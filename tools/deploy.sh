@@ -8,7 +8,7 @@
 #
 # Chain it with your start command so every boot gets the latest:
 #
-#   /opt/fivem-server-basic/deploy.sh && cd /opt/fivem-server-basic && ./run.sh +exec server.cfg
+#   /opt/fivem-server-classic/deploy.sh && cd /opt/fivem-server-classic && ./run.sh +exec server.cfg
 #
 # ---------------------------------------------------------------------------
 # A NOTE ON THE SQUARE BRACKETS
@@ -28,7 +28,7 @@ set -euo pipefail
 REPO="${BR_REPO:-git@github.com:WillMontgomery/fivem-br-gamemode.git}"
 BRANCH="${BR_BRANCH:-main}"
 
-SERVER_ROOT="${BR_SERVER_ROOT:-/opt/fivem-server-basic}"
+SERVER_ROOT="${BR_SERVER_ROOT:-/opt/fivem-server-classic}"
 TARGET_CATEGORY="${BR_TARGET_CATEGORY:-[gamemodes]}"
 
 # Where the working clone lives. Deliberately NOT inside resources/: FiveM would
