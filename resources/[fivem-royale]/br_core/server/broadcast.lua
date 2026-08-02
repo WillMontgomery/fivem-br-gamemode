@@ -45,6 +45,34 @@ function BR.Broadcast.flushNow()
     flush()
 end
 
+--- One notice for a player's on-screen notification stack.
+---
+--- This is the channel for events that happen TO a player -- an invite
+--- declined, a party joined, a match left. Chat's system messages scroll away
+--- with the conversation and were the only feedback channel until now, which is
+--- how "the invite was declined" became information nobody received.
+---
+--- @param target integer|integer[]  a server id, or a list of them
+--- @param text string
+--- @param tone string|nil  'info' | 'success' | 'warn' | 'danger'
+function BR.Server.notify(target, text, tone)
+    local payload = { text = text, tone = tone or 'info' }
+    if type(target) == 'table' then
+        for _, src in ipairs(target) do
+            TriggerClientEvent(BR.Net.NOTIFY, src, payload)
+        end
+    else
+        TriggerClientEvent(BR.Net.NOTIFY, target, payload)
+    end
+end
+
+--- A match-wide alert. Same stack, every client.
+--- @param text string
+--- @param tone string|nil
+function BR.Server.notifyAll(text, tone)
+    TriggerClientEvent(BR.Net.NOTIFY, -1, { text = text, tone = tone or 'info' })
+end
+
 --- The heartbeat: counts every client needs but nobody needs instantly.
 ---
 --- Sent unconditionally rather than on change, because it is also how a client

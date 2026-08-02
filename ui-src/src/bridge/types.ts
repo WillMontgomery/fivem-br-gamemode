@@ -88,6 +88,9 @@ export interface SquadPayload {
    *  a leader?" -- true for everybody. */
   you?: number
   members: SquadMember[]
+  /** Invites awaiting an answer. Party (lobby) payloads only -- an in-match
+   *  squad cannot be invited into. */
+  pending?: { src: number; name: string }[]
 }
 
 /** An incoming party invite. Expires server-side after a minute. */

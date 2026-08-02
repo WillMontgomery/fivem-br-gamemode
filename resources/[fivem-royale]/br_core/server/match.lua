@@ -60,9 +60,27 @@ end
 --- @param from string
 function BR.Match.onEnter(state, from)
     if state == BR.MatchState.WARMUP then
-        BR.Roster.each(nil, function(src)
-            BR.Roster.setState(src, BR.PlayerState.WARMUP)
-        end)
+        -- Only the players who READIED UP enter the match. This used to sweep
+        -- the whole roster, which conscripted everyone connected -- a player
+        -- idling in the lobby, or one who had just left the previous match,
+        -- was dragged into warmup they never asked for. The queue gates the
+        -- start; it must also define who is in.
+        --
+        -- The fallback covers `brforce warmup`, which jumps here without the
+        -- tick having snapshotted the queue. It still respects the rule: the
+        -- QUEUE is consumed, not the roster -- forcing a match with nobody
+        -- queued produces an empty match, which is the honest outcome.
+        local parts = S.participants
+        if not parts or #parts == 0 then
+            parts = BR.Lobby.ids()
+            BR.Lobby.clear()
+        end
+        S.participants = nil   -- consumed; must never leak into the next match
+        for _, src in ipairs(parts) do
+            if BR.Roster.get(src) then
+                BR.Roster.setState(src, BR.PlayerState.WARMUP)
+            end
+        end
         -- Squads are formed once, here, from the parties that exist at the
         -- moment the match starts. Forming them earlier would go stale as
         -- people join and leave parties in the lobby.
@@ -84,12 +102,12 @@ function BR.Match.onEnter(state, from)
         --
         -- M3 replaces this: players become ALIVE when they LAND, not when the
         -- match starts.
+        --
+        -- isInMatch, not "everyone not dead": LOBBY players -- idlers who never
+        -- readied up, or someone who left this match -- must not be promoted
+        -- into a match they are not part of.
         BR.Roster.each(
-            function(e)
-                return e.state ~= BR.PlayerState.DEAD
-                   and e.state ~= BR.PlayerState.LEFT
-                   and e.state ~= BR.PlayerState.SPECTATING
-            end,
+            function(e) return BR.Server.isInMatch(e.state) end,
             function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
 
         -- Nothing can win in the first moments of a match. Without this, any
@@ -285,7 +303,13 @@ local function tick()
         -- transition throws, the queue must still be spent -- otherwise the
         -- next tick sees a full queue and tries to start the match again,
         -- every tick, forever.
+        --
+        -- The snapshot taken here is the match's roster of participants:
+        -- onEnter(WARMUP) runs after the queue is cleared, so it reads this
+        -- rather than the queue -- and it must never read the whole roster,
+        -- which would conscript players who did not ready up.
         S.mode = BR.Lobby.dominantMode()
+        S.participants = BR.Lobby.ids()
         BR.Lobby.clear()
         BR.Match.transition(BR.MatchState.WARMUP)
         return
@@ -303,10 +327,11 @@ local function tick()
     -- A timed state whose time is up moves to whatever comes next.
     if S.endsAt > 0 and now >= S.endsAt then
         if S.state == BR.MatchState.WARMUP then
-            -- Connected count here, not queued: the queue was cleared when
-            -- warmup began, and what matters now is whether enough people are
-            -- still actually present to make a match of it.
-            if BR.Server.count() < M.MinPlayers(BR.Server.devMode) then
+            -- Participants still standing on the pad, not the connected count:
+            -- the queue was cleared when warmup began, and a lobby idler who
+            -- never readied up must not pad the number that decides whether
+            -- this match is worth flying.
+            if BR.Server.aliveCount() < M.MinPlayers(BR.Server.devMode) then
                 print('[br_core] match: not enough players, returning to WAITING')
                 BR.Match.transition(BR.MatchState.WAITING)
             else
@@ -323,6 +348,49 @@ local function tick()
 end
 
 BR.Sched.every(250, 'match.tick', tick)
+
+--- Leave the current match, on the player's own initiative.
+---
+--- The match must not notice beyond the elimination: leaving while alive IS an
+--- elimination -- placement recorded, squadmates play on, the alive count drops
+--- through the same path a death would use. Anything gentler would create a
+--- second, parallel way to exit a match, and every later system (placements,
+--- stats, spectate) would have to know about both.
+---
+--- The party deliberately survives. Leaving the MATCH and leaving the PARTY
+--- are different intents with different buttons.
+--- @param src integer
+function BR.Match.leaveMatch(src)
+    local entry = BR.Roster.get(src)
+    if not entry then return end
+
+    if entry.state == BR.PlayerState.LOBBY then
+        return   -- nothing to leave
+    end
+
+    if entry.state == BR.PlayerState.WARMUP then
+        -- The match has not started; there is no placement to record. They
+        -- simply step out, and the warmup-end headcount treats them exactly
+        -- like someone who never readied up.
+        BR.Roster.clearFields(src, { 'squadId', 'colour' })
+    elseif BR.Server.isInMatch(entry.state)
+        or entry.state == BR.PlayerState.DBNO then
+        BR.Combat.eliminate(src, 'left', nil)
+    end
+    -- DEAD and SPECTATING players fall through: already out of the fight, they
+    -- only need the trip back to the lobby.
+
+    BR.Roster.setState(src, BR.PlayerState.LOBBY)
+    TriggerClientEvent(BR.Net.TO_LOBBY, src)
+    BR.Server.notify(src, 'You left the match.', 'info')
+
+    print(('[br_core] %s (%d) left the match'):format(entry.name, src))
+end
+
+RegisterNetEvent(BR.Net.MATCH_LEAVE)
+AddEventHandler(BR.Net.MATCH_LEAVE, function()
+    BR.Match.leaveMatch(source)
+end)
 
 -- --------------------------------------------------------------------------
 -- Admin

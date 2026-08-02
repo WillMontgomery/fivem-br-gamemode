@@ -28,8 +28,11 @@ BR.Net = {
     SQUAD_KICK      = 'br:squad:kick',       -- C->S  { target }
     SQUAD_UPDATE    = 'br:squad:update',     -- S->C  { id, leader, members }
     SQUAD_INVITED   = 'br:squad:invited',    -- S->C  { partyId, from, name, size, max }
-    LOBBY_STATUS    = 'br:lobby:status',     -- S->C  { queued, needed, connected, mode, ids, players }
+    LOBBY_STATUS    = 'br:lobby:status',     -- S->C  { queued, needed, connected, mode, ids, players, wait }
     SQUAD_RESULT    = 'br:squad:result',     -- S->C  { ok, reason } -- feedback for an invite/kick
+    NOTIFY          = 'br:notify',           -- S->C  { text, tone } -- one notice for the on-screen stack
+    MATCH_LEAVE     = 'br:match:leave',      -- C->S  abandon the current match, back to the lobby
+    TO_LOBBY        = 'br:lobby:return',     -- S->C  respawn at the lobby pad NOW (leave-match flow)
 
     -- Bus / drop
     BUS_ROUTE       = 'br:bus:route',        -- S->C  { sx, sy, ex, ey, alt, tStart, tEnd }

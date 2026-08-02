@@ -3,6 +3,7 @@ import { useUi } from './store'
 import Hud from './hud/Hud'
 import Chat from './chat/Chat'
 import Lobby from './screens/Lobby'
+import Notices from './hud/Notices'
 
 /**
  * Root.
@@ -30,7 +31,7 @@ export default function App() {
   useNuiEvent('invite',   (d) => s.setInvite(d))
   useNuiEvent('feed',     (d) => s.pushFeed(d))
   useNuiEvent('chat',     (d) => s.pushChat(d))
-  useNuiEvent('toast',    (d) => s.showToast(d))
+  useNuiEvent('toast',    (d) => s.pushNotice(d))
 
   // Lua owns focus. When it hands focus to chat, the input opens; when it takes
   // focus away, the input closes. The UI never decides this on its own.
@@ -48,19 +49,26 @@ export default function App() {
   // Lobby only rendering when focus === 'lobby' (which nothing ever set) left
   // the screen completely empty for the whole warmup countdown.
   //
-  // WAITING is the only genuinely pre-match state, and the lobby shows there
-  // whether or not Lua has granted focus: a queue screen you cannot see is worse
-  // than one you cannot yet click.
-  const waiting = s.match.state === 'waiting'
-  const inMatch = !waiting
+  // The lobby shows when the MATCH is waiting -- or when this player
+  // personally is in the lobby while a match runs without them (left it, or
+  // never readied up). The match state alone stopped being the right test the
+  // moment leaving a match became possible. `hud.state` is the server's word
+  // on OUR state, so this stays a mirror, not a local decision.
+  //
+  // Visible whether or not Lua has granted focus: a queue screen you cannot
+  // see is worse than one you cannot yet click.
+  const showLobby = s.match.state === 'waiting' || s.hud.state === 'lobby'
 
   return (
     <>
       {/* Always mounted; visibility follows match state so transitions cost no
           mount work mid-fight. */}
-      <Hud visible={inMatch} />
+      <Hud visible={!showLobby} />
       <Chat />
-      <Lobby visible={waiting} />
+      <Lobby visible={showLobby} />
+      {/* Over everything: party events and match alerts do not care which
+          screen is up when they land. */}
+      <Notices />
     </>
   )
 }

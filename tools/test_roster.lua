@@ -289,14 +289,18 @@ do
     local e = BR.Roster.get(1)
     ok(e.hp == 100.0, 'players start at full display health')
 
-    pedHealth[1001] = 150            -- engine units: halfway between floor and max
+    -- Halfway between the floor and max, computed from config rather than
+    -- hardcoded -- this test is about the CONVERSION HAPPENING, not about
+    -- where the floor sits (that is pinned in test_shared's health block).
+    local mid = (BR.Config.Match.healthFloor + BR.Config.Match.maxHealth) // 2
+    pedHealth[1001] = mid
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
 
     ok(BR.Roster.get(1).hp == 50,
         'sampled engine health becomes display health',
         ('got %s'):format(tostring(BR.Roster.get(1).hp)))
-    ok(BR.Roster.get(1).engineHp == 150, 'and the raw engine value is kept too')
+    ok(BR.Roster.get(1).engineHp == mid, 'and the raw engine value is kept too')
 
     pedHealth[1001] = BR.Config.Match.healthFloor
     fakeTime = fakeTime + 1000
@@ -599,18 +603,26 @@ end
 
 describe('lobby.midMatch')
 do
+    -- The queue gate is the PLAYER's state, not the match's. A lobby player
+    -- may queue at any time -- the WAITING tick is the only consumer, so
+    -- queueing during a live match just means waiting in line for the next
+    -- one. A player still IN the match may not queue; leaving is explicit.
     reset()
     BR.Server.devMode = true
     BR.Lobby.clear()
     join(1, 'A'); join(2, 'B')
 
     BR.Match.transition(BR.MatchState.PLAYING)
-    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
-    ok(BR.Lobby.count() == 0, 'queueing during a live match is ignored')
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
 
-    BR.Match.transition(BR.MatchState.WAITING)
     fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
-    ok(BR.Lobby.count() == 1, 'and works again once the match is over')
+    ok(BR.Lobby.count() == 0, 'an in-match player cannot queue')
+
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
+    ok(BR.Lobby.count() == 1,
+        'a lobby player queues for the NEXT match while this one runs')
+    ok(BR.Server.match.state == BR.MatchState.PLAYING,
+        'and the running match does not notice')
 
     BR.Lobby.clear()
 end
@@ -1181,6 +1193,156 @@ do
         if p.inParty then flagged = flagged + 1 end
     end
     ok(flagged == 0, 'nobody is advertised as partied when no party has two members')
+end
+
+local function noticesTo(target)
+    local out = {}
+    for _, s in ipairs(sent) do
+        if s.event == BR.Net.NOTIFY and s.target == target then
+            out[#out + 1] = s.args[1]
+        end
+    end
+    return out
+end
+
+describe('party.pending')
+do
+    -- The sender's only feedback used to be a transient "Invite sent." --
+    -- after it faded, ignored, declined and expired invites all looked like
+    -- nothing had ever been sent. The pending list and the answer notices are
+    -- asserted ON THE WIRE, because that is what the interface actually reads.
+    reset()
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+
+    sent = {}
+    BR.Party.invite(1, 2)
+    local updates = eventsOf(BR.Net.SQUAD_UPDATE)
+    ok(#updates > 0, 'the invite itself pushes a party update')
+    local last = updates[#updates].args[1]
+    ok(last.pending and #last.pending == 1 and last.pending[1].src == 2,
+        'and it carries the invite as pending')
+    ok(last.pending[1].name == 'B', 'with the invitee name, not just an id')
+
+    -- Declined: the inviter HEARS the no, and the chip goes away.
+    sent = {}
+    BR.Party.respond(2, false)
+    local notes = noticesTo(1)
+    ok(#notes > 0 and tostring(notes[1].text):find('declined'),
+        'declining notifies the inviter')
+    updates = eventsOf(BR.Net.SQUAD_UPDATE)
+    ok(#updates > 0 and #(updates[#updates].args[1].pending or {}) == 0,
+        'and the pending list empties on the wire')
+
+    -- Accepted: pending clears and both sides are told.
+    BR.Party.invite(1, 2)
+    sent = {}
+    BR.Party.respond(2, true)
+    updates = eventsOf(BR.Net.SQUAD_UPDATE)
+    ok(#(updates[#updates].args[1].pending or {}) == 0,
+        'accepting clears the pending list')
+    ok(#noticesTo(2) > 0, 'the joiner is told they joined')
+    ok(#noticesTo(1) > 0, 'and the inviter is told who arrived')
+
+    -- Expired: ignoring an invite is an answer the sender needs too.
+    BR.Party.invite(1, 3)
+    sent = {}
+    fakeTime = fakeTime + 61000
+    BR.Sched.step(fakeTime)
+    notes = noticesTo(1)
+    local expired = false
+    for _, n in ipairs(notes) do
+        if tostring(n.text):find('expired') then expired = true end
+    end
+    ok(expired, 'an ignored invite expires with a notice to the sender')
+    updates = eventsOf(BR.Net.SQUAD_UPDATE)
+    ok(#updates > 0 and #(updates[#updates].args[1].pending or {}) == 0,
+        'and the pending chip is withdrawn')
+end
+
+describe('lobby.soloDropsParty')
+do
+    -- Queueing solo while in a party is a contradiction; the resolution is
+    -- what the player asked for most recently. No "in a party but playing
+    -- alone" state exists, on purpose.
+    reset()
+    join(1, 'A'); join(2, 'B')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    ok(BR.Party.isGrouped(1), 'party formed')
+
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    ok(not BR.Party.isGrouped(1), 'queueing solo leaves the party')
+    ok(not BR.Party.isGrouped(2),
+        'and the abandoned partner is released too (party of one rule)')
+    ok(BR.Server.queue[1] ~= nil, 'the queue entry still lands')
+end
+
+describe('match.participants')
+do
+    -- The queue gates the start AND defines who is in. This used to sweep the
+    -- whole roster, conscripting connected players who never readied up.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B'); join(3, 'Idler')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'the match starts')
+    ok(BR.Roster.get(1).state == BR.PlayerState.WARMUP, 'queued players enter warmup')
+    ok(BR.Roster.get(3).state == BR.PlayerState.LOBBY,
+        'the idler who never readied up stays in the lobby')
+
+    -- And the idler is not promoted when the match goes live either.
+    BR.Match.transition(BR.MatchState.PLAYING)
+    ok(BR.Roster.get(1).state == BR.PlayerState.ALIVE, 'participants go alive')
+    ok(BR.Roster.get(3).state == BR.PlayerState.LOBBY, 'the idler still does not')
+end
+
+describe('match.leave')
+do
+    -- Leaving mid-match IS an elimination: placement recorded, the match plays
+    -- on, and the leaver is back in the lobby able to queue for the next one.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    BR.Match.transition(BR.MatchState.PLAYING)
+
+    sent = {}
+    fire(BR.Net.MATCH_LEAVE, 2)
+    local e = BR.Roster.get(2)
+    ok(e.state == BR.PlayerState.LOBBY, 'the leaver is back in the lobby')
+    ok(e.placement ~= nil, 'with a placement recorded, like any elimination')
+    ok(#eventsOf(BR.Net.TO_LOBBY) == 1, 'and is sent home')
+    ok(BR.Server.match.state == BR.MatchState.PLAYING,
+        'while the match plays on for everyone else')
+    ok(BR.Server.squadsAlive() == 2, 'the alive count dropped by exactly one')
+
+    -- Back in the lobby DURING the match, they may queue for the next one.
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    ok(BR.Server.queue[2] ~= nil, 'a lobby player can queue while a match runs')
+
+    -- A player still IN the match cannot double-queue their way out.
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    ok(BR.Server.queue[1] == nil, 'an in-match player cannot queue')
+
+    -- Leaving during WARMUP records no placement -- the match never started
+    -- for them, so there is nothing to place.
+    reset()
+    join(4, 'D'); join(5, 'E')
+    fire(BR.Net.QUEUE_JOIN, 4, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 5, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'warmup running')
+    fire(BR.Net.MATCH_LEAVE, 5)
+    ok(BR.Roster.get(5).state == BR.PlayerState.LOBBY, 'warmup leaver is out')
+    ok(BR.Roster.get(5).placement == nil, 'with no placement recorded')
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

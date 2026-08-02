@@ -51,6 +51,15 @@ FXServer*
 server-data/
 
 # ---------------------------------------------------------------------------
+# Session working memory
+#
+# PLAN.md is the living handoff document between working sessions -- project
+# state, testing strategy, what's next. It is deliberately untracked: the repo
+# documents the project, PLAN.md documents the work in progress.
+# ---------------------------------------------------------------------------
+PLAN.md
+
+# ---------------------------------------------------------------------------
 # Editors and OS
 # ---------------------------------------------------------------------------
 .vscode/

@@ -61,13 +61,13 @@ BR.Config.Match = {
     -- Everything in config/*.lua is DISPLAY units. Convert at the engine
     -- boundary with BR.ToEngineHp / BR.ToDisplayHp -- never inline the arithmetic.
     --
-    -- VERIFY IN-GAME (Milestone 0): the 100-means-dead floor for player peds is
-    -- the widely used FiveM convention, but it is a convention, not something we
-    -- have confirmed on this build. If it turns out players die at 0 like other
-    -- peds, healthFloor becomes 0 and maxHealth 100, and the converters below are
-    -- the only two places that need to change.
+    -- VERIFIED IN-GAME (2026-08-02): player peds on this build die at engine 0,
+    -- NOT at the widely repeated 100-means-dead convention. The floor is 0 and
+    -- the full engine range 0..200 maps onto display 0..100. Exactly as the
+    -- old note here promised, the converters below were the only places that
+    -- needed to know.
     maxHealth       = 200,    -- engine units
-    healthFloor     = 100,    -- engine units; below this a player ped is dead
+    healthFloor     = 0,      -- engine units; at or below this a player ped is dead
     maxArmour       = 100,    -- armour is already 0..100 natively, no conversion
 
     -- DBNO (squads only -- solo has nobody who could revive you).

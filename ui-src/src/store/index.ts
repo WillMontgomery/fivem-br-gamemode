@@ -31,7 +31,9 @@ export interface UiState {
   summary: SummaryPayload | null
   feed: FeedEntry[]
   chat: ChatMessage[]
-  toast: (ToastPayload & { id: number }) | null
+  /** The on-screen notice stack: party events, action results, match alerts.
+   *  Newest last; each expires on its own timer. */
+  notices: (ToastPayload & { id: number })[]
   focus: FocusPayload['screen']
 
   /** Queue progress while WAITING. Null until the server reports. */
@@ -67,7 +69,7 @@ export interface UiState {
   clearInvite: () => void
   pushFeed: (f: FeedEntry) => void
   pushChat: (c: ChatMessage) => void
-  showToast: (t: ToastPayload) => void
+  pushNotice: (t: ToastPayload) => void
   openChat: (channel: ChatMessage['channel']) => void
   closeChat: () => void
   hydrate: (s: {
@@ -89,11 +91,14 @@ const emptyDbno: DbnoPayload = {
   downed: false, bleedEndsAt: 0, reviverName: null, revivePct: 0,
 }
 
-let toastId = 0
-let toastTimer: ReturnType<typeof setTimeout> | null = null
+let noticeId = 0
 
-/** How long a toast stays up when the sender does not specify. */
+/** How long a notice stays up when the sender does not specify. */
 const TOAST_MS = 4000
+
+/** The stack is capped: a burst (whole party leaving at once) must not build a
+ *  wall of text over the game. Oldest fall off first. */
+const NOTICES_MAX = 5
 
 export const useUi = create<UiState>((set) => ({
   match: emptyMatch,
@@ -106,7 +111,7 @@ export const useUi = create<UiState>((set) => ({
   summary: null,
   feed: [],
   chat: [],
-  toast: null,
+  notices: [],
   focus: 'none',
   lobby: null,
   invite: null,
@@ -143,21 +148,19 @@ export const useUi = create<UiState>((set) => ({
     chat: [...s.chat, msg].slice(-CHAT_MAX),
   })),
 
-  // Toasts expire on their own. Without this they were sticky: "Invite sent."
-  // stayed on the lobby panel indefinitely, so the next thing you did looked
-  // like it had produced no response at all.
-  //
-  // The timer is module-level rather than per-toast so a newer toast cancels
-  // the older one's expiry -- otherwise the first toast's timeout would clear
-  // the second one early.
-  showToast: (t) => {
-    const id = ++toastId
-    if (toastTimer) clearTimeout(toastTimer)
-    toastTimer = setTimeout(() => {
-      toastTimer = null
-      set((s) => (s.toast?.id === id ? { toast: null } : {}))
+  // Notices stack instead of replacing each other. The single-slot version
+  // meant two events in quick succession -- "Kestrel joined" then "Rook
+  // declined" -- showed only the second, and the first might as well never
+  // have happened. Each notice removes ITSELF by id, so an expiring older
+  // notice can never take a newer one down with it.
+  pushNotice: (t) => {
+    const id = ++noticeId
+    setTimeout(() => {
+      set((s) => (s.notices.some((n) => n.id === id)
+        ? { notices: s.notices.filter((n) => n.id !== id) }
+        : {}))
     }, t.ms ?? TOAST_MS)
-    set({ toast: { ...t, id } })
+    set((s) => ({ notices: [...s.notices, { ...t, id }].slice(-NOTICES_MAX) }))
   },
 
   openChat:  (chatChannel) => set({ chatOpen: true, chatChannel }),
@@ -186,3 +189,4 @@ export const selDbno     = (s: UiState) => s.dbno
 export const selFocus    = (s: UiState) => s.focus
 export const selChatOpen = (s: UiState) => s.chatOpen
 export const selLobby    = (s: UiState) => s.lobby
+export const selNotices  = (s: UiState) => s.notices

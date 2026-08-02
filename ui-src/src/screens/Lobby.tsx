@@ -1,6 +1,6 @@
 import { Button, Card, CardBody, CardHeader, Spinner } from '@heroui/react'
-import { useState } from 'react'
-import { useUi, selMatch, selLobby } from '../store'
+import { useEffect, useRef, useState } from 'react'
+import { useUi, selMatch, selLobby, selSquad } from '../store'
 import PartyPanel from './PartyPanel'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
@@ -23,8 +23,29 @@ import { CB } from '../bridge/types'
 export default function Lobby({ visible }: { visible: boolean }) {
   const match = useUi(selMatch)
   const lobby = useUi(selLobby)
+  const squad = useUi(selSquad)
   const [queued, setQueued] = useState(false)
   const [mode, setMode] = useState<'solo' | 'squad'>('squad')
+
+  const inParty = squad.members.length > 1
+
+  // Joining a party IS choosing squads -- there is deliberately no "in a party
+  // but queued solo" state. Only the transition INTO a party flips the toggle:
+  // reacting to `inParty` itself would fight the Solo button, which leaves the
+  // party asynchronously and would be flipped back before the server answered.
+  const wasInParty = useRef(inParty)
+  useEffect(() => {
+    if (inParty && !wasInParty.current) setMode('squad')
+    wasInParty.current = inParty
+  }, [inParty])
+
+  const pickMode = (m: 'solo' | 'squad') => {
+    setMode(m)
+    // Solo and a party cannot coexist; picking solo leaves the party, now.
+    // The server enforces the same rule on queue -- this just makes the
+    // consequence visible at the moment of choice instead of at Ready up.
+    if (m === 'solo' && inParty) void fetchNui(CB.SQUAD_LEAVE, {})
+  }
 
   // THE SERVER IS THE AUTHORITY ON WHETHER WE ARE QUEUED.
   //
@@ -37,7 +58,10 @@ export default function Lobby({ visible }: { visible: boolean }) {
   // the queue and fell back to WAITING without the client noticing.
   const searching = lobby ? lobby.you : queued
 
-  const warmup = match.state === 'warmup'
+  // When this screen is up while the match is NOT waiting, this player is in
+  // the lobby during someone else's match (left it, or never readied up).
+  // They can queue -- the server holds the queue until the next WAITING.
+  const matchRunning = match.state !== 'waiting'
 
   // WHAT ARE WE WAITING FOR?
   //
@@ -94,10 +118,17 @@ export default function Lobby({ visible }: { visible: boolean }) {
         </div>
 
         <Card className="border border-white/10">
-          <CardHeader className="pb-0">
+          <CardHeader className="pb-0 flex-col items-start gap-1">
             <h2 className="text-lg font-semibold">
-              {warmup ? 'Match starting' : 'Find a match'}
+              {matchRunning ? 'Next match' : 'Find a match'}
             </h2>
+            {/* Only ever seen by a player who is OUT of the running match --
+                a participant never has this screen up. */}
+            {matchRunning && (
+              <p className="text-[0.6875rem] text-white/40">
+                A match is in progress &mdash; ready up to join the next one.
+              </p>
+            )}
           </CardHeader>
 
           <CardBody className="flex flex-col gap-4">
@@ -107,8 +138,8 @@ export default function Lobby({ visible }: { visible: boolean }) {
                   key={m}
                   color={mode === m ? 'primary' : 'default'}
                   variant={mode === m ? 'solid' : 'bordered'}
-                  isDisabled={searching || warmup}
-                  onPress={() => setMode(m)}
+                  isDisabled={searching}
+                  onPress={() => pickMode(m)}
                   className="flex-1 capitalize"
                 >
                   {m}
@@ -119,16 +150,9 @@ export default function Lobby({ visible }: { visible: boolean }) {
             {/* Parties persist between matches, so this is always relevant --
                 not only while queueing. It knows the mode because a party has
                 no meaning in solo. */}
-            <PartyPanel disabled={searching || warmup} mode={mode} />
+            <PartyPanel disabled={searching} mode={mode} />
 
-            {warmup ? (
-              <div className="flex items-center justify-center gap-3 py-2">
-                <Spinner size="sm" />
-                <span className="text-sm text-white/70">
-                  Warmup &mdash; everyone drops shortly
-                </span>
-              </div>
-            ) : searching ? (
+            {searching ? (
               <div className="flex flex-col gap-2">
                 <div className="flex flex-col items-center gap-1 py-1">
                   <div className="flex items-center gap-3">

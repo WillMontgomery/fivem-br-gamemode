@@ -63,7 +63,11 @@ end)
 --- Both paths are idempotent: pushFocus ignores a screen already on the stack.
 --- @param state string
 local function applyFocusForState(state)
-    if state == BR.MatchState.WAITING then
+    -- The lobby owns the screen when the MATCH is waiting -- or when this
+    -- player personally is in the lobby while a match runs without them
+    -- (left it, or never readied up). Match state alone was the wrong test
+    -- the moment leaving a match became possible.
+    if state == BR.MatchState.WAITING or S.me.state == BR.PlayerState.LOBBY then
         mark('focus')
         TriggerEvent('br:ui:pushFocus', 'lobby')
     else
@@ -153,8 +157,22 @@ AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
         end
 
         if d.src == S.me.src and d.e then
+            local wasState = S.me.state
             for k, v in pairs(d.e) do
                 if S.me[k] ~= nil or k == 'squadId' then S.me[k] = v end
+            end
+            -- The clear list applies to ME too. Without this, S.me.squadId
+            -- outlived the match until the next full snapshot happened to
+            -- re-seed it -- a window where the squad/party fallback picked
+            -- the wrong branch.
+            for _, k in ipairs(d.clear or {}) do
+                if k == 'squadId' or S.me[k] ~= nil then S.me[k] = nil end
+            end
+            -- MY state changing can move screen ownership: becoming LOBBY
+            -- while a match runs (left it) must summon the lobby and its
+            -- focus, and leaving LOBBY must release them.
+            if S.me.state ~= wasState then
+                applyFocusForState(S.match.state)
             end
         end
     end
@@ -253,6 +271,16 @@ end)
 RegisterNetEvent(BR.Net.SQUAD_INVITED)
 AddEventHandler(BR.Net.SQUAD_INVITED, function(inv)
     TriggerEvent('br:ui:sendLocal', BR.Nui.INVITE, inv)
+end)
+
+-- Server-pushed notices: party events, match alerts. Same UI stack as the
+-- local action results, so a player has ONE place to glance at.
+RegisterNetEvent(BR.Net.NOTIFY)
+AddEventHandler(BR.Net.NOTIFY, function(n)
+    TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
+        text = n and n.text or '',
+        tone = n and n.tone or 'info',
+    })
 end)
 
 RegisterNetEvent(BR.Net.LOBBY_STATUS)
@@ -365,7 +393,8 @@ function pushSquadOrParty()
     if not me.squadId then
         local p = S.party
         TriggerEvent('br:ui:sendLocal', BR.Nui.SQUAD,
-            p and { id = p.id, leader = p.leader, members = p.members, you = me.src }
+            p and { id = p.id, leader = p.leader, members = p.members,
+                    pending = p.pending, you = me.src }
               or  { id = nil, members = {}, you = me.src })
         return
     end

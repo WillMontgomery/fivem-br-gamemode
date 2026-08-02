@@ -84,7 +84,8 @@ end
 -- ------------------------------------------------------------------- health ---
 
 --- Read the local player's health in DISPLAY units (0..100).
---- Engine health is 100..200 for player peds; see BR.ToDisplayHp.
+--- Engine health is 0..200 for player peds on this build (floor verified 0
+--- in-game, not the oft-repeated 100); see BR.ToDisplayHp.
 --- @return number
 function BR.Native.displayHealth()
     return BR.ToDisplayHp(GetEntityHealth(PlayerPedId()))

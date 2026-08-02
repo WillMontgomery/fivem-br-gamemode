@@ -440,16 +440,23 @@ end
 
 describe('health units')
 do
-    -- Engine health (100..200, where 100 = dead) versus display health (0..100).
-    -- Mixing the two is the most likely source of a silent balance bug, so the
-    -- conversion is pinned here.
+    -- Engine health versus display health (0..100). Mixing the two is the most
+    -- likely source of a silent balance bug, so the conversion is pinned here.
+    --
+    -- The floor was VERIFIED IN-GAME on 2026-08-02: player peds on this build
+    -- die at engine 0, not at the widely repeated 100-means-dead convention.
+    -- The expectations below are written against config, not literals, so a
+    -- future floor change fails here only if the arithmetic breaks -- but the
+    -- midpoint checks pin today's verified numbers on purpose.
+    ok(BR.Config.Match.healthFloor == 0, 'the in-game verified floor is 0')
+
     ok(BR.ToEngineHp(100) == BR.Config.Match.maxHealth, 'full display maps to max engine hp')
     ok(BR.ToEngineHp(0) == BR.Config.Match.healthFloor, 'zero display maps to the death floor')
-    ok(BR.ToEngineHp(50) == 150, 'half display maps to the midpoint')
+    ok(BR.ToEngineHp(50) == 100, 'half display maps to the midpoint (engine 100)')
 
     ok(near(BR.ToDisplayHp(200), 100.0), 'max engine hp reads as full')
-    ok(near(BR.ToDisplayHp(100), 0.0), 'the death floor reads as zero')
-    ok(near(BR.ToDisplayHp(150), 50.0), 'midpoint engine hp reads as half')
+    ok(near(BR.ToDisplayHp(0), 0.0), 'the death floor reads as zero')
+    ok(near(BR.ToDisplayHp(100), 50.0), 'midpoint engine hp reads as half')
 
     local roundTrips = true
     for d = 0, 100 do
@@ -459,10 +466,10 @@ do
 
     ok(BR.ToEngineHp(-50) == BR.Config.Match.healthFloor, 'negative display is clamped')
     ok(BR.ToEngineHp(999) == BR.Config.Match.maxHealth, 'excess display is clamped')
-    ok(near(BR.ToDisplayHp(50), 0.0), 'sub-floor engine hp reads as zero, not negative')
+    ok(near(BR.ToDisplayHp(-10), 0.0), 'sub-floor engine hp reads as zero, not negative')
 
-    ok(BR.IsDeadHp(100) and BR.IsDeadHp(99), 'at or below the floor is dead')
-    ok(not BR.IsDeadHp(101), 'above the floor is alive')
+    ok(BR.IsDeadHp(0) and BR.IsDeadHp(-1), 'at or below the floor is dead')
+    ok(not BR.IsDeadHp(1), 'above the floor is alive')
 
     -- Consumable numbers are authored in display units; they must stay in range.
     local bad = {}

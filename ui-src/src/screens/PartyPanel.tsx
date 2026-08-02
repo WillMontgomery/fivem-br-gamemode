@@ -29,7 +29,6 @@ export default function PartyPanel({
   const lobby = useUi(selLobby)
   const invite = useUi((s) => s.invite)
   const clearInvite = useUi((s) => s.clearInvite)
-  const toast = useUi((s) => s.toast)
 
   const [selected, setSelected] = useState<Set<number>>(new Set())
 
@@ -44,8 +43,10 @@ export default function PartyPanel({
   const players = lobby?.players ?? []
 
   // Anyone already in a party cannot be invited into another, so offering them
-  // would only produce a rejection.
-  const invitable = players.filter((p) => !p.inParty)
+  // would only produce a rejection. Anyone we have ALREADY invited shows as a
+  // pending chip instead -- listing them here too would invite double-sends.
+  const pendingSrcs = new Set((squad.pending ?? []).map((p) => p.src))
+  const invitable = players.filter((p) => !p.inParty && !pendingSrcs.has(p.src))
 
   // Drop selections that are no longer valid -- a player who disconnected, or
   // who joined someone else's party while the panel was open.
@@ -99,18 +100,9 @@ export default function PartyPanel({
         </div>
       )}
 
-      {/* A party has no meaning in a solo round -- everyone is their own team.
-          Showing the roster and a Leave party button under a Solo selection
-          reads as though the party is coming along, which is the opposite of
-          what happens. The note stays so the party does not appear to have
-          silently vanished. */}
-      {mode === 'solo' && inParty && (
-        <p className="text-[0.6875rem] text-white/35">
-          Playing solo &mdash; your party of {squad.members.length} sits this round
-          out. Switch to Squad to drop together.
-        </p>
-      )}
-
+      {/* No solo branch: choosing Solo LEAVES the party (Lobby.pickMode + the
+          server-side guard on queue), so there is never a party to explain
+          under a Solo selection -- by design, not omission. */}
       {mode === 'squad' && (inParty ? (
         <div className="flex flex-wrap items-center gap-1.5">
           {squad.members.map((m) => (
@@ -122,6 +114,21 @@ export default function PartyPanel({
               title={m.leader ? 'Party leader' : undefined}
             >
               {m.leader ? '★ ' : ''}{m.name}
+            </Chip>
+          ))}
+
+          {/* Invites still out. Without these, "Invite sent" faded after four
+              seconds and an ignored invite looked identical to one that was
+              never sent. Dashed border = not a member yet. */}
+          {(squad.pending ?? []).map((p) => (
+            <Chip
+              key={`pending-${p.src}`}
+              size="sm"
+              variant="bordered"
+              className="border-dashed opacity-60"
+              title="Invited — waiting for an answer"
+            >
+              {p.name} &hellip;
             </Chip>
           ))}
         </div>
@@ -182,16 +189,6 @@ export default function PartyPanel({
         </Button>
       )}
 
-      {/* Result of the last party action. An invite that silently did nothing
-          is indistinguishable from one that worked. */}
-      {toast && (
-        <span
-          className="text-[0.6875rem]"
-          style={{ color: toast.tone === 'danger' ? 'var(--color-danger)' : 'var(--color-hp)' }}
-        >
-          {toast.text}
-        </span>
-      )}
     </div>
   )
 }

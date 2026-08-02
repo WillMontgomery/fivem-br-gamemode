@@ -70,15 +70,27 @@ function BR.Lobby.join(src, mode)
     local entry = BR.Roster.get(src)
     if not entry then return end
 
-    -- Queueing mid-match is meaningless; they will be picked up at cleanup.
-    if BR.Server.match.state ~= BR.MatchState.WAITING
-       and BR.Server.match.state ~= BR.MatchState.CLEANUP then
+    -- The gate is the PLAYER's state, not the match's. Someone who left the
+    -- match (or never joined it) is in the lobby while a match runs, and they
+    -- may queue for the next one -- the WAITING tick is the only thing that
+    -- consumes the queue, so queueing early just means waiting in line.
+    -- Someone still IN a match may not queue; leaving is the explicit verb.
+    if entry.state ~= BR.PlayerState.LOBBY then
         return
     end
 
     -- Never trust a client-supplied mode: an unknown value falls back rather
     -- than being stored and later used to index a config table.
     local resolved = BR.ResolveMode(mode)
+
+    -- Queueing SOLO while in a party is a contradiction, and the resolution is
+    -- the one the player asked for most recently: solo wins, the party is left.
+    -- There is deliberately no "in a party but playing alone" state -- it made
+    -- the lobby read as though the party would ride along, then didn't.
+    if resolved.key == BR.Mode.SOLO.key and BR.Party.isGrouped(src) then
+        BR.Party.leave(src)
+    end
+
     queue[src] = { mode = resolved.key, at = GetGameTimer() }
 
     print(('[br_core] %s (%d) queued for %s -- %d/%d')
@@ -121,7 +133,13 @@ end)
 --- "Searching for players" with no numbers behind it is indistinguishable from
 --- a broken queue, which is exactly how it looked when the button did nothing.
 BR.Sched.every(500, 'lobby.status', function()
-    if BR.Server.match.state ~= BR.MatchState.WAITING then return end
+    -- Broadcast in EVERY match state, not only WAITING: a player who left the
+    -- match is standing in the lobby while others play, and without this they
+    -- would queue into silence -- no counts, no reason, exactly the "is it
+    -- broken?" screen this payload exists to prevent.
+    --
+    -- In-match clients receive it too and ignore it; at 2Hz with a name list
+    -- this is far below the deltas the match itself generates.
 
     -- The ids ride along so each client can tell whether IT is queued.
     --

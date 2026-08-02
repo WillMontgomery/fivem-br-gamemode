@@ -218,10 +218,41 @@ end
 
 RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)
-    if d.state == BR.MatchState.WARMUP or d.state == BR.MatchState.CLEANUP then
+    if d.state == BR.MatchState.CLEANUP then
+        BR.Spawn.toWarmupPad()
+        return
+    end
+    -- WARMUP moves only the players who are IN the match. A lobby idler who
+    -- never readied up keeps standing where they are; teleporting them into
+    -- someone else's warmup was the visible half of the conscription bug.
+    if d.state == BR.MatchState.WARMUP
+       and BR.State.me.state == BR.PlayerState.WARMUP then
         BR.Spawn.toWarmupPad()
     end
 end)
+
+-- The server's half of /brleave: it has already recorded the elimination (if
+-- any) and set us back to LOBBY; all that is left is the physical trip.
+RegisterNetEvent(BR.Net.TO_LOBBY)
+AddEventHandler(BR.Net.TO_LOBBY, function()
+    BR.Spawn.toWarmupPad()
+end)
+
+--- Leave the current match and return to the lobby.
+---
+--- A COMMAND rather than a button, by design: mid-match the HUD never holds
+--- NUI focus (that rule is what keeps players able to move and shoot), so
+--- there is nothing on screen to click. A console/chat command plus a
+--- bindable key in Pause > Settings > Key Bindings costs no focus at all.
+--- Unbound by default -- a mispressed key must not be able to forfeit a match.
+RegisterCommand('brleave', function()
+    if BR.State.me.state == BR.PlayerState.LOBBY then
+        print('[br_core] not in a match')
+        return
+    end
+    TriggerServerEvent(BR.Net.MATCH_LEAVE)
+end, false)
+RegisterKeyMapping('brleave', 'Royale: Leave the current match', 'keyboard', '')
 
 Citizen.CreateThread(function()
     -- The one thread outside the loop registry: it runs once at startup and

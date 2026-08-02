@@ -89,7 +89,21 @@ function BR.Party.public(partyId)
             colour = COLOURS[((i - 1) % #COLOURS) + 1],
         }
     end
-    return { id = p.id, leader = p.leader, members = members }
+
+    -- Invites still waiting for an answer. Without this the sender's only
+    -- feedback was a transient "Invite sent." -- once that faded, an invite
+    -- that was ignored, declined, or expired all looked identical: like
+    -- nothing had ever been sent.
+    local pending = {}
+    for target, inv in pairs(invites) do
+        if inv.partyId == p.id then
+            local e = BR.Roster.get(target)
+            pending[#pending + 1] = { src = target, name = e and e.name or '?' }
+        end
+    end
+    table.sort(pending, function(a, b) return a.src < b.src end)
+
+    return { id = p.id, leader = p.leader, members = members, pending = pending }
 end
 
 --- Push the current party state to every member.
@@ -166,6 +180,9 @@ function BR.Party.invite(src, targetSrc)
         max     = BR.Config.Match.maxSquadSize,
     })
 
+    -- The pending list changed, so the party sees the invite it is waiting on.
+    sync(party.id)
+
     return true
 end
 
@@ -179,7 +196,21 @@ function BR.Party.respond(src, accept)
     invites[src] = nil
 
     if not inv then return false, 'No pending invite.' end
-    if not accept then return true end
+
+    local responder = BR.Roster.get(src)
+    local rName = responder and responder.name or '?'
+
+    if not accept then
+        -- The inviter must HEAR the no. Silence after an invite is
+        -- indistinguishable from the invite never arriving, so senders
+        -- re-invited people who had already said no.
+        local party = parties[inv.partyId]
+        if party then
+            BR.Server.notify(inv.from, ('%s declined your invite.'):format(rName), 'warn')
+            sync(party.id)   -- the pending chip goes away for everyone
+        end
+        return true
+    end
 
     local party = parties[inv.partyId]
     if not party then return false, 'That party no longer exists.' end
@@ -198,8 +229,12 @@ function BR.Party.respond(src, accept)
     entry.partyId = party.id
 
     sync(party.id)
-    BR.Server.systemMessage(('%s joined the party.'):format(entry.name),
-        party.members)
+    BR.Server.notify(src, 'You joined the party.', 'success')
+    for _, m in ipairs(party.members) do
+        if m ~= src then
+            BR.Server.notify(m, ('%s joined the party.'):format(entry.name), 'success')
+        end
+    end
     return true
 end
 
@@ -245,12 +280,15 @@ function BR.Party.leave(src, quiet)
             party.leader = party.members[1]
         end
         if not quiet then
-            BR.Server.systemMessage(('%s left the party.'):format(entry.name),
-                party.members)
+            BR.Server.notify(party.members,
+                ('%s left the party.'):format(entry.name), 'warn')
         end
         sync(party.id)
     end
 
+    if not quiet then
+        BR.Server.notify(src, 'You left the party.', 'info')
+    end
     syncEmpty(src)
 end
 
@@ -273,8 +311,9 @@ function BR.Party.kick(src, targetSrc)
     BR.Party.leave(targetSrc, true)
     TriggerClientEvent(BR.Net.SQUAD_UPDATE, targetSrc,
         { id = nil, leader = nil, members = {} })
-    BR.Server.systemMessage(('%s was removed from the party.'):format(target.name),
-        party.members)
+    BR.Server.notify(targetSrc, 'You were removed from the party.', 'danger')
+    BR.Server.notify(party.members,
+        ('%s was removed from the party.'):format(target.name), 'warn')
     return true
 end
 
@@ -545,6 +584,15 @@ BR.Sched.every(5000, 'party.expire', function()
     for src, inv in pairs(invites) do
         if now - inv.at > INVITE_TTL_MS then
             invites[src] = nil
+
+            -- Being ignored is an answer the sender needs to hear too --
+            -- otherwise "expired" and "still thinking" look identical for as
+            -- long as the sender cares to keep watching the pending chip.
+            local target = BR.Roster.get(src)
+            BR.Server.notify(inv.from,
+                ('Invite to %s expired.'):format(target and target.name or 'a player'),
+                'warn')
+            sync(inv.partyId)
         end
     end
 end)
