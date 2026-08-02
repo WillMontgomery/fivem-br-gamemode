@@ -95,6 +95,10 @@ ensure hardcap           # enforces sv_maxclients
 
 # ---------------------------------------------------------------------------
 # Dependencies
+#
+# OPTIONAL. Comment out this line and `ensure br_stats` below if you have not
+# installed oxmysql yet -- the gamemode runs fine without a database, you just
+# get no persistent stats. See DEPLOY.md section 2.
 # ---------------------------------------------------------------------------
 ensure oxmysql
 
@@ -111,7 +115,7 @@ ensure oxmysql
 ensure br_lib
 ensure br_core
 ensure br_ui
-ensure br_stats
+ensure br_stats          # optional -- needs oxmysql; safe to comment out
 
 # ---------------------------------------------------------------------------
 # Development

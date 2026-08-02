@@ -41,7 +41,41 @@ cd ~/fxserver && ./run.sh +exec server.cfg
 
 ---
 
-## 2. Database
+## 2. Database — optional, and skippable on first boot
+
+**You do not need this to run a match.** `br_stats` checks at runtime whether
+oxmysql is available and disables itself cleanly if not, printing why. Gameplay
+is unaffected; you simply get no persistent stats, XP or leaderboards.
+
+If you are booting for the first time and want a clean log, comment these two
+lines out of `server.cfg` and come back to this section later:
+
+```cfg
+# ensure oxmysql
+# ensure br_stats
+```
+
+`ensure` on a resource that is not installed logs a "could not find resource"
+error. It is harmless, but it is noise in exactly the log you want to be reading
+carefully on a first boot.
+
+### 2a. Install oxmysql
+
+oxmysql is a third-party resource, not something npm or apt provides. Download
+the latest release and drop it in `resources/[standalone]/`:
+
+```bash
+mkdir -p ~/fxserver/resources/\[standalone\] && cd ~/fxserver/resources/\[standalone\]
+curl -sSLo oxmysql.zip \
+  https://github.com/CommunityOx/oxmysql/releases/latest/download/oxmysql.zip
+unzip -q oxmysql.zip && rm oxmysql.zip
+```
+
+You should end up with `resources/[standalone]/oxmysql/fxmanifest.lua`. If the
+folder is nested one level deeper after extraction, move it up — FXServer will
+not find it otherwise.
+
+### 2b. MariaDB
 
 ```bash
 sudo systemctl enable --now mariadb
@@ -66,7 +100,25 @@ sudo mariadb -u root -p fivem_royale \
   < resources/[fivem-royale]/br_stats/sql/schema.sql
 ```
 
-Then set `mysql_connection_string` in `server.cfg` to match the password you chose.
+Then set `mysql_connection_string` in `server.cfg` to match the password you chose,
+and uncomment `ensure oxmysql` and `ensure br_stats`.
+
+Order matters: `set mysql_connection_string` must appear **before** `ensure oxmysql`,
+and `ensure oxmysql` before `ensure br_stats`. The supplied `server.cfg.example`
+already has them in the right order.
+
+Verify with `brdb` on the server console:
+
+```
+oxmysql       started
+ready         true
+healthy       true
+```
+
+`ready true / healthy false` means oxmysql connected but the schema is missing —
+run the `schema.sql` step above. That distinction is deliberate: "no database"
+and "database with no tables" have different fixes, and guessing between them
+wastes time.
 
 **Security:** MariaDB binds to `localhost` by default. Leave it that way and do
 **not** open port 3306 in the EC2 security group — the game server and the
