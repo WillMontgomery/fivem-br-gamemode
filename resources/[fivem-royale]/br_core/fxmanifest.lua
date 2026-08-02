@@ -35,6 +35,7 @@ client_scripts {
     'client/main.lua',      -- defines the loop registry; must be first
     'client/natives.lua',
     'client/screen.lua',
+    'client/spawn.lua',
     'client/state.lua',
     'client/keybinds.lua',
     'client/chat.lua',

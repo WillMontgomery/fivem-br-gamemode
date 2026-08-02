@@ -41,14 +41,24 @@ export default function App() {
     }
   })
 
-  const inLobby = s.match.state === 'waiting' || s.match.state === 'warmup'
+  // WARMUP is not a lobby. Players are standing in the world on the warmup pad,
+  // so they get the HUD -- an earlier version hid it, which combined with the
+  // Lobby only rendering when focus === 'lobby' (which nothing ever set) left
+  // the screen completely empty for the whole warmup countdown.
+  //
+  // WAITING is the only genuinely pre-match state, and the lobby shows there
+  // whether or not Lua has granted focus: a queue screen you cannot see is worse
+  // than one you cannot yet click.
+  const waiting = s.match.state === 'waiting'
+  const inMatch = !waiting
 
   return (
     <>
-      {/* Always mounted; visibility follows match state. */}
-      <Hud visible={!inLobby} />
+      {/* Always mounted; visibility follows match state so transitions cost no
+          mount work mid-fight. */}
+      <Hud visible={inMatch} />
       <Chat />
-      <Lobby visible={inLobby && s.focus === 'lobby'} />
+      <Lobby visible={waiting} />
     </>
   )
 }

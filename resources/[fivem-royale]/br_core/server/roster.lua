@@ -204,7 +204,13 @@ end
 local function samplePositions()
     local now = GetGameTimer()
     for src, entry in pairs(roster) do
-        local ped = GetPlayerPed(src)
+        -- GET_PLAYER_PED is declared as `Entity GET_PLAYER_PED(char* playerSrc)`
+        -- -- playerSrc is documented as a STRING. Passing the numeric roster key
+        -- returned 0 for every player, so positions silently never sampled and
+        -- brwhy reported "not sampled yet" indefinitely.
+        local ped = GetPlayerPed(tostring(src))
+        entry.ped = ped
+
         if ped and ped ~= 0 then
             local c = GetEntityCoords(ped)
             entry.pos   = { x = c.x, y = c.y, z = c.z }

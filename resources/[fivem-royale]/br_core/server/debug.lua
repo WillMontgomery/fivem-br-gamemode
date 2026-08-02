@@ -322,7 +322,16 @@ RegisterCommand('brwhy', function(_, args)
     print(('  squad          %s'):format(tostring(p.squadId or 'none (solo)')))
     print(('  health         %s hp / %s armour (display units)')
         :format(tostring(p.hp), tostring(p.armour)))
+    -- The ped handle is shown alongside the position, because "not sampled yet"
+    -- on its own does not distinguish "the sampler is broken" from "this player
+    -- has no ped because they never spawned". Those have different fixes.
+    print(('  ped handle     %s%s'):format(
+        tostring(p.ped or 'nil'),
+        (not p.ped or p.ped == 0) and '   <- no ped: player has not spawned' or ''))
     print(('  position       %s'):format(p.pos and ('%.0f, %.0f, %.0f'):format(p.pos.x, p.pos.y, p.pos.z) or 'not sampled yet'))
+    if p.posAt and p.posAt > 0 then
+        print(('  sampled        %s ago'):format(secs(GetGameTimer() - p.posAt)))
+    end
     print(('  last damaged   by %s, %s ago')
         :format(tostring(p.lastDamageBy or '-'),
                 p.lastDamageAt and secs(GetGameTimer() - p.lastDamageAt) or '-'))
