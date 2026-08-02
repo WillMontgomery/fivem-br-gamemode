@@ -43,11 +43,14 @@ end
 
 --- Author a route for this match and remember it. Does not broadcast.
 ---
---- Geometry: takeoff roll from the Cayo runway threshold, climb out over the
---- ocean to one end of a chord across the match anchor's circle, then fly
---- the chord slowly -- the jump window is exactly the chord leg. The entry
---- point is whichever chord end is nearer the airstrip, so the bus never
---- overflies Los Santos at cruise speed with the doors shut.
+--- The flight is a WAYPOINT PATH: parked at the surveyed runway spawn,
+--- ground roll to the surveyed rotation point, wheels-up and a straight
+--- climb on the same heading to altitude, one banked turn onto the heading
+--- for the chord entry, acceleration across the ocean, then the drop chord
+--- -- the jump window -- at drop speed. Timing IS the speed profile:
+--- waypoints are spaced by segment length over the speed the plane should
+--- carry there, so the roll starts gentle (streaming gets a head start) and
+--- the ocean crossing is the fast part.
 ---
 --- The chord is the best of several candidates by land coverage: an unscored
 --- random chord across a coastal anchor is water-to-water often enough to
@@ -56,7 +59,6 @@ end
 --- @return number  seconds until BUS should hand over to PLAYING
 function BR.Bus.plan()
     local cfg = BR.Config.Bus
-    local rw  = cfg.runwayStart
 
     -- The anchor is picked here and REMEMBERED: M4's storm must shrink over
     -- the same ground the bus crossed, or drops and circles disagree about
@@ -75,31 +77,110 @@ function BR.Bus.plan()
         end
     end
 
+    local sp = cfg.spawn
     -- Enter at the end nearer the airstrip.
-    if BR.Dist2(rw.x, rw.y, x2, y2) < BR.Dist2(rw.x, rw.y, x1, y1) then
+    if BR.Dist2(sp.x, sp.y, x2, y2) < BR.Dist2(sp.x, sp.y, x1, y1) then
         x1, y1, x2, y2 = x2, y2, x1, y1
     end
 
+    -- ---- build the path ---------------------------------------------------
+
     local now    = GetGameTimer()
-    local ocean  = BR.Dist(rw.x, rw.y, x1, y1)
-    local chord  = BR.Dist(x1, y1, x2, y2)
-    local tStart = now + cfg.boardSeconds * 1000
+    local points = {}
+    local clockMs = now + cfg.boardSeconds * 1000
+
+    local function push(x, y, z, speed)
+        local prev = points[#points]
+        if prev then
+            local d = BR.Dist(prev.x, prev.y, x, y)
+            clockMs = clockMs + (d / math.max(1.0, speed)) * 1000.0
+        end
+        points[#points + 1] = { x = x, y = y, z = z, t = math.floor(clockMs) }
+    end
+
+    -- Parked, then the ground roll: speed builds 15 -> rollSpeed across the
+    -- surveyed runway stretch. Segment speed is the AVERAGE carried across
+    -- it, hence the ramp values between samples.
+    local rp = cfg.rotatePoint
+    push(sp.x, sp.y, sp.z, 1.0)
+    local rollSamples = 6
+    for i = 1, rollSamples do
+        local k = i / rollSamples
+        push(BR.Lerp(sp.x, rp.x, k), BR.Lerp(sp.y, rp.y, k), sp.z,
+             BR.Lerp(15.0, cfg.rollSpeed, (k + (i - 1) / rollSamples) * 0.5))
+    end
+
+    -- Wheels up: hold the runway heading, climb to altitude over climbDist.
+    local dirX, dirY = rp.x - sp.x, rp.y - sp.y
+    local dLen = math.max(1.0, BR.Dist(sp.x, sp.y, rp.x, rp.y))
+    dirX, dirY = dirX / dLen, dirY / dLen
+
+    local climbSamples = 8
+    for i = 1, climbSamples do
+        local k = i / climbSamples
+        local ease = k * k * (3.0 - 2.0 * k)
+        push(rp.x + dirX * cfg.climbDist * k,
+             rp.y + dirY * cfg.climbDist * k,
+             BR.Lerp(sp.z, cfg.altitude, ease),
+             BR.Lerp(cfg.rollSpeed, cfg.climbSpeed, k))
+    end
+
+    -- The banked turn: fly the arc in fixed angular steps, steering toward
+    -- the chord entry each step (a pursuit arc), until the nose points at
+    -- it. Right or left falls out of the geometry; with the runway pointing
+    -- out to sea and every anchor to the northwest, it is a right turn.
+    local hx, hy = dirX, dirY
+    local px = rp.x + dirX * cfg.climbDist
+    local py = rp.y + dirY * cfg.climbDist
+    local stepRad = math.rad(6.0)
+    local stepLen = cfg.turnRadius * stepRad
+    for _ = 1, 60 do
+        local tx, ty = x1 - px, y1 - py
+        local tLen = math.max(1.0, math.sqrt(tx * tx + ty * ty))
+        tx, ty = tx / tLen, ty / tLen
+
+        local cross = hx * ty - hy * tx
+        local dot   = hx * tx + hy * ty
+        if dot > math.cos(math.rad(5.0)) then break end   -- nose on target
+
+        local turn = cross >= 0 and stepRad or -stepRad
+        local c, s = math.cos(turn), math.sin(turn)
+        hx, hy = hx * c - hy * s, hx * s + hy * c
+        px, py = px + hx * stepLen, py + hy * stepLen
+        push(px, py, cfg.altitude, cfg.climbSpeed)
+    end
+
+    -- The straight run to the chord entry, accelerating to cruise.
+    local runSamples = 8
+    for i = 1, runSamples do
+        local k = i / runSamples
+        push(BR.Lerp(px, x1, k), BR.Lerp(py, y1, k), cfg.altitude,
+             BR.Lerp(cfg.climbSpeed, cfg.cruiseSpeed, math.min(1.0, k * 1.6)))
+    end
+    local jumpFrom = math.floor(clockMs)
+
+    -- The drop chord. Doors open here.
+    local chordSamples = 6
+    for i = 1, chordSamples do
+        local k = i / chordSamples
+        push(BR.Lerp(x1, x2, k), BR.Lerp(y1, y2, k), cfg.altitude, cfg.speed)
+    end
 
     route = {
-        sx = rw.x,  sy = rw.y,  sz = rw.z,
-        mx = x1,    my = y1,
-        ex = x2,    ey = y2,
-        alt    = cfg.altitude,
-        tStart = tStart,
-        tMid   = math.floor(tStart + (ocean / cfg.cruiseSpeed) * 1000),
-        tEnd   = math.floor(tStart + (ocean / cfg.cruiseSpeed
-                                    + chord / cfg.speed) * 1000),
+        points    = points,
+        tStart    = points[1].t,
+        jumpFrom  = jumpFrom,
+        tEnd      = points[#points].t,
+        alt       = cfg.altitude,
+        mx = x1, my = y1, ex = x2, ey = y2,
+        heading   = sp.heading,
         serverNow = now,
         landScore = best,
     }
 
-    print(('[br_core] bus: %s chord (land %.0f%%), %.0fm ocean + %.0fm drop leg, %.0fs total')
-        :format(anchor.name, best * 100, ocean, chord, (route.tEnd - now) / 1000))
+    print(('[br_core] bus: %s chord (land %.0f%%), %d waypoints, doors at %.0fs, %.0fs total')
+        :format(anchor.name, best * 100, #points,
+                (jumpFrom - now) / 1000, (route.tEnd - now) / 1000))
 
     return (route.tEnd - now) / 1000 + cfg.jumpGrace
 end
@@ -126,11 +207,11 @@ local function eject(src, forced)
     if not entry or entry.state ~= BR.PlayerState.BUS or not route then return end
 
     local t = math.min(GetGameTimer(), route.tEnd)
-    local x, y = BR.RoutePosAt(route, t)
+    local x, y, z = BR.PathPosAt(route.points, t)
 
     BR.Roster.setState(src, BR.PlayerState.FREEFALL)
     TriggerClientEvent(BR.Net.BUS_JUMP_OK, src, {
-        x = x, y = y, z = route.alt,
+        x = x, y = y, z = z,
         -- GTA heading, not compass bearing -- the client feeds this straight
         -- to SetEntityHeading and its exit-velocity vector.
         heading = BR.GtaHeading(BR.Bearing(route.mx, route.my, route.ex, route.ey)),
@@ -153,10 +234,10 @@ AddEventHandler(BR.Net.BUS_JUMP, function()
             :format(src, BR.Server.match.state))
         return
     end
-    if GetGameTimer() < route.tMid then
+    if GetGameTimer() < route.jumpFrom then
         BR.Server.notify(src, 'Doors are still closed.', 'warn')
         print(('[br_core] bus: jump from %d refused -- doors open in %.1fs')
-            :format(src, (route.tMid - GetGameTimer()) / 1000))
+            :format(src, (route.jumpFrom - GetGameTimer()) / 1000))
         return
     end
 

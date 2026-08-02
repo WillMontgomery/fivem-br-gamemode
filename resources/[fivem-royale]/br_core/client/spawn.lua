@@ -174,7 +174,7 @@ end
 --- @param y number
 --- @param z number
 --- @param heading number|nil
-function BR.Spawn.respawn(x, y, z, heading)
+function BR.Spawn.respawn(x, y, z, heading, exact)
     local ped = PlayerPedId()
 
     NetworkResurrectLocalPlayer(x, y, z, heading or 0.0, true, false)
@@ -183,6 +183,18 @@ function BR.Spawn.respawn(x, y, z, heading)
 
     -- Re-apply the health model: resurrection restores GTA's defaults, not ours.
     BR.Native.initHealthModel()
+
+    if exact then
+        -- EXACTLY these coordinates, no ground snap: the lobby vista floats
+        -- above the hillside on purpose (it is a camera position wearing a
+        -- ped), and placeAt's ground-finding would march the ped down the
+        -- slope. The per-frame LOBBY freeze rule holds them there.
+        SetEntityCoordsNoOffset(ped, x, y, z, false, false, false)
+        SetEntityHeading(ped, heading or 0.0)
+        FreezeEntityPosition(ped, true)
+        BR.Spawn.reveal()
+        return
+    end
 
     BR.Spawn.placeAt(x, y, z, heading)
 end
@@ -195,7 +207,7 @@ local function initialSpawn()
     spawned = true
 
     local p = BR.Config.Match.lobbyPos
-    BR.Spawn.respawn(p.x, p.y, p.z, p.heading)
+    BR.Spawn.respawn(p.x, p.y, p.z, p.heading, true)
 
     print('[br_core] spawned at the lobby vista')
 end
@@ -216,7 +228,7 @@ function BR.Spawn.toLobby()
         end
 
         local p = BR.Config.Match.lobbyPos
-        BR.Spawn.respawn(p.x, p.y, p.z, p.heading)
+        BR.Spawn.respawn(p.x, p.y, p.z, p.heading, true)
 
         -- Hold black until the island is actually under us; br_environment
         -- flips it on within a second of the state change.

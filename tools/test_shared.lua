@@ -204,26 +204,36 @@ do
         ('width=%.4f gap=%.4f'):format(w, gap))
 end
 
-describe('geo.route')
+describe('geo.path')
 do
     -- The bus position function: server (jump/eject coordinates) and every
-    -- client (rendering) must compute the same answer from the same record,
-    -- so the arithmetic is pinned here once.
-    local r = { sx = 0, sy = 0, mx = 100, my = 0, ex = 100, ey = 100,
-                tStart = 1000, tMid = 2000, tEnd = 3000 }
+    -- client (rendering) must compute the same answer from the same waypoint
+    -- array, so the interpolation is pinned here once.
+    local pts = {
+        { x = 0,   y = 0,  z = 5,   t = 1000 },
+        { x = 100, y = 0,  z = 5,   t = 2000 },
+        { x = 100, y = 80, z = 300, t = 3000 },
+    }
 
-    local x, y = BR.RoutePosAt(r, 0)
-    ok(x == 0 and y == 0, 'before departure the bus sits at the start')
+    local x, y, z = BR.PathPosAt(pts, 0)
+    ok(x == 0 and y == 0 and z == 5, 'before the first timestamp: parked at the start')
 
-    x, y = BR.RoutePosAt(r, 1500)
-    ok(near(x, 50) and near(y, 0), 'halfway through leg one (smoothstep midpoint is exact)')
+    x, y, z = BR.PathPosAt(pts, 1500)
+    ok(near(x, 50) and near(y, 0) and near(z, 5), 'midway along the first segment')
 
-    -- The ocean leg eases: a quarter of the way through the TIME, the bus has
-    -- covered LESS than a quarter of the distance -- it is still accelerating
-    -- out of the airstrip. Symmetrically it bleeds speed into the coast.
-    x = BR.RoutePosAt(r, 1250)
-    ok(x > 0 and x < 25, 'leg one accelerates from rest rather than snapping to speed',
-        ('quarter-time x = %s'):format(tostring(x)))
+    x, y, z = BR.PathPosAt(pts, 2000)
+    ok(near(x, 100) and near(y, 0), 'waypoints themselves are exact')
+
+    x, y, z = BR.PathPosAt(pts, 2500)
+    ok(near(x, 100) and near(y, 40) and near(z, 152.5),
+        'position AND altitude interpolate between waypoints')
+
+    x, y, z = BR.PathPosAt(pts, 99999)
+    ok(near(x, 100) and near(y, 80) and near(z, 300),
+        'past the end it clamps, never extrapolates')
+
+    local _, _, _, dx, dy = BR.PathPosAt(pts, 1500)
+    ok(dx > 0 and near(dy, 0), 'direction follows the active segment')
 
     -- Compass bearing vs GTA heading run OPPOSITE directions; due east is 90
     -- by compass and 270 to the engine. Conflating them flew the first bus
@@ -231,32 +241,6 @@ do
     ok(near(BR.Bearing(0, 0, 10, 0), 90), 'due east is bearing 90')
     ok(near(BR.GtaHeading(90), 270), 'and GTA heading 270')
     ok(near(BR.GtaHeading(0), 0), 'north is 0 in both conventions')
-
-    x, y = BR.RoutePosAt(r, 2000)
-    ok(near(x, 100) and near(y, 0), 'the leg boundary is exact')
-
-    x, y = BR.RoutePosAt(r, 2500)
-    ok(near(x, 100) and near(y, 50), 'halfway down the chord')
-
-    x, y = BR.RoutePosAt(r, 99999)
-    ok(near(x, 100) and near(y, 100), 'past the end it clamps, never extrapolates')
-
-    local _, _, dx, dy = BR.RoutePosAt(r, 1500)
-    ok(dx > 0 and near(dy, 0), 'leg one travels toward the chord entry')
-
-    -- The climb profile: on the ground before departure, at cruise altitude
-    -- well before the chord, climbing smoothly in between. This is the
-    -- takeoff -- a plane that pops into the sky is what it replaces.
-    local rz = { sx = 0, sy = 0, sz = 5, mx = 100, my = 0, ex = 100, ey = 100,
-                 alt = 300, tStart = 1000, tMid = 11000, tEnd = 12000 }
-    local _, _, _, _, z0 = BR.RoutePosAt(rz, 0)
-    ok(near(z0, 5), 'on the runway before departure')
-    local _, _, _, _, zMidClimb = BR.RoutePosAt(rz, 2500)
-    ok(zMidClimb > 5 and zMidClimb < 300, 'climbing early in the ocean leg')
-    local _, _, _, _, zCruise = BR.RoutePosAt(rz, 8000)
-    ok(near(zCruise, 300), 'level at cruise before the chord')
-    local _, _, _, _, zChord = BR.RoutePosAt(rz, 11500)
-    ok(near(zChord, 300), 'level on the chord')
 end
 
 describe('geo.chord')

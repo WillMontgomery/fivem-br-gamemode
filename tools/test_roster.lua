@@ -1603,12 +1603,32 @@ do
     ok(#eventsOf(BR.Net.BUS_ROUTE) == 1, 'and was broadcast exactly once')
     ok(BR.Roster.get(1).state == BR.PlayerState.BUS, 'players are aboard')
 
-    -- Geometry: departs the airstrip, legs in order, chord ends on the
-    -- anchor circle, enters at the end nearer the airstrip.
-    local rw = BR.Config.Bus.runwayStart
-    ok(r.sx == rw.x and r.sy == rw.y, 'the route departs the runway threshold')
-    ok(r.sz == rw.z, 'on the ground -- the climb profile owes its start to this')
-    ok(r.tStart < r.tMid and r.tMid < r.tEnd, 'legs are ordered in time')
+    -- Path shape: parked at the surveyed spawn, ground-level through the
+    -- roll, at altitude by the doors, timestamps strictly increasing, and
+    -- the last point is the chord's far end.
+    local sp = BR.Config.Bus.spawn
+    local p1, pn = r.points[1], r.points[#r.points]
+    ok(p1.x == sp.x and p1.y == sp.y and p1.z == sp.z,
+        'the path begins parked at the surveyed runway spawn')
+    ok(r.tStart < r.jumpFrom and r.jumpFrom < r.tEnd, 'doors open inside the flight')
+
+    local ordered, groundedRoll = true, true
+    for i = 2, #r.points do
+        if r.points[i].t <= r.points[i - 1].t then ordered = false end
+    end
+    local rp = BR.Config.Bus.rotatePoint
+    for _, p in ipairs(r.points) do
+        -- Everything before the rotation point's timestamp stays on the deck.
+        if p.t <= r.tStart then groundedRoll = groundedRoll and p.z == sp.z end
+    end
+    ok(ordered, 'waypoint timestamps strictly increase')
+    ok(groundedRoll, 'the ground roll stays on the ground')
+
+    local _, _, doorZ = BR.PathPosAt(r.points, r.jumpFrom)
+    ok(math.abs(doorZ - BR.Config.Bus.altitude) < 1.0,
+        'the bus is at cruise altitude when the doors open')
+    ok(math.abs(pn.x - r.ex) < 0.1 and math.abs(pn.y - r.ey) < 0.1,
+        'the path ends at the chord exit')
     ok((r.landScore or 0) > 0, 'the chosen chord overflies at least some land')
 
     -- The scorer itself, pinned at its extremes: open sea south of the map
@@ -1625,7 +1645,7 @@ do
     ok(a ~= nil, 'the match anchor is remembered for the storm')
     ok(math.abs(BR.Dist(a.x, a.y, r.mx, r.my) - BR.Config.Bus.chordRadius) < 1.0,
         'the chord entry sits on the anchor circle')
-    ok(BR.Dist2(rw.x, rw.y, r.mx, r.my) <= BR.Dist2(rw.x, rw.y, r.ex, r.ey),
+    ok(BR.Dist2(sp.x, sp.y, r.mx, r.my) <= BR.Dist2(sp.x, sp.y, r.ex, r.ey),
         'the bus enters at the end nearer the airstrip')
     ok(BR.Server.match.endsAt >= r.tEnd, 'BUS lasts at least the whole route')
 
@@ -1636,13 +1656,13 @@ do
     ok(BR.Roster.get(1).state == BR.PlayerState.BUS, 'jumping before the chord is refused')
     ok(#eventsOf(BR.Net.BUS_JUMP_OK) == 0, 'no exit coordinates are sent')
 
-    fakeTime = r.tMid + 1000
+    fakeTime = r.jumpFrom + 1000
     fire(BR.Net.BUS_JUMP, 1)
     ok(BR.Roster.get(1).state == BR.PlayerState.FREEFALL, 'jumping over the chord works')
     local oks = eventsOf(BR.Net.BUS_JUMP_OK)
     ok(#oks == 1 and oks[1].target == 1, 'exit coordinates go to the jumper alone')
     local jx, jy = oks[1].args[1].x, oks[1].args[1].y
-    local px, py = BR.RoutePosAt(r, fakeTime)
+    local px, py = BR.PathPosAt(r.points, fakeTime)
     ok(math.abs(jx - px) < 0.1 and math.abs(jy - py) < 0.1,
         'and they are the bus position by the SERVER clock')
 

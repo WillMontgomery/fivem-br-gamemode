@@ -152,45 +152,48 @@ end
 --- mid -> end (the drop chord, slower). Clamped at both ends so a caller a
 --- frame early or late gets the endpoints, not an extrapolation.
 ---
---- @param route table  { sx, sy, sz?, mx, my, ex, ey, alt, tStart, tMid, tEnd }
---- @param t number     synced-clock milliseconds
---- @return number x, number y, number dx, number dy, number z
-function BR.RoutePosAt(route, t)
-    local ground = route.sz or route.alt or 0.0
-    local alt    = route.alt or ground
+--- Where a WAYPOINT PATH puts the bus at time t.
+---
+--- The path is an array of { x, y, z, t } with strictly increasing t,
+--- authored once by the server -- ground roll, rotation, climb, the banked
+--- turn, the acceleration, all of it is just waypoint spacing and timing.
+--- Every client and the server interpolate the same array against the same
+--- clock, which is what makes 48 locally spawned buses appear to be one.
+---
+--- Replaces the old two-straight-legs model, whose instant heading change at
+--- the leg boundary read in-game as the plane teleporting mid-air.
+---
+--- Clamped at both ends: before the first timestamp you are parked at the
+--- first point, after the last you are parked at the last.
+---
+--- @param points table  array of { x, y, z, t }
+--- @param t number      synced-clock milliseconds
+--- @return number x, number y, number z, number dx, number dy  position, travel direction
+function BR.PathPosAt(points, t)
+    local n = #points
+    local first, last = points[1], points[n]
 
-    -- Altitude profile: on the runway before departure, CLIMBING through the
-    -- first 40% of the ocean leg (its own smoothstep, so rotation is gentle),
-    -- level at cruise from there on. Bakes the takeoff into the shared
-    -- function -- a plane that pops into the sky and then starts moving is
-    -- what this replaces.
-    local function climbZ(k)
-        local ck = k / 0.4
-        if ck >= 1.0 then return alt end
-        ck = ck * ck * (3.0 - 2.0 * ck)
-        return BR.Lerp(ground, alt, ck)
+    if t <= first.t or n == 1 then
+        local nxt = points[2] or last
+        return first.x, first.y, first.z, nxt.x - first.x, nxt.y - first.y
+    end
+    if t >= last.t then
+        local prev = points[n - 1] or first
+        return last.x, last.y, last.z, last.x - prev.x, last.y - prev.y
     end
 
-    if t <= route.tStart then
-        return route.sx, route.sy, route.mx - route.sx, route.my - route.sy, ground
+    -- Linear scan: paths are under a hundred points and calls are per-frame,
+    -- not per-entity -- measured cost is noise. Revisit only if paths grow.
+    for i = 2, n do
+        local b = points[i]
+        if t <= b.t then
+            local a = points[i - 1]
+            local k = (t - a.t) / math.max(1, b.t - a.t)
+            return BR.Lerp(a.x, b.x, k), BR.Lerp(a.y, b.y, k), BR.Lerp(a.z, b.z, k),
+                   b.x - a.x, b.y - a.y
+        end
     end
-    if t >= route.tEnd then
-        return route.ex, route.ey, route.ex - route.mx, route.ey - route.my, alt
-    end
-    if t < route.tMid and route.tMid > route.tStart then
-        local k = (t - route.tStart) / (route.tMid - route.tStart)
-        -- Smoothstep on the ocean leg: the bus ACCELERATES down the runway
-        -- and bleeds speed into the coast instead of snapping to 400 m/s on
-        -- frame one. Shared code, so the server's jump coordinates ease
-        -- exactly as every client's plane does; the leg's endpoints and
-        -- midpoint are unchanged (smoothstep is symmetric), only the ramp is.
-        k = k * k * (3.0 - 2.0 * k)
-        return BR.Lerp(route.sx, route.mx, k), BR.Lerp(route.sy, route.my, k),
-               route.mx - route.sx, route.my - route.sy, climbZ(k)
-    end
-    local k = (t - route.tMid) / math.max(1, route.tEnd - route.tMid)
-    return BR.Lerp(route.mx, route.ex, k), BR.Lerp(route.my, route.ey, k),
-           route.ex - route.mx, route.ey - route.my, alt
+    return last.x, last.y, last.z, 0.0, 0.0
 end
 
 --- Pick a chord across a circle: two points on the circumference, offset from

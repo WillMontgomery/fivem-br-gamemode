@@ -123,6 +123,20 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
         return
     end
 
+    -- Falling with NO parachute task (state -1 mid-air): the engine lost or
+    -- never took the task. Below the floor this re-arms and force-opens in
+    -- one motion -- the auto-deploy floor must hold even when the task
+    -- machinery failed, because this exact gap is how players fell straight
+    -- to the ground. (The descent is invincible as a second net, but the
+    -- chute is the fix; the invincibility is the apology.)
+    if cs == BR.Native.ChuteState.NONE
+       and not IsPedOnFoot(ped) and not IsEntityInWater(ped)
+       and GetEntityHeightAboveGround(ped) < BR.Config.Drop.autoDeployAGL then
+        GiveWeaponToPed(ped, CHUTE, 1, false, false)
+        TaskParachute(ped, true, false)
+        return
+    end
+
     -- Landed: no chute in play and feet on something. Water counts -- a sea
     -- landing is a bad drop, not a continuing one.
     if (cs == BR.Native.ChuteState.NONE or cs == BR.Native.ChuteState.ON_BACK)

@@ -80,17 +80,28 @@ BR.Config.Bus = {
     -- driven by direct coordinate writes, not by physics.
     model        = 'titan',
 
-    altitude     = 340.0,
+    -- Cruise altitude. Raised from 340 after the plane clipped terrain --
+    -- Los Santos has 700m+ peaks, but the chord anchors keep it out of the
+    -- Chiliad massif and 500 clears everything a scored chord crosses.
+    altitude     = 500.0,
     chordRadius  = 4000.0,  -- entry/exit points sit on a circle this size around the anchor
     chordOffset  = 0.5,     -- 0..1, how far off-centre the flight path may sit
 
-    -- THE WHOLE FLIGHT FITS IN ~75 SECONDS, worst anchor included. The map is
-    -- huge and the bus is a countdown, not a cruise: ocean leg at cruise
-    -- speed (~11.7km to Paleto in ~29s), then the chord fast enough that the
-    -- longest chord (8km) takes ~43s. Nobody watches clouds for four minutes.
-    cruiseSpeed  = 400.0,   -- m/s, airstrip -> chord entry
+    -- THE FLIGHT IS A PATH, NOT TWO LINES: spawn parked on the runway, roll,
+    -- rotate at the committed point, climb straight ahead, one banked turn
+    -- onto the heading for the chord, accelerate across the ocean, slow over
+    -- the drop chord. The server bakes the whole thing into timestamped
+    -- waypoints; clients interpolate. Surveyed in-game by the user:
+    spawn        = { x = 4484.61, y = -4497.98, z = 4.19, heading = 106.12 },
+    rotatePoint  = { x = 4090.23, y = -4642.18 },  -- wheels-up here, straight out
+    climbDist    = 2500.0,  -- metres past rotation to reach cruise altitude
+    turnRadius   = 1000.0,  -- the banked turn onto the chord heading
+
+    rollSpeed    = 80.0,    -- m/s at wheels-up (the roll builds up to this)
+    climbSpeed   = 150.0,   -- m/s through the climb and the turn
+    cruiseSpeed  = 400.0,   -- m/s reached across the open ocean
     speed        = 185.0,   -- m/s along the drop chord
-    boardSeconds = 5,       -- aboard before the wheels leave the airstrip
+    boardSeconds = 5,       -- parked, engines idling, before the roll begins
     jumpGrace    = 5,       -- seconds after the route ends before BUS -> PLAYING
 
     -- Camera orbit distance/height from the plane while riding. The Titan is
@@ -99,10 +110,6 @@ BR.Config.Bus = {
     -- fuselage and, over featureless ocean, read as the game having frozen.
     camDistance  = 44.0,
     camHeight    = 13.0,
-
-    -- Where the takeoff roll begins: the Cayo runway threshold, rolling
-    -- toward the northwest end. The climb profile lives in BR.RoutePosAt.
-    runwayStart  = { x = 4517.7, y = -4558.3, z = 4.5 },
 
     -- Route selection: candidate chords are scored by how much of the drop
     -- leg overflies LAND (proximity to authored POIs is the proxy -- they

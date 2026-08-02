@@ -90,8 +90,9 @@ local function board()
         end
         if not riding then return end   -- torn down while the model streamed
 
-        local heading = BR.GtaHeading(BR.Bearing(route.sx, route.sy, route.mx, route.my))
-        bus = CreateVehicle(model, route.sx, route.sy, route.sz or route.alt, heading,
+        local p0 = route.points[1]
+        local heading = route.heading or 0.0
+        bus = CreateVehicle(model, p0.x, p0.y, p0.z, heading,
                             false, false)   -- LOCAL. Never networked.
         SetModelAsNoLongerNeeded(model)
         SetEntityCollision(bus, false, false)
@@ -130,7 +131,7 @@ local function board()
         -- thing missed. HUD chrome goes with it -- the ride is a cutscene.
         camYaw, camPitch = 0.0, -8.0
         cam = CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA',
-            route.sx, route.sy, (route.sz or route.alt) + BR.Config.Bus.camHeight,
+            p0.x, p0.y, p0.z + BR.Config.Bus.camHeight,
             0.0, 0.0, 0.0, 65.0, false, 2)
         SetCamActive(cam, true)
         RenderScriptCams(true, false, 0, true, true)
@@ -163,8 +164,8 @@ BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
             ejectedSeen = ejectedSeen or GetGameTimer()
             if GetGameTimer() - ejectedSeen > 800 then
                 print('[br_core] bus: exit coords never arrived; self-placing from the route')
-                local x, y = BR.RoutePosAt(route, BR.Clock.now())
-                beginDrop(x, y, route.alt,
+                local x, y, z = BR.PathPosAt(route.points, BR.Clock.now())
+                beginDrop(x, y, z,
                           BR.GtaHeading(BR.Bearing(route.mx, route.my, route.ex, route.ey)))
             end
         else
@@ -174,7 +175,7 @@ BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
         end
     end
 
-    if riding and not told and route and BR.Clock.now() >= route.tMid then
+    if riding and not told and route and BR.Clock.now() >= route.jumpFrom then
         told = true
         TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
             text = 'Doors open — SPACE to jump.', tone = 'info', ms = 6000,
@@ -199,7 +200,7 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
     if not bus then return end
 
     local t = BR.Clock.now()
-    local x, y, dx, dy, z = BR.RoutePosAt(route, t)
+    local x, y, z, dx, dy = BR.PathPosAt(route.points, t)
 
     SetEntityCoordsNoOffset(bus, x, y, z, false, false, false)
 
@@ -249,7 +250,7 @@ end)
 -- of the two listeners acts on any press.)
 BR.Keys.on('deploy', function(pressed)
     if not pressed or not riding or not route then return end
-    if BR.Clock.now() < route.tMid then
+    if BR.Clock.now() < route.jumpFrom then
         TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
             text = 'Doors are still closed.', tone = 'warn' })
         return
@@ -274,11 +275,11 @@ RegisterCommand('brbus', function()
         BR.Clock.offset, tostring(BR.Clock.synced), BR.Clock.now()))
     if not route then print('  route  none') return end
     local now = BR.Clock.now()
-    print(('  route  tStart %+.1fs  tMid %+.1fs  tEnd %+.1fs  (relative to now)')
-        :format((route.tStart - now) / 1000, (route.tMid - now) / 1000,
-                (route.tEnd - now) / 1000))
-    local x, y = BR.RoutePosAt(route, now)
-    print(('  route pos now   %.0f, %.0f'):format(x, y))
+    print(('  route  %d pts  tStart %+.1fs  doors %+.1fs  tEnd %+.1fs  (relative to now)')
+        :format(#route.points, (route.tStart - now) / 1000,
+                (route.jumpFrom - now) / 1000, (route.tEnd - now) / 1000))
+    local x, y, z = BR.PathPosAt(route.points, now)
+    print(('  route pos now   %.0f, %.0f, %.0f'):format(x, y, z))
     if bus and DoesEntityExist(bus) then
         local c = GetEntityCoords(bus)
         print(('  bus entity pos  %.0f, %.0f, %.0f'):format(c.x, c.y, c.z))

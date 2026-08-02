@@ -259,20 +259,32 @@ function BR.Native.applyGameRules()
     SetCanAttackFriendly(ped, false, false)
 
     -- Peace while nobody can meaningfully fight back: the warmup pad, the
-    -- bus ride, and the landing-stumble grace window after touchdown.
+    -- bus ride, THE WHOLE DESCENT, and half a second after touchdown. The
+    -- descent matters most -- a chute that fails to open must cost the drop,
+    -- never the life; the invincibility holds until the landing grace runs
+    -- out no matter how hard the ground arrives.
     local st = BR.State.me.state
     SetPlayerInvincible(pid,
         st == BR.PlayerState.WARMUP
         or st == BR.PlayerState.BUS
         or st == BR.PlayerState.LOBBY
+        or st == BR.PlayerState.FREEFALL
+        or st == BR.PlayerState.GLIDE
         or GetGameTimer() < (BR.State.dropGraceUntil or 0))
 
-    -- The lobby is a menu with a view -- no ped in the shot. The bus ride
-    -- hides the ped too (it is "aboard"); the rule living here, per frame,
-    -- is what makes every transition self-correcting: whatever hid or
-    -- showed the ped along the way, the current state wins within a frame.
-    SetEntityVisible(ped,
-        st ~= BR.PlayerState.LOBBY and st ~= BR.PlayerState.BUS, false)
+    -- The lobby is a menu with a view -- no ped in the shot, and no ped
+    -- FALLING OUT of the shot: the vista point floats above the hillside,
+    -- so an unfrozen ped drops on camera. The bus ride hides and freezes
+    -- too (the ped is "aboard"). Living here, per frame, is what makes
+    -- every transition self-correcting -- whatever any path did to the ped,
+    -- the current state wins within a frame. The freeze deliberately never
+    -- RELEASES here: spawn placement holds its own temporary freezes while
+    -- collision loads, and stomping those drops players through the world.
+    local parked = st == BR.PlayerState.LOBBY or st == BR.PlayerState.BUS
+    SetEntityVisible(ped, not parked, false)
+    if parked then
+        FreezeEntityPosition(ped, true)
+    end
 
     -- GTA's own feed ("X joined", "Y died", weapon unlocks, whatever any other
     -- resource posts). The gamemode owns its presentation -- eliminations go
