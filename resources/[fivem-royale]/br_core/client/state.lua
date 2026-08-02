@@ -34,6 +34,26 @@ end)
 -- Snapshot and deltas
 -- --------------------------------------------------------------------------
 
+--- Grant or release NUI focus for the current match state.
+---
+--- Called from BOTH the snapshot and the state handler, deliberately.
+---
+--- Doing it only on transition was a bug with a very confusing symptom: a
+--- player joining a server already sitting in WAITING never receives a
+--- transition, so they got a fully rendered lobby with no focus behind it --
+--- visible, correct, and completely unclickable, with no cursor. It looked like
+--- the UI was drawn wrong rather than simply not focused.
+---
+--- Both paths are idempotent: pushFocus ignores a screen already on the stack.
+--- @param state string
+local function applyFocusForState(state)
+    if state == BR.MatchState.WAITING then
+        TriggerEvent('br:ui:pushFocus', 'lobby')
+    else
+        TriggerEvent('br:ui:popFocus', 'lobby')
+    end
+end
+
 RegisterNetEvent(BR.Net.SNAPSHOT)
 AddEventHandler(BR.Net.SNAPSHOT, function(payload)
     S.roster = payload.roster or {}
@@ -58,6 +78,7 @@ AddEventHandler(BR.Net.SNAPSHOT, function(payload)
     end
 
     BR.PushHud(true)
+    applyFocusForState(S.match.state)
 end)
 
 RegisterNetEvent(BR.Net.ROSTER_DELTA)
@@ -118,18 +139,12 @@ AddEventHandler(BR.Net.STATE, function(d)
         serverNow = BR.Clock.now(),
     })
 
-    -- Visibility and FOCUS are separate things, and forgetting the second one
-    -- produces a lobby you can see and cannot click: CEF only receives mouse
-    -- input while NUI focus is held, so without this the queue buttons are inert
-    -- and the player is stuck staring at them.
+    -- Visibility and FOCUS are separate things. CEF only receives mouse input
+    -- while NUI focus is held, so a visible-but-unfocused lobby is inert.
     --
     -- Focus is granted by br_ui, which owns the ui_page -- br_core must never
     -- call SetNuiFocus itself or there would be two owners disagreeing.
-    if d.state == BR.MatchState.WAITING then
-        TriggerEvent('br:ui:pushFocus', 'lobby')
-    else
-        TriggerEvent('br:ui:popFocus', 'lobby')
-    end
+    applyFocusForState(d.state)
 
     print(('[br_core] match state: %s'):format(tostring(d.state)))
 end)
@@ -217,21 +232,33 @@ BR.Loop.register(BR.Loop.SLOW, 'state.clock', function()
     end
 end)
 
--- Ask for a snapshot once both this resource and the UI are up. br_ui fires
--- br:ui:ready when its bridge loads, which may be before or after this file.
+-- Snapshot requests.
+--
+-- br_ui announces itself with br:ui:ready, which may arrive before or after this
+-- file loads, and again every time br_ui restarts.
+--
+-- br:ui:ready ALWAYS re-requests. That matters for more than tidiness: the
+-- snapshot is what re-applies NUI focus, and if a snapshot arrived while br_ui
+-- was still loading, nothing was listening for the focus event. Guarding the
+-- ready path would leave the player with a visible, unfocused, unclickable
+-- lobby and no way to recover short of reconnecting.
 local askedForSnapshot = false
-local function requestSnapshot()
-    if askedForSnapshot then return end
+
+AddEventHandler('br:ui:ready', function()
     askedForSnapshot = true
     TriggerServerEvent(BR.Net.READY)
-end
-
-AddEventHandler('br:ui:ready', requestSnapshot)
+end)
 
 AddEventHandler('onClientResourceStart', function(res)
     if res ~= GetCurrentResourceName() then return end
-    -- Do not wait on br_ui indefinitely: if it started first its ready event is
-    -- already gone, and we would sit with an empty mirror forever.
-    Citizen.SetTimeout(2000, requestSnapshot)
+
+    -- Fallback only: if br_ui started first, its ready event is already gone and
+    -- we would otherwise sit with an empty mirror forever.
+    Citizen.SetTimeout(2000, function()
+        if not askedForSnapshot then
+            askedForSnapshot = true
+            TriggerServerEvent(BR.Net.READY)
+        end
+    end)
     Citizen.SetTimeout(500, pingClock)
 end)

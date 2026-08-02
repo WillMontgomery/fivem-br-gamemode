@@ -109,6 +109,37 @@ exports('pushFocus', pushFocus)
 exports('popFocus', popFocus)
 exports('clearFocus', clearFocus)
 
+--- Focus diagnostics.
+---
+--- "I have no mouse" is a symptom with no error attached to it, and the cause is
+--- always one of a small number of things -- nothing pushed focus, something
+--- popped it, or the push arrived before this resource was listening. Printing
+--- the stack answers that in one command instead of by inference.
+RegisterCommand('brfocus', function(_, args)
+    if args[1] == 'lobby' or args[1] == 'chat' then
+        pushFocus(args[1])
+        print(('[br_ui] forced focus: %s'):format(args[1]))
+        return
+    end
+    if args[1] == 'clear' then
+        clearFocus()
+        print('[br_ui] focus cleared')
+        return
+    end
+
+    print('=== br_ui focus ===')
+    print(('  SetNuiFocus held : %s'):format(tostring(focusHeld)))
+    print(('  stack depth      : %d'):format(#focusStack))
+    for i, s in ipairs(focusStack) do
+        print(('    %d. %s%s'):format(i, s, i == #focusStack and '   <- owns focus' or ''))
+    end
+    if #focusStack == 0 then
+        print('    (empty -- no screen has asked for focus)')
+    end
+    print(('  chat channel     : %s'):format(tostring(chatChannel)))
+    print('  usage: brfocus [lobby|chat|clear]')
+end, false)
+
 AddEventHandler('br:ui:pushFocus', pushFocus)
 AddEventHandler('br:ui:popFocus', popFocus)
 AddEventHandler('br:ui:clearFocus', clearFocus)
