@@ -22,10 +22,17 @@ local tags     = {}   -- [src] = { tag = gamerTagId, ped = pedHandle }
 local mates    = {}   -- [src] = latest server record for that squadmate
 local lastPush = 0
 
+local PLAYER_GROUP = GetHashKey('PLAYER')
+
 local function dropTag(src)
     local t = tags[src]
     if t then
         RemoveMpGamerTag(t.tag)
+        -- Hand the ped back to the default group, or an EX-squadmate would
+        -- stay unshootable until their ped handle happened to change.
+        if DoesEntityExist(t.ped) then
+            SetPedRelationshipGroupHash(t.ped, PLAYER_GROUP)
+        end
         tags[src] = nil
     end
 end
@@ -78,14 +85,18 @@ AddEventHandler(BR.Net.SQUAD_POS, function(list)
     end
 end)
 
--- Overhead names, and staleness.
+-- Overhead names, ally grouping, and staleness.
 --
 -- The server goes quiet instead of sending an empty list when a squad stops
 -- being a squad (last mate died, match ended while the job was between
 -- pushes), so silence longer than a few pushes means "no squad" -- without
 -- the staleness check the last blip of a dead squadmate would outlive them
 -- indefinitely.
-BR.Loop.register(BR.Loop.SLOW, 'squadmates.tags', function()
+--
+-- TICK, not SLOW: this loop is also what moves a freshly streamed-in
+-- squadmate into the BR_ALLY group, and until that happens they are
+-- shootable -- at 10Hz that window is a bullet or two, at 1Hz a burst.
+BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
     if next(mates) and (GetGameTimer() - lastPush) > 3500 then
         clearAll()
         return
@@ -106,6 +117,9 @@ BR.Loop.register(BR.Loop.SLOW, 'squadmates.tags', function()
                 dropTag(src)
                 local tag = CreateFakeMpGamerTag(ped, m.name, false, false, '', 0)
                 SetMpGamerTagVisibility(tag, 0, true)   -- component 0: the name
+                -- Squad-level peace: same group as my own ped, and my
+                -- canAttackFriendly=false (gamerules) refuses the damage.
+                SetPedRelationshipGroupHash(ped, BR.Native.ALLY_GROUP)
                 tags[src] = { tag = tag, ped = ped }
             end
         else

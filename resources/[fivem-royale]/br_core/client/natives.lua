@@ -12,6 +12,11 @@
 BR = BR or {}
 BR.Native = {}
 
+-- The local relationship group holding me + my squadmates. A relationship
+-- group hash IS the joaat of its name, so this is constant and safe to read
+-- before applyWorldSetup registers the group.
+BR.Native.ALLY_GROUP = GetHashKey('BR_ALLY')
+
 -- Implementation switches. Flipped by /brnativecheck findings or by config.
 BR.Native.use = {
     spectatorNative = false,  -- false = free-cam + SetFocusEntity (the safer default)
@@ -231,13 +236,28 @@ function BR.Native.applyGameRules()
     SetCreateRandomCopsNotOnScenarios(false)
     SetCreateRandomCopsOnScenarios(false)
 
-    -- PvP. FiveM ships with players unable to damage each other -- every
-    -- freeroam framework flips these two, and without them shots at another
-    -- player simply do nothing, which reads as "peace mode" rather than a
-    -- missing pair of natives. Per-frame like the rest: the ped handle
-    -- changes on respawn, and friendly-fire state has been observed to reset.
+    -- PvP, with two carve-outs, both enforced on the SHOOTER's client where
+    -- GTA computes bullet damage:
+    --
+    --   Squadmates: my ped and my squadmates' local peds share the BR_ALLY
+    --   relationship group (squadmates.lua assigns theirs as they stream in),
+    --   and canAttackFriendly = false means same-group damage is refused.
+    --   Everyone else stays in the engine's default PLAYER group, which
+    --   BR_ALLY hates -- so enemies take damage exactly as before. This is
+    --   the same lever that made PvP work in the first place (default no-PvP
+    --   IS "everyone in PLAYER + canAttackFriendly false"), pointed at a
+    --   group that now only contains my own squad.
+    --
+    --   Warmup: my own ped is simply invincible. Everyone's client does the
+    --   same, so nobody can be hurt by anything until the bus.
+    --
+    -- Per-frame like the rest: the ped handle changes on respawn, and the
+    -- group assignment dies with the old handle.
+    local ped = PlayerPedId()
     NetworkSetFriendlyFireOption(true)
-    SetCanAttackFriendly(PlayerPedId(), true, false)
+    SetPedRelationshipGroupHash(ped, BR.Native.ALLY_GROUP)
+    SetCanAttackFriendly(ped, false, false)
+    SetPlayerInvincible(pid, BR.State.me.state == BR.PlayerState.WARMUP)
 
     -- GTA's own feed ("X joined", "Y died", weapon unlocks, whatever any other
     -- resource posts). The gamemode owns its presentation -- eliminations go
@@ -265,6 +285,17 @@ function BR.Native.applyWorldSetup()
     SetRandomTrains(false)
     DistantCopCarSirens(false)
     SetAudioFlag('PoliceScannerDisabled', true)
+
+    -- The squad relationship group. Local to this client, like all
+    -- relationship state: MY view groups me and my squadmates together, an
+    -- enemy's view groups me with the default PLAYER crowd -- and since each
+    -- client's own shots are computed against its own view, both are right.
+    AddRelationshipGroup('BR_ALLY')
+    local player = GetHashKey('PLAYER')
+    -- 5 = hate: BR_ALLY (me + squad) will damage the PLAYER group (everyone
+    -- else) and vice versa. Within BR_ALLY, canAttackFriendly = false rules.
+    SetRelationshipBetweenGroups(5, BR.Native.ALLY_GROUP, player)
+    SetRelationshipBetweenGroups(5, player, BR.Native.ALLY_GROUP)
 end
 
 -- ------------------------------------------------------------ native check ---
