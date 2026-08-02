@@ -162,36 +162,54 @@ function BR.Spawn.diagnose()
     }
 end
 
+--- Put the player into the world ALIVE at a position.
+---
+--- Distinct from placeAt, which only moves them. Teleporting a dead ped gives
+--- you a corpse at the new coordinates: after a match ended, players were
+--- returned to the warmup pad still dead, reading 0 hp with a valid ped handle
+--- at the right position. Resurrection has to be explicit, and without
+--- spawnmanager nothing else does it.
+---
+--- @param x number
+--- @param y number
+--- @param z number
+--- @param heading number|nil
+function BR.Spawn.respawn(x, y, z, heading)
+    local ped = PlayerPedId()
+
+    NetworkResurrectLocalPlayer(x, y, z, heading or 0.0, true, false)
+    ClearPedTasksImmediately(ped)
+    RemoveAllPedWeapons(ped, true)
+
+    -- Re-apply the health model: resurrection restores GTA's defaults, not ours.
+    BR.Native.initHealthModel()
+
+    BR.Spawn.placeAt(x, y, z, heading)
+end
+
 --- Bring the player into the world for the first time.
 local function initialSpawn()
     if spawned then return end
     spawned = true
 
     local pad = BR.Config.Match.warmupPos
-    local ped = PlayerPedId()
-
-    -- Without spawnmanager nothing has resurrected the player, so do it here.
-    -- Skipping this leaves them in a not-quite-alive state where controls work
-    -- but the ped is not properly registered.
-    NetworkResurrectLocalPlayer(pad.x, pad.y, pad.z, pad.heading, true, false)
-    ClearPedTasksImmediately(ped)
-    RemoveAllPedWeapons(ped, true)
-
-    BR.Native.initHealthModel()
-    BR.Spawn.placeAt(pad.x, pad.y, pad.z, pad.heading)
+    BR.Spawn.respawn(pad.x, pad.y, pad.z, pad.heading)
 
     print('[br_core] spawned at the warmup pad')
 end
 
---- Move the player to the warmup pad, scattered slightly so a full lobby does
---- not stack everyone on one point.
+--- Return the player to the warmup pad, alive, scattered slightly so a full
+--- lobby does not stack everyone on one point.
+---
+--- respawn rather than placeAt: this runs between matches, and whoever died in
+--- the last one is still a corpse until something resurrects them.
 function BR.Spawn.toWarmupPad()
     local pad = BR.Config.Match.warmupPos
     local r = BR.Config.Match.warmupRadius * 0.5
     local theta = math.random() * 2.0 * math.pi
     local dist = r * math.sqrt(math.random())
 
-    BR.Spawn.placeAt(
+    BR.Spawn.respawn(
         pad.x + math.cos(theta) * dist,
         pad.y + math.sin(theta) * dist,
         pad.z,
@@ -267,8 +285,18 @@ RegisterCommand('brblack', function()
     }) do
         print(('  %-13s %s'):format(k, tostring(d[k])))
     end
-    print('  -- fadedIn false with fadedOut false means the screen was never')
-    print('     faded in at all, which is a different fault from being faded out.')
+    -- The hint reflects the ACTUAL values rather than printing a fixed line
+    -- that contradicts them -- a static footer saying "faded in is false" under
+    -- a reading of true is worse than no footer.
+    if d.fadedIn == true or d.fadedIn == 1 then
+        print('  -- screen is faded in; if it still looks black the page is')
+        print('     painting over the game. Check the overlay line at startup.')
+    elseif d.fadedOut == true or d.fadedOut == 1 then
+        print('  -- faded OUT: something faded and never faded back in.')
+    else
+        print('  -- never faded in at all, which is a different fault from')
+        print('     being faded out. The watchdog should recover this.')
+    end
     print('  -- run brunstuck to force recovery')
 end, false)
 

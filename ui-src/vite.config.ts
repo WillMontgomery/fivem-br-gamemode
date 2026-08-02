@@ -24,13 +24,17 @@ import react from '@vitejs/plugin-react'
 // running any of them. "Did my change actually reach the game?" is not a
 // question that should ever need guessing at, and re-testing against a stale
 // bundle wastes a whole round trip.
+// NOTE ON THE REV: it is the commit the build was made FROM, not the commit
+// containing the bundle -- the build necessarily happens before the commit that
+// records it, so the hash always reads one behind. The timestamp is the
+// unambiguous half; use it to confirm a bundle is current.
 const BUILD_STAMP = (() => {
   const t = new Date().toISOString().replace('T', ' ').slice(0, 19)
   let rev = 'nogit'
   try {
     rev = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim()
   } catch { /* building outside a repo is fine */ }
-  return `${rev} ${t}`
+  return `built ${t} (from ${rev})`
 })()
 
 export default defineConfig({
