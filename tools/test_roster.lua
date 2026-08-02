@@ -125,6 +125,16 @@ local function queueUp(src, name, mode)
     fire(BR.Net.QUEUE_JOIN, src, { mode = mode or 'solo' })
 end
 
+--- Simulate a real disconnect.
+---
+--- Firing playerDropped alone is not faithful: the player would still be in
+--- GetPlayers(), so roster.reconcile correctly re-adopts them a few seconds
+--- later. A genuine disconnect removes them from both.
+local function leave(src)
+    connected[src] = nil
+    fire('playerDropped', src, 'quit')
+end
+
 local function eventsOf(name)
     local out = {}
     for _, s in ipairs(sent) do
@@ -403,7 +413,7 @@ do
     ok(BR.Server.squadsAlive() == 2, 'two solos are two teams')
 
     BR.Roster.setState(2, BR.PlayerState.DEAD)
-    fakeTime = fakeTime + 500
+    fakeTime = fakeTime + 4000   -- past WIN_GRACE_MS
     BR.Sched.step(fakeTime)
 
     ok(BR.Server.match.state == BR.MatchState.ENDED, 'one team left ends the match')
@@ -439,7 +449,7 @@ do
     ok(BR.Server.squadsAlive() == 2, 'a downed player still counts for their squad')
 
     BR.Roster.setState(2, BR.PlayerState.DEAD)
-    fakeTime = fakeTime + 500
+    fakeTime = fakeTime + 4000   -- past WIN_GRACE_MS
     BR.Sched.step(fakeTime)
     ok(BR.Server.match.state == BR.MatchState.ENDED, 'wiping a squad ends the match')
 
@@ -458,8 +468,8 @@ do
     BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
     ok(BR.Server.squadsAlive() == 2, 'two players in play')
 
-    fire('playerDropped', 2, 'timeout')
-    fakeTime = fakeTime + 500
+    leave(2)
+    fakeTime = fakeTime + 4000   -- past WIN_GRACE_MS
     BR.Sched.step(fakeTime)
 
     ok(BR.Server.match.state == BR.MatchState.ENDED,
@@ -664,7 +674,7 @@ do
     BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
 
     BR.Combat.eliminate(2, 'fall', 1)
-    fakeTime = fakeTime + 500
+    fakeTime = fakeTime + 4000   -- past WIN_GRACE_MS
     BR.Sched.step(fakeTime)
 
     ok(BR.Server.match.state == BR.MatchState.ENDED,

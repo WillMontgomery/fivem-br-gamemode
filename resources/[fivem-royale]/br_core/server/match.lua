@@ -70,11 +70,27 @@ function BR.Match.onEnter(state, from)
             function(src) BR.Roster.setState(src, BR.PlayerState.BUS) end)
 
     elseif state == BR.MatchState.PLAYING then
-        -- M3 replaces this: players become ALIVE when they land, not when the
-        -- match starts. Until the drop exists, everyone aboard is simply playing.
+        -- Everyone not already out becomes ALIVE -- not just those on the bus.
+        --
+        -- Matching only BUS meant `brforce playing`, which skips the bus
+        -- entirely, promoted nobody: every player stayed in lobby/warmup, which
+        -- do not count as alive, so squadsAlive() was 0 and the win condition
+        -- fired on the very next tick. The match ended the instant it started.
+        --
+        -- M3 replaces this: players become ALIVE when they LAND, not when the
+        -- match starts.
         BR.Roster.each(
-            function(e) return e.state == BR.PlayerState.BUS end,
+            function(e)
+                return e.state ~= BR.PlayerState.DEAD
+                   and e.state ~= BR.PlayerState.LEFT
+                   and e.state ~= BR.PlayerState.SPECTATING
+            end,
             function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
+
+        -- Nothing can win in the first moments of a match. Without this, any
+        -- path that reaches PLAYING with states still settling ends instantly,
+        -- and the log reads as though a match was played and won in one tick.
+        S.startedAt = GetGameTimer()
 
     elseif state == BR.MatchState.ENDED then
         BR.Match.awardPlacements()
@@ -130,10 +146,24 @@ end
 
 --- Is there anyone left to fight over?
 --- @return boolean
+--- How long after PLAYING begins before a win can be declared.
+--- Purely a guard against states that have not settled; a real match cannot be
+--- decided this fast anyway.
+local WIN_GRACE_MS = 3000
+
 local function winConditionMet()
     -- Only meaningful once the match is live; two players in a lobby are not a
     -- finished match.
     if S.state ~= BR.MatchState.PLAYING then return false end
+    if S.startedAt and (GetGameTimer() - S.startedAt) < WIN_GRACE_MS then
+        return false
+    end
+
+    -- An empty server has not "been won" -- it has nobody in it. Treating zero
+    -- squads as a victory produced a match that ended immediately with no
+    -- survivors and a confusing log line.
+    if BR.Server.count() == 0 then return false end
+
     return BR.Server.squadsAlive() <= 1
 end
 

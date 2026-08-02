@@ -214,16 +214,33 @@ function BR.Server.count(pred)
     return n
 end
 
---- How many players are still alive (includes downed -- they are not out yet).
+--- Is this player still in the match?
+---
+--- "Still in" rather than "alive" is the useful question, and the two differ at
+--- both ends:
+---   * a DOWNED player is not alive but is very much still in it
+---   * a player in WARMUP has not dropped yet but is equally still in it
+---
+--- Leaving WARMUP out made the HUD read "0 ALIVE" to two players standing next
+--- to each other on the warmup pad, which is technically defensible and plainly
+--- wrong to look at.
+---
+--- LOBBY is excluded on purpose: those players are not in the match at all.
+--- @param state string
+--- @return boolean
+function BR.Server.isInMatch(state)
+    return state == BR.PlayerState.ALIVE
+        or state == BR.PlayerState.DBNO
+        or state == BR.PlayerState.WARMUP
+        or state == BR.PlayerState.BUS
+        or state == BR.PlayerState.FREEFALL
+        or state == BR.PlayerState.GLIDE
+end
+
+--- How many players are still in the match.
 --- @return integer
 function BR.Server.aliveCount()
-    return BR.Server.count(function(p)
-        return p.state == BR.PlayerState.ALIVE
-            or p.state == BR.PlayerState.DBNO
-            or p.state == BR.PlayerState.BUS
-            or p.state == BR.PlayerState.FREEFALL
-            or p.state == BR.PlayerState.GLIDE
-    end)
+    return BR.Server.count(function(p) return BR.Server.isInMatch(p.state) end)
 end
 
 --- How many squads still have at least one living member. This is the win
@@ -232,12 +249,7 @@ end
 function BR.Server.squadsAlive()
     local seen, n = {}, 0
     for _, p in pairs(BR.Server.roster) do
-        local living = p.state == BR.PlayerState.ALIVE
-                    or p.state == BR.PlayerState.DBNO
-                    or p.state == BR.PlayerState.BUS
-                    or p.state == BR.PlayerState.FREEFALL
-                    or p.state == BR.PlayerState.GLIDE
-        if living then
+        if BR.Server.isInMatch(p.state) then
             -- Solo players have no squad; each counts as their own team.
             local key = p.squadId or ('solo:' .. tostring(p.src))
             if not seen[key] then
