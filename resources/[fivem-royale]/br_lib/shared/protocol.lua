@@ -24,6 +24,7 @@ BR.Net = {
     SQUAD_RESPOND   = 'br:squad:respond',    -- C->S  { squadId, accept }
     SQUAD_LEAVE     = 'br:squad:leave',      -- C->S
     SQUAD_UPDATE    = 'br:squad:update',     -- S->C  { squad }
+    LOBBY_STATUS    = 'br:lobby:status',     -- S->C  { queued, needed, connected, mode }
 
     -- Bus / drop
     BUS_ROUTE       = 'br:bus:route',        -- S->C  { sx, sy, ex, ey, alt, tStart, tEnd }
@@ -109,6 +110,7 @@ BR.Nui = {
     TOAST     = 'toast',
     CHAT      = 'chat',      -- one appended message
     SCREEN    = 'screen',    -- resolution + safe zone, so the HUD can lay out
+    LOBBY     = 'lobby',     -- queue progress, so waiting has a visible reason
 }
 
 --- NUI -> Lua callback names, namespaced. Every one of these MUST resolve on

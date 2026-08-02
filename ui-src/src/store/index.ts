@@ -12,8 +12,8 @@
 import { create } from 'zustand'
 import type {
   ChatMessage, DbnoPayload, FeedEntry, FocusPayload, HudPayload,
-  InvPayload, MatchPayload, SpectatePayload, SquadPayload, StormPayload,
-  SummaryPayload, ToastPayload,
+  InvPayload, LobbyPayload, MatchPayload, SpectatePayload, SquadPayload,
+  StormPayload, SummaryPayload, ToastPayload,
 } from '../bridge/types'
 
 /** Kill feed and chat are capped so a long match cannot grow the DOM forever. */
@@ -34,6 +34,9 @@ export interface UiState {
   toast: (ToastPayload & { id: number }) | null
   focus: FocusPayload['screen']
 
+  /** Queue progress while WAITING. Null until the server reports. */
+  lobby: LobbyPayload | null
+
   /** True while the chat input is open; the HUD dims slightly to make it readable. */
   chatOpen: boolean
   chatChannel: ChatMessage['channel']
@@ -47,6 +50,7 @@ export interface UiState {
   setSpectate: (s: SpectatePayload | null) => void
   setSummary: (s: SummaryPayload | null) => void
   setFocus: (f: FocusPayload['screen']) => void
+  setLobby: (l: LobbyPayload) => void
   pushFeed: (f: FeedEntry) => void
   pushChat: (c: ChatMessage) => void
   showToast: (t: ToastPayload) => void
@@ -86,6 +90,7 @@ export const useUi = create<UiState>((set) => ({
   chat: [],
   toast: null,
   focus: 'none',
+  lobby: null,
   chatOpen: false,
   chatChannel: 'global',
 
@@ -98,6 +103,7 @@ export const useUi = create<UiState>((set) => ({
   setSpectate: (spectate) => set({ spectate }),
   setSummary:  (summary) => set({ summary }),
   setFocus:    (focus) => set({ focus }),
+  setLobby:    (lobby) => set({ lobby }),
 
   pushFeed: (entry) => set((s) => ({
     feed: [entry, ...s.feed].slice(0, FEED_MAX),
@@ -134,3 +140,4 @@ export const selChat     = (s: UiState) => s.chat
 export const selDbno     = (s: UiState) => s.dbno
 export const selFocus    = (s: UiState) => s.focus
 export const selChatOpen = (s: UiState) => s.chatOpen
+export const selLobby    = (s: UiState) => s.lobby

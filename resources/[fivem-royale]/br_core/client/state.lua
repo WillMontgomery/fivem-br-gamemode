@@ -150,6 +150,35 @@ AddEventHandler(BR.Net.STATE, function(d)
 end)
 
 -- --------------------------------------------------------------------------
+-- Lobby
+-- --------------------------------------------------------------------------
+
+--- UI actions forwarded from br_ui.
+---
+--- br_ui deliberately does not know what any of these mean -- it owns the NUI
+--- page and focus, nothing else. This is the handler that was missing: the
+--- queue button resolved its callback and emitted an event nobody listened for,
+--- so pressing Play did nothing while the UI happily showed "Searching...".
+AddEventHandler('br:ui:action', function(name, data)
+    if name == BR.NuiCb.QUEUE then
+        TriggerServerEvent(BR.Net.QUEUE_JOIN, { mode = data and data.mode })
+    elseif name == BR.NuiCb.QUEUE_LEAVE then
+        TriggerServerEvent(BR.Net.QUEUE_LEAVE)
+    elseif name == BR.NuiCb.SQUAD_INVITE then
+        TriggerServerEvent(BR.Net.SQUAD_INVITE, data)
+    elseif name == BR.NuiCb.SQUAD_LEAVE then
+        TriggerServerEvent(BR.Net.SQUAD_LEAVE)
+    elseif BR.Server and BR.Server.devMode then
+        print(('[br_core] unhandled UI action: %s'):format(tostring(name)))
+    end
+end)
+
+RegisterNetEvent(BR.Net.LOBBY_STATUS)
+AddEventHandler(BR.Net.LOBBY_STATUS, function(d)
+    TriggerEvent('br:ui:sendLocal', BR.Nui.LOBBY, d)
+end)
+
+-- --------------------------------------------------------------------------
 -- HUD
 -- --------------------------------------------------------------------------
 

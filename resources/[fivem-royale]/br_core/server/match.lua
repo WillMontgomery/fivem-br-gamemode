@@ -143,9 +143,14 @@ local function tick()
     local now = GetGameTimer()
 
     if S.state == BR.MatchState.WAITING then
-        local need = M.MinPlayers(BR.Server.devMode)
-        if BR.Server.count() >= need then
+        -- Start on the QUEUED count, not the connected count. Being connected
+        -- and wanting to play are different things: starting on connections
+        -- drags anyone idling in the lobby into a match they never asked for,
+        -- and made the Play button decorative.
+        if BR.Lobby.count() >= BR.Lobby.needed() then
+            S.mode = BR.Lobby.dominantMode()
             BR.Match.transition(BR.MatchState.WARMUP)
+            BR.Lobby.clear()
         end
         return
     end
@@ -158,7 +163,9 @@ local function tick()
     -- A timed state whose time is up moves to whatever comes next.
     if S.endsAt > 0 and now >= S.endsAt then
         if S.state == BR.MatchState.WARMUP then
-            -- Not enough players left to bother starting.
+            -- Connected count here, not queued: the queue was cleared when
+            -- warmup began, and what matters now is whether enough people are
+            -- still actually present to make a match of it.
             if BR.Server.count() < M.MinPlayers(BR.Server.devMode) then
                 print('[br_core] match: not enough players, returning to WAITING')
                 BR.Match.transition(BR.MatchState.WAITING)

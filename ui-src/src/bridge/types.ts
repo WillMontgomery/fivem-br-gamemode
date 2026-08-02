@@ -155,6 +155,20 @@ export interface ScreenPayload {
   aspect: number
 }
 
+/**
+ * Queue progress.
+ *
+ * Exists so a waiting player can see WHY they are waiting. "Searching for
+ * players" with no numbers behind it is indistinguishable from a broken queue --
+ * which is exactly how it looked while the Play button was wired to nothing.
+ */
+export interface LobbyPayload {
+  queued: number
+  needed: number
+  connected: number
+  mode: string
+}
+
 export interface ToastPayload {
   text: string
   tone?: 'info' | 'warn' | 'danger' | 'success'
@@ -195,6 +209,7 @@ export type Envelope =
   | { k: 'toast';    d: ToastPayload }
   | { k: 'chat';     d: ChatMessage }
   | { k: 'screen';   d: ScreenPayload }
+  | { k: 'lobby';    d: LobbyPayload }
 
 export type EnvelopeKind = Envelope['k']
 

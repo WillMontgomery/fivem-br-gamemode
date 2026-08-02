@@ -1,6 +1,6 @@
 import { Button, Card, CardBody, CardHeader, Chip, Spinner } from '@heroui/react'
 import { useState } from 'react'
-import { useUi, selMatch, selSquad } from '../store'
+import { useUi, selMatch, selSquad, selLobby } from '../store'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 
@@ -22,8 +22,16 @@ import { CB } from '../bridge/types'
 export default function Lobby({ visible }: { visible: boolean }) {
   const match = useUi(selMatch)
   const squad = useUi(selSquad)
+  const lobby = useUi(selLobby)
   const [queued, setQueued] = useState(false)
   const [mode, setMode] = useState<'solo' | 'squad'>('squad')
+
+  // The server is the authority on whether we are queued. Believing only local
+  // state meant the button showed "Searching..." forever while the server had
+  // no idea we existed -- which is precisely what happened when the queue
+  // callback was wired to an event nobody handled.
+  const serverQueued = (lobby?.queued ?? 0) > 0
+  const short = lobby ? Math.max(0, lobby.needed - lobby.queued) : 0
 
   const warmup = match.state === 'warmup'
 
@@ -108,9 +116,34 @@ export default function Lobby({ visible }: { visible: boolean }) {
               </div>
             ) : queued ? (
               <div className="flex flex-col gap-2">
-                <div className="flex items-center justify-center gap-3 py-1">
-                  <Spinner size="sm" />
-                  <span className="text-sm text-white/70">Searching for players&hellip;</span>
+                <div className="flex flex-col items-center gap-1 py-1">
+                  <div className="flex items-center gap-3">
+                    <Spinner size="sm" />
+                    <span className="text-sm text-white/70">
+                      {short > 0
+                        ? `Waiting for ${short} more player${short === 1 ? '' : 's'}`
+                        : 'Starting…'}
+                    </span>
+                  </div>
+
+                  {/* The actual numbers. "Searching for players" on its own is
+                      indistinguishable from a queue that is not working, which
+                      is exactly how this looked while the button did nothing. */}
+                  {lobby && (
+                    <span className="text-[0.6875rem] tabular-nums text-white/40">
+                      {lobby.queued} / {lobby.needed} queued
+                      {lobby.connected > lobby.queued &&
+                        ` · ${lobby.connected} connected`}
+                    </span>
+                  )}
+
+                  {/* If the server does not think we are queued, say so rather
+                      than spinning forever. */}
+                  {lobby && !serverQueued && (
+                    <span className="text-[0.6875rem] text-danger">
+                      Server has not registered the queue
+                    </span>
+                  )}
                 </div>
                 <Button variant="bordered" onPress={leave}>Cancel</Button>
               </div>

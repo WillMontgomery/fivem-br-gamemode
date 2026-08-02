@@ -2,47 +2,64 @@
 --
 -- server.cfg deliberately does not start spawnmanager or basic-gamemode: they
 -- would spawn players into the world on join and respawn them on death, both of
--- which the match state machine owns. Removing them without replacing them left
--- players with no ped at all, which is why the server's position sampling had
--- nothing to read.
+-- which the match state machine owns. This is their replacement.
 --
--- This is that replacement. It is deliberately minimal -- put the player in the
--- world at a known place, take the loading screen down, and let the match state
--- machine decide where they belong from there.
+-- THE GOVERNING RULE HERE IS: NEVER LEAVE THE PLAYER LOOKING AT BLACK.
+--
+-- A black screen with the HUD drawn on top of it means the loading screen never
+-- came down, or the screen faded out and never faded back in. Neither produces
+-- an error, neither appears in any log, and the player cannot do anything about
+-- it except reconnect. An earlier version of this file put ShutdownLoadingScreen
+-- inside a callback that only ran if a collision-wait loop finished -- so if
+-- that loop was interrupted, or a second placement started while the first was
+-- still running, the screen stayed black forever.
+--
+-- Now: the loading screen comes down as soon as the session exists, regardless
+-- of where the player ends up; placement is serialised so two requests cannot
+-- fight; and a watchdog fades the screen back in if it is ever left dark.
 
 BR = BR or {}
 BR.Spawn = {}
 
 local spawned = false
+local placing = false
 
---- Place the local player at a position, waiting for the world to stream in.
+--- Place the local player, waiting for the world to stream in.
 ---
 --- The wait matters: teleporting to coordinates whose collision has not loaded
---- drops the player through the map. Freezing during the wait is what stops that
---- becoming a swim in the ocean.
+--- drops the player through the map. Freezing during the wait prevents that.
+---
+--- Serialised on `placing`. Two overlapping placements would each freeze and
+--- unfreeze the ped, and whichever finished first would unfreeze a player the
+--- other still intended to hold still.
 ---
 --- @param x number
 --- @param y number
 --- @param z number
 --- @param heading number|nil
---- @param cb function|nil  called once the player is on solid ground
+--- @param cb function|nil
 function BR.Spawn.placeAt(x, y, z, heading, cb)
-    local ped = PlayerPedId()
+    if placing then
+        if BR.Server and BR.Server.devMode then
+            print('[br_core] placement already in progress, ignoring')
+        end
+        return
+    end
+    placing = true
 
+    local ped = PlayerPedId()
     RequestCollisionAtCoord(x, y, z)
     SetEntityCoordsNoOffset(ped, x, y, z, false, false, false)
     SetEntityHeading(ped, heading or 0.0)
     FreezeEntityPosition(ped, true)
 
     Citizen.CreateThread(function()
-        local tries = 0
         local groundZ = z
 
-        -- ~4 seconds. Long enough for a cold streaming load, short enough that a
-        -- failure does not look like a hang.
-        while tries < 40 do
+        -- ~4 seconds: long enough for a cold streaming load, short enough that
+        -- failing does not look like a hang.
+        for _ = 1, 40 do
             Citizen.Wait(100)
-            tries = tries + 1
             RequestCollisionAtCoord(x, y, z)
             if HasCollisionLoadedAroundEntity(ped) then
                 local found, gz = GetGroundZFor_3dCoord(x, y, z + 50.0, false)
@@ -51,11 +68,30 @@ function BR.Spawn.placeAt(x, y, z, heading, cb)
             end
         end
 
+        -- Re-read the ped: it can change while we waited (a respawn, a model
+        -- swap), and unfreezing a stale handle would leave the real one stuck.
+        ped = PlayerPedId()
         SetEntityCoordsNoOffset(ped, x, y, groundZ, false, false, false)
         FreezeEntityPosition(ped, false)
 
+        -- Unconditional. Whatever happened above, the player can see and move.
+        BR.Spawn.reveal()
+
+        placing = false
         if cb then cb() end
     end)
+end
+
+--- Make sure the player can actually see the world.
+---
+--- Safe to call at any time and as often as you like. This is the single place
+--- that undoes every way the screen can be dark.
+function BR.Spawn.reveal()
+    ShutdownLoadingScreen()
+    ShutdownLoadingScreenNui()
+    if IsScreenFadedOut() or IsScreenFadingOut() then
+        DoScreenFadeIn(500)
+    end
 end
 
 --- Bring the player into the world for the first time.
@@ -74,16 +110,12 @@ local function initialSpawn()
     RemoveAllPedWeapons(ped, true)
 
     BR.Native.initHealthModel()
+    BR.Spawn.placeAt(pad.x, pad.y, pad.z, pad.heading)
 
-    BR.Spawn.placeAt(pad.x, pad.y, pad.z, pad.heading, function()
-        ShutdownLoadingScreen()
-        ShutdownLoadingScreenNui()
-        DoScreenFadeIn(800)
-        print('[br_core] spawned at the warmup pad')
-    end)
+    print('[br_core] spawned at the warmup pad')
 end
 
---- Move the player to the warmup pad, scattered a little so a full lobby does
+--- Move the player to the warmup pad, scattered slightly so a full lobby does
 --- not stack everyone on one point.
 function BR.Spawn.toWarmupPad()
     local pad = BR.Config.Match.warmupPos
@@ -98,7 +130,6 @@ function BR.Spawn.toWarmupPad()
         pad.heading)
 end
 
--- Match state drives where the player belongs.
 RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)
     if d.state == BR.MatchState.WARMUP or d.state == BR.MatchState.CLEANUP then
@@ -107,18 +138,43 @@ AddEventHandler(BR.Net.STATE, function(d)
 end)
 
 Citizen.CreateThread(function()
-    -- The one place a thread is spawned outside the loop registry, because this
-    -- runs exactly once at startup and then never again. Registering a callback
-    -- that no-ops forever afterwards would cost more than it saves.
+    -- The one thread outside the loop registry: it runs once at startup and
+    -- then never again, so a permanently-registered callback would cost more
+    -- than it saves.
     while not NetworkIsSessionStarted() do
         Citizen.Wait(100)
     end
+
+    -- Take the loading screen down as soon as there is a session, BEFORE any
+    -- placement. Tying it to the end of a placement meant an interrupted
+    -- placement left the player staring at black with the HUD drawn on top.
+    BR.Spawn.reveal()
+
     Citizen.Wait(500)
     initialSpawn()
 end)
 
-RegisterCommand('brrespawn', function()
-    spawned = false
-    initialSpawn()
-    print('[br_core] forced respawn')
+-- Watchdog. If the screen is dark and nothing is deliberately placing the
+-- player, something failed silently -- there is no error for "faded out and
+-- never faded back in". Recovering automatically beats a reconnect.
+BR.Loop.register(BR.Loop.SLOW, 'spawn.antiblack', function()
+    if placing then return end
+    if IsScreenFadedOut() and not IsScreenFadingIn() then
+        print('[br_core] screen was left faded out -- fading back in (watchdog)')
+        BR.Spawn.reveal()
+    end
+end)
+
+RegisterCommand('brunstuck', function()
+    -- Manual escape hatch for anything the watchdog does not catch.
+    local ped = PlayerPedId()
+    placing = false
+    FreezeEntityPosition(ped, false)
+    SetEntityVisible(ped, true, false)
+    SetEntityCollision(ped, true, true)
+    ShutdownLoadingScreen()
+    ShutdownLoadingScreenNui()
+    DoScreenFadeIn(300)
+    ClearFocus()
+    print('[br_core] unstuck: screen restored, ped unfrozen')
 end, false)

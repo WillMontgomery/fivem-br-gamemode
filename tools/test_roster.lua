@@ -75,6 +75,7 @@ for _, f in ipairs({
     'br_core/server/main.lua',
     'br_core/server/broadcast.lua',
     'br_core/server/roster.lua',
+    'br_core/server/lobby.lua',
     'br_core/server/match.lua',
     'br_core/server/combat.lua',
 }) do
@@ -112,6 +113,16 @@ local function join(src, name)
     connected[src] = true
     playerNames[src] = name
     fire('playerJoining', src)
+end
+
+--- Join AND opt in to a match.
+---
+--- A match starts on the QUEUED count, not the connected count: being present
+--- and wanting to play are different things, and starting on connections would
+--- drag anyone idling in the lobby into a match they never asked for.
+local function queueUp(src, name, mode)
+    join(src, name)
+    fire(BR.Net.QUEUE_JOIN, src, { mode = mode or 'solo' })
 end
 
 local function eventsOf(name)
@@ -348,17 +359,26 @@ do
     reset()
     BR.Server.devMode = true
 
+    -- Connected but NOT queued: the match must not start.
     join(1, 'Alice')
-    fakeTime = fakeTime + 1000
-    BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WAITING,
-        'one player is not enough to start')
-
     join(2, 'Bob')
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WAITING,
+        'connected players alone do not start a match')
+
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WAITING,
+        'one queued player is not enough to start')
+
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
     ok(BR.Server.match.state == BR.MatchState.WARMUP,
-        'reaching the minimum starts warmup')
+        'reaching the minimum QUEUED count starts warmup')
+    ok(BR.Lobby.count() == 0, 'and the queue is cleared once the match begins')
     ok(BR.Roster.get(1).state == BR.PlayerState.WARMUP,
         'players move to warmup with the match')
     ok(BR.Server.match.endsAt > fakeTime, 'warmup has a deadline')
@@ -445,6 +465,91 @@ do
     ok(BR.Server.match.state == BR.MatchState.ENDED,
         'a disconnect can end the match like an elimination')
     ok(BR.Roster.get(2) == nil, 'and the leaver is gone from the roster')
+end
+
+-- ------------------------------------------------------------------ queue ---
+
+describe('lobby.queue')
+do
+    reset()
+    BR.Server.devMode = true
+    BR.Lobby.clear()
+
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    ok(BR.Lobby.count() == 0, 'joining does not queue you')
+
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    ok(BR.Lobby.count() == 1, 'queueing adds you')
+
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    ok(BR.Lobby.count() == 1, 'queueing twice is idempotent')
+
+    fire(BR.Net.QUEUE_LEAVE, 1)
+    ok(BR.Lobby.count() == 0, 'leaving removes you')
+
+    fire(BR.Net.QUEUE_LEAVE, 1)
+    ok(BR.Lobby.count() == 0, 'leaving when not queued is harmless')
+
+    -- A client can send anything. An unrecognised mode must not be stored and
+    -- later used to index a config table.
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'nonsense' })
+    ok(BR.Server.queue[2] ~= nil, 'an unknown mode still queues the player')
+    ok(BR.Server.queue[2].mode == BR.Mode.SOLO.key,
+        'and falls back to a real mode',
+        tostring(BR.Server.queue[2].mode))
+
+    fire(BR.Net.QUEUE_JOIN, 3, {})
+    ok(BR.Server.queue[3].mode == BR.Mode.SOLO.key, 'a missing mode falls back too')
+
+    -- Disconnecting must not leave a phantom holding a queue slot, or a match
+    -- could start for players who are no longer there.
+    fire('playerDropped', 2, 'quit')
+    ok(BR.Server.queue[2] == nil, 'dropping removes you from the queue')
+
+    BR.Lobby.clear()
+    ok(BR.Lobby.count() == 0, 'clear empties the queue')
+end
+
+describe('lobby.mode')
+do
+    reset()
+    BR.Server.devMode = true
+    BR.Lobby.clear()
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = 'squad' })
+    ok(BR.Lobby.dominantMode() == 'solo', 'the majority mode wins',
+        BR.Lobby.dominantMode())
+
+    BR.Lobby.clear()
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'squad' })
+    -- Ties favour squad: a solo player dropped into a squad match still plays,
+    -- whereas a squad dropped into solos loses the mode entirely.
+    ok(BR.Lobby.dominantMode() == 'squad', 'a tie falls to squad',
+        BR.Lobby.dominantMode())
+
+    BR.Lobby.clear()
+end
+
+describe('lobby.midMatch')
+do
+    reset()
+    BR.Server.devMode = true
+    BR.Lobby.clear()
+    join(1, 'A'); join(2, 'B')
+
+    BR.Match.transition(BR.MatchState.PLAYING)
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    ok(BR.Lobby.count() == 0, 'queueing during a live match is ignored')
+
+    BR.Match.transition(BR.MatchState.WAITING)
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    ok(BR.Lobby.count() == 1, 'and works again once the match is over')
+
+    BR.Lobby.clear()
 end
 
 -- ----------------------------------------------------------------- combat ---
