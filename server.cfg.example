@@ -114,8 +114,20 @@ ensure oxmysql
 # ---------------------------------------------------------------------------
 ensure br_lib
 ensure br_core
+ensure br_environment    # world state: IPLs + the Cayo Perico lobby island
 ensure br_ui
 ensure br_stats          # optional -- needs oxmysql; safe to comment out
+
+# ---------------------------------------------------------------------------
+# Third-party admin tools (vMenu etc.)
+#
+# If you run vMenu alongside this gamemode, DISABLE its overlapping features --
+# the gamemode owns them and the two will fight:
+#   - Player blips        (gamemode shows squadmates only)
+#   - Overhead names      (gamemode shows squadmates only)
+#   - Join/quit notifications (the gamemode hides GTA's feed entirely)
+#   - PvP / friendly fire settings (the gamemode forces PvP on)
+# ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # Development

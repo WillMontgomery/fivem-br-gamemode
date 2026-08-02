@@ -1345,6 +1345,110 @@ do
     ok(BR.Roster.get(5).placement == nil, 'with no placement recorded')
 end
 
+describe('party.squadpos')
+do
+    -- SECURITY-RELEVANT. br:squad:pos is the single deliberate exception to
+    -- "positions never leave the server", and this pins its boundary: members
+    -- of a squad receive their OWN squad's positions and never anyone
+    -- else's. A leak here is a wallhack, the same class of bug the
+    -- roster.privacy block guards against.
+    reset()
+    BR.Server.devMode = true
+    -- Player 5 never queues: a lobby bystander, the one kind of player who
+    -- must receive nothing. (A SOLO QUEUER in a squad round is autofilled
+    -- onto a squad by design, so they are not the negative case here.)
+    join(1, 'A'); join(2, 'B'); join(3, 'C'); join(4, 'D'); join(5, 'Idler')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    BR.Party.invite(3, 4); BR.Party.respond(4, true)
+
+    for i = 1, 4 do
+        fire(BR.Net.QUEUE_JOIN, i, { mode = BR.Mode.SQUAD.key })
+    end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'match reaches warmup')
+
+    local sq1 = BR.Roster.get(1).squadId
+    local sq3 = BR.Roster.get(3).squadId
+    ok(sq1 and sq3 and sq1 ~= sq3, 'two distinct squads formed')
+
+    -- Positions are sampled by roster.positions; then the beacon job runs.
+    sent = {}
+    fakeTime = fakeTime + 1100
+    BR.Sched.step(fakeTime)
+
+    local pushes = eventsOf(BR.Net.SQUAD_POS)
+    ok(#pushes > 0, 'squad positions are pushed during warmup')
+
+    local leak, wrongTarget, idlerGot = false, false, false
+    for _, p in ipairs(pushes) do
+        if p.target == 5 then idlerGot = true end
+        local targetSquad = BR.Roster.get(p.target)
+        targetSquad = targetSquad and targetSquad.squadId
+        for _, m in ipairs(p.args[1]) do
+            local e = BR.Roster.get(m.src)
+            if not e or e.squadId ~= targetSquad then leak = true end
+        end
+        if not targetSquad then wrongTarget = true end
+    end
+    ok(not idlerGot, 'a lobby bystander receives no positions at all')
+    ok(not leak, 'no payload ever contains a player from another squad')
+    ok(not wrongTarget, 'every recipient is in a squad')
+
+    -- A dead squadmate drops out of the push; a one-survivor squad gets none.
+    BR.Match.transition(BR.MatchState.PLAYING)
+    BR.Combat.eliminate(2, 'test', nil)
+    sent = {}
+    fakeTime = fakeTime + 1100
+    BR.Sched.step(fakeTime)
+    local after = eventsOf(BR.Net.SQUAD_POS)
+    local deadSeen, lonely = false, false
+    for _, p in ipairs(after) do
+        if p.target == 1 then lonely = true end
+        for _, m in ipairs(p.args[1]) do
+            if m.src == 2 then deadSeen = true end
+        end
+    end
+    ok(not deadSeen, 'the dead stop being broadcast')
+    ok(not lonely, 'a squad of one survivor gets no pushes (nothing to show)')
+
+    -- And a SOLO round shares nothing with anybody: no squads, no beacons.
+    reset()
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'solo match reaches warmup')
+    sent = {}
+    fakeTime = fakeTime + 1100
+    BR.Sched.step(fakeTime)
+    ok(#eventsOf(BR.Net.SQUAD_POS) == 0,
+        'solo rounds broadcast no positions to anyone')
+end
+
+describe('party.resultFailuresOnly')
+do
+    -- The "You joined the party." / "Joined the party." double: every success
+    -- already speaks through the notify channel or a visible state change, so
+    -- SQUAD_RESULT firing on success too put two voices on one event.
+    reset()
+    join(1, 'A'); join(2, 'B')
+
+    sent = {}
+    BR.Party.invite(1, 2)
+    fire(BR.Net.SQUAD_RESPOND, 2, { accept = true })
+    ok(#eventsOf(BR.Net.SQUAD_RESULT) == 0,
+        'a successful accept sends no SQUAD_RESULT (notify already spoke)')
+    ok(#noticesTo(2) > 0, 'and the joiner still hears about it')
+
+    sent = {}
+    fire(BR.Net.SQUAD_INVITE, 1, { target = 1 })   -- inviting yourself fails
+    local results = eventsOf(BR.Net.SQUAD_RESULT)
+    ok(#results == 1 and results[1].args[1].ok == false,
+        'a failure still sends its reason')
+end
+
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then
     realPrint(('\27[31m%d failed\27[0m'):format(fail))

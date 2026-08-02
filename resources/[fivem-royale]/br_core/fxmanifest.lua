@@ -38,6 +38,7 @@ client_scripts {
     'client/spawn.lua',
     'client/gamerules.lua',
     'client/state.lua',
+    'client/squadmates.lua',
     'client/keybinds.lua',
     'client/chat.lua',
     'client/debug.lua',

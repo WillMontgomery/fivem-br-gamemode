@@ -497,6 +497,56 @@ function BR.Party.formSquads(mode)
     print(('[br_core] formed %d squad(s) for %s'):format(#squads, mode))
 end
 
+-- ---------------------------------------------------------- squad beacons ---
+
+-- Squadmate positions, to squad members ONLY.
+--
+-- This is the single deliberate exception to "positions never leave the
+-- server": your own squad is the one set of players you are supposed to know
+-- about, and squad blips are unbuildable without it. The privacy line holds
+-- everywhere else -- nothing here can ever reach a player outside the squad,
+-- and the roster's public view still carries no positions at all. There is a
+-- wire test pinning both properties.
+BR.Sched.every(1000, 'party.squadpos', function()
+    local ms = BR.Server.match.state
+    if ms ~= BR.MatchState.WARMUP
+       and ms ~= BR.MatchState.BUS
+       and ms ~= BR.MatchState.PLAYING then
+        return
+    end
+
+    -- Group living squad members. Solos have no squadId and are never sent.
+    local squads = {}
+    BR.Roster.each(nil, function(src, e)
+        if e.squadId and e.pos
+           and (BR.Server.isInMatch(e.state) or e.state == BR.PlayerState.DBNO) then
+            local sq = squads[e.squadId]
+            if not sq then
+                sq = {}
+                squads[e.squadId] = sq
+            end
+            sq[#sq + 1] = {
+                src   = src,
+                name  = e.name,
+                x     = e.pos.x,
+                y     = e.pos.y,
+                state = e.state,
+            }
+        end
+    end)
+
+    for _, members in pairs(squads) do
+        if #members > 1 then
+            -- Stable member index -> stable blip colour on every client.
+            table.sort(members, function(a, b) return a.src < b.src end)
+            for i, m in ipairs(members) do m.i = i end
+            for _, m in ipairs(members) do
+                TriggerClientEvent(BR.Net.SQUAD_POS, m.src, members)
+            end
+        end
+    end
+end)
+
 -- --------------------------------------------------------------- plumbing ---
 
 --- Send an invite/kick outcome back to whoever asked, so a failure is visible
@@ -506,34 +556,33 @@ end
 --- @param ok boolean
 --- @param reason string|nil
 local function result(src, ok, reason)
+    -- FAILURES ONLY. Every success in this file already announces itself
+    -- through the notify channel or a visible state change (the pending chip,
+    -- the member list) -- sending a result too produced pairs like
+    -- "You joined the party." / "Joined the party." stacked on screen.
+    -- A failure has no other voice, so it still speaks here.
+    if ok then return end
     TriggerClientEvent(BR.Net.SQUAD_RESULT, src, { ok = ok, reason = reason })
-    if not ok and reason then
-        BR.Server.systemMessage(reason, { src })
-    end
 end
 
 RegisterNetEvent(BR.Net.SQUAD_INVITE)
 AddEventHandler(BR.Net.SQUAD_INVITE, function(data)
     local src = source
     local ok, reason = BR.Party.invite(src, tonumber(data and data.target))
-    result(src, ok, reason or 'Invite sent.')
+    result(src, ok, reason)
 end)
 
 RegisterNetEvent(BR.Net.SQUAD_RESPOND)
 AddEventHandler(BR.Net.SQUAD_RESPOND, function(data)
     local src = source
-    local accept = data and data.accept
-    local ok, reason = BR.Party.respond(src, accept)
-    -- Never fall through to a bare "Done." -- the player needs to know WHICH
-    -- thing was done, especially when declining.
-    result(src, ok, reason or (accept and 'Joined the party.' or 'Invite declined.'))
+    local ok, reason = BR.Party.respond(src, data and data.accept)
+    result(src, ok, reason)
 end)
 
 RegisterNetEvent(BR.Net.SQUAD_LEAVE)
 AddEventHandler(BR.Net.SQUAD_LEAVE, function()
-    local src = source
-    BR.Party.leave(src)
-    result(src, true, 'Left the party.')
+    -- Success speaks via the "You left the party." notice inside leave().
+    BR.Party.leave(source)
 end)
 
 RegisterNetEvent(BR.Net.SQUAD_KICK)

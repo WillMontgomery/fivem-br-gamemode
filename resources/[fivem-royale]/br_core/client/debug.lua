@@ -209,6 +209,18 @@ RegisterCommand('brnativecheck', function()
     end
 end, false)
 
+--- Set our own armour, so the shield HUD can be validated before any shield
+--- consumable exists (M5). Dev tool only: the server's ledger will reconcile
+--- this away once server-authoritative health lands in M6 -- which is exactly
+--- the behaviour that milestone will want to see demonstrated.
+RegisterCommand('brshield', function(_, args)
+    local amount = math.floor(tonumber(args[1] or 50) or 50)
+    amount = math.max(0, math.min(BR.Config.Match.maxArmour, amount))
+    SetPedArmour(PlayerPedId(), amount)
+    print(('[br_core] armour set to %d (dev only -- M6 reconciliation will own this)')
+        :format(amount))
+end, false)
+
 RegisterCommand('brfx', function(_, args)
     -- postFX names are the likeliest thing to differ between builds, so they get
     -- auditioned in-game rather than guessed at.

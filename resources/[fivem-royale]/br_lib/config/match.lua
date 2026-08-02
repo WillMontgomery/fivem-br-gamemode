@@ -36,12 +36,18 @@ BR.Config.Match = {
     minSquads       = 2,
     minSquadsDev    = 1,
 
-    -- Warmup pad. Deliberately the LSIA apron rather than Cayo Perico: Cayo needs
-    -- island-enable and IPL juggling, which is exactly the kind of streaming edge
-    -- case that breaks first. LSIA is always loaded, and the routing bucket's
-    -- disabled population keeps it empty.
-    warmupPos       = { x = -1336.0, y = -3044.0, z = 13.9, heading = 60.0 },
-    warmupRadius    = 120.0,
+    -- Warmup pad: the Cayo Perico airstrip apron. The island is enabled by
+    -- br_environment whenever a match is not PLAYING -- if players spawn into
+    -- ocean here, that resource is not running (it must be ensured in
+    -- server.cfg) or its island switch failed; check the F8 console for
+    -- '[br_environment]'.
+    --
+    -- M3: the Battle Bus departs from this airstrip; its runway runs
+    -- (4517.7, -4558.3) -> (4372.2, -4413.2), heading ~315.
+    warmupPos       = { x = 4449.0, y = -4482.0, z = 4.3, heading = 315.0 },
+    -- Tighter than the old LSIA pad: the airstrip apron is generous but the
+    -- island tip is not, and a wide scatter puts players in the surf.
+    warmupRadius    = 60.0,
 
     -- Routing buckets. Lobby is fixed; matches allocate upward from matchBase so
     -- the next lobby can form while the current match finishes.

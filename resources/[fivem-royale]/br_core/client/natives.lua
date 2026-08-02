@@ -231,6 +231,21 @@ function BR.Native.applyGameRules()
     SetCreateRandomCopsNotOnScenarios(false)
     SetCreateRandomCopsOnScenarios(false)
 
+    -- PvP. FiveM ships with players unable to damage each other -- every
+    -- freeroam framework flips these two, and without them shots at another
+    -- player simply do nothing, which reads as "peace mode" rather than a
+    -- missing pair of natives. Per-frame like the rest: the ped handle
+    -- changes on respawn, and friendly-fire state has been observed to reset.
+    NetworkSetFriendlyFireOption(true)
+    SetCanAttackFriendly(PlayerPedId(), true, false)
+
+    -- GTA's own feed ("X joined", "Y died", weapon unlocks, whatever any other
+    -- resource posts). The gamemode owns its presentation -- eliminations go
+    -- through the kill feed, everything personal through the notice stack --
+    -- so the engine ticker only ever duplicates or contradicts them.
+    -- NOTE: this also silences vMenu's notifications, deliberately.
+    ThefeedHideThisFrame()
+
     SetVehicleDensityMultiplierThisFrame(0.0)
     SetPedDensityMultiplierThisFrame(0.0)
     SetScenarioPedDensityMultiplierThisFrame(0.0, 0.0)

@@ -44,6 +44,7 @@ Four resources under `resources/[fivem-royale]/`:
 |---|---|---|
 | `br_lib` | No | Shared config, enums, protocol constants, geometry, seeded RNG, storm solver. Consumed via `shared_scripts { '@br_lib/...' }`, which loads files into each consuming resource's own Lua state — zero runtime cost, no exports. |
 | `br_core` | Yes | All gameplay, client and server. One Lua state, one loop registry. |
+| `br_environment` | Yes | World state: IPL loading and the Cayo Perico lobby island (home of the pre-match lobby; released back to the streamer once a match is live). Will grow into the streamed-asset container. |
 | `br_ui` | Yes | The NUI page and the only file that touches `SetNuiFocus`. |
 | `br_stats` | Yes | oxmysql persistence, XP, leaderboards. Optional — degrades to "no stats" rather than taking the match down. |
 
