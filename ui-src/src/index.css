@@ -81,13 +81,39 @@
    structural half of the focus discipline -- even if Lua mistakenly granted
    focus, the HUD still cannot swallow the player's clicks.
 --------------------------------------------------------------------------- */
+/* TRANSPARENCY IS A HARD REQUIREMENT OF THE MEDIUM, NOT A STYLE CHOICE.
+ *
+ * This page is drawn over a running game. Any opaque background anywhere in the
+ * html/body/#root chain paints the game out completely -- the result is a black
+ * screen with the HUD floating on it, and every in-game diagnostic reports
+ * perfect health because nothing is actually wrong with the game.
+ *
+ * HeroUI's Tailwind plugin emits, in its base layer:
+ *
+ *     :root, [data-theme] { background-color: hsl(var(--heroui-background)) }
+ *
+ * which is entirely reasonable for a web app and fatal here. `:root` carries
+ * class-level specificity (0,1,0) while a bare `html` selector is (0,0,1), so
+ * it wins no matter what order the rules appear in -- a plain
+ * `html { background: transparent }` silently loses.
+ *
+ * Hence :root in the selector list AND !important: we are overriding a
+ * third-party base layer that will keep reasserting itself on every upgrade.
+ */
+:root,
+html,
+body,
+#root {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
 html, body, #root {
   width: 100%;
   height: 100%;
   margin: 0;
   padding: 0;
   overflow: hidden;
-  background: transparent;
   user-select: none;
   pointer-events: none;
   font-family: 'Rajdhani', 'Segoe UI', system-ui, sans-serif;

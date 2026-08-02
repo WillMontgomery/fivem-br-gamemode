@@ -26,11 +26,16 @@ export default function Lobby({ visible }: { visible: boolean }) {
   const [queued, setQueued] = useState(false)
   const [mode, setMode] = useState<'solo' | 'squad'>('squad')
 
-  // The server is the authority on whether we are queued. Believing only local
-  // state meant the button showed "Searching..." forever while the server had
-  // no idea we existed -- which is precisely what happened when the queue
-  // callback was wired to an event nobody handled.
-  const serverQueued = (lobby?.queued ?? 0) > 0
+  // THE SERVER IS THE AUTHORITY ON WHETHER WE ARE QUEUED.
+  //
+  // `queued` below is only optimism, to bridge the moment between pressing Play
+  // and the first status arriving. Once the server has spoken, it wins.
+  //
+  // Believing local state indefinitely is what left players showing "Searching
+  // for players..." against a server that had no record of them -- first
+  // because the button was wired to nothing, and later because a match consumed
+  // the queue and fell back to WAITING without the client noticing.
+  const searching = lobby ? lobby.you : queued
   const short = lobby ? Math.max(0, lobby.needed - lobby.queued) : 0
 
   const warmup = match.state === 'warmup'
@@ -83,7 +88,7 @@ export default function Lobby({ visible }: { visible: boolean }) {
                   key={m}
                   color={mode === m ? 'primary' : 'default'}
                   variant={mode === m ? 'solid' : 'bordered'}
-                  isDisabled={queued || warmup}
+                  isDisabled={searching || warmup}
                   onPress={() => setMode(m)}
                   className="flex-1 capitalize"
                 >
@@ -114,7 +119,7 @@ export default function Lobby({ visible }: { visible: boolean }) {
                   Warmup &mdash; everyone drops shortly
                 </span>
               </div>
-            ) : queued ? (
+            ) : searching ? (
               <div className="flex flex-col gap-2">
                 <div className="flex flex-col items-center gap-1 py-1">
                   <div className="flex items-center gap-3">
@@ -134,14 +139,6 @@ export default function Lobby({ visible }: { visible: boolean }) {
                       {lobby.queued} / {lobby.needed} queued
                       {lobby.connected > lobby.queued &&
                         ` · ${lobby.connected} connected`}
-                    </span>
-                  )}
-
-                  {/* If the server does not think we are queued, say so rather
-                      than spinning forever. */}
-                  {lobby && !serverQueued && (
-                    <span className="text-[0.6875rem] text-danger">
-                      Server has not registered the queue
                     </span>
                   )}
                 </div>

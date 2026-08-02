@@ -175,7 +175,21 @@ end)
 
 RegisterNetEvent(BR.Net.LOBBY_STATUS)
 AddEventHandler(BR.Net.LOBBY_STATUS, function(d)
-    TriggerEvent('br:ui:sendLocal', BR.Nui.LOBBY, d)
+    -- Resolve "am I queued?" here rather than shipping the id list to the UI.
+    -- The client already knows its own server id; the interface should be told
+    -- a boolean, not asked to work it out.
+    local you = false
+    for _, src in ipairs(d.ids or {}) do
+        if src == S.me.src then you = true break end
+    end
+
+    TriggerEvent('br:ui:sendLocal', BR.Nui.LOBBY, {
+        queued    = d.queued,
+        needed    = d.needed,
+        connected = d.connected,
+        mode      = d.mode,
+        you       = you,
+    })
 end)
 
 -- --------------------------------------------------------------------------

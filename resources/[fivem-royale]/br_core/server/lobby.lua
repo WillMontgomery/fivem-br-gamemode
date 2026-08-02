@@ -111,11 +111,22 @@ end)
 BR.Sched.every(500, 'lobby.status', function()
     if BR.Server.match.state ~= BR.MatchState.WAITING then return end
 
+    -- The ids ride along so each client can tell whether IT is queued.
+    --
+    -- Sending only a count meant a client had no way to know: after a match
+    -- consumed the queue and fell back to WAITING, players were left showing
+    -- "Searching..." forever against a server that had never heard of them.
+    -- One broadcast with ids is cheaper than 48 targeted messages and is
+    -- self-correcting -- a client that misses one is fixed by the next.
+    local ids = {}
+    for src in pairs(queue) do ids[#ids + 1] = src end
+
     TriggerClientEvent(BR.Net.LOBBY_STATUS, -1, {
         queued    = BR.Lobby.count(),
         needed    = BR.Lobby.needed(),
         connected = BR.Server.count(),
         mode      = BR.Lobby.dominantMode(),
+        ids       = ids,
     })
 end)
 

@@ -167,6 +167,11 @@ export interface LobbyPayload {
   needed: number
   connected: number
   mode: string
+  /** Whether THIS client is in the queue. Resolved by Lua from the id list, so
+   *  the UI is told a boolean rather than asked to work it out. This is the
+   *  authority on queue state -- local optimism only bridges the gap until the
+   *  first payload arrives. */
+  you: boolean
 }
 
 export interface ToastPayload {
