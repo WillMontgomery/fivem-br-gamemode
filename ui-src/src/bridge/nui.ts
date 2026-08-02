@@ -161,6 +161,9 @@ export function reportEnvironment(): void {
   const chromeVersion = chromeMatch?.[1] ? parseInt(chromeMatch[1], 10) : 0
 
   const env = {
+    // Which bundle is actually running. Without this, "the fix did not work"
+    // and "the fix never reached the client" look identical from the console.
+    build: typeof __BUILD_STAMP__ !== 'undefined' ? __BUILD_STAMP__ : 'unknown',
     userAgent: navigator.userAgent,
     chromeVersion,
     css: {

@@ -222,6 +222,9 @@ end
 callback(BR.NuiCb.ENV, function(data)
     local css = data.css or {}
     print('[br_ui] ---- CEF environment ----')
+    -- Printed first and deliberately prominent: this is how you tell "the fix
+    -- did not work" apart from "the fix never reached the client".
+    print(('[br_ui]   BUILD      %s'):format(tostring(data.build)))
     print(('[br_ui]   chrome     %s'):format(tostring(data.chromeVersion)))
     print(('[br_ui]   viewport   %sx%s @ %sx'):format(
         tostring(data.viewport and data.viewport.w),
@@ -242,9 +245,9 @@ callback(BR.NuiCb.ENV, function(data)
     -- Tailwind v4 and HeroUI v3 emit oklch/oklab/color-mix throughout their
     -- colour system. Without them, components render with no colour at all.
     if not css.oklch or not css.colorMix then
-        print('[br_ui]   !! this build cannot parse modern colour functions.')
-        print('[br_ui]      Tailwind v4 / HeroUI v3 emit oklch and color-mix everywhere,')
-        print('[br_ui]      so the UI will render unstyled until the theme avoids them.')
+        print('[br_ui]   note: no modern colour functions on this build -- expected.')
+        print('[br_ui]   The stack is pinned to HeroUI 2 + Tailwind 3 for exactly')
+        print('[br_ui]   this reason, and check-css enforces it at build time.')
     end
     print(('[br_ui] ---- %d unsupported ----'):format(#missing))
     return { ok = true }

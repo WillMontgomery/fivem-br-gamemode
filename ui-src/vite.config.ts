@@ -1,3 +1,4 @@
+import { execSync } from 'node:child_process'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 // Tailwind 3 runs through PostCSS (see postcss.config.js), not a Vite plugin.
@@ -17,8 +18,27 @@ import react from '@vitejs/plugin-react'
 // and writes its output into the resource.
 //
 // Build config below is shaped by NUI's constraints, not by web defaults.
+// Build stamp.
+//
+// Four fixes were shipped for one bug without any way to confirm the client was
+// running any of them. "Did my change actually reach the game?" is not a
+// question that should ever need guessing at, and re-testing against a stale
+// bundle wastes a whole round trip.
+const BUILD_STAMP = (() => {
+  const t = new Date().toISOString().replace('T', ' ').slice(0, 19)
+  let rev = 'nogit'
+  try {
+    rev = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim()
+  } catch { /* building outside a repo is fine */ }
+  return `${rev} ${t}`
+})()
+
 export default defineConfig({
   plugins: [react()],
+
+  define: {
+    __BUILD_STAMP__: JSON.stringify(BUILD_STAMP),
+  },
 
   // NUI serves from the nui:// scheme, so every asset reference must be
   // relative. An absolute '/assets/...' resolves to nothing and the page is blank.
