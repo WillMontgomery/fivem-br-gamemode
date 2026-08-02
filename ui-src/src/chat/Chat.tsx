@@ -34,20 +34,28 @@ const CHANNEL_STYLE: Record<ChatChannel, { label: string; colour: string }> = {
 
 const MAX_LENGTH = 200
 
+/** How long the log stays up after the last message before fading away. */
+const FADE_AFTER_MS = 12_000
+
+/** Resting opacity of the log while closed. Readable over bright ground -- the
+ *  chat sits over the world, and grass and sand are the worst case, not the
+ *  dark menus it is easy to design against. */
+const RESTING_OPACITY = 0.94
+
 function Line({ msg }: { msg: ChatMessage }) {
   const style = CHANNEL_STYLE[msg.channel]
   return (
-    <div className="text-[0.75rem] leading-snug py-[1px] break-words">
+    <div className="text-[0.875rem] leading-snug py-[1px] break-words">
       <span
-        className="text-[0.5625rem] font-bold uppercase tracking-wider mr-1.5 align-middle"
+        className="text-[0.625rem] font-bold uppercase tracking-wider mr-1.5 align-middle"
         style={{ color: style.colour }}
       >
         {style.label}
       </span>
       {msg.channel !== 'system' && (
-        <span className="font-semibold text-white/90 mr-1">{msg.name}:</span>
+        <span className="font-semibold text-white mr-1">{msg.name}:</span>
       )}
-      <span className="text-white/75">{msg.text}</span>
+      <span className="text-white/90">{msg.text}</span>
     </div>
   )
 }
@@ -98,7 +106,22 @@ export default function Chat() {
     if (el) el.scrollTop = el.scrollHeight
   }, [messages])
 
+  // Fade the log out after a quiet spell, the way game chat is expected to
+  // behave. Without this the last message sits on screen for the rest of the
+  // match, permanently occupying a corner of the player's view.
+  //
+  // One timer, reset whenever a message arrives or chat opens -- not a ticking
+  // interval. Nothing here should re-render on a clock.
+  const [faded, setFaded] = useState(false)
+  useEffect(() => {
+    setFaded(false)
+    if (open) return                    // never fade while typing
+    const t = window.setTimeout(() => setFaded(true), FADE_AFTER_MS)
+    return () => window.clearTimeout(t)
+  }, [messages, open])
+
   const visible = messages.length > 0 || open
+  const logOpacity = !visible ? 0 : open ? 1 : faded ? 0 : RESTING_OPACITY
 
   return (
     // Chat lives in its own `.hud-safe` box rather than positioning against the
@@ -119,10 +142,16 @@ export default function Chat() {
     >
       <div
         ref={logRef}
-        className="thin-scroll overflow-y-auto max-h-40 px-3 pb-1 transition-opacity duration-200"
+        className="thin-scroll overflow-y-auto max-h-40 px-3 pb-1"
         style={{
-          opacity: visible ? (open ? 1 : 0.72) : 0,
+          opacity: logOpacity,
+          // Slow when fading away so it is not distracting, quick when coming
+          // back so a new message never feels delayed.
+          transition: `opacity ${faded && !open ? 1200 : 150}ms ease`,
           maskImage: open ? undefined : 'linear-gradient(to bottom, transparent, black 28%)',
+          // Text sits over the world, including bright grass and sand. A soft
+          // shadow keeps it readable without needing an opaque panel behind it.
+          textShadow: '0 1px 3px rgba(0, 0, 0, 0.9), 0 0 8px rgba(0, 0, 0, 0.6)',
         }}
       >
         {messages.map((m, i) => (
