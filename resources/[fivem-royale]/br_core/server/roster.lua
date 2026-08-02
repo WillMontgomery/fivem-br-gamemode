@@ -220,6 +220,22 @@ local function samplePositions()
             -- makes the reconciliation in the combat pipeline possible later.
             entry.engineHp = GetEntityHealth(ped)
             entry.engineArmour = GetPedArmour(ped)
+
+            -- ...and converted into the DISPLAY value the rest of the system
+            -- uses. Sampling the engine value without doing this left entry.hp
+            -- pinned at its initial 100 forever: brwhy reported full health for
+            -- a player lying dead at the bottom of a cliff, and every squad
+            -- panel would have shown the same.
+            --
+            -- Rounded to an integer so a stationary player does not generate a
+            -- delta every half second from float noise -- Roster.update only
+            -- broadcasts fields that actually changed.
+            local hp = math.floor(BR.ToDisplayHp(entry.engineHp) + 0.5)
+            local armour = math.floor((entry.engineArmour or 0) + 0.5)
+
+            if hp ~= entry.hp or armour ~= entry.armour then
+                BR.Roster.update(src, { hp = hp, armour = armour })
+            end
         end
     end
 end

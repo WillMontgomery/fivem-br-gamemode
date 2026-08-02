@@ -204,6 +204,63 @@ do
     ok(BR.Roster.update(999, { kills = 1 }) == nil, 'updating an unknown player is safe')
 end
 
+describe('roster.healthSync')
+do
+    -- REGRESSION: the sampler read engine health but never converted it into
+    -- the display value the roster, brwhy and every squad panel actually use.
+    -- entry.hp stayed pinned at its initial 100, so a player lying dead at the
+    -- bottom of a cliff reported full health.
+    reset()
+    join(1, 'A')
+    local e = BR.Roster.get(1)
+    ok(e.hp == 100.0, 'players start at full display health')
+
+    pedHealth[1001] = 150            -- engine units: halfway between floor and max
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+
+    ok(BR.Roster.get(1).hp == 50,
+        'sampled engine health becomes display health',
+        ('got %s'):format(tostring(BR.Roster.get(1).hp)))
+    ok(BR.Roster.get(1).engineHp == 150, 'and the raw engine value is kept too')
+
+    pedHealth[1001] = BR.Config.Match.healthFloor
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    ok(BR.Roster.get(1).hp == 0, 'a dead player reports zero display health',
+        ('got %s'):format(tostring(BR.Roster.get(1).hp)))
+
+    -- Health changes must reach clients, or squad panels show stale bars.
+    sent = {}
+    pedHealth[1001] = 200
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    BR.Broadcast.flushNow()
+    local sawHp = false
+    for _, s in ipairs(eventsOf(BR.Net.ROSTER_DELTA)) do
+        for _, d in ipairs(s.args[1].deltas or {}) do
+            if d.e and d.e.hp ~= nil then sawHp = true end
+        end
+    end
+    ok(sawHp, 'a health change is broadcast to clients')
+
+    -- ...but an unchanged value must not be, or 48 players at 2Hz would flood
+    -- the wire with deltas that say nothing.
+    sent = {}
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    BR.Broadcast.flushNow()
+    local sawIdle = false
+    for _, s in ipairs(eventsOf(BR.Net.ROSTER_DELTA)) do
+        for _, d in ipairs(s.args[1].deltas or {}) do
+            if d.e and d.e.hp ~= nil then sawIdle = true end
+        end
+    end
+    ok(not sawIdle, 'unchanged health generates no traffic')
+
+    pedHealth[1001] = nil
+end
+
 describe('roster.reconcile')
 do
     -- A resource restart mid-session leaves an empty roster and a full server.
