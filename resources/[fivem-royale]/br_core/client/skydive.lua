@@ -25,36 +25,55 @@ local function hexToRgb(hex)
 end
 
 AddEventHandler('br:drop:begin', function(d)
-    local ped = PlayerPedId()
-
-    SetEntityVisible(ped, true, false)
-    FreezeEntityPosition(ped, false)
-    ClearPedTasksImmediately(ped)
-
-    -- Carry the bus's momentum out of the door; a dead-stop exit reads as
-    -- teleportation even when the coordinates are right.
-    local rad = math.rad(d.heading or 0.0)
-    SetEntityVelocity(ped, -math.sin(rad) * 25.0, math.cos(rad) * 25.0, -2.0)
-
-    GiveWeaponToPed(ped, CHUTE, 1, false, false)
-    SetPlayerParachuteModelOverride(PlayerId(),
-        GetHashKey(BR.Config.Drop.parachuteModel))
-
-    -- Squad identity in the air, exactly as cheap as it looks.
-    if BR.Config.Drop.smokeTrail then
-        local me = BR.State.roster[BR.State.me.src]
-        if me and me.colour then
-            SetPlayerCanLeaveParachuteSmokeTrail(PlayerId(), true)
-            SetPlayerParachuteSmokeTrailColor(PlayerId(), hexToRgb(me.colour))
-        end
-    end
-
-    TaskParachute(ped, true, false)   -- second param verified unused
+    -- One-shot thread: the give-verify-task sequence needs real frames
+    -- between steps, and the first flight ended with a player falling
+    -- chuteless -- never again on an assumption. dropping is set FIRST so
+    -- the SPACE listener in bus.lua stands down immediately.
     dropping = true
 
-    TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
-        text = 'SPACE deploys the glider — or ride it low.', tone = 'info', ms = 5000,
-    })
+    Citizen.CreateThread(function()
+        local ped = PlayerPedId()
+
+        SetEntityVisible(ped, true, false)
+        FreezeEntityPosition(ped, false)
+        ClearPedTasksImmediately(ped)
+
+        -- Carry the bus's momentum out of the door; a dead-stop exit reads
+        -- as teleportation even when the coordinates are right.
+        local rad = math.rad(d.heading or 0.0)
+        SetEntityVelocity(ped, -math.sin(rad) * 25.0, math.cos(rad) * 25.0, -2.0)
+
+        -- THE CHUTE, VERIFIED. GiveWeaponToPed is normally instant, but the
+        -- one scenario where it quietly fails is a player mid-teleport --
+        -- which is exactly when this runs. Confirm it stuck, retry across
+        -- real frames, and say so out loud if the game refuses.
+        for attempt = 1, 10 do
+            GiveWeaponToPed(ped, CHUTE, 1, false, false)
+            if HasPedGotWeapon(ped, CHUTE, false) then break end
+            if attempt == 10 then
+                print('[br_core] drop: GADGET_PARACHUTE refused 10 times -- deploy will not work')
+            end
+            Citizen.Wait(0)
+        end
+
+        SetPlayerParachuteModelOverride(PlayerId(),
+            GetHashKey(BR.Config.Drop.parachuteModel))
+
+        -- Squad identity in the air, exactly as cheap as it looks.
+        if BR.Config.Drop.smokeTrail then
+            local me = BR.State.roster[BR.State.me.src]
+            if me and me.colour then
+                SetPlayerCanLeaveParachuteSmokeTrail(PlayerId(), true)
+                SetPlayerParachuteSmokeTrailColor(PlayerId(), hexToRgb(me.colour))
+            end
+        end
+
+        TaskParachute(ped, true, false)   -- second param verified unused
+
+        TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
+            text = 'SPACE opens the glider — or ride it low.', tone = 'info', ms = 5000,
+        })
+    end)
 end)
 
 -- Manual deploy.

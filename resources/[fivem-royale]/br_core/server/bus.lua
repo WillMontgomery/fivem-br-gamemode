@@ -114,11 +114,21 @@ end
 RegisterNetEvent(BR.Net.BUS_JUMP)
 AddEventHandler(BR.Net.BUS_JUMP, function()
     local src = source
-    if BR.Server.match.state ~= BR.MatchState.BUS or not route then return end
 
-    -- The doors open at the chord, not over the ocean. A client asking early
-    -- is most likely a keybind mash; it costs nothing to ignore.
-    if GetGameTimer() < route.tMid then return end
+    -- Refusals are AUDIBLE, in both consoles. The first flight had a jump
+    -- key that "did nothing": the request was being refused silently, and
+    -- from in the game that is indistinguishable from the key being dead.
+    if BR.Server.match.state ~= BR.MatchState.BUS or not route then
+        print(('[br_core] bus: jump from %d refused -- state is %s')
+            :format(src, BR.Server.match.state))
+        return
+    end
+    if GetGameTimer() < route.tMid then
+        BR.Server.notify(src, 'Doors are still closed.', 'warn')
+        print(('[br_core] bus: jump from %d refused -- doors open in %.1fs')
+            :format(src, (route.tMid - GetGameTimer()) / 1000))
+        return
+    end
 
     eject(src, false)
 end)

@@ -79,9 +79,10 @@ end
 -- Descriptions are prefixed so they group together and read sensibly in the
 -- pause menu, where they sit alongside every other resource's bindings.
 
--- Drop
-tap ('jump',        'brjump',      'Royale: Jump from the Battle Bus',   'F')
-tap ('deploy',      'brdeploy',    'Royale: Deploy glider',              'SPACE')
+-- Drop. ONE key for the whole descent: aboard the bus it jumps, in freefall
+-- it deploys the glider. Two bindings for consecutive actions on the same
+-- second of gameplay was one binding too many.
+tap ('deploy',      'brdeploy',    'Royale: Jump / deploy glider',       'SPACE')
 
 -- Inventory and interaction
 tap ('inventory',   'brinventory', 'Royale: Inventory',                  'TAB')
@@ -107,7 +108,7 @@ tap ('specPrev',    'brspecprev',  'Royale: Spectate previous player',   'LEFT')
 
 --- Names of every registered action, for the debug overlay.
 BR.Keys.actions = {
-    'jump', 'deploy', 'inventory', 'interact', 'drop',
+    'deploy', 'inventory', 'interact', 'drop',
     'slot1', 'slot2', 'slot3', 'slot4', 'slot5',
     'chatGlobal', 'chatSquad', 'ping', 'map', 'specNext', 'specPrev',
 }

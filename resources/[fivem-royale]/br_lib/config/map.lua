@@ -81,20 +81,23 @@ BR.Config.Bus = {
     model        = 'titan',
 
     altitude     = 340.0,
-    chordRadius  = 4500.0,  -- entry/exit points sit on a circle this size around the anchor
+    chordRadius  = 4000.0,  -- entry/exit points sit on a circle this size around the anchor
     chordOffset  = 0.5,     -- 0..1, how far off-centre the flight path may sit
 
-    -- Two speeds, two legs. The bus departs the Cayo airstrip ~7km from Los
-    -- Santos; at drop speed that leg alone is two minutes of open ocean. So
-    -- it CRUISES the ocean and slows over the chord -- the jump window only
-    -- opens at the chord anyway, so the fast leg costs the player nothing.
-    cruiseSpeed  = 150.0,   -- m/s, airstrip -> chord entry
-    speed        = 55.0,    -- m/s along the drop chord
-    boardSeconds = 8,       -- aboard before the wheels leave the airstrip
+    -- THE WHOLE FLIGHT FITS IN ~75 SECONDS, worst anchor included. The map is
+    -- huge and the bus is a countdown, not a cruise: ocean leg at cruise
+    -- speed (~11.7km to Paleto in ~29s), then the chord fast enough that the
+    -- longest chord (8km) takes ~43s. Nobody watches clouds for four minutes.
+    cruiseSpeed  = 400.0,   -- m/s, airstrip -> chord entry
+    speed        = 185.0,   -- m/s along the drop chord
+    boardSeconds = 5,       -- aboard before the wheels leave the airstrip
     jumpGrace    = 5,       -- seconds after the route ends before BUS -> PLAYING
 
-    -- Camera offset from the plane while riding.
-    camOffset    = { x = 0.0, y = -14.0, z = 3.0 },
+    -- Camera offset from the plane while riding. The Titan is ~20m long and
+    -- the camera must CLEAR the hull -- the first offset (-14, +3) sat inside
+    -- the tail, which rendered as a black wedge of fuselage and, over
+    -- featureless ocean, read as the game having frozen.
+    camOffset    = { x = 0.0, y = -42.0, z = 13.0 },
 }
 
 BR.Config.Drop = {
