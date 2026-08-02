@@ -18,11 +18,20 @@ local jobs = {}
 local started = false
 local MAX_CONSECUTIVE_ERRORS = 5
 
-local now_s
-do
-    local okClock, v = pcall(os.clock)
-    now_s = (okClock and type(v) == 'number') and os.clock
-        or function() return GetGameTimer() / 1000.0 end
+-- GetGameTimer only, matching the client. The `os` library IS available in the
+-- server runtime, unlike the client -- but using one clock on both sides means
+-- /brperf reads the same way wherever you run it, and removes a difference
+-- nobody would remember later.
+--
+-- Resolution is 1ms, so a single sub-millisecond job measures as 0. Totals
+-- accumulated over many calls are what carry the signal; see the longer note in
+-- client/main.lua.
+-- Named clockMs, not nowMs, on purpose: BR.Sched.step takes a `nowMs` parameter,
+-- and a local function of the same name would be shadowed inside it -- turning
+-- every `nowMs()` call into "attempt to call a number value" at runtime. Syntax
+-- checks do not catch that; the scheduler tests do.
+local function clockMs()
+    return GetGameTimer()
 end
 
 --- Register a repeating job.
@@ -51,8 +60,8 @@ function BR.Sched.every(intervalMs, name, fn)
         suspended   = false,
         dead        = false,
         calls       = 0,
-        totalS      = 0.0,
-        peakS       = 0.0,
+        totalMs     = 0.0,
+        peakMs      = 0.0,
         errors      = 0,
         consecutive = 0,
     }
@@ -89,9 +98,9 @@ function BR.Sched.stats()
             name       = j.name,
             intervalMs = j.interval,
             calls      = j.calls,
-            avgMs      = j.calls > 0 and (j.totalS / j.calls) * 1000.0 or 0.0,
-            totalMs    = j.totalS * 1000.0,
-            peakMs     = j.peakS * 1000.0,
+            avgMs      = j.calls > 0 and (j.totalMs / j.calls) or 0.0,
+            totalMs    = j.totalMs,
+            peakMs     = j.peakMs,
             errors     = j.errors,
             enabled    = j.enabled,
             suspended  = j.suspended,
@@ -103,7 +112,7 @@ end
 
 function BR.Sched.resetStats()
     for _, j in ipairs(jobs) do
-        j.calls, j.totalS, j.peakS = 0, 0.0, 0.0
+        j.calls, j.totalMs, j.peakMs = 0, 0.0, 0.0
     end
 end
 
@@ -121,13 +130,13 @@ function BR.Sched.step(nowMs)
             j.lastRun = nowMs
             j.nextRun = nowMs + j.interval
 
-            local s = now_s()
+            local s = clockMs()
             local ok, err = pcall(j.fn, dt)
-            local elapsed = now_s() - s
+            local elapsed = clockMs() - s
 
             j.calls  = j.calls + 1
-            j.totalS = j.totalS + elapsed
-            if elapsed > j.peakS then j.peakS = elapsed end
+            j.totalMs = j.totalMs + elapsed
+            if elapsed > j.peakMs then j.peakMs = elapsed end
 
             if ok then
                 j.consecutive = 0

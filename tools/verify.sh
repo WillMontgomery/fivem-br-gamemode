@@ -77,7 +77,7 @@ fi
 
 echo "${DIM}== tests ==${RST}"
 if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_stats.lua; do
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_stats.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1

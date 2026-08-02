@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+#
+# Pre-commit hook. Install with:  ./tools/install-hooks.sh
+#
+# Guards the one real weakness of shipping a pre-built UI: source and bundle
+# drifting apart.
+#
+# The server serves resources/[fivem-royale]/br_ui/ui/ as static files and never
+# builds anything. If ui-src/ changes are committed without rebuilding, the
+# server keeps serving the old bundle while the source says otherwise -- which
+# presents as "my change didn't do anything", with nothing wrong in any log.
+#
+# Also runs tools/verify.sh, so syntax errors and failing tests cannot be
+# committed.
+
+set -uo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+RED=$'\033[31m'; GRN=$'\033[32m'; YEL=$'\033[33m'; RST=$'\033[0m'
+
+staged() { git diff --cached --name-only --diff-filter=ACMR; }
+
+# --- 1. UI source changed without a rebuild ----------------------------------
+
+if staged | grep -q '^ui-src/src/'; then
+    if ! staged | grep -q '^resources/\[fivem-royale\]/br_ui/ui/'; then
+        echo "${RED}pre-commit: ui-src/src changed but the built bundle did not.${RST}"
+        echo
+        echo "  The server serves the committed bundle and never builds. Committing"
+        echo "  source without it means the server keeps running the old UI."
+        echo
+        echo "  Fix:"
+        echo "    cd ui-src && npm run build"
+        echo "    git add resources/\[fivem-royale\]/br_ui/ui"
+        echo
+        echo "  Override (only if you know the bundle is unaffected):"
+        echo "    git commit --no-verify"
+        exit 1
+    fi
+fi
+
+# --- 2. never commit a real server.cfg ---------------------------------------
+
+if staged | grep -qE '^server\.cfg$'; then
+    echo "${RED}pre-commit: server.cfg is staged.${RST}"
+    echo "  It holds the Cfx.re license key and the database password."
+    echo "  Track server.cfg.example instead; server.cfg is gitignored."
+    exit 1
+fi
+
+# --- 3. never commit node_modules --------------------------------------------
+
+if staged | grep -q 'node_modules/'; then
+    echo "${RED}pre-commit: node_modules is staged.${RST}"
+    echo "  It contains platform-specific binaries that would be wrong on Linux."
+    exit 1
+fi
+
+# --- 4. verify ---------------------------------------------------------------
+
+if [ -x tools/verify.sh ]; then
+    if ! out=$(./tools/verify.sh 2>&1); then
+        echo "${RED}pre-commit: verify.sh failed.${RST}"
+        echo "$out" | tail -25
+        echo
+        echo "  Override with: git commit --no-verify"
+        exit 1
+    fi
+    echo "${GRN}pre-commit:${RST} verify.sh passed"
+else
+    echo "${YEL}pre-commit: tools/verify.sh not executable, skipping${RST}"
+fi
+
+exit 0

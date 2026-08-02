@@ -39,5 +39,5 @@
 
 # Generated. Collapses diff noise on the built bundle, which changes wholesale
 # on every build and is never reviewed line by line.
-resources/[fivem-royale]/br_ui/ui/assets/**  linguist-generated=true -diff
-package-lock.json                            linguist-generated=true -diff
+resources/[fivem-royale]/br_ui/ui/**  linguist-generated=true -diff
+ui-src/package-lock.json              linguist-generated=true -diff

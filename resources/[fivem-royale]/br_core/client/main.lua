@@ -44,33 +44,29 @@ local started = false
 
 -- TIMING -- read this before trusting the numbers in /brperf.
 --
--- Two clocks, because neither one alone is honest here:
+-- GetGameTimer() only, deliberately. The `os` library does not exist in FiveM's
+-- CLIENT Lua runtime -- it is sandboxed away, so os.clock() is not an option
+-- here regardless of its merits. (It does exist server-side, which is why this
+-- only ever failed on the client.)
 --
---   GetGameTimer()  wall time, but only millisecond resolution. A healthy
---                   per-frame callback costs well under 1ms, so timing one call
---                   with it rounds to zero. It IS reliable for the total cost of
---                   a whole band pass accumulated over a window.
+-- The consequence, stated plainly: resolution is 1ms. A healthy per-frame
+-- callback costs well under that, so any INDIVIDUAL call measures as 0.
 --
---   os.clock()      sub-millisecond, but it reports PROCESS CPU time. In a
---                   multithreaded game client that can advance faster than wall
---                   time, so its absolute values may be inflated.
+-- What makes the numbers useful anyway is accumulation. A frame callback runs
+-- ~60 times a second, so over a 10-second window that is ~600 samples; a
+-- callback genuinely costing 0.3ms accrues ~180ms of total time, and
+-- total/calls recovers the average with real precision. So:
 --
--- So: band totals come from GetGameTimer and are trustworthy in absolute terms.
--- Per-callback figures come from os.clock and are trustworthy as a RELATIVE
--- share -- good enough to answer "which subsystem is heavy", which is the actual
--- question. /brperf prints both so they can be cross-checked in-game; if the
--- per-callback sum diverges wildly from the band total, believe the band total.
-local now_s
-do
-    local okClock, v = pcall(os.clock)
-    if okClock and type(v) == 'number' then
-        now_s = os.clock
-    else
-        now_s = function() return GetGameTimer() / 1000.0 end
-    end
+--   totalMs  trustworthy once `calls` is large -- this is the number to read
+--   avgMs    trustworthy for the same reason, derived from the total
+--   peakMs   coarse; only meaningful for spotting a callback that stalls >= 1ms
+--
+-- Read /brperf after letting it run for a few seconds, not immediately.
+local function nowMs()
+    return GetGameTimer()
 end
 
--- Band-level wall-clock accumulators, keyed by band.
+-- Band-level accumulators, keyed by band.
 local bandStats = {}
 
 --- Register a callback into one of the three loops.
@@ -101,8 +97,8 @@ function BR.Loop.register(band, name, fn)
         enabled    = true,
         -- perf accumulators, drained by BR.Loop.stats()
         calls      = 0,
-        totalS     = 0.0,
-        peakS      = 0.0,
+        totalMs    = 0.0,
+        peakMs     = 0.0,
         errors     = 0,
         consecutive= 0,
         lastRun    = 0,
@@ -163,9 +159,9 @@ function BR.Loop.stats()
                 name      = e.name,
                 band      = band,
                 calls     = e.calls,
-                avgMs     = e.calls > 0 and (e.totalS / e.calls) * 1000.0 or 0.0,
-                totalMs   = e.totalS * 1000.0,
-                peakMs    = e.peakS * 1000.0,
+                avgMs     = e.calls > 0 and (e.totalMs / e.calls) or 0.0,
+                totalMs   = e.totalMs,
+                peakMs    = e.peakMs,
                 errors    = e.errors,
                 enabled   = e.enabled,
                 suspended = e.suspended,
@@ -196,7 +192,7 @@ end
 function BR.Loop.resetStats()
     for _, list in pairs(registry) do
         for _, e in ipairs(list) do
-            e.calls, e.totalS, e.peakS = 0, 0.0, 0.0
+            e.calls, e.totalMs, e.peakMs = 0, 0.0, 0.0
         end
     end
     for _, bs in pairs(bandStats) do
@@ -226,13 +222,13 @@ function BR.Loop.step(band)
             local dt = e.lastRun > 0 and (t - e.lastRun) or 0
             e.lastRun = t
 
-            local s = now_s()
+            local s = nowMs()
             local ok, err = pcall(e.fn, dt)
-            local elapsed = now_s() - s
+            local elapsed = nowMs() - s
 
             e.calls  = e.calls + 1
-            e.totalS = e.totalS + elapsed
-            if elapsed > e.peakS then e.peakS = elapsed end
+            e.totalMs = e.totalMs + elapsed
+            if elapsed > e.peakMs then e.peakMs = elapsed end
 
             if ok then
                 e.consecutive = 0

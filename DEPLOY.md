@@ -135,14 +135,51 @@ Copy `resources/[fivem-royale]/` into the server's `resources/` directory, and
 install `oxmysql` into `resources/[standalone]/`.
 
 The NUI build output (`br_ui/ui/`) is committed, so **no build step is required
-on the server**. Node is only needed if you intend to change the interface:
+on the server**, and no Node is needed on it either.
+
+### Why the UI project lives in `ui-src/`, outside `resources/`
+
+FXServer automatically builds any resource containing a `package.json`, using its
+own bundled yarn and **Node 16**. This toolchain needs Node 20+, so leaving the
+project inside the resource made the server try to build an already-built
+resource and fail on startup:
+
+```
+error tar@7.5.22: The engine "node" is incompatible with this module.
+Expected version ">=18". Got "16.9.1"
+Building resource br_ui failed.
+```
+
+Targeting Node 16 instead is not a real option: Vite 7 requires
+`^20.19.0 || >=22.12.0`, Tailwind v4's engine needs Node 20+, and HeroUI v3
+requires Tailwind v4. Building on the server would also turn a UI build failure
+into a server boot failure, which is the wrong place for it.
+
+So `ui-src/` sits outside `resources/` — the only tree FXServer scans — and
+writes its output into `resources/[fivem-royale]/br_ui/ui/`.
+
+```
+ui-src/                                   # Vite project, needs Node 20+
+  src/                                    # React source
+resources/[fivem-royale]/br_ui/
+  fxmanifest.lua                          # serves ui/ as static files
+  client/nui.lua
+  ui/                                     # build output, committed
+```
+
+To change the interface (on a dev machine, not the server):
 
 ```bash
-cd resources/[fivem-royale]/br_ui
+cd ui-src
 npm install
-npm run build      # typechecks, then writes ui/
-npm run dev        # browser dev harness, no game required
+npm run build      # typechecks, then writes into the resource
+npm run dev        # browser dev harness at :3000, no game required
 ```
+
+**Always commit the rebuilt `ui/` alongside the source change.** The pre-commit
+hook enforces this — install it once with `./tools/install-hooks.sh`. Without it,
+committing source without the bundle leaves the server serving the old UI, with
+nothing wrong in any log.
 
 ---
 
