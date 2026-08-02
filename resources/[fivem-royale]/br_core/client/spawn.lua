@@ -85,13 +85,81 @@ end
 --- Make sure the player can actually see the world.
 ---
 --- Safe to call at any time and as often as you like. This is the single place
---- that undoes every way the screen can be dark.
+--- that undoes every way the screen can be dark, and there are more of them
+--- than the obvious one:
+---
+---   * the loading screen never came down
+---   * the screen was faded out and never faded back in
+---   * the screen was NEVER FADED IN AT ALL -- distinct from the above, and the
+---     one that bit us. After connecting, the screen is dark without any fade
+---     having been performed, so IsScreenFadedOut() returns FALSE and a
+---     watchdog checking only that sees nothing wrong.
+---   * the player is mid "switch" (the cinematic GTA uses to move between
+---     characters), which renders black until switched in
+---   * player control was never handed back
 function BR.Spawn.reveal()
     ShutdownLoadingScreen()
     ShutdownLoadingScreenNui()
-    if IsScreenFadedOut() or IsScreenFadingOut() then
+
+    -- Not `IsScreenFadedOut`: see above. Fading in an already-faded-in screen
+    -- is a no-op, so this is safe to call repeatedly.
+    if not IsScreenFadedIn() and not IsScreenFadingIn() then
         DoScreenFadeIn(500)
     end
+
+    -- GTA can leave a joining player mid-switch, which renders black no matter
+    -- what the fade state says.
+    if IsPlayerSwitchInProgress() then
+        SwitchInPlayer(PlayerPedId())
+    end
+
+    SetPlayerControl(PlayerId(), true, 0)
+end
+
+--- Everything that determines whether the player can see anything.
+---
+--- "Black screen" carries no error and no log line, and the cause is one of
+--- half a dozen unrelated states. Printing all of them at once turns a guessing
+--- game into a reading.
+--- @return table
+function BR.Spawn.diagnose()
+    local ped = PlayerPedId()
+
+    -- Every probe is wrapped. This runs precisely when something is already
+    -- wrong, and a diagnostic that throws halfway through tells you less than
+    -- no diagnostic at all -- GetRenderingCam with no active camera is exactly
+    -- the sort of call that misbehaves in that state.
+    local function safe(fn, fallback)
+        local ok, v = pcall(fn)
+        if ok then return v end
+        return fallback == nil and 'error' or fallback
+    end
+
+    return {
+        fadedIn      = safe(function() return IsScreenFadedIn() end),
+        fadedOut     = safe(function() return IsScreenFadedOut() end),
+        fadingIn     = safe(function() return IsScreenFadingIn() end),
+        fadingOut    = safe(function() return IsScreenFadingOut() end),
+        switchActive = safe(function() return IsPlayerSwitchInProgress() end),
+        switchState  = safe(function() return GetPlayerSwitchState() end),
+        pedExists    = safe(function() return DoesEntityExist(ped) end),
+        pedVisible   = safe(function() return IsEntityVisible(ped) end),
+        pedDead      = safe(function() return IsEntityDead(ped) end),
+        frozen       = safe(function() return IsEntityPositionFrozen(ped) end),
+        collision    = safe(function() return HasCollisionLoadedAroundEntity(ped) end),
+        scriptCam    = safe(function()
+            local c = GetRenderingCam()
+            return c and c ~= -1 and IsCamRendering(c) or false
+        end, false),
+        placing      = placing,
+        spawned      = spawned,
+        pos          = safe(function()
+            local p = GetEntityCoords(ped)
+            return ('%.0f, %.0f, %.0f'):format(p.x, p.y, p.z)
+        end, '?'),
+        matchState   = BR.State and BR.State.match and BR.State.match.state or '?',
+        playerState  = BR.State and BR.State.me and BR.State.me.state or '?',
+    }
 end
 
 --- Bring the player into the world for the first time.
@@ -154,27 +222,79 @@ Citizen.CreateThread(function()
     initialSpawn()
 end)
 
--- Watchdog. If the screen is dark and nothing is deliberately placing the
--- player, something failed silently -- there is no error for "faded out and
--- never faded back in". Recovering automatically beats a reconnect.
+-- Watchdog.
+--
+-- The condition is `not IsScreenFadedIn()`, NOT `IsScreenFadedOut()`. Those are
+-- different states and the distinction is the whole bug: after connecting, the
+-- screen is dark without any fade having been performed, so IsScreenFadedOut()
+-- is false and a watchdog checking it sees a perfectly healthy screen while the
+-- player stares at black.
+--
+-- Two consecutive ticks before acting, so a legitimate fade in progress is not
+-- interrupted.
+local darkTicks = 0
 BR.Loop.register(BR.Loop.SLOW, 'spawn.antiblack', function()
-    if placing then return end
-    if IsScreenFadedOut() and not IsScreenFadingIn() then
-        print('[br_core] screen was left faded out -- fading back in (watchdog)')
-        BR.Spawn.reveal()
+    if placing or not spawned then
+        darkTicks = 0
+        return
     end
+
+    if IsScreenFadedIn() or IsScreenFadingIn() then
+        darkTicks = 0
+        return
+    end
+
+    darkTicks = darkTicks + 1
+    if darkTicks < 2 then return end
+    darkTicks = 0
+
+    print('[br_core] screen is not faded in -- recovering (watchdog)')
+    for k, v in pairs(BR.Spawn.diagnose()) do
+        print(('[br_core]   %-13s %s'):format(k, tostring(v)))
+    end
+    BR.Spawn.reveal()
 end)
+
+RegisterCommand('brblack', function()
+    -- Read this when the screen is black. Every state that can cause it, at once.
+    print('=== screen / spawn diagnosis ===')
+    local d = BR.Spawn.diagnose()
+    for _, k in ipairs({
+        'fadedIn', 'fadedOut', 'fadingIn', 'fadingOut',
+        'switchActive', 'switchState',
+        'pedExists', 'pedVisible', 'pedDead', 'frozen', 'collision',
+        'scriptCam', 'placing', 'spawned', 'pos', 'matchState', 'playerState',
+    }) do
+        print(('  %-13s %s'):format(k, tostring(d[k])))
+    end
+    print('  -- fadedIn false with fadedOut false means the screen was never')
+    print('     faded in at all, which is a different fault from being faded out.')
+    print('  -- run brunstuck to force recovery')
+end, false)
 
 RegisterCommand('brunstuck', function()
     -- Manual escape hatch for anything the watchdog does not catch.
     local ped = PlayerPedId()
     placing = false
+
     FreezeEntityPosition(ped, false)
     SetEntityVisible(ped, true, false)
     SetEntityCollision(ped, true, true)
+    SetPlayerControl(PlayerId(), true, 0)
+
+    -- Tear down any script camera: one left rendering shows whatever it points
+    -- at, which after a failed placement is often nothing at all.
+    RenderScriptCams(false, false, 0, true, true)
+    DestroyAllCams(true)
+    ClearFocus()
+
+    if IsPlayerSwitchInProgress() then
+        SwitchInPlayer(ped)
+    end
+
     ShutdownLoadingScreen()
     ShutdownLoadingScreenNui()
     DoScreenFadeIn(300)
-    ClearFocus()
-    print('[br_core] unstuck: screen restored, ped unfrozen')
+
+    print('[br_core] unstuck: screen restored, ped unfrozen, cams cleared')
 end, false)
