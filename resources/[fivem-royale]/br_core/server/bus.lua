@@ -75,6 +75,10 @@ function BR.Bus.plan()
         if score > best then
             x1, y1, x2, y2, best = cx1, cy1, cx2, cy2, score
         end
+        -- Good enough is good enough; keep drawing only while it is not.
+        -- A coastal anchor can hand out a 30%-land "best of N" -- which a
+        -- player experiences as flying over water the whole way.
+        if best >= (cfg.minLandScore or 0) then break end
     end
 
     local sp = cfg.spawn
@@ -150,26 +154,47 @@ function BR.Bus.plan()
         push(px, py, cfg.altitude, cfg.climbSpeed)
     end
 
-    -- The straight run to the chord entry, accelerating to cruise.
-    local runSamples = 8
+    local turnEndT = math.floor(clockMs)
+
+    -- The straight run to the chord entry, accelerating to cruise. Sampled
+    -- finely enough that the doors-over-land scan below has real waypoints
+    -- to find the coastline with.
+    local runSamples = 12
     for i = 1, runSamples do
         local k = i / runSamples
         push(BR.Lerp(px, x1, k), BR.Lerp(py, y1, k), cfg.altitude,
              BR.Lerp(cfg.climbSpeed, cfg.cruiseSpeed, math.min(1.0, k * 1.6)))
     end
-    local jumpFrom = math.floor(clockMs)
+    local chordAt = math.floor(clockMs)
 
-    -- The drop chord. Doors open here.
+    -- The drop chord.
     local chordSamples = 6
     for i = 1, chordSamples do
         local k = i / chordSamples
         push(BR.Lerp(x1, x2, k), BR.Lerp(y1, y2, k), cfg.altitude, cfg.speed)
     end
 
+    -- THE DOORS OPEN AT FIRST LAND, not at the anchor circle. The chord
+    -- entry is a geometric boundary that can sit far inland -- riders
+    -- watched half the mainland pass with the doors shut, twice. The first
+    -- waypoint after the turn that overflies land opens them; the chord
+    -- entry is only the latest they can possibly open.
+    local jumpFrom = chordAt
+    for _, p in ipairs(points) do
+        if p.t > turnEndT and p.t < jumpFrom then
+            local _, d = BR.Config.Map.NearestPOI(p.x, p.y)
+            if d and d <= cfg.landRadius then
+                jumpFrom = p.t
+                break
+            end
+        end
+    end
+
     route = {
         points    = points,
         tStart    = points[1].t,
         jumpFrom  = jumpFrom,
+        chordAt   = chordAt,
         tEnd      = points[#points].t,
         alt       = cfg.altitude,
         mx = x1, my = y1, ex = x2, ey = y2,

@@ -92,7 +92,9 @@ BR.Config.Bus = {
     -- onto the heading for the chord, accelerate across the ocean, slow over
     -- the drop chord. The server bakes the whole thing into timestamped
     -- waypoints; clients interpolate. Surveyed in-game by the user:
-    spawn        = { x = 4484.61, y = -4497.98, z = 4.19, heading = 106.12 },
+    -- z is the surveyed 4.19 + 0.5: at exactly 4.19 the Titan's gear sat in
+    -- the runway surface.
+    spawn        = { x = 4484.61, y = -4497.98, z = 4.69, heading = 106.12 },
     rotatePoint  = { x = 4090.23, y = -4642.18 },  -- wheels-up here, straight out
     climbDist    = 2500.0,  -- metres past rotation to reach cruise altitude
     turnRadius   = 1000.0,  -- the banked turn onto the chord heading
@@ -115,8 +117,9 @@ BR.Config.Bus = {
     -- leg overflies LAND (proximity to authored POIs is the proxy -- they
     -- blanket the landmass). Best of N wins; pure water-to-water routes were
     -- a real and miserable outcome of unscored randomness.
-    chordTries   = 10,
+    chordTries   = 16,
     landRadius   = 1400.0,  -- a sample point within this range of a POI counts as land
+    minLandScore = 0.45,    -- keep drawing candidates until one clears this (best kept regardless)
 }
 
 BR.Config.Drop = {

@@ -26,6 +26,18 @@ local ejectedSeen = nil -- when we noticed the server flipped us to FREEFALL
 local lastX, lastY, lastZ, lastT = nil, nil, nil, nil  -- finite-difference state
 local camYaw, camPitch = 0.0, -8.0   -- free-look orbit, reset each boarding
 
+-- Smoothed airframe orientation. The path is a polyline, so its raw
+-- direction is CONSTANT within a segment and STEPS at every waypoint -- the
+-- turn is built from 6-degree jumps. Feeding that straight into the
+-- entity's rotation made the plane stutter through the arc, and because the
+-- camera orbit was based on the same raw heading, every step swung the
+-- whole view with it: the "world snaps and rotates back" report.
+local smoothHdg, smoothPitch, smoothRoll = nil, 0.0, 0.0
+
+local function angDiff(a, b)
+    return ((a - b + 540.0) % 360.0) - 180.0
+end
+
 local function cleanup()
     if cam then
         RenderScriptCams(false, false, 0, true, true)
@@ -41,6 +53,7 @@ local function cleanup()
         bus = nil
     end
     lastX, lastY, lastZ, lastT = nil, nil, nil, nil
+    smoothHdg, smoothPitch, smoothRoll = nil, 0.0, 0.0
     -- Streaming focus back to the ped, radar back on screen.
     ClearFocus()
     DisplayRadar(true)
@@ -200,28 +213,44 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
     if not bus then return end
 
     local t = BR.Clock.now()
-    local x, y, z, dx, dy = BR.PathPosAt(route.points, t)
+    local x, y, z = BR.PathPosAt(route.points, t)
 
     SetEntityCoordsNoOffset(bus, x, y, z, false, false, false)
 
-    local heading = 0.0
-    if dx ~= 0.0 or dy ~= 0.0 then
-        heading = BR.GtaHeading(BR.Bearing(0.0, 0.0, dx, dy))
+    -- ORIENTATION FROM A LOOK-AHEAD, EASED. Where will the bus be in 1.2
+    -- seconds? The direction to there spans waypoint boundaries, so it
+    -- changes continuously through the turn instead of stepping with the
+    -- polyline -- and the exponential ease below takes out what little
+    -- stepping remains. Roll banks into the heading change and pitch
+    -- follows the climb, both gently.
+    local ax, ay, az = BR.PathPosAt(route.points, t + 1200)
+    local ddx, ddy, ddz = ax - x, ay - y, az - z
+    local hLen = math.sqrt(ddx * ddx + ddy * ddy)
+
+    local dt = GetFrameTime()
+    local ease = 1.0 - math.exp(-dt * 2.2)
+
+    if hLen > 1.0 then
+        local targetHdg = BR.GtaHeading(BR.Bearing(0.0, 0.0, ddx, ddy))
+        smoothHdg = smoothHdg or targetHdg
+        local turn = angDiff(targetHdg, smoothHdg)
+        smoothHdg = (smoothHdg + turn * ease) % 360.0
+
+        -- Bank proportional to how hard the nose is being asked to come
+        -- around; clamped shallow -- this is an airliner, not a stunt plane.
+        local targetRoll  = BR.Clamp(-turn * 0.9, -18.0, 18.0)
+        local targetPitch = BR.Clamp(math.deg(math.atan(ddz, hLen)) * 0.8, -14.0, 14.0)
+        smoothRoll  = smoothRoll + (targetRoll - smoothRoll) * ease
+        smoothPitch = smoothPitch + (targetPitch - smoothPitch) * ease
     end
+
+    SetEntityRotation(bus, smoothPitch, smoothRoll, smoothHdg or 0.0, 2, true)
 
     local vx, vy, vz = 0.0, 0.0, 0.0
     if lastT and t > lastT then
         local inv = 1000.0 / (t - lastT)
         vx, vy, vz = (x - lastX) * inv, (y - lastY) * inv, (z - lastZ) * inv
-
-        -- Pitch follows the actual climb, so rotation off the runway looks
-        -- like rotation rather than an elevator.
-        local hSpeed = math.sqrt(vx * vx + vy * vy)
-        local pitch = hSpeed > 1.0 and math.deg(math.atan(vz, hSpeed)) or 0.0
-        SetEntityRotation(bus, pitch, 0.0, heading, 2, true)
         SetEntityVelocity(bus, vx, vy, vz)
-    else
-        SetEntityHeading(bus, heading)
     end
     lastX, lastY, lastZ, lastT = x, y, z, t
 
@@ -229,12 +258,14 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
 
     -- Free-look orbit: mouse (or right stick) walks the camera around the
     -- plane; it always looks AT the plane, so there is no way to get lost.
+    -- Based on the SMOOTHED heading -- on the raw one, every waypoint step
+    -- swung the entire view and snapped it back.
     if cam then
         camYaw   = (camYaw - GetControlNormal(0, 1) * 8.0) % 360.0
         camPitch = BR.Clamp(camPitch - GetControlNormal(0, 2) * 6.0, -75.0, 25.0)
 
         local dist = BR.Config.Bus.camDistance
-        local yawRad   = math.rad(heading + 180.0 + camYaw)  -- 0 = behind the plane
+        local yawRad   = math.rad((smoothHdg or 0.0) + 180.0 + camYaw)  -- 0 = behind
         local pitchRad = math.rad(camPitch)
         local horiz = dist * math.cos(pitchRad)
         SetCamCoord(cam,

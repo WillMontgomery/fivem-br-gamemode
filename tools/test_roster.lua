@@ -1624,9 +1624,13 @@ do
     ok(ordered, 'waypoint timestamps strictly increase')
     ok(groundedRoll, 'the ground roll stays on the ground')
 
-    local _, _, doorZ = BR.PathPosAt(r.points, r.jumpFrom)
+    local doorX, doorY, doorZ = BR.PathPosAt(r.points, r.jumpFrom)
     ok(math.abs(doorZ - BR.Config.Bus.altitude) < 1.0,
         'the bus is at cruise altitude when the doors open')
+    ok(r.jumpFrom <= r.chordAt, 'doors never open later than the chord entry')
+    local _, doorLand = BR.Config.Map.NearestPOI(doorX, doorY)
+    ok(doorLand <= BR.Config.Bus.landRadius + 1.0 or r.jumpFrom == r.chordAt,
+        'the doors open over land, or at worst at the chord entry')
     ok(math.abs(pn.x - r.ex) < 0.1 and math.abs(pn.y - r.ey) < 0.1,
         'the path ends at the chord exit')
     ok((r.landScore or 0) > 0, 'the chosen chord overflies at least some land')
@@ -1700,15 +1704,29 @@ do
     -- Across many seeds, the CHOSEN chord never dips below a floor a purely
     -- random pick regularly violates around the coastal anchors. Runs last:
     -- each plan() replaces the live route.
-    local worst = 1.0
+    local worst, doorsEarly, doorsBad = 1.0, 0, false
     for seed = 1, 25 do
         fakeTime = fakeTime + 7919 * seed
         BR.Bus.plan()
         local rr = BR.Bus.active()
         if rr.landScore < worst then worst = rr.landScore end
+
+        if rr.jumpFrom < rr.chordAt then
+            doorsEarly = doorsEarly + 1
+            local px2, py2 = BR.PathPosAt(rr.points, rr.jumpFrom)
+            local _, dd = BR.Config.Map.NearestPOI(px2, py2)
+            if dd > BR.Config.Bus.landRadius + 1.0 then doorsBad = true end
+        end
     end
-    ok(worst >= 0.3, 'best-of-N keeps every match over meaningful land',
+    ok(worst >= 0.3, 'candidate scoring keeps every match over meaningful land',
         ('worst chosen score across seeds: %.2f'):format(worst))
+    -- The coastline scan must actually FIRE sometimes, or the "or at chord
+    -- entry" fallback makes the door rule vacuously true with the scan
+    -- deleted. Anchors sit inland, so most routes cross the coast well
+    -- before the anchor circle.
+    ok(doorsEarly >= 5, 'the first-land scan opens doors before the chord regularly',
+        ('early doors on %d of 25 seeds'):format(doorsEarly))
+    ok(not doorsBad, 'and every early opening is genuinely over land')
     BR.Bus.clear()
 end
 
