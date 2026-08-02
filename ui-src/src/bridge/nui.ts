@@ -140,6 +140,55 @@ export function reportError(context: string, err: unknown): void {
   }).catch(() => { /* nothing left to do */ })
 }
 
+/**
+ * Report what this browser can actually do, to the F8 console.
+ *
+ * FiveM's CEF is an embedded Chromium that lags mainstream Chrome, sometimes by
+ * a lot. That matters more than it sounds: Tailwind v4 and HeroUI v3 emit
+ * oklch(), oklab(), lch() and color-mix() throughout their colour system, and
+ * all of those are Chrome 111+. On an older CEF every one of those declarations
+ * fails to parse, so components render with no colour at all -- which looks like
+ * "the CSS didn't load" rather than "this browser is too old".
+ *
+ * Guessing at that costs hours. Measuring it costs one function.
+ */
+export function reportEnvironment(): void {
+  const supports = (prop: string, value: string) => {
+    try { return CSS.supports(prop, value) } catch { return false }
+  }
+
+  const chromeMatch = /Chrom(?:e|ium)\/(\d+)/.exec(navigator.userAgent)
+  const chromeVersion = chromeMatch?.[1] ? parseInt(chromeMatch[1], 10) : 0
+
+  const env = {
+    userAgent: navigator.userAgent,
+    chromeVersion,
+    css: {
+      oklch:          supports('color', 'oklch(70% 0.1 200)'),
+      oklab:          supports('color', 'oklab(70% 0.1 0.1)'),
+      lch:            supports('color', 'lch(70% 40 200)'),
+      colorMix:       supports('color', 'color-mix(in oklch, red, blue)'),
+      colorMixSrgb:   supports('color', 'color-mix(in srgb, red, blue)'),
+      atProperty:     typeof CSS !== 'undefined' && 'registerProperty' in CSS,
+      has:            supports('selector', ':has(a)'),
+      nesting:        supports('selector', '&'),
+      containerType:  supports('container-type', 'inline-size'),
+      backdropFilter: supports('backdrop-filter', 'blur(2px)'),
+    },
+    viewport: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio },
+  }
+
+  // eslint-disable-next-line no-console
+  console.info('[br_ui] environment', env)
+
+  if (isBrowser) return
+  void fetch(`https://${resourceName()}/br/ui/env`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+    body: JSON.stringify(env),
+  }).catch(() => { /* the console line above is still useful */ })
+}
+
 /** Install global error sinks. Called once from main.tsx. */
 export function installErrorSinks(): void {
   window.addEventListener('error', (ev) => {

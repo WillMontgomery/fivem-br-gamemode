@@ -118,6 +118,19 @@ AddEventHandler(BR.Net.STATE, function(d)
         serverNow = BR.Clock.now(),
     })
 
+    -- Visibility and FOCUS are separate things, and forgetting the second one
+    -- produces a lobby you can see and cannot click: CEF only receives mouse
+    -- input while NUI focus is held, so without this the queue buttons are inert
+    -- and the player is stuck staring at them.
+    --
+    -- Focus is granted by br_ui, which owns the ui_page -- br_core must never
+    -- call SetNuiFocus itself or there would be two owners disagreeing.
+    if d.state == BR.MatchState.WAITING then
+        TriggerEvent('br:ui:pushFocus', 'lobby')
+    else
+        TriggerEvent('br:ui:popFocus', 'lobby')
+    end
+
     print(('[br_core] match state: %s'):format(tostring(d.state)))
 end)
 

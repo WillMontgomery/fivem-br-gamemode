@@ -182,6 +182,43 @@ for _, name in ipairs({
     end)
 end
 
+--- CEF capability report.
+---
+--- Printed at startup because a stylesheet that is perfectly correct will still
+--- render as nothing if this CEF build cannot parse its colour functions -- and
+--- that failure looks identical to "the CSS did not load". Knowing the Chrome
+--- version turns an afternoon of guessing into one line of output.
+callback(BR.NuiCb.ENV, function(data)
+    local css = data.css or {}
+    print('[br_ui] ---- CEF environment ----')
+    print(('[br_ui]   chrome     %s'):format(tostring(data.chromeVersion)))
+    print(('[br_ui]   viewport   %sx%s @ %sx'):format(
+        tostring(data.viewport and data.viewport.w),
+        tostring(data.viewport and data.viewport.h),
+        tostring(data.viewport and data.viewport.dpr)))
+
+    local order = {
+        'oklch', 'oklab', 'lch', 'colorMix', 'colorMixSrgb',
+        'has', 'nesting', 'atProperty', 'containerType', 'backdropFilter',
+    }
+    local missing = {}
+    for _, k in ipairs(order) do
+        local v = css[k]
+        print(('[br_ui]   %-15s %s'):format(k, v and 'yes' or 'NO'))
+        if not v then missing[#missing + 1] = k end
+    end
+
+    -- Tailwind v4 and HeroUI v3 emit oklch/oklab/color-mix throughout their
+    -- colour system. Without them, components render with no colour at all.
+    if not css.oklch or not css.colorMix then
+        print('[br_ui]   !! this build cannot parse modern colour functions.')
+        print('[br_ui]      Tailwind v4 / HeroUI v3 emit oklch and color-mix everywhere,')
+        print('[br_ui]      so the UI will render unstyled until the theme avoids them.')
+    end
+    print(('[br_ui] ---- %d unsupported ----'):format(#missing))
+    return { ok = true }
+end)
+
 --- The error sink. Without this, a CEF exception is a blank screen and there is
 --- nowhere to look for the cause.
 callback(BR.NuiCb.ERROR, function(data)

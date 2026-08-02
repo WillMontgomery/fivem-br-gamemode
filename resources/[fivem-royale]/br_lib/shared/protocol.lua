@@ -123,6 +123,7 @@ BR.NuiCb = {
     CHAT_SEND    = 'br/chat/send',
     CHAT_FOCUS   = 'br/chat/focus',  -- UI tells Lua the input opened/closed
     ERROR        = 'br/err',  -- CEF exception sink; without this a crash is a blank screen
+    ENV          = 'br/ui/env',  -- CEF capability report, printed at startup
 }
 
 BR.NUI_ENVELOPE_VERSION = 1

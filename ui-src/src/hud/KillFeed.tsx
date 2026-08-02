@@ -14,7 +14,7 @@ export default function KillFeed({ entries }: { entries: FeedEntry[] }) {
         <div
           key={e.id}
           className="rise panel px-2.5 py-1 text-[0.6875rem] flex items-center gap-1.5 max-w-full"
-          style={e.mine ? { borderColor: 'color-mix(in oklch, var(--color-royale-accent) 60%, transparent)' } : undefined}
+          style={e.mine ? { borderColor: 'var(--color-accent-edge)' } : undefined}
         >
           <span className="font-semibold truncate max-w-[5rem]"
                 style={{ color: e.mine ? 'var(--color-royale-accent2)' : 'white' }}>

@@ -37,7 +37,7 @@ export default function DbnoOverlay({ dbno }: { dbno: DbnoPayload }) {
     <div className="absolute inset-x-0 bottom-40 flex justify-center">
       <div
         className="panel px-6 py-3 text-center"
-        style={{ borderColor: 'color-mix(in oklch, var(--color-danger) 55%, transparent)' }}
+        style={{ borderColor: 'var(--color-danger-edge)' }}
       >
         <div className="text-[0.625rem] uppercase tracking-[0.24em] text-white/50">
           You are down

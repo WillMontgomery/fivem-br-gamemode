@@ -215,6 +215,7 @@ export const CB = {
   CHAT_SEND:    'br/chat/send',
   CHAT_FOCUS:   'br/chat/focus',
   ERROR:        'br/err',
+  ENV:          'br/ui/env',
 } as const
 
 export type CallbackName = (typeof CB)[keyof typeof CB]

@@ -12,17 +12,38 @@
    loot glow markers, the UI uses these for borders and text. Two representations
    of one decision; change both together.
    --------------------------------------------------------------------------- */
+/* COLOUR FUNCTIONS AND CEF
+ *
+ * These were originally authored in oklch(), which is the modern, correct way
+ * to express them -- and which FiveM's CEF may not be able to parse. An
+ * unparseable colour is not a fallback, it is nothing: the declaration is
+ * dropped and the element renders with no colour at all, which looks exactly
+ * like a stylesheet that failed to load.
+ *
+ * So every value the HUD depends on is plain hex or rgba, which has worked in
+ * every browser for twenty years. The equivalent oklch is kept in a comment so
+ * the intent survives; run `bruicheck` output past the theme before reaching for
+ * a newer colour space here.
+ *
+ * (Tailwind and HeroUI emit oklch/color-mix throughout their own palette. That
+ * is a separate problem and is not solvable from this file.)
+ */
 @theme {
-  --color-royale-bg:      oklch(0.16 0.02 275);
-  --color-royale-panel:   oklch(0.21 0.03 275);
-  --color-royale-edge:    oklch(0.32 0.04 275);
-  --color-royale-accent:  oklch(0.72 0.19 300);
-  --color-royale-accent2: oklch(0.80 0.15 210);
+  --color-royale-bg:      #14151f;   /* oklch(0.16 0.02 275) */
+  --color-royale-panel:   #1d1e2b;   /* oklch(0.21 0.03 275) */
+  --color-royale-edge:    #33354a;   /* oklch(0.32 0.04 275) */
+  --color-royale-accent:  #a855f7;   /* oklch(0.72 0.19 300) */
+  --color-royale-accent2: #4cc9f0;   /* oklch(0.80 0.15 210) */
 
-  --color-hp:      oklch(0.78 0.17 145);
-  --color-shield:  oklch(0.78 0.14 230);
-  --color-storm:   oklch(0.65 0.22 300);
-  --color-danger:  oklch(0.66 0.22 25);
+  --color-hp:      #4ade80;          /* oklch(0.78 0.17 145) */
+  --color-shield:  #38bdf8;          /* oklch(0.78 0.14 230) */
+  --color-storm:   #9333ea;          /* oklch(0.65 0.22 300) */
+  --color-danger:  #ef4444;          /* oklch(0.66 0.22 25)  */
+
+  /* Pre-mixed translucent variants, replacing color-mix() at the point of use. */
+  --color-storm-fade:  rgba(147, 51, 234, 0.55);
+  --color-danger-edge: rgba(239, 68, 68, 0.55);
+  --color-accent-edge: rgba(168, 85, 247, 0.60);
 
   --color-rarity-common:    #b0b0b0;
   --color-rarity-uncommon:  #4cd964;
@@ -157,9 +178,10 @@ html, body, #root {
   position: fixed;
   inset: 0;
   pointer-events: none;
+  /* rgba rather than color-mix -- see the note in @theme. */
   background: radial-gradient(ellipse at center,
-    transparent 45%,
-    color-mix(in oklch, var(--color-storm) 55%, transparent) 100%);
+    rgba(147, 51, 234, 0) 45%,
+    rgba(147, 51, 234, 0.55) 100%);
   animation: stormPulse 2.4s ease-in-out infinite;
 }
 

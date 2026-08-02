@@ -28,9 +28,14 @@ function Bar({
           style={{
             transform: `scaleX(${pct})`,
             width: '100%',
-            background: `linear-gradient(90deg,
-              color-mix(in oklch, ${colour} 70%, black),
-              ${colour})`,
+            // The shading is a black overlay rather than color-mix(), which
+            // FiveM's CEF may not parse. An unparseable background is not a
+            // fallback -- the declaration is dropped and the bar renders
+            // invisible, which is exactly what happened: health read 100 with
+            // no green bar behind it.
+            backgroundColor: colour,
+            backgroundImage:
+              'linear-gradient(90deg, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0) 60%)',
           }}
         />
       </div>
