@@ -142,8 +142,12 @@ function BR.Match.reset()
     BR.Server.storm = nil
     BR.Roster.each(nil, function(src, e)
         e.kills, e.downs, e.revives, e.damage = 0, 0, 0, 0.0
-        e.placement, e.lastDamageBy, e.lastDamageAt = nil, nil, 0
+        e.lastDamageBy, e.lastDamageAt = nil, 0
         e.hp, e.armour = 100.0, 0.0
+
+        -- Explicitly cleared, so clients drop them too. squadId is per-match;
+        -- partyId deliberately survives.
+        BR.Roster.clearFields(src, { 'placement', 'squadId', 'colour' })
         BR.Roster.setState(src, BR.PlayerState.LOBBY)
     end)
 end

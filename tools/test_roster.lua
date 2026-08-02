@@ -227,6 +227,52 @@ do
     ok(BR.Roster.update(999, { kills = 1 }) == nil, 'updating an unknown player is safe')
 end
 
+describe('roster.clearFields')
+do
+    -- REGRESSION: a nil cannot travel in a serialised delta. Assigning
+    -- entry.squadId = nil made the key VANISH from the payload rather than
+    -- arriving as an instruction to forget it, so every client kept displaying
+    -- the value it was last told. Clearing therefore needs its own wire
+    -- instruction: a list of field names to drop.
+    reset()
+    join(1, 'Alice')
+    BR.Roster.update(1, { squadId = 'sq1', colour = '#ff0000' })
+    BR.Broadcast.flushNow()
+    sent = {}
+
+    BR.Roster.clearFields(1, { 'squadId', 'colour' })
+    ok(BR.Roster.get(1).squadId == nil, 'the field is cleared server-side')
+
+    BR.Broadcast.flushNow()
+    local cleared = {}
+    for _, s in ipairs(eventsOf(BR.Net.ROSTER_DELTA)) do
+        for _, d in ipairs(s.args[1].deltas or {}) do
+            for _, k in ipairs(d.clear or {}) do cleared[k] = true end
+        end
+    end
+    ok(cleared.squadId, 'and the wire carries a named clear instruction')
+    ok(cleared.colour, 'for every cleared public field')
+
+    -- The same privacy rule as updates: clearing a private field must not
+    -- announce that the field existed.
+    BR.Roster.update(1, { pos = { x = 1, y = 2, z = 3 } })
+    BR.Broadcast.flushNow()
+    sent = {}
+    BR.Roster.clearFields(1, { 'pos' })
+    BR.Broadcast.flushNow()
+    ok(#eventsOf(BR.Net.ROSTER_DELTA) == 0,
+        'clearing a private field sends nothing')
+
+    sent = {}
+    BR.Roster.clearFields(1, { 'squadId' })   -- already nil
+    BR.Broadcast.flushNow()
+    ok(#eventsOf(BR.Net.ROSTER_DELTA) == 0,
+        'clearing an already-absent field sends nothing')
+
+    ok(pcall(BR.Roster.clearFields, 999, { 'squadId' }),
+        'clearing on an unknown player is safe')
+end
+
 describe('roster.healthSync')
 do
     -- REGRESSION: the sampler read engine health but never converted it into
@@ -723,6 +769,48 @@ do
     ok(BR.Roster.get(3).squadId ~= BR.Roster.get(4).squadId,
         'without autofill, solo players are not merged')
     BR.Config.Match.autofill = true
+end
+
+describe('party.squadToSolo')
+do
+    -- REGRESSION, reported in play: two players finished a squad match together,
+    -- then queued SOLO -- and both clients still showed them squadded. The
+    -- server had it right; the clearing never reached the clients, because a
+    -- nil squadId simply dropped out of the delta.
+    --
+    -- Asserting on the server roster alone would have passed while the bug was
+    -- live, so this checks what actually goes over the wire.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.WARMUP) end)
+    BR.Party.formSquads(BR.Mode.SQUAD.key)
+
+    local sq = BR.Roster.get(1).squadId
+    ok(sq ~= nil and BR.Roster.get(2).squadId == sq, 'both start on one squad')
+
+    BR.Broadcast.flushNow()
+    sent = {}
+
+    -- The next match is solo.
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.WARMUP) end)
+    BR.Party.formSquads(BR.Mode.SOLO.key)
+    BR.Broadcast.flushNow()
+
+    ok(BR.Roster.get(1).squadId == nil, 'the squad is dropped server-side')
+
+    local told = {}
+    for _, s in ipairs(eventsOf(BR.Net.ROSTER_DELTA)) do
+        for _, d in ipairs(s.args[1].deltas or {}) do
+            for _, k in ipairs(d.clear or {}) do
+                if k == 'squadId' then told[d.src] = true end
+            end
+        end
+    end
+    ok(told[1] and told[2], 'and both clients are told to drop it')
+
+    -- Autofill is what pairs unpartied players, so it must not happen in solo.
+    ok(BR.Roster.get(1).colour == nil, 'the squad colour goes with it')
 end
 
 -- ----------------------------------------------------------------- combat ---

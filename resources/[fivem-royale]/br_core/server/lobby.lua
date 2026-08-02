@@ -121,12 +121,30 @@ BR.Sched.every(500, 'lobby.status', function()
     local ids = {}
     for src in pairs(queue) do ids[#ids + 1] = src end
 
+    -- The connected player list, so inviting does not require knowing someone's
+    -- server id. Asking players to type an id they have no way to discover is
+    -- not a feature, and was the only way to invite until now.
+    --
+    -- Names and ids only -- no positions, nothing that is not already visible
+    -- in a lobby.
+    local players = {}
+    BR.Roster.each(nil, function(src, e)
+        players[#players + 1] = {
+            src     = src,
+            name    = e.name,
+            inParty = e.partyId ~= nil,
+            queued  = queue[src] ~= nil,
+        }
+    end)
+    table.sort(players, function(a, b) return a.src < b.src end)
+
     TriggerClientEvent(BR.Net.LOBBY_STATUS, -1, {
         queued    = BR.Lobby.count(),
         needed    = BR.Lobby.needed(),
         connected = BR.Server.count(),
         mode      = BR.Lobby.dominantMode(),
         ids       = ids,
+        players   = players,
     })
 end)
 

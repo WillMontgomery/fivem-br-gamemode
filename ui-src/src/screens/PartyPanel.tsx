@@ -1,6 +1,6 @@
-import { Button, Chip, Input } from '@heroui/react'
-import { useState } from 'react'
-import { useUi, selSquad } from '../store'
+import { Button, Chip } from '@heroui/react'
+import { useEffect, useState } from 'react'
+import { useUi, selSquad, selLobby } from '../store'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 
@@ -11,25 +11,57 @@ import { CB } from '../bridge/types'
  * from parties plus autofilled solo players. This panel operates on the party,
  * which is why it survives a match ending.
  *
- * The server is the authority: this can ask to invite, accept, decline, leave
- * or remove. It never asserts membership -- everything shown comes from a
- * SQUAD_UPDATE the server pushed to party members only.
+ * Invites are made by PICKING FROM A LIST, not by typing a server id. The first
+ * version asked for an id, which nothing in the game shows you -- so there was
+ * no way to invite anyone you had not separately arranged it with.
+ *
+ * The server is the authority: this asks to invite, accept, decline, leave or
+ * remove. Everything shown comes from state the server pushed.
  */
 export default function PartyPanel({ disabled }: { disabled: boolean }) {
   const squad = useUi(selSquad)
+  const lobby = useUi(selLobby)
   const invite = useUi((s) => s.invite)
   const clearInvite = useUi((s) => s.clearInvite)
-  const [target, setTarget] = useState('')
+  const toast = useUi((s) => s.toast)
+
+  const [selected, setSelected] = useState<Set<number>>(new Set())
 
   const inParty = squad.members.length > 1
-  const me = squad.members.find((m) => m.leader)
-  const iAmLeader = squad.members.some((m) => m.leader && m.src === squad.leader)
+  const iAmLeader = !squad.id || squad.members.some((m) => m.leader && m.src === squad.leader)
+  const players = lobby?.players ?? []
 
-  const doInvite = async () => {
-    const id = parseInt(target, 10)
-    if (!Number.isFinite(id)) return
-    setTarget('')
-    await fetchNui(CB.SQUAD_INVITE, { target: id })
+  // Anyone already in a party cannot be invited into another, so offering them
+  // would only produce a rejection.
+  const invitable = players.filter((p) => !p.inParty)
+
+  // Drop selections that are no longer valid -- a player who disconnected, or
+  // who joined someone else's party while the panel was open.
+  useEffect(() => {
+    setSelected((prev) => {
+      const valid = new Set(invitable.map((p) => p.src))
+      const next = new Set([...prev].filter((s) => valid.has(s)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [players])
+
+  const toggle = (src: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(src)) next.delete(src)
+      else next.add(src)
+      return next
+    })
+  }
+
+  const inviteSelected = async () => {
+    const targets = [...selected]
+    setSelected(new Set())
+    // One call per invite: the server validates each independently, so a full
+    // party or a player who just left fails only that one.
+    for (const target of targets) {
+      await fetchNui(CB.SQUAD_INVITE, { target })
+    }
   }
 
   const respond = async (accept: boolean) => {
@@ -39,10 +71,10 @@ export default function PartyPanel({ disabled }: { disabled: boolean }) {
 
   return (
     <div className="flex flex-col gap-2">
-      {/* An incoming invite outranks everything else on this panel: it expires,
-          so it must not be something you have to go looking for. */}
+      {/* An incoming invite outranks everything else here: it expires, so it
+          must not be something you have to go looking for. */}
       {invite && (
-        <div className="rise flex items-center gap-2 rounded-lg border border-white/15 px-3 py-2">
+        <div className="rise flex items-center gap-2 rounded-lg border border-white/20 px-3 py-2">
           <span className="flex-1 text-sm">
             <span className="font-semibold">{invite.name}</span>
             <span className="text-white/60"> invited you</span>
@@ -50,66 +82,91 @@ export default function PartyPanel({ disabled }: { disabled: boolean }) {
               {' '}({invite.size}/{invite.max})
             </span>
           </span>
-          <Button size="sm" color="primary" onPress={() => respond(true)}>
-            Accept
-          </Button>
-          <Button size="sm" variant="bordered" onPress={() => respond(false)}>
-            Decline
-          </Button>
+          <Button size="sm" color="primary" onPress={() => respond(true)}>Accept</Button>
+          <Button size="sm" variant="bordered" onPress={() => respond(false)}>Decline</Button>
         </div>
       )}
 
       {inParty ? (
-        <>
-          <div className="flex flex-wrap items-center gap-1.5">
-            {squad.members.map((m) => (
-              <Chip
-                key={m.src}
-                size="sm"
-                variant="bordered"
-                style={{ borderColor: m.colour }}
-                title={m.leader ? 'Party leader' : undefined}
-              >
-                {m.leader ? '★ ' : ''}{m.name}
-              </Chip>
-            ))}
-          </div>
-
-          <div className="flex gap-2">
-            {/* Leaving must be obvious and always available. A party you cannot
-                get out of is worse than no party system. */}
-            <Button
+        <div className="flex flex-wrap items-center gap-1.5">
+          {squad.members.map((m) => (
+            <Chip
+              key={m.src}
               size="sm"
               variant="bordered"
-              className="flex-1"
-              onPress={() => fetchNui(CB.SQUAD_LEAVE, {})}
+              style={{ borderColor: m.colour }}
+              title={m.leader ? 'Party leader' : undefined}
             >
-              Leave party
-            </Button>
-          </div>
-        </>
+              {m.leader ? '★ ' : ''}{m.name}
+            </Chip>
+          ))}
+        </div>
       ) : (
         <p className="text-[0.6875rem] text-white/35">
           Not in a party &mdash; you&rsquo;ll be matched with random teammates.
         </p>
       )}
 
-      {/* Invite by server id. Crude, and honest about it: a friends list needs
-          persistent identity, which arrives with the stats layer. */}
-      {!disabled && (!inParty || iAmLeader || !me) && (
-        <div className="flex gap-2">
-          <Input
+      {/* The player list. Only shown when there is somebody to invite, so an
+          empty server does not display an empty box. */}
+      {!disabled && iAmLeader && invitable.length > 0 && (
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[0.625rem] uppercase tracking-wider text-white/35">
+            Players online &mdash; select to invite
+          </span>
+
+          <div className="thin-scroll flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+            {invitable.map((p) => {
+              const on = selected.has(p.src)
+              return (
+                <button
+                  key={p.src}
+                  type="button"
+                  onClick={() => toggle(p.src)}
+                  className={
+                    'rounded-full border px-2.5 py-1 text-[0.75rem] transition-colors ' +
+                    (on
+                      ? 'border-primary bg-primary/25 text-white'
+                      : 'border-white/15 text-white/70 hover:border-white/35')
+                  }
+                >
+                  {on ? '✓ ' : ''}{p.name}
+                  {p.queued && <span className="text-white/35 text-[0.625rem]"> · queued</span>}
+                </button>
+              )
+            })}
+          </div>
+
+          <Button
             size="sm"
-            value={target}
-            onValueChange={setTarget}
-            placeholder="Player ID"
-            className="flex-1"
-            onKeyDown={(e) => { if (e.key === 'Enter') void doInvite() }}
-          />
-          <Button size="sm" variant="bordered" onPress={doInvite} isDisabled={!target}>
-            Invite
+            variant="bordered"
+            isDisabled={selected.size === 0}
+            onPress={inviteSelected}
+          >
+            {selected.size === 0
+              ? 'Select players to invite'
+              : `Invite ${selected.size} player${selected.size === 1 ? '' : 's'}`}
           </Button>
         </div>
+      )}
+
+      {/* Leaving must be obvious and always available. A party you cannot get
+          out of is worse than no party system. */}
+      {inParty && (
+        <Button size="sm" variant="bordered" onPress={() => fetchNui(CB.SQUAD_LEAVE, {})}>
+          Leave party
+        </Button>
+      )}
+
+      {/* Result of the last party action. An invite that silently did nothing
+          is indistinguishable from one that worked. */}
+      {toast && (
+        <span
+          className="text-[0.6875rem]"
+          style={{ color: toast.tone === 'danger' ? 'var(--color-danger)' : 'var(--color-hp)' }}
+        >
+          {toast.text}
+        </span>
       )}
     </div>
   )

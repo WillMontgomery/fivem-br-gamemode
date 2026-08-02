@@ -100,6 +100,10 @@ AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
             local entry = S.roster[d.src]
             if entry then
                 for k, v in pairs(d.e or {}) do entry[k] = v end
+                -- Cleared fields arrive as a name list, because a nil value
+                -- cannot survive serialisation -- it simply vanishes from the
+                -- table and the client keeps the stale value.
+                for _, k in ipairs(d.clear or {}) do entry[k] = nil end
             else
                 -- An update for someone we do not know about means we missed
                 -- their add. Take what we were given rather than dropping them.
@@ -185,6 +189,14 @@ AddEventHandler(BR.Net.SQUAD_UPDATE, function(party)
     TriggerEvent('br:ui:sendLocal', BR.Nui.SQUAD, party or { id = nil, members = {} })
 end)
 
+RegisterNetEvent(BR.Net.SQUAD_RESULT)
+AddEventHandler(BR.Net.SQUAD_RESULT, function(res)
+    TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
+        text = res and res.reason or (res and res.ok and 'Done.' or 'Failed.'),
+        tone = (res and res.ok) and 'success' or 'danger',
+    })
+end)
+
 RegisterNetEvent(BR.Net.SQUAD_INVITED)
 AddEventHandler(BR.Net.SQUAD_INVITED, function(inv)
     TriggerEvent('br:ui:sendLocal', BR.Nui.INVITE, inv)
@@ -200,12 +212,21 @@ AddEventHandler(BR.Net.LOBBY_STATUS, function(d)
         if src == S.me.src then you = true break end
     end
 
+    -- Drop ourselves from the invitable list here rather than making the UI
+    -- filter: the client knows its own server id, the interface should not
+    -- have to care.
+    local others = {}
+    for _, p in ipairs(d.players or {}) do
+        if p.src ~= S.me.src then others[#others + 1] = p end
+    end
+
     TriggerEvent('br:ui:sendLocal', BR.Nui.LOBBY, {
         queued    = d.queued,
         needed    = d.needed,
         connected = d.connected,
         mode      = d.mode,
         you       = you,
+        players   = others,
     })
 end)
 

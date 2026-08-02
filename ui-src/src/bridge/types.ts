@@ -175,6 +175,13 @@ export interface ScreenPayload {
  * players" with no numbers behind it is indistinguishable from a broken queue --
  * which is exactly how it looked while the Play button was wired to nothing.
  */
+export interface LobbyPlayer {
+  src: number
+  name: string
+  inParty: boolean
+  queued: boolean
+}
+
 export interface LobbyPayload {
   queued: number
   needed: number
@@ -185,6 +192,9 @@ export interface LobbyPayload {
    *  authority on queue state -- local optimism only bridges the gap until the
    *  first payload arrives. */
   you: boolean
+  /** Connected players, excluding this one. Lua filters us out so the UI is
+   *  not asked to know its own server id. */
+  players?: LobbyPlayer[]
 }
 
 export interface ToastPayload {

@@ -144,6 +144,35 @@ function BR.Roster.update(src, changes)
     return entry
 end
 
+--- Clear fields, and tell clients they were cleared.
+---
+--- A separate verb from update() because nil cannot travel in a delta: setting
+--- `e.squadId = nil` removes the key from the table, so it serialises as though
+--- nothing changed and the client keeps the old value forever.
+---
+--- That is exactly what happened switching a squad match to solo -- the server
+--- correctly emptied squadId and every client carried on displaying the squad
+--- from the previous match.
+---
+--- @param src integer
+--- @param fields table  array of field names
+function BR.Roster.clearFields(src, fields)
+    local entry = roster[src]
+    if not entry then return end
+
+    local cleared = {}
+    for _, k in ipairs(fields) do
+        if entry[k] ~= nil then
+            entry[k] = nil
+            if PUBLIC_FIELDS[k] then cleared[#cleared + 1] = k end
+        end
+    end
+
+    if #cleared > 0 then
+        BR.Broadcast.delta({ op = 'update', src = src, clear = cleared })
+    end
+end
+
 --- Set a player's state, with the transition logged.
 --- State changes are the single most useful thing in a match log when working
 --- out why someone did or did not win.

@@ -28,7 +28,8 @@ BR.Net = {
     SQUAD_KICK      = 'br:squad:kick',       -- C->S  { target }
     SQUAD_UPDATE    = 'br:squad:update',     -- S->C  { id, leader, members }
     SQUAD_INVITED   = 'br:squad:invited',    -- S->C  { partyId, from, name, size, max }
-    LOBBY_STATUS    = 'br:lobby:status',     -- S->C  { queued, needed, connected, mode }
+    LOBBY_STATUS    = 'br:lobby:status',     -- S->C  { queued, needed, connected, mode, ids, players }
+    SQUAD_RESULT    = 'br:squad:result',     -- S->C  { ok, reason } -- feedback for an invite/kick
 
     -- Bus / drop
     BUS_ROUTE       = 'br:bus:route',        -- S->C  { sx, sy, ex, ey, alt, tStart, tEnd }

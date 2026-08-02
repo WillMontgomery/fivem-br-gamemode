@@ -262,7 +262,12 @@ end
 --- @param mode string
 function BR.Party.formSquads(mode)
     -- Clear last match's squads first; squadId is per-match, partyId is not.
-    BR.Roster.each(nil, function(_, e) e.squadId = nil; e.colour = nil end)
+    -- clearFields rather than direct assignment, because a nil cannot travel in
+    -- a delta -- assigning it left every client displaying the previous match's
+    -- squad indefinitely, most visibly when switching from squads to solo.
+    BR.Roster.each(nil, function(src)
+        BR.Roster.clearFields(src, { 'squadId', 'colour' })
+    end)
 
     if mode == BR.Mode.SOLO.key then
         print('[br_core] solo match -- no squads formed')
@@ -329,27 +334,65 @@ function BR.Party.formSquads(mode)
         end
     end
 
+    -- Tell every player who they are playing with, and why.
+    --
+    -- Without this, being autofilled onto a squad is indistinguishable from an
+    -- invite having worked: two unpartied players queue, land on the same
+    -- squad, and neither has any idea how that happened.
+    for _, sq in ipairs(squads) do
+        if #sq.members > 1 then
+            for _, src in ipairs(sq.members) do
+                local mates = {}
+                local partied = false
+                for _, other in ipairs(sq.members) do
+                    if other ~= src then
+                        local e = BR.Roster.get(other)
+                        mates[#mates + 1] = e and e.name or '?'
+                        local mine = BR.Roster.get(src)
+                        if mine and e and mine.partyId and mine.partyId == e.partyId then
+                            partied = true
+                        end
+                    end
+                end
+                BR.Server.systemMessage(
+                    ('Your squad: %s%s'):format(
+                        table.concat(mates, ', '),
+                        partied and '' or ' (matched automatically)'),
+                    { src })
+            end
+        end
+    end
+
     print(('[br_core] formed %d squad(s) for %s'):format(#squads, mode))
 end
 
 -- --------------------------------------------------------------- plumbing ---
 
+--- Send an invite/kick outcome back to whoever asked, so a failure is visible
+--- where the player is looking. Chat alone was not enough: an invite that
+--- silently did nothing looked identical to one that worked.
+--- @param src integer
+--- @param ok boolean
+--- @param reason string|nil
+local function result(src, ok, reason)
+    TriggerClientEvent(BR.Net.SQUAD_RESULT, src, { ok = ok, reason = reason })
+    if not ok and reason then
+        BR.Server.systemMessage(reason, { src })
+    end
+end
+
 RegisterNetEvent(BR.Net.SQUAD_INVITE)
 AddEventHandler(BR.Net.SQUAD_INVITE, function(data)
     local src = source
     local ok, reason = BR.Party.invite(src, tonumber(data and data.target))
-    if not ok and reason then
-        BR.Server.systemMessage(reason, { src })
-    end
+    result(src, ok, reason or 'Invite sent.')
 end)
 
 RegisterNetEvent(BR.Net.SQUAD_RESPOND)
 AddEventHandler(BR.Net.SQUAD_RESPOND, function(data)
     local src = source
     local ok, reason = BR.Party.respond(src, data and data.accept)
-    if not ok and reason then
-        BR.Server.systemMessage(reason, { src })
-    end
+    result(src, ok, reason)
 end)
 
 RegisterNetEvent(BR.Net.SQUAD_LEAVE)
@@ -361,9 +404,7 @@ RegisterNetEvent(BR.Net.SQUAD_KICK)
 AddEventHandler(BR.Net.SQUAD_KICK, function(data)
     local src = source
     local ok, reason = BR.Party.kick(src, tonumber(data and data.target))
-    if not ok and reason then
-        BR.Server.systemMessage(reason, { src })
-    end
+    result(src, ok, reason)
 end)
 
 --- Remove a player from whatever party they are in, WITHOUT consulting the
