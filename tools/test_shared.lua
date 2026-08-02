@@ -216,7 +216,21 @@ do
     ok(x == 0 and y == 0, 'before departure the bus sits at the start')
 
     x, y = BR.RoutePosAt(r, 1500)
-    ok(near(x, 50) and near(y, 0), 'halfway through leg one')
+    ok(near(x, 50) and near(y, 0), 'halfway through leg one (smoothstep midpoint is exact)')
+
+    -- The ocean leg eases: a quarter of the way through the TIME, the bus has
+    -- covered LESS than a quarter of the distance -- it is still accelerating
+    -- out of the airstrip. Symmetrically it bleeds speed into the coast.
+    x = BR.RoutePosAt(r, 1250)
+    ok(x > 0 and x < 25, 'leg one accelerates from rest rather than snapping to speed',
+        ('quarter-time x = %s'):format(tostring(x)))
+
+    -- Compass bearing vs GTA heading run OPPOSITE directions; due east is 90
+    -- by compass and 270 to the engine. Conflating them flew the first bus
+    -- mirror-imaged to its route.
+    ok(near(BR.Bearing(0, 0, 10, 0), 90), 'due east is bearing 90')
+    ok(near(BR.GtaHeading(90), 270), 'and GTA heading 270')
+    ok(near(BR.GtaHeading(0), 0), 'north is 0 in both conventions')
 
     x, y = BR.RoutePosAt(r, 2000)
     ok(near(x, 100) and near(y, 0), 'the leg boundary is exact')

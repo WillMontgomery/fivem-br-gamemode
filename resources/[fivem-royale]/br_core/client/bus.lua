@@ -18,10 +18,12 @@ BR = BR or {}
 
 local route   = nil     -- published record; survives until the next match
 local bus     = nil     -- local vehicle handle
+local pilot   = nil     -- local ped in the seat; see board() for why it matters
 local cam     = nil
 local riding  = false
 local told    = false   -- "doors open" notice sent
 local ejectedSeen = nil -- when we noticed the server flipped us to FREEFALL
+local lastX, lastY, lastT = nil, nil, nil   -- for the finite-difference velocity
 
 local function cleanup()
     if cam then
@@ -29,10 +31,15 @@ local function cleanup()
         DestroyCam(cam, false)
         cam = nil
     end
+    if pilot then
+        if DoesEntityExist(pilot) then DeleteEntity(pilot) end
+        pilot = nil
+    end
     if bus then
         if DoesEntityExist(bus) then DeleteEntity(bus) end
         bus = nil
     end
+    lastX, lastY, lastT = nil, nil, nil
     if riding then
         -- Whatever ends the ride, the ped must come back. A hidden frozen
         -- ped with no bus is a black screen with a HUD on it.
@@ -79,13 +86,35 @@ local function board()
         end
         if not riding then return end   -- torn down while the model streamed
 
-        local heading = BR.Bearing(route.sx, route.sy, route.mx, route.my)
+        local heading = BR.GtaHeading(BR.Bearing(route.sx, route.sy, route.mx, route.my))
         bus = CreateVehicle(model, route.sx, route.sy, route.alt, heading,
                             false, false)   -- LOCAL. Never networked.
         SetModelAsNoLongerNeeded(model)
         SetEntityCollision(bus, false, false)
         SetEntityInvincible(bus, true)
-        FreezeEntityPosition(bus, true)
+        -- NOT frozen: the fly loop writes coordinates every frame anyway, and
+        -- a frozen prop plane does not run its engine simulation -- static
+        -- propellers were half of what made the first flight unconvincing.
+
+        -- The pilot. Prop aircraft SHUT THEIR ENGINES OFF when unoccupied --
+        -- that is engine behaviour, not a missing native call -- so the crew
+        -- is load-bearing: a seated ped is what keeps the engine simulation
+        -- (props, audio) alive. Local and non-networked like the plane.
+        local pilotModel = GetHashKey('s_m_m_pilot_01')
+        RequestModel(pilotModel)
+        local pDeadline = GetGameTimer() + 5000
+        while not HasModelLoaded(pilotModel) and GetGameTimer() < pDeadline do
+            Citizen.Wait(50)
+        end
+        if HasModelLoaded(pilotModel) then
+            pilot = CreatePed(4, pilotModel, route.sx, route.sy, route.alt, heading,
+                              false, false)
+            SetModelAsNoLongerNeeded(pilotModel)
+            SetEntityInvincible(pilot, true)
+            SetBlockingOfNonTemporaryEvents(pilot, true)
+            SetPedIntoVehicle(pilot, bus, -1)
+        end
+
         SetVehicleEngineOn(bus, true, true, false)
 
         local ped = PlayerPedId()
@@ -130,7 +159,7 @@ BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
                 print('[br_core] bus: exit coords never arrived; self-placing from the route')
                 local x, y = BR.RoutePosAt(route, BR.Clock.now())
                 beginDrop(x, y, route.alt,
-                          BR.Bearing(route.mx, route.my, route.ex, route.ey))
+                          BR.GtaHeading(BR.Bearing(route.mx, route.my, route.ex, route.ey)))
             end
         else
             -- Dead, back to lobby, match torn down -- nothing airborne about
@@ -149,14 +178,28 @@ end)
 
 -- Fly the plane. Frame loop, active only while a bus exists; everyone
 -- computes the same position from the same record and the same clock.
+--
+-- Coordinates are written every frame -- that is the authority, and what
+-- keeps 48 local planes identical. Velocity is ALSO set, from a finite
+-- difference of the route, because the engine simulation reads it: velocity
+-- is what makes propellers blur and the airframe sound like it is working.
+-- The two never fight; the coordinate write wins every frame.
 BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
     if not bus then return end
 
-    local x, y, dx, dy = BR.RoutePosAt(route, BR.Clock.now())
+    local t = BR.Clock.now()
+    local x, y, dx, dy = BR.RoutePosAt(route, t)
+
     SetEntityCoordsNoOffset(bus, x, y, route.alt, false, false, false)
     if dx ~= 0.0 or dy ~= 0.0 then
-        SetEntityHeading(bus, BR.Bearing(0.0, 0.0, dx, dy))
+        SetEntityHeading(bus, BR.GtaHeading(BR.Bearing(0.0, 0.0, dx, dy)))
     end
+
+    if lastT and t > lastT then
+        local inv = 1000.0 / (t - lastT)
+        SetEntityVelocity(bus, (x - lastX) * inv, (y - lastY) * inv, 0.0)
+    end
+    lastX, lastY, lastT = x, y, t
 end)
 
 -- SPACE, bus half: ask to jump. (skydive.lua owns the freefall half of the

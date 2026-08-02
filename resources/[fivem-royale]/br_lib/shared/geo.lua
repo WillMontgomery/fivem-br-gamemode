@@ -79,6 +79,18 @@ function BR.Bearing(x1, y1, x2, y2)
     return deg
 end
 
+--- A COMPASS bearing converted to a GTA entity heading.
+---
+--- The two run opposite ways around: bearings increase clockwise from north,
+--- GTA headings counter-clockwise. Conflating them is why the first bus flew
+--- sideways-mirrored to its route -- every entity-facing consumer of
+--- BR.Bearing must pass through this.
+--- @param bearing number  degrees, 0 = north, clockwise
+--- @return number heading  degrees, 0 = north, counter-clockwise
+function BR.GtaHeading(bearing)
+    return (360.0 - bearing) % 360.0
+end
+
 --- Sample points along the arc of a circle nearest to (px, py).
 ---
 --- This is what makes the storm wall affordable. Drawing the full circle would
@@ -152,6 +164,12 @@ function BR.RoutePosAt(route, t)
     end
     if t < route.tMid and route.tMid > route.tStart then
         local k = (t - route.tStart) / (route.tMid - route.tStart)
+        -- Smoothstep on the ocean leg: the bus ACCELERATES out of the
+        -- airstrip and bleeds speed into the coast instead of snapping to
+        -- 400 m/s on frame one. Shared code, so the server's jump coordinates
+        -- ease exactly as every client's plane does; the leg's endpoints and
+        -- midpoint are unchanged (smoothstep is symmetric), only the ramp is.
+        k = k * k * (3.0 - 2.0 * k)
         return BR.Lerp(route.sx, route.mx, k), BR.Lerp(route.sy, route.my, k),
                route.mx - route.sx, route.my - route.sy
     end

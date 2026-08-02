@@ -103,7 +103,9 @@ local function eject(src, forced)
     BR.Roster.setState(src, BR.PlayerState.FREEFALL)
     TriggerClientEvent(BR.Net.BUS_JUMP_OK, src, {
         x = x, y = y, z = route.alt,
-        heading = BR.Bearing(route.mx, route.my, route.ex, route.ey),
+        -- GTA heading, not compass bearing -- the client feeds this straight
+        -- to SetEntityHeading and its exit-velocity vector.
+        heading = BR.GtaHeading(BR.Bearing(route.mx, route.my, route.ex, route.ey)),
         forced = forced or false,
     })
 
