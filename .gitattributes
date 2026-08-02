@@ -1,0 +1,43 @@
+# Line endings.
+#
+# This project is authored on Windows and runs on Linux, which makes CRLF a real
+# hazard rather than a style preference:
+#
+#   * tools/verify.sh with CRLF fails on Linux with "bad interpreter: no such
+#     file or directory" -- an error that points at the shell, not at the line
+#     endings, and reliably wastes twenty minutes.
+#   * schema.sql and server.cfg are read by tools that mostly tolerate CRLF, but
+#     "mostly" is doing a lot of work there.
+#
+# So: normalise everything to LF in the repository. Git still checks out CRLF
+# locally for the file types where Windows tooling expects it.
+
+* text=auto eol=lf
+
+# Explicit for the files where it matters most.
+*.sh    text eol=lf
+*.lua   text eol=lf
+*.sql   text eol=lf
+*.cfg   text eol=lf
+*.json  text eol=lf
+*.md    text eol=lf
+*.ts    text eol=lf
+*.tsx   text eol=lf
+*.css   text eol=lf
+*.html  text eol=lf
+
+# Binary -- never touch these.
+*.png   binary
+*.jpg   binary
+*.woff  binary
+*.woff2 binary
+*.ytd   binary
+*.ydr   binary
+*.yft   binary
+*.ymap  binary
+*.ybn   binary
+
+# Generated. Collapses diff noise on the built bundle, which changes wholesale
+# on every build and is never reviewed line by line.
+resources/[fivem-royale]/br_ui/ui/assets/**  linguist-generated=true -diff
+package-lock.json                            linguist-generated=true -diff

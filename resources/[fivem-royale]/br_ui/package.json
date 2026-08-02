@@ -1,0 +1,29 @@
+{
+  "name": "br_ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "NUI for FiveM Royale. Builds to ui/ which fxmanifest serves.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "build:only": "vite build",
+    "watch": "vite build --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@heroui/react": "3.2.3",
+    "react": "19.2.0",
+    "react-dom": "19.2.0",
+    "zustand": "5.0.8"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "4.1.14",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.1",
+    "@vitejs/plugin-react": "5.0.4",
+    "tailwindcss": "4.1.14",
+    "typescript": "5.9.3",
+    "vite": "7.1.9"
+  }
+}

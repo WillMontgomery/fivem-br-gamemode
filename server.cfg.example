@@ -1,0 +1,140 @@
+## FiveM Royale -- server configuration
+##
+## Target: Legacy FiveM (standard FXServer Linux artifacts), Ubuntu.
+## See DEPLOY.md for the full setup walkthrough.
+##
+## Two things in here are load-bearing and easy to get wrong, so they are called
+## out at the top:
+##
+##   1. The default `chat` resource is NOT started. This gamemode ships its own
+##      chat in br_ui, and two chat systems fighting over the T key is a bad
+##      time. If you see a duplicate chat box, something re-enabled it.
+##
+##   2. spawnmanager and basic-gamemode are NOT started. They would spawn players
+##      into the world on join and respawn them on death, both of which the match
+##      state machine owns. Leaving them on produces players appearing at random
+##      map locations mid-match.
+
+# ---------------------------------------------------------------------------
+# Network
+# ---------------------------------------------------------------------------
+endpoint_add_tcp "0.0.0.0:30120"
+endpoint_add_udp "0.0.0.0:30120"
+
+# ---------------------------------------------------------------------------
+# Players and sync
+# ---------------------------------------------------------------------------
+
+# OneSync is required: this gamemode's roster, storm damage and validation all
+# run server-side against every connected player.
+set onesync on
+
+# 48 is the FREE OneSync ceiling. Going above it requires a Cfx.re Element Club
+# tier (Argentum 64 / Arum 128 / Platinum 2048) attached to your license key --
+# and setting it higher WITHOUT one makes the server fail its heartbeat check and
+# disappear from the public list entirely. Raise Config.Match.maxPlayers in
+# br_lib/config/match.lua to match if you ever change this.
+sv_maxclients 48
+
+# Sync rate. 60 is a sensible default; raise only if 48-player load testing shows
+# sync lag, and expect CPU cost to scale roughly linearly.
+set sv_syncTickRate 60
+
+sv_scriptHookAllowed 0
+sv_enforceGameBuild 3095
+
+# ---------------------------------------------------------------------------
+# Identity
+# ---------------------------------------------------------------------------
+sv_hostname "FiveM Royale | Battle Royale"
+sets sv_projectName "FiveM Royale"
+sets sv_projectDesc "48-player battle royale. Drop, loot, outlast the storm."
+sets locale "en-US"
+sets tags "battle royale, br, pvp, gamemode"
+
+# Get one from https://keymaster.fivem.net -- the server will not start without it.
+sv_licenseKey "CHANGEME"
+
+# ---------------------------------------------------------------------------
+# Database
+#
+# Must be set BEFORE oxmysql is ensured. If this is wrong or MariaDB is down,
+# br_stats disables itself and prints why -- gameplay is unaffected, you just do
+# not get persistent stats. Check with `brdb` on the console.
+# ---------------------------------------------------------------------------
+set mysql_connection_string "mysql://royale:CHANGE_ME_STRONG_PASSWORD@localhost/fivem_royale?charset=utf8mb4"
+
+# ---------------------------------------------------------------------------
+# Admin permissions
+#
+# Most br_* commands are registered restricted, so they need this ACE from a live
+# client. Typed at the server console they always work, because console commands
+# run as source 0.
+#
+# Replace the identifier with your own license: find it with `brroster` or in the
+# server log on join.
+# ---------------------------------------------------------------------------
+add_ace group.admin br.admin allow
+add_ace group.admin command allow
+# add_principal identifier.license:PUT_YOUR_LICENSE_HERE group.admin
+
+# ---------------------------------------------------------------------------
+# Base resources
+#
+# Deliberately minimal. Anything that spawns, respawns, or moves a player
+# conflicts with the match state machine.
+# ---------------------------------------------------------------------------
+ensure sessionmanager    # connection handling -- required
+ensure hardcap           # enforces sv_maxclients
+
+# NOT started, on purpose:
+#   chat            -- br_ui provides chat; two systems fight over the T key
+#   spawnmanager    -- br_core owns spawning and the warmup pad
+#   basic-gamemode  -- would respawn players into the world on death
+#   mapmanager      -- nothing to load; we use the vanilla map as-is
+
+# ---------------------------------------------------------------------------
+# Dependencies
+# ---------------------------------------------------------------------------
+ensure oxmysql
+
+# ---------------------------------------------------------------------------
+# Gamemode
+#
+# ORDER MATTERS.
+#   br_lib   is a file container with no runtime scripts, but must exist and be
+#            started before anything referencing '@br_lib/...' loads.
+#   br_core  defines the loop registry and scheduler.
+#   br_ui    owns the NUI page and NUI focus.
+#   br_stats is last; it is the only optional one.
+# ---------------------------------------------------------------------------
+ensure br_lib
+ensure br_core
+ensure br_ui
+ensure br_stats
+
+# ---------------------------------------------------------------------------
+# Development
+#
+# sv_devMode enables client dev tools and lowers the minimum players to start,
+# so a match can be tested with two people instead of sixteen.
+#
+# TURN THIS OFF FOR PRODUCTION.
+# ---------------------------------------------------------------------------
+set sv_devMode true
+set br_devMode true
+
+# Useful console commands once running:
+#   brhelp        list every server command
+#   brstate       match state, counts, timers
+#   brroster      every player the server knows about
+#   brstorm       storm record + live containment check
+#   brwhy <id>    why a given player is in the state they are in
+#   brperf        scheduler cost per job
+#   brdb          database health
+#   brtop         leaderboard
+#
+# On a client, in the F8 console:
+#   brnativecheck verify native assumptions against this build  <-- run this first
+#   brdebug       on-screen overlay (perf / state / keys)
+#   brperf        client loop cost per subsystem

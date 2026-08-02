@@ -1,0 +1,62 @@
+# ---------------------------------------------------------------------------
+# Node
+#
+# node_modules is ~150 packages of small files and is needed ONLY to rebuild the
+# interface. The server never reads it -- FiveM serves the built output in
+# br_ui/ui/ as static files.
+# ---------------------------------------------------------------------------
+node_modules/
+.npm/
+*.tsbuildinfo
+.vite/
+
+# ---------------------------------------------------------------------------
+# DO NOT IGNORE br_ui/ui/
+#
+# This is the opposite of the usual rule, so it is spelled out: ui/ is BUILD
+# OUTPUT and it is COMMITTED ON PURPOSE. fxmanifest.lua serves those files
+# directly, and there is deliberately no build step on the server. Adding ui/ to
+# this file would produce a server that starts cleanly and shows a blank screen,
+# which is a genuinely annoying thing to debug.
+#
+# After changing anything under br_ui/src/, run `npm run build` and commit the
+# regenerated ui/ alongside the source change.
+# ---------------------------------------------------------------------------
+!resources/[fivem-royale]/br_ui/ui/
+
+# ---------------------------------------------------------------------------
+# Secrets and per-host configuration
+#
+# server.cfg holds the Cfx.re license key, the database password and admin
+# identifiers. Track server.cfg.example instead and keep the real one local.
+# ---------------------------------------------------------------------------
+server.cfg
+*.env
+.env*
+
+# ---------------------------------------------------------------------------
+# FXServer runtime
+#
+# If the repo is ever cloned directly into a server directory, these are the
+# things the server generates and should never be tracked.
+# ---------------------------------------------------------------------------
+cache/
+logs/
+*.log
+svadhesive/
+citizen/
+alpine/
+run.sh
+FXServer*
+server-data/
+
+# ---------------------------------------------------------------------------
+# Editors and OS
+# ---------------------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+*~
+Thumbs.db
+desktop.ini
+.DS_Store
