@@ -115,6 +115,12 @@ function BR.Match.onEnter(state, from)
         -- and the log reads as though a match was played and won in one tick.
         S.startedAt = GetGameTimer()
 
+        -- How many teams this match BEGAN with. A dev match that starts with
+        -- one squad (minToStart = 1) has already met the win condition at the
+        -- starting gun; recording the starting count lets winConditionMet tell
+        -- "last squad standing" apart from "only squad there ever was".
+        S.startSquads = BR.Server.squadsAlive()
+
     elseif state == BR.MatchState.ENDED then
         BR.Match.awardPlacements()
 
@@ -275,6 +281,19 @@ local function winConditionMet()
     -- squads as a victory produced a match that ended immediately with no
     -- survivors and a confusing log line.
     if BR.Server.count() == 0 then return false end
+
+    -- DEV ONLY: a match that STARTED with exactly one squad has nothing to
+    -- win, so as long as that squad is still standing it never auto-ends --
+    -- a lone developer can sit in PLAYING and poke at the world.
+    -- brforce/brskip/brleave are the ways out, and everyone dying still ends
+    -- it. Production cannot reach this: the minSquads gate refuses to start
+    -- a one-squad match at all. (== 1, not <= 1: a zero here means states
+    -- had not settled when the count was taken, which is the grace period's
+    -- problem, not this rule's.)
+    if BR.Server.devMode and S.startSquads == 1
+       and BR.Server.squadsAlive() >= 1 then
+        return false
+    end
 
     return BR.Server.squadsAlive() <= 1
 end

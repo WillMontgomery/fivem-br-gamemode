@@ -102,7 +102,18 @@ local function ok(cond, name, detail)
     end
 end
 
+-- The value the CONFIG ships (dev minimum 1, so a lone client can walk the
+-- flow). Captured before reset() pins the suite default below.
+local SHIPPED_MIN_TO_START = BR.Config.Match.minToStart
+
 local function reset()
+    -- Suite default: matches need TWO queued players. Most blocks queue
+    -- players one at a time and assert nothing starts early -- under the
+    -- shipped dev minimum of 1 the match would start at the first queueUp
+    -- and every later assertion would be testing the wrong match. Blocks
+    -- that care about the shipped value (match.soloDev) set it themselves.
+    BR.Config.Match.minToStart = 2
+
     for k in pairs(BR.Server.roster) do BR.Server.roster[k] = nil end
     for k in pairs(BR.Server.parties or {}) do BR.Server.parties[k] = nil end
     for k in pairs(connected) do connected[k] = nil end
@@ -1425,6 +1436,47 @@ do
     BR.Sched.step(fakeTime)
     ok(#eventsOf(BR.Net.SQUAD_POS) == 0,
         'solo rounds broadcast no positions to anyone')
+end
+
+describe('match.soloDev')
+do
+    -- minToStart = 1 exists so a lone dev client can walk the whole flow.
+    -- The trap it sets: one squad satisfies "squadsAlive <= 1" the moment
+    -- PLAYING begins, so without the started-with check the match ends three
+    -- seconds in, every time, and PLAYING is untestable alone.
+    ok(SHIPPED_MIN_TO_START == 1, 'the config ships a dev minimum of 1')
+
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1   -- the shipped value, under test here
+    join(1, 'OnlyDev')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'one dev player starts a match')
+
+    BR.Match.transition(BR.MatchState.PLAYING)
+    fakeTime = fakeTime + 5000        -- well past WIN_GRACE_MS
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.PLAYING,
+        'a match that STARTED with one squad never auto-ends in dev')
+
+    -- The guard must not weaken a real dev match: two squads, one dies,
+    -- the match ends exactly as before.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    BR.Match.transition(BR.MatchState.PLAYING)
+    BR.Combat.eliminate(2, 'test', 1)
+    fakeTime = fakeTime + 5000
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.ENDED,
+        'a two-squad dev match still ends when one falls')
 end
 
 describe('party.resultFailuresOnly')

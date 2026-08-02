@@ -13,7 +13,10 @@ BR.Config.Match = {
     -- Slots. 48 is the free OneSync ceiling; the code paths are written to scale
     -- past it, but do not raise this without the matching Element Club tier.
     maxPlayers      = 48,
-    minToStart      = 2,      -- lowered for development; raise for production
+    -- 1 so a lone dev client can walk the whole flow. The win condition knows
+    -- a dev match that STARTED with one squad has nothing to win (see
+    -- winConditionMet) -- otherwise PLAYING would end three seconds in.
+    minToStart      = 1,
     minToStartProd  = 16,
 
     -- Lobby / warmup timings, in seconds.
