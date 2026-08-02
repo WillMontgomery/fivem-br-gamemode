@@ -91,6 +91,15 @@ function BR.Lobby.join(src, mode)
         BR.Party.leave(src)
     end
 
+    -- During WARMUP the bus has not left, so readying up joins the FORMING
+    -- match directly instead of queueing for the one after it. The mode they
+    -- clicked is irrelevant here -- the match already has a mode. From BUS
+    -- onward this falls through to the normal queue.
+    if BR.Server.match.state == BR.MatchState.WARMUP then
+        BR.Party.lateJoin(src)
+        return
+    end
+
     queue[src] = { mode = resolved.key, at = GetGameTimer() }
 
     print(('[br_core] %s (%d) queued for %s -- %d/%d')

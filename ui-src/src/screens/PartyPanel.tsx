@@ -119,14 +119,16 @@ export default function PartyPanel({
 
           {/* Invites still out. Without these, "Invite sent" faded after four
               seconds and an ignored invite looked identical to one that was
-              never sent. Dashed border = not a member yet. */}
+              never sent. Dashed border + pulse = live and waiting; the chip
+              resolves into a member, a decline notice, or an expiry notice,
+              so the animation always has an ending. */}
           {(squad.pending ?? []).map((p) => (
             <Chip
               key={`pending-${p.src}`}
               size="sm"
               variant="bordered"
-              className="border-dashed opacity-60"
-              title="Invited — waiting for an answer"
+              className="border-dashed opacity-70 animate-pulse"
+              title={`Waiting for ${p.name} to answer`}
             >
               {p.name} &hellip;
             </Chip>

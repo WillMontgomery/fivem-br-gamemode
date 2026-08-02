@@ -497,6 +497,94 @@ function BR.Party.formSquads(mode)
     print(('[br_core] formed %d squad(s) for %s'):format(#squads, mode))
 end
 
+--- Pull a late arrival into the match during WARMUP.
+---
+--- The bus has not left; there is no reason to make someone who readied up
+--- thirty seconds late sit out the whole round. They join the forming match
+--- exactly as if they had queued in time: their party's squad first, then the
+--- emptiest squad with room, then a squad of their own -- the same preference
+--- order formSquads uses, applied to one person.
+---
+--- WARMUP only. From BUS onward the drop is in motion and a new player would
+--- materialise into a match with no way aboard; those queue for the next one.
+--- @param src integer
+function BR.Party.lateJoin(src)
+    local entry = BR.Roster.get(src)
+    if not entry then return end
+
+    BR.Roster.setState(src, BR.PlayerState.WARMUP)
+
+    if BR.Server.match.mode ~= BR.Mode.SQUAD.key then
+        BR.Server.notify(src, 'Joined the match -- dropping soon.', 'success')
+        return
+    end
+
+    local maxSize = BR.Config.Match.maxSquadSize
+
+    -- Whatever squads exist right now, counted from the roster: sorted ids so
+    -- the tie-break between equally empty squads is reproducible.
+    local counts, colours, ids, maxIdx = {}, {}, {}, 0
+    BR.Roster.each(nil, function(_, e)
+        if e.squadId then
+            if not counts[e.squadId] then
+                ids[#ids + 1] = e.squadId
+                counts[e.squadId] = 0
+                colours[e.squadId] = e.colour
+            end
+            counts[e.squadId] = counts[e.squadId] + 1
+            local n = tonumber(e.squadId:match('^sq(%d+)$'))
+            if n and n > maxIdx then maxIdx = n end
+        end
+    end)
+    table.sort(ids)
+
+    -- Their party's squad first: friends who queued in time must not end up
+    -- on a different team because one of them was slow to click.
+    local target
+    local party = entry.partyId and parties[entry.partyId]
+    if party then
+        for _, m in ipairs(party.members) do
+            local mate = BR.Roster.get(m)
+            if m ~= src and mate and mate.squadId
+               and BR.Server.isInMatch(mate.state)
+               and counts[mate.squadId] < maxSize then
+                target = mate.squadId
+                break
+            end
+        end
+    end
+
+    if not target and BR.Config.Match.autofill then
+        for _, id in ipairs(ids) do
+            if counts[id] < maxSize
+               and (not target or counts[id] < counts[target]) then
+                target = id
+            end
+        end
+    end
+
+    local colour
+    if target then
+        colour = colours[target]
+    else
+        target = ('sq%d'):format(maxIdx + 1)
+        colour = COLOURS[(maxIdx % #COLOURS) + 1]
+    end
+
+    entry.squadId, entry.colour = target, colour
+    BR.Broadcast.delta({ op = 'update', src = src,
+                         e = { squadId = target, colour = colour } })
+
+    BR.Server.notify(src, 'Joined the match -- dropping soon.', 'success')
+    for other, e in pairs(BR.Server.roster) do
+        if other ~= src and e.squadId == target then
+            BR.Server.notify(other, ('%s joined your squad.'):format(entry.name), 'success')
+        end
+    end
+
+    print(('[br_core] %s (%d) late-joined warmup on %s'):format(entry.name, src, target))
+end
+
 -- ---------------------------------------------------------- squad beacons ---
 
 -- Squadmate positions, to squad members ONLY.

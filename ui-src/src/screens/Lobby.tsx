@@ -123,10 +123,13 @@ export default function Lobby({ visible }: { visible: boolean }) {
               {matchRunning ? 'Next match' : 'Find a match'}
             </h2>
             {/* Only ever seen by a player who is OUT of the running match --
-                a participant never has this screen up. */}
+                a participant never has this screen up. During warmup the door
+                is still open: readying up joins THIS match, not the next. */}
             {matchRunning && (
               <p className="text-[0.6875rem] text-white/40">
-                A match is in progress &mdash; ready up to join the next one.
+                {match.state === 'warmup'
+                  ? 'A match is forming — ready up to jump straight in.'
+                  : 'A match is in progress — ready up to join the next one.'}
               </p>
             )}
           </CardHeader>

@@ -1479,6 +1479,92 @@ do
         'a two-squad dev match still ends when one falls')
 end
 
+describe('match.lateJoin')
+do
+    -- The warmup door stays open: readying up during WARMUP joins the FORMING
+    -- match; from BUS onward it queues for the next one. Without this, idler
+    -- protection worked "too well" -- one early bird started the round and
+    -- everyone else was locked out for its whole duration.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1
+
+    join(1, 'Early'); join(2, 'Late')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'the early bird starts warmup')
+    ok(BR.Roster.get(2).state == BR.PlayerState.LOBBY, 'the other is still an idler')
+
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    ok(BR.Roster.get(2).state == BR.PlayerState.WARMUP,
+        'readying up during warmup joins the forming match directly')
+    ok(BR.Server.queue[2] == nil, 'and does not sit in the queue')
+
+    -- Both now count as starting teams: the solo-dev hold does not engage and
+    -- the match ends like any other.
+    BR.Match.transition(BR.MatchState.PLAYING)
+    BR.Combat.eliminate(2, 'test', 1)
+    fakeTime = fakeTime + 5000
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.ENDED,
+        'a late joiner makes it a real match with a real winner')
+
+    -- Squad placement: party squad first, then the emptiest squad with room.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B'); join(3, 'C'); join(4, 'D'); join(5, 'E'); join(6, 'F')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    BR.Party.invite(1, 3); BR.Party.respond(3, true)   -- party of 3: 1,2,3
+    BR.Party.invite(4, 5); BR.Party.respond(5, true)   -- party of 2: 4,5
+    for i = 1, 5 do fire(BR.Net.QUEUE_JOIN, i, { mode = BR.Mode.SQUAD.key }) end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'squad match forms')
+
+    -- Player 6, partied with nobody, readies late: the emptiest squad with
+    -- room is the pair, not the trio.
+    local pairSquad = BR.Roster.get(4).squadId
+    fire(BR.Net.QUEUE_JOIN, 6, { mode = BR.Mode.SQUAD.key })
+    ok(BR.Roster.get(6).state == BR.PlayerState.WARMUP, 'late joiner is in the match')
+    ok(BR.Roster.get(6).squadId == pairSquad,
+        'and fills the emptiest squad, not the fullest')
+    ok(BR.Roster.get(6).colour == BR.Roster.get(4).colour,
+        "wearing that squad's colour")
+
+    -- A late PARTYMATE goes to their friends EVEN WHEN another squad is
+    -- emptier -- autofill is off here precisely so the two rules disagree:
+    -- the party squad has two members, the solo's squad has one, and only
+    -- the party preference sends player 3 to the fuller one.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.autofill = false
+    join(1, 'A'); join(2, 'B'); join(3, 'C'); join(4, 'D')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    BR.Party.invite(1, 3); BR.Party.respond(3, true)   -- trio 1,2,3
+    for i = 1, 2 do fire(BR.Net.QUEUE_JOIN, i, { mode = BR.Mode.SQUAD.key }) end
+    fire(BR.Net.QUEUE_JOIN, 4, { mode = BR.Mode.SQUAD.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'match forms without player 3')
+    ok(BR.Roster.get(4).squadId ~= BR.Roster.get(1).squadId,
+        'the solo has a squad of one -- the emptier target')
+
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SQUAD.key })
+    ok(BR.Roster.get(3).squadId == BR.Roster.get(1).squadId,
+        "a late partymate lands on their party's squad, not the emptier one",
+        ('got %s, wanted %s'):format(tostring(BR.Roster.get(3).squadId),
+                                     tostring(BR.Roster.get(1).squadId)))
+    BR.Config.Match.autofill = true
+
+    -- From BUS onward the door is shut: late arrivals queue for the NEXT match.
+    BR.Match.transition(BR.MatchState.BUS)
+    join(9, 'TooLate')
+    fire(BR.Net.QUEUE_JOIN, 9, { mode = BR.Mode.SOLO.key })
+    ok(BR.Roster.get(9).state == BR.PlayerState.LOBBY, 'a bus-stage arrival stays in the lobby')
+    ok(BR.Server.queue[9] ~= nil, 'queued for the next match instead')
+end
+
 describe('party.resultFailuresOnly')
 do
     -- The "You joined the party." / "Joined the party." double: every success
