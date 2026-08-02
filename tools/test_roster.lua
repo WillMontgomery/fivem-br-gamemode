@@ -78,6 +78,7 @@ for _, f in ipairs({
     'br_core/server/lobby.lua',
     'br_core/server/party.lua',
     'br_core/server/match.lua',
+    'br_core/server/bus.lua',
     'br_core/server/combat.lua',
 }) do
     local chunk, err = loadfile(ROOT .. f)
@@ -470,7 +471,14 @@ do
     fakeTime = BR.Server.match.endsAt + 1
     BR.Sched.step(fakeTime)
     ok(BR.Server.match.state == BR.MatchState.PLAYING, 'the bus route ends in play')
-    ok(BR.Roster.get(1).state == BR.PlayerState.ALIVE, 'players are alive in play')
+    -- Since M3, the transition does not make anyone alive -- riders were
+    -- force-ejected at the end of the chord and are falling; LANDING is what
+    -- makes a player alive (pinned in match.bus).
+    ok(BR.Roster.get(1).state == BR.PlayerState.FREEFALL,
+        'riders who never jumped are falling, not alive')
+    fire(BR.Net.DROP_LANDED, 1)
+    fire(BR.Net.DROP_LANDED, 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.ALIVE, 'players are alive once they land')
 end
 
 describe('match.winCondition')
@@ -1563,6 +1571,92 @@ do
     fire(BR.Net.QUEUE_JOIN, 9, { mode = BR.Mode.SOLO.key })
     ok(BR.Roster.get(9).state == BR.PlayerState.LOBBY, 'a bus-stage arrival stays in the lobby')
     ok(BR.Server.queue[9] ~= nil, 'queued for the next match instead')
+end
+
+describe('match.bus')
+do
+    -- The bus is a shared illusion: the server publishes ONE route record and
+    -- owns who may jump, when, and where they exit. These pin the authority
+    -- half; the rendering half is native-driven and tested in-game.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'warmup starts')
+
+    sent = {}
+    fakeTime = BR.Server.match.endsAt + 1
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.BUS, 'warmup expires into the bus')
+
+    local r = BR.Bus.active()
+    ok(r ~= nil, 'a route exists')
+    ok(#eventsOf(BR.Net.BUS_ROUTE) == 1, 'and was broadcast exactly once')
+    ok(BR.Roster.get(1).state == BR.PlayerState.BUS, 'players are aboard')
+
+    -- Geometry: departs the airstrip, legs in order, chord ends on the
+    -- anchor circle, enters at the end nearer the airstrip.
+    local pad = BR.Config.Match.warmupPos
+    ok(r.sx == pad.x and r.sy == pad.y, 'the route departs the warmup pad')
+    ok(r.tStart < r.tMid and r.tMid < r.tEnd, 'legs are ordered in time')
+    local a = BR.Server.matchAnchor
+    ok(a ~= nil, 'the match anchor is remembered for the storm')
+    ok(math.abs(BR.Dist(a.x, a.y, r.mx, r.my) - BR.Config.Bus.chordRadius) < 1.0,
+        'the chord entry sits on the anchor circle')
+    ok(BR.Dist2(pad.x, pad.y, r.mx, r.my) <= BR.Dist2(pad.x, pad.y, r.ex, r.ey),
+        'the bus enters at the end nearer the airstrip')
+    ok(BR.Server.match.endsAt >= r.tEnd, 'BUS lasts at least the whole route')
+
+    -- Jumping over the ocean is refused; over the chord it is an elimination
+    -- of altitude, not of the player.
+    sent = {}
+    fire(BR.Net.BUS_JUMP, 1)
+    ok(BR.Roster.get(1).state == BR.PlayerState.BUS, 'jumping before the chord is refused')
+    ok(#eventsOf(BR.Net.BUS_JUMP_OK) == 0, 'no exit coordinates are sent')
+
+    fakeTime = r.tMid + 1000
+    fire(BR.Net.BUS_JUMP, 1)
+    ok(BR.Roster.get(1).state == BR.PlayerState.FREEFALL, 'jumping over the chord works')
+    local oks = eventsOf(BR.Net.BUS_JUMP_OK)
+    ok(#oks == 1 and oks[1].target == 1, 'exit coordinates go to the jumper alone')
+    local jx, jy = oks[1].args[1].x, oks[1].args[1].y
+    local px, py = BR.RoutePosAt(r, fakeTime)
+    ok(math.abs(jx - px) < 0.1 and math.abs(jy - py) < 0.1,
+        'and they are the bus position by the SERVER clock')
+
+    -- Nobody rides the bus home.
+    sent = {}
+    fakeTime = r.tEnd + 600
+    BR.Sched.step(fakeTime)
+    ok(BR.Roster.get(2).state == BR.PlayerState.FREEFALL,
+        'stragglers are force-ejected at the end of the line')
+    oks = eventsOf(BR.Net.BUS_JUMP_OK)
+    ok(#oks == 1 and oks[1].args[1].forced == true, 'and told it was not their idea')
+
+    -- Landing is what makes a player ALIVE -- not the PLAYING transition.
+    fakeTime = BR.Server.match.endsAt + 1
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.PLAYING, 'the route expires into PLAYING')
+    ok(BR.Roster.get(1).state == BR.PlayerState.FREEFALL,
+        'a mid-air player is NOT snapped to alive by the transition')
+
+    fire(BR.Net.DROP_LANDED, 1)
+    ok(BR.Roster.get(1).state == BR.PlayerState.ALIVE, 'touchdown makes them alive')
+
+    fire(BR.Net.DROP_LANDED, 1)
+    ok(BR.Roster.get(1).state == BR.PlayerState.ALIVE, 'a duplicate report is a no-op')
+
+    join(9, 'Idler')
+    fire(BR.Net.DROP_LANDED, 9)
+    ok(BR.Roster.get(9).state == BR.PlayerState.LOBBY,
+        'a bystander claiming to land changes nothing')
+
+    -- Freefallers count as living teams: the match must not end while one
+    -- fighter is on the ground and the other is still falling.
+    ok(BR.Server.squadsAlive() == 2, 'a freefaller is a living team')
 end
 
 describe('party.resultFailuresOnly')

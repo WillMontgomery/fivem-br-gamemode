@@ -257,7 +257,14 @@ function BR.Native.applyGameRules()
     NetworkSetFriendlyFireOption(true)
     SetPedRelationshipGroupHash(ped, BR.Native.ALLY_GROUP)
     SetCanAttackFriendly(ped, false, false)
-    SetPlayerInvincible(pid, BR.State.me.state == BR.PlayerState.WARMUP)
+
+    -- Peace while nobody can meaningfully fight back: the warmup pad, the
+    -- bus ride, and the landing-stumble grace window after touchdown.
+    local st = BR.State.me.state
+    SetPlayerInvincible(pid,
+        st == BR.PlayerState.WARMUP
+        or st == BR.PlayerState.BUS
+        or GetGameTimer() < (BR.State.dropGraceUntil or 0))
 
     -- GTA's own feed ("X joined", "Y died", weapon unlocks, whatever any other
     -- resource posts). The gamemode owns its presentation -- eliminations go

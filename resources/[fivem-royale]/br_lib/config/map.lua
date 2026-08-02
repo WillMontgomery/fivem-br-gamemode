@@ -83,9 +83,15 @@ BR.Config.Bus = {
     altitude     = 340.0,
     chordRadius  = 4500.0,  -- entry/exit points sit on a circle this size around the anchor
     chordOffset  = 0.5,     -- 0..1, how far off-centre the flight path may sit
-    speed        = 55.0,    -- metres per second along the chord
-    boardSeconds = 8,       -- time aboard before the jump window opens
-    jumpGrace    = 5,       -- seconds after the route ends before force-eject
+
+    -- Two speeds, two legs. The bus departs the Cayo airstrip ~7km from Los
+    -- Santos; at drop speed that leg alone is two minutes of open ocean. So
+    -- it CRUISES the ocean and slows over the chord -- the jump window only
+    -- opens at the chord anyway, so the fast leg costs the player nothing.
+    cruiseSpeed  = 150.0,   -- m/s, airstrip -> chord entry
+    speed        = 55.0,    -- m/s along the drop chord
+    boardSeconds = 8,       -- aboard before the wheels leave the airstrip
+    jumpGrace    = 5,       -- seconds after the route ends before BUS -> PLAYING
 
     -- Camera offset from the plane while riding.
     camOffset    = { x = 0.0, y = -14.0, z = 3.0 },

@@ -204,6 +204,33 @@ do
         ('width=%.4f gap=%.4f'):format(w, gap))
 end
 
+describe('geo.route')
+do
+    -- The bus position function: server (jump/eject coordinates) and every
+    -- client (rendering) must compute the same answer from the same record,
+    -- so the arithmetic is pinned here once.
+    local r = { sx = 0, sy = 0, mx = 100, my = 0, ex = 100, ey = 100,
+                tStart = 1000, tMid = 2000, tEnd = 3000 }
+
+    local x, y = BR.RoutePosAt(r, 0)
+    ok(x == 0 and y == 0, 'before departure the bus sits at the start')
+
+    x, y = BR.RoutePosAt(r, 1500)
+    ok(near(x, 50) and near(y, 0), 'halfway through leg one')
+
+    x, y = BR.RoutePosAt(r, 2000)
+    ok(near(x, 100) and near(y, 0), 'the leg boundary is exact')
+
+    x, y = BR.RoutePosAt(r, 2500)
+    ok(near(x, 100) and near(y, 50), 'halfway down the chord')
+
+    x, y = BR.RoutePosAt(r, 99999)
+    ok(near(x, 100) and near(y, 100), 'past the end it clamps, never extrapolates')
+
+    local _, _, dx, dy = BR.RoutePosAt(r, 1500)
+    ok(dx > 0 and near(dy, 0), 'leg one travels toward the chord entry')
+end
+
 describe('geo.chord')
 do
     -- Bus routes must start and end on the boundary of the chord circle, or the

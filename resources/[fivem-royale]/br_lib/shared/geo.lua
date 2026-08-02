@@ -129,6 +129,37 @@ function BR.ArcSegmentWidth(radius, segments, spanDeg)
     return 2.0 * radius * sin(step * 0.5)
 end
 
+--- Where a two-leg bus route puts the bus at time t.
+---
+--- Shared by the server (jump validation, force-eject coordinates) and every
+--- client (rendering the bus), all computing from the SAME published record
+--- against the synced clock -- which is what makes 48 locally spawned buses
+--- appear to be one bus, with zero per-frame network traffic.
+---
+--- Legs: start (the airstrip) -> mid (chord entry, cruise speed), then
+--- mid -> end (the drop chord, slower). Clamped at both ends so a caller a
+--- frame early or late gets the endpoints, not an extrapolation.
+---
+--- @param route table  { sx, sy, mx, my, ex, ey, tStart, tMid, tEnd }
+--- @param t number     synced-clock milliseconds
+--- @return number x, number y, number dx, number dy  position and travel direction
+function BR.RoutePosAt(route, t)
+    if t <= route.tStart then
+        return route.sx, route.sy, route.mx - route.sx, route.my - route.sy
+    end
+    if t >= route.tEnd then
+        return route.ex, route.ey, route.ex - route.mx, route.ey - route.my
+    end
+    if t < route.tMid and route.tMid > route.tStart then
+        local k = (t - route.tStart) / (route.tMid - route.tStart)
+        return BR.Lerp(route.sx, route.mx, k), BR.Lerp(route.sy, route.my, k),
+               route.mx - route.sx, route.my - route.sy
+    end
+    local k = (t - route.tMid) / math.max(1, route.tEnd - route.tMid)
+    return BR.Lerp(route.mx, route.ex, k), BR.Lerp(route.my, route.ey, k),
+           route.ex - route.mx, route.ey - route.my
+end
+
 --- Pick a chord across a circle: two points on the circumference, offset from
 --- centre so the line does not always pass through the middle.
 ---

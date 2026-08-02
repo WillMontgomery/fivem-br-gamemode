@@ -88,6 +88,16 @@ function BR.Match.onEnter(state, from)
 
     elseif state == BR.MatchState.BUS then
         BR.Server.matchId = BR.Server.matchId + 1
+
+        -- The route decides how long BUS lasts, so the deadline is set HERE
+        -- and rebroadcast -- planned in onEnter rather than by the caller so
+        -- that `brforce bus` gets a real route and a real deadline too,
+        -- instead of a state that never expires.
+        local dur = BR.Bus.plan()
+        S.endsAt = GetGameTimer() + math.floor(dur * 1000)
+        BR.Broadcast.state(S.state, S.endsAt, { reason = 'busRoute' })
+        BR.Bus.launch()
+
         BR.Roster.each(
             function(e) return e.state == BR.PlayerState.WARMUP end,
             function(src) BR.Roster.setState(src, BR.PlayerState.BUS) end)
@@ -100,14 +110,20 @@ function BR.Match.onEnter(state, from)
         -- do not count as alive, so squadsAlive() was 0 and the win condition
         -- fired on the very next tick. The match ended the instant it started.
         --
-        -- M3 replaces this: players become ALIVE when they LAND, not when the
-        -- match starts.
-        --
-        -- isInMatch, not "everyone not dead": LOBBY players -- idlers who never
-        -- readied up, or someone who left this match -- must not be promoted
-        -- into a match they are not part of.
+        -- Anyone somehow still aboard goes out the door first -- brforce can
+        -- reach PLAYING mid-flight, and a player left in the BUS state would
+        -- be invisible and frozen with the match running around them.
+        BR.Bus.ejectAll()
+
+        -- WARMUP only. Players who rode the bus are FREEFALL or GLIDE right
+        -- now, and they become ALIVE when they LAND (DROP_LANDED in bus.lua),
+        -- not when the state machine happens to tick over -- snapping a
+        -- mid-air player to ALIVE would say they can fight before they can
+        -- steer. The WARMUP case keeps `brforce playing` working: forcing
+        -- past the bus entirely still promotes the people standing on the
+        -- pad. LOBBY bystanders are never touched.
         BR.Roster.each(
-            function(e) return BR.Server.isInMatch(e.state) end,
+            function(e) return e.state == BR.PlayerState.WARMUP end,
             function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
 
         -- Nothing can win in the first moments of a match. Without this, any
@@ -125,10 +141,14 @@ function BR.Match.onEnter(state, from)
         BR.Match.awardPlacements()
 
     elseif state == BR.MatchState.CLEANUP then
+        BR.Bus.clear()
         BR.Match.reset()
 
-    elseif state == BR.MatchState.WAITING and from == BR.MatchState.CLEANUP then
-        BR.Broadcast.snapshot()   -- re-seed everyone for the next match
+    elseif state == BR.MatchState.WAITING then
+        BR.Bus.clear()   -- covers brforce waiting from mid-flight too
+        if from == BR.MatchState.CLEANUP then
+            BR.Broadcast.snapshot()   -- re-seed everyone for the next match
+        end
     end
 end
 
@@ -141,7 +161,10 @@ function BR.Match.awardPlacements()
     local living = {}
     BR.Roster.each(
         function(e)
-            return e.state == BR.PlayerState.ALIVE or e.state == BR.PlayerState.DBNO
+            -- isInMatch, not just ALIVE/DBNO: since landing became what makes
+            -- a player alive, a winner can be mid-glide when the last enemy
+            -- dies -- still falling is still standing.
+            return BR.Server.isInMatch(e.state)
         end,
         function(src, e) living[#living + 1] = { src = src, e = e } end)
 
@@ -354,7 +377,9 @@ local function tick()
                 print('[br_core] match: not enough players, returning to WAITING')
                 BR.Match.transition(BR.MatchState.WAITING)
             else
-                BR.Match.transition(BR.MatchState.BUS, 30)
+                -- No duration passed: onEnter(BUS) plans the route and sets
+                -- the deadline from it.
+                BR.Match.transition(BR.MatchState.BUS)
             end
         elseif S.state == BR.MatchState.BUS then
             BR.Match.transition(BR.MatchState.PLAYING)

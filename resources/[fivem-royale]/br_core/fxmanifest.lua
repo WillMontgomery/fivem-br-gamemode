@@ -40,6 +40,8 @@ client_scripts {
     'client/state.lua',
     'client/squadmates.lua',
     'client/keybinds.lua',
+    'client/bus.lua',       -- needs BR.Keys (keybinds) and BR.State (main)
+    'client/skydive.lua',
     'client/chat.lua',
     'client/debug.lua',
 }
@@ -52,6 +54,7 @@ server_scripts {
     'server/lobby.lua',     -- BR.Lobby, read by the match tick
     'server/party.lua',     -- BR.Party, read by the match tick
     'server/match.lua',
+    'server/bus.lua',       -- route authority; match.onEnter(BUS) calls into it
     'server/combat.lua',
     'server/chat.lua',
     'server/debug.lua',

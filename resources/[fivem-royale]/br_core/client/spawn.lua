@@ -220,14 +220,25 @@ RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)
     if d.state == BR.MatchState.CLEANUP then
         BR.Spawn.toWarmupPad()
-        return
     end
-    -- WARMUP moves only the players who are IN the match. A lobby idler who
-    -- never readied up keeps standing where they are; teleporting them into
-    -- someone else's warmup was the visible half of the conscription bug.
-    if d.state == BR.MatchState.WARMUP
-       and BR.State.me.state == BR.PlayerState.WARMUP then
-        BR.Spawn.toWarmupPad()
+end)
+
+-- WARMUP moves only the players who are IN the match, and the trigger is MY
+-- state, not the match transition: the STATE broadcast is deliberately sent
+-- BEFORE onEnter's roster deltas (clients must not learn a match started
+-- before learning who is in it), so at the moment 'warmup' arrives my own
+-- state still reads lobby. Watching my state instead means the gather
+-- happens when the server actually names me a participant -- late joiners
+-- included, which no transition-time check could ever cover.
+local gathered = false
+BR.Loop.register(BR.Loop.TICK, 'spawn.gather', function()
+    if BR.State.me.state == BR.PlayerState.WARMUP then
+        if not gathered then
+            gathered = true
+            BR.Spawn.toWarmupPad()
+        end
+    else
+        gathered = false
     end
 end)
 
