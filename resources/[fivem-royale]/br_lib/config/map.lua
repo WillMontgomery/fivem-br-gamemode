@@ -93,11 +93,23 @@ BR.Config.Bus = {
     boardSeconds = 5,       -- aboard before the wheels leave the airstrip
     jumpGrace    = 5,       -- seconds after the route ends before BUS -> PLAYING
 
-    -- Camera offset from the plane while riding. The Titan is ~20m long and
-    -- the camera must CLEAR the hull -- the first offset (-14, +3) sat inside
-    -- the tail, which rendered as a black wedge of fuselage and, over
-    -- featureless ocean, read as the game having frozen.
-    camOffset    = { x = 0.0, y = -42.0, z = 13.0 },
+    -- Camera orbit distance/height from the plane while riding. The Titan is
+    -- ~20m long and the camera must CLEAR the hull -- the first offset
+    -- (-14, +3) sat inside the tail, which rendered as a black wedge of
+    -- fuselage and, over featureless ocean, read as the game having frozen.
+    camDistance  = 44.0,
+    camHeight    = 13.0,
+
+    -- Where the takeoff roll begins: the Cayo runway threshold, rolling
+    -- toward the northwest end. The climb profile lives in BR.RoutePosAt.
+    runwayStart  = { x = 4517.7, y = -4558.3, z = 4.5 },
+
+    -- Route selection: candidate chords are scored by how much of the drop
+    -- leg overflies LAND (proximity to authored POIs is the proxy -- they
+    -- blanket the landmass). Best of N wins; pure water-to-water routes were
+    -- a real and miserable outcome of unscored randomness.
+    chordTries   = 10,
+    landRadius   = 1400.0,  -- a sample point within this range of a POI counts as land
 }
 
 BR.Config.Drop = {

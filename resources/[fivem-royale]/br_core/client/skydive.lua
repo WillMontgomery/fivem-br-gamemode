@@ -68,7 +68,20 @@ AddEventHandler('br:drop:begin', function(d)
             end
         end
 
-        TaskParachute(ped, true, false)   -- second param verified unused
+        -- TASKED, VERIFIED, RETRIED. TaskParachute issued in the same frame
+        -- as a long teleport can silently not take -- the ped is mid-warp --
+        -- and a ped without the task reports chute state -1 forever, which
+        -- made SPACE dead on flight 3. The state saying FREEFALL/OPENING is
+        -- the only proof the task exists.
+        for attempt = 1, 8 do
+            TaskParachute(ped, true, false)   -- second param verified unused
+            Citizen.Wait(150)
+            local cs = GetPedParachuteState(ped)
+            if cs ~= BR.Native.ChuteState.NONE then break end
+            if attempt == 8 then
+                print('[br_core] drop: TaskParachute never took after 8 attempts')
+            end
+        end
 
         TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
             text = 'SPACE opens the glider — or ride it low.', tone = 'info', ms = 5000,
@@ -76,12 +89,19 @@ AddEventHandler('br:drop:begin', function(d)
     end)
 end)
 
--- Manual deploy.
+-- Manual deploy. If the engine lost the parachute task (state -1 while
+-- clearly airborne), SPACE re-tasks instead of doing nothing -- a dead key
+-- during a fatal fall is the worst possible failure mode, twice observed.
 BR.Keys.on('deploy', function(pressed)
     if not pressed or not dropping then return end
     local ped = PlayerPedId()
-    if GetPedParachuteState(ped) == BR.Native.ChuteState.FREEFALL then
+    local cs = GetPedParachuteState(ped)
+    if cs == BR.Native.ChuteState.FREEFALL then
         ForcePedToOpenParachute(ped)
+    elseif cs == BR.Native.ChuteState.NONE
+       and not IsPedOnFoot(ped) and not IsEntityInWater(ped) then
+        GiveWeaponToPed(ped, CHUTE, 1, false, false)
+        TaskParachute(ped, true, false)
     end
 end)
 
@@ -121,6 +141,18 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
         print('[br_core] landed')
     end
 end)
+
+--- Everything about the drop, in one paste.
+RegisterCommand('brdrop', function()
+    local ped = PlayerPedId()
+    print('=== drop (client) ===')
+    print(('  dropping  %s   chuteState %d   hasChute %s'):format(
+        tostring(dropping), GetPedParachuteState(ped),
+        tostring(HasPedGotWeapon(ped, CHUTE, false))))
+    print(('  AGL %.0fm   onFoot %s   inWater %s   falling %s'):format(
+        GetEntityHeightAboveGround(ped), tostring(IsPedOnFoot(ped)),
+        tostring(IsEntityInWater(ped)), tostring(IsPedFalling(ped))))
+end, false)
 
 -- A match ending mid-air (brforce, mass leave) must not leave the latch set.
 RegisterNetEvent(BR.Net.STATE)

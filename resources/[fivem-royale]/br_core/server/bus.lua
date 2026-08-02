@@ -25,18 +25,38 @@ function BR.Bus.active()
     return route
 end
 
+--- How much of a chord overflies LAND, 0..1.
+---
+--- Proximity to authored POIs is the proxy -- they blanket the landmass and
+--- exist on both sides already. Sampled, not solved: thirteen distance checks
+--- against two dozen POIs, once per candidate, at match start.
+--- @return number
+function BR.Bus.landScore(x1, y1, x2, y2)
+    local hits, samples = 0, 12
+    for i = 0, samples do
+        local k = i / samples
+        local _, d = BR.Config.Map.NearestPOI(BR.Lerp(x1, x2, k), BR.Lerp(y1, y2, k))
+        if d and d <= BR.Config.Bus.landRadius then hits = hits + 1 end
+    end
+    return hits / (samples + 1)
+end
+
 --- Author a route for this match and remember it. Does not broadcast.
 ---
---- Geometry: depart the Cayo airstrip, cruise the ocean to one end of a chord
---- across the match anchor's circle, then fly the chord slowly -- the jump
---- window is exactly the chord leg. The entry point is whichever chord end is
---- nearer the airstrip, so the bus never overflies Los Santos at cruise speed
---- with the doors shut.
+--- Geometry: takeoff roll from the Cayo runway threshold, climb out over the
+--- ocean to one end of a chord across the match anchor's circle, then fly
+--- the chord slowly -- the jump window is exactly the chord leg. The entry
+--- point is whichever chord end is nearer the airstrip, so the bus never
+--- overflies Los Santos at cruise speed with the doors shut.
+---
+--- The chord is the best of several candidates by land coverage: an unscored
+--- random chord across a coastal anchor is water-to-water often enough to
+--- have actually happened on the first flights.
 ---
 --- @return number  seconds until BUS should hand over to PLAYING
 function BR.Bus.plan()
     local cfg = BR.Config.Bus
-    local pad = BR.Config.Match.warmupPos
+    local rw  = cfg.runwayStart
 
     -- The anchor is picked here and REMEMBERED: M4's storm must shrink over
     -- the same ground the bus crossed, or drops and circles disagree about
@@ -45,21 +65,28 @@ function BR.Bus.plan()
     anchor = rng:pick(BR.Config.Storm.anchors)
     BR.Server.matchAnchor = anchor
 
-    local x1, y1, x2, y2 = BR.PickChord(rng, anchor.x, anchor.y,
-                                        cfg.chordRadius, cfg.chordOffset)
+    local x1, y1, x2, y2, best = nil, nil, nil, nil, -1.0
+    for _ = 1, cfg.chordTries do
+        local cx1, cy1, cx2, cy2 = BR.PickChord(rng, anchor.x, anchor.y,
+                                                cfg.chordRadius, cfg.chordOffset)
+        local score = BR.Bus.landScore(cx1, cy1, cx2, cy2)
+        if score > best then
+            x1, y1, x2, y2, best = cx1, cy1, cx2, cy2, score
+        end
+    end
 
     -- Enter at the end nearer the airstrip.
-    if BR.Dist2(pad.x, pad.y, x2, y2) < BR.Dist2(pad.x, pad.y, x1, y1) then
+    if BR.Dist2(rw.x, rw.y, x2, y2) < BR.Dist2(rw.x, rw.y, x1, y1) then
         x1, y1, x2, y2 = x2, y2, x1, y1
     end
 
     local now    = GetGameTimer()
-    local ocean  = BR.Dist(pad.x, pad.y, x1, y1)
+    local ocean  = BR.Dist(rw.x, rw.y, x1, y1)
     local chord  = BR.Dist(x1, y1, x2, y2)
     local tStart = now + cfg.boardSeconds * 1000
 
     route = {
-        sx = pad.x, sy = pad.y,
+        sx = rw.x,  sy = rw.y,  sz = rw.z,
         mx = x1,    my = y1,
         ex = x2,    ey = y2,
         alt    = cfg.altitude,
@@ -68,10 +95,11 @@ function BR.Bus.plan()
         tEnd   = math.floor(tStart + (ocean / cfg.cruiseSpeed
                                     + chord / cfg.speed) * 1000),
         serverNow = now,
+        landScore = best,
     }
 
-    print(('[br_core] bus: %s chord, %.0fm ocean + %.0fm drop leg, %.0fs total')
-        :format(anchor.name, ocean, chord, (route.tEnd - now) / 1000))
+    print(('[br_core] bus: %s chord (land %.0f%%), %.0fm ocean + %.0fm drop leg, %.0fs total')
+        :format(anchor.name, best * 100, ocean, chord, (route.tEnd - now) / 1000))
 
     return (route.tEnd - now) / 1000 + cfg.jumpGrace
 end

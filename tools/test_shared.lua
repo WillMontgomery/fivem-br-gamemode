@@ -243,6 +243,20 @@ do
 
     local _, _, dx, dy = BR.RoutePosAt(r, 1500)
     ok(dx > 0 and near(dy, 0), 'leg one travels toward the chord entry')
+
+    -- The climb profile: on the ground before departure, at cruise altitude
+    -- well before the chord, climbing smoothly in between. This is the
+    -- takeoff -- a plane that pops into the sky is what it replaces.
+    local rz = { sx = 0, sy = 0, sz = 5, mx = 100, my = 0, ex = 100, ey = 100,
+                 alt = 300, tStart = 1000, tMid = 11000, tEnd = 12000 }
+    local _, _, _, _, z0 = BR.RoutePosAt(rz, 0)
+    ok(near(z0, 5), 'on the runway before departure')
+    local _, _, _, _, zMidClimb = BR.RoutePosAt(rz, 2500)
+    ok(zMidClimb > 5 and zMidClimb < 300, 'climbing early in the ocean leg')
+    local _, _, _, _, zCruise = BR.RoutePosAt(rz, 8000)
+    ok(near(zCruise, 300), 'level at cruise before the chord')
+    local _, _, _, _, zChord = BR.RoutePosAt(rz, 11500)
+    ok(near(zChord, 300), 'level on the chord')
 end
 
 describe('geo.chord')

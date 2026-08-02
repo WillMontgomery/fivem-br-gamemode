@@ -184,7 +184,10 @@ local islandActive = false   -- what we have applied
 local islandWanted = true    -- what the match state says we should have
 
 local function nearIsland()
-    return #(GetEntityCoords(PlayerPedId()) - ISLAND_CENTRE) < NEAR_ISLAND
+    -- The RENDERED CAMERA, not the ped: during the bus ride the ped is
+    -- parked at the airstrip while the camera flies the route -- and it is
+    -- the camera's view that must not have its ground deleted.
+    return #(GetFinalRenderedCamCoord() - ISLAND_CENTRE) < NEAR_ISLAND
 end
 
 --- Flip the island's existence. This is the same switch the Cayo heist flips;
@@ -206,18 +209,27 @@ local function applyIsland(on)
     print(('[br_environment] Cayo Perico %s'):format(on and 'enabled' or 'disabled'))
 end
 
+--- The island exists everywhere EXCEPT a running match. This is not only a
+--- streaming-budget decision: ENABLING THE HEIST ISLAND HIDES LOS SANTOS --
+--- that is how the R* mechanic works, the two are mutually exclusive at
+--- range. Keeping the island on through the bus ride is why an entire
+--- flight overflew nothing but ocean: the mainland was not unstreamed, it
+--- was DISABLED. So the switch flips at BUS; the deferred apply below holds
+--- it until the camera is clear of the island, and by then the view ahead
+--- is open water either way.
+local function wantIsland(state)
+    return state ~= BR.MatchState.PLAYING and state ~= BR.MatchState.BUS
+end
+
 RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)
-    -- The island exists everywhere EXCEPT a live match: once everyone is
-    -- dropping over Los Santos its streaming budget belongs to the mainland.
-    -- BUS keeps it -- that is the climb-out over the airstrip.
-    islandWanted = d.state ~= BR.MatchState.PLAYING
+    islandWanted = wantIsland(d.state)
 end)
 
 RegisterNetEvent(BR.Net.SNAPSHOT)
 AddEventHandler(BR.Net.SNAPSHOT, function(payload)
     if payload and payload.match and payload.match.state then
-        islandWanted = payload.match.state ~= BR.MatchState.PLAYING
+        islandWanted = wantIsland(payload.match.state)
     end
 end)
 

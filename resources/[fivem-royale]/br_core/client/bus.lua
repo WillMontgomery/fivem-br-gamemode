@@ -23,7 +23,8 @@ local cam     = nil
 local riding  = false
 local told    = false   -- "doors open" notice sent
 local ejectedSeen = nil -- when we noticed the server flipped us to FREEFALL
-local lastX, lastY, lastT = nil, nil, nil   -- for the finite-difference velocity
+local lastX, lastY, lastZ, lastT = nil, nil, nil, nil  -- finite-difference state
+local camYaw, camPitch = 0.0, -8.0   -- free-look orbit, reset each boarding
 
 local function cleanup()
     if cam then
@@ -39,7 +40,10 @@ local function cleanup()
         if DoesEntityExist(bus) then DeleteEntity(bus) end
         bus = nil
     end
-    lastX, lastY, lastT = nil, nil, nil
+    lastX, lastY, lastZ, lastT = nil, nil, nil, nil
+    -- Streaming focus back to the ped, radar back on screen.
+    ClearFocus()
+    DisplayRadar(true)
     if riding then
         -- Whatever ends the ride, the ped must come back. A hidden frozen
         -- ped with no bus is a black screen with a HUD on it.
@@ -87,7 +91,7 @@ local function board()
         if not riding then return end   -- torn down while the model streamed
 
         local heading = BR.GtaHeading(BR.Bearing(route.sx, route.sy, route.mx, route.my))
-        bus = CreateVehicle(model, route.sx, route.sy, route.alt, heading,
+        bus = CreateVehicle(model, route.sx, route.sy, route.sz or route.alt, heading,
                             false, false)   -- LOCAL. Never networked.
         SetModelAsNoLongerNeeded(model)
         SetEntityCollision(bus, false, false)
@@ -121,14 +125,16 @@ local function board()
         SetEntityVisible(ped, false, false)
         FreezeEntityPosition(ped, true)
 
-        local off = BR.Config.Bus.camOffset
+        -- Unattached camera, positioned every frame by the fly loop: an
+        -- attached camera is welded in place, and free look was the first
+        -- thing missed. HUD chrome goes with it -- the ride is a cutscene.
+        camYaw, camPitch = 0.0, -8.0
         cam = CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA',
-            route.sx + off.x, route.sy + off.y, route.alt + off.z,
+            route.sx, route.sy, (route.sz or route.alt) + BR.Config.Bus.camHeight,
             0.0, 0.0, 0.0, 65.0, false, 2)
-        AttachCamToEntity(cam, bus, off.x, off.y, off.z, true)
-        PointCamAtEntity(cam, bus, 0.0, 0.0, 0.0, true)
         SetCamActive(cam, true)
         RenderScriptCams(true, false, 0, true, true)
+        DisplayRadar(false)
 
         print(('[br_core] aboard the bus (handle %d)'):format(bus))
     end)
@@ -184,22 +190,58 @@ end)
 -- difference of the route, because the engine simulation reads it: velocity
 -- is what makes propellers blur and the airframe sound like it is working.
 -- The two never fight; the coordinate write wins every frame.
+--
+-- The same pass drives the free-look orbit camera and keeps the STREAMING
+-- FOCUS on the plane: the world streams around the PED by default, and the
+-- ped is parked at the airstrip -- without the focus hint, the entire route
+-- ahead is unstreamed ocean, which is precisely how flight 3 looked.
 BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
     if not bus then return end
 
     local t = BR.Clock.now()
-    local x, y, dx, dy = BR.RoutePosAt(route, t)
+    local x, y, dx, dy, z = BR.RoutePosAt(route, t)
 
-    SetEntityCoordsNoOffset(bus, x, y, route.alt, false, false, false)
+    SetEntityCoordsNoOffset(bus, x, y, z, false, false, false)
+
+    local heading = 0.0
     if dx ~= 0.0 or dy ~= 0.0 then
-        SetEntityHeading(bus, BR.GtaHeading(BR.Bearing(0.0, 0.0, dx, dy)))
+        heading = BR.GtaHeading(BR.Bearing(0.0, 0.0, dx, dy))
     end
 
+    local vx, vy, vz = 0.0, 0.0, 0.0
     if lastT and t > lastT then
         local inv = 1000.0 / (t - lastT)
-        SetEntityVelocity(bus, (x - lastX) * inv, (y - lastY) * inv, 0.0)
+        vx, vy, vz = (x - lastX) * inv, (y - lastY) * inv, (z - lastZ) * inv
+
+        -- Pitch follows the actual climb, so rotation off the runway looks
+        -- like rotation rather than an elevator.
+        local hSpeed = math.sqrt(vx * vx + vy * vy)
+        local pitch = hSpeed > 1.0 and math.deg(math.atan(vz, hSpeed)) or 0.0
+        SetEntityRotation(bus, pitch, 0.0, heading, 2, true)
+        SetEntityVelocity(bus, vx, vy, vz)
+    else
+        SetEntityHeading(bus, heading)
     end
-    lastX, lastY, lastT = x, y, t
+    lastX, lastY, lastZ, lastT = x, y, z, t
+
+    SetFocusPosAndVel(x, y, z, vx, vy, vz)
+
+    -- Free-look orbit: mouse (or right stick) walks the camera around the
+    -- plane; it always looks AT the plane, so there is no way to get lost.
+    if cam then
+        camYaw   = (camYaw - GetControlNormal(0, 1) * 8.0) % 360.0
+        camPitch = BR.Clamp(camPitch - GetControlNormal(0, 2) * 6.0, -75.0, 25.0)
+
+        local dist = BR.Config.Bus.camDistance
+        local yawRad   = math.rad(heading + 180.0 + camYaw)  -- 0 = behind the plane
+        local pitchRad = math.rad(camPitch)
+        local horiz = dist * math.cos(pitchRad)
+        SetCamCoord(cam,
+            x - math.sin(yawRad) * horiz,
+            y + math.cos(yawRad) * horiz,
+            z + BR.Config.Bus.camHeight - dist * math.sin(pitchRad))
+        PointCamAtCoord(cam, x, y, z + 4.0)
+    end
 end)
 
 -- SPACE, bus half: ask to jump. (skydive.lua owns the freefall half of the

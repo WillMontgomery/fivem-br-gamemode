@@ -59,11 +59,15 @@ export default function App() {
   // see is worse than one you cannot yet click.
   const showLobby = s.match.state === 'waiting' || s.hud.state === 'lobby'
 
+  // The bus ride is a cutscene: no vitals, no counters, no kill feed (Lua
+  // hides the radar to match). Notices still render -- "doors open" IS one.
+  const ridingBus = s.hud.state === 'bus'
+
   return (
     <>
       {/* Always mounted; visibility follows match state so transitions cost no
           mount work mid-fight. */}
-      <Hud visible={!showLobby} />
+      <Hud visible={!showLobby && !ridingBus} />
       <Chat />
       <Lobby visible={showLobby} />
       {/* Over everything: party events and match alerts do not care which

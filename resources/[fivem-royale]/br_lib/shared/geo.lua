@@ -152,30 +152,45 @@ end
 --- mid -> end (the drop chord, slower). Clamped at both ends so a caller a
 --- frame early or late gets the endpoints, not an extrapolation.
 ---
---- @param route table  { sx, sy, mx, my, ex, ey, tStart, tMid, tEnd }
+--- @param route table  { sx, sy, sz?, mx, my, ex, ey, alt, tStart, tMid, tEnd }
 --- @param t number     synced-clock milliseconds
---- @return number x, number y, number dx, number dy  position and travel direction
+--- @return number x, number y, number dx, number dy, number z
 function BR.RoutePosAt(route, t)
+    local ground = route.sz or route.alt or 0.0
+    local alt    = route.alt or ground
+
+    -- Altitude profile: on the runway before departure, CLIMBING through the
+    -- first 40% of the ocean leg (its own smoothstep, so rotation is gentle),
+    -- level at cruise from there on. Bakes the takeoff into the shared
+    -- function -- a plane that pops into the sky and then starts moving is
+    -- what this replaces.
+    local function climbZ(k)
+        local ck = k / 0.4
+        if ck >= 1.0 then return alt end
+        ck = ck * ck * (3.0 - 2.0 * ck)
+        return BR.Lerp(ground, alt, ck)
+    end
+
     if t <= route.tStart then
-        return route.sx, route.sy, route.mx - route.sx, route.my - route.sy
+        return route.sx, route.sy, route.mx - route.sx, route.my - route.sy, ground
     end
     if t >= route.tEnd then
-        return route.ex, route.ey, route.ex - route.mx, route.ey - route.my
+        return route.ex, route.ey, route.ex - route.mx, route.ey - route.my, alt
     end
     if t < route.tMid and route.tMid > route.tStart then
         local k = (t - route.tStart) / (route.tMid - route.tStart)
-        -- Smoothstep on the ocean leg: the bus ACCELERATES out of the
-        -- airstrip and bleeds speed into the coast instead of snapping to
-        -- 400 m/s on frame one. Shared code, so the server's jump coordinates
-        -- ease exactly as every client's plane does; the leg's endpoints and
+        -- Smoothstep on the ocean leg: the bus ACCELERATES down the runway
+        -- and bleeds speed into the coast instead of snapping to 400 m/s on
+        -- frame one. Shared code, so the server's jump coordinates ease
+        -- exactly as every client's plane does; the leg's endpoints and
         -- midpoint are unchanged (smoothstep is symmetric), only the ramp is.
         k = k * k * (3.0 - 2.0 * k)
         return BR.Lerp(route.sx, route.mx, k), BR.Lerp(route.sy, route.my, k),
-               route.mx - route.sx, route.my - route.sy
+               route.mx - route.sx, route.my - route.sy, climbZ(k)
     end
     local k = (t - route.tMid) / math.max(1, route.tEnd - route.tMid)
     return BR.Lerp(route.mx, route.ex, k), BR.Lerp(route.my, route.ey, k),
-           route.ex - route.mx, route.ey - route.my
+           route.ex - route.mx, route.ey - route.my, alt
 end
 
 --- Pick a chord across a circle: two points on the circumference, offset from

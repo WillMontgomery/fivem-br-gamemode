@@ -1599,14 +1599,27 @@ do
 
     -- Geometry: departs the airstrip, legs in order, chord ends on the
     -- anchor circle, enters at the end nearer the airstrip.
-    local pad = BR.Config.Match.warmupPos
-    ok(r.sx == pad.x and r.sy == pad.y, 'the route departs the warmup pad')
+    local rw = BR.Config.Bus.runwayStart
+    ok(r.sx == rw.x and r.sy == rw.y, 'the route departs the runway threshold')
+    ok(r.sz == rw.z, 'on the ground -- the climb profile owes its start to this')
     ok(r.tStart < r.tMid and r.tMid < r.tEnd, 'legs are ordered in time')
+    ok((r.landScore or 0) > 0, 'the chosen chord overflies at least some land')
+
+    -- The scorer itself, pinned at its extremes: open sea south of the map
+    -- scores zero, a chord through the city scores near-full. (The best-of-N
+    -- selection is exercised statistically below -- a single "> 0" proved
+    -- vacuous in audit, since almost any chord near a land anchor grazes
+    -- some POI.)
+    ok(BR.Bus.landScore(0.0, -8000.0, 4000.0, -9000.0) == 0,
+        'open ocean scores zero')
+    ok(BR.Bus.landScore(-1000.0, -1500.0, 1000.0, -500.0) > 0.8,
+        'a chord across the city scores near-full')
+
     local a = BR.Server.matchAnchor
     ok(a ~= nil, 'the match anchor is remembered for the storm')
     ok(math.abs(BR.Dist(a.x, a.y, r.mx, r.my) - BR.Config.Bus.chordRadius) < 1.0,
         'the chord entry sits on the anchor circle')
-    ok(BR.Dist2(pad.x, pad.y, r.mx, r.my) <= BR.Dist2(pad.x, pad.y, r.ex, r.ey),
+    ok(BR.Dist2(rw.x, rw.y, r.mx, r.my) <= BR.Dist2(rw.x, rw.y, r.ex, r.ey),
         'the bus enters at the end nearer the airstrip')
     ok(BR.Server.match.endsAt >= r.tEnd, 'BUS lasts at least the whole route')
 
@@ -1657,6 +1670,20 @@ do
     -- Freefallers count as living teams: the match must not end while one
     -- fighter is on the ground and the other is still falling.
     ok(BR.Server.squadsAlive() == 2, 'a freefaller is a living team')
+
+    -- Across many seeds, the CHOSEN chord never dips below a floor a purely
+    -- random pick regularly violates around the coastal anchors. Runs last:
+    -- each plan() replaces the live route.
+    local worst = 1.0
+    for seed = 1, 25 do
+        fakeTime = fakeTime + 7919 * seed
+        BR.Bus.plan()
+        local rr = BR.Bus.active()
+        if rr.landScore < worst then worst = rr.landScore end
+    end
+    ok(worst >= 0.3, 'best-of-N keeps every match over meaningful land',
+        ('worst chosen score across seeds: %.2f'):format(worst))
+    BR.Bus.clear()
 end
 
 describe('party.resultFailuresOnly')
