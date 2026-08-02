@@ -83,28 +83,49 @@
 --------------------------------------------------------------------------- */
 /* TRANSPARENCY IS A HARD REQUIREMENT OF THE MEDIUM, NOT A STYLE CHOICE.
  *
- * This page is drawn over a running game. Any opaque background anywhere in the
- * html/body/#root chain paints the game out completely -- the result is a black
- * screen with the HUD floating on it, and every in-game diagnostic reports
- * perfect health because nothing is actually wrong with the game.
+ * This page is drawn over a running game. Anything that paints the canvas
+ * opaque hides the game completely -- a black screen with the HUD floating on
+ * it, while every in-game diagnostic reports perfect health, because nothing is
+ * actually wrong with the game.
  *
- * HeroUI's Tailwind plugin emits, in its base layer:
+ * There are TWO separate ways a component library does this, and fixing only
+ * the obvious one leaves the screen just as black.
  *
- *     :root, [data-theme] { background-color: hsl(var(--heroui-background)) }
+ * 1. AN OPAQUE BACKGROUND. HeroUI's plugin emits, in its base layer:
  *
- * which is entirely reasonable for a web app and fatal here. `:root` carries
- * class-level specificity (0,1,0) while a bare `html` selector is (0,0,1), so
- * it wins no matter what order the rules appear in -- a plain
- * `html { background: transparent }` silently loses.
+ *        :root, [data-theme] { background-color: hsl(var(--heroui-background)) }
  *
- * Hence :root in the selector list AND !important: we are overriding a
- * third-party base layer that will keep reasserting itself on every upgrade.
+ *    `:root` carries class-level specificity (0,1,0) while a bare `html`
+ *    selector is (0,0,1), so it wins regardless of source order -- a plain
+ *    `html { background: transparent }` silently loses.
+ *
+ * 2. color-scheme: dark  <-- THE ONE THAT ACTUALLY KEPT THE SCREEN BLACK.
+ *
+ *    HeroUI's dark theme sets `color-scheme: dark` alongside
+ *    `--heroui-background: 0 0% 0%`. When color-scheme is dark, the browser
+ *    paints the CANVAS opaque dark -- and the canvas background is not any
+ *    element's background-color. That is why html, body and #root can all
+ *    compute to rgba(0,0,0,0) while the screen stays completely black, which
+ *    made the first fix look like it had done nothing.
+ *
+ * ox_lib -- Mantine inside FiveM NUI, the same shape of problem -- opens its
+ * stylesheet with exactly this, which is where the answer came from:
+ *
+ *        html { color-scheme: normal !important; }
+ *        body { background: none !important; }
+ *
+ * !important throughout, because these override a third-party base layer that
+ * reasserts itself on every upgrade.
  */
+html {
+  color-scheme: normal !important;
+}
+
 :root,
 html,
 body,
 #root {
-  background: transparent !important;
+  background: none !important;
   background-color: transparent !important;
 }
 

@@ -179,6 +179,30 @@ export function reportEnvironment(): void {
       backdropFilter: supports('backdrop-filter', 'blur(2px)'),
     },
     viewport: { w: window.innerWidth, h: window.innerHeight, dpr: window.devicePixelRatio },
+
+    // Whether this page is actually see-through.
+    //
+    // Reported because a black screen over a healthy game is otherwise
+    // undiagnosable from in-game: every native check says the world is fine,
+    // because it is -- the page is simply painted over it.
+    //
+    // colorScheme matters as much as the backgrounds. `dark` makes the browser
+    // paint the CANVAS opaque, which is not any element's background-color, so
+    // the two below can read fully transparent while the screen stays black.
+    overlay: (() => {
+      const html = getComputedStyle(document.documentElement)
+      const body = getComputedStyle(document.body)
+      const clear = (c: string) => c === 'rgba(0, 0, 0, 0)' || c === 'transparent'
+      return {
+        colorScheme: html.colorScheme,
+        htmlBg: html.backgroundColor,
+        bodyBg: body.backgroundColor,
+        transparent:
+          html.colorScheme !== 'dark' &&
+          clear(html.backgroundColor) &&
+          clear(body.backgroundColor),
+      }
+    })(),
   }
 
   // eslint-disable-next-line no-console

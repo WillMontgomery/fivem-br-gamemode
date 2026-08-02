@@ -231,6 +231,21 @@ callback(BR.NuiCb.ENV, function(data)
         tostring(data.viewport and data.viewport.h),
         tostring(data.viewport and data.viewport.dpr)))
 
+    -- Is the page actually see-through? A black screen over a healthy game is
+    -- otherwise undiagnosable in-game, because every native check correctly
+    -- reports the world is fine -- the page is just painted over it.
+    local ov = data.overlay or {}
+    if ov.transparent then
+        print('[br_ui]   overlay    transparent (game visible)')
+    else
+        print('[br_ui]   overlay    !! NOT TRANSPARENT -- this will black out the game')
+        print(('[br_ui]     colorScheme %s%s'):format(
+            tostring(ov.colorScheme),
+            ov.colorScheme == 'dark' and '   <- paints the canvas opaque' or ''))
+        print(('[br_ui]     html bg     %s'):format(tostring(ov.htmlBg)))
+        print(('[br_ui]     body bg     %s'):format(tostring(ov.bodyBg)))
+    end
+
     local order = {
         'oklch', 'oklab', 'lch', 'colorMix', 'colorMixSrgb',
         'has', 'nesting', 'atProperty', 'containerType', 'backdropFilter',
