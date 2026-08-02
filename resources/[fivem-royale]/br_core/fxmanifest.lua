@@ -36,6 +36,7 @@ client_scripts {
     'client/natives.lua',
     'client/screen.lua',
     'client/spawn.lua',
+    'client/gamerules.lua',
     'client/state.lua',
     'client/keybinds.lua',
     'client/chat.lua',
@@ -48,6 +49,7 @@ server_scripts {
     'server/broadcast.lua', -- BR.Broadcast, used by roster
     'server/roster.lua',
     'server/match.lua',
+    'server/combat.lua',
     'server/chat.lua',
     'server/debug.lua',
 }

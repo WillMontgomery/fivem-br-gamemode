@@ -257,11 +257,40 @@ AddEventHandler('onResourceStart', function(res)
 
     BR.Sched.start()
 
+    -- ONESYNC IS NOT OPTIONAL FOR THIS GAMEMODE.
+    --
+    -- Server-side entity access -- GetPlayerPed, GetEntityCoords, GetEntityHealth
+    -- against another player -- only exists when OneSync is on. Without it those
+    -- natives return 0 and the server is blind: no position sampling, so no storm
+    -- damage, no spectator targets, and no damage validation.
+    --
+    -- The failure is silent. Nothing errors; the server simply believes every
+    -- player is standing at nowhere with no ped, forever. Worth an explicit,
+    -- noisy check at boot rather than discovering it three milestones later.
+    BR.Server.onesync = GetConvar('onesync', 'off')
+
     print('[br_core] server started')
+    print(('[br_core]   onesync      %s'):format(BR.Server.onesync))
     print(('[br_core]   devMode      %s'):format(tostring(BR.Server.devMode)))
     print(('[br_core]   maxPlayers   %d (free OneSync ceiling is 48)')
         :format(BR.Config.Match.maxPlayers))
     print(('[br_core]   minToStart   %d'):format(BR.Config.Match.MinPlayers(BR.Server.devMode)))
     print(('[br_core]   match length ~%.0f min planned')
         :format(BR.Config.Storm.TotalSeconds() / 60.0))
+
+    if BR.Server.onesync == 'off' or BR.Server.onesync == '' then
+        print('[br_core] ')
+        print('[br_core] ############################################################')
+        print('[br_core]   ONESYNC IS OFF. The server cannot see player entities.')
+        print('[br_core] ')
+        print('[br_core]   GetPlayerPed returns 0 for every player, so nothing that')
+        print('[br_core]   depends on where players are can work: storm damage,')
+        print('[br_core]   spectating, damage validation, the scatter test.')
+        print('[br_core] ')
+        print('[br_core]   Add to server.cfg, BEFORE any ensure lines:')
+        print('[br_core]       set onesync on')
+        print('[br_core]   It also needs a valid sv_licenseKey from keymaster.')
+        print('[br_core] ############################################################')
+        print('[br_core] ')
+    end
 end)

@@ -127,6 +127,16 @@ RegisterCommand('brstate', function()
     print(('  endsAt       %s (in %s)'):format(tostring(M.endsAt),
         M.endsAt > 0 and secs(M.endsAt - GetGameTimer()) or '-'))
     print(('  devMode      %s'):format(tostring(BR.Server.devMode)))
+    print(('  onesync      %s%s'):format(
+        tostring(BR.Server.onesync),
+        (BR.Server.onesync == 'off' or BR.Server.onesync == '')
+            and '   <- server cannot see player entities' or ''))
+
+    -- How many players the server can actually resolve a ped for. If this is
+    -- below the connected count while a match is running, everything that
+    -- depends on positions is silently doing nothing.
+    local withPed = BR.Server.count(function(p) return p.ped and p.ped ~= 0 end)
+    print(('  peds visible %d of %d'):format(withPed, BR.Server.count()))
     line('-')
     print(('  connected    %d'):format(BR.Server.count()))
     print(('  alive        %d'):format(BR.Server.aliveCount()))

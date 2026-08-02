@@ -60,6 +60,9 @@ BR.Net = {
     SPECTATE_CYCLE  = 'br:spectate:cycle',   -- C->S  { dir }
     SUMMARY         = 'br:summary',          -- S->C  end-of-match payload
 
+    -- Death. The client reports; the server decides. See server/combat.lua.
+    PLAYER_DIED     = 'br:player:died',      -- C->S  { cause, killer? }
+
     -- Chat
     CHAT_SEND       = 'br:chat:send',        -- C->S  { channel, text }
     CHAT_MSG        = 'br:chat:msg',         -- S->C  { channel, from, name, text, at }

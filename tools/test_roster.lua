@@ -21,9 +21,25 @@ function GetPlayers()
     table.sort(out)
     return out
 end
-function GetPlayerPed(src) return connected[src] and (1000 + src) or 0 end
+-- GET_PLAYER_PED takes playerSrc as a STRING; the stub matches so the test
+-- exercises the same call shape the server does.
+-- noPed simulates OneSync being off, or a player who has not spawned: they are
+-- connected and on the roster, but the server cannot resolve a ped for them.
+local noPed = {}
+function GetPlayerPed(src)
+    local n = tonumber(src)
+    if noPed[n] then return 0 end
+    return connected[n] and (1000 + n) or 0
+end
 function GetEntityCoords() return { x = 0.0, y = 0.0, z = 0.0 } end
-function GetEntityHealth() return 200 end
+
+-- Health is driven through this table rather than set on roster entries
+-- directly. roster.positions samples health every pass and would overwrite a
+-- hand-set value before combat.deathcheck ever read it -- so poking the entry
+-- tests nothing, while this exercises the real path: server samples, server
+-- observes death, server eliminates.
+local pedHealth = {}
+function GetEntityHealth(ped) return pedHealth[ped] or 200 end
 function GetPedArmour() return 0 end
 
 -- Capture outbound traffic so tests can assert on what clients would receive.
@@ -60,6 +76,7 @@ for _, f in ipairs({
     'br_core/server/broadcast.lua',
     'br_core/server/roster.lua',
     'br_core/server/match.lua',
+    'br_core/server/combat.lua',
 }) do
     local chunk, err = loadfile(ROOT .. f)
     if not chunk then
@@ -371,6 +388,127 @@ do
     ok(BR.Server.match.state == BR.MatchState.ENDED,
         'a disconnect can end the match like an elimination')
     ok(BR.Roster.get(2) == nil, 'and the leaver is gone from the roster')
+end
+
+-- ----------------------------------------------------------------- combat ---
+
+describe('combat.elimination')
+do
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B'); join(3, 'C'); join(4, 'D')
+    BR.Match.transition(BR.MatchState.PLAYING)
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
+
+    ok(BR.Server.squadsAlive() == 4, 'four solo players are four teams')
+
+    -- Placement counts teams still standing INCLUDING the one dying, so the
+    -- first of four to die finishes 4th, not 1st.
+    BR.Combat.eliminate(1, 'fall', nil)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD, 'eliminating marks the player dead')
+    ok(BR.Roster.get(1).placement == 4, 'first death of four takes last place',
+        ('got %s'):format(tostring(BR.Roster.get(1).placement)))
+
+    BR.Combat.eliminate(2, 'fall', nil)
+    ok(BR.Roster.get(2).placement == 3, 'placements count down as teams fall',
+        ('got %s'):format(tostring(BR.Roster.get(2).placement)))
+
+    -- Ordering must be strictly monotonic; two players sharing a placement in a
+    -- solo match would be a scoring bug nobody notices until someone complains.
+    ok(BR.Roster.get(1).placement > BR.Roster.get(2).placement,
+        'an earlier death places worse than a later one')
+
+    BR.Combat.eliminate(1, 'fall', nil)
+    ok(BR.Roster.get(1).placement == 4, 'eliminating an already-dead player does nothing')
+
+    reset()
+    join(1, 'A')
+    BR.Match.transition(BR.MatchState.WAITING)
+    BR.Roster.setState(1, BR.PlayerState.LOBBY)
+    BR.Combat.eliminate(1, 'fall', nil)
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY, 'a player in the lobby cannot be eliminated')
+end
+
+describe('combat.credit')
+do
+    reset()
+    BR.Server.devMode = true
+    join(1, 'Killer'); join(2, 'Victim'); join(3, 'Bystander')
+    BR.Match.transition(BR.MatchState.PLAYING)
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
+
+    BR.Combat.eliminate(2, 'weapon', 1)
+    ok(BR.Roster.get(1).kills == 1, 'the killer is credited')
+    ok(BR.Roster.get(3).kills == 0, 'bystanders are not')
+
+    -- A player cannot farm kills off themselves.
+    BR.Combat.eliminate(3, 'weapon', 3)
+    ok(BR.Roster.get(3).kills == 0, 'a self-kill credits nobody')
+end
+
+describe('combat.serverObserved')
+do
+    -- The half a cheating client cannot avoid: the server reads health itself
+    -- and eliminates regardless of whether the client ever reported.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    BR.Match.transition(BR.MatchState.PLAYING)
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
+
+    -- Player 1's ped now reads as dead. Nothing reports it; the server has to
+    -- notice on its own.
+    pedHealth[1001] = BR.Config.Match.healthFloor
+
+    fakeTime = fakeTime + 2000
+    BR.Sched.step(fakeTime)
+
+    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+        'the server eliminates on its own health reading, with no client report')
+    ok(BR.Roster.get(2).state == BR.PlayerState.ALIVE,
+        'and leaves the healthy player alone')
+    pedHealth[1001] = nil
+
+    -- Without a ped the check must not fire. No ped means OneSync is off or the
+    -- player has not spawned -- neither of which means they are dead, and
+    -- treating it as death would eliminate everyone on a misconfigured server.
+    reset()
+    join(1, 'A'); join(2, 'B')
+    BR.Match.transition(BR.MatchState.PLAYING)
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
+
+    -- Simulate "connected but no ped" with a dedicated lever. Removing them from
+    -- `connected` would also make roster.reconcile drop them entirely -- correct
+    -- behaviour, but not the case under test.
+    noPed[1] = true
+    pedHealth[1001] = 0
+
+    fakeTime = fakeTime + 2000
+    BR.Sched.step(fakeTime)
+    ok(BR.Roster.get(1) ~= nil, 'the player is still on the roster')
+    ok(BR.Roster.get(1).state == BR.PlayerState.ALIVE,
+        'a player with no ped is not assumed dead')
+
+    noPed[1] = nil
+    pedHealth[1001] = nil
+end
+
+describe('combat.endsMatch')
+do
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    BR.Match.transition(BR.MatchState.PLAYING)
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
+
+    BR.Combat.eliminate(2, 'fall', 1)
+    fakeTime = fakeTime + 500
+    BR.Sched.step(fakeTime)
+
+    ok(BR.Server.match.state == BR.MatchState.ENDED,
+        'eliminating the last opponent ends the match')
+    ok(BR.Roster.get(1).placement == 1, 'the survivor takes first')
+    ok(BR.Roster.get(2).placement == 2, 'the loser keeps the placement they died at')
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
