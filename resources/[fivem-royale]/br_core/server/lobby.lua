@@ -27,6 +27,18 @@ function BR.Lobby.needed()
     return BR.Config.Match.MinPlayers(BR.Server.devMode)
 end
 
+--- The queued player ids.
+---
+--- Sorted, so anything derived from the queue is reproducible -- `pairs` order
+--- is undefined and would make squad packing differ between identical lobbies.
+--- @return integer[]
+function BR.Lobby.ids()
+    local ids = {}
+    for src in pairs(queue) do ids[#ids + 1] = src end
+    table.sort(ids)
+    return ids
+end
+
 --- The mode the next match should run, decided by majority of the queue.
 ---
 --- Ties fall to squad: a solo player dropped into a squad match still plays,

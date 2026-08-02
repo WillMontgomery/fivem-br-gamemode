@@ -14,6 +14,22 @@ BR = BR or {}
 local S = BR.State
 local lastSeq = -1
 
+-- Forward declaration. The SQUAD_UPDATE handler sits above the definition
+-- because it belongs with the other net handlers, not with the UI pushes.
+local pushSquadOrParty
+
+-- Boot timeline, so "the menu takes ages to appear" becomes a number instead of
+-- an impression. Each stage records ms since this resource started; /brboot
+-- prints them.
+local boot = { t0 = GetGameTimer() }
+
+--- Record the first time a boot stage happened.
+--- @param stage string
+local function mark(stage)
+    if boot[stage] then return end
+    boot[stage] = GetGameTimer() - boot.t0
+end
+
 -- --------------------------------------------------------------------------
 -- Clock
 -- --------------------------------------------------------------------------
@@ -48,6 +64,7 @@ end)
 --- @param state string
 local function applyFocusForState(state)
     if state == BR.MatchState.WAITING then
+        mark('focus')
         TriggerEvent('br:ui:pushFocus', 'lobby')
     else
         TriggerEvent('br:ui:popFocus', 'lobby')
@@ -56,6 +73,7 @@ end
 
 RegisterNetEvent(BR.Net.SNAPSHOT)
 AddEventHandler(BR.Net.SNAPSHOT, function(payload)
+    mark('snapshot')
     S.roster = payload.roster or {}
     S.match.state  = payload.match.state
     S.match.mode   = payload.match.mode
@@ -183,10 +201,16 @@ end)
 
 -- Party membership is pushed by the server to members only, so a client never
 -- learns about parties it is not in.
+--
+-- Held here rather than only forwarded, because the SQUAD channel has two
+-- writers: this, and pushSquadOrParty() below for the in-match squad.
+-- Forwarding without keeping a copy meant the party could not be re-sent once
+-- the match squad went away -- see that function.
 RegisterNetEvent(BR.Net.SQUAD_UPDATE)
 AddEventHandler(BR.Net.SQUAD_UPDATE, function(party)
     S.me.partyId = party and party.id or nil
-    TriggerEvent('br:ui:sendLocal', BR.Nui.SQUAD, party or { id = nil, members = {} })
+    S.party = (party and party.id) and party or nil
+    pushSquadOrParty()
 end)
 
 RegisterNetEvent(BR.Net.SQUAD_RESULT)
@@ -270,10 +294,27 @@ function BR.PushHud(force)
 end
 
 --- Squad panel data, assembled from the mirror.
-local function pushSquad()
+---
+--- ONE channel, TWO sources, and the fallback between them matters.
+---
+--- A SQUAD is per-match and dies with the match; a PARTY persists. Both feed
+--- BR.Nui.SQUAD. This function used to send an empty payload whenever squadId
+--- was nil, which meant that the moment a match ended and Match.reset cleared
+--- squadId, this loop overwrote the party the server was still holding -- so
+--- players who had queued together were told, on the lobby screen, that they
+--- were in no party at all. The party was fine; only the display was destroyed,
+--- roughly four times a second.
+---
+--- Falling back to the party keeps the panel showing the group that actually
+--- still exists.
+function pushSquadOrParty()
     local me = S.me
+
     if not me.squadId then
-        TriggerEvent('br:ui:sendLocal', BR.Nui.SQUAD, { id = nil, members = {} })
+        local p = S.party
+        TriggerEvent('br:ui:sendLocal', BR.Nui.SQUAD,
+            p and { id = p.id, leader = p.leader, members = p.members }
+              or  { id = nil, members = {} })
         return
     end
 
@@ -302,7 +343,7 @@ BR.Loop.register(BR.Loop.TICK, 'state.vitals', function()
     BR.PushHud()
 end)
 
-BR.Loop.register(BR.Loop.SLOW, 'state.squad', pushSquad)
+BR.Loop.register(BR.Loop.SLOW, 'state.squad', pushSquadOrParty)
 
 -- Clock sync: fast at first so countdowns are usable immediately, then slow.
 local pings = 0
@@ -326,16 +367,30 @@ end)
 local askedForSnapshot = false
 
 AddEventHandler('br:ui:ready', function()
+    mark('uiReady')
     askedForSnapshot = true
     TriggerServerEvent(BR.Net.READY)
 end)
+
+RegisterCommand('brboot', function()
+    print('[br_core] boot timeline (ms since br_core start)')
+    for _, k in ipairs({ 'uiReady', 'snapshot', 'focus' }) do
+        print(('  %-9s %s'):format(k, boot[k] and (boot[k] .. 'ms') or 'never'))
+    end
+    print(('  total    %dms since start'):format(GetGameTimer() - boot.t0))
+end, false)
 
 AddEventHandler('onClientResourceStart', function(res)
     if res ~= GetCurrentResourceName() then return end
 
     -- Fallback only: if br_ui started first, its ready event is already gone and
     -- we would otherwise sit with an empty mirror forever.
-    Citizen.SetTimeout(2000, function()
+    --
+    -- 250ms rather than 2s. This is a floor on how long a player can stare at
+    -- nothing whenever the start order goes that way, and the cost of being
+    -- wrong is one extra snapshot -- the handler is idempotent and the server
+    -- answers it happily. Two seconds bought nothing for that.
+    Citizen.SetTimeout(250, function()
         if not askedForSnapshot then
             askedForSnapshot = true
             TriggerServerEvent(BR.Net.READY)

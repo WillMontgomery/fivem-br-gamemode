@@ -37,6 +37,15 @@ export interface UiState {
   /** Queue progress while WAITING. Null until the server reports. */
   lobby: LobbyPayload | null
 
+  /**
+   * serverNow - Date.now(), captured whenever the server reports its clock.
+   *
+   * Every `endsAt` in this app is a server GetGameTimer value, which shares no
+   * origin with the browser's wall clock -- the raw difference between them is
+   * meaningless. Countdowns must be computed against Date.now() + clockOffset.
+   */
+  clockOffset: number
+
   /** A pending party invite. Expires server-side, so it is transient here too. */
   invite: InvitePayload | null
 
@@ -81,6 +90,10 @@ const emptyDbno: DbnoPayload = {
 }
 
 let toastId = 0
+let toastTimer: ReturnType<typeof setTimeout> | null = null
+
+/** How long a toast stays up when the sender does not specify. */
+const TOAST_MS = 4000
 
 export const useUi = create<UiState>((set) => ({
   match: emptyMatch,
@@ -97,10 +110,19 @@ export const useUi = create<UiState>((set) => ({
   focus: 'none',
   lobby: null,
   invite: null,
+  clockOffset: 0,
   chatOpen: false,
   chatChannel: 'global',
 
-  setMatch:    (match) => set({ match }),
+  // The state payload is the only regular carrier of the server clock, so the
+  // offset is refreshed here. Transitions are infrequent, but drift over a
+  // 45-second warmup is far below one second -- well inside what a countdown
+  // rounded to whole seconds can show.
+  setMatch: (match) => set(
+    match.serverNow
+      ? { match, clockOffset: match.serverNow - Date.now() }
+      : { match }
+  ),
   setHud:      (hud) => set({ hud }),
   setSquad:    (squad) => set({ squad }),
   setInv:      (inv) => set({ inv }),
@@ -121,7 +143,22 @@ export const useUi = create<UiState>((set) => ({
     chat: [...s.chat, msg].slice(-CHAT_MAX),
   })),
 
-  showToast: (t) => set({ toast: { ...t, id: ++toastId } }),
+  // Toasts expire on their own. Without this they were sticky: "Invite sent."
+  // stayed on the lobby panel indefinitely, so the next thing you did looked
+  // like it had produced no response at all.
+  //
+  // The timer is module-level rather than per-toast so a newer toast cancels
+  // the older one's expiry -- otherwise the first toast's timeout would clear
+  // the second one early.
+  showToast: (t) => {
+    const id = ++toastId
+    if (toastTimer) clearTimeout(toastTimer)
+    toastTimer = setTimeout(() => {
+      toastTimer = null
+      set((s) => (s.toast?.id === id ? { toast: null } : {}))
+    }, t.ms ?? TOAST_MS)
+    set({ toast: { ...t, id } })
+  },
 
   openChat:  (chatChannel) => set({ chatOpen: true, chatChannel }),
   closeChat: () => set({ chatOpen: false }),

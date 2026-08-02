@@ -29,6 +29,13 @@ BR.Config.Match = {
     autofill        = true,   -- fill partial squads with solo queuers
     maxSquadSize    = 4,
 
+    -- A squad match needs somebody to fight. One squad means the win condition
+    -- is already satisfied at the starting gun, which reads as "the match ended
+    -- the instant it began". Dev mode drops to 1 so a two-client test can force
+    -- a match through; set autofill = false to test as two one-player squads.
+    minSquads       = 2,
+    minSquadsDev    = 1,
+
     -- Warmup pad. Deliberately the LSIA apron rather than Cayo Perico: Cayo needs
     -- island-enable and IPL juggling, which is exactly the kind of streaming edge
     -- case that breaks first. LSIA is always loaded, and the routing bucket's
@@ -91,6 +98,16 @@ function BR.Config.Match.MinPlayers(devMode)
         return BR.Config.Match.minToStart
     end
     return BR.Config.Match.minToStartProd
+end
+
+--- Resolve the minimum number of squads a squad match needs, honouring dev mode.
+--- @param devMode boolean
+--- @return integer
+function BR.Config.Match.MinSquads(devMode)
+    if devMode then
+        return BR.Config.Match.minSquadsDev
+    end
+    return BR.Config.Match.minSquads
 end
 
 -- Health conversion. The only two places that know about the engine's offset.

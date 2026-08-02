@@ -296,6 +296,7 @@ BR.State = {
     me       = { src = 0, squadId = nil, state = BR.PlayerState.LOBBY, hp = 100.0, armour = 0.0 },
     roster   = {},   -- [serverId] = { name, squadId, state, ... } -- mirror only
     squad    = {},   -- array of serverIds
+    party    = nil,  -- persistent party, pushed by the server; survives a match
     storm    = nil,  -- the published storm record; solved locally via BR.StormAt
     alive    = 0,
     squadsAlive = 0,

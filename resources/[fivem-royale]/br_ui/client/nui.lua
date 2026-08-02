@@ -266,6 +266,18 @@ callback(BR.NuiCb.ENV, function(data)
         print('[br_ui]   this reason, and check-css enforces it at build time.')
     end
     print(('[br_ui] ---- %d unsupported ----'):format(#missing))
+
+    -- This callback is also the only reliable "the interface is alive" signal.
+    --
+    -- br:ui:ready is fired from onClientResourceStart, which is the LUA resource
+    -- starting -- CEF has not fetched the page at that point, let alone mounted
+    -- React. Envelopes sent in that window reach a page whose dispatcher has no
+    -- subscribers yet and are dropped, and nothing re-sent them, because the
+    -- snapshot request had already been answered. The player then waits for the
+    -- next thing that happens to push state before the lobby fills in.
+    --
+    -- This fires from the bundle's own module load, so it cannot be early.
+    TriggerEvent('br:ui:ready')
     return { ok = true }
 end)
 

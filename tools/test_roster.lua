@@ -771,6 +771,142 @@ do
     BR.Config.Match.autofill = true
 end
 
+describe('party.noOrphans')
+do
+    -- Greedy fill packed each squad full before opening the next, so five
+    -- players at a cap of four became 4 + 1 and somebody played a squad round
+    -- alone against a full team.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.autofill = true
+
+    local function sizesFor(n)
+        reset()
+        BR.Server.devMode = true
+        for i = 1, n do join(i, 'P' .. i) end
+        BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.WARMUP) end)
+        BR.Party.formSquads(BR.Mode.SQUAD.key)
+
+        local counts = {}
+        BR.Roster.each(nil, function(_, e)
+            if e.squadId then counts[e.squadId] = (counts[e.squadId] or 0) + 1 end
+        end)
+        local sizes = {}
+        for _, c in pairs(counts) do sizes[#sizes + 1] = c end
+        table.sort(sizes)
+        return sizes
+    end
+
+    for _, n in ipairs({ 5, 6, 7, 9, 13 }) do
+        local sizes = sizesFor(n)
+        local lone, total = 0, 0
+        for _, c in ipairs(sizes) do
+            if c == 1 then lone = lone + 1 end
+            total = total + c
+        end
+        ok(total == n, ('%d players are all placed'):format(n))
+        ok(lone == 0, ('%d players leave nobody in a squad of one'):format(n))
+    end
+
+    -- With one player there is no way to avoid a squad of one; it must not
+    -- crash or drop them, and the minSquads gate is what stops such a match.
+    ok(#sizesFor(1) == 1, 'a single player still forms one squad')
+end
+
+describe('party.prospectiveSquads')
+do
+    -- The gate and the outcome must agree. If the prediction says two squads
+    -- and formation produces one, the match starts into an instant win -- which
+    -- is the exact thing the prediction exists to prevent.
+    local function actual(n, partyPairs, mode)
+        reset()
+        BR.Server.devMode = true
+        for i = 1, n do join(i, 'P' .. i) end
+        for _, pr in ipairs(partyPairs or {}) do
+            BR.Party.invite(pr[1], pr[2]); BR.Party.respond(pr[2], true)
+        end
+
+        local ids = {}
+        for i = 1, n do ids[#ids + 1] = i end
+        local predicted = BR.Party.prospectiveSquads(ids, mode)
+
+        BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.WARMUP) end)
+        BR.Party.formSquads(mode)
+
+        local counts = {}
+        BR.Roster.each(nil, function(_, e)
+            if e.squadId then counts[e.squadId] = true end
+        end)
+        local formed = 0
+        for _ in pairs(counts) do formed = formed + 1 end
+        return predicted, formed
+    end
+
+    BR.Config.Match.autofill = true
+    for _, case in ipairs({
+        { 2, {} }, { 5, {} }, { 8, {} },
+        { 4, { { 1, 2 } } },
+        { 6, { { 1, 2 }, { 3, 4 } } },
+        { 9, { { 1, 2 } } },
+    }) do
+        local predicted, formed = actual(case[1], case[2], BR.Mode.SQUAD.key)
+        ok(predicted == formed,
+            ('prediction matches formation for %d players (%d)'):format(case[1], formed))
+    end
+
+    -- Solo mode is one "squad" per player, and forms none at all.
+    local predicted = actual(5, {}, BR.Mode.SOLO.key)
+    ok(predicted == 5, 'solo mode counts every player as their own team')
+
+    BR.Config.Match.autofill = false
+    local p2, f2 = actual(3, {}, BR.Mode.SQUAD.key)
+    ok(p2 == f2 and p2 == 3, 'without autofill each solo is its own squad')
+    BR.Config.Match.autofill = true
+end
+
+describe('match.minSquads')
+do
+    -- A squad match with one squad has already met its win condition at the
+    -- starting gun: it would end on the first tick past the grace period.
+    reset()
+    BR.Server.devMode = false          -- production thresholds: minSquads = 2
+    BR.Config.Match.autofill = true
+
+    for i = 1, 20 do join(i, 'P' .. i) end
+    -- Everyone in one party would be one squad -- but a party caps at 4, so
+    -- instead make the whole queue a single squad by capping size at 20.
+    local realMax = BR.Config.Match.maxSquadSize
+    BR.Config.Match.maxSquadSize = 20
+    for i = 2, 20 do BR.Party.invite(1, i); BR.Party.respond(i, true) end
+
+    for i = 1, 20 do BR.Lobby.join(i, BR.Mode.SQUAD.key) end
+    ok(BR.Lobby.count() >= BR.Lobby.needed(), 'the queue is full enough on headcount')
+    ok(BR.Party.prospectiveSquads(BR.Lobby.ids(), BR.Mode.SQUAD.key) == 1,
+        'but they are all one squad')
+
+    -- The clock MUST advance past the tick interval, or the scheduler simply
+    -- does not run the tick and "still WAITING" would be true for the wrong
+    -- reason -- a test that passes with the gate deleted.
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WAITING,
+        'so the match does not start')
+    ok(BR.Lobby.count() == 20, 'and the queue is not consumed')
+
+    -- A second team arrives and it starts.
+    BR.Config.Match.maxSquadSize = realMax
+    join(21, 'Outsider')
+    BR.Lobby.join(21, BR.Mode.SQUAD.key)
+    ok(BR.Party.prospectiveSquads(BR.Lobby.ids(), BR.Mode.SQUAD.key) >= 2,
+        'a second team makes two')
+
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'and now it starts')
+
+    BR.Server.devMode = true
+end
+
 describe('party.squadToSolo')
 do
     -- REGRESSION, reported in play: two players finished a squad match together,

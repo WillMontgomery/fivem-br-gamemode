@@ -2,6 +2,7 @@ import { useUi, selHud, selStorm, selSquad, selFeed, selDbno } from '../store'
 import { useScreenMetrics } from './useScreenMetrics'
 import Vitals from './Vitals'
 import StormBar from './StormBar'
+import WarmupTimer from './WarmupTimer'
 import Counters from './Counters'
 import KillFeed from './KillFeed'
 import SquadPanel from './SquadPanel'
@@ -51,7 +52,11 @@ export default function Hud({ visible }: { visible: boolean }) {
 
       <div className="hud-safe">
         {/* Top row */}
+        {/* Top centre carries whichever clock matters right now. Warmup owns it
+            until the drop; the storm owns it for the rest of the match. They
+            never overlap, so they share the slot rather than competing. */}
         <div className="absolute left-1/2 -translate-x-1/2" style={{ top: 'var(--safe-y)' }}>
+          <WarmupTimer />
           <StormBar storm={storm} />
         </div>
 

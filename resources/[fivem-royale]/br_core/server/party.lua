@@ -260,6 +260,47 @@ end
 --- is their own team and a squadId would only confuse the win condition.
 ---
 --- @param mode string
+--- How many squads a given set of players WOULD form, without forming them.
+---
+--- Deliberately mirrors the arithmetic in formSquads below. The two must agree:
+--- if this says two squads and formSquads then produces one, the match starts
+--- into an instant win, which is precisely the failure this exists to prevent.
+--- Any change to the packing rules belongs in both.
+---
+--- @param srcs integer[]  the players who would be in the match
+--- @param mode string
+--- @return integer
+function BR.Party.prospectiveSquads(srcs, mode)
+    if mode == BR.Mode.SOLO.key then return #srcs end
+
+    local maxSize = BR.Config.Match.maxSquadSize
+
+    -- Party members only count if they are in this set; a partied player who
+    -- did not queue is not in the match.
+    local sizes, solos = {}, 0
+    for _, src in ipairs(srcs) do
+        local p = BR.Party.of(src)
+        if p then
+            sizes[p.id] = (sizes[p.id] or 0) + 1
+        else
+            solos = solos + 1
+        end
+    end
+
+    local squads, capacity = 0, 0
+    for _, n in pairs(sizes) do
+        squads = squads + 1
+        capacity = capacity + math.max(0, maxSize - n)
+    end
+
+    if BR.Config.Match.autofill then
+        squads = squads + math.ceil(math.max(0, solos - capacity) / maxSize)
+    else
+        squads = squads + solos
+    end
+    return squads
+end
+
 function BR.Party.formSquads(mode)
     -- Clear last match's squads first; squadId is per-match, partyId is not.
     -- clearFields rather than direct assignment, because a nil cannot travel in
@@ -302,11 +343,35 @@ function BR.Party.formSquads(mode)
     table.sort(solos)
 
     if BR.Config.Match.autofill then
+        -- Spread solos across squads rather than packing each one full before
+        -- opening the next.
+        --
+        -- Greedy fill orphans people. Five solos at a cap of four gives 4 + 1,
+        -- and that last player spends a squad round alone against full teams --
+        -- which is the whole complaint about "solos in a squad match". Opening
+        -- enough squads up front and dealing round-robin gives 3 + 2 instead.
+        --
+        -- Enough squads are opened up front to hold everyone, then each solo
+        -- goes to the emptiest one with room. A part-full party gets topped up
+        -- only once the new squads have caught up to its size, which is what
+        -- keeps the teams even.
+        local capacity = 0
+        for _, sq in ipairs(squads) do capacity = capacity + (maxSize - #sq.members) end
+
+        local extra = math.ceil(math.max(0, #solos - capacity) / maxSize)
+        for _ = 1, extra do squads[#squads + 1] = { members = {} } end
+
         for _, src in ipairs(solos) do
+            -- Always the emptiest squad with room, so the sizes stay level.
             local target
             for _, sq in ipairs(squads) do
-                if #sq.members < maxSize then target = sq break end
+                if #sq.members < maxSize
+                   and (not target or #sq.members < #target.members) then
+                    target = sq
+                end
             end
+            -- Only reachable if capacity was miscounted; opening a squad beats
+            -- dropping a player out of the match entirely.
             if not target then
                 target = { members = {} }
                 squads[#squads + 1] = target
@@ -391,13 +456,18 @@ end)
 RegisterNetEvent(BR.Net.SQUAD_RESPOND)
 AddEventHandler(BR.Net.SQUAD_RESPOND, function(data)
     local src = source
-    local ok, reason = BR.Party.respond(src, data and data.accept)
-    result(src, ok, reason)
+    local accept = data and data.accept
+    local ok, reason = BR.Party.respond(src, accept)
+    -- Never fall through to a bare "Done." -- the player needs to know WHICH
+    -- thing was done, especially when declining.
+    result(src, ok, reason or (accept and 'Joined the party.' or 'Invite declined.'))
 end)
 
 RegisterNetEvent(BR.Net.SQUAD_LEAVE)
 AddEventHandler(BR.Net.SQUAD_LEAVE, function()
-    BR.Party.leave(source)
+    local src = source
+    BR.Party.leave(src)
+    result(src, true, 'Left the party.')
 end)
 
 RegisterNetEvent(BR.Net.SQUAD_KICK)

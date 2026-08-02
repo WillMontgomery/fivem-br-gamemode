@@ -51,11 +51,20 @@ export function dispatch(msg: WireEnvelope): void {
     lastSeq = msg.s ?? 0
   } else if (typeof msg.s === 'number') {
     if (msg.s <= lastSeq) return
-    lastSeq = msg.s
   }
 
   const set = handlers.get(msg.k)
-  if (!set) return
+
+  // Do NOT advance the sequence for an envelope nobody is listening for.
+  //
+  // The window listener is attached at module load; React does not subscribe
+  // until after the first render. Consuming the sequence here meant envelopes
+  // arriving in that gap were dropped AND counted as delivered, so the resend
+  // that followed looked stale and was discarded too. The UI then sat on
+  // defaults until something unrelated happened to push state again.
+  if (!set || set.size === 0) return
+
+  if (msg.k !== 'snapshot' && typeof msg.s === 'number') lastSeq = msg.s
   for (const fn of set) {
     try {
       fn(msg.d)

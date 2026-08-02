@@ -45,6 +45,7 @@ function BR.Match.transition(state, durationSec)
     local secs = durationSec or DURATION[state]
     S.state  = state
     S.endsAt = secs and (GetGameTimer() + secs * 1000) or 0
+    S.shortened = false
 
     print(('[br_core] match: %s -> %s%s'):format(
         from, state, secs and (' (%ds)'):format(secs) or ''))
@@ -152,6 +153,54 @@ function BR.Match.reset()
     end)
 end
 
+--- Cut the warmup short once the lobby is full.
+---
+--- Warmup exists to give stragglers time to arrive. Once nobody else can join,
+--- it is dead time -- and a full lobby staring at a 45 second timer with every
+--- slot taken is the most obvious possible way to waste a player's patience.
+---
+--- Rebroadcasts rather than mutating quietly: clients derive their countdown
+--- from endsAt, so an endsAt that changed without being announced would leave
+--- every HUD counting down to the wrong moment.
+function BR.Match.shortenWarmupIfFull()
+    if S.shortened then return end
+    if BR.Server.count() < M.maxPlayers then return end
+
+    local cap = GetGameTimer() + M.warmupShortened * 1000
+    if cap >= S.endsAt then
+        S.shortened = true    -- already sooner than the cap; nothing to do
+        return
+    end
+
+    S.endsAt = cap
+    S.shortened = true
+    print(('[br_core] lobby full -- warmup cut to %ds'):format(M.warmupShortened))
+    BR.Broadcast.state(S.state, S.endsAt, { reason = 'lobbyFull' })
+end
+
+--- Explain why a full queue is not starting.
+---
+--- The tick runs at 4Hz, so this is throttled and only speaks when the answer
+--- changes. Without it the lobby sits at "enough players" forever with no
+--- indication of what it is waiting for, which is indistinguishable from the
+--- queue being broken -- a failure mode this project has already shipped once.
+--- @param squads integer
+--- @param minSquads integer
+local lastSquadWarn = { squads = -1, at = 0 }
+
+function BR.Match.waitingOnSquads(squads, minSquads)
+    local now = GetGameTimer()
+    if squads == lastSquadWarn.squads and (now - lastSquadWarn.at) < 15000 then
+        return
+    end
+    lastSquadWarn.squads, lastSquadWarn.at = squads, now
+
+    print(('[br_core] holding: %d squad(s), need %d -- waiting for another team')
+        :format(squads, minSquads))
+    BR.Server.systemMessage(
+        ('Waiting for another squad to queue (%d/%d teams).'):format(squads, minSquads))
+end
+
 --- Is there anyone left to fight over?
 --- @return boolean
 --- How long after PLAYING begins before a win can be declared.
@@ -186,15 +235,36 @@ local function tick()
         -- drags anyone idling in the lobby into a match they never asked for,
         -- and made the Play button decorative.
         if BR.Lobby.count() >= BR.Lobby.needed() then
+            local mode = BR.Lobby.dominantMode()
+
+            -- Enough PLAYERS is not the same as enough TEAMS. Four players who
+            -- all queued as one party form a single squad, and a single squad
+            -- has already met the win condition before the match starts -- the
+            -- match would end on its own first tick.
+            --
+            -- Checked here rather than after forming squads because the queue is
+            -- consumed on the way into WARMUP: refusing later would mean the
+            -- players are already out of the queue with no match to be in.
+            local squads = BR.Party.prospectiveSquads(BR.Lobby.ids(), mode)
+            local minSquads = BR.Config.Match.MinSquads(BR.Server.devMode)
+            if squads < minSquads then
+                BR.Match.waitingOnSquads(squads, minSquads)
+                return
+            end
+
             -- Consume the queue BEFORE transitioning. If anything in the
             -- transition throws, the queue must still be spent -- otherwise the
             -- next tick sees a full queue and tries to start the match again,
             -- every tick, forever.
-            S.mode = BR.Lobby.dominantMode()
+            S.mode = mode
             BR.Lobby.clear()
             BR.Match.transition(BR.MatchState.WARMUP)
         end
         return
+    end
+
+    if S.state == BR.MatchState.WARMUP then
+        BR.Match.shortenWarmupIfFull()
     end
 
     if winConditionMet() then
