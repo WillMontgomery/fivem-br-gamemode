@@ -244,6 +244,31 @@ RegisterCommand('brtc', function(_, args)
     print(('[br_core] timecycle "%s" at %.2f'):format(name, strength))
 end, false)
 
+RegisterNetEvent('br:debug:teleport')
+AddEventHandler('br:debug:teleport', function(x, y)
+    local ped = PlayerPedId()
+    -- Request collision at the destination and wait for ground to stream in;
+    -- teleporting without it drops the player through the map into the water.
+    RequestCollisionAtCoord(x + 0.0, y + 0.0, 500.0)
+    SetEntityCoordsNoOffset(ped, x + 0.0, y + 0.0, 500.0, false, false, false)
+    FreezeEntityPosition(ped, true)
+
+    Citizen.CreateThread(function()
+        local tries = 0
+        while tries < 40 do
+            Citizen.Wait(100)
+            tries = tries + 1
+            local found, z = GetGroundZFor_3dCoord(x + 0.0, y + 0.0, 500.0, false)
+            if found then
+                SetEntityCoordsNoOffset(ped, x + 0.0, y + 0.0, z + 1.0, false, false, false)
+                break
+            end
+        end
+        FreezeEntityPosition(ped, false)
+        print(('[br_core] scatter: moved to %.0f, %.0f'):format(x, y))
+    end)
+end)
+
 RegisterCommand('brkeys', function()
     print('--- key actions (rebind in Pause > Settings > Key Bindings) ---')
     for _, a in ipairs(BR.Keys.actions or {}) do

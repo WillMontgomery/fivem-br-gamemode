@@ -58,6 +58,48 @@ end
 
 -- ---------------------------------------------------------------- commands ---
 
+RegisterCommand('brscatter', function(_, args)
+    -- THE GATE FOR MILESTONE 1 AND EVERY MILESTONE AFTER IT.
+    --
+    -- Scoping bugs are invisible with players stood together and total with
+    -- players spread out. This drops everyone on a circle several kilometres
+    -- across so nobody is in anyone else's scope, then reports what the server
+    -- believes. Compare that against what each client's HUD shows: if the
+    -- numbers disagree, roster data is leaking through scope somewhere.
+    local radius = tonumber(args[1]) or 3000.0
+    local anchor = BR.Config.Storm.anchors[1]
+
+    local players, i = {}, 0
+    for src in pairs(BR.Server.roster) do players[#players + 1] = src end
+    table.sort(players)
+
+    if #players == 0 then
+        print('  nobody connected to scatter')
+        return
+    end
+
+    header(('scatter test -- %d players onto a %.0fm circle'):format(#players, radius))
+
+    for _, src in ipairs(players) do
+        local theta = (i / #players) * 2.0 * math.pi
+        local x = anchor.x + math.cos(theta) * radius
+        local y = anchor.y + math.sin(theta) * radius
+        i = i + 1
+
+        TriggerClientEvent('br:debug:teleport', src, x, y)
+
+        local p = BR.Server.roster[src]
+        print(('  %-3d %-18s -> %.0f, %.0f'):format(src, p and p.name or '?', x, y))
+    end
+
+    print('')
+    print(('  server believes: %d connected, %d alive, %d squads up')
+        :format(BR.Server.count(), BR.Server.aliveCount(), BR.Server.squadsAlive()))
+    print('  Now check every client HUD shows the same alive count, and that')
+    print('  each one still sees the others join/leave. Any disagreement means')
+    print('  roster data is being derived from scope somewhere.')
+end, RESTRICTED)
+
 RegisterCommand('brhelp', function()
     header('FiveM Royale - server commands')
     print('  brstate              match state, mode, timings, counts')
@@ -68,6 +110,9 @@ RegisterCommand('brhelp', function()
     print('  brjob <on|off> <n>   enable or disable a scheduler job by name')
     print('  brconfig             the tunables that most often explain odd behaviour')
     print('  brwhy <id>           why is this player in the state they are in')
+    print('  brscatter [radius]   spread everyone out to test OneSync scoping')
+    print('  brforce <state>      force a match state transition')
+    print('  brskip               end the current timed state immediately')
     line('-')
     print('  Client-side (run in the F8 console): brnativecheck, brperf, brloop, brfx')
 end, RESTRICTED)

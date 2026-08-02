@@ -32,16 +32,21 @@ shared_scripts {
 -- main.lua must load first on both sides: it defines the loop registry and the
 -- scheduler that every other file registers into.
 client_scripts {
-    'client/main.lua',
+    'client/main.lua',      -- defines the loop registry; must be first
     'client/natives.lua',
     'client/screen.lua',
+    'client/state.lua',
     'client/keybinds.lua',
     'client/chat.lua',
     'client/debug.lua',
 }
 
 server_scripts {
-    'server/main.lua',
+    'server/main.lua',      -- defines the scheduler and BR.Server; must be first
+    'server/clock.lua',
+    'server/broadcast.lua', -- BR.Broadcast, used by roster
+    'server/roster.lua',
+    'server/match.lua',
     'server/chat.lua',
     'server/debug.lua',
 }
