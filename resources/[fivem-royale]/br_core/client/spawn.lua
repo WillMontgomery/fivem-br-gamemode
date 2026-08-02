@@ -187,15 +187,49 @@ function BR.Spawn.respawn(x, y, z, heading)
     BR.Spawn.placeAt(x, y, z, heading)
 end
 
---- Bring the player into the world for the first time.
+--- Bring the player into the world for the first time: straight into the
+--- lobby vista. Visibility is owned by the game rules (invisible while the
+--- state is LOBBY), so nothing here needs to hide anyone.
 local function initialSpawn()
     if spawned then return end
     spawned = true
 
-    local pad = BR.Config.Match.warmupPos
-    BR.Spawn.respawn(pad.x, pad.y, pad.z, pad.heading)
+    local p = BR.Config.Match.lobbyPos
+    BR.Spawn.respawn(p.x, p.y, p.z, p.heading)
 
-    print('[br_core] spawned at the warmup pad')
+    print('[br_core] spawned at the lobby vista')
+end
+
+--- Return to the lobby vista behind a screen fade.
+---
+--- The sequence the transition NEEDS, in order: black first, THEN the world
+--- change (the island coming back is also Los Santos going away -- watching
+--- that happen was an eight-second texture void), then the teleport, then
+--- collision under our feet, then light. The lobby interface renders above
+--- the fade throughout, so the menu is usable the whole time.
+function BR.Spawn.toLobby()
+    Citizen.CreateThread(function()
+        DoScreenFadeOut(400)
+        local t0 = GetGameTimer()
+        while not IsScreenFadedOut() and GetGameTimer() - t0 < 1000 do
+            Citizen.Wait(50)
+        end
+
+        local p = BR.Config.Match.lobbyPos
+        BR.Spawn.respawn(p.x, p.y, p.z, p.heading)
+
+        -- Hold black until the island is actually under us; br_environment
+        -- flips it on within a second of the state change.
+        RequestCollisionAtCoord(p.x, p.y, p.z)
+        local deadline = GetGameTimer() + 8000
+        while GetGameTimer() < deadline
+              and not HasCollisionLoadedAroundEntity(PlayerPedId()) do
+            Citizen.Wait(100)
+        end
+        Citizen.Wait(300)   -- one breath for textures behind the collision
+
+        DoScreenFadeIn(600)
+    end)
 end
 
 --- Return the player to the warmup pad, alive, scattered slightly so a full
@@ -219,7 +253,8 @@ end
 RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)
     if d.state == BR.MatchState.CLEANUP then
-        BR.Spawn.toWarmupPad()
+        -- Match over: everyone goes back to the lobby vista, behind the fade.
+        BR.Spawn.toLobby()
     end
 end)
 
@@ -246,7 +281,7 @@ end)
 -- any) and set us back to LOBBY; all that is left is the physical trip.
 RegisterNetEvent(BR.Net.TO_LOBBY)
 AddEventHandler(BR.Net.TO_LOBBY, function()
-    BR.Spawn.toWarmupPad()
+    BR.Spawn.toLobby()
 end)
 
 --- Leave the current match and return to the lobby.

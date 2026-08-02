@@ -218,7 +218,14 @@ end
 --- it until the camera is clear of the island, and by then the view ahead
 --- is open water either way.
 local function wantIsland(state)
-    return state ~= BR.MatchState.PLAYING and state ~= BR.MatchState.BUS
+    -- ENDED keeps the island OFF too: the summary period is spent standing
+    -- in Los Santos, and enabling the island is what DISABLES Los Santos --
+    -- flipping it at ENDED was the eight-second texture void after every
+    -- match. The island returns at CLEANUP, while the screen fade holds
+    -- black over the swap.
+    return state ~= BR.MatchState.PLAYING
+       and state ~= BR.MatchState.BUS
+       and state ~= BR.MatchState.ENDED
 end
 
 RegisterNetEvent(BR.Net.STATE)
@@ -239,16 +246,34 @@ CreateThread(function()
 
     applyIsland(true)   -- the default world is the lobby world
 
+    local farPolls = 0
     while true do
         Wait(1000)
         if islandWanted ~= islandActive then
-            -- NEVER pull the island out from under the player. Without this,
-            -- forcing PLAYING while still standing on the airstrip (brforce,
-            -- or M3's stragglers) deletes the ground mid-stand and drops them
-            -- into open ocean. The switch waits until they are genuinely away.
-            if islandWanted or not nearIsland() then
-                applyIsland(islandWanted)
+            if islandWanted then
+                applyIsland(true)
+                farPolls = 0
+            else
+                -- NEVER pull the island out from under the player -- and
+                -- never on ONE reading. The rendered-camera coordinate can
+                -- return garbage for a frame mid-cam-transition, and one bad
+                -- 1Hz sample once deleted the runway during boarding. Two
+                -- consecutive far readings, both from plausible coordinates,
+                -- before the switch flips.
+                local c = GetFinalRenderedCamCoord()
+                local plausible = math.abs(c.x) + math.abs(c.y) > 1.0
+                if plausible and not nearIsland() then
+                    farPolls = farPolls + 1
+                else
+                    farPolls = 0
+                end
+                if farPolls >= 2 then
+                    applyIsland(false)
+                    farPolls = 0
+                end
             end
+        else
+            farPolls = 0
         end
     end
 end)

@@ -72,6 +72,28 @@ end
 --- Add a player, or return the existing entry if they are already known.
 --- @param src integer
 --- @return table
+--- Put a player in the routing bucket their state calls for.
+---
+--- LOBBY players get a PERSONAL bucket (a base offset plus their own id):
+--- the lobby is a menu with a view, and in a shared bucket every idler's ped
+--- would be standing in everyone else's vista shot. Alone in a bucket, a
+--- lobby player sees no peds at all and no one sees theirs. Everyone in a
+--- match shares bucket 0. Guarded, because the unit tests run this file
+--- without the Cfx runtime.
+--- @param src integer
+--- @param state string
+local function applyBucket(src, state)
+    if not SetPlayerRoutingBucket then return end
+    local bucket = 0
+    if state == BR.PlayerState.LOBBY then
+        bucket = 1000 + src
+        if SetRoutingBucketPopulationEnabled then
+            SetRoutingBucketPopulationEnabled(bucket, false)
+        end
+    end
+    SetPlayerRoutingBucket(tostring(src), bucket)
+end
+
 function BR.Roster.add(src)
     local existing = roster[src]
     if existing then
@@ -81,6 +103,10 @@ function BR.Roster.add(src)
 
     local entry = newEntry(src)
     roster[src] = entry
+
+    -- New joiners start in the LOBBY state, so they get its private bucket
+    -- too -- add() writes the state directly rather than through setState.
+    applyBucket(src, entry.state)
 
     BR.Broadcast.delta({ op = 'add', src = src, e = BR.Roster.public(entry) })
     print(('[br_core] + %s (%d) joined -- %d connected'):format(entry.name, src, BR.Server.count()))
@@ -184,6 +210,10 @@ function BR.Roster.setState(src, state)
 
     local from = entry.state
     entry.state = state
+
+    -- The bucket rides the state, from the single choke point every state
+    -- change already passes through.
+    applyBucket(src, state)
 
     BR.Broadcast.delta({ op = 'update', src = src, e = { state = state } })
 

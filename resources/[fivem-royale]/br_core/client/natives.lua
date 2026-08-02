@@ -264,7 +264,15 @@ function BR.Native.applyGameRules()
     SetPlayerInvincible(pid,
         st == BR.PlayerState.WARMUP
         or st == BR.PlayerState.BUS
+        or st == BR.PlayerState.LOBBY
         or GetGameTimer() < (BR.State.dropGraceUntil or 0))
+
+    -- The lobby is a menu with a view -- no ped in the shot. The bus ride
+    -- hides the ped too (it is "aboard"); the rule living here, per frame,
+    -- is what makes every transition self-correcting: whatever hid or
+    -- showed the ped along the way, the current state wins within a frame.
+    SetEntityVisible(ped,
+        st ~= BR.PlayerState.LOBBY and st ~= BR.PlayerState.BUS, false)
 
     -- GTA's own feed ("X joined", "Y died", weapon unlocks, whatever any other
     -- resource posts). The gamemode owns its presentation -- eliminations go

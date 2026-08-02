@@ -39,6 +39,12 @@ BR.Config.Match = {
     minSquads       = 2,
     minSquadsDev    = 1,
 
+    -- The LOBBY: a vista point above Cayo Perico, used as the backdrop
+    -- behind the menu. Players in the LOBBY state sit here invisible and in
+    -- a PERSONAL routing bucket -- the lobby is a menu with a view, not a
+    -- place, so nobody's ped may wander through the shot.
+    lobbyPos        = { x = 4798.33, y = -5031.61, z = 36.59, heading = 44.05 },
+
     -- Warmup pad: the Cayo Perico airstrip apron. The island is enabled by
     -- br_environment whenever a match is not PLAYING -- if players spawn into
     -- ocean here, that resource is not running (it must be ensured in

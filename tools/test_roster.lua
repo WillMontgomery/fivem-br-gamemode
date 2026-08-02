@@ -42,6 +42,12 @@ local pedHealth = {}
 function GetEntityHealth(ped) return pedHealth[ped] or 200 end
 function GetPedArmour() return 0 end
 
+-- Routing buckets, captured for assertion: the lobby is per-player private,
+-- matches are shared.
+local buckets = {}
+function SetPlayerRoutingBucket(src, bucket) buckets[tonumber(src)] = bucket end
+function SetRoutingBucketPopulationEnabled() end
+
 -- Capture outbound traffic so tests can assert on what clients would receive.
 local sent = {}
 function TriggerClientEvent(event, target, ...)
@@ -1684,6 +1690,32 @@ do
     ok(worst >= 0.3, 'best-of-N keeps every match over meaningful land',
         ('worst chosen score across seeds: %.2f'):format(worst))
     BR.Bus.clear()
+end
+
+describe('roster.buckets')
+do
+    -- The lobby is a MENU with a view: each lobby player sits alone in a
+    -- personal routing bucket so no ped ever stands in another player's
+    -- vista shot. Match states share bucket 0. The bucket rides the state
+    -- through the setState choke point, and join must apply it too --
+    -- add() writes the initial state directly.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    ok(buckets[1] == 1001 and buckets[2] == 1002,
+        'joining lands each player in their own private lobby bucket')
+
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'match starts')
+    ok(buckets[1] == 0 and buckets[2] == 0,
+        'entering the match moves everyone into the shared bucket')
+
+    fire(BR.Net.MATCH_LEAVE, 2)
+    ok(buckets[2] == 1002, 'leaving the match returns them to their private bucket')
+    ok(buckets[1] == 0, 'without disturbing anyone still playing')
 end
 
 describe('party.resultFailuresOnly')
