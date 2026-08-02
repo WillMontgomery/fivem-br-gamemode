@@ -166,11 +166,28 @@ AddEventHandler('br:ui:action', function(name, data)
         TriggerServerEvent(BR.Net.QUEUE_LEAVE)
     elseif name == BR.NuiCb.SQUAD_INVITE then
         TriggerServerEvent(BR.Net.SQUAD_INVITE, data)
+    elseif name == BR.NuiCb.SQUAD_RESPOND then
+        TriggerServerEvent(BR.Net.SQUAD_RESPOND, data)
+    elseif name == BR.NuiCb.SQUAD_KICK then
+        TriggerServerEvent(BR.Net.SQUAD_KICK, data)
     elseif name == BR.NuiCb.SQUAD_LEAVE then
         TriggerServerEvent(BR.Net.SQUAD_LEAVE)
     elseif BR.Server and BR.Server.devMode then
         print(('[br_core] unhandled UI action: %s'):format(tostring(name)))
     end
+end)
+
+-- Party membership is pushed by the server to members only, so a client never
+-- learns about parties it is not in.
+RegisterNetEvent(BR.Net.SQUAD_UPDATE)
+AddEventHandler(BR.Net.SQUAD_UPDATE, function(party)
+    S.me.partyId = party and party.id or nil
+    TriggerEvent('br:ui:sendLocal', BR.Nui.SQUAD, party or { id = nil, members = {} })
+end)
+
+RegisterNetEvent(BR.Net.SQUAD_INVITED)
+AddEventHandler(BR.Net.SQUAD_INVITED, function(inv)
+    TriggerEvent('br:ui:sendLocal', BR.Nui.INVITE, inv)
 end)
 
 RegisterNetEvent(BR.Net.LOBBY_STATUS)

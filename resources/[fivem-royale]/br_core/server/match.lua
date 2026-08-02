@@ -62,6 +62,10 @@ function BR.Match.onEnter(state, from)
         BR.Roster.each(nil, function(src)
             BR.Roster.setState(src, BR.PlayerState.WARMUP)
         end)
+        -- Squads are formed once, here, from the parties that exist at the
+        -- moment the match starts. Forming them earlier would go stale as
+        -- people join and leave parties in the lobby.
+        BR.Party.formSquads(S.mode)
 
     elseif state == BR.MatchState.BUS then
         BR.Server.matchId = BR.Server.matchId + 1
@@ -178,9 +182,13 @@ local function tick()
         -- drags anyone idling in the lobby into a match they never asked for,
         -- and made the Play button decorative.
         if BR.Lobby.count() >= BR.Lobby.needed() then
+            -- Consume the queue BEFORE transitioning. If anything in the
+            -- transition throws, the queue must still be spent -- otherwise the
+            -- next tick sees a full queue and tries to start the match again,
+            -- every tick, forever.
             S.mode = BR.Lobby.dominantMode()
-            BR.Match.transition(BR.MatchState.WARMUP)
             BR.Lobby.clear()
+            BR.Match.transition(BR.MatchState.WARMUP)
         end
         return
     end

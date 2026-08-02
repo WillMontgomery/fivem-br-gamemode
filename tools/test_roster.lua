@@ -76,6 +76,7 @@ for _, f in ipairs({
     'br_core/server/broadcast.lua',
     'br_core/server/roster.lua',
     'br_core/server/lobby.lua',
+    'br_core/server/party.lua',
     'br_core/server/match.lua',
     'br_core/server/combat.lua',
 }) do
@@ -103,6 +104,7 @@ end
 
 local function reset()
     for k in pairs(BR.Server.roster) do BR.Server.roster[k] = nil end
+    for k in pairs(BR.Server.parties or {}) do BR.Server.parties[k] = nil end
     for k in pairs(connected) do connected[k] = nil end
     sent = {}
     BR.Server.match.state = BR.MatchState.WAITING
@@ -560,6 +562,167 @@ do
     ok(BR.Lobby.count() == 1, 'and works again once the match is over')
 
     BR.Lobby.clear()
+end
+
+-- ------------------------------------------------------------------ party ---
+
+describe('party.invite')
+do
+    reset()
+    BR.Server.devMode = true
+    join(1, 'Alice'); join(2, 'Bob'); join(3, 'Cara')
+
+    ok(BR.Party.of(1) == nil, 'players start with no party')
+
+    -- Inviting creates the inviter's party implicitly. A separate "create
+    -- party" step is one more thing to forget.
+    local ok1 = BR.Party.invite(1, 2)
+    ok(ok1, 'inviting succeeds')
+    ok(BR.Party.of(1) ~= nil, 'and creates a party for the inviter')
+    ok(BR.Party.size(BR.Party.of(1).id) == 1, 'which contains only them until accepted')
+
+    BR.Party.respond(2, true)
+    ok(BR.Party.of(2) ~= nil, 'accepting joins the party')
+    ok(BR.Party.of(2).id == BR.Party.of(1).id, 'the same party')
+    ok(BR.Party.size(BR.Party.of(1).id) == 2, 'now with two members')
+
+    -- Declining must not join, and must consume the invite.
+    BR.Party.invite(1, 3)
+    BR.Party.respond(3, false)
+    ok(BR.Party.of(3) == nil, 'declining does not join')
+    local again = BR.Party.respond(3, true)
+    ok(not again, 'and the invite is consumed -- no accepting it later')
+
+    ok(not BR.Party.invite(1, 1), 'you cannot invite yourself')
+    ok(not BR.Party.invite(1, 999), 'you cannot invite someone not connected')
+
+    -- Only the leader invites, or any member could grow the party unilaterally.
+    ok(not BR.Party.invite(2, 3), 'non-leaders cannot invite')
+end
+
+describe('party.leave')
+do
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    BR.Party.invite(1, 3); BR.Party.respond(3, true)
+
+    local pid = BR.Party.of(1).id
+    ok(BR.Party.size(pid) == 3, 'three in the party')
+
+    BR.Party.leave(3)
+    ok(BR.Party.of(3) == nil, 'leaving clears your party')
+    ok(BR.Party.size(pid) == 2, 'and removes you from it')
+
+    -- The leader leaving must not orphan everyone else.
+    ok(BR.Party.of(1).leader == 1, 'player 1 leads')
+    BR.Party.leave(1)
+    ok(BR.Party.of(2) ~= nil, 'the party survives the leader leaving')
+    ok(BR.Party.of(2).leader == 2, 'and someone else is promoted')
+
+    BR.Party.leave(2)
+    ok(BR.Server.parties[pid] == nil, 'an empty party is deleted')
+end
+
+describe('party.kick')
+do
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+
+    ok(not BR.Party.kick(2, 1), 'a non-leader cannot kick')
+    ok(BR.Party.kick(1, 2), 'the leader can')
+    ok(BR.Party.of(2) == nil, 'and the target is removed')
+end
+
+describe('party.capacity')
+do
+    reset()
+    BR.Server.devMode = true
+    local maxSize = BR.Config.Match.maxSquadSize
+    for i = 1, maxSize + 1 do join(i, 'P' .. i) end
+
+    for i = 2, maxSize do
+        BR.Party.invite(1, i)
+        BR.Party.respond(i, true)
+    end
+    ok(BR.Party.size(BR.Party.of(1).id) == maxSize, 'party fills to the maximum')
+
+    local over = BR.Party.invite(1, maxSize + 1)
+    ok(not over, 'and refuses to go beyond it')
+end
+
+describe('party.persistence')
+do
+    -- The entire reason parties exist separately from squads: they must survive
+    -- a match, or players re-invite each other every single round.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    local pid = BR.Party.of(1).id
+
+    BR.Match.transition(BR.MatchState.PLAYING)
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
+    BR.Match.transition(BR.MatchState.ENDED)
+    BR.Match.transition(BR.MatchState.CLEANUP)
+
+    ok(BR.Party.of(1) ~= nil, 'the party survives a completed match')
+    ok(BR.Party.of(1).id == pid, 'and it is the same party')
+    ok(BR.Roster.get(1).squadId == nil, 'while the in-match squad is cleared')
+
+    -- Disconnecting does leave the party -- a ghost member would hold a slot.
+    leave(2)
+    ok(BR.Party.size(pid) == 1, 'disconnecting removes you from the party')
+end
+
+describe('party.squadFormation')
+do
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.autofill = true
+    for i = 1, 6 do join(i, 'P' .. i) end
+
+    -- 1+2 are a party; 3..6 are solos to be filled around them.
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.WARMUP) end)
+
+    BR.Party.formSquads(BR.Mode.SQUAD.key)
+
+    local sq1 = BR.Roster.get(1).squadId
+    ok(sq1 ~= nil, 'squads are assigned')
+    ok(BR.Roster.get(2).squadId == sq1, 'a party is never split across squads')
+
+    -- Every player placed, and no squad over the cap.
+    local counts, unplaced = {}, 0
+    BR.Roster.each(nil, function(_, e)
+        if e.squadId then counts[e.squadId] = (counts[e.squadId] or 0) + 1
+        else unplaced = unplaced + 1 end
+    end)
+    ok(unplaced == 0, 'everyone is placed in a squad')
+
+    local over = 0
+    for _, n in pairs(counts) do
+        if n > BR.Config.Match.maxSquadSize then over = over + 1 end
+    end
+    ok(over == 0, 'no squad exceeds the maximum size')
+
+    -- Solo mode has no squads at all: each player is their own team, and a
+    -- squadId would only confuse the win condition.
+    BR.Party.formSquads(BR.Mode.SOLO.key)
+    local anySquad = false
+    BR.Roster.each(nil, function(_, e) if e.squadId then anySquad = true end end)
+    ok(not anySquad, 'solo mode assigns no squads')
+
+    -- Without autofill, solos stand alone rather than being merged.
+    BR.Config.Match.autofill = false
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.WARMUP) end)
+    BR.Party.formSquads(BR.Mode.SQUAD.key)
+    ok(BR.Roster.get(3).squadId ~= BR.Roster.get(4).squadId,
+        'without autofill, solo players are not merged')
+    BR.Config.Match.autofill = true
 end
 
 -- ----------------------------------------------------------------- combat ---

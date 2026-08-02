@@ -27,6 +27,7 @@ export default function App() {
   useNuiEvent('spectate', (d) => s.setSpectate(d))
   useNuiEvent('summary',  (d) => s.setSummary(d))
   useNuiEvent('lobby',    (d) => s.setLobby(d))
+  useNuiEvent('invite',   (d) => s.setInvite(d))
   useNuiEvent('feed',     (d) => s.pushFeed(d))
   useNuiEvent('chat',     (d) => s.pushChat(d))
   useNuiEvent('toast',    (d) => s.showToast(d))

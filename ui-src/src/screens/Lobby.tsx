@@ -1,6 +1,7 @@
-import { Button, Card, CardBody, CardHeader, Chip, Spinner } from '@heroui/react'
+import { Button, Card, CardBody, CardHeader, Spinner } from '@heroui/react'
 import { useState } from 'react'
-import { useUi, selMatch, selSquad, selLobby } from '../store'
+import { useUi, selMatch, selLobby } from '../store'
+import PartyPanel from './PartyPanel'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 
@@ -21,7 +22,6 @@ import { CB } from '../bridge/types'
  */
 export default function Lobby({ visible }: { visible: boolean }) {
   const match = useUi(selMatch)
-  const squad = useUi(selSquad)
   const lobby = useUi(selLobby)
   const [queued, setQueued] = useState(false)
   const [mode, setMode] = useState<'solo' | 'squad'>('squad')
@@ -97,20 +97,9 @@ export default function Lobby({ visible }: { visible: boolean }) {
               ))}
             </div>
 
-            {squad.members.length > 0 && (
-              <div className="flex flex-wrap gap-1.5">
-                {squad.members.map((m) => (
-                  <Chip
-                    key={m.src}
-                    size="sm"
-                    variant="bordered"
-                    style={{ borderColor: m.colour }}
-                  >
-                    {m.name}
-                  </Chip>
-                ))}
-              </div>
-            )}
+            {/* Parties persist between matches, so this is always relevant --
+                not only while queueing. */}
+            <PartyPanel disabled={searching || warmup} />
 
             {warmup ? (
               <div className="flex items-center justify-center gap-3 py-2">

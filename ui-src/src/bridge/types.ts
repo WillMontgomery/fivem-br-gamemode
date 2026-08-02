@@ -71,6 +71,8 @@ export interface StormPayload {
 export interface SquadMember {
   src: number
   name: string
+  /** True for the party leader. */
+  leader?: boolean
   state: PlayerState
   hp: number
   armour: number
@@ -79,7 +81,18 @@ export interface SquadMember {
 
 export interface SquadPayload {
   id: string | null
+  /** Server id of the party leader. Only the leader may invite or remove. */
+  leader?: number | null
   members: SquadMember[]
+}
+
+/** An incoming party invite. Expires server-side after a minute. */
+export interface InvitePayload {
+  partyId: string
+  from: number
+  name: string
+  size: number
+  max: number
 }
 
 export interface InvSlot {
@@ -215,6 +228,7 @@ export type Envelope =
   | { k: 'chat';     d: ChatMessage }
   | { k: 'screen';   d: ScreenPayload }
   | { k: 'lobby';    d: LobbyPayload }
+  | { k: 'invite';   d: InvitePayload }
 
 export type EnvelopeKind = Envelope['k']
 
@@ -226,6 +240,8 @@ export const CB = {
   QUEUE:        'br/lobby/queue',
   QUEUE_LEAVE:  'br/lobby/leave',
   SQUAD_INVITE: 'br/squad/invite',
+  SQUAD_RESPOND: 'br/squad/respond',
+  SQUAD_KICK:   'br/squad/kick',
   SQUAD_LEAVE:  'br/squad/leave',
   INV_SWAP:     'br/inv/swap',
   INV_DROP:     'br/inv/drop',

@@ -20,10 +20,14 @@ BR.Net = {
     -- Lobby / squads
     QUEUE_JOIN      = 'br:queue:join',       -- C->S  { mode }
     QUEUE_LEAVE     = 'br:queue:leave',      -- C->S
+    -- Parties are persistent; squads are formed from them per match. The events
+    -- are named "squad" for continuity with the UI, but they operate on parties.
     SQUAD_INVITE    = 'br:squad:invite',     -- C->S  { target }
-    SQUAD_RESPOND   = 'br:squad:respond',    -- C->S  { squadId, accept }
+    SQUAD_RESPOND   = 'br:squad:respond',    -- C->S  { accept }
     SQUAD_LEAVE     = 'br:squad:leave',      -- C->S
-    SQUAD_UPDATE    = 'br:squad:update',     -- S->C  { squad }
+    SQUAD_KICK      = 'br:squad:kick',       -- C->S  { target }
+    SQUAD_UPDATE    = 'br:squad:update',     -- S->C  { id, leader, members }
+    SQUAD_INVITED   = 'br:squad:invited',    -- S->C  { partyId, from, name, size, max }
     LOBBY_STATUS    = 'br:lobby:status',     -- S->C  { queued, needed, connected, mode }
 
     -- Bus / drop
@@ -111,6 +115,7 @@ BR.Nui = {
     CHAT      = 'chat',      -- one appended message
     SCREEN    = 'screen',    -- resolution + safe zone, so the HUD can lay out
     LOBBY     = 'lobby',     -- queue progress, so waiting has a visible reason
+    INVITE    = 'invite',    -- an incoming party invite
 }
 
 --- NUI -> Lua callback names, namespaced. Every one of these MUST resolve on
@@ -119,6 +124,8 @@ BR.NuiCb = {
     QUEUE        = 'br/lobby/queue',
     QUEUE_LEAVE  = 'br/lobby/leave',
     SQUAD_INVITE = 'br/squad/invite',
+    SQUAD_RESPOND = 'br/squad/respond',
+    SQUAD_KICK   = 'br/squad/kick',
     SQUAD_LEAVE  = 'br/squad/leave',
     INV_SWAP     = 'br/inv/swap',
     INV_DROP     = 'br/inv/drop',

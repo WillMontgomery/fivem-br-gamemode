@@ -12,7 +12,7 @@
 import { create } from 'zustand'
 import type {
   ChatMessage, DbnoPayload, FeedEntry, FocusPayload, HudPayload,
-  InvPayload, LobbyPayload, MatchPayload, SpectatePayload, SquadPayload,
+  InvPayload, InvitePayload, LobbyPayload, MatchPayload, SpectatePayload, SquadPayload,
   StormPayload, SummaryPayload, ToastPayload,
 } from '../bridge/types'
 
@@ -37,6 +37,9 @@ export interface UiState {
   /** Queue progress while WAITING. Null until the server reports. */
   lobby: LobbyPayload | null
 
+  /** A pending party invite. Expires server-side, so it is transient here too. */
+  invite: InvitePayload | null
+
   /** True while the chat input is open; the HUD dims slightly to make it readable. */
   chatOpen: boolean
   chatChannel: ChatMessage['channel']
@@ -51,6 +54,8 @@ export interface UiState {
   setSummary: (s: SummaryPayload | null) => void
   setFocus: (f: FocusPayload['screen']) => void
   setLobby: (l: LobbyPayload) => void
+  setInvite: (i: InvitePayload) => void
+  clearInvite: () => void
   pushFeed: (f: FeedEntry) => void
   pushChat: (c: ChatMessage) => void
   showToast: (t: ToastPayload) => void
@@ -91,6 +96,7 @@ export const useUi = create<UiState>((set) => ({
   toast: null,
   focus: 'none',
   lobby: null,
+  invite: null,
   chatOpen: false,
   chatChannel: 'global',
 
@@ -104,6 +110,8 @@ export const useUi = create<UiState>((set) => ({
   setSummary:  (summary) => set({ summary }),
   setFocus:    (focus) => set({ focus }),
   setLobby:    (lobby) => set({ lobby }),
+  setInvite:   (invite) => set({ invite }),
+  clearInvite: () => set({ invite: null }),
 
   pushFeed: (entry) => set((s) => ({
     feed: [entry, ...s.feed].slice(0, FEED_MAX),

@@ -34,7 +34,7 @@ local roster = BR.Server.roster   -- [src] = entry
 --- every other server script in this resource's Lua state.
 local PUBLIC_FIELDS = {
     name = true, squadId = true, state = true,
-    hp = true, armour = true, kills = true, placement = true,
+    hp = true, armour = true, kills = true, placement = true, colour = true,
 }
 
 --- Fields carried per player. Written here so the shape is documented in one

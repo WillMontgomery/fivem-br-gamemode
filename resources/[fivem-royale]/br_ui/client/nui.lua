@@ -204,7 +204,8 @@ end)
 -- Gameplay callbacks are forwarded to br_core, which owns the decisions.
 for _, name in ipairs({
     BR.NuiCb.QUEUE, BR.NuiCb.QUEUE_LEAVE,
-    BR.NuiCb.SQUAD_INVITE, BR.NuiCb.SQUAD_LEAVE,
+    BR.NuiCb.SQUAD_INVITE, BR.NuiCb.SQUAD_RESPOND,
+    BR.NuiCb.SQUAD_KICK, BR.NuiCb.SQUAD_LEAVE,
     BR.NuiCb.INV_SWAP, BR.NuiCb.INV_DROP, BR.NuiCb.INV_USE, BR.NuiCb.INV_SELECT,
 }) do
     callback(name, function(data)

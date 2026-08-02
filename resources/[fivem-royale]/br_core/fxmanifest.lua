@@ -49,6 +49,7 @@ server_scripts {
     'server/broadcast.lua', -- BR.Broadcast, used by roster
     'server/roster.lua',
     'server/lobby.lua',     -- BR.Lobby, read by the match tick
+    'server/party.lua',     -- BR.Party, read by the match tick
     'server/match.lua',
     'server/combat.lua',
     'server/chat.lua',
