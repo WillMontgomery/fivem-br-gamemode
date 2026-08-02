@@ -116,6 +116,53 @@ else
     echo "${GRN}ok${RST}   no unmarked scope-poisoned natives (${marked} file(s) with marked exceptions)"
 fi
 
+# --- 4. manifest coverage -----------------------------------------------------
+#
+# Every .lua under a resource must be declared in its fxmanifest, or it simply
+# never loads.
+#
+# This gate exists because client/screen.lua was written, committed and deployed
+# without ever being added to client_scripts. Nothing errored. The HUD just
+# quietly used its CSS fallbacks instead of the game's real safe zone, and the
+# only visible symptom was "1 callbacks registered" where it should have said 2.
+# A file that is never loaded produces no error to grep for.
+
+echo "${DIM}== manifest coverage ==${RST}"
+missing_total=0
+
+while IFS= read -r manifest; do
+    resdir="$(dirname "$manifest")"
+
+    # Declared entries: any quoted *.lua in the manifest. '@other_resource/...'
+    # references point outside this resource, so they are not coverage for it.
+    declared=$(grep -oE "'[^']+\.lua'" "$manifest" | tr -d "'" | grep -v '^@' || true)
+
+    while IFS= read -r f; do
+        rel="${f#"$resdir"/}"
+        [ "$rel" = "fxmanifest.lua" ] && continue
+
+        covered=0
+        while IFS= read -r pat; do
+            [ -z "$pat" ] && continue
+            # Glob match, so `shared/*.lua` covers shared/enums.lua
+            # shellcheck disable=SC2053
+            if [[ "$rel" == $pat ]]; then covered=1; break; fi
+        done <<< "$declared"
+
+        if [ "$covered" -eq 0 ]; then
+            echo "${RED}FAIL${RST} ${resdir#resources/}/$rel is not declared in fxmanifest.lua"
+            missing_total=$((missing_total+1))
+        fi
+    done < <(find "$resdir" -name '*.lua' | sort)
+done < <(find resources -name 'fxmanifest.lua' | sort)
+
+if [ "$missing_total" -eq 0 ]; then
+    echo "${GRN}ok${RST}   every .lua is declared in its manifest"
+else
+    echo "     A file absent from the manifest never loads, and never errors."
+    rc=1
+fi
+
 # --- result ------------------------------------------------------------------
 
 echo

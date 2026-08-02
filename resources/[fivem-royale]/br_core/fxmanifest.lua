@@ -34,6 +34,7 @@ shared_scripts {
 client_scripts {
     'client/main.lua',
     'client/natives.lua',
+    'client/screen.lua',
     'client/keybinds.lua',
     'client/chat.lua',
     'client/debug.lua',
