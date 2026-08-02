@@ -18,7 +18,13 @@ import { CB } from '../bridge/types'
  * The server is the authority: this asks to invite, accept, decline, leave or
  * remove. Everything shown comes from state the server pushed.
  */
-export default function PartyPanel({ disabled }: { disabled: boolean }) {
+export default function PartyPanel({
+  disabled,
+  mode,
+}: {
+  disabled: boolean
+  mode: 'solo' | 'squad'
+}) {
   const squad = useUi(selSquad)
   const lobby = useUi(selLobby)
   const invite = useUi((s) => s.invite)
@@ -28,7 +34,13 @@ export default function PartyPanel({ disabled }: { disabled: boolean }) {
   const [selected, setSelected] = useState<Set<number>>(new Set())
 
   const inParty = squad.members.length > 1
-  const iAmLeader = !squad.id || squad.members.some((m) => m.leader && m.src === squad.leader)
+
+  // Whether *I* am the leader, which needs my own server id -- Lua sends it,
+  // because the interface has no other way to know it. The previous check asked
+  // whether the party HAS a leader, which is true for every member, so everyone
+  // saw invite controls the server would then refuse.
+  const iAmLeader = !squad.id || (squad.you != null && squad.leader === squad.you)
+
   const players = lobby?.players ?? []
 
   // Anyone already in a party cannot be invited into another, so offering them
@@ -87,7 +99,19 @@ export default function PartyPanel({ disabled }: { disabled: boolean }) {
         </div>
       )}
 
-      {inParty ? (
+      {/* A party has no meaning in a solo round -- everyone is their own team.
+          Showing the roster and a Leave party button under a Solo selection
+          reads as though the party is coming along, which is the opposite of
+          what happens. The note stays so the party does not appear to have
+          silently vanished. */}
+      {mode === 'solo' && inParty && (
+        <p className="text-[0.6875rem] text-white/35">
+          Playing solo &mdash; your party of {squad.members.length} sits this round
+          out. Switch to Squad to drop together.
+        </p>
+      )}
+
+      {mode === 'squad' && (inParty ? (
         <div className="flex flex-wrap items-center gap-1.5">
           {squad.members.map((m) => (
             <Chip
@@ -105,11 +129,11 @@ export default function PartyPanel({ disabled }: { disabled: boolean }) {
         <p className="text-[0.6875rem] text-white/35">
           Not in a party &mdash; you&rsquo;ll be matched with random teammates.
         </p>
-      )}
+      ))}
 
       {/* The player list. Only shown when there is somebody to invite, so an
           empty server does not display an empty box. */}
-      {!disabled && iAmLeader && invitable.length > 0 && (
+      {mode === 'squad' && !disabled && iAmLeader && invitable.length > 0 && (
         <div className="flex flex-col gap-1.5">
           <span className="text-[0.625rem] uppercase tracking-wider text-white/35">
             Players online &mdash; select to invite
@@ -152,7 +176,7 @@ export default function PartyPanel({ disabled }: { disabled: boolean }) {
 
       {/* Leaving must be obvious and always available. A party you cannot get
           out of is worse than no party system. */}
-      {inParty && (
+      {mode === 'squad' && inParty && (
         <Button size="sm" variant="bordered" onPress={() => fetchNui(CB.SQUAD_LEAVE, {})}>
           Leave party
         </Button>

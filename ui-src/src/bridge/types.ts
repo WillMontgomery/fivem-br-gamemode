@@ -83,6 +83,10 @@ export interface SquadPayload {
   id: string | null
   /** Server id of the party leader. Only the leader may invite or remove. */
   leader?: number | null
+  /** This client's own server id. Sent because the UI has no other way to know
+   *  it, and without it "am I the leader?" collapses into "does this party have
+   *  a leader?" -- true for everybody. */
+  you?: number
   members: SquadMember[]
 }
 
@@ -182,6 +186,19 @@ export interface LobbyPlayer {
   queued: boolean
 }
 
+/**
+ * Why the match has not started yet.
+ *
+ * Produced by the same server function that decides whether to start, so the
+ * explanation can never describe a condition that is not the one actually
+ * holding the match. Absent when nothing is blocking.
+ */
+export interface LobbyWait {
+  reason: 'players' | 'squads'
+  have: number
+  need: number
+}
+
 export interface LobbyPayload {
   queued: number
   needed: number
@@ -195,6 +212,10 @@ export interface LobbyPayload {
   /** Connected players, excluding this one. Lua filters us out so the UI is
    *  not asked to know its own server id. */
   players?: LobbyPlayer[]
+  /** What the queue is waiting for, or absent when nothing is. */
+  wait?: LobbyWait
+  /** How much of THIS player's party has readied up. Absent when not in one. */
+  party?: { ready: number; size: number }
 }
 
 export interface ToastPayload {

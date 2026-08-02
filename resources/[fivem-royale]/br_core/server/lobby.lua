@@ -144,7 +144,9 @@ BR.Sched.every(500, 'lobby.status', function()
         players[#players + 1] = {
             src     = src,
             name    = e.name,
-            inParty = e.partyId ~= nil,
+            -- isGrouped, not `partyId ~= nil`: a party of one is not a party,
+            -- and treating it as one made the player invisible to invites.
+            inParty = BR.Party.isGrouped(src),
             queued  = queue[src] ~= nil,
         }
     end)
@@ -157,6 +159,15 @@ BR.Sched.every(500, 'lobby.status', function()
         mode      = BR.Lobby.dominantMode(),
         ids       = ids,
         players   = players,
+
+        -- WHY the match has not started, straight from the function the tick
+        -- uses to decide -- so the explanation cannot describe a condition that
+        -- is not the one actually holding the match.
+        --
+        -- nil when nothing is blocking, which drops the key entirely. Safe only
+        -- because this payload is rebuilt whole every time rather than merged:
+        -- the client sees the reason vanish instead of keeping the last one.
+        wait      = BR.Match.startBlocker(),
     })
 end)
 

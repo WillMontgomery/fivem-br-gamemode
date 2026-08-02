@@ -178,27 +178,64 @@ function BR.Match.shortenWarmupIfFull()
     BR.Broadcast.state(S.state, S.endsAt, { reason = 'lobbyFull' })
 end
 
---- Explain why a full queue is not starting.
+--- Why the next match cannot start yet, or nil if it can.
+---
+--- THE GATE AND THE EXPLANATION ARE THE SAME FUNCTION, deliberately.
+---
+--- The tick below decides whether to start; the lobby broadcast tells players
+--- what it is waiting for. Written separately those two drift, and the failure
+--- is nasty: the interface confidently explains a condition that is not the one
+--- actually holding the match, so the player does the thing it asked for and
+--- nothing happens. One function, two callers, no possible disagreement.
+---
+--- @return table|nil  { reason = 'players'|'squads', have, need }
+function BR.Match.startBlocker()
+    local queued = BR.Lobby.count()
+    local need   = BR.Lobby.needed()
+    if queued < need then
+        return { reason = 'players', have = queued, need = need }
+    end
+
+    -- Enough PLAYERS is not the same as enough TEAMS. Four players who all
+    -- queued as one party form a single squad, and a single squad has already
+    -- met the win condition before the match starts.
+    local mode = BR.Lobby.dominantMode()
+    if mode ~= BR.Mode.SOLO.key then
+        local squads    = BR.Party.prospectiveSquads(BR.Lobby.ids(), mode)
+        local minSquads = BR.Config.Match.MinSquads(BR.Server.devMode)
+        if squads < minSquads then
+            return { reason = 'squads', have = squads, need = minSquads }
+        end
+    end
+
+    return nil
+end
+
+--- Say out loud why a full queue is not starting.
 ---
 --- The tick runs at 4Hz, so this is throttled and only speaks when the answer
 --- changes. Without it the lobby sits at "enough players" forever with no
 --- indication of what it is waiting for, which is indistinguishable from the
 --- queue being broken -- a failure mode this project has already shipped once.
---- @param squads integer
---- @param minSquads integer
-local lastSquadWarn = { squads = -1, at = 0 }
+--- @param blocker table
+local lastWarn = { key = '', at = 0 }
 
-function BR.Match.waitingOnSquads(squads, minSquads)
+function BR.Match.announceBlocker(blocker)
     local now = GetGameTimer()
-    if squads == lastSquadWarn.squads and (now - lastSquadWarn.at) < 15000 then
-        return
-    end
-    lastSquadWarn.squads, lastSquadWarn.at = squads, now
+    local key = ('%s:%d/%d'):format(blocker.reason, blocker.have, blocker.need)
+    if key == lastWarn.key and (now - lastWarn.at) < 15000 then return end
+    lastWarn.key, lastWarn.at = key, now
 
-    print(('[br_core] holding: %d squad(s), need %d -- waiting for another team')
-        :format(squads, minSquads))
-    BR.Server.systemMessage(
-        ('Waiting for another squad to queue (%d/%d teams).'):format(squads, minSquads))
+    if blocker.reason == 'squads' then
+        print(('[br_core] holding: %d squad(s), need %d -- waiting for another team')
+            :format(blocker.have, blocker.need))
+        BR.Server.systemMessage(
+            ('Waiting for another squad to queue (%d/%d teams).')
+                :format(blocker.have, blocker.need))
+    else
+        print(('[br_core] holding: %d queued, need %d')
+            :format(blocker.have, blocker.need))
+    end
 end
 
 --- Is there anyone left to fight over?
@@ -234,32 +271,23 @@ local function tick()
         -- and wanting to play are different things: starting on connections
         -- drags anyone idling in the lobby into a match they never asked for,
         -- and made the Play button decorative.
-        if BR.Lobby.count() >= BR.Lobby.needed() then
-            local mode = BR.Lobby.dominantMode()
-
-            -- Enough PLAYERS is not the same as enough TEAMS. Four players who
-            -- all queued as one party form a single squad, and a single squad
-            -- has already met the win condition before the match starts -- the
-            -- match would end on its own first tick.
-            --
-            -- Checked here rather than after forming squads because the queue is
-            -- consumed on the way into WARMUP: refusing later would mean the
-            -- players are already out of the queue with no match to be in.
-            local squads = BR.Party.prospectiveSquads(BR.Lobby.ids(), mode)
-            local minSquads = BR.Config.Match.MinSquads(BR.Server.devMode)
-            if squads < minSquads then
-                BR.Match.waitingOnSquads(squads, minSquads)
-                return
-            end
-
-            -- Consume the queue BEFORE transitioning. If anything in the
-            -- transition throws, the queue must still be spent -- otherwise the
-            -- next tick sees a full queue and tries to start the match again,
-            -- every tick, forever.
-            S.mode = mode
-            BR.Lobby.clear()
-            BR.Match.transition(BR.MatchState.WARMUP)
+        --
+        -- Every reason to hold is checked BEFORE the queue is consumed. The
+        -- queue is spent on the way into WARMUP, so refusing later would leave
+        -- the players out of the queue with no match to be in.
+        local blocker = BR.Match.startBlocker()
+        if blocker then
+            BR.Match.announceBlocker(blocker)
+            return
         end
+
+        -- Consume the queue BEFORE transitioning. If anything in the
+        -- transition throws, the queue must still be spent -- otherwise the
+        -- next tick sees a full queue and tries to start the match again,
+        -- every tick, forever.
+        S.mode = BR.Lobby.dominantMode()
+        BR.Lobby.clear()
+        BR.Match.transition(BR.MatchState.WARMUP)
         return
     end
 

@@ -71,6 +71,28 @@ local function applyFocusForState(state)
     end
 end
 
+--- Tell the UI what state the match is in.
+---
+--- Called from EVERY path that learns the state, not only transitions.
+---
+--- It used to be sent only from the transition handler, which was wrong in a
+--- way that took a br_ui restart to expose: restarting the interface mid-warmup
+--- re-seeded the Lua mirror from a snapshot, but nothing pushed the state
+--- across the bridge, so the freshly loaded page sat on its default -- a full
+--- lobby screen drawn over a match already in progress -- until the next
+--- transition happened to correct it.
+---
+--- The digest path makes it self-healing: if the UI's idea of the state is ever
+--- wrong, it is wrong for at most half a second.
+local function pushMatchState()
+    TriggerEvent('br:ui:sendLocal', BR.Nui.STATE, {
+        state     = S.match.state,
+        mode      = S.match.mode,
+        endsAt    = S.match.endsAt,
+        serverNow = BR.Clock.now(),
+    })
+end
+
 RegisterNetEvent(BR.Net.SNAPSHOT)
 AddEventHandler(BR.Net.SNAPSHOT, function(payload)
     mark('snapshot')
@@ -96,6 +118,7 @@ AddEventHandler(BR.Net.SNAPSHOT, function(payload)
     end
 
     BR.PushHud(true)
+    pushMatchState()
     applyFocusForState(S.match.state)
 end)
 
@@ -143,8 +166,19 @@ RegisterNetEvent(BR.Net.DIGEST)
 AddEventHandler(BR.Net.DIGEST, function(d)
     S.alive       = d.alive or 0
     S.squadsAlive = d.squadsAlive or 0
-    S.match.state = d.state or S.match.state
+
+    -- The digest is the safety net under the transition broadcast: if the UI's
+    -- state is ever wrong -- a missed transition, a br_ui restart, a snapshot
+    -- that raced the page load -- this corrects it within half a second.
+    -- Pushed only on a CHANGE, so the net is free when nothing is wrong.
+    local was, wasEnd = S.match.state, S.match.endsAt
+    S.match.state  = d.state or S.match.state
     S.match.endsAt = d.endsAt or S.match.endsAt
+    if S.match.state ~= was or S.match.endsAt ~= wasEnd then
+        pushMatchState()
+        applyFocusForState(S.match.state)
+    end
+
     BR.PushHud()
 end)
 
@@ -154,12 +188,7 @@ AddEventHandler(BR.Net.STATE, function(d)
     S.match.endsAt = d.endsAt
     S.match.mode   = d.mode or S.match.mode
 
-    TriggerEvent('br:ui:sendLocal', BR.Nui.STATE, {
-        state     = d.state,
-        mode      = S.match.mode,
-        endsAt    = d.endsAt,
-        serverNow = BR.Clock.now(),
-    })
+    pushMatchState()
 
     -- Visibility and FOCUS are separate things. CEF only receives mouse input
     -- while NUI focus is held, so a visible-but-unfocused lobby is inert.
@@ -244,6 +273,23 @@ AddEventHandler(BR.Net.LOBBY_STATUS, function(d)
         if p.src ~= S.me.src then others[#others + 1] = p end
     end
 
+    -- How much of MY party has readied up.
+    --
+    -- Resolved here rather than server-side because it is the one number in
+    -- this payload that differs per player, and the queued id list is already
+    -- on the wire -- so one broadcast still serves everyone. Sending it from
+    -- the server would mean 48 targeted messages to say 48 different things.
+    local party
+    if S.party and S.party.members then
+        local queued = 0
+        for _, m in ipairs(S.party.members) do
+            for _, src in ipairs(d.ids or {}) do
+                if src == m.src then queued = queued + 1 break end
+            end
+        end
+        party = { ready = queued, size = #S.party.members }
+    end
+
     TriggerEvent('br:ui:sendLocal', BR.Nui.LOBBY, {
         queued    = d.queued,
         needed    = d.needed,
@@ -251,6 +297,8 @@ AddEventHandler(BR.Net.LOBBY_STATUS, function(d)
         mode      = d.mode,
         you       = you,
         players   = others,
+        wait      = d.wait,
+        party     = party,
     })
 end)
 
@@ -310,11 +358,15 @@ end
 function pushSquadOrParty()
     local me = S.me
 
+    -- `you` rides along on every payload. The interface has no other way to
+    -- know its own server id, and without it "am I the leader?" degenerates to
+    -- "does this party have a leader?" -- which is true for everyone, so every
+    -- member was shown leader-only controls the server would then refuse.
     if not me.squadId then
         local p = S.party
         TriggerEvent('br:ui:sendLocal', BR.Nui.SQUAD,
-            p and { id = p.id, leader = p.leader, members = p.members }
-              or  { id = nil, members = {} })
+            p and { id = p.id, leader = p.leader, members = p.members, you = me.src }
+              or  { id = nil, members = {}, you = me.src })
         return
     end
 
@@ -330,7 +382,8 @@ function pushSquadOrParty()
     end
     table.sort(members, function(a, b) return a.src < b.src end)
 
-    TriggerEvent('br:ui:sendLocal', BR.Nui.SQUAD, { id = me.squadId, members = members })
+    TriggerEvent('br:ui:sendLocal', BR.Nui.SQUAD,
+        { id = me.squadId, members = members, you = me.src })
 end
 
 -- Local vitals. Read from our own ped, which is always in our own scope --

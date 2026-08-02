@@ -106,6 +106,11 @@ local function reset()
     for k in pairs(BR.Server.roster) do BR.Server.roster[k] = nil end
     for k in pairs(BR.Server.parties or {}) do BR.Server.parties[k] = nil end
     for k in pairs(connected) do connected[k] = nil end
+    -- The queue survives a roster wipe otherwise, and a leftover queue from the
+    -- previous block silently changes what the state machine decides -- which
+    -- is exactly the kind of cross-test leak that makes a real failure look
+    -- like a flake.
+    BR.Lobby.clear()
     sent = {}
     BR.Server.match.state = BR.MatchState.WAITING
     BR.Server.match.endsAt = 0
@@ -650,16 +655,15 @@ describe('party.leave')
 do
     reset()
     BR.Server.devMode = true
-    join(1, 'A'); join(2, 'B'); join(3, 'C')
-    BR.Party.invite(1, 2); BR.Party.respond(2, true)
-    BR.Party.invite(1, 3); BR.Party.respond(3, true)
+    join(1, 'A'); join(2, 'B'); join(3, 'C'); join(4, 'D')
+    for i = 2, 4 do BR.Party.invite(1, i); BR.Party.respond(i, true) end
 
     local pid = BR.Party.of(1).id
-    ok(BR.Party.size(pid) == 3, 'three in the party')
+    ok(BR.Party.size(pid) == 4, 'four in the party')
 
-    BR.Party.leave(3)
-    ok(BR.Party.of(3) == nil, 'leaving clears your party')
-    ok(BR.Party.size(pid) == 2, 'and removes you from it')
+    BR.Party.leave(4)
+    ok(BR.Party.of(4) == nil, 'leaving clears your party')
+    ok(BR.Party.size(pid) == 3, 'and removes you from it')
 
     -- The leader leaving must not orphan everyone else.
     ok(BR.Party.of(1).leader == 1, 'player 1 leads')
@@ -667,8 +671,11 @@ do
     ok(BR.Party.of(2) ~= nil, 'the party survives the leader leaving')
     ok(BR.Party.of(2).leader == 2, 'and someone else is promoted')
 
+    -- Down to one is down to none: see party.ofOne for why a lone member left
+    -- holding a party id is a trap rather than a tidiness question.
     BR.Party.leave(2)
-    ok(BR.Server.parties[pid] == nil, 'an empty party is deleted')
+    ok(BR.Server.parties[pid] == nil, 'the party is deleted once it cannot field two')
+    ok(BR.Party.of(3) == nil, 'and the last member is released with it')
 end
 
 describe('party.kick')
@@ -1068,6 +1075,112 @@ do
         'eliminating the last opponent ends the match')
     ok(BR.Roster.get(1).placement == 1, 'the survivor takes first')
     ok(BR.Roster.get(2).placement == 2, 'the loser keeps the placement they died at')
+end
+
+describe('match.startBlocker')
+do
+    -- The gate and the explanation shown to players are the same function.
+    -- Written separately they drift, and the drift is nasty: the lobby
+    -- confidently explains a condition that is not the one holding the match,
+    -- so the player does what it asks and nothing happens.
+    reset()
+    BR.Server.devMode = true       -- minToStart 2, minSquads 1
+
+    ok(BR.Match.startBlocker().reason == 'players',
+        'an empty queue is blocked on players')
+
+    queueUp(1, 'A', BR.Mode.SQUAD.key)
+    local b = BR.Match.startBlocker()
+    ok(b.reason == 'players' and b.have == 1 and b.need == 2,
+        'and it reports how many are short')
+
+    queueUp(2, 'B', BR.Mode.SQUAD.key)
+    ok(BR.Match.startBlocker() == nil,
+        'two solo queuers in dev mode are two squads, so nothing blocks')
+
+    -- Put them in one party and the headcount is still met, but the TEAM count
+    -- is not -- with production thresholds this is the case that matters.
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    BR.Server.devMode = false      -- minSquads 2, minToStart 16
+    BR.Config.Match.minToStartProd = 2
+    local sq = BR.Match.startBlocker()
+    ok(sq and sq.reason == 'squads', 'one party of two is blocked on squads')
+    ok(sq.have == 1 and sq.need == 2, 'and says how many teams it has')
+
+    -- Solo rounds have no team requirement: everyone IS their own team, so the
+    -- squad gate must never apply to them.
+    --
+    -- Reaching that branch takes a lobby smaller than the squad minimum, which
+    -- only happens if the two are configured across each other. That is the
+    -- point: without the exemption such a lobby waits for a second "squad" that
+    -- can never arrive, because in solo the squad count and the player count
+    -- are the same number it has already rejected.
+    BR.Lobby.clear()
+    BR.Config.Match.minToStartProd = 1
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    ok(BR.Match.startBlocker() == nil,
+        'a solo round is never held for want of squads')
+
+    BR.Config.Match.minToStartProd = 16
+    BR.Server.devMode = true
+end
+
+describe('lobby.wait')
+do
+    -- The reason has to reach the client, not merely exist on the server.
+    reset()
+    BR.Server.devMode = true
+    queueUp(1, 'A', BR.Mode.SQUAD.key)
+
+    sent = {}
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+
+    local status = eventsOf(BR.Net.LOBBY_STATUS)
+    ok(#status > 0, 'the lobby broadcasts while WAITING')
+    local d = status[#status].args[1]
+    ok(d.wait ~= nil and d.wait.reason == 'players',
+        'and it carries the reason the match has not started')
+    ok(d.wait.need == 2, 'including the minimum needed to start')
+end
+
+describe('party.ofOne')
+do
+    -- REGRESSION, reported in play: after a match one player left the party and
+    -- the other was left in a party of one. Their own interface said "not in a
+    -- party" -- correctly, there was nobody else in it -- while the server
+    -- still reported them as partied, which filtered them out of every invite
+    -- list. No control anywhere fixed it.
+    reset()
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    BR.Party.invite(1, 2)
+    BR.Party.respond(2, true)
+    ok(BR.Party.isGrouped(1) and BR.Party.isGrouped(2), 'two players make a party')
+
+    BR.Party.leave(2)
+    ok(BR.Roster.get(2).partyId == nil, 'the leaver is out')
+    ok(BR.Roster.get(1).partyId == nil,
+        'and the last member left behind is out too -- a party of one is not a party')
+    ok(not BR.Party.isGrouped(1), 'so they can be invited again')
+
+    -- The same trap by a different route: inviting creates the inviter's party
+    -- before the invite is answered, so a decline used to leave a party of one.
+    BR.Party.invite(1, 3)
+    BR.Party.respond(3, false)
+    ok(not BR.Party.isGrouped(1),
+        'a declined invite does not leave the inviter stranded in a party of one')
+
+    -- And the wire agrees, which is what the invite list actually reads.
+    sent = {}
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+    local status = eventsOf(BR.Net.LOBBY_STATUS)
+    local players = status[#status] and status[#status].args[1].players or {}
+    local flagged = 0
+    for _, p in ipairs(players) do
+        if p.inParty then flagged = flagged + 1 end
+    end
+    ok(flagged == 0, 'nobody is advertised as partied when no party has two members')
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

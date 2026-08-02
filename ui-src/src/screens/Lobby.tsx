@@ -36,9 +36,28 @@ export default function Lobby({ visible }: { visible: boolean }) {
   // because the button was wired to nothing, and later because a match consumed
   // the queue and fell back to WAITING without the client noticing.
   const searching = lobby ? lobby.you : queued
-  const short = lobby ? Math.max(0, lobby.needed - lobby.queued) : 0
 
   const warmup = match.state === 'warmup'
+
+  // WHAT ARE WE WAITING FOR?
+  //
+  // "2 / 2 queued" was the old answer and it told the player nothing: it did
+  // not say what the two were counting, whether they were part of it, or what
+  // the queue was still short of. The server now sends the actual blocking
+  // condition -- from the same function that decides whether to start -- and
+  // this only phrases it.
+  const wait = lobby?.wait
+  const headline = !wait
+    ? 'Starting…'
+    : wait.reason === 'squads'
+      ? `Waiting for ${wait.need - wait.have} more squad${wait.need - wait.have === 1 ? '' : 's'}`
+      : `Waiting for ${wait.need - wait.have} more player${wait.need - wait.have === 1 ? '' : 's'}`
+
+  // The supporting numbers, each one answering a question the headline raises.
+  const detail: string[] = []
+  if (lobby?.party) detail.push(`Your party ${lobby.party.ready}/${lobby.party.size} ready`)
+  if (lobby) detail.push(`${lobby.queued} of ${lobby.needed} players needed`)
+  if (wait?.reason === 'squads') detail.push(`${wait.have} of ${wait.need} squads`)
 
   const queue = async () => {
     // Optimistic, but the server is the authority -- the next state envelope
@@ -98,8 +117,9 @@ export default function Lobby({ visible }: { visible: boolean }) {
             </div>
 
             {/* Parties persist between matches, so this is always relevant --
-                not only while queueing. */}
-            <PartyPanel disabled={searching || warmup} />
+                not only while queueing. It knows the mode because a party has
+                no meaning in solo. */}
+            <PartyPanel disabled={searching || warmup} mode={mode} />
 
             {warmup ? (
               <div className="flex items-center justify-center gap-3 py-2">
@@ -113,29 +133,23 @@ export default function Lobby({ visible }: { visible: boolean }) {
                 <div className="flex flex-col items-center gap-1 py-1">
                   <div className="flex items-center gap-3">
                     <Spinner size="sm" />
-                    <span className="text-sm text-white/70">
-                      {short > 0
-                        ? `Waiting for ${short} more player${short === 1 ? '' : 's'}`
-                        : 'Starting…'}
-                    </span>
+                    <span className="text-sm text-white/70">{headline}</span>
                   </div>
 
-                  {/* The actual numbers. "Searching for players" on its own is
+                  {/* The supporting numbers. A spinner on its own is
                       indistinguishable from a queue that is not working, which
                       is exactly how this looked while the button did nothing. */}
-                  {lobby && (
+                  {detail.length > 0 && (
                     <span className="text-[0.6875rem] tabular-nums text-white/40">
-                      {lobby.queued} / {lobby.needed} queued
-                      {lobby.connected > lobby.queued &&
-                        ` · ${lobby.connected} connected`}
+                      {detail.join(' · ')}
                     </span>
                   )}
                 </div>
-                <Button variant="bordered" onPress={leave}>Cancel</Button>
+                <Button variant="bordered" onPress={leave}>Not ready</Button>
               </div>
             ) : (
-              <Button color="primary" size="lg" onPress={queue} className="capitalize">
-                Play {mode}
+              <Button color="primary" size="lg" onPress={queue}>
+                Ready up
               </Button>
             )}
           </CardBody>

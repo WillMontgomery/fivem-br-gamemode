@@ -55,6 +55,20 @@ function BR.Party.size(partyId)
     return p and #p.members or 0
 end
 
+--- Is this player actually grouped with somebody?
+---
+--- Not the same question as "has a partyId". BR.Party.invite creates the
+--- inviter's party before the invite is answered, so an invite that is declined
+--- leaves a party of one behind. Membership alone would then mark that player
+--- as unavailable and hide them from every invite list -- punishing them for
+--- having asked. Only a party with somebody else in it counts.
+--- @param src integer
+--- @return boolean
+function BR.Party.isGrouped(src)
+    local p = BR.Party.of(src)
+    return p ~= nil and #p.members > 1
+end
+
 --- The client-visible view of a party.
 --- @param partyId string|nil
 --- @return table
@@ -209,7 +223,20 @@ function BR.Party.leave(src, quiet)
         if party.members[i] == src then table.remove(party.members, i) end
     end
 
-    if #party.members == 0 then
+    -- A PARTY OF ONE IS NOT A PARTY, and leaving one behind is a trap.
+    --
+    -- The remaining player's own interface correctly says "not in a party" --
+    -- there is nobody else in it -- while the server still reports them as
+    -- partied, which filters them out of every other player's invite list. They
+    -- end up unable to be invited and unable to see why, with no control
+    -- anywhere that fixes it. Disbanding on the way down to one keeps the
+    -- server's answer and the player's answer the same.
+    if #party.members <= 1 then
+        for _, last in ipairs(party.members) do
+            local e = BR.Roster.get(last)
+            if e then e.partyId = nil end
+            syncEmpty(last)
+        end
         parties[party.id] = nil
     else
         -- The leader leaving must not orphan the party; the longest-standing
