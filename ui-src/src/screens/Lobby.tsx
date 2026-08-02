@@ -1,4 +1,4 @@
-import { Button, Card, CardContent, CardHeader, CardTitle, Chip, Spinner } from '@heroui/react'
+import { Button, Card, CardBody, CardHeader, Chip, Spinner } from '@heroui/react'
 import { useState } from 'react'
 import { useUi, selMatch, selSquad } from '../store'
 import { fetchNui } from '../bridge/nui'
@@ -10,8 +10,14 @@ import { CB } from '../bridge/types'
  * This is where HeroUI earns its place: a focused, interactive, non-realtime
  * screen. The in-match HUD deliberately avoids it -- see hud/Hud.tsx.
  *
- * Mounted always, shown only when Lua has granted focus to the lobby, so the
- * transition costs no mount work.
+ * HeroUI 2 API, not 3. FiveM's CEF is Chrome 103, and HeroUI 3 emits oklch and
+ * color-mix throughout its colour system -- that build cannot parse them, so
+ * the declarations are dropped and every component renders with no colour,
+ * looking exactly like a stylesheet that failed to load. HeroUI 2 is a Tailwind
+ * plugin generating HSL at build time and contains none of them.
+ *
+ * Mounted always, shown only when the match is WAITING, so the transition costs
+ * no mount work.
  */
 export default function Lobby({ visible }: { visible: boolean }) {
   const match = useUi(selMatch)
@@ -40,7 +46,8 @@ export default function Lobby({ visible }: { visible: boolean }) {
       style={{
         opacity: visible ? 1 : 0,
         pointerEvents: visible ? 'auto' : 'none',
-        background: 'radial-gradient(ellipse at 50% 40%, rgb(20 12 40 / 0.72), rgb(6 8 14 / 0.92))',
+        background:
+          'radial-gradient(ellipse at 50% 40%, rgba(20, 12, 40, 0.72), rgba(6, 8, 14, 0.94))',
       }}
       aria-hidden={!visible}
     >
@@ -54,17 +61,20 @@ export default function Lobby({ visible }: { visible: boolean }) {
           </p>
         </div>
 
-        <Card>
-          <CardHeader>
-            <CardTitle>{warmup ? 'Match starting' : 'Find a match'}</CardTitle>
+        <Card className="border border-white/10">
+          <CardHeader className="pb-0">
+            <h2 className="text-lg font-semibold">
+              {warmup ? 'Match starting' : 'Find a match'}
+            </h2>
           </CardHeader>
 
-          <CardContent className="flex flex-col gap-4">
+          <CardBody className="flex flex-col gap-4">
             <div className="flex gap-2">
               {(['solo', 'squad'] as const).map((m) => (
                 <Button
                   key={m}
-                  variant={mode === m ? 'primary' : 'secondary'}
+                  color={mode === m ? 'primary' : 'default'}
+                  variant={mode === m ? 'solid' : 'bordered'}
                   isDisabled={queued || warmup}
                   onPress={() => setMode(m)}
                   className="flex-1 capitalize"
@@ -77,7 +87,12 @@ export default function Lobby({ visible }: { visible: boolean }) {
             {squad.members.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
                 {squad.members.map((m) => (
-                  <Chip key={m.src} style={{ borderColor: m.colour }}>
+                  <Chip
+                    key={m.src}
+                    size="sm"
+                    variant="bordered"
+                    style={{ borderColor: m.colour }}
+                  >
                     {m.name}
                   </Chip>
                 ))}
@@ -86,23 +101,25 @@ export default function Lobby({ visible }: { visible: boolean }) {
 
             {warmup ? (
               <div className="flex items-center justify-center gap-3 py-2">
-                <Spinner />
-                <span className="text-sm text-white/70">Warmup &mdash; everyone drops shortly</span>
+                <Spinner size="sm" />
+                <span className="text-sm text-white/70">
+                  Warmup &mdash; everyone drops shortly
+                </span>
               </div>
             ) : queued ? (
               <div className="flex flex-col gap-2">
                 <div className="flex items-center justify-center gap-3 py-1">
-                  <Spinner />
+                  <Spinner size="sm" />
                   <span className="text-sm text-white/70">Searching for players&hellip;</span>
                 </div>
-                <Button variant="secondary" onPress={leave}>Cancel</Button>
+                <Button variant="bordered" onPress={leave}>Cancel</Button>
               </div>
             ) : (
-              <Button variant="primary" size="lg" onPress={queue}>
+              <Button color="primary" size="lg" onPress={queue} className="capitalize">
                 Play {mode}
               </Button>
             )}
-          </CardContent>
+          </CardBody>
         </Card>
 
         <p className="text-center text-[0.6875rem] text-white/30 mt-4">

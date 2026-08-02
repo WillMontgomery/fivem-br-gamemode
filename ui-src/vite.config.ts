@@ -1,6 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import tailwindcss from '@tailwindcss/vite'
+// Tailwind 3 runs through PostCSS (see postcss.config.js), not a Vite plugin.
 
 // WHY THIS PROJECT LIVES OUTSIDE resources/
 //
@@ -18,7 +18,7 @@ import tailwindcss from '@tailwindcss/vite'
 //
 // Build config below is shaped by NUI's constraints, not by web defaults.
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react()],
 
   // NUI serves from the nui:// scheme, so every asset reference must be
   // relative. An absolute '/assets/...' resolves to nothing and the page is blank.
@@ -31,9 +31,10 @@ export default defineConfig({
     // refuses to clean the directory.
     emptyOutDir: true,
 
-    // CEF in FiveM lags mainstream Chrome. Targeting a known-older baseline
-    // avoids shipping syntax the embedded browser cannot parse.
-    target: 'chrome115',
+    // MEASURED, not guessed: the in-game probe reports Chrome 103. This only
+    // constrains JS syntax -- CSS is handled by Tailwind 3 plus autoprefixer,
+    // and enforced by scripts/check-css.mjs.
+    target: 'chrome103',
 
     // Inlining assets as data URIs bloats the single bundle and has caused
     // trouble with the nui:// scheme; keep them as real files instead.

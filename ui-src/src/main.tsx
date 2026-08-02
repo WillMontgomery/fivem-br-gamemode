@@ -1,5 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { HeroUIProvider } from '@heroui/react'
 import App from './App'
 import { installErrorSinks, isBrowser, reportEnvironment } from './bridge/nui'
 import './index.css'
@@ -29,8 +30,15 @@ if (!root) {
   throw new Error('#root missing from index.html')
 }
 
+// HeroUI 2 resolves its theme from a class on an ancestor. Without `dark` here
+// it falls back to the light theme, which over a game world is actively wrong
+// rather than merely unstyled.
+document.documentElement.classList.add('dark')
+
 createRoot(root).render(
   <StrictMode>
-    <App />
+    <HeroUIProvider>
+      <App />
+    </HeroUIProvider>
   </StrictMode>,
 )

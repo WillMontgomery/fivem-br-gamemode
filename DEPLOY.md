@@ -167,6 +167,32 @@ resources/[fivem-royale]/br_ui/
   ui/                                     # build output, committed
 ```
 
+### The CEF constraint — read before touching the UI stack
+
+**FiveM's embedded browser reports Chrome 103** (June 2022). Measured, not
+assumed: the client prints a capability probe at startup as
+`[br_ui] ---- CEF environment ----`. Re-run it after any FiveM client update.
+
+Not available: `oklch()` `oklab()` `lch()` `color-mix()` `:has()` CSS nesting.
+
+This is why the stack is **HeroUI 2 + Tailwind 3** rather than the current
+majors. Tailwind 4's default palette is authored in oklch and HeroUI 3 emits
+oklch and color-mix throughout its component styles — neither is patchable from
+outside, and on Chrome 103 the result is not a fallback but *no colour at all*.
+A correct stylesheet renders as an apparently broken one.
+
+`npm run build` runs `scripts/check-css.mjs`, which fails the build if an
+unsupported colour function reaches the bundle. It distinguishes severity
+deliberately:
+
+- **value functions are errors** — the declaration is dropped from an otherwise
+  valid rule, so the element renders invisible
+- **selectors are warnings** — the whole rule is dropped, which degrades
+  gracefully (a disabled button not dimming is not worth failing a build)
+
+A dependency bump can reintroduce these with no change on our side, and nothing
+in a typecheck or unit test would notice.
+
 To change the interface (on a dev machine, not the server):
 
 ```bash
