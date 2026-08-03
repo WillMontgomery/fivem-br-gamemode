@@ -383,6 +383,25 @@ local function tick()
         BR.Match.shortenWarmupIfFull()
     end
 
+    if S.state == BR.MatchState.BUS then
+        -- The drop ends when the LAST player is down -- not when the route
+        -- timer says so. Everyone jumped early and landed? The match goes
+        -- live now instead of waiting out an empty flight. The endsAt timer
+        -- below stays as the CEILING: a client that crashes mid-fall never
+        -- reports a landing, and one ghost must not hold 47 players in the
+        -- pre-match state forever.
+        local airborne = BR.Server.count(function(p)
+            return p.state == BR.PlayerState.BUS
+                or p.state == BR.PlayerState.FREEFALL
+                or p.state == BR.PlayerState.GLIDE
+        end)
+        if airborne == 0 and BR.Server.aliveCount() > 0 then
+            print('[br_core] match: last player down -- going live')
+            BR.Match.transition(BR.MatchState.PLAYING)
+            return
+        end
+    end
+
     if winConditionMet() then
         BR.Match.transition(BR.MatchState.ENDED)
         return

@@ -1864,6 +1864,64 @@ do
         ('state %s, squadsAlive %d'):format(BR.Server.match.state, BR.Server.squadsAlive()))
 end
 
+describe('match.lastLanding')
+do
+    -- BUS -> PLAYING is driven by the LAST landing, not the route timer --
+    -- the timer is only the ceiling for clients that crash mid-fall.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    fakeTime = BR.Server.match.endsAt + 1
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.BUS, 'both aboard')
+
+    local r = BR.Bus.active()
+    fakeTime = r.jumpFrom + 1000
+    fire(BR.Net.BUS_JUMP, 1)
+    fire(BR.Net.BUS_JUMP, 2)
+    fire(BR.Net.DROP_LANDED, 1)
+
+    -- One down, one still falling: the match must NOT go live.
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.BUS,
+        'one player still airborne holds the bus state')
+
+    -- The second lands, long before the route runs out.
+    fire(BR.Net.DROP_LANDED, 2)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.PLAYING,
+        'the last landing takes the match live early')
+    ok(fakeTime < r.tEnd, 'well before the route timer',
+        ('%.0fs early'):format((r.tEnd - fakeTime) / 1000))
+
+    -- Ceiling intact: a ghost stuck in FREEFALL cannot hold the match.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    fakeTime = BR.Server.match.endsAt + 1
+    BR.Sched.step(fakeTime)
+    local r2 = BR.Bus.active()
+    fakeTime = r2.jumpFrom + 1000
+    fire(BR.Net.BUS_JUMP, 1)
+    fire(BR.Net.DROP_LANDED, 1)   -- p1 lands; p2 rides to force-eject and never reports
+    fakeTime = r2.tEnd + 600
+    BR.Sched.step(fakeTime)
+    fakeTime = BR.Server.match.endsAt + 1
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.PLAYING,
+        'the route timer still forces PLAYING past a silent faller')
+end
+
 describe('party.resultFailuresOnly')
 do
     -- The "You joined the party." / "Joined the party." double: every success
