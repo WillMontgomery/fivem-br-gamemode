@@ -71,17 +71,29 @@ export default function Lobby({ visible }: { visible: boolean }) {
   // condition -- from the same function that decides whether to start -- and
   // this only phrases it.
   const wait = lobby?.wait
-  const headline = !wait
-    ? 'Starting…'
-    : wait.reason === 'squads'
-      ? `Waiting for ${wait.need - wait.have} more squad${wait.need - wait.have === 1 ? '' : 's'}`
-      : `Waiting for ${wait.need - wait.have} more player${wait.need - wait.have === 1 ? '' : 's'}`
 
-  // The supporting numbers, each one answering a question the headline raises.
+  // Readying up while the last round is still tearing down is allowed -- the
+  // queue simply holds until WAITING. Saying so beats showing player counts
+  // for a match that cannot form yet.
+  const tearingDown = match.state === 'ended' || match.state === 'cleanup'
+
+  const headline = tearingDown
+    ? 'Cleaning up the last round…'
+    : !wait
+      ? 'Starting…'
+      : wait.reason === 'squads'
+        ? `Waiting for ${wait.need - wait.have} more squad${wait.need - wait.have === 1 ? '' : 's'}`
+        : `Waiting for ${wait.need - wait.have} more player${wait.need - wait.have === 1 ? '' : 's'}`
+
+  // The supporting numbers, each one answering a question the headline
+  // raises. Suppressed during teardown -- counts for a match that cannot
+  // form yet only contradict the "cleaning up" headline.
   const detail: string[] = []
-  if (lobby?.party) detail.push(`Your party ${lobby.party.ready}/${lobby.party.size} ready`)
-  if (lobby) detail.push(`${lobby.queued} of ${lobby.needed} players needed`)
-  if (wait?.reason === 'squads') detail.push(`${wait.have} of ${wait.need} squads`)
+  if (!tearingDown) {
+    if (lobby?.party) detail.push(`Your party ${lobby.party.ready}/${lobby.party.size} ready`)
+    if (lobby) detail.push(`${lobby.queued} of ${lobby.needed} players needed`)
+    if (wait?.reason === 'squads') detail.push(`${wait.have} of ${wait.need} squads`)
+  }
 
   const queue = async () => {
     // Optimistic, but the server is the authority -- the next state envelope

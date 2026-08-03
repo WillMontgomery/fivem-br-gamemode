@@ -218,14 +218,13 @@ end
 --- it until the camera is clear of the island, and by then the view ahead
 --- is open water either way.
 local function wantIsland(state)
-    -- ENDED keeps the island OFF too: the summary period is spent standing
-    -- in Los Santos, and enabling the island is what DISABLES Los Santos --
-    -- flipping it at ENDED was the eight-second texture void after every
-    -- match. The island returns at CLEANUP, while the screen fade holds
-    -- black over the swap.
+    -- The island returns at ENDED now: the trip home happens the moment the
+    -- match is decided, behind the screen fade that holds black over the
+    -- island/mainland swap. (When the summary period was spent standing in
+    -- Los Santos, flipping the island at ENDED was an eight-second texture
+    -- void -- the fade choreography is what makes this safe.)
     return state ~= BR.MatchState.PLAYING
        and state ~= BR.MatchState.BUS
-       and state ~= BR.MatchState.ENDED
 end
 
 RegisterNetEvent(BR.Net.STATE)

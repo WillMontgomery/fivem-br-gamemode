@@ -3,6 +3,7 @@ import { useUi } from './store'
 import Hud from './hud/Hud'
 import Chat from './chat/Chat'
 import Lobby from './screens/Lobby'
+import EndScreen from './screens/EndScreen'
 import Notices from './hud/Notices'
 
 /**
@@ -19,7 +20,11 @@ export default function App() {
   const s = useUi()
 
   useNuiEvent('snapshot', (d) => s.hydrate(d))
-  useNuiEvent('state',    (d) => s.setMatch(d))
+  useNuiEvent('state',    (d) => {
+    s.setMatch(d)
+    // The result screen lives exactly as long as the teardown does.
+    if (d.state === 'waiting') s.setSummary(null)
+  })
   useNuiEvent('hud',      (d) => s.setHud(d))
   useNuiEvent('squad',    (d) => s.setSquad(d))
   useNuiEvent('inv',      (d) => s.setInv(d))
@@ -57,19 +62,28 @@ export default function App() {
   //
   // Visible whether or not Lua has granted focus: a queue screen you cannot
   // see is worse than one you cannot yet click.
-  const showLobby = s.match.state === 'waiting' || s.hud.state === 'lobby'
+  // The result interstitial owns the teardown: from the moment the match is
+  // decided until the state machine is back at WAITING, players see won-or-
+  // lost and "cleaning up" -- not the find-a-match card pretending a match
+  // could form.
+  const tearingDown = s.match.state === 'ended' || s.match.state === 'cleanup'
+  const showEnd = tearingDown && s.summary !== null
 
-  // The bus ride is a cutscene: no vitals, no counters, no kill feed (Lua
-  // hides the radar to match). Notices still render -- "doors open" IS one.
+  const showLobby = !showEnd
+    && (s.match.state === 'waiting' || s.hud.state === 'lobby')
+
+  // The bus ride is a cutscene: no vitals, no counters, no kill feed.
+  // Notices still render -- "doors open" IS one.
   const ridingBus = s.hud.state === 'bus'
 
   return (
     <>
       {/* Always mounted; visibility follows match state so transitions cost no
           mount work mid-fight. */}
-      <Hud visible={!showLobby && !ridingBus} />
+      <Hud visible={!showLobby && !ridingBus && !showEnd} />
       <Chat />
       <Lobby visible={showLobby} />
+      {showEnd && s.summary && <EndScreen summary={s.summary} />}
       {/* Over everything: party events and match alerts do not care which
           screen is up when they land. */}
       <Notices />

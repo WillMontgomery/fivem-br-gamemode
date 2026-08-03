@@ -264,8 +264,10 @@ end
 
 RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)
-    if d.state == BR.MatchState.CLEANUP then
-        -- Match over: everyone goes back to the lobby vista, behind the fade.
+    if d.state == BR.MatchState.ENDED then
+        -- The moment the match is decided, everyone goes home behind the
+        -- fade -- ENDED, not cleanup: the summary period plays out over the
+        -- lobby, not standing in the aftermath.
         BR.Spawn.toLobby()
     end
 end)

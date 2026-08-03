@@ -144,6 +144,17 @@ function BR.Match.onEnter(state, from)
     elseif state == BR.MatchState.ENDED then
         BR.Match.awardPlacements()
 
+        -- Everyone goes HOME at ENDED, not at cleanup. Placements are
+        -- already awarded (the line above; reset() keeps them until
+        -- CLEANUP), and flipping the roster to LOBBY is what drives the
+        -- whole trip client-side: the fade, the teleport to the vista, the
+        -- invisibility, the private bucket. Waiting out the summary period
+        -- standing over a corpse in Los Santos served nobody -- M7's
+        -- victory screen will render over the lobby instead.
+        BR.Roster.each(
+            function(e) return e.state ~= BR.PlayerState.LEFT end,
+            function(src) BR.Roster.setState(src, BR.PlayerState.LOBBY) end)
+
     elseif state == BR.MatchState.CLEANUP then
         BR.Bus.clear()
         BR.Match.reset()

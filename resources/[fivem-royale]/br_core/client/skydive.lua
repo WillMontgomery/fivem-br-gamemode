@@ -182,6 +182,7 @@ end, false)
 RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)
     if d.state == BR.MatchState.WAITING
+       or d.state == BR.MatchState.ENDED
        or d.state == BR.MatchState.CLEANUP then
         dropping = false
     end

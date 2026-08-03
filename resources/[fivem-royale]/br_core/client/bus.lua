@@ -100,7 +100,7 @@ local function drawCrumbs()
             local k = d / segLen
             local blip = AddBlipForCoord(BR.Lerp(a.x, b.x, k), BR.Lerp(a.y, b.y, k), 0.0)
             SetBlipSprite(blip, 1)
-            SetBlipScale(blip, 0.3)
+            SetBlipScale(blip, 0.85)   -- was 0.3; unreadable on the pause map
             SetBlipColour(blip, 3)
             SetBlipAsShortRange(blip, true)
             crumbs[#crumbs + 1] = blip

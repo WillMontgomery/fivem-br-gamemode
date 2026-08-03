@@ -208,6 +208,26 @@ AddEventHandler(BR.Net.STATE, function(d)
 
     pushMatchState()
 
+    -- The result screen. Placement rides roster deltas that flush AFTER the
+    -- state broadcast (the transition flushes what came before it, then
+    -- onEnter awards placements), so the mirror is read after a beat -- the
+    -- screen is faded to black at this moment anyway. M7 fills in damage,
+    -- survival time and XP; placement and kills already tell won-or-lost.
+    if d.state == BR.MatchState.ENDED then
+        Citizen.SetTimeout(500, function()
+            local me = S.roster[S.me.src]
+            TriggerEvent('br:ui:sendLocal', BR.Nui.SUMMARY, {
+                placement  = (me and me.placement) or 0,
+                kills      = (me and me.kills) or 0,
+                won        = (me and me.placement == 1) or false,
+                total      = 0,
+                damage     = 0,
+                survivedMs = 0,
+                xpEarned   = 0,
+            })
+        end)
+    end
+
     -- Visibility and FOCUS are separate things. CEF only receives mouse input
     -- while NUI focus is held, so a visible-but-unfocused lobby is inert.
     --
