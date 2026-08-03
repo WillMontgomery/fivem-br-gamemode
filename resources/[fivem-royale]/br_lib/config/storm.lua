@@ -91,7 +91,7 @@ BR.Config.Storm = {
         height         = 300.0,  -- scaleZ, tall enough to span the visible vertical band
         colour         = { r = 150, g = 70, b = 255 },
         alpha          = 110,    -- segments must not overlap or alpha banding looks awful
-        groundCacheSec = 1.0,    -- GetGroundZFor3dCoord is slow; sample once per second
+        groundCacheSec = 1.0,    -- GetGroundZFor_3dCoord is slow; sample once per second
         fallbackZDrop  = 150.0,  -- if ground Z is unavailable, anchor below the camera
     },
 

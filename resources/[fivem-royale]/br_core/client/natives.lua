@@ -369,6 +369,13 @@ function BR.Native.check()
         SetTimecycleModifier(BR.Config.Storm.fx.timecycle)
         ClearTimecycleModifier()
     end)
+    -- The underscore is real: FiveM keeps it when a native name segment
+    -- starts with a digit. The unadorned spelling is nil, and the storm wall
+    -- shipped calling it once -- this probe is what makes that a boot-time
+    -- finding instead of a per-frame error spam report.
+    probe('GetGroundZFor_3dCoord',   function()
+        return GetGroundZFor_3dCoord(0.0, 0.0, 500.0, false)
+    end)
     probe('SetFocusPosAndVel',       function()
         SetFocusPosAndVel(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         ClearFocus()

@@ -28,9 +28,10 @@ end
 
 -- ------------------------------------------------------------------- wall ---
 
--- Ground height under the nearest wall point, cached: GetGroundZFor3dCoord is
--- slow and returns garbage for unloaded cells, so it is sampled once per
--- second and the previous answer is reused between samples.
+-- Ground height under the nearest wall point, cached: GetGroundZFor_3dCoord
+-- (the underscore is real -- FiveM keeps it when a native name segment starts
+-- with a digit) is slow and returns garbage for unloaded cells, so it is
+-- sampled once per second and the previous answer is reused between samples.
 local groundZ, groundAt = nil, 0
 
 BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
@@ -66,7 +67,7 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
         groundAt = now
         local nearX = cx + math.cos(base) * r
         local nearY = cy + math.sin(base) * r
-        local okZ, gz = GetGroundZFor3dCoord(nearX, nearY, p.z + 50.0, false)
+        local okZ, gz = GetGroundZFor_3dCoord(nearX, nearY, p.z + 50.0, false)
         groundZ = okZ and gz or nil
     end
     -- Anchor the curtain well below the ground line so slopes never show a
