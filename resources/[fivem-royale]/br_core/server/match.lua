@@ -86,17 +86,21 @@ function BR.Match.onEnter(state, from)
         -- people join and leave parties in the lobby.
         BR.Party.formSquads(S.mode)
 
+        -- The flight is drawn NOW, not at departure: warmup is when players
+        -- study the route on the map and pick their drop.
+        BR.Bus.plan()
+
     elseif state == BR.MatchState.BUS then
         BR.Server.matchId = BR.Server.matchId + 1
 
-        -- The route decides how long BUS lasts, so the deadline is set HERE
-        -- and rebroadcast -- planned in onEnter rather than by the caller so
-        -- that `brforce bus` gets a real route and a real deadline too,
-        -- instead of a state that never expires.
-        local dur = BR.Bus.plan()
+        -- The flight decides how long BUS lasts, so the deadline is set HERE
+        -- and rebroadcast. The geometry was planned at WARMUP; departure only
+        -- stamps the clock onto it. `brforce bus` from WAITING skips warmup,
+        -- so plan on demand if nothing is drawn yet.
+        if not BR.Bus.active() then BR.Bus.plan() end
+        local dur = BR.Bus.depart()
         S.endsAt = GetGameTimer() + math.floor(dur * 1000)
         BR.Broadcast.state(S.state, S.endsAt, { reason = 'busRoute' })
-        BR.Bus.launch()
 
         BR.Roster.each(
             function(e) return e.state == BR.PlayerState.WARMUP end,

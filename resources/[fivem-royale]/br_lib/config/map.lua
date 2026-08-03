@@ -80,29 +80,60 @@ BR.Config.Bus = {
     -- driven by direct coordinate writes, not by physics.
     model        = 'titan',
 
-    -- Cruise altitude. Raised from 340 after the plane clipped terrain --
-    -- Los Santos has 700m+ peaks, but the chord anchors keep it out of the
-    -- Chiliad massif and 500 clears everything a scored chord crosses.
+    -- Cruise altitude. Authored waypoints may override z per point (the
+    -- northern exits climb to clear Mount Chiliad); everything else uses this.
     altitude     = 500.0,
-    chordRadius  = 4000.0,  -- entry/exit points sit on a circle this size around the anchor
-    chordOffset  = 0.5,     -- 0..1, how far off-centre the flight path may sit
 
-    -- THE FLIGHT IS A PATH, NOT TWO LINES: spawn parked on the runway, roll,
-    -- rotate at the committed point, climb straight ahead, one banked turn
-    -- onto the heading for the chord, accelerate across the ocean, slow over
-    -- the drop chord. The server bakes the whole thing into timestamped
-    -- waypoints; clients interpolate. Surveyed in-game by the user:
-    -- z is the surveyed 4.19 + 0.5: at exactly 4.19 the Titan's gear sat in
-    -- the runway surface.
+    -- THE FLIGHT IS AN AUTHORED TOUR. One option is drawn from each leg list
+    -- at WARMUP -- so players see the route and plan their drop -- giving
+    -- 4 x 4 x 4 x 3 = 192 distinct flights, all over land by construction
+    -- (which retired the whole land-scoring machinery). Legs run south
+    -- coast -> city belt -> mid-map -> northern exit. An OPTION is an array
+    -- of waypoints so an exit can dogleg across the Chiliad massif with
+    -- explicit altitudes. Corners are filleted into arcs at build time; the
+    -- doors open on arrival at the leg-1 waypoint (the coastline).
+    legs = {
+        {   -- Leg 1: crossing the southern coast
+            { { x = -2598.67, y = -1086.21 } },
+            { { x =  -938.81, y = -1781.52 } },
+            { { x =   338.61, y = -3363.02 } },
+            { { x =  1726.79, y = -2109.79 } },
+        },
+        {   -- Leg 2: the city belt
+            { { x =  1427.70, y =  -357.45 } },
+            { { x =   765.43, y =  1219.36 } },
+            { { x =  -288.90, y =  -410.69 } },
+            { { x = -1152.44, y =  2456.74 } },
+        },
+        {   -- Leg 3: mid-map
+            { { x =  522.49, y = 3249.48 } },
+            { { x = 2240.84, y = 1384.38 } },
+            { { x = 2002.04, y = 2869.46 } },
+            { { x = 2277.24, y = 5014.84 } },
+        },
+        {   -- Leg 4: northern exits. The explicit z values are NOT
+            -- decorative: these overfly the Chiliad massif, and the default
+            -- cruise altitude is inside the rock.
+            { { x =  1370.50, y = 5849.28, z = 597.94 },
+              { x =  -193.45, y = 6425.31, z = 892.0 } },
+            { { x = -1254.45, y = 4135.53, z = 598.0 },
+              { x =  -632.90, y = 5458.41 } },
+            { { x = -2031.09, y = 4913.02 } },
+        },
+    },
+
+    -- Surveyed in-game by the user. Spawn z is the surveyed 4.19 + 0.5: at
+    -- exactly 4.19 the Titan's gear sat in the runway surface.
     spawn        = { x = 4484.61, y = -4497.98, z = 4.69, heading = 106.12 },
     rotatePoint  = { x = 4090.23, y = -4642.18 },  -- wheels-up here, straight out
     climbDist    = 2500.0,  -- metres past rotation to reach cruise altitude
-    turnRadius   = 1000.0,  -- the banked turn onto the chord heading
+    turnRadius   = 1000.0,  -- fillet radius: this close to a waypoint, start turning
 
     rollSpeed    = 80.0,    -- m/s at wheels-up (the roll builds up to this)
-    climbSpeed   = 150.0,   -- m/s through the climb and the turn
-    cruiseSpeed  = 400.0,   -- m/s reached across the open ocean
-    speed        = 185.0,   -- m/s along the drop chord
+    climbSpeed   = 150.0,   -- m/s through the climb and the initial turn
+    cruiseSpeed  = 400.0,   -- m/s across the open ocean approach
+    speed        = 185.0,   -- m/s over land: the WHOLE TOUR is the drop zone
+    cornerSpeed  = 150.0,   -- m/s through filleted corners
     boardSeconds = 5,       -- parked, engines idling, before the roll begins
     jumpGrace    = 5,       -- seconds after the route ends before BUS -> PLAYING
 
@@ -113,13 +144,8 @@ BR.Config.Bus = {
     camDistance  = 44.0,
     camHeight    = 13.0,
 
-    -- Route selection: candidate chords are scored by how much of the drop
-    -- leg overflies LAND (proximity to authored POIs is the proxy -- they
-    -- blanket the landmass). Best of N wins; pure water-to-water routes were
-    -- a real and miserable outcome of unscored randomness.
-    chordTries   = 16,
-    landRadius   = 1400.0,  -- a sample point within this range of a POI counts as land
-    minLandScore = 0.45,    -- keep drawing candidates until one clears this (best kept regardless)
+    -- Spacing of the route breadcrumbs drawn on the map and minimap.
+    crumbSpacing = 350.0,
 }
 
 BR.Config.Drop = {

@@ -114,26 +114,25 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
     local ped = PlayerPedId()
     local cs = GetPedParachuteState(ped)
 
-    if cs == BR.Native.ChuteState.FREEFALL then
-        -- The floor is not a suggestion: below this height the chute opens
-        -- whether or not the player was still holding for style.
-        if GetEntityHeightAboveGround(ped) < BR.Config.Drop.autoDeployAGL then
-            ForcePedToOpenParachute(ped)
-        end
-        return
-    end
-
-    -- Falling with NO parachute task (state -1 mid-air): the engine lost or
-    -- never took the task. Below the floor this re-arms and force-opens in
-    -- one motion -- the auto-deploy floor must hold even when the task
-    -- machinery failed, because this exact gap is how players fell straight
-    -- to the ground. (The descent is invincible as a second net, but the
-    -- chute is the fix; the invincibility is the apology.)
-    if cs == BR.Native.ChuteState.NONE
-       and not IsPedOnFoot(ped) and not IsEntityInWater(ped)
+    -- THE FLOOR, UNCONDITIONALLY. Below the auto-deploy height with the
+    -- canopy not out, this hammers EVERY tick until it is: re-give, re-task,
+    -- force -- regardless of which state the chute machinery claims to be in
+    -- (-1 task lost, 0 stowed, 3 freefall; ragdolls lie about all three).
+    -- Earlier versions gated each recovery step on the state that step
+    -- expected, and players fell past a floor made of preconditions. The
+    -- descent is invincible as the last net, but the chute is the fix.
+    local airborne = not IsPedOnFoot(ped) and not IsEntityInWater(ped)
+    if airborne
+       and cs ~= BR.Native.ChuteState.OPENING
+       and cs ~= BR.Native.ChuteState.OPEN
        and GetEntityHeightAboveGround(ped) < BR.Config.Drop.autoDeployAGL then
-        GiveWeaponToPed(ped, CHUTE, 1, false, false)
-        TaskParachute(ped, true, false)
+        if not HasPedGotWeapon(ped, CHUTE, false) then
+            GiveWeaponToPed(ped, CHUTE, 1, false, false)
+        end
+        if cs ~= BR.Native.ChuteState.FREEFALL then
+            TaskParachute(ped, true, false)
+        end
+        ForcePedToOpenParachute(ped)
         return
     end
 

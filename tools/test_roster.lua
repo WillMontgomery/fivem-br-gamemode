@@ -1593,21 +1593,39 @@ do
     BR.Sched.step(fakeTime)
     ok(BR.Server.match.state == BR.MatchState.WARMUP, 'warmup starts')
 
+    -- The route is drawn AT WARMUP -- players plan their drop with it -- but
+    -- carries no clock yet: the wheels move at BUS.
+    local r = BR.Bus.active()
+    ok(r ~= nil, 'the flight is drawn when warmup begins')
+    ok(#eventsOf(BR.Net.BUS_ROUTE) >= 1, 'and the preview reaches every client')
+    ok(r.timed == false, 'but it is not timed until departure')
+
+    ok(#r.legs == #BR.Config.Bus.legs, 'one option chosen per leg')
+    local legsValid, wpIdx = true, 1
+    for li, pick in ipairs(r.legs) do
+        local option = BR.Config.Bus.legs[li][pick]
+        if not option then legsValid = false break end
+        for _, wp in ipairs(option) do
+            local got = r.waypoints[wpIdx]
+            if not got or got.x ~= wp.x or got.y ~= wp.y then legsValid = false end
+            wpIdx = wpIdx + 1
+        end
+    end
+    ok(legsValid and wpIdx - 1 == #r.waypoints,
+        'the tour is exactly the chosen options, in leg order')
+
     sent = {}
     fakeTime = BR.Server.match.endsAt + 1
     BR.Sched.step(fakeTime)
     ok(BR.Server.match.state == BR.MatchState.BUS, 'warmup expires into the bus')
-
-    local r = BR.Bus.active()
-    ok(r ~= nil, 'a route exists')
-    ok(#eventsOf(BR.Net.BUS_ROUTE) == 1, 'and was broadcast exactly once')
     ok(BR.Roster.get(1).state == BR.PlayerState.BUS, 'players are aboard')
 
-    -- Path shape: parked at the surveyed spawn, ground-level through the
-    -- roll, at altitude by the doors, timestamps strictly increasing, and
-    -- the last point is the chord's far end.
+    r = BR.Bus.active()
+    ok(r.timed == true, 'departure stamps the clock onto the geometry')
+    ok(#eventsOf(BR.Net.BUS_ROUTE) == 1, 'and rebroadcasts the timed flight')
+
     local sp = BR.Config.Bus.spawn
-    local p1, pn = r.points[1], r.points[#r.points]
+    local p1 = r.points[1]
     ok(p1.x == sp.x and p1.y == sp.y and p1.z == sp.z,
         'the path begins parked at the surveyed runway spawn')
     ok(r.tStart < r.jumpFrom and r.jumpFrom < r.tEnd, 'doors open inside the flight')
@@ -1616,53 +1634,39 @@ do
     for i = 2, #r.points do
         if r.points[i].t <= r.points[i - 1].t then ordered = false end
     end
-    local rp = BR.Config.Bus.rotatePoint
     for _, p in ipairs(r.points) do
-        -- Everything before the rotation point's timestamp stays on the deck.
         if p.t <= r.tStart then groundedRoll = groundedRoll and p.z == sp.z end
     end
     ok(ordered, 'waypoint timestamps strictly increase')
     ok(groundedRoll, 'the ground roll stays on the ground')
 
+    -- THE DOORS OPEN AT THE LEG-1 WAYPOINT -- the coastline the players saw
+    -- on the map, not some geometric boundary halfway across the mainland.
     local doorX, doorY, doorZ = BR.PathPosAt(r.points, r.jumpFrom)
     ok(math.abs(doorZ - BR.Config.Bus.altitude) < 1.0,
         'the bus is at cruise altitude when the doors open')
-    ok(r.jumpFrom <= r.chordAt, 'doors never open later than the chord entry')
-    local _, doorLand = BR.Config.Map.NearestPOI(doorX, doorY)
-    ok(doorLand <= BR.Config.Bus.landRadius + 1.0 or r.jumpFrom == r.chordAt,
-        'the doors open over land, or at worst at the chord entry')
-    ok(math.abs(pn.x - r.ex) < 0.1 and math.abs(pn.y - r.ey) < 0.1,
-        'the path ends at the chord exit')
-    ok((r.landScore or 0) > 0, 'the chosen chord overflies at least some land')
+    local w1 = r.waypoints[1]
+    ok(BR.Dist(doorX, doorY, w1.x, w1.y) <= BR.Config.Bus.turnRadius + 50.0,
+        'the doors open on arrival at the first authored waypoint',
+        ('door at %.0f,%.0f -- wp1 at %.0f,%.0f'):format(doorX, doorY, w1.x, w1.y))
 
-    -- The scorer itself, pinned at its extremes: open sea south of the map
-    -- scores zero, a chord through the city scores near-full. (The best-of-N
-    -- selection is exercised statistically below -- a single "> 0" proved
-    -- vacuous in audit, since almost any chord near a land anchor grazes
-    -- some POI.)
-    ok(BR.Bus.landScore(0.0, -8000.0, 4000.0, -9000.0) == 0,
-        'open ocean scores zero')
-    ok(BR.Bus.landScore(-1000.0, -1500.0, 1000.0, -500.0) > 0.8,
-        'a chord across the city scores near-full')
+    local wn = r.waypoints[#r.waypoints]
+    local pn = r.points[#r.points]
+    ok(math.abs(pn.x - wn.x) < 0.1 and math.abs(pn.y - wn.y) < 0.1,
+        'the path ends exactly at the final authored waypoint')
+    ok(BR.Server.matchAnchor ~= nil, 'a match anchor is still picked for the storm')
+    ok(BR.Server.match.endsAt >= r.tEnd, 'BUS lasts at least the whole flight')
 
-    local a = BR.Server.matchAnchor
-    ok(a ~= nil, 'the match anchor is remembered for the storm')
-    ok(math.abs(BR.Dist(a.x, a.y, r.mx, r.my) - BR.Config.Bus.chordRadius) < 1.0,
-        'the chord entry sits on the anchor circle')
-    ok(BR.Dist2(sp.x, sp.y, r.mx, r.my) <= BR.Dist2(sp.x, sp.y, r.ex, r.ey),
-        'the bus enters at the end nearer the airstrip')
-    ok(BR.Server.match.endsAt >= r.tEnd, 'BUS lasts at least the whole route')
-
-    -- Jumping over the ocean is refused; over the chord it is an elimination
+    -- Jumping before the doors is refused; after them it is an elimination
     -- of altitude, not of the player.
     sent = {}
     fire(BR.Net.BUS_JUMP, 1)
-    ok(BR.Roster.get(1).state == BR.PlayerState.BUS, 'jumping before the chord is refused')
+    ok(BR.Roster.get(1).state == BR.PlayerState.BUS, 'jumping before the doors is refused')
     ok(#eventsOf(BR.Net.BUS_JUMP_OK) == 0, 'no exit coordinates are sent')
 
     fakeTime = r.jumpFrom + 1000
     fire(BR.Net.BUS_JUMP, 1)
-    ok(BR.Roster.get(1).state == BR.PlayerState.FREEFALL, 'jumping over the chord works')
+    ok(BR.Roster.get(1).state == BR.PlayerState.FREEFALL, 'jumping past the doors works')
     local oks = eventsOf(BR.Net.BUS_JUMP_OK)
     ok(#oks == 1 and oks[1].target == 1, 'exit coordinates go to the jumper alone')
     local jx, jy = oks[1].args[1].x, oks[1].args[1].y
@@ -1701,32 +1705,37 @@ do
     -- fighter is on the ground and the other is still falling.
     ok(BR.Server.squadsAlive() == 2, 'a freefaller is a living team')
 
-    -- Across many seeds, the CHOSEN chord never dips below a floor a purely
-    -- random pick regularly violates around the coastal anchors. Runs last:
-    -- each plan() replaces the live route.
-    local worst, doorsEarly, doorsBad = 1.0, 0, false
-    for seed = 1, 25 do
+    -- Variety and the Chiliad clearance, across many seeds. Runs last: each
+    -- plan() replaces the live route.
+    local combos, sawChiliad, chiliadOk = {}, false, true
+    local comboCount = 0
+    for seed = 1, 40 do
         fakeTime = fakeTime + 7919 * seed
         BR.Bus.plan()
         local rr = BR.Bus.active()
-        if rr.landScore < worst then worst = rr.landScore end
 
-        if rr.jumpFrom < rr.chordAt then
-            doorsEarly = doorsEarly + 1
-            local px2, py2 = BR.PathPosAt(rr.points, rr.jumpFrom)
-            local _, dd = BR.Config.Map.NearestPOI(px2, py2)
-            if dd > BR.Config.Bus.landRadius + 1.0 then doorsBad = true end
+        local key = table.concat(rr.legs, '-')
+        if not combos[key] then
+            combos[key] = true
+            comboCount = comboCount + 1
+        end
+
+        -- Exit option 1 doglegs over the Chiliad massif with explicit
+        -- altitudes; if those are dropped anywhere in the pipeline, the
+        -- plane flies through the mountain at 500.
+        if rr.legs[4] == 1 then
+            sawChiliad = true
+            local peak = 0.0
+            for _, p in ipairs(rr.points) do
+                if p.z > peak then peak = p.z end
+            end
+            if peak < 850.0 then chiliadOk = false end
         end
     end
-    ok(worst >= 0.3, 'candidate scoring keeps every match over meaningful land',
-        ('worst chosen score across seeds: %.2f'):format(worst))
-    -- The coastline scan must actually FIRE sometimes, or the "or at chord
-    -- entry" fallback makes the door rule vacuously true with the scan
-    -- deleted. Anchors sit inland, so most routes cross the coast well
-    -- before the anchor circle.
-    ok(doorsEarly >= 5, 'the first-land scan opens doors before the chord regularly',
-        ('early doors on %d of 25 seeds'):format(doorsEarly))
-    ok(not doorsBad, 'and every early opening is genuinely over land')
+    ok(comboCount >= 8, 'the draw actually varies across matches',
+        ('%d distinct tours in 40 draws'):format(comboCount))
+    ok(sawChiliad, 'the Chiliad exit came up at least once in 40 draws')
+    ok(chiliadOk, "the Chiliad exit's authored altitudes survive into the path")
     BR.Bus.clear()
 end
 

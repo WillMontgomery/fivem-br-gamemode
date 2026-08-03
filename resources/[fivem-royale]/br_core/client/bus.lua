@@ -69,9 +69,59 @@ local function cleanup()
     ejectedSeen = nil
 end
 
+-- ------------------------------------------------------- the map drawing ---
+
+local crumbs = {}
+
+local function clearCrumbs()
+    for _, b in ipairs(crumbs) do
+        if DoesBlipExist(b) then RemoveBlip(b) end
+    end
+    crumbs = {}
+end
+
+--- Draw the flight as breadcrumb dots on the map and minimap.
+---
+--- There is no native "draw a line on the map" for arbitrary paths (GPS
+--- routes snap to roads), so the route is a string of small short-range
+--- blips: the pause map shows the whole flight, the minimap shows the
+--- stretch near you. This is what warmup's drop-planning looks at.
+local function drawCrumbs()
+    clearCrumbs()
+    if not route then return end
+
+    local spacing = BR.Config.Bus.crumbSpacing
+    local carry = 0.0
+    for i = 2, #route.points do
+        local a, b = route.points[i - 1], route.points[i]
+        local segLen = BR.Dist(a.x, a.y, b.x, b.y)
+        local d = spacing - carry
+        while d <= segLen do
+            local k = d / segLen
+            local blip = AddBlipForCoord(BR.Lerp(a.x, b.x, k), BR.Lerp(a.y, b.y, k), 0.0)
+            SetBlipSprite(blip, 1)
+            SetBlipScale(blip, 0.3)
+            SetBlipColour(blip, 3)
+            SetBlipAsShortRange(blip, true)
+            crumbs[#crumbs + 1] = blip
+            d = d + spacing
+        end
+        carry = (carry + segLen) % spacing
+    end
+end
+
 RegisterNetEvent(BR.Net.BUS_ROUTE)
 AddEventHandler(BR.Net.BUS_ROUTE, function(r)
     route = r
+    drawCrumbs()
+end)
+
+-- The route drawing lives and dies with the pre-drop states.
+RegisterNetEvent(BR.Net.STATE)
+AddEventHandler(BR.Net.STATE, function(d)
+    if d.state ~= BR.MatchState.WARMUP and d.state ~= BR.MatchState.BUS then
+        clearCrumbs()
+    end
 end)
 
 --- Begin the drop at given coordinates: the one true handoff to skydive.lua.
@@ -160,7 +210,7 @@ end
 BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
     local me = BR.State.me.state
 
-    if not riding and route
+    if not riding and route and route.timed
        and BR.State.match.state == BR.MatchState.BUS
        and me == BR.PlayerState.BUS then
         board()
@@ -177,9 +227,8 @@ BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
             ejectedSeen = ejectedSeen or GetGameTimer()
             if GetGameTimer() - ejectedSeen > 800 then
                 print('[br_core] bus: exit coords never arrived; self-placing from the route')
-                local x, y, z = BR.PathPosAt(route.points, BR.Clock.now())
-                beginDrop(x, y, z,
-                          BR.GtaHeading(BR.Bearing(route.mx, route.my, route.ex, route.ey)))
+                local x, y, z, ddx, ddy = BR.PathPosAt(route.points, BR.Clock.now())
+                beginDrop(x, y, z, BR.GtaHeading(BR.Bearing(0.0, 0.0, ddx, ddy)))
             end
         else
             -- Dead, back to lobby, match torn down -- nothing airborne about
@@ -188,7 +237,8 @@ BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
         end
     end
 
-    if riding and not told and route and BR.Clock.now() >= route.jumpFrom then
+    if riding and not told and route and route.timed
+       and BR.Clock.now() >= route.jumpFrom then
         told = true
         TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
             text = 'Doors open — SPACE to jump.', tone = 'info', ms = 6000,
@@ -237,8 +287,9 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
         smoothHdg = (smoothHdg + turn * ease) % 360.0
 
         -- Bank proportional to how hard the nose is being asked to come
-        -- around; clamped shallow -- this is an airliner, not a stunt plane.
-        local targetRoll  = BR.Clamp(-turn * 0.9, -18.0, 18.0)
+        -- around. 2.5x the first pass, per feedback -- the shallow bank read
+        -- as a plane sliding sideways through its own turn.
+        local targetRoll  = BR.Clamp(-turn * 2.2, -42.0, 42.0)
         local targetPitch = BR.Clamp(math.deg(math.atan(ddz, hLen)) * 0.8, -14.0, 14.0)
         smoothRoll  = smoothRoll + (targetRoll - smoothRoll) * ease
         smoothPitch = smoothPitch + (targetPitch - smoothPitch) * ease
@@ -280,7 +331,7 @@ end)
 -- same key; `riding` and `dropping` are mutually exclusive, so exactly one
 -- of the two listeners acts on any press.)
 BR.Keys.on('deploy', function(pressed)
-    if not pressed or not riding or not route then return end
+    if not pressed or not riding or not route or not route.timed then return end
     if BR.Clock.now() < route.jumpFrom then
         TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
             text = 'Doors are still closed.', tone = 'warn' })
@@ -305,9 +356,14 @@ RegisterCommand('brbus', function()
     print(('  clock  offset %.0fms  synced %s  now %d'):format(
         BR.Clock.offset, tostring(BR.Clock.synced), BR.Clock.now()))
     if not route then print('  route  none') return end
+    print(('  route  %d pts  %d crumbs  legs %s  timed %s')
+        :format(#route.points, #crumbs,
+                route.legs and table.concat(route.legs, '-') or '?',
+                tostring(route.timed)))
+    if not route.timed then print('  (preview only -- departs at BUS)') return end
     local now = BR.Clock.now()
-    print(('  route  %d pts  tStart %+.1fs  doors %+.1fs  tEnd %+.1fs  (relative to now)')
-        :format(#route.points, (route.tStart - now) / 1000,
+    print(('  tStart %+.1fs  doors %+.1fs  tEnd %+.1fs  (relative to now)')
+        :format((route.tStart - now) / 1000,
                 (route.jumpFrom - now) / 1000, (route.tEnd - now) / 1000))
     local x, y, z = BR.PathPosAt(route.points, now)
     print(('  route pos now   %.0f, %.0f, %.0f'):format(x, y, z))
@@ -325,5 +381,8 @@ RegisterCommand('brbus', function()
 end, false)
 
 AddEventHandler('onResourceStop', function(res)
-    if res == GetCurrentResourceName() then cleanup() end
+    if res == GetCurrentResourceName() then
+        cleanup()
+        clearCrumbs()
+    end
 end)

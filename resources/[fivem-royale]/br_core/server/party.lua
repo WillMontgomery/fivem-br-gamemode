@@ -516,6 +516,7 @@ function BR.Party.lateJoin(src)
 
     if BR.Server.match.mode ~= BR.Mode.SQUAD.key then
         BR.Server.notify(src, 'Joined the match -- dropping soon.', 'success')
+        if BR.Bus and BR.Bus.sendPreview then BR.Bus.sendPreview(src) end
         return
     end
 
@@ -581,6 +582,10 @@ function BR.Party.lateJoin(src)
             BR.Server.notify(other, ('%s joined your squad.'):format(entry.name), 'success')
         end
     end
+
+    -- The room saw the flight preview when warmup began; the late arrival
+    -- needs their own copy to plan a drop with.
+    if BR.Bus and BR.Bus.sendPreview then BR.Bus.sendPreview(src) end
 
     print(('[br_core] %s (%d) late-joined warmup on %s'):format(entry.name, src, target))
 end
