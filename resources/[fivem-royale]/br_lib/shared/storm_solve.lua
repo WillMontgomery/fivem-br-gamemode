@@ -42,9 +42,20 @@ function BR.StormAt(rec, now)
 
     -- Still holding: the next circle is already known and drawn on the map, so
     -- players can see where to rotate before the wall starts moving.
+    --
+    -- PHASE 1'S HOLD IS THE FREE-LOOT PERIOD AND DEALS NO DAMAGE ANYWHERE --
+    -- the Fortnite rule: the whole map is safe until the first circle locks in
+    -- and starts closing. The tour spans the entire map and the anchor rides
+    -- one leg of it, so a far-end jumper can legitimately land kilometres
+    -- outside circle 1; bleeding them for it before the wall has ever moved
+    -- punishes the drop they were invited to make. From the first shrink
+    -- onward -- including every LATER phase's hold -- outside always hurts.
+    -- Decided HERE, in the solver, so the server's damage tick and the
+    -- client's vignette cannot disagree about it.
     if elapsed < rec.tWait then
         local state = (rec.phase == 0) and BR.StormPhase.PRE or BR.StormPhase.HOLDING
-        return rec.cx0, rec.cy0, rec.r0, state, rec.tWait - elapsed, rec.dps
+        local dps = (rec.phase <= 1) and 0.0 or rec.dps
+        return rec.cx0, rec.cy0, rec.r0, state, rec.tWait - elapsed, dps
     end
 
     local shrinkElapsed = elapsed - rec.tWait

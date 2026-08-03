@@ -2023,8 +2023,21 @@ do
     setPos(1, a.x, a.y)
     setPos(2, a.x + BR.Config.Storm.radius0 + 4000.0, a.y)
 
+    -- THE FREE-LOOT HOLD IS FREE: during phase 1's wait, being outside
+    -- circle 1 costs nothing -- no wire damage, no ledger. Live report
+    -- pinned here: a far-end jumper bled from the moment they landed.
     sent = {}
     fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+    ok(#eventsOf(BR.Net.STORM_DAMAGE) == 0,
+        'nobody takes damage during the phase-1 free-loot hold')
+    ok(BR.Roster.get(2).stormHp == nil,
+        'and the ledger stays empty for the whole map')
+
+    -- The first shrink is where the storm goes live.
+    sent = {}
+    fakeTime = fakeTime + 121000   -- past the 120s hold, into the shrink
+    BR.Sched.step(fakeTime)
     fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
 
     local toOne, lastToTwo, countTwo = 0, nil, 0
@@ -2033,7 +2046,7 @@ do
         if h.target == 2 then countTwo = countTwo + 1 lastToTwo = h.args[1] end
     end
     ok(toOne == 0, 'a player inside the circle is never told to take damage')
-    ok(countTwo >= 1, 'the player outside is')
+    ok(countTwo >= 1, 'the player outside is, once the shrink begins')
     -- Phase 1 is 1.0 DISPLAY hp/s; the wire speaks ENGINE units, and on this
     -- build's 0..200 range that is exactly 2 per one-second tick.
     ok(lastToTwo and lastToTwo.amount == 2,
@@ -2042,11 +2055,11 @@ do
     ok(BR.Roster.get(2).stormHp ~= nil, 'the server ledger tracks the exposure')
     ok(BR.Roster.get(1).stormHp == nil, 'and carries nothing for the safe player')
 
-    -- Phase advancement: jump past hold + shrink; the next record starts
-    -- exactly where the last one finished.
+    -- Phase advancement: jump past the rest of the shrink; the next record
+    -- starts exactly where the last one finished.
     local c1x, c1y, r1 = rec.cx1, rec.cy1, rec.r1
     sent = {}
-    fakeTime = fakeTime + 271000   -- 120s wait + 150s shrink + 1s
+    fakeTime = fakeTime + 150000   -- we are ~123s in; this clears wait+shrink (270s)
     BR.Sched.step(fakeTime)
     local rec2 = BR.Server.storm
     ok(rec2.phase == 2, 'a finished shrink advances the phase')

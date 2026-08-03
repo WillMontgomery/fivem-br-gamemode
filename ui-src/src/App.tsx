@@ -24,6 +24,12 @@ export default function App() {
     s.setMatch(d)
     // The result screen lives exactly as long as the teardown does.
     if (d.state === 'waiting') s.setSummary(null)
+    // The storm exists only while a match is live. Clearing it HERE -- off
+    // the state transition the UI already receives -- is what removes the
+    // card between matches; Lua never sends a "no storm" message (a nil
+    // payload crosses the bridge as {}, which once rendered as a ghost
+    // "PHASE UNDEFINED" card during warmup).
+    if (d.state !== 'playing') s.setStorm(null)
   })
   useNuiEvent('hud',      (d) => s.setHud(d))
   useNuiEvent('squad',    (d) => s.setSquad(d))

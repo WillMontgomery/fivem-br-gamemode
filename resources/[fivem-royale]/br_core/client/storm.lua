@@ -93,7 +93,6 @@ local lastBlipR = -1.0
 local fxOn = false
 local warnedPhase = nil
 local lastPush = 0
-local pushedNull = false
 
 local function clearBlips()
     if curBlip then RemoveBlip(curBlip) curBlip = nil end
@@ -118,13 +117,14 @@ local function fxSet(outside)
     end
 end
 
+-- NO "clear" envelope is ever sent from here. A nil payload arrives in the
+-- UI as {} (the bridge's `data or {}`), which rendered as a ghost "PHASE
+-- UNDEFINED / NaN" storm card during warmup. The UI clears its own storm
+-- slice whenever the match state is not PLAYING -- it already receives every
+-- state transition, so it needs no extra message to know.
 local function teardown()
     clearBlips()
     fxSet(false)
-    if not pushedNull then
-        pushedNull = true
-        TriggerEvent('br:ui:sendLocal', BR.Nui.STORM, nil)
-    end
 end
 
 BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
@@ -134,7 +134,6 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
         warnedPhase = nil
         return
     end
-    pushedNull = false
 
     local now = BR.Clock.now()
     local cx, cy, r, st, msLeft, dps = solveNow(rec)
@@ -144,11 +143,14 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     local dist = BR.Dist(p.x, p.y, cx, cy)
     local edge = dist - r   -- positive = outside
 
-    -- Screen FX track being outside, but only while we can actually be hurt
-    -- -- a spectator ghosting through the wall does not need a red screen.
+    -- Screen FX track being outside AND the storm actually hurting right now
+    -- (dps is 0 for everyone during the phase-1 free-loot hold -- the solver
+    -- decides that, so this cannot disagree with the server's damage tick),
+    -- and only while we can be hurt at all -- a spectator ghosting through
+    -- the wall does not need a red screen.
     local me = BR.State.me.state
     local canHurt = me == BR.PlayerState.ALIVE or me == BR.PlayerState.DBNO
-    fxSet(edge > 0 and canHurt)
+    fxSet(edge > 0 and dps > 0 and canHurt)
 
     -- "Storm closing in 30s" -- once per phase, at the authored warn time.
     if st == BR.StormPhase.HOLDING or st == BR.StormPhase.PRE then

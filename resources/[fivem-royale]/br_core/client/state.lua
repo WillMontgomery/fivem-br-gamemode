@@ -14,6 +14,12 @@ BR = BR or {}
 local S = BR.State
 local lastSeq = -1
 
+-- Set by the delta handler the moment MY state reads 'dead'; consumed by the
+-- match-end summary (see the long note above its declaration site... which is
+-- the STATE handler below). Declared HERE because the delta handler assigns
+-- it -- an assignment above a later `local` would quietly write a global.
+local diedThisMatch = false
+
 -- Forward declaration. The SQUAD_UPDATE handler sits above the definition
 -- because it belongs with the other net handlers, not with the UI pushes.
 local pushSquadOrParty
@@ -172,6 +178,9 @@ AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
             -- while a match runs (left it) must summon the lobby and its
             -- focus, and leaving LOBBY must release them.
             if S.me.state ~= wasState then
+                if S.me.state == BR.PlayerState.DEAD then
+                    diedThisMatch = true
+                end
                 applyFocusForState(S.match.state)
             end
         end
@@ -200,11 +209,23 @@ AddEventHandler(BR.Net.DIGEST, function(d)
     BR.PushHud()
 end)
 
+-- diedThisMatch (declared at the top; the delta handler writes it): placement
+-- alone cannot answer "did I win". The last player standing who then dies to
+-- the storm still finishes #1 -- there was nobody left to finish ahead of
+-- them -- and a dev-solo run did exactly that: the storm killed the only
+-- player and the screen slammed VICTORY ROYALE over their corpse. Placement
+-- says where you finished; the flag says how it ended.
+
 RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)
     S.match.state  = d.state
     S.match.endsAt = d.endsAt
     S.match.mode   = d.mode or S.match.mode
+
+    -- A new match forgives old deaths.
+    if d.state == BR.MatchState.WARMUP or d.state == BR.MatchState.BUS then
+        diedThisMatch = false
+    end
 
     pushMatchState()
 
@@ -219,7 +240,8 @@ AddEventHandler(BR.Net.STATE, function(d)
             TriggerEvent('br:ui:sendLocal', BR.Nui.SUMMARY, {
                 placement  = (me and me.placement) or 0,
                 kills      = (me and me.kills) or 0,
-                won        = (me and me.placement == 1) or false,
+                won        = (me and me.placement == 1 and not diedThisMatch)
+                                or false,
                 total      = 0,
                 damage     = 0,
                 survivedMs = 0,

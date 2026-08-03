@@ -38,7 +38,10 @@ export default function Hud({ visible }: { visible: boolean }) {
   // Applies the game's resolution and safe zone to CSS variables.
   useScreenMetrics()
 
-  const outside = (storm?.edgeDistance ?? -1) > 0
+  // Red only when the storm is actually hurting: dps is 0 during the phase-1
+  // free-loot hold, where being outside circle 1 is a rotation problem, not
+  // an emergency.
+  const outside = (storm?.edgeDistance ?? -1) > 0 && (storm?.dps ?? 0) > 0
 
   return (
     <div

@@ -59,7 +59,7 @@ export interface UiState {
   setHud: (h: HudPayload) => void
   setSquad: (s: SquadPayload) => void
   setInv: (i: InvPayload) => void
-  setStorm: (s: StormPayload) => void
+  setStorm: (s: StormPayload | null) => void
   setDbno: (d: DbnoPayload) => void
   setSpectate: (s: SpectatePayload | null) => void
   setSummary: (s: SummaryPayload | null) => void
@@ -131,7 +131,10 @@ export const useUi = create<UiState>((set) => ({
   setHud:      (hud) => set({ hud }),
   setSquad:    (squad) => set({ squad }),
   setInv:      (inv) => set({ inv }),
-  setStorm:    (storm) => set({ storm }),
+  // Normalised at the boundary: an empty or shapeless payload (a nil that
+  // crossed the Lua bridge becomes {}) must read as "no storm", never as a
+  // storm whose every field is undefined.
+  setStorm:    (storm) => set({ storm: storm && storm.phase != null ? storm : null }),
   setDbno:     (dbno) => set({ dbno }),
   setSpectate: (spectate) => set({ spectate }),
   setSummary:  (summary) => set({ summary }),

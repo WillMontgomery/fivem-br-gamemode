@@ -297,6 +297,40 @@ do
     ok(near(BR.StormPhaseDuration(rec), 15000.0), 'phase duration is wait + shrink')
 end
 
+describe('storm.freeHold')
+do
+    -- THE FREE-LOOT HOLD IS FREE. Phase 1's wait deals no damage anywhere on
+    -- the map (the Fortnite rule: nothing hurts until the first circle locks
+    -- in and starts closing) -- a far-end jumper can legitimately land
+    -- kilometres outside circle 1 and must not bleed for it. Decided in the
+    -- SOLVER so the server's damage tick and the client's vignette cannot
+    -- disagree. This is a user-facing rule pinned after a live report:
+    -- "as soon as I jumped I was already outside the circle and losing
+    -- health" (2026-08-02).
+    local p1 = BR.BuildStormRecord(1, 0.0, 0.0, 3500.0, 100.0, 0.0, 2600.0,
+                                   0, 120000, 150000, 1.0)
+
+    local _, _, _, st, _, dps = BR.StormAt(p1, 60000)   -- mid-hold
+    ok(st == BR.StormPhase.HOLDING and dps == 0.0,
+        'phase 1 holding deals NO damage', ('dps=%.1f'):format(dps))
+
+    _, _, _, st, _, dps = BR.StormAt(p1, 130000)        -- mid-shrink
+    ok(st == BR.StormPhase.SHRINKING and dps == 1.0,
+        'phase 1 shrinking deals its authored dps')
+
+    _, _, _, st, _, dps = BR.StormAt(p1, 999999)        -- collapsed
+    ok(st == BR.StormPhase.FINISHED and dps == 1.0,
+        'a finished phase keeps hurting until the next record')
+
+    -- LATER holds are not free: from phase 2 on, outside always hurts, wait
+    -- or shrink alike.
+    local p2 = BR.BuildStormRecord(2, 0.0, 0.0, 2600.0, 0.0, 0.0, 1600.0,
+                                   0, 120000, 120000, 2.0)
+    _, _, _, st, _, dps = BR.StormAt(p2, 60000)
+    ok(st == BR.StormPhase.HOLDING and dps == 2.0,
+        'phase 2 holding deals its authored dps')
+end
+
 describe('storm.nesting')
 do
     -- THE critical invariant. If a new circle is not fully contained by the old

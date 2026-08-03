@@ -75,7 +75,7 @@ export function startMockDriver(): void {
       },
       storm: {
         phase: 4, phaseState: 'shrinking', endsAt: now + 42_000,
-        radius: 520, edgeDistance: -180, bearing: 214,
+        radius: 520, edgeDistance: -180, bearing: 214, dps: 8,
       },
       chat: [
         { channel: 'system', from: 0, name: 'System', text: 'Storm closing in 30s', at: now - 30_000 },
@@ -104,7 +104,7 @@ export function startMockDriver(): void {
       k: 'storm',
       d: {
         phase: 4, phaseState: 'shrinking', endsAt: Date.now() + 42_000,
-        radius, edgeDistance: edge, bearing: (Date.now() / 90) % 360,
+        radius, edgeDistance: edge, bearing: (Date.now() / 90) % 360, dps: 8,
       },
     })
   }, 250)
