@@ -31,7 +31,17 @@ function GetPlayerPed(src)
     if noPed[n] then return 0 end
     return connected[n] and (1000 + n) or 0
 end
-function GetEntityCoords() return { x = 0.0, y = 0.0, z = 0.0 } end
+-- Per-ped coordinates, settable by storm/position tests. Everyone else stands
+-- at the origin, which is what the older blocks were written against.
+local pedCoords = {}
+function GetEntityCoords(ped)
+    return pedCoords[ped] or { x = 0.0, y = 0.0, z = 0.0 }
+end
+--- Place a player's PED (positions flow ped -> sampler -> roster, never the
+--- other way, so tests must set them the same way the game would).
+local function setPos(src, x, y)
+    pedCoords[1000 + src] = { x = x, y = y, z = 30.0 }
+end
 
 -- Health is driven through this table rather than set on roster entries
 -- directly. roster.positions samples health every pass and would overwrite a
@@ -86,6 +96,7 @@ for _, f in ipairs({
     'br_core/server/match.lua',
     'br_core/server/bus.lua',
     'br_core/server/combat.lua',
+    'br_core/server/storm.lua',
 }) do
     local chunk, err = loadfile(ROOT .. f)
     if not chunk then
@@ -135,6 +146,10 @@ local function reset()
     -- Cleared by Match.reset() between real matches; the harness must do the
     -- same or one block's starting-team count leaks into the next.
     BR.Server.match.startSquads = nil
+    -- Storm state and placed peds leak across blocks the same way.
+    BR.Server.storm = nil
+    BR.Server.matchAnchor = nil
+    for k in pairs(pedCoords) do pedCoords[k] = nil end
 end
 
 local function join(src, name)
@@ -1959,6 +1974,139 @@ do
     local results = eventsOf(BR.Net.SQUAD_RESULT)
     ok(#results == 1 and results[1].args[1].ok == false,
         'a failure still sends its reason')
+end
+
+describe('match.storm')
+do
+    -- The M4 engine, end to end on the server alone: PLAYING starts the
+    -- clock, the record is published once per phase, damage is decided from
+    -- server-sampled positions, and the LEDGER -- not the client's ped --
+    -- is what eliminates. This last property is the authority drill in unit
+    -- test form: player 2's "client" never applies a single point of the
+    -- damage it is told about, and dies on schedule anyway.
+    reset()
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'warmup starts')
+
+    sent = {}
+    fakeTime = fakeTime + 1000
+    BR.Match.transition(BR.MatchState.PLAYING)
+
+    local rec = BR.Server.storm
+    local a   = BR.Server.matchAnchor
+    ok(rec ~= nil, 'PLAYING starts the storm')
+    ok(rec.phase == 1, 'phase 1 is entered directly -- the hold IS its wait')
+    ok(rec.cx0 == a.x and rec.cy0 == a.y, 'the opening circle sits on the match anchor')
+    ok(rec.r0 == BR.Config.Storm.radius0, 'at the opening radius')
+    ok(rec.tWait == 120000.0, 'the 120s free-loot hold is on the wire')
+    ok(rec.r1 == BR.Config.Storm.phases[1].radius,
+        'the first target circle is known the moment the match goes live')
+    ok(BR.Dist(rec.cx0, rec.cy0, rec.cx1, rec.cy1) + rec.r1 <= rec.r0 + 1e-6,
+        'and nests inside the opening circle')
+
+    local syncs = eventsOf(BR.Net.STORM_SYNC)
+    ok(#syncs >= 1 and syncs[#syncs].target == -1,
+        'the record is broadcast to everyone, once')
+
+    -- A late joiner needs no special path: the snapshot carries the record.
+    join(5, 'Late')
+    sent = {}
+    fire(BR.Net.READY, 5)
+    local snaps = eventsOf(BR.Net.SNAPSHOT)
+    ok(#snaps == 1 and snaps[1].args[1].storm ~= nil,
+        'snapshots carry the storm record for late joiners')
+    leave(5)
+
+    -- Damage targeting: 1 stands at the anchor (inside), 2 far out at sea.
+    setPos(1, a.x, a.y)
+    setPos(2, a.x + BR.Config.Storm.radius0 + 4000.0, a.y)
+
+    sent = {}
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+
+    local toOne, lastToTwo, countTwo = 0, nil, 0
+    for _, h in ipairs(eventsOf(BR.Net.STORM_DAMAGE)) do
+        if h.target == 1 then toOne = toOne + 1 end
+        if h.target == 2 then countTwo = countTwo + 1 lastToTwo = h.args[1] end
+    end
+    ok(toOne == 0, 'a player inside the circle is never told to take damage')
+    ok(countTwo >= 1, 'the player outside is')
+    -- Phase 1 is 1.0 DISPLAY hp/s; the wire speaks ENGINE units, and on this
+    -- build's 0..200 range that is exactly 2 per one-second tick.
+    ok(lastToTwo and lastToTwo.amount == 2,
+        'damage crosses the wire in engine units (1 dps -> 2/tick)',
+        lastToTwo and ('amount %s'):format(tostring(lastToTwo.amount)) or 'none')
+    ok(BR.Roster.get(2).stormHp ~= nil, 'the server ledger tracks the exposure')
+    ok(BR.Roster.get(1).stormHp == nil, 'and carries nothing for the safe player')
+
+    -- Phase advancement: jump past hold + shrink; the next record starts
+    -- exactly where the last one finished.
+    local c1x, c1y, r1 = rec.cx1, rec.cy1, rec.r1
+    sent = {}
+    fakeTime = fakeTime + 271000   -- 120s wait + 150s shrink + 1s
+    BR.Sched.step(fakeTime)
+    local rec2 = BR.Server.storm
+    ok(rec2.phase == 2, 'a finished shrink advances the phase')
+    ok(rec2.cx0 == c1x and rec2.cy0 == c1y and rec2.r0 == r1,
+        'the new record starts at the old target circle')
+    ok(BR.Dist(rec2.cx0, rec2.cy0, rec2.cx1, rec2.cy1) + rec2.r1 <= rec2.r0 + 1e-6,
+        'and its own target nests in turn')
+    ok(#eventsOf(BR.Net.STORM_SYNC) >= 1, 'the new phase is rebroadcast')
+
+    -- THE AUTHORITY PROOF. Player 2's ped health never moves -- this client
+    -- ignores every STORM_DAMAGE it is sent -- but the ledger runs out at the
+    -- dps-predicted moment and the server eliminates them anyway.
+    -- The block is in phase 2 by now, and phase 2 is 2.0 dps: display 8 is
+    -- exactly four one-second ticks of life.
+    pedHealth[1002] = 16          -- engine 16 = display 8
+    local deadAt = nil
+    for i = 1, 14 do
+        fakeTime = fakeTime + 1000
+        BR.Sched.step(fakeTime)
+        local e = BR.Roster.get(2)
+        if e and e.state == BR.PlayerState.DEAD and not deadAt then deadAt = i end
+    end
+    ok(deadAt ~= nil,
+        'the LEDGER eliminates a client that never applies its storm damage')
+    ok(deadAt and deadAt >= 3 and deadAt <= 5,
+        'at the dps-predicted moment (8 hp / 2 dps), not instantly and not late',
+        ('died on tick %s'):format(tostring(deadAt)))
+
+    local feed = eventsOf(BR.Net.KILL_FEED)
+    ok(#feed >= 1 and feed[#feed].args[1].cause == 'storm',
+        'the kill feed names the storm')
+
+    -- And the win condition sees it like any other death: last squad standing.
+    ok(BR.Server.match.state == BR.MatchState.ENDED,
+        'a storm kill can decide the match')
+    ok(BR.Server.storm == nil or BR.Server.match.state ~= BR.MatchState.PLAYING,
+        'no storm keeps running past the match')
+
+    pedHealth[1002] = nil
+end
+
+describe('match.storm.cleanup')
+do
+    -- Between matches the record must be gone: the next match's clients would
+    -- otherwise render last round's wall until the new PLAYING replaced it.
+    reset()
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    BR.Match.transition(BR.MatchState.PLAYING)
+    ok(BR.Server.storm ~= nil, 'storm up')
+
+    local e1 = BR.Roster.get(1)
+    e1.stormHp, e1.lastStormAt = 42.0, fakeTime
+
+    BR.Match.transition(BR.MatchState.ENDED)
+    BR.Match.transition(BR.MatchState.CLEANUP)
+    ok(BR.Server.storm == nil, 'CLEANUP clears the storm record')
+    ok(e1.stormHp == nil and e1.lastStormAt == nil,
+        'and the per-player storm ledger with it')
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

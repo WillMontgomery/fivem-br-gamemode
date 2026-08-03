@@ -147,6 +147,11 @@ function BR.Match.onEnter(state, from)
         -- bus never ran. Never overwrite a count the bus already took.
         S.startSquads = S.startSquads or BR.Server.squadsAlive()
 
+        -- The storm clock starts NOW -- the last landing, not the bus timer
+        -- -- and the first circle goes on every map immediately so rotation
+        -- decisions start with the looting (user call, 2026-08-02).
+        BR.Storm.begin()
+
     elseif state == BR.MatchState.ENDED then
         BR.Match.awardPlacements()
 
@@ -213,6 +218,7 @@ function BR.Match.reset()
     BR.Roster.each(nil, function(src, e)
         e.kills, e.downs, e.revives, e.damage = 0, 0, 0, 0.0
         e.lastDamageBy, e.lastDamageAt = nil, 0
+        e.stormHp, e.lastStormAt = nil, nil
         e.hp, e.armour = 100.0, 0.0
 
         -- Explicitly cleared, so clients drop them too. squadId is per-match;

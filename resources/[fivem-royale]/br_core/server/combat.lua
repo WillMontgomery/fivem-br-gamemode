@@ -108,9 +108,16 @@ BR.Sched.every(1000, 'combat.deathcheck', function()
 
         -- engineHp is sampled by roster.positions alongside coordinates.
         if entry.engineHp and BR.IsDeadHp(entry.engineHp) then
+            -- A death within moments of a storm tick is a storm death: the
+            -- kill feed should say so rather than the generic fallback.
+            local cause = 'server-observed'
+            if entry.lastStormAt
+               and (GetGameTimer() - entry.lastStormAt) < 3000 then
+                cause = 'storm'
+            end
             print(('[br_core] server observed %s (%d) dead (hp %d) -- eliminating')
                 :format(entry.name, src, entry.engineHp))
-            BR.Combat.eliminate(src, 'server-observed', nil)
+            BR.Combat.eliminate(src, cause, nil)
         end
     end)
 end)

@@ -303,6 +303,30 @@ AddEventHandler(BR.Net.NOTIFY, function(n)
     })
 end)
 
+-- --------------------------------------------------------------------------
+-- Storm
+-- --------------------------------------------------------------------------
+
+-- The published record. Solved locally (BR.StormAt against the synced clock)
+-- by the renderer and the HUD; nothing about the circle is ever streamed.
+RegisterNetEvent(BR.Net.STORM_SYNC)
+AddEventHandler(BR.Net.STORM_SYNC, function(rec)
+    S.storm = rec
+end)
+
+-- The server said the storm hurt us; hurt the ped it can see. This handler
+-- lives HERE, in the mirror, and not in client/storm.lua ON PURPOSE: the
+-- authority drill disables every storm VISUAL and the player must still take
+-- identical damage -- and even a client that strips this handler out only
+-- silences the animation, because the server eliminates from its own ledger
+-- either way. Applying what the server said is exactly this file's job.
+RegisterNetEvent(BR.Net.STORM_DAMAGE)
+AddEventHandler(BR.Net.STORM_DAMAGE, function(d)
+    local amount = (d and d.amount) or 0
+    if amount <= 0 then return end
+    BR.Native.applyDamage(amount, d.armourFirst)
+end)
+
 RegisterNetEvent(BR.Net.LOBBY_STATUS)
 AddEventHandler(BR.Net.LOBBY_STATUS, function(d)
     -- Resolve "am I queued?" here rather than shipping the id list to the UI.

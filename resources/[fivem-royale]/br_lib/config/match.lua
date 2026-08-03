@@ -137,6 +137,15 @@ function BR.ToEngineHp(display)
     return math.floor(v + 0.5)
 end
 
+--- A display-unit DELTA (damage or heal amount) -> engine units. Deltas scale
+--- by the span only -- no floor offset, that is for absolute values.
+--- @param display number
+--- @return number  engine delta, NOT rounded (callers decide how to carry fractions)
+function BR.ToEngineHpDelta(display)
+    local M = BR.Config.Match
+    return display * (M.maxHealth - M.healthFloor) / 100.0
+end
+
 --- Engine health -> display health (0..100).
 --- @param engine number
 --- @return number

@@ -56,6 +56,7 @@ server_scripts {
     'server/match.lua',
     'server/bus.lua',       -- route authority; match.onEnter(BUS) calls into it
     'server/combat.lua',
+    'server/storm.lua',     -- phase authority + the damage ledger
     'server/chat.lua',
     'server/debug.lua',
 }
