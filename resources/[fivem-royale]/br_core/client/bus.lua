@@ -22,6 +22,7 @@ local pilot   = nil     -- local ped in the seat; see board() for why it matters
 local cam     = nil
 local riding  = false
 local told    = false   -- "doors open" notice sent
+local toldClosing = false
 local ejectedSeen = nil -- when we noticed the server flipped us to FREEFALL
 local lastX, lastY, lastZ, lastT = nil, nil, nil, nil  -- finite-difference state
 local camYaw, camPitch = 0.0, -8.0   -- free-look orbit, reset each boarding
@@ -54,18 +55,17 @@ local function cleanup()
     end
     lastX, lastY, lastZ, lastT = nil, nil, nil, nil
     smoothHdg, smoothPitch, smoothRoll = nil, 0.0, 0.0
-    -- Streaming focus back to the ped, radar back on screen.
-    ClearFocus()
-    DisplayRadar(true)
     if riding then
-        -- Whatever ends the ride, the ped must come back. A hidden frozen
-        -- ped with no bus is a black screen with a HUD on it.
+        -- Whatever ends the ride, the ped must come back to the world: off
+        -- the plane (it rode ATTACHED -- that is what keeps the minimap and
+        -- streaming following the flight), visible, its own master.
         local ped = PlayerPedId()
+        DetachEntity(ped, true, false)
         SetEntityVisible(ped, true, false)
-        FreezeEntityPosition(ped, false)
         riding = false
     end
     told = false
+    toldClosing = false
     ejectedSeen = nil
 end
 
@@ -126,7 +126,7 @@ end)
 
 --- Begin the drop at given coordinates: the one true handoff to skydive.lua.
 local function beginDrop(x, y, z, heading)
-    cleanup()
+    cleanup()   -- detaches the ped from the plane, among everything else
     local ped = PlayerPedId()
     SetEntityCoordsNoOffset(ped, x + 0.0, y + 0.0, z + 0.0, false, false, false)
     SetEntityHeading(ped, heading or 0.0)
@@ -185,20 +185,37 @@ local function board()
 
         SetVehicleEngineOn(bus, true, true, false)
 
+        -- THE PED RIDES IN THE PLANE, attached at a cabin offset varied by
+        -- server id so co-riders spread through the fuselage instead of
+        -- stacking in one seat. This is what makes the minimap and the
+        -- world's streaming follow the flight -- both track the PED, and a
+        -- ped parked at the airstrip kept the minimap there too. Attaching
+        -- own-local-ped to own-local-plane has none of the network attach
+        -- problems this design originally avoided; nothing here is synced.
+        -- It also retires the in-flight freeze, whose per-frame re-freeze
+        -- was racing the drop setup at the moment of the jump.
         local ped = PlayerPedId()
+        local srcN = BR.State.me.src or 0
+        AttachEntityToEntity(ped, bus,
+            0,
+            (srcN % 3 - 1) * 0.9,            -- across the cabin
+            -1.5 - (srcN % 4) * 1.3,         -- down the fuselage
+            0.4,
+            0.0, 0.0, 0.0, false, false, false, false, 2, true)
         SetEntityVisible(ped, false, false)
-        FreezeEntityPosition(ped, true)
 
         -- Unattached camera, positioned every frame by the fly loop: an
         -- attached camera is welded in place, and free look was the first
         -- thing missed. HUD chrome goes with it -- the ride is a cutscene.
         camYaw, camPitch = 0.0, -8.0
+        smoothHdg = route.heading or heading   -- parked look-ahead is zero-length;
+                                               -- without this the first rotation
+                                               -- write snapped the plane to north
         cam = CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA',
             p0.x, p0.y, p0.z + BR.Config.Bus.camHeight,
             0.0, 0.0, 0.0, 65.0, false, 2)
         SetCamActive(cam, true)
         RenderScriptCams(true, false, 0, true, true)
-        DisplayRadar(false)
 
         print(('[br_core] aboard the bus (handle %d)'):format(bus))
     end)
@@ -244,6 +261,16 @@ BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
             text = 'Doors open — SPACE to jump.', tone = 'info', ms = 6000,
         })
     end
+
+    -- Last call: past the final authored waypoint the plane flies its
+    -- overrun; whoever is still aboard when it runs out goes out anyway.
+    if riding and not toldClosing and route and route.timed
+       and BR.Clock.now() >= route.doorsClose then
+        toldClosing = true
+        TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
+            text = 'Doors closing — jump now!', tone = 'warn', ms = 5000,
+        })
+    end
 end)
 
 -- Fly the plane. Frame loop, active only while a bus exists; everyone
@@ -264,6 +291,13 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
 
     local t = BR.Clock.now()
     local x, y, z = BR.PathPosAt(route.points, t)
+
+    -- A hand on the yoke: slow layered sine drift in altitude, +/- ~8 units,
+    -- driven by the SYNCED clock so all 48 planes drift identically. Only
+    -- once airborne -- the runway does not undulate.
+    if z > (route.points[1].z + 15.0) then
+        z = z + math.sin(t * 0.00037) * 5.0 + math.sin(t * 0.00011 + 1.7) * 3.0
+    end
 
     SetEntityCoordsNoOffset(bus, x, y, z, false, false, false)
 
@@ -304,8 +338,8 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
         SetEntityVelocity(bus, vx, vy, vz)
     end
     lastX, lastY, lastZ, lastT = x, y, z, t
-
-    SetFocusPosAndVel(x, y, z, vx, vy, vz)
+    -- No streaming focus hint needed anymore: the ped rides the plane, and
+    -- the world streams around the ped all by itself.
 
     -- Free-look orbit: mouse (or right stick) walks the camera around the
     -- plane; it always looks AT the plane, so there is no way to get lost.

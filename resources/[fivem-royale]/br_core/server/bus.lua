@@ -125,11 +125,23 @@ function BR.Bus.plan()
         cx, cy, cz = nx, ny, nz
     end
 
+    local closeIdx = nil
     for i, wp in ipairs(waypoints) do
         local nxt = waypoints[i + 1]
         if not nxt then
-            -- Final waypoint: run straight in and end exactly there.
+            -- Final waypoint: run straight in... and then KEEP FLYING. The
+            -- overrun past the last authored point is the "doors closing"
+            -- window: five more seconds aboard before the force-eject,
+            -- instead of the plane evaporating on arrival.
             straight(wp.x, wp.y, wp.z, cfg.speed, cfg.speed, 6)
+            closeIdx = #points
+
+            local pv = points[#points - 1]
+            local odx, ody = wp.x - pv.x, wp.y - pv.y
+            local oLen = math.max(1.0, math.sqrt(odx * odx + ody * ody))
+            local oDist = cfg.speed * (cfg.overrunSecs or 5)
+            straight(wp.x + odx / oLen * oDist, wp.y + ody / oLen * oDist,
+                     wp.z, cfg.speed, cfg.speed, 3)
         else
             -- Fillet: trim the corner by up to turnRadius (never more than
             -- 35% of either adjoining stretch), then round it with a
@@ -175,6 +187,7 @@ function BR.Bus.plan()
         waypoints = waypoints,   -- the authored tour, for the map drawing
         legs      = legs,
         jumpIdx   = jumpIdx or #points,
+        closeIdx  = closeIdx or #points,   -- last authored point: doors-closing warning
         alt       = cfg.altitude,
         heading   = sp.heading,
         timed     = false,
@@ -193,23 +206,46 @@ end
 function BR.Bus.depart()
     local cfg = BR.Config.Bus
     local now = GetGameTimer()
+    local pts = route.points
+
+    -- PHYSICS-SMOOTH THE SPEED PROFILE before stamping the clock. The
+    -- authored profile changes speed in blocks (cruise into a corner was a
+    -- 400 -> 150 step across one sample), which rode like a handbrake. Two
+    -- kinematic passes -- accelerate forward, brake backward, both capped at
+    -- maxAccel -- turn every step into a ramp: v^2 = v0^2 + 2ad, the same
+    -- arithmetic a driving NPC obeys.
+    local amax = cfg.maxAccel or 9.0
+    for i = 2, #pts do
+        local d = BR.Dist(pts[i - 1].x, pts[i - 1].y, pts[i].x, pts[i].y)
+        local cap = math.sqrt(pts[i - 1].v ^ 2 + 2 * amax * d)
+        if pts[i].v > cap then pts[i].v = cap end
+    end
+    for i = #pts - 1, 1, -1 do
+        local d = BR.Dist(pts[i].x, pts[i].y, pts[i + 1].x, pts[i + 1].y)
+        local cap = math.sqrt(pts[i + 1].v ^ 2 + 2 * amax * d)
+        if pts[i].v > cap then pts[i].v = cap end
+    end
 
     local clockMs = now + cfg.boardSeconds * 1000
     local prev = nil
-    for _, p in ipairs(route.points) do
+    for _, p in ipairs(pts) do
         if prev then
             local d = BR.Dist(prev.x, prev.y, p.x, p.y)
-            clockMs = clockMs + (d / math.max(1.0, p.v)) * 1000.0
+            -- Average of entry and exit speed across the segment, since the
+            -- smoothing made speed continuous.
+            local v = math.max(1.0, (prev.v + p.v) * 0.5)
+            clockMs = clockMs + (d / v) * 1000.0
         end
         p.t = math.floor(clockMs)
         prev = p
     end
 
-    route.timed     = true
-    route.tStart    = route.points[1].t
-    route.jumpFrom  = route.points[route.jumpIdx].t
-    route.tEnd      = route.points[#route.points].t
-    route.serverNow = now
+    route.timed      = true
+    route.tStart     = pts[1].t
+    route.jumpFrom   = pts[route.jumpIdx].t
+    route.doorsClose = pts[route.closeIdx].t
+    route.tEnd       = pts[#pts].t
+    route.serverNow  = now
 
     print(('[br_core] bus: departing -- doors at %.0fs, %.0fs total')
         :format((route.jumpFrom - now) / 1000, (route.tEnd - now) / 1000))

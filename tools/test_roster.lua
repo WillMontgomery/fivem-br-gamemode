@@ -1640,6 +1640,25 @@ do
     ok(ordered, 'waypoint timestamps strictly increase')
     ok(groundedRoll, 'the ground roll stays on the ground')
 
+    -- Speed continuity: implied segment speeds must ramp, not step. Before
+    -- the kinematic smoothing, cruise into a corner was a 400 -> 150 cliff
+    -- across one sample.
+    local maxJump, prevSpd = 0.0, nil
+    for i = 2, #r.points do
+        local a, b = r.points[i - 1], r.points[i]
+        local d = BR.Dist(a.x, a.y, b.x, b.y)
+        local dt = (b.t - a.t) / 1000.0
+        if dt > 0.01 and d > 5.0 then
+            local spd = d / dt
+            if prevSpd then
+                maxJump = math.max(maxJump, math.abs(spd - prevSpd))
+            end
+            prevSpd = spd
+        end
+    end
+    ok(maxJump < 80.0, 'speed changes ramp instead of stepping',
+        ('largest adjacent speed jump: %.0f m/s'):format(maxJump))
+
     -- THE DOORS OPEN AT THE LEG-1 WAYPOINT -- the coastline the players saw
     -- on the map, not some geometric boundary halfway across the mainland.
     local doorX, doorY, doorZ = BR.PathPosAt(r.points, r.jumpFrom)
@@ -1650,10 +1669,17 @@ do
         'the doors open on arrival at the first authored waypoint',
         ('door at %.0f,%.0f -- wp1 at %.0f,%.0f'):format(doorX, doorY, w1.x, w1.y))
 
+    -- The last AUTHORED point is where the doors-closing warning fires; the
+    -- path then overruns ~5s so stragglers get a last call instead of the
+    -- plane evaporating under them.
     local wn = r.waypoints[#r.waypoints]
-    local pn = r.points[#r.points]
-    ok(math.abs(pn.x - wn.x) < 0.1 and math.abs(pn.y - wn.y) < 0.1,
-        'the path ends exactly at the final authored waypoint')
+    local pc = r.points[r.closeIdx]
+    ok(math.abs(pc.x - wn.x) < 0.1 and math.abs(pc.y - wn.y) < 0.1,
+        'the doors-closing point is the final authored waypoint')
+    ok(r.doorsClose < r.tEnd, 'and the plane keeps flying past it')
+    local overrun = (r.tEnd - r.doorsClose) / 1000
+    ok(overrun > 3 and overrun < 10,
+        'for about the configured overrun', ('overrun %.1fs'):format(overrun))
     ok(BR.Server.matchAnchor ~= nil, 'a match anchor is still picked for the storm')
     ok(BR.Server.match.endsAt >= r.tEnd, 'BUS lasts at least the whole flight')
 

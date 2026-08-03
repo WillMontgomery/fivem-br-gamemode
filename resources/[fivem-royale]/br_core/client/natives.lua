@@ -274,15 +274,17 @@ function BR.Native.applyGameRules()
 
     -- The lobby is a menu with a view -- no ped in the shot, and no ped
     -- FALLING OUT of the shot: the vista point floats above the hillside,
-    -- so an unfrozen ped drops on camera. The bus ride hides and freezes
-    -- too (the ped is "aboard"). Living here, per frame, is what makes
-    -- every transition self-correcting -- whatever any path did to the ped,
-    -- the current state wins within a frame. The freeze deliberately never
-    -- RELEASES here: spawn placement holds its own temporary freezes while
-    -- collision loads, and stomping those drops players through the world.
-    local parked = st == BR.PlayerState.LOBBY or st == BR.PlayerState.BUS
-    SetEntityVisible(ped, not parked, false)
-    if parked then
+    -- so an unfrozen ped drops on camera. The bus rider is hidden too, but
+    -- NOT frozen: it rides attached inside the plane, and the old per-frame
+    -- BUS freeze was still re-freezing for the ~250ms after a jump while
+    -- the roster still said BUS -- fighting TaskParachute in exactly the
+    -- frames it needed the ped falling. That race was the dead SPACE key.
+    -- The freeze deliberately never RELEASES here: spawn placement holds
+    -- its own temporary freezes while collision loads, and stomping those
+    -- drops players through the world.
+    SetEntityVisible(ped,
+        st ~= BR.PlayerState.LOBBY and st ~= BR.PlayerState.BUS, false)
+    if st == BR.PlayerState.LOBBY then
         FreezeEntityPosition(ped, true)
     end
 

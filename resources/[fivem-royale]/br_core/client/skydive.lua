@@ -109,7 +109,18 @@ end)
 -- these transitions and keeps GetEntityHeightAboveGround (slow) off the
 -- frame path.
 BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
-    if not dropping then return end
+    -- Armed by the drop handoff OR by the server calling me a faller --
+    -- whichever arrives first. Gating on the handoff alone meant that if it
+    -- was ever missed, the chute floor below was disarmed for exactly the
+    -- player who needed it.
+    if not dropping then
+        local st = BR.State.me.state
+        if st == BR.PlayerState.FREEFALL or st == BR.PlayerState.GLIDE then
+            dropping = true
+        else
+            return
+        end
+    end
 
     local ped = PlayerPedId()
     local cs = GetPedParachuteState(ped)

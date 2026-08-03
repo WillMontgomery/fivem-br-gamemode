@@ -122,9 +122,9 @@ BR.Config.Bus = {
         },
     },
 
-    -- Surveyed in-game by the user. Spawn z is the surveyed 4.19 + 0.5: at
-    -- exactly 4.19 the Titan's gear sat in the runway surface.
-    spawn        = { x = 4484.61, y = -4497.98, z = 4.69, heading = 106.12 },
+    -- Surveyed in-game by the user. Spawn z is the surveyed 4.19 + 0.8
+    -- (two rounds of "raise it a bit" -- the Titan's gear sat in the runway).
+    spawn        = { x = 4484.61, y = -4497.98, z = 4.99, heading = 106.12 },
     rotatePoint  = { x = 4090.23, y = -4642.18 },  -- wheels-up here, straight out
     climbDist    = 2500.0,  -- metres past rotation to reach cruise altitude
     turnRadius   = 1000.0,  -- fillet radius: this close to a waypoint, start turning
@@ -135,6 +135,8 @@ BR.Config.Bus = {
     speed        = 185.0,   -- m/s over land: the WHOLE TOUR is the drop zone
     cornerSpeed  = 150.0,   -- m/s through filleted corners
     boardSeconds = 5,       -- parked, engines idling, before the roll begins
+    overrunSecs  = 5,       -- flown past the last waypoint before force-eject
+    maxAccel     = 9.0,     -- m/s^2 cap smoothing every speed transition
     jumpGrace    = 5,       -- seconds after the route ends before BUS -> PLAYING
 
     -- Camera orbit distance/height from the plane while riding. The Titan is
