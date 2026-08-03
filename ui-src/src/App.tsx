@@ -87,7 +87,11 @@ export default function App() {
       {/* Always mounted; visibility follows match state so transitions cost no
           mount work mid-fight. */}
       <Hud visible={!showLobby && !ridingBus && !tearingDown} />
-      <Chat />
+      {/* Chat vanishes with the rest of the in-match chrome the instant the
+          match is decided -- a lingering kill-chatter log under the verdict
+          slam reads as UI debris. The store keeps the messages; it is only
+          unmounted, and remounts blank-slate clean at the lobby. */}
+      {!tearingDown && <Chat />}
       <Lobby visible={showLobby} />
       {showEnd && s.summary && <EndScreen summary={s.summary} />}
       {/* Over everything: party events and match alerts do not care which
