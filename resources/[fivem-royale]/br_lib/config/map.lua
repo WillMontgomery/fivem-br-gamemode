@@ -28,21 +28,52 @@ BR.Config.Map.POIs = {
     { id = 'lamesa',      name = 'La Mesa',          x =   800.0, y = -1600.0, z =  30.0, radius = 240.0, tier = 2 },
     { id = 'cypress',     name = 'Cypress Flats',    x =   700.0, y = -2000.0, z =  29.0, radius = 220.0, tier = 2 },
     { id = 'elysian',     name = 'Elysian Island',   x =   200.0, y = -2700.0, z =   6.0, radius = 260.0, tier = 3 },
+    { id = 'arena',       name = 'Maze Bank Arena',  x =  -250.0, y = -1900.0, z =  24.0, radius = 220.0, tier = 2 },
+    { id = 'grove',       name = 'Grove Street',     x =   105.0, y = -1885.0, z =  21.0, radius = 200.0, tier = 2 },
+    { id = 'terminal',    name = 'Terminal',         x =  1050.0, y = -2500.0, z =   6.0, radius = 280.0, tier = 2 },
+    { id = 'murrieta',    name = 'Murrieta Heights', x =  1030.0, y = -1700.0, z =  30.0, radius = 200.0, tier = 1 },
+    { id = 'elburro',     name = 'El Burro Heights', x =  1370.0, y = -2100.0, z =  32.0, radius = 200.0, tier = 1 },
+    { id = 'littleseoul', name = 'Little Seoul',     x =  -640.0, y = -1100.0, z =  22.0, radius = 220.0, tier = 2 },
+    { id = 'morningwood', name = 'Morningwood',      x = -1310.0, y =  -830.0, z =  30.0, radius = 200.0, tier = 1 },
+    { id = 'golf',        name = 'GWC Golf Club',    x = -1120.0, y =    30.0, z =  50.0, radius = 220.0, tier = 1 },
 
     -- Vinewood and the hills
     { id = 'vinewood',    name = 'Vinewood Bowl',    x =   700.0, y =  1200.0, z = 350.0, radius = 220.0, tier = 3 },
     { id = 'vinehills',   name = 'Vinewood Hills',   x =  -100.0, y =   500.0, z = 130.0, radius = 260.0, tier = 1 },
+    { id = 'observatory', name = 'Galileo Observatory', x = -410.0, y = 1200.0, z = 330.0, radius = 200.0, tier = 2 },
+    { id = 'casino',      name = 'Diamond Casino',   x =   925.0, y =    46.0, z =  80.0, radius = 220.0, tier = 3 },
+    { id = 'landact',     name = 'Land Act Dam',     x =  1660.0, y =   -30.0, z = 110.0, radius = 200.0, tier = 1 },
+    { id = 'ulsa',        name = 'ULSA Campus',      x = -1600.0, y =   200.0, z =  60.0, radius = 220.0, tier = 1 },
+
+    -- The west coast
+    { id = 'kortz',       name = 'Kortz Center',     x = -2245.0, y =   265.0, z = 170.0, radius = 220.0, tier = 2 },
+    { id = 'chumash',     name = 'Chumash',          x = -3170.0, y =  1080.0, z =   8.0, radius = 220.0, tier = 2 },
+    { id = 'banham',      name = 'Banham Canyon',    x = -2540.0, y =  2320.0, z =  25.0, radius = 220.0, tier = 1 },
+    { id = 'hookies',     name = 'Hookies',          x = -2200.0, y =  4290.0, z =   5.0, radius = 200.0, tier = 1 },
+    { id = 'raton',       name = 'Raton Canyon',     x = -1450.0, y =  4450.0, z =  20.0, radius = 220.0, tier = 1 },
 
     -- North and county
     { id = 'chaparral',   name = 'Great Chaparral',  x =  -100.0, y =  2000.0, z =  70.0, radius = 260.0, tier = 1 },
     { id = 'route68',     name = 'Route 68',         x =   600.0, y =  1900.0, z = 190.0, radius = 240.0, tier = 2 },
     { id = 'harmony',     name = 'Harmony',          x =   700.0, y =  2700.0, z =  42.0, radius = 200.0, tier = 2 },
     { id = 'sandy',       name = 'Sandy Shores',     x =  1900.0, y =  3700.0, z =  32.0, radius = 320.0, tier = 3 },
+    { id = 'stab',        name = 'Stab City',        x =    85.0, y =  3690.0, z =  39.0, radius = 200.0, tier = 2 },
+    { id = 'galilee',     name = 'Galilee',          x =  1380.0, y =  4360.0, z =  42.0, radius = 200.0, tier = 1 },
     { id = 'grapeseed',   name = 'Grapeseed',        x =  1700.0, y =  4800.0, z =  42.0, radius = 260.0, tier = 2 },
     { id = 'paleto',      name = 'Paleto Bay',       x =  -150.0, y =  6300.0, z =  31.0, radius = 300.0, tier = 3 },
+    { id = 'sawmill',     name = 'Paleto Forest Sawmill', x = -560.0, y = 5300.0, z = 70.0, radius = 220.0, tier = 2 },
     { id = 'chiliad',     name = 'Mount Chiliad',    x =   450.0, y =  5700.0, z = 780.0, radius = 240.0, tier = 1 },
+    { id = 'procopio',    name = 'Procopio Beach',   x =  1450.0, y =  6550.0, z =   2.0, radius = 240.0, tier = 1 },
+    { id = 'gordo',       name = 'Mount Gordo',      x =  2870.0, y =  5910.0, z = 340.0, radius = 220.0, tier = 1 },
+    { id = 'lighthouse',  name = 'El Gordo Lighthouse', x = 3335.0, y = 5160.0, z =  18.0, radius = 200.0, tier = 1 },
     { id = 'humane',      name = 'Humane Labs',      x =  3600.0, y =  3700.0, z =  30.0, radius = 260.0, tier = 3 },
     { id = 'zancudo',     name = 'Fort Zancudo',     x = -2100.0, y =  3200.0, z =  32.0, radius = 340.0, tier = 3 },
+
+    -- The eastern desert
+    { id = 'penitentiary', name = 'Bolingbroke Penitentiary', x = 1690.0, y = 2565.0, z = 45.0, radius = 260.0, tier = 3 },
+    { id = 'redwood',     name = 'Redwood Lights Track', x = 1160.0, y = 2555.0, z =  50.0, radius = 220.0, tier = 1 },
+    { id = 'quarry',      name = 'Davis Quartz Quarry', x = 2950.0, y = 2780.0, z =  40.0, radius = 260.0, tier = 2 },
+    { id = 'palmer',      name = 'Palmer-Taylor Power Station', x = 2780.0, y = 1520.0, z = 32.0, radius = 240.0, tier = 2 },
     { id = 'palomino',    name = 'Palomino Highlands', x = 2400.0, y = 1600.0, z =  40.0, radius = 240.0, tier = 1 },
 }
 

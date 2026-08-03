@@ -332,9 +332,11 @@ do
     -- up to 162 units, which in-game reads as "I took storm damage while standing
     -- inside the circle" and is essentially undebuggable from a bug report.
     --
-    -- Seeded from the real anchors so the regression is exercised where it bit.
+    -- Seeded from the real POIs (the anchor candidates) so the regression is
+    -- exercised where it bit -- including the map-edge ones like Chumash and
+    -- Humane Labs whose opening circles overhang the bounds the most.
     local aabb = BR.Config.Storm.mapAABB
-    local anchors = BR.Config.Storm.anchors
+    local anchors = BR.Config.Map.POIs
     violations, worst = 0, 0.0
     for _ = 1, 20000 do
         local a     = anchors[rng:int(1, #anchors)]
@@ -380,41 +382,102 @@ do
     ok(inBounds, 'a contained circle keeps its successors inside the bounds')
 end
 
-describe('storm.anchors')
+describe('storm.anchor')
 do
-    -- The opening circle is deliberately allowed to overhang the playable bounds
-    -- (coastline and ocean are fine at phase 0 -- nobody is forced anywhere yet,
-    -- and later phases clamp inward onto land). But a grossly misplaced anchor
-    -- would put most of the opening circle over water, so the overhang is bounded
-    -- rather than unchecked.
-    local S, A = BR.Config.Storm, BR.Config.Storm.mapAABB
-    local maxOverhang, offender = 0.0, nil
+    -- The anchor scheme: a random tour waypoint, then a random POI inside the
+    -- configured band of it. These tests drive the picker with the REAL legs
+    -- and the REAL POI table, because that is the pairing that has to work --
+    -- a picker that passes on synthetic data and starves on the actual coastal
+    -- waypoints would be a vacuous green.
+    local band = BR.Config.Storm.anchorBand
+    local pois = BR.Config.Map.POIs
+    local legs = BR.Config.Bus.legs
 
-    for _, a in ipairs(S.anchors) do
-        local over = math.max(
-            (A.min.x - (a.x - S.radius0)),
-            ((a.x + S.radius0) - A.max.x),
-            (A.min.y - (a.y - S.radius0)),
-            ((a.y + S.radius0) - A.max.y),
-            0.0)
-        if over > maxOverhang then maxOverhang, offender = over, a.name end
+    --- Flatten one concrete tour, mirroring bus.plan()'s draw.
+    local function drawTour(rng)
+        local wps = {}
+        for _, options in ipairs(legs) do
+            for _, wp in ipairs(options[rng:int(1, #options)]) do
+                wps[#wps + 1] = { x = wp.x, y = wp.y }
+            end
+        end
+        return wps
     end
 
-    ok(maxOverhang <= 2000.0, 'opening-circle overhang stays within tolerance',
-        ('worst %.0f units at %s'):format(maxOverhang, tostring(offender)))
-
-    -- Every anchor must sit on the map itself, even if its circle spills off it.
-    local off = {}
-    for _, a in ipairs(S.anchors) do
-        if a.x < A.min.x or a.x > A.max.x or a.y < A.min.y or a.y > A.max.y then
-            off[#off + 1] = a.name
+    -- Property, over many seeds: an anchor is ALWAYS produced, is always one
+    -- of the authored POIs, and sits within the (possibly widened) reach of
+    -- the waypoint it was drawn around.
+    local produced, isPoi, inReach = 0, true, true
+    local seen = {}
+    local worstD = 0.0
+    for seed = 1, 500 do
+        local rng = BR.Rng(seed)
+        local wps = drawTour(rng)
+        local poi, wp = BR.PickStormAnchor(rng, wps, pois, band)
+        if poi then
+            produced = produced + 1
+            seen[poi.id] = true
+            local found = false
+            for _, p in ipairs(pois) do
+                if p == poi then found = true break end
+            end
+            isPoi = isPoi and found
+            local d = BR.Dist(wp.x, wp.y, poi.x, poi.y)
+            if d > worstD then worstD = d end
+            if d > band.widenMax then inReach = false end
         end
     end
-    ok(#off == 0, 'every anchor centre is inside the playable bounds',
-        table.concat(off, ', '))
+    ok(produced == 500, 'an anchor is always produced', ('%d/500'):format(produced))
+    ok(isPoi, 'the anchor is always an authored POI')
+    ok(inReach, 'the anchor stays within widenMax of its waypoint',
+        ('worst distance %.0f'):format(worstD))
 
-    ok(#S.anchors >= 3, 'enough anchors for match-to-match variety',
-        ('%d found'):format(#S.anchors))
+    -- Variety: the user's design goal was "could never conceivably have a
+    -- regular outcome". 500 matches must spread across a healthy share of the
+    -- POI table, not orbit a favoured few.
+    local distinct = 0
+    for _ in pairs(seen) do distinct = distinct + 1 end
+    ok(distinct >= 25, 'anchors spread across the POI table',
+        ('%d distinct POIs over 500 seeds'):format(distinct))
+
+    -- The in-band rule is REAL for the real map: most draws must resolve
+    -- without widening at all. If this decays, the POI table has thinned out
+    -- around the flight legs and the band is quietly always widening.
+    local inBand = 0
+    for seed = 1, 500 do
+        local rng = BR.Rng(seed)
+        local wps = drawTour(rng)
+        local poi, wp = BR.PickStormAnchor(rng, wps, pois, band)
+        local d = BR.Dist(wp.x, wp.y, poi.x, poi.y)
+        if d >= band.min and d <= band.max then inBand = inBand + 1 end
+    end
+    ok(inBand >= 350, 'most anchors resolve inside the un-widened band',
+        ('%d/500 in [%d, %d]'):format(inBand, band.min, band.max))
+
+    -- Widening: a waypoint with nothing in band must still anchor. One distant
+    -- POI, far outside band.max but inside widenMax, gets found by widening.
+    local rng = BR.Rng(7)
+    local far = { { id = 'only', x = 3000.0, y = 0.0 } }
+    local poi = BR.PickStormAnchor(rng, { { x = 0.0, y = 0.0 } }, far, band)
+    ok(poi and poi.id == 'only', 'the band widens until a POI appears')
+
+    -- Last resort: a POI beyond even widenMax is still returned -- a slightly
+    -- off-band anchor is a shrug, no anchor is a dead match.
+    local beyond = { { id = 'lonely', x = 9000.0, y = 9000.0 } }
+    poi = BR.PickStormAnchor(BR.Rng(8), { { x = 0.0, y = 0.0 } }, beyond, band)
+    ok(poi and poi.id == 'lonely', 'nearest POI is the fallback beyond widenMax')
+
+    -- Determinism: the same seed draws the same anchor. The whole route/anchor
+    -- pipeline hangs off one seeded rng, so tests (and replays later) can pin it.
+    local a1 = BR.PickStormAnchor(BR.Rng(42), drawTour(BR.Rng(42)), pois, band)
+    local a2 = BR.PickStormAnchor(BR.Rng(42), drawTour(BR.Rng(42)), pois, band)
+    ok(a1 == a2, 'the same seed picks the same anchor')
+
+    -- Degenerate inputs degrade to nil rather than erroring inside a
+    -- transition.
+    ok(BR.PickStormAnchor(BR.Rng(1), {}, pois, band) == nil, 'no waypoints -> nil')
+    ok(BR.PickStormAnchor(BR.Rng(1), { { x = 0, y = 0 } }, {}, band) == nil,
+        'no POIs -> nil')
 end
 
 -- ------------------------------------------------------------------ config ---
@@ -440,6 +503,12 @@ do
 
     ok(phases[#phases].radius == 0.0, 'final phase collapses to a point')
 
+    -- USER DECISION (2026-08-02): the free-loot hold is phase 1's wait, 120
+    -- seconds from the moment the match goes live. There is no separate
+    -- initialHold field any more -- resurrecting one would double-count.
+    ok(phases[1].wait == 120, 'the free-loot hold is 120s (user call)')
+    ok(BR.Config.Storm.initialHold == nil, 'initialHold stays retired')
+
     local total = BR.Config.Storm.TotalSeconds()
     ok(total > 900 and total < 1800,
         'match length lands in a sane 15-30 minute window',
@@ -458,7 +527,10 @@ do
         ids[p.id] = true
     end
     ok(not dupes, 'POI ids are unique')
-    ok(#BR.Config.Map.POIs >= 20, 'at least 20 POIs authored',
+    -- 40+, not the original 20: POIs double as storm-anchor candidates now,
+    -- and the anchor scheme's "never a regular outcome" property needs the
+    -- density (user call, 2026-08-02).
+    ok(#BR.Config.Map.POIs >= 40, 'at least 40 POIs authored',
         ('%d found'):format(#BR.Config.Map.POIs))
 
     -- Every POI must sit inside the playable bounds, or the storm can never

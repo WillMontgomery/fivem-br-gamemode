@@ -64,6 +64,60 @@ function BR.StormAt(rec, now)
            rec.dps
 end
 
+--- Pick the match anchor: the POI the whole storm sequence homes on.
+---
+--- The scheme (user-designed, 2026-08-02): one random waypoint of THIS match's
+--- flight tour, then one random POI between band.min and band.max units of it.
+--- Route-coupled -- the opening circle almost always contains a stretch of the
+--- path players actually dropped along -- and POI-anchored, so the centre is
+--- always a nameable place on land, never a point in the sea.
+---
+--- FAILURE IS NOT AN OPTION HERE: this runs inside the WARMUP transition, and
+--- an error would kill the match before it starts. So the band widens in steps
+--- when a waypoint is POI-sparse (coastal leg-1 points, the Chiliad exits),
+--- and the nearest POI of all is the final fallback. Some POI is always
+--- returned as long as one exists.
+---
+--- @param rng table         a BR.Rng instance (server only)
+--- @param waypoints table   the tour's authored waypoints, { {x, y}, ... }
+--- @param pois table        candidate POIs, { {x, y, ...}, ... }
+--- @param band table        { min, max, widenStep, widenMax }
+--- @return table|nil poi    the chosen POI (a reference into `pois`)
+--- @return table|nil wp     the waypoint it was picked around
+function BR.PickStormAnchor(rng, waypoints, pois, band)
+    if #pois == 0 or #waypoints == 0 then return nil, nil end
+
+    local wp = rng:pick(waypoints)
+    local minD = band and band.min or 500.0
+    local maxD = band and band.max or 1500.0
+    local step = band and band.widenStep or 500.0
+    local cap  = band and band.widenMax or 4000.0
+
+    while true do
+        local candidates = {}
+        for _, p in ipairs(pois) do
+            local d = BR.Dist(wp.x, wp.y, p.x, p.y)
+            if d >= minD and d <= maxD then
+                candidates[#candidates + 1] = p
+            end
+        end
+        if #candidates > 0 then
+            return rng:pick(candidates), wp
+        end
+        if maxD >= cap then break end
+        maxD = math.min(cap, maxD + step)
+    end
+
+    -- Nothing within widenMax of this waypoint. Take the nearest POI outright:
+    -- a slightly off-band anchor is a shrug, no anchor is a dead match.
+    local best, bestD = nil, math.huge
+    for _, p in ipairs(pois) do
+        local d = BR.Dist(wp.x, wp.y, p.x, p.y)
+        if d < bestD then best, bestD = p, d end
+    end
+    return best, wp
+end
+
 --- Choose the centre of the next circle.
 ---
 --- Sampled uniformly inside the slack between the current and next radius, so the

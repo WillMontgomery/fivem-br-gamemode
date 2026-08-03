@@ -67,7 +67,8 @@ RegisterCommand('brscatter', function(_, args)
     -- believes. Compare that against what each client's HUD shows: if the
     -- numbers disagree, roster data is leaking through scope somewhere.
     local radius = tonumber(args[1]) or 3000.0
-    local anchor = BR.Config.Storm.anchors[1]
+    -- Centre on the current match anchor if one exists, else downtown LS.
+    local anchor = BR.Server.matchAnchor or { x = -300.0, y = -800.0 }
 
     local players, i = {}, 0
     for src in pairs(BR.Server.roster) do players[#players + 1] = src end

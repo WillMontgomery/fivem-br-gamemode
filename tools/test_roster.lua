@@ -1683,7 +1683,24 @@ do
     local overrun = (r.tEnd - r.doorsClose) / 1000
     ok(overrun > 3 and overrun < 10,
         'for about the configured overrun', ('overrun %.1fs'):format(overrun))
-    ok(BR.Server.matchAnchor ~= nil, 'a match anchor is still picked for the storm')
+    -- The storm anchor rides the route draw: it must be an authored POI within
+    -- anchor-band reach of SOME waypoint of this tour -- that is the whole
+    -- design ("select a flight leg coord, then a POI 500-1500 off it").
+    local anch = BR.Server.matchAnchor
+    ok(anch ~= nil, 'a match anchor is picked for the storm')
+    local anchIsPoi = false
+    for _, p in ipairs(BR.Config.Map.POIs) do
+        if p.id == anch.poi and p.x == anch.x and p.y == anch.y then
+            anchIsPoi = true
+        end
+    end
+    ok(anchIsPoi, 'the anchor is an authored POI')
+    local bandMax = BR.Config.Storm.anchorBand.widenMax
+    local anchNear = false
+    for _, w in ipairs(r.waypoints) do
+        if BR.Dist(w.x, w.y, anch.x, anch.y) <= bandMax then anchNear = true end
+    end
+    ok(anchNear, 'the anchor is within band reach of this tour')
     ok(BR.Server.match.endsAt >= r.tEnd, 'BUS lasts at least the whole flight')
 
     -- Jumping before the doors is refused; after them it is an elimination

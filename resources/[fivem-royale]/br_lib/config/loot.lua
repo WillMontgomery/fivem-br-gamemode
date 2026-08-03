@@ -72,10 +72,12 @@ BR.Config.KindWeights = {
 }
 
 BR.Config.Loot = {
-    -- Items per POI, scaled by tier. A 48-player match across ~22 POIs lands
-    -- around 1200 items -- which is exactly why they are local, non-networked
-    -- props rather than networked entities.
-    budgetPerTier = { [1] = 35, [2] = 55, [3] = 80 },
+    -- Items per POI, scaled by tier. A 48-player match across ~49 POIs lands
+    -- around 1650 items -- which is exactly why they are local, non-networked
+    -- props rather than networked entities. (Scaled down from 35/55/80 when
+    -- the POI table grew from 22 to 49 for the storm-anchor scheme: the
+    -- map-wide total is the budget, the per-POI number is just its share.)
+    budgetPerTier = { [1] = 20, [2] = 35, [3] = 60 },
 
     -- Chests hold a guaranteed burst and are worth crossing open ground for.
     chestsPerTier = { [1] = 2, [2] = 4, [3] = 7 },

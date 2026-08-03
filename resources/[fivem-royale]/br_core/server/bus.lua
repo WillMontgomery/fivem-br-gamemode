@@ -36,12 +36,7 @@ end
 function BR.Bus.plan()
     local cfg = BR.Config.Bus
 
-    -- The anchor is still picked per match for M4's storm, but it is now
-    -- DECOUPLED from the flight: the tour crosses the whole map, so the
-    -- storm no longer needs to hug the bus path. M4 revisits this.
     local rng = BR.Rng(GetGameTimer())
-    anchor = rng:pick(BR.Config.Storm.anchors)
-    BR.Server.matchAnchor = anchor
 
     -- Draw the tour: one option per leg, flattened into waypoints.
     local legs, waypoints = {}, {}
@@ -54,6 +49,17 @@ function BR.Bus.plan()
             }
         end
     end
+
+    -- The storm anchor is picked FROM the tour: a random waypoint of this
+    -- flight, then a random POI 500-1500 units off it (band widens where the
+    -- route is POI-sparse). The circle tends to land where people actually
+    -- dropped, it is always centred on a nameable place, and 192 tours x ~49
+    -- POIs never settles into a pattern.
+    local poi = BR.PickStormAnchor(rng, waypoints,
+        BR.Config.Map.POIs, BR.Config.Storm.anchorBand)
+    anchor = poi and { x = poi.x, y = poi.y, name = poi.name, poi = poi.id }
+        or { x = waypoints[1].x, y = waypoints[1].y, name = 'route' }
+    BR.Server.matchAnchor = anchor
 
     -- ---- build the geometry ------------------------------------------------
 
@@ -193,8 +199,9 @@ function BR.Bus.plan()
         timed     = false,
     }
 
-    print(('[br_core] bus: tour %d-%d-%d-%d, %d waypoints, %d path points')
-        :format(legs[1], legs[2], legs[3], legs[4], #waypoints, #points))
+    print(('[br_core] bus: tour %d-%d-%d-%d, %d waypoints, %d path points -- storm homes on %s')
+        :format(legs[1], legs[2], legs[3], legs[4], #waypoints, #points,
+                anchor.name))
 
     TriggerClientEvent(BR.Net.BUS_ROUTE, -1, route)
 end

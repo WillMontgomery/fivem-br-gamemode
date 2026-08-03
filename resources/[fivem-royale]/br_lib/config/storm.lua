@@ -5,8 +5,12 @@
 -- 1. ANCHORS, NOT ONE MAP-WIDE CIRCLE. The Los Santos landmass spans roughly
 --    8 km x 11.5 km. A single circle covering all of it needs a radius around
 --    5800, which produces 11 km rotations that no battle royale pacing survives.
---    Five hand-authored anchors give match-to-match variety while keeping each
---    match's playable area coherent.
+--    The anchor is a POI picked relative to THIS match's flight (see anchorBand
+--    below): one random waypoint of the drawn tour, then one random POI inside
+--    a distance band of it. Route-coupled, so the opening circle almost always
+--    contains part of the path players actually dropped along; POI-anchored, so
+--    it can never sit in the ocean and always centres somewhere nameable. With
+--    192 tours x ~49 POIs the outcome never reads as a pattern.
 --
 -- 2. LATE CIRCLES SIT INSIDE THE RENDER CEILING. FiveM's default entity culling
 --    radius is 424 units, and the natives that would widen it are deprecated with
@@ -18,17 +22,19 @@ BR = BR or {}
 BR.Config = BR.Config or {}
 
 BR.Config.Storm = {
-    -- One picked per match. Loose labels for admin tooling and logs.
-    anchors = {
-        { name = 'Los Santos',    x =  -300.0, y =  -800.0 },
-        { name = 'Vinewood',      x =   200.0, y =  1200.0 },
-        { name = 'Sandy Shores',  x =  1900.0, y =  3600.0 },
-        { name = 'Paleto Bay',    x =  -200.0, y =  6100.0 },
-        { name = 'East County',   x =  2600.0, y =  2400.0 },
+    -- How the match anchor is picked from the flight (BR.PickStormAnchor).
+    -- A POI between min and max units of a random tour waypoint; if a waypoint
+    -- has no POI in the band (a coastal or mountain leg), the band widens by
+    -- widenStep until one appears, and the nearest POI is the last resort --
+    -- an anchor must ALWAYS exist, a crash here would kill the warmup.
+    anchorBand = {
+        min       = 500.0,
+        max       = 1500.0,
+        widenStep = 500.0,
+        widenMax  = 4000.0,
     },
 
     radius0     = 3500.0,   -- opening circle
-    initialHold = 90,       -- seconds of free looting before phase 1 begins
     edgeBiasMax = 0.55,     -- how far off-centre the next circle may sit (0..1)
 
     -- Playable bounds, describing the LAND we want fights to happen on.
@@ -51,13 +57,16 @@ BR.Config.Storm = {
     -- radius:  target radius for this phase
     -- wait:    seconds the circle holds static (next circle already visible)
     -- shrink:  seconds spent interpolating to the new circle
-    -- dps:     damage per second applied to anyone outside
+    -- dps:     damage per second (DISPLAY units, 0..100 scale) outside the circle
     -- warn:    seconds before shrink starts that the UI raises a warning
     --
-    -- Total is roughly 22-23 minutes including the initial hold. Tune from
-    -- playtests, not from theory.
+    -- Phase 1's wait IS the free-loot hold: the storm clock starts the moment
+    -- the match goes live (last landing), the first circle is drawn on the map
+    -- immediately, and the wall first moves 120 seconds later (user call,
+    -- 2026-08-02: "PLAYING+120s because the map is so big"). Total is roughly
+    -- 20 minutes. Tune from playtests, not from theory.
     phases = {
-        { radius = 2600.0, wait = 180, shrink = 150, dps =  1.0, warn = 30 },
+        { radius = 2600.0, wait = 120, shrink = 150, dps =  1.0, warn = 30 },
         { radius = 1600.0, wait = 120, shrink = 120, dps =  2.0, warn = 30 },
         { radius =  950.0, wait =  90, shrink =  90, dps =  5.0, warn = 20 },
         { radius =  520.0, wait =  75, shrink =  75, dps =  8.0, warn = 20 },
@@ -111,12 +120,12 @@ BR.Config.Storm = {
     },
 }
 
---- Total planned match length in seconds, including the initial hold.
---- Useful for the lobby's "average match length" display and for sanity-checking
---- tuning changes.
+--- Total planned match length in seconds. Phase 1's wait is the free-loot
+--- hold, so nothing needs adding on top. Useful for the lobby's "average match
+--- length" display and for sanity-checking tuning changes.
 --- @return number
 function BR.Config.Storm.TotalSeconds()
-    local total = BR.Config.Storm.initialHold
+    local total = 0
     for _, p in ipairs(BR.Config.Storm.phases) do
         total = total + p.wait + p.shrink
     end
