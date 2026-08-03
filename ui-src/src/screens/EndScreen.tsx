@@ -51,7 +51,7 @@ export default function EndScreen({ summary }: { summary: SummaryPayload }) {
 
         <div className="end-late flex items-center gap-3">
           <Spinner size="sm" />
-          <span className="text-sm text-white/60">Cleaning up the map…</span>
+          <span className="text-sm text-white/60">Cleaning up and saving match data…</span>
         </div>
       </div>
     </div>
