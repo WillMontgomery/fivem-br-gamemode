@@ -231,9 +231,12 @@ function BR.Spawn.toLobby(holdBlack)
     Citizen.CreateThread(function()
         if holdBlack then
             BR.Spawn.holdBlack = true
-            -- The verdict slams in over the dying world; the interface's own
-            -- backdrop is solid black by ~1.3s and takes over the screen.
-            Citizen.Wait(1300)
+            -- NOTHING in the world moves until the result sequence has fully
+            -- played: slam (~1.2s), black (~3.4s), secondary lines at rest
+            -- (~4.9s), plus a two-second hold on the finished card. Only
+            -- then does the teleport-and-swap begin, invisibly, under the
+            -- interface's own solid black.
+            Citizen.Wait(6900)
         end
 
         DoScreenFadeOut(400)
@@ -293,7 +296,7 @@ AddEventHandler(BR.Net.STATE, function(d)
         DisplayRadar(true)
         if BR.Spawn.holdBlack then
             BR.Spawn.holdBlack = false
-            DoScreenFadeIn(800)
+            DoScreenFadeIn(2000)
         end
     end
 end)

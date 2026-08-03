@@ -106,6 +106,13 @@ function BR.Match.onEnter(state, from)
             function(e) return e.state == BR.PlayerState.WARMUP end,
             function(src) BR.Roster.setState(src, BR.PlayerState.BUS) end)
 
+        -- The starting team count is taken HERE, before anyone can possibly
+        -- be dead (warmup is invincible; the doors are still shut). Counting
+        -- it at PLAYING was the bug where a player who died during the bus
+        -- ride made a two-player match register as "started with one squad"
+        -- -- engaging the dev-mode never-auto-end hold and hanging the match.
+        S.startSquads = BR.Server.squadsAlive()
+
     elseif state == BR.MatchState.PLAYING then
         -- Everyone not already out becomes ALIVE -- not just those on the bus.
         --
@@ -135,11 +142,10 @@ function BR.Match.onEnter(state, from)
         -- and the log reads as though a match was played and won in one tick.
         S.startedAt = GetGameTimer()
 
-        -- How many teams this match BEGAN with. A dev match that starts with
-        -- one squad (minToStart = 1) has already met the win condition at the
-        -- starting gun; recording the starting count lets winConditionMet tell
-        -- "last squad standing" apart from "only squad there ever was".
-        S.startSquads = BR.Server.squadsAlive()
+        -- Normally counted at BUS entry (before anyone can be dead); this
+        -- fallback covers `brforce playing` straight from warmup, where the
+        -- bus never ran. Never overwrite a count the bus already took.
+        S.startSquads = S.startSquads or BR.Server.squadsAlive()
 
     elseif state == BR.MatchState.ENDED then
         BR.Match.awardPlacements()
@@ -203,6 +209,7 @@ end
 --- Clear per-match state, ready for the next one.
 function BR.Match.reset()
     BR.Server.storm = nil
+    S.startSquads = nil   -- the next match takes its own count at BUS entry
     BR.Roster.each(nil, function(src, e)
         e.kills, e.downs, e.revives, e.damage = 0, 0, 0, 0.0
         e.lastDamageBy, e.lastDamageAt = nil, 0

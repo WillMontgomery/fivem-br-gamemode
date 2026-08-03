@@ -132,6 +132,9 @@ local function reset()
     sent = {}
     BR.Server.match.state = BR.MatchState.WAITING
     BR.Server.match.endsAt = 0
+    -- Cleared by Match.reset() between real matches; the harness must do the
+    -- same or one block's starting-team count leaks into the next.
+    BR.Server.match.startSquads = nil
 end
 
 local function join(src, name)
@@ -1789,6 +1792,76 @@ do
     fire(BR.Net.MATCH_LEAVE, 2)
     ok(buckets[2] == 1002, 'leaving the match returns them to their private bucket')
     ok(buckets[1] == 0, 'without disturbing anyone still playing')
+end
+
+describe('match.earlyDeath')
+do
+    -- REGRESSION, reported in play: a player who died while the machine was
+    -- still in BUS (dove into the ground) left the server thinking they were
+    -- alive, and the match never ended.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    fakeTime = BR.Server.match.endsAt + 1
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.BUS, 'both aboard')
+
+    local r = BR.Bus.active()
+
+    -- Player 2 jumps at the doors, dives, lands, and dies -- all during BUS.
+    fakeTime = r.jumpFrom + 1000
+    fire(BR.Net.BUS_JUMP, 2)
+    ok(BR.Roster.get(2).state == BR.PlayerState.FREEFALL, 'p2 is out early')
+    fire(BR.Net.DROP_LANDED, 2)
+    ok(BR.Roster.get(2).state == BR.PlayerState.ALIVE, 'p2 hit the ground')
+    fire(BR.Net.PLAYER_DIED, 2, { cause = 'fall' })
+    ok(BR.Roster.get(2).state == BR.PlayerState.DEAD,
+        'a death during BUS is a real death')
+
+    -- The route runs out; player 1 is force-ejected, lands, stands alone.
+    fakeTime = r.tEnd + 600
+    BR.Sched.step(fakeTime)
+    fakeTime = BR.Server.match.endsAt + 1
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.PLAYING, 'the match goes live')
+    fire(BR.Net.DROP_LANDED, 1)
+
+    fakeTime = fakeTime + 4000   -- past WIN_GRACE_MS
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.ENDED,
+        'and ends: the early death counted',
+        ('state %s, squadsAlive %d'):format(BR.Server.match.state, BR.Server.squadsAlive()))
+
+    -- Variant: dies MID-AIR during BUS (never landed).
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    fakeTime = BR.Server.match.endsAt + 1
+    BR.Sched.step(fakeTime)
+    local r2 = BR.Bus.active()
+    fakeTime = r2.jumpFrom + 1000
+    fire(BR.Net.BUS_JUMP, 2)
+    fire(BR.Net.PLAYER_DIED, 2, { cause = 'fall' })
+    ok(BR.Roster.get(2).state == BR.PlayerState.DEAD, 'a freefall death counts too')
+
+    fakeTime = r2.tEnd + 600
+    BR.Sched.step(fakeTime)
+    fakeTime = BR.Server.match.endsAt + 1
+    BR.Sched.step(fakeTime)
+    fire(BR.Net.DROP_LANDED, 1)
+    fakeTime = fakeTime + 4000
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.ENDED,
+        'the match still ends',
+        ('state %s, squadsAlive %d'):format(BR.Server.match.state, BR.Server.squadsAlive()))
 end
 
 describe('party.resultFailuresOnly')

@@ -191,14 +191,15 @@ html, body, #root {
   from { opacity: 0; transform: translateY(34px); }
   to   { opacity: 1; transform: translateY(0); }
 }
-.end-slam     { animation: endSlam 480ms cubic-bezier(0.16, 1.1, 0.3, 1) both; }
-/* Solid black, arriving AFTER the slam: the verdict lands on the dying
-   world, then the screen goes dark behind it and stays dark until the
-   lobby is ready (the game-side fade holds too). */
-.end-backdrop { animation: endFade 800ms ease-out both; animation-delay: 550ms; }
-/* Secondary lines fly up only once the backdrop has fully gone black. */
-.end-late     { animation: endFlyUp 500ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
-                animation-delay: 1450ms; }
+/* Timings are the original cut x2.5, per direction -- the sequence read
+   right but rushed. Verdict settled ~1.2s, black complete ~3.4s, secondary
+   lines at rest ~4.9s. The WORLD does not change until the whole sequence
+   has played plus a two-second hold (spawn.lua's toLobby waits ~6.9s, and
+   the island swap is gated on the screen actually being dark). */
+.end-slam     { animation: endSlam 1200ms cubic-bezier(0.16, 1.1, 0.3, 1) both; }
+.end-backdrop { animation: endFade 2000ms ease-out both; animation-delay: 1400ms; }
+.end-late     { animation: endFlyUp 1250ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+                animation-delay: 3600ms; }
 
 @keyframes riseFade {
   from { opacity: 0; transform: translateY(6px); }

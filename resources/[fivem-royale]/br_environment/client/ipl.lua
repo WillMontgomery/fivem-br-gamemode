@@ -182,6 +182,7 @@ local ISLAND_IPLS = {
 
 local islandActive = false   -- what we have applied
 local islandWanted = true    -- what the match state says we should have
+local matchState   = nil     -- last match state seen, for the swap gate below
 
 local function nearIsland()
     -- The RENDERED CAMERA, not the ped: during the bus ride the ped is
@@ -229,12 +230,14 @@ end
 
 RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)
+    matchState   = d.state
     islandWanted = wantIsland(d.state)
 end)
 
 RegisterNetEvent(BR.Net.SNAPSHOT)
 AddEventHandler(BR.Net.SNAPSHOT, function(payload)
     if payload and payload.match and payload.match.state then
+        matchState   = payload.match.state
         islandWanted = wantIsland(payload.match.state)
     end
 end)
@@ -250,7 +253,17 @@ CreateThread(function()
         Wait(1000)
         if islandWanted ~= islandActive then
             if islandWanted then
-                applyIsland(true)
+                -- ENABLING the island DISABLES Los Santos, and during the
+                -- match-end teardown that is a world change happening in
+                -- plain sight -- the result slam plays over the aftermath
+                -- for several seconds before the screen goes dark. So during
+                -- teardown states the swap waits for actual darkness; in
+                -- ordinary lobby states it applies freely.
+                local teardown = matchState == BR.MatchState.ENDED
+                              or matchState == BR.MatchState.CLEANUP
+                if not teardown or IsScreenFadedOut() then
+                    applyIsland(true)
+                end
                 farPolls = 0
             else
                 -- NEVER pull the island out from under the player -- and
