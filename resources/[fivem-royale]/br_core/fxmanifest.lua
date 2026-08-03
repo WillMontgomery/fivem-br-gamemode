@@ -42,6 +42,7 @@ client_scripts {
     'client/keybinds.lua',
     'client/bus.lua',       -- needs BR.Keys (keybinds) and BR.State (main)
     'client/skydive.lua',
+    'client/storm.lua',     -- rendering only; damage lands in state.lua
     'client/chat.lua',
     'client/debug.lua',
 }

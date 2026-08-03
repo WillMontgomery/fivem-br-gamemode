@@ -66,6 +66,8 @@ export interface StormPayload {
   edgeDistance: number
   /** Compass bearing toward the circle centre, 0 = north. */
   bearing: number
+  /** Damage per second (display units) currently applied outside. */
+  dps?: number
 }
 
 export interface SquadMember {

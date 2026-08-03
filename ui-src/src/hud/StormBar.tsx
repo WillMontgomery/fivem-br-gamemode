@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { useUi } from '../store'
 import type { StormPayload } from '../bridge/types'
 
 /**
@@ -16,6 +17,7 @@ import type { StormPayload } from '../bridge/types'
 export default function StormBar({ storm }: { storm: StormPayload | null }) {
   const timeRef = useRef<HTMLSpanElement>(null)
   const arrowRef = useRef<HTMLDivElement>(null)
+  const offset = useUi((s) => s.clockOffset)
   const endsAt = storm?.endsAt ?? 0
   const bearing = storm?.bearing ?? 0
 
@@ -26,7 +28,10 @@ export default function StormBar({ storm }: { storm: StormPayload | null }) {
     const tick = () => {
       const node = timeRef.current
       if (node) {
-        const left = Math.max(0, endsAt - Date.now())
+        // endsAt is a SERVER timestamp, same contract as the warmup timer --
+        // comparing it to the raw browser clock would be comparing two
+        // unrelated origins.
+        const left = Math.max(0, endsAt - (Date.now() + offset))
         const total = Math.ceil(left / 1000)
         const m = Math.floor(total / 60)
         const sec = total % 60
