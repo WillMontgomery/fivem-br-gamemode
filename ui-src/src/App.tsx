@@ -69,7 +69,13 @@ export default function App() {
   const tearingDown = s.match.state === 'ended' || s.match.state === 'cleanup'
   const showEnd = tearingDown && s.summary !== null
 
-  const showLobby = !showEnd
+  // NEVER the lobby during teardown -- not even before the summary arrives.
+  // The server flips everyone to the LOBBY state the instant the match is
+  // decided, but the verdict payload follows ~half a second later (it waits
+  // for the placement deltas), and "own state is lobby" showing the menu in
+  // that gap was a one-frame lobby flash before the slam. The gap shows
+  // nothing: the frozen world, then the verdict lands on it.
+  const showLobby = !tearingDown
     && (s.match.state === 'waiting' || s.hud.state === 'lobby')
 
   // The bus ride is a cutscene: no vitals, no counters, no kill feed.
@@ -80,7 +86,7 @@ export default function App() {
     <>
       {/* Always mounted; visibility follows match state so transitions cost no
           mount work mid-fight. */}
-      <Hud visible={!showLobby && !ridingBus && !showEnd} />
+      <Hud visible={!showLobby && !ridingBus && !tearingDown} />
       <Chat />
       <Lobby visible={showLobby} />
       {showEnd && s.summary && <EndScreen summary={s.summary} />}
