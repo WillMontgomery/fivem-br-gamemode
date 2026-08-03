@@ -174,6 +174,23 @@ html, body, #root {
   border-radius: 0.9rem;
 }
 
+/* The match-result slam: the verdict lands on a transparent screen first,
+   huge and fast with a small overshoot on impact; the backdrop and the
+   supporting lines arrive later (see .end-*). transform/opacity only. */
+@keyframes endSlam {
+  0%   { transform: scale(3.4); opacity: 0; }
+  55%  { transform: scale(0.92); opacity: 1; }
+  75%  { transform: scale(1.06); }
+  100% { transform: scale(1.0); opacity: 1; }
+}
+@keyframes endFade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.end-slam     { animation: endSlam 480ms cubic-bezier(0.16, 1.1, 0.3, 1) both; }
+.end-backdrop { animation: endFade 600ms ease-out both; animation-delay: 600ms; }
+.end-late     { animation: endFade 450ms ease-out both; animation-delay: 950ms; }
+
 @keyframes riseFade {
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }
