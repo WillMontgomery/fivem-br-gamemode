@@ -18,14 +18,11 @@ import type { SummaryPayload } from '../bridge/types'
 export default function EndScreen({ summary }: { summary: SummaryPayload }) {
   return (
     <div className="fixed inset-0">
-      {/* The backdrop is its own layer so the slam happens over nothing. */}
-      <div
-        className="end-backdrop absolute inset-0"
-        style={{
-          background:
-            'radial-gradient(ellipse at 50% 40%, rgba(20, 12, 40, 0.55), rgba(6, 8, 14, 0.85))',
-        }}
-      />
+      {/* The backdrop is its own layer so the slam happens over nothing --
+          and it is SOLID BLACK, not a tint: the screen goes fully dark
+          behind the verdict and stays dark until the lobby fades in at
+          WAITING (the game-side fade holds underneath to match). */}
+      <div className="end-backdrop absolute inset-0" style={{ background: '#000' }} />
 
       <div className="absolute inset-0 flex flex-col items-center justify-center gap-8">
         <div className="text-center">

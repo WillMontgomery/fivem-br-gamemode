@@ -102,8 +102,11 @@ function BR.Spawn.reveal()
     ShutdownLoadingScreenNui()
 
     -- Not `IsScreenFadedOut`: see above. Fading in an already-faded-in screen
-    -- is a no-op, so this is safe to call repeatedly.
-    if not IsScreenFadedIn() and not IsScreenFadingIn() then
+    -- is a no-op, so this is safe to call repeatedly. holdBlack is the one
+    -- legitimate dark screen: the end-of-match sequence owns the fade until
+    -- WAITING, and this reveal racing it was the rough lobby transition.
+    if not BR.Spawn.holdBlack
+       and not IsScreenFadedIn() and not IsScreenFadingIn() then
         DoScreenFadeIn(500)
     end
 
@@ -219,8 +222,20 @@ end
 --- that happen was an eight-second texture void), then the teleport, then
 --- collision under our feet, then light. The lobby interface renders above
 --- the fade throughout, so the menu is usable the whole time.
-function BR.Spawn.toLobby()
+--- @param holdBlack boolean|nil  end-of-match mode: let the result slam play
+---        over the live world first, then go dark and STAY dark -- the fade
+---        back in belongs to WAITING, when the result screen hands over to
+---        the lobby card. Without it (the /brleave path), fade out now and
+---        back in as soon as the vista is under our feet.
+function BR.Spawn.toLobby(holdBlack)
     Citizen.CreateThread(function()
+        if holdBlack then
+            BR.Spawn.holdBlack = true
+            -- The verdict slams in over the dying world; the interface's own
+            -- backdrop is solid black by ~1.3s and takes over the screen.
+            Citizen.Wait(1300)
+        end
+
         DoScreenFadeOut(400)
         local t0 = GetGameTimer()
         while not IsScreenFadedOut() and GetGameTimer() - t0 < 1000 do
@@ -240,7 +255,9 @@ function BR.Spawn.toLobby()
         end
         Citizen.Wait(300)   -- one breath for textures behind the collision
 
-        DoScreenFadeIn(600)
+        if not BR.Spawn.holdBlack then
+            DoScreenFadeIn(600)
+        end
     end)
 end
 
@@ -265,10 +282,19 @@ end
 RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)
     if d.state == BR.MatchState.ENDED then
-        -- The moment the match is decided, everyone goes home behind the
-        -- fade -- ENDED, not cleanup: the summary period plays out over the
-        -- lobby, not standing in the aftermath.
-        BR.Spawn.toLobby()
+        -- The moment the match is decided: HUD and radar go, the verdict
+        -- slams in over the world, and the trip home happens under black
+        -- that does not lift until WAITING.
+        DisplayRadar(false)
+        BR.Spawn.toLobby(true)
+    elseif d.state == BR.MatchState.WAITING then
+        -- The result screen has just handed over to the lobby card; NOW the
+        -- world may come back behind it.
+        DisplayRadar(true)
+        if BR.Spawn.holdBlack then
+            BR.Spawn.holdBlack = false
+            DoScreenFadeIn(800)
+        end
     end
 end)
 
@@ -343,7 +369,9 @@ end)
 -- interrupted.
 local darkTicks = 0
 BR.Loop.register(BR.Loop.SLOW, 'spawn.antiblack', function()
-    if placing or not spawned then
+    -- holdBlack is a deliberately dark screen (the end-of-match sequence);
+    -- recovering from it would fade the aftermath in behind the result card.
+    if placing or not spawned or BR.Spawn.holdBlack then
         darkTicks = 0
         return
     end
