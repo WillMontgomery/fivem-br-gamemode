@@ -163,8 +163,15 @@ BR.Config.Bus = {
     turnRadius   = 1000.0,  -- fillet radius: this close to a waypoint, start turning
 
     rollSpeed    = 80.0,    -- m/s at wheels-up (the roll builds up to this)
-    climbSpeed   = 150.0,   -- m/s through the climb and the initial turn
-    cruiseSpeed  = 600.0,   -- m/s across the open ocean approach (+50%, user call)
+    climbSpeed   = 270.0,   -- m/s through the climb and the initial turn
+                            -- (150 originally; +80%, user call 2026-08-04 --
+                            -- the ascent dragged. Still gradual: depart()'s
+                            -- kinematic passes ramp toward this at maxAccel,
+                            -- so the plane accelerates continuously from
+                            -- wheels-up instead of stepping)
+    cruiseSpeed  = 600.0,   -- m/s across the open ocean approach (+50%, user
+                            -- call). MUST stay >= climbSpeed: the ascent may
+                            -- never be faster than the leg to waypoint 1
     speed        = 185.0,   -- m/s over land: the WHOLE TOUR is the drop zone
     cornerSpeed  = 150.0,   -- m/s through filleted corners
     boardSeconds = 5,       -- parked, engines idling, before the roll begins

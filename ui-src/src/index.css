@@ -227,17 +227,23 @@ html, body, #root {
   to { opacity: 0; }
 }
 
+/* ~3x the original effect (user call, 2026-08-04: "purple is good but not
+   strong enough"): the pulse never drops below a strong floor instead of
+   vanishing entirely, and the gradient reaches further in with a heavier
+   edge. Being in the storm should be unmistakable before the health bar
+   says so. */
 @keyframes stormPulse {
-  0%, 100% { opacity: 0.0; }
-  50%      { opacity: 0.5; }
+  0%, 100% { opacity: 0.55; }
+  50%      { opacity: 1.0; }
 }
 .storm-vignette {
   position: fixed;
   inset: 0;
   pointer-events: none;
   background: radial-gradient(ellipse at center,
-    rgba(147, 51, 234, 0) 45%,
-    rgba(147, 51, 234, 0.55) 100%);
+    rgba(147, 51, 234, 0) 22%,
+    rgba(147, 51, 234, 0.38) 62%,
+    rgba(124, 30, 220, 0.88) 100%);
   animation: stormPulse 2.4s ease-in-out infinite;
 }
 

@@ -24,11 +24,13 @@ export default function Lobby({ visible }: { visible: boolean }) {
   const match = useUi(selMatch)
   const lobby = useUi(selLobby)
   const squad = useUi(selSquad)
-  // False only during first join, while the loadscreen still covers
-  // everything. When Lua flips it, two 700ms fades run together: the menu
-  // fades IN while the opaque backdrop fades OUT to the world -- the boot
-  // choreography's final beat (loading.lua owns the timing).
-  const worldReady = useUi((s) => s.screen?.worldReady ?? true)
+  // False from first paint until the boot choreography's flip -- a store
+  // field with a boot-safe default, NOT read off the screen payload: the
+  // `?? true` fallback raced the ready-handshake envelope and the menu
+  // popped visible before learning the world was not there (filmed repro).
+  // When Lua flips it, two 700ms fades run together: the menu fades IN
+  // while the opaque backdrop fades OUT to the world.
+  const worldReady = useUi((s) => s.worldReady)
   const [queued, setQueued] = useState(false)
   const [mode, setMode] = useState<'solo' | 'squad'>('squad')
 

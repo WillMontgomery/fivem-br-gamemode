@@ -185,6 +185,39 @@ local function fxSet(outside)
     end
 end
 
+-- REAL RAIN, tiered by depth. Weather natives are LOCAL to this client --
+-- "global weather" is only a thing when a resource syncs it, and nothing on
+-- this server does -- so the sky itself becomes a storm effect: RAIN just
+-- past the wall, THUNDER deep outside, clear again inside. The engine's
+-- overtime blend does the dramatics for free: rain builds gently over
+-- blendSec, and fades the same way on the walk back in.
+--
+-- The ladder never touches the weather until the player is first caught
+-- outside -- a match spent inside the circle keeps GTA's own sky.
+local wxTier  = 'clear'   -- what the sky is currently doing
+local wxWant  = 'clear'   -- what the ladder wants it to do
+local wxSince = 0         -- when it first wanted that
+local wxOwned = false     -- whether we have overridden the weather at all
+local WX_NAME = { clear = 'EXTRASUNNY', rain = 'RAIN', thunder = 'THUNDER' }
+
+local function weatherWant(tier)
+    local wcfg = cfg.weather
+    if not (wcfg and wcfg.enabled) then return end
+
+    local now = GetGameTimer()
+    if tier ~= wxWant then
+        wxWant, wxSince = tier, now
+        return
+    end
+    -- Hysteresis: a player strafing the wall must not strobe the sky.
+    if tier ~= wxTier and now - wxSince >= (wcfg.holdMs or 2000) then
+        wxTier = tier
+        if not wxOwned and tier == 'clear' then return end
+        wxOwned = true
+        SetWeatherTypeOvertimePersist(WX_NAME[tier], wcfg.blendSec + 0.0)
+    end
+end
+
 -- NO "clear" envelope is ever sent from here. A nil payload arrives in the
 -- UI as {} (the bridge's `data or {}`), which rendered as a ghost "PHASE
 -- UNDEFINED / NaN" storm card during warmup. The UI clears its own storm
@@ -193,6 +226,12 @@ end
 local function teardown()
     clearBlips()
     fxSet(false)
+    -- Hand the sky back to the engine between matches.
+    if wxOwned then
+        wxOwned = false
+        wxTier, wxWant = 'clear', 'clear'
+        ClearWeatherTypePersist()
+    end
 end
 
 BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
@@ -217,7 +256,14 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- the wall does not need a red screen.
     local me = BR.State.me.state
     local canHurt = me == BR.PlayerState.ALIVE or me == BR.PlayerState.DBNO
-    fxSet(edge > 0 and dps > 0 and canHurt)
+    local caught = edge > 0 and dps > 0 and canHurt
+    fxSet(caught)
+
+    -- The sky agrees with the vignette: rain when caught outside, thunder
+    -- when deep outside, clearing on the way back in. Same condition as
+    -- the screen FX so the free-loot hold stays dry everywhere.
+    weatherWant(not caught and 'clear'
+        or (edge > cfg.weather.deepM and 'thunder' or 'rain'))
 
     -- No per-phase warn toast: once the first shrink begins the storm bar
     -- is PERMANENT (user call, 2026-08-04) and a toast repeating what the
@@ -228,13 +274,19 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- always in clean half-minute amounts: "2 minutes", "1m 30s", never
     -- "2m 29s". Each notice fires when the countdown enters a new 30-second
     -- slot and names THAT slot, so the cadence lands on the dot regardless
-    -- of when this client started listening. Stops at the final minute,
-    -- where the storm bar takes over; landed players only -- the drop has
-    -- its own prompts.
+    -- of when this client started listening. Landed players only -- the
+    -- drop has its own prompts.
+    --
+    -- THE LAST SLOT ANNOUNCED IS 90s. The 60 slot fires anywhere in its
+    -- (45s, 75s] window, while the bar appears at exactly 60s -- so "the
+    -- storm is coming in 1 minute" could precede a bar reading 1:00 by
+    -- fifteen silent seconds (filmed report, 2026-08-04). The bar's own
+    -- arrival at 60s IS the one-minute announcement; a toast that lies
+    -- about it is worse than none.
     if rec.phase == 1 and st == BR.StormPhase.HOLDING and msLeft > 60000
        and me == BR.PlayerState.ALIVE then
         local slot = math.floor((msLeft + 15000) / 30000) * 30
-        if slot ~= lastComing and slot > 0 then
+        if slot ~= lastComing and slot >= 90 then
             lastComing = slot
             local m, s = math.floor(slot / 60), slot % 60
             local span

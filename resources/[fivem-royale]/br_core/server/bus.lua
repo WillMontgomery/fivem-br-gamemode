@@ -169,7 +169,11 @@ function BR.Bus.plan()
             local ey2 = BR.Lerp(wp.y, nxt.y, ok2)
             local ez2 = BR.Lerp(wp.z, nxt.z, ok2)
 
-            local approachV = (i == 1) and cfg.cruiseSpeed or cfg.speed
+            -- The ocean leg is never slower than the ascent that fed it:
+            -- climbing at 270 into a 200 cruise would read as air-braking
+            -- for no reason (config documents the same invariant).
+            local approachV = (i == 1)
+                and math.max(cfg.cruiseSpeed, cfg.climbSpeed) or cfg.speed
             straight(ex1, ey1, ez1,
                      (i == 1) and cfg.climbSpeed or cfg.speed, approachV,
                      (i == 1) and 10 or 6)

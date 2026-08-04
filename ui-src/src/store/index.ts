@@ -49,6 +49,15 @@ export interface UiState {
    *  the mock provides one. */
   screen: ScreenPayload | null
 
+  /** Whether the game world is streamed in behind the lobby. Carried by the
+   *  screen envelope but stored SEPARATELY with a boot-safe default: in game
+   *  this starts FALSE, so the menu can only ever appear on a genuine
+   *  worldReady=true -- sent exactly once, at the boot choreography's flip.
+   *  Defaulting true raced the ready-handshake envelope and produced the
+   *  filmed appear/vanish/reappear flap (2026-08-04). Dev harness starts
+   *  true: the browser has no world to wait for. */
+  worldReady: boolean
+
   /** Queue progress while WAITING. Null until the server reports. */
   lobby: LobbyPayload | null
 
@@ -148,6 +157,7 @@ export const useUi = create<UiState>((set, get) => {
   focus: 'none',
   lobby: null,
   screen: null,
+  worldReady: import.meta.env.DEV,
   invite: null,
   clockOffset: 0,
   chatOpen: false,
@@ -188,7 +198,10 @@ export const useUi = create<UiState>((set, get) => {
   setSummary:  (summary) => set({ summary }),
   setFocus:    (focus) => set({ focus }),
   setLobby:    (lobby) => set({ lobby }),
-  setScreen:   (screen) => set({ screen }),
+  setScreen:   (screen) => set((s) => ({
+    screen,
+    worldReady: screen.worldReady !== undefined ? screen.worldReady : s.worldReady,
+  })),
   setInvite:   (invite) => set({ invite }),
   clearInvite: () => set({ invite: null }),
 

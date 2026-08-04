@@ -93,10 +93,12 @@ BR.Config.Storm = {
     -- and the storm must NEVER kill faster than that (user rule,
     -- 2026-08-04) -- late-game dps used to reach 20, a five-second melt.
     phases = {
-        -- Shrink 60, not the original 150: the first wall crosses most of
-        -- the map and at 150s it read as scenery, not a threat (user call,
-        -- 2026-08-03: "at least 2.5x speed").
-        { radius = 2600.0, wait = 120, shrink =  60, dps =  1.0, warn = 30 },
+        -- The first shrink has been tuned in both directions from live
+        -- feel: 150 read as scenery (2026-08-03, cut to 60), 60 read as a
+        -- charge ("far too fast -- 50% the current speed", 2026-08-04,
+        -- doubled back to 120). Note the start-cap payback in
+        -- server/storm.lua ADDS trimmed hold seconds on top of this.
+        { radius = 2600.0, wait = 120, shrink = 120, dps =  1.0, warn = 30 },
         { radius = 1600.0, wait = 120, shrink = 120, dps =  2.0, warn = 30 },
         { radius =  950.0, wait =  90, shrink =  90, dps =  4.0, warn = 20 },
         { radius =  520.0, wait =  75, shrink =  75, dps =  6.0, warn = 20 },
@@ -104,6 +106,21 @@ BR.Config.Storm = {
         { radius =  110.0, wait =  45, shrink =  50, dps =  9.0, warn = 15 },
         { radius =   40.0, wait =  40, shrink =  40, dps = 10.0, warn = 10 },
         { radius =    0.0, wait =  30, shrink =  60, dps = 10.0, warn = 10 },
+    },
+
+    -- REAL RAIN IN THE STORM, per client. GTA weather is only "global" when
+    -- something syncs it -- a client-side override is purely local, which
+    -- makes it a legitimate storm effect: just outside the wall it RAINS,
+    -- deep outside it is a THUNDERstorm, and stepping back inside clears
+    -- the sky. Transitions use the engine's own overtime blend, so the
+    -- rain builds gently, peaks, and fades -- exactly the arc asked for
+    -- (user call, 2026-08-04).
+    weather = {
+        enabled  = true,
+        deepM    = 150.0,  -- this far outside, rain escalates to thunder
+        blendSec = 12.0,   -- overtime blend: gentle build, gentle fade
+        holdMs   = 2000,   -- a tier must persist this long before the sky
+                           -- moves -- edge-straddlers must not strobe it
     },
 
     -- Does storm damage chew through shields first, or bypass them?
