@@ -537,6 +537,17 @@ do
 
     ok(phases[#phases].radius == 0.0, 'final phase collapses to a point')
 
+    -- THE TEN-SECOND FLOOR (user rule, 2026-08-04): the storm must never
+    -- kill a full-health player in under ten seconds, so at 100 display
+    -- health no phase may exceed 10 dps. Late phases used to hit 20 -- a
+    -- five-second melt.
+    local worstDps = 0
+    for _, p in ipairs(phases) do
+        if p.dps > worstDps then worstDps = p.dps end
+    end
+    ok(worstDps <= 10.0, 'no phase kills a full-health player in under 10s',
+        ('worst dps %.1f'):format(worstDps))
+
     -- USER DECISION (2026-08-02): the free-loot hold is phase 1's wait, 120
     -- seconds from the moment the match goes live. There is no separate
     -- initialHold field any more -- resurrecting one would double-count.

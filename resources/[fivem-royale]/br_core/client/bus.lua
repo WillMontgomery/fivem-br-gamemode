@@ -256,25 +256,18 @@ BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
         end
     end
 
-    if riding and not told and route and route.timed
-       and BR.Clock.now() >= route.jumpFrom then
-        told = true
-        -- A BASE-GAME input name: custom keymapping hashes render as a hole
-        -- in the help text on this build (live report), but engine input
-        -- names always resolve to the player's actual binding -- and the
-        -- parachute key genuinely jumps (bus.jumpkey polls it), so the hint
-        -- is honest. Our own rebindable command still works alongside.
-        BR.Native.help('Doors open — press ~INPUT_PARACHUTE_DEPLOY~ to jump.')
-    end
+    -- (The doors-open prompt is drawn per-frame in bus.jumpkey below, so it
+    -- PERSISTS for the whole jump window instead of fading on the engine's
+    -- own schedule.)
 
     -- Last call: past the final authored waypoint the plane flies its
     -- overrun; whoever is still aboard when it runs out goes out anyway.
+    -- Native help with the beep, like every other door/chute message --
+    -- flight prompts live in the game's own scaleforms, not the NUI stack.
     if riding and not toldClosing and route and route.timed
        and BR.Clock.now() >= route.doorsClose then
         toldClosing = true
-        TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
-            text = 'Doors closing — jump now!', tone = 'warn', ms = 5000,
-        })
+        BR.Native.help('Doors closing — jump now!')
     end
 end)
 
@@ -385,11 +378,10 @@ end)
 -- acts on any press.)
 local function tryJump()
     if not riding or not route or not route.timed then return end
-    if BR.Clock.now() < route.jumpFrom then
-        TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
-            text = 'Doors are still closed.', tone = 'warn' })
-        return
-    end
+    -- No toast on an early press: the persistent doors-open prompt IS the
+    -- state display now -- its absence says the doors are still shut, and
+    -- door/chute messaging lives entirely in the native scaleforms.
+    if BR.Clock.now() < route.jumpFrom then return end
     TriggerServerEvent(BR.Net.BUS_JUMP)
 end
 
@@ -404,7 +396,19 @@ end)
 -- IsControlJustPressed only lives for the frame it happened in.
 local INPUT_PARACHUTE_DEPLOY = 144
 BR.Loop.register(BR.Loop.FRAME, 'bus.jumpkey', function()
-    if riding and IsControlJustPressed(0, INPUT_PARACHUTE_DEPLOY) then
+    if not riding then return end
+
+    -- The prompt PERSISTS from doors-open until this player jumps --
+    -- redrawn per frame, gone the frame `riding` flips. Past the last
+    -- authored waypoint it hardens into the last call (the TICK block
+    -- above beeps once at that moment; this keeps the text on screen).
+    if route and route.timed and BR.Clock.now() >= route.jumpFrom then
+        BR.Native.helpThisFrame(BR.Clock.now() >= route.doorsClose
+            and 'Doors closing — press ~INPUT_PARACHUTE_DEPLOY~ NOW!'
+            or  'Doors open — press ~INPUT_PARACHUTE_DEPLOY~ to jump.')
+    end
+
+    if IsControlJustPressed(0, INPUT_PARACHUTE_DEPLOY) then
         tryJump()
     end
 end)

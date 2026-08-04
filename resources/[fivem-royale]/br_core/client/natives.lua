@@ -206,6 +206,18 @@ function BR.Native.help(text)
     EndTextCommandDisplayHelp(0, false, true, -1)
 end
 
+--- The per-frame variant: call every frame and the box PERSISTS, vanishing
+--- the frame the caller stops. This is how a prompt stays up "until they
+--- actually do it" -- the one-shot above fades on the engine's own clock,
+--- which is why the doors prompt kept disappearing mid-flight. No beep:
+--- sounding it every frame would be a siren.
+--- @param text string
+function BR.Native.helpThisFrame(text)
+    BeginTextCommandDisplayHelp('STRING')
+    AddTextComponentSubstringPlayerName(text)
+    EndTextCommandDisplayHelp(0, false, false, -1)
+end
+
 --- The ~INPUT_~ placeholder for one of OUR keymapped commands (keybinds.lua),
 --- resolving to whatever the player bound under Settings > Key Bindings >
 --- FiveM. The hash convention (joaat of the command name with the high bit

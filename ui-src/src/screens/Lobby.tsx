@@ -132,13 +132,12 @@ export default function Lobby({ visible }: { visible: boolean }) {
       }}
       aria-hidden={!visible}
     >
-      {/* scale(1.2) grows the WHOLE menu 20% (user call); the text classes
-          inside are additionally ~25% up, netting text at ~150% of the old
-          size while the chrome stays at 120%. */}
-      <div
-        className="interactive w-[35rem] max-w-[80vw]"
-        style={{ transform: 'scale(1.2)', transformOrigin: 'center' }}
-      >
+      {/* Sized with REAL dimensions (42rem = the old 35 + 20%), never
+          transform: scale() -- a scaled layer rasterizes at 1x and re-blurs
+          every time any child animates, which smeared every button's text
+          the moment one was pressed. HeroUI's press animation (the "doppler"
+          scale on the button itself) is unaffected and stays. */}
+      <div className="interactive w-[42rem] max-w-[85vw]">
         <div className="text-center mb-6">
           <h1 className="text-6xl font-bold tracking-tight">
             FiveM <span style={{ color: 'var(--color-royale-accent)' }}>Royale</span>
@@ -170,6 +169,7 @@ export default function Lobby({ visible }: { visible: boolean }) {
               {(['solo', 'squad'] as const).map((m) => (
                 <Button
                   key={m}
+                  size="lg"
                   color={mode === m ? 'primary' : 'default'}
                   variant={mode === m ? 'solid' : 'bordered'}
                   isDisabled={searching}
@@ -203,7 +203,7 @@ export default function Lobby({ visible }: { visible: boolean }) {
                     </span>
                   )}
                 </div>
-                <Button variant="bordered" onPress={leave}>Not ready</Button>
+                <Button size="lg" variant="bordered" onPress={leave}>Not ready</Button>
               </div>
             ) : (
               <Button color="primary" size="lg" onPress={queue}>

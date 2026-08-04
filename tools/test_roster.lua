@@ -2157,6 +2157,24 @@ do
     pedHealth[1002] = nil
 end
 
+describe('match.abandoned')
+do
+    -- Everyone brleaving during warmup used to leave the state machine
+    -- idling out the warmup clock for nobody. An empty match aborts.
+    reset()
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'warmup starts')
+
+    fire(BR.Net.MATCH_LEAVE, 1)
+    fire(BR.Net.MATCH_LEAVE, 2)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WAITING,
+        'an all-left warmup aborts straight back to WAITING')
+end
+
 describe('match.partyGate')
 do
     -- Parties enter together: one member readying up must not launch the

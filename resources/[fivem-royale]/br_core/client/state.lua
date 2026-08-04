@@ -139,6 +139,19 @@ local function noteMyState()
             roundParticipant = true
             pushMatchState()
         end
+    elseif st == BR.PlayerState.LOBBY
+       and S.match.state ~= BR.MatchState.ENDED
+       and S.match.state ~= BR.MatchState.CLEANUP then
+        -- Becoming LOBBY while the match is still running means I LEFT the
+        -- round (brleave). Someone who once touched the warmup and then sat
+        -- out kept the flag, and the match's ending slammed ELIMINATED over
+        -- their lobby menu (live report, twice). The teardown flip to LOBBY
+        -- is different: by then match.state already reads ended, so real
+        -- participants keep their verdict.
+        if roundParticipant then
+            roundParticipant = false
+            pushMatchState()
+        end
     end
 end
 

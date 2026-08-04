@@ -186,7 +186,7 @@ export default function PartyPanel({
             {(['create', 'join', 'random'] as const).map((sm) => (
               <Button
                 key={sm}
-                size="sm"
+                size="md"
                 color={subMode === sm ? 'primary' : 'default'}
                 variant={subMode === sm ? 'solid' : 'bordered'}
                 isDisabled={disabled}
@@ -282,7 +282,7 @@ export default function PartyPanel({
       {/* Leaving must be obvious and always available. A party you cannot get
           out of is worse than no party system. */}
       {mode === 'squad' && inParty && (
-        <Button size="sm" variant="bordered" onPress={() => fetchNui(CB.SQUAD_LEAVE, {})}>
+        <Button size="md" variant="bordered" onPress={() => fetchNui(CB.SQUAD_LEAVE, {})}>
           Leave party
         </Button>
       )}

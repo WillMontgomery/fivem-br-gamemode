@@ -442,6 +442,18 @@ local function tick()
         BR.Match.shortenWarmupIfFull()
     end
 
+    -- AN ABANDONED MATCH ABORTS. Everyone brleaving (or dropping) during
+    -- warmup or the flight used to leave the state machine idling out its
+    -- timers for nobody -- an empty warmup has nothing to wait for and an
+    -- empty plane nothing to deliver. Straight back to WAITING. (PLAYING
+    -- ends through the win condition like any other match.)
+    if (S.state == BR.MatchState.WARMUP or S.state == BR.MatchState.BUS)
+       and BR.Server.aliveCount() == 0 then
+        print('[br_core] match: everyone left -- aborting back to WAITING')
+        BR.Match.transition(BR.MatchState.WAITING)
+        return
+    end
+
     if S.state == BR.MatchState.BUS then
         -- The drop ends when the LAST player is down -- not when the route
         -- timer says so. Everyone jumped early and landed? The match goes

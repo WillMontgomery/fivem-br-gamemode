@@ -16,6 +16,16 @@ local CHUTE = GetHashKey('GADGET_PARACHUTE')   -- 0xFBAB5776, verified
 
 local dropping = false
 
+-- THE LANDING LATCH. The landing test is "chute away, feet on something" --
+-- which is also true in the instant AFTER THE JUMP, before the exit
+-- velocity and parachute task have taken hold: the ped still reads as
+-- on-foot, so the landing branch fired seconds into the fall. That sent a
+-- false DROP_LANDED (the server marked the player ALIVE mid-air -- the
+-- premature storm clock), and re-fired every re-arm: the stack of four
+-- "Loot up!" toasts. Landing only counts after the drop has actually been
+-- AIRBORNE at least once.
+local airborneSeen = false
+
 --- Parse '#RRGGBB' (the squad colour the server assigned) into rgb.
 local function hexToRgb(hex)
     if type(hex) ~= 'string' then return 255, 255, 255 end
@@ -30,6 +40,7 @@ AddEventHandler('br:drop:begin', function(d)
     -- chuteless -- never again on an assumption. dropping is set FIRST so
     -- the SPACE listener in bus.lua stands down immediately.
     dropping = true
+    airborneSeen = false
 
     Citizen.CreateThread(function()
         local ped = PlayerPedId()
@@ -83,14 +94,23 @@ AddEventHandler('br:drop:begin', function(d)
             end
         end
 
-        -- A native help box, NOT a toast: ~INPUT_PARACHUTE_DEPLOY~ renders
-        -- the player's real base-game parachute bind (the engine's own
-        -- deploy input works during the fall too, since the ped is in a
-        -- genuine parachute task). The old toast said "SPACE" to everyone,
-        -- which was our binding's DEFAULT, not their key. No "ride it low"
-        -- promise: the auto-deploy floor opens the canopy regardless.
-        BR.Native.help('Press ~INPUT_PARACHUTE_DEPLOY~ to open the glider early.')
+        -- (The glider prompt is drawn per-frame below, so it persists until
+        -- the canopy is actually out.)
     end)
+end)
+
+-- The glider prompt PERSISTS until the chute is genuinely pulled -- redrawn
+-- per frame while falling with the canopy stowed, gone the frame it opens.
+-- ~INPUT_PARACHUTE_DEPLOY~ renders the player's real base-game bind (the
+-- engine's own deploy input works during the fall, since the ped is in a
+-- genuine parachute task; our keybind works alongside).
+BR.Loop.register(BR.Loop.FRAME, 'skydive.prompt', function()
+    if not dropping then return end
+    local cs = GetPedParachuteState(PlayerPedId())
+    if cs == BR.Native.ChuteState.ON_BACK
+       or cs == BR.Native.ChuteState.FREEFALL then
+        BR.Native.helpThisFrame('Press ~INPUT_PARACHUTE_DEPLOY~ to open the glider.')
+    end
 end)
 
 -- Manual deploy on OUR keymapped binding too (the base game's own deploy
@@ -144,6 +164,7 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
     -- expected, and players fell past a floor made of preconditions. The
     -- descent is invincible as the last net, but the chute is the fix.
     local airborne = not IsPedOnFoot(ped) and not IsEntityInWater(ped)
+    if airborne then airborneSeen = true end
     if airborne
        and cs ~= BR.Native.ChuteState.OPENING
        and cs ~= BR.Native.ChuteState.OPEN
@@ -158,9 +179,11 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
         return
     end
 
-    -- Landed: no chute in play and feet on something. Water counts -- a sea
-    -- landing is a bad drop, not a continuing one.
-    if (cs == BR.Native.ChuteState.NONE or cs == BR.Native.ChuteState.ON_BACK)
+    -- Landed: no chute in play and feet on something -- and only after the
+    -- drop has actually BEEN airborne (see the latch note at the top).
+    -- Water counts: a sea landing is a bad drop, not a continuing one.
+    if airborneSeen
+       and (cs == BR.Native.ChuteState.NONE or cs == BR.Native.ChuteState.ON_BACK)
        and not IsPedFalling(ped)
        and (IsPedOnFoot(ped) or IsEntityInWater(ped)) then
         dropping = false

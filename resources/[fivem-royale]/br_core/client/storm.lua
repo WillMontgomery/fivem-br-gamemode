@@ -42,14 +42,19 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     local rec = activeRecord()
     if not rec then return end
 
-    local cx, cy, r, stt = solveNow(rec)
+    local cx, cy, r, stt, msLeft = solveNow(rec)
     if r <= 1.0 then return end   -- a collapsed circle has no wall to draw
 
     -- NO WALL BEFORE ANYTHING HAS HAPPENED. During the free-loot hold the
     -- "circle" is the whole map, and a purple ring around the horizon
-    -- announced nothing but its own existence. The curtain first appears
-    -- the moment the first shrink begins.
-    if rec.phase == 1 and stt == BR.StormPhase.HOLDING then return end
+    -- announced nothing but its own existence. The curtain FADES IN across
+    -- the hold's last seconds, at full strength as the shrink begins.
+    local alphaScale = 1.0
+    if rec.phase == 1 and stt == BR.StormPhase.HOLDING then
+        local fadeMs = (cfg.render.fadeInSec or 10.0) * 1000.0
+        if msLeft > fadeMs then return end
+        alphaScale = 1.0 - (msLeft / fadeMs)
+    end
 
     local ped = PlayerPedId()
     local p = GetEntityCoords(ped)
@@ -86,11 +91,16 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
         -- above Chiliad. The old ground-probe fallback hung the curtain off
         -- the viewer's own z whenever the probe missed -- which at wall
         -- distances is most of the time -- so the wall rode the camera.
+        --
+        -- Drawn edgeInset INSIDE the logical radius: the marker's soft
+        -- surface reads fatter than its scale, and the logical edge (which
+        -- is what damages) must never sit inside the visible curtain.
+        local vr = math.max(1.0, r - (rr.edgeInset or 0.0))
         DrawMarker(1,
             cx, cy, -100.0,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            r * 2.0, r * 2.0, rr.height * 3.0 + 50.0,
-            col.r, col.g, col.b, rr.alpha,
+            vr * 2.0, vr * 2.0, rr.height * 3.0 + 50.0,
+            col.r, col.g, col.b, math.floor(rr.alpha * alphaScale),
             false, false, 2, false, nil, nil, false)
         return
     end
@@ -150,11 +160,7 @@ local lastBlipR = -1.0
 local fxOn = false
 local warnedPhase = nil
 local lastPush = 0
-local lastComing = 0   -- last "the storm is coming" notice; 0 = fire on sight
-
-local function gtNow()
-    return GetGameTimer()
-end
+local lastComing = 0   -- the 30s SLOT last announced; 0 = fire on sight
 
 local function clearBlips()
     if curBlip then RemoveBlip(curBlip) curBlip = nil end
@@ -228,17 +234,26 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
         end
     end
 
-    -- The long first hold speaks through NOTICES, not a parked timer: "The
-    -- storm is coming in M:SS" the moment the match goes live, again every
-    -- thirty seconds, and it stops the moment the storm bar takes over at
-    -- the final minute.
-    if rec.phase == 1 and st == BR.StormPhase.HOLDING and msLeft > 60000 then
-        if gtNow() - lastComing >= 30000 then
-            lastComing = gtNow()
-            local total = math.floor(msLeft / 1000)
+    -- The long first hold speaks through NOTICES, not a parked timer -- and
+    -- always in clean half-minute amounts: "2 minutes", "1m 30s", never
+    -- "2m 29s". Each notice fires when the countdown enters a new 30-second
+    -- slot and names THAT slot, so the cadence lands on the dot regardless
+    -- of when this client started listening. Stops at the final minute,
+    -- where the storm bar takes over; landed players only -- the drop has
+    -- its own prompts.
+    if rec.phase == 1 and st == BR.StormPhase.HOLDING and msLeft > 60000
+       and me == BR.PlayerState.ALIVE then
+        local slot = math.floor((msLeft + 15000) / 30000) * 30
+        if slot ~= lastComing and slot > 0 then
+            lastComing = slot
+            local m, s = math.floor(slot / 60), slot % 60
+            local span
+            if m > 0 and s > 0 then span = ('%dm %ds'):format(m, s)
+            elseif m > 1 then span = ('%d minutes'):format(m)
+            elseif m == 1 then span = '1 minute'
+            else span = ('%d seconds'):format(s) end
             TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
-                text = ('The storm is coming in %d:%02d.')
-                    :format(math.floor(total / 60), total % 60),
+                text = ('The storm is coming in %s.'):format(span),
                 tone = 'info', ms = 6000,
             })
         end
