@@ -6,7 +6,9 @@
 <style>
   /* The same visual language as the lobby (ui-src/src/index.css): solid
      black base, the royale purple (#a855f7) as the only voice. CEF here is
-     Chrome 103 -- plain CSS only, nothing exotic. */
+     Chrome 103 -- plain CSS only, nothing exotic. Deliberately NOT a menu:
+     an earlier draft mocked up the lobby card, and a menu that ignores
+     clicks is worse than no menu (user call, 2026-08-04). */
   * { margin: 0; padding: 0; box-sizing: border-box; }
 
   html, body {
@@ -61,24 +63,36 @@
     transition: width 300ms ease-out;
   }
 
+  /* The status row: a loading circle plus one gag line at a time. */
   .status {
-    font-size: 1.7vh;
-    color: rgba(255, 255, 255, 0.35);
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
+    display: flex; align-items: center; gap: 1.4vh;
+    height: 4vh;
+    margin-top: 0.6vh;
   }
 
-  /* Three dots marching -- the "still alive" signal while the fraction sits
-     between engine milestones, which it does for long stretches. */
-  .dots::after {
-    content: '';
-    animation: dots 1.6s steps(4) infinite;
+  .spinner {
+    width: 2.4vh; height: 2.4vh;
+    border-radius: 50%;
+    border: 0.35vh solid rgba(168, 85, 247, 0.22);
+    border-top-color: #a855f7;
+    animation: spin 900ms linear infinite;
   }
-  @keyframes dots {
-    0%   { content: ''; }
-    25%  { content: '.'; }
-    50%  { content: '..'; }
-    75%  { content: '...'; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* THE SAME FLY-UP AS THE VERDICT SCREEN'S SUPPORTING LINES -- endFlyUp in
+     ui-src/src/index.css, identical offset and curve, shortened to fit a
+     3-second cadence. Re-applied per message via the class-toggle reflow
+     trick below. */
+  .line {
+    font-size: 2.0vh;
+    color: rgba(255, 255, 255, 0.55);
+  }
+  .line.fly {
+    animation: flyUp 700ms cubic-bezier(0.2, 0.9, 0.3, 1) both;
+  }
+  @keyframes flyUp {
+    from { opacity: 0; transform: translateY(34px); }
+    to   { opacity: 1; transform: translateY(0); }
   }
 </style>
 </head>
@@ -88,14 +102,76 @@
     <h1>FiveM <span>Royale</span></h1>
     <div class="tag">Drop in. Loot up. Outlast the storm.</div>
     <div class="bar"><div class="fill" id="fill"></div></div>
-    <div class="status"><span id="status">Loading Los Santos</span><span class="dots"></span></div>
+    <div class="status">
+      <div class="spinner"></div>
+      <div class="line" id="line"></div>
+    </div>
   </div>
 
 <script>
-  // The engine narrates its load through one-way messages; loadFraction is
-  // the only number worth a pixel. The bar never moves backwards -- the
-  // fraction can jitter across load stages, and a regressing loading bar
-  // reads as a crash in progress.
+  // The gag reel. One line at a time, random order without immediate
+  // repeats, a fresh fly-up every three seconds.
+  var LINES = [
+    'Brewing the pilot’s coffee',
+    'Hunting snakes in Sandy Shores',
+    'Inflating the Battle Bus',
+    'Folding forty-eight gliders',
+    'Painting the storm purple',
+    'Hiding the good loot',
+    'Drawing circles on the map',
+    'Untangling parachute cords',
+    'Bribing the weatherman',
+    'Sweeping the Cayo Perico runway',
+    'Telling the cops to stay home',
+    'Stocking shield potions',
+    'Rehearsing the doors-open announcement',
+    'Convincing the storm to play fair',
+    'Counting to forty-eight',
+    'Evacuating the civilians',
+    'Testing gravity (still works)',
+    'Arguing with the bus pilot',
+    'Tightening the Titan’s screws',
+    'Reading the storm’s terms and conditions',
+    'Checking under the map for stragglers',
+    'Warming up the Victory Royale',
+    'Feeding the seagulls at Vespucci',
+    'Mopping the vista point',
+    'Teaching NPCs to duck'
+  ];
+
+  function shuffle(a) {
+    for (var i = a.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var t = a[i]; a[i] = a[j]; a[j] = t;
+    }
+    return a;
+  }
+
+  var deck = shuffle(LINES.slice());
+  var idx = 0;
+  var el = document.getElementById('line');
+
+  function next() {
+    if (idx >= deck.length) {
+      var last = deck[deck.length - 1];
+      deck = shuffle(LINES.slice());
+      // No immediate repeat across the reshuffle boundary.
+      if (deck[0] === last) { deck.push(deck.shift()); }
+      idx = 0;
+    }
+    el.textContent = deck[idx++] + '…';
+    // Class-toggle reflow: drop the animation class, force a layout, put it
+    // back -- the browser restarts the fly-up from frame zero.
+    el.classList.remove('fly');
+    void el.offsetWidth;
+    el.classList.add('fly');
+  }
+
+  next();
+  setInterval(next, 3000);
+
+  // loadFraction drives the bar. Never backwards -- the fraction jitters
+  // across load stages, and a regressing bar reads as a crash in progress.
   var best = 0;
   window.addEventListener('message', function (e) {
     var d = e.data || {};
@@ -104,9 +180,6 @@
       if (pct > best) {
         best = pct;
         document.getElementById('fill').style.width = pct + '%';
-      }
-      if (best >= 100) {
-        document.getElementById('status').textContent = 'Opening the lobby';
       }
     }
   });

@@ -343,6 +343,12 @@ function BR.Native.applyGameRules()
     HideHudComponentThisFrame(3)   -- HUD_CASH
     HideHudComponentThisFrame(4)   -- HUD_MP_CASH (the bank line)
 
+    -- The corner busy spinner ("Loading...") -- the engine raises it during
+    -- session setup and other resources may leave one on. The convar
+    -- sv_showBusySpinnerOnLoadingScreen only covers the phase BEFORE scripts
+    -- run; from the first frame we own, nothing of the engine's spins.
+    if BusyspinnerIsOn() then BusyspinnerOff() end
+
     SetVehicleDensityMultiplierThisFrame(0.0)
     SetPedDensityMultiplierThisFrame(0.0)
     SetScenarioPedDensityMultiplierThisFrame(0.0, 0.0)
