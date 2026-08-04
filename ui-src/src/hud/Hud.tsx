@@ -105,7 +105,7 @@ export default function Hud({ visible }: { visible: boolean }) {
             width: 'var(--map-w)',
           }}
         >
-          <Vitals hp={hud.hp} armour={hud.armour} />
+          <Vitals hp={hud.hp} armour={hud.armour} stamina={hud.stamina} />
         </div>
 
         {dbno.downed && <DbnoOverlay dbno={dbno} />}

@@ -58,6 +58,11 @@ export interface UiState {
    *  true: the browser has no world to wait for. */
   worldReady: boolean
 
+  /** True from the moment ESC is pressed in the lobby until Lua hands the
+   *  lobby its focus back after the pause menu closes -- the menu fades out
+   *  under GTA's pause screen and back in afterwards. */
+  pauseHiding: boolean
+
   /** Queue progress while WAITING. Null until the server reports. */
   lobby: LobbyPayload | null
 
@@ -86,6 +91,7 @@ export interface UiState {
   setSpectate: (s: SpectatePayload | null) => void
   setSummary: (s: SummaryPayload | null) => void
   setFocus: (f: FocusPayload['screen']) => void
+  setPauseHiding: (v: boolean) => void
   setLobby: (l: LobbyPayload) => void
   setScreen: (s: ScreenPayload) => void
   setInvite: (i: InvitePayload) => void
@@ -158,6 +164,7 @@ export const useUi = create<UiState>((set, get) => {
   lobby: null,
   screen: null,
   worldReady: import.meta.env.DEV,
+  pauseHiding: false,
   invite: null,
   clockOffset: 0,
   chatOpen: false,
@@ -197,6 +204,7 @@ export const useUi = create<UiState>((set, get) => {
   setSpectate: (spectate) => set({ spectate }),
   setSummary:  (summary) => set({ summary }),
   setFocus:    (focus) => set({ focus }),
+  setPauseHiding: (pauseHiding) => set({ pauseHiding }),
   setLobby:    (lobby) => set({ lobby }),
   setScreen:   (screen) => set((s) => ({
     screen,

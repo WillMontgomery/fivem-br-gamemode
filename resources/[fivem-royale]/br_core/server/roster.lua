@@ -93,7 +93,12 @@ local function applyBucket(src, state)
         bucket = M.matchBucketBase + BR.Server.matchId
     end
     if SetRoutingBucketPopulationEnabled then
-        SetRoutingBucketPopulationEnabled(bucket, false)
+        -- MATCH buckets get ambient life (user call, 2026-08-04: parked
+        -- cars, some traffic, pedestrians -- the AMOUNT is throttled
+        -- client-side by the density multipliers in gamerules). The lobby
+        -- bucket stays sterile: it is a menu with a view.
+        SetRoutingBucketPopulationEnabled(bucket,
+            state ~= BR.PlayerState.LOBBY)
     end
     SetPlayerRoutingBucket(tostring(src), bucket)
 end

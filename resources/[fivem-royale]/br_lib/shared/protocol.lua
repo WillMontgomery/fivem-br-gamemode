@@ -144,6 +144,7 @@ BR.NuiCb = {
     CLOSE        = 'br/close',
     CHAT_SEND    = 'br/chat/send',
     CHAT_FOCUS   = 'br/chat/focus',  -- UI tells Lua the input opened/closed
+    PAUSE        = 'br/pause',       -- ESC in the lobby: open GTA's pause menu
     ERROR        = 'br/err',  -- CEF exception sink; without this a crash is a blank screen
     ENV          = 'br/ui/env',  -- CEF capability report, printed at startup
 }

@@ -157,7 +157,6 @@ local curBlip, nextBlip = nil, nil
 local dirBlip = nil       -- centre marker: clamps to the minimap edge = direction home
 local lastBlipAt = 0
 local lastBlipR = -1.0
-local fxOn = false
 local lastPush = 0
 local lastComing = 0   -- the 30s SLOT last announced; 0 = fire on sight
 
@@ -168,20 +167,52 @@ local function clearBlips()
     lastBlipR = -1.0
 end
 
+-- The screen grade RAMPS on the same clock as the weather and the NUI
+-- vignette (weather.blendSec): fxLevel walks toward its target each tick
+-- and drives the timecycle STRENGTH, so entering the storm darkens the
+-- world over five seconds instead of snapping (user call, 2026-08-04).
+local fxLevel, fxTarget = 0.0, 0.0
+local fxApplied, postOn  = false, false
+local lastFxAt = 0
+
 local function fxSet(outside)
-    if outside == fxOn then return end
-    fxOn = outside
-    if outside then
-        if cfg.fx.useTimecycle then
+    fxTarget = outside and 1.0 or 0.0
+end
+
+local function fxStep()
+    local now = GetGameTimer()
+    local dt = (lastFxAt > 0) and math.min(now - lastFxAt, 500) or 0
+    lastFxAt = now
+    if fxLevel == fxTarget then return end
+
+    local blend = (cfg.weather and cfg.weather.blendSec or 5.0) * 1000.0
+    local step = dt / blend
+    if fxLevel < fxTarget then fxLevel = math.min(fxTarget, fxLevel + step)
+    else fxLevel = math.max(fxTarget, fxLevel - step) end
+
+    if cfg.fx.useTimecycle then
+        if fxLevel > 0.0 and not fxApplied then
+            fxApplied = true
             SetTimecycleModifier(cfg.fx.timecycle)
-            SetTimecycleModifierStrength(cfg.fx.timecycleTarget)
         end
-        if cfg.fx.usePostFx then
+        if fxApplied then
+            SetTimecycleModifierStrength(cfg.fx.timecycleTarget * fxLevel)
+        end
+        if fxLevel <= 0.0 and fxApplied then
+            fxApplied = false
+            ClearTimecycleModifier()
+        end
+    end
+    -- The post FX loop has no strength knob; it joins once the grade is
+    -- genuinely present and leaves as it goes.
+    if cfg.fx.usePostFx then
+        if fxLevel > 0.15 and not postOn then
+            postOn = true
             AnimpostfxPlay(cfg.fx.postFx, 0, true)
+        elseif fxLevel < 0.05 and postOn then
+            postOn = false
+            AnimpostfxStop(cfg.fx.postFx)
         end
-    else
-        if cfg.fx.useTimecycle then ClearTimecycleModifier() end
-        if cfg.fx.usePostFx then AnimpostfxStop(cfg.fx.postFx) end
     end
 end
 
@@ -198,6 +229,8 @@ local wxTier  = 'clear'   -- what the sky is currently doing
 local wxWant  = 'clear'   -- what the ladder wants it to do
 local wxSince = 0         -- when it first wanted that
 local wxOwned = false     -- whether we have overridden the weather at all
+local wxDryAt = nil       -- when to force the ground dry after clearing
+local wxUndryAt = nil     -- when to hand rain control back to the engine
 local WX_NAME = { clear = 'EXTRASUNNY', thunder = 'THUNDER' }
 
 local function weatherWant(tier)
@@ -205,6 +238,23 @@ local function weatherWant(tier)
     if not (wcfg and wcfg.enabled) then return end
 
     local now = GetGameTimer()
+
+    -- THE DRYING SCHEDULE. Forcing sunny stops the rain, but the ground
+    -- keeps its sheen and puddles for minutes -- SetRainLevel(0.0) kills
+    -- rain, rain audio AND puddle creation outright (its documented job),
+    -- so once the blend back to clear finishes, the world dries. Control
+    -- is handed back (-1.0) a while later so the engine's own weather can
+    -- rain again some day.
+    if wxDryAt and now >= wxDryAt then
+        wxDryAt = nil
+        SetRainLevel(0.0)
+        wxUndryAt = now + 45000
+    end
+    if wxUndryAt and now >= wxUndryAt then
+        wxUndryAt = nil
+        SetRainLevel(-1.0)
+    end
+
     if tier ~= wxWant then
         wxWant, wxSince = tier, now
         return
@@ -215,6 +265,14 @@ local function weatherWant(tier)
         if not wxOwned and tier == 'clear' then return end
         wxOwned = true
         SetWeatherTypeOvertimePersist(WX_NAME[tier], wcfg.blendSec + 0.0)
+        if tier == 'thunder' then
+            -- Let the thunderstorm actually rain, whatever the dry
+            -- schedule was up to.
+            wxDryAt, wxUndryAt = nil, nil
+            SetRainLevel(-1.0)
+        else
+            wxDryAt = now + wcfg.blendSec * 1000.0
+        end
     end
 end
 
@@ -225,11 +283,17 @@ end
 -- state transition, so it needs no extra message to know.
 local function teardown()
     clearBlips()
-    fxSet(false)
+    -- Between matches the grade SNAPS off -- there is nothing to fade
+    -- against once the world resets around a teleport home.
+    fxTarget, fxLevel = 0.0, 0.0
+    if fxApplied then fxApplied = false ClearTimecycleModifier() end
+    if postOn then postOn = false AnimpostfxStop(cfg.fx.postFx) end
     -- Hand the sky back to the engine between matches.
     if wxOwned then
         wxOwned = false
         wxTier, wxWant = 'clear', 'clear'
+        wxDryAt, wxUndryAt = nil, nil
+        SetRainLevel(-1.0)
         ClearWeatherTypePersist()
     end
 end
@@ -258,6 +322,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     local canHurt = me == BR.PlayerState.ALIVE or me == BR.PlayerState.DBNO
     local caught = edge > 0 and dps > 0 and canHurt
     fxSet(caught)
+    fxStep()
 
     -- The sky agrees with the vignette: thunder when caught outside,
     -- clearing on the way back in. Same condition as the screen FX so the
@@ -306,17 +371,31 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- brisk while shrinking, lazy while holding, and only when the radius
     -- moved enough to see.
     local gt = GetGameTimer()
-    local hz = (st == BR.StormPhase.SHRINKING)
+    -- The blip fade window shares the wall's fade clock: the map ring and
+    -- the 3D curtain arrive together (user call, 2026-08-04).
+    local fadeMs  = (cfg.render.fadeInSec or 10.0) * 1000.0
+    local wholeMap = rec.phase == 1 and st == BR.StormPhase.HOLDING
+    local fading   = wholeMap and msLeft <= fadeMs
+    local hz = (st == BR.StormPhase.SHRINKING or fading)
         and cfg.blip.refreshHzShrinking or cfg.blip.refreshHzHolding
     if gt - lastBlipAt >= 1000 / hz then
         lastBlipAt = gt
         -- The CURRENT circle is not drawn while it is still the whole map
         -- (phase-1 hold): a ring around all of Los Santos on every map told
-        -- players nothing. Only the purple target matters until the wall
-        -- starts moving.
-        local wholeMap = rec.phase == 1 and st == BR.StormPhase.HOLDING
+        -- players nothing... until the wall starts fading in, when its map
+        -- ring fades in WITH it -- alpha ramped on the same countdown the
+        -- curtain uses, so neither pops.
         if wholeMap then
-            if curBlip then RemoveBlip(curBlip) curBlip = nil lastBlipR = -1.0 end
+            if fading then
+                local a = math.floor(cfg.blip.currentAlpha
+                    * (1.0 - msLeft / fadeMs) + 0.5)
+                curBlip = BR.Native.radiusBlip(curBlip, cx, cy, r,
+                    cfg.blip.currentColour, a)
+                lastBlipR = r
+                if nextBlip then RemoveBlip(nextBlip) nextBlip = nil end
+            elseif curBlip then
+                RemoveBlip(curBlip) curBlip = nil lastBlipR = -1.0
+            end
         elseif math.abs(r - lastBlipR) > 1.0 or not curBlip then
             lastBlipR = r
             curBlip = BR.Native.radiusBlip(curBlip, cx, cy, r,
@@ -333,17 +412,24 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
                 cfg.blip.nextColour, cfg.blip.nextAlpha)
         end
 
-        -- "RUN THIS WAY", on the minimap -- and only while outside. The blip
-        -- sits at the NEAREST SAFE POINT on the circle (just inside the
-        -- edge), long-range so it clamps to the minimap's border as a
-        -- heading that rotates with the map itself. Deliberately NOT the
-        -- circle's centre: the anchor is tuning data, and parking a marker
-        -- on it would hand every player the storm's destination for free.
-        -- Inside the circle there is nothing to point at, so no blip.
-        if edge > 0 then
-            local inv = 1.0 / math.max(dist, 1.0)
-            local sx = cx + (p.x - cx) * inv * math.max(r - 25.0, 0.0)
-            local sy = cy + (p.y - cy) * inv * math.max(r - 25.0, 0.0)
+        -- "RUN THIS WAY", on the minimap -- whenever outside the PURPLE
+        -- TARGET circle, not just the current wall (user call, 2026-08-04:
+        -- during the whole phase-1 hold "outside the current circle" is
+        -- impossible -- it is the entire map -- but outside the target is
+        -- exactly when guidance matters). The blip sits at the NEAREST
+        -- SAFE POINT just inside the target's edge, long-range so it
+        -- clamps to the minimap's border as a heading that rotates with
+        -- the map. Deliberately NOT the centre: the anchor is tuning
+        -- data, and parking a marker on it would hand every player the
+        -- storm's destination for free. (No rotatable arrow sprite exists
+        -- in the blip set -- the engine's arrows are elevation markers --
+        -- so the clamped dot IS the arrow.)
+        local tx, ty, tr = rec.cx1, rec.cy1, rec.r1
+        local distT = BR.Dist(p.x, p.y, tx, ty)
+        if distT > tr then
+            local inv = 1.0 / math.max(distT, 1.0)
+            local sx = tx + (p.x - tx) * inv * math.max(tr - 25.0, 0.0)
+            local sy = ty + (p.y - ty) * inv * math.max(tr - 25.0, 0.0)
             if not dirBlip or not DoesBlipExist(dirBlip) then
                 dirBlip = AddBlipForCoord(sx, sy, 0.0)
                 SetBlipSprite(dirBlip, 1)

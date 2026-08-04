@@ -562,21 +562,23 @@ do
 
     ok(phases[#phases].radius == 0.0, 'final phase collapses to a point')
 
-    -- THE TEN-SECOND FLOOR (user rule, 2026-08-04): the storm must never
-    -- kill a full-health player in under ten seconds, so at 100 display
-    -- health no phase may exceed 10 dps. Late phases used to hit 20 -- a
-    -- five-second melt.
+    -- THE KILL-TIME BAND (user rule, 2026-08-04, superseding the 10s floor
+    -- with a gentler one): the storm's fastest kill is 15 seconds (phase 8)
+    -- and its slowest is 100 (phase 1) -- dps is authored as 100/killtime.
     local worstDps = 0
     for _, p in ipairs(phases) do
         if p.dps > worstDps then worstDps = p.dps end
     end
-    ok(worstDps <= 10.0, 'no phase kills a full-health player in under 10s',
+    ok(worstDps <= 100.0 / 15.0 + 0.05,
+        'no phase kills a full-health player in under 15s',
         ('worst dps %.1f'):format(worstDps))
+    ok(math.abs(100.0 / phases[1].dps - 100.0) < 1.0,
+        'phase 1 takes a hundred seconds to kill')
 
-    -- USER DECISION (2026-08-02): the free-loot hold is phase 1's wait, 120
-    -- seconds from the moment the match goes live. There is no separate
-    -- initialHold field any more -- resurrecting one would double-count.
-    ok(phases[1].wait == 120, 'the free-loot hold is 120s (user call)')
+    -- The free-loot floor: an all-inside drop still gets one full minute
+    -- (hold.minSeconds); the priced hold stretches it from there.
+    ok(BR.Config.Storm.hold.minSeconds == 60,
+        'the free-loot hold floors at one minute (user call, 2026-08-04)')
     ok(BR.Config.Storm.initialHold == nil, 'initialHold stays retired')
 
     local total = BR.Config.Storm.TotalSeconds()

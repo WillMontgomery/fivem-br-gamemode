@@ -61,29 +61,39 @@ export default function StormBar({ storm }: { storm: StormPayload | null }) {
 
   // The label tells you what the number MEANS -- a bare "10s" told nobody
   // anything. Holding: time until the wall starts moving. Shrinking: time
-  // until it stops. Being in it outranks both.
-  const label = hurting ? 'In the storm'
-    : shrinking ? 'Storm closing now'
-    : 'Storm moving in'
+  // until it stops.
+  const label = shrinking ? 'Storm closing now' : 'Storm moving in'
 
+  // TWO STATES, CROSSFADED (user call, 2026-08-04): inside, the label and
+  // countdown; caught outside, a pulsing imperative and NO timer -- when
+  // you are in the storm the number that matters is your health, not the
+  // wall's schedule. The keyed swap restarts the fade both directions.
   return (
-    <div className="panel px-4 py-2 flex items-baseline gap-3">
-      <span
-        className="text-[0.625rem] uppercase tracking-[0.18em]"
-        style={{ color: hurting ? 'var(--color-danger)' : 'rgba(255,255,255,0.45)' }}
-      >
-        {label}
-      </span>
-      <span
-        ref={timeRef}
-        className="text-lg font-bold tabular-nums leading-none"
-        style={{
-          color: hurting ? 'var(--color-danger)'
-               : shrinking ? 'var(--color-storm)' : 'white',
-        }}
-      >
-        --
-      </span>
+    <div className="panel px-4 py-2">
+      {hurting ? (
+        <div
+          key="out"
+          className="stormbar-swap storm-warning text-sm font-black uppercase tracking-[0.18em] leading-none"
+        >
+          Get out of the storm!
+        </div>
+      ) : (
+        <div key="in" className="stormbar-swap flex items-baseline gap-3">
+          <span
+            className="text-[0.625rem] uppercase tracking-[0.18em]"
+            style={{ color: 'rgba(255,255,255,0.45)' }}
+          >
+            {label}
+          </span>
+          <span
+            ref={timeRef}
+            className="text-lg font-bold tabular-nums leading-none"
+            style={{ color: shrinking ? 'var(--color-storm)' : 'white' }}
+          >
+            --
+          </span>
+        </div>
+      )}
     </div>
   )
 }

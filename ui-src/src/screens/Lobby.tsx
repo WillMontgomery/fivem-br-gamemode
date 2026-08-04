@@ -32,7 +32,7 @@ export default function Lobby({ visible }: { visible: boolean }) {
   // while the opaque backdrop fades OUT to the world.
   const worldReady = useUi((s) => s.worldReady)
   const [queued, setQueued] = useState(false)
-  const [mode, setMode] = useState<'solo' | 'squad'>('squad')
+  const [mode, setMode] = useState<'solo' | 'squad'>('solo')
 
   const inParty = squad.members.length > 1
 

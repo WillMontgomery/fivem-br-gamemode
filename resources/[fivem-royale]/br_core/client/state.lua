@@ -102,6 +102,41 @@ local function applyFocusForState(state)
     end
 end
 
+-- ESC IN THE LOBBY RAISES GTA'S PAUSE MENU. With NUI focused the engine
+-- never sees the key, so the page captures it, fades itself out, drops
+-- focus (nui.lua), and hands over here. The beat before ActivateFrontendMenu
+-- lets the fade land; the watcher below gives the lobby its focus back the
+-- moment the menu closes -- if the player is still a lobby player.
+local pausePhase, pauseAt = nil, 0
+
+AddEventHandler('br:ui:pauseRequest', function()
+    Citizen.SetTimeout(250, function()
+        ActivateFrontendMenu(GetHashKey('FE_MENU_VERSION_SP_PAUSE'), false, -1)
+        pausePhase, pauseAt = 'raising', GetGameTimer()
+    end)
+end)
+
+BR.Loop.register(BR.Loop.TICK, 'state.pausewatch', function()
+    if not pausePhase then return end
+    local active = IsPauseMenuActive()
+    if pausePhase == 'raising' then
+        if active then
+            pausePhase = 'open'
+        elseif GetGameTimer() - pauseAt > 2000 then
+            -- The menu never came up; do not strand the player focusless.
+            pausePhase = nil
+            if S.me.state == BR.PlayerState.LOBBY then
+                TriggerEvent('br:ui:pushFocus', 'lobby')
+            end
+        end
+    elseif pausePhase == 'open' and not active then
+        pausePhase = nil
+        if S.me.state == BR.PlayerState.LOBBY then
+            TriggerEvent('br:ui:pushFocus', 'lobby')
+        end
+    end
+end)
+
 --- Tell the UI what state the match is in.
 ---
 --- Called from EVERY path that learns the state, not only transitions.
@@ -525,12 +560,15 @@ function BR.PushHud(force)
     -- The HUD gets out of the way of the pause menu (the map fills the
     -- screen and our chrome floats over it otherwise).
     local paused = IsPauseMenuActive()
+    -- Whole numbers: the bar cannot show fractions and fractional churn
+    -- would defeat the dedupe below.
+    local stamina = math.floor((S.stamina or 100.0) + 0.5)
 
     if not force
        and hp == lastPush.hp and armour == lastPush.armour
        and S.alive == lastPush.alive and S.squadsAlive == lastPush.squads
        and kills == lastPush.kills and me.state == lastPush.state
-       and paused == lastPush.paused then
+       and paused == lastPush.paused and stamina == lastPush.stamina then
         return
     end
 
@@ -538,6 +576,7 @@ function BR.PushHud(force)
     lastPush.alive, lastPush.squads = S.alive, S.squadsAlive
     lastPush.kills, lastPush.state = kills, me.state
     lastPush.paused = paused
+    lastPush.stamina = stamina
 
     TriggerEvent('br:ui:sendLocal', BR.Nui.HUD, {
         hp          = hp,
@@ -547,6 +586,7 @@ function BR.PushHud(force)
         kills       = kills,
         state       = me.state,
         paused      = paused,
+        stamina     = stamina,
     })
 end
 

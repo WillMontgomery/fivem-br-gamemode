@@ -201,6 +201,15 @@ callback(BR.NuiCb.CHAT_SEND, function(data)
     return { ok = true }
 end)
 
+-- ESC in the lobby: GTA's pause menu cannot open while NUI holds focus, so
+-- the page captures the key and asks. The focus drops HERE (this resource
+-- owns the stack); raising the actual menu is br_core's call.
+callback(BR.NuiCb.PAUSE, function()
+    popFocus('lobby')
+    TriggerEvent('br:ui:pauseRequest')
+    return { ok = true }
+end)
+
 -- Gameplay callbacks are forwarded to br_core, which owns the decisions.
 for _, name in ipairs({
     BR.NuiCb.QUEUE, BR.NuiCb.QUEUE_LEAVE,

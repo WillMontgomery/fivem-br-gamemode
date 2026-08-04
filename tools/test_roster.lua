@@ -2053,8 +2053,8 @@ do
     ok(cornersIn, 'the opening circle contains the whole playable map')
     ok(rec.r0 >= BR.Config.Storm.radius0, 'and never shrinks below the radius0 floor')
 
-    ok(rec.tWait == 120000.0,
-        'players at the anchor get the minimum 120s free-loot hold')
+    ok(rec.tWait == BR.Config.Storm.hold.minSeconds * 1000.0,
+        'players at the anchor get the minimum free-loot hold (one minute)')
     ok(rec.r1 == BR.Config.Storm.phases[1].radius,
         'the first target circle is known the moment the match goes live')
     ok(BR.Dist(rec.cx0, rec.cy0, rec.cx1, rec.cy1) + rec.r1 <= rec.r0 + 1e-6,
@@ -2090,9 +2090,11 @@ do
     ok(BR.Roster.get(2).stormHp == nil,
         'and the ledger stays empty for the whole map')
 
-    -- The first shrink is where the storm goes live.
+    -- The first shrink is where the storm goes live. RECORD-DRIVEN, not a
+    -- hardcoded step: the hold and shrink are both priced dynamically now,
+    -- so the record is the only honest schedule.
     sent = {}
-    fakeTime = fakeTime + 121000   -- past the 120s hold, into the shrink
+    fakeTime = rec.tStart + rec.tWait + 1000
     BR.Sched.step(fakeTime)
     fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
 
@@ -2119,7 +2121,7 @@ do
     -- starts exactly where the last one finished.
     local c1x, c1y, r1 = rec.cx1, rec.cy1, rec.r1
     sent = {}
-    fakeTime = fakeTime + 150000   -- we are ~123s in; this clears wait+shrink (270s)
+    fakeTime = rec.tStart + rec.tWait + rec.tShrink + 1500
     BR.Sched.step(fakeTime)
     local rec2 = BR.Server.storm
     ok(rec2.phase == 2, 'a finished shrink advances the phase')
@@ -2132,9 +2134,9 @@ do
     -- THE AUTHORITY PROOF. Player 2's ped health never moves -- this client
     -- ignores every STORM_DAMAGE it is sent -- but the ledger runs out at the
     -- dps-predicted moment and the server eliminates them anyway.
-    -- The block is in phase 2 by now, and phase 2 is 2.0 dps: display 8 is
-    -- exactly four one-second ticks of life.
-    pedHealth[1002] = BR.ToEngineHp(8)   -- display 8, converter-derived
+    -- The block is in phase 2 by now (1.25 dps on the kill-time curve):
+    -- display 5 is exactly four one-second ticks of life.
+    pedHealth[1002] = BR.ToEngineHp(5)   -- display 5, converter-derived
     local deadAt = nil
     for i = 1, 14 do
         fakeTime = fakeTime + 1000
@@ -2144,8 +2146,8 @@ do
     end
     ok(deadAt ~= nil,
         'the LEDGER eliminates a client that never applies its storm damage')
-    ok(deadAt and deadAt >= 3 and deadAt <= 5,
-        'at the dps-predicted moment (8 hp / 2 dps), not instantly and not late',
+    ok(deadAt and deadAt >= 3 and deadAt <= 6,
+        'at the dps-predicted moment (5 hp / 1.25 dps), not instantly and not late',
         ('died on tick %s'):format(tostring(deadAt)))
 
     local feed = eventsOf(BR.Net.KILL_FEED)
@@ -2362,8 +2364,8 @@ do
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
     BR.Match.transition(BR.MatchState.PLAYING)
-    ok(BR.Server.storm.tWait == BR.Config.Storm.phases[1].wait * 1000.0,
-        'anyone already inside the target circle pays only the minimum hold',
+    ok(BR.Server.storm.tWait == BR.Config.Storm.hold.minSeconds * 1000.0,
+        'anyone already inside the target circle pays only the one-minute floor',
         ('tWait %.0fms'):format(BR.Server.storm.tWait))
     ok(math.abs(BR.Server.storm.tShrink - expectShrink(BR.Server.storm)) < 1.0,
         'an uncontested map prices at the formula (the floor when all inside)',

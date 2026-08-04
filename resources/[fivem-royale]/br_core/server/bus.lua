@@ -95,10 +95,18 @@ function BR.Bus.plan()
 
     -- Doubled alongside the roll: wheels-up is where speed, elevation AND
     -- pitch all change at once, so the sample boundaries show most there.
+    --
+    -- SMOOTHERSTEP, not smoothstep: k^2(3-2k) has zero slope at the ends
+    -- but its CURVATURE is maximal exactly at k=0 -- the climb rate ramped
+    -- hardest in the first seconds off the runway, which read as the nose
+    -- yanking up ("too aggressive for the first 2 seconds", live report).
+    -- 6k^5-15k^4+10k^3 zeroes the second derivative at both ends too: the
+    -- lift builds from nothing, gently, and settles the same way at
+    -- altitude.
     local climbSamples = 20
     for i = 1, climbSamples do
         local k = i / climbSamples
-        local ease = k * k * (3.0 - 2.0 * k)
+        local ease = k * k * k * (k * (k * 6.0 - 15.0) + 10.0)
         push(rp.x + dirX * cfg.climbDist * k,
              rp.y + dirY * cfg.climbDist * k,
              BR.Lerp(sp.z, cfg.altitude, ease),

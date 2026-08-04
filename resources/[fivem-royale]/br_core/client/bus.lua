@@ -31,6 +31,8 @@ local lastX, lastY, lastZ, lastT = nil, nil, nil, nil  -- finite-difference stat
 local camYaw, camPitch = 0.0, -8.0   -- free-look orbit, reset each boarding
 local gearAt = nil      -- when to retract the landing gear; true once done
 local boardGen = 0      -- boarding generation; a stale boarding thread abandons
+local smoke = {}        -- looped engine-smoke ptfx handles
+local islandCut = false -- this flight has already released the lobby island
 
 -- Smoothed airframe orientation. The path is a polyline, so its raw
 -- direction is CONSTANT within a segment and STEPS at every waypoint -- the
@@ -46,6 +48,8 @@ end
 
 local function cleanup()
     boardGen = boardGen + 1   -- abandon any boarding thread still streaming
+    for _, h in ipairs(smoke) do StopParticleFxLooped(h, false) end
+    smoke = {}
     if cam then
         RenderScriptCams(false, false, 0, true, true)
         DestroyCam(cam, false)
@@ -149,6 +153,7 @@ end
 --- behind it. One thread per boarding, not per frame, is within the rules.
 local function board()
     riding = true   -- set before the async work so the loop does not re-enter
+    islandCut = false   -- fresh flight, fresh island handoff
     boardGen = boardGen + 1
     local gen = boardGen
 
@@ -202,6 +207,28 @@ local function board()
         end
 
         SetVehicleEngineOn(bus, true, true, false)
+
+        -- ENGINE SMOKE, from startup and for the whole ride: looped exhaust
+        -- plumes at the wing engines. Local particles on a local plane --
+        -- every client renders their own identical set.
+        RequestNamedPtfxAsset('core')
+        local ptfxDeadline = GetGameTimer() + 3000
+        while not HasNamedPtfxAssetLoaded('core')
+              and GetGameTimer() < ptfxDeadline do
+            Citizen.Wait(25)
+        end
+        if HasNamedPtfxAssetLoaded('core') and gen == boardGen then
+            for _, off in ipairs({
+                { x = -5.4, y = 1.6, z = 0.6 },
+                { x =  5.4, y = 1.6, z = 0.6 },
+            }) do
+                UseParticleFxAssetNextCall('core')
+                smoke[#smoke + 1] = StartParticleFxLoopedOnEntity(
+                    'ent_amb_smoke_general', bus,
+                    off.x, off.y, off.z, 0.0, 0.0, 0.0,
+                    0.8, false, false, false)
+            end
+        end
 
         -- THE PED RIDES IN THE PLANE, attached at a cabin offset varied by
         -- server id so co-riders spread through the fuselage instead of
@@ -287,6 +314,17 @@ BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
     -- (The doors-open prompt is drawn per-frame in bus.jumpkey below, so it
     -- PERSISTS for the whole jump window instead of fading on the engine's
     -- own schedule.)
+
+    -- THE ISLAND HANDOFF: a few seconds into the ascent -- while the
+    -- forward view is open ocean and the overcast haze flattens the
+    -- horizon -- the lobby island is released so Los Santos can exist
+    -- (they are mutually exclusive; br_environment owns the switch and
+    -- the weather choreography that hides the swap).
+    if riding and not islandCut and route and route.timed
+       and BR.Clock.now() >= route.tStart + 3500 then
+        islandCut = true
+        TriggerEvent('br:env:releaseIsland')
+    end
 
     -- Last call: past the final authored waypoint the plane flies its
     -- overrun; whoever is still aboard when it runs out goes out anyway.

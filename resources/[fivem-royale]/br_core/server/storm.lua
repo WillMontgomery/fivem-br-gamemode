@@ -141,8 +141,12 @@ function BR.Storm.begin()
                 if d > furthest then furthest = d end
             end
         end)
+    -- Floor at hold.minSeconds, NOT phases[1].wait: an all-inside drop
+    -- waits one minute, not two (user call, 2026-08-04 -- "why does it
+    -- take 3 minutes for the storm to form?"). The authored wait remains
+    -- the schedule for LATER phases.
     local holdSec = BR.Clamp(furthest / cfg.hold.metersPerSec,
-        cfg.phases[1].wait, cfg.hold.maxSeconds)
+        cfg.hold.minSeconds or cfg.phases[1].wait, cfg.hold.maxSeconds)
 
     -- THE WALL MOVES WITHIN THREE MINUTES, whatever the drop spread priced:
     -- the stationary wait caps at startCapSeconds. The old payback (trimmed

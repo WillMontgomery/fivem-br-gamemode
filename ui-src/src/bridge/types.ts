@@ -60,6 +60,8 @@ export interface HudPayload {
   state: PlayerState
   /** True while GTA's pause menu is open; the HUD hides under it. */
   paused?: boolean
+  /** Sprint stamina 0..100, client-computed. The bar hides at full. */
+  stamina?: number
 }
 
 export interface StormPayload {
@@ -326,6 +328,7 @@ export const CB = {
   CLOSE:        'br/close',
   CHAT_SEND:    'br/chat/send',
   CHAT_FOCUS:   'br/chat/focus',
+  PAUSE:        'br/pause',
   ERROR:        'br/err',
   ENV:          'br/ui/env',
 } as const

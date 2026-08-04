@@ -79,6 +79,9 @@ BR.Config.Storm = {
     -- spends more of it visibly creeping instead of parked.
     hold = {
         metersPerSec    = 9.0,   -- assumed cross-map travel speed
+        minSeconds      = 60.0,  -- floor: everyone-in-the-circle matches
+                                 -- still get ONE minute of free looting,
+                                 -- not three (user call, 2026-08-04)
         maxSeconds      = 300.0, -- cap on the TOTAL priced budget
         startCapSeconds = 180.0, -- cap on the stationary wait alone
     },
@@ -111,23 +114,27 @@ BR.Config.Storm = {
     -- immediately, and the wall first moves 120 seconds later (user call,
     -- 2026-08-02: "PLAYING+120s because the map is so big"). Total is roughly
     -- 20 minutes. Tune from playtests, not from theory.
-    -- DPS CEILING: 10. At 100 display health that is a ten-second death,
-    -- and the storm must NEVER kill faster than that (user rule,
-    -- 2026-08-04) -- late-game dps used to reach 20, a five-second melt.
+    -- DPS = 100 / kill-seconds. The authored kill times run 100s (phase 1)
+    -- down to 15s (phase 8) -- the storm must never kill faster than 15
+    -- seconds even at its angriest (user rule, 2026-08-04, superseding the
+    -- earlier 10s floor with a gentler one). Damage lands every single
+    -- second on the wire: all dps values are >= 1 display, so the whole-
+    -- point carry never has to bank across ticks.
     phases = {
         -- The first shrink has been tuned in both directions from live
         -- feel: 150 read as scenery (2026-08-03, cut to 60), 60 read as a
         -- charge ("far too fast -- 50% the current speed", 2026-08-04,
         -- doubled back to 120). Note the start-cap payback in
         -- server/storm.lua ADDS trimmed hold seconds on top of this.
-        { radius = 2600.0, wait = 120, shrink = 120, dps =  1.0, warn = 30 },
-        { radius = 1600.0, wait = 120, shrink = 120, dps =  2.0, warn = 30 },
-        { radius =  950.0, wait =  90, shrink =  90, dps =  4.0, warn = 20 },
-        { radius =  520.0, wait =  75, shrink =  75, dps =  6.0, warn = 20 },
-        { radius =  260.0, wait =  60, shrink =  60, dps =  8.0, warn = 15 },
-        { radius =  110.0, wait =  45, shrink =  50, dps =  9.0, warn = 15 },
-        { radius =   40.0, wait =  40, shrink =  40, dps = 10.0, warn = 10 },
-        { radius =    0.0, wait =  30, shrink =  60, dps = 10.0, warn = 10 },
+        -- dps column reads as kill time: 100, 80, 60, 45, 35, 25, 20, 15s.
+        { radius = 2600.0, wait = 120, shrink = 120, dps = 1.0,  warn = 30 },
+        { radius = 1600.0, wait = 120, shrink = 120, dps = 1.25, warn = 30 },
+        { radius =  950.0, wait =  90, shrink =  90, dps = 1.7,  warn = 20 },
+        { radius =  520.0, wait =  75, shrink =  75, dps = 2.2,  warn = 20 },
+        { radius =  260.0, wait =  60, shrink =  60, dps = 2.9,  warn = 15 },
+        { radius =  110.0, wait =  45, shrink =  50, dps = 4.0,  warn = 15 },
+        { radius =   40.0, wait =  40, shrink =  40, dps = 5.0,  warn = 10 },
+        { radius =    0.0, wait =  30, shrink =  60, dps = 6.7,  warn = 10 },
     },
 
     -- REAL WEATHER IN THE STORM, per client. GTA weather is only "global"

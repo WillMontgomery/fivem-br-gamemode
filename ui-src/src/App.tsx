@@ -1,4 +1,7 @@
+import { useEffect } from 'react'
 import { useNuiEvent } from './bridge/useNuiEvent'
+import { fetchNui } from './bridge/nui'
+import { CB } from './bridge/types'
 import { useUi } from './store'
 import Hud from './hud/Hud'
 import Chat from './chat/Chat'
@@ -52,12 +55,35 @@ export default function App() {
   // focus away, the input closes. The UI never decides this on its own.
   useNuiEvent('focus', (d) => {
     s.setFocus(d.screen)
+    // Focus returning to the lobby is the pause round-trip completing.
+    if (d.screen === 'lobby') s.setPauseHiding(false)
     if (d.screen === 'chat') {
       s.openChat(d.channel ?? s.chatChannel)
     } else if (s.chatOpen) {
       s.closeChat()
     }
   })
+
+  // ESC IN THE LOBBY -> GTA'S PAUSE MENU. The engine never sees the key
+  // while NUI holds focus, so the page captures it: fade the menu out
+  // immediately (pauseHiding), then ask Lua to drop focus and raise the
+  // pause screen. The fallback timer covers a failed round-trip -- a menu
+  // that faded out and never came back would be a soft lock.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      const st = useUi.getState()
+      if (st.focus !== 'lobby' || st.pauseHiding || !st.worldReady) return
+      st.setPauseHiding(true)
+      void fetchNui(CB.PAUSE, {})
+      window.setTimeout(() => {
+        const cur = useUi.getState()
+        if (cur.pauseHiding && !cur.hud.paused) cur.setPauseHiding(false)
+      }, 1500)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   // WARMUP is not a lobby. Players are standing in the world on the warmup pad,
   // so they get the HUD -- an earlier version hid it, which combined with the
@@ -117,7 +143,7 @@ export default function App() {
           card was just noise. The store keeps the messages; it is only
           unmounted, and remounts blank-slate clean at the next warmup. */}
       {!tearingDown && !showLobby && <Chat barsVisible={hudUp} />}
-      <Lobby visible={showLobby} />
+      <Lobby visible={showLobby && !s.pauseHiding} />
       {showEnd && s.summary && <EndScreen summary={s.summary} />}
       {/* Over the WORLD, never the menu: in-match alerts land wherever the
           player is looking, but the lobby has its own feedback (chips

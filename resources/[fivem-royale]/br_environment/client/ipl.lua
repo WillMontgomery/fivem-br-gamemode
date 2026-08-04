@@ -183,6 +183,7 @@ local ISLAND_IPLS = {
 local islandActive = false   -- what we have applied
 local islandWanted = true    -- what the match state says we should have
 local matchState   = nil     -- last match state seen, for the swap gate below
+local forceSwap    = false   -- the bus said "now" -- skip the distance gate
 
 local function nearIsland()
     -- The RENDERED CAMERA, not the ped: during the bus ride the ped is
@@ -208,7 +209,25 @@ local function applyIsland(on)
     SetDeepOceanScaler(on and 0.0 or 1.0)
 
     print(('[br_environment] Cayo Perico %s'):format(on and 'enabled' or 'disabled'))
+
+    -- THE WEATHER CHOREOGRAPHY (user call, 2026-08-04). The island lives
+    -- under OVERCAST: a hazy horizon is what makes the mid-flight world
+    -- swap invisible -- there is no crisp distant geometry to pop. When
+    -- the island is released for the flight, the sky spends the next ten
+    -- seconds clearing to EXTRASUNNY, timed to be fully bright before the
+    -- doors open. Per-client weather, like the storm's: nothing syncs it.
+    if on then
+        SetWeatherTypeNowPersist('OVERCAST')
+    else
+        SetWeatherTypeOvertimePersist('EXTRASUNNY', 10.0)
+    end
 end
+
+-- The bus calls this a few seconds after takeoff: swap NOW, distance gate
+-- be damned -- the overcast haze is doing the hiding, not the range check.
+AddEventHandler('br:env:releaseIsland', function()
+    forceSwap = true
+end)
 
 --- The island exists everywhere EXCEPT a running match. This is not only a
 --- streaming-budget decision: ENABLING THE HEIST ISLAND HIDES LOS SANTOS --
@@ -264,14 +283,16 @@ CreateThread(function()
                 if not teardown or IsScreenFadedOut() then
                     applyIsland(true)
                 end
-                farPolls = 0
+                farPolls, forceSwap = 0, false
             else
-                -- NEVER pull the island out from under the player -- and
-                -- never on ONE reading. The rendered-camera coordinate can
-                -- return garbage for a frame mid-cam-transition, and one bad
-                -- 1Hz sample once deleted the runway during boarding. Two
-                -- consecutive far readings, both from plausible coordinates,
-                -- before the switch flips.
+                -- The bus's release cue (a few seconds into the ascent)
+                -- swaps IMMEDIATELY -- the overcast choreography is doing
+                -- the hiding. Without the cue: NEVER pull the island out
+                -- from under the player, and never on ONE reading -- the
+                -- rendered-camera coordinate can return garbage for a
+                -- frame mid-cam-transition, and one bad 1Hz sample once
+                -- deleted the runway during boarding. Two consecutive far
+                -- readings, both plausible, before the switch flips.
                 local c = GetFinalRenderedCamCoord()
                 local plausible = math.abs(c.x) + math.abs(c.y) > 1.0
                 if plausible and not nearIsland() then
@@ -279,8 +300,9 @@ CreateThread(function()
                 else
                     farPolls = 0
                 end
-                if farPolls >= 2 then
+                if forceSwap or farPolls >= 2 then
                     applyIsland(false)
+                    forceSwap = false
                     farPolls = 0
                 end
             end

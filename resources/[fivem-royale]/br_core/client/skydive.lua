@@ -121,6 +121,7 @@ end)
 BR.Keys.on('deploy', function(pressed)
     if not pressed or not dropping then return end
     local ped = PlayerPedId()
+    if IsPedInAnyVehicle(ped, true) then return end
     local cs = GetPedParachuteState(ped)
     -- ON_BACK is the state a HEALTHY drop spends its whole freefall in (the
     -- chute was given, so the engine never reports 3/falling-to-doom). The
@@ -154,6 +155,25 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
     end
 
     local ped = PlayerPedId()
+
+    -- A DRIVER'S SEAT IS NOT A DROP. In a vehicle IsPedOnFoot is false, so
+    -- the airborne test below reads "falling" -- and the chute floor then
+    -- gave the ped a parachute, re-tasked it, and forced the canopy, which
+    -- EJECTS from the vehicle (live report: "given a parachute, prompted to
+    -- pull, immediately ejected"). If the machine was somehow still armed
+    -- when the player got in, entering a vehicle IS proof of being landed:
+    -- finish the drop and stand down.
+    if IsPedInAnyVehicle(ped, true) then
+        if dropping then
+            dropping = false
+            RemoveWeaponFromPed(ped, CHUTE)
+            SetPlayerCanLeaveParachuteSmokeTrail(PlayerId(), false)
+            TriggerServerEvent(BR.Net.DROP_LANDED)
+            print('[br_core] drop: finished from a vehicle seat -- the machine was still armed')
+        end
+        return
+    end
+
     local cs = GetPedParachuteState(ped)
 
     -- THE FLOOR, UNCONDITIONALLY. Below the auto-deploy height with the

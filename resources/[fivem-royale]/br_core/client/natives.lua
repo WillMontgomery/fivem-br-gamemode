@@ -349,11 +349,19 @@ function BR.Native.applyGameRules()
     -- run; from the first frame we own, nothing of the engine's spins.
     if BusyspinnerIsOn() then BusyspinnerOff() end
 
-    SetVehicleDensityMultiplierThisFrame(0.0)
-    SetPedDensityMultiplierThisFrame(0.0)
-    SetScenarioPedDensityMultiplierThisFrame(0.0, 0.0)
-    SetRandomVehicleDensityMultiplierThisFrame(0.0)
-    SetParkedVehicleDensityMultiplierThisFrame(0.0)
+    -- AMBIENT LIFE, throttled rather than zeroed (user call, 2026-08-04):
+    -- the routing bucket's population flag is the on/off switch (matches
+    -- on, lobby off -- roster.applyBucket), and these set HOW MUCH streams
+    -- in where it is on. Zeroed during the lobby/warmup states anyway --
+    -- the island stays a stage.
+    local amb = BR.Config.Ambient
+    local inWorld = st ~= BR.PlayerState.LOBBY and st ~= BR.PlayerState.WARMUP
+    SetVehicleDensityMultiplierThisFrame(inWorld and amb.vehicles or 0.0)
+    SetPedDensityMultiplierThisFrame(inWorld and amb.peds or 0.0)
+    SetScenarioPedDensityMultiplierThisFrame(
+        inWorld and amb.scenarioPeds or 0.0, inWorld and amb.scenarioPeds or 0.0)
+    SetRandomVehicleDensityMultiplierThisFrame(inWorld and amb.vehicles or 0.0)
+    SetParkedVehicleDensityMultiplierThisFrame(inWorld and amb.parked or 0.0)
 
     -- Never let the engine's own death/respawn flow run; the gamemode owns it.
     PauseDeathArrestRestart(true)

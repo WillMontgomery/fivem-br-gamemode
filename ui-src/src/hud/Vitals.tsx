@@ -35,7 +35,8 @@ function Fill({ value, colour }: { value: number; colour: string }) {
   )
 }
 
-export default function Vitals({ hp, armour }: { hp: number; armour: number }) {
+export default function Vitals({ hp, armour, stamina = 100 }:
+  { hp: number; armour: number; stamina?: number }) {
   // THE HIT FLASH. Storm ticks drain health silently, one point at a time,
   // and a slim bar quietly getting shorter is easy to miss entirely (user
   // report, 2026-08-04). Every DROP in hp remounts a red overlay over the
@@ -50,13 +51,28 @@ export default function Vitals({ hp, armour }: { hp: number; armour: number }) {
   }, [hp])
 
   return (
-    <div className="flex gap-[3px] items-stretch h-[0.6rem]">
-      <div className="basis-[62%] relative" title="Health">
-        <Fill value={hp} colour="var(--color-hp)" />
-        {hit > 0 && <div key={hit} className="vitals-hit-flash" />}
+    <div>
+      {/* Sprint stamina: a hair-thin white strip that only exists while
+          catching breath -- at full it fades away entirely, Fortnite-style.
+          Above the vitals so it reads as "legs", not "life". */}
+      <div
+        className="h-[0.22rem] mb-[3px] rounded-full bg-black/50 overflow-hidden transition-opacity duration-300"
+        style={{ opacity: stamina >= 99.5 ? 0 : 1 }}
+        title="Stamina"
+      >
+        <div
+          className="bar-fill h-full rounded-full bg-white/85"
+          style={{ transform: `scaleX(${Math.max(0, Math.min(1, stamina / 100))})`, width: '100%' }}
+        />
       </div>
-      <div className="basis-[38%]" title="Shield">
-        <Fill value={armour} colour="var(--color-shield)" />
+      <div className="flex gap-[3px] items-stretch h-[0.6rem]">
+        <div className="basis-[62%] relative" title="Health">
+          <Fill value={hp} colour="var(--color-hp)" />
+          {hit > 0 && <div key={hit} className="vitals-hit-flash" />}
+        </div>
+        <div className="basis-[38%]" title="Shield">
+          <Fill value={armour} colour="var(--color-shield)" />
+        </div>
       </div>
     </div>
   )

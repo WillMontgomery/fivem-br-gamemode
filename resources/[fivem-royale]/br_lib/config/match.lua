@@ -26,7 +26,7 @@ BR.Config.Match = {
     cleanupSeconds  = 5,
 
     -- Default mode when a player queues without choosing.
-    defaultMode     = 'squad',
+    defaultMode     = 'solo',
 
     -- Squads
     autofill        = true,   -- fill partial squads with solo queuers
@@ -111,6 +111,30 @@ BR.Config.Match = {
     -- having been killed by the attacker, so storm or fall damage finishing a
     -- wounded player still credits the shooter.
     assistWindowMs  = 10000,
+}
+
+-- Ambient world life inside matches, as fractions of GTA's defaults. The
+-- routing-bucket population flag is the on/off switch (roster.applyBucket);
+-- these throttle the amount, per-frame in gamerules. Parked cars run full
+-- -- they are scenery and, eventually, loot context.
+BR.Config.Ambient = {
+    peds         = 0.3,
+    scenarioPeds = 0.3,
+    vehicles     = 0.25,   -- moving traffic at 25% (user call, 2026-08-04)
+    parked       = 1.0,
+}
+
+-- Sprint stamina, Fortnite-shaped: a meter that drains while sprinting and
+-- recharges after a beat off the key. OUR meter is the only limiter -- GTA's
+-- own stamina stat is kept topped up (running it dry drains HEALTH, which
+-- has no place here). Client-side and cosmetic-plus-controls only; nothing
+-- about it crosses the wire.
+BR.Config.Stamina = {
+    max          = 100.0,
+    drainPerSec  = 12.5,   -- ~8 seconds of full sprint
+    regenPerSec  = 25.0,   -- ~4 seconds to refill
+    regenDelayMs = 900,    -- breath caught before the refill starts
+    minToSprint  = 15.0,   -- an emptied meter must climb back here to sprint
 }
 
 --- Resolve the minimum players to start, honouring dev mode.

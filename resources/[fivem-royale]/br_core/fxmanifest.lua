@@ -39,6 +39,7 @@ client_scripts {
     'client/spawn.lua',
     'client/gamerules.lua',
     'client/state.lua',
+    'client/stamina.lua',   -- needs BR.State (state.lua) and the loops
     'client/squadmates.lua',
     'client/keybinds.lua',
     'client/bus.lua',       -- needs BR.Keys (keybinds) and BR.State (main)

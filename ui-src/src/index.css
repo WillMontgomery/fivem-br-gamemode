@@ -243,6 +243,23 @@ html, body, #root {
   transition: opacity 5s ease-in-out;
 }
 
+/* The storm bar's two states crossfade on swap, and the caught-outside
+   imperative pulses. Opacity only, per the CEF rules. */
+@keyframes stormbarIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.stormbar-swap { animation: stormbarIn 400ms ease-out both; }
+@keyframes stormWarnPulse {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.45; }
+}
+.storm-warning {
+  color: var(--color-danger);
+  animation: stormbarIn 400ms ease-out both,
+             stormWarnPulse 1.1s ease-in-out 400ms infinite;
+}
+
 /* The health-bar hit flash: a red wash over the bar that burns out in
    ~650ms. Remounted (key change) on every hp drop, so sustained damage --
    a storm tick per second -- pulses red for as long as it lasts. Opacity
