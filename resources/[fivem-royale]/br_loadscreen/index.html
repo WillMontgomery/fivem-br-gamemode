@@ -35,7 +35,13 @@
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
     gap: 1.2vh;
+    transition: opacity 400ms ease-out;
   }
+  /* The exit, on br_core's cue: the CONTENT fades, the purple stays. The
+     lobby behind this screen opens on the identical purple backdrop, so
+     the shutdown that follows is pixel-invisible -- the player sees text
+     leave, then the menu and the world arrive together. */
+  .wrap.fading { opacity: 0; }
 
   h1 {
     font-size: 6.5vh;
@@ -162,6 +168,15 @@
 
   next();
   setInterval(next, 3000);
+
+  // br_core cues the exit with SendLoadingScreenMessage just before the
+  // manual shutdown: text out, glow stays.
+  window.addEventListener('message', function (e) {
+    var d = e.data || {};
+    if (d.eventName === 'br:fadeText') {
+      document.querySelector('.wrap').classList.add('fading');
+    }
+  });
 </script>
 </body>
 </html>

@@ -120,4 +120,11 @@ AddEventHandler('br:ui:ready', function()
     publish()
 end)
 
+--- Immediate republish on demand -- the boot choreography flips worldReady
+--- and must not wait out the SLOW poll for the double fade to start.
+AddEventHandler('br:screen:refresh', function()
+    last.w = 0
+    publish()
+end)
+
 exports('publishScreenMetrics', publish)
