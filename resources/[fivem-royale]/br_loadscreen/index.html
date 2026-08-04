@@ -49,25 +49,13 @@
     color: rgba(255, 255, 255, 0.45);
   }
 
-  .bar {
-    width: 34vh; height: 0.55vh;
-    margin-top: 4vh;
-    background: rgba(255, 255, 255, 0.08);
-    border-radius: 1vh;
-    overflow: hidden;
-  }
-  .bar .fill {
-    width: 0%; height: 100%;
-    background: #a855f7;
-    border-radius: 1vh;
-    transition: width 300ms ease-out;
-  }
-
-  /* The status row: a loading circle plus one gag line at a time. */
+  /* The status row: a loading circle plus one gag line at a time. The
+     circle is the ONLY progress indicator -- a bar next to a spinner was
+     two voices saying "working on it" (user call, 2026-08-04). */
   .status {
     display: flex; align-items: center; gap: 1.4vh;
     height: 4vh;
-    margin-top: 0.6vh;
+    margin-top: 4vh;
   }
 
   .spinner {
@@ -101,7 +89,6 @@
   <div class="wrap">
     <h1>FiveM <span>Royale</span></h1>
     <div class="tag">Drop in. Loot up. Outlast the storm.</div>
-    <div class="bar"><div class="fill" id="fill"></div></div>
     <div class="status">
       <div class="spinner"></div>
       <div class="line" id="line"></div>
@@ -169,20 +156,6 @@
 
   next();
   setInterval(next, 3000);
-
-  // loadFraction drives the bar. Never backwards -- the fraction jitters
-  // across load stages, and a regressing bar reads as a crash in progress.
-  var best = 0;
-  window.addEventListener('message', function (e) {
-    var d = e.data || {};
-    if (d.eventName === 'loadProgress' && typeof d.loadFraction === 'number') {
-      var pct = Math.round(d.loadFraction * 100);
-      if (pct > best) {
-        best = pct;
-        document.getElementById('fill').style.width = pct + '%';
-      }
-    }
-  });
 </script>
 </body>
 </html>
