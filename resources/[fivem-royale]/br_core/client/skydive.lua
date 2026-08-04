@@ -106,9 +106,22 @@ end)
 -- genuine parachute task; our keybind works alongside).
 BR.Loop.register(BR.Loop.FRAME, 'skydive.prompt', function()
     if not dropping then return end
-    local cs = GetPedParachuteState(PlayerPedId())
-    if cs == BR.Native.ChuteState.ON_BACK
-       or cs == BR.Native.ChuteState.FREEFALL then
+    local ped = PlayerPedId()
+
+    -- F IS NOT A RIPCORD-CUTTER. INPUT_PARACHUTE_DETACH (153, default F)
+    -- cuts the canopy mid-glide in base GTA -- and F is also the default
+    -- enter-vehicle key, so players who reached for a door mid-descent
+    -- dropped out of the sky (live report, 2026-08-04). Dead for the
+    -- whole drop.
+    DisableControlAction(0, 153, true)
+
+    local cs = GetPedParachuteState(ped)
+    -- `not IsPedOnFoot`: at touchdown the canopy detaches a beat before
+    -- the TICK landing branch disarms the machine, and the prompt flashed
+    -- "open the glider" at a player standing on the ground.
+    if not IsPedOnFoot(ped)
+       and (cs == BR.Native.ChuteState.ON_BACK
+            or cs == BR.Native.ChuteState.FREEFALL) then
         BR.Native.helpThisFrame('Press ~INPUT_PARACHUTE_DEPLOY~ to open the glider.')
     end
 end)

@@ -43,10 +43,14 @@ BR.Loop.register(BR.Loop.SLOW, 'gamerules.madDrivers', function()
     for _, veh in ipairs(GetGamePool('CVehicle')) do
         if not maddened[veh] and DoesEntityExist(veh)
            and #(GetEntityCoords(veh) - mp) < 250.0 then
-            maddened[veh] = true
-            maddenedCount = maddenedCount + 1
+            -- Mark only once a driver is actually TREATED: marking on
+            -- sight branded empty or not-yet-crewed vehicles as done, and
+            -- their drivers stayed calm forever ("some peds drive like
+            -- assholes, but not all", live report).
             local drv = GetPedInVehicleSeat(veh, -1)
             if drv ~= 0 and not IsPedAPlayer(drv) then
+                maddened[veh] = true
+                maddenedCount = maddenedCount + 1
                 -- Ability/aggressiveness alone changed nothing visible
                 -- (live report: "drivers are still very much calm") -- the
                 -- ambient cruise TASK is what actually drives. Replace it:

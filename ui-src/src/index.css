@@ -243,13 +243,16 @@ html, body, #root {
   transition: opacity 5s ease-in-out;
 }
 
-/* The leave interstitial's backdrop fades in fast -- it must be opaque
-   before the world starts changing underneath. */
-@keyframes leaveIn {
-  from { opacity: 0; }
-  to   { opacity: 1; }
+/* The leave interstitial's spinner -- the loadscreen's ring, HUD-scaled. */
+@keyframes leaveSpin { to { transform: rotate(360deg); } }
+.leave-spinner {
+  width: 1.4rem;
+  height: 1.4rem;
+  border-radius: 50%;
+  border: 0.22rem solid rgba(168, 85, 247, 0.22);
+  border-top-color: #a855f7;
+  animation: leaveSpin 900ms linear infinite;
 }
-.leave-in { animation: leaveIn 300ms ease-out both; }
 /* The same fly-up the verdict screen's late lines use, but starting almost
    immediately -- .end-late's 3.6s delay belongs to the slam choreography,
    not here. */

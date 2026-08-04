@@ -83,24 +83,23 @@ local routeDrawn = false
 
 local function clearCrumbs()
     if routeDrawn then
-        ClearGpsMultiRoute()
+        ClearGpsCustomRoute()
         routeDrawn = false
     end
 end
 
 --- Draw the flight as a SOLID LINE on the map and minimap.
 ---
---- A GPS MULTI-ROUTE, not blips: multi-routes draw straight segments
---- between arbitrary points (unlike ordinary GPS, which snaps to roads),
---- which is the one native way to put a real line on the map.
+--- A GPS CUSTOM ROUTE -- the race-creator air-route line. The first
+--- attempt used the MULTI route, which still runs GPS pathfinding: it
+--- snapped every segment to the road network and drew NOTHING over open
+--- country (map screenshot, 2026-08-04). The CUSTOM route is the one
+--- that draws straight point-to-point segments anywhere.
 ---
---- THE POINT BUDGET IS TINY. The first version fed it ~44 sampled path
---- points and the engine rendered only the first handful -- "the only
---- line on the map is to the end of the runway" (live report,
---- 2026-08-04). The line is now the AUTHORED TOUR: start, the leg
---- waypoints, the overrun end -- resampled down to a dozen if a tour
---- runs long. Straight lines between waypoints are exactly what the
---- flight is; the fillets only round the corners.
+--- Point budget stays respected (the multi-route lesson: the engine
+--- renders only a handful): start + authored waypoints + overrun end,
+--- resampled down to a dozen. Straight lines between waypoints are
+--- exactly what the flight is; the fillets only round the corners.
 local function drawCrumbs()
     clearCrumbs()
     if not route then return end
@@ -124,11 +123,11 @@ local function drawCrumbs()
         line = sampled
     end
 
-    StartGpsMultiRoute(25, true, true)   -- hud colour 25; on foot + in vehicle
+    StartGpsCustomRoute(25, true, true)   -- hud colour 25 (green)
     for _, p in ipairs(line) do
-        AddPointToGpsMultiRoute(p.x, p.y, p.z or 200.0)
+        AddPointToGpsCustomRoute(p.x, p.y, p.z or 200.0)
     end
-    SetGpsMultiRouteRender(true)
+    SetGpsCustomRouteRender(true, 16, 16)   -- radar + map line thickness
     routeDrawn = true
 end
 

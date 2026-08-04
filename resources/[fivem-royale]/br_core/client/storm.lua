@@ -437,9 +437,16 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
             local sy = ty + (p.y - ty) * inv * math.max(tr - 25.0, 0.0)
             if not dirBlip or not DoesBlipExist(dirBlip) then
                 dirBlip = AddBlipForCoord(sx, sy, 0.0)
+                -- FLASHING and LARGE: squadmates are steady coloured dots,
+                -- so the run-this-way marker must read as a different KIND
+                -- of thing at a glance (user call, 2026-08-04). No
+                -- rotatable arrow exists in the blip sprite set -- the
+                -- engine's "arrows" are fixed elevation chevrons -- so
+                -- distinction comes from size and blink instead.
                 SetBlipSprite(dirBlip, 1)
                 SetBlipColour(dirBlip, cfg.blip.nextColour)
-                SetBlipScale(dirBlip, 0.65)
+                SetBlipScale(dirBlip, 1.0)
+                SetBlipFlashes(dirBlip, true)
                 SetBlipAsShortRange(dirBlip, false)
             else
                 SetBlipCoords(dirBlip, sx, sy, 0.0)

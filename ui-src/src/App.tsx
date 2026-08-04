@@ -149,8 +149,9 @@ export default function App() {
       {showEnd && s.summary && <EndScreen summary={s.summary} />}
       {/* The voluntary-leave interstitial covers EVERYTHING -- including
           the lobby that mounts underneath it mid-trip -- until Lua says
-          the vista is real. */}
-      {s.leaving && <LeaveScreen />}
+          the vista is real, then fades out over the waiting menu. Always
+          mounted so the exit is a fade, not a pop. */}
+      <LeaveScreen show={s.leaving} />
       {/* Over the WORLD, never the menu: in-match alerts land wherever the
           player is looking, but the lobby has its own feedback (chips
           resolve, panels update) and floating toasts over it read as
