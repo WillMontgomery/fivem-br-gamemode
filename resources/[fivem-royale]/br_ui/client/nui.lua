@@ -65,10 +65,13 @@ local function applyFocus()
     focusHeld = want
     SetNuiFocus(want, want)
 
-    -- Keeping game input alive while a screen is focused means chat and the
-    -- inventory do not freeze the player in place mid-fight.
+    -- Keep-input is for screens meant to be used WHILE playing (the future
+    -- inventory). The lobby is a menu, and CHAT captures everything typed
+    -- into it -- WASD while composing a message walked the player into the
+    -- storm mid-sentence (user call, 2026-08-04).
     if want then
-        SetNuiFocusKeepInput(focusStack[#focusStack] ~= 'lobby')
+        local top = focusStack[#focusStack]
+        SetNuiFocusKeepInput(top ~= 'lobby' and top ~= 'chat')
     else
         SetNuiFocusKeepInput(false)
     end

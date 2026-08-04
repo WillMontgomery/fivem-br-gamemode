@@ -87,6 +87,7 @@ function BR.Bus.plan()
         push(BR.Lerp(sp.x, rp.x, k * k), BR.Lerp(sp.y, rp.y, k * k), sp.z,
              math.max(3.0, cfg.rollSpeed * k))
     end
+    local rotateIdx = #points   -- wheels-up: the island handoff clocks from here
 
     -- Wheels up: hold the runway heading, climb to altitude over climbDist.
     local dirX, dirY = rp.x - sp.x, rp.y - sp.y
@@ -217,6 +218,7 @@ function BR.Bus.plan()
         legs      = legs,
         jumpIdx   = jumpIdx or #points,
         closeIdx  = closeIdx or #points,   -- last authored point: doors-closing warning
+        rotateIdx = rotateIdx,             -- wheels-up sample index
         alt       = cfg.altitude,
         -- The heading the plane SPAWNS at is the direction it will actually
         -- roll: computed from spawn -> rotate point, not the surveyed value,
@@ -276,6 +278,7 @@ function BR.Bus.depart()
 
     route.timed      = true
     route.tStart     = pts[1].t
+    route.rotateAt   = pts[route.rotateIdx or 1].t   -- wheels leave the runway
     route.jumpFrom   = pts[route.jumpIdx].t
     route.doorsClose = pts[route.closeIdx].t
     route.tEnd       = pts[#pts].t

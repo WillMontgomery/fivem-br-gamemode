@@ -224,34 +224,20 @@ local function board()
             Citizen.Wait(25)
         end
         if HasNamedPtfxAssetLoaded('core') and gen == boardGen then
-            local anchors = {}
-            for _, bn in ipairs({ 'engine_1', 'engine_2', 'engine_3', 'engine_4' }) do
-                local b = GetEntityBoneIndexByName(bus, bn)
-                if b and b ~= -1 then anchors[#anchors + 1] = { bone = b } end
-            end
-            if #anchors == 0 then
-                -- No named bones on this model: all four nacelles by hand,
-                -- just behind the engines rather than ahead of the props.
-                anchors = {
-                    { x = -6.9, y = 0.2, z = 0.55 }, { x = -3.3, y = 0.2, z = 0.55 },
-                    { x =  3.3, y = 0.2, z = 0.55 }, { x =  6.9, y = 0.2, z = 0.55 },
-                }
-            end
-            print(('[br_core] bus: engine smoke on %d anchors (%s)')
-                :format(#anchors, anchors[1].bone and 'bones' or 'offsets'))
-            for _, a in ipairs(anchors) do
+            -- OFFSETS ONLY: the Titan's engine bones cluster at the
+            -- fuselage, not the nacelles ("not the correct bones" +
+            -- "spread by 2x", live report). These are the four visible
+            -- nacelle positions. The loops die 5s after wheels-up (see the
+            -- TICK below) -- startup and taxi flavour, no cruise flak.
+            for _, a in ipairs({
+                { x = -7.0, y = 0.2, z = 0.55 }, { x = -3.5, y = 0.2, z = 0.55 },
+                { x =  3.5, y = 0.2, z = 0.55 }, { x =  7.0, y = 0.2, z = 0.55 },
+            }) do
                 UseParticleFxAssetNextCall('core')
-                if a.bone then
-                    smoke[#smoke + 1] = StartParticleFxLoopedOnEntityBone(
-                        'ent_amb_smoke_general', bus,
-                        0.0, -0.9, 0.0, 0.0, 0.0, 0.0, a.bone,
-                        0.4, false, false, false)
-                else
-                    smoke[#smoke + 1] = StartParticleFxLoopedOnEntity(
-                        'ent_amb_smoke_general', bus,
-                        a.x, a.y, a.z, 0.0, 0.0, 0.0,
-                        0.4, false, false, false)
-                end
+                smoke[#smoke + 1] = StartParticleFxLoopedOnEntity(
+                    'ent_amb_smoke_general', bus,
+                    a.x, a.y, a.z, 0.0, 0.0, 0.0,
+                    0.4, false, false, false)
             end
         end
 
@@ -340,15 +326,27 @@ BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
     -- PERSISTS for the whole jump window instead of fading on the engine's
     -- own schedule.)
 
-    -- THE ISLAND HANDOFF: a few seconds into the ascent -- while the
-    -- forward view is open ocean and the overcast haze flattens the
-    -- horizon -- the lobby island is released so Los Santos can exist
-    -- (they are mutually exclusive; br_environment owns the switch and
-    -- the weather choreography that hides the swap).
+    -- THE ISLAND HANDOFF: a few seconds AFTER WHEELS-UP -- clocked from
+    -- rotateAt, not tStart, which is when the ROLL begins: the first cut
+    -- fired while the plane was still on the runway it was deleting (live
+    -- report). Airborne with the forward view on open ocean and the
+    -- overcast haze flattening the horizon, the lobby island is released
+    -- so Los Santos can exist (they are mutually exclusive; br_environment
+    -- owns the switch and the weather choreography that hides the swap).
     if riding and not islandCut and route and route.timed
-       and BR.Clock.now() >= route.tStart + 3500 then
+       and BR.Clock.now() >= (route.rotateAt or route.tStart) + 3500 then
         islandCut = true
         TriggerEvent('br:env:releaseIsland')
+    end
+
+    -- ENGINE SMOKE ENDS SHORTLY AFTER TAKEOFF. Particles detach into
+    -- world space with no slipstream, so a cruise-speed trail reads as
+    -- flak bursts no matter how it is tuned (screenshot report) -- the
+    -- effect earns its keep on startup, taxi and the roll, then bows out.
+    if #smoke > 0 and route and route.timed
+       and BR.Clock.now() >= (route.rotateAt or route.tStart) + 5000 then
+        for _, h in ipairs(smoke) do StopParticleFxLooped(h, false) end
+        smoke = {}
     end
 
     -- Last call: past the final authored waypoint the plane flies its

@@ -360,6 +360,16 @@ end)
 RegisterNetEvent(BR.Net.TO_LOBBY)
 AddEventHandler(BR.Net.TO_LOBBY, function()
     BR.Spawn.toLobby()
+    -- THE CURSOR RIDES THE TRIP HOME. The focus grant for a voluntary
+    -- leaver rode the roster-delta path and at least once never landed --
+    -- lobby menu up, no cursor, game still eating input (live report,
+    -- 2026-08-04). This event IS the server saying "you are a lobby
+    -- player now", so assert the focus here too; pushFocus is idempotent.
+    Citizen.SetTimeout(600, function()
+        if BR.State.me.state == BR.PlayerState.LOBBY then
+            TriggerEvent('br:ui:pushFocus', 'lobby')
+        end
+    end)
 end)
 
 --- Leave the current match and return to the lobby.

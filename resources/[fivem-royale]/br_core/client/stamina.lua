@@ -47,10 +47,18 @@ BR.Loop.register(BR.Loop.TICK, 'stamina.meter', function()
 
     local ped = PlayerPedId()
 
-    -- The engine's own meter stays pinned full -- see the header.
-    RestorePlayerStamina(PlayerId(), 1.0)
+    -- The engine's own meter stays pinned full -- see the header. The
+    -- argument is percentage POINTS: at 10Hz this restores far faster than
+    -- any sprint can drain it.
+    RestorePlayerStamina(PlayerId(), 25.0)
 
-    local sprinting = IsPedSprinting(ped) and IsPedOnFoot(ped)
+    -- Belt AND suspenders on the detection: IsPedSprinting has been
+    -- observed returning false through entire sprints ("stamina seems
+    -- infinite", live report), so the sprint key held while genuinely
+    -- moving fast on foot counts too.
+    local sprinting = IsPedOnFoot(ped)
+        and (IsPedSprinting(ped)
+             or (IsControlPressed(0, 21) and GetEntitySpeed(ped) > 5.0))
     if sprinting then
         stam = math.max(0.0, stam - cfgS.drainPerSec * dt)
         lastDrainAt = now
@@ -72,3 +80,14 @@ BR.Loop.register(BR.Loop.FRAME, 'stamina.block', function()
         DisableControlAction(0, 21, true)   -- INPUT_SPRINT
     end
 end)
+
+--- Everything about the meter, in one paste.
+RegisterCommand('brstam', function()
+    local ped = PlayerPedId()
+    print('=== stamina ===')
+    print(('  meter %.1f   blocked %s   state %s'):format(
+        stam, tostring(blocked), tostring(BR.State.me.state)))
+    print(('  IsPedSprinting %s   sprintKey %s   speed %.1f   onFoot %s'):format(
+        tostring(IsPedSprinting(ped)), tostring(IsControlPressed(0, 21)),
+        GetEntitySpeed(ped), tostring(IsPedOnFoot(ped))))
+end, false)

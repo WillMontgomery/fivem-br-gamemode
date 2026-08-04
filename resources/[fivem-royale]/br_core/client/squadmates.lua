@@ -24,17 +24,28 @@ local lastPush = 0
 
 local PLAYER_GROUP = GetHashKey('PLAYER')
 
+-- Every ped we have ever moved into BR_ALLY, so leaving the squad (or the
+-- squad dissolving) can hand ALL of them back -- the group is no longer
+-- tied to tag lifetime (see the loop below).
+local allied = {}
+
 local function dropTag(src)
     local t = tags[src]
     if t then
         RemoveMpGamerTag(t.tag)
-        -- Hand the ped back to the default group, or an EX-squadmate would
-        -- stay unshootable until their ped handle happened to change.
-        if DoesEntityExist(t.ped) then
-            SetPedRelationshipGroupHash(t.ped, PLAYER_GROUP)
-        end
         tags[src] = nil
     end
+end
+
+--- Hand every allied ped back to the default group. Called when the squad
+--- stops being a squad -- an EX-squadmate must not stay unshootable.
+local function disbandAllies()
+    for ped in pairs(allied) do
+        if DoesEntityExist(ped) then
+            SetPedRelationshipGroupHash(ped, PLAYER_GROUP)
+        end
+    end
+    allied = {}
 end
 
 local function dropMate(src)
@@ -49,6 +60,7 @@ end
 
 local function clearAll()
     for src in pairs(mates) do dropMate(src) end
+    disbandAllies()
 end
 
 RegisterNetEvent(BR.Net.SQUAD_POS)
@@ -106,7 +118,21 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
         -- Presentation-only use of scope: a name can only hang over a ped
         -- that is streamed in, and no game state is derived from whether it
         -- is. Out of scope, the coord blip above still shows where they are.
-        --
+        local player = GetPlayerFromServerId(src) -- scope-ok: overhead name + local relationship group need the local ped; absence just means neither applies yet
+        local ped = (player ~= -1) and GetPlayerPed(player) or 0 -- scope-ok: same presentation-only use
+
+        -- SQUAD-LEVEL PEACE IS NOT PRESENTATION -- and it is re-asserted
+        -- EVERY tick, for every streamed-in mate, in every state. The old
+        -- version set the group once, inside the tag path, only after the
+        -- mate had jumped -- so a handle change (or any engine-side group
+        -- reset) silently made a teammate shootable again ("in squads I
+        -- can kill my own teammates", live report). Ten hash-writes a
+        -- second is free; a teamkill is not.
+        if ped ~= 0 then
+            SetPedRelationshipGroupHash(ped, BR.Native.ALLY_GROUP)
+            allied[ped] = true
+        end
+
         -- NO NAME UNTIL THEY HAVE JUMPED: everyone shares the plane during
         -- the flight, and a tag on an invisible rider rendered as a name
         -- floating over the fuselage. Pre-drop there is nothing to label.
@@ -116,20 +142,15 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
             or st == BR.PlayerState.GLIDE
             or st == BR.PlayerState.ALIVE
             or st == BR.PlayerState.DBNO
-        local player = jumped and GetPlayerFromServerId(src) or -1 -- scope-ok: overhead name needs the local ped; absence just means no tag
-        if player ~= -1 then
-            local ped = GetPlayerPed(player) -- scope-ok: same presentation-only use
+        if ped ~= 0 and jumped then
             local t = tags[src]
             -- Re-tag when the ped handle changes: respawn or re-entering
             -- scope hands the mate a new ped, and the old tag dies with the
             -- old handle.
-            if ped ~= 0 and (not t or t.ped ~= ped) then
+            if not t or t.ped ~= ped then
                 dropTag(src)
                 local tag = CreateFakeMpGamerTag(ped, m.name, false, false, '', 0)
                 SetMpGamerTagVisibility(tag, 0, true)   -- component 0: the name
-                -- Squad-level peace: same group as my own ped, and my
-                -- canAttackFriendly=false (gamerules) refuses the damage.
-                SetPedRelationshipGroupHash(ped, BR.Native.ALLY_GROUP)
                 tags[src] = { tag = tag, ped = ped }
             end
         else

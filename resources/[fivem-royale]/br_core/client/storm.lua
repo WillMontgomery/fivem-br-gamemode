@@ -247,6 +247,11 @@ local function weatherWant(tier)
     -- rain again some day.
     if wxDryAt and now >= wxDryAt then
         wxDryAt = nil
+        -- The blend has finished, so the snap is visually a no-op -- but it
+        -- HARD-RESETS the weather system's internal rain memory, which the
+        -- overtime path preserves and which is what kept the ground shiny
+        -- long after the sky cleared (live report, 2026-08-04).
+        SetWeatherTypeNowPersist(WX_NAME.clear)
         SetRainLevel(0.0)
         wxUndryAt = now + 45000
     end

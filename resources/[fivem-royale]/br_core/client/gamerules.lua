@@ -22,6 +22,39 @@ BR.Loop.register(BR.Loop.FRAME, 'gamerules.apply', function()
 end)
 
 -- --------------------------------------------------------------------------
+-- Mad drivers
+-- --------------------------------------------------------------------------
+
+-- Ambient drivers drive BADLY (user call, 2026-08-04): zero ability, full
+-- aggression -- the apocalypse does not produce calm commuters. Applied
+-- once per vehicle as they stream in; the handled set is wiped when it
+-- grows stale so handle reuse cannot leak.
+local maddened = {}
+local maddenedCount = 0
+
+BR.Loop.register(BR.Loop.SLOW, 'gamerules.madDrivers', function()
+    if not BR.Config.Ambient.erratic then return end
+    local st = BR.State.me.state
+    if st == BR.PlayerState.LOBBY or st == BR.PlayerState.WARMUP then return end
+
+    if maddenedCount > 300 then maddened = {} maddenedCount = 0 end
+
+    local mp = GetEntityCoords(PlayerPedId())
+    for _, veh in ipairs(GetGamePool('CVehicle')) do
+        if not maddened[veh] and DoesEntityExist(veh)
+           and #(GetEntityCoords(veh) - mp) < 250.0 then
+            maddened[veh] = true
+            maddenedCount = maddenedCount + 1
+            local drv = GetPedInVehicleSeat(veh, -1)
+            if drv ~= 0 and not IsPedAPlayer(drv) then
+                SetDriverAbility(drv, 0.0)
+                SetDriverAggressiveness(drv, 1.0)
+            end
+        end
+    end
+end)
+
+-- --------------------------------------------------------------------------
 -- Death
 -- --------------------------------------------------------------------------
 

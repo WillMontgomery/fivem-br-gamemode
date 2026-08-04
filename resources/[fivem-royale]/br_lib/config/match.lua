@@ -120,8 +120,12 @@ BR.Config.Match = {
 BR.Config.Ambient = {
     peds         = 0.3,
     scenarioPeds = 0.3,
-    vehicles     = 0.25,   -- moving traffic at 25% (user call, 2026-08-04)
+    vehicles     = 0.19,   -- 25%, then cut a further quarter (user calls,
+                           -- 2026-08-04 -- the roads were still too busy)
     parked       = 1.0,
+    -- Ambient drivers drive BADLY: zero ability, maximum aggression --
+    -- the apocalypse does not produce calm commuters.
+    erratic      = true,
 }
 
 -- Sprint stamina, Fortnite-shaped: a meter that drains while sprinting and

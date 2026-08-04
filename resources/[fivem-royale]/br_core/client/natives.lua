@@ -363,6 +363,11 @@ function BR.Native.applyGameRules()
     SetRandomVehicleDensityMultiplierThisFrame(inWorld and amb.vehicles or 0.0)
     SetParkedVehicleDensityMultiplierThisFrame(inWorld and amb.parked or 0.0)
 
+    -- HIGH NOON, FOREVER (for now -- user call, 2026-08-04). Weather is
+    -- already gamemode-owned; the clock joins it. Overridden per frame so
+    -- nothing else can advance it.
+    NetworkOverrideClockTime(12, 0, 0)
+
     -- Never let the engine's own death/respawn flow run; the gamemode owns it.
     PauseDeathArrestRestart(true)
     SetFadeOutAfterDeath(false)
