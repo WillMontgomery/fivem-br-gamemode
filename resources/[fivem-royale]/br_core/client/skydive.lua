@@ -87,8 +87,9 @@ AddEventHandler('br:drop:begin', function(d)
         -- the player's real base-game parachute bind (the engine's own
         -- deploy input works during the fall too, since the ped is in a
         -- genuine parachute task). The old toast said "SPACE" to everyone,
-        -- which was our binding's DEFAULT, not their key.
-        BR.Native.help('Press ~INPUT_PARACHUTE_DEPLOY~ to open the glider early — or ride it low.')
+        -- which was our binding's DEFAULT, not their key. No "ride it low"
+        -- promise: the auto-deploy floor opens the canopy regardless.
+        BR.Native.help('Press ~INPUT_PARACHUTE_DEPLOY~ to open the glider early.')
     end)
 end)
 

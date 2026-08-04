@@ -106,7 +106,17 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
         -- Presentation-only use of scope: a name can only hang over a ped
         -- that is streamed in, and no game state is derived from whether it
         -- is. Out of scope, the coord blip above still shows where they are.
-        local player = GetPlayerFromServerId(src) -- scope-ok: overhead name needs the local ped; absence just means no tag
+        --
+        -- NO NAME UNTIL THEY HAVE JUMPED: everyone shares the plane during
+        -- the flight, and a tag on an invisible rider rendered as a name
+        -- floating over the fuselage. Pre-drop there is nothing to label.
+        local e = BR.State.roster[src]
+        local st = e and e.state
+        local jumped = st == BR.PlayerState.FREEFALL
+            or st == BR.PlayerState.GLIDE
+            or st == BR.PlayerState.ALIVE
+            or st == BR.PlayerState.DBNO
+        local player = jumped and GetPlayerFromServerId(src) or -1 -- scope-ok: overhead name needs the local ped; absence just means no tag
         if player ~= -1 then
             local ped = GetPlayerPed(player) -- scope-ok: same presentation-only use
             local t = tags[src]
@@ -124,6 +134,31 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
             end
         else
             dropTag(src)
+        end
+    end
+end)
+
+-- Shared-lobby hygiene. The lobby is ONE routing bucket now, so other lobby
+-- players' peds can stream in -- every one of them frozen, invisible-on-
+-- their-own-client, at the exact vista point the camera occupies. Their own
+-- client's invisibility does not reliably replicate, so this client hides
+-- them locally, and un-hides anyone who has moved on to a match state.
+local hiddenLobbyPeds = {}
+BR.Loop.register(BR.Loop.TICK, 'squadmates.lobbyhide', function()
+    for _, player in ipairs(GetActivePlayers()) do -- scope-ok: presentation-only hiding of co-located lobby peds
+        if player ~= PlayerId() then
+            local srv = GetPlayerServerId(player)
+            local ped = GetPlayerPed(player) -- scope-ok: same presentation-only use
+            if ped and ped ~= 0 then
+                local e = BR.State.roster[srv]
+                if e and e.state == BR.PlayerState.LOBBY then
+                    SetEntityVisible(ped, false, false)
+                    hiddenLobbyPeds[ped] = true
+                elseif hiddenLobbyPeds[ped] then
+                    SetEntityVisible(ped, true, false)
+                    hiddenLobbyPeds[ped] = nil
+                end
+            end
         end
     end
 end)

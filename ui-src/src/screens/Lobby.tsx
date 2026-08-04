@@ -77,25 +77,34 @@ export default function Lobby({ visible }: { visible: boolean }) {
   // for a match that cannot form yet.
   const tearingDown = match.state === 'ended' || match.state === 'cleanup'
 
+  // A match in progress outranks queue arithmetic: "waiting for more
+  // players" while 46 of them are mid-firefight was a lie, and the counts
+  // under it doubly so. Warmup is different: that door is still open and
+  // the normal copy applies.
+  const waitingOnMatch = matchRunning && match.state !== 'warmup' && !tearingDown
+
   const headline = tearingDown
     ? 'Cleaning up the last round…'
-    : !wait
-      ? 'Starting…'
-      : wait.reason === 'party'
-        ? 'Waiting for your party to ready up'
-        : wait.reason === 'squads'
-          ? `Waiting for ${wait.need - wait.have} more squad${wait.need - wait.have === 1 ? '' : 's'}`
-          : `Waiting for ${wait.need - wait.have} more player${wait.need - wait.have === 1 ? '' : 's'}`
+    : waitingOnMatch
+      ? 'Waiting for the current match to end…'
+      : !wait
+        ? 'Starting…'
+        : wait.reason === 'party'
+          ? 'Waiting for your party to ready up'
+          : wait.reason === 'squads'
+            ? `Waiting for ${wait.need - wait.have} more squad${wait.need - wait.have === 1 ? '' : 's'}`
+            : `Waiting for ${wait.need - wait.have} more player${wait.need - wait.have === 1 ? '' : 's'}`
 
   // The supporting numbers, each one answering a question the headline
   // raises. Suppressed during teardown -- counts for a match that cannot
   // form yet only contradict the "cleaning up" headline.
   const detail: string[] = []
-  if (!tearingDown) {
+  if (!tearingDown && !waitingOnMatch) {
     if (lobby?.party) detail.push(`Your party ${lobby.party.ready}/${lobby.party.size} ready`)
     // "2 of 16 players needed" read as a riddle -- needed for WHAT, and am I
-    // one of the 2? Say what is true in words instead.
-    if (lobby) detail.push(`${lobby.queued} readied up · waiting for more players`)
+    // one of the 2? Say what is true in words instead. Solo queuers skip the
+    // count entirely: there is no group whose progress they need to track.
+    if (lobby && mode === 'squad') detail.push(`${lobby.queued} readied up · waiting for more players`)
     if (wait?.reason === 'squads') detail.push(`${wait.have} of ${wait.need} squads`)
   }
 
@@ -125,24 +134,24 @@ export default function Lobby({ visible }: { visible: boolean }) {
     >
       <div className="interactive w-[35rem] max-w-[80vw]">
         <div className="text-center mb-6">
-          <h1 className="text-4xl font-bold tracking-tight">
+          <h1 className="text-5xl font-bold tracking-tight">
             FiveM <span style={{ color: 'var(--color-royale-accent)' }}>Royale</span>
           </h1>
-          <p className="text-sm text-white/45 mt-1">
+          <p className="text-base text-white/45 mt-1">
             Drop in. Loot up. Outlast the storm.
           </p>
         </div>
 
         <Card className="border border-white/10">
           <CardHeader className="pb-0 flex-col items-start gap-1">
-            <h2 className="text-lg font-semibold">
+            <h2 className="text-xl font-semibold">
               {matchRunning ? 'Next match' : 'Find a match'}
             </h2>
             {/* Only ever seen by a player who is OUT of the running match --
                 a participant never has this screen up. During warmup the door
                 is still open: readying up joins THIS match, not the next. */}
             {matchRunning && (
-              <p className="text-[0.6875rem] text-white/40">
+              <p className="text-[0.8125rem] text-white/40">
                 {match.state === 'warmup'
                   ? 'A match is forming — ready up to jump straight in.'
                   : 'A match is in progress — ready up to join the next one.'}
@@ -176,14 +185,14 @@ export default function Lobby({ visible }: { visible: boolean }) {
                 <div className="flex flex-col items-center gap-1 py-1">
                   <div className="flex items-center gap-3">
                     <Spinner size="sm" />
-                    <span className="text-sm text-white/70">{headline}</span>
+                    <span className="text-base text-white/70">{headline}</span>
                   </div>
 
                   {/* The supporting numbers. A spinner on its own is
                       indistinguishable from a queue that is not working, which
                       is exactly how this looked while the button did nothing. */}
                   {detail.length > 0 && (
-                    <span className="text-[0.6875rem] tabular-nums text-white/40">
+                    <span className="text-[0.8125rem] tabular-nums text-white/40">
                       {detail.join(' · ')}
                     </span>
                   )}
@@ -198,7 +207,7 @@ export default function Lobby({ visible }: { visible: boolean }) {
           </CardBody>
         </Card>
 
-        <p className="text-center text-[0.6875rem] text-white/30 mt-4">
+        <p className="text-center text-[0.8125rem] text-white/30 mt-4">
           Rebind controls in Pause &rarr; Settings &rarr; Key Bindings
         </p>
       </div>

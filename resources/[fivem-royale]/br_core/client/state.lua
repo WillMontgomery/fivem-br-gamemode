@@ -25,6 +25,12 @@ local diedThisMatch = false
 local myDeathCause = nil
 local myDeathByPlayer = false
 
+-- Whether I am IN this round. A lobby bystander shares match.state with the
+-- players fighting it out, and at ENDED they were shown the verdict slam of
+-- a match they never entered while their lobby menu vanished. Set the
+-- moment my own state becomes a match state; cleared at WAITING.
+local roundParticipant = false
+
 -- Forward declaration. The SQUAD_UPDATE handler sits above the definition
 -- because it belongs with the other net handlers, not with the UI pushes.
 local pushSquadOrParty
@@ -115,7 +121,25 @@ local function pushMatchState()
         mode      = S.match.mode,
         endsAt    = S.match.endsAt,
         serverNow = BR.Clock.now(),
+        -- The UI needs to know whether the teardown is OURS: participants
+        -- get the verdict-slam choreography; a lobby bystander keeps their
+        -- menu.
+        participant = roundParticipant,
     })
+end
+
+--- Keep the participant flag current from MY state. Called wherever my
+--- state can change (snapshot, deltas).
+local function noteMyState()
+    local st = S.me.state
+    if st == BR.PlayerState.WARMUP or st == BR.PlayerState.BUS
+       or st == BR.PlayerState.FREEFALL or st == BR.PlayerState.GLIDE
+       or st == BR.PlayerState.ALIVE or st == BR.PlayerState.DBNO then
+        if not roundParticipant then
+            roundParticipant = true
+            pushMatchState()
+        end
+    end
 end
 
 RegisterNetEvent(BR.Net.SNAPSHOT)
@@ -141,6 +165,7 @@ AddEventHandler(BR.Net.SNAPSHOT, function(payload)
         S.me.hp      = me.hp
         S.me.armour  = me.armour
     end
+    noteMyState()
 
     BR.PushHud(true)
     pushMatchState()
@@ -196,6 +221,7 @@ AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
                 if S.me.state == BR.PlayerState.DEAD then
                     diedThisMatch = true
                 end
+                noteMyState()
                 applyFocusForState(S.match.state)
             end
         end
@@ -242,6 +268,10 @@ AddEventHandler(BR.Net.STATE, function(d)
         diedThisMatch = false
         myDeathCause, myDeathByPlayer = nil, false
     end
+    -- The round is over for everyone; participation resets with it.
+    if d.state == BR.MatchState.WAITING then
+        roundParticipant = false
+    end
 
     pushMatchState()
 
@@ -250,7 +280,10 @@ AddEventHandler(BR.Net.STATE, function(d)
     -- onEnter awards placements), so the mirror is read after a beat -- the
     -- screen is faded to black at this moment anyway. M7 fills in damage,
     -- survival time and XP; placement and kills already tell won-or-lost.
-    if d.state == BR.MatchState.ENDED then
+    -- PARTICIPANTS ONLY: the verdict belongs to the players who were in the
+    -- round. A lobby bystander got the wasted screen of somebody else's
+    -- match (live report); with no summary sent, their lobby menu stays.
+    if d.state == BR.MatchState.ENDED and roundParticipant then
         Citizen.SetTimeout(500, function()
             local me = S.roster[S.me.src]
             TriggerEvent('br:ui:sendLocal', BR.Nui.SUMMARY, {
@@ -299,6 +332,10 @@ AddEventHandler('br:ui:action', function(name, data)
         TriggerServerEvent(BR.Net.SQUAD_RESPOND, data)
     elseif name == BR.NuiCb.SQUAD_KICK then
         TriggerServerEvent(BR.Net.SQUAD_KICK, data)
+    elseif name == BR.NuiCb.SQUAD_JOINREQ then
+        TriggerServerEvent(BR.Net.SQUAD_JOINREQ, data)
+    elseif name == BR.NuiCb.SQUAD_JOINRESP then
+        TriggerServerEvent(BR.Net.SQUAD_JOINRESP, data)
     elseif name == BR.NuiCb.SQUAD_LEAVE then
         TriggerServerEvent(BR.Net.SQUAD_LEAVE)
     elseif BR.Server and BR.Server.devMode then
@@ -331,6 +368,19 @@ end)
 RegisterNetEvent(BR.Net.SQUAD_INVITED)
 AddEventHandler(BR.Net.SQUAD_INVITED, function(inv)
     TriggerEvent('br:ui:sendLocal', BR.Nui.INVITE, inv)
+end)
+
+-- A join REQUEST rides the same interface slot as an invite -- one card,
+-- two directions -- tagged so the UI words it and answers it correctly.
+RegisterNetEvent(BR.Net.SQUAD_JOINASK)
+AddEventHandler(BR.Net.SQUAD_JOINASK, function(ask)
+    TriggerEvent('br:ui:sendLocal', BR.Nui.INVITE, {
+        kind = 'joinreq',
+        from = ask and ask.from,
+        name = ask and ask.name or '?',
+        size = ask and ask.size or 0,
+        max  = ask and ask.max or 0,
+    })
 end)
 
 -- Server-pushed notices: party events, match alerts. Same UI stack as the

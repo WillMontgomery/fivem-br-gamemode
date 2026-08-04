@@ -1818,28 +1818,45 @@ end
 
 describe('roster.buckets')
 do
-    -- The lobby is a MENU with a view: each lobby player sits alone in a
-    -- personal routing bucket so no ped ever stands in another player's
-    -- vista shot. Match states share bucket 0. The bucket rides the state
+    -- THE INSTANCE MODEL (user-specified, 2026-08-03): ONE shared lobby
+    -- bucket, and a fresh bucket per match (matchBucketBase + matchId) so a
+    -- new round never inherits the last one's world. Match states share bucket 0. The bucket rides the state
     -- through the setState choke point, and join must apply it too --
     -- add() writes the initial state directly.
     reset()
     BR.Server.devMode = true
+    local LB = BR.Config.Match.lobbyBucket
     join(1, 'A'); join(2, 'B')
-    ok(buckets[1] == 1001 and buckets[2] == 1002,
-        'joining lands each player in their own private lobby bucket')
+    ok(buckets[1] == LB and buckets[2] == LB,
+        'joining lands everyone in the one shared lobby bucket')
 
     fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
     fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
     ok(BR.Server.match.state == BR.MatchState.WARMUP, 'match starts')
-    ok(buckets[1] == 0 and buckets[2] == 0,
-        'entering the match moves everyone into the shared bucket')
+    local mb = BR.Config.Match.matchBucketBase + BR.Server.matchId
+    ok(buckets[1] == mb and buckets[2] == mb,
+        "entering the match moves everyone into THIS match's bucket",
+        ('got %s/%s want %d'):format(tostring(buckets[1]), tostring(buckets[2]), mb))
+    ok(mb ~= LB, 'which is never the lobby bucket')
 
     fire(BR.Net.MATCH_LEAVE, 2)
-    ok(buckets[2] == 1002, 'leaving the match returns them to their private bucket')
-    ok(buckets[1] == 0, 'without disturbing anyone still playing')
+    ok(buckets[2] == LB, 'leaving the match returns them to the lobby bucket')
+    ok(buckets[1] == mb, 'without disturbing anyone still playing')
+
+    -- The NEXT match gets a different bucket: leftover entities from this
+    -- round can never haunt the next one.
+    BR.Match.transition(BR.MatchState.ENDED)
+    BR.Match.transition(BR.MatchState.CLEANUP)
+    BR.Match.transition(BR.MatchState.WAITING)
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'second match starts')
+    local mb2 = BR.Config.Match.matchBucketBase + BR.Server.matchId
+    ok(mb2 ~= mb, 'and it lives in a fresh bucket')
+    ok(buckets[1] == mb2, 'with its players inside')
 end
 
 describe('match.earlyDeath')
@@ -2237,17 +2254,20 @@ end
 
 describe('match.storm.hold')
 do
-    -- The free-loot hold is priced for the FURTHEST player: whoever rode the
-    -- tour to its far end gets time to cross toward the anchor. 1800m at the
-    -- configured 9 m/s is exactly 200 seconds -- between the 120s floor and
-    -- the 300s cap, so this pins the formula itself, not a clamp.
+    -- The free-loot hold is priced for the furthest player's run to the
+    -- FIRST TARGET CIRCLE'S EDGE -- distance beyond phases[1].radius, not to
+    -- the anchor point (pricing to the anchor charged players already inside
+    -- the circle: the "everyone is in the circle, why four minutes?" report).
+    -- 1800m beyond the edge at 9 m/s is exactly 200 seconds -- between the
+    -- 120s floor and the 300s cap, so this pins the formula, not a clamp.
     reset()
     queueUp(1, 'A'); queueUp(2, 'B')
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
 
+    local r1 = BR.Config.Storm.phases[1].radius
     local a = BR.Server.matchAnchor
-    setPos(1, a.x + 1800.0, a.y)
+    setPos(1, a.x + r1 + 1800.0, a.y)
     setPos(2, a.x, a.y)
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
@@ -2255,8 +2275,26 @@ do
     BR.Match.transition(BR.MatchState.PLAYING)
     local rec = BR.Server.storm
     ok(math.abs(rec.tWait - 200000.0) < 1500.0,
-        'the hold is priced for the furthest player (1800m / 9mps = 200s)',
+        'the hold is priced for the run to the circle edge (1800m / 9mps = 200s)',
         ('tWait %.0fms'):format(rec.tWait))
+
+    -- Landing INSIDE the first target circle prices at zero: the minimum
+    -- hold applies no matter where inside it you are.
+    BR.Match.transition(BR.MatchState.ENDED)
+    BR.Match.transition(BR.MatchState.CLEANUP)
+    BR.Match.transition(BR.MatchState.WAITING)
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    a = BR.Server.matchAnchor
+    setPos(1, a.x + BR.Config.Storm.phases[1].radius - 100.0, a.y)
+    setPos(2, a.x, a.y)
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    BR.Match.transition(BR.MatchState.PLAYING)
+    ok(BR.Server.storm.tWait == BR.Config.Storm.phases[1].wait * 1000.0,
+        'anyone already inside the target circle pays only the minimum hold',
+        ('tWait %.0fms'):format(BR.Server.storm.tWait))
 
     -- The cap: nobody waits five minutes-plus no matter how far out the
     -- drop was.
@@ -2267,7 +2305,7 @@ do
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
     a = BR.Server.matchAnchor
-    setPos(1, a.x + 9000.0, a.y)
+    setPos(1, a.x + r1 + 9000.0, a.y)
     setPos(2, a.x, a.y)
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)

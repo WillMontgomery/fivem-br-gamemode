@@ -22,6 +22,9 @@ BR.Server.parties = parties
 -- [targetSrc] = { partyId, from = src, at = ms }
 local invites = {}
 
+-- [requesterSrc] = { leader = src, at = ms } -- join requests, invites in reverse
+local joinReqs = {}
+
 local nextId = 0
 
 --- Squad colours, assigned in order. Kept small and high-contrast: these have to
@@ -672,6 +675,107 @@ AddEventHandler(BR.Net.SQUAD_RESPOND, function(data)
     result(src, ok, reason)
 end)
 
+-- --------------------------------------------------------------------------
+-- Join requests: the invite, reversed. A player asks a party LEADER to take
+-- them; the leader answers. Same shape as invites -- one outstanding request
+-- per requester, expiring on the same sweep -- so every property invites
+-- earned (audible declines, expiry notices) is inherited rather than rebuilt.
+-- --------------------------------------------------------------------------
+
+--- @param src integer        the requester
+--- @param leaderSrc integer  the party leader being asked
+--- @return boolean ok
+--- @return string|nil reason
+function BR.Party.requestJoin(src, leaderSrc)
+    if src == leaderSrc then return false, 'That is you.' end
+    local entry = BR.Roster.get(src)
+    if not entry then return false, 'You are not on the roster yet.' end
+    if BR.Party.isGrouped(src) then
+        return false, 'Leave your current party first.'
+    end
+
+    local lp = BR.Party.of(leaderSrc)
+    if not lp or lp.leader ~= leaderSrc then
+        return false, 'That player is not leading a party.'
+    end
+    if #lp.members >= BR.Config.Match.maxSquadSize then
+        return false, 'That party is full.'
+    end
+    local le = BR.Roster.get(leaderSrc)
+    if le and BR.Server.isInMatch(le.state) then
+        return false, 'That party is in a match right now.'
+    end
+
+    joinReqs[src] = { leader = leaderSrc, at = GetGameTimer() }
+    TriggerClientEvent(BR.Net.SQUAD_JOINASK, leaderSrc, {
+        from = src,
+        name = entry.name,
+        size = #lp.members,
+        max  = BR.Config.Match.maxSquadSize,
+    })
+    BR.Server.notify(src, 'Join request sent.', 'info')
+    return true
+end
+
+--- The leader's answer.
+--- @param leaderSrc integer
+--- @param requesterSrc integer
+--- @param accept boolean
+--- @return boolean ok
+--- @return string|nil reason
+function BR.Party.answerJoin(leaderSrc, requesterSrc, accept)
+    local req = joinReqs[requesterSrc]
+    if not req or req.leader ~= leaderSrc then
+        return false, 'No such join request.'
+    end
+    joinReqs[requesterSrc] = nil
+
+    local rq = BR.Roster.get(requesterSrc)
+    if not rq then return false, 'They are no longer connected.' end
+
+    if not accept then
+        BR.Server.notify(requesterSrc, 'Your join request was declined.', 'warn')
+        return true
+    end
+
+    local party = BR.Party.of(leaderSrc)
+    if not party or party.leader ~= leaderSrc then
+        return false, 'Your party no longer exists.'
+    end
+    if #party.members >= BR.Config.Match.maxSquadSize then
+        BR.Server.notify(requesterSrc, 'That party is now full.', 'warn')
+        return false, 'Party is full.'
+    end
+
+    if rq.partyId then BR.Party.leave(requesterSrc, true) end
+    party.members[#party.members + 1] = requesterSrc
+    rq.partyId = party.id
+
+    sync(party.id)
+    BR.Server.notify(requesterSrc, 'You joined the party.', 'success')
+    for _, m in ipairs(party.members) do
+        if m ~= requesterSrc then
+            BR.Server.notify(m, ('%s joined the party.'):format(rq.name), 'success')
+        end
+    end
+    return true
+end
+
+RegisterNetEvent(BR.Net.SQUAD_JOINREQ)
+AddEventHandler(BR.Net.SQUAD_JOINREQ, function(data)
+    local src = source
+    local ok, reason = BR.Party.requestJoin(src, tonumber(data and data.leader))
+    result(src, ok, reason)
+end)
+
+RegisterNetEvent(BR.Net.SQUAD_JOINRESP)
+AddEventHandler(BR.Net.SQUAD_JOINRESP, function(data)
+    local src = source
+    local ok, reason = BR.Party.answerJoin(src,
+        tonumber(data and data.requester), data and data.accept)
+    result(src, ok, reason)
+end)
+
 RegisterNetEvent(BR.Net.SQUAD_LEAVE)
 AddEventHandler(BR.Net.SQUAD_LEAVE, function()
     -- Success speaks via the "You left the party." notice inside leave().
@@ -735,6 +839,15 @@ BR.Sched.every(5000, 'party.expire', function()
                 ('Invite to %s expired.'):format(target and target.name or 'a player'),
                 'warn')
             sync(inv.partyId)
+        end
+    end
+
+    -- Join requests age out the same way, and the requester hears it --
+    -- "ignored" must never look like "still deciding".
+    for src, req in pairs(joinReqs) do
+        if now - req.at > INVITE_TTL_MS then
+            joinReqs[src] = nil
+            BR.Server.notify(src, 'Your join request expired.', 'warn')
         end
     end
 end)

@@ -259,12 +259,12 @@ BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
     if riding and not told and route and route.timed
        and BR.Clock.now() >= route.jumpFrom then
         told = true
-        -- Native help box: the ~INPUT_~ placeholder renders whatever the
-        -- player actually bound to our jump command in Settings > Key
-        -- Bindings > FiveM. The toast that said "SPACE" was only ever
-        -- describing the default.
-        BR.Native.help(('Doors open — press %s to jump.')
-            :format(BR.Native.inputForCommand('brdeploy')))
+        -- A BASE-GAME input name: custom keymapping hashes render as a hole
+        -- in the help text on this build (live report), but engine input
+        -- names always resolve to the player's actual binding -- and the
+        -- parachute key genuinely jumps (bus.jumpkey polls it), so the hint
+        -- is honest. Our own rebindable command still works alongside.
+        BR.Native.help('Doors open — press ~INPUT_PARACHUTE_DEPLOY~ to jump.')
     end
 
     -- Last call: past the final authored waypoint the plane flies its
@@ -380,17 +380,33 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
     end
 end)
 
--- SPACE, bus half: ask to jump. (skydive.lua owns the freefall half of the
--- same key; `riding` and `dropping` are mutually exclusive, so exactly one
--- of the two listeners acts on any press.)
-BR.Keys.on('deploy', function(pressed)
-    if not pressed or not riding or not route or not route.timed then return end
+-- Ask to jump. (skydive.lua owns the freefall half of the same intent;
+-- `riding` and `dropping` are mutually exclusive, so exactly one of the two
+-- acts on any press.)
+local function tryJump()
+    if not riding or not route or not route.timed then return end
     if BR.Clock.now() < route.jumpFrom then
         TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
             text = 'Doors are still closed.', tone = 'warn' })
         return
     end
     TriggerServerEvent(BR.Net.BUS_JUMP)
+end
+
+BR.Keys.on('deploy', function(pressed)
+    if pressed then tryJump() end
+end)
+
+-- The BASE GAME's parachute-deploy control works aboard too -- it is the key
+-- the doors-open prompt displays (custom keymapping hashes refused to render
+-- a glyph in help text; INPUT_PARACHUTE_DEPLOY always does, and one key for
+-- the whole descent was the design anyway). Frame-polled because
+-- IsControlJustPressed only lives for the frame it happened in.
+local INPUT_PARACHUTE_DEPLOY = 144
+BR.Loop.register(BR.Loop.FRAME, 'bus.jumpkey', function()
+    if riding and IsControlJustPressed(0, INPUT_PARACHUTE_DEPLOY) then
+        tryJump()
+    end
 end)
 
 RegisterNetEvent(BR.Net.BUS_JUMP_OK)

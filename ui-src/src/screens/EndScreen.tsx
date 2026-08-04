@@ -43,10 +43,12 @@ export default function EndScreen({ summary }: { summary: SummaryPayload }) {
 
   // The teardown line tells a small two-act story: progress is "saved"
   // first (true in spirit; literally true from M7), then the map is being
-  // cleaned. One crossfade, keyed so the swap re-runs the rise animation.
+  // cleaned. The five seconds are counted from when the line becomes
+  // VISIBLE -- .end-late flies in 3.6s after mount -- not from mount, which
+  // cut the first act to about a second on screen.
   const [busy, setBusy] = useState('Saving progress…')
   useEffect(() => {
-    const t = window.setTimeout(() => setBusy('Cleaning up the map…'), 4500)
+    const t = window.setTimeout(() => setBusy('Cleaning up the map…'), 3600 + 5000)
     return () => window.clearTimeout(t)
   }, [])
 

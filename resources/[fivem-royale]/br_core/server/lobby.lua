@@ -168,12 +168,19 @@ BR.Sched.every(500, 'lobby.status', function()
     -- in a lobby.
     local players = {}
     BR.Roster.each(nil, function(src, e)
+        local party = BR.Party.of(src)
         players[#players + 1] = {
             src     = src,
             name    = e.name,
             -- isGrouped, not `partyId ~= nil`: a party of one is not a party,
             -- and treating it as one made the player invisible to invites.
             inParty = BR.Party.isGrouped(src),
+            -- The Join tab lists leaders; the Create tab must not offer
+            -- players who are mid-match. Both facts are already visible in
+            -- a lobby, so nothing new leaks.
+            leader  = (party ~= nil and party.leader == src
+                       and BR.Party.isGrouped(src)) or false,
+            inMatch = BR.Server.isInMatch(e.state),
             queued  = queue[src] ~= nil,
         }
     end)

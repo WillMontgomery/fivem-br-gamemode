@@ -19,13 +19,14 @@ local last = { w = 0, h = 0, safe = -1.0, radar = nil }
 --- with the default safe zone. They scale with height, which is how the engine
 --- scales it. Re-measure with /brdebug if the radar ever looks wrong -- the dev
 --- overlay draws this rectangle so a mismatch is visible immediately.
--- Corrected in-game 2026-08-03: the first pass measured the radar's outer
--- glow into the rectangle, and everything anchored to it (bars, notices)
--- overshot the map's right edge by ~25%. These match the MAP AREA itself:
--- ~314x198 px at 1080p with the default safe zone.
-local RADAR_H_FRAC = 0.183   -- ~198 / 1080
-local RADAR_W_FRAC = 0.291   -- ~314 / 1080, expressed against HEIGHT so the
-                             -- aspect of the radar itself stays correct
+-- THE CANONICAL VALUES, finally researched instead of measured off
+-- screenshots (glitchdetector/fivem-minimap-anchor, the community-standard
+-- derivation): the radar's map area is EXACTLY screenHeight/4 wide and
+-- screenHeight/5.674 tall, anchored to the safe zone's bottom-left. Two
+-- rounds of screenshot-measuring produced 0.370 then 0.291; the real number
+-- is 0.25, which is why the bars kept overshooting the map's right edge.
+local RADAR_H_FRAC = 1.0 / 5.674   -- ~0.1763
+local RADAR_W_FRAC = 0.25          -- width == height/4, aspect-independent
 
 --- Whether the radar is currently on screen. IsRadarHidden reflects both our
 --- own DisplayRadar calls and the pause map; guarded because a wrong native

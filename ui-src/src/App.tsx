@@ -77,15 +77,23 @@ export default function App() {
   // lost and "cleaning up" -- not the find-a-match card pretending a match
   // could form.
   const tearingDown = s.match.state === 'ended' || s.match.state === 'cleanup'
-  const showEnd = tearingDown && s.summary !== null
+  // Participant-gated twice over: Lua only sends a summary to players who
+  // were in the round, and this refuses to slam a verdict over a bystander
+  // even if a stale summary is somehow still in the store.
+  const showEnd = tearingDown && s.summary !== null && s.match.participant !== false
 
-  // NEVER the lobby during teardown -- not even before the summary arrives.
-  // The server flips everyone to the LOBBY state the instant the match is
-  // decided, but the verdict payload follows ~half a second later (it waits
-  // for the placement deltas), and "own state is lobby" showing the menu in
-  // that gap was a one-frame lobby flash before the slam. The gap shows
-  // nothing: the frozen world, then the verdict lands on it.
-  const showLobby = !tearingDown
+  // NEVER the lobby during teardown -- FOR PARTICIPANTS. The server flips
+  // everyone to the LOBBY state the instant the match is decided, but the
+  // verdict payload follows ~half a second later (it waits for the placement
+  // deltas), and "own state is lobby" showing the menu in that gap was a
+  // one-frame lobby flash before the slam. The gap shows nothing: the
+  // frozen world, then the verdict lands on it.
+  //
+  // A BYSTANDER -- someone in the lobby while other people's match ends --
+  // keeps their menu through the whole teardown: the slam is not theirs
+  // (no summary is even sent to them), and hiding their lobby left them
+  // staring at somebody else's wasted screen.
+  const showLobby = (!tearingDown || !s.match.participant)
     && (s.match.state === 'waiting' || s.hud.state === 'lobby')
 
   // The bus ride is a cutscene: no vitals, no counters, no kill feed.

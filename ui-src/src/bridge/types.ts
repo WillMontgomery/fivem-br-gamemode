@@ -45,6 +45,10 @@ export interface MatchPayload {
    *  over the bridge. */
   endsAt: number
   serverNow: number
+  /** True when THIS player is in the current round. A lobby bystander shares
+   *  match.state with the fighters but must keep their menu through someone
+   *  else's teardown. */
+  participant?: boolean
 }
 
 export interface HudPayload {
@@ -97,9 +101,12 @@ export interface SquadPayload {
   pending?: { src: number; name: string }[]
 }
 
-/** An incoming party invite. Expires server-side after a minute. */
+/** An incoming party invite -- or a join REQUEST, the same card reversed
+ *  (kind 'joinreq': someone asking the leader to take them). Expires
+ *  server-side after a minute either way. */
 export interface InvitePayload {
-  partyId: string
+  partyId?: string
+  kind?: 'invite' | 'joinreq'
   from: number
   name: string
   size: number
@@ -207,6 +214,10 @@ export interface LobbyPlayer {
   name: string
   inParty: boolean
   queued: boolean
+  /** Leading a real party (2+). The Join tab lists these. */
+  leader?: boolean
+  /** Currently in a running match; not offerable for create/join. */
+  inMatch?: boolean
 }
 
 /**
@@ -300,6 +311,8 @@ export const CB = {
   SQUAD_INVITE: 'br/squad/invite',
   SQUAD_RESPOND: 'br/squad/respond',
   SQUAD_KICK:   'br/squad/kick',
+  SQUAD_JOINREQ: 'br/squad/joinreq',
+  SQUAD_JOINRESP: 'br/squad/joinresp',
   SQUAD_LEAVE:  'br/squad/leave',
   INV_SWAP:     'br/inv/swap',
   INV_DROP:     'br/inv/drop',

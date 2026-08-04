@@ -74,22 +74,26 @@ end
 --- @return table
 --- Put a player in the routing bucket their state calls for.
 ---
---- LOBBY players get a PERSONAL bucket (a base offset plus their own id):
---- the lobby is a menu with a view, and in a shared bucket every idler's ped
---- would be standing in everyone else's vista shot. Alone in a bucket, a
---- lobby player sees no peds at all and no one sees theirs. Everyone in a
---- match shares bucket 0. Guarded, because the unit tests run this file
---- without the Cfx runtime.
+--- THE INSTANCE MODEL (user-specified, 2026-08-03): the lobby is ONE shared
+--- bucket, and every match gets its OWN -- matchBucketBase + matchId, so a
+--- fresh match never inherits the last round's bucket or anything left in
+--- it. (Lobby peds are all invisible and frozen at the vista; the client
+--- game rules hide any that stream in, so sharing the lobby costs nothing
+--- visually.) Guarded, because the unit tests run this file without the
+--- Cfx runtime.
 --- @param src integer
 --- @param state string
 local function applyBucket(src, state)
     if not SetPlayerRoutingBucket then return end
-    local bucket = 0
+    local M = BR.Config.Match
+    local bucket
     if state == BR.PlayerState.LOBBY then
-        bucket = 1000 + src
-        if SetRoutingBucketPopulationEnabled then
-            SetRoutingBucketPopulationEnabled(bucket, false)
-        end
+        bucket = M.lobbyBucket
+    else
+        bucket = M.matchBucketBase + BR.Server.matchId
+    end
+    if SetRoutingBucketPopulationEnabled then
+        SetRoutingBucketPopulationEnabled(bucket, false)
     end
     SetPlayerRoutingBucket(tostring(src), bucket)
 end

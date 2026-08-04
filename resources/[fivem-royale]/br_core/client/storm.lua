@@ -14,9 +14,13 @@ local cfg = BR.Config.Storm
 
 --- The record, gated on the one state where a storm can exist. BUS and
 --- earlier have no record; ENDED keeps whatever is left but must not render
---- it under the verdict slam.
+--- it under the verdict slam. And gated on MY OWN state too: a LOBBY
+--- bystander shares the match.state but not the match -- they were getting
+--- "storm closing" toasts at the vista menu, storm blips on their pause
+--- map, and (with the distance gate gone) a purple wall on the horizon.
 local function activeRecord()
     if BR.State.match.state ~= BR.MatchState.PLAYING then return nil end
+    if BR.State.me.state == BR.PlayerState.LOBBY then return nil end
     return BR.State.storm
 end
 
@@ -63,22 +67,7 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     --     wherever the player is, the full ring once the circle is small.
     local rr = cfg.render
     local dist = BR.Dist(p.x, p.y, cx, cy)
-
-    -- Slot layout depends only on the circle, so it is identical for all 48
-    -- players and stable frame to frame.
-    local slots = math.max(rr.segments,
-        math.floor((2.0 * math.pi * r) / rr.slotArc + 0.5))
-    local step = (2.0 * math.pi) / slots
-    local w = (r * step) * (rr.overlap or 1.05)
-
-    -- How many slots to actually draw: cover wallVisDist of arc each way
-    -- when near the wall, more when it is far so the span fills the view.
-    local visArc = math.max(rr.wallVisDist, math.abs(dist - r) * 2.0)
-    local want = math.floor((visArc * 2.0) / rr.slotArc + 0.5)
-    local drawn = math.min(slots, math.min(rr.maxDraw, math.max(rr.segments, want)))
-
     local base = math.atan(p.y - cy, p.x - cx)
-    local k0 = math.floor(base / step)
 
     local now = GetGameTimer()
     if now - groundAt > rr.groundCacheSec * 1000 then
@@ -91,8 +80,35 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     -- Anchor the curtain well below the ground line so slopes never show a
     -- gap under it; without a ground answer, hang it off the player's own z.
     local zBase = (groundZ or (p.z - rr.fallbackZDrop)) - 50.0
-
     local col = rr.colour
+
+    if BR.Storm.wallStyle == 'solid' then
+        -- ONE marker: the entire zone as a single giant vertical cylinder.
+        -- Its side surface IS the wall -- continuous, identical from every
+        -- angle and distance, no columns to count or watch slide. The
+        -- original design doc warned huge marker scales can misbehave, which
+        -- is why the column renderer below survives behind /brwallstyle.
+        DrawMarker(1,
+            cx, cy, zBase,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            r * 2.0, r * 2.0, rr.height + 50.0,
+            col.r, col.g, col.b, rr.alpha,
+            false, false, 2, false, nil, nil, false)
+        return
+    end
+
+    -- Column fallback: fixed angular slots derived from the circle alone,
+    -- so the colonnade stands still as the player moves.
+    local slots = math.max(rr.segments,
+        math.floor((2.0 * math.pi * r) / rr.slotArc + 0.5))
+    local step = (2.0 * math.pi) / slots
+    local w = (r * step) * (rr.overlap or 1.05)
+
+    local visArc = math.max(rr.wallVisDist, math.abs(dist - r) * 2.0)
+    local want = math.floor((visArc * 2.0) / rr.slotArc + 0.5)
+    local drawn = math.min(slots, math.min(rr.maxDraw, math.max(rr.segments, want)))
+    local k0 = math.floor(base / step)
+
     local first = k0 - math.floor(drawn / 2)
     for i = 0, drawn - 1 do
         local theta = (first + i + 0.5) * step
@@ -104,6 +120,16 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
             false, false, 2, false, nil, nil, false)
     end
 end)
+
+-- Which renderer draws the wall. 'solid' is the shipping default (user call,
+-- 2026-08-03); /brwallstyle flips to the column renderer live for A/B if the
+-- giant-marker geometry ever misbehaves on some hardware.
+BR.Storm = BR.Storm or {}
+BR.Storm.wallStyle = 'solid'
+RegisterCommand('brwallstyle', function()
+    BR.Storm.wallStyle = BR.Storm.wallStyle == 'solid' and 'columns' or 'solid'
+    print(('[br_core] storm wall style: %s'):format(BR.Storm.wallStyle))
+end, false)
 
 -- ----------------------------------------------------- blips, FX, envelope ---
 

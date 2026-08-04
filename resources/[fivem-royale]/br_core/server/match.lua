@@ -77,6 +77,14 @@ function BR.Match.onEnter(state, from)
         end
         S.participants = nil   -- consumed; must never leak into the next match
         S.partyHoldSince = nil -- the party-gate patience is per queue attempt
+
+        -- The match's identity is minted when it FORMS, not at the bus:
+        -- routing buckets are matchBucketBase + matchId, and participants
+        -- enter their match's bucket right here as their states flip to
+        -- WARMUP. Minting at BUS (as before) would have re-bucketed
+        -- everybody mid-flow.
+        BR.Server.matchId = BR.Server.matchId + 1
+
         for _, src in ipairs(parts) do
             if BR.Roster.get(src) then
                 BR.Roster.setState(src, BR.PlayerState.WARMUP)
@@ -92,7 +100,6 @@ function BR.Match.onEnter(state, from)
         BR.Bus.plan()
 
     elseif state == BR.MatchState.BUS then
-        BR.Server.matchId = BR.Server.matchId + 1
         S.descent = nil   -- fresh per flight: the descent-grace bookkeeping
 
         -- The flight decides how long BUS lasts, so the deadline is set HERE

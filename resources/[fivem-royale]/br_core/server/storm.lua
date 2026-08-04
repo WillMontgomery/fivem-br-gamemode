@@ -94,17 +94,20 @@ function BR.Storm.begin()
     rng   = BR.Rng(GetGameTimer() + BR.Server.matchId * 7919)
     carry = {}
 
-    -- The free-loot hold is scaled to the FURTHEST player from the anchor at
-    -- the moment the match goes live: whoever took the tour to its far end
-    -- gets time priced for their run, and everyone shares it. Positions are
-    -- the server's own samples; a player without one yet just doesn't
-    -- lengthen the hold.
+    -- The free-loot hold is priced for the FURTHEST player's run to the
+    -- FIRST TARGET CIRCLE -- distance to its edge, not to the anchor point.
+    -- Pricing to the anchor charged a player already standing inside the
+    -- phase-1 circle for the full radius they never had to cross ("everyone
+    -- is in the circle, why is the timer four minutes?"). Anyone inside the
+    -- target pays nothing; only the overshoot beyond its edge buys time.
+    -- LOBBY bystanders are not participants and never lengthen the hold.
     local furthest = 0.0
     BR.Roster.each(
         function(e) return BR.Server.isInMatch(e.state) end,
         function(_, e)
             if e.pos then
                 local d = BR.Dist(e.pos.x, e.pos.y, a.x, a.y)
+                    - cfg.phases[1].radius
                 if d > furthest then furthest = d end
             end
         end)

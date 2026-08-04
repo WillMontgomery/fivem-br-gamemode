@@ -32,6 +32,11 @@ export default function PartyPanel({
 
   const [selected, setSelected] = useState<Set<number>>(new Set())
 
+  // How this player wants to end up in a squad: build one (invite people),
+  // knock on one (ask a leader), or let autofill sort it out. Only shown
+  // before a party exists -- once in one, the party itself is the answer.
+  const [subMode, setSubMode] = useState<'create' | 'join' | 'random'>('create')
+
   const inParty = squad.members.length > 1
 
   // Whether *I* am the leader, which needs my own server id -- Lua sends it,
@@ -46,7 +51,11 @@ export default function PartyPanel({
   // would only produce a rejection. Anyone we have ALREADY invited shows as a
   // pending chip instead -- listing them here too would invite double-sends.
   const pendingSrcs = new Set((squad.pending ?? []).map((p) => p.src))
-  const invitable = players.filter((p) => !p.inParty && !pendingSrcs.has(p.src))
+  const invitable = players.filter(
+    (p) => !p.inParty && !p.inMatch && !pendingSrcs.has(p.src))
+
+  // The Join tab's targets: leaders of real parties who are not mid-match.
+  const leaders = players.filter((p) => p.leader && !p.inMatch)
 
   // Drop selections that are no longer valid -- a player who disconnected, or
   // who joined someone else's party while the panel was open.
@@ -78,8 +87,20 @@ export default function PartyPanel({
   }
 
   const respond = async (accept: boolean) => {
+    const wasJoinReq = invite?.kind === 'joinreq'
+    const requester = invite?.from
     clearInvite()
-    await fetchNui(CB.SQUAD_RESPOND, { accept })
+    // Same card, two directions: an invite is answered by the invitee, a
+    // join request by the leader it was sent to.
+    if (wasJoinReq) {
+      await fetchNui(CB.SQUAD_JOINRESP, { requester, accept })
+    } else {
+      await fetchNui(CB.SQUAD_RESPOND, { accept })
+    }
+  }
+
+  const askToJoin = async (leader: number) => {
+    await fetchNui(CB.SQUAD_JOINREQ, { leader })
   }
 
   return (
@@ -88,11 +109,13 @@ export default function PartyPanel({
           must not be something you have to go looking for. */}
       {invite && (
         <div className="rise flex items-center gap-2 rounded-lg border border-white/20 px-3 py-2">
-          <span className="flex-1 text-sm">
+          <span className="flex-1 text-base">
             <span className="font-semibold">{invite.name}</span>
-            <span className="text-white/60"> invited you</span>
-            <span className="text-white/40 text-[0.6875rem]">
-              {' '}({invite.size}/{invite.max})
+            <span className="text-white/60">
+              {invite.kind === 'joinreq' ? ' wants to join your party' : ' invited you'}
+            </span>
+            <span className="text-white/40 text-[0.8125rem]">
+{' '}({invite.size}/{invite.max})
             </span>
           </span>
           <Button size="sm" color="primary" onPress={() => respond(true)}>Accept</Button>
@@ -157,16 +180,67 @@ export default function PartyPanel({
           ))}
         </div>
       ) : (
-        <p className="text-[0.6875rem] text-white/35">
-          Not in a party &mdash; you&rsquo;ll be matched with random teammates.
-        </p>
+        <>
+          {/* Not in a party yet: pick HOW to get one. */}
+          <div className="flex gap-1.5">
+            {(['create', 'join', 'random'] as const).map((sm) => (
+              <Button
+                key={sm}
+                size="sm"
+                color={subMode === sm ? 'primary' : 'default'}
+                variant={subMode === sm ? 'solid' : 'bordered'}
+                isDisabled={disabled}
+                onPress={() => setSubMode(sm)}
+                className="flex-1 capitalize"
+              >
+                {sm}
+              </Button>
+            ))}
+          </div>
+
+          {subMode === 'random' && (
+            <p className="text-[0.8125rem] text-white/35">
+              You&rsquo;ll be matched with random teammates.
+            </p>
+          )}
+
+          {subMode === 'join' && !disabled && (
+            leaders.length > 0 ? (
+              <div className="flex flex-col gap-1.5">
+                <span className="text-[0.75rem] uppercase tracking-wider text-white/35">
+                  Squads looking for players &mdash; ask to join
+                </span>
+                <div className="thin-scroll flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
+                  {leaders.map((p) => (
+                    <button
+                      key={p.src}
+                      type="button"
+                      onClick={() => void askToJoin(p.src)}
+                      className="rounded-full border border-white/15 px-2.5 py-1 text-[0.875rem]
+                                 text-white/70 hover:border-white/35 transition-colors"
+                      title={`Ask to join ${p.name}'s squad`}
+                    >
+                      ★ {p.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <p className="text-[0.8125rem] text-white/35">
+                No open squads to join right now.
+              </p>
+            )
+          )}
+        </>
       ))}
 
-      {/* The player list. Only shown when there is somebody to invite, so an
-          empty server does not display an empty box. */}
-      {mode === 'squad' && !disabled && iAmLeader && invitable.length > 0 && (
+      {/* The player list -- the CREATE flow. Only shown when there is
+          somebody to invite, so an empty server does not display an empty
+          box; also shown while already leading a party (inviting more). */}
+      {mode === 'squad' && (inParty || subMode === 'create')
+        && !disabled && iAmLeader && invitable.length > 0 && (
         <div className="flex flex-col gap-1.5">
-          <span className="text-[0.625rem] uppercase tracking-wider text-white/35">
+          <span className="text-[0.75rem] uppercase tracking-wider text-white/35">
             Players online &mdash; select to invite
           </span>
 
@@ -179,7 +253,7 @@ export default function PartyPanel({
                   type="button"
                   onClick={() => toggle(p.src)}
                   className={
-                    'rounded-full border px-2.5 py-1 text-[0.75rem] transition-colors ' +
+                    'rounded-full border px-2.5 py-1 text-[0.875rem] transition-colors ' +
                     (on
                       ? 'border-primary bg-primary/25 text-white'
                       : 'border-white/15 text-white/70 hover:border-white/35')
