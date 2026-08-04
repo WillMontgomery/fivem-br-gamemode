@@ -63,6 +63,10 @@ export interface UiState {
    *  under GTA's pause screen and back in afterwards. */
   pauseHiding: boolean
 
+  /** True while the voluntary-leave interstitial covers the screen: black
+   *  plus a quiet "Leaving the match" while the world swaps underneath. */
+  leaving: boolean
+
   /** Queue progress while WAITING. Null until the server reports. */
   lobby: LobbyPayload | null
 
@@ -92,6 +96,7 @@ export interface UiState {
   setSummary: (s: SummaryPayload | null) => void
   setFocus: (f: FocusPayload['screen']) => void
   setPauseHiding: (v: boolean) => void
+  setLeaving: (v: boolean) => void
   setLobby: (l: LobbyPayload) => void
   setScreen: (s: ScreenPayload) => void
   setInvite: (i: InvitePayload) => void
@@ -165,6 +170,7 @@ export const useUi = create<UiState>((set, get) => {
   screen: null,
   worldReady: import.meta.env.DEV,
   pauseHiding: false,
+  leaving: false,
   invite: null,
   clockOffset: 0,
   chatOpen: false,
@@ -205,6 +211,7 @@ export const useUi = create<UiState>((set, get) => {
   setSummary:  (summary) => set({ summary }),
   setFocus:    (focus) => set({ focus }),
   setPauseHiding: (pauseHiding) => set({ pauseHiding }),
+  setLeaving: (leaving) => set({ leaving }),
   setLobby:    (lobby) => set({ lobby }),
   setScreen:   (screen) => set((s) => ({
     screen,

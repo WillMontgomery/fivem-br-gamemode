@@ -124,6 +124,7 @@ BR.Nui = {
     SCREEN    = 'screen',    -- resolution + safe zone, so the HUD can lay out
     LOBBY     = 'lobby',     -- queue progress, so waiting has a visible reason
     INVITE    = 'invite',    -- an incoming party invite
+    LEAVING   = 'leaving',   -- the voluntary-leave interstitial (black + text)
 }
 
 --- NUI -> Lua callback names, namespaced. Every one of these MUST resolve on

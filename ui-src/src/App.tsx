@@ -7,6 +7,7 @@ import Hud from './hud/Hud'
 import Chat from './chat/Chat'
 import Lobby from './screens/Lobby'
 import EndScreen from './screens/EndScreen'
+import LeaveScreen from './screens/LeaveScreen'
 import Notices from './hud/Notices'
 
 /**
@@ -50,6 +51,7 @@ export default function App() {
   // components that need to REASON about the layout -- chat and notices pick
   // their anchor by whether the radar is on screen.
   useNuiEvent('screen',   (d) => s.setScreen(d))
+  useNuiEvent('leaving',  (d) => s.setLeaving(d.show))
 
   // Lua owns focus. When it hands focus to chat, the input opens; when it takes
   // focus away, the input closes. The UI never decides this on its own.
@@ -145,6 +147,10 @@ export default function App() {
       {!tearingDown && !showLobby && <Chat barsVisible={hudUp} />}
       <Lobby visible={showLobby && !s.pauseHiding} />
       {showEnd && s.summary && <EndScreen summary={s.summary} />}
+      {/* The voluntary-leave interstitial covers EVERYTHING -- including
+          the lobby that mounts underneath it mid-trip -- until Lua says
+          the vista is real. */}
+      {s.leaving && <LeaveScreen />}
       {/* Over the WORLD, never the menu: in-match alerts land wherever the
           player is looking, but the lobby has its own feedback (chips
           resolve, panels update) and floating toasts over it read as

@@ -359,7 +359,16 @@ end)
 -- any) and set us back to LOBBY; all that is left is the physical trip.
 RegisterNetEvent(BR.Net.TO_LOBBY)
 AddEventHandler(BR.Net.TO_LOBBY, function()
+    -- THE LEAVING INTERSTITIAL (user call, 2026-08-04). A voluntary leave
+    -- used to snap straight to a half-streamed Cayo. Now: an opaque black
+    -- NUI screen with a quiet "Leaving the match" fly-up covers everything
+    -- IMMEDIATELY; the teleport and the island swap happen under it; it
+    -- lifts only once the vista genuinely exists (collision loaded, with a
+    -- hard timeout -- nobody gets parked on a black screen).
+    TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING, { show = true })
+
     BR.Spawn.toLobby()
+
     -- THE CURSOR RIDES THE TRIP HOME. The focus grant for a voluntary
     -- leaver rode the roster-delta path and at least once never landed --
     -- lobby menu up, no cursor, game still eating input (live report,
@@ -369,6 +378,25 @@ AddEventHandler(BR.Net.TO_LOBBY, function()
         if BR.State.me.state == BR.PlayerState.LOBBY then
             TriggerEvent('br:ui:pushFocus', 'lobby')
         end
+    end)
+
+    Citizen.CreateThread(function()
+        -- Give the text a beat to be read even on an instant trip, then
+        -- hold until the island is real underfoot.
+        local minUntil = GetGameTimer() + 2200
+        local deadline = GetGameTimer() + 12000
+        while GetGameTimer() < deadline do
+            local ped = PlayerPedId()
+            local p = BR.Config.Match.lobbyPos
+            local c = GetEntityCoords(ped)
+            if GetGameTimer() >= minUntil
+               and BR.Dist(c.x, c.y, p.x, p.y) < 200.0
+               and HasCollisionLoadedAroundEntity(ped) then
+                break
+            end
+            Citizen.Wait(200)
+        end
+        TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING, { show = false })
     end)
 end)
 

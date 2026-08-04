@@ -92,23 +92,41 @@ end
 ---
 --- A GPS MULTI-ROUTE, not blips: multi-routes draw straight segments
 --- between arbitrary points (unlike ordinary GPS, which snaps to roads),
---- which is the one native way to put a real line on the map -- the old
---- breadcrumb dots read as scattered debris (user call, 2026-08-04).
---- Sampled down: the multi-route point budget is small, and a flight is
---- straight runs and gentle arcs -- every ~4th path point traces it
---- faithfully.
+--- which is the one native way to put a real line on the map.
+---
+--- THE POINT BUDGET IS TINY. The first version fed it ~44 sampled path
+--- points and the engine rendered only the first handful -- "the only
+--- line on the map is to the end of the runway" (live report,
+--- 2026-08-04). The line is now the AUTHORED TOUR: start, the leg
+--- waypoints, the overrun end -- resampled down to a dozen if a tour
+--- runs long. Straight lines between waypoints are exactly what the
+--- flight is; the fillets only round the corners.
 local function drawCrumbs()
     clearCrumbs()
     if not route then return end
 
-    StartGpsMultiRoute(25, true, true)   -- hud colour 25; on foot + in vehicle
-    local pts = route.points
-    local step = math.max(1, math.floor(#pts / 40))
-    for i = 1, #pts, step do
-        AddPointToGpsMultiRoute(pts[i].x, pts[i].y, pts[i].z)
+    local line = {}
+    local p1 = route.points[1]
+    line[#line + 1] = p1
+    for _, wp in ipairs(route.waypoints or {}) do
+        line[#line + 1] = wp
     end
-    if (#pts - 1) % step ~= 0 then
-        AddPointToGpsMultiRoute(pts[#pts].x, pts[#pts].y, pts[#pts].z)
+    line[#line + 1] = route.points[#route.points]
+
+    -- Resample evenly if the tour outruns the budget.
+    local MAXPTS = 12
+    if #line > MAXPTS then
+        local sampled = {}
+        for i = 1, MAXPTS do
+            local idx = math.floor((i - 1) * (#line - 1) / (MAXPTS - 1)) + 1
+            sampled[#sampled + 1] = line[idx]
+        end
+        line = sampled
+    end
+
+    StartGpsMultiRoute(25, true, true)   -- hud colour 25; on foot + in vehicle
+    for _, p in ipairs(line) do
+        AddPointToGpsMultiRoute(p.x, p.y, p.z or 200.0)
     end
     SetGpsMultiRouteRender(true)
     routeDrawn = true

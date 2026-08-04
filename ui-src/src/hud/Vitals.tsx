@@ -55,8 +55,13 @@ export default function Vitals({ hp, armour, stamina = 100 }:
     prevHp.current = hp
   }, [hp])
 
+  // The container is BOTTOM-ANCHORED to the minimap's lower edge, so any
+  // in-flow sibling grows the box UPWARD and shoves the health row over
+  // the map (live report, 2026-08-04). The stamina bar is therefore
+  // absolutely positioned BELOW the row -- out of flow, the health bar
+  // exactly where it always was.
   return (
-    <div>
+    <div className="relative">
       <div className="flex gap-[3px] items-stretch h-[0.6rem]">
         <div className="basis-[62%] relative" title="Health">
           <Fill value={hp} colour="var(--color-hp)" />
@@ -66,18 +71,15 @@ export default function Vitals({ hp, armour, stamina = 100 }:
           <Fill value={armour} colour="var(--color-shield)" />
         </div>
       </div>
-      {/* Sprint stamina: its own full-width bar UNDER the vitals (user
-          call, 2026-08-04 -- the hair-thin strip above them was invisible).
-          Fades away entirely at full, Fortnite-style. */}
+      {/* Sprint stamina: full-width, same height as the health bar (user
+          call), hanging below the row. Fades away entirely at full,
+          Fortnite-style -- hold SPRINT while running to drain it. */}
       <div
-        className="h-[0.35rem] mt-[3px] rounded-full bg-black/50 border border-white/10 overflow-hidden transition-opacity duration-300"
-        style={{ opacity: stamina >= 99.5 ? 0 : 1 }}
+        className="absolute left-0 right-0 h-[0.6rem] transition-opacity duration-300"
+        style={{ top: 'calc(100% + 3px)', opacity: stamina >= 99.5 ? 0 : 1 }}
         title="Stamina"
       >
-        <div
-          className="bar-fill h-full rounded-full bg-white/90"
-          style={{ transform: `scaleX(${Math.max(0, Math.min(1, stamina / 100))})`, width: '100%' }}
-        />
+        <Fill value={stamina} colour="rgba(255,255,255,0.9)" />
       </div>
     </div>
   )

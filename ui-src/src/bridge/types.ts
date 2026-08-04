@@ -305,6 +305,7 @@ export type Envelope =
   | { k: 'screen';   d: ScreenPayload }
   | { k: 'lobby';    d: LobbyPayload }
   | { k: 'invite';   d: InvitePayload }
+  | { k: 'leaving';  d: { show: boolean } }
 
 export type EnvelopeKind = Envelope['k']
 

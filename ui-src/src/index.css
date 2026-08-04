@@ -243,6 +243,20 @@ html, body, #root {
   transition: opacity 5s ease-in-out;
 }
 
+/* The leave interstitial's backdrop fades in fast -- it must be opaque
+   before the world starts changing underneath. */
+@keyframes leaveIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.leave-in { animation: leaveIn 300ms ease-out both; }
+/* The same fly-up the verdict screen's late lines use, but starting almost
+   immediately -- .end-late's 3.6s delay belongs to the slam choreography,
+   not here. */
+.leave-line {
+  animation: endFlyUp 1250ms cubic-bezier(0.2, 0.9, 0.3, 1) 250ms both;
+}
+
 /* The storm bar's two states crossfade on swap, and the caught-outside
    imperative pulses. Opacity only, per the CEF rules. */
 @keyframes stormbarIn {
