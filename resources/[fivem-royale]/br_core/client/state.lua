@@ -20,6 +20,11 @@ local lastSeq = -1
 -- it -- an assignment above a later `local` would quietly write a global.
 local diedThisMatch = false
 
+-- HOW I died, from the kill feed (the one broadcast that carries a cause).
+-- The verdict slam reads it: a storm death is not an "elimination".
+local myDeathCause = nil
+local myDeathByPlayer = false
+
 -- Forward declaration. The SQUAD_UPDATE handler sits above the definition
 -- because it belongs with the other net handlers, not with the UI pushes.
 local pushSquadOrParty
@@ -225,6 +230,7 @@ AddEventHandler(BR.Net.STATE, function(d)
     -- A new match forgives old deaths.
     if d.state == BR.MatchState.WARMUP or d.state == BR.MatchState.BUS then
         diedThisMatch = false
+        myDeathCause, myDeathByPlayer = nil, false
     end
 
     pushMatchState()
@@ -242,6 +248,8 @@ AddEventHandler(BR.Net.STATE, function(d)
                 kills      = (me and me.kills) or 0,
                 won        = (me and me.placement == 1 and not diedThisMatch)
                                 or false,
+                cause      = myDeathCause,
+                byPlayer   = myDeathByPlayer,
                 total      = 0,
                 damage     = 0,
                 survivedMs = 0,
@@ -322,6 +330,29 @@ AddEventHandler(BR.Net.NOTIFY, function(n)
     TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
         text = n and n.text or '',
         tone = n and n.tone or 'info',
+    })
+end)
+
+-- Eliminations, broadcast to everyone. Forwarded to the UI's kill feed --
+-- and if the victim is ME, the cause is remembered for the verdict slam.
+RegisterNetEvent(BR.Net.KILL_FEED)
+AddEventHandler(BR.Net.KILL_FEED, function(d)
+    if not d then return end
+
+    if d.victimSrc == S.me.src then
+        myDeathCause    = d.cause
+        myDeathByPlayer = d.killerSrc ~= nil
+    end
+
+    -- Shaped to the UI's FeedEntry contract. weapon carries the cause until
+    -- M6 brings real weapon attribution.
+    TriggerEvent('br:ui:sendLocal', BR.Nui.FEED, {
+        id       = BR.Clock.now(),
+        killer   = d.killer or '',
+        victim   = d.victim or '',
+        weapon   = d.cause or '',
+        headshot = false,
+        mine     = d.victimSrc == S.me.src or d.killerSrc == S.me.src,
     })
 end)
 

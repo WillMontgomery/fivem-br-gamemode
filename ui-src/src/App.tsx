@@ -43,6 +43,10 @@ export default function App() {
   useNuiEvent('feed',     (d) => s.pushFeed(d))
   useNuiEvent('chat',     (d) => s.pushChat(d))
   useNuiEvent('toast',    (d) => s.pushNotice(d))
+  // Also consumed by useScreenMetrics (CSS variables); the store copy is for
+  // components that need to REASON about the layout -- chat and notices pick
+  // their anchor by whether the radar is on screen.
+  useNuiEvent('screen',   (d) => s.setScreen(d))
 
   // Lua owns focus. When it hands focus to chat, the input opens; when it takes
   // focus away, the input closes. The UI never decides this on its own.
@@ -88,21 +92,25 @@ export default function App() {
   // Notices still render -- "doors open" IS one.
   const ridingBus = s.hud.state === 'bus'
 
+  // Whether the vitals strip is on screen -- chat and notices fall back to
+  // its position when the radar is hidden, so they need to know.
+  const hudUp = !showLobby && !ridingBus && !tearingDown
+
   return (
     <>
       {/* Always mounted; visibility follows match state so transitions cost no
           mount work mid-fight. */}
-      <Hud visible={!showLobby && !ridingBus && !tearingDown} />
+      <Hud visible={hudUp} />
       {/* Chat vanishes with the rest of the in-match chrome the instant the
           match is decided -- a lingering kill-chatter log under the verdict
           slam reads as UI debris. The store keeps the messages; it is only
           unmounted, and remounts blank-slate clean at the lobby. */}
-      {!tearingDown && <Chat />}
+      {!tearingDown && <Chat barsVisible={hudUp} />}
       <Lobby visible={showLobby} />
       {showEnd && s.summary && <EndScreen summary={s.summary} />}
       {/* Over everything: party events and match alerts do not care which
           screen is up when they land. */}
-      <Notices />
+      <Notices barsVisible={hudUp} />
     </>
   )
 }

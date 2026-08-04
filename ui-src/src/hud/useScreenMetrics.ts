@@ -22,6 +22,14 @@ export function useScreenMetrics(): ScreenPayload | null {
     root.setProperty('--safe-y', `${d.safeY}%`)
     root.setProperty('--radar-w', `${d.radarW}rem`)
     root.setProperty('--radar-h', `${d.radarH}rem`)
+    // The minimap rectangle, in viewport percentages. Everything that anchors
+    // to the radar -- our health/shield strip, the chat column, the notice
+    // stack -- reads these, so the whole lower-left interface follows the
+    // player's safe-zone slider without any component knowing about it.
+    if (d.mapLeft != null)   root.setProperty('--map-left',   `${d.mapLeft}vw`)
+    if (d.mapBottom != null) root.setProperty('--map-bottom', `${d.mapBottom}vh`)
+    if (d.mapW != null)      root.setProperty('--map-w',      `${d.mapW}vw`)
+    if (d.mapH != null)      root.setProperty('--map-h',      `${d.mapH}vh`)
   })
 
   // Ultrawide handling, such as it can be.

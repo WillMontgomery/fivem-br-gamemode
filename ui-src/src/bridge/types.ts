@@ -150,6 +150,12 @@ export interface SummaryPayload {
   survivedMs: number
   xpEarned: number
   won: boolean
+  /** How this player died, when they did: 'storm', 'fall', 'drowned',
+   *  'burned', 'explosion', 'roadkill', or undefined/unknown. Drives the
+   *  verdict slam -- a storm death is not an "elimination". */
+  cause?: string | null
+  /** True when another player did it. */
+  byPlayer?: boolean
 }
 
 export interface ChatMessage {
@@ -175,6 +181,16 @@ export interface ScreenPayload {
   radarW: number
   radarH: number
   aspect: number
+  /** The native minimap's rectangle, in viewport percentages: left/bottom
+   *  insets and width/height. Our health bars, the chat column and the
+   *  notice stack all anchor to it -- it moves with the player's safe-zone
+   *  slider, so nothing here is hardcodeable. */
+  mapLeft?: number
+  mapBottom?: number
+  mapW?: number
+  mapH?: number
+  /** Whether the radar is currently drawn at all. */
+  radarOn?: boolean
 }
 
 /**

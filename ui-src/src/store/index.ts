@@ -12,8 +12,8 @@
 import { create } from 'zustand'
 import type {
   ChatMessage, DbnoPayload, FeedEntry, FocusPayload, HudPayload,
-  InvPayload, InvitePayload, LobbyPayload, MatchPayload, SpectatePayload, SquadPayload,
-  StormPayload, SummaryPayload, ToastPayload,
+  InvPayload, InvitePayload, LobbyPayload, MatchPayload, ScreenPayload,
+  SpectatePayload, SquadPayload, StormPayload, SummaryPayload, ToastPayload,
 } from '../bridge/types'
 
 /** Kill feed and chat are capped so a long match cannot grow the DOM forever. */
@@ -32,9 +32,15 @@ export interface UiState {
   feed: FeedEntry[]
   chat: ChatMessage[]
   /** The on-screen notice stack: party events, action results, match alerts.
-   *  Newest last; each expires on its own timer. */
-  notices: (ToastPayload & { id: number })[]
+   *  Newest last; each expires on its own timer. `ms` is that timer, kept on
+   *  the notice so the fly-in/fade-out animation can match it exactly. */
+  notices: (ToastPayload & { id: number; ms: number })[]
   focus: FocusPayload['screen']
+
+  /** Real screen metrics from the game -- including the minimap rectangle the
+   *  bars, chat and notices anchor to. Null in the browser dev harness until
+   *  the mock provides one. */
+  screen: ScreenPayload | null
 
   /** Queue progress while WAITING. Null until the server reports. */
   lobby: LobbyPayload | null
@@ -65,6 +71,7 @@ export interface UiState {
   setSummary: (s: SummaryPayload | null) => void
   setFocus: (f: FocusPayload['screen']) => void
   setLobby: (l: LobbyPayload) => void
+  setScreen: (s: ScreenPayload) => void
   setInvite: (i: InvitePayload) => void
   clearInvite: () => void
   pushFeed: (f: FeedEntry) => void
@@ -114,6 +121,7 @@ export const useUi = create<UiState>((set) => ({
   notices: [],
   focus: 'none',
   lobby: null,
+  screen: null,
   invite: null,
   clockOffset: 0,
   chatOpen: false,
@@ -140,6 +148,7 @@ export const useUi = create<UiState>((set) => ({
   setSummary:  (summary) => set({ summary }),
   setFocus:    (focus) => set({ focus }),
   setLobby:    (lobby) => set({ lobby }),
+  setScreen:   (screen) => set({ screen }),
   setInvite:   (invite) => set({ invite }),
   clearInvite: () => set({ invite: null }),
 
@@ -158,12 +167,13 @@ export const useUi = create<UiState>((set) => ({
   // notice can never take a newer one down with it.
   pushNotice: (t) => {
     const id = ++noticeId
+    const ms = t.ms ?? TOAST_MS
     setTimeout(() => {
       set((s) => (s.notices.some((n) => n.id === id)
         ? { notices: s.notices.filter((n) => n.id !== id) }
         : {}))
-    }, t.ms ?? TOAST_MS)
-    set((s) => ({ notices: [...s.notices, { ...t, id }].slice(-NOTICES_MAX) }))
+    }, ms)
+    set((s) => ({ notices: [...s.notices, { ...t, id, ms }].slice(-NOTICES_MAX) }))
   },
 
   openChat:  (chatChannel) => set({ chatOpen: true, chatChannel }),
@@ -193,3 +203,4 @@ export const selFocus    = (s: UiState) => s.focus
 export const selChatOpen = (s: UiState) => s.chatOpen
 export const selLobby    = (s: UiState) => s.lobby
 export const selNotices  = (s: UiState) => s.notices
+export const selScreen   = (s: UiState) => s.screen

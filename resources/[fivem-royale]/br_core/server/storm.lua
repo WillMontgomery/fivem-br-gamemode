@@ -42,18 +42,37 @@ end
 --- @param cy0 number
 --- @param r0 number
 --- @param now number
-local function enterPhase(phase, cx0, cy0, r0, now)
+--- @param waitSec number|nil  override the authored wait (the dynamic hold)
+local function enterPhase(phase, cx0, cy0, r0, now, waitSec)
     local p = cfg.phases[phase]
     local cx1, cy1 = BR.NextStormCentre(rng, cx0, cy0, r0, p.radius,
         cfg.edgeBiasMax, cfg.mapAABB)
 
     S.storm = BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, p.radius,
-        now, p.wait * 1000 * timeScale, p.shrink * 1000 * timeScale, p.dps)
+        now, (waitSec or p.wait) * 1000 * timeScale,
+        p.shrink * 1000 * timeScale, p.dps)
 
     print(('[br_core] storm: phase %d -- r %.0f -> %.0f, holds %.0fs, shrinks %.0fs, %.1f dps')
         :format(phase, r0, p.radius,
                 S.storm.tWait / 1000, S.storm.tShrink / 1000, p.dps))
     publish()
+end
+
+--- The opening circle covers the WHOLE playable map: distance from the anchor
+--- to the farthest bounds corner, floored at radius0. Nobody can land outside
+--- circle 1, so "I spawned already dying" is structurally impossible -- the
+--- first shrink is what brings the map in toward the anchor.
+--- @param ax number
+--- @param ay number
+--- @return number
+local function openingRadius(ax, ay)
+    local A = cfg.mapAABB
+    local r = cfg.radius0
+    r = math.max(r, BR.Dist(ax, ay, A.min.x, A.min.y))
+    r = math.max(r, BR.Dist(ax, ay, A.min.x, A.max.y))
+    r = math.max(r, BR.Dist(ax, ay, A.max.x, A.min.y))
+    r = math.max(r, BR.Dist(ax, ay, A.max.x, A.max.y))
+    return r + (cfg.openMargin or 200.0)
 end
 
 --- Start the storm. Called when the match goes PLAYING: the clock starts at
@@ -75,9 +94,27 @@ function BR.Storm.begin()
     rng   = BR.Rng(GetGameTimer() + BR.Server.matchId * 7919)
     carry = {}
 
-    print(('[br_core] storm: homing on %s (%.0f, %.0f)'):format(
-        tostring(a.name), a.x, a.y))
-    enterPhase(1, a.x, a.y, cfg.radius0, GetGameTimer())
+    -- The free-loot hold is scaled to the FURTHEST player from the anchor at
+    -- the moment the match goes live: whoever took the tour to its far end
+    -- gets time priced for their run, and everyone shares it. Positions are
+    -- the server's own samples; a player without one yet just doesn't
+    -- lengthen the hold.
+    local furthest = 0.0
+    BR.Roster.each(
+        function(e) return BR.Server.isInMatch(e.state) end,
+        function(_, e)
+            if e.pos then
+                local d = BR.Dist(e.pos.x, e.pos.y, a.x, a.y)
+                if d > furthest then furthest = d end
+            end
+        end)
+    local holdSec = BR.Clamp(furthest / cfg.hold.metersPerSec,
+        cfg.phases[1].wait, cfg.hold.maxSeconds)
+
+    local r0 = openingRadius(a.x, a.y)
+    print(('[br_core] storm: homing on %s (%.0f, %.0f) -- opening r %.0f, hold %.0fs (furthest %.0fm)')
+        :format(tostring(a.name), a.x, a.y, r0, holdSec, furthest))
+    enterPhase(1, a.x, a.y, r0, GetGameTimer(), holdSec)
 end
 
 --- Which player states the storm can hurt. Airborne players are untouchable

@@ -85,6 +85,18 @@ export function startMockDriver(): void {
     },
   })
 
+  // Screen metrics as the game would report them at 1080p, default safe
+  // zone -- so the minimap-anchored layout (bars/chat/notices) is exercised
+  // in the browser too.
+  emit({
+    k: 'screen',
+    d: {
+      width: 1920, height: 1080, safeX: 2.2, safeY: 3.2,
+      radarW: 25, radarH: 12.5, aspect: 16 / 9,
+      mapLeft: 2.2, mapBottom: 3.2, mapW: 20.8, mapH: 19.5, radarOn: true,
+    },
+  })
+
   // Vitals drift, so the bars and their transitions can be seen working.
   let hp = 82, armour = 45, kills = 3, alive = 23
   window.setInterval(() => {

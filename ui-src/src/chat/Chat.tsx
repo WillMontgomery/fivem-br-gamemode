@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useUi, selChat, selChatOpen } from '../store'
+import { useUi, selChat, selChatOpen, selScreen } from '../store'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 import type { ChatChannel, ChatMessage } from '../bridge/types'
@@ -60,12 +60,13 @@ function Line({ msg }: { msg: ChatMessage }) {
   )
 }
 
-export default function Chat() {
+export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) {
   const messages = useUi(selChat)
   const open = useUi(selChatOpen)
   const channel = useUi((s) => s.chatChannel)
   const closeChat = useUi((s) => s.closeChat)
   const openChat = useUi((s) => s.openChat)
+  const screen = useUi(selScreen)
 
   const [draft, setDraft] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -123,21 +124,26 @@ export default function Chat() {
   const visible = messages.length > 0 || open
   const logOpacity = !visible ? 0 : open ? 1 : faded ? 0 : RESTING_OPACITY
 
+  // WHERE THE CHAT SITS -- the ladder, per design:
+  //   1. Minimap on screen: directly above it, left edges aligned. The
+  //      minimap rect comes from the game (--map-* variables), so this
+  //      follows the player's safe-zone slider.
+  //   2. Minimap hidden but the vitals strip showing: just above the strip
+  //      (which occupies the minimap's old lower edge).
+  //   3. Both hidden: dropped to the strip's own line.
+  const radarOn = screen?.radarOn ?? true
+  const bottom = radarOn
+    ? 'calc(var(--map-bottom) + var(--map-h) + 0.75rem)'
+    : barsVisible
+      ? 'calc(var(--map-bottom) + 1.6rem)'
+      : 'var(--map-bottom)'
+
   return (
-    // Chat lives in its own `.hud-safe` box rather than positioning against the
-    // raw viewport.
-    //
-    // That matters on ultrawide: `.hud-safe` is clamped past ~21:9, so the squad
-    // panel and radar get pulled in from the extreme edge. Positioning chat
-    // against the viewport instead left it sitting 200px further left than the
-    // column it belongs to at 3440x1440. Sharing the box keeps the left column
-    // -- squad, chat, radar -- aligned at every aspect ratio.
-    <div className="hud-safe">
     <div
-      className="absolute w-[28.75rem] max-w-[38vw]"
+      className="fixed w-[28.75rem] max-w-[38vw]"
       style={{
-        left: 'var(--safe-x)',
-        bottom: 'calc(var(--safe-y) + var(--radar-h) + 1rem)',
+        left: 'var(--map-left)',
+        bottom,
       }}
     >
       <div
@@ -212,7 +218,6 @@ export default function Chat() {
           </span>
         </div>
       )}
-    </div>
     </div>
   )
 }

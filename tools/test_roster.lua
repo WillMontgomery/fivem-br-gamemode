@@ -1990,6 +1990,14 @@ do
     BR.Sched.step(fakeTime)
     ok(BR.Server.match.state == BR.MatchState.WARMUP, 'warmup starts')
 
+    -- Stand both players ON the anchor before the match goes live, so the
+    -- distance-scaled hold bottoms out at its 120s minimum and the timing
+    -- assertions below stay exact. The far-player case has its own block.
+    local a0 = BR.Server.matchAnchor
+    setPos(1, a0.x, a0.y); setPos(2, a0.x, a0.y)
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)   -- the position sampler picks them up
+
     sent = {}
     fakeTime = fakeTime + 1000
     BR.Match.transition(BR.MatchState.PLAYING)
@@ -1999,8 +2007,21 @@ do
     ok(rec ~= nil, 'PLAYING starts the storm')
     ok(rec.phase == 1, 'phase 1 is entered directly -- the hold IS its wait')
     ok(rec.cx0 == a.x and rec.cy0 == a.y, 'the opening circle sits on the match anchor')
-    ok(rec.r0 == BR.Config.Storm.radius0, 'at the opening radius')
-    ok(rec.tWait == 120000.0, 'the 120s free-loot hold is on the wire')
+
+    -- THE OPENING CIRCLE COVERS THE WHOLE MAP: every playable-bounds corner
+    -- inside, so "landed outside circle 1, bleeding on arrival" is
+    -- structurally impossible (live report, 2026-08-02).
+    local A = BR.Config.Storm.mapAABB
+    local cornersIn = true
+    for _, c in ipairs({ { A.min.x, A.min.y }, { A.min.x, A.max.y },
+                         { A.max.x, A.min.y }, { A.max.x, A.max.y } }) do
+        if BR.Dist(a.x, a.y, c[1], c[2]) > rec.r0 then cornersIn = false end
+    end
+    ok(cornersIn, 'the opening circle contains the whole playable map')
+    ok(rec.r0 >= BR.Config.Storm.radius0, 'and never shrinks below the radius0 floor')
+
+    ok(rec.tWait == 120000.0,
+        'players at the anchor get the minimum 120s free-loot hold')
     ok(rec.r1 == BR.Config.Storm.phases[1].radius,
         'the first target circle is known the moment the match goes live')
     ok(BR.Dist(rec.cx0, rec.cy0, rec.cx1, rec.cy1) + rec.r1 <= rec.r0 + 1e-6,
@@ -2019,9 +2040,11 @@ do
         'snapshots carry the storm record for late joiners')
     leave(5)
 
-    -- Damage targeting: 1 stands at the anchor (inside), 2 far out at sea.
+    -- Damage targeting: 1 stands at the anchor (inside), 2 beyond even the
+    -- full-map opening circle (a spot no real player can reach, which is the
+    -- point -- it stays outside through every assertion below).
     setPos(1, a.x, a.y)
-    setPos(2, a.x + BR.Config.Storm.radius0 + 4000.0, a.y)
+    setPos(2, a.x + rec.r0 + 4000.0, a.y)
 
     -- THE FREE-LOOT HOLD IS FREE: during phase 1's wait, being outside
     -- circle 1 costs nothing -- no wire damage, no ledger. Live report
@@ -2099,6 +2122,48 @@ do
         'no storm keeps running past the match')
 
     pedHealth[1002] = nil
+end
+
+describe('match.storm.hold')
+do
+    -- The free-loot hold is priced for the FURTHEST player: whoever rode the
+    -- tour to its far end gets time to cross toward the anchor. 1800m at the
+    -- configured 9 m/s is exactly 200 seconds -- between the 120s floor and
+    -- the 300s cap, so this pins the formula itself, not a clamp.
+    reset()
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+
+    local a = BR.Server.matchAnchor
+    setPos(1, a.x + 1800.0, a.y)
+    setPos(2, a.x, a.y)
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+
+    BR.Match.transition(BR.MatchState.PLAYING)
+    local rec = BR.Server.storm
+    ok(math.abs(rec.tWait - 200000.0) < 1500.0,
+        'the hold is priced for the furthest player (1800m / 9mps = 200s)',
+        ('tWait %.0fms'):format(rec.tWait))
+
+    -- The cap: nobody waits five minutes-plus no matter how far out the
+    -- drop was.
+    BR.Match.transition(BR.MatchState.ENDED)
+    BR.Match.transition(BR.MatchState.CLEANUP)
+    BR.Match.transition(BR.MatchState.WAITING)
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    a = BR.Server.matchAnchor
+    setPos(1, a.x + 9000.0, a.y)
+    setPos(2, a.x, a.y)
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    BR.Match.transition(BR.MatchState.PLAYING)
+    ok(BR.Server.storm.tWait == BR.Config.Storm.hold.maxSeconds * 1000.0,
+        'a very distant player hits the hold cap, not a five-minute wait',
+        ('tWait %.0fms'):format(BR.Server.storm.tWait))
 end
 
 describe('match.storm.cleanup')

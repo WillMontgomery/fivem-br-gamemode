@@ -84,12 +84,16 @@ export default function Hud({ visible }: { visible: boolean }) {
           <SquadPanel squad={squad} />
         </div>
 
-        {/* Vitals sit to the RIGHT of the reserved radar footprint. */}
+        {/* Vitals sit exactly where GTA's own minimap strip was: overlapping
+            the radar's lower edge, spanning its width. Positioned FIXED
+            against the viewport (not inside hud-safe's padding) because the
+            --map-* variables are viewport-true coordinates of the real radar. */}
         <div
-          className="absolute w-[20rem]"
+          className="fixed"
           style={{
-            bottom: 'var(--safe-y)',
-            left: 'calc(var(--safe-x) + var(--radar-w) + 1.5rem)',
+            left: 'var(--map-left)',
+            bottom: 'calc(var(--map-bottom) + 0.3rem)',
+            width: 'var(--map-w)',
           }}
         >
           <Vitals hp={hud.hp} armour={hud.armour} />

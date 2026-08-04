@@ -57,9 +57,14 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     end
 
     TriggerClientEvent(BR.Net.KILL_FEED, -1, {
-        killer   = killer and killer.name or nil,
-        victim   = entry.name,
-        cause    = cause,
+        killer    = killer and killer.name or nil,
+        killerSrc = killer and killerSrc or nil,
+        victim    = entry.name,
+        -- The src matters to exactly one consumer: the victim's own client,
+        -- which needs to know HOW it died to pick the right verdict slam --
+        -- a storm death is not an "elimination" and should not read as one.
+        victimSrc = src,
+        cause     = cause,
         placement = placement,
     })
 
@@ -70,6 +75,35 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     BR.Server.systemMessage(killer
         and ('%s eliminated %s'):format(killer.name, entry.name)
         or  ('%s was eliminated'):format(entry.name))
+end
+
+--- What GET_PED_CAUSE_OF_DEATH's weapon hash means in words.
+---
+--- The client reports the raw hash; translating it HERE keeps the wire format
+--- dumb and the mapping in one place. Built lazily because GetHashKey is what
+--- computes the keys (a raw hash literal in source broke luac once already),
+--- and normalised to unsigned because hash sign conventions differ between
+--- the native's return and Lua's arithmetic.
+local causeByHash = nil
+
+local function describeCause(raw)
+    if type(raw) ~= 'number' then
+        return (type(raw) == 'string') and raw or 'unknown'
+    end
+    if not causeByHash then
+        causeByHash = {}
+        local function put(weapon, key)
+            causeByHash[GetHashKey(weapon) & 0xFFFFFFFF] = key
+        end
+        put('WEAPON_FALL',                 'fall')
+        put('WEAPON_DROWNING',             'drowned')
+        put('WEAPON_DROWNING_IN_VEHICLE',  'drowned')
+        put('WEAPON_FIRE',                 'burned')
+        put('WEAPON_EXPLOSION',            'explosion')
+        put('WEAPON_RAMMED_BY_CAR',        'roadkill')
+        put('WEAPON_RUN_OVER_BY_CAR',      'roadkill')
+    end
+    return causeByHash[raw & 0xFFFFFFFF] or 'unknown'
 end
 
 --- Client-reported death. A hint, not an instruction.
@@ -89,10 +123,17 @@ AddEventHandler(BR.Net.PLAYER_DIED, function(data)
         return
     end
 
+    -- A recent storm tick outranks whatever the engine blames: the finishing
+    -- blow of a storm death often reads as generic damage.
+    local cause = describeCause(data and data.cause)
+    if entry.lastStormAt and (GetGameTimer() - entry.lastStormAt) < 3000 then
+        cause = 'storm'
+    end
+
     -- Resolving the killer from a network id is left to M6, where it can be
     -- validated properly against weapon, distance and fire rate. Crediting a
     -- kill on an unvalidated client claim would be trivially forgeable.
-    BR.Combat.eliminate(src, (data and data.cause) or 'unknown', nil)
+    BR.Combat.eliminate(src, cause, nil)
 end)
 
 --- Independent confirmation from server-side health.

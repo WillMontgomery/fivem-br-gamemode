@@ -34,8 +34,24 @@ BR.Config.Storm = {
         widenMax  = 4000.0,
     },
 
-    radius0     = 3500.0,   -- opening circle
+    -- The opening circle COVERS THE WHOLE MAP: its radius is computed per
+    -- match as the distance from the anchor to the farthest playable-bounds
+    -- corner (plus a margin), so nobody can land outside circle 1 -- a far
+    -- tour-end jumper starts inside like everyone else, and the first shrink
+    -- sweeps the map inward toward the anchor. radius0 is the FLOOR on that
+    -- computation, not the radius itself.
+    radius0     = 3500.0,
+    openMargin  = 200.0,
     edgeBiasMax = 0.55,     -- how far off-centre the next circle may sit (0..1)
+
+    -- The free-loot hold stretches with the match: phase 1's wait is scaled
+    -- to how far the FURTHEST player is from the anchor at the moment the
+    -- match goes live -- fair to whoever dropped at the wrong end of the
+    -- tour. phases[1].wait is the minimum; this is the rate and the cap.
+    hold = {
+        metersPerSec = 9.0,     -- assumed cross-map travel speed
+        maxSeconds   = 300.0,
+    },
 
     -- Playable bounds, describing the LAND we want fights to happen on.
     --
@@ -85,12 +101,21 @@ BR.Config.Storm = {
     -- huge scale values produce broken geometry with no depth sorting. Instead we
     -- draw only the arc nearest the player, out of type-1 vertical cylinders.
     render = {
-        wallRenderDist = 250.0,  -- don't draw the wall beyond this distance
-        segments       = 40,     -- markers per frame; ~0.1ms, a full circle is not affordable
-        spanDeg        = 120.0,  -- arc width centred on the nearest point
+        wallRenderDist = 300.0,  -- don't draw the wall when the EDGE is beyond this
+        segments       = 48,     -- markers per frame; ~0.1ms, bounded regardless of radius
+        -- How far ALONG the wall to draw, in metres of arc either side of the
+        -- nearest point. The span angle is derived from this per frame
+        -- (span = visDist / r), so a big circle gets a shallow arc and a
+        -- small one wraps all the way around -- the fixed 120-degree span
+        -- visibly ENDED mid-screen inside late circles.
+        wallVisDist    = 700.0,
         height         = 300.0,  -- scaleZ, tall enough to span the visible vertical band
         colour         = { r = 150, g = 70, b = 255 },
-        alpha          = 110,    -- segments must not overlap or alpha banding looks awful
+        alpha          = 110,
+        -- Neighbouring cylinders should MEET, barely: heavy overlap doubles
+        -- the additive alpha where they cross and renders as dark vertical
+        -- banding -- the "stripes" of the first in-game wall.
+        overlap        = 1.05,
         groundCacheSec = 1.0,    -- GetGroundZFor_3dCoord is slow; sample once per second
         fallbackZDrop  = 150.0,  -- if ground Z is unavailable, anchor below the camera
     },

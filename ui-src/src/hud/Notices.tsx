@@ -1,17 +1,23 @@
-import { useUi, selNotices } from '../store'
+import { useUi, selNotices, selScreen } from '../store'
 import type { ToastPayload } from '../bridge/types'
 
 /**
  * The notification stack.
  *
  * One place for everything that happens TO the player: party events, action
- * results, match alerts. Before this there was a single toast slot buried in
- * the party panel -- so a notice arriving during a match had nowhere to render,
- * and two notices in quick succession showed only the second.
+ * results, match alerts. Rendered over BOTH the lobby and the HUD, because the
+ * events it carries do not care which screen is up.
  *
- * Rendered over BOTH the lobby and the HUD, because the events it carries do
- * not care which screen is up: "Kestrel declined your invite" can land while
- * you are already dropping.
+ * WHERE IT SITS -- the ladder, per design:
+ *   1. Minimap on screen: tucked against its bottom-right corner, growing
+ *      upward. The rect comes from the game (--map-* variables).
+ *   2. Minimap hidden but the vitals strip showing: above the strip, aligned
+ *      to the minimap's left edge.
+ *   3. Both hidden: on the strip's own line.
+ *
+ * Each notice FLIES IN from the left and FADES OUT at the end of its own
+ * lifetime -- the animation length is driven by the same `ms` the store uses
+ * to remove it, so nothing ever blinks out mid-fade.
  *
  * pointer-events: none -- notices are never interactive, so they must never
  * steal a click from the game or the lobby beneath them.
@@ -24,20 +30,43 @@ const TONE_COLOUR: Record<NonNullable<ToastPayload['tone']>, string> = {
   danger:  'var(--color-danger)',
 }
 
-export default function Notices() {
+/** How long the fade-out at the end of a notice's life runs. Kept in sync
+ *  with the `noticeOut` keyframes duration below in index.css. */
+const FADE_OUT_MS = 450
+
+export default function Notices({ barsVisible = true }: { barsVisible?: boolean }) {
   const notices = useUi(selNotices)
+  const screen = useUi(selScreen)
   if (notices.length === 0) return null
+
+  const radarOn = screen?.radarOn ?? true
+
+  const pos = radarOn
+    ? {
+        left: 'calc(var(--map-left) + var(--map-w) + 0.6rem)',
+        bottom: 'var(--map-bottom)',
+      }
+    : {
+        left: 'var(--map-left)',
+        bottom: barsVisible
+          ? 'calc(var(--map-bottom) + 1.6rem)'
+          : 'var(--map-bottom)',
+      }
 
   return (
     <div
-      className="fixed left-1/2 -translate-x-1/2 flex flex-col items-center gap-1.5"
-      style={{ bottom: '18%', pointerEvents: 'none', zIndex: 40 }}
+      className="fixed flex flex-col-reverse items-start gap-1.5"
+      style={{ ...pos, pointerEvents: 'none', zIndex: 40 }}
     >
-      {notices.map((n) => (
+      {[...notices].reverse().map((n) => (
         <div
           key={n.id}
-          className="rise panel px-3.5 py-1.5 text-[0.8125rem] text-white/85"
-          style={{ borderLeft: `2px solid ${TONE_COLOUR[n.tone ?? 'info']}` }}
+          className="panel px-3.5 py-1.5 text-[0.8125rem] text-white/85"
+          style={{
+            borderLeft: `2px solid ${TONE_COLOUR[n.tone ?? 'info']}`,
+            animation: `noticeIn 220ms cubic-bezier(0.2, 0.9, 0.3, 1) both, `
+                     + `noticeOut ${FADE_OUT_MS}ms ease-in ${Math.max(0, n.ms - FADE_OUT_MS)}ms both`,
+          }}
         >
           {n.text}
         </div>

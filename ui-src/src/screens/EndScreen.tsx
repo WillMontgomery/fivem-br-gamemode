@@ -15,7 +15,31 @@ import type { SummaryPayload } from '../bridge/types'
  * placeholder M7's full Victory Royale screen replaces -- placement and
  * kills are real, the rest of the summary payload arrives with stats.
  */
+/**
+ * What the slam says when you lost, by how you lost.
+ *
+ * "ELIMINATED" is reserved for another player doing it -- getting outrun by
+ * a wall of purple or stepping off a cliff is not an elimination and reads
+ * as a lie when the screen calls it one. Everything else gets the energy of
+ * a GTA death with the honesty of a cause, and the generic environmental
+ * fallback is the franchise's own word for it.
+ */
+function slamText(summary: SummaryPayload): string {
+  if (summary.byPlayer) return 'ELIMINATED'
+  switch (summary.cause) {
+    case 'storm':     return 'COOKED BY THE STORM'
+    case 'fall':      return 'GRAVITY WINS'
+    case 'drowned':   return 'SLEPT WITH THE FISHES'
+    case 'burned':    return 'EXTRA CRISPY'
+    case 'explosion': return 'BLOWN TO BITS'
+    case 'roadkill':  return 'SPEED BUMP'
+    default:          return 'WASTED'
+  }
+}
+
 export default function EndScreen({ summary }: { summary: SummaryPayload }) {
+  const slam = slamText(summary)
+
   return (
     <div className="fixed inset-0">
       {/* The backdrop is its own layer so the slam happens over nothing --
@@ -34,8 +58,12 @@ export default function EndScreen({ summary }: { summary: SummaryPayload }) {
               VICTORY ROYALE
             </h1>
           ) : (
-            <h1 className="end-slam text-8xl font-black tracking-tight text-white/95">
-              ELIMINATED
+            <h1
+              className={`end-slam font-black tracking-tight text-white/95 ${
+                slam.length > 12 ? 'text-6xl' : 'text-8xl'
+              }`}
+            >
+              {slam}
             </h1>
           )}
 

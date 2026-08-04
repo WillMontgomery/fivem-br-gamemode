@@ -1,53 +1,47 @@
 /**
- * Health and shield bars.
+ * Health and shield, drawn where GTA's own minimap strip used to be.
  *
- * Both bars animate with `transform: scaleX()`, never `width`. Width animates on
- * the layout thread and costs real frames every time damage lands, which is
- * precisely when frames matter most. The CSS transition does the interpolation,
- * so React only re-renders when the server pushes a new value (~10 Hz), not per
- * frame.
+ * The stock bars are hidden game-side (SETUP_HEALTH_ARMOUR on the minimap
+ * scaleform -- they also disagreed with our numbers, because they draw the
+ * raw engine range). These render in their place: same layout language as
+ * the original -- health left, shield right, one slim row spanning the
+ * minimap's width -- in our own visual style, anchored to the real minimap
+ * rectangle via the --map-* variables so the safe-zone slider moves us with
+ * the radar.
+ *
+ * Both fills animate with `transform: scaleX()`, never `width`. Width
+ * animates on the layout thread and costs real frames every time damage
+ * lands, which is precisely when frames matter most.
  */
-function Bar({
-  value, max, colour, label,
-}: { value: number; max: number; colour: string; label: string }) {
-  const pct = Math.max(0, Math.min(1, value / max))
-
+function Fill({ value, colour }: { value: number; colour: string }) {
+  const pct = Math.max(0, Math.min(1, value / 100))
   return (
-    <div className="mb-1.5">
-      <div className="flex justify-between items-baseline mb-0.5">
-        <span className="text-[0.625rem] uppercase tracking-[0.18em] text-white/45">
-          {label}
-        </span>
-        <span className="text-sm font-semibold tabular-nums text-white/90">
-          {Math.round(value)}
-        </span>
-      </div>
-      <div className="h-2.5 rounded-full bg-black/55 border border-white/10 overflow-hidden">
-        <div
-          className="bar-fill h-full rounded-full"
-          style={{
-            transform: `scaleX(${pct})`,
-            width: '100%',
-            // The shading is a black overlay rather than color-mix(), which
-            // FiveM's CEF may not parse. An unparseable background is not a
-            // fallback -- the declaration is dropped and the bar renders
-            // invisible, which is exactly what happened: health read 100 with
-            // no green bar behind it.
-            backgroundColor: colour,
-            backgroundImage:
-              'linear-gradient(90deg, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0) 60%)',
-          }}
-        />
-      </div>
+    <div className="h-full w-full rounded-full bg-black/60 border border-white/10 overflow-hidden">
+      <div
+        className="bar-fill h-full rounded-full"
+        style={{
+          transform: `scaleX(${pct})`,
+          width: '100%',
+          // Black overlay shading, not color-mix() -- FiveM's CEF drops what
+          // it cannot parse and the bar simply vanishes.
+          backgroundColor: colour,
+          backgroundImage:
+            'linear-gradient(90deg, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0) 60%)',
+        }}
+      />
     </div>
   )
 }
 
 export default function Vitals({ hp, armour }: { hp: number; armour: number }) {
   return (
-    <div className="panel px-3.5 py-3">
-      <Bar value={armour} max={100} colour="var(--color-shield)" label="Shield" />
-      <Bar value={hp}     max={100} colour="var(--color-hp)"     label="Health" />
+    <div className="flex gap-[3px] items-stretch h-[0.6rem]">
+      <div className="basis-[62%]" title="Health">
+        <Fill value={hp} colour="var(--color-hp)" />
+      </div>
+      <div className="basis-[38%]" title="Shield">
+        <Fill value={armour} colour="var(--color-shield)" />
+      </div>
     </div>
   )
 }

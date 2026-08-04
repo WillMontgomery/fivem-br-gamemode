@@ -3,23 +3,22 @@ import { useUi } from '../store'
 import type { StormPayload } from '../bridge/types'
 
 /**
- * Storm phase readout and countdown.
+ * Storm readout: a label and a countdown. Nothing else, deliberately --
+ * the arrow this used to carry pointed relative to the PED, not the camera,
+ * which read as wrong more often than right; direction now lives on the
+ * minimap itself (a purple centre blip that clamps to the minimap's edge
+ * when the circle is off-screen), and phase/radius numbers were dashboard
+ * detail nobody rotates by.
  *
- * The countdown is the clearest example of the performance rule in this project:
- * it updates every frame, but it does NOT go through React. One requestAnimationFrame
- * loop writes directly to a DOM node via a ref. Driving it with setState would
- * re-render this component 60 times a second for a number that occupies about
- * forty pixels.
- *
- * The value is computed locally from `endsAt`, a server timestamp. The server
- * sends that once per phase change -- it never ticks a countdown over the bridge.
+ * The countdown updates every frame but does NOT go through React: one
+ * requestAnimationFrame loop writes to a DOM node via a ref. The value is
+ * computed locally from `endsAt`, a server timestamp, against the synced
+ * clock offset -- the server never ticks a countdown over the bridge.
  */
 export default function StormBar({ storm }: { storm: StormPayload | null }) {
   const timeRef = useRef<HTMLSpanElement>(null)
-  const arrowRef = useRef<HTMLDivElement>(null)
   const offset = useUi((s) => s.clockOffset)
   const endsAt = storm?.endsAt ?? 0
-  const bearing = storm?.bearing ?? 0
 
   useEffect(() => {
     if (!endsAt) return
@@ -39,55 +38,36 @@ export default function StormBar({ storm }: { storm: StormPayload | null }) {
         // Only touch the DOM when the rendered text actually changes.
         if (node.textContent !== next) node.textContent = next
       }
-      if (arrowRef.current) {
-        arrowRef.current.style.transform = `rotate(${bearing}deg)`
-      }
       raf = requestAnimationFrame(tick)
     }
 
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [endsAt, bearing])
+  }, [endsAt, offset])
 
   if (!storm) return null
 
   const shrinking = storm.phaseState === 'shrinking'
-  const outside = storm.edgeDistance > 0
+  const hurting = storm.edgeDistance > 0 && (storm.dps ?? 0) > 0
 
   return (
-    <div className="panel px-4 py-2 flex items-center gap-3 min-w-[15rem]">
-      <div
-        ref={arrowRef}
-        className="w-5 h-5 shrink-0 transition-transform duration-150"
-        style={{ color: outside ? 'var(--color-danger)' : 'var(--color-storm)' }}
-        title="Direction to the safe zone"
+    <div className="panel px-4 py-2 flex items-baseline gap-3">
+      <span
+        className="text-[0.625rem] uppercase tracking-[0.18em]"
+        style={{ color: hurting ? 'var(--color-danger)' : 'rgba(255,255,255,0.45)' }}
       >
-        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-          <path d="M12 2 L19 20 L12 16 L5 20 Z" />
-        </svg>
-      </div>
-
-      <div className="flex-1">
-        <div className="flex items-baseline justify-between gap-3">
-          <span className="text-[0.625rem] uppercase tracking-[0.18em] text-white/45">
-            {shrinking ? 'Storm closing' : `Phase ${storm.phase}`}
-          </span>
-          <span
-            ref={timeRef}
-            className="text-lg font-bold tabular-nums leading-none"
-            style={{ color: shrinking ? 'var(--color-storm)' : 'white' }}
-          >
-            --
-          </span>
-        </div>
-        <div className="text-[0.6875rem] text-white/55 mt-0.5">
-          {outside
-            ? <span style={{ color: 'var(--color-danger)' }}>
-                {Math.round(storm.edgeDistance)}m outside &mdash; move
-              </span>
-            : <span>{Math.round(-storm.edgeDistance)}m inside &middot; r {Math.round(storm.radius)}m</span>}
-        </div>
-      </div>
+        {hurting ? 'In the storm' : shrinking ? 'Storm closing' : 'Storm'}
+      </span>
+      <span
+        ref={timeRef}
+        className="text-lg font-bold tabular-nums leading-none"
+        style={{
+          color: hurting ? 'var(--color-danger)'
+               : shrinking ? 'var(--color-storm)' : 'white',
+        }}
+      >
+        --
+      </span>
     </div>
   )
 }

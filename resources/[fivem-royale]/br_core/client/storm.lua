@@ -50,17 +50,22 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     local dist = BR.Dist(p.x, p.y, cx, cy)
     if math.abs(dist - r) > cfg.render.wallRenderDist then return end
 
-    -- The arc nearest the player: segments spread over spanDeg centred on
-    -- the bearing from the circle's centre through the player.
+    -- The arc nearest the player, centred on the bearing from the circle's
+    -- centre through the player. The SPAN IS DERIVED FROM ARC LENGTH, not a
+    -- fixed angle: a fixed 120 degrees was 7km of wall on the opening circle
+    -- and only a third of the way around a late one -- the wall visibly
+    -- ENDED mid-screen inside small circles. wallVisDist metres each way,
+    -- wrapping into a full ring once the circle is small enough.
+    local rr = cfg.render
     local base = math.atan(p.y - cy, p.x - cx)
-    local span = math.rad(cfg.render.spanDeg)
-    local segs = cfg.render.segments
-    local step = span / (segs - 1)
+    local halfSpan = math.min(math.pi, rr.wallVisDist / math.max(r, 1.0))
+    local segs = rr.segments
+    local step = (halfSpan * 2.0) / segs
 
-    -- Segment width: the chord each marker must cover, padded slightly so
-    -- neighbours meet. (They must MEET, not overlap -- overlapping additive
-    -- alpha renders as banding, which is why alpha rides config.)
-    local w = (r * step) * 1.15
+    -- Segment width: the chord each marker covers, padded only just enough
+    -- to meet its neighbour. Generous overlap doubled the additive alpha at
+    -- every seam and rendered as dark vertical banding -- the "stripes".
+    local w = (r * step) * (rr.overlap or 1.05)
 
     local now = GetGameTimer()
     if now - groundAt > cfg.render.groundCacheSec * 1000 then
@@ -74,14 +79,14 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     -- gap under it; without a ground answer, hang it off the player's own z.
     local zBase = (groundZ or (p.z - cfg.render.fallbackZDrop)) - 50.0
 
-    local col = cfg.render.colour
+    local col = rr.colour
     for i = 0, segs - 1 do
-        local theta = base - span * 0.5 + step * i
+        local theta = base - halfSpan + step * (i + 0.5)
         DrawMarker(1,
             cx + math.cos(theta) * r, cy + math.sin(theta) * r, zBase,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            w, w, cfg.render.height + 50.0,
-            col.r, col.g, col.b, cfg.render.alpha,
+            w, w, rr.height + 50.0,
+            col.r, col.g, col.b, rr.alpha,
             false, false, 2, false, nil, nil, false)
     end
 end)
@@ -89,6 +94,7 @@ end)
 -- ----------------------------------------------------- blips, FX, envelope ---
 
 local curBlip, nextBlip = nil, nil
+local dirBlip = nil       -- centre marker: clamps to the minimap edge = direction home
 local lastBlipAt = 0
 local lastBlipR = -1.0
 local fxOn = false
@@ -98,6 +104,7 @@ local lastPush = 0
 local function clearBlips()
     if curBlip then RemoveBlip(curBlip) curBlip = nil end
     if nextBlip then RemoveBlip(nextBlip) nextBlip = nil end
+    if dirBlip then RemoveBlip(dirBlip) dirBlip = nil end
     lastBlipR = -1.0
 end
 
@@ -178,11 +185,31 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
             lastBlipR = r
             curBlip = BR.Native.radiusBlip(curBlip, cx, cy, r,
                 cfg.blip.currentColour, cfg.blip.currentAlpha)
+            -- REBUILT TOGETHER, ALWAYS IN THIS ORDER. The target ring used to
+            -- be created once and left alone -- so every current-circle
+            -- rebuild landed ON TOP of it, then the next phase put it back on
+            -- top, and the purple ring read as flashing on the map. Blips
+            -- draw in creation order; recreating both keeps purple above.
+            if nextBlip then RemoveBlip(nextBlip) nextBlip = nil end
         end
-        -- The next circle is static for the whole record; draw it once.
         if not nextBlip and rec.r1 > 1.0 then
             nextBlip = BR.Native.radiusBlip(nil, rec.cx1, rec.cy1, rec.r1,
                 cfg.blip.nextColour, cfg.blip.nextAlpha)
+        end
+
+        -- The direction home, ON the minimap: a plain coordinate blip at the
+        -- live circle's centre. Long-range, so when the centre is off the
+        -- minimap it clamps to the minimap's edge -- a heading that rotates
+        -- with the map itself, which the HUD's screen-space arrow never got
+        -- right (it pointed relative to the PED, not the camera).
+        if not dirBlip or not DoesBlipExist(dirBlip) then
+            dirBlip = AddBlipForCoord(cx, cy, 0.0)
+            SetBlipSprite(dirBlip, 1)
+            SetBlipColour(dirBlip, cfg.blip.nextColour)
+            SetBlipScale(dirBlip, 0.65)
+            SetBlipAsShortRange(dirBlip, false)
+        else
+            SetBlipCoords(dirBlip, cx, cy, 0.0)
         end
     end
 
