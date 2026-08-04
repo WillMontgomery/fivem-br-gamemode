@@ -1716,6 +1716,15 @@ do
         if BR.Dist(w.x, w.y, anch.x, anch.y) <= bandMax then anchNear = true end
     end
     ok(anchNear, 'the anchor is within band reach of this tour')
+
+    -- The spawn heading IS the roll direction. The surveyed heading was ~3
+    -- degrees off the actual spawn->rotate line, and the airframe visibly
+    -- snapped straight as the roll began.
+    local sp2, rp2 = BR.Config.Bus.spawn, BR.Config.Bus.rotatePoint
+    local wantHdg = BR.GtaHeading(BR.Bearing(sp2.x, sp2.y, rp2.x, rp2.y))
+    local hdgDiff = math.abs(((r.heading - wantHdg + 540.0) % 360.0) - 180.0)
+    ok(hdgDiff < 0.01, 'the plane spawns facing exactly down the runway',
+        ('heading %.2f vs direction %.2f'):format(r.heading, wantHdg))
     ok(BR.Server.match.endsAt >= r.tEnd, 'BUS lasts at least the whole flight')
 
     -- Jumping before the doors is refused; after them it is an elimination

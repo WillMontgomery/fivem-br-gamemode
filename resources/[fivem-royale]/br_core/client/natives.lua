@@ -288,6 +288,13 @@ function BR.Native.applyGameRules()
         FreezeEntityPosition(ped, true)
     end
 
+    -- The radar follows MY state, owned here like every other per-frame
+    -- rule: hidden in the LOBBY (it used to poke out under the menu after a
+    -- match), shown for every in-match state. This replaces the point calls
+    -- spawn.lua made at ENDED/WAITING, which said the right thing for match
+    -- participants and the wrong thing for everyone idling in the lobby.
+    DisplayRadar(st ~= BR.PlayerState.LOBBY)
+
     -- GTA's own feed ("X joined", "Y died", weapon unlocks, whatever any other
     -- resource posts). The gamemode owns its presentation -- eliminations go
     -- through the kill feed, everything personal through the notice stack --

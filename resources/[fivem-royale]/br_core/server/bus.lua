@@ -69,14 +69,17 @@ function BR.Bus.plan()
         points[#points + 1] = { x = x, y = y, z = z, v = v }
     end
 
-    -- Parked, then the ground roll: speed builds across the surveyed stretch.
+    -- Parked, then the ground roll: UNIFORM ACCELERATION, sampled at equal
+    -- time steps -- position goes with k^2, speed linearly, so the speed
+    -- carried into every sample rises by the same ~7 m/s. The old six
+    -- unevenly-spaced samples read as distinct gear changes off the line.
     local sp, rp = cfg.spawn, cfg.rotatePoint
     push(sp.x, sp.y, sp.z, 1.0)
-    local rollSamples = 6
+    local rollSamples = 12
     for i = 1, rollSamples do
         local k = i / rollSamples
-        push(BR.Lerp(sp.x, rp.x, k), BR.Lerp(sp.y, rp.y, k), sp.z,
-             BR.Lerp(15.0, cfg.rollSpeed, (k + (i - 1) / rollSamples) * 0.5))
+        push(BR.Lerp(sp.x, rp.x, k * k), BR.Lerp(sp.y, rp.y, k * k), sp.z,
+             math.max(6.0, cfg.rollSpeed * k))
     end
 
     -- Wheels up: hold the runway heading, climb to altitude over climbDist.
@@ -84,7 +87,7 @@ function BR.Bus.plan()
     local dLen = math.max(1.0, BR.Dist(sp.x, sp.y, rp.x, rp.y))
     dirX, dirY = dirX / dLen, dirY / dLen
 
-    local climbSamples = 8
+    local climbSamples = 10
     for i = 1, climbSamples do
         local k = i / climbSamples
         local ease = k * k * (3.0 - 2.0 * k)
@@ -195,7 +198,11 @@ function BR.Bus.plan()
         jumpIdx   = jumpIdx or #points,
         closeIdx  = closeIdx or #points,   -- last authored point: doors-closing warning
         alt       = cfg.altitude,
-        heading   = sp.heading,
+        -- The heading the plane SPAWNS at is the direction it will actually
+        -- roll: computed from spawn -> rotate point, not the surveyed value,
+        -- which was ~3 degrees off and made the airframe visibly snap
+        -- straight as the roll began.
+        heading   = BR.GtaHeading(BR.Bearing(sp.x, sp.y, rp.x, rp.y)),
         timed     = false,
     }
 

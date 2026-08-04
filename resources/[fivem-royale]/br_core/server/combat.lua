@@ -72,9 +72,8 @@ function BR.Combat.eliminate(src, cause, killerSrc)
         :format(entry.name, src, placement,
                 killer and (' by ' .. killer.name) or (' (' .. tostring(cause) .. ')')))
 
-    BR.Server.systemMessage(killer
-        and ('%s eliminated %s'):format(killer.name, entry.name)
-        or  ('%s was eliminated'):format(entry.name))
+    -- No system chat: the kill feed already carries this to every client,
+    -- and the chat is for players talking (user rule, 2026-08-03).
 end
 
 --- What GET_PED_CAUSE_OF_DEATH's weapon hash means in words.

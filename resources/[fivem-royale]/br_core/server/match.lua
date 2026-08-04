@@ -199,15 +199,16 @@ function BR.Match.awardPlacements()
         BR.Broadcast.delta({ op = 'update', src = p.src, e = { placement = 1 } })
     end
 
+    -- Console only. The chat is for PLAYERS TALKING (user rule, 2026-08-03):
+    -- the victory is announced by the end screen, which every participant is
+    -- already looking at.
     if #living > 0 then
         local names = {}
         for _, p in ipairs(living) do names[#names + 1] = p.e.name end
-        local who = table.concat(names, ', ')
-        print(('[br_core] match %d won by %s'):format(BR.Server.matchId, who))
-        BR.Server.systemMessage(('Victory Royale: %s'):format(who))
+        print(('[br_core] match %d won by %s'):format(BR.Server.matchId,
+            table.concat(names, ', ')))
     else
         print(('[br_core] match %d ended with no survivors'):format(BR.Server.matchId))
-        BR.Server.systemMessage('Match over -- no survivors.')
     end
 end
 
@@ -296,17 +297,21 @@ end
 local lastWarn = { key = '', at = 0 }
 
 function BR.Match.announceBlocker(blocker)
+    -- An empty queue explains itself. Announcing it anyway printed
+    -- "holding: 0 queued, need 1" every 15 seconds into an empty server's
+    -- console, forever. Speak only when somebody is actually waiting.
+    if blocker.have == 0 then return end
+
     local now = GetGameTimer()
     local key = ('%s:%d/%d'):format(blocker.reason, blocker.have, blocker.need)
     if key == lastWarn.key and (now - lastWarn.at) < 15000 then return end
     lastWarn.key, lastWarn.at = key, now
 
+    -- Console only; the lobby screen already tells the waiting players what
+    -- the queue is short of, phrased from this same blocker.
     if blocker.reason == 'squads' then
         print(('[br_core] holding: %d squad(s), need %d -- waiting for another team')
             :format(blocker.have, blocker.need))
-        BR.Server.systemMessage(
-            ('Waiting for another squad to queue (%d/%d teams).')
-                :format(blocker.have, blocker.need))
     else
         print(('[br_core] holding: %d queued, need %d')
             :format(blocker.have, blocker.need))

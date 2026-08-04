@@ -91,7 +91,9 @@ export default function Lobby({ visible }: { visible: boolean }) {
   const detail: string[] = []
   if (!tearingDown) {
     if (lobby?.party) detail.push(`Your party ${lobby.party.ready}/${lobby.party.size} ready`)
-    if (lobby) detail.push(`${lobby.queued} of ${lobby.needed} players needed`)
+    // "2 of 16 players needed" read as a riddle -- needed for WHAT, and am I
+    // one of the 2? Say what is true in words instead.
+    if (lobby) detail.push(`${lobby.queued} readied up · waiting for more players`)
     if (wait?.reason === 'squads') detail.push(`${wait.have} of ${wait.need} squads`)
   }
 

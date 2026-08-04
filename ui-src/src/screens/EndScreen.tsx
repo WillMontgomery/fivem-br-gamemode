@@ -1,4 +1,5 @@
 import { Spinner } from '@heroui/react'
+import { useEffect, useState } from 'react'
 import type { SummaryPayload } from '../bridge/types'
 
 /**
@@ -40,6 +41,15 @@ function slamText(summary: SummaryPayload): string {
 export default function EndScreen({ summary }: { summary: SummaryPayload }) {
   const slam = slamText(summary)
 
+  // The teardown line tells a small two-act story: progress is "saved"
+  // first (true in spirit; literally true from M7), then the map is being
+  // cleaned. One crossfade, keyed so the swap re-runs the rise animation.
+  const [busy, setBusy] = useState('Saving progress…')
+  useEffect(() => {
+    const t = window.setTimeout(() => setBusy('Cleaning up the map…'), 4500)
+    return () => window.clearTimeout(t)
+  }, [])
+
   return (
     <div className="fixed inset-0">
       {/* The backdrop is its own layer so the slam happens over nothing --
@@ -79,7 +89,7 @@ export default function EndScreen({ summary }: { summary: SummaryPayload }) {
 
         <div className="end-late flex items-center gap-3">
           <Spinner size="sm" />
-          <span className="text-sm text-white/60">Cleaning up and saving match data…</span>
+          <span key={busy} className="rise text-sm text-white/60">{busy}</span>
         </div>
       </div>
     </div>

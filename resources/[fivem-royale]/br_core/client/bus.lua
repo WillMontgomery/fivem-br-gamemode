@@ -294,9 +294,14 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
 
     -- A hand on the yoke: slow layered sine drift in altitude, +/- ~8 units,
     -- driven by the SYNCED clock so all 48 planes drift identically. Only
-    -- once airborne -- the runway does not undulate.
-    if z > (route.points[1].z + 15.0) then
-        z = z + math.sin(t * 0.00037) * 5.0 + math.sin(t * 0.00011 + 1.7) * 3.0
+    -- once airborne -- and RAMPED IN over the first ~120m of climb: switching
+    -- it on at full amplitude the moment the wheels cleared 15m added up to
+    -- eight metres in one frame, which was the "small but noticeable vertical
+    -- jump" right off the pavement.
+    local above = z - (route.points[1].z + 15.0)
+    if above > 0.0 then
+        local amp = math.min(1.0, above / 120.0)
+        z = z + (math.sin(t * 0.00037) * 5.0 + math.sin(t * 0.00011 + 1.7) * 3.0) * amp
     end
 
     SetEntityCoordsNoOffset(bus, x, y, z, false, false, false)

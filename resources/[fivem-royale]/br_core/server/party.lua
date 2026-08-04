@@ -469,27 +469,27 @@ function BR.Party.formSquads(mode)
     --
     -- Without this, being autofilled onto a squad is indistinguishable from an
     -- invite having worked: two unpartied players queue, land on the same
-    -- squad, and neither has any idea how that happened.
+    -- squad, and neither has any idea how that happened. A NOTICE, not system
+    -- chat -- the chat is for players talking (user rule, 2026-08-03), and
+    -- the squad panel shows the roster anyway; this only flags the surprise.
     for _, sq in ipairs(squads) do
         if #sq.members > 1 then
             for _, src in ipairs(sq.members) do
-                local mates = {}
+                local mine = BR.Roster.get(src)
                 local partied = false
                 for _, other in ipairs(sq.members) do
                     if other ~= src then
                         local e = BR.Roster.get(other)
-                        mates[#mates + 1] = e and e.name or '?'
-                        local mine = BR.Roster.get(src)
                         if mine and e and mine.partyId and mine.partyId == e.partyId then
                             partied = true
                         end
                     end
                 end
-                BR.Server.systemMessage(
-                    ('Your squad: %s%s'):format(
-                        table.concat(mates, ', '),
-                        partied and '' or ' (matched automatically)'),
-                    { src })
+                if not partied then
+                    BR.Server.notify(src,
+                        'Squad filled automatically — check the squad panel.',
+                        'info')
+                end
             end
         end
     end

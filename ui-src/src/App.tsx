@@ -103,9 +103,11 @@ export default function App() {
       <Hud visible={hudUp} />
       {/* Chat vanishes with the rest of the in-match chrome the instant the
           match is decided -- a lingering kill-chatter log under the verdict
-          slam reads as UI debris. The store keeps the messages; it is only
-          unmounted, and remounts blank-slate clean at the lobby. */}
-      {!tearingDown && <Chat barsVisible={hudUp} />}
+          slam reads as UI debris -- and it does NOT render under the lobby
+          menu either: last round's log bleeding through the find-a-match
+          card was just noise. The store keeps the messages; it is only
+          unmounted, and remounts blank-slate clean at the next warmup. */}
+      {!tearingDown && !showLobby && <Chat barsVisible={hudUp} />}
       <Lobby visible={showLobby} />
       {showEnd && s.summary && <EndScreen summary={s.summary} />}
       {/* Over everything: party events and match alerts do not care which

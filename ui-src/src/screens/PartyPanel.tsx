@@ -105,17 +105,39 @@ export default function PartyPanel({
           under a Solo selection -- by design, not omission. */}
       {mode === 'squad' && (inParty ? (
         <div className="flex flex-wrap items-center gap-1.5">
-          {squad.members.map((m) => (
-            <Chip
-              key={m.src}
-              size="sm"
-              variant="bordered"
-              style={{ borderColor: m.colour }}
-              title={m.leader ? 'Party leader' : undefined}
-            >
-              {m.leader ? '★ ' : ''}{m.name}
-            </Chip>
-          ))}
+          {squad.members.map((m) => {
+            // Once ANYBODY in the party readies up, show who the group is
+            // still waiting on -- a party where three are queued and one is
+            // browsing settings was previously indistinguishable from a
+            // party where nobody had pressed the button.
+            const readyIds = new Set(lobby?.readyIds ?? [])
+            const someoneReady = squad.members.some((x) => readyIds.has(x.src))
+            const ready = readyIds.has(m.src)
+            return (
+              <Chip
+                key={m.src}
+                size="sm"
+                variant="bordered"
+                className={someoneReady && !ready ? 'opacity-55' : undefined}
+                style={{ borderColor: m.colour }}
+                title={
+                  someoneReady
+                    ? ready ? 'Readied up' : 'Not readied up yet'
+                    : m.leader ? 'Party leader' : undefined
+                }
+              >
+                {m.leader ? '★ ' : ''}{m.name}
+                {someoneReady && (
+                  <span
+                    className="ml-1 text-[0.625rem]"
+                    style={{ color: ready ? 'var(--color-hp)' : 'rgba(255,255,255,0.4)' }}
+                  >
+                    {ready ? '✓' : '…'}
+                  </span>
+                )}
+              </Chip>
+            )
+          })}
 
           {/* Invites still out. Without these, "Invite sent" faded after four
               seconds and an ignored invite looked identical to one that was

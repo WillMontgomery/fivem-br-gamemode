@@ -74,6 +74,16 @@ end)
 --- Both paths are idempotent: pushFocus ignores a screen already on the stack.
 --- @param state string
 local function applyFocusForState(state)
+    -- NEVER during the teardown. At ENDED the server flips every roster
+    -- entry to LOBBY (that is what drives the trip home), and the rule
+    -- below read that as "the lobby owns the screen" -- granting focus and
+    -- drawing a MOUSE CURSOR over the verdict slam. The lobby is not
+    -- visible until WAITING, so it must not be focusable until then either.
+    if state == BR.MatchState.ENDED or state == BR.MatchState.CLEANUP then
+        TriggerEvent('br:ui:popFocus', 'lobby')
+        return
+    end
+
     -- The lobby owns the screen when the MATCH is waiting -- or when this
     -- player personally is in the lobby while a match runs without them
     -- (left it, or never readied up). Match state alone was the wrong test
@@ -424,6 +434,10 @@ AddEventHandler(BR.Net.LOBBY_STATUS, function(d)
         players   = others,
         wait      = d.wait,
         party     = party,
+        -- Who has readied up, so the party panel can mark which members are
+        -- still holding the group. The id list is already on the wire in
+        -- this same broadcast -- forwarding it reveals nothing new.
+        readyIds  = d.ids or {},
     })
 end)
 

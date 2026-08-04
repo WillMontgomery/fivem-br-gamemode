@@ -157,12 +157,14 @@ BR.Config.Bus = {
     -- (two rounds of "raise it a bit" -- the Titan's gear sat in the runway).
     spawn        = { x = 4484.61, y = -4497.98, z = 4.99, heading = 106.12 },
     rotatePoint  = { x = 4090.23, y = -4642.18 },  -- wheels-up here, straight out
-    climbDist    = 2500.0,  -- metres past rotation to reach cruise altitude
+    climbDist    = 1800.0,  -- metres past rotation to reach cruise altitude
+                            -- (2500 originally; cut ~40% for a steeper,
+                            -- more take-off-looking climb -- user call)
     turnRadius   = 1000.0,  -- fillet radius: this close to a waypoint, start turning
 
     rollSpeed    = 80.0,    -- m/s at wheels-up (the roll builds up to this)
     climbSpeed   = 150.0,   -- m/s through the climb and the initial turn
-    cruiseSpeed  = 400.0,   -- m/s across the open ocean approach
+    cruiseSpeed  = 600.0,   -- m/s across the open ocean approach (+50%, user call)
     speed        = 185.0,   -- m/s over land: the WHOLE TOUR is the drop zone
     cornerSpeed  = 150.0,   -- m/s through filleted corners
     boardSeconds = 5,       -- parked, engines idling, before the roll begins

@@ -284,16 +284,18 @@ end
 
 RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)
+    -- The radar is no longer touched here: it rides MY player state in the
+    -- per-frame gamerules (hidden whenever I am in the LOBBY), which covers
+    -- both the teardown and the "minimap poking out under the lobby menu"
+    -- report in one rule.
     if d.state == BR.MatchState.ENDED then
-        -- The moment the match is decided: HUD and radar go, the verdict
-        -- slams in over the world, and the trip home happens under black
-        -- that does not lift until WAITING.
-        DisplayRadar(false)
+        -- The moment the match is decided: the verdict slams in over the
+        -- world, and the trip home happens under black that does not lift
+        -- until WAITING.
         BR.Spawn.toLobby(true)
     elseif d.state == BR.MatchState.WAITING then
         -- The result screen has just handed over to the lobby card; NOW the
         -- world may come back behind it.
-        DisplayRadar(true)
         if BR.Spawn.holdBlack then
             BR.Spawn.holdBlack = false
             DoScreenFadeIn(2000)

@@ -237,6 +237,10 @@ export interface LobbyPayload {
   wait?: LobbyWait
   /** How much of THIS player's party has readied up. Absent when not in one. */
   party?: { ready: number; size: number }
+  /** Server ids of everyone currently queued, so the party panel can mark
+   *  which members are still holding the group. Already public knowledge --
+   *  the same broadcast carries it to every client. */
+  readyIds?: number[]
 }
 
 export interface ToastPayload {
