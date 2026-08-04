@@ -26,16 +26,26 @@ BR.State = BR.State or {}
 -- and must not replay the boot choreography over a world already there.
 BR.State.worldReady = not GetIsLoadingScreenActive()
 
+-- The interface's ready handshake. THE REVEAL MUST WAIT FOR IT: the page
+-- learns worldReady=false via the screen publish that fires on this very
+-- event -- reveal before it and the menu is caught in its default-visible
+-- state, producing the "lobby appears, fades out, fades back in" stutter
+-- (live report, 2026-08-04). Collision can genuinely stream in faster than
+-- CEF loads the page, so this is a real order, not paranoia.
+local uiReady = false
+AddEventHandler('br:ui:ready', function() uiReady = true end)
+
 Citizen.CreateThread(function()
     if BR.State.worldReady then return end   -- mid-session restart: nothing to do
 
-    -- Menu data. The hard deadline is not decoration: if the snapshot never
-    -- comes (server fault mid-join), a player parked on the loadscreen
-    -- forever has no F8, no quit button, nothing. The screen drops
-    -- regardless and whatever is wrong becomes visible and reportable.
+    -- Menu data AND the menu itself. The hard deadline is not decoration:
+    -- if the snapshot never comes (server fault mid-join), a player parked
+    -- on the loadscreen forever has no F8, no quit button, nothing. The
+    -- screen drops regardless and whatever is wrong becomes visible and
+    -- reportable.
     local deadline = GetGameTimer() + 30000
     while GetGameTimer() < deadline do
-        if BR.State.me and BR.State.me.src
+        if uiReady and BR.State.me and BR.State.me.src
            and NetworkIsSessionStarted() then break end
         Citizen.Wait(100)
     end
