@@ -44,31 +44,44 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     local ped = PlayerPedId()
     local p = GetEntityCoords(ped)
 
-    -- Only draw when the EDGE is near. The wall is a 300m purple curtain;
-    -- from four kilometres inside the circle it would be invisible anyway,
-    -- and 40 markers a frame are only affordable because of this gate.
-    local dist = BR.Dist(p.x, p.y, cx, cy)
-    if math.abs(dist - r) > cfg.render.wallRenderDist then return end
-
-    -- The arc nearest the player, centred on the bearing from the circle's
-    -- centre through the player. The SPAN IS DERIVED FROM ARC LENGTH, not a
-    -- fixed angle: a fixed 120 degrees was 7km of wall on the opening circle
-    -- and only a third of the way around a late one -- the wall visibly
-    -- ENDED mid-screen inside small circles. wallVisDist metres each way,
-    -- wrapping into a full ring once the circle is small enough.
+    -- FIXED SLOTS AROUND THE CIRCLE, ALWAYS DRAWN.
+    --
+    -- Two lessons from the first live walls, both about the same illusion:
+    -- the wall must behave like a THING IN THE WORLD, not an effect around
+    -- the player.
+    --
+    --   * Columns stand on quantized angles derived from the circle alone
+    --     (slot arc length / radius). The old arc was centred on the
+    --     player's own bearing, so every step the player took slid the
+    --     whole colonnade around the circumference with them -- "really
+    --     jarring" was the polite version.
+    --   * No proximity gate. The old |dist - r| cut-off made a 300m-tall
+    --     curtain pop out of existence past 300m, which read as a render
+    --     bug (and got blamed on OneSync -- it never was; markers are pure
+    --     local draw calls). The wall is always drawn; what scales is how
+    --     much of the ring gets columns: enough arc to span the view from
+    --     wherever the player is, the full ring once the circle is small.
     local rr = cfg.render
-    local base = math.atan(p.y - cy, p.x - cx)
-    local halfSpan = math.min(math.pi, rr.wallVisDist / math.max(r, 1.0))
-    local segs = rr.segments
-    local step = (halfSpan * 2.0) / segs
+    local dist = BR.Dist(p.x, p.y, cx, cy)
 
-    -- Segment width: the chord each marker covers, padded only just enough
-    -- to meet its neighbour. Generous overlap doubled the additive alpha at
-    -- every seam and rendered as dark vertical banding -- the "stripes".
+    -- Slot layout depends only on the circle, so it is identical for all 48
+    -- players and stable frame to frame.
+    local slots = math.max(rr.segments,
+        math.floor((2.0 * math.pi * r) / rr.slotArc + 0.5))
+    local step = (2.0 * math.pi) / slots
     local w = (r * step) * (rr.overlap or 1.05)
 
+    -- How many slots to actually draw: cover wallVisDist of arc each way
+    -- when near the wall, more when it is far so the span fills the view.
+    local visArc = math.max(rr.wallVisDist, math.abs(dist - r) * 2.0)
+    local want = math.floor((visArc * 2.0) / rr.slotArc + 0.5)
+    local drawn = math.min(slots, math.min(rr.maxDraw, math.max(rr.segments, want)))
+
+    local base = math.atan(p.y - cy, p.x - cx)
+    local k0 = math.floor(base / step)
+
     local now = GetGameTimer()
-    if now - groundAt > cfg.render.groundCacheSec * 1000 then
+    if now - groundAt > rr.groundCacheSec * 1000 then
         groundAt = now
         local nearX = cx + math.cos(base) * r
         local nearY = cy + math.sin(base) * r
@@ -77,11 +90,12 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     end
     -- Anchor the curtain well below the ground line so slopes never show a
     -- gap under it; without a ground answer, hang it off the player's own z.
-    local zBase = (groundZ or (p.z - cfg.render.fallbackZDrop)) - 50.0
+    local zBase = (groundZ or (p.z - rr.fallbackZDrop)) - 50.0
 
     local col = rr.colour
-    for i = 0, segs - 1 do
-        local theta = base - halfSpan + step * (i + 0.5)
+    local first = k0 - math.floor(drawn / 2)
+    for i = 0, drawn - 1 do
+        local theta = (first + i + 0.5) * step
         DrawMarker(1,
             cx + math.cos(theta) * r, cy + math.sin(theta) * r, zBase,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
@@ -197,19 +211,29 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
                 cfg.blip.nextColour, cfg.blip.nextAlpha)
         end
 
-        -- The direction home, ON the minimap: a plain coordinate blip at the
-        -- live circle's centre. Long-range, so when the centre is off the
-        -- minimap it clamps to the minimap's edge -- a heading that rotates
-        -- with the map itself, which the HUD's screen-space arrow never got
-        -- right (it pointed relative to the PED, not the camera).
-        if not dirBlip or not DoesBlipExist(dirBlip) then
-            dirBlip = AddBlipForCoord(cx, cy, 0.0)
-            SetBlipSprite(dirBlip, 1)
-            SetBlipColour(dirBlip, cfg.blip.nextColour)
-            SetBlipScale(dirBlip, 0.65)
-            SetBlipAsShortRange(dirBlip, false)
-        else
-            SetBlipCoords(dirBlip, cx, cy, 0.0)
+        -- "RUN THIS WAY", on the minimap -- and only while outside. The blip
+        -- sits at the NEAREST SAFE POINT on the circle (just inside the
+        -- edge), long-range so it clamps to the minimap's border as a
+        -- heading that rotates with the map itself. Deliberately NOT the
+        -- circle's centre: the anchor is tuning data, and parking a marker
+        -- on it would hand every player the storm's destination for free.
+        -- Inside the circle there is nothing to point at, so no blip.
+        if edge > 0 then
+            local inv = 1.0 / math.max(dist, 1.0)
+            local sx = cx + (p.x - cx) * inv * math.max(r - 25.0, 0.0)
+            local sy = cy + (p.y - cy) * inv * math.max(r - 25.0, 0.0)
+            if not dirBlip or not DoesBlipExist(dirBlip) then
+                dirBlip = AddBlipForCoord(sx, sy, 0.0)
+                SetBlipSprite(dirBlip, 1)
+                SetBlipColour(dirBlip, cfg.blip.nextColour)
+                SetBlipScale(dirBlip, 0.65)
+                SetBlipAsShortRange(dirBlip, false)
+            else
+                SetBlipCoords(dirBlip, sx, sy, 0.0)
+            end
+        elseif dirBlip then
+            RemoveBlip(dirBlip)
+            dirBlip = nil
         end
     end
 

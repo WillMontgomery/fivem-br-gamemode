@@ -76,6 +76,7 @@ function BR.Match.onEnter(state, from)
             BR.Lobby.clear()
         end
         S.participants = nil   -- consumed; must never leak into the next match
+        S.partyHoldSince = nil -- the party-gate patience is per queue attempt
         for _, src in ipairs(parts) do
             if BR.Roster.get(src) then
                 BR.Roster.setState(src, BR.PlayerState.WARMUP)
@@ -92,6 +93,7 @@ function BR.Match.onEnter(state, from)
 
     elseif state == BR.MatchState.BUS then
         BR.Server.matchId = BR.Server.matchId + 1
+        S.descent = nil   -- fresh per flight: the descent-grace bookkeeping
 
         -- The flight decides how long BUS lasts, so the deadline is set HERE
         -- and rebroadcast. The geometry was planned at WARMUP; departure only
@@ -282,6 +284,42 @@ function BR.Match.startBlocker()
         if squads < minSquads then
             return { reason = 'squads', have = squads, need = minSquads }
         end
+
+        -- PARTIES ENTER TOGETHER -- with a patience limit. One member
+        -- readying up must not launch the match while the rest of their
+        -- party is still picking a mode (the first two-client squad test
+        -- started the instant the first Ready landed) -- but one AFK
+        -- partymate must not brick the queue for everyone either. So the
+        -- hold lasts partyGraceSeconds; after that the match forms without
+        -- the stragglers, and the warmup door they can still walk through
+        -- is the late-join path that already exists. The party panel marks
+        -- who the room is waiting on (check / ellipsis) the whole time.
+        local queuedSet = {}
+        for _, src in ipairs(BR.Lobby.ids()) do queuedSet[src] = true end
+        local incomplete = nil
+        for src in pairs(queuedSet) do
+            local party = BR.Party.of(src)
+            if party then
+                local ready = 0
+                for _, m in ipairs(party.members) do
+                    if queuedSet[m] then ready = ready + 1 end
+                end
+                if ready < #party.members then
+                    incomplete = { reason = 'party', have = ready, need = #party.members }
+                    break
+                end
+            end
+        end
+        if incomplete then
+            S.partyHoldSince = S.partyHoldSince or GetGameTimer()
+            if GetGameTimer() - S.partyHoldSince
+               < (BR.Config.Match.partyGraceSeconds * 1000) then
+                return incomplete
+            end
+            -- Patience spent: start without them.
+        else
+            S.partyHoldSince = nil
+        end
     end
 
     return nil
@@ -311,6 +349,9 @@ function BR.Match.announceBlocker(blocker)
     -- the queue is short of, phrased from this same blocker.
     if blocker.reason == 'squads' then
         print(('[br_core] holding: %d squad(s), need %d -- waiting for another team')
+            :format(blocker.have, blocker.need))
+    elseif blocker.reason == 'party' then
+        print(('[br_core] holding: a party has %d/%d readied up')
             :format(blocker.have, blocker.need))
     else
         print(('[br_core] holding: %d queued, need %d')
@@ -410,6 +451,49 @@ local function tick()
             print('[br_core] match: last player down -- going live')
             BR.Match.transition(BR.MatchState.PLAYING)
             return
+        end
+
+        -- THE CEILING YIELDS TO A LIVE DESCENDER. A real glider off a 500m
+        -- exit outlasts the route timer, and forcing PLAYING under them
+        -- started the storm clock before the last player had landed.
+        --
+        -- Altitude is tracked EVERY tick, so that at the moment the ceiling
+        -- hits, "is anyone genuinely falling" is already answered -- deciding
+        -- it only at expiry would either grant every ghost one free
+        -- extension (first sample has no baseline) or grant a real glider
+        -- none (no second sample before the transition). A frozen altitude
+        -- stops paying within one round, so a hung client cannot hold the
+        -- room; the extensions cap at two minutes regardless.
+        S.descent = S.descent or { extended = 0, z = {}, falling = {} }
+        BR.Roster.each(
+            function(e)
+                return e.state == BR.PlayerState.BUS
+                    or e.state == BR.PlayerState.FREEFALL
+                    or e.state == BR.PlayerState.GLIDE
+            end,
+            function(src, e)
+                if e.pos and (now - (e.posAt or 0)) < 3000 then
+                    local last = S.descent.z[src]
+                    S.descent.falling[src] =
+                        (last ~= nil and e.pos.z < last - 1.0) or nil
+                    S.descent.z[src] = e.pos.z
+                else
+                    S.descent.falling[src] = nil
+                end
+            end)
+
+        if S.endsAt > 0 and now >= S.endsAt and airborne > 0
+           and S.descent.extended < 120000 then
+            local descending = false
+            for _, v in pairs(S.descent.falling) do
+                if v then descending = true break end
+            end
+            if descending then
+                S.descent.extended = S.descent.extended + 10000
+                S.endsAt = S.endsAt + 10000
+                BR.Broadcast.state(S.state, S.endsAt, { reason = 'descent' })
+                print('[br_core] match: someone is still descending -- holding BUS 10s more')
+            end
         end
     end
 

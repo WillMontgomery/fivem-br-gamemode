@@ -193,6 +193,29 @@ function BR.Native.stopSpectate()
     ClearFocus()
 end
 
+-- -------------------------------------------------------------- key prompts ---
+
+--- A native GTA help box (top-left). Used for every prompt that references a
+--- key: ~INPUT_*~ placeholders render the player's ACTUAL binding, which no
+--- NUI toast can do -- hardcoding "SPACE" into toast text lied to anyone who
+--- had rebound it.
+--- @param text string  may contain ~INPUT_*~ placeholders
+function BR.Native.help(text)
+    BeginTextCommandDisplayHelp('STRING')
+    AddTextComponentSubstringPlayerName(text)
+    EndTextCommandDisplayHelp(0, false, true, -1)
+end
+
+--- The ~INPUT_~ placeholder for one of OUR keymapped commands (keybinds.lua),
+--- resolving to whatever the player bound under Settings > Key Bindings >
+--- FiveM. The hash convention (joaat of the command name with the high bit
+--- set) is the documented RegisterKeyMapping instructional-button contract.
+--- @param command string  the command name as registered, e.g. 'brdeploy'
+--- @return string
+function BR.Native.inputForCommand(command)
+    return ('~INPUT_%08X~'):format((GetHashKey(command) | 0x80000000) & 0xFFFFFFFF)
+end
+
 -- ------------------------------------------------------------- storm screen ---
 
 local stormFxActive = false

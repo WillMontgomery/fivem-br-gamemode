@@ -54,6 +54,8 @@ export interface HudPayload {
   squadsAlive: number
   kills: number
   state: PlayerState
+  /** True while GTA's pause menu is open; the HUD hides under it. */
+  paused?: boolean
 }
 
 export interface StormPayload {
@@ -215,7 +217,7 @@ export interface LobbyPlayer {
  * holding the match. Absent when nothing is blocking.
  */
 export interface LobbyWait {
-  reason: 'players' | 'squads'
+  reason: 'players' | 'squads' | 'party'
   have: number
   need: number
 }

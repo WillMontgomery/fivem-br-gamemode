@@ -445,7 +445,8 @@ end)
 -- HUD
 -- --------------------------------------------------------------------------
 
-local lastPush = { hp = -1, armour = -1, alive = -1, squads = -1, kills = -1, state = '' }
+local lastPush = { hp = -1, armour = -1, alive = -1, squads = -1, kills = -1,
+                   state = '', paused = nil }
 
 --- Send the HUD envelope, but only when something actually changed.
 ---
@@ -458,17 +459,22 @@ function BR.PushHud(force)
     local hp     = math.floor(me.hp or 0)
     local armour = math.floor(me.armour or 0)
     local kills  = (S.roster[me.src] and S.roster[me.src].kills) or 0
+    -- The HUD gets out of the way of the pause menu (the map fills the
+    -- screen and our chrome floats over it otherwise).
+    local paused = IsPauseMenuActive()
 
     if not force
        and hp == lastPush.hp and armour == lastPush.armour
        and S.alive == lastPush.alive and S.squadsAlive == lastPush.squads
-       and kills == lastPush.kills and me.state == lastPush.state then
+       and kills == lastPush.kills and me.state == lastPush.state
+       and paused == lastPush.paused then
         return
     end
 
     lastPush.hp, lastPush.armour = hp, armour
     lastPush.alive, lastPush.squads = S.alive, S.squadsAlive
     lastPush.kills, lastPush.state = kills, me.state
+    lastPush.paused = paused
 
     TriggerEvent('br:ui:sendLocal', BR.Nui.HUD, {
         hp          = hp,
@@ -477,6 +483,7 @@ function BR.PushHud(force)
         squadsAlive = S.squadsAlive,
         kills       = kills,
         state       = me.state,
+        paused      = paused,
     })
 end
 

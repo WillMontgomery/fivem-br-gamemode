@@ -16,6 +16,8 @@ export default function SquadPanel({ squad }: { squad: SquadPayload }) {
         const dead = m.state === 'dead' || m.state === 'left'
         const downed = m.state === 'dbno'
 
+        // Bars, not numbers: a glance says "hurt / shielded / down", which
+        // is all a squadmate readout is for -- the digits were noise.
         return (
           <div key={m.src} className="flex items-center gap-2" style={{ opacity: dead ? 0.35 : 1 }}>
             <span
@@ -25,21 +27,35 @@ export default function SquadPanel({ squad }: { squad: SquadPayload }) {
             <div className="flex-1 min-w-0">
               <div className="flex items-baseline justify-between gap-2">
                 <span className="text-[0.6875rem] font-semibold truncate">{m.name}</span>
-                <span className="text-[0.625rem] tabular-nums text-white/50">
-                  {dead ? 'OUT' : downed ? 'DOWN' : Math.round(m.hp)}
-                </span>
+                {(dead || downed) && (
+                  <span className="text-[0.625rem] text-white/50">
+                    {dead ? 'OUT' : 'DOWN'}
+                  </span>
+                )}
               </div>
               {!dead && (
-                <div className="h-1 mt-0.5 rounded-full bg-black/55 overflow-hidden">
-                  <div
-                    className="bar-fill h-full rounded-full"
-                    style={{
-                      width: '100%',
-                      transform: `scaleX(${Math.max(0, Math.min(1, m.hp / 100))})`,
-                      background: downed ? 'var(--color-danger)' : 'var(--color-hp)',
-                    }}
-                  />
-                </div>
+                <>
+                  <div className="h-1 mt-0.5 rounded-full bg-black/55 overflow-hidden">
+                    <div
+                      className="bar-fill h-full rounded-full"
+                      style={{
+                        width: '100%',
+                        transform: `scaleX(${Math.max(0, Math.min(1, m.hp / 100))})`,
+                        background: downed ? 'var(--color-danger)' : 'var(--color-hp)',
+                      }}
+                    />
+                  </div>
+                  <div className="h-1 mt-0.5 rounded-full bg-black/55 overflow-hidden">
+                    <div
+                      className="bar-fill h-full rounded-full"
+                      style={{
+                        width: '100%',
+                        transform: `scaleX(${Math.max(0, Math.min(1, (m.armour ?? 0) / 100))})`,
+                        background: 'var(--color-shield)',
+                      }}
+                    />
+                  </div>
+                </>
               )}
             </div>
           </div>

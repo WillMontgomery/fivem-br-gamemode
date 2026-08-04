@@ -20,6 +20,9 @@ import type {
 const FEED_MAX = 8
 const CHAT_MAX = 60
 
+/** How long a kill-feed entry lives. KillFeed times its fade to this. */
+export const FEED_TTL_MS = 7000
+
 export interface UiState {
   match: MatchPayload
   hud: HudPayload
@@ -152,9 +155,17 @@ export const useUi = create<UiState>((set) => ({
   setInvite:   (invite) => set({ invite }),
   clearInvite: () => set({ invite: null }),
 
-  pushFeed: (entry) => set((s) => ({
-    feed: [entry, ...s.feed].slice(0, FEED_MAX),
-  })),
+  // Feed entries expire like notices do: the component fades them at the
+  // same deadline, so removal lands as opacity reaches zero. Before this,
+  // eliminations sat in the corner for the rest of the match.
+  pushFeed: (entry) => {
+    setTimeout(() => {
+      set((s) => (s.feed.some((f) => f.id === entry.id)
+        ? { feed: s.feed.filter((f) => f.id !== entry.id) }
+        : {}))
+    }, FEED_TTL_MS)
+    set((s) => ({ feed: [entry, ...s.feed].slice(0, FEED_MAX) }))
+  },
 
   pushChat: (msg) => set((s) => ({
     chat: [...s.chat, msg].slice(-CHAT_MAX),

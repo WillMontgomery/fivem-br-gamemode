@@ -26,6 +26,7 @@ local toldClosing = false
 local ejectedSeen = nil -- when we noticed the server flipped us to FREEFALL
 local lastX, lastY, lastZ, lastT = nil, nil, nil, nil  -- finite-difference state
 local camYaw, camPitch = 0.0, -8.0   -- free-look orbit, reset each boarding
+local gearAt = nil      -- when to retract the landing gear; true once done
 
 -- Smoothed airframe orientation. The path is a polyline, so its raw
 -- direction is CONSTANT within a segment and STEPS at every waypoint -- the
@@ -55,6 +56,7 @@ local function cleanup()
     end
     lastX, lastY, lastZ, lastT = nil, nil, nil, nil
     smoothHdg, smoothPitch, smoothRoll = nil, 0.0, 0.0
+    gearAt = nil
     if riding then
         -- Whatever ends the ride, the ped must come back to the world: off
         -- the plane (it rode ATTACHED -- that is what keeps the minimap and
@@ -257,9 +259,12 @@ BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
     if riding and not told and route and route.timed
        and BR.Clock.now() >= route.jumpFrom then
         told = true
-        TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
-            text = 'Doors open — SPACE to jump.', tone = 'info', ms = 6000,
-        })
+        -- Native help box: the ~INPUT_~ placeholder renders whatever the
+        -- player actually bound to our jump command in Settings > Key
+        -- Bindings > FiveM. The toast that said "SPACE" was only ever
+        -- describing the default.
+        BR.Native.help(('Doors open — press %s to jump.')
+            :format(BR.Native.inputForCommand('brdeploy')))
     end
 
     -- Last call: past the final authored waypoint the plane flies its
@@ -300,6 +305,15 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.fly', function()
     -- jump" right off the pavement.
     local above = z - (route.points[1].z + 15.0)
     if above > 0.0 then
+        -- Wheels up: tuck the gear five seconds after leaving the pavement,
+        -- like an aircraft that means it. gearAt doubles as the done-flag.
+        if not gearAt then
+            gearAt = GetGameTimer() + 5000
+        elseif gearAt ~= true and GetGameTimer() >= gearAt then
+            ControlLandingGear(bus, 3)   -- 3 = retract
+            gearAt = true
+        end
+
         local amp = math.min(1.0, above / 120.0)
         z = z + (math.sin(t * 0.00037) * 5.0 + math.sin(t * 0.00011 + 1.7) * 3.0) * amp
     end

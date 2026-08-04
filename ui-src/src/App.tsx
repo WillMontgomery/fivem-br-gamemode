@@ -99,8 +99,9 @@ export default function App() {
   return (
     <>
       {/* Always mounted; visibility follows match state so transitions cost no
-          mount work mid-fight. */}
-      <Hud visible={hudUp} />
+          mount work mid-fight. Hidden under the pause menu -- the fullscreen
+          map does not need our chrome floating over it. */}
+      <Hud visible={hudUp && !s.hud.paused} />
       {/* Chat vanishes with the rest of the in-match chrome the instant the
           match is decided -- a lingering kill-chatter log under the verdict
           slam reads as UI debris -- and it does NOT render under the lobby
@@ -110,9 +111,11 @@ export default function App() {
       {!tearingDown && !showLobby && <Chat barsVisible={hudUp} />}
       <Lobby visible={showLobby} />
       {showEnd && s.summary && <EndScreen summary={s.summary} />}
-      {/* Over everything: party events and match alerts do not care which
-          screen is up when they land. */}
-      <Notices barsVisible={hudUp} />
+      {/* Over the WORLD, never the menu: in-match alerts land wherever the
+          player is looking, but the lobby has its own feedback (chips
+          resolve, panels update) and floating toasts over it read as
+          clutter (user call, 2026-08-03). */}
+      {!showLobby && <Notices barsVisible={hudUp} />}
     </>
   )
 }

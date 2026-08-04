@@ -82,7 +82,10 @@ BR.Config.Storm = {
     -- 2026-08-02: "PLAYING+120s because the map is so big"). Total is roughly
     -- 20 minutes. Tune from playtests, not from theory.
     phases = {
-        { radius = 2600.0, wait = 120, shrink = 150, dps =  1.0, warn = 30 },
+        -- Shrink 60, not the original 150: the first wall crosses most of
+        -- the map and at 150s it read as scenery, not a threat (user call,
+        -- 2026-08-03: "at least 2.5x speed").
+        { radius = 2600.0, wait = 120, shrink =  60, dps =  1.0, warn = 30 },
         { radius = 1600.0, wait = 120, shrink = 120, dps =  2.0, warn = 30 },
         { radius =  950.0, wait =  90, shrink =  90, dps =  5.0, warn = 20 },
         { radius =  520.0, wait =  75, shrink =  75, dps =  8.0, warn = 20 },
@@ -101,13 +104,18 @@ BR.Config.Storm = {
     -- huge scale values produce broken geometry with no depth sorting. Instead we
     -- draw only the arc nearest the player, out of type-1 vertical cylinders.
     render = {
-        wallRenderDist = 300.0,  -- don't draw the wall when the EDGE is beyond this
-        segments       = 48,     -- markers per frame; ~0.1ms, bounded regardless of radius
-        -- How far ALONG the wall to draw, in metres of arc either side of the
-        -- nearest point. The span angle is derived from this per frame
-        -- (span = visDist / r), so a big circle gets a shallow arc and a
-        -- small one wraps all the way around -- the fixed 120-degree span
-        -- visibly ENDED mid-screen inside late circles.
+        segments       = 48,     -- MINIMUM columns drawn (and the floor on slot count)
+        maxDraw        = 80,     -- ceiling on columns per frame, near or far
+        -- The wall stands on FIXED angular slots, one column per slotArc
+        -- metres of circumference -- world-anchored, so columns do not slide
+        -- along the wall as the player moves (they used to ride the player's
+        -- bearing, which read as the whole colonnade rotating).
+        slotArc        = 30.0,
+        -- How far ALONG the wall to populate slots, in metres of arc either
+        -- side of the player's nearest point; widened automatically with
+        -- distance so the wall spans the view from far away too. There is NO
+        -- proximity cut-off any more -- the old one made the curtain pop out
+        -- of existence past 300m.
         wallVisDist    = 700.0,
         height         = 300.0,  -- scaleZ, tall enough to span the visible vertical band
         colour         = { r = 150, g = 70, b = 255 },

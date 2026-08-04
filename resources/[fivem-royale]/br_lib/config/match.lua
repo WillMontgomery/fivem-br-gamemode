@@ -39,6 +39,12 @@ BR.Config.Match = {
     minSquads       = 2,
     minSquadsDev    = 1,
 
+    -- How long the queue waits for an incomplete party before starting the
+    -- match without its stragglers (who can still late-join during warmup).
+    -- Zero patience started matches on the first Ready; infinite patience
+    -- hands one AFK partymate the whole lobby.
+    partyGraceSeconds = 45,
+
     -- The LOBBY: a vista point above Cayo Perico, used as the backdrop
     -- behind the menu. Players in the LOBBY state sit here invisible and in
     -- a PERSONAL routing bucket -- the lobby is a menu with a view, not a

@@ -228,6 +228,8 @@ end
 ---        the lobby card. Without it (the /brleave path), fade out now and
 ---        back in as soon as the vista is under our feet.
 function BR.Spawn.toLobby(holdBlack)
+    if BR.Spawn.traveling then return end
+    BR.Spawn.traveling = true
     Citizen.CreateThread(function()
         if holdBlack then
             BR.Spawn.holdBlack = true
@@ -261,8 +263,29 @@ function BR.Spawn.toLobby(holdBlack)
         if not BR.Spawn.holdBlack then
             DoScreenFadeIn(600)
         end
+        BR.Spawn.traveling = false
     end)
 end
+
+-- THE LOBBY STATE ALWAYS MEANS THE VISTA, no matter which door led to it.
+-- The choreographed path only runs off the ENDED transition -- so any other
+-- road to the LOBBY state (brforce cleanup mid-match, an admin resetting a
+-- stuck round) left the player standing in Los Santos with the menu over a
+-- live world and no teleport. This watcher closes every such gap: my state
+-- says lobby, my ped is far from the vista, and no trip is already running
+-- -- go home behind an ordinary fade.
+BR.Loop.register(BR.Loop.TICK, 'spawn.lobbywatch', function()
+    if BR.State.me.state ~= BR.PlayerState.LOBBY then return end
+    if BR.Spawn.traveling or BR.Spawn.holdBlack then return end
+    if BR.State.match.state == BR.MatchState.ENDED then return end
+
+    local p = BR.Config.Match.lobbyPos
+    local c = GetEntityCoords(PlayerPedId())
+    if BR.Dist(c.x, c.y, p.x, p.y) > 150.0 then
+        print('[br_core] lobby state away from the vista -- going home')
+        BR.Spawn.toLobby(false)
+    end
+end)
 
 --- Return the player to the warmup pad, alive, scattered slightly so a full
 --- lobby does not stack everyone on one point.

@@ -83,20 +83,30 @@ AddEventHandler('br:drop:begin', function(d)
             end
         end
 
-        TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
-            text = 'SPACE opens the glider — or ride it low.', tone = 'info', ms = 5000,
-        })
+        -- A native help box, NOT a toast: ~INPUT_PARACHUTE_DEPLOY~ renders
+        -- the player's real base-game parachute bind (the engine's own
+        -- deploy input works during the fall too, since the ped is in a
+        -- genuine parachute task). The old toast said "SPACE" to everyone,
+        -- which was our binding's DEFAULT, not their key.
+        BR.Native.help('Press ~INPUT_PARACHUTE_DEPLOY~ to open the glider early — or ride it low.')
     end)
 end)
 
--- Manual deploy. If the engine lost the parachute task (state -1 while
--- clearly airborne), SPACE re-tasks instead of doing nothing -- a dead key
--- during a fatal fall is the worst possible failure mode, twice observed.
+-- Manual deploy on OUR keymapped binding too (the base game's own deploy
+-- input already works natively during the task). If the engine lost the
+-- parachute task (state -1 while clearly airborne), this re-tasks instead of
+-- doing nothing -- a dead key during a fatal fall is the worst possible
+-- failure mode, twice observed.
 BR.Keys.on('deploy', function(pressed)
     if not pressed or not dropping then return end
     local ped = PlayerPedId()
     local cs = GetPedParachuteState(ped)
-    if cs == BR.Native.ChuteState.FREEFALL then
+    -- ON_BACK is the state a HEALTHY drop spends its whole freefall in (the
+    -- chute was given, so the engine never reports 3/falling-to-doom). The
+    -- old check only forced the canopy from FREEFALL, which is why the key
+    -- read as dead for every player whose drop was going fine.
+    if cs == BR.Native.ChuteState.FREEFALL
+       or cs == BR.Native.ChuteState.ON_BACK then
         ForcePedToOpenParachute(ped)
     elseif cs == BR.Native.ChuteState.NONE
        and not IsPedOnFoot(ped) and not IsEntityInWater(ped) then

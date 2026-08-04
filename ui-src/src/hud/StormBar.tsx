@@ -50,13 +50,20 @@ export default function StormBar({ storm }: { storm: StormPayload | null }) {
   const shrinking = storm.phaseState === 'shrinking'
   const hurting = storm.edgeDistance > 0 && (storm.dps ?? 0) > 0
 
+  // The label tells you what the number MEANS -- a bare "10s" told nobody
+  // anything. Holding: time until the wall starts moving. Shrinking: time
+  // until it stops. Being in it outranks both.
+  const label = hurting ? 'In the storm'
+    : shrinking ? 'Storm closing now'
+    : 'Storm moving in'
+
   return (
     <div className="panel px-4 py-2 flex items-baseline gap-3">
       <span
         className="text-[0.625rem] uppercase tracking-[0.18em]"
         style={{ color: hurting ? 'var(--color-danger)' : 'rgba(255,255,255,0.45)' }}
       >
-        {hurting ? 'In the storm' : shrinking ? 'Storm closing' : 'Storm'}
+        {label}
       </span>
       <span
         ref={timeRef}

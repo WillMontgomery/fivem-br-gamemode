@@ -39,8 +39,8 @@ function GetEntityCoords(ped)
 end
 --- Place a player's PED (positions flow ped -> sampler -> roster, never the
 --- other way, so tests must set them the same way the game would).
-local function setPos(src, x, y)
-    pedCoords[1000 + src] = { x = x, y = y, z = 30.0 }
+local function setPos(src, x, y, z)
+    pedCoords[1000 + src] = { x = x, y = y, z = z or 30.0 }
 end
 
 -- Health is driven through this table rather than set on roster entries
@@ -149,6 +149,8 @@ local function reset()
     -- Storm state and placed peds leak across blocks the same way.
     BR.Server.storm = nil
     BR.Server.matchAnchor = nil
+    BR.Server.match.partyHoldSince = nil
+    BR.Server.match.descent = nil
     for k in pairs(pedCoords) do pedCoords[k] = nil end
 end
 
@@ -1576,7 +1578,12 @@ do
     BR.Party.invite(1, 3); BR.Party.respond(3, true)   -- trio 1,2,3
     for i = 1, 2 do fire(BR.Net.QUEUE_JOIN, i, { mode = BR.Mode.SQUAD.key }) end
     fire(BR.Net.QUEUE_JOIN, 4, { mode = BR.Mode.SQUAD.key })
+    -- Player 3's party is incomplete, so the party gate holds first (one
+    -- tick to engage its patience clock); the match forms once the patience
+    -- runs out. That is the door 3 will late-join through -- this scenario.
     fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    fakeTime = fakeTime + BR.Config.Match.partyGraceSeconds * 1000 + 1500
     BR.Sched.step(fakeTime)
     ok(BR.Server.match.state == BR.MatchState.WARMUP, 'match forms without player 3')
     ok(BR.Roster.get(4).squadId ~= BR.Roster.get(1).squadId,
@@ -2131,6 +2138,101 @@ do
         'no storm keeps running past the match')
 
     pedHealth[1002] = nil
+end
+
+describe('match.partyGate')
+do
+    -- Parties enter together: one member readying up must not launch the
+    -- match while the rest of the party is still in the menu -- the first
+    -- two-client squad test started on the first Ready.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1   -- so the party gate is what holds, not headcount
+    join(1, 'A'); join(2, 'B')
+    BR.Party.invite(1, 2)
+    fire(BR.Net.SQUAD_RESPOND, 2, { accept = true })
+
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'squad' })
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WAITING,
+        'one ready in a party of two holds the match')
+    local blocker = BR.Match.startBlocker()
+    ok(blocker and blocker.reason == 'party' and blocker.have == 1 and blocker.need == 2,
+        'and the blocker names the party as the reason',
+        blocker and ('%s %s/%s'):format(tostring(blocker.reason),
+            tostring(blocker.have), tostring(blocker.need)) or 'nil')
+
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'squad' })
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WARMUP,
+        'the second Ready releases it')
+
+    -- Patience: an AFK partymate cannot brick the queue. The hold expires
+    -- after partyGraceSeconds and the match forms without them (they can
+    -- still late-join during warmup).
+    BR.Match.transition(BR.MatchState.ENDED)
+    BR.Match.transition(BR.MatchState.CLEANUP)
+    BR.Match.transition(BR.MatchState.WAITING)
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'squad' })
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WAITING, 'held again next match')
+    fakeTime = fakeTime + BR.Config.Match.partyGraceSeconds * 1000 + 1500
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.WARMUP,
+        'but patience runs out and the match forms without the idler')
+end
+
+describe('match.busDescent')
+do
+    -- The BUS ceiling yields to a LIVE descender: fresh, still-falling
+    -- position samples extend the timer in 10s steps, so a real glider off
+    -- a high exit is not forced into PLAYING mid-air (the "storm started
+    -- before I landed" report). A frozen altitude stops paying within one
+    -- round, so a crashed client cannot hold the room hostage.
+    reset()
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    BR.Match.transition(BR.MatchState.BUS)
+    local r = BR.Bus.active()
+
+    fakeTime = r.jumpFrom + 1000
+    fire(BR.Net.BUS_JUMP, 1)
+    fire(BR.Net.BUS_JUMP, 2)
+    fire(BR.Net.DROP_LANDED, 1)   -- 1 lands instantly; 2 keeps gliding
+    ok(BR.Roster.get(2).state == BR.PlayerState.FREEFALL, 'player 2 is airborne')
+
+    -- Mid-flight ticks record 2's falling altitude, so the verdict already
+    -- exists when the ceiling arrives (that is the design: track always,
+    -- decide at expiry).
+    setPos(2, 0.0, 0.0, 500.0)
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+    setPos(2, 0.0, 0.0, 450.0)
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+
+    -- Past the ceiling with 2 visibly descending: BUS holds.
+    setPos(2, 0.0, 0.0, 400.0)
+    fakeTime = BR.Server.match.endsAt + 600
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.BUS,
+        'a live descender holds the BUS past the route timer')
+
+    setPos(2, 0.0, 0.0, 300.0)
+    fakeTime = BR.Server.match.endsAt + 600
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.BUS, 'and keeps holding while falling')
+
+    -- Altitude freezes (a hung client): the grace stops paying and the
+    -- ceiling fires within two more checks.
+    for _ = 1, 3 do
+        fakeTime = math.max(fakeTime + 11000, BR.Server.match.endsAt + 600)
+        BR.Sched.step(fakeTime)
+    end
+    ok(BR.Server.match.state == BR.MatchState.PLAYING,
+        'a frozen altitude stops extending and the match goes live')
 end
 
 describe('match.storm.hold')

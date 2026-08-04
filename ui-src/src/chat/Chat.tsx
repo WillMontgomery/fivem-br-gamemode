@@ -131,9 +131,11 @@ export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) 
   //   2. Minimap hidden but the vitals strip showing: just above the strip
   //      (which occupies the minimap's old lower edge).
   //   3. Both hidden: dropped to the strip's own line.
+  // 0.3rem above the map: the same breathing room the vitals strip keeps
+  // from the map's bottom edge, so the column reads as one unit.
   const radarOn = screen?.radarOn ?? true
   const bottom = radarOn
-    ? 'calc(var(--map-bottom) + var(--map-h) + 0.75rem)'
+    ? 'calc(var(--map-bottom) + var(--map-h) + 0.3rem)'
     : barsVisible
       ? 'calc(var(--map-bottom) + 1.6rem)'
       : 'var(--map-bottom)'

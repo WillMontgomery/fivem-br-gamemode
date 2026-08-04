@@ -81,9 +81,11 @@ export default function Lobby({ visible }: { visible: boolean }) {
     ? 'Cleaning up the last round…'
     : !wait
       ? 'Starting…'
-      : wait.reason === 'squads'
-        ? `Waiting for ${wait.need - wait.have} more squad${wait.need - wait.have === 1 ? '' : 's'}`
-        : `Waiting for ${wait.need - wait.have} more player${wait.need - wait.have === 1 ? '' : 's'}`
+      : wait.reason === 'party'
+        ? 'Waiting for your party to ready up'
+        : wait.reason === 'squads'
+          ? `Waiting for ${wait.need - wait.have} more squad${wait.need - wait.have === 1 ? '' : 's'}`
+          : `Waiting for ${wait.need - wait.have} more player${wait.need - wait.have === 1 ? '' : 's'}`
 
   // The supporting numbers, each one answering a question the headline
   // raises. Suppressed during teardown -- counts for a match that cannot

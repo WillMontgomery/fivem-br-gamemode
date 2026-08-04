@@ -18,21 +18,27 @@ Everything uses stock GTA V assets — no custom models, maps, or streamed files
 |---|---|---|
 | M0 | Resources, build pipeline, verification tooling, debug commands | **Done** |
 | M1 | Authoritative roster, scope-safe broadcast, match state machine, clock sync | **Done** |
-| M2 | Persistent parties, squad formation, autofill, lobby UI | **In progress** |
-| M3 | Battle Bus, skydive, glider | Not started |
-| M4 | The storm — phases, damage, rendering | Not started |
+| M2 | Persistent parties, squad formation, autofill, lobby UI | **Done** |
+| M3 | Battle Bus, skydive, glider, end-of-match choreography | **Done** |
+| M4 | The storm — anchor, phases, damage, rendering | **Code complete** — in-game gate pending |
 | M5 | Loot spawning, pickups, 5-slot inventory | Not started |
 | M6 | Combat, damage validation, kill attribution | Not started |
 | M7 | Downed state and revives | Not started |
 | M8 | Spectating, match summary, round flow | Not started |
 
-**Working now:** players connect and spawn, queue for a match, form persistent
-parties, chat globally or to their squad, and a match runs WAITING → WARMUP →
-BUS → PLAYING → ENDED → CLEANUP with a real win condition. Deaths are detected
-and placements assigned.
+**Working now:** the full pre-combat loop. Players queue from a lobby above
+Cayo Perico, form persistent parties, and warm up on the island airstrip while
+the match's flight route is drawn on the map. The Battle Bus takes off from a
+real runway, flies an authored four-leg tour over Los Santos, and everyone
+skydives out wherever they choose. When the last player lands, the match goes
+live and the storm starts: a shrinking circle homed on a point of interest near
+the flight path, with a rendered wall, map circles, screen effects, and
+server-authoritative damage. Deaths (storm included) are detected, placements
+assigned, and a match ends with a victory/elimination sequence back to the
+lobby.
 
-**Not working yet:** there is no bus, no drop, no storm, no loot, and no weapons.
-A "match" currently consists of standing at the airport until someone dies.
+**Not working yet:** no loot, no weapons in the loop, no downed state, no
+spectating, no persistent stats. Fights are whatever you brought.
 
 ---
 
@@ -68,10 +74,77 @@ into one of three loops (per-frame, 10 Hz, 1 Hz) rather than spawning its own
 thread. Because gameplay is one resource, `resmon` can't attribute cost per
 subsystem — so the registry measures each callback itself.
 
-**Loot will be client-rendered and server-owned.** ~1200 items as networked
+**Loot will be client-rendered and server-owned.** ~1650 items as networked
 entities would not survive contact with a real server. The server holds the
 layout as plain data generated from a seeded RNG; clients render local,
 non-networked props and ask the server to claim them.
+
+---
+
+## Terminology
+
+The words the code, the logs, and the commit history use — and what each one
+actually is.
+
+### Authority and sync
+
+| Term | Meaning |
+|---|---|
+| **Roster** | The server's per-player table (`br_core/server/roster.lua`) — the single source of truth for who is connected, their state, squad, health, kills, placement. Positions and licences live here too but are never broadcast. |
+| **Mirror** | The client's read-only copy of the roster and match state (`br_core/client/state.lua`). It applies what the server said and derives nothing itself. |
+| **Snapshot** | Everything a client needs to rebuild its mirror from nothing. Sent on join and whenever the UI restarts. |
+| **Delta** | A batched, sequenced list of roster changes, flushed at 4 Hz. The optimisation layered on top of snapshots. |
+| **Digest** | A 2 Hz heartbeat of the counts everyone needs (alive, squads, state, endsAt). Also the self-healing layer: a client whose state is wrong is wrong for at most half a second. |
+| **Routing bucket** | FiveM's server-side world partition. Every LOBBY player sits alone in a personal bucket (the lobby is a menu with a view — nobody's ped may wander into it); everyone in a match shares bucket 0. |
+| **Clock sync** | Client-estimated offset from server time via ping/pong. Countdowns and both moving systems (bus, storm) interpolate against `BR.Clock.now()`, never a streamed position. |
+| **Scope gate** | The CI grep in `tools/verify.sh` banning scope-limited natives (`GetActivePlayers` etc.) from client gameplay code — under OneSync those only see nearby players, which is how alive-counts silently go wrong. |
+
+### Match flow
+
+| Term | Meaning |
+|---|---|
+| **Match states** | `WAITING → WARMUP → BUS → PLAYING → ENDED → CLEANUP`, owned entirely by the server (`match.lua`). Clients are told; they never infer. |
+| **Player states** | `lobby, warmup, bus, freefall, glide, alive, dbno, dead, spectating, left` — a player's own position in the match, independent of the match state. Landing is what makes you `alive`; the state machine going PLAYING does not. |
+| **Party** | A persistent group that survives across matches (invites, leader, pending list). What you queue with. |
+| **Squad** | The per-match team formed from parties (plus autofill) the moment a match starts. Dies with the match; the party does not. |
+| **Participants** | The queue snapshot taken when a match starts. Only players who readied up enter warmup — idling in the lobby never conscripts you. |
+
+### The Battle Bus
+
+| Term | Meaning |
+|---|---|
+| **Virtual bus** | There is no shared plane. The server publishes one timestamped route; every client spawns its own local, non-networked Titan and flies it along that route against the synced clock. 48 players see identical planes with zero sync traffic. |
+| **Tour / legs** | The flight is authored, not random: one option drawn from each of four leg lists (coast → city → mid-map → northern exit), 192 possible flights, all over land by construction. |
+| **Waypoints** | The authored points of the drawn tour — what players see on the map during warmup, and what the storm anchor is picked from. |
+| **Doors** | The jump window. Opens on arrival at the leg-1 waypoint (the coastline players saw on the map) and closes after a 5-second overrun past the last waypoint, when stragglers are force-ejected. |
+
+### The storm
+
+| Term | Meaning |
+|---|---|
+| **POI** | Point of interest: ~49 named places (`br_lib/config/map.lua`) with a tier that drives loot density. They double as storm-anchor candidates. |
+| **Anchor** | The place a match's whole storm sequence homes on. Picked at warmup: one random waypoint of this match's tour, then one random POI 500–1500 units off it — route-coupled, always on land, never a pattern. |
+| **Record** | The one table the server publishes per phase: current circle, target circle, timestamps, dps. Whole-record broadcasts only, never incremental mutation. |
+| **Solver** | `BR.StormAt(record, now)` — a pure function both sides run to get the circle at any instant. A shrinking storm costs zero per-frame network traffic. |
+| **Phase** | One hold-then-shrink cycle from the authored table (radius, wait, shrink, dps, warn). Phase 1's 120 s wait is the free-loot hold; the first circle is visible from the moment the match goes live. |
+| **Wall** | The rendered edge: ~40 tall cylinder markers on the arc nearest the player, drawn only when the edge is within 250 m. Cosmetic — disabling it changes nothing about damage. |
+| **Ledger** | The authority trick. The server cannot write a ped's health, so clients are *told* to apply storm damage — but the server also tracks what the storm should have done and eliminates from its own arithmetic. A client that ignores every damage instruction dies at exactly the honest moment. |
+
+### Health units
+
+| Term | Meaning |
+|---|---|
+| **Display units** | 0–100, what players see and what every config number uses (storm dps, consumables, revive HP). Shield is armour, natively 0–100. |
+| **Engine units** | 0–200 on this build (floor verified 0 in-game). Conversion happens only in `BR.ToEngineHp` / `BR.ToDisplayHp` / `BR.ToEngineHpDelta` — never inline. |
+
+### Interface
+
+| Term | Meaning |
+|---|---|
+| **NUI** | FiveM's in-game browser layer (CEF, Chrome 103) where the React interface renders. |
+| **Envelope** | The single message shape crossing the Lua→UI bridge: `{ k = kind, d = payload, s = sequence }`, numerics normalised once at the boundary. |
+| **Focus stack** | `br_ui`'s ownership of `SetNuiFocus` — the only file allowed to touch it. Screens push and pop; a thrown React error can never strand a player without controls. |
+| **Loop registry** | The client performance contract: exactly three loops (per-frame, 10 Hz, 1 Hz); every subsystem registers a measured callback instead of spawning threads. The server mirror of this is the **scheduler** (`BR.Sched`, interval-based jobs). |
 
 ---
 
@@ -104,10 +177,11 @@ cd ui-src && npm run dev   # the UI in a browser, no game required
 cd ui-src && npm run build # typecheck, build, and CSS compatibility check
 ```
 
-`verify.sh` runs four gates: Lua 5.4 syntax on every file, 350 unit tests over
-the pure logic (geometry, storm solver, seeded RNG, loop registry, roster,
-parties, XP curve), the scope gate, and a check that every `.lua` is declared in
-its `fxmanifest` — because a file that is never loaded produces no error.
+`verify.sh` runs four gates: Lua 5.4 syntax on every file, ~570 unit tests over
+the pure logic (geometry, storm solver and anchor picker, seeded RNG, loop
+registry, roster, match flow, bus routes, storm engine, parties, XP curve), the
+scope gate, and a check that every `.lua` is declared in its `fxmanifest` —
+because a file that is never loaded produces no error.
 
 Install the pre-commit hook with `./tools/install-hooks.sh`.
 
@@ -118,9 +192,14 @@ Install the pre-commit hook with `./tools/install-hooks.sh`.
 | `brnativecheck` | client | Verify every native assumption against the running build |
 | `brblack` | client | Every state that can cause a black screen, at once |
 | `brfocus` | client | The NUI focus stack — why you do or don't have a cursor |
+| `brbus`, `brdrop` | client | Bus ride and skydive state, live |
+| `/brleave` | client | Leave the current match (counts as an elimination) |
 | `brperf` | both | Per-subsystem frame and tick cost |
 | `brwhy <id>` | server | Why a given player is in the state they're in |
 | `brscatter` | server | Spread everyone 3 km apart to test OneSync scoping |
+| `brforce <state>`, `brskip`, `brkill <id>` | server | Drive the match by hand |
+| `brphase <n>` | server | Jump the storm to phase n, seamlessly from the live circle |
+| `brstormscale <0.05–1>` | server | Compress storm pacing for testing (0.1 ≈ a 2-minute cycle) |
 | `brstate`, `brroster`, `brstorm`, `brqueue`, `brparty` | server | State dumps |
 
 ---
