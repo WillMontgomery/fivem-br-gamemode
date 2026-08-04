@@ -150,6 +150,7 @@ function BR.Match.onEnter(state, from)
         -- path that reaches PLAYING with states still settling ends instantly,
         -- and the log reads as though a match was played and won in one tick.
         S.startedAt = GetGameTimer()
+        S.landCheck = nil   -- fresh stuck-lander bookkeeping per match
 
         -- Normally counted at BUS entry (before anyone can be dead); this
         -- fallback covers `brforce playing` straight from warmup, where the
@@ -181,6 +182,18 @@ function BR.Match.onEnter(state, from)
 
     elseif state == BR.MatchState.WAITING then
         BR.Bus.clear()   -- covers brforce waiting from mid-flight too
+
+        -- NO MATCH STATE OUTLIVES THE MATCH. The normal road home runs
+        -- through ENDED's sweep, but aborts and brforce arrive here
+        -- directly -- and a player still DEAD (or BUS, or FREEFALL) at
+        -- WAITING is stranded: no teleport fires, no resurrection, the
+        -- lobby menu draws over a corpse. Whatever the road, WAITING
+        -- means everyone is a lobby player now.
+        BR.Roster.each(
+            function(e) return e.state ~= BR.PlayerState.LOBBY
+                and e.state ~= BR.PlayerState.LEFT end,
+            function(src) BR.Roster.setState(src, BR.PlayerState.LOBBY) end)
+
         if from == BR.MatchState.CLEANUP then
             BR.Broadcast.snapshot()   -- re-seed everyone for the next match
         end
@@ -442,15 +455,25 @@ local function tick()
         BR.Match.shortenWarmupIfFull()
     end
 
-    -- AN ABANDONED MATCH ABORTS. Everyone brleaving (or dropping) during
-    -- warmup or the flight used to leave the state machine idling out its
-    -- timers for nobody -- an empty warmup has nothing to wait for and an
-    -- empty plane nothing to deliver. Straight back to WAITING. (PLAYING
-    -- ends through the win condition like any other match.)
+    -- AN ABANDONED MATCH ABORTS -- but DYING IS NOT LEAVING. Everyone
+    -- brleaving during warmup or the flight goes straight back to WAITING
+    -- (nothing happened, nothing to show). If anyone actually DIED, this
+    -- was a match, however short, and it takes the REAL exit: ENDED runs
+    -- placements, the verdict, the roster sweep and the trip home. The
+    -- first version aborted a solo's mid-bus death to WAITING, skipping
+    -- all of that -- lobby menu over a corpse in Los Santos.
     if (S.state == BR.MatchState.WARMUP or S.state == BR.MatchState.BUS)
        and BR.Server.aliveCount() == 0 then
-        print('[br_core] match: everyone left -- aborting back to WAITING')
-        BR.Match.transition(BR.MatchState.WAITING)
+        local anyDead = BR.Server.count(function(p)
+            return p.state == BR.PlayerState.DEAD
+        end) > 0
+        if anyDead then
+            print('[br_core] match: everyone is down -- ending')
+            BR.Match.transition(BR.MatchState.ENDED)
+        else
+            print('[br_core] match: everyone left -- aborting back to WAITING')
+            BR.Match.transition(BR.MatchState.WAITING)
+        end
         return
     end
 
@@ -514,6 +537,39 @@ local function tick()
                 print('[br_core] match: someone is still descending -- holding BUS 10s more')
             end
         end
+    end
+
+    -- STUCK LANDERS BECOME ALIVE. A player whose landing report was lost
+    -- (or refused) stays FREEFALL/GLIDE forever -- and those states are
+    -- invincible on their own client, so they walk the match untouchable
+    -- ("players seem invincible", live report). Standing at a constant
+    -- altitude for five seconds is not falling by any definition: promote
+    -- them server-side, which drops their invincibility and re-arms every
+    -- system keyed on ALIVE.
+    if S.state == BR.MatchState.PLAYING then
+        S.landCheck = S.landCheck or { z = {}, still = {} }
+        BR.Roster.each(
+            function(e)
+                return e.state == BR.PlayerState.FREEFALL
+                    or e.state == BR.PlayerState.GLIDE
+            end,
+            function(src, e)
+                if e.pos and (now - (e.posAt or 0)) < 3000 then
+                    local last = S.landCheck.z[src]
+                    if last and math.abs(e.pos.z - last) < 1.0 then
+                        S.landCheck.still[src] = (S.landCheck.still[src] or 0) + 1
+                        if S.landCheck.still[src] >= 20 then   -- ~5s at the 250ms tick
+                            print(('[br_core] %s (%d) has been at constant altitude 5s -- promoting to ALIVE')
+                                :format(e.name, src))
+                            BR.Roster.setState(src, BR.PlayerState.ALIVE)
+                            S.landCheck.still[src] = nil
+                        end
+                    else
+                        S.landCheck.still[src] = 0
+                    end
+                    S.landCheck.z[src] = e.pos.z
+                end
+            end)
     end
 
     if winConditionMet() then

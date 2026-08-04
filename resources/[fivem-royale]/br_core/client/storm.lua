@@ -158,7 +158,6 @@ local dirBlip = nil       -- centre marker: clamps to the minimap edge = directi
 local lastBlipAt = 0
 local lastBlipR = -1.0
 local fxOn = false
-local warnedPhase = nil
 local lastPush = 0
 local lastComing = 0   -- the 30s SLOT last announced; 0 = fire on sight
 
@@ -200,7 +199,6 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     local rec = activeRecord()
     if not rec then
         teardown()
-        warnedPhase = nil
         return
     end
 
@@ -221,18 +219,10 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     local canHurt = me == BR.PlayerState.ALIVE or me == BR.PlayerState.DBNO
     fxSet(edge > 0 and dps > 0 and canHurt)
 
-    -- "Storm closing in 30s" -- once per phase, at the authored warn time.
-    if st == BR.StormPhase.HOLDING or st == BR.StormPhase.PRE then
-        local phase = cfg.phases[rec.phase]
-        if phase and warnedPhase ~= rec.phase
-           and msLeft <= (phase.warn or 30) * 1000 then
-            warnedPhase = rec.phase
-            TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
-                text = ('Storm closing in %ds.'):format(math.ceil(msLeft / 1000)),
-                tone = 'warn',
-            })
-        end
-    end
+    -- No per-phase warn toast: once the first shrink begins the storm bar
+    -- is PERMANENT (user call, 2026-08-04) and a toast repeating what the
+    -- timer already says was noise. The countdown notices below cover the
+    -- one stretch the bar sits out -- the long phase-1 hold.
 
     -- The long first hold speaks through NOTICES, not a parked timer -- and
     -- always in clean half-minute amounts: "2 minutes", "1m 30s", never

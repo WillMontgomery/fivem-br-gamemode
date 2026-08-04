@@ -27,6 +27,7 @@ local ejectedSeen = nil -- when we noticed the server flipped us to FREEFALL
 local lastX, lastY, lastZ, lastT = nil, nil, nil, nil  -- finite-difference state
 local camYaw, camPitch = 0.0, -8.0   -- free-look orbit, reset each boarding
 local gearAt = nil      -- when to retract the landing gear; true once done
+local boardGen = 0      -- boarding generation; a stale boarding thread abandons
 
 -- Smoothed airframe orientation. The path is a polyline, so its raw
 -- direction is CONSTANT within a segment and STEPS at every waypoint -- the
@@ -41,6 +42,7 @@ local function angDiff(a, b)
 end
 
 local function cleanup()
+    boardGen = boardGen + 1   -- abandon any boarding thread still streaming
     if cam then
         RenderScriptCams(false, false, 0, true, true)
         DestroyCam(cam, false)
@@ -142,6 +144,8 @@ end
 --- behind it. One thread per boarding, not per frame, is within the rules.
 local function board()
     riding = true   -- set before the async work so the loop does not re-enter
+    boardGen = boardGen + 1
+    local gen = boardGen
 
     Citizen.CreateThread(function()
         local model = GetHashKey(BR.Config.Bus.model)
@@ -153,7 +157,14 @@ local function board()
         if not HasModelLoaded(model) then
             print('[br_core] bus: model never loaded; riding blind (camera only)')
         end
-        if not riding then return end   -- torn down while the model streamed
+        -- STALE-BOARDING GUARD. Model streaming takes real time (longest
+        -- right after the island unloads), and a state flap can run
+        -- cleanup() and a SECOND board() while this thread is still waiting
+        -- -- which is how one flight produced two planes (handles 258 and
+        -- 770), the first orphaned with the ped attached to nothing the fly
+        -- loop moves. The generation token means a superseded boarding
+        -- quietly abandons instead of finishing.
+        if not riding or gen ~= boardGen then return end
 
         local p0 = route.points[1]
         local heading = route.heading or 0.0
@@ -251,7 +262,10 @@ BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
             end
         else
             -- Dead, back to lobby, match torn down -- nothing airborne about
-            -- any of it. Plain teardown.
+            -- any of it. Plain teardown. LOGGED with the state that caused
+            -- it: a mid-flight teardown+reboard has happened once (the
+            -- two-plane flight) and the trigger state is the evidence.
+            print(('[br_core] bus: ending ride -- my state is %s'):format(tostring(me)))
             cleanup()
         end
     end

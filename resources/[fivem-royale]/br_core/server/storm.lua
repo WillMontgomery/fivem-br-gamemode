@@ -151,8 +151,22 @@ BR.Sched.every(1000, 'storm.damage', function(dt)
     if S.match.state ~= BR.MatchState.PLAYING or not S.storm then return end
 
     local now = GetGameTimer()
-    local cx, cy, r, _, _, dps = BR.StormAt(S.storm, now)
+    local rec = S.storm
+    local cx, cy, r, st, _, dps = BR.StormAt(rec, now)
     if dps <= 0 then return end
+
+    -- THE EDGE CUSHION. During a shrink the wall moves METRES PER SECOND
+    -- (phase 1 sweeps >150 m/s), and three clocks disagree at the knife
+    -- edge: this tick, the half-second-old position sample, and the
+    -- client's own view of the circle. Damage therefore starts a margin
+    -- OUTSIDE the solved radius -- a base allowance plus ~0.7s of wall
+    -- travel -- so a player standing at the visible curtain is always
+    -- genuinely safe (live reports: hurt while 20-50ft inside the wall).
+    local margin = 10.0
+    if st == BR.StormPhase.SHRINKING then
+        margin = margin
+            + ((rec.r0 - rec.r1) / math.max(rec.tShrink / 1000.0, 1.0)) * 0.7
+    end
 
     -- Capped so a long scheduler stall (or a test jumping the clock) cannot
     -- land one apocalyptic tick.
@@ -163,7 +177,7 @@ BR.Sched.every(1000, 'storm.damage', function(dt)
         function(src, e)
             if not e.pos then return end   -- not sampled yet (OneSync warning covers why)
 
-            if BR.Dist(e.pos.x, e.pos.y, cx, cy) <= r then
+            if BR.Dist(e.pos.x, e.pos.y, cx, cy) <= r + margin then
                 -- Inside: the ledger re-seeds from sampled reality next time
                 -- they are caught out.
                 e.stormHp  = nil
