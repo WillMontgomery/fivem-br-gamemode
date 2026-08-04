@@ -50,8 +50,10 @@ export default function Hud({ visible }: { visible: boolean }) {
       aria-hidden={!visible}
     >
       {/* Storm vignette is full-bleed: it should ignore the safe zone, because
-          it is an effect rather than an element to read. */}
-      {outside && <div className="storm-vignette" />}
+          it is an effect rather than an element to read. Always mounted so the
+          5s opacity transition can play both directions -- in step with the
+          client-side weather blend. */}
+      <div className="storm-vignette" style={{ opacity: outside ? 1 : 0 }} />
 
       <div className="hud-safe">
         {/* Top row */}

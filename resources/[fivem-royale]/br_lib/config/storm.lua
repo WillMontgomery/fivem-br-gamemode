@@ -42,7 +42,29 @@ BR.Config.Storm = {
     -- computation, not the radius itself.
     radius0     = 3500.0,
     openMargin  = 200.0,
-    edgeBiasMax = 0.55,     -- how far off-centre the next circle may sit (0..1)
+    -- How far off-centre the next circle may sit, as a fraction of the
+    -- containment slack. 1.0 = anywhere the nesting rule allows -- 0.55
+    -- "wasn't moving far enough" (user call, 2026-08-04).
+    edgeBiasMax = 1.0,
+
+    -- The FINAL circles hug the edge: for the last edgeHugPhases phases the
+    -- next centre is pushed to within edgeHugM of the current circle's rim
+    -- (containment still wins at small radii, where the whole circle is
+    -- within 250m of its own circumference anyway). Endgames resolve as a
+    -- run to a place, not a shuffle in the middle.
+    edgeHugM      = 250.0,
+    edgeHugPhases = 2,
+
+    -- SHRINK TIME IS PRICED PER PHASE, like the hold: at each phase entry
+    -- the furthest in-match player's run to the TARGET circle's edge sets
+    -- the wall's travel time -- everyone already inside means the sweep
+    -- takes only minSeconds and the game moves on (the "extra minutes for
+    -- gameplay to really begin" complaint); a far straggler gets time to
+    -- run. The authored per-phase shrink value is the CEILING.
+    shrinkPace = {
+        metersPerSec = 9.0,   -- same assumed cross-map speed as the hold
+        minSeconds   = 40.0,  -- even an uncontested sweep takes this long
+    },
 
     -- The free-loot hold stretches with the match: phase 1's wait is scaled
     -- to how far the FURTHEST player is from the anchor at the moment the
@@ -108,19 +130,17 @@ BR.Config.Storm = {
         { radius =    0.0, wait =  30, shrink =  60, dps = 10.0, warn = 10 },
     },
 
-    -- REAL RAIN IN THE STORM, per client. GTA weather is only "global" when
-    -- something syncs it -- a client-side override is purely local, which
-    -- makes it a legitimate storm effect: just outside the wall it RAINS,
-    -- deep outside it is a THUNDERstorm, and stepping back inside clears
-    -- the sky. Transitions use the engine's own overtime blend, so the
-    -- rain builds gently, peaks, and fades -- exactly the arc asked for
-    -- (user call, 2026-08-04).
+    -- REAL WEATHER IN THE STORM, per client. GTA weather is only "global"
+    -- when something syncs it -- a client-side override is purely local,
+    -- which makes it a legitimate storm effect: caught outside the wall the
+    -- sky goes full THUNDER (no gentle-rain tier -- user call, 2026-08-04),
+    -- back inside it clears. The engine's overtime blend gives the build
+    -- and fade; the NUI vignette fades on the same 5s clock.
     weather = {
         enabled  = true,
-        deepM    = 150.0,  -- this far outside, rain escalates to thunder
-        blendSec = 12.0,   -- overtime blend: gentle build, gentle fade
-        holdMs   = 2000,   -- a tier must persist this long before the sky
-                           -- moves -- edge-straddlers must not strobe it
+        blendSec = 5.0,    -- overtime blend, both directions
+        holdMs   = 1000,   -- the state must persist this long before the
+                           -- sky moves -- edge-straddlers must not strobe it
     },
 
     -- Does storm damage chew through shields first, or bypass them?

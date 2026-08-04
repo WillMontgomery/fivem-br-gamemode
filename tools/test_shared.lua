@@ -398,6 +398,31 @@ do
     ok(violations == 0, 'out-of-range edgeBias is clamped, not trusted',
         ('%d violations'):format(violations))
 
+    -- THE EDGE HUG (2026-08-04): the final phases pass a minimum offset so
+    -- the next centre lands within edgeHugM of the current circumference --
+    -- endgames run to a place instead of shuffling in the middle. The
+    -- minimum must hold, containment must still win, and a minimum larger
+    -- than the slack must clamp instead of breaking nesting.
+    local hugViol, hugNest = 0, 0
+    for _ = 1, 5000 do
+        local curR, nextR = 1000.0, 200.0
+        local slack   = curR - nextR
+        local minDist = slack - 250.0
+        local nx2, ny2 = BR.NextStormCentre(rng, 0.0, 0.0, curR, nextR,
+            1.0, nil, minDist)
+        local off = BR.Dist(0.0, 0.0, nx2, ny2)
+        if off < minDist - 1e-6 then hugViol = hugViol + 1 end
+        if off + nextR - curR > 1e-6 then hugNest = hugNest + 1 end
+    end
+    ok(hugViol == 0, 'the edge hug pushes the centre out to its minimum',
+        ('%d short draws'):format(hugViol))
+    ok(hugNest == 0, 'and containment still wins over the hug',
+        ('%d nesting violations'):format(hugNest))
+
+    local hx, hy = BR.NextStormCentre(rng, 0.0, 0.0, 100.0, 60.0, 1.0, nil, 9999.0)
+    ok(BR.Dist(0.0, 0.0, hx, hy) + 60.0 - 100.0 <= 1e-6,
+        'an oversized minimum clamps to the slack instead of breaking nesting')
+
     -- Bounds are best-effort and yield to containment. Where the current circle
     -- is itself fully inside the map, though, the next one should be too.
     local inBounds = true

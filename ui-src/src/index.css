@@ -227,15 +227,11 @@ html, body, #root {
   to { opacity: 0; }
 }
 
-/* ~3x the original effect (user call, 2026-08-04: "purple is good but not
-   strong enough"): the pulse never drops below a strong floor instead of
-   vanishing entirely, and the gradient reaches further in with a heavier
-   edge. Being in the storm should be unmistakable before the health bar
-   says so. */
-@keyframes stormPulse {
-  0%, 100% { opacity: 0.55; }
-  50%      { opacity: 1.0; }
-}
+/* ~3x the original effect (user call: "purple is good but not strong
+   enough") and NO PULSE (second user call, same day): the vignette fades
+   in and out over the same 5 seconds the client-side THUNDER weather
+   blends, so the purple and the rain arrive and leave as one storm. The
+   element stays mounted; Hud.tsx drives opacity. */
 .storm-vignette {
   position: fixed;
   inset: 0;
@@ -244,7 +240,25 @@ html, body, #root {
     rgba(147, 51, 234, 0) 22%,
     rgba(147, 51, 234, 0.38) 62%,
     rgba(124, 30, 220, 0.88) 100%);
-  animation: stormPulse 2.4s ease-in-out infinite;
+  transition: opacity 5s ease-in-out;
+}
+
+/* The health-bar hit flash: a red wash over the bar that burns out in
+   ~650ms. Remounted (key change) on every hp drop, so sustained damage --
+   a storm tick per second -- pulses red for as long as it lasts. Opacity
+   only; no box-shadow on an animated element (CEF rule). */
+@keyframes vitalsHit {
+  0%   { opacity: 1; }
+  100% { opacity: 0; }
+}
+.vitals-hit-flash {
+  position: absolute;
+  inset: -2px;
+  border-radius: 9999px;
+  background: rgba(255, 70, 70, 0.55);
+  border: 1px solid rgba(255, 70, 70, 0.9);
+  pointer-events: none;
+  animation: vitalsHit 650ms ease-out both;
 }
 
 /* Scrollbars inside chat -- CEF shows the default chunky ones otherwise. */

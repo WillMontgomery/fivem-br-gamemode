@@ -71,15 +71,21 @@ function BR.Bus.plan()
 
     -- Parked, then the ground roll: UNIFORM ACCELERATION, sampled at equal
     -- time steps -- position goes with k^2, speed linearly, so the speed
-    -- carried into every sample rises by the same ~7 m/s. The old six
-    -- unevenly-spaced samples read as distinct gear changes off the line.
+    -- carried into every sample rises by the same small step.
+    --
+    -- DENSITY IS THE SMOOTHNESS. The path is piecewise LINEAR in position
+    -- and speed between samples, and at rolling speeds the old 12 samples
+    -- meant each boundary jumped the speed by ~7 m/s -- a +100% lurch on
+    -- the first few, which is exactly the "sudden movements between speed
+    -- and position" the takeoff was reported for (2026-08-04). 32 samples
+    -- cut every step by ~2.7x for the cost of 20 route points.
     local sp, rp = cfg.spawn, cfg.rotatePoint
     push(sp.x, sp.y, sp.z, 1.0)
-    local rollSamples = 12
+    local rollSamples = 32
     for i = 1, rollSamples do
         local k = i / rollSamples
         push(BR.Lerp(sp.x, rp.x, k * k), BR.Lerp(sp.y, rp.y, k * k), sp.z,
-             math.max(6.0, cfg.rollSpeed * k))
+             math.max(3.0, cfg.rollSpeed * k))
     end
 
     -- Wheels up: hold the runway heading, climb to altitude over climbDist.
@@ -87,7 +93,9 @@ function BR.Bus.plan()
     local dLen = math.max(1.0, BR.Dist(sp.x, sp.y, rp.x, rp.y))
     dirX, dirY = dirX / dLen, dirY / dLen
 
-    local climbSamples = 10
+    -- Doubled alongside the roll: wheels-up is where speed, elevation AND
+    -- pitch all change at once, so the sample boundaries show most there.
+    local climbSamples = 20
     for i = 1, climbSamples do
         local k = i / climbSamples
         local ease = k * k * (3.0 - 2.0 * k)

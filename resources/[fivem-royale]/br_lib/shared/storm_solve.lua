@@ -143,8 +143,12 @@ end
 --- @param nextRadius number
 --- @param edgeBias number  0..1, how far off-centre the next circle may sit
 --- @param aabb table       playable bounds
+--- @param minDist number|nil  minimum offset from the current centre -- the
+---                        edge-hug rule for the final phases pushes the next
+---                        centre out to at least (slack - edgeHugM). Clamped
+---                        to the slack, so containment always wins.
 --- @return number, number  next centre
-function BR.NextStormCentre(rng, cx, cy, curRadius, nextRadius, edgeBias, aabb)
+function BR.NextStormCentre(rng, cx, cy, curRadius, nextRadius, edgeBias, aabb, minDist)
     local slack = curRadius - nextRadius
     if slack <= 0 then
         return cx, cy
@@ -157,6 +161,22 @@ function BR.NextStormCentre(rng, cx, cy, curRadius, nextRadius, edgeBias, aabb)
     -- pointInDisc applies the sqrt that keeps the distribution uniform rather
     -- than centre-clustered. Without it every match's zone path feels the same.
     local nx, ny = rng:pointInDisc(cx, cy, slack * edgeBias)
+
+    -- The edge hug: push a too-central draw outward along its own bearing
+    -- until it clears the minimum. A zero-length draw gets a random bearing
+    -- -- there is no "outward" from the exact centre.
+    minDist = BR.Clamp(minDist or 0.0, 0.0, slack)
+    local off = BR.Dist(cx, cy, nx, ny)
+    if off < minDist then
+        local ang
+        if off > 1e-9 then
+            ang = math.atan(ny - cy, nx - cx)
+        else
+            ang = rng:float() * 2.0 * math.pi
+        end
+        nx = cx + math.cos(ang) * minDist
+        ny = cy + math.sin(ang) * minDist
+    end
 
     if aabb then
         nx, ny = BR.ClampCircleToAABB(nx, ny, nextRadius, aabb)

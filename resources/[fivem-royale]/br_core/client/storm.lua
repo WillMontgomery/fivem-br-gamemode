@@ -185,12 +185,12 @@ local function fxSet(outside)
     end
 end
 
--- REAL RAIN, tiered by depth. Weather natives are LOCAL to this client --
--- "global weather" is only a thing when a resource syncs it, and nothing on
--- this server does -- so the sky itself becomes a storm effect: RAIN just
--- past the wall, THUNDER deep outside, clear again inside. The engine's
--- overtime blend does the dramatics for free: rain builds gently over
--- blendSec, and fades the same way on the walk back in.
+-- REAL WEATHER. Weather natives are LOCAL to this client -- "global
+-- weather" is only a thing when a resource syncs it, and nothing on this
+-- server does -- so the sky itself becomes a storm effect: full THUNDER
+-- when caught outside (no gentle-rain tier -- user call, 2026-08-04),
+-- clear again inside. The engine's overtime blend does the build and the
+-- fade over blendSec; the NUI vignette fades on the same clock.
 --
 -- The ladder never touches the weather until the player is first caught
 -- outside -- a match spent inside the circle keeps GTA's own sky.
@@ -198,7 +198,7 @@ local wxTier  = 'clear'   -- what the sky is currently doing
 local wxWant  = 'clear'   -- what the ladder wants it to do
 local wxSince = 0         -- when it first wanted that
 local wxOwned = false     -- whether we have overridden the weather at all
-local WX_NAME = { clear = 'EXTRASUNNY', rain = 'RAIN', thunder = 'THUNDER' }
+local WX_NAME = { clear = 'EXTRASUNNY', thunder = 'THUNDER' }
 
 local function weatherWant(tier)
     local wcfg = cfg.weather
@@ -259,11 +259,10 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     local caught = edge > 0 and dps > 0 and canHurt
     fxSet(caught)
 
-    -- The sky agrees with the vignette: rain when caught outside, thunder
-    -- when deep outside, clearing on the way back in. Same condition as
-    -- the screen FX so the free-loot hold stays dry everywhere.
-    weatherWant(not caught and 'clear'
-        or (edge > cfg.weather.deepM and 'thunder' or 'rain'))
+    -- The sky agrees with the vignette: thunder when caught outside,
+    -- clearing on the way back in. Same condition as the screen FX so the
+    -- free-loot hold stays dry everywhere.
+    weatherWant(caught and 'thunder' or 'clear')
 
     -- No per-phase warn toast: once the first shrink begins the storm bar
     -- is PERMANENT (user call, 2026-08-04) and a toast repeating what the

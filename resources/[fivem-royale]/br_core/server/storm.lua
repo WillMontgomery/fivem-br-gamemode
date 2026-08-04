@@ -37,26 +37,54 @@ end
 --- Build and publish the record that shrinks toward phases[phase], starting
 --- from the given circle. The next centre is drawn HERE, at phase entry, so
 --- players see where to rotate for the whole hold.
+---
+--- THE WALL'S TRAVEL TIME IS PRICED HERE TOO, every phase (user call,
+--- 2026-08-04): the furthest in-match player's run to the TARGET circle's
+--- edge, at shrinkPace speed, floored at minSeconds and ceilinged by the
+--- authored value. Everyone already inside the target? The sweep is quick
+--- and the game moves on. A straggler two kilometres out? They get their
+--- run. This replaced phase 1's hold-payback scheme -- pricing the shrink
+--- directly is the same fairness without the bookkeeping.
 --- @param phase integer  1-based index into cfg.phases
 --- @param cx0 number     circle being held / shrunk from
 --- @param cy0 number
 --- @param r0 number
 --- @param now number
---- @param waitSec number|nil    override the authored wait (the dynamic hold)
---- @param shrinkSec number|nil  override the authored shrink (phase 1 pays
----                              hold time trimmed by the start cap back here)
-local function enterPhase(phase, cx0, cy0, r0, now, waitSec, shrinkSec)
+--- @param waitSec number|nil  override the authored wait (the dynamic hold)
+local function enterPhase(phase, cx0, cy0, r0, now, waitSec)
     local p = cfg.phases[phase]
+
+    -- The FINAL phases hug the rim: the next centre sits within edgeHugM of
+    -- the current circle's circumference, so endgames resolve as a run to a
+    -- place rather than a shuffle in the middle. Earlier phases roam the
+    -- whole containment slack (edgeBiasMax 1.0).
+    local minDist = 0.0
+    if phase > #cfg.phases - (cfg.edgeHugPhases or 0) then
+        minDist = math.max(0.0, (r0 - p.radius) - (cfg.edgeHugM or 0.0))
+    end
     local cx1, cy1 = BR.NextStormCentre(rng, cx0, cy0, r0, p.radius,
-        cfg.edgeBiasMax, cfg.mapAABB)
+        cfg.edgeBiasMax, cfg.mapAABB, minDist)
+
+    -- Price the sweep for the furthest player's run to the target's edge.
+    local furthest = 0.0
+    BR.Roster.each(
+        function(e) return BR.Server.isInMatch(e.state) end,
+        function(_, e)
+            if e.pos then
+                local d = BR.Dist(e.pos.x, e.pos.y, cx1, cy1) - p.radius
+                if d > furthest then furthest = d end
+            end
+        end)
+    local shrinkSec = BR.Clamp(furthest / cfg.shrinkPace.metersPerSec,
+        cfg.shrinkPace.minSeconds, p.shrink)
 
     S.storm = BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, p.radius,
         now, (waitSec or p.wait) * 1000 * timeScale,
-        (shrinkSec or p.shrink) * 1000 * timeScale, p.dps)
+        shrinkSec * 1000 * timeScale, p.dps)
 
-    print(('[br_core] storm: phase %d -- r %.0f -> %.0f, holds %.0fs, shrinks %.0fs, %.1f dps')
+    print(('[br_core] storm: phase %d -- r %.0f -> %.0f, holds %.0fs, shrinks %.0fs (furthest %.0fm), %.1f dps')
         :format(phase, r0, p.radius,
-                S.storm.tWait / 1000, S.storm.tShrink / 1000, p.dps))
+                S.storm.tWait / 1000, S.storm.tShrink / 1000, furthest, p.dps))
     publish()
 end
 
@@ -116,19 +144,17 @@ function BR.Storm.begin()
     local holdSec = BR.Clamp(furthest / cfg.hold.metersPerSec,
         cfg.phases[1].wait, cfg.hold.maxSeconds)
 
-    -- THE WALL MOVES WITHIN THREE MINUTES, whatever the drop spread priced.
-    -- The stationary wait is capped at startCapSeconds; every trimmed second
-    -- is paid back into a slower first shrink, so the far-drop player keeps
-    -- the identical total phase-1 budget for the run -- the difference is a
-    -- wall that visibly creeps instead of one parked for five minutes.
-    local waitSec   = math.min(holdSec, cfg.hold.startCapSeconds or holdSec)
-    local shrinkSec = cfg.phases[1].shrink + (holdSec - waitSec)
+    -- THE WALL MOVES WITHIN THREE MINUTES, whatever the drop spread priced:
+    -- the stationary wait caps at startCapSeconds. The old payback (trimmed
+    -- hold seconds added to the shrink) is gone -- enterPhase now prices
+    -- every phase's shrink for the furthest player's actual run, which is
+    -- the same fairness measured directly.
+    local waitSec = math.min(holdSec, cfg.hold.startCapSeconds or holdSec)
 
     local r0 = openingRadius(a.x, a.y)
-    print(('[br_core] storm: homing on %s (%.0f, %.0f) -- opening r %.0f, budget %.0fs = hold %.0fs + shrink %.0fs (furthest %.0fm)')
-        :format(tostring(a.name), a.x, a.y, r0,
-                holdSec + cfg.phases[1].shrink, waitSec, shrinkSec, furthest))
-    enterPhase(1, a.x, a.y, r0, GetGameTimer(), waitSec, shrinkSec)
+    print(('[br_core] storm: homing on %s (%.0f, %.0f) -- opening r %.0f, hold %.0fs (furthest %.0fm)')
+        :format(tostring(a.name), a.x, a.y, r0, waitSec, furthest))
+    enterPhase(1, a.x, a.y, r0, GetGameTimer(), waitSec)
 end
 
 --- Which player states the storm can hurt. Airborne players are untouchable

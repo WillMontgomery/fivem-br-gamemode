@@ -245,7 +245,16 @@ end
 BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
     local me = BR.State.me.state
 
-    if not riding and route and route.timed
+    -- `not dropBegun` closes THE JUMP RACE (repro: jump the moment the
+    -- doors open). The server ejects and sends BUS_JUMP_OK immediately,
+    -- but the FREEFALL state rides the 4Hz delta flush -- so the OK
+    -- often lands FIRST. beginDrop() tears the plane down, this loop
+    -- then saw "not riding, mirror still says BUS" and put the player
+    -- BACK ABOARD A SECOND PLANE mid-drop (handles 258/770, live log):
+    -- re-attached, re-hidden, camera up -- while falling. That wrecked
+    -- the drop state machine and read as invincibility. Once this
+    -- flight's drop has begun, there is nothing left to board.
+    if not riding and not dropBegun and route and route.timed
        and BR.State.match.state == BR.MatchState.BUS
        and me == BR.PlayerState.BUS then
         board()

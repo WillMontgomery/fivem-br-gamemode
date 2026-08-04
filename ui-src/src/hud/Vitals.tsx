@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from 'react'
+
 /**
  * Health and shield, drawn where GTA's own minimap strip used to be.
  *
@@ -34,10 +36,24 @@ function Fill({ value, colour }: { value: number; colour: string }) {
 }
 
 export default function Vitals({ hp, armour }: { hp: number; armour: number }) {
+  // THE HIT FLASH. Storm ticks drain health silently, one point at a time,
+  // and a slim bar quietly getting shorter is easy to miss entirely (user
+  // report, 2026-08-04). Every DROP in hp remounts a red overlay over the
+  // health bar (key change restarts the animation), so continuous damage
+  // reads as a continuous red pulse. The overlay is separate from Fill so
+  // the bar's own scaleX transition is never interrupted.
+  const prevHp = useRef(hp)
+  const [hit, setHit] = useState(0)
+  useEffect(() => {
+    if (hp < prevHp.current - 0.5) setHit((h) => h + 1)
+    prevHp.current = hp
+  }, [hp])
+
   return (
     <div className="flex gap-[3px] items-stretch h-[0.6rem]">
-      <div className="basis-[62%]" title="Health">
+      <div className="basis-[62%] relative" title="Health">
         <Fill value={hp} colour="var(--color-hp)" />
+        {hit > 0 && <div key={hit} className="vitals-hit-flash" />}
       </div>
       <div className="basis-[38%]" title="Shield">
         <Fill value={armour} colour="var(--color-shield)" />

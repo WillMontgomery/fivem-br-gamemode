@@ -2280,8 +2280,30 @@ do
     -- FIRST TARGET CIRCLE'S EDGE -- distance beyond phases[1].radius, not to
     -- the anchor point (pricing to the anchor charged players already inside
     -- the circle: the "everyone is in the circle, why four minutes?" report).
-    -- 1800m beyond the edge at 9 m/s is exactly 200 seconds -- between the
-    -- 120s floor and the 300s cap, so this pins the formula, not a clamp.
+    -- The SHRINK is priced the same way per phase (2026-08-04): the furthest
+    -- player's run to the target edge, floored at shrinkPace.minSeconds and
+    -- ceilinged by the authored value.
+    --
+    -- edgeBiasMax is zeroed for this block to remove the random draw --
+    -- but the AABB clamp can STILL shift the target off an edge-adjacent
+    -- anchor, so shrink expectations are computed from the record's ACTUAL
+    -- target circle rather than assumed distances.
+    local savedBias = BR.Config.Storm.edgeBiasMax
+    BR.Config.Storm.edgeBiasMax = 0.0
+
+    --- What enterPhase should have priced, from the same geometry it saw.
+    local function expectShrink(rec2)
+        local f = 0.0
+        for _, src in ipairs({ 1, 2 }) do
+            local pc = pedCoords[1000 + src]
+            local d = BR.Dist(pc.x, pc.y, rec2.cx1, rec2.cy1) - rec2.r1
+            if d > f then f = d end
+        end
+        return BR.Clamp(f / BR.Config.Storm.shrinkPace.metersPerSec,
+            BR.Config.Storm.shrinkPace.minSeconds,
+            BR.Config.Storm.phases[1].shrink) * 1000.0
+    end
+
     reset()
     queueUp(1, 'A'); queueUp(2, 'B')
     fakeTime = fakeTime + 1000
@@ -2296,17 +2318,35 @@ do
 
     BR.Match.transition(BR.MatchState.PLAYING)
     local rec = BR.Server.storm
-    -- 200s priced, but the START CAP holds the stationary wait to 180s and
-    -- pays the trimmed 20s into a slower first shrink: the total budget
-    -- (200s run + the authored shrink) is untouched.
+    -- 200s priced, capped at the 180s start cap; the 1800m run also prices
+    -- the shrink at 200s, which the authored phase-1 value ceilings.
     local cap    = BR.Config.Storm.hold.startCapSeconds * 1000.0
     local shrink = BR.Config.Storm.phases[1].shrink * 1000.0
     ok(math.abs(rec.tWait - cap) < 1500.0,
         'a 200s-priced hold waits only to the start cap (180s)',
         ('tWait %.0fms'):format(rec.tWait))
-    ok(math.abs((rec.tWait + rec.tShrink) - (200000.0 + shrink)) < 1500.0,
-        'and the trimmed seconds are paid back into the first shrink',
-        ('total %.0fms'):format(rec.tWait + rec.tShrink))
+    ok(math.abs(rec.tShrink - expectShrink(rec)) < 1500.0,
+        'the shrink matches the pricing formula against the actual target',
+        ('tShrink %.0fms, expected %.0fms'):format(rec.tShrink, expectShrink(rec)))
+
+    -- The formula itself, un-clamped: a 700m run beyond the target edge is
+    -- ~78s of wall travel -- between the 40s floor and the 120s ceiling.
+    BR.Match.transition(BR.MatchState.ENDED)
+    BR.Match.transition(BR.MatchState.CLEANUP)
+    BR.Match.transition(BR.MatchState.WAITING)
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    a = BR.Server.matchAnchor
+    setPos(1, a.x + r1 + 700.0, a.y)
+    setPos(2, a.x, a.y)
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    BR.Match.transition(BR.MatchState.PLAYING)
+    ok(math.abs(BR.Server.storm.tShrink - expectShrink(BR.Server.storm)) < 1500.0,
+        'a mid-range run prices between the floor and the ceiling',
+        ('tShrink %.0fms, expected %.0fms'):format(
+            BR.Server.storm.tShrink, expectShrink(BR.Server.storm)))
 
     -- Landing INSIDE the first target circle prices at zero: the minimum
     -- hold applies no matter where inside it you are.
@@ -2325,10 +2365,13 @@ do
     ok(BR.Server.storm.tWait == BR.Config.Storm.phases[1].wait * 1000.0,
         'anyone already inside the target circle pays only the minimum hold',
         ('tWait %.0fms'):format(BR.Server.storm.tWait))
+    ok(math.abs(BR.Server.storm.tShrink - expectShrink(BR.Server.storm)) < 1.0,
+        'an uncontested map prices at the formula (the floor when all inside)',
+        ('tShrink %.0fms'):format(BR.Server.storm.tShrink))
 
-    -- The budget cap: however far out the drop was, the priced budget stops
-    -- at maxSeconds -- and the START CAP splits it 180s parked + the rest
-    -- as shrink. The wall is ALWAYS moving within three minutes of PLAYING.
+    -- The caps: however far out the drop was, the wait stops at the start
+    -- cap and the shrink at its authored ceiling. The wall is ALWAYS moving
+    -- within three minutes of PLAYING.
     BR.Match.transition(BR.MatchState.ENDED)
     BR.Match.transition(BR.MatchState.CLEANUP)
     BR.Match.transition(BR.MatchState.WAITING)
@@ -2344,11 +2387,11 @@ do
     ok(BR.Server.storm.tWait == BR.Config.Storm.hold.startCapSeconds * 1000.0,
         'even the farthest drop waits only to the start cap',
         ('tWait %.0fms'):format(BR.Server.storm.tWait))
-    ok(BR.Server.storm.tWait + BR.Server.storm.tShrink
-        == (BR.Config.Storm.hold.maxSeconds
-            + BR.Config.Storm.phases[1].shrink) * 1000.0,
-        'with the full capped budget preserved as hold + slower shrink',
-        ('total %.0fms'):format(BR.Server.storm.tWait + BR.Server.storm.tShrink))
+    ok(BR.Server.storm.tShrink == BR.Config.Storm.phases[1].shrink * 1000.0,
+        'and its shrink stops at the authored ceiling',
+        ('tShrink %.0fms'):format(BR.Server.storm.tShrink))
+
+    BR.Config.Storm.edgeBiasMax = savedBias
 end
 
 describe('match.storm.cleanup')
