@@ -132,26 +132,32 @@ export default function Lobby({ visible }: { visible: boolean }) {
       }}
       aria-hidden={!visible}
     >
-      <div className="interactive w-[35rem] max-w-[80vw]">
+      {/* scale(1.2) grows the WHOLE menu 20% (user call); the text classes
+          inside are additionally ~25% up, netting text at ~150% of the old
+          size while the chrome stays at 120%. */}
+      <div
+        className="interactive w-[35rem] max-w-[80vw]"
+        style={{ transform: 'scale(1.2)', transformOrigin: 'center' }}
+      >
         <div className="text-center mb-6">
-          <h1 className="text-5xl font-bold tracking-tight">
+          <h1 className="text-6xl font-bold tracking-tight">
             FiveM <span style={{ color: 'var(--color-royale-accent)' }}>Royale</span>
           </h1>
-          <p className="text-base text-white/45 mt-1">
+          <p className="text-xl text-white/45 mt-1">
             Drop in. Loot up. Outlast the storm.
           </p>
         </div>
 
         <Card className="border border-white/10">
           <CardHeader className="pb-0 flex-col items-start gap-1">
-            <h2 className="text-xl font-semibold">
+            <h2 className="text-2xl font-semibold">
               {matchRunning ? 'Next match' : 'Find a match'}
             </h2>
             {/* Only ever seen by a player who is OUT of the running match --
                 a participant never has this screen up. During warmup the door
                 is still open: readying up joins THIS match, not the next. */}
             {matchRunning && (
-              <p className="text-[0.8125rem] text-white/40">
+              <p className="text-[1rem] text-white/40">
                 {match.state === 'warmup'
                   ? 'A match is forming — ready up to jump straight in.'
                   : 'A match is in progress — ready up to join the next one.'}
@@ -185,14 +191,14 @@ export default function Lobby({ visible }: { visible: boolean }) {
                 <div className="flex flex-col items-center gap-1 py-1">
                   <div className="flex items-center gap-3">
                     <Spinner size="sm" />
-                    <span className="text-base text-white/70">{headline}</span>
+                    <span className="text-xl text-white/70">{headline}</span>
                   </div>
 
                   {/* The supporting numbers. A spinner on its own is
                       indistinguishable from a queue that is not working, which
                       is exactly how this looked while the button did nothing. */}
                   {detail.length > 0 && (
-                    <span className="text-[0.8125rem] tabular-nums text-white/40">
+                    <span className="text-[1rem] tabular-nums text-white/40">
                       {detail.join(' · ')}
                     </span>
                   )}
@@ -207,7 +213,7 @@ export default function Lobby({ visible }: { visible: boolean }) {
           </CardBody>
         </Card>
 
-        <p className="text-center text-[0.8125rem] text-white/30 mt-4">
+        <p className="text-center text-[1rem] text-white/30 mt-4">
           Rebind controls in Pause &rarr; Settings &rarr; Key Bindings
         </p>
       </div>

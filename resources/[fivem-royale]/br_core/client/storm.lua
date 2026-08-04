@@ -42,8 +42,14 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     local rec = activeRecord()
     if not rec then return end
 
-    local cx, cy, r = solveNow(rec)
+    local cx, cy, r, stt = solveNow(rec)
     if r <= 1.0 then return end   -- a collapsed circle has no wall to draw
+
+    -- NO WALL BEFORE ANYTHING HAS HAPPENED. During the free-loot hold the
+    -- "circle" is the whole map, and a purple ring around the horizon
+    -- announced nothing but its own existence. The curtain first appears
+    -- the moment the first shrink begins.
+    if rec.phase == 1 and stt == BR.StormPhase.HOLDING then return end
 
     local ped = PlayerPedId()
     local p = GetEntityCoords(ped)
@@ -68,7 +74,29 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
     local rr = cfg.render
     local dist = BR.Dist(p.x, p.y, cx, cy)
     local base = math.atan(p.y - cy, p.x - cx)
+    local col = rr.colour
 
+    if BR.Storm.wallStyle == 'solid' then
+        -- ONE marker: the entire zone as a single giant vertical cylinder.
+        -- Its side surface IS the wall -- continuous, identical from every
+        -- angle and distance, no columns to count or watch slide.
+        --
+        -- GLUED TO THE WORLD, NOT THE PED: a fixed base below sea level and
+        -- triple height (user call, 2026-08-03), spanning ocean floor to
+        -- above Chiliad. The old ground-probe fallback hung the curtain off
+        -- the viewer's own z whenever the probe missed -- which at wall
+        -- distances is most of the time -- so the wall rode the camera.
+        DrawMarker(1,
+            cx, cy, -100.0,
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            r * 2.0, r * 2.0, rr.height * 3.0 + 50.0,
+            col.r, col.g, col.b, rr.alpha,
+            false, false, 2, false, nil, nil, false)
+        return
+    end
+
+    -- Column fallback keeps the per-arc ground probe: short columns must
+    -- meet the terrain they stand on.
     local now = GetGameTimer()
     if now - groundAt > rr.groundCacheSec * 1000 then
         groundAt = now
@@ -77,25 +105,7 @@ BR.Loop.register(BR.Loop.FRAME, 'storm.wall', function()
         local okZ, gz = GetGroundZFor_3dCoord(nearX, nearY, p.z + 50.0, false)
         groundZ = okZ and gz or nil
     end
-    -- Anchor the curtain well below the ground line so slopes never show a
-    -- gap under it; without a ground answer, hang it off the player's own z.
     local zBase = (groundZ or (p.z - rr.fallbackZDrop)) - 50.0
-    local col = rr.colour
-
-    if BR.Storm.wallStyle == 'solid' then
-        -- ONE marker: the entire zone as a single giant vertical cylinder.
-        -- Its side surface IS the wall -- continuous, identical from every
-        -- angle and distance, no columns to count or watch slide. The
-        -- original design doc warned huge marker scales can misbehave, which
-        -- is why the column renderer below survives behind /brwallstyle.
-        DrawMarker(1,
-            cx, cy, zBase,
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            r * 2.0, r * 2.0, rr.height + 50.0,
-            col.r, col.g, col.b, rr.alpha,
-            false, false, 2, false, nil, nil, false)
-        return
-    end
 
     -- Column fallback: fixed angular slots derived from the circle alone,
     -- so the colonnade stands still as the player moves.
@@ -140,6 +150,11 @@ local lastBlipR = -1.0
 local fxOn = false
 local warnedPhase = nil
 local lastPush = 0
+local lastComing = 0   -- last "the storm is coming" notice; 0 = fire on sight
+
+local function gtNow()
+    return GetGameTimer()
+end
 
 local function clearBlips()
     if curBlip then RemoveBlip(curBlip) curBlip = nil end
@@ -213,6 +228,24 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
         end
     end
 
+    -- The long first hold speaks through NOTICES, not a parked timer: "The
+    -- storm is coming in M:SS" the moment the match goes live, again every
+    -- thirty seconds, and it stops the moment the storm bar takes over at
+    -- the final minute.
+    if rec.phase == 1 and st == BR.StormPhase.HOLDING and msLeft > 60000 then
+        if gtNow() - lastComing >= 30000 then
+            lastComing = gtNow()
+            local total = math.floor(msLeft / 1000)
+            TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
+                text = ('The storm is coming in %d:%02d.')
+                    :format(math.floor(total / 60), total % 60),
+                tone = 'info', ms = 6000,
+            })
+        end
+    else
+        lastComing = 0
+    end
+
     -- Blips: radius blips cannot resize in place, so refresh on a cadence --
     -- brisk while shrinking, lazy while holding, and only when the radius
     -- moved enough to see.
@@ -221,7 +254,14 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
         and cfg.blip.refreshHzShrinking or cfg.blip.refreshHzHolding
     if gt - lastBlipAt >= 1000 / hz then
         lastBlipAt = gt
-        if math.abs(r - lastBlipR) > 1.0 or not curBlip then
+        -- The CURRENT circle is not drawn while it is still the whole map
+        -- (phase-1 hold): a ring around all of Los Santos on every map told
+        -- players nothing. Only the purple target matters until the wall
+        -- starts moving.
+        local wholeMap = rec.phase == 1 and st == BR.StormPhase.HOLDING
+        if wholeMap then
+            if curBlip then RemoveBlip(curBlip) curBlip = nil lastBlipR = -1.0 end
+        elseif math.abs(r - lastBlipR) > 1.0 or not curBlip then
             lastBlipR = r
             curBlip = BR.Native.radiusBlip(curBlip, cx, cy, r,
                 cfg.blip.currentColour, cfg.blip.currentAlpha)

@@ -109,12 +109,12 @@ export default function PartyPanel({
           must not be something you have to go looking for. */}
       {invite && (
         <div className="rise flex items-center gap-2 rounded-lg border border-white/20 px-3 py-2">
-          <span className="flex-1 text-base">
+          <span className="flex-1 text-xl">
             <span className="font-semibold">{invite.name}</span>
             <span className="text-white/60">
               {invite.kind === 'joinreq' ? ' wants to join your party' : ' invited you'}
             </span>
-            <span className="text-white/40 text-[0.8125rem]">
+            <span className="text-white/40 text-[1rem]">
 {' '}({invite.size}/{invite.max})
             </span>
           </span>
@@ -152,7 +152,7 @@ export default function PartyPanel({
                 {m.leader ? '★ ' : ''}{m.name}
                 {someoneReady && (
                   <span
-                    className="ml-1 text-[0.625rem]"
+                    className="ml-1 text-[0.78rem]"
                     style={{ color: ready ? 'var(--color-hp)' : 'rgba(255,255,255,0.4)' }}
                   >
                     {ready ? '✓' : '…'}
@@ -199,7 +199,7 @@ export default function PartyPanel({
           </div>
 
           {subMode === 'random' && (
-            <p className="text-[0.8125rem] text-white/35">
+            <p className="text-[1rem] text-white/35">
               You&rsquo;ll be matched with random teammates.
             </p>
           )}
@@ -207,7 +207,7 @@ export default function PartyPanel({
           {subMode === 'join' && !disabled && (
             leaders.length > 0 ? (
               <div className="flex flex-col gap-1.5">
-                <span className="text-[0.75rem] uppercase tracking-wider text-white/35">
+                <span className="text-[0.9375rem] uppercase tracking-wider text-white/35">
                   Squads looking for players &mdash; ask to join
                 </span>
                 <div className="thin-scroll flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
@@ -216,7 +216,7 @@ export default function PartyPanel({
                       key={p.src}
                       type="button"
                       onClick={() => void askToJoin(p.src)}
-                      className="rounded-full border border-white/15 px-2.5 py-1 text-[0.875rem]
+                      className="rounded-full border border-white/15 px-2.5 py-1 text-[1.0625rem]
                                  text-white/70 hover:border-white/35 transition-colors"
                       title={`Ask to join ${p.name}'s squad`}
                     >
@@ -226,7 +226,7 @@ export default function PartyPanel({
                 </div>
               </div>
             ) : (
-              <p className="text-[0.8125rem] text-white/35">
+              <p className="text-[1rem] text-white/35">
                 No open squads to join right now.
               </p>
             )
@@ -240,7 +240,7 @@ export default function PartyPanel({
       {mode === 'squad' && (inParty || subMode === 'create')
         && !disabled && iAmLeader && invitable.length > 0 && (
         <div className="flex flex-col gap-1.5">
-          <span className="text-[0.75rem] uppercase tracking-wider text-white/35">
+          <span className="text-[0.9375rem] uppercase tracking-wider text-white/35">
             Players online &mdash; select to invite
           </span>
 
@@ -253,7 +253,7 @@ export default function PartyPanel({
                   type="button"
                   onClick={() => toggle(p.src)}
                   className={
-                    'rounded-full border px-2.5 py-1 text-[0.875rem] transition-colors ' +
+                    'rounded-full border px-2.5 py-1 text-[1.0625rem] transition-colors ' +
                     (on
                       ? 'border-primary bg-primary/25 text-white'
                       : 'border-white/15 text-white/70 hover:border-white/35')

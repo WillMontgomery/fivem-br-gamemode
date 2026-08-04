@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useUi, selChat, selChatOpen, selScreen } from '../store'
+import { useUi, selChat, selChatOpen, selScreen, selSquad } from '../store'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 import type { ChatChannel, ChatMessage } from '../bridge/types'
@@ -71,6 +71,14 @@ export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) 
   const [draft, setDraft] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
   const logRef = useRef<HTMLDivElement>(null)
+
+  // Squad chat only exists when there is a squad (or party) to hear it --
+  // solos get no toggle, no Tab switch, and never sit on the squad channel.
+  const squad = useUi(selSquad)
+  const canSquadChat = squad.members.length > 1
+  useEffect(() => {
+    if (open && channel === 'squad' && !canSquadChat) openChat('global')
+  }, [open, channel, canSquadChat, openChat])
 
   /** The single exit path. Everything that closes chat goes through here. */
   const release = (send: boolean) => {
@@ -178,11 +186,12 @@ export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) 
             // thing it is meant to change. A synthetic .click() does not
             // reproduce this; only a real mouse press does.
             onMouseDown={(e) => e.preventDefault()}
-            onClick={() => openChat(channel === 'global' ? 'squad' : 'global')}
+            onClick={() => canSquadChat
+              && openChat(channel === 'global' ? 'squad' : 'global')}
             className="text-[0.625rem] font-bold uppercase tracking-wider px-2 py-1 rounded-md shrink-0
                        border border-white/15 hover:border-white/35 transition-colors"
             style={{ color: CHANNEL_STYLE[channel].colour }}
-            title="Switch channel (Tab)"
+            title={canSquadChat ? 'Switch channel (Tab)' : undefined}
           >
             {CHANNEL_STYLE[channel].label}
           </button>
@@ -199,7 +208,7 @@ export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) 
               else if (e.key === 'Escape') { e.preventDefault(); release(false) }
               else if (e.key === 'Tab') {
                 e.preventDefault()
-                openChat(channel === 'global' ? 'squad' : 'global')
+                if (canSquadChat) openChat(channel === 'global' ? 'squad' : 'global')
               }
             }}
             // Losing focus without closing would leave the player holding NUI

@@ -173,6 +173,9 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
         BR.State.dropGraceUntil = GetGameTimer() + BR.Config.Drop.landedGraceMs
 
         TriggerServerEvent(BR.Net.DROP_LANDED)
+        TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
+            text = 'Loot up before the storm comes!', tone = 'info', ms = 6000,
+        })
         print('[br_core] landed')
     end
 end)
