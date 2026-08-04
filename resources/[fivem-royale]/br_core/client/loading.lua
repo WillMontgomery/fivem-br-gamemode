@@ -59,11 +59,12 @@ Citizen.CreateThread(function()
         Citizen.Wait(250)
     end
 
-    -- Text out (the glow stays). pcall: if the cue native is unavailable
-    -- the exit is a cut instead of a fade, never a hang.
-    pcall(function()
-        SendLoadingScreenMessage('{"eventName":"br:fadeText"}')
-    end)
+    -- Text out (the glow stays). The result is LOGGED: if this channel ever
+    -- fails the exit degrades to a cut, and the console should say which
+    -- half was at fault rather than leaving it to timing forensics.
+    local ok, sent = pcall(SendLoadingScreenMessage, '{"eventName":"br:fadeText"}')
+    print(('[br_core] loading: fade cue %s')
+        :format(ok and ('delivered=' .. tostring(sent)) or 'native unavailable'))
     Citizen.Wait(500)
 
     -- The reveal. Behind this is the lobby on its opaque twin backdrop,

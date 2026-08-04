@@ -98,8 +98,18 @@ end
 ---     characters), which renders black until switched in
 ---   * player control was never handed back
 function BR.Spawn.reveal()
-    ShutdownLoadingScreen()
-    ShutdownLoadingScreenNui()
+    -- THE BOOT CHOREOGRAPHY OWNS THE LOADSCREEN. While worldReady is still
+    -- false, loading.lua is mid-sequence -- gag reel, text fade, purple
+    -- hold, double fade -- and these two calls firing from the vista
+    -- placement WAS the "loadscreen instantly pops instead of fading" report:
+    -- the spawn completes before the collision wait, reveal() ran, and the
+    -- screen died mid-reel with the fade cue still queued. loading.lua has
+    -- its own hard deadlines for every wait, and brunstuck stays the
+    -- unconditional manual escape.
+    if BR.State.worldReady ~= false then
+        ShutdownLoadingScreen()
+        ShutdownLoadingScreenNui()
+    end
 
     -- Not `IsScreenFadedOut`: see above. Fading in an already-faded-in screen
     -- is a no-op, so this is safe to call repeatedly. holdBlack is the one
