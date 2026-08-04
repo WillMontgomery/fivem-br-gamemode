@@ -209,8 +209,14 @@ local function board()
         SetVehicleEngineOn(bus, true, true, false)
 
         -- ENGINE SMOKE, from startup and for the whole ride: looped exhaust
-        -- plumes at the wing engines. Local particles on a local plane --
-        -- every client renders their own identical set.
+        -- at the BACK of each engine. The first cut used two hand-guessed
+        -- offsets that landed on the propeller FRONTS at 0.8 scale --
+        -- artillery bursts, not exhaust (screenshot report). Now: the
+        -- engine bones themselves when the model names them (self-correct
+        -- placement on all four nacelles), an exhaust-length offset behind
+        -- each, and half the scale. The puff spacing at speed is the
+        -- effect's fixed emission rate -- smaller puffs from four sources
+        -- read as a trail where big sparse ones read as flak.
         RequestNamedPtfxAsset('core')
         local ptfxDeadline = GetGameTimer() + 3000
         while not HasNamedPtfxAssetLoaded('core')
@@ -218,15 +224,34 @@ local function board()
             Citizen.Wait(25)
         end
         if HasNamedPtfxAssetLoaded('core') and gen == boardGen then
-            for _, off in ipairs({
-                { x = -5.4, y = 1.6, z = 0.6 },
-                { x =  5.4, y = 1.6, z = 0.6 },
-            }) do
+            local anchors = {}
+            for _, bn in ipairs({ 'engine_1', 'engine_2', 'engine_3', 'engine_4' }) do
+                local b = GetEntityBoneIndexByName(bus, bn)
+                if b and b ~= -1 then anchors[#anchors + 1] = { bone = b } end
+            end
+            if #anchors == 0 then
+                -- No named bones on this model: all four nacelles by hand,
+                -- just behind the engines rather than ahead of the props.
+                anchors = {
+                    { x = -6.9, y = 0.2, z = 0.55 }, { x = -3.3, y = 0.2, z = 0.55 },
+                    { x =  3.3, y = 0.2, z = 0.55 }, { x =  6.9, y = 0.2, z = 0.55 },
+                }
+            end
+            print(('[br_core] bus: engine smoke on %d anchors (%s)')
+                :format(#anchors, anchors[1].bone and 'bones' or 'offsets'))
+            for _, a in ipairs(anchors) do
                 UseParticleFxAssetNextCall('core')
-                smoke[#smoke + 1] = StartParticleFxLoopedOnEntity(
-                    'ent_amb_smoke_general', bus,
-                    off.x, off.y, off.z, 0.0, 0.0, 0.0,
-                    0.8, false, false, false)
+                if a.bone then
+                    smoke[#smoke + 1] = StartParticleFxLoopedOnEntityBone(
+                        'ent_amb_smoke_general', bus,
+                        0.0, -0.9, 0.0, 0.0, 0.0, 0.0, a.bone,
+                        0.4, false, false, false)
+                else
+                    smoke[#smoke + 1] = StartParticleFxLoopedOnEntity(
+                        'ent_amb_smoke_general', bus,
+                        a.x, a.y, a.z, 0.0, 0.0, 0.0,
+                        0.4, false, false, false)
+                end
             end
         end
 
