@@ -339,9 +339,13 @@ function BR.Native.applyGameRules()
     ThefeedHideThisFrame()
 
     -- The cash/bank readout pops top-right at load-in and every time the
-    -- pause menu closes. There is no money in a battle royale.
+    -- pause menu closes. There is no money in a battle royale. The area
+    -- and street names ("Grand Senora Desert") go with them -- the map is
+    -- the gamemode's to narrate (user call, 2026-08-04).
     HideHudComponentThisFrame(3)   -- HUD_CASH
     HideHudComponentThisFrame(4)   -- HUD_MP_CASH (the bank line)
+    HideHudComponentThisFrame(7)   -- HUD_AREA_NAME
+    HideHudComponentThisFrame(9)   -- HUD_STREET_NAME
 
     -- The corner busy spinner ("Loading...") -- the engine raises it during
     -- session setup and other resources may leave one on. The convar
@@ -364,9 +368,10 @@ function BR.Native.applyGameRules()
     SetParkedVehicleDensityMultiplierThisFrame(inWorld and amb.parked or 0.0)
 
     -- HIGH NOON, FOREVER (for now -- user call, 2026-08-04). Weather is
-    -- already gamemode-owned; the clock joins it. Overridden per frame so
-    -- nothing else can advance it.
-    NetworkOverrideClockTime(12, 0, 0)
+    -- already gamemode-owned; the clock joins it. The SECONDS still spin
+    -- (invisible at sun-angle scale) so any engine system that steps on
+    -- clock deltas -- wetness decay is a suspect -- keeps stepping.
+    NetworkOverrideClockTime(12, 0, math.floor(GetGameTimer() / 1000) % 60)
 
     -- Never let the engine's own death/respawn flow run; the gamemode owns it.
     PauseDeathArrestRestart(true)

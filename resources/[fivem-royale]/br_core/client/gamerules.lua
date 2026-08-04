@@ -47,8 +47,15 @@ BR.Loop.register(BR.Loop.SLOW, 'gamerules.madDrivers', function()
             maddenedCount = maddenedCount + 1
             local drv = GetPedInVehicleSeat(veh, -1)
             if drv ~= 0 and not IsPedAPlayer(drv) then
+                -- Ability/aggressiveness alone changed nothing visible
+                -- (live report: "drivers are still very much calm") -- the
+                -- ambient cruise TASK is what actually drives. Replace it:
+                -- wander fast with style 786468 (rushed -- runs lights,
+                -- overtakes, swerves for nothing).
                 SetDriverAbility(drv, 0.0)
                 SetDriverAggressiveness(drv, 1.0)
+                TaskVehicleDriveWander(drv, veh, 30.0, 786468)
+                SetDriveTaskMaxCruiseSpeed(drv, 30.0)
             end
         end
     end

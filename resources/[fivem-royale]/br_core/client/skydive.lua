@@ -199,14 +199,29 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
         return
     end
 
-    -- Landed: no chute in play and feet on something -- and only after the
-    -- drop has actually BEEN airborne (see the latch note at the top).
-    -- Water counts: a sea landing is a bad drop, not a continuing one.
+    -- Landed: feet on something, not falling, canopy not mid-opening --
+    -- and only after the drop has actually BEEN airborne (see the latch
+    -- note at the top). Water counts: a sea landing is a bad drop, not a
+    -- continuing one.
+    --
+    -- ANY chute state except OPENING counts as landed. The old test
+    -- required NONE/ON_BACK, but the engine sometimes keeps the canopy
+    -- ATTACHED after touchdown (state still OPEN, with GTA's own "press F
+    -- to release parachute" prompt) -- so the machine stayed armed, the
+    -- glider prompt lingered, and the next F press (bound to enter-vehicle)
+    -- hit the chute floor from a driver's seat: the parachute-in-a-car
+    -- ejection, root-caused at last (user insight, 2026-08-04).
     if airborneSeen
-       and (cs == BR.Native.ChuteState.NONE or cs == BR.Native.ChuteState.ON_BACK)
+       and cs ~= BR.Native.ChuteState.OPENING
        and not IsPedFalling(ped)
        and (IsPedOnFoot(ped) or IsEntityInWater(ped)) then
         dropping = false
+
+        if cs == BR.Native.ChuteState.OPEN then
+            -- Shed the still-attached canopy along with its vanilla prompt.
+            ClearPedTasks(ped)
+        end
+        ClearHelp(true)   -- kill "press F to release parachute" outright
 
         RemoveWeaponFromPed(ped, CHUTE)
         SetPlayerCanLeaveParachuteSmokeTrail(PlayerId(), false)

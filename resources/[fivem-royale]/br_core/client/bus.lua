@@ -31,7 +31,6 @@ local lastX, lastY, lastZ, lastT = nil, nil, nil, nil  -- finite-difference stat
 local camYaw, camPitch = 0.0, -8.0   -- free-look orbit, reset each boarding
 local gearAt = nil      -- when to retract the landing gear; true once done
 local boardGen = 0      -- boarding generation; a stale boarding thread abandons
-local smoke = {}        -- looped engine-smoke ptfx handles
 local islandCut = false -- this flight has already released the lobby island
 
 -- Smoothed airframe orientation. The path is a polyline, so its raw
@@ -48,8 +47,6 @@ end
 
 local function cleanup()
     boardGen = boardGen + 1   -- abandon any boarding thread still streaming
-    for _, h in ipairs(smoke) do StopParticleFxLooped(h, false) end
-    smoke = {}
     if cam then
         RenderScriptCams(false, false, 0, true, true)
         DestroyCam(cam, false)
@@ -82,43 +79,39 @@ end
 
 -- ------------------------------------------------------- the map drawing ---
 
-local crumbs = {}
+local routeDrawn = false
 
 local function clearCrumbs()
-    for _, b in ipairs(crumbs) do
-        if DoesBlipExist(b) then RemoveBlip(b) end
+    if routeDrawn then
+        ClearGpsMultiRoute()
+        routeDrawn = false
     end
-    crumbs = {}
 end
 
---- Draw the flight as breadcrumb dots on the map and minimap.
+--- Draw the flight as a SOLID LINE on the map and minimap.
 ---
---- There is no native "draw a line on the map" for arbitrary paths (GPS
---- routes snap to roads), so the route is a string of small short-range
---- blips: the pause map shows the whole flight, the minimap shows the
---- stretch near you. This is what warmup's drop-planning looks at.
+--- A GPS MULTI-ROUTE, not blips: multi-routes draw straight segments
+--- between arbitrary points (unlike ordinary GPS, which snaps to roads),
+--- which is the one native way to put a real line on the map -- the old
+--- breadcrumb dots read as scattered debris (user call, 2026-08-04).
+--- Sampled down: the multi-route point budget is small, and a flight is
+--- straight runs and gentle arcs -- every ~4th path point traces it
+--- faithfully.
 local function drawCrumbs()
     clearCrumbs()
     if not route then return end
 
-    local spacing = BR.Config.Bus.crumbSpacing
-    local carry = 0.0
-    for i = 2, #route.points do
-        local a, b = route.points[i - 1], route.points[i]
-        local segLen = BR.Dist(a.x, a.y, b.x, b.y)
-        local d = spacing - carry
-        while d <= segLen do
-            local k = d / segLen
-            local blip = AddBlipForCoord(BR.Lerp(a.x, b.x, k), BR.Lerp(a.y, b.y, k), 0.0)
-            SetBlipSprite(blip, 1)
-            SetBlipScale(blip, 0.85)   -- was 0.3; unreadable on the pause map
-            SetBlipColour(blip, 3)
-            SetBlipAsShortRange(blip, true)
-            crumbs[#crumbs + 1] = blip
-            d = d + spacing
-        end
-        carry = (carry + segLen) % spacing
+    StartGpsMultiRoute(25, true, true)   -- hud colour 25; on foot + in vehicle
+    local pts = route.points
+    local step = math.max(1, math.floor(#pts / 40))
+    for i = 1, #pts, step do
+        AddPointToGpsMultiRoute(pts[i].x, pts[i].y, pts[i].z)
     end
+    if (#pts - 1) % step ~= 0 then
+        AddPointToGpsMultiRoute(pts[#pts].x, pts[#pts].y, pts[#pts].z)
+    end
+    SetGpsMultiRouteRender(true)
+    routeDrawn = true
 end
 
 RegisterNetEvent(BR.Net.BUS_ROUTE)
@@ -207,39 +200,12 @@ local function board()
         end
 
         SetVehicleEngineOn(bus, true, true, false)
-
-        -- ENGINE SMOKE, from startup and for the whole ride: looped exhaust
-        -- at the BACK of each engine. The first cut used two hand-guessed
-        -- offsets that landed on the propeller FRONTS at 0.8 scale --
-        -- artillery bursts, not exhaust (screenshot report). Now: the
-        -- engine bones themselves when the model names them (self-correct
-        -- placement on all four nacelles), an exhaust-length offset behind
-        -- each, and half the scale. The puff spacing at speed is the
-        -- effect's fixed emission rate -- smaller puffs from four sources
-        -- read as a trail where big sparse ones read as flak.
-        RequestNamedPtfxAsset('core')
-        local ptfxDeadline = GetGameTimer() + 3000
-        while not HasNamedPtfxAssetLoaded('core')
-              and GetGameTimer() < ptfxDeadline do
-            Citizen.Wait(25)
-        end
-        if HasNamedPtfxAssetLoaded('core') and gen == boardGen then
-            -- OFFSETS ONLY: the Titan's engine bones cluster at the
-            -- fuselage, not the nacelles ("not the correct bones" +
-            -- "spread by 2x", live report). These are the four visible
-            -- nacelle positions. The loops die 5s after wheels-up (see the
-            -- TICK below) -- startup and taxi flavour, no cruise flak.
-            for _, a in ipairs({
-                { x = -7.0, y = 0.2, z = 0.55 }, { x = -3.5, y = 0.2, z = 0.55 },
-                { x =  3.5, y = 0.2, z = 0.55 }, { x =  7.0, y = 0.2, z = 0.55 },
-            }) do
-                UseParticleFxAssetNextCall('core')
-                smoke[#smoke + 1] = StartParticleFxLoopedOnEntity(
-                    'ent_amb_smoke_general', bus,
-                    a.x, a.y, a.z, 0.0, 0.0, 0.0,
-                    0.4, false, false, false)
-            end
-        end
+        -- (No engine-smoke particles. Two rounds of tuning could not make
+        -- looped ptfx read as exhaust: particles detach into world space
+        -- with no slipstream, and the effect's emitter geometry trailed
+        -- forward regardless of anchor. Removed by user call, 2026-08-04
+        -- -- the props, audio and heat-haze the engine sim provides are
+        -- the effect.)
 
         -- THE PED RIDES IN THE PLANE, attached at a cabin offset varied by
         -- server id so co-riders spread through the fuselage instead of
@@ -337,16 +303,6 @@ BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
        and BR.Clock.now() >= (route.rotateAt or route.tStart) + 3500 then
         islandCut = true
         TriggerEvent('br:env:releaseIsland')
-    end
-
-    -- ENGINE SMOKE ENDS SHORTLY AFTER TAKEOFF. Particles detach into
-    -- world space with no slipstream, so a cruise-speed trail reads as
-    -- flak bursts no matter how it is tuned (screenshot report) -- the
-    -- effect earns its keep on startup, taxi and the roll, then bows out.
-    if #smoke > 0 and route and route.timed
-       and BR.Clock.now() >= (route.rotateAt or route.tStart) + 5000 then
-        for _, h in ipairs(smoke) do StopParticleFxLooped(h, false) end
-        smoke = {}
     end
 
     -- Last call: past the final authored waypoint the plane flies its

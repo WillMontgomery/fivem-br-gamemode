@@ -35,7 +35,7 @@ export default function PartyPanel({
   // How this player wants to end up in a squad: build one (invite people),
   // knock on one (ask a leader), or let autofill sort it out. Only shown
   // before a party exists -- once in one, the party itself is the answer.
-  const [subMode, setSubMode] = useState<'create' | 'join' | 'random'>('create')
+  const [subMode, setSubMode] = useState<'create' | 'join' | 'random'>('random')
 
   const inParty = squad.members.length > 1
 
