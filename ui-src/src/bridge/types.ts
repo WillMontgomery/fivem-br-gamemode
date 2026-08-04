@@ -200,6 +200,11 @@ export interface ScreenPayload {
   mapH?: number
   /** Whether the radar is currently drawn at all. */
   radarOn?: boolean
+  /** False from first join until the world has streamed in around the ped.
+   *  The lobby keeps an opaque loading backdrop up while false -- the menu
+   *  is fully interactive over it -- and fades it out when this flips.
+   *  Rides the screen envelope so a br_ui restart re-learns it. */
+  worldReady?: boolean
 }
 
 /**

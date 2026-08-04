@@ -42,15 +42,17 @@ end
 --- @param cy0 number
 --- @param r0 number
 --- @param now number
---- @param waitSec number|nil  override the authored wait (the dynamic hold)
-local function enterPhase(phase, cx0, cy0, r0, now, waitSec)
+--- @param waitSec number|nil    override the authored wait (the dynamic hold)
+--- @param shrinkSec number|nil  override the authored shrink (phase 1 pays
+---                              hold time trimmed by the start cap back here)
+local function enterPhase(phase, cx0, cy0, r0, now, waitSec, shrinkSec)
     local p = cfg.phases[phase]
     local cx1, cy1 = BR.NextStormCentre(rng, cx0, cy0, r0, p.radius,
         cfg.edgeBiasMax, cfg.mapAABB)
 
     S.storm = BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, p.radius,
         now, (waitSec or p.wait) * 1000 * timeScale,
-        p.shrink * 1000 * timeScale, p.dps)
+        (shrinkSec or p.shrink) * 1000 * timeScale, p.dps)
 
     print(('[br_core] storm: phase %d -- r %.0f -> %.0f, holds %.0fs, shrinks %.0fs, %.1f dps')
         :format(phase, r0, p.radius,
@@ -114,10 +116,19 @@ function BR.Storm.begin()
     local holdSec = BR.Clamp(furthest / cfg.hold.metersPerSec,
         cfg.phases[1].wait, cfg.hold.maxSeconds)
 
+    -- THE WALL MOVES WITHIN THREE MINUTES, whatever the drop spread priced.
+    -- The stationary wait is capped at startCapSeconds; every trimmed second
+    -- is paid back into a slower first shrink, so the far-drop player keeps
+    -- the identical total phase-1 budget for the run -- the difference is a
+    -- wall that visibly creeps instead of one parked for five minutes.
+    local waitSec   = math.min(holdSec, cfg.hold.startCapSeconds or holdSec)
+    local shrinkSec = cfg.phases[1].shrink + (holdSec - waitSec)
+
     local r0 = openingRadius(a.x, a.y)
-    print(('[br_core] storm: homing on %s (%.0f, %.0f) -- opening r %.0f, hold %.0fs (furthest %.0fm)')
-        :format(tostring(a.name), a.x, a.y, r0, holdSec, furthest))
-    enterPhase(1, a.x, a.y, r0, GetGameTimer(), holdSec)
+    print(('[br_core] storm: homing on %s (%.0f, %.0f) -- opening r %.0f, budget %.0fs = hold %.0fs + shrink %.0fs (furthest %.0fm)')
+        :format(tostring(a.name), a.x, a.y, r0,
+                holdSec + cfg.phases[1].shrink, waitSec, shrinkSec, furthest))
+    enterPhase(1, a.x, a.y, r0, GetGameTimer(), waitSec, shrinkSec)
 end
 
 --- Which player states the storm can hurt. Airborne players are untouchable

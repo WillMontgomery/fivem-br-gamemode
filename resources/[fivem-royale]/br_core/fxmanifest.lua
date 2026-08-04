@@ -34,6 +34,7 @@ shared_scripts {
 client_scripts {
     'client/main.lua',      -- defines the loop registry; must be first
     'client/natives.lua',
+    'client/loading.lua',   -- owns BR.State.worldReady; screen.lua reads it
     'client/screen.lua',
     'client/spawn.lua',
     'client/gamerules.lua',

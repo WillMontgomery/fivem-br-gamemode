@@ -116,7 +116,12 @@ ensure br_lib
 ensure br_core
 ensure br_environment    # world state: IPLs + the Cayo Perico lobby island
 ensure br_ui
+ensure br_loadscreen     # branded loading screen; br_core releases it
 ensure br_stats          # optional -- needs oxmysql; safe to comment out
+
+# Our loading screen draws its own progress; the engine's busy spinner over
+# it is just a second, contradicting voice.
+setr sv_showBusySpinnerOnLoadingScreen false
 
 # ---------------------------------------------------------------------------
 # Third-party admin tools (vMenu etc.)

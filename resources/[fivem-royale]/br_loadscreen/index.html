@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>FiveM Royale</title>
+<style>
+  /* The same visual language as the lobby (ui-src/src/index.css): solid
+     black base, the royale purple (#a855f7) as the only voice. CEF here is
+     Chrome 103 -- plain CSS only, nothing exotic. */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    width: 100%; height: 100%;
+    background: #06080e;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    color: #fff;
+    overflow: hidden;
+  }
+
+  .glow {
+    position: absolute; inset: 0;
+    background: radial-gradient(ellipse at 50% 42%,
+      rgba(88, 40, 160, 0.38), rgba(20, 12, 40, 0.55) 45%, rgba(6, 8, 14, 1) 78%);
+    animation: breathe 5s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    0%, 100% { opacity: 0.85; }
+    50%      { opacity: 1.0; }
+  }
+
+  .wrap {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 1.2vh;
+  }
+
+  h1 {
+    font-size: 6.5vh;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+  }
+  h1 span { color: #a855f7; }
+
+  .tag {
+    font-size: 2.1vh;
+    color: rgba(255, 255, 255, 0.45);
+  }
+
+  .bar {
+    width: 34vh; height: 0.55vh;
+    margin-top: 4vh;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 1vh;
+    overflow: hidden;
+  }
+  .bar .fill {
+    width: 0%; height: 100%;
+    background: #a855f7;
+    border-radius: 1vh;
+    transition: width 300ms ease-out;
+  }
+
+  .status {
+    font-size: 1.7vh;
+    color: rgba(255, 255, 255, 0.35);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
+  /* Three dots marching -- the "still alive" signal while the fraction sits
+     between engine milestones, which it does for long stretches. */
+  .dots::after {
+    content: '';
+    animation: dots 1.6s steps(4) infinite;
+  }
+  @keyframes dots {
+    0%   { content: ''; }
+    25%  { content: '.'; }
+    50%  { content: '..'; }
+    75%  { content: '...'; }
+  }
+</style>
+</head>
+<body>
+  <div class="glow"></div>
+  <div class="wrap">
+    <h1>FiveM <span>Royale</span></h1>
+    <div class="tag">Drop in. Loot up. Outlast the storm.</div>
+    <div class="bar"><div class="fill" id="fill"></div></div>
+    <div class="status"><span id="status">Loading Los Santos</span><span class="dots"></span></div>
+  </div>
+
+<script>
+  // The engine narrates its load through one-way messages; loadFraction is
+  // the only number worth a pixel. The bar never moves backwards -- the
+  // fraction can jitter across load stages, and a regressing loading bar
+  // reads as a crash in progress.
+  var best = 0;
+  window.addEventListener('message', function (e) {
+    var d = e.data || {};
+    if (d.eventName === 'loadProgress' && typeof d.loadFraction === 'number') {
+      var pct = Math.round(d.loadFraction * 100);
+      if (pct > best) {
+        best = pct;
+        document.getElementById('fill').style.width = pct + '%';
+      }
+      if (best >= 100) {
+        document.getElementById('status').textContent = 'Opening the lobby';
+      }
+    }
+  });
+</script>
+</body>
+</html>

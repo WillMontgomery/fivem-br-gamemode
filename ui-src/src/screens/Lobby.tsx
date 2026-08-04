@@ -24,6 +24,10 @@ export default function Lobby({ visible }: { visible: boolean }) {
   const match = useUi(selMatch)
   const lobby = useUi(selLobby)
   const squad = useUi(selSquad)
+  // False only during first join, before the world has streamed in. The menu
+  // is fully usable the whole time -- an opaque backdrop (below) just stands
+  // in for the half-loaded vista until Lua says the view is worth showing.
+  const worldReady = useUi((s) => s.screen?.worldReady ?? true)
   const [queued, setQueued] = useState(false)
   const [mode, setMode] = useState<'solo' | 'squad'>('squad')
 
@@ -83,12 +87,14 @@ export default function Lobby({ visible }: { visible: boolean }) {
   // the normal copy applies.
   const waitingOnMatch = matchRunning && match.state !== 'warmup' && !tearingDown
 
-  const headline = tearingDown
-    ? 'Cleaning up the last round…'
-    : waitingOnMatch
-      ? 'Waiting for the current match to end…'
-      : !wait
-        ? 'Starting…'
+  const headline = !worldReady
+    ? 'Waiting for the map to load…'
+    : tearingDown
+      ? 'Cleaning up the last round…'
+      : waitingOnMatch
+        ? 'Waiting for the current match to end…'
+        : !wait
+          ? 'Starting…'
         : wait.reason === 'party'
           ? 'Waiting for your party to ready up'
           : wait.reason === 'squads'
@@ -99,7 +105,7 @@ export default function Lobby({ visible }: { visible: boolean }) {
   // raises. Suppressed during teardown -- counts for a match that cannot
   // form yet only contradict the "cleaning up" headline.
   const detail: string[] = []
-  if (!tearingDown && !waitingOnMatch) {
+  if (!tearingDown && !waitingOnMatch && worldReady) {
     if (lobby?.party) detail.push(`Your party ${lobby.party.ready}/${lobby.party.size} ready`)
     // "2 of 16 players needed" read as a riddle -- needed for WHAT, and am I
     // one of the 2? Say what is true in words instead. Solo queuers skip the
@@ -132,12 +138,27 @@ export default function Lobby({ visible }: { visible: boolean }) {
       }}
       aria-hidden={!visible}
     >
+      {/* THE STREAMING BACKDROP. From the loading screen's release until the
+          world has streamed in, the view behind this menu is half-loaded
+          terrain -- so an OPAQUE layer in the loadscreen's exact visual
+          language stands in for it. The lobby is fully interactive on top
+          the entire time; when Lua flags worldReady the backdrop fades and
+          the vista is simply there. Solid colours on purpose: this is the
+          load screen continuing by other means, not a tint. */}
+      <div
+        className="absolute inset-0 pointer-events-none transition-opacity duration-700"
+        style={{
+          opacity: worldReady ? 0 : 1,
+          background:
+            'radial-gradient(ellipse at 50% 42%, rgb(36, 22, 62), rgb(6, 8, 14) 78%)',
+        }}
+      />
       {/* Sized with REAL dimensions (42rem = the old 35 + 20%), never
           transform: scale() -- a scaled layer rasterizes at 1x and re-blurs
           every time any child animates, which smeared every button's text
           the moment one was pressed. HeroUI's press animation (the "doppler"
           scale on the button itself) is unaffected and stays. */}
-      <div className="interactive w-[42rem] max-w-[85vw]">
+      <div className="interactive relative w-[42rem] max-w-[85vw]">
         <div className="text-center mb-6">
           <h1 className="text-6xl font-bold tracking-tight">
             FiveM <span style={{ color: 'var(--color-royale-accent)' }}>Royale</span>

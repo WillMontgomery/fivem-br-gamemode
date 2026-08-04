@@ -48,9 +48,17 @@ BR.Config.Storm = {
     -- to how far the FURTHEST player is from the anchor at the moment the
     -- match goes live -- fair to whoever dropped at the wrong end of the
     -- tour. phases[1].wait is the minimum; this is the rate and the cap.
+    --
+    -- startCapSeconds bounds the WAIT alone, not the budget: the wall starts
+    -- moving within three minutes of PLAYING no matter how wide the drop
+    -- spread, and every second the cap trims off the hold is paid back into
+    -- a SLOWER first shrink (user call, 2026-08-04). The far-drop player
+    -- gets the same total phase-1 time to make the run -- the wall just
+    -- spends more of it visibly creeping instead of parked.
     hold = {
-        metersPerSec = 9.0,     -- assumed cross-map travel speed
-        maxSeconds   = 300.0,
+        metersPerSec    = 9.0,   -- assumed cross-map travel speed
+        maxSeconds      = 300.0, -- cap on the TOTAL priced budget
+        startCapSeconds = 180.0, -- cap on the stationary wait alone
     },
 
     -- Playable bounds, describing the LAND we want fights to happen on.

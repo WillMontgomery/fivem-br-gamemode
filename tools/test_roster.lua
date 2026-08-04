@@ -2103,11 +2103,15 @@ do
     end
     ok(toOne == 0, 'a player inside the circle is never told to take damage')
     ok(countTwo >= 1, 'the player outside is, once the shrink begins')
-    -- Phase 1 is 1.0 DISPLAY hp/s; the wire speaks ENGINE units, and on this
-    -- build's 0..200 range that is exactly 2 per one-second tick.
-    ok(lastToTwo and lastToTwo.amount == 2,
-        'damage crosses the wire in engine units (1 dps -> 2/tick)',
-        lastToTwo and ('amount %s'):format(tostring(lastToTwo.amount)) or 'none')
+    -- Phase 1 is 1.0 DISPLAY hp/s; the wire speaks ENGINE units. With the
+    -- corrected floor (100..200 live range, span 100) the two scales move
+    -- 1:1 -- derived from the converter, not hardcoded, so a future span
+    -- change lands here as arithmetic and not as a stale literal.
+    local expectEngine = math.floor(BR.ToEngineHpDelta(1.0) + 0.5)
+    ok(lastToTwo and lastToTwo.amount == expectEngine,
+        'damage crosses the wire in engine units',
+        lastToTwo and ('amount %s, expected %d'):format(
+            tostring(lastToTwo.amount), expectEngine) or 'none')
     ok(BR.Roster.get(2).stormHp ~= nil, 'the server ledger tracks the exposure')
     ok(BR.Roster.get(1).stormHp == nil, 'and carries nothing for the safe player')
 
@@ -2130,7 +2134,7 @@ do
     -- dps-predicted moment and the server eliminates them anyway.
     -- The block is in phase 2 by now, and phase 2 is 2.0 dps: display 8 is
     -- exactly four one-second ticks of life.
-    pedHealth[1002] = 16          -- engine 16 = display 8
+    pedHealth[1002] = BR.ToEngineHp(8)   -- display 8, converter-derived
     local deadAt = nil
     for i = 1, 14 do
         fakeTime = fakeTime + 1000
@@ -2292,9 +2296,17 @@ do
 
     BR.Match.transition(BR.MatchState.PLAYING)
     local rec = BR.Server.storm
-    ok(math.abs(rec.tWait - 200000.0) < 1500.0,
-        'the hold is priced for the run to the circle edge (1800m / 9mps = 200s)',
+    -- 200s priced, but the START CAP holds the stationary wait to 180s and
+    -- pays the trimmed 20s into a slower first shrink: the total budget
+    -- (200s run + the authored shrink) is untouched.
+    local cap    = BR.Config.Storm.hold.startCapSeconds * 1000.0
+    local shrink = BR.Config.Storm.phases[1].shrink * 1000.0
+    ok(math.abs(rec.tWait - cap) < 1500.0,
+        'a 200s-priced hold waits only to the start cap (180s)',
         ('tWait %.0fms'):format(rec.tWait))
+    ok(math.abs((rec.tWait + rec.tShrink) - (200000.0 + shrink)) < 1500.0,
+        'and the trimmed seconds are paid back into the first shrink',
+        ('total %.0fms'):format(rec.tWait + rec.tShrink))
 
     -- Landing INSIDE the first target circle prices at zero: the minimum
     -- hold applies no matter where inside it you are.
@@ -2314,8 +2326,9 @@ do
         'anyone already inside the target circle pays only the minimum hold',
         ('tWait %.0fms'):format(BR.Server.storm.tWait))
 
-    -- The cap: nobody waits five minutes-plus no matter how far out the
-    -- drop was.
+    -- The budget cap: however far out the drop was, the priced budget stops
+    -- at maxSeconds -- and the START CAP splits it 180s parked + the rest
+    -- as shrink. The wall is ALWAYS moving within three minutes of PLAYING.
     BR.Match.transition(BR.MatchState.ENDED)
     BR.Match.transition(BR.MatchState.CLEANUP)
     BR.Match.transition(BR.MatchState.WAITING)
@@ -2328,9 +2341,14 @@ do
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
     BR.Match.transition(BR.MatchState.PLAYING)
-    ok(BR.Server.storm.tWait == BR.Config.Storm.hold.maxSeconds * 1000.0,
-        'a very distant player hits the hold cap, not a five-minute wait',
+    ok(BR.Server.storm.tWait == BR.Config.Storm.hold.startCapSeconds * 1000.0,
+        'even the farthest drop waits only to the start cap',
         ('tWait %.0fms'):format(BR.Server.storm.tWait))
+    ok(BR.Server.storm.tWait + BR.Server.storm.tShrink
+        == (BR.Config.Storm.hold.maxSeconds
+            + BR.Config.Storm.phases[1].shrink) * 1000.0,
+        'with the full capped budget preserved as hold + slower shrink',
+        ('total %.0fms'):format(BR.Server.storm.tWait + BR.Server.storm.tShrink))
 end
 
 describe('match.storm.cleanup')

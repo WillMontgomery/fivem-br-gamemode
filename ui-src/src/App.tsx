@@ -122,8 +122,10 @@ export default function App() {
       {/* Over the WORLD, never the menu: in-match alerts land wherever the
           player is looking, but the lobby has its own feedback (chips
           resolve, panels update) and floating toasts over it read as
-          clutter (user call, 2026-08-03). */}
-      {!showLobby && <Notices barsVisible={hudUp} />}
+          clutter (user call, 2026-08-03). The pause menu is a menu too --
+          while it is open, new notices queue in the store and flush on
+          unpause (dropped after 30s of waiting). */}
+      {!showLobby && !s.hud.paused && <Notices barsVisible={hudUp} />}
     </>
   )
 }

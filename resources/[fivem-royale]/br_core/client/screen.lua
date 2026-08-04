@@ -10,7 +10,7 @@
 -- to sit, on any display, including the ultrawide cases we cannot otherwise
 -- reason about.
 
-local last = { w = 0, h = 0, safe = -1.0, radar = nil }
+local last = { w = 0, h = 0, safe = -1.0, radar = nil, ready = nil }
 
 --- The native radar's footprint, as a fraction of screen height.
 ---
@@ -71,6 +71,10 @@ local function publish()
         mapH      = mapH,
         radarOn   = radarVisible(),
         aspect  = (h > 0) and (w / h) or (16.0 / 9.0),
+        -- Rides here rather than in its own envelope so a br_ui restart
+        -- mid-session re-learns it on the next periodic publish. Owned by
+        -- loading.lua; the lobby's opaque streaming backdrop keys on it.
+        worldReady = BR.State.worldReady ~= false,
     })
 end
 
@@ -82,10 +86,11 @@ BR.Loop.register(BR.Loop.SLOW, 'screen.metrics', function()
     local w, h = GetActiveScreenResolution()
     local safe = GetSafeZoneSize()
     local radar = radarVisible()
+    local ready = BR.State.worldReady ~= false
 
     if w ~= last.w or h ~= last.h or math.abs(safe - last.safe) > 0.001
-       or radar ~= last.radar then
-        last.w, last.h, last.safe, last.radar = w, h, safe, radar
+       or radar ~= last.radar or ready ~= last.ready then
+        last.w, last.h, last.safe, last.radar, last.ready = w, h, safe, radar, ready
         publish()
     end
 end)

@@ -82,13 +82,15 @@ BR.Config.Match = {
     -- Everything in config/*.lua is DISPLAY units. Convert at the engine
     -- boundary with BR.ToEngineHp / BR.ToDisplayHp -- never inline the arithmetic.
     --
-    -- VERIFIED IN-GAME (2026-08-02): player peds on this build die at engine 0,
-    -- NOT at the widely repeated 100-means-dead convention. The floor is 0 and
-    -- the full engine range 0..200 maps onto display 0..100. Exactly as the
-    -- old note here promised, the converters below were the only places that
-    -- needed to know.
+    -- THE FLOOR IS 100, the convention after all. A 2026-08-02 note here
+    -- claimed an in-game verification of floor 0 -- that verification misread
+    -- a corpse: GetEntityHealth returns 0 AFTER death, so a dead body "proves"
+    -- 0 while the living range never actually dips below 100. The live
+    -- measurement that settled it (2026-08-04): a player died with the health
+    -- bar at exactly 50%, which under a 0..200 display mapping is precisely
+    -- the engine-100 death threshold announcing itself.
     maxHealth       = 200,    -- engine units
-    healthFloor     = 0,      -- engine units; at or below this a player ped is dead
+    healthFloor     = 100,    -- engine units; at or below this a player ped is dead
     maxArmour       = 100,    -- armour is already 0..100 natively, no conversion
 
     -- DBNO (squads only -- solo has nobody who could revive you).

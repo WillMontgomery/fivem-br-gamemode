@@ -76,13 +76,20 @@ export default function Hud({ visible }: { visible: boolean }) {
 
         {/* Left column, top to bottom: squad, chat (rendered separately), radar.
             Each has its own band so none can grow into another -- the squad
-            panel varies with squad size and chat with message count. */}
-        <div
-          className="absolute w-[13rem]"
-          style={{ top: 'var(--safe-y)', left: 'var(--safe-x)' }}
-        >
-          <SquadPanel squad={squad} />
-        </div>
+            panel varies with squad size and chat with message count.
+
+            Hidden until the player has LANDED: the game's native help boxes
+            ("Press SPACE to open the glider.") draw in exactly this corner,
+            and the squad panel sat on top of them (user report, 2026-08-04).
+            The bus ride already hides the whole HUD; this covers the descent. */}
+        {hud.state !== 'freefall' && hud.state !== 'glide' && (
+          <div
+            className="absolute w-[13rem]"
+            style={{ top: 'var(--safe-y)', left: 'var(--safe-x)' }}
+          >
+            <SquadPanel squad={squad} />
+          </div>
+        )}
 
         {/* Vitals sit exactly where GTA's own minimap strip was: overlapping
             the radar's lower edge, spanning its width. Positioned FIXED

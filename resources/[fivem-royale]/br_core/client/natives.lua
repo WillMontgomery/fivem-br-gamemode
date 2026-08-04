@@ -89,8 +89,9 @@ end
 -- ------------------------------------------------------------------- health ---
 
 --- Read the local player's health in DISPLAY units (0..100).
---- Engine health is 0..200 for player peds on this build (floor verified 0
---- in-game, not the oft-repeated 100); see BR.ToDisplayHp.
+--- Engine health runs 100..200 for a living player ped -- the floor IS the
+--- conventional 100 (settled by a live death at exactly half bar under the
+--- old 0..200 mapping); see BR.ToDisplayHp and the config note.
 --- @return number
 function BR.Native.displayHealth()
     return BR.ToDisplayHp(GetEntityHealth(PlayerPedId()))
@@ -336,6 +337,11 @@ function BR.Native.applyGameRules()
     -- so the engine ticker only ever duplicates or contradicts them.
     -- NOTE: this also silences vMenu's notifications, deliberately.
     ThefeedHideThisFrame()
+
+    -- The cash/bank readout pops top-right at load-in and every time the
+    -- pause menu closes. There is no money in a battle royale.
+    HideHudComponentThisFrame(3)   -- HUD_CASH
+    HideHudComponentThisFrame(4)   -- HUD_MP_CASH (the bank line)
 
     SetVehicleDensityMultiplierThisFrame(0.0)
     SetPedDensityMultiplierThisFrame(0.0)

@@ -38,6 +38,10 @@ export interface UiState {
    *  Newest last; each expires on its own timer. `ms` is that timer, kept on
    *  the notice so the fly-in/fade-out animation can match it exactly. */
   notices: (ToastPayload & { id: number; ms: number })[]
+  /** Notices that arrived while the pause menu was open. They display on
+   *  unpause -- unless they sat here longer than PAUSE_QUEUE_MS, in which
+   *  case the moment has passed and they are dropped silently. */
+  pendingNotices: (ToastPayload & { queuedAt: number })[]
   focus: FocusPayload['screen']
 
   /** Real screen metrics from the game -- including the minimap rectangle the
@@ -110,7 +114,25 @@ const TOAST_MS = 4000
  *  wall of text over the game. Oldest fall off first. */
 const NOTICES_MAX = 5
 
-export const useUi = create<UiState>((set) => ({
+/** How long a notice may wait out a pause before it stops being news. */
+const PAUSE_QUEUE_MS = 30_000
+
+export const useUi = create<UiState>((set, get) => {
+  /** The actual display push: id, self-removal timer, stack cap. Both the
+   *  live path and the unpause flush land here, so queued notices get the
+   *  same lifetime and animation as ones that never waited. */
+  const showNotice = (t: ToastPayload) => {
+    const id = ++noticeId
+    const ms = t.ms ?? TOAST_MS
+    setTimeout(() => {
+      set((s) => (s.notices.some((n) => n.id === id)
+        ? { notices: s.notices.filter((n) => n.id !== id) }
+        : {}))
+    }, ms)
+    set((s) => ({ notices: [...s.notices, { ...t, id, ms }].slice(-NOTICES_MAX) }))
+  }
+
+  return {
   match: emptyMatch,
   hud: emptyHud,
   squad: { id: null, members: [] },
@@ -122,6 +144,7 @@ export const useUi = create<UiState>((set) => ({
   feed: [],
   chat: [],
   notices: [],
+  pendingNotices: [],
   focus: 'none',
   lobby: null,
   screen: null,
@@ -139,7 +162,21 @@ export const useUi = create<UiState>((set) => ({
       ? { match, clockOffset: match.serverNow - Date.now() }
       : { match }
   ),
-  setHud:      (hud) => set({ hud }),
+  // Unpausing flushes the notice queue: whatever arrived under the pause
+  // menu shows now -- except entries older than PAUSE_QUEUE_MS, whose
+  // moment has passed (user call, 2026-08-04).
+  setHud: (hud) => {
+    const wasPaused = get().hud.paused
+    if (wasPaused && !hud.paused) {
+      const now = Date.now()
+      const held = get().pendingNotices
+        .filter((p) => now - p.queuedAt <= PAUSE_QUEUE_MS)
+      set({ hud, pendingNotices: [] })
+      held.forEach(({ queuedAt: _dropped, ...t }) => showNotice(t))
+      return
+    }
+    set({ hud })
+  },
   setSquad:    (squad) => set({ squad }),
   setInv:      (inv) => set({ inv }),
   // Normalised at the boundary: an empty or shapeless payload (a nil that
@@ -176,15 +213,20 @@ export const useUi = create<UiState>((set) => ({
   // declined" -- showed only the second, and the first might as well never
   // have happened. Each notice removes ITSELF by id, so an expiring older
   // notice can never take a newer one down with it.
+  //
+  // While the pause menu is open, notices QUEUE instead of showing: the
+  // fullscreen map is not a place for toasts. The queue is bounded like the
+  // live stack; the unpause flush in setHud decides what is still worth
+  // saying.
   pushNotice: (t) => {
-    const id = ++noticeId
-    const ms = t.ms ?? TOAST_MS
-    setTimeout(() => {
-      set((s) => (s.notices.some((n) => n.id === id)
-        ? { notices: s.notices.filter((n) => n.id !== id) }
-        : {}))
-    }, ms)
-    set((s) => ({ notices: [...s.notices, { ...t, id, ms }].slice(-NOTICES_MAX) }))
+    if (get().hud.paused) {
+      set((s) => ({
+        pendingNotices: [...s.pendingNotices, { ...t, queuedAt: Date.now() }]
+          .slice(-NOTICES_MAX),
+      }))
+      return
+    }
+    showNotice(t)
   },
 
   openChat:  (chatChannel) => set({ chatOpen: true, chatChannel }),
@@ -198,7 +240,8 @@ export const useUi = create<UiState>((set) => ({
     storm: s.storm,
     chat: s.chat.slice(-CHAT_MAX),
   }),
-}))
+  }
+})
 
 // Selectors. Components subscribe to the narrowest slice they need so a hud
 // update at 10 Hz does not re-render the chat log.
