@@ -100,7 +100,8 @@ function BR.Match.onEnter(state, from)
         BR.Bus.plan()
 
     elseif state == BR.MatchState.BUS then
-        S.descent = nil   -- fresh per flight: the descent-grace bookkeeping
+        S.descent = nil     -- fresh per flight: the descent-grace bookkeeping
+        S.landCheck = nil   -- and the stuck-lander bookkeeping runs here too
 
         -- The flight decides how long BUS lasts, so the deadline is set HERE
         -- and rebroadcast. The geometry was planned at WARMUP; departure only
@@ -546,7 +547,17 @@ local function tick()
     -- altitude for five seconds is not falling by any definition: promote
     -- them server-side, which drops their invincibility and re-arms every
     -- system keyed on ALIVE.
-    if S.state == BR.MatchState.PLAYING then
+    --
+    -- This MUST run during BUS as well as PLAYING, and the first version
+    -- (PLAYING only) was circular: a stuck lander still counts as airborne,
+    -- airborne > 0 is exactly what holds the match in BUS -- so the net that
+    -- would fix them was waiting on the state THEY were blocking, and the
+    -- player walked Los Santos untouchable until the route timer ran out
+    -- ("invincible until the flight is over", live repro). No false
+    -- positives from the ride itself: riders are in the BUS state, which
+    -- this filter never touches, and a jumper awaiting exit coords hits the
+    -- self-place fallback (and a changing z) within a second.
+    if S.state == BR.MatchState.PLAYING or S.state == BR.MatchState.BUS then
         S.landCheck = S.landCheck or { z = {}, still = {} }
         BR.Roster.each(
             function(e)

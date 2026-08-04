@@ -141,7 +141,12 @@ end)
 --- is also what makes position sampling work -- if the roster shows no peds,
 --- this silently does nothing and the boot warning explains why.
 BR.Sched.every(1000, 'combat.deathcheck', function()
-    if BR.Server.match.state ~= BR.MatchState.PLAYING then return end
+    -- BUS counts as live: early droppers are on the ground and mortal while
+    -- stragglers are still flying, and a death in that window must be
+    -- observed like any other. PLAYING-only meant a landed player could not
+    -- be server-confirmed dead until the LAST player was down.
+    if BR.Server.match.state ~= BR.MatchState.PLAYING
+       and BR.Server.match.state ~= BR.MatchState.BUS then return end
 
     BR.Roster.each(canDie, function(src, entry)
         if not entry.ped or entry.ped == 0 then return end

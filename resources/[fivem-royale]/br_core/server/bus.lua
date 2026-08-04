@@ -365,5 +365,12 @@ AddEventHandler(BR.Net.DROP_LANDED, function()
        or entry.state == BR.PlayerState.GLIDE then
         BR.Roster.setState(src, BR.PlayerState.ALIVE)
         print(('[br_core] %s (%d) landed'):format(entry.name, src))
+    else
+        -- Refusals are AUDIBLE (the jump handler's rule, applied here after
+        -- a landing report vanished into this branch untraced). ALIVE is the
+        -- benign duplicate; BUS means the server never registered the jump
+        -- at all, which is the lead worth having in the log.
+        print(('[br_core] bus: landing report from %s (%d) ignored -- state is %s')
+            :format(entry.name, src, tostring(entry.state)))
     end
 end)

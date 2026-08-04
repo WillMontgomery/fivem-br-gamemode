@@ -2354,6 +2354,91 @@ do
         'and the per-player storm ledger with it')
 end
 
+describe('match.busSafetyNets')
+do
+    -- The invincibility repro (2026-08-04): a lander whose DROP_LANDED went
+    -- missing stayed FREEFALL -- a client-invincible state -- and BOTH
+    -- safety nets (stuck-lander promotion, server deathcheck) were gated on
+    -- PLAYING. That gate was circular: a stuck lander still counts as
+    -- airborne, and airborne > 0 is exactly what holds the match in BUS --
+    -- so the net waited on the state the stuck lander was blocking, for as
+    -- long as the route had left to fly. Both nets must work DURING BUS.
+
+    -- (1) The stuck lander is promoted mid-flight, and the promotion itself
+    --     is what takes the match live -- not the route timer.
+    reset()
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    fakeTime = BR.Server.match.endsAt + 1
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.BUS, 'flying')
+
+    local r = BR.Bus.active()
+    fakeTime = r.jumpFrom + 1000
+    fire(BR.Net.BUS_JUMP, 1)
+    fire(BR.Net.BUS_JUMP, 2)
+    fire(BR.Net.DROP_LANDED, 2)   -- 2 lands cleanly; 1's report is LOST
+    ok(BR.Roster.get(1).state == BR.PlayerState.FREEFALL,
+        'the lost report leaves 1 marked as falling')
+
+    for _ = 1, 30 do              -- ~7.5s standing on the ground, silent
+        setPos(1, 150.0, 150.0, 25.0)
+        setPos(2, 300.0, 300.0, 25.0)
+        fakeTime = fakeTime + 250
+        BR.Sched.step(fakeTime)
+    end
+    ok(BR.Roster.get(1).state == BR.PlayerState.ALIVE,
+        'constant altitude promotes the stuck lander DURING the flight')
+    ok(BR.Server.match.state == BR.MatchState.PLAYING,
+        'and the promotion is what takes the match live')
+    ok(fakeTime < r.tEnd, 'long before the route timer',
+        ('%.0fs early'):format((r.tEnd - fakeTime) / 1000))
+
+    -- (2) A death on the ground while others still fly is server-observed
+    --     immediately, not shelved until PLAYING.
+    reset()
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    fakeTime = BR.Server.match.endsAt + 1
+    BR.Sched.step(fakeTime)
+    local r2 = BR.Bus.active()
+    fakeTime = r2.jumpFrom + 1000
+    fire(BR.Net.BUS_JUMP, 1)
+    fire(BR.Net.BUS_JUMP, 2)
+    fire(BR.Net.DROP_LANDED, 2)
+
+    pedHealth[1002] = 0           -- 2 dies on the ground; 1 still gliding
+    local z = 400.0
+    for _ = 1, 8 do
+        z = z - 15.0
+        setPos(1, 150.0, 150.0, z)   -- a REAL descent: no promotion here
+        setPos(2, 300.0, 300.0, 25.0)
+        fakeTime = fakeTime + 250
+        BR.Sched.step(fakeTime)
+    end
+    ok(BR.Roster.get(2).state == BR.PlayerState.DEAD,
+        'a death on the ground is observed while others still fly')
+    ok(BR.Roster.get(1).state == BR.PlayerState.FREEFALL,
+        'a genuinely descending glider is never promoted')
+    ok(BR.Server.match.state == BR.MatchState.BUS,
+        'and the flight goes on for everyone else')
+    pedHealth[1002] = nil
+
+    -- The mid-flight death already counted: the survivor lands, the match
+    -- goes live, and the win condition sees one squad standing.
+    fire(BR.Net.DROP_LANDED, 1)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.PLAYING,
+        'the survivor landing takes it live')
+    fakeTime = fakeTime + 3100
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.match.state == BR.MatchState.ENDED,
+        'and last squad standing wins off the mid-flight death')
+end
+
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then
     realPrint(('\27[31m%d failed\27[0m'):format(fail))

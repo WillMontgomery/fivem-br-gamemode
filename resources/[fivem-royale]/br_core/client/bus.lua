@@ -24,6 +24,9 @@ local riding  = false
 local told    = false   -- "doors open" notice sent
 local toldClosing = false
 local ejectedSeen = nil -- when we noticed the server flipped us to FREEFALL
+local dropBegun = false -- this flight's drop has started; a LATE BUS_JUMP_OK
+                        -- must not re-teleport a fall the self-place fallback
+                        -- already began
 local lastX, lastY, lastZ, lastT = nil, nil, nil, nil  -- finite-difference state
 local camYaw, camPitch = 0.0, -8.0   -- free-look orbit, reset each boarding
 local gearAt = nil      -- when to retract the landing gear; true once done
@@ -117,6 +120,7 @@ end
 RegisterNetEvent(BR.Net.BUS_ROUTE)
 AddEventHandler(BR.Net.BUS_ROUTE, function(r)
     route = r
+    dropBegun = false   -- a fresh route is a fresh flight
     drawCrumbs()
 end)
 
@@ -130,6 +134,7 @@ end)
 
 --- Begin the drop at given coordinates: the one true handoff to skydive.lua.
 local function beginDrop(x, y, z, heading)
+    dropBegun = true
     cleanup()   -- detaches the ped from the plane, among everything else
     local ped = PlayerPedId()
     SetEntityCoordsNoOffset(ped, x + 0.0, y + 0.0, z + 0.0, false, false, false)
@@ -429,6 +434,18 @@ end)
 
 RegisterNetEvent(BR.Net.BUS_JUMP_OK)
 AddEventHandler(BR.Net.BUS_JUMP_OK, function(d)
+    if dropBegun then
+        -- The self-place fallback beat these coordinates here. Snapping the
+        -- ped back up to the route mid-fall would restart the whole drop.
+        print('[br_core] bus: exit coords arrived late -- already dropping, ignored')
+        return
+    end
+    if ejectedSeen then
+        -- The eject state flip was seen before the coordinates: measure the
+        -- gap. "Exit coords never arrived" repros need this number.
+        print(('[br_core] bus: exit coords arrived %dms after the eject flip')
+            :format(GetGameTimer() - ejectedSeen))
+    end
     beginDrop(d.x, d.y, d.z, d.heading)
 end)
 
