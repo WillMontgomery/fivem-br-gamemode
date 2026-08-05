@@ -28,9 +28,12 @@ local joinReqs = {}
 local nextId = 0
 
 --- Squad colours, assigned in order. Kept small and high-contrast: these have to
---- be distinguishable at a glance on a HUD, over any terrain.
+--- be distinguishable at a glance on a HUD, over any terrain. NO PURPLE,
+--- ever -- purple is the storm's colour and nothing squad-owned (tags,
+--- smoke trails, map markers) may be mistaken for it (user call,
+--- 2026-08-04); the old violet slot is teal now.
 local COLOURS = {
-    '#6EE7F9', '#A78BFA', '#FBBF24', '#F472B6',
+    '#6EE7F9', '#2DD4BF', '#FBBF24', '#F472B6',
     '#4ADE80', '#FB923C', '#60A5FA', '#F87171',
 }
 

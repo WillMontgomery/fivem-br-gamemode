@@ -326,10 +326,12 @@ function BR.Native.applyGameRules()
 
     -- The radar follows MY state, owned here like every other per-frame
     -- rule: hidden in the LOBBY (it used to poke out under the menu after a
-    -- match), shown for every in-match state. This replaces the point calls
-    -- spawn.lua made at ENDED/WAITING, which said the right thing for match
-    -- participants and the wrong thing for everyone idling in the lobby.
-    DisplayRadar(st ~= BR.PlayerState.LOBBY)
+    -- match), hidden ABOARD THE BUS (the ride is a cutscene; the map lives
+    -- on the pause screen -- user call, 2026-08-04), shown for every other
+    -- in-match state. This replaces the point calls spawn.lua made at
+    -- ENDED/WAITING, which said the right thing for match participants and
+    -- the wrong thing for everyone idling in the lobby.
+    DisplayRadar(st ~= BR.PlayerState.LOBBY and st ~= BR.PlayerState.BUS)
 
     -- GTA's own feed ("X joined", "Y died", weapon unlocks, whatever any other
     -- resource posts). The gamemode owns its presentation -- eliminations go

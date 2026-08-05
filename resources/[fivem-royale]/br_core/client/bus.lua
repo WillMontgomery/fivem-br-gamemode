@@ -107,11 +107,12 @@ local function drawCrumbs()
     -- Sampled from the FULL PATH, curves included: the "point budget"
     -- theory was a misdiagnosis (the runway-only line was the multi-route
     -- road-snapping over open water), so the custom route gets enough
-    -- points to trace the filleted corners -- ~36 across the tour keeps
-    -- every arc visibly an arc (user call, 2026-08-04).
+    -- points to trace the filleted corners. ~36 still showed its polygon
+    -- edges; ~90 across the tour is past what the eye resolves at map
+    -- scale (user call, 2026-08-04; no documented native point cap).
     local line = {}
     local pts = route.points
-    local step = math.max(1, math.floor(#pts / 36))
+    local step = math.max(1, math.floor(#pts / 90))
     for i = 1, #pts, step do
         line[#line + 1] = pts[i]
     end
@@ -119,7 +120,7 @@ local function drawCrumbs()
         line[#line + 1] = pts[#pts]
     end
 
-    StartGpsCustomRoute(25, true, true)   -- hud colour 25 (green)
+    StartGpsCustomRoute(0, true, true)   -- hud colour 0 (pure white)
     for _, p in ipairs(line) do
         AddPointToGpsCustomRoute(p.x, p.y, p.z or 200.0)
     end
@@ -312,8 +313,10 @@ BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
     -- overcast haze flattening the horizon, the lobby island is released
     -- so Los Santos can exist (they are mutually exclusive; br_environment
     -- owns the switch and the weather choreography that hides the swap).
+    -- 5.5s: the +3.5s cut still read as abrupt, so the swap AND the
+    -- weather clear that rides it wait two more seconds (user call).
     if riding and not islandCut and route and route.timed
-       and BR.Clock.now() >= (route.rotateAt or route.tStart) + 3500 then
+       and BR.Clock.now() >= (route.rotateAt or route.tStart) + 5500 then
         islandCut = true
         TriggerEvent('br:env:releaseIsland')
     end

@@ -57,7 +57,7 @@ export function startMockDriver(): void {
         id: 'sq_1',
         members: [
           { src: 1, name: 'You',     state: 'alive', hp: 82,  armour: 45, colour: '#6EE7F9' },
-          { src: 2, name: 'Kestrel', state: 'alive', hp: 100, armour: 80, colour: '#A78BFA' },
+          { src: 2, name: 'Kestrel', state: 'alive', hp: 100, armour: 80, colour: '#2DD4BF' },
           { src: 3, name: 'Vandal',  state: 'dbno',  hp: 12,  armour: 0,  colour: '#FBBF24' },
           { src: 4, name: 'Nyx',     state: 'dead',  hp: 0,   armour: 0,  colour: '#F472B6' },
         ],

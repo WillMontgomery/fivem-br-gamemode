@@ -17,12 +17,14 @@ BR = BR or {}
 local markers = {}   -- [owner] = { x, y, colour, blip, gz, gzAt }
 
 -- The squad palette (party.lua COLOURS) mapped to the nearest blip colour
--- index -- blips take indices, not RGB.
+-- index -- blips take indices, not RGB. NEVER PURPLE, in any slot
+-- including the fallback: purple belongs to the storm alone, and a marker
+-- has nothing to do with the storm (user call, 2026-08-04).
 local BLIP_BY_HEX = {
-    ['#6EE7F9'] = 18, ['#A78BFA'] = 27, ['#FBBF24'] = 5, ['#F472B6'] = 8,
+    ['#6EE7F9'] = 18, ['#2DD4BF'] = 15, ['#FBBF24'] = 5, ['#F472B6'] = 8,
     ['#4ADE80'] = 2,  ['#FB923C'] = 17, ['#60A5FA'] = 3, ['#F87171'] = 1,
 }
-local SOLO_COLOUR = '#A855F7'   -- the royale purple, for markers with no squad
+local SOLO_COLOUR = '#FBBF24'   -- amber: reads "ping", nothing like the storm
 
 local function hexToRgb(hex)
     if type(hex) ~= 'string' then return 255, 255, 255 end
@@ -51,7 +53,7 @@ AddEventHandler(BR.Net.MARKER_SYNC, function(d)
     local colour = d.colour or SOLO_COLOUR
     local blip = AddBlipForCoord(d.x, d.y, 0.0)
     SetBlipSprite(blip, 1)
-    SetBlipColour(blip, BLIP_BY_HEX[colour] or 27)
+    SetBlipColour(blip, BLIP_BY_HEX[colour] or 5)   -- unknown hex -> amber, never purple
     SetBlipScale(blip, 1.1)
     SetBlipAsShortRange(blip, false)
     markers[d.owner] = { x = d.x, y = d.y, colour = colour, blip = blip }
@@ -77,14 +79,18 @@ BR.Loop.register(BR.Loop.TICK, 'markers.place', function()
     end
 end)
 
--- The world beams. Always drawn -- at 3x wall height they are landmarks,
+-- The world beams. Always drawn -- at 6x wall height they are landmarks,
 -- and there are at most four of them.
 BR.Loop.register(BR.Loop.FRAME, 'markers.beam', function()
     if not next(markers) then return end
 
     local beamH = ((BR.Config.Storm.render and BR.Config.Storm.render.height)
-        or 300.0) * 3.0
+        or 300.0) * 6.0
     local now = GetGameTimer()
+    -- Distance from the RENDERED CAMERA, not the ped: aboard the bus the
+    -- ped is nowhere near the view, and the beams must read from the
+    -- flight (user call, 2026-08-04).
+    local cc = GetFinalRenderedCamCoord()
 
     for _, m in pairs(markers) do
         -- Ground probe, cached: the beam must stand ON the terrain. A
@@ -96,9 +102,16 @@ BR.Loop.register(BR.Loop.FRAME, 'markers.beam', function()
             m.gzAt = now
         end
         local r, g, b = hexToRgb(m.colour)
+        -- A fixed-width cylinder vanishes into a subpixel sliver seen from
+        -- the bus 5-10km out -- "the markers don't draw from the plane" was
+        -- angular size, not culling. Past ~800m the radius grows with
+        -- distance (~1% of range) so the beam keeps a readable width from
+        -- anywhere on the route.
+        local dist = BR.Dist(cc.x, cc.y, m.x, m.y)
+        local rad = 10.0 + math.max(0.0, dist - 800.0) * 0.01
         DrawMarker(1, m.x, m.y, m.gz - 10.0,
             0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-            5.0, 5.0, beamH,
+            rad, rad, beamH,
             r, g, b, 130,
             false, false, 2, false, nil, nil, false)
     end

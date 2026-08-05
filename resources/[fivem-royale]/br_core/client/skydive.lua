@@ -116,10 +116,14 @@ BR.Loop.register(BR.Loop.FRAME, 'skydive.prompt', function()
     DisableControlAction(0, 153, true)
 
     local cs = GetPedParachuteState(ped)
-    -- `not IsPedOnFoot`: at touchdown the canopy detaches a beat before
-    -- the TICK landing branch disarms the machine, and the prompt flashed
-    -- "open the glider" at a player standing on the ground.
-    if not IsPedOnFoot(ped)
+    -- The airborne test must NOT be `not IsPedOnFoot`: a ped in the
+    -- parachute task's freefall COUNTS AS ON FOOT, so that gate killed the
+    -- prompt for the entire healthy drop (live report, 2026-08-04). What
+    -- it was guarding against -- the canopy detaching a beat before the
+    -- TICK landing branch disarms, flashing "open the glider" at a player
+    -- standing on the ground -- is covered by the freefall/falling pair
+    -- below, both false for a ped with feet on anything.
+    if (IsPedInParachuteFreeFall(ped) or IsPedFalling(ped))
        and (cs == BR.Native.ChuteState.ON_BACK
             or cs == BR.Native.ChuteState.FREEFALL) then
         BR.Native.helpThisFrame('Press ~INPUT_PARACHUTE_DEPLOY~ to open the glider.')
