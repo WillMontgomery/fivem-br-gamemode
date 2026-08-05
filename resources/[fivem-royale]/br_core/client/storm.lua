@@ -423,50 +423,54 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
                 cfg.blip.nextColour, cfg.blip.nextAlpha)
         end
 
-        -- "RUN THIS WAY", on the minimap -- whenever outside the PURPLE
-        -- TARGET circle, not just the current wall (user call, 2026-08-04:
-        -- during the whole phase-1 hold "outside the current circle" is
-        -- impossible -- it is the entire map -- but outside the target is
-        -- exactly when guidance matters). The blip sits at the NEAREST
-        -- SAFE POINT just inside the target's edge, long-range so it
-        -- clamps to the minimap's border as a heading that rotates with
-        -- the map. Deliberately NOT the centre: the anchor is tuning
-        -- data, and parking a marker on it would hand every player the
-        -- storm's destination for free. (No rotatable arrow sprite exists
-        -- in the blip set -- the engine's arrows are elevation markers --
-        -- so the clamped dot IS the arrow.)
-        local tx, ty, tr = rec.cx1, rec.cy1, rec.r1
-        local distT = BR.Dist(p.x, p.y, tx, ty)
-        if distT > tr then
-            local inv = 1.0 / math.max(distT, 1.0)
-            local sx = tx + (p.x - tx) * inv * math.max(tr - 25.0, 0.0)
-            local sy = ty + (p.y - ty) * inv * math.max(tr - 25.0, 0.0)
-            -- AN ARROW THAT POINTS AT THE CIRCLE (user call, 2026-08-04,
-            -- overturning the earlier "no rotatable arrow" finding):
-            -- sprite 11 is a directional arrow per the FiveM blip
-            -- reference, and SetBlipRotation aims it. The bearing is
-            -- player -> target centre, refreshed with every coord update,
-            -- so on the minimap edge it always faces the way to run.
-            local rot = math.floor(
-                BR.GtaHeading(BR.Bearing(p.x, p.y, tx, ty)) + 0.5) % 360
-            if not dirBlip or not DoesBlipExist(dirBlip) then
-                dirBlip = AddBlipForCoord(sx, sy, 0.0)
-                -- FLASHING and LARGE: squadmates are steady coloured dots,
-                -- so the run-this-way marker must read as a different KIND
-                -- of thing at a glance (user call, 2026-08-04).
-                SetBlipSprite(dirBlip, 11)
-                SetBlipColour(dirBlip, cfg.blip.nextColour)
-                SetBlipScale(dirBlip, 1.0)
-                SetBlipFlashes(dirBlip, true)
-                SetBlipAsShortRange(dirBlip, false)
-            else
-                SetBlipCoords(dirBlip, sx, sy, 0.0)
-            end
-            SetBlipRotation(dirBlip, rot)
-        elseif dirBlip then
-            RemoveBlip(dirBlip)
-            dirBlip = nil
+    end
+
+    -- "RUN THIS WAY", on the minimap -- whenever outside the PURPLE
+    -- TARGET circle, not just the current wall (user call, 2026-08-04:
+    -- during the whole phase-1 hold "outside the current circle" is
+    -- impossible -- it is the entire map -- but outside the target is
+    -- exactly when guidance matters). The blip sits at the NEAREST
+    -- SAFE POINT just inside the target's edge, long-range so it
+    -- clamps to the minimap's border as a heading that rotates with
+    -- the map. Deliberately NOT the centre: the anchor is tuning
+    -- data, and parking a marker on it would hand every player the
+    -- storm's destination for free.
+    --
+    -- EVERY TICK, not on the blip refresh cadence (user call,
+    -- 2026-08-04): the arrow's rotation must track the player's own
+    -- movement smoothly, and re-asserting existence at 10Hz means
+    -- anything that eats the handle (a live "no blip at all in squads"
+    -- report -- engine blip handles are recycled, so another system
+    -- removing a stale handle can delete ours) heals within 100ms
+    -- instead of a refresh period.
+    local tx, ty, tr = rec.cx1, rec.cy1, rec.r1
+    local distT = BR.Dist(p.x, p.y, tx, ty)
+    if distT > tr then
+        local inv = 1.0 / math.max(distT, 1.0)
+        local sx = tx + (p.x - tx) * inv * math.max(tr - 25.0, 0.0)
+        local sy = ty + (p.y - ty) * inv * math.max(tr - 25.0, 0.0)
+        -- AN ARROW THAT POINTS AT THE CIRCLE (user call, 2026-08-04,
+        -- overturning the earlier "no rotatable arrow" finding): sprite
+        -- 11 is a directional arrow per the FiveM blip reference, and
+        -- SetBlipRotation aims it. The bearing is player -> target
+        -- centre. 2x scale, and NO SetBlipFlashes -- the sprite blinks
+        -- on its own, and stacking our flash on top of that left it
+        -- invisible half the time (both user calls, 2026-08-04).
+        local rot = math.floor(
+            BR.GtaHeading(BR.Bearing(p.x, p.y, tx, ty)) + 0.5) % 360
+        if not dirBlip or not DoesBlipExist(dirBlip) then
+            dirBlip = AddBlipForCoord(sx, sy, 0.0)
+            SetBlipSprite(dirBlip, 11)
+            SetBlipColour(dirBlip, cfg.blip.nextColour)
+            SetBlipScale(dirBlip, 2.0)
+            SetBlipAsShortRange(dirBlip, false)
+        else
+            SetBlipCoords(dirBlip, sx, sy, 0.0)
         end
+        SetBlipRotation(dirBlip, rot)
+    elseif dirBlip then
+        RemoveBlip(dirBlip)
+        dirBlip = nil
     end
 
     -- The HUD envelope, at ~4Hz. The countdown is NOT ticked here -- endsAt
