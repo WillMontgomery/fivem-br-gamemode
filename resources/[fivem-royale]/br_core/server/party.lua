@@ -249,6 +249,12 @@ function BR.Party.respond(src, accept)
     local entry = BR.Roster.get(src)
     if not entry then return false, 'You are not on the roster.' end
 
+    -- Never twice in one members list: if a stale copy of this src survived
+    -- an earlier asymmetry, appending would double them and every count
+    -- downstream (the party gate, squad packing) would lie.
+    for i = #party.members, 1, -1 do
+        if party.members[i] == src then table.remove(party.members, i) end
+    end
     party.members[#party.members + 1] = src
     entry.partyId = party.id
 
@@ -785,6 +791,9 @@ function BR.Party.answerJoin(leaderSrc, requesterSrc, accept)
     end
 
     if rq.partyId then BR.Party.leave(requesterSrc, true) end
+    for i = #party.members, 1, -1 do   -- never twice in one members list
+        if party.members[i] == requesterSrc then table.remove(party.members, i) end
+    end
     party.members[#party.members + 1] = requesterSrc
     rq.partyId = party.id
 
@@ -841,16 +850,25 @@ function BR.Party.removePlayer(src)
         for i = #party.members, 1, -1 do
             if party.members[i] == src then
                 table.remove(party.members, i)
-
-                if #party.members == 0 then
-                    parties[id] = nil
-                else
-                    if party.leader == src then
-                        party.leader = party.members[1]
-                    end
-                    sync(id)
-                end
             end
+        end
+        -- A PARTY OF ONE IS NOT A PARTY -- the same rule leave() enforces.
+        -- This path only disbanded at ZERO, so a pair losing one member to
+        -- a disconnect left a live one-member party whose survivor was
+        -- half-partied: invisible in invite lists, holding the party gate,
+        -- with no control anywhere that fixed it (live report, 2026-08-04).
+        if parties[id] and #party.members <= 1 then
+            for _, last in ipairs(party.members) do
+                local e = BR.Roster.get(last)
+                if e then e.partyId = nil end
+                syncEmpty(last)
+            end
+            parties[id] = nil
+        elseif parties[id] then
+            if party.leader == src then
+                party.leader = party.members[1]
+            end
+            sync(id)
         end
     end
 end
@@ -858,6 +876,79 @@ end
 AddEventHandler('playerDropped', function()
     invites[source] = nil
     BR.Party.removePlayer(source)
+end)
+
+-- THE INTEGRITY SWEEP. Party membership lives in TWO places -- the parties
+-- table and each roster entry's partyId -- and the 2026-08-04 playtests
+-- produced a state where they disagreed: a members list holding a player
+-- whose entry no longer claimed the party. That half-ghost poisoned
+-- everything downstream (the party gate held a "1/2 party" nobody could
+-- see, invite lists silently hid players, accepting an invite into the
+-- ghost duplicated members). Whatever the origin -- a reconcile remove/
+-- re-add, a lost event, a path not yet found -- the two representations
+-- are reconciled here every few seconds, ghosts dropped, one-member
+-- parties disbanded, dangling ids released, and the affected clients
+-- re-synced. Self-healing beats chasing every possible origin.
+BR.Sched.every(5000, 'party.integrity', function()
+    for id, party in pairs(parties) do
+        local dirty = false
+        for i = #party.members, 1, -1 do
+            local src = party.members[i]
+            local e = BR.Roster.get(src)
+            if not e or e.partyId ~= id then
+                table.remove(party.members, i)
+                dirty = true
+                print(('[br_core] party integrity: dropped ghost member %d from %s')
+                    :format(src, id))
+            end
+        end
+        -- A single-member party AWAITING INVITE ANSWERS is the one
+        -- legitimate party of one (invite() creates it); the sweep only
+        -- disbands loners with nothing pending.
+        local pendingInvite = false
+        for _, inv in pairs(invites) do
+            if inv.partyId == id then pendingInvite = true break end
+        end
+        if #party.members <= 1 and not pendingInvite then
+            for _, last in ipairs(party.members) do
+                local e = BR.Roster.get(last)
+                if e then e.partyId = nil end
+                syncEmpty(last)
+            end
+            parties[id] = nil
+            if dirty then
+                print(('[br_core] party integrity: disbanded %s (one member left)')
+                    :format(id))
+            end
+        elseif dirty then
+            local leaderOk = false
+            for _, m in ipairs(party.members) do
+                if m == party.leader then leaderOk = true break end
+            end
+            if not leaderOk then party.leader = party.members[1] end
+            sync(id)
+        end
+    end
+
+    -- The other direction: an entry pointing at a party that is gone, or
+    -- that does not list them, is released -- and told so.
+    BR.Roster.each(nil, function(src, e)
+        if e.partyId then
+            local p = parties[e.partyId]
+            local listed = false
+            if p then
+                for _, m in ipairs(p.members) do
+                    if m == src then listed = true break end
+                end
+            end
+            if not listed then
+                print(('[br_core] party integrity: released %d from dangling %s')
+                    :format(src, tostring(e.partyId)))
+                e.partyId = nil
+                syncEmpty(src)
+            end
+        end
+    end)
 end)
 
 -- Expire stale invites, so a declined-by-ignoring invite does not sit forever

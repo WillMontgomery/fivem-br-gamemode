@@ -200,6 +200,7 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
         if dropping then
             dropping = false
             RemoveWeaponFromPed(ped, CHUTE)
+            SetPedAmmo(ped, CHUTE, 0)   -- scrub any lingering reserve count
             SetPlayerCanLeaveParachuteSmokeTrail(PlayerId(), false)
             TriggerServerEvent(BR.Net.DROP_LANDED)
             print('[br_core] drop: finished from a vehicle seat -- the machine was still armed')
@@ -280,6 +281,10 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
         ClearHelp(true)   -- kill "press F to release parachute" outright
 
         RemoveWeaponFromPed(ped, CHUTE)
+        -- The chute COUNT is ammo and can outlive the weapon removal --
+        -- a leftover count is exactly the "reserve chute after landing"
+        -- report. Zero it explicitly.
+        SetPedAmmo(ped, CHUTE, 0)
         SetPlayerCanLeaveParachuteSmokeTrail(PlayerId(), false)
 
         -- A short grace absorbs the landing-stumble edge cases (gamerules

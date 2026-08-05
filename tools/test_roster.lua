@@ -831,9 +831,13 @@ do
     ok(BR.Party.of(1).id == pid, 'and it is the same party')
     ok(BR.Roster.get(1).squadId == nil, 'while the in-match squad is cleared')
 
-    -- Disconnecting does leave the party -- a ghost member would hold a slot.
+    -- Disconnecting does leave the party -- a ghost member would hold a
+    -- slot. And a pair losing one member DISBANDS (the party-of-one rule,
+    -- now applied on the disconnect path too): the survivor must not be
+    -- left half-partied, invisible in every invite list.
     leave(2)
-    ok(BR.Party.size(pid) == 1, 'disconnecting removes you from the party')
+    ok(BR.Party.size(pid) == 0, 'a pair losing a member to disconnect disbands')
+    ok(BR.Roster.get(1).partyId == nil, 'and the survivor is fully released')
 end
 
 describe('party.squadFormation')
@@ -2861,6 +2865,55 @@ do
        and specTo[2].route and specTo[2].route.timed,
         "the other warmup receives the departing flight's timed route")
     ok(specTo[1] == nil, 'the riders themselves get no spectator copy')
+end
+
+describe('party.integrity')
+do
+    -- Party membership lives in two places (the parties table and each
+    -- entry's partyId), and the 2026-08-04 playtests produced a state
+    -- where they disagreed -- which held the party gate on a "1/2 party"
+    -- nobody could see. The sweep reconciles both directions within 5s,
+    -- whatever the origin.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    local pid = BR.Party.of(1).id
+
+    -- Simulate the observed asymmetry: B's entry forgets the party while
+    -- the members list still holds them.
+    BR.Roster.get(2).partyId = nil
+    fakeTime = fakeTime + 5100
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.parties[pid] == nil,
+        'a ghost member is dropped and the resulting loner party disbanded')
+    ok(BR.Roster.get(1).partyId == nil,
+        'with the stranded member fully released')
+
+    -- The other direction: an entry pointing at a party that is gone.
+    BR.Roster.get(3).partyId = 'p999'
+    sent = {}
+    fakeTime = fakeTime + 5100
+    BR.Sched.step(fakeTime)
+    ok(BR.Roster.get(3).partyId == nil, 'a dangling partyId is released')
+    local toldEmpty = false
+    for _, s in ipairs(eventsOf(BR.Net.SQUAD_UPDATE)) do
+        if s.target == 3 and s.args[1] and s.args[1].id == nil then
+            toldEmpty = true
+        end
+    end
+    ok(toldEmpty, 'and the client is told it has no party')
+
+    -- The one legitimate party of one -- an inviter awaiting an answer --
+    -- is spared, or every fresh invite would dissolve in five seconds.
+    BR.Party.invite(1, 2)
+    local pid2 = BR.Party.of(1).id
+    fakeTime = fakeTime + 5100
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.parties[pid2] ~= nil,
+        'a loner party with a pending invite survives the sweep')
+    BR.Party.respond(2, true)
+    ok(BR.Party.size(pid2) == 2, 'and the acceptance lands normally')
 end
 
 describe('markers')

@@ -441,15 +441,20 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
             local inv = 1.0 / math.max(distT, 1.0)
             local sx = tx + (p.x - tx) * inv * math.max(tr - 25.0, 0.0)
             local sy = ty + (p.y - ty) * inv * math.max(tr - 25.0, 0.0)
+            -- AN ARROW THAT POINTS AT THE CIRCLE (user call, 2026-08-04,
+            -- overturning the earlier "no rotatable arrow" finding):
+            -- sprite 11 is a directional arrow per the FiveM blip
+            -- reference, and SetBlipRotation aims it. The bearing is
+            -- player -> target centre, refreshed with every coord update,
+            -- so on the minimap edge it always faces the way to run.
+            local rot = math.floor(
+                BR.GtaHeading(BR.Bearing(p.x, p.y, tx, ty)) + 0.5) % 360
             if not dirBlip or not DoesBlipExist(dirBlip) then
                 dirBlip = AddBlipForCoord(sx, sy, 0.0)
                 -- FLASHING and LARGE: squadmates are steady coloured dots,
                 -- so the run-this-way marker must read as a different KIND
-                -- of thing at a glance (user call, 2026-08-04). No
-                -- rotatable arrow exists in the blip sprite set -- the
-                -- engine's "arrows" are fixed elevation chevrons -- so
-                -- distinction comes from size and blink instead.
-                SetBlipSprite(dirBlip, 1)
+                -- of thing at a glance (user call, 2026-08-04).
+                SetBlipSprite(dirBlip, 11)
                 SetBlipColour(dirBlip, cfg.blip.nextColour)
                 SetBlipScale(dirBlip, 1.0)
                 SetBlipFlashes(dirBlip, true)
@@ -457,6 +462,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
             else
                 SetBlipCoords(dirBlip, sx, sy, 0.0)
             end
+            SetBlipRotation(dirBlip, rot)
         elseif dirBlip then
             RemoveBlip(dirBlip)
             dirBlip = nil
