@@ -45,6 +45,7 @@ client_scripts {
     'client/bus.lua',       -- needs BR.Keys (keybinds) and BR.State (main)
     'client/skydive.lua',
     'client/storm.lua',     -- rendering only; damage lands in state.lua
+    'client/markers.lua',   -- pause-map pings: blips + world beams
     'client/chat.lua',
     'client/debug.lua',
 }
@@ -60,6 +61,7 @@ server_scripts {
     'server/bus.lua',       -- route authority; match.onEnter(BUS) calls into it
     'server/combat.lua',
     'server/storm.lua',     -- phase authority + the damage ledger
+    'server/markers.lua',   -- player map markers: relay + squad scoping
     'server/chat.lua',
     'server/debug.lua',
 }

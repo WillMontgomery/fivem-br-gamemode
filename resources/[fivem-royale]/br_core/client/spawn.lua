@@ -382,9 +382,12 @@ AddEventHandler(BR.Net.TO_LOBBY, function()
 
     Citizen.CreateThread(function()
         -- Give the text a beat to be read even on an instant trip, then
-        -- hold until the island is real underfoot.
-        local minUntil = GetGameTimer() + 2200
-        local deadline = GetGameTimer() + 12000
+        -- hold until the island is real underfoot -- and then TWO MORE
+        -- seconds: collision loads well before the island's visuals finish
+        -- streaming, and lifting on collision alone still showed a
+        -- half-baked Cayo (live report, 2026-08-04).
+        local minUntil = GetGameTimer() + 3500
+        local deadline = GetGameTimer() + 15000
         while GetGameTimer() < deadline do
             local ped = PlayerPedId()
             local p = BR.Config.Match.lobbyPos
@@ -396,6 +399,7 @@ AddEventHandler(BR.Net.TO_LOBBY, function()
             end
             Citizen.Wait(200)
         end
+        Citizen.Wait(2000)
         TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING, { show = false })
     end)
 end)
@@ -412,7 +416,18 @@ RegisterCommand('brleave', function()
         print('[br_core] not in a match')
         return
     end
+    -- The interstitial rises HERE, before the server round-trip: the LOBBY
+    -- roster delta can beat TO_LOBBY across the wire, and the menu flashed
+    -- in the gap (live report, 2026-08-04). TO_LOBBY owns the hide; the
+    -- fallback below only covers a refused or lost leave.
+    TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING, { show = true })
     TriggerServerEvent(BR.Net.MATCH_LEAVE)
+    Citizen.SetTimeout(3000, function()
+        if BR.State.me.state ~= BR.PlayerState.LOBBY
+           and not BR.Spawn.traveling then
+            TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING, { show = false })
+        end
+    end)
 end, false)
 RegisterKeyMapping('brleave', 'Royale: Leave the current match', 'keyboard', '')
 

@@ -104,23 +104,19 @@ local function drawCrumbs()
     clearCrumbs()
     if not route then return end
 
+    -- Sampled from the FULL PATH, curves included: the "point budget"
+    -- theory was a misdiagnosis (the runway-only line was the multi-route
+    -- road-snapping over open water), so the custom route gets enough
+    -- points to trace the filleted corners -- ~36 across the tour keeps
+    -- every arc visibly an arc (user call, 2026-08-04).
     local line = {}
-    local p1 = route.points[1]
-    line[#line + 1] = p1
-    for _, wp in ipairs(route.waypoints or {}) do
-        line[#line + 1] = wp
+    local pts = route.points
+    local step = math.max(1, math.floor(#pts / 36))
+    for i = 1, #pts, step do
+        line[#line + 1] = pts[i]
     end
-    line[#line + 1] = route.points[#route.points]
-
-    -- Resample evenly if the tour outruns the budget.
-    local MAXPTS = 12
-    if #line > MAXPTS then
-        local sampled = {}
-        for i = 1, MAXPTS do
-            local idx = math.floor((i - 1) * (#line - 1) / (MAXPTS - 1)) + 1
-            sampled[#sampled + 1] = line[idx]
-        end
-        line = sampled
+    if line[#line] ~= pts[#pts] then
+        line[#line + 1] = pts[#pts]
     end
 
     StartGpsCustomRoute(25, true, true)   -- hud colour 25 (green)

@@ -324,8 +324,14 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- and only while we can be hurt at all -- a spectator ghosting through
     -- the wall does not need a red screen.
     local me = BR.State.me.state
-    local canHurt = me == BR.PlayerState.ALIVE or me == BR.PlayerState.DBNO
-    local caught = edge > 0 and dps > 0 and canHurt
+    -- DEAD is included: a corpse in the storm is still IN the storm, and
+    -- the rain and grade stopping at the moment of death read as a bug
+    -- (live report, 2026-08-04 -- this becomes the DBNO view later).
+    -- Spectate will re-gate this when it exists.
+    local affected = me == BR.PlayerState.ALIVE
+        or me == BR.PlayerState.DBNO
+        or me == BR.PlayerState.DEAD
+    local caught = edge > 0 and dps > 0 and affected
     fxSet(caught)
     fxStep()
 

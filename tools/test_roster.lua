@@ -97,6 +97,7 @@ for _, f in ipairs({
     'br_core/server/bus.lua',
     'br_core/server/combat.lua',
     'br_core/server/storm.lua',
+    'br_core/server/markers.lua',
 }) do
     local chunk, err = loadfile(ROOT .. f)
     if not chunk then
@@ -2500,6 +2501,66 @@ do
     BR.Sched.step(fakeTime)
     ok(BR.Server.match.state == BR.MatchState.ENDED,
         'and last squad standing wins off the mid-flight death')
+end
+
+describe('markers')
+do
+    -- One marker per player, relayed to the squad and nobody else, tinted
+    -- the owner's colour. The sweep clears a marker whose owner stopped
+    -- being a match participant.
+    reset()
+    join(1, 'A'); join(2, 'B'); join(3, 'C')
+    local e1 = BR.Roster.get(1)
+    e1.squadId, e1.colour = 'sq_test', '#F87171'
+    BR.Roster.get(2).squadId = 'sq_test'
+    BR.Roster.get(3).squadId = 'sq_other'
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    BR.Roster.setState(3, BR.PlayerState.ALIVE)
+
+    sent = {}
+    fire(BR.Net.MARKER_SET, 1, { x = 100.0, y = 200.0 })
+    local got = {}
+    for _, s in ipairs(eventsOf(BR.Net.MARKER_SYNC)) do
+        got[s.target] = s.args[1]
+    end
+    ok(got[1] ~= nil and got[2] ~= nil and got[3] == nil,
+        'a squad marker reaches owner and squadmates, nobody else')
+    ok(got[2] and got[2].colour == '#F87171' and got[2].x == 100.0,
+        'and carries the owner colour and position')
+
+    sent = {}
+    fire(BR.Net.MARKER_CLEAR, 1)
+    local cleared = eventsOf(BR.Net.MARKER_SYNC)
+    ok(#cleared >= 2 and cleared[1].args[1].op == 'clear',
+        'clearing tells the same audience')
+
+    -- Solo: no squadId means the audience is exactly the owner.
+    sent = {}
+    fire(BR.Net.MARKER_SET, 3, { x = 5.0, y = 6.0 })
+    local soloTo = {}
+    for _, s in ipairs(eventsOf(BR.Net.MARKER_SYNC)) do
+        soloTo[#soloTo + 1] = s.target
+    end
+    BR.Roster.get(3).squadId = nil
+    sent = {}
+    fire(BR.Net.MARKER_SET, 3, { x = 5.0, y = 6.0 })
+    soloTo = {}
+    for _, s in ipairs(eventsOf(BR.Net.MARKER_SYNC)) do
+        soloTo[#soloTo + 1] = s.target
+    end
+    ok(#soloTo == 1 and soloTo[1] == 3, 'a solo marker is private to its owner')
+
+    -- The sweep: an owner who stops being in the match loses their marker.
+    BR.Roster.setState(3, BR.PlayerState.LOBBY)
+    sent = {}
+    fakeTime = fakeTime + 5100
+    BR.Sched.step(fakeTime)
+    local swept = false
+    for _, s in ipairs(eventsOf(BR.Net.MARKER_SYNC)) do
+        if s.args[1].op == 'clear' and s.args[1].owner == 3 then swept = true end
+    end
+    ok(swept, 'the sweep clears markers of departed owners')
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

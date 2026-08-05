@@ -48,6 +48,11 @@ BR.Net = {
     STORM_SYNC      = 'br:storm:sync',       -- S->C  full storm record (also mirrored to GlobalState)
     STORM_DAMAGE    = 'br:storm:damage',     -- S->C  { amount, targetHp }
 
+    -- Player-placed map markers (one per player; squad-visible in squads)
+    MARKER_SET      = 'br:marker:set',       -- C->S  { x, y }
+    MARKER_CLEAR    = 'br:marker:clear',     -- C->S  remove my marker
+    MARKER_SYNC     = 'br:marker:sync',      -- S->C  { op, owner, x, y, colour }
+
     -- Loot / inventory
     LOOT_CELL       = 'br:loot:cell',        -- C->S  { cx, cy } subscribe to a grid cell
     LOOT_ADD        = 'br:loot:add',         -- S->C  array of loot entries entering scope
