@@ -31,12 +31,23 @@ end
 ---
 --- Sorted, so anything derived from the queue is reproducible -- `pairs` order
 --- is undefined and would make squad packing differ between identical lobbies.
+--- @param mode string|nil  only players queued for this mode
 --- @return integer[]
-function BR.Lobby.ids()
+function BR.Lobby.ids(mode)
     local ids = {}
-    for src in pairs(queue) do ids[#ids + 1] = src end
+    for src, q in pairs(queue) do
+        if not mode or q.mode == mode then ids[#ids + 1] = src end
+    end
     table.sort(ids)
     return ids
+end
+
+--- Remove a specific set of players from the queue -- the per-mode match
+--- formation consumes only ITS mode's queuers, leaving the other mode's
+--- queue waiting for its own match.
+--- @param ids integer[]
+function BR.Lobby.consume(ids)
+    for _, src in ipairs(ids) do queue[src] = nil end
 end
 
 --- The mode the next match should run, decided by majority of the queue.
@@ -91,13 +102,14 @@ function BR.Lobby.join(src, mode)
         BR.Party.leave(src)
     end
 
-    -- While a match sits in OPEN WARMUP (not full), readying up joins it
-    -- directly instead of queueing for the one after it. The mode they
-    -- clicked is irrelevant here -- the match already has a mode. Once every
-    -- match is BUS-or-later (or a full warmup), this falls through to the
-    -- normal queue -- which is exactly the parallel-matches formation gate:
-    -- the queue only ever accumulates toward a NEW instance.
-    local forming = BR.Server.formingMatch()
+    -- While a match OF THE MODE THEY PICKED sits in open warmup (not full),
+    -- readying up joins it directly instead of queueing for the one after
+    -- it. Matches are homogeneous (user call, 2026-08-04): a solo queuer
+    -- must never be absorbed into a squad warmup or vice versa -- they
+    -- queue instead, and the per-mode formation tick builds their own
+    -- match alongside the open one. Both warmups share the communal warmup
+    -- bucket; the flights and everything after are separate.
+    local forming = BR.Server.formingMatch(resolved.key)
     if forming then
         BR.Party.lateJoin(src, forming)
         return

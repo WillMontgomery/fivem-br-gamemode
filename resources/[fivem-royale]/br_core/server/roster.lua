@@ -75,25 +75,32 @@ end
 --- @return table
 --- Put a player in the routing bucket their state AND MATCH call for.
 ---
---- THE INSTANCE MODEL (user-specified, 2026-08-03; parallel matches
---- 2026-08-04): the lobby is ONE shared bucket, and every match instance
---- gets its OWN -- matchBucketBase + the entry's matchId, so two concurrent
---- matches never see each other and a fresh match never inherits anything.
+--- THE INSTANCE MODEL (user-specified, 2026-08-03; parallel matches + the
+--- communal warmup, 2026-08-04): the lobby is one shared bucket, the WARMUP
+--- PAD is another -- every forming match's players (and every rider until
+--- their flight is genuinely airborne) share it, so the airstrip is a place
+--- where you watch other lobbies' planes take off. From the moment a rider's
+--- flight climbs out (m.airborne, set by the bus a few seconds after
+--- wheels-up) -- or the moment they jump -- they live in their match's OWN
+--- bucket, matchBucketBase + matchId, so two concurrent matches never see
+--- each other and a fresh match never inherits anything.
+---
 --- A LOBBY-state player rides the lobby bucket even while they still carry
 --- a matchId (the ENDED summary trip home) -- the bucket is about where
 --- their PED is, the matchId about which match's traffic they hear.
---- (Lobby peds are all invisible and frozen at the vista; the client game
---- rules hide any that stream in, so sharing the lobby costs nothing
---- visually.) Guarded, because the unit tests run this file without the
---- Cfx runtime.
+--- Guarded, because the unit tests run this file without the Cfx runtime.
 --- @param src integer
 --- @param entry table
 local function applyBucket(src, entry)
     if not SetPlayerRoutingBucket then return end
     local M = BR.Config.Match
+    local m = entry.matchId and BR.Server.matches[entry.matchId]
     local bucket
-    if entry.state == BR.PlayerState.LOBBY or not entry.matchId then
+    if entry.state == BR.PlayerState.LOBBY or not m then
         bucket = M.lobbyBucket
+    elseif entry.state == BR.PlayerState.WARMUP
+        or (entry.state == BR.PlayerState.BUS and not m.airborne) then
+        bucket = M.warmupBucket
     else
         bucket = M.matchBucketBase + entry.matchId
     end
@@ -101,11 +108,20 @@ local function applyBucket(src, entry)
         -- MATCH buckets get ambient life (user call, 2026-08-04: parked
         -- cars, some traffic, pedestrians -- the AMOUNT is throttled
         -- client-side by the density multipliers in gamerules). The lobby
-        -- bucket stays sterile: it is a menu with a view.
+        -- and warmup buckets stay sterile: the island is a stage.
         SetRoutingBucketPopulationEnabled(bucket,
-            bucket ~= M.lobbyBucket)
+            bucket >= M.matchBucketBase)
     end
     SetPlayerRoutingBucket(tostring(src), bucket)
+end
+
+--- Re-derive a player's bucket from their current entry -- the lever the
+--- bus pulls when a flight goes airborne and its riders leave the communal
+--- warmup bucket without any state change.
+--- @param src integer
+function BR.Roster.rebucket(src)
+    local entry = roster[src]
+    if entry then applyBucket(src, entry) end
 end
 
 --- Attach a player to a match instance (or detach with nil). The bucket

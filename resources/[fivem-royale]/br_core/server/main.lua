@@ -259,13 +259,18 @@ function BR.Server.latestMatch()
 end
 
 --- The instance a ready-up should late-join: a WARMUP match with a free
---- slot. nil means ready-ups queue for a NEW match instead -- which is the
---- user-specified formation gate: a fresh match may form once every
---- existing one is BUS-or-later or a full warmup.
+--- slot -- OF THE GIVEN MODE, when one is asked for. Matches are
+--- homogeneous (user call, 2026-08-04): a solo queuer never lands in a
+--- squad match, so a solo warmup and a squad warmup can be open at the
+--- same time, sharing the communal warmup bucket but flying separate
+--- buses into separate matches. nil means ready-ups of that mode queue
+--- for a NEW match instead -- the formation gate.
+--- @param mode string|nil  restrict to this mode; nil matches any
 --- @return table|nil
-function BR.Server.formingMatch()
+function BR.Server.formingMatch(mode)
     for _, m in pairs(BR.Server.matches) do
         if m.state == BR.MatchState.WARMUP
+           and (not mode or m.mode == mode)
            and BR.Server.countIn(m) < BR.Config.Match.maxPlayers then
             return m
         end

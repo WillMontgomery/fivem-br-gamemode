@@ -64,9 +64,14 @@ BR.Config.Match = {
     -- island tip is not, and a wide scatter puts players in the surf.
     warmupRadius    = 60.0,
 
-    -- Routing buckets. Lobby is fixed; matches allocate upward from matchBase so
-    -- the next lobby can form while the current match finishes.
+    -- Routing buckets. Lobby and warmup are fixed SHARED buckets; matches
+    -- allocate upward from matchBase. The warmup pad is communal (user call,
+    -- 2026-08-04): everyone waiting for any flight stands there together and
+    -- watches departures -- riders only hop to their match's own bucket a
+    -- few seconds after wheels-up (bus.lua schedules it), jumpers the moment
+    -- they leave the plane.
     lobbyBucket     = 1,
+    warmupBucket    = 2,
     matchBucketBase = 100,
 
     -- HEALTH UNITS -- read this before touching any health number anywhere.

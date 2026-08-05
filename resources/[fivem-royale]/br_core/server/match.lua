@@ -120,8 +120,15 @@ function BR.Match.transition(m, state, durationSec)
     print(('[br_core] match %d: %s -> %s%s'):format(
         m.id, from, state, secs and (' (%ds)'):format(secs) or ''))
 
-    BR.Broadcast.state(m, state, m.endsAt, { from = from })
+    -- onEnter FIRST, one broadcast AFTER: entering BUS is where the flight
+    -- decides the real endsAt, and broadcasting before it meant every BUS
+    -- entry sent TWO state events (endsAt 0, then the corrected rebroadcast)
+    -- -- the "state bus twice" client log (live report, 2026-08-04). The
+    -- ordering is safe for the roster too: Broadcast.state flushes queued
+    -- deltas before the event, so clients still learn who is in the match
+    -- before they learn it started.
     BR.Match.onEnter(m, state, from)
+    BR.Broadcast.state(m, state, m.endsAt, { from = from })
 end
 
 --- Side effects of entering a state. Kept separate from transition() so the
@@ -153,13 +160,13 @@ function BR.Match.onEnter(m, state, from)
         m.landCheck = nil   -- and the stuck-lander bookkeeping runs here too
 
         -- The flight decides how long BUS lasts, so the deadline is set HERE
-        -- and rebroadcast. The geometry was planned at WARMUP; departure only
-        -- stamps the clock onto it. `brforce bus` from nothing skips warmup,
-        -- so plan on demand if nothing is drawn yet.
+        -- -- transition() broadcasts it right after onEnter returns, as the
+        -- one and only 'bus' state event. The geometry was planned at
+        -- WARMUP; departure only stamps the clock onto it. `brforce bus`
+        -- from nothing skips warmup, so plan on demand if nothing is drawn.
         if not BR.Bus.active(m) then BR.Bus.plan(m) end
         local dur = BR.Bus.depart(m)
         m.endsAt = GetGameTimer() + math.floor(dur * 1000)
-        BR.Broadcast.state(m, m.state, m.endsAt, { reason = 'busRoute' })
 
         BR.Roster.each(
             function(e) return e.matchId == m.id
@@ -313,7 +320,7 @@ function BR.Match.shortenWarmupIfFull(m)
     BR.Broadcast.state(m, m.state, m.endsAt, { reason = 'lobbyFull' })
 end
 
---- Why the next match cannot form yet, or nil if it can.
+--- Why the next match OF A MODE cannot form yet, or nil if it can.
 ---
 --- THE GATE AND THE EXPLANATION ARE THE SAME FUNCTION, deliberately.
 ---
@@ -323,13 +330,16 @@ end
 --- not the one actually holding the match, so the player does the thing it
 --- asked for and nothing happens. One function, two callers, no disagreement.
 ---
---- Note there is no "a warmup is open" reason here: while one is open,
---- ready-ups late-join it instead of queueing, so the queue this function
---- reads only ever holds players waiting for a NEW match.
+--- Note there is no "a warmup is open" reason here: while one of this mode
+--- is open, ready-ups late-join it instead of queueing, so the queue this
+--- function reads only ever holds players waiting for a NEW match.
 ---
+--- @param mode string|nil  the mode whose queue is being judged; defaults to
+---        the dominant mode (the lobby status display's approximation)
 --- @return table|nil  { reason = 'players'|'squads'|'party', have, need }
-function BR.Match.startBlocker()
-    local queued = BR.Lobby.count()
+function BR.Match.startBlocker(mode)
+    mode = mode or BR.Lobby.dominantMode()
+    local queued = #BR.Lobby.ids(mode)
     local need   = BR.Lobby.needed()
     if queued < need then
         return { reason = 'players', have = queued, need = need }
@@ -338,9 +348,8 @@ function BR.Match.startBlocker()
     -- Enough PLAYERS is not the same as enough TEAMS. Four players who all
     -- queued as one party form a single squad, and a single squad has already
     -- met the win condition before the match starts.
-    local mode = BR.Lobby.dominantMode()
     if mode ~= BR.Mode.SOLO.key then
-        local squads    = BR.Party.prospectiveSquads(BR.Lobby.ids(), mode)
+        local squads    = BR.Party.prospectiveSquads(BR.Lobby.ids(mode), mode)
         local minSquads = BR.Config.Match.MinSquads(BR.Server.devMode)
         if squads < minSquads then
             return { reason = 'squads', have = squads, need = minSquads }
@@ -356,7 +365,7 @@ function BR.Match.startBlocker()
         -- is the late-join path that already exists. The party panel marks
         -- who the room is waiting on (check / ellipsis) the whole time.
         local queuedSet = {}
-        for _, src in ipairs(BR.Lobby.ids()) do queuedSet[src] = true end
+        for _, src in ipairs(BR.Lobby.ids(mode)) do queuedSet[src] = true end
         local incomplete = nil
         for src in pairs(queuedSet) do
             local party = BR.Party.of(src)
@@ -629,29 +638,33 @@ local function tick()
 
     BR.Server.eachMatch(function(m) matchTick(m, now) end)
 
-    -- FORMATION. Reachable only while no warmup is open (ready-ups late-join
-    -- an open one instead of queueing), which is the user-specified gate:
-    -- the next match forms from the first players to ready up after every
-    -- existing match is BUS-or-later or a full warmup.
-    if BR.Server.formingMatch() then return end
-
-    -- Every reason to hold is checked BEFORE the queue is consumed. The
-    -- queue is spent on the way into WARMUP, so refusing later would leave
-    -- the players out of the queue with no match to be in.
-    local blocker = BR.Match.startBlocker()
-    if blocker then
-        if BR.Lobby.count() > 0 then BR.Match.announceBlocker(blocker) end
-        return
+    -- FORMATION, PER MODE. Matches are homogeneous (user call, 2026-08-04),
+    -- so each mode's queue forms its own match, and a solo warmup being open
+    -- never blocks a squad match from forming beside it -- both warmups
+    -- share the communal pad; the flights are separate. A mode's queue only
+    -- ever accumulates while no warmup of that mode is open (ready-ups
+    -- late-join an open one instead of queueing), which is the formation
+    -- gate: the next match of a mode forms from the first players to ready
+    -- up after every match of that mode is BUS-or-later or a full warmup.
+    for _, modeDef in pairs(BR.Mode) do
+        local mode = modeDef.key
+        if not BR.Server.formingMatch(mode) then
+            local parts = BR.Lobby.ids(mode)
+            if #parts > 0 then
+                -- Every reason to hold is checked BEFORE the queue is
+                -- consumed. The queue is spent on the way into WARMUP, so
+                -- refusing later would leave the players out of the queue
+                -- with no match to be in.
+                local blocker = BR.Match.startBlocker(mode)
+                if blocker then
+                    BR.Match.announceBlocker(blocker)
+                else
+                    BR.Lobby.consume(parts)
+                    BR.Match.create(mode, parts)
+                end
+            end
+        end
     end
-    if BR.Lobby.count() == 0 then return end
-
-    -- Consume the queue BEFORE creating. If anything in the creation
-    -- throws, the queue must still be spent -- otherwise the next tick sees
-    -- a full queue and tries to start the match again, every tick, forever.
-    local mode  = BR.Lobby.dominantMode()
-    local parts = BR.Lobby.ids()
-    BR.Lobby.clear()
-    BR.Match.create(mode, parts)
 end
 
 BR.Sched.every(250, 'match.tick', tick)

@@ -1867,14 +1867,15 @@ end
 
 describe('roster.buckets')
 do
-    -- THE INSTANCE MODEL (user-specified, 2026-08-03): ONE shared lobby
-    -- bucket, and a fresh bucket per match (matchBucketBase + matchId) so a
-    -- new round never inherits the last one's world. Match states share bucket 0. The bucket rides the state
-    -- through the setState choke point, and join must apply it too --
-    -- add() writes the initial state directly.
+    -- THE INSTANCE MODEL (2026-08-03; communal warmup 2026-08-04): ONE
+    -- shared lobby bucket; ONE shared WARMUP bucket -- the pad is communal,
+    -- so players waiting on any flight watch the others depart -- and a
+    -- fresh private bucket per match that riders enter only once their
+    -- flight is genuinely airborne (or the moment they jump).
     reset()
     BR.Server.devMode = true
     local LB = BR.Config.Match.lobbyBucket
+    local WB = BR.Config.Match.warmupBucket
     join(1, 'A'); join(2, 'B')
     ok(buckets[1] == LB and buckets[2] == LB,
         'joining lands everyone in the one shared lobby bucket')
@@ -1884,28 +1885,41 @@ do
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
     ok(mstate() == BR.MatchState.WARMUP, 'match starts')
-    local mb = BR.Config.Match.matchBucketBase + BR.Server.matchId
-    ok(buckets[1] == mb and buckets[2] == mb,
-        "entering the match moves everyone into THIS match's bucket",
-        ('got %s/%s want %d'):format(tostring(buckets[1]), tostring(buckets[2]), mb))
-    ok(mb ~= LB, 'which is never the lobby bucket')
+    ok(buckets[1] == WB and buckets[2] == WB,
+        'warmup is the COMMUNAL warmup bucket, not the match bucket',
+        ('got %s/%s want %d'):format(tostring(buckets[1]), tostring(buckets[2]), WB))
+    ok(WB ~= LB, 'which is never the lobby bucket')
 
     fire(BR.Net.MATCH_LEAVE, 2)
     ok(buckets[2] == LB, 'leaving the match returns them to the lobby bucket')
-    ok(buckets[1] == mb, 'without disturbing anyone still playing')
+    ok(buckets[1] == WB, 'without disturbing anyone still on the pad')
+
+    -- Departure: riders HOLD the communal bucket through boarding and the
+    -- roll -- the airstrip watches the takeoff -- and hop to the match's
+    -- own bucket once the flight has climbed out.
+    forceState(BR.MatchState.BUS)
+    local m = theMatch()
+    ok(buckets[1] == WB, 'riders keep the communal bucket through boarding')
+    fakeTime = m.route.rotateAt + 3600
+    BR.Sched.step(fakeTime)
+    local mb = BR.Config.Match.matchBucketBase + m.id
+    ok(m.airborne == true, 'the flight goes airborne shortly after wheels-up')
+    ok(buckets[1] == mb, "and its riders hop to the match's own bucket",
+        ('got %s want %d'):format(tostring(buckets[1]), mb))
+    ok(mb ~= LB and mb ~= WB, 'which is neither shared bucket')
 
     -- The NEXT match gets a different bucket: leftover entities from this
     -- round can never haunt the next one.
     forceState(BR.MatchState.ENDED)
     forceState(BR.MatchState.CLEANUP)
     forceState(BR.MatchState.WAITING)
+    ok(buckets[1] == LB, 'the trip home is the lobby bucket again')
     queueUp(1, 'A'); queueUp(2, 'B')
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
     ok(mstate() == BR.MatchState.WARMUP, 'second match starts')
-    local mb2 = BR.Config.Match.matchBucketBase + BR.Server.matchId
-    ok(mb2 ~= mb, 'and it lives in a fresh bucket')
-    ok(buckets[1] == mb2, 'with its players inside')
+    local mb2 = BR.Config.Match.matchBucketBase + theMatch().id
+    ok(mb2 ~= mb, 'and it owns a fresh private bucket for its flight')
 end
 
 describe('match.earlyDeath')
@@ -2598,16 +2612,26 @@ do
     ok(B ~= nil and B.id ~= A.id, 'a second match forms while A is mid-flight')
     ok(B.state == BR.MatchState.WARMUP and A.state == BR.MatchState.BUS,
         'each instance holds its own state')
-    ok(A.bucket ~= B.bucket, 'the matches live in different routing buckets')
-    ok(buckets[1] == A.bucket and buckets[3] == B.bucket,
-        'with their players routed apart',
-        ('p1 %s (A %d), p3 %s (B %d)'):format(tostring(buckets[1]), A.bucket,
-                                              tostring(buckets[3]), B.bucket))
+    ok(A.bucket ~= B.bucket, 'the matches own different private buckets')
+    local WB = BR.Config.Match.warmupBucket
+    ok(buckets[1] == WB and buckets[3] == WB,
+        "pre-flight everyone shares the communal warmup bucket",
+        ('p1 %s, p3 %s, WB %d'):format(tostring(buckets[1]),
+                                       tostring(buckets[3]), WB))
 
-    -- A's landings take A live without moving B.
+    -- A's landings take A live without moving B. B's own warmup deadline is
+    -- pinned far out first: the clock is about to jump to A's door-open
+    -- time (minutes ahead, tour-dependent), and B expiring on its own
+    -- schedule during that jump would read as "A moved B" when it is only
+    -- the shared clock.
+    B.endsAt = fakeTime + 600000
     local r = A.route
     fakeTime = math.max(fakeTime, r.jumpFrom + 1000)
     fire(BR.Net.BUS_JUMP, 1); fire(BR.Net.BUS_JUMP, 2)
+    ok(buckets[1] == A.bucket,
+        "a jumper leaves the communal bucket for the match's own",
+        ('got %s want %d'):format(tostring(buckets[1]), A.bucket))
+    ok(buckets[3] == WB, "while B's warmup stays on the communal pad")
     fire(BR.Net.DROP_LANDED, 1); fire(BR.Net.DROP_LANDED, 2)
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
@@ -2646,6 +2670,51 @@ do
     ok(BR.Server.matchOf(3) == nil
        and BR.Roster.get(3).state == BR.PlayerState.LOBBY,
         "B's players are ordinary lobby players again")
+end
+
+describe('match.modes')
+do
+    -- HOMOGENEOUS MATCHES (user call, 2026-08-04): a solo queuer never
+    -- lands in a squad match. Each mode's queue forms its own instance, so
+    -- a solo warmup and a squad warmup can be open at the same time --
+    -- sharing the communal pad, flying separate buses into separate games.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'Q1'); join(2, 'Q2'); join(3, 'S1'); join(4, 'S2')
+
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SQUAD.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SQUAD.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local SQ = BR.Server.matchOf(1)
+    ok(SQ ~= nil and SQ.mode == BR.Mode.SQUAD.key
+       and SQ.state == BR.MatchState.WARMUP, 'a squad match forms')
+
+    -- A solo ready-up while the squad warmup is open QUEUES; it must not
+    -- be absorbed into a match of the wrong mode.
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SOLO.key })
+    ok(BR.Server.matchOf(3) == nil and BR.Server.queue[3] ~= nil,
+        'a solo queuer is not absorbed into the open squad warmup')
+
+    fire(BR.Net.QUEUE_JOIN, 4, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local SO = BR.Server.matchOf(3)
+    ok(SO ~= nil and SO.mode == BR.Mode.SOLO.key and SO.id ~= SQ.id,
+        'the solo queue forms its own match beside the open squad warmup')
+    ok(SO.state == BR.MatchState.WARMUP and SQ.state == BR.MatchState.WARMUP,
+        'two warmups are open at once')
+    local WB = BR.Config.Match.warmupBucket
+    ok(buckets[1] == WB and buckets[3] == WB,
+        'and their players share the communal pad')
+
+    -- Later ready-ups are routed by the mode they picked.
+    join(5, 'Q3')
+    fire(BR.Net.QUEUE_JOIN, 5, { mode = BR.Mode.SQUAD.key })
+    ok(BR.Server.matchOf(5) == SQ, 'a squad ready-up joins the squad warmup')
+    join(6, 'S3')
+    fire(BR.Net.QUEUE_JOIN, 6, { mode = BR.Mode.SOLO.key })
+    ok(BR.Server.matchOf(6) == SO, 'a solo ready-up joins the solo warmup')
 end
 
 describe('markers')

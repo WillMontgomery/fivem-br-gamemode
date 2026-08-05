@@ -291,6 +291,15 @@ function BR.Bus.depart(m)
     route.tEnd       = pts[#pts].t
     route.serverNow  = now
 
+    -- THE AIRBORNE HOP (user call, 2026-08-04): riders stay in the communal
+    -- warmup bucket through boarding, the roll and the climb -- that is what
+    -- lets everyone still at the airstrip watch the flight leave -- and move
+    -- to the match's own bucket a few seconds after wheels-up, out over the
+    -- water where nobody can tell. Jumpers hop the moment they jump (their
+    -- state change re-derives the bucket); this clock covers everyone else.
+    m.airborne = false
+    m.hopAt    = route.rotateAt + 3500
+
     print(('[br_core] bus: match %d departing -- doors at %.0fs, %.0fs total')
         :format(m.id, (route.jumpFrom - now) / 1000, (route.tEnd - now) / 1000))
 
@@ -379,12 +388,30 @@ end
 
 -- Nobody rides the bus home. Anyone still aboard when the chord runs out is
 -- put out over its end -- the same rule Fortnite applies, and the only thing
--- stopping "hide in the bus" from being a strategy.
+-- stopping "hide in the bus" from being a strategy. The same clock runs the
+-- airborne hop: once the flight has climbed out, its riders leave the
+-- communal warmup bucket for the match's own.
 BR.Sched.every(500, 'bus.eject', function()
     BR.Server.eachMatch(function(m)
         if m.state ~= BR.MatchState.BUS
            or not m.route or not m.route.timed then return end
-        if GetGameTimer() < m.route.tEnd then return end
+
+        local now = GetGameTimer()
+        if not m.airborne and m.hopAt and now >= m.hopAt then
+            m.airborne = true
+            local moved = 0
+            BR.Roster.each(
+                function(e) return e.matchId == m.id
+                    and e.state == BR.PlayerState.BUS end,
+                function(src)
+                    BR.Roster.rebucket(src)
+                    moved = moved + 1
+                end)
+            print(('[br_core] bus: match %d airborne -- %d rider(s) moved to bucket %d')
+                :format(m.id, moved, m.bucket))
+        end
+
+        if now < m.route.tEnd then return end
         BR.Bus.ejectAll(m)
     end)
 end)

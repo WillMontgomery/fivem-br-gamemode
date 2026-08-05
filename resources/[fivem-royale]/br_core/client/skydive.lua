@@ -54,11 +54,17 @@ AddEventHandler('br:drop:begin', function(d)
         local rad = math.rad(d.heading or 0.0)
         SetEntityVelocity(ped, -math.sin(rad) * 25.0, math.cos(rad) * 25.0, -2.0)
 
-        -- THE CHUTE, VERIFIED. GiveWeaponToPed is normally instant, but the
-        -- one scenario where it quietly fails is a player mid-teleport --
-        -- which is exactly when this runs. Confirm it stuck, retry across
-        -- real frames, and say so out loud if the game refuses.
+        -- THE CHUTE, VERIFIED -- and NEVER DOUBLED. GiveWeaponToPed is
+        -- normally instant, but the one scenario where it quietly fails is
+        -- a player mid-teleport -- which is exactly when this runs. Confirm
+        -- it stuck, retry across real frames, and say so out loud if the
+        -- game refuses. The has-check comes FIRST: giving a second
+        -- GADGET_PARACHUTE to a ped that already holds one (the TICK
+        -- floor's give can race this thread) stacks as chute ammo, which
+        -- the engine treats as a RESERVE parachute -- the "handed another
+        -- parachute after pulling the first" report (2026-08-04).
         for attempt = 1, 10 do
+            if HasPedGotWeapon(ped, CHUTE, false) then break end
             GiveWeaponToPed(ped, CHUTE, 1, false, false)
             if HasPedGotWeapon(ped, CHUTE, false) then break end
             if attempt == 10 then
@@ -149,7 +155,11 @@ BR.Keys.on('deploy', function(pressed)
         ForcePedToOpenParachute(ped)
     elseif cs == BR.Native.ChuteState.NONE
        and not IsPedOnFoot(ped) and not IsEntityInWater(ped) then
-        GiveWeaponToPed(ped, CHUTE, 1, false, false)
+        -- State NONE means the TASK is lost, not necessarily the weapon --
+        -- re-giving one the ped still holds stacks a reserve chute.
+        if not HasPedGotWeapon(ped, CHUTE, false) then
+            GiveWeaponToPed(ped, CHUTE, 1, false, false)
+        end
         TaskParachute(ped, true, false)
     end
 end)

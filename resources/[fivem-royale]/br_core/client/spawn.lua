@@ -303,6 +303,19 @@ end)
 --- respawn rather than placeAt: this runs between matches, and whoever died in
 --- the last one is still a corpse until something resurrects them.
 function BR.Spawn.toWarmupPad()
+    -- A NEW MATCH IS PLACING US IN THE WORLD: whatever end-of-match dark
+    -- hold was running is over -- even though its WAITING handover never
+    -- arrived. Under parallel matches a player who dies, returns to the
+    -- lobby and readies up during the old match's summary jumps ENDED ->
+    -- (new match's) WARMUP directly, and holdBlack -- released only by
+    -- WAITING, and respected by the anti-black watchdog -- parked exactly
+    -- those players on a permanent black screen at the warmup pad (live
+    -- repro, 2026-08-04: consistently the client that had DIED).
+    if BR.Spawn.holdBlack then
+        BR.Spawn.holdBlack = false
+        DoScreenFadeIn(600)
+    end
+
     local pad = BR.Config.Match.warmupPos
     local r = BR.Config.Match.warmupRadius * 0.5
     local theta = math.random() * 2.0 * math.pi

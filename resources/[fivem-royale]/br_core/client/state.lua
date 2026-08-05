@@ -302,15 +302,19 @@ AddEventHandler(BR.Net.DIGEST, function(d)
         applyFocusForState(S.match.state)
     end
 
-    -- REPLAY A STATE CHANGE the transition broadcast never delivered. Under
-    -- parallel matches, STATE events are scoped to a match's audience -- so a
-    -- player who LEAVES one stops hearing about it, and their digest flipping
-    -- to WAITING is the only signal the round is over for them. Every
-    -- subsystem keyed on the STATE event (route line, markers, island, the
-    -- skydive latch) must still run its teardown, so the missed transition is
-    -- re-fired locally -- TriggerEvent reaches the same handlers, and the
-    -- state handler below is idempotent for a state it already holds.
-    if S.match.state ~= was then
+    -- REPLAY THE ONE TRANSITION the broadcast can never deliver: WAITING.
+    -- Under parallel matches, STATE events are scoped to a match's audience
+    -- -- a player who LEAVES one stops hearing about it, and their digest
+    -- flipping to WAITING is the only signal the round is over for them.
+    -- Every subsystem keyed on the STATE event (route line, markers, island,
+    -- the skydive latch) must still run its teardown, so that transition is
+    -- re-fired locally -- TriggerEvent reaches the same handlers.
+    --
+    -- WAITING ONLY, deliberately: for any in-match state the real event
+    -- always arrives (the player is in the audience), and replaying those
+    -- races the wire into DOUBLED side effects -- an early digest re-firing
+    -- 'bus' was part of the duplicated-parachute report (2026-08-04).
+    if S.match.state ~= was and S.match.state == BR.MatchState.WAITING then
         TriggerEvent(BR.Net.STATE, {
             state     = S.match.state,
             endsAt    = S.match.endsAt,
