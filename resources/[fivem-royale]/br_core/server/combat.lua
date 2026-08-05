@@ -44,7 +44,10 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     local entry = BR.Roster.get(src)
     if not entry or not canDie(entry) then return end
 
-    local placement = BR.Server.squadsAlive()
+    -- Placement counts THIS match's teams; the kill feed goes to THIS
+    -- match's audience. A death in one match is silence in every other.
+    local m = BR.Server.matchOf(src)
+    local placement = BR.Server.squadsAlive(m)
 
     BR.Roster.setState(src, BR.PlayerState.DEAD)
     entry.placement = placement
@@ -56,7 +59,7 @@ function BR.Combat.eliminate(src, cause, killerSrc)
         BR.Broadcast.delta({ op = 'update', src = killerSrc, e = { kills = killer.kills } })
     end
 
-    TriggerClientEvent(BR.Net.KILL_FEED, -1, {
+    local feed = {
         killer    = killer and killer.name or nil,
         killerSrc = killer and killerSrc or nil,
         victim    = entry.name,
@@ -66,7 +69,14 @@ function BR.Combat.eliminate(src, cause, killerSrc)
         victimSrc = src,
         cause     = cause,
         placement = placement,
-    })
+    }
+    if m then
+        BR.Broadcast.toMatch(m, BR.Net.KILL_FEED, feed)
+    else
+        -- No instance resolvable (a brkill on an odd state); the victim at
+        -- least must hear about their own death.
+        TriggerClientEvent(BR.Net.KILL_FEED, src, feed)
+    end
 
     print(('[br_core] eliminated %s (%d) -- placement %d%s')
         :format(entry.name, src, placement,
@@ -144,11 +154,14 @@ BR.Sched.every(1000, 'combat.deathcheck', function()
     -- BUS counts as live: early droppers are on the ground and mortal while
     -- stragglers are still flying, and a death in that window must be
     -- observed like any other. PLAYING-only meant a landed player could not
-    -- be server-confirmed dead until the LAST player was down.
-    if BR.Server.match.state ~= BR.MatchState.PLAYING
-       and BR.Server.match.state ~= BR.MatchState.BUS then return end
-
-    BR.Roster.each(canDie, function(src, entry)
+    -- be server-confirmed dead until the LAST player was down. Checked per
+    -- player against THEIR match's state -- matches advance independently.
+    BR.Roster.each(function(e)
+        if not canDie(e) then return false end
+        local m = e.matchId and BR.Server.matches[e.matchId]
+        return m ~= nil and (m.state == BR.MatchState.PLAYING
+                          or m.state == BR.MatchState.BUS)
+    end, function(src, entry)
         if not entry.ped or entry.ped == 0 then return end
 
         -- engineHp is sampled by roster.positions alongside coordinates.

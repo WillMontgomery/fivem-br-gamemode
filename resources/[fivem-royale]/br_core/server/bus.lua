@@ -17,12 +17,14 @@
 BR = BR or {}
 BR.Bus = {}
 
-local route = nil       -- the published record, nil between matches
-local anchor = nil      -- the LS-side anchor this route crosses
+-- Routes and anchors live ON THE MATCH INSTANCE (m.route, m.anchor): two
+-- concurrent matches fly two different tours, and each is published only to
+-- its own audience.
 
---- The active route, or nil.
-function BR.Bus.active()
-    return route
+--- The active route of a match, or nil.
+--- @param m table
+function BR.Bus.active(m)
+    return m and m.route
 end
 
 --- Author this match's flight GEOMETRY and broadcast the preview.
@@ -33,10 +35,13 @@ end
 --- are filleted into arcs; every point carries the speed the plane holds
 --- into it. No timestamps yet -- the wheels do not move until BUS, and
 --- depart() stamps the clock then.
-function BR.Bus.plan()
+--- @param m table
+function BR.Bus.plan(m)
     local cfg = BR.Config.Bus
 
-    local rng = BR.Rng(GetGameTimer())
+    -- Seeded with the match id folded in: two matches planned in the same
+    -- server millisecond (tests, mostly) must not fly identical tours.
+    local rng = BR.Rng(GetGameTimer() + m.id * 104729)
 
     -- Draw the tour: one option per leg, flattened into waypoints.
     local legs, waypoints = {}, {}
@@ -57,9 +62,8 @@ function BR.Bus.plan()
     -- POIs never settles into a pattern.
     local poi = BR.PickStormAnchor(rng, waypoints,
         BR.Config.Map.POIs, BR.Config.Storm.anchorBand)
-    anchor = poi and { x = poi.x, y = poi.y, name = poi.name, poi = poi.id }
+    m.anchor = poi and { x = poi.x, y = poi.y, name = poi.name, poi = poi.id }
         or { x = waypoints[1].x, y = waypoints[1].y, name = 'route' }
-    BR.Server.matchAnchor = anchor
 
     -- ---- build the geometry ------------------------------------------------
 
@@ -212,7 +216,7 @@ function BR.Bus.plan()
         end
     end
 
-    route = {
+    local route = {
         points    = points,
         waypoints = waypoints,   -- the authored tour, for the map drawing
         legs      = legs,
@@ -227,21 +231,24 @@ function BR.Bus.plan()
         heading   = BR.GtaHeading(BR.Bearing(sp.x, sp.y, rp.x, rp.y)),
         timed     = false,
     }
+    m.route = route
 
-    print(('[br_core] bus: tour %d-%d-%d-%d, %d waypoints, %d path points -- storm homes on %s')
-        :format(legs[1], legs[2], legs[3], legs[4], #waypoints, #points,
-                anchor.name))
+    print(('[br_core] bus: match %d tour %d-%d-%d-%d, %d waypoints, %d path points -- storm homes on %s')
+        :format(m.id, legs[1], legs[2], legs[3], legs[4], #waypoints, #points,
+                m.anchor.name))
 
-    TriggerClientEvent(BR.Net.BUS_ROUTE, -1, route)
+    BR.Broadcast.toMatch(m, BR.Net.BUS_ROUTE, route)
 end
 
 --- Stamp the clock onto the planned geometry and broadcast the flight.
 --- Called when BUS begins: timestamps accumulate as segment length over the
 --- speed carried into each point, so the profile IS the timing.
+--- @param m table
 --- @return number  seconds until BUS should hand over to PLAYING
-function BR.Bus.depart()
+function BR.Bus.depart(m)
     local cfg = BR.Config.Bus
     local now = GetGameTimer()
+    local route = m.route
     local pts = route.points
 
     -- PHYSICS-SMOOTH THE SPEED PROFILE before stamping the clock. The
@@ -284,32 +291,36 @@ function BR.Bus.depart()
     route.tEnd       = pts[#pts].t
     route.serverNow  = now
 
-    print(('[br_core] bus: departing -- doors at %.0fs, %.0fs total')
-        :format((route.jumpFrom - now) / 1000, (route.tEnd - now) / 1000))
+    print(('[br_core] bus: match %d departing -- doors at %.0fs, %.0fs total')
+        :format(m.id, (route.jumpFrom - now) / 1000, (route.tEnd - now) / 1000))
 
-    TriggerClientEvent(BR.Net.BUS_ROUTE, -1, route)
+    BR.Broadcast.toMatch(m, BR.Net.BUS_ROUTE, route)
     return (route.tEnd - now) / 1000 + cfg.jumpGrace
 end
 
 --- Late joiners during warmup need the preview the room already has.
+--- @param m table
 --- @param src integer
-function BR.Bus.sendPreview(src)
-    if route then
-        TriggerClientEvent(BR.Net.BUS_ROUTE, src, route)
+function BR.Bus.sendPreview(m, src)
+    if m and m.route then
+        TriggerClientEvent(BR.Net.BUS_ROUTE, src, m.route)
     end
 end
 
-function BR.Bus.clear()
-    route = nil
+--- @param m table
+function BR.Bus.clear(m)
+    if m then m.route = nil end
 end
 
 --- Put one player out of the bus. The exit point is the bus's position on the
 --- route RIGHT NOW by the server's clock -- the client is told where it
 --- jumped from, never asked.
+--- @param m table
 --- @param src integer
 --- @param forced boolean|nil
-local function eject(src, forced)
+local function eject(m, src, forced)
     local entry = BR.Roster.get(src)
+    local route = m and m.route
     if not entry or entry.state ~= BR.PlayerState.BUS
        or not route or not route.timed then return end
 
@@ -336,41 +347,46 @@ AddEventHandler(BR.Net.BUS_JUMP, function()
     -- Refusals are AUDIBLE, in both consoles. The first flight had a jump
     -- key that "did nothing": the request was being refused silently, and
     -- from in the game that is indistinguishable from the key being dead.
-    if BR.Server.match.state ~= BR.MatchState.BUS
-       or not route or not route.timed then
+    local m = BR.Server.matchOf(src)
+    if not m or m.state ~= BR.MatchState.BUS
+       or not m.route or not m.route.timed then
         print(('[br_core] bus: jump from %d refused -- state is %s')
-            :format(src, BR.Server.match.state))
+            :format(src, m and m.state or 'no match'))
         return
     end
-    if GetGameTimer() < route.jumpFrom then
+    if GetGameTimer() < m.route.jumpFrom then
         BR.Server.notify(src, 'Doors are still closed.', 'warn')
         print(('[br_core] bus: jump from %d refused -- doors open in %.1fs')
-            :format(src, (route.jumpFrom - GetGameTimer()) / 1000))
+            :format(src, (m.route.jumpFrom - GetGameTimer()) / 1000))
         return
     end
 
-    eject(src, false)
+    eject(m, src, false)
 end)
 
 --- Force out everyone still aboard. The end-of-route job below is the usual
 --- caller; the PLAYING transition also calls it, so no path into PLAYING --
 --- including brforce mid-flight -- can strand a player in the BUS state,
 --- invisible and frozen with the match running around them.
-function BR.Bus.ejectAll()
-    if not route then return end
+--- @param m table
+function BR.Bus.ejectAll(m)
+    if not m or not m.route then return end
     BR.Roster.each(
-        function(e) return e.state == BR.PlayerState.BUS end,
-        function(src) eject(src, true) end)
+        function(e) return e.matchId == m.id
+            and e.state == BR.PlayerState.BUS end,
+        function(src) eject(m, src, true) end)
 end
 
 -- Nobody rides the bus home. Anyone still aboard when the chord runs out is
 -- put out over its end -- the same rule Fortnite applies, and the only thing
 -- stopping "hide in the bus" from being a strategy.
 BR.Sched.every(500, 'bus.eject', function()
-    if BR.Server.match.state ~= BR.MatchState.BUS
-       or not route or not route.timed then return end
-    if GetGameTimer() < route.tEnd then return end
-    BR.Bus.ejectAll()
+    BR.Server.eachMatch(function(m)
+        if m.state ~= BR.MatchState.BUS
+           or not m.route or not m.route.timed then return end
+        if GetGameTimer() < m.route.tEnd then return end
+        BR.Bus.ejectAll(m)
+    end)
 end)
 
 -- Landing. FREEFALL -> ALIVE happens when the CLIENT reports touchdown, not

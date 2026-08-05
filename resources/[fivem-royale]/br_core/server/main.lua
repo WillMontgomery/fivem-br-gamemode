@@ -183,24 +183,25 @@ end
 
 BR.Server = {
     devMode  = false,
-    matchId  = 0,
+    matchId  = 0,   -- mint counter; the highest id ever issued
 
-    match = {
-        state  = BR.MatchState.WAITING,
-        mode   = BR.Mode.SOLO.key,
-        endsAt = 0,
-        bucket = 0,
-    },
+    -- THE MATCH REGISTRY (parallel-matches refactor, user call 2026-08-04).
+    -- matches[id] = a match INSTANCE: { id, bucket, state, mode, endsAt, ... }.
+    -- There is no global "the match" any more: an instance is born straight
+    -- into WARMUP when a queue clears the start gate, and is destroyed after
+    -- its CLEANUP -- WAITING is not a state an instance can be in, it is what
+    -- a lobby client sees when it belongs to no match. At most ONE instance
+    -- is ever in open WARMUP (ready-ups late-join it until it departs or
+    -- fills; only then does the queue accumulate toward the next instance).
+    matches = {},
 
-    -- roster[src] = { src, name, license, squadId, state, hp, armour, pos, ... }
+    -- roster[src] = { src, name, license, matchId, squadId, state, ... }
     -- Populated from the server-side playerJoining / playerDropped events, which
     -- are global and unaffected by entity scoping.
     roster = {},
 
     -- squads[squadId] = { id, members = { src, ... }, colour, alive, placement }
     squads = {},
-
-    storm = nil,
 }
 
 --- Count players in the roster matching an optional predicate.
@@ -212,6 +213,91 @@ function BR.Server.count(pred)
         if not pred or pred(p) then n = n + 1 end
     end
     return n
+end
+
+-- ------------------------------------------------------- match instances ---
+
+--- The match instance a player belongs to, or nil for a lobby player.
+--- A DEAD player (and an ENDED-summary spectator swept home early) keeps
+--- their matchId until the instance is destroyed or they leave, so match
+--- traffic still reaches them.
+--- @param src integer
+--- @return table|nil
+function BR.Server.matchOf(src)
+    local e = BR.Server.roster[src]
+    return e and e.matchId and BR.Server.matches[e.matchId] or nil
+end
+
+--- @param id integer
+--- @return table|nil
+function BR.Server.matchById(id)
+    return id and BR.Server.matches[id] or nil
+end
+
+--- Iterate every live match instance, in id order (deterministic -- tests
+--- and logs depend on it).
+--- @param fn function  receives (m)
+function BR.Server.eachMatch(fn)
+    local ids = {}
+    for id in pairs(BR.Server.matches) do ids[#ids + 1] = id end
+    table.sort(ids)
+    for _, id in ipairs(ids) do
+        local m = BR.Server.matches[id]
+        if m then fn(m) end
+    end
+end
+
+--- The newest instance, or nil. Admin commands (brforce, brphase) target
+--- this: with one match running -- the dev norm -- it is simply THE match.
+--- @return table|nil
+function BR.Server.latestMatch()
+    local best = nil
+    for id, m in pairs(BR.Server.matches) do
+        if not best or id > best.id then best = m end
+    end
+    return best
+end
+
+--- The instance a ready-up should late-join: a WARMUP match with a free
+--- slot. nil means ready-ups queue for a NEW match instead -- which is the
+--- user-specified formation gate: a fresh match may form once every
+--- existing one is BUS-or-later or a full warmup.
+--- @return table|nil
+function BR.Server.formingMatch()
+    for _, m in pairs(BR.Server.matches) do
+        if m.state == BR.MatchState.WARMUP
+           and BR.Server.countIn(m) < BR.Config.Match.maxPlayers then
+            return m
+        end
+    end
+    return nil
+end
+
+--- Count the players belonging to a match (any player state -- DEAD and
+--- summary-lobby players still belong until the instance dies).
+--- @param m table
+--- @param pred function|nil
+--- @return integer
+function BR.Server.countIn(m, pred)
+    local n = 0
+    for _, p in pairs(BR.Server.roster) do
+        if p.matchId == m.id and (not pred or pred(p)) then n = n + 1 end
+    end
+    return n
+end
+
+--- The server ids a match's traffic goes to. This is the scoping primitive:
+--- match STATE, storm records, bus routes and kill feed reach exactly these
+--- players and nobody else.
+--- @param m table
+--- @return integer[]
+function BR.Server.audience(m)
+    local out = {}
+    for src, p in pairs(BR.Server.roster) do
+        if p.matchId == m.id then out[#out + 1] = src end
+    end
+    table.sort(out)
+    return out
 end
 
 --- Is this player still in the match?
@@ -237,19 +323,27 @@ function BR.Server.isInMatch(state)
         or state == BR.PlayerState.GLIDE
 end
 
---- How many players are still in the match.
+--- How many players are still in a match. Scoped to one instance when given;
+--- across every instance when not (debug output, mostly).
+--- @param m table|nil
 --- @return integer
-function BR.Server.aliveCount()
-    return BR.Server.count(function(p) return BR.Server.isInMatch(p.state) end)
+function BR.Server.aliveCount(m)
+    return BR.Server.count(function(p)
+        return BR.Server.isInMatch(p.state)
+           and (not m or p.matchId == m.id)
+    end)
 end
 
 --- How many squads still have at least one living member. This is the win
 --- condition, not the player count -- a four-stack with three dead is one squad.
+--- Squad ids are namespaced per match (party.formSquads), so even the
+--- unscoped call cannot conflate two matches' squads.
+--- @param m table|nil
 --- @return integer
-function BR.Server.squadsAlive()
+function BR.Server.squadsAlive(m)
     local seen, n = {}, 0
     for _, p in pairs(BR.Server.roster) do
-        if BR.Server.isInMatch(p.state) then
+        if BR.Server.isInMatch(p.state) and (not m or p.matchId == m.id) then
             -- Solo players have no squad; each counts as their own team.
             local key = p.squadId or ('solo:' .. tostring(p.src))
             if not seen[key] then

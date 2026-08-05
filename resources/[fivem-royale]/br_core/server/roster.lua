@@ -46,6 +46,7 @@ local function newEntry(src)
         src        = src,
         name       = GetPlayerName(src) or 'Unknown',
         license    = nil,          -- filled by br_stats if it is running
+        matchId    = nil,          -- match instance membership; NEVER public
         squadId    = nil,
         state      = BR.PlayerState.LOBBY,
 
@@ -72,25 +73,29 @@ end
 --- Add a player, or return the existing entry if they are already known.
 --- @param src integer
 --- @return table
---- Put a player in the routing bucket their state calls for.
+--- Put a player in the routing bucket their state AND MATCH call for.
 ---
---- THE INSTANCE MODEL (user-specified, 2026-08-03): the lobby is ONE shared
---- bucket, and every match gets its OWN -- matchBucketBase + matchId, so a
---- fresh match never inherits the last round's bucket or anything left in
---- it. (Lobby peds are all invisible and frozen at the vista; the client
---- game rules hide any that stream in, so sharing the lobby costs nothing
+--- THE INSTANCE MODEL (user-specified, 2026-08-03; parallel matches
+--- 2026-08-04): the lobby is ONE shared bucket, and every match instance
+--- gets its OWN -- matchBucketBase + the entry's matchId, so two concurrent
+--- matches never see each other and a fresh match never inherits anything.
+--- A LOBBY-state player rides the lobby bucket even while they still carry
+--- a matchId (the ENDED summary trip home) -- the bucket is about where
+--- their PED is, the matchId about which match's traffic they hear.
+--- (Lobby peds are all invisible and frozen at the vista; the client game
+--- rules hide any that stream in, so sharing the lobby costs nothing
 --- visually.) Guarded, because the unit tests run this file without the
 --- Cfx runtime.
 --- @param src integer
---- @param state string
-local function applyBucket(src, state)
+--- @param entry table
+local function applyBucket(src, entry)
     if not SetPlayerRoutingBucket then return end
     local M = BR.Config.Match
     local bucket
-    if state == BR.PlayerState.LOBBY then
+    if entry.state == BR.PlayerState.LOBBY or not entry.matchId then
         bucket = M.lobbyBucket
     else
-        bucket = M.matchBucketBase + BR.Server.matchId
+        bucket = M.matchBucketBase + entry.matchId
     end
     if SetRoutingBucketPopulationEnabled then
         -- MATCH buckets get ambient life (user call, 2026-08-04: parked
@@ -98,9 +103,21 @@ local function applyBucket(src, state)
         -- client-side by the density multipliers in gamerules). The lobby
         -- bucket stays sterile: it is a menu with a view.
         SetRoutingBucketPopulationEnabled(bucket,
-            state ~= BR.PlayerState.LOBBY)
+            bucket ~= M.lobbyBucket)
     end
     SetPlayerRoutingBucket(tostring(src), bucket)
+end
+
+--- Attach a player to a match instance (or detach with nil). The bucket
+--- follows immediately. matchId is server business -- it never travels in a
+--- delta; scoped events are how a client knows which match it is in.
+--- @param src integer
+--- @param matchId integer|nil
+function BR.Roster.setMatch(src, matchId)
+    local entry = roster[src]
+    if not entry or entry.matchId == matchId then return end
+    entry.matchId = matchId
+    applyBucket(src, entry)
 end
 
 function BR.Roster.add(src)
@@ -113,9 +130,9 @@ function BR.Roster.add(src)
     local entry = newEntry(src)
     roster[src] = entry
 
-    -- New joiners start in the LOBBY state, so they get its private bucket
+    -- New joiners start in the LOBBY state, so they get its shared bucket
     -- too -- add() writes the state directly rather than through setState.
-    applyBucket(src, entry.state)
+    applyBucket(src, entry)
 
     BR.Broadcast.delta({ op = 'add', src = src, e = BR.Roster.public(entry) })
     print(('[br_core] + %s (%d) joined -- %d connected'):format(entry.name, src, BR.Server.count()))
@@ -222,7 +239,7 @@ function BR.Roster.setState(src, state)
 
     -- The bucket rides the state, from the single choke point every state
     -- change already passes through.
-    applyBucket(src, state)
+    applyBucket(src, entry)
 
     BR.Broadcast.delta({ op = 'update', src = src, e = { state = state } })
 

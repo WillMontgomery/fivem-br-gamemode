@@ -67,8 +67,9 @@ RegisterCommand('brscatter', function(_, args)
     -- believes. Compare that against what each client's HUD shows: if the
     -- numbers disagree, roster data is leaking through scope somewhere.
     local radius = tonumber(args[1]) or 3000.0
-    -- Centre on the current match anchor if one exists, else downtown LS.
-    local anchor = BR.Server.matchAnchor or { x = -300.0, y = -800.0 }
+    -- Centre on the newest match's anchor if one exists, else downtown LS.
+    local latest = BR.Server.latestMatch()
+    local anchor = (latest and latest.anchor) or { x = -300.0, y = -800.0 }
 
     local players, i = {}, 0
     for src in pairs(BR.Server.roster) do players[#players + 1] = src end
@@ -120,14 +121,19 @@ RegisterCommand('brhelp', function()
 end, RESTRICTED)
 
 RegisterCommand('brstate', function()
-    local M = BR.Server.match
     header('match state')
-    print(('  matchId      %d'):format(BR.Server.matchId))
-    print(('  state        %s'):format(M.state))
-    print(('  mode         %s'):format(M.mode))
-    print(('  bucket       %d'):format(M.bucket))
-    print(('  endsAt       %s (in %s)'):format(tostring(M.endsAt),
-        M.endsAt > 0 and secs(M.endsAt - GetGameTimer()) or '-'))
+    local any = false
+    BR.Server.eachMatch(function(m)
+        any = true
+        print(('  match %-4d %-8s %-6s bucket %-5d players %-3d alive %-3d squads %-3d endsAt %s')
+            :format(m.id, m.state, m.mode, m.bucket,
+                    BR.Server.countIn(m), BR.Server.aliveCount(m),
+                    BR.Server.squadsAlive(m),
+                    m.endsAt > 0 and secs(m.endsAt - GetGameTimer()) or '-'))
+    end)
+    if not any then print('  (no match instances -- lobby is WAITING)') end
+    line('-')
+    print(('  minted ids   %d'):format(BR.Server.matchId))
     print(('  devMode      %s'):format(tostring(BR.Server.devMode)))
     print(('  onesync      %s%s'):format(
         tostring(BR.Server.onesync),
@@ -207,11 +213,13 @@ end, RESTRICTED)
 
 RegisterCommand('brstorm', function()
     header('storm')
-    local rec = BR.Server.storm
+    local latest = BR.Server.latestMatch()
+    local rec = latest and latest.storm
     if not rec then
-        print('  no storm record -- the match is not in a storm phase')
+        print('  no storm record -- no match is in a storm phase')
         return
     end
+    print(('  match        %d'):format(latest.id))
 
     print(('  phase        %d of %d'):format(rec.phase, #BR.Config.Storm.phases))
     print(('  from         (%.0f, %.0f) r=%.0f'):format(rec.cx0, rec.cy0, rec.r0))
@@ -349,8 +357,12 @@ RegisterCommand('brwhy', function(_, args)
                 p.lastDamageAt and secs(GetGameTimer() - p.lastDamageAt) or '-'))
     print(('  kills/place    %s / %s'):format(tostring(p.kills or 0), tostring(p.placement or '-')))
 
-    if p.pos and BR.Server.storm then
-        local cx, cy, r = BR.StormAt(BR.Server.storm, GetGameTimer())
+    local pm = BR.Server.matchOf(src)
+    if pm then
+        print(('  match          %d (%s)'):format(pm.id, pm.state))
+    end
+    if p.pos and pm and pm.storm then
+        local cx, cy, r = BR.StormAt(pm.storm, GetGameTimer())
         local d = BR.EdgeDistance(p.pos.x, p.pos.y, cx, cy, r)
         print(('  storm          %.0fm %s the circle'):format(math.abs(d), d > 0 and 'OUTSIDE' or 'inside'))
     end

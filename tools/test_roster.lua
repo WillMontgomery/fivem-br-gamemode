@@ -142,17 +142,60 @@ local function reset()
     -- like a flake.
     BR.Lobby.clear()
     sent = {}
-    BR.Server.match.state = BR.MatchState.WAITING
-    BR.Server.match.endsAt = 0
-    -- Cleared by Match.reset() between real matches; the harness must do the
-    -- same or one block's starting-team count leaks into the next.
-    BR.Server.match.startSquads = nil
-    -- Storm state and placed peds leak across blocks the same way.
-    BR.Server.storm = nil
-    BR.Server.matchAnchor = nil
-    BR.Server.match.partyHoldSince = nil
-    BR.Server.match.descent = nil
+    -- The match registry replaces the old global match: dropping every
+    -- instance is the whole between-blocks cleanup (storm, anchor, descent
+    -- and start-squad bookkeeping all live ON the instances now).
+    for k in pairs(BR.Server.matches) do BR.Server.matches[k] = nil end
+    BR.Server.partyHoldSince = nil
     for k in pairs(pedCoords) do pedCoords[k] = nil end
+end
+
+-- ------------------------------------------------ parallel-match helpers ---
+-- The state machine is per-instance (parallel matches, 2026-08-04). These
+-- read and drive "the newest match" -- which is simply THE match everywhere
+-- a block runs one at a time, and lets the multi-match blocks talk about
+-- several by holding the returned instances directly.
+local function theMatch() return BR.Server.latestMatch() end
+local function mstate()
+    local m = theMatch()
+    return m and m.state or BR.MatchState.WAITING
+end
+local function mendsAt() local m = theMatch(); return m and m.endsAt or 0 end
+local function mstorm()  local m = theMatch(); return m and m.storm or nil end
+local function manchor() local m = theMatch(); return m and m.anchor or nil end
+
+--- brforce semantics: drive the newest instance (creating one from every
+--- connected player if none exists) into a state. WAITING dissolves it.
+local function forceState(state)
+    if state == BR.MatchState.WAITING then
+        local m = theMatch()
+        if m then BR.Match.destroy(m) end
+        return
+    end
+    local m = theMatch()
+    if not m then
+        local mode = BR.Lobby.count() > 0 and BR.Lobby.dominantMode()
+            or BR.Mode.SOLO.key
+        local parts = {}
+        for src in pairs(BR.Server.roster) do parts[#parts + 1] = src end
+        table.sort(parts)
+        BR.Lobby.clear()
+        m = BR.Match.create(mode, parts)
+    end
+    BR.Match.transition(m, state)
+end
+
+--- A bare instance for blocks that exercise one subsystem (squad formation,
+--- a scoped broadcast) without running the machine; attaches every
+--- rostered player, which mirrors the old whole-roster semantics.
+local function fakeMatch(mode)
+    BR.Server.matchId = BR.Server.matchId + 1
+    local m = { id = BR.Server.matchId, mode = mode or BR.Mode.SOLO.key,
+                state = BR.MatchState.WARMUP, endsAt = 0,
+                bucket = BR.Config.Match.matchBucketBase + BR.Server.matchId }
+    BR.Server.matches[m.id] = m
+    for src in pairs(BR.Server.roster) do BR.Roster.setMatch(src, m.id) end
+    return m
 end
 
 local function join(src, name)
@@ -446,7 +489,7 @@ do
 
     -- A client must not learn the match started before it learns who is in it.
     BR.Roster.update(1, { kills = 5 })
-    BR.Broadcast.state(BR.MatchState.PLAYING, 12345)
+    BR.Broadcast.state(fakeMatch(BR.Mode.SOLO.key), BR.MatchState.PLAYING, 12345)
 
     local order = {}
     for _, s in ipairs(sent) do
@@ -470,34 +513,34 @@ do
     join(2, 'Bob')
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WAITING,
+    ok(mstate() == BR.MatchState.WAITING,
         'connected players alone do not start a match')
 
     fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WAITING,
+    ok(mstate() == BR.MatchState.WAITING,
         'one queued player is not enough to start')
 
     fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WARMUP,
+    ok(mstate() == BR.MatchState.WARMUP,
         'reaching the minimum QUEUED count starts warmup')
     ok(BR.Lobby.count() == 0, 'and the queue is cleared once the match begins')
     ok(BR.Roster.get(1).state == BR.PlayerState.WARMUP,
         'players move to warmup with the match')
-    ok(BR.Server.match.endsAt > fakeTime, 'warmup has a deadline')
+    ok(mendsAt() > fakeTime, 'warmup has a deadline')
 
     -- Countdowns are derived from endsAt, never ticked over the network.
-    fakeTime = BR.Server.match.endsAt + 1
+    fakeTime = mendsAt() + 1
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.BUS, 'warmup expires into the bus')
+    ok(mstate() == BR.MatchState.BUS, 'warmup expires into the bus')
     ok(BR.Roster.get(1).state == BR.PlayerState.BUS, 'players board the bus')
 
-    fakeTime = BR.Server.match.endsAt + 1
+    fakeTime = mendsAt() + 1
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.PLAYING, 'the bus route ends in play')
+    ok(mstate() == BR.MatchState.PLAYING, 'the bus route ends in play')
     -- Since M3, the transition does not make anyone alive -- riders were
     -- force-ejected at the end of the chord and are falling; LANDING is what
     -- makes a player alive (pinned in match.bus).
@@ -512,19 +555,19 @@ describe('match.winCondition')
 do
     -- Two solo players: eliminating one should end the match, because solos each
     -- count as their own team.
-    ok(BR.Server.match.state == BR.MatchState.PLAYING, 'starting from PLAYING')
+    ok(mstate() == BR.MatchState.PLAYING, 'starting from PLAYING')
     ok(BR.Server.squadsAlive() == 2, 'two solos are two teams')
 
     BR.Roster.setState(2, BR.PlayerState.DEAD)
     fakeTime = fakeTime + 4000   -- past WIN_GRACE_MS
     BR.Sched.step(fakeTime)
 
-    ok(BR.Server.match.state == BR.MatchState.ENDED, 'one team left ends the match')
+    ok(mstate() == BR.MatchState.ENDED, 'one team left ends the match')
     ok(BR.Roster.get(1).placement == 1, 'the survivor is placed first')
 
-    fakeTime = BR.Server.match.endsAt + 1
+    fakeTime = mendsAt() + 1
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.CLEANUP, 'ended expires into cleanup')
+    ok(mstate() == BR.MatchState.CLEANUP, 'ended expires into cleanup')
     ok(BR.Roster.get(1).placement == nil, 'cleanup clears per-match state')
     ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY, 'and returns players to the lobby')
 end
@@ -534,13 +577,15 @@ do
     reset()
     BR.Server.devMode = true
     join(1, 'A'); join(2, 'B'); join(3, 'C'); join(4, 'D')
+
+    forceState(BR.MatchState.PLAYING)
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
+    -- Squads are hand-assigned AFTER the machine runs: formation (solo mode
+    -- here) clears squad identity on the way in.
     BR.Roster.update(1, { squadId = 'sq1' })
     BR.Roster.update(2, { squadId = 'sq1' })
     BR.Roster.update(3, { squadId = 'sq2' })
     BR.Roster.update(4, { squadId = 'sq2' })
-
-    BR.Match.transition(BR.MatchState.PLAYING)
-    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
 
     ok(BR.Server.squadsAlive() == 2, 'four players in two squads are two teams')
 
@@ -554,7 +599,7 @@ do
     BR.Roster.setState(2, BR.PlayerState.DEAD)
     fakeTime = fakeTime + 4000   -- past WIN_GRACE_MS
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.ENDED, 'wiping a squad ends the match')
+    ok(mstate() == BR.MatchState.ENDED, 'wiping a squad ends the match')
 
     local placed = 0
     BR.Roster.each(function(e) return e.placement == 1 end, function() placed = placed + 1 end)
@@ -567,7 +612,7 @@ do
     reset()
     BR.Server.devMode = true
     join(1, 'A'); join(2, 'B')
-    BR.Match.transition(BR.MatchState.PLAYING)
+    forceState(BR.MatchState.PLAYING)
     BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
     ok(BR.Server.squadsAlive() == 2, 'two players in play')
 
@@ -575,7 +620,7 @@ do
     fakeTime = fakeTime + 4000   -- past WIN_GRACE_MS
     BR.Sched.step(fakeTime)
 
-    ok(BR.Server.match.state == BR.MatchState.ENDED,
+    ok(mstate() == BR.MatchState.ENDED,
         'a disconnect can end the match like an elimination')
     ok(BR.Roster.get(2) == nil, 'and the leaver is gone from the roster')
 end
@@ -658,7 +703,9 @@ do
     BR.Lobby.clear()
     join(1, 'A'); join(2, 'B')
 
-    BR.Match.transition(BR.MatchState.PLAYING)
+    -- Only player 1 is IN the match; 2 stays a lobby bystander.
+    BR.Match.create(BR.Mode.SOLO.key, { 1 })
+    forceState(BR.MatchState.PLAYING)
     BR.Roster.setState(1, BR.PlayerState.ALIVE)
 
     fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
@@ -667,7 +714,7 @@ do
     fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
     ok(BR.Lobby.count() == 1,
         'a lobby player queues for the NEXT match while this one runs')
-    ok(BR.Server.match.state == BR.MatchState.PLAYING,
+    ok(mstate() == BR.MatchState.PLAYING,
         'and the running match does not notice')
 
     BR.Lobby.clear()
@@ -775,10 +822,10 @@ do
     BR.Party.invite(1, 2); BR.Party.respond(2, true)
     local pid = BR.Party.of(1).id
 
-    BR.Match.transition(BR.MatchState.PLAYING)
+    forceState(BR.MatchState.PLAYING)
     BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
-    BR.Match.transition(BR.MatchState.ENDED)
-    BR.Match.transition(BR.MatchState.CLEANUP)
+    forceState(BR.MatchState.ENDED)
+    forceState(BR.MatchState.CLEANUP)
 
     ok(BR.Party.of(1) ~= nil, 'the party survives a completed match')
     ok(BR.Party.of(1).id == pid, 'and it is the same party')
@@ -800,7 +847,7 @@ do
     BR.Party.invite(1, 2); BR.Party.respond(2, true)
     BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.WARMUP) end)
 
-    BR.Party.formSquads(BR.Mode.SQUAD.key)
+    BR.Party.formSquads(fakeMatch(BR.Mode.SQUAD.key))
 
     local sq1 = BR.Roster.get(1).squadId
     ok(sq1 ~= nil, 'squads are assigned')
@@ -822,7 +869,7 @@ do
 
     -- Solo mode has no squads at all: each player is their own team, and a
     -- squadId would only confuse the win condition.
-    BR.Party.formSquads(BR.Mode.SOLO.key)
+    BR.Party.formSquads(fakeMatch(BR.Mode.SOLO.key))
     local anySquad = false
     BR.Roster.each(nil, function(_, e) if e.squadId then anySquad = true end end)
     ok(not anySquad, 'solo mode assigns no squads')
@@ -830,7 +877,7 @@ do
     -- Without autofill, solos stand alone rather than being merged.
     BR.Config.Match.autofill = false
     BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.WARMUP) end)
-    BR.Party.formSquads(BR.Mode.SQUAD.key)
+    BR.Party.formSquads(fakeMatch(BR.Mode.SQUAD.key))
     ok(BR.Roster.get(3).squadId ~= BR.Roster.get(4).squadId,
         'without autofill, solo players are not merged')
     BR.Config.Match.autofill = true
@@ -850,7 +897,7 @@ do
         BR.Server.devMode = true
         for i = 1, n do join(i, 'P' .. i) end
         BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.WARMUP) end)
-        BR.Party.formSquads(BR.Mode.SQUAD.key)
+        BR.Party.formSquads(fakeMatch(BR.Mode.SQUAD.key))
 
         local counts = {}
         BR.Roster.each(nil, function(_, e)
@@ -896,7 +943,7 @@ do
         local predicted = BR.Party.prospectiveSquads(ids, mode)
 
         BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.WARMUP) end)
-        BR.Party.formSquads(mode)
+        BR.Party.formSquads(fakeMatch(mode))
 
         local counts = {}
         BR.Roster.each(nil, function(_, e)
@@ -954,7 +1001,7 @@ do
     -- reason -- a test that passes with the gate deleted.
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WAITING,
+    ok(mstate() == BR.MatchState.WAITING,
         'so the match does not start')
     ok(BR.Lobby.count() == 20, 'and the queue is not consumed')
 
@@ -967,7 +1014,7 @@ do
 
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'and now it starts')
+    ok(mstate() == BR.MatchState.WARMUP, 'and now it starts')
 
     BR.Server.devMode = true
 end
@@ -985,7 +1032,7 @@ do
     BR.Server.devMode = true
     join(1, 'A'); join(2, 'B')
     BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.WARMUP) end)
-    BR.Party.formSquads(BR.Mode.SQUAD.key)
+    BR.Party.formSquads(fakeMatch(BR.Mode.SQUAD.key))
 
     local sq = BR.Roster.get(1).squadId
     ok(sq ~= nil and BR.Roster.get(2).squadId == sq, 'both start on one squad')
@@ -995,7 +1042,7 @@ do
 
     -- The next match is solo.
     BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.WARMUP) end)
-    BR.Party.formSquads(BR.Mode.SOLO.key)
+    BR.Party.formSquads(fakeMatch(BR.Mode.SOLO.key))
     BR.Broadcast.flushNow()
 
     ok(BR.Roster.get(1).squadId == nil, 'the squad is dropped server-side')
@@ -1021,7 +1068,7 @@ do
     reset()
     BR.Server.devMode = true
     join(1, 'A'); join(2, 'B'); join(3, 'C'); join(4, 'D')
-    BR.Match.transition(BR.MatchState.PLAYING)
+    forceState(BR.MatchState.PLAYING)
     BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
 
     ok(BR.Server.squadsAlive() == 4, 'four solo players are four teams')
@@ -1047,7 +1094,7 @@ do
 
     reset()
     join(1, 'A')
-    BR.Match.transition(BR.MatchState.WAITING)
+    forceState(BR.MatchState.WAITING)
     BR.Roster.setState(1, BR.PlayerState.LOBBY)
     BR.Combat.eliminate(1, 'fall', nil)
     ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY, 'a player in the lobby cannot be eliminated')
@@ -1058,7 +1105,7 @@ do
     reset()
     BR.Server.devMode = true
     join(1, 'Killer'); join(2, 'Victim'); join(3, 'Bystander')
-    BR.Match.transition(BR.MatchState.PLAYING)
+    forceState(BR.MatchState.PLAYING)
     BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
 
     BR.Combat.eliminate(2, 'weapon', 1)
@@ -1077,7 +1124,7 @@ do
     reset()
     BR.Server.devMode = true
     join(1, 'A'); join(2, 'B')
-    BR.Match.transition(BR.MatchState.PLAYING)
+    forceState(BR.MatchState.PLAYING)
     BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
 
     -- Player 1's ped now reads as dead. Nothing reports it; the server has to
@@ -1098,7 +1145,7 @@ do
     -- treating it as death would eliminate everyone on a misconfigured server.
     reset()
     join(1, 'A'); join(2, 'B')
-    BR.Match.transition(BR.MatchState.PLAYING)
+    forceState(BR.MatchState.PLAYING)
     BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
 
     -- Simulate "connected but no ped" with a dedicated lever. Removing them from
@@ -1122,14 +1169,14 @@ do
     reset()
     BR.Server.devMode = true
     join(1, 'A'); join(2, 'B')
-    BR.Match.transition(BR.MatchState.PLAYING)
+    forceState(BR.MatchState.PLAYING)
     BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
 
     BR.Combat.eliminate(2, 'fall', 1)
     fakeTime = fakeTime + 4000   -- past WIN_GRACE_MS
     BR.Sched.step(fakeTime)
 
-    ok(BR.Server.match.state == BR.MatchState.ENDED,
+    ok(mstate() == BR.MatchState.ENDED,
         'eliminating the last opponent ends the match')
     ok(BR.Roster.get(1).placement == 1, 'the survivor takes first')
     ok(BR.Roster.get(2).placement == 2, 'the loser keeps the placement they died at')
@@ -1334,13 +1381,13 @@ do
 
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'the match starts')
+    ok(mstate() == BR.MatchState.WARMUP, 'the match starts')
     ok(BR.Roster.get(1).state == BR.PlayerState.WARMUP, 'queued players enter warmup')
     ok(BR.Roster.get(3).state == BR.PlayerState.LOBBY,
         'the idler who never readied up stays in the lobby')
 
     -- And the idler is not promoted when the match goes live either.
-    BR.Match.transition(BR.MatchState.PLAYING)
+    forceState(BR.MatchState.PLAYING)
     ok(BR.Roster.get(1).state == BR.PlayerState.ALIVE, 'participants go alive')
     ok(BR.Roster.get(3).state == BR.PlayerState.LOBBY, 'the idler still does not')
 end
@@ -1357,7 +1404,7 @@ do
     fire(BR.Net.QUEUE_JOIN, 3, { mode = BR.Mode.SOLO.key })
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    BR.Match.transition(BR.MatchState.PLAYING)
+    forceState(BR.MatchState.PLAYING)
 
     sent = {}
     fire(BR.Net.MATCH_LEAVE, 2)
@@ -1365,7 +1412,7 @@ do
     ok(e.state == BR.PlayerState.LOBBY, 'the leaver is back in the lobby')
     ok(e.placement ~= nil, 'with a placement recorded, like any elimination')
     ok(#eventsOf(BR.Net.TO_LOBBY) == 1, 'and is sent home')
-    ok(BR.Server.match.state == BR.MatchState.PLAYING,
+    ok(mstate() == BR.MatchState.PLAYING,
         'while the match plays on for everyone else')
     ok(BR.Server.squadsAlive() == 2, 'the alive count dropped by exactly one')
 
@@ -1385,7 +1432,7 @@ do
     fire(BR.Net.QUEUE_JOIN, 5, { mode = BR.Mode.SOLO.key })
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'warmup running')
+    ok(mstate() == BR.MatchState.WARMUP, 'warmup running')
     fire(BR.Net.MATCH_LEAVE, 5)
     ok(BR.Roster.get(5).state == BR.PlayerState.LOBBY, 'warmup leaver is out')
     ok(BR.Roster.get(5).placement == nil, 'with no placement recorded')
@@ -1412,7 +1459,7 @@ do
     end
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'match reaches warmup')
+    ok(mstate() == BR.MatchState.WARMUP, 'match reaches warmup')
 
     local sq1 = BR.Roster.get(1).squadId
     local sq3 = BR.Roster.get(3).squadId
@@ -1442,7 +1489,7 @@ do
     ok(not wrongTarget, 'every recipient is in a squad')
 
     -- A dead squadmate drops out of the push; a one-survivor squad gets none.
-    BR.Match.transition(BR.MatchState.PLAYING)
+    forceState(BR.MatchState.PLAYING)
     BR.Combat.eliminate(2, 'test', nil)
     sent = {}
     fakeTime = fakeTime + 1100
@@ -1465,7 +1512,7 @@ do
     fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'solo match reaches warmup')
+    ok(mstate() == BR.MatchState.WARMUP, 'solo match reaches warmup')
     sent = {}
     fakeTime = fakeTime + 1100
     BR.Sched.step(fakeTime)
@@ -1489,12 +1536,12 @@ do
 
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'one dev player starts a match')
+    ok(mstate() == BR.MatchState.WARMUP, 'one dev player starts a match')
 
-    BR.Match.transition(BR.MatchState.PLAYING)
+    forceState(BR.MatchState.PLAYING)
     fakeTime = fakeTime + 5000        -- well past WIN_GRACE_MS
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.PLAYING,
+    ok(mstate() == BR.MatchState.PLAYING,
         'a match that STARTED with one squad never auto-ends in dev')
 
     -- The guard must not weaken a real dev match: two squads, one dies,
@@ -1506,11 +1553,11 @@ do
     fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    BR.Match.transition(BR.MatchState.PLAYING)
+    forceState(BR.MatchState.PLAYING)
     BR.Combat.eliminate(2, 'test', 1)
     fakeTime = fakeTime + 5000
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.ENDED,
+    ok(mstate() == BR.MatchState.ENDED,
         'a two-squad dev match still ends when one falls')
 end
 
@@ -1528,7 +1575,7 @@ do
     fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'the early bird starts warmup')
+    ok(mstate() == BR.MatchState.WARMUP, 'the early bird starts warmup')
     ok(BR.Roster.get(2).state == BR.PlayerState.LOBBY, 'the other is still an idler')
 
     fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
@@ -1538,11 +1585,11 @@ do
 
     -- Both now count as starting teams: the solo-dev hold does not engage and
     -- the match ends like any other.
-    BR.Match.transition(BR.MatchState.PLAYING)
+    forceState(BR.MatchState.PLAYING)
     BR.Combat.eliminate(2, 'test', 1)
     fakeTime = fakeTime + 5000
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.ENDED,
+    ok(mstate() == BR.MatchState.ENDED,
         'a late joiner makes it a real match with a real winner')
 
     -- Squad placement: party squad first, then the emptiest squad with room.
@@ -1555,7 +1602,7 @@ do
     for i = 1, 5 do fire(BR.Net.QUEUE_JOIN, i, { mode = BR.Mode.SQUAD.key }) end
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'squad match forms')
+    ok(mstate() == BR.MatchState.WARMUP, 'squad match forms')
 
     -- Player 6, partied with nobody, readies late: the emptiest squad with
     -- room is the pair, not the trio.
@@ -1586,7 +1633,7 @@ do
     BR.Sched.step(fakeTime)
     fakeTime = fakeTime + BR.Config.Match.partyGraceSeconds * 1000 + 1500
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'match forms without player 3')
+    ok(mstate() == BR.MatchState.WARMUP, 'match forms without player 3')
     ok(BR.Roster.get(4).squadId ~= BR.Roster.get(1).squadId,
         'the solo has a squad of one -- the emptier target')
 
@@ -1598,7 +1645,7 @@ do
     BR.Config.Match.autofill = true
 
     -- From BUS onward the door is shut: late arrivals queue for the NEXT match.
-    BR.Match.transition(BR.MatchState.BUS)
+    forceState(BR.MatchState.BUS)
     join(9, 'TooLate')
     fire(BR.Net.QUEUE_JOIN, 9, { mode = BR.Mode.SOLO.key })
     ok(BR.Roster.get(9).state == BR.PlayerState.LOBBY, 'a bus-stage arrival stays in the lobby')
@@ -1617,11 +1664,11 @@ do
     fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'warmup starts')
+    ok(mstate() == BR.MatchState.WARMUP, 'warmup starts')
 
     -- The route is drawn AT WARMUP -- players plan their drop with it -- but
     -- carries no clock yet: the wheels move at BUS.
-    local r = BR.Bus.active()
+    local r = BR.Bus.active(theMatch())
     ok(r ~= nil, 'the flight is drawn when warmup begins')
     ok(#eventsOf(BR.Net.BUS_ROUTE) >= 1, 'and the preview reaches every client')
     ok(r.timed == false, 'but it is not timed until departure')
@@ -1641,14 +1688,15 @@ do
         'the tour is exactly the chosen options, in leg order')
 
     sent = {}
-    fakeTime = BR.Server.match.endsAt + 1
+    fakeTime = mendsAt() + 1
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.BUS, 'warmup expires into the bus')
+    ok(mstate() == BR.MatchState.BUS, 'warmup expires into the bus')
     ok(BR.Roster.get(1).state == BR.PlayerState.BUS, 'players are aboard')
 
-    r = BR.Bus.active()
+    r = BR.Bus.active(theMatch())
     ok(r.timed == true, 'departure stamps the clock onto the geometry')
-    ok(#eventsOf(BR.Net.BUS_ROUTE) == 1, 'and rebroadcasts the timed flight')
+    ok(#eventsOf(BR.Net.BUS_ROUTE) == 2,
+        'and rebroadcasts the timed flight to each of the two riders')
 
     local sp = BR.Config.Bus.spawn
     local p1 = r.points[1]
@@ -1709,7 +1757,7 @@ do
     -- The storm anchor rides the route draw: it must be an authored POI within
     -- anchor-band reach of SOME waypoint of this tour -- that is the whole
     -- design ("select a flight leg coord, then a POI 500-1500 off it").
-    local anch = BR.Server.matchAnchor
+    local anch = manchor()
     ok(anch ~= nil, 'a match anchor is picked for the storm')
     local anchIsPoi = false
     for _, p in ipairs(BR.Config.Map.POIs) do
@@ -1733,7 +1781,7 @@ do
     local hdgDiff = math.abs(((r.heading - wantHdg + 540.0) % 360.0) - 180.0)
     ok(hdgDiff < 0.01, 'the plane spawns facing exactly down the runway',
         ('heading %.2f vs direction %.2f'):format(r.heading, wantHdg))
-    ok(BR.Server.match.endsAt >= r.tEnd, 'BUS lasts at least the whole flight')
+    ok(mendsAt() >= r.tEnd, 'BUS lasts at least the whole flight')
 
     -- Jumping before the doors is refused; after them it is an elimination
     -- of altitude, not of the player.
@@ -1762,9 +1810,9 @@ do
     ok(#oks == 1 and oks[1].args[1].forced == true, 'and told it was not their idea')
 
     -- Landing is what makes a player ALIVE -- not the PLAYING transition.
-    fakeTime = BR.Server.match.endsAt + 1
+    fakeTime = mendsAt() + 1
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.PLAYING, 'the route expires into PLAYING')
+    ok(mstate() == BR.MatchState.PLAYING, 'the route expires into PLAYING')
     ok(BR.Roster.get(1).state == BR.PlayerState.FREEFALL,
         'a mid-air player is NOT snapped to alive by the transition')
 
@@ -1789,8 +1837,8 @@ do
     local comboCount = 0
     for seed = 1, 40 do
         fakeTime = fakeTime + 7919 * seed
-        BR.Bus.plan()
-        local rr = BR.Bus.active()
+        BR.Bus.plan(theMatch())
+        local rr = BR.Bus.active(theMatch())
 
         local key = table.concat(rr.legs, '-')
         if not combos[key] then
@@ -1814,7 +1862,7 @@ do
         ('%d distinct tours in 40 draws'):format(comboCount))
     ok(sawChiliad, 'the Chiliad exit came up at least once in 40 draws')
     ok(chiliadOk, "the Chiliad exit's authored altitudes survive into the path")
-    BR.Bus.clear()
+    BR.Bus.clear(theMatch())
 end
 
 describe('roster.buckets')
@@ -1835,7 +1883,7 @@ do
     fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'match starts')
+    ok(mstate() == BR.MatchState.WARMUP, 'match starts')
     local mb = BR.Config.Match.matchBucketBase + BR.Server.matchId
     ok(buckets[1] == mb and buckets[2] == mb,
         "entering the match moves everyone into THIS match's bucket",
@@ -1848,13 +1896,13 @@ do
 
     -- The NEXT match gets a different bucket: leftover entities from this
     -- round can never haunt the next one.
-    BR.Match.transition(BR.MatchState.ENDED)
-    BR.Match.transition(BR.MatchState.CLEANUP)
-    BR.Match.transition(BR.MatchState.WAITING)
+    forceState(BR.MatchState.ENDED)
+    forceState(BR.MatchState.CLEANUP)
+    forceState(BR.MatchState.WAITING)
     queueUp(1, 'A'); queueUp(2, 'B')
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'second match starts')
+    ok(mstate() == BR.MatchState.WARMUP, 'second match starts')
     local mb2 = BR.Config.Match.matchBucketBase + BR.Server.matchId
     ok(mb2 ~= mb, 'and it lives in a fresh bucket')
     ok(buckets[1] == mb2, 'with its players inside')
@@ -1872,11 +1920,11 @@ do
     fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    fakeTime = BR.Server.match.endsAt + 1
+    fakeTime = mendsAt() + 1
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.BUS, 'both aboard')
+    ok(mstate() == BR.MatchState.BUS, 'both aboard')
 
-    local r = BR.Bus.active()
+    local r = BR.Bus.active(theMatch())
 
     -- Player 2 jumps at the doors, dives, lands, and dies -- all during BUS.
     fakeTime = r.jumpFrom + 1000
@@ -1891,16 +1939,16 @@ do
     -- The route runs out; player 1 is force-ejected, lands, stands alone.
     fakeTime = r.tEnd + 600
     BR.Sched.step(fakeTime)
-    fakeTime = BR.Server.match.endsAt + 1
+    fakeTime = mendsAt() + 1
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.PLAYING, 'the match goes live')
+    ok(mstate() == BR.MatchState.PLAYING, 'the match goes live')
     fire(BR.Net.DROP_LANDED, 1)
 
     fakeTime = fakeTime + 4000   -- past WIN_GRACE_MS
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.ENDED,
+    ok(mstate() == BR.MatchState.ENDED,
         'and ends: the early death counted',
-        ('state %s, squadsAlive %d'):format(BR.Server.match.state, BR.Server.squadsAlive()))
+        ('state %s, squadsAlive %d'):format(mstate(), BR.Server.squadsAlive()))
 
     -- Variant: dies MID-AIR during BUS (never landed).
     reset()
@@ -1910,9 +1958,9 @@ do
     fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    fakeTime = BR.Server.match.endsAt + 1
+    fakeTime = mendsAt() + 1
     BR.Sched.step(fakeTime)
-    local r2 = BR.Bus.active()
+    local r2 = BR.Bus.active(theMatch())
     fakeTime = r2.jumpFrom + 1000
     fire(BR.Net.BUS_JUMP, 2)
     fire(BR.Net.PLAYER_DIED, 2, { cause = 'fall' })
@@ -1920,14 +1968,14 @@ do
 
     fakeTime = r2.tEnd + 600
     BR.Sched.step(fakeTime)
-    fakeTime = BR.Server.match.endsAt + 1
+    fakeTime = mendsAt() + 1
     BR.Sched.step(fakeTime)
     fire(BR.Net.DROP_LANDED, 1)
     fakeTime = fakeTime + 4000
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.ENDED,
+    ok(mstate() == BR.MatchState.ENDED,
         'the match still ends',
-        ('state %s, squadsAlive %d'):format(BR.Server.match.state, BR.Server.squadsAlive()))
+        ('state %s, squadsAlive %d'):format(mstate(), BR.Server.squadsAlive()))
 end
 
 describe('match.lastLanding')
@@ -1941,11 +1989,11 @@ do
     fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    fakeTime = BR.Server.match.endsAt + 1
+    fakeTime = mendsAt() + 1
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.BUS, 'both aboard')
+    ok(mstate() == BR.MatchState.BUS, 'both aboard')
 
-    local r = BR.Bus.active()
+    local r = BR.Bus.active(theMatch())
     fakeTime = r.jumpFrom + 1000
     fire(BR.Net.BUS_JUMP, 1)
     fire(BR.Net.BUS_JUMP, 2)
@@ -1954,14 +2002,14 @@ do
     -- One down, one still falling: the match must NOT go live.
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.BUS,
+    ok(mstate() == BR.MatchState.BUS,
         'one player still airborne holds the bus state')
 
     -- The second lands, long before the route runs out.
     fire(BR.Net.DROP_LANDED, 2)
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.PLAYING,
+    ok(mstate() == BR.MatchState.PLAYING,
         'the last landing takes the match live early')
     ok(fakeTime < r.tEnd, 'well before the route timer',
         ('%.0fs early'):format((r.tEnd - fakeTime) / 1000))
@@ -1974,17 +2022,17 @@ do
     fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    fakeTime = BR.Server.match.endsAt + 1
+    fakeTime = mendsAt() + 1
     BR.Sched.step(fakeTime)
-    local r2 = BR.Bus.active()
+    local r2 = BR.Bus.active(theMatch())
     fakeTime = r2.jumpFrom + 1000
     fire(BR.Net.BUS_JUMP, 1)
     fire(BR.Net.DROP_LANDED, 1)   -- p1 lands; p2 rides to force-eject and never reports
     fakeTime = r2.tEnd + 600
     BR.Sched.step(fakeTime)
-    fakeTime = BR.Server.match.endsAt + 1
+    fakeTime = mendsAt() + 1
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.PLAYING,
+    ok(mstate() == BR.MatchState.PLAYING,
         'the route timer still forces PLAYING past a silent faller')
 end
 
@@ -2022,22 +2070,22 @@ do
     queueUp(1, 'A'); queueUp(2, 'B')
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'warmup starts')
+    ok(mstate() == BR.MatchState.WARMUP, 'warmup starts')
 
     -- Stand both players ON the anchor before the match goes live, so the
     -- distance-scaled hold bottoms out at its 120s minimum and the timing
     -- assertions below stay exact. The far-player case has its own block.
-    local a0 = BR.Server.matchAnchor
+    local a0 = manchor()
     setPos(1, a0.x, a0.y); setPos(2, a0.x, a0.y)
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)   -- the position sampler picks them up
 
     sent = {}
     fakeTime = fakeTime + 1000
-    BR.Match.transition(BR.MatchState.PLAYING)
+    forceState(BR.MatchState.PLAYING)
 
-    local rec = BR.Server.storm
-    local a   = BR.Server.matchAnchor
+    local rec = mstorm()
+    local a   = manchor()
     ok(rec ~= nil, 'PLAYING starts the storm')
     ok(rec.phase == 1, 'phase 1 is entered directly -- the hold IS its wait')
     ok(rec.cx0 == a.x and rec.cy0 == a.y, 'the opening circle sits on the match anchor')
@@ -2062,16 +2110,25 @@ do
         'and nests inside the opening circle')
 
     local syncs = eventsOf(BR.Net.STORM_SYNC)
-    ok(#syncs >= 1 and syncs[#syncs].target == -1,
-        'the record is broadcast to everyone, once')
+    local gotSync = {}
+    for _, sy in ipairs(syncs) do gotSync[sy.target] = true end
+    ok(#syncs >= 1 and gotSync[1] and gotSync[2],
+        'the record reaches every participant')
+    ok(not gotSync[-1], 'and is never blasted to the whole server')
 
-    -- A late joiner needs no special path: the snapshot carries the record.
+    -- A participant rebuilding its mirror (br_ui restart) gets the record in
+    -- its snapshot; a lobby bystander gets none -- storm is match traffic.
+    sent = {}
+    fire(BR.Net.READY, 1)
+    local snaps = eventsOf(BR.Net.SNAPSHOT)
+    ok(#snaps == 1 and snaps[1].args[1].storm ~= nil,
+        'snapshots carry the storm record for a participant rebuilding')
     join(5, 'Late')
     sent = {}
     fire(BR.Net.READY, 5)
-    local snaps = eventsOf(BR.Net.SNAPSHOT)
-    ok(#snaps == 1 and snaps[1].args[1].storm ~= nil,
-        'snapshots carry the storm record for late joiners')
+    snaps = eventsOf(BR.Net.SNAPSHOT)
+    ok(#snaps == 1 and snaps[1].args[1].storm == nil,
+        "a lobby bystander's snapshot carries no other match's storm")
     leave(5)
 
     -- Damage targeting: 1 stands at the anchor (inside), 2 beyond even the
@@ -2124,7 +2181,7 @@ do
     sent = {}
     fakeTime = rec.tStart + rec.tWait + rec.tShrink + 1500
     BR.Sched.step(fakeTime)
-    local rec2 = BR.Server.storm
+    local rec2 = mstorm()
     ok(rec2.phase == 2, 'a finished shrink advances the phase')
     ok(rec2.cx0 == c1x and rec2.cy0 == c1y and rec2.r0 == r1,
         'the new record starts at the old target circle')
@@ -2156,9 +2213,9 @@ do
         'the kill feed names the storm')
 
     -- And the win condition sees it like any other death: last squad standing.
-    ok(BR.Server.match.state == BR.MatchState.ENDED,
+    ok(mstate() == BR.MatchState.ENDED,
         'a storm kill can decide the match')
-    ok(BR.Server.storm == nil or BR.Server.match.state ~= BR.MatchState.PLAYING,
+    ok(mstorm() == nil or mstate() ~= BR.MatchState.PLAYING,
         'no storm keeps running past the match')
 
     pedHealth[1002] = nil
@@ -2172,13 +2229,13 @@ do
     queueUp(1, 'A'); queueUp(2, 'B')
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WARMUP, 'warmup starts')
+    ok(mstate() == BR.MatchState.WARMUP, 'warmup starts')
 
     fire(BR.Net.MATCH_LEAVE, 1)
     fire(BR.Net.MATCH_LEAVE, 2)
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WAITING,
+    ok(mstate() == BR.MatchState.WAITING,
         'an all-left warmup aborts straight back to WAITING')
 end
 
@@ -2197,7 +2254,7 @@ do
     fire(BR.Net.QUEUE_JOIN, 1, { mode = 'squad' })
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WAITING,
+    ok(mstate() == BR.MatchState.WAITING,
         'one ready in a party of two holds the match')
     local blocker = BR.Match.startBlocker()
     ok(blocker and blocker.reason == 'party' and blocker.have == 1 and blocker.need == 2,
@@ -2208,22 +2265,22 @@ do
     fire(BR.Net.QUEUE_JOIN, 2, { mode = 'squad' })
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WARMUP,
+    ok(mstate() == BR.MatchState.WARMUP,
         'the second Ready releases it')
 
     -- Patience: an AFK partymate cannot brick the queue. The hold expires
     -- after partyGraceSeconds and the match forms without them (they can
     -- still late-join during warmup).
-    BR.Match.transition(BR.MatchState.ENDED)
-    BR.Match.transition(BR.MatchState.CLEANUP)
-    BR.Match.transition(BR.MatchState.WAITING)
+    forceState(BR.MatchState.ENDED)
+    forceState(BR.MatchState.CLEANUP)
+    forceState(BR.MatchState.WAITING)
     fire(BR.Net.QUEUE_JOIN, 1, { mode = 'squad' })
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WAITING, 'held again next match')
+    ok(mstate() == BR.MatchState.WAITING, 'held again next match')
     fakeTime = fakeTime + BR.Config.Match.partyGraceSeconds * 1000 + 1500
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.WARMUP,
+    ok(mstate() == BR.MatchState.WARMUP,
         'but patience runs out and the match forms without the idler')
 end
 
@@ -2238,8 +2295,8 @@ do
     queueUp(1, 'A'); queueUp(2, 'B')
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
-    BR.Match.transition(BR.MatchState.BUS)
-    local r = BR.Bus.active()
+    forceState(BR.MatchState.BUS)
+    local r = BR.Bus.active(theMatch())
 
     fakeTime = r.jumpFrom + 1000
     fire(BR.Net.BUS_JUMP, 1)
@@ -2257,23 +2314,23 @@ do
 
     -- Past the ceiling with 2 visibly descending: BUS holds.
     setPos(2, 0.0, 0.0, 400.0)
-    fakeTime = BR.Server.match.endsAt + 600
+    fakeTime = mendsAt() + 600
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.BUS,
+    ok(mstate() == BR.MatchState.BUS,
         'a live descender holds the BUS past the route timer')
 
     setPos(2, 0.0, 0.0, 300.0)
-    fakeTime = BR.Server.match.endsAt + 600
+    fakeTime = mendsAt() + 600
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.BUS, 'and keeps holding while falling')
+    ok(mstate() == BR.MatchState.BUS, 'and keeps holding while falling')
 
     -- Altitude freezes (a hung client): the grace stops paying and the
     -- ceiling fires within two more checks.
     for _ = 1, 3 do
-        fakeTime = math.max(fakeTime + 11000, BR.Server.match.endsAt + 600)
+        fakeTime = math.max(fakeTime + 11000, mendsAt() + 600)
         BR.Sched.step(fakeTime)
     end
-    ok(BR.Server.match.state == BR.MatchState.PLAYING,
+    ok(mstate() == BR.MatchState.PLAYING,
         'a frozen altitude stops extending and the match goes live')
 end
 
@@ -2313,14 +2370,14 @@ do
     BR.Sched.step(fakeTime)
 
     local r1 = BR.Config.Storm.phases[1].radius
-    local a = BR.Server.matchAnchor
+    local a = manchor()
     setPos(1, a.x + r1 + 1800.0, a.y)
     setPos(2, a.x, a.y)
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
 
-    BR.Match.transition(BR.MatchState.PLAYING)
-    local rec = BR.Server.storm
+    forceState(BR.MatchState.PLAYING)
+    local rec = mstorm()
     -- 200s priced, capped at the 180s start cap; the 1800m run also prices
     -- the shrink at 200s, which the authored phase-1 value ceilings.
     local cap    = BR.Config.Storm.hold.startCapSeconds * 1000.0
@@ -2334,65 +2391,65 @@ do
 
     -- The formula itself, un-clamped: a 700m run beyond the target edge is
     -- ~78s of wall travel -- between the 40s floor and the 120s ceiling.
-    BR.Match.transition(BR.MatchState.ENDED)
-    BR.Match.transition(BR.MatchState.CLEANUP)
-    BR.Match.transition(BR.MatchState.WAITING)
+    forceState(BR.MatchState.ENDED)
+    forceState(BR.MatchState.CLEANUP)
+    forceState(BR.MatchState.WAITING)
     queueUp(1, 'A'); queueUp(2, 'B')
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
-    a = BR.Server.matchAnchor
+    a = manchor()
     setPos(1, a.x + r1 + 700.0, a.y)
     setPos(2, a.x, a.y)
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
-    BR.Match.transition(BR.MatchState.PLAYING)
-    ok(math.abs(BR.Server.storm.tShrink - expectShrink(BR.Server.storm)) < 1500.0,
+    forceState(BR.MatchState.PLAYING)
+    ok(math.abs(mstorm().tShrink - expectShrink(mstorm())) < 1500.0,
         'a mid-range run prices between the floor and the ceiling',
         ('tShrink %.0fms, expected %.0fms'):format(
-            BR.Server.storm.tShrink, expectShrink(BR.Server.storm)))
+            mstorm().tShrink, expectShrink(mstorm())))
 
     -- Landing INSIDE the first target circle prices at zero: the minimum
     -- hold applies no matter where inside it you are.
-    BR.Match.transition(BR.MatchState.ENDED)
-    BR.Match.transition(BR.MatchState.CLEANUP)
-    BR.Match.transition(BR.MatchState.WAITING)
+    forceState(BR.MatchState.ENDED)
+    forceState(BR.MatchState.CLEANUP)
+    forceState(BR.MatchState.WAITING)
     queueUp(1, 'A'); queueUp(2, 'B')
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
-    a = BR.Server.matchAnchor
+    a = manchor()
     setPos(1, a.x + BR.Config.Storm.phases[1].radius - 100.0, a.y)
     setPos(2, a.x, a.y)
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
-    BR.Match.transition(BR.MatchState.PLAYING)
-    ok(BR.Server.storm.tWait == BR.Config.Storm.hold.minSeconds * 1000.0,
+    forceState(BR.MatchState.PLAYING)
+    ok(mstorm().tWait == BR.Config.Storm.hold.minSeconds * 1000.0,
         'anyone already inside the target circle pays only the one-minute floor',
-        ('tWait %.0fms'):format(BR.Server.storm.tWait))
-    ok(math.abs(BR.Server.storm.tShrink - expectShrink(BR.Server.storm)) < 1.0,
+        ('tWait %.0fms'):format(mstorm().tWait))
+    ok(math.abs(mstorm().tShrink - expectShrink(mstorm())) < 1.0,
         'an uncontested map prices at the formula (the floor when all inside)',
-        ('tShrink %.0fms'):format(BR.Server.storm.tShrink))
+        ('tShrink %.0fms'):format(mstorm().tShrink))
 
     -- The caps: however far out the drop was, the wait stops at the start
     -- cap and the shrink at its authored ceiling. The wall is ALWAYS moving
     -- within three minutes of PLAYING.
-    BR.Match.transition(BR.MatchState.ENDED)
-    BR.Match.transition(BR.MatchState.CLEANUP)
-    BR.Match.transition(BR.MatchState.WAITING)
+    forceState(BR.MatchState.ENDED)
+    forceState(BR.MatchState.CLEANUP)
+    forceState(BR.MatchState.WAITING)
     queueUp(1, 'A'); queueUp(2, 'B')
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
-    a = BR.Server.matchAnchor
+    a = manchor()
     setPos(1, a.x + r1 + 9000.0, a.y)
     setPos(2, a.x, a.y)
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
-    BR.Match.transition(BR.MatchState.PLAYING)
-    ok(BR.Server.storm.tWait == BR.Config.Storm.hold.startCapSeconds * 1000.0,
+    forceState(BR.MatchState.PLAYING)
+    ok(mstorm().tWait == BR.Config.Storm.hold.startCapSeconds * 1000.0,
         'even the farthest drop waits only to the start cap',
-        ('tWait %.0fms'):format(BR.Server.storm.tWait))
-    ok(BR.Server.storm.tShrink == BR.Config.Storm.phases[1].shrink * 1000.0,
+        ('tWait %.0fms'):format(mstorm().tWait))
+    ok(mstorm().tShrink == BR.Config.Storm.phases[1].shrink * 1000.0,
         'and its shrink stops at the authored ceiling',
-        ('tShrink %.0fms'):format(BR.Server.storm.tShrink))
+        ('tShrink %.0fms'):format(mstorm().tShrink))
 
     BR.Config.Storm.edgeBiasMax = savedBias
 end
@@ -2405,15 +2462,15 @@ do
     queueUp(1, 'A'); queueUp(2, 'B')
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
-    BR.Match.transition(BR.MatchState.PLAYING)
-    ok(BR.Server.storm ~= nil, 'storm up')
+    forceState(BR.MatchState.PLAYING)
+    ok(mstorm() ~= nil, 'storm up')
 
     local e1 = BR.Roster.get(1)
     e1.stormHp, e1.lastStormAt = 42.0, fakeTime
 
-    BR.Match.transition(BR.MatchState.ENDED)
-    BR.Match.transition(BR.MatchState.CLEANUP)
-    ok(BR.Server.storm == nil, 'CLEANUP clears the storm record')
+    forceState(BR.MatchState.ENDED)
+    forceState(BR.MatchState.CLEANUP)
+    ok(mstorm() == nil, 'CLEANUP clears the storm record')
     ok(e1.stormHp == nil and e1.lastStormAt == nil,
         'and the per-player storm ledger with it')
 end
@@ -2434,11 +2491,11 @@ do
     queueUp(1, 'A'); queueUp(2, 'B')
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
-    fakeTime = BR.Server.match.endsAt + 1
+    fakeTime = mendsAt() + 1
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.BUS, 'flying')
+    ok(mstate() == BR.MatchState.BUS, 'flying')
 
-    local r = BR.Bus.active()
+    local r = BR.Bus.active(theMatch())
     fakeTime = r.jumpFrom + 1000
     fire(BR.Net.BUS_JUMP, 1)
     fire(BR.Net.BUS_JUMP, 2)
@@ -2454,7 +2511,7 @@ do
     end
     ok(BR.Roster.get(1).state == BR.PlayerState.ALIVE,
         'constant altitude promotes the stuck lander DURING the flight')
-    ok(BR.Server.match.state == BR.MatchState.PLAYING,
+    ok(mstate() == BR.MatchState.PLAYING,
         'and the promotion is what takes the match live')
     ok(fakeTime < r.tEnd, 'long before the route timer',
         ('%.0fs early'):format((r.tEnd - fakeTime) / 1000))
@@ -2465,9 +2522,9 @@ do
     queueUp(1, 'A'); queueUp(2, 'B')
     fakeTime = fakeTime + 1000
     BR.Sched.step(fakeTime)
-    fakeTime = BR.Server.match.endsAt + 1
+    fakeTime = mendsAt() + 1
     BR.Sched.step(fakeTime)
-    local r2 = BR.Bus.active()
+    local r2 = BR.Bus.active(theMatch())
     fakeTime = r2.jumpFrom + 1000
     fire(BR.Net.BUS_JUMP, 1)
     fire(BR.Net.BUS_JUMP, 2)
@@ -2486,7 +2543,7 @@ do
         'a death on the ground is observed while others still fly')
     ok(BR.Roster.get(1).state == BR.PlayerState.FREEFALL,
         'a genuinely descending glider is never promoted')
-    ok(BR.Server.match.state == BR.MatchState.BUS,
+    ok(mstate() == BR.MatchState.BUS,
         'and the flight goes on for everyone else')
     pedHealth[1002] = nil
 
@@ -2495,12 +2552,100 @@ do
     fire(BR.Net.DROP_LANDED, 1)
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.PLAYING,
+    ok(mstate() == BR.MatchState.PLAYING,
         'the survivor landing takes it live')
     fakeTime = fakeTime + 3100
     BR.Sched.step(fakeTime)
-    ok(BR.Server.match.state == BR.MatchState.ENDED,
+    ok(mstate() == BR.MatchState.ENDED,
         'and last squad standing wins off the mid-flight death')
+end
+
+describe('match.parallel')
+do
+    -- THE PARALLEL-MATCHES MODEL (user call, 2026-08-04): matches are
+    -- instances. While one sits in OPEN WARMUP, ready-ups join IT; once it
+    -- is BUS-or-later the next ready-ups queue and form their own -- and
+    -- the two then run fully isolated: buckets, storms, kill feeds, win
+    -- conditions, teardown.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A1'); join(2, 'A2'); join(3, 'B1'); join(4, 'B2')
+
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local A = theMatch()
+    ok(A ~= nil and A.state == BR.MatchState.WARMUP, 'match A forms')
+
+    -- The formation gate, front half: an open warmup absorbs ready-ups.
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = 'solo' })
+    ok(BR.Roster.get(3).state == BR.PlayerState.WARMUP,
+        'an open warmup absorbs a ready-up directly')
+    ok(BR.Server.matchOf(3) == A, 'into match A itself')
+    fire(BR.Net.MATCH_LEAVE, 3)   -- steps back out for the B half below
+    ok(BR.Server.matchOf(3) == nil, 'and leaving detaches cleanly')
+
+    -- A departs; the gate opens.
+    BR.Match.transition(A, BR.MatchState.BUS)
+    fire(BR.Net.QUEUE_JOIN, 3, { mode = 'solo' })
+    ok(BR.Server.queue[3] ~= nil, 'once A is flying, ready-ups queue instead')
+    fire(BR.Net.QUEUE_JOIN, 4, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+
+    local B = theMatch()
+    ok(B ~= nil and B.id ~= A.id, 'a second match forms while A is mid-flight')
+    ok(B.state == BR.MatchState.WARMUP and A.state == BR.MatchState.BUS,
+        'each instance holds its own state')
+    ok(A.bucket ~= B.bucket, 'the matches live in different routing buckets')
+    ok(buckets[1] == A.bucket and buckets[3] == B.bucket,
+        'with their players routed apart',
+        ('p1 %s (A %d), p3 %s (B %d)'):format(tostring(buckets[1]), A.bucket,
+                                              tostring(buckets[3]), B.bucket))
+
+    -- A's landings take A live without moving B.
+    local r = A.route
+    fakeTime = math.max(fakeTime, r.jumpFrom + 1000)
+    fire(BR.Net.BUS_JUMP, 1); fire(BR.Net.BUS_JUMP, 2)
+    fire(BR.Net.DROP_LANDED, 1); fire(BR.Net.DROP_LANDED, 2)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(A.state == BR.MatchState.PLAYING, 'A goes live on its own landings')
+    ok(B.state == BR.MatchState.WARMUP, 'without moving B')
+
+    BR.Match.transition(B, BR.MatchState.PLAYING)
+    ok(A.storm ~= nil and B.storm ~= nil, 'each match runs its own storm')
+    ok(A.storm ~= B.storm, 'two distinct records')
+
+    -- A kill in B is silence in A: scoped feed, scoped win condition.
+    sent = {}
+    BR.Combat.eliminate(4, 'test', 3)
+    local feedTargets = {}
+    for _, s in ipairs(eventsOf(BR.Net.KILL_FEED)) do
+        feedTargets[s.target] = true
+    end
+    ok(feedTargets[3] and feedTargets[4],
+        "B's kill feed reaches B's players")
+    ok(not feedTargets[1] and not feedTargets[2] and not feedTargets[-1],
+        "and never A's, nor the whole server")
+
+    fakeTime = fakeTime + 4000   -- past WIN_GRACE_MS
+    BR.Sched.step(fakeTime)
+    ok(B.state == BR.MatchState.ENDED, "B's win condition fires on B's kill")
+    ok(A.state == BR.MatchState.PLAYING, 'while A plays on, untouched')
+
+    -- B runs out and is destroyed; A survives it.
+    fakeTime = B.endsAt + 1
+    BR.Sched.step(fakeTime)      -- ENDED -> CLEANUP
+    fakeTime = B.endsAt + 1
+    BR.Sched.step(fakeTime)      -- CLEANUP -> destroyed
+    ok(BR.Server.matches[B.id] == nil, 'B is destroyed after its cleanup')
+    ok(BR.Server.matches[A.id] == A and A.state == BR.MatchState.PLAYING,
+        'and A is still running')
+    ok(BR.Server.matchOf(3) == nil
+       and BR.Roster.get(3).state == BR.PlayerState.LOBBY,
+        "B's players are ordinary lobby players again")
 end
 
 describe('markers')

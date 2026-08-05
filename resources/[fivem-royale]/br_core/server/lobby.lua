@@ -91,12 +91,15 @@ function BR.Lobby.join(src, mode)
         BR.Party.leave(src)
     end
 
-    -- During WARMUP the bus has not left, so readying up joins the FORMING
-    -- match directly instead of queueing for the one after it. The mode they
-    -- clicked is irrelevant here -- the match already has a mode. From BUS
-    -- onward this falls through to the normal queue.
-    if BR.Server.match.state == BR.MatchState.WARMUP then
-        BR.Party.lateJoin(src)
+    -- While a match sits in OPEN WARMUP (not full), readying up joins it
+    -- directly instead of queueing for the one after it. The mode they
+    -- clicked is irrelevant here -- the match already has a mode. Once every
+    -- match is BUS-or-later (or a full warmup), this falls through to the
+    -- normal queue -- which is exactly the parallel-matches formation gate:
+    -- the queue only ever accumulates toward a NEW instance.
+    local forming = BR.Server.formingMatch()
+    if forming then
+        BR.Party.lateJoin(src, forming)
         return
     end
 

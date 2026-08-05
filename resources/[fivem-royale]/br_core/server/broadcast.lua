@@ -73,19 +73,71 @@ function BR.Server.notifyAll(text, tone)
     TriggerClientEvent(BR.Net.NOTIFY, -1, { text = text, tone = tone or 'info' })
 end
 
+--- Send one event to every member of a match's audience.
+---
+--- THE SCOPING PRIMITIVE of the parallel-matches model: match traffic --
+--- state changes, storm records, bus routes, the kill feed -- reaches the
+--- players attached to that instance and nobody else. A lobby bystander no
+--- longer hears about anyone's match at all, which is also what keeps two
+--- concurrent matches mutually invisible on the wire.
+--- @param m table
+--- @param event string
+--- @param payload any
+function BR.Broadcast.toMatch(m, event, payload)
+    for _, src in ipairs(BR.Server.audience(m)) do
+        TriggerClientEvent(event, src, payload)
+    end
+end
+
 --- The heartbeat: counts every client needs but nobody needs instantly.
 ---
 --- Sent unconditionally rather than on change, because it is also how a client
---- that missed a delta re-converges without needing a full snapshot.
+--- that missed a delta re-converges without needing a full snapshot. Each
+--- player hears about THEIR match; players in no match get the WAITING view,
+--- which is how a client's mirror settles back to the lobby after any exit.
 local function digest()
-    TriggerClientEvent(BR.Net.DIGEST, -1, {
-        alive       = BR.Server.aliveCount(),
-        squadsAlive = BR.Server.squadsAlive(),
-        connected   = BR.Server.count(),
-        state       = BR.Server.match.state,
-        endsAt      = BR.Server.match.endsAt,
-        serverNow   = GetGameTimer(),
-    })
+    local now       = GetGameTimer()
+    local connected = BR.Server.count()
+
+    local lobbyPayload = {
+        alive       = 0,
+        squadsAlive = 0,
+        connected   = connected,
+        state       = BR.MatchState.WAITING,
+        endsAt      = 0,
+        serverNow   = now,
+    }
+
+    local byMatch = {}   -- [matchId] = payload, built once per match
+    BR.Server.eachMatch(function(m)
+        byMatch[m.id] = {
+            alive       = BR.Server.aliveCount(m),
+            squadsAlive = BR.Server.squadsAlive(m),
+            connected   = connected,
+            state       = m.state,
+            endsAt      = m.endsAt,
+            serverNow   = now,
+        }
+    end)
+
+    BR.Roster.each(nil, function(src, e)
+        TriggerClientEvent(BR.Net.DIGEST, src,
+            (e.matchId and byMatch[e.matchId]) or lobbyPayload)
+    end)
+end
+
+--- The match view one player should hold: their own instance, or the lobby's
+--- WAITING idle.
+--- @param src integer
+--- @return table match, integer alive, integer squadsAlive, table|nil storm
+local function viewFor(src)
+    local m = BR.Server.matchOf(src)
+    if m then
+        return { state = m.state, mode = m.mode, endsAt = m.endsAt },
+               BR.Server.aliveCount(m), BR.Server.squadsAlive(m), m.storm
+    end
+    return { state = BR.MatchState.WAITING, mode = BR.Mode.SOLO.key, endsAt = 0 },
+           0, 0, nil
 end
 
 --- Everything a client needs to rebuild its mirror from nothing.
@@ -94,42 +146,51 @@ end
 --- Deltas are an optimisation on top of this; the snapshot is what makes them
 --- safe, because any client that falls behind can always be re-seeded.
 ---
+--- The roster is global (the lobby lists everyone), but the MATCH portion is
+--- the receiver's own view -- so a snapshot with no target fans out as one
+--- personalised send per player rather than one broadcast.
+---
 --- @param src integer|nil  a single player, or nil for everyone
 function BR.Broadcast.snapshot(src)
-    local payload = {
-        seq       = seq,
-        roster    = BR.Roster.publicAll(),
-        match     = {
-            state  = BR.Server.match.state,
-            mode   = BR.Server.match.mode,
-            endsAt = BR.Server.match.endsAt,
-        },
-        alive       = BR.Server.aliveCount(),
-        squadsAlive = BR.Server.squadsAlive(),
-        serverNow   = GetGameTimer(),
-        storm       = BR.Server.storm,
-    }
+    local roster = BR.Roster.publicAll()
+    local now    = GetGameTimer()
+
+    local function payloadFor(target)
+        local match, alive, squadsAlive, storm = viewFor(target)
+        return {
+            seq         = seq,
+            roster      = roster,
+            match       = match,
+            alive       = alive,
+            squadsAlive = squadsAlive,
+            serverNow   = now,
+            storm       = storm,
+        }
+    end
 
     if src then
-        TriggerClientEvent(BR.Net.SNAPSHOT, src, payload)
+        TriggerClientEvent(BR.Net.SNAPSHOT, src, payloadFor(src))
     else
-        TriggerClientEvent(BR.Net.SNAPSHOT, -1, payload)
+        BR.Roster.each(nil, function(target)
+            TriggerClientEvent(BR.Net.SNAPSHOT, target, payloadFor(target))
+        end)
     end
 end
 
---- Announce a match state transition.
+--- Announce a match state transition, to that match's audience.
 ---
 --- Flushes queued deltas first: a client must not learn the match started before
 --- it learns who is in it.
+--- @param m table
 --- @param state string
 --- @param endsAt number
 --- @param meta table|nil
-function BR.Broadcast.state(state, endsAt, meta)
+function BR.Broadcast.state(m, state, endsAt, meta)
     flush()
-    TriggerClientEvent(BR.Net.STATE, -1, {
+    BR.Broadcast.toMatch(m, BR.Net.STATE, {
         state     = state,
         endsAt    = endsAt,
-        mode      = BR.Server.match.mode,
+        mode      = m.mode,
         serverNow = GetGameTimer(),
         meta      = meta,
     })

@@ -373,14 +373,18 @@ function BR.Party.prospectiveSquads(srcs, mode)
     return squads
 end
 
-function BR.Party.formSquads(mode)
-    -- Clear last match's squads first; squadId is per-match, partyId is not.
-    -- clearFields rather than direct assignment, because a nil cannot travel in
-    -- a delta -- assigning it left every client displaying the previous match's
-    -- squad indefinitely, most visibly when switching from squads to solo.
-    BR.Roster.each(nil, function(src)
-        BR.Roster.clearFields(src, { 'squadId', 'colour' })
-    end)
+function BR.Party.formSquads(m)
+    local mode = m.mode
+
+    -- Clear stale squad identity on THIS match's players first; squadId is
+    -- per-match, partyId is not. Scoped to the instance -- another match's
+    -- squads are mid-fight and must never be touched. clearFields rather
+    -- than direct assignment, because a nil cannot travel in a delta --
+    -- assigning it left every client displaying the previous match's squad
+    -- indefinitely, most visibly when switching from squads to solo.
+    BR.Roster.each(
+        function(e) return e.matchId == m.id end,
+        function(src) BR.Roster.clearFields(src, { 'squadId', 'colour' }) end)
 
     if mode == BR.Mode.SOLO.key then
         print('[br_core] solo match -- no squads formed')
@@ -397,7 +401,7 @@ function BR.Party.formSquads(mode)
         local members = {}
         for _, src in ipairs(party.members) do
             local e = BR.Roster.get(src)
-            if e and BR.Server.isInMatch(e.state) then
+            if e and e.matchId == m.id and BR.Server.isInMatch(e.state) then
                 members[#members + 1] = src
                 placed[src] = true
             end
@@ -410,7 +414,7 @@ function BR.Party.formSquads(mode)
     -- Then everyone else, filling existing squads before opening new ones.
     local solos = {}
     BR.Roster.each(
-        function(e) return BR.Server.isInMatch(e.state) end,
+        function(e) return e.matchId == m.id and BR.Server.isInMatch(e.state) end,
         function(src) if not placed[src] then solos[#solos + 1] = src end end)
     table.sort(solos)
 
@@ -456,9 +460,12 @@ function BR.Party.formSquads(mode)
         end
     end
 
-    -- Assign ids and colours.
+    -- Assign ids and colours. Squad ids are NAMESPACED BY MATCH ('m3sq1'):
+    -- with concurrent matches, a bare 'sq1' in two of them would conflate
+    -- everything keyed on squadId -- the win condition, squad beacons,
+    -- marker audiences -- across match boundaries.
     for i, sq in ipairs(squads) do
-        local id = ('sq%d'):format(i)
+        local id = ('m%dsq%d'):format(m.id, i)
         local colour = COLOURS[((i - 1) % #COLOURS) + 1]
         for _, src in ipairs(sq.members) do
             local e = BR.Roster.get(src)
@@ -514,32 +521,38 @@ end
 --- WARMUP only. From BUS onward the drop is in motion and a new player would
 --- materialise into a match with no way aboard; those queue for the next one.
 --- @param src integer
-function BR.Party.lateJoin(src)
+--- @param m table  the forming match instance
+function BR.Party.lateJoin(src, m)
     local entry = BR.Roster.get(src)
-    if not entry then return end
+    if not entry or not m then return end
 
+    -- Membership BEFORE the state flip: the state change is what applies
+    -- the routing bucket, and the bucket needs the matchId already there.
+    BR.Roster.setMatch(src, m.id)
     BR.Roster.setState(src, BR.PlayerState.WARMUP)
 
-    if BR.Server.match.mode ~= BR.Mode.SQUAD.key then
+    if m.mode ~= BR.Mode.SQUAD.key then
         BR.Server.notify(src, 'Joined the match -- dropping soon.', 'success')
-        if BR.Bus and BR.Bus.sendPreview then BR.Bus.sendPreview(src) end
+        if BR.Bus and BR.Bus.sendPreview then BR.Bus.sendPreview(m, src) end
         return
     end
 
     local maxSize = BR.Config.Match.maxSquadSize
 
-    -- Whatever squads exist right now, counted from the roster: sorted ids so
-    -- the tie-break between equally empty squads is reproducible.
+    -- Whatever squads exist in THIS match right now, counted from the
+    -- roster: sorted ids so the tie-break between equally empty squads is
+    -- reproducible.
+    local idPattern = '^m' .. m.id .. 'sq(%d+)$'
     local counts, colours, ids, maxIdx = {}, {}, {}, 0
     BR.Roster.each(nil, function(_, e)
-        if e.squadId then
+        if e.squadId and e.matchId == m.id then
             if not counts[e.squadId] then
                 ids[#ids + 1] = e.squadId
                 counts[e.squadId] = 0
                 colours[e.squadId] = e.colour
             end
             counts[e.squadId] = counts[e.squadId] + 1
-            local n = tonumber(e.squadId:match('^sq(%d+)$'))
+            local n = tonumber(e.squadId:match(idPattern))
             if n and n > maxIdx then maxIdx = n end
         end
     end)
@@ -574,7 +587,7 @@ function BR.Party.lateJoin(src)
     if target then
         colour = colours[target]
     else
-        target = ('sq%d'):format(maxIdx + 1)
+        target = ('m%dsq%d'):format(m.id, maxIdx + 1)
         colour = COLOURS[(maxIdx % #COLOURS) + 1]
     end
 
@@ -591,7 +604,7 @@ function BR.Party.lateJoin(src)
 
     -- The room saw the flight preview when warmup began; the late arrival
     -- needs their own copy to plan a drop with.
-    if BR.Bus and BR.Bus.sendPreview then BR.Bus.sendPreview(src) end
+    if BR.Bus and BR.Bus.sendPreview then BR.Bus.sendPreview(m, src) end
 
     print(('[br_core] %s (%d) late-joined warmup on %s'):format(entry.name, src, target))
 end
@@ -607,17 +620,20 @@ end
 -- and the roster's public view still carries no positions at all. There is a
 -- wire test pinning both properties.
 BR.Sched.every(1000, 'party.squadpos', function()
-    local ms = BR.Server.match.state
-    if ms ~= BR.MatchState.WARMUP
-       and ms ~= BR.MatchState.BUS
-       and ms ~= BR.MatchState.PLAYING then
-        return
-    end
+    -- Live states, checked per player against THEIR match: with parallel
+    -- matches there is no single gate. Squad ids are match-namespaced, so
+    -- grouping by squadId alone can never mix two matches' beacons.
+    local liveStates = {
+        [BR.MatchState.WARMUP]  = true,
+        [BR.MatchState.BUS]     = true,
+        [BR.MatchState.PLAYING] = true,
+    }
 
     -- Group living squad members. Solos have no squadId and are never sent.
     local squads = {}
     BR.Roster.each(nil, function(src, e)
-        if e.squadId and e.pos
+        local em = e.matchId and BR.Server.matches[e.matchId]
+        if em and liveStates[em.state] and e.squadId and e.pos
            and (BR.Server.isInMatch(e.state) or e.state == BR.PlayerState.DBNO) then
             local sq = squads[e.squadId]
             if not sq then
