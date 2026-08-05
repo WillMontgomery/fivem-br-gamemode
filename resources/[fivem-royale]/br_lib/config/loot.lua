@@ -148,15 +148,19 @@ BR.Config.Loot = {
     -- anyone watching the building knows exactly where you are.
     chestHoldMs     = 1000,
 
-    -- The GLYPH in the pickup prompt, and nothing else -- which key works is
-    -- always the player's own RegisterKeyMapping binding, never this.
+    -- The GLYPH in the pickup prompt.
     --
-    -- false = render the real binding via BR.Native.inputForCommand. PLAN.md
-    -- records that a custom binding's ~INPUT_<hash>~ drew as a HOLE on this
-    -- build once (the bus doors prompt hit it), so if the prompt comes back
-    -- blank in-game, set this to a vanilla token such as '~INPUT_CONTEXT~'.
-    -- /brpromptcheck prints both side by side.
-    promptToken     = false,
+    -- SETTLED IN-GAME 2026-08-05: a custom RegisterKeyMapping binding's
+    -- ~INPUT_8D762F65~ renders as a HOLE ("press  to pick up"), while
+    -- ~INPUT_CONTEXT~ draws a proper E key. So the prompt shows the VANILLA
+    -- token -- and, so that the picture never lies, GTA's own INPUT_CONTEXT
+    -- control is accepted as a second interact input alongside our binding.
+    -- Both are player-configurable: INPUT_CONTEXT in GTA's settings, ours in
+    -- Settings > Key Bindings > FiveM. Neither is a hardcoded key.
+    promptToken     = '~INPUT_CONTEXT~',
+
+    -- The GTA control that backs that glyph. 51 = INPUT_CONTEXT.
+    promptControl   = 51,
 
     -- Consumables are interruptible by design -- committing to an 8s med kit
     -- while being shot should lose you the med kit, not heal you through it.

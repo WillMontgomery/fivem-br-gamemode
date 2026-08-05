@@ -44,13 +44,33 @@ local airborneSeen = false
 local chuteSpent = false
 
 --- Take the parachute away for good, and kill the vanilla prompt with it.
+---
+--- `hard` is the second attempt: RemoveWeaponFromPed has now failed to shift
+--- GADGET_PARACHUTE often enough (it is a gadget, not an ordinary weapon, and
+--- the parachute task can hand it straight back as it unwinds) that the
+--- fallback is RemoveAllPedWeapons -- which does work, and is safe here
+--- because client/inventory.lua re-grants the active slot on its next tick.
 --- @param ped integer
-local function disarmChute(ped)
-    RemoveWeaponFromPed(ped, CHUTE)
+--- @param hard boolean|nil
+local function disarmChute(ped, hard)
+    if hard then
+        RemoveAllPedWeapons(ped, true)
+        if BR.Inv and BR.Inv.reapply then BR.Inv.reapply() end
+    else
+        RemoveWeaponFromPed(ped, CHUTE)
+    end
     -- The COUNT is ammo and outlives the weapon removal; this is the line the
     -- "reserve chute after landing" reports kept coming back to.
     SetPedAmmo(ped, CHUTE, 0)
     ClearHelp(true)
+end
+
+--- Does this ped still have a parachute in any sense the engine cares about?
+--- @param ped integer
+--- @return boolean
+local function hasChute(ped)
+    return HasPedGotWeapon(ped, CHUTE, false)
+        or GetAmmoInPedWeapon(ped, CHUTE) > 0
 end
 
 --- Parse '#RRGGBB' (the squad colour the server assigned) into rgb.
@@ -330,12 +350,12 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
         -- single-shot RemoveWeaponFromPed can see coming.
         disarmChute(ped)
         Citizen.CreateThread(function()
-            for _ = 1, 15 do
+            for attempt = 1, 15 do
                 Citizen.Wait(100)
                 local p = PlayerPedId()
-                if not HasPedGotWeapon(p, CHUTE, false)
-                   and GetAmmoInPedWeapon(p, CHUTE) == 0 then break end
-                disarmChute(p)
+                if not hasChute(p) then break end
+                -- Escalate after three polite attempts.
+                disarmChute(p, attempt >= 3)
             end
         end)
 
@@ -362,6 +382,7 @@ end)
 --
 -- HasPedGotWeapon first, so the ordinary case is one cheap call at 10Hz and the
 -- expensive height probe only runs for a ped that actually still has a chute.
+local sweeps = 0
 BR.Loop.register(BR.Loop.TICK, 'skydive.disarm', function()
     if dropping then return end
 
@@ -369,22 +390,39 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.disarm', function()
     if st ~= BR.PlayerState.ALIVE and st ~= BR.PlayerState.DBNO then return end
 
     local ped = PlayerPedId()
-    if not HasPedGotWeapon(ped, CHUTE, false)
-       and GetAmmoInPedWeapon(ped, CHUTE) == 0 then return end
-    -- Never yank one out of the air: if this player is somehow genuinely
-    -- falling, the floor above is the system that owns them.
-    if IsPedFalling(ped) or GetEntityHeightAboveGround(ped) > 5.0 then return end
+    if not hasChute(ped) then
+        sweeps = 0
+        return
+    end
 
-    disarmChute(ped)
+    -- WATER IS GROUND. GetEntityHeightAboveGround measures to the SEABED, so
+    -- a player swimming in 30m of water reads as 30m up and the height gate
+    -- skipped them entirely -- which is the worst possible place to leave
+    -- someone armed with a parachute, because the engine's next expected
+    -- action is a deploy they cannot perform (user, 2026-08-05).
+    local inWater = IsEntityInWater(ped)
+    if not inWater then
+        -- Never yank one out of the air: if this player is somehow genuinely
+        -- falling, the floor above is the system that owns them.
+        if IsPedFalling(ped) or GetEntityHeightAboveGround(ped) > 5.0 then
+            sweeps = 0
+            return
+        end
+    end
+
+    sweeps = sweeps + 1
+    disarmChute(ped, sweeps >= 3)
 end)
 
 --- Everything about the drop, in one paste.
 RegisterCommand('brdrop', function()
     local ped = PlayerPedId()
     print('=== drop (client) ===')
-    print(('  dropping  %s   chuteState %d   hasChute %s'):format(
+    print(('  dropping  %s   chuteState %d   hasChute %s   chuteAmmo %d   reserve %s'):format(
         tostring(dropping), GetPedParachuteState(ped),
-        tostring(HasPedGotWeapon(ped, CHUTE, false))))
+        tostring(HasPedGotWeapon(ped, CHUTE, false)),
+        GetAmmoInPedWeapon(ped, CHUTE),
+        tostring(GetPlayerHasReserveParachute(PlayerId()))))
     print(('  AGL %.0fm   onFoot %s   inWater %s   falling %s'):format(
         GetEntityHeightAboveGround(ped), tostring(IsPedOnFoot(ped)),
         tostring(IsEntityInWater(ped)), tostring(IsPedFalling(ped))))

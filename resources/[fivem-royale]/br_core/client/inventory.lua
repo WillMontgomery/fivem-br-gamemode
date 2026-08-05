@@ -34,11 +34,39 @@ local applied, appliedPed = nil, 0
 -- Last ammo report, so the 2Hz push is silent when nothing was fired.
 local lastReport = { clip = -1, pool = -1, at = 0 }
 
+-- GTA'S OWN WEAPON UI HAS TO GO. The inventory replaces it wholesale, and
+-- leaving the engine's version bound to the same keys means every one of our
+-- inputs fires two things at once: TAB opened our panel AND the weapon wheel,
+-- and 1-5 selected our slots AND the wheel's weapon groups (user, 2026-08-05).
+--
+-- These are DISABLED, not rebound. The player's own GTA control settings still
+-- decide which physical key each of these is -- we are suppressing the
+-- engine's reaction to them, not claiming a key.
+local SUPPRESS = {
+    37,   -- INPUT_SELECT_WEAPON        (the weapon wheel; TAB by default)
+    157, 158, 159, 160, 161,  -- INPUT_SELECT_WEAPON_UNARMED..SHOTGUN (1-5)
+    162, 163, 164,            -- ..and the rest of the group row
+    99, 100,                  -- INPUT_SELECT_NEXT/PREV_WEAPON
+    14, 15,                   -- INPUT_WEAPON_WHEEL_NEXT/PREV (mouse wheel)
+}
+
+-- Scroll cycles OUR slots instead. Read as DISABLED controls, which is what
+-- they are after the loop above -- the wheel binding is still whatever the
+-- player has it set to in GTA's own settings.
+local WHEEL_NEXT, WHEEL_PREV = 14, 15
+
 --- Can this player's ped be given anything at all?
+---
+--- WARMUP counts. There is loot on the warmup island and the point of it is
+--- early PVP, so the bar, the panel and the weapon grants all have to work
+--- there -- a bar showing five slots you cannot open was the worst of both
+--- (user, 2026-08-05).
 --- @return boolean
 local function canArm()
     local st = BR.State.me.state
-    return st == BR.PlayerState.ALIVE or st == BR.PlayerState.DBNO
+    return st == BR.PlayerState.ALIVE
+        or st == BR.PlayerState.DBNO
+        or st == BR.PlayerState.WARMUP
 end
 
 --- The weapon hash a slot represents, or nil for anything not held.
@@ -270,7 +298,50 @@ BR.Loop.register(BR.Loop.TICK, 'inv.apply', function()
         closePanel()
         return
     end
+
+    -- The pause menu is a full-screen map with its own cursor; ours sitting on
+    -- top of it is two interfaces fighting for the same mouse (user,
+    -- 2026-08-05).
+    if panelOpen and IsPauseMenuActive() then closePanel() end
+
     applyActive(false)
+end)
+
+-- Control suppression and slot cycling, per frame.
+--
+-- FRAME rather than TICK because DisableControlAction only lasts one frame,
+-- and a wheel that flickers into existence every other frame is worse than one
+-- that never goes away.
+BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
+    if not canArm() then return end
+
+    for i = 1, #SUPPRESS do
+        DisableControlAction(0, SUPPRESS[i], true)
+    end
+
+    -- MOUSE WHEEL CYCLES SLOTS, WRAPPING. Past slot 5 is slot 1 -- a cycle
+    -- with ends is a cycle you have to think about (user, 2026-08-05).
+    local step = 0
+    if IsDisabledControlJustPressed(0, WHEEL_NEXT) then step = 1
+    elseif IsDisabledControlJustPressed(0, WHEEL_PREV) then step = -1 end
+
+    if step ~= 0 then
+        local want = ((inv.active - 1 + step) % SLOTS) + 1
+        TriggerServerEvent(BR.Net.INV_SELECT, { slot = want })
+    end
+
+    -- While the panel is up the cursor belongs to the panel. Keep-input focus
+    -- means the game still reads the mouse, so without this the camera spins
+    -- as you reach for a slot (user, 2026-08-05). Movement is deliberately
+    -- left alone: this is a screen you use DURING a fight.
+    if panelOpen then
+        DisableControlAction(0, 1, true)    -- LOOK_LR
+        DisableControlAction(0, 2, true)    -- LOOK_UD
+        DisableControlAction(0, 24, true)   -- ATTACK
+        DisableControlAction(0, 25, true)   -- AIM
+        DisableControlAction(0, 68, true)   -- VEH_ATTACK
+        DisableControlAction(0, 106, true)  -- VEH_MOUSE_CONTROL_OVERRIDE
+    end
 end)
 
 -- The ammo report: 2Hz, decrease-only at the far end, and silent when nothing
@@ -331,4 +402,14 @@ end)
 --- @return table
 function BR.Inv.local_()
     return inv
+end
+
+--- Force the active slot back onto the ped.
+---
+--- Called by skydive.lua after its hard disarm (RemoveAllPedWeapons, which
+--- takes the real weapon with the parachute). Without this, landing with a gun
+--- would leave the mirror thinking it was applied and the ped empty-handed.
+function BR.Inv.reapply()
+    applied = nil
+    applyActive(true)
 end

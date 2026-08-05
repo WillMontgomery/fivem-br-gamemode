@@ -375,11 +375,8 @@ end)
 -- Input
 -- --------------------------------------------------------------------------
 
-BR.Keys.on('interact', function(pressed)
-    if not pressed then
-        hold.id = nil
-        return
-    end
+--- Begin an interaction with whatever is in front of the player.
+local function interactPressed()
     if not canTake() then return end
 
     local p = GetEntityCoords(PlayerPedId())
@@ -397,6 +394,34 @@ BR.Keys.on('interact', function(pressed)
     if now - (claimedAt[e.id] or 0) < 500 then return end
     claimedAt[e.id] = now
     TriggerServerEvent(BR.Net.LOOT_CLAIM, { id = e.id })
+end
+
+BR.Keys.on('interact', function(pressed)
+    if not pressed then
+        hold.id = nil
+        return
+    end
+    interactPressed()
+end)
+
+-- TWO INPUTS, ONE ACTION. The prompt draws ~INPUT_CONTEXT~ because a custom
+-- binding's token renders as a blank hole on this build (settled in-game
+-- 2026-08-05, /brpromptcheck), and a prompt showing a key that does nothing is
+-- worse than no prompt -- so GTA's own context control works too. Ours still
+-- works alongside it, and both are things the player configures.
+BR.Loop.register(BR.Loop.FRAME, 'loot.interact', function()
+    if not canTake() then return end
+    local control = L.promptControl
+    if not control then return end
+
+    if IsControlJustPressed(0, control) then
+        interactPressed()
+    elseif hold.id and not IsControlPressed(0, control)
+           and not BR.Keys.isHeld('interact') then
+        -- Released: either input letting go cancels, so long as neither is
+        -- still down.
+        hold.id = nil
+    end
 end)
 
 -- --------------------------------------------------------------------------

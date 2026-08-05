@@ -512,6 +512,17 @@ function BR.Native.check()
         SetDrawOrigin(0.0, 0.0, -200.0, 0)
         ClearDrawOrigin()
     end)
+    -- The no-teamkill net reads these every frame that health drops. A nil
+    -- here means friendly fire silently works again.
+    probe('HasEntityBeenDamagedByEntity', function()
+        return HasEntityBeenDamagedByEntity(ped, ped, true)
+    end)
+    probe('ClearEntityLastDamageEntity', function()
+        ClearEntityLastDamageEntity(ped)
+    end)
+    probe('GetPlayerHasReserveParachute', function()
+        return GetPlayerHasReserveParachute(PlayerId())
+    end)
 
     -- The health model assumption that most affects gameplay: does a player ped
     -- really floor at 100 rather than 0?

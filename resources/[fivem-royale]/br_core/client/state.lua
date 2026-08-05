@@ -312,10 +312,15 @@ AddEventHandler(BR.Net.DIGEST, function(d)
     -- state is ever wrong -- a missed transition, a br_ui restart, a snapshot
     -- that raced the page load -- this corrects it within half a second.
     -- Pushed only on a CHANGE, so the net is free when nothing is wrong.
-    local was, wasEnd = S.match.state, S.match.endsAt
+    local was, wasEnd, wasMode = S.match.state, S.match.endsAt, S.match.mode
     S.match.state  = d.state or S.match.state
     S.match.endsAt = d.endsAt or S.match.endsAt
-    if S.match.state ~= was or S.match.endsAt ~= wasEnd then
+    -- Mode is carried here as well as on STATE because a late joiner is
+    -- attached to a match that is ALREADY in warmup and so never hears a
+    -- transition -- this is the only channel that reaches them.
+    S.match.mode   = d.mode or S.match.mode
+    if S.match.state ~= was or S.match.endsAt ~= wasEnd
+       or S.match.mode ~= wasMode then
         pushMatchState()
         applyFocusForState(S.match.state)
     end

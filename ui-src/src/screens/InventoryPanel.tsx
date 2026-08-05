@@ -3,6 +3,7 @@ import { useUi, selInv } from '../store'
 import { fetchNui } from '../bridge/nui'
 import { CB, RARITY } from '../bridge/types'
 import type { InvSlot } from '../bridge/types'
+import ItemIcon from '../hud/ItemIcon'
 
 /**
  * The TAB panel.
@@ -73,6 +74,9 @@ function SlotCard({
       {slot ? (
         <>
           <div className="flex-1">
+            <div style={{ color: hex }} className="mb-1">
+              <ItemIcon slot={slot} size="2.2rem" />
+            </div>
             <div className="text-sm font-semibold leading-tight">{slot.label}</div>
             <div className="text-[0.6rem] uppercase tracking-wide text-white/40 mt-0.5">
               {slot.kind}

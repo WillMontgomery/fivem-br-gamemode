@@ -99,11 +99,19 @@ local function digest()
     local now       = GetGameTimer()
     local connected = BR.Server.count()
 
+    -- MODE RIDES THE DIGEST. It used to travel only on the STATE event, which
+    -- a LATE JOINER never receives: they are attached to a match that is
+    -- already in WARMUP, so no transition is broadcast for them and their
+    -- mirror kept the lobby's default 'solo' until the next real transition.
+    -- The visible symptom was a squad player's HUD hiding the squads counter
+    -- through the whole warmup and correcting itself at the jump (user,
+    -- 2026-08-05).
     local lobbyPayload = {
         alive       = 0,
         squadsAlive = 0,
         connected   = connected,
         state       = BR.MatchState.WAITING,
+        mode        = BR.Mode.SOLO.key,
         endsAt      = 0,
         serverNow   = now,
     }
@@ -115,6 +123,7 @@ local function digest()
             squadsAlive = BR.Server.squadsAlive(m),
             connected   = connected,
             state       = m.state,
+            mode        = m.mode,
             endsAt      = m.endsAt,
             serverNow   = now,
         }

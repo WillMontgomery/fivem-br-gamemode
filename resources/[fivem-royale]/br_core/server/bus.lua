@@ -466,6 +466,12 @@ AddEventHandler(BR.Net.DROP_LANDED, function()
                 BR.Server.notify(src,
                     'The match will start once all players have landed.', 'info')
             end
+            -- Logged either way: "the landing notice does not work in solos"
+            -- has two very different causes -- nobody else was actually still
+            -- in the air (correct, and the common case testing alone), or the
+            -- count is wrong. This line tells them apart from the console.
+            print(('[br_core] landing notice: match %d state %s, %d still airborne')
+                :format(m.id, m.state, airborne))
         end
     else
         -- Refusals are AUDIBLE (the jump handler's rule, applied here after

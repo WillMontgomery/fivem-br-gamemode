@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useUi } from '../store'
 import { RARITY } from '../bridge/types'
 import type { InvPayload, InvSlot } from '../bridge/types'
+import ItemIcon from './ItemIcon'
 
 /**
  * The always-on inventory bar.
@@ -81,17 +82,23 @@ function Slot({
             className="absolute bottom-0 left-0 right-0 h-[0.2rem]"
             style={{ backgroundColor: hex }}
           />
-          <div className="absolute inset-0 flex items-center justify-center px-1">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-0.5 px-1">
+            <div style={{ color: hex }}>
+              <ItemIcon slot={slot} />
+            </div>
             <span
-              className="text-[0.5rem] leading-tight text-center uppercase tracking-wide"
-              style={{ color: 'rgba(255,255,255,0.92)' }}
+              className="text-[0.42rem] leading-none text-center uppercase tracking-wide"
+              style={{ color: 'rgba(255,255,255,0.75)' }}
             >
               {slot.label}
             </span>
           </div>
-          {slot.count > 1 && (
+          {/* A weapon shows its magazine, everything else its stack. Both were
+              missing before -- a weapon with clip 24 and count 1 fell through
+              the count > 1 test and showed no number at all. */}
+          {(slot.kind === 'weapon' ? slot.clip != null : slot.count > 1) && (
             <div className="absolute bottom-0 right-0 px-1 text-[0.6rem] font-bold tabular-nums">
-              {slot.count}
+              {slot.kind === 'weapon' ? slot.clip : slot.count}
             </div>
           )}
           {KIND_HINT[slot.kind] && (

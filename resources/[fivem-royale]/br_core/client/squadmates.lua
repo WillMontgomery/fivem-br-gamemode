@@ -187,6 +187,57 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
     end
 end)
 
+-- FRIENDLY FIRE IS UNDONE, BECAUSE IT CANNOT BE PREVENTED HERE.
+--
+-- The relationship-group scheme (BR_ALLY + SetCanAttackFriendly) governs AI
+-- aggression and melee, and it does NOT stop one player's bullets from
+-- damaging another's ped -- which is why teamkilling survived being "fixed"
+-- twice (user, 2026-08-05, third report). GTA's own answer is the team system,
+-- which this gamemode does not use, so the honest fix at this stage is to
+-- notice the damage and put the health back.
+--
+-- This is a CLIENT-SIDE net and it is temporary: M6 moves damage behind
+-- server-side validation, where a shot at a squadmate is simply never applied.
+-- Until then, restoring is the difference between a squad that works and one
+-- that does not.
+--
+-- FRAME, not TICK: at 10Hz an automatic weapon lands several rounds between
+-- samples, and restoring to a health value that was already three bullets old
+-- would leak damage. The per-mate scan only runs on a frame where health
+-- actually dropped, so the ordinary cost is two native reads.
+local lastHp, lastArmour = nil, nil
+
+BR.Loop.register(BR.Loop.FRAME, 'squadmates.noff', function()
+    local st = BR.State.me.state
+    if st ~= BR.PlayerState.ALIVE and st ~= BR.PlayerState.WARMUP then
+        lastHp, lastArmour = nil, nil
+        return
+    end
+
+    local ped     = PlayerPedId()
+    local hp      = GetEntityHealth(ped)
+    local armour  = GetPedArmour(ped)
+    local prevHp, prevArmour = lastHp, lastArmour
+    lastHp, lastArmour = hp, armour
+
+    if not prevHp then return end
+    if hp >= prevHp and armour >= prevArmour then return end
+
+    for src in pairs(mates) do
+        local player = GetPlayerFromServerId(src) -- scope-ok: undoing damage needs the attacker's local ped; out of scope they cannot have shot us
+        local matePed = (player ~= -1) and GetPlayerPed(player) or 0 -- scope-ok: same
+        if matePed ~= 0 and HasEntityBeenDamagedByEntity(ped, matePed, true) then
+            if hp < prevHp then SetEntityHealth(ped, prevHp) end
+            if armour < prevArmour then SetPedArmour(ped, math.floor(prevArmour)) end
+            lastHp, lastArmour = prevHp, prevArmour
+            -- Without this the flag stays set and every later frame reads as a
+            -- fresh teamkill, restoring damage an ENEMY did.
+            ClearEntityLastDamageEntity(ped)
+            break
+        end
+    end
+end)
+
 -- Shared-lobby hygiene. The lobby is ONE routing bucket now, so other lobby
 -- players' peds can stream in -- every one of them frozen, invisible-on-
 -- their-own-client, at the exact vista point the camera occupies. Their own
