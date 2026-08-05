@@ -40,6 +40,7 @@ BR.Net = {
 
     -- Bus / drop
     BUS_ROUTE       = 'br:bus:route',        -- S->C  { sx, sy, ex, ey, alt, tStart, tEnd }
+    BUS_SPECTATE    = 'br:bus:spectate',     -- S->C  { matchId, route } -- another match's departing flight, for warmup bystanders
     BUS_JUMP        = 'br:bus:jump',         -- C->S  request to jump
     BUS_JUMP_OK     = 'br:bus:jumpOk',       -- S->C  { x, y, z, heading }
     DROP_LANDED     = 'br:drop:landed',      -- C->S  reached the ground

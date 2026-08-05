@@ -491,6 +491,122 @@ AddEventHandler(BR.Net.BUS_JUMP_OK, function(d)
     beginDrop(d.x, d.y, d.z, d.heading)
 end)
 
+-- ------------------------------------------------------- ghost flights ---
+--
+-- OTHER matches' departures, rendered for the audience on the tarmac
+-- (user call, 2026-08-04). The warmup pad is communal now, and a departing
+-- flight's riders are visible peds -- but their plane is client-local, so
+-- without this the bystanders watched a formation of people levitate away.
+-- The server sends warmup bystanders a spectator copy of the timed route
+-- (BUS_SPECTATE); this renders a local, non-networked plane flying it.
+-- Purely scenery: no camera, no attachment, no gameplay.
+
+local ghosts = {}   -- [matchId] = { route, plane, pilot, hdg, spawning }
+
+local function removeGhost(id)
+    local g = ghosts[id]
+    if not g then return end
+    if g.pilot and DoesEntityExist(g.pilot) then DeleteEntity(g.pilot) end
+    if g.plane and DoesEntityExist(g.plane) then DeleteEntity(g.plane) end
+    ghosts[id] = nil
+end
+
+local function clearGhosts()
+    for id in pairs(ghosts) do removeGhost(id) end
+end
+
+local function spawnGhost(g)
+    g.spawning = true
+    Citizen.CreateThread(function()
+        local model = GetHashKey(BR.Config.Bus.model)
+        RequestModel(model)
+        local deadline = GetGameTimer() + 10000
+        while not HasModelLoaded(model) and GetGameTimer() < deadline do
+            Citizen.Wait(50)
+        end
+        if not HasModelLoaded(model) or not g.route then
+            g.spawning = false
+            return
+        end
+        local p0 = g.route.points[1]
+        g.plane = CreateVehicle(model, p0.x, p0.y, p0.z,
+                                g.route.heading or 0.0, false, false)
+        SetModelAsNoLongerNeeded(model)
+        SetEntityCollision(g.plane, false, false)
+        SetEntityInvincible(g.plane, true)
+        -- The crew keeps the engine sim (props, audio) alive, same as the
+        -- real ride's plane.
+        local pilotModel = GetHashKey('s_m_m_pilot_01')
+        RequestModel(pilotModel)
+        local pDeadline = GetGameTimer() + 5000
+        while not HasModelLoaded(pilotModel) and GetGameTimer() < pDeadline do
+            Citizen.Wait(50)
+        end
+        if HasModelLoaded(pilotModel) and DoesEntityExist(g.plane) then
+            g.pilot = CreatePed(4, pilotModel, p0.x, p0.y, p0.z,
+                                g.route.heading or 0.0, false, false)
+            SetModelAsNoLongerNeeded(pilotModel)
+            SetEntityInvincible(g.pilot, true)
+            SetBlockingOfNonTemporaryEvents(g.pilot, true)
+            SetPedIntoVehicle(g.pilot, g.plane, -1)
+        end
+        SetVehicleEngineOn(g.plane, true, true, false)
+        g.spawning = false
+    end)
+end
+
+RegisterNetEvent(BR.Net.BUS_SPECTATE)
+AddEventHandler(BR.Net.BUS_SPECTATE, function(d)
+    if type(d) ~= 'table' or not d.matchId or not d.route
+       or not d.route.timed then return end
+    removeGhost(d.matchId)   -- a re-send replaces
+    ghosts[d.matchId] = {
+        route = d.route,
+        hdg   = d.route.heading or 0.0,
+    }
+end)
+
+BR.Loop.register(BR.Loop.FRAME, 'bus.ghosts', function()
+    if not next(ghosts) then return end
+
+    -- Ghosts exist for the pre-flight audience: my own warmup, or my own
+    -- boarding/ride (another flight climbing out past the window is
+    -- exactly the scenery this is for). Any other state means I have
+    -- moved on and the tarmac is no longer my problem.
+    local st = BR.State.me.state
+    if st ~= BR.PlayerState.WARMUP and st ~= BR.PlayerState.BUS then
+        clearGhosts()
+        return
+    end
+
+    local t = BR.Clock.now()
+    for id, g in pairs(ghosts) do
+        local r = g.route
+        if t > r.tEnd + 5000 then
+            removeGhost(id)
+        else
+            if not g.plane and not g.spawning then spawnGhost(g) end
+            if g.plane and DoesEntityExist(g.plane) then
+                local x, y, z = BR.PathPosAt(r.points, t)
+                SetEntityCoordsNoOffset(g.plane, x, y, z, false, false, false)
+
+                -- Look-ahead heading, exponentially eased -- the same cure
+                -- for polyline stepping the real ride uses, minus the roll
+                -- theatrics nobody can judge from the ground.
+                local ax, ay = BR.PathPosAt(r.points, t + 1200)
+                local dx, dy = ax - x, ay - y
+                if dx * dx + dy * dy > 1.0 then
+                    local target = BR.GtaHeading(BR.Bearing(0.0, 0.0, dx, dy))
+                    local turn = ((target - g.hdg + 540.0) % 360.0) - 180.0
+                    g.hdg = (g.hdg + turn
+                        * (1.0 - math.exp(-GetFrameTime() * 2.2))) % 360.0
+                end
+                SetEntityRotation(g.plane, 0.0, 0.0, g.hdg, 2, true)
+            end
+        end
+    end
+end)
+
 --- Everything about the ride, printed at once. The first flight produced
 --- "the plane never moved" with no way to tell a dead loop from a dead
 --- clock from a camera buried in the hull; this answers all three in one

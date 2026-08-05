@@ -473,9 +473,25 @@ end)
 -- interrupted.
 local darkTicks = 0
 BR.Loop.register(BR.Loop.SLOW, 'spawn.antiblack', function()
+    if placing or not spawned then
+        darkTicks = 0
+        return
+    end
+
     -- holdBlack is a deliberately dark screen (the end-of-match sequence);
-    -- recovering from it would fade the aftermath in behind the result card.
-    if placing or not spawned or BR.Spawn.holdBlack then
+    -- recovering from it would fade the aftermath in behind the result
+    -- card. But the hold is only legitimate while that sequence is
+    -- actually running: the mirror reading WAITING with the hold still set
+    -- means the release signal was swallowed somewhere upstream, and a
+    -- watchdog that keeps deferring to it parks the player on black
+    -- forever (live repro, 2026-08-04). An expired hold is released here,
+    -- not respected.
+    if BR.Spawn.holdBlack then
+        if BR.State.match.state == BR.MatchState.WAITING then
+            print('[br_core] holdBlack outlived the match -- releasing (watchdog)')
+            BR.Spawn.holdBlack = false
+            DoScreenFadeIn(1000)
+        end
         darkTicks = 0
         return
     end

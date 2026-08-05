@@ -304,6 +304,21 @@ function BR.Bus.depart(m)
         :format(m.id, (route.jumpFrom - now) / 1000, (route.tEnd - now) / 1000))
 
     BR.Broadcast.toMatch(m, BR.Net.BUS_ROUTE, route)
+
+    -- THE AUDIENCE ON THE TARMAC (user call, 2026-08-04): everyone still at
+    -- the communal warmup pad -- other matches' forming players -- gets a
+    -- SPECTATOR copy of the timed route, and their clients render a ghost
+    -- plane flying it: the departure is a thing you watch, not a group of
+    -- peds levitating away. Scoped to WARMUP-state players outside this
+    -- match; this match's own riders fly the real (equally local) one.
+    BR.Roster.each(
+        function(e) return e.matchId ~= m.id
+            and e.state == BR.PlayerState.WARMUP end,
+        function(src)
+            TriggerClientEvent(BR.Net.BUS_SPECTATE, src,
+                { matchId = m.id, route = route })
+        end)
+
     return (route.tEnd - now) / 1000 + cfg.jumpGrace
 end
 

@@ -2717,6 +2717,152 @@ do
     ok(BR.Server.matchOf(6) == SO, 'a solo ready-up joins the solo warmup')
 end
 
+describe('match.teardownWire')
+do
+    -- The ordering CONTRACT at the end of a match, plus the teardown
+    -- housekeeping the 2026-08-04 playtests caught missing.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local m = theMatch()
+
+    -- ONE 'bus' state event per rider, with the flight's real deadline.
+    -- The transition used to broadcast (endsAt 0) and depart rebroadcast:
+    -- every client logged "state bus" twice.
+    sent = {}
+    BR.Match.transition(m, BR.MatchState.BUS)
+    local busEvents = {}
+    for _, s in ipairs(eventsOf(BR.Net.STATE)) do
+        if s.args[1].state == BR.MatchState.BUS then
+            busEvents[#busEvents + 1] = s
+        end
+    end
+    ok(#busEvents == 2, 'entering BUS sends exactly one state event per rider',
+        ('got %d'):format(#busEvents))
+    ok(busEvents[1] and busEvents[1].args[1].endsAt > fakeTime,
+        'and it carries the flight-derived deadline, not zero')
+
+    -- STATE(ended) must reach clients BEFORE the roster sweep's LOBBY
+    -- deltas: a client that processes its own LOBBY flip first reads it as
+    -- a voluntary leave and drops the verdict screen (live regression).
+    forceState(BR.MatchState.PLAYING)
+    sent = {}
+    BR.Combat.eliminate(2, 'storm', nil)
+    fakeTime = fakeTime + 4000
+    BR.Sched.step(fakeTime)
+    ok(m.state == BR.MatchState.ENDED, 'the match ends')
+    BR.Broadcast.flushNow()   -- the sweep's deltas ride the next flush; force it
+    local endedIdx, lobbyDeltaIdx = nil, nil
+    for i, s in ipairs(sent) do
+        if s.event == BR.Net.STATE
+           and s.args[1].state == BR.MatchState.ENDED and not endedIdx then
+            endedIdx = i
+        end
+        if s.event == BR.Net.ROSTER_DELTA and not lobbyDeltaIdx then
+            for _, d in ipairs(s.args[1].deltas or {}) do
+                if d.e and d.e.state == BR.PlayerState.LOBBY then
+                    lobbyDeltaIdx = i
+                end
+            end
+        end
+    end
+    ok(endedIdx ~= nil and lobbyDeltaIdx ~= nil and endedIdx < lobbyDeltaIdx,
+        'STATE ended is on the wire before the trip-home roster deltas',
+        ('ended at %s, lobby delta at %s'):format(
+            tostring(endedIdx), tostring(lobbyDeltaIdx)))
+end
+
+describe('match.memberless')
+do
+    -- A match nobody belongs to cannot end itself -- the win condition
+    -- refuses empty matches -- so the last leaver used to leave a PLAYING
+    -- instance running forever, storm and all.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local m = theMatch()
+    forceState(BR.MatchState.PLAYING)
+
+    fire(BR.Net.MATCH_LEAVE, 1)
+    fire(BR.Net.MATCH_LEAVE, 2)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Server.matches[m.id] == nil,
+        'a PLAYING match emptied by its last leaver is dissolved')
+end
+
+describe('party.resyncAtTeardown')
+do
+    -- Parties survive matches by design -- so the moment a match is
+    -- destroyed, its players must be RE-TOLD their party state. A client
+    -- whose party display went stale filtered its owner out of every
+    -- invite list with nothing on screen explaining why.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'A'); join(2, 'B')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'squad' })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'squad' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local m = theMatch()
+    forceState(BR.MatchState.PLAYING)
+    forceState(BR.MatchState.ENDED)
+    forceState(BR.MatchState.CLEANUP)
+
+    sent = {}
+    fakeTime = m.endsAt + 1
+    BR.Sched.step(fakeTime)   -- CLEANUP expires -> destroy
+    ok(BR.Server.matches[m.id] == nil, 'the match is destroyed')
+
+    local told = {}
+    for _, s in ipairs(eventsOf(BR.Net.SQUAD_UPDATE)) do
+        local p = s.args[1]
+        if p and p.id and #(p.members or {}) == 2 then told[s.target] = true end
+    end
+    ok(told[1] and told[2],
+        'both members are re-told their surviving party at teardown')
+end
+
+describe('bus.spectate')
+do
+    -- The audience on the tarmac: when a flight departs, warmup players of
+    -- OTHER matches get a spectator copy of the route (their clients render
+    -- the ghost plane). The departing match's own riders do not.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.minToStart = 1   -- one queuer per mode forms each match
+    join(1, 'A1'); join(2, 'B1')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = 'solo' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local A = theMatch()
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = 'squad' })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local B = BR.Server.matchOf(2)
+    ok(A and B and A.id ~= B.id, 'two forming matches are open')
+
+    sent = {}
+    BR.Match.transition(A, BR.MatchState.BUS)
+    local specTo = {}
+    for _, s in ipairs(eventsOf(BR.Net.BUS_SPECTATE)) do
+        specTo[s.target] = s.args[1]
+    end
+    ok(specTo[2] ~= nil and specTo[2].matchId == A.id
+       and specTo[2].route and specTo[2].route.timed,
+        "the other warmup receives the departing flight's timed route")
+    ok(specTo[1] == nil, 'the riders themselves get no spectator copy')
+end
+
 describe('markers')
 do
     -- One marker per player, relayed to the squad and nobody else, tinted

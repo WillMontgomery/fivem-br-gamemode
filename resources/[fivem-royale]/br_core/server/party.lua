@@ -128,6 +128,24 @@ local function syncEmpty(src)
     TriggerClientEvent(BR.Net.SQUAD_UPDATE, src, { id = nil, leader = nil, members = {} })
 end
 
+--- Re-announce a player's party (or the absence of one) to them.
+---
+--- Called at match teardown: the SQUAD channel spends the whole match
+--- carrying the in-match squad, and parties deliberately SURVIVE matches --
+--- so the moment a player is back in the lobby, their client must be told
+--- what party state it is actually in. A stale "no party" display against a
+--- server that still counts the player as partied removed them from every
+--- invite list with nothing on screen saying why.
+--- @param src integer
+function BR.Party.resync(src)
+    local entry = BR.Roster.get(src)
+    if entry and entry.partyId and parties[entry.partyId] then
+        sync(entry.partyId)
+    else
+        syncEmpty(src)
+    end
+end
+
 -- ------------------------------------------------------------------ verbs ---
 
 --- Create a party around a player, or return their existing one.

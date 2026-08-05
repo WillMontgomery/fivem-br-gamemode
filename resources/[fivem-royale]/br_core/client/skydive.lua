@@ -72,6 +72,11 @@ AddEventHandler('br:drop:begin', function(d)
             end
             Citizen.Wait(0)
         end
+        -- EXACTLY ONE, ALWAYS. Chute count is ammo, and a count above one
+        -- is what the engine treats as a RESERVE parachute -- there is no
+        -- reserve in this gamemode, whatever race between give paths may
+        -- have happened (user rule, 2026-08-04).
+        SetPedAmmo(ped, CHUTE, 1)
 
         SetPlayerParachuteModelOverride(PlayerId(),
             GetHashKey(BR.Config.Drop.parachuteModel))
@@ -160,6 +165,7 @@ BR.Keys.on('deploy', function(pressed)
         if not HasPedGotWeapon(ped, CHUTE, false) then
             GiveWeaponToPed(ped, CHUTE, 1, false, false)
         end
+        SetPedAmmo(ped, CHUTE, 1)   -- exactly one; never a reserve
         TaskParachute(ped, true, false)
     end
 end)
@@ -210,14 +216,23 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
     -- Earlier versions gated each recovery step on the state that step
     -- expected, and players fell past a floor made of preconditions. The
     -- descent is invincible as the last net, but the chute is the fix.
+    local agl = GetEntityHeightAboveGround(ped)
     local airborne = not IsPedOnFoot(ped) and not IsEntityInWater(ped)
-    if airborne then airborneSeen = true end
+    if airborne and agl > 3.0 then airborneSeen = true end
+    -- The floor's band has a BOTTOM as well as a top: below ~3m a chute
+    -- can do nothing, and firing there is pure harm -- the vehicle-entry
+    -- animation reads as "airborne at ground level" for a beat (not on
+    -- foot, chute state NONE once the task drops), and the floor answered
+    -- it by handing the player a parachute and forcing it open ("given a
+    -- chute the moment I try to enter a vehicle", live report 2026-08-04).
     if airborne
        and cs ~= BR.Native.ChuteState.OPENING
        and cs ~= BR.Native.ChuteState.OPEN
-       and GetEntityHeightAboveGround(ped) < BR.Config.Drop.autoDeployAGL then
+       and agl > 3.0
+       and agl < BR.Config.Drop.autoDeployAGL then
         if not HasPedGotWeapon(ped, CHUTE, false) then
             GiveWeaponToPed(ped, CHUTE, 1, false, false)
+            SetPedAmmo(ped, CHUTE, 1)   -- exactly one; never a reserve
         end
         if cs ~= BR.Native.ChuteState.FREEFALL then
             TaskParachute(ped, true, false)
@@ -226,9 +241,9 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
         return
     end
 
-    -- Landed: feet on something, not falling, canopy not mid-opening --
-    -- and only after the drop has actually BEEN airborne (see the latch
-    -- note at the top). Water counts: a sea landing is a bad drop, not a
+    -- Landed: on the ground, not falling, canopy not mid-opening -- and
+    -- only after the drop has actually BEEN airborne (see the latch note
+    -- at the top). Water counts: a sea landing is a bad drop, not a
     -- continuing one.
     --
     -- ANY chute state except OPENING counts as landed. The old test
@@ -238,10 +253,24 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
     -- glider prompt lingered, and the next F press (bound to enter-vehicle)
     -- hit the chute floor from a driver's seat: the parachute-in-a-car
     -- ejection, root-caused at last (user insight, 2026-08-04).
+    --
+    -- AND on-foot alone is not the whole grounded test: with the canopy
+    -- still ATTACHED the parachute task holds the ped off "on foot"
+    -- indefinitely -- the machine stayed armed on the ground, which kept
+    -- F dead (control 153 stays disabled while dropping) and left the
+    -- floor loaded for the vehicle-entry gap (live report, 2026-08-04:
+    -- "press F, nothing; enter a vehicle, given a chute"). A ped standing
+    -- still at ground level with the canopy out has landed, whatever the
+    -- task claims.
+    local grounded = IsPedOnFoot(ped) or IsEntityInWater(ped)
+    if not grounded and cs == BR.Native.ChuteState.OPEN
+       and agl < 2.0 and GetEntitySpeed(ped) < 2.0 then
+        grounded = true
+    end
     if airborneSeen
        and cs ~= BR.Native.ChuteState.OPENING
        and not IsPedFalling(ped)
-       and (IsPedOnFoot(ped) or IsEntityInWater(ped)) then
+       and grounded then
         dropping = false
 
         if cs == BR.Native.ChuteState.OPEN then

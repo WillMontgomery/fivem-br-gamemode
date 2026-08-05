@@ -200,10 +200,28 @@ end
 RegisterNetEvent(BR.Net.SNAPSHOT)
 AddEventHandler(BR.Net.SNAPSHOT, function(payload)
     mark('snapshot')
+    local was = S.match.state
     S.roster = payload.roster or {}
     S.match.state  = payload.match.state
     S.match.mode   = payload.match.mode
     S.match.endsAt = payload.match.endsAt
+
+    -- The same WAITING replay the digest performs (see its handler for the
+    -- full note). It must live HERE too: a match being destroyed re-seeds
+    -- its players with a snapshot, which used to update the mirror
+    -- SILENTLY -- so when the digest arrived the state had already
+    -- "changed" and the edge never fired. The players it stranded were the
+    -- ones under the end-of-match black hold, whose release rides this
+    -- exact transition (live repro, 2026-08-04: both storm deaths stuck
+    -- black over the lobby menu).
+    if S.match.state ~= was and S.match.state == BR.MatchState.WAITING then
+        TriggerEvent(BR.Net.STATE, {
+            state     = S.match.state,
+            endsAt    = S.match.endsAt,
+            serverNow = payload.serverNow,
+            meta      = { from = was, reason = 'snapshot' },
+        })
+    end
     S.alive        = payload.alive or 0
     S.squadsAlive  = payload.squadsAlive or 0
     S.storm        = payload.storm

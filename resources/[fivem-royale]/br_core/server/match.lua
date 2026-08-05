@@ -89,6 +89,14 @@ function BR.Match.destroy(m)
                 BR.Roster.setState(src, BR.PlayerState.LOBBY)
             end
             BR.Roster.setMatch(src, nil)
+            -- The SQUAD channel spent the whole match showing the in-match
+            -- squad; back in the lobby it must show the PARTY again (which
+            -- deliberately survives matches). A client whose party display
+            -- went stale here filtered its owner out of every invite list
+            -- with nothing on screen explaining why (live report,
+            -- 2026-08-04: "can't see each other in the menu" until a solo
+            -- queue dissolved the party).
+            BR.Party.resync(src)
         end)
     BR.Server.matches[m.id] = nil
     print(('[br_core] match %d destroyed'):format(m.id))
@@ -120,15 +128,19 @@ function BR.Match.transition(m, state, durationSec)
     print(('[br_core] match %d: %s -> %s%s'):format(
         m.id, from, state, secs and (' (%ds)'):format(secs) or ''))
 
-    -- onEnter FIRST, one broadcast AFTER: entering BUS is where the flight
-    -- decides the real endsAt, and broadcasting before it meant every BUS
-    -- entry sent TWO state events (endsAt 0, then the corrected rebroadcast)
-    -- -- the "state bus twice" client log (live report, 2026-08-04). The
-    -- ordering is safe for the roster too: Broadcast.state flushes queued
-    -- deltas before the event, so clients still learn who is in the match
-    -- before they learn it started.
+    -- Broadcast BEFORE onEnter -- the ordering is a CONTRACT. At ENDED the
+    -- client must hear the match ended BEFORE the roster sweep flips its
+    -- own state to LOBBY: processing the flip first reads as a voluntary
+    -- leave (roundParticipant drops) and the verdict screen never shows --
+    -- the "died and went straight to the lobby card" regression
+    -- (2026-08-04, caused by briefly reversing this order). BUS is the one
+    -- exception: the flight computes the real endsAt inside onEnter, so
+    -- onEnter(BUS) sends the single 'bus' event itself -- broadcasting
+    -- here too was the doubled "state bus" client log.
+    if state ~= BR.MatchState.BUS then
+        BR.Broadcast.state(m, state, m.endsAt, { from = from })
+    end
     BR.Match.onEnter(m, state, from)
-    BR.Broadcast.state(m, state, m.endsAt, { from = from })
 end
 
 --- Side effects of entering a state. Kept separate from transition() so the
@@ -167,6 +179,10 @@ function BR.Match.onEnter(m, state, from)
         if not BR.Bus.active(m) then BR.Bus.plan(m) end
         local dur = BR.Bus.depart(m)
         m.endsAt = GetGameTimer() + math.floor(dur * 1000)
+        -- The single 'bus' state event, with the flight's real deadline --
+        -- see the ordering note in transition(), which skips its own
+        -- broadcast for BUS.
+        BR.Broadcast.state(m, state, m.endsAt, { from = from, reason = 'busRoute' })
 
         BR.Roster.each(
             function(e) return e.matchId == m.id
@@ -468,6 +484,19 @@ end
 --- One instance's share of the tick.
 --- @param m table
 local function matchTick(m, now)
+    -- A MATCH NOBODY BELONGS TO CANNOT END ITSELF: the win condition
+    -- refuses empty matches by design, so an instance whose last member
+    -- left (everyone brleaving mid-PLAYING) sat leaked forever with its
+    -- storm still ticking (repro'd 2026-08-04). Memberless means dissolve,
+    -- whatever the state.
+    if BR.Server.countIn(m) == 0
+       and m.state ~= BR.MatchState.ENDED
+       and m.state ~= BR.MatchState.CLEANUP then
+        print(('[br_core] match %d: memberless -- dissolving'):format(m.id))
+        BR.Match.destroy(m)
+        return
+    end
+
     if m.state == BR.MatchState.WARMUP then
         BR.Match.shortenWarmupIfFull(m)
     end
