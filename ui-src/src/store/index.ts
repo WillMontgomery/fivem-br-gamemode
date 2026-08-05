@@ -14,6 +14,7 @@ import type {
   ChatMessage, DbnoPayload, FeedEntry, FocusPayload, HudPayload,
   InvPayload, InvitePayload, LobbyPayload, MatchPayload, ScreenPayload,
   SpectatePayload, SquadPayload, StormPayload, SummaryPayload, ToastPayload,
+  WireInvPayload,
 } from '../bridge/types'
 
 /** Kill feed and chat are capped so a long match cannot grow the DOM forever. */
@@ -89,7 +90,7 @@ export interface UiState {
   setMatch: (m: MatchPayload) => void
   setHud: (h: HudPayload) => void
   setSquad: (s: SquadPayload) => void
-  setInv: (i: InvPayload) => void
+  setInv: (i: WireInvPayload) => void
   setStorm: (s: StormPayload | null) => void
   setDbno: (d: DbnoPayload) => void
   setSpectate: (s: SpectatePayload | null) => void
@@ -108,7 +109,7 @@ export interface UiState {
   closeChat: () => void
   hydrate: (s: {
     match: MatchPayload; hud: HudPayload; squad: SquadPayload
-    inv: InvPayload; storm: StormPayload | null; chat: ChatMessage[]
+    inv: WireInvPayload; storm: StormPayload | null; chat: ChatMessage[]
   }) => void
 }
 
@@ -119,7 +120,18 @@ const emptyHud: HudPayload = {
   hp: 100, armour: 0, alive: 0, squadsAlive: 0, kills: 0, state: 'lobby',
 }
 const emptyInv: InvPayload = {
-  slots: [null, null, null, null, null], ammo: {}, active: 1,
+  slots: [null, null, null, null, null], ammo: {}, active: 1, using: null,
+}
+
+/** Lua sends an empty slot as `false` (nil does not survive serialisation in an
+ *  array, and slot POSITION is the whole model). Spell it one way from here on. */
+function normaliseInv(d: WireInvPayload): InvPayload {
+  return {
+    slots: (d.slots ?? []).map((s) => (s ? s : null)),
+    ammo: d.ammo ?? {},
+    active: d.active ?? 1,
+    using: d.using ?? null,
+  }
 }
 const emptyDbno: DbnoPayload = {
   downed: false, bleedEndsAt: 0, reviverName: null, revivePct: 0,
@@ -201,7 +213,7 @@ export const useUi = create<UiState>((set, get) => {
     set({ hud })
   },
   setSquad:    (squad) => set({ squad }),
-  setInv:      (inv) => set({ inv }),
+  setInv:      (inv) => set({ inv: normaliseInv(inv) }),
   // Normalised at the boundary: an empty or shapeless payload (a nil that
   // crossed the Lua bridge becomes {}) must read as "no storm", never as a
   // storm whose every field is undefined.
@@ -264,7 +276,7 @@ export const useUi = create<UiState>((set, get) => {
     match: s.match,
     hud: s.hud,
     squad: s.squad,
-    inv: s.inv,
+    inv: normaliseInv(s.inv),
     storm: s.storm,
     chat: s.chat.slice(-CHAT_MAX),
   }),

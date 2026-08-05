@@ -88,6 +88,11 @@ tap ('deploy',      'brdeploy',    'Royale: Jump / deploy glider',       'SPACE'
 tap ('inventory',   'brinventory', 'Royale: Inventory',                  'TAB')
 hold('interact',    'brinteract',  'Royale: Interact / pick up / revive','E')
 tap ('drop',        'brdrop',      'Royale: Drop selected item',         'G')
+-- R by default because RELOAD is exactly what a player reaches for when they
+-- want the thing in their hands to do something, and reloading a shield potion
+-- means nothing -- so the two never want the key at the same moment. Rebind it
+-- in Settings > Key Bindings like everything else here.
+tap ('use',         'bruse',       'Royale: Use selected item',          'R')
 
 -- Slots. Direct slot keys beat scroll-wheel cycling under pressure.
 tap ('slot1',       'brslot1',     'Royale: Slot 1',                     '1')
@@ -108,7 +113,7 @@ tap ('specPrev',    'brspecprev',  'Royale: Spectate previous player',   'LEFT')
 
 --- Names of every registered action, for the debug overlay.
 BR.Keys.actions = {
-    'deploy', 'inventory', 'interact', 'drop',
+    'deploy', 'inventory', 'interact', 'drop', 'use',
     'slot1', 'slot2', 'slot3', 'slot4', 'slot5',
     'chatGlobal', 'chatSquad', 'ping', 'map', 'specNext', 'specPrev',
 }

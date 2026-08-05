@@ -20,6 +20,7 @@ for _, f in ipairs({
     'config/weapons.lua',
     'config/loot.lua',
     'shared/storm_solve.lua',
+    'shared/loot_gen.lua',
 }) do
     local chunk, err = loadfile(ROOT .. f)
     if not chunk then
@@ -874,6 +875,260 @@ do
     end
     ok(#badTier == 0, 'every POI tier has a budget and a rarity table',
         table.concat(badTier, ', '))
+end
+
+-- --------------------------------------------------------------- loot.grid ---
+
+describe('loot.grid')
+do
+    local size = BR.Config.Loot.cellSize
+
+    local cx, cy = BR.LootCellOf(0.0, 0.0)
+    ok(cx == 0 and cy == 0, 'origin is cell 0,0')
+
+    cx, cy = BR.LootCellOf(size + 1.0, size * 2 + 1.0)
+    ok(cx == 1 and cy == 2, 'positive coordinates floor into the right cell')
+
+    -- Negative coordinates are more than half the map (the AABB runs to -3600).
+    -- An integer-truncating cell function would put -1.0 and +1.0 in the SAME
+    -- cell, silently merging two 256m squares on the Vespucci side of the map.
+    cx, cy = BR.LootCellOf(-1.0, -1.0)
+    ok(cx == -1 and cy == -1, 'negative coordinates floor DOWN, not toward zero')
+
+    ok(BR.LootCellKeyAt(-1.0, -1.0) == BR.LootCellKey(-1, -1),
+        'cell key round-trips through a position')
+
+    local cells = BR.LootCellsAround(4, 7, 1)
+    ok(#cells == 9, 'a subscribe radius of 1 is a 3x3 block')
+
+    local seen = {}
+    for _, k in ipairs(cells) do seen[k] = true end
+    ok(seen[BR.LootCellKey(4, 7)] and seen[BR.LootCellKey(3, 6)]
+        and seen[BR.LootCellKey(5, 8)], 'the block is centred and complete')
+
+    -- Order is fixed, because subscription diffs compare two of these.
+    local again = BR.LootCellsAround(4, 7, 1)
+    local sameOrder = true
+    for i = 1, #cells do
+        if cells[i] ~= again[i] then sameOrder = false break end
+    end
+    ok(sameOrder, 'cell order is stable between calls')
+
+    ok(#BR.LootCellsAround(0, 0, 2) == 25, 'radius 2 is a 5x5 block')
+end
+
+-- ---------------------------------------------------------------- loot.gen ---
+
+describe('loot.gen')
+do
+    -- THE contract of this module. A layout that is not reproducible cannot be
+    -- reasoned about after the fact: "the chest was here" stops being answerable
+    -- and every loot bug becomes a ghost story.
+    local a = BR.BuildLootLayout(12345)
+    local b = BR.BuildLootLayout(12345)
+
+    ok(#a == #b, 'the same seed produces the same number of entries')
+
+    local identical = #a == #b
+    if identical then
+        for i = 1, #a do
+            local x, y = a[i], b[i]
+            if x.id ~= y.id or x.item ~= y.item or x.kind ~= y.kind
+                or x.rarity ~= y.rarity or x.count ~= y.count
+                or math.abs(x.x - y.x) > 1e-9 or math.abs(x.y - y.y) > 1e-9 then
+                identical = false
+                break
+            end
+        end
+    end
+    ok(identical, 'the same seed produces an identical layout, entry for entry')
+
+    local c = BR.BuildLootLayout(999)
+    local differs = #c ~= #a
+    if not differs then
+        for i = 1, #a do
+            if a[i].item ~= c[i].item or math.abs(a[i].x - c[i].x) > 0.01 then
+                differs = true
+                break
+            end
+        end
+    end
+    ok(differs, 'a different seed produces a different layout')
+
+    -- Ids are the claim key. A duplicate would make one claim delete two items.
+    local ids, dupe = {}, false
+    for _, e in ipairs(a) do
+        if ids[e.id] then dupe = true break end
+        ids[e.id] = true
+    end
+    ok(not dupe, 'every entry id is unique')
+
+    local _, stats = BR.BuildLootLayout(12345)
+    ok(stats.poi == BR.Config.TotalLootBudget(),
+        'POI ground loot matches the authored budget exactly',
+        ('%d vs %d'):format(stats.poi, BR.Config.TotalLootBudget()))
+
+    local chestBudget = 0
+    for _, poi in ipairs(BR.Config.Map.POIs) do
+        chestBudget = chestBudget + (BR.Config.Loot.chestsPerTier[poi.tier] or 0)
+    end
+    ok(stats.chest == chestBudget, 'chest counts match the authored budget')
+    ok(stats.total == #a, 'the stats total is the entry count')
+
+    -- Every rolled item must resolve. An unresolvable id is an invisible prop
+    -- and an inventory slot that shows a blank card.
+    local bad = {}
+    local function checkStack(s, where)
+        if s.kind == BR.ItemKind.AMMO then
+            if not BR.Config.AmmoPickups[s.item] then bad[#bad + 1] = where .. ':' .. tostring(s.item) end
+        elseif s.kind == BR.ItemKind.CONSUMABLE then
+            if not BR.Config.ConsumableById[s.item] then bad[#bad + 1] = where .. ':' .. tostring(s.item) end
+        elseif s.kind == BR.ItemKind.WEAPON or s.kind == BR.ItemKind.THROWABLE then
+            if not BR.Config.WeaponById[s.item] then bad[#bad + 1] = where .. ':' .. tostring(s.item) end
+        elseif s.kind ~= 'chest' then
+            bad[#bad + 1] = where .. ':kind=' .. tostring(s.kind)
+        end
+        if (s.count or 0) < 1 then bad[#bad + 1] = where .. ':count' end
+    end
+    for _, e in ipairs(a) do
+        checkStack(e, 'entry')
+        for _, s in ipairs(e.contents or {}) do checkStack(s, 'chest') end
+    end
+    ok(#bad == 0, 'every generated item id resolves in its config table',
+        table.concat(bad, ', ', 1, math.min(#bad, 6)))
+
+    -- Chest contents stay inside the authored burst size.
+    local chestSizesOk, chestCount = true, 0
+    for _, e in ipairs(a) do
+        if e.kind == 'chest' then
+            chestCount = chestCount + 1
+            local n = #(e.contents or {})
+            if n < BR.Config.Loot.chestItems.min or n > BR.Config.Loot.chestItems.max then
+                chestSizesOk = false
+            end
+            if e.rarity ~= BR.LootContentsRarity(e.contents) then chestSizesOk = false end
+        end
+    end
+    ok(chestCount > 0 and chestSizesOk,
+        'chests hold min..max items and glow with their best one')
+
+    -- Placement. Every POI entry must land inside the POI it belongs to, or the
+    -- storm's "loot up at a named location" premise quietly stops holding.
+    local outside = 0
+    for _, e in ipairs(a) do
+        if e.poi then
+            local poi = BR.Config.Map.GetPOI(e.poi)
+            if BR.Dist(e.x, e.y, poi.x, poi.y) > poi.radius then outside = outside + 1 end
+        end
+    end
+    ok(outside == 0, 'no POI entry lands outside its POI radius',
+        ('%d strays'):format(outside))
+
+    -- Filler placement: on a road, off the POIs.
+    local fillerSeen, offRoad, tooClose = 0, 0, 0
+    for _, e in ipairs(a) do
+        if e.road then
+            fillerSeen = fillerSeen + 1
+            local road, near = nil, math.huge
+            for _, r in ipairs(BR.Config.Map.Roads) do
+                if r.id == e.road then road = r end
+            end
+            for i = 2, #road.points do
+                local p, q = road.points[i - 1], road.points[i]
+                -- Point-to-segment distance.
+                local vx, vy = q.x - p.x, q.y - p.y
+                local wx, wy = e.x - p.x, e.y - p.y
+                local len2 = vx * vx + vy * vy
+                local t = len2 > 0 and ((wx * vx + wy * vy) / len2) or 0.0
+                t = BR.Clamp(t, 0.0, 1.0)
+                local d = BR.Dist(e.x, e.y, p.x + vx * t, p.y + vy * t)
+                if d < near then near = d end
+            end
+            if near > BR.Config.Loot.filler.lateralOffset + 0.5 then offRoad = offRoad + 1 end
+
+            for _, poi in ipairs(BR.Config.Map.POIs) do
+                if BR.Dist(e.x, e.y, poi.x, poi.y) < BR.Config.Loot.filler.minPoiDist then
+                    tooClose = tooClose + 1
+                    break
+                end
+            end
+        end
+    end
+    ok(fillerSeen > 0, 'filler is generated at all', ('%d points'):format(fillerSeen))
+    ok(offRoad == 0, 'filler stays within lateralOffset of its road',
+        ('%d strays'):format(offRoad))
+    ok(tooClose == 0, 'filler keeps clear of the POIs', ('%d too close'):format(tooClose))
+    ok(stats.filler <= BR.Config.Loot.filler.count,
+        'filler never exceeds its authored count')
+
+    -- Every entry must be findable through the grid, or the streamer will hand
+    -- a client a cell that does not contain the items standing in front of them.
+    local misfiled = 0
+    for _, e in ipairs(a) do
+        if BR.LootCellKeyAt(e.x, e.y) ~= BR.LootCellKey(BR.LootCellOf(e.x, e.y)) then
+            misfiled = misfiled + 1
+        end
+    end
+    ok(misfiled == 0, 'every entry files into the cell its position implies')
+end
+
+-- ------------------------------------------------------------- loot.stacks ---
+
+describe('loot.stacks')
+do
+    -- LootPickOfRarity walks DOWN to a populated bucket. There is no legendary
+    -- consumable, and a nil item here would become a nil-indexed prop lookup on
+    -- the client -- an error inside a frame callback, which the loop registry
+    -- suspends after five of.
+    local rng = BR.Rng(2024)
+    local nilPicks = 0
+    for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+        for _ = 1, 50 do
+            if not BR.LootPickOfRarity(rng, BR.Config.ConsumablesByRarity, r) then
+                nilPicks = nilPicks + 1
+            end
+            if not BR.LootPickOfRarity(rng, BR.Config.WeaponsByRarity, r) then
+                nilPicks = nilPicks + 1
+            end
+            if not BR.LootPickOfRarity(rng, BR.Config.ThrowablesByRarity, r) then
+                nilPicks = nilPicks + 1
+            end
+        end
+    end
+    ok(nilPicks == 0, 'no rarity produces a nil pick from any bucket')
+
+    -- Legendary is authored on weapons only; a legendary consumable roll must
+    -- pay out the best consumable that exists, not nothing and not a common.
+    local best = BR.LootPickOfRarity(BR.Rng(1), BR.Config.ConsumablesByRarity,
+        BR.Rarity.LEGENDARY)
+    ok(best ~= nil and best.rarity == BR.Rarity.EPIC,
+        'a legendary consumable roll walks down to the epic med kit')
+
+    -- The rarity buckets must agree with the flat tables they were built from.
+    local counted = 0
+    for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+        counted = counted + #BR.Config.WeaponsByRarity[r]
+    end
+    ok(counted == #BR.Config.Weapons, 'every weapon lands in exactly one bucket')
+
+    ok(BR.Config.WeaponsOfRarity(BR.Rarity.LEGENDARY)[1] ~= nil,
+        'WeaponsOfRarity still answers after the rewrite')
+
+    -- Weapon stacks carry a clip; the HUD reads it and a nil would render "/".
+    local wr = BR.Rng(55)
+    local noClip = 0
+    for _ = 1, 400 do
+        local s = BR.RollLootStack(wr, 3)
+        if s.kind == BR.ItemKind.WEAPON and not s.clip then noClip = noClip + 1 end
+    end
+    ok(noClip == 0, 'every weapon stack carries a clip size')
+
+    ok(BR.LootLabel({ kind = BR.ItemKind.AMMO, item = BR.AmmoType.HEAVY }) == 'Heavy Ammo',
+        'LootLabel resolves ammo')
+    ok(BR.LootLabel({ kind = BR.ItemKind.CONSUMABLE, item = 'medkit' }) == 'Med Kit',
+        'LootLabel resolves consumables')
+    ok(BR.LootLabel({ kind = BR.ItemKind.WEAPON, item = 'heavysniper' }) ~= 'Weapon',
+        'LootLabel resolves weapons')
 end
 
 -- ----------------------------------------------------------------- result ---

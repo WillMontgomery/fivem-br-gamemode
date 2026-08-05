@@ -18,7 +18,9 @@ version '0.1.0'
 -- at runtime. Exposing this as exports instead would put a cross-runtime call on
 -- every hot path, which is exactly what we are avoiding.
 --
--- Load order matters: enums -> protocol -> rng -> geo -> clock -> config -> storm_solve.
+-- Load order matters:
+--   enums -> protocol -> rng -> geo -> clock -> config -> storm_solve -> loot_gen.
+-- The two solvers come last because both read config tables at load time.
 
 files {
     'shared/*.lua',

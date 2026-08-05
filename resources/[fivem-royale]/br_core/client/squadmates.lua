@@ -87,6 +87,16 @@ AddEventHandler(BR.Net.SQUAD_POS, function(list)
             else
                 SetBlipCoords(b, m.x + 0.0, m.y + 0.0, 0.0)
             end
+
+            -- A dead mate's blip STAYS, dimmed. Where they went down is the
+            -- whole reason to keep it; a full-brightness dot would read as a
+            -- live teammate to rotate to. Set unconditionally rather than on
+            -- the state edge -- four native calls a second is nothing, and an
+            -- edge test cannot cover the blip that was born dead (a mate who
+            -- died while this client was out of the squad push).
+            local dead = m.state == BR.PlayerState.DEAD
+                or m.state == BR.PlayerState.SPECTATING
+            SetBlipAlpha(blips[m.src], dead and 120 or 255)
         end
     end
 
@@ -136,22 +146,40 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
         -- NO NAME UNTIL THEY HAVE JUMPED: everyone shares the plane during
         -- the flight, and a tag on an invisible rider rendered as a name
         -- floating over the fuselage. Pre-drop there is nothing to label.
+        --
+        -- DEAD AND DOWNED MATES ARE STILL LABELLED. Nothing hides faster in a
+        -- firefight than the question "where did my teammate go down", and the
+        -- corpse is the answer. The state is written into the tag so it reads
+        -- at a glance rather than being a name that mysteriously stopped
+        -- moving (user report, 2026-08-05: could not see dead squadmates).
         local e = BR.State.roster[src]
         local st = e and e.state
         local jumped = st == BR.PlayerState.FREEFALL
             or st == BR.PlayerState.GLIDE
             or st == BR.PlayerState.ALIVE
             or st == BR.PlayerState.DBNO
+            or st == BR.PlayerState.DEAD
+            or st == BR.PlayerState.SPECTATING
+
+        local mark = ''
+        if st == BR.PlayerState.DBNO then mark = ' [DOWN]'
+        elseif st == BR.PlayerState.DEAD or st == BR.PlayerState.SPECTATING then
+            mark = ' [DEAD]'
+        end
+
         if ped ~= 0 and jumped then
             local t = tags[src]
-            -- Re-tag when the ped handle changes: respawn or re-entering
+            -- Re-tag when the ped handle changes (respawn or re-entering
             -- scope hands the mate a new ped, and the old tag dies with the
-            -- old handle.
-            if not t or t.ped ~= ped then
+            -- old handle) OR when the mark changes -- a gamer tag's text is
+            -- fixed at creation, so "Alice" becoming "Alice [DEAD]" is a new
+            -- tag or it is nothing.
+            if not t or t.ped ~= ped or t.mark ~= mark then
                 dropTag(src)
-                local tag = CreateFakeMpGamerTag(ped, m.name, false, false, '', 0)
+                local tag = CreateFakeMpGamerTag(ped, m.name .. mark,
+                    false, false, '', 0)
                 SetMpGamerTagVisibility(tag, 0, true)   -- component 0: the name
-                tags[src] = { tag = tag, ped = ped }
+                tags[src] = { tag = tag, ped = ped, mark = mark }
             end
         else
             dropTag(src)

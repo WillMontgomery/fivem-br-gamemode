@@ -50,14 +50,12 @@ export default function StormBar({ storm }: { storm: StormPayload | null }) {
   const shrinking = storm.phaseState === 'shrinking'
   const hurting = storm.edgeDistance > 0 && (storm.dps ?? 0) > 0
 
-  // The PHASE-1 hold with minutes on the clock is loot time, not
-  // information -- the countdown notices carry it. From the moment the
-  // first shrink begins, the bar is PERMANENT: every later hold and shrink
-  // keeps the timer on screen (user call, 2026-08-04). The storm envelope
-  // re-renders this at 4Hz, so the threshold crossing lands within a
-  // quarter second.
-  const msLeft = endsAt ? endsAt - (Date.now() + offset) : 0
-  if (storm.phase === 1 && !shrinking && !hurting && msLeft > 60_000) return null
+  // THE BAR IS ALWAYS ON (user call, 2026-08-05). It used to hide through the
+  // long phase-1 hold, with toasts announcing "the storm is coming in 2
+  // minutes" every thirty seconds instead -- two systems saying the same thing
+  // badly, and the toasts could only ever land on a 30-second slot while the
+  // timer they were approximating was exact. One countdown, from the first
+  // moment there is a storm to count down to.
 
   // The label tells you what the number MEANS -- a bare "10s" told nobody
   // anything. Holding: time until the wall starts moving. Shrinking: time

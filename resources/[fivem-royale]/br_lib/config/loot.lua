@@ -44,6 +44,18 @@ for _, c in ipairs(BR.Config.Consumables) do
     BR.Config.ConsumableById[c.id] = c
 end
 
+--- Consumables bucketed by rarity, in authored order. Built once, and built from
+--- an ipairs walk rather than a pairs walk for the same reason the weapon
+--- buckets are: the loot layout must replay identically from a seed.
+BR.Config.ConsumablesByRarity = {}
+for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+    BR.Config.ConsumablesByRarity[r] = {}
+end
+for _, c in ipairs(BR.Config.Consumables) do
+    local b = BR.Config.ConsumablesByRarity[c.rarity]
+    if b then b[#b + 1] = c end
+end
+
 --- Ammo pickups. Dropped alongside weapons so a found gun is usable.
 BR.Config.AmmoPickups = {
     [BR.AmmoType.LIGHT]  = { label = 'Light Ammo',  amount = 36, prop = 'prop_box_ammo01a' },
@@ -51,6 +63,18 @@ BR.Config.AmmoPickups = {
     [BR.AmmoType.MEDIUM] = { label = 'Medium Ammo', amount = 45, prop = 'prop_box_ammo02a' },
     [BR.AmmoType.SHELLS] = { label = 'Shells',      amount = 16, prop = 'prop_box_ammo02a' },
     [BR.AmmoType.HEAVY]  = { label = 'Heavy Ammo',  amount = 12, prop = 'prop_box_ammo03a' },
+}
+
+--- The ammo pools in a FIXED order. AmmoPickups is keyed by pool name, and
+--- iterating a string-keyed table with pairs() is order-undefined -- rolling
+--- against it directly would make two servers with the same seed lay out
+--- different maps. Every ordered walk over ammo goes through this.
+BR.Config.AmmoOrder = {
+    BR.AmmoType.LIGHT,
+    BR.AmmoType.SMG,
+    BR.AmmoType.MEDIUM,
+    BR.AmmoType.SHELLS,
+    BR.AmmoType.HEAVY,
 }
 
 --- Rarity weighting per POI tier. Higher tiers are contested by design, so they
@@ -89,10 +113,29 @@ BR.Config.Loot = {
         'prop_gold_cont_01',
     },
 
+    -- Sparse filler between the POIs. Without it a bad drop is a two-minute walk
+    -- with empty hands; with it there is always something on the roadside worth
+    -- stopping for. Rolled on the tier-1 table -- filler is a lifeline, not a
+    -- reason to skip the named locations.
+    filler = {
+        count         = 240,
+        tier          = 1,
+        lateralOffset = 22.0,   -- metres either side of the road centreline
+        minPoiDist    = 260.0,  -- do not double up on ground a POI already covers
+    },
+
     -- Streaming. Clients subscribe to a 3x3 neighbourhood of cells, so roughly
     -- 50-150 entries are ever in flight rather than the full 1200.
     cellSize        = 256.0,
     subscribeRadius = 1,     -- in cells, so 1 = a 3x3 block
+
+    -- Physical props are a much smaller radius than the subscription: a 3x3
+    -- block is 768m across, and 150 objects at that range would be paid for in
+    -- frames for no visible benefit. Entries beyond this are registry rows that
+    -- materialise as the player walks in.
+    propDistance    = 90.0,
+    propHysteresis  = 15.0,  -- despawn beyond propDistance + this, so a player
+                             -- standing on the boundary does not thrash models
 
     -- Interaction
     pickupDistance  = 3.5,   -- server re-validates this; the client prompt is cosmetic
@@ -101,9 +144,37 @@ BR.Config.Loot = {
     glowDistance    = 25.0,  -- rarity marker draw range
     labelDistance   = 8.0,   -- 3D text draw range
 
+    -- Containers are a commitment in the open: you stand still for a second and
+    -- anyone watching the building knows exactly where you are.
+    chestHoldMs     = 1000,
+
+    -- The GLYPH in the pickup prompt, and nothing else -- which key works is
+    -- always the player's own RegisterKeyMapping binding, never this.
+    --
+    -- false = render the real binding via BR.Native.inputForCommand. PLAN.md
+    -- records that a custom binding's ~INPUT_<hash>~ drew as a HOLE on this
+    -- build once (the bus doors prompt hit it), so if the prompt comes back
+    -- blank in-game, set this to a vanilla token such as '~INPUT_CONTEXT~'.
+    -- /brpromptcheck prints both side by side.
+    promptToken     = false,
+
+    -- Consumables are interruptible by design -- committing to an 8s med kit
+    -- while being shot should lose you the med kit, not heal you through it.
+    useCancelOnDamage = true,
+
     -- Death boxes
     deathBoxProp    = 'prop_box_ammo04a',
     deathBoxSpread  = 0.8,
+
+    -- Inventory. Five is the number the keybinds (slot1..slot5), the UI's
+    -- emptyInv and the HUD bar all already assume; changing it means changing
+    -- all three together.
+    slots           = 5,
+
+    -- A found gun has to be usable, or the first weapon on the ground is a
+    -- decoration. One clip loaded plus one in reserve is enough for a fight,
+    -- not enough to stop looting ammo.
+    weaponReserveClips = 1,
 
     -- Starting kit. Deliberately nothing but the drop itself -- landing unarmed
     -- is what makes the first thirty seconds tense.

@@ -64,6 +64,14 @@ BR.Net = {
     INV_DROP        = 'br:inv:drop',         -- C->S  { slot }
     INV_USE         = 'br:inv:use',          -- C->S  { slot }
     INV_SELECT      = 'br:inv:select',       -- C->S  { slot }
+    -- The server owns the inventory but cannot write a ped: it decides the
+    -- consumable landed and TELLS the client to apply it, exactly as the storm
+    -- tells a client to hurt itself. Health/armour arrive in DISPLAY units.
+    INV_EFFECT      = 'br:inv:effect',       -- S->C  { health, healthCap, armour, armourCap }
+    -- Ammo is the one number only the client can observe before M6's shot
+    -- validation exists. Reports are accepted ONLY when they LOWER the stored
+    -- value, so the worst a liar can do is disarm themselves.
+    INV_AMMO        = 'br:inv:ammo',         -- C->S  { pool = { light = n, ... }, clip, slot }
 
     -- Combat / DBNO
     HEALTH_SYNC     = 'br:health:sync',      -- S->C  { hp, armour } authoritative correction

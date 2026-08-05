@@ -122,12 +122,38 @@ export interface InvSlot {
   rarity: Rarity
   count: number
   clip?: number
+  /** Which ammo pool a weapon's reserve comes from ('light', 'heavy', ...).
+   *  Sent by Lua rather than looked up here: the weapon table lives in br_lib
+   *  and a hand-mirrored copy would go stale the first time a gun is added. */
+  pool?: string
+}
+
+/** An in-progress consumable. Times out against the SERVER clock, like every
+ *  other countdown here -- `endsAt` is a server timestamp, never Date.now(). */
+export interface InvUsing {
+  slot: number
+  endsAt: number
+  ms: number
 }
 
 export interface InvPayload {
   slots: (InvSlot | null)[]
   ammo: Record<string, number>
+  /** 1-based, matching the slot1..slot5 keybinds. */
   active: number
+  using?: InvUsing | null
+}
+
+/**
+ * What Lua actually puts on the wire.
+ *
+ * An empty slot travels as `false`, not nil: a Lua array with a nil hole in it
+ * does not survive serialisation as an array, and the whole inventory depends
+ * on slot POSITION. `false` is normalised to `null` once, in the store's
+ * setter, so no component ever sees both spellings of empty.
+ */
+export interface WireInvPayload extends Omit<InvPayload, 'slots'> {
+  slots: (InvSlot | false | null)[]
 }
 
 export interface FeedEntry {
@@ -281,7 +307,9 @@ export interface SnapshotPayload {
   match: MatchPayload
   hud: HudPayload
   squad: SquadPayload
-  inv: InvPayload
+  /** Wire shape, like every other field here: the snapshot is what Lua sends,
+   *  not what the store holds. `hydrate` normalises it. */
+  inv: WireInvPayload
   storm: StormPayload | null
   chat: ChatMessage[]
 }
@@ -293,7 +321,7 @@ export type Envelope =
   | { k: 'state';    d: MatchPayload }
   | { k: 'hud';      d: HudPayload }
   | { k: 'squad';    d: SquadPayload }
-  | { k: 'inv';      d: InvPayload }
+  | { k: 'inv';      d: WireInvPayload }
   | { k: 'feed';     d: FeedEntry }
   | { k: 'storm';    d: StormPayload }
   | { k: 'dbno';     d: DbnoPayload }

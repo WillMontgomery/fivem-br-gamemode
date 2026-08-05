@@ -3,8 +3,9 @@
 -- COORDINATES ARE A FIRST PASS. They were authored from map knowledge, not
 -- surveyed in-game, so centres will be roughly right and radii will need tuning.
 -- The /brtp <poi> admin command exists specifically so these can be walked and
--- corrected quickly, and loot spawn points are authored separately with /lootedit
--- rather than being derived from these centres.
+-- corrected quickly. Loot IS derived from these centres (a seeded scatter inside
+-- each POI's radius, plus filler along BR.Config.Map.Roads below), so a wrong
+-- radius shows up as loot in the sea long before anything else complains.
 --
 -- `tier` drives loot density and quality:
 --   3 = hot drop, dense and high quality (contested by design)
@@ -75,6 +76,66 @@ BR.Config.Map.POIs = {
     { id = 'quarry',      name = 'Davis Quartz Quarry', x = 2950.0, y = 2780.0, z =  40.0, radius = 260.0, tier = 2 },
     { id = 'palmer',      name = 'Palmer-Taylor Power Station', x = 2780.0, y = 1520.0, z = 32.0, radius = 240.0, tier = 2 },
     { id = 'palomino',    name = 'Palomino Highlands', x = 2400.0, y = 1600.0, z =  40.0, radius = 240.0, tier = 1 },
+}
+
+--- Major road corridors, as polylines.
+---
+--- These exist for ONE purpose: sparse loot filler between the POIs. FiveM has
+--- no offline road graph -- GetClosestVehicleNode is a client native and loot
+--- generation is server-side and must be reproducible from a seed outside the
+--- game -- so the corridors players actually travel are authored here instead.
+--- Being roughly right is enough: filler is scattered up to `lateralOffset`
+--- either side and the client ground-probes each point anyway.
+---
+--- Same caveat as the POIs: first pass, walk them with /brtp and correct.
+BR.Config.Map.Roads = {
+    {
+        id = 'greatocean', name = 'Great Ocean Highway',
+        points = {
+            { x = -1800.0, y = -1200.0 }, { x = -2300.0, y =  -400.0 },
+            { x = -2600.0, y =   800.0 }, { x = -2400.0, y =  2000.0 },
+            { x = -1900.0, y =  3000.0 }, { x = -1100.0, y =  4400.0 },
+            { x =  -300.0, y =  5900.0 }, { x =   500.0, y =  6600.0 },
+        },
+    },
+    {
+        id = 'route68', name = 'Route 68',
+        points = {
+            { x = -2200.0, y =  2400.0 }, { x = -1200.0, y =  2100.0 },
+            { x =     0.0, y =  2700.0 }, { x =  1200.0, y =  3100.0 },
+            { x =  2300.0, y =  3400.0 }, { x =  2900.0, y =  2900.0 },
+        },
+    },
+    {
+        id = 'senora', name = 'Senora Freeway',
+        points = {
+            { x =  2600.0, y =  1400.0 }, { x =  2300.0, y =  2600.0 },
+            { x =  1700.0, y =  3400.0 }, { x =   700.0, y =  4200.0 },
+            { x =  -200.0, y =  5300.0 }, { x =    50.0, y =  6300.0 },
+        },
+    },
+    {
+        id = 'palomino', name = 'Palomino Freeway',
+        points = {
+            { x =   900.0, y = -1200.0 }, { x =  1600.0, y =  -400.0 },
+            { x =  2200.0, y =   500.0 }, { x =  2600.0, y =  1300.0 },
+        },
+    },
+    {
+        id = 'lapuerta', name = 'La Puerta Freeway',
+        points = {
+            { x = -1200.0, y = -2200.0 }, { x =  -600.0, y = -1900.0 },
+            { x =   100.0, y = -1400.0 }, { x =   600.0, y =  -800.0 },
+            { x =   400.0, y =   200.0 }, { x =  -400.0, y =   800.0 },
+        },
+    },
+    {
+        id = 'joshua', name = 'Joshua / Alamo Road',
+        points = {
+            { x =  1900.0, y =  3800.0 }, { x =  1300.0, y =  4400.0 },
+            { x =   800.0, y =  5300.0 }, { x =   200.0, y =  6100.0 },
+        },
+    },
 }
 
 --- Look up a POI by id.

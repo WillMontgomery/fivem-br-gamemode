@@ -148,13 +148,38 @@ function BR.Config.ExpectedDamage(hash, rarity, distance)
     return dmg
 end
 
+-- Rarity buckets, built once at load. A match rolls ~1900 loot stacks, and the
+-- old per-call linear scan allocated a fresh table for every one of them.
+--
+-- Order inside a bucket is the authored order of BR.Config.Weapons, which is
+-- fixed source order rather than pairs() order -- the loot layout must be
+-- reproducible from a seed, and an index built by iterating a hash would not be.
+BR.Config.WeaponsByRarity   = {}
+BR.Config.ThrowablesByRarity = {}
+
+for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+    BR.Config.WeaponsByRarity[r]    = {}
+    BR.Config.ThrowablesByRarity[r] = {}
+end
+for _, w in ipairs(BR.Config.Weapons) do
+    local b = BR.Config.WeaponsByRarity[w.rarity]
+    if b then b[#b + 1] = w end
+end
+for _, t in ipairs(BR.Config.Throwables) do
+    local b = BR.Config.ThrowablesByRarity[t.rarity]
+    if b then b[#b + 1] = t end
+end
+
 --- All weapons of a given rarity, for loot rolls.
 --- @param rarity integer
---- @return table
+--- @return table  the shared bucket -- treat as read-only
 function BR.Config.WeaponsOfRarity(rarity)
-    local out = {}
-    for _, w in ipairs(BR.Config.Weapons) do
-        if w.rarity == rarity then out[#out + 1] = w end
-    end
-    return out
+    return BR.Config.WeaponsByRarity[rarity] or {}
+end
+
+--- All throwables of a given rarity.
+--- @param rarity integer
+--- @return table  the shared bucket -- treat as read-only
+function BR.Config.ThrowablesOfRarity(rarity)
+    return BR.Config.ThrowablesByRarity[rarity] or {}
 end

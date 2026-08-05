@@ -49,6 +49,14 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     local m = BR.Server.matchOf(src)
     local placement = BR.Server.squadsAlive(m)
 
+    -- THE BOX IS BUILT BEFORE THE STATE CHANGES. What they were carrying and
+    -- where they were standing are both still true at exactly this moment;
+    -- one line later the roster sweep and the CLEANUP reset have opinions
+    -- about both. Whoever killed them gets to walk over and take it.
+    if m and BR.Loot and BR.Loot.deathBox then
+        BR.Loot.deathBox(m, src)
+    end
+
     BR.Roster.setState(src, BR.PlayerState.DEAD)
     entry.placement = placement
     BR.Broadcast.delta({ op = 'update', src = src, e = { placement = placement } })

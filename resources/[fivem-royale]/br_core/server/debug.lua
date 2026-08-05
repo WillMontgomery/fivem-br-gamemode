@@ -112,12 +112,16 @@ RegisterCommand('brhelp', function()
     print('  brjob <on|off> <n>   enable or disable a scheduler job by name')
     print('  brconfig             the tunables that most often explain odd behaviour')
     print('  brwhy <id>           why is this player in the state they are in')
+    print('  brloot [matchId]     world loot: counts by kind and rarity, subscriptions')
+    print('  brinv <id>           one player\'s inventory, slot by slot')
+    print('  brgive <id> <item> [n]  put an item straight into a player\'s hands')
     print('  brscatter [radius]   spread everyone out to test OneSync scoping')
     print('  brforce <state>      force a match state transition')
     print('  brskip               end the current timed state immediately')
     line('-')
     print('  Client-side (run in the F8 console): brnativecheck, brperf, brloop, brfx,')
-    print('    brboot, brblack, brfocus, brshield [0-100], brleave (leave the match)')
+    print('    brboot, brblack, brfocus, brshield [0-100], brleave (leave the match),')
+    print('    brloot (what this client can see), brpromptcheck (prompt glyph)')
 end, RESTRICTED)
 
 RegisterCommand('brstate', function()
@@ -320,9 +324,145 @@ RegisterCommand('brconfig', function()
         :format(M.dbnoBleedBase, M.dbnoReviveTime, M.dbnoReviveDist, M.dbnoReviveHp))
     print(('  storm             r0=%.0f, %d phases, ~%.0f min total, edgeBias %.2f')
         :format(S.radius0, #S.phases, S.TotalSeconds() / 60.0, S.edgeBiasMax))
-    print(('  loot              %d items planned, cell %.0fm, pickup %.1fm')
-        :format(BR.Config.TotalLootBudget(), L.cellSize, L.pickupDistance))
+    print(('  loot              %d POI items + %d filler, cell %.0fm, props %.0fm, pickup %.1fm')
+        :format(BR.Config.TotalLootBudget(), L.filler and L.filler.count or 0,
+                L.cellSize, L.propDistance, L.pickupDistance))
+    print(('  inventory         %d slots, %d clip(s) of reserve per weapon found')
+        :format(L.slots, L.weaponReserveClips))
     print(('  render ceiling    424 units -- entities beyond this are not drawn'))
+end, RESTRICTED)
+
+RegisterCommand('brloot', function(_, args)
+    local wanted = tonumber(args[1])
+
+    local any = false
+    BR.Server.eachMatch(function(m)
+        if wanted and m.id ~= wanted then return end
+        any = true
+
+        if not m.loot then
+            print(('  match %d: no loot (state %s)'):format(m.id, m.state))
+            return
+        end
+
+        header(('loot -- match %d, seed %d'):format(m.id, m.loot.seed))
+
+        local byKind, byRarity, cells, total = {}, {}, 0, 0
+        for _, e in pairs(m.loot.items) do
+            total = total + 1
+            byKind[e.kind] = (byKind[e.kind] or 0) + 1
+            byRarity[e.rarity or 1] = (byRarity[e.rarity or 1] or 0) + 1
+        end
+        for _ in pairs(m.loot.cells) do cells = cells + 1 end
+
+        print(('  %d items live across %d cells'):format(total, cells))
+
+        -- Fixed orders, not pairs(): a debug dump that reorders itself between
+        -- runs is one you cannot diff against the last one.
+        local kinds = { BR.ItemKind.WEAPON, BR.ItemKind.AMMO,
+                        BR.ItemKind.CONSUMABLE, BR.ItemKind.THROWABLE,
+                        'chest', 'deathbox' }
+        local parts = {}
+        for _, k in ipairs(kinds) do
+            parts[#parts + 1] = ('%s %d'):format(k, byKind[k] or 0)
+        end
+        print('  by kind:   ' .. table.concat(parts, '   '))
+
+        parts = {}
+        for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+            parts[#parts + 1] = ('%s %d')
+                :format(BR.RarityInfo[r].key, byRarity[r] or 0)
+        end
+        print('  by rarity: ' .. table.concat(parts, '   '))
+
+        local subs = {}
+        for src, keys in pairs(m.loot.subs) do
+            local n = 0
+            for _ in pairs(keys) do n = n + 1 end
+            subs[#subs + 1] = ('%d(%d cells)'):format(src, n)
+        end
+        table.sort(subs)
+        print('  subscribed: ' .. (#subs > 0 and table.concat(subs, ' ') or 'nobody'))
+    end)
+
+    if not any then print('  no matches running') end
+end, RESTRICTED)
+
+RegisterCommand('brinv', function(_, args)
+    local src = tonumber(args[1])
+    if not src then
+        print('  usage: brinv <serverId>')
+        return
+    end
+    local e = BR.Server.roster[src]
+    if not e then
+        print(('  no roster entry for %d'):format(src))
+        return
+    end
+
+    local inv = BR.Inv.of(src)
+    header(('inventory -- %s (%d)'):format(e.name or '?', src))
+    for i = 1, BR.Config.Loot.slots do
+        local s = inv.slots[i]
+        local mark = (inv.active == i) and '>' or ' '
+        if s then
+            print(('  %s %d  %-16s %-11s %-9s x%-3d clip %s')
+                :format(mark, i, s.item, s.kind,
+                        BR.RarityInfo[s.rarity or 1].key, s.count,
+                        tostring(s.clip or '-')))
+        else
+            print(('  %s %d  --'):format(mark, i))
+        end
+    end
+
+    local parts = {}
+    for _, pool in ipairs(BR.Config.AmmoOrder) do
+        parts[#parts + 1] = ('%s %d/%d'):format(pool, inv.ammo[pool] or 0,
+            BR.Config.AmmoCaps[pool] or 0)
+    end
+    print('  ammo: ' .. table.concat(parts, '  '))
+    if inv.using then
+        print(('  using slot %d (%s), %s left'):format(inv.using.slot,
+            inv.using.item, secs(math.max(0, inv.using.endsAt - GetGameTimer()))))
+    end
+end, RESTRICTED)
+
+RegisterCommand('brgive', function(_, args)
+    local src  = tonumber(args[1])
+    local item = args[2]
+    local n    = tonumber(args[3]) or 1
+    if not src or not item then
+        print('  usage: brgive <serverId> <itemId> [count]')
+        print('    itemId is a weapon/throwable id (carbinerifle), a consumable')
+        print('    id (medkit), or an ammo pool (light|smg|medium|shells|heavy)')
+        return
+    end
+    if not BR.Roster.get(src) then
+        print(('  no roster entry for %d'):format(src))
+        return
+    end
+
+    local stack
+    local w = BR.Config.WeaponById[item]
+    local c = BR.Config.ConsumableById[item]
+    if w then
+        stack = { item = item, rarity = w.rarity, count = n, clip = w.clip,
+                  kind = w.clip and BR.ItemKind.WEAPON or BR.ItemKind.THROWABLE }
+    elseif c then
+        stack = { item = item, kind = BR.ItemKind.CONSUMABLE,
+                  rarity = c.rarity, count = n }
+    elseif BR.Config.AmmoPickups[item] then
+        stack = { item = item, kind = BR.ItemKind.AMMO,
+                  rarity = BR.Rarity.COMMON, count = n }
+    else
+        print(('  unknown item: %s'):format(item))
+        return
+    end
+
+    local ok, displaced, reason = BR.Inv.give(src, stack)
+    print(('  %s %s x%d -> %s%s'):format(ok and 'gave' or 'REFUSED', item, n, src,
+        ok and (displaced and (' (displaced ' .. displaced.item .. ')') or '')
+           or (' -- ' .. tostring(reason))))
 end, RESTRICTED)
 
 RegisterCommand('brwhy', function(_, args)

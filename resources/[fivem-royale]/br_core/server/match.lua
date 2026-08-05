@@ -167,6 +167,11 @@ function BR.Match.onEnter(m, state, from)
         -- study the route on the map and pick their drop.
         BR.Bus.plan(m)
 
+        -- The world is stocked NOW too, for the same reason in reverse:
+        -- players land during BUS, not at PLAYING, so loot generated at the
+        -- state flip would appear under the feet of whoever got down first.
+        BR.Loot.begin(m)
+
     elseif state == BR.MatchState.BUS then
         m.descent = nil     -- fresh per flight: the descent-grace bookkeeping
         m.landCheck = nil   -- and the stuck-lander bookkeeping runs here too
@@ -246,6 +251,7 @@ function BR.Match.onEnter(m, state, from)
 
     elseif state == BR.MatchState.CLEANUP then
         BR.Bus.clear(m)
+        BR.Loot.clear(m)
         BR.Match.resetPlayers(m)
     end
 end
@@ -290,6 +296,7 @@ end
 function BR.Match.resetPlayers(m)
     m.storm = nil
     m.startSquads = nil
+    BR.Inv.clearFor(m)
     BR.Roster.each(
         function(e) return e.matchId == m.id end,
         function(src, e)

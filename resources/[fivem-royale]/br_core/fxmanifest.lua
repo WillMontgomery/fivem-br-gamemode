@@ -27,6 +27,7 @@ shared_scripts {
     '@br_lib/config/weapons.lua',
     '@br_lib/config/loot.lua',
     '@br_lib/shared/storm_solve.lua',
+    '@br_lib/shared/loot_gen.lua',  -- reads the loot/weapon/map config at call time
 }
 
 -- main.lua must load first on both sides: it defines the loop registry and the
@@ -46,6 +47,8 @@ client_scripts {
     'client/skydive.lua',
     'client/storm.lua',     -- rendering only; damage lands in state.lua
     'client/markers.lua',   -- pause-map pings: blips + world beams
+    'client/inventory.lua', -- the inventory mirror; owns every weapon grant
+    'client/loot.lua',      -- world props + pickup; needs BR.Inv (inventory.lua)
     'client/chat.lua',
     'client/debug.lua',
 }
@@ -61,6 +64,8 @@ server_scripts {
     'server/bus.lua',       -- route authority; match.onEnter(BUS) calls into it
     'server/combat.lua',
     'server/storm.lua',     -- phase authority + the damage ledger
+    'server/inventory.lua', -- BR.Inv: the authoritative inventory model
+    'server/loot.lua',      -- world loot: layout, streaming, claim arbitration
     'server/markers.lua',   -- player map markers: relay + squad scoping
     'server/chat.lua',
     'server/debug.lua',

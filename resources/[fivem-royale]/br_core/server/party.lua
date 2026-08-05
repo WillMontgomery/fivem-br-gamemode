@@ -627,8 +627,10 @@ function BR.Party.lateJoin(src, m)
     end
 
     -- The room saw the flight preview when warmup began; the late arrival
-    -- needs their own copy to plan a drop with.
+    -- needs their own copy to plan a drop with, and an empty inventory bar
+    -- rather than whatever the last match left on their screen.
     if BR.Bus and BR.Bus.sendPreview then BR.Bus.sendPreview(m, src) end
+    if BR.Inv and BR.Inv.reset then BR.Inv.reset(src) end
 
     print(('[br_core] %s (%d) late-joined warmup on %s'):format(entry.name, src, target))
 end
@@ -653,12 +655,26 @@ BR.Sched.every(1000, 'party.squadpos', function()
         [BR.MatchState.PLAYING] = true,
     }
 
-    -- Group living squad members. Solos have no squadId and are never sent.
+    -- Group squad members. Solos have no squadId and are never sent.
+    --
+    -- DEAD MATES STAY ON THE LIST. They used to drop off it the instant they
+    -- were eliminated, which took their blip and their overhead name with them
+    -- ("in squads I can't see the names of dead players in my squad", user,
+    -- 2026-08-05) -- the client's membership model IS this push, so going
+    -- quiet about someone reads as "no longer in the squad". Where a
+    -- teammate fell is information their squad is entitled to, and it is the
+    -- same privacy boundary either way: still squad-only, still their own
+    -- match. SPECTATING rides along for the same reason.
+    local visibleStates = {
+        [BR.PlayerState.DEAD]       = true,
+        [BR.PlayerState.SPECTATING] = true,
+        [BR.PlayerState.DBNO]       = true,
+    }
     local squads = {}
     BR.Roster.each(nil, function(src, e)
         local em = e.matchId and BR.Server.matches[e.matchId]
         if em and liveStates[em.state] and e.squadId and e.pos
-           and (BR.Server.isInMatch(e.state) or e.state == BR.PlayerState.DBNO) then
+           and (BR.Server.isInMatch(e.state) or visibleStates[e.state]) then
             local sq = squads[e.squadId]
             if not sq then
                 sq = {}

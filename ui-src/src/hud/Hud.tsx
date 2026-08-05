@@ -1,4 +1,6 @@
-import { useUi, selHud, selStorm, selSquad, selFeed, selDbno } from '../store'
+import {
+  useUi, selHud, selStorm, selSquad, selFeed, selDbno, selMatch, selInv,
+} from '../store'
 import { useScreenMetrics } from './useScreenMetrics'
 import Vitals from './Vitals'
 import StormBar from './StormBar'
@@ -7,6 +9,7 @@ import Counters from './Counters'
 import KillFeed from './KillFeed'
 import SquadPanel from './SquadPanel'
 import DbnoOverlay from './DbnoOverlay'
+import InventoryBar from './InventoryBar'
 
 /**
  * The in-match HUD.
@@ -34,6 +37,8 @@ export default function Hud({ visible }: { visible: boolean }) {
   const squad = useUi(selSquad)
   const feed  = useUi(selFeed)
   const dbno  = useUi(selDbno)
+  const match = useUi(selMatch)
+  const inv   = useUi(selInv)
 
   // Applies the game's resolution and safe zone to CSS variables.
   useScreenMetrics()
@@ -66,7 +71,12 @@ export default function Hud({ visible }: { visible: boolean }) {
         </div>
 
         <div className="absolute" style={{ top: 'var(--safe-y)', right: 'var(--safe-x)' }}>
-          <Counters alive={hud.alive} squads={hud.squadsAlive} kills={hud.kills} />
+          <Counters
+            alive={hud.alive}
+            squads={hud.squadsAlive}
+            kills={hud.kills}
+            mode={match.mode}
+          />
         </div>
 
         <div
@@ -107,6 +117,19 @@ export default function Hud({ visible }: { visible: boolean }) {
         >
           <Vitals hp={hud.hp} armour={hud.armour} stamina={hud.stamina} />
         </div>
+
+        {/* Bottom right, clear of the radar on the left and of the kill feed
+            above it. Hidden during the descent for the same reason the squad
+            panel is: the game's own help boxes own the screen until touchdown,
+            and there is nothing in the bar to look at before you land. */}
+        {hud.state !== 'freefall' && hud.state !== 'glide' && (
+          <div
+            className="absolute"
+            style={{ bottom: 'var(--safe-y)', right: 'var(--safe-x)' }}
+          >
+            <InventoryBar inv={inv} />
+          </div>
+        )}
 
         {dbno.downed && <DbnoOverlay dbno={dbno} />}
 

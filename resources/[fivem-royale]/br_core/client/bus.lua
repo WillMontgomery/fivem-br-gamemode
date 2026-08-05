@@ -564,6 +564,22 @@ AddEventHandler(BR.Net.BUS_SPECTATE, function(d)
         route = d.route,
         hdg   = d.route.heading or 0.0,
     }
+
+    -- WATCHING SOMEONE ELSE'S PLANE LEAVE NEEDS AN EXPLANATION. From the pad
+    -- it is indistinguishable from your own flight departing without you --
+    -- that match was full, or it is the other mode, and either way this
+    -- player is fine (user, 2026-08-05). Delayed so it lands with the plane
+    -- in the air rather than before it has spawned, and re-checked on fire:
+    -- three seconds is long enough to have boarded your own bus, and a
+    -- "next flight" toast aboard your own plane would be nonsense.
+    Citizen.SetTimeout(3000, function()
+        if BR.State.me.state ~= BR.PlayerState.WARMUP then return end
+        if not ghosts[d.matchId] then return end
+        TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
+            text = 'Another match is dropping — you are on the next flight.',
+            tone = 'info', ms = 7000,
+        })
+    end)
 end)
 
 BR.Loop.register(BR.Loop.FRAME, 'bus.ghosts', function()

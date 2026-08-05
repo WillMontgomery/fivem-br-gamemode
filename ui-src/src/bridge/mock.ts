@@ -63,15 +63,21 @@ export function startMockDriver(): void {
         ],
       },
       inv: {
+        // `false` rather than null in the empty slot, and `pool` on the
+        // weapons: this mirrors what Lua actually puts on the wire, so the
+        // store's normalisation is exercised in the browser rather than only
+        // in the game (an earlier mock that sent the already-clean shape is
+        // exactly how a boundary bug reaches production).
         slots: [
-          { id: 'carbinerifle', label: 'Carbine Rifle', kind: 'weapon', rarity: 3, count: 1, clip: 24 },
-          { id: 'pumpshotgun',  label: 'Pump Shotgun',  kind: 'weapon', rarity: 2, count: 1, clip: 6 },
-          { id: 'heavysniper',  label: 'Heavy Sniper',  kind: 'weapon', rarity: 5, count: 1, clip: 4 },
+          { id: 'carbinerifle', label: 'Carbine Rifle', kind: 'weapon', rarity: 3, count: 1, clip: 24, pool: 'medium' },
+          { id: 'pumpshotgun',  label: 'Pump Shotgun',  kind: 'weapon', rarity: 2, count: 1, clip: 6, pool: 'shells' },
+          { id: 'heavysniper',  label: 'Heavy Sniper',  kind: 'weapon', rarity: 5, count: 1, clip: 4, pool: 'heavy' },
           { id: 'shield',       label: 'Shield Potion', kind: 'consumable', rarity: 3, count: 2 },
-          null,
+          false,
         ],
         ammo: { light: 84, smg: 0, medium: 172, shells: 22, heavy: 9 },
         active: 1,
+        using: null,
       },
       storm: {
         phase: 4, phaseState: 'shrinking', endsAt: now + 42_000,

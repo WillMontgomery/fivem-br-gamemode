@@ -446,6 +446,27 @@ AddEventHandler(BR.Net.DROP_LANDED, function()
        or entry.state == BR.PlayerState.GLIDE then
         BR.Roster.setState(src, BR.PlayerState.ALIVE)
         print(('[br_core] %s (%d) landed'):format(entry.name, src))
+
+        -- Empty by design, but the config field is real and this is the one
+        -- moment it means anything.
+        if BR.Inv and BR.Inv.grantStarting then BR.Inv.grantStarting(src) end
+
+        -- THE MATCH IS NOT LIVE UNTIL EVERYONE IS DOWN, and a player standing
+        -- in an empty field with no storm and no timer has no way to know
+        -- that -- it reads as the match being broken (user, 2026-08-05).
+        -- Say it out loud, once, and only while it is still true.
+        local m = BR.Server.matchOf(src)
+        if m and m.state ~= BR.MatchState.PLAYING then
+            local airborne = BR.Server.countIn(m, function(e)
+                return e.state == BR.PlayerState.FREEFALL
+                    or e.state == BR.PlayerState.GLIDE
+                    or e.state == BR.PlayerState.BUS
+            end)
+            if airborne > 0 then
+                BR.Server.notify(src,
+                    'The match will start once all players have landed.', 'info')
+            end
+        end
     else
         -- Refusals are AUDIBLE (the jump handler's rule, applied here after
         -- a landing report vanished into this branch untraced). ALIVE is the

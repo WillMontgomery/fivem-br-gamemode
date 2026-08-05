@@ -34,22 +34,21 @@ BR.Native.ChuteState = {
     FREEFALL =  3,  -- "falling to doom"
 }
 
---- Put the local player into the drop.
----
---- TASK_PARACHUTE's second parameter is VERIFIED UNUSED -- it is a vestigial
---- jetpack flag from early development and does NOT give the player a chute.
---- Skipping the explicit grant is the single easiest way to break the drop.
-function BR.Native.beginSkydive()
-    local ped = PlayerPedId()
-    GiveWeaponToPed(ped, BR.Config.Gadgets.PARACHUTE, 1, false, false)
-
-    local model = BR.Config.Drop.parachuteModel
-    if model then
-        SetPlayerParachuteModelOverride(PlayerId(), GetHashKey(model))
-    end
-    SetPlayerHasReserveParachute(PlayerId())   -- ensure a known state, then disable below
-    TaskParachute(ped, true, false)
-end
+-- THE DROP SEQUENCE LIVES IN client/skydive.lua, AND NOWHERE ELSE.
+--
+-- There used to be a BR.Native.beginSkydive()/endSkydive() pair here, an M3
+-- draft that nothing ever called once skydive.lua grew the real (verified,
+-- retried) sequence. It was deleted rather than left as a convenience, because
+-- of the line it carried: SetPlayerHasReserveParachute(PlayerId()), whose
+-- comment promised a disable that was never written. A second give path for
+-- the chute is the exact shape of every reserve-parachute bug this project has
+-- had, and one that hands out a reserve deliberately would have been the last
+-- one anybody looked for. If a helper is wanted again, it calls into
+-- skydive.lua -- it does not re-implement it.
+--
+-- TASK_PARACHUTE's second parameter is VERIFIED UNUSED -- a vestigial jetpack
+-- flag that does NOT give the player a chute. Skipping the explicit
+-- GiveWeaponToPed is still the single easiest way to break the drop.
 
 --- @return integer one of BR.Native.ChuteState
 function BR.Native.chuteState()
@@ -64,10 +63,6 @@ end
 
 function BR.Native.forceOpenChute()
     ForcePedToOpenParachute(PlayerPedId())
-end
-
-function BR.Native.endSkydive()
-    RemoveWeaponFromPed(PlayerPedId(), BR.Config.Gadgets.PARACHUTE)
 end
 
 -- ------------------------------------------------------------------ ragdoll ---
@@ -424,6 +419,12 @@ function BR.Native.check()
     probe('SetPlayerParachuteModelOverride', function()
         SetPlayerParachuteModelOverride(PlayerId(), GetHashKey(BR.Config.Drop.parachuteModel))
     end)
+    -- The chute's AMMO, not its presence, is what the engine reads as "has a
+    -- parachute available" -- the disarm path checks it and the landing retry
+    -- loop exits on it, so a nil here would silently re-arm every player.
+    probe('GetAmmoInPedWeapon',      function()
+        return GetAmmoInPedWeapon(ped, BR.Config.Gadgets.PARACHUTE)
+    end)
     probe('SetPedCanRagdoll',        function() SetPedCanRagdoll(ped, true) end)
     probe('GetEntityHealth',         function() return GetEntityHealth(ped) end)
     probe('SetEntityMaxHealth',      function() SetEntityMaxHealth(ped, BR.Config.Match.maxHealth) end)
@@ -434,6 +435,13 @@ function BR.Native.check()
     end)
     probe('AddBlipForRadius',        function()
         local b = AddBlipForRadius(0.0, 0.0, 0.0, 100.0)
+        RemoveBlip(b)
+    end)
+    -- Dead squadmates keep a dimmed blip; a nil here would leave every
+    -- eliminated mate looking alive on the minimap.
+    probe('SetBlipAlpha',            function()
+        local b = AddBlipForCoord(0.0, 0.0, 0.0)
+        SetBlipAlpha(b, 120)
         RemoveBlip(b)
     end)
     probe('DrawMarker',              function()
@@ -465,6 +473,45 @@ function BR.Native.check()
         SetModelAsNoLongerNeeded(m)
     end)
     probe('PauseDeathArrestRestart', function() PauseDeathArrestRestart(true) end)
+
+    -- M5 loot and inventory. Every one of these is load-bearing on a path the
+    -- unit tests cannot reach (they stub natives), and a misspelled native is
+    -- nil rather than an error -- which is how GetGroundZFor_3dCoord cost a
+    -- day. Probe first, test in-game second.
+    probe('GetWeapontypeModel',      function()
+        -- Weapons on the ground are drawn as the engine's own model for the
+        -- weapon rather than 35 hand-typed prop names.
+        return GetWeapontypeModel(BR.Config.WeaponById['pistol'].hash)
+    end)
+    probe('PlaceObjectOnGroundProperly', function()
+        local m = GetHashKey('prop_box_ammo04a')
+        RequestModel(m)
+        local obj = CreateObjectNoOffset(m, 0.0, 0.0, -200.0, false, false, false)
+        if obj and obj ~= 0 then
+            PlaceObjectOnGroundProperly(obj)
+            DeleteEntity(obj)
+        end
+        SetModelAsNoLongerNeeded(m)
+    end)
+    -- The ammo report reads this every 500ms. A nil here reports clip 0 for
+    -- every weapon forever, and the server accepts decreases -- so a wrong
+    -- name would quietly empty every magazine in the match.
+    probe('GetAmmoInClip',           function()
+        local _, clip = GetAmmoInClip(ped, BR.Config.WeaponById['pistol'].hash)
+        return clip
+    end)
+    probe('GetAmmoInPedWeapon',      function()
+        return GetAmmoInPedWeapon(ped, BR.Config.WeaponById['pistol'].hash)
+    end)
+    probe('SetAmmoInClip',           function()
+        -- Harmless on a ped that does not hold the weapon; the point is only
+        -- that the name resolves.
+        SetAmmoInClip(ped, BR.Config.WeaponById['pistol'].hash, 0)
+    end)
+    probe('SetDrawOrigin',           function()
+        SetDrawOrigin(0.0, 0.0, -200.0, 0)
+        ClearDrawOrigin()
+    end)
 
     -- The health model assumption that most affects gameplay: does a player ped
     -- really floor at 100 rather than 0?

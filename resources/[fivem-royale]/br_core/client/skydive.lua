@@ -26,6 +26,33 @@ local dropping = false
 -- AIRBORNE at least once.
 local airborneSeen = false
 
+-- THE CANOPY IS OUT, SO THE WEAPON IS SPENT.
+--
+-- GTA does NOT consume GADGET_PARACHUTE when the canopy opens: the ped keeps
+-- the weapon with its ammo intact, which is the engine's definition of "has a
+-- parachute available". That is why a player who had already pulled was still
+-- armed with a second one and why the vanilla deploy prompt came back the
+-- moment they were near the ground (live report, 2026-08-05 -- the third
+-- distinct reserve-chute symptom, and the first one whose cause was the
+-- ENGINE'S ammo model rather than one of our own give paths).
+--
+-- Zeroing the ammo the instant the canopy appears leaves the open canopy
+-- alone (the parachute TASK owns it, not the inventory entry) while making a
+-- redeploy impossible. Removing the weapon outright here would be the obvious
+-- move and is exactly what we do NOT do: pulling the weapon out from under a
+-- live parachute task is how you drop someone out of their own canopy.
+local chuteSpent = false
+
+--- Take the parachute away for good, and kill the vanilla prompt with it.
+--- @param ped integer
+local function disarmChute(ped)
+    RemoveWeaponFromPed(ped, CHUTE)
+    -- The COUNT is ammo and outlives the weapon removal; this is the line the
+    -- "reserve chute after landing" reports kept coming back to.
+    SetPedAmmo(ped, CHUTE, 0)
+    ClearHelp(true)
+end
+
 --- Parse '#RRGGBB' (the squad colour the server assigned) into rgb.
 local function hexToRgb(hex)
     if type(hex) ~= 'string' then return 255, 255, 255 end
@@ -41,6 +68,7 @@ AddEventHandler('br:drop:begin', function(d)
     -- the SPACE listener in bus.lua stands down immediately.
     dropping = true
     airborneSeen = false
+    chuteSpent = false
 
     Citizen.CreateThread(function()
         local ped = PlayerPedId()
@@ -199,8 +227,7 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
     if IsPedInAnyVehicle(ped, true) then
         if dropping then
             dropping = false
-            RemoveWeaponFromPed(ped, CHUTE)
-            SetPedAmmo(ped, CHUTE, 0)   -- scrub any lingering reserve count
+            disarmChute(ped)
             SetPlayerCanLeaveParachuteSmokeTrail(PlayerId(), false)
             TriggerServerEvent(BR.Net.DROP_LANDED)
             print('[br_core] drop: finished from a vehicle seat -- the machine was still armed')
@@ -209,6 +236,16 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
     end
 
     local cs = GetPedParachuteState(ped)
+
+    -- Spend the chute the moment the canopy appears -- see the note on
+    -- chuteSpent at the top. One write, latched, so this is not fighting the
+    -- engine every tick of a two-minute glide.
+    if not chuteSpent
+       and (cs == BR.Native.ChuteState.OPENING
+            or cs == BR.Native.ChuteState.OPEN) then
+        chuteSpent = true
+        SetPedAmmo(ped, CHUTE, 0)
+    end
 
     -- THE FLOOR, UNCONDITIONALLY. Below the auto-deploy height with the
     -- canopy not out, this hammers EVERY tick until it is: re-give, re-task,
@@ -233,8 +270,13 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
        and agl < BR.Config.Drop.autoDeployAGL then
         if not HasPedGotWeapon(ped, CHUTE, false) then
             GiveWeaponToPed(ped, CHUTE, 1, false, false)
-            SetPedAmmo(ped, CHUTE, 1)   -- exactly one; never a reserve
         end
+        -- Ammo is re-asserted here even when the weapon was already held: the
+        -- canopy-spent latch above zeroes it, and a chute that reverted to
+        -- ON_BACK afterwards would have nothing to deploy. The floor is the
+        -- unconditional net -- it must not be able to fire blanks.
+        SetPedAmmo(ped, CHUTE, 1)   -- exactly one; never a reserve
+        chuteSpent = false
         if cs ~= BR.Native.ChuteState.FREEFALL then
             TaskParachute(ped, true, false)
         end
@@ -278,13 +320,25 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
             -- Shed the still-attached canopy along with its vanilla prompt.
             ClearPedTasks(ped)
         end
-        ClearHelp(true)   -- kill "press F to release parachute" outright
 
-        RemoveWeaponFromPed(ped, CHUTE)
-        -- The chute COUNT is ammo and can outlive the weapon removal --
-        -- a leftover count is exactly the "reserve chute after landing"
-        -- report. Zero it explicitly.
-        SetPedAmmo(ped, CHUTE, 0)
+        -- REMOVAL IS VERIFIED, NOT ASSUMED. The give path has retried across
+        -- real frames since flight one, on the grounds that GiveWeaponToPed
+        -- can quietly fail around a teleport -- and the removal path, doing
+        -- the mirror-image thing at the mirror-image moment, never did. It
+        -- also has to outlive ClearPedTasks: the task teardown can hand the
+        -- weapon back into the ped's hands a frame later, which no
+        -- single-shot RemoveWeaponFromPed can see coming.
+        disarmChute(ped)
+        Citizen.CreateThread(function()
+            for _ = 1, 15 do
+                Citizen.Wait(100)
+                local p = PlayerPedId()
+                if not HasPedGotWeapon(p, CHUTE, false)
+                   and GetAmmoInPedWeapon(p, CHUTE) == 0 then break end
+                disarmChute(p)
+            end
+        end)
+
         SetPlayerCanLeaveParachuteSmokeTrail(PlayerId(), false)
 
         -- A short grace absorbs the landing-stumble edge cases (gamerules
@@ -297,6 +351,31 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
         })
         print('[br_core] landed')
     end
+end)
+
+-- THE STANDING DISARM. Everything above depends on the landing branch firing,
+-- and the landing branch has now been wrong in four different ways across four
+-- sessions -- attached canopies, vehicle seats, water, the state machine never
+-- arming at all. This is the net under all of it: a player the SERVER считает
+-- calls landed (ALIVE/DBNO), standing on the ground, must not be holding a
+-- parachute, whatever route they took to get there.
+--
+-- HasPedGotWeapon first, so the ordinary case is one cheap call at 10Hz and the
+-- expensive height probe only runs for a ped that actually still has a chute.
+BR.Loop.register(BR.Loop.TICK, 'skydive.disarm', function()
+    if dropping then return end
+
+    local st = BR.State.me.state
+    if st ~= BR.PlayerState.ALIVE and st ~= BR.PlayerState.DBNO then return end
+
+    local ped = PlayerPedId()
+    if not HasPedGotWeapon(ped, CHUTE, false)
+       and GetAmmoInPedWeapon(ped, CHUTE) == 0 then return end
+    -- Never yank one out of the air: if this player is somehow genuinely
+    -- falling, the floor above is the system that owns them.
+    if IsPedFalling(ped) or GetEntityHeightAboveGround(ped) > 5.0 then return end
+
+    disarmChute(ped)
 end)
 
 --- Everything about the drop, in one paste.

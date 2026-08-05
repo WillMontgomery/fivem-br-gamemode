@@ -8,6 +8,7 @@ import Chat from './chat/Chat'
 import Lobby from './screens/Lobby'
 import EndScreen from './screens/EndScreen'
 import LeaveScreen from './screens/LeaveScreen'
+import InventoryPanel from './screens/InventoryPanel'
 import Notices from './hud/Notices'
 
 /**
@@ -152,6 +153,12 @@ export default function App() {
           the vista is real, then fades out over the waiting menu. Always
           mounted so the exit is a fade, not a pop. */}
       <LeaveScreen show={s.leaving} />
+      {/* The TAB panel. Lua owns whether it is open -- the `inventory` keybind
+          pushes NUI focus and this follows -- so there is no local toggle to
+          drift out of agreement with the cursor. Keep-input focus means the
+          match keeps running underneath, which is the point: this is a thing
+          you do DURING a fight, not a place to hide from one. */}
+      {s.focus === 'inventory' && hudUp && <InventoryPanel />}
       {/* Over the WORLD, never the menu: in-match alerts land wherever the
           player is looking, but the lobby has its own feedback (chips
           resolve, panels update) and floating toasts over it read as

@@ -88,6 +88,7 @@ for _, f in ipairs({
     'br_lib/config/match.lua', 'br_lib/config/storm.lua', 'br_lib/config/map.lua',
     'br_lib/config/weapons.lua', 'br_lib/config/loot.lua',
     'br_lib/shared/storm_solve.lua',
+    'br_lib/shared/loot_gen.lua',
     'br_core/server/main.lua',
     'br_core/server/broadcast.lua',
     'br_core/server/roster.lua',
@@ -97,6 +98,8 @@ for _, f in ipairs({
     'br_core/server/bus.lua',
     'br_core/server/combat.lua',
     'br_core/server/storm.lua',
+    'br_core/server/inventory.lua',
+    'br_core/server/loot.lua',
     'br_core/server/markers.lua',
 }) do
     local chunk, err = loadfile(ROOT .. f)
@@ -1442,6 +1445,69 @@ do
     ok(BR.Roster.get(5).placement == nil, 'with no placement recorded')
 end
 
+describe('bus.landingNotice')
+do
+    -- A player who lands first stands in an empty field with no storm, no
+    -- timer and no enemies, and nothing on screen says why (user, 2026-08-05:
+    -- "give them a notification that the match will start once all players
+    -- have landed"). Said once, to the lander, and only while it is true.
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    forceState(BR.MatchState.BUS)
+    BR.Roster.setState(1, BR.PlayerState.FREEFALL)
+    BR.Roster.setState(2, BR.PlayerState.FREEFALL)
+
+    local function noticesTo(target)
+        local out = {}
+        for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do
+            if s.target == target then out[#out + 1] = s.args[1] end
+        end
+        return out
+    end
+
+    sent = {}
+    fire(BR.Net.DROP_LANDED, 1)
+    local first = noticesTo(1)
+    local told = false
+    for _, n in ipairs(first) do
+        if n.text and n.text:find('landed') then told = true end
+    end
+    ok(told, 'the first player down is told the match is waiting on the others')
+
+    -- The LAST player down must not be told to wait for himself.
+    sent = {}
+    fire(BR.Net.DROP_LANDED, 2)
+    local second = noticesTo(2)
+    local toldAgain = false
+    for _, n in ipairs(second) do
+        if n.text and n.text:find('landed') then toldAgain = true end
+    end
+    ok(not toldAgain, 'the last player down is told nothing -- nobody is left')
+
+    -- And a match already live says nothing either: a late lander (the
+    -- stuck-lander promotion, a glider still coming down after PLAYING)
+    -- would otherwise be told to wait for a match that already started.
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    forceState(BR.MatchState.PLAYING)
+    BR.Roster.setState(1, BR.PlayerState.FREEFALL)
+    BR.Roster.setState(2, BR.PlayerState.FREEFALL)
+    sent = {}
+    fire(BR.Net.DROP_LANDED, 1)
+    local live = noticesTo(1)
+    local liveTold = false
+    for _, n in ipairs(live) do
+        if n.text and n.text:find('landed') then liveTold = true end
+    end
+    ok(not liveTold, 'a live match never announces a wait')
+end
+
 describe('party.squadpos')
 do
     -- SECURITY-RELEVANT. br:squad:pos is the single deliberate exception to
@@ -1492,22 +1558,44 @@ do
     ok(not leak, 'no payload ever contains a player from another squad')
     ok(not wrongTarget, 'every recipient is in a squad')
 
-    -- A dead squadmate drops out of the push; a one-survivor squad gets none.
+    -- A DEAD SQUADMATE STAYS ON THE PUSH (user, 2026-08-05). The client's
+    -- membership model IS this list, so dropping the dead took their blip and
+    -- their overhead name with them -- and where a teammate fell is exactly
+    -- the thing their squad needs to see. The survivor keeps receiving.
     forceState(BR.MatchState.PLAYING)
     BR.Combat.eliminate(2, 'test', nil)
     sent = {}
     fakeTime = fakeTime + 1100
     BR.Sched.step(fakeTime)
     local after = eventsOf(BR.Net.SQUAD_POS)
-    local deadSeen, lonely = false, false
+    local deadSeen, survivorGot, deadState = false, false, nil
     for _, p in ipairs(after) do
-        if p.target == 1 then lonely = true end
+        if p.target == 1 then survivorGot = true end
         for _, m in ipairs(p.args[1]) do
-            if m.src == 2 then deadSeen = true end
+            if m.src == 2 then
+                deadSeen = true
+                deadState = m.state
+            end
         end
     end
-    ok(not deadSeen, 'the dead stop being broadcast')
-    ok(not lonely, 'a squad of one survivor gets no pushes (nothing to show)')
+    ok(deadSeen, 'a dead squadmate is still broadcast to their squad')
+    ok(survivorGot, 'the survivor keeps receiving the push')
+    ok(deadState == BR.PlayerState.DEAD,
+        'the payload carries the dead state, so the client can mark the tag',
+        tostring(deadState))
+
+    -- The privacy boundary is unchanged by that: a dead player is still only
+    -- ever shown to their OWN squad, never to the other one.
+    local crossSquad = false
+    for _, p in ipairs(after) do
+        local targetSquad = BR.Roster.get(p.target)
+        targetSquad = targetSquad and targetSquad.squadId
+        for _, m in ipairs(p.args[1]) do
+            local e = BR.Roster.get(m.src)
+            if not e or e.squadId ~= targetSquad then crossSquad = true end
+        end
+    end
+    ok(not crossSquad, 'a dead mate never leaks to another squad')
 
     -- And a SOLO round shares nothing with anybody: no squads, no beacons.
     reset()
@@ -2974,6 +3062,437 @@ do
         if s.args[1].op == 'clear' and s.args[1].owner == 3 then swept = true end
     end
     ok(swept, 'the sweep clears markers of departed owners')
+end
+
+-- ------------------------------------------------------------------ loot ---
+
+--- A match in warmup with a stocked world and both players landed. Loot is
+--- generated at WARMUP (players land during BUS), so this is the earliest
+--- point at which any of it can be reached.
+local function lootMatch()
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    return theMatch()
+end
+
+--- Stand a player exactly on top of a ground entry.
+local function standOn(src, e)
+    BR.Roster.get(src).pos = { x = e.x, y = e.y, z = e.z }
+end
+
+describe('loot.stream')
+do
+    local m = lootMatch()
+    ok(m.loot ~= nil, 'warmup stocks the world')
+
+    -- Ids are assigned 1..n in generation order, so entry 1 always exists and
+    -- always names the same place for a given seed.
+    local first = m.loot.items[1]
+    ok(first ~= nil, 'the layout is indexed by id')
+
+    local cx, cy = BR.LootCellOf(first.x, first.y)
+
+    sent = {}
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+    local adds = eventsOf(BR.Net.LOOT_ADD)
+    local sawFirst, leaked = false, false
+    for _, s in ipairs(adds) do
+        for _, entry in ipairs(s.args[1]) do
+            if entry.id == 1 then sawFirst = true end
+            if entry.contents then leaked = true end
+        end
+    end
+    ok(#adds > 0, 'subscribing to a cell streams its entries')
+    ok(sawFirst, 'the entry standing in that cell is among them')
+    -- SECURITY-ADJACENT: a client that knew what was in each chest would only
+    -- ever open the good ones, which is the whole tension of a chest removed.
+    ok(not leaked, 'container contents never travel to the client')
+
+    -- Re-subscribing to the SAME cell must be a no-op, or a client parked on
+    -- a cell boundary re-streams 150 entries every second.
+    sent = {}
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+    ok(#eventsOf(BR.Net.LOOT_ADD) == 0, 'a repeat subscription sends nothing')
+
+    -- Walking three cells away drops everything that was in scope.
+    sent = {}
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx + 3, cy = cy + 3 })
+    local goneIds = {}
+    for _, s in ipairs(eventsOf(BR.Net.LOOT_GONE)) do
+        for _, id in ipairs(s.args[1]) do goneIds[id] = true end
+    end
+    ok(goneIds[1], 'leaving the neighbourhood retires what was in it')
+
+    -- A WARMUP player is not in the world yet. The pad is shared between
+    -- matches, so streaming there would hand one match's items to another's.
+    BR.Roster.setState(2, BR.PlayerState.WARMUP)
+    sent = {}
+    fire(BR.Net.LOOT_CELL, 2, { cx = cx, cy = cy })
+    ok(#eventsOf(BR.Net.LOOT_ADD) == 0, 'a warmup player is refused a subscription')
+end
+
+describe('loot.claim')
+do
+    local m = lootMatch()
+
+    -- Find a plain weapon entry to fight over: containers take a different
+    -- path and ammo does not occupy a slot.
+    local target
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.kind == BR.ItemKind.WEAPON then target = e break end
+    end
+    ok(target ~= nil, 'the layout contains a weapon to claim')
+
+    local cx, cy = BR.LootCellOf(target.x, target.y)
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+    fire(BR.Net.LOOT_CELL, 2, { cx = cx, cy = cy })
+    standOn(1, target)
+    standOn(2, target)
+
+    -- BOTH REACH FOR IT IN THE SAME TICK. This is the normal case at a hot
+    -- drop, and exactly one of them may end up holding it.
+    sent = {}
+    fire(BR.Net.LOOT_CLAIM, 1, { id = target.id })
+    fire(BR.Net.LOOT_CLAIM, 2, { id = target.id })
+
+    local gained = {}
+    for _, s in ipairs(eventsOf(BR.Net.INV_SET)) do
+        for _, slot in ipairs(s.args[1].slots) do
+            if slot and slot.id == target.item then gained[s.target] = true end
+        end
+    end
+    local n = 0
+    for _ in pairs(gained) do n = n + 1 end
+    ok(n == 1, 'exactly one claimant ends up holding it', ('%d did'):format(n))
+    ok(m.loot.items[target.id] == nil, 'and it is gone from the world')
+
+    -- The loser is TOLD. A claim that silently does nothing is
+    -- indistinguishable from a broken key (the bus jump handler's rule).
+    local loser = gained[1] and 2 or 1
+    local toldLoser = false
+    for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do
+        if s.target == loser and s.args[1].text:find('beat you') then
+            toldLoser = true
+        end
+    end
+    ok(toldLoser, 'the loser is told someone beat them to it')
+
+    -- Both subscribers must hear it vanish, not just the winner -- otherwise
+    -- the loser keeps a prop standing in the world forever.
+    local goneTo = {}
+    for _, s in ipairs(eventsOf(BR.Net.LOOT_GONE)) do
+        for _, id in ipairs(s.args[1]) do
+            if id == target.id then goneTo[s.target] = true end
+        end
+    end
+    ok(goneTo[1] and goneTo[2], 'every subscriber is told it is gone')
+
+    -- Distance is re-validated server-side; the client prompt is cosmetic.
+    local far
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.kind == BR.ItemKind.WEAPON then far = e break end
+    end
+    BR.Roster.get(1).pos = { x = far.x + 400.0, y = far.y, z = far.z }
+    sent = {}
+    fire(BR.Net.LOOT_CLAIM, 1, { id = far.id })
+    ok(m.loot.items[far.id] ~= nil, 'a claim from 400m away is refused')
+    local toldFar = false
+    for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do
+        if s.target == 1 and s.args[1].text:find('far') then toldFar = true end
+    end
+    ok(toldFar, 'and audibly so')
+
+    -- A dead player cannot loot.
+    standOn(1, far)
+    BR.Roster.setState(1, BR.PlayerState.DEAD)
+    fire(BR.Net.LOOT_CLAIM, 1, { id = far.id })
+    ok(m.loot.items[far.id] ~= nil, 'a corpse cannot pick things up')
+end
+
+describe('loot.rateLimit')
+do
+    local m = lootMatch()
+
+    -- Ten claims inside one millisecond is not a player. The limit is per
+    -- second, so this must bite regardless of what is being claimed.
+    local ids = {}
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.kind ~= 'chest' and e.kind ~= 'deathbox' then
+            ids[#ids + 1] = id
+            if #ids >= 10 then break end
+        end
+    end
+
+    for _, id in ipairs(ids) do
+        standOn(1, m.loot.items[id])
+        fire(BR.Net.LOOT_CLAIM, 1, { id = id })
+    end
+
+    local taken = 0
+    for _, id in ipairs(ids) do
+        if m.loot.items[id] == nil then taken = taken + 1 end
+    end
+    ok(taken <= BR.Config.Loot.pickupRateLimit,
+        'no more than the configured claims per second are honoured',
+        ('%d of %d'):format(taken, #ids))
+end
+
+describe('inv.model')
+do
+    local m = lootMatch()
+
+    BR.Inv.reset(1)
+    local rifle = BR.Config.WeaponById['carbinerifle']
+    local ok1 = BR.Inv.give(1, { item = 'carbinerifle', kind = BR.ItemKind.WEAPON,
+                                 rarity = rifle.rarity, count = 1, clip = rifle.clip })
+    local inv = BR.Inv.of(1)
+    ok(ok1 and inv.slots[1] and inv.slots[1].item == 'carbinerifle',
+        'a weapon lands in the first free slot')
+    ok(inv.active == 1, 'and comes up in an empty hand')
+    -- A found gun has to be usable or the first weapon on the ground is a
+    -- decoration.
+    ok((inv.ammo[rifle.ammo] or 0) > 0, 'a weapon brings reserve ammo with it')
+
+    -- Fill every slot, then pick up a sixth weapon.
+    for i = 2, BR.Config.Loot.slots do
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 12 })
+    end
+    inv.active = 3
+    local ok2, displaced = BR.Inv.give(1, { item = 'heavysniper',
+        kind = BR.ItemKind.WEAPON, rarity = 5, count = 1, clip = 6 })
+    ok(ok2 and inv.slots[3].item == 'heavysniper',
+        'a full inventory swaps the new weapon into the ACTIVE slot')
+    ok(displaced ~= nil and displaced.item == 'pistol',
+        'and hands the displaced one back to the world')
+
+    -- A CONSUMABLE MUST NOT BE ABLE TO THROW AWAY A GUN. That is a misclick
+    -- costing a gunfight, which is why only weapons displace.
+    local ok3, _, reason = BR.Inv.give(1, { item = 'bandage',
+        kind = BR.ItemKind.CONSUMABLE, rarity = 1, count = 1 })
+    ok(not ok3 and reason == 'full',
+        'a consumable is refused rather than displacing a weapon')
+
+    -- Stacking.
+    BR.Inv.reset(1)
+    inv = BR.Inv.of(1)
+    local band = BR.Config.ConsumableById['bandage']
+    for _ = 1, band.maxStack do
+        BR.Inv.give(1, { item = 'bandage', kind = BR.ItemKind.CONSUMABLE,
+                         rarity = 1, count = 1 })
+    end
+    ok(inv.slots[1] and inv.slots[1].count == band.maxStack,
+        'consumables fill one slot to maxStack first')
+    BR.Inv.give(1, { item = 'bandage', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = 1, count = 1 })
+    ok(inv.slots[2] and inv.slots[2].item == 'bandage',
+        'and open a second stack only when the first is full')
+
+    -- Ammo pools are capped.
+    BR.Inv.reset(1)
+    inv = BR.Inv.of(1)
+    local cap = BR.Config.AmmoCaps[BR.AmmoType.HEAVY]
+    BR.Inv.give(1, { item = BR.AmmoType.HEAVY, kind = BR.ItemKind.AMMO,
+                     rarity = 1, count = cap * 10 })
+    ok(inv.ammo[BR.AmmoType.HEAVY] == cap, 'ammo cannot exceed its pool cap')
+    local ok4, _, reason4 = BR.Inv.give(1, { item = BR.AmmoType.HEAVY,
+        kind = BR.ItemKind.AMMO, rarity = 1, count = 10 })
+    ok(not ok4 and reason4 == 'ammofull', 'a full pool refuses more')
+
+    -- Dropping puts it back in the world at the dropper's feet.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                     rarity = 1, count = 1, clip = 12 })
+    BR.Roster.get(1).pos = { x = 1234.0, y = -567.0, z = 30.0 }
+    local before = m.loot.nextId
+    fire(BR.Net.INV_DROP, 1, { slot = 1 })
+    ok(m.loot.nextId == before + 1, 'dropping creates a ground entry')
+    local droppedEntry = m.loot.items[m.loot.nextId]
+    ok(droppedEntry and droppedEntry.item == 'pistol'
+        and math.abs(droppedEntry.x - 1234.0) < 0.01,
+        'at the dropper, carrying the same item')
+    ok(BR.Inv.of(1).slots[1] == false, 'and it leaves the inventory')
+
+    -- The slot INDEX is what is selected, not the gun in it: dragging an item
+    -- into slot 3 while slot 1 is up must not change what is in your hands.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    BR.Inv.give(1, { item = 'sawnoff', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 8 })
+    BR.Inv.of(1).active = 1
+    fire(BR.Net.INV_SWAP, 1, { from = 1, to = 2 })
+    ok(BR.Inv.of(1).active == 1, 'a swap never moves the active slot index')
+    ok(BR.Inv.of(1).slots[1].item == 'sawnoff', 'but it does move the items')
+end
+
+describe('inv.use')
+do
+    lootMatch()
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'minishield', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = 1, count = 2 })
+    local shield = BR.Config.ConsumableById['minishield']
+    local e = BR.Roster.get(1)
+    e.armour = 0.0
+
+    sent = {}
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+    ok(BR.Inv.of(1).using ~= nil, 'using starts a timed action')
+    ok(BR.Inv.of(1).slots[1].count == 2,
+        'and consumes nothing yet -- an interrupted use costs nothing')
+
+    -- Half way through: still nothing.
+    fakeTime = fakeTime + math.floor(shield.useMs / 2)
+    BR.Sched.step(fakeTime)
+    ok(#eventsOf(BR.Net.INV_EFFECT) == 0, 'no effect before the timer lands')
+
+    fakeTime = fakeTime + shield.useMs
+    BR.Sched.step(fakeTime)
+    local effects = eventsOf(BR.Net.INV_EFFECT)
+    ok(#effects == 1, 'the effect lands exactly once')
+    ok(effects[1] and effects[1].args[1].armour == shield.armour,
+        'with the armour the item is worth')
+    ok(effects[1] and effects[1].args[1].armourCap == shield.armourCap,
+        'and its own ceiling, so the client can clamp')
+    ok(BR.Inv.of(1).slots[1].count == 1, 'completion is what consumes one')
+    ok(BR.Inv.of(1).using == nil, 'and clears the action')
+
+    -- TAKING FIRE INTERRUPTS. Committing to an 8s med kit while being shot
+    -- should lose you the med kit, not heal you through it.
+    e.armour = 0.0
+    sent = {}
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+    e.hp = (e.hp or 100.0) - 20.0
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Inv.of(1).using == nil, 'damage cancels a use in progress')
+    fakeTime = fakeTime + shield.useMs * 2
+    BR.Sched.step(fakeTime)
+    ok(#eventsOf(BR.Net.INV_EFFECT) == 0, 'and no effect ever lands')
+    ok(BR.Inv.of(1).slots[1].count == 1, 'the item survives the interruption')
+
+    -- Dying mid-use lands nothing either.
+    e.hp = 100.0
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+    sent = {}
+    BR.Combat.eliminate(1, 'test', nil)
+    fakeTime = fakeTime + shield.useMs * 2
+    BR.Sched.step(fakeTime)
+    ok(#eventsOf(BR.Net.INV_EFFECT) == 0, 'a use dies with the player')
+
+    -- A use that would do nothing is refused OUT LOUD rather than eating five
+    -- seconds for no effect.
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'minishield', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = 1, count = 1 })
+    BR.Roster.get(1).armour = shield.armourCap
+    sent = {}
+    fire(BR.Net.INV_USE, 1, { slot = 1 })
+    ok(BR.Inv.of(1).using == nil, 'a pointless use never starts')
+    local refused = false
+    for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do
+        if s.args[1].text:find('already') then refused = true end
+    end
+    ok(refused, 'and says why')
+end
+
+describe('inv.ammo')
+do
+    lootMatch()
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = BR.AmmoType.LIGHT, kind = BR.ItemKind.AMMO,
+                     rarity = 1, count = 100 })
+    local inv = BR.Inv.of(1)
+    local start = inv.ammo[BR.AmmoType.LIGHT]
+
+    -- A report that RAISES ammo is either a cheat or a stale packet that
+    -- crossed a pickup in flight. Neither is worth acting on.
+    fire(BR.Net.INV_AMMO, 1, { pool = { [BR.AmmoType.LIGHT] = start + 500 } })
+    ok(inv.ammo[BR.AmmoType.LIGHT] == start, 'an increase is ignored')
+
+    fire(BR.Net.INV_AMMO, 1, { pool = { [BR.AmmoType.LIGHT] = start - 30 } })
+    ok(inv.ammo[BR.AmmoType.LIGHT] == start - 30, 'a decrease applies')
+
+    fire(BR.Net.INV_AMMO, 1, { pool = { [BR.AmmoType.LIGHT] = -50 } })
+    ok(inv.ammo[BR.AmmoType.LIGHT] == start - 30, 'a negative report is ignored')
+
+    -- The clip is the same contract.
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, clip = 4 })
+    ok(inv.slots[1].clip == 4, 'a lower clip count applies')
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, clip = 99 })
+    ok(inv.slots[1].clip == 4, 'a higher one does not')
+end
+
+describe('loot.deathbox')
+do
+    local m = lootMatch()
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'carbinerifle', kind = BR.ItemKind.WEAPON,
+                     rarity = 3, count = 1, clip = 30 })
+    BR.Inv.give(1, { item = 'bandage', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = 1, count = 3 })
+    BR.Roster.get(1).pos = { x = 900.0, y = 900.0, z = 40.0 }
+
+    local before = m.loot.nextId
+    BR.Combat.eliminate(1, 'test', 2)
+    ok(m.loot.nextId > before, 'an elimination leaves a box behind')
+
+    local box = m.loot.items[m.loot.nextId]
+    ok(box and box.kind == 'deathbox', 'and it is a container')
+    ok(box and math.abs(box.x - 900.0) < 0.01, 'where they fell')
+
+    local hasRifle = false
+    for _, s in ipairs(box.contents or {}) do
+        if s.item == 'carbinerifle' then hasRifle = true end
+    end
+    ok(hasRifle, 'holding what they were carrying')
+    ok(BR.Inv.of(1).slots[1] == false, 'and the corpse carries nothing')
+
+    -- Opening it scatters the contents for whoever walks over.
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    standOn(2, box)
+    local n = #box.contents
+    local beforeOpen = m.loot.nextId
+    fire(BR.Net.LOOT_CLAIM, 2, { id = box.id })
+    ok(m.loot.items[box.id] == nil, 'opening consumes the box')
+    ok(m.loot.nextId == beforeOpen + n,
+        'and lays every item in it on the ground',
+        ('%d of %d'):format(m.loot.nextId - beforeOpen, n))
+end
+
+describe('loot.teardown')
+do
+    local m = lootMatch()
+    local first = m.loot.items[1]
+    local cx, cy = BR.LootCellOf(first.x, first.y)
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    ok(BR.Inv.of(1).slots[1] ~= false, 'the player is carrying something')
+
+    BR.Match.transition(m, BR.MatchState.CLEANUP)
+    ok(m.loot == nil, 'cleanup forgets the layout')
+    ok(BR.Inv.of(1).slots[1] == false, 'and empties every inventory')
+
+    BR.Match.destroy(m)
+    ok(BR.Server.matches[m.id] == nil, 'and the instance goes with it')
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

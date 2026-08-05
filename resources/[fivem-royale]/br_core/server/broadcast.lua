@@ -165,6 +165,12 @@ function BR.Broadcast.snapshot(src)
             squadsAlive = squadsAlive,
             serverNow   = now,
             storm       = storm,
+            -- Both are the receiver's OWN view and both are why a mid-match
+            -- br_ui restart recovers rather than showing an empty bar over a
+            -- player holding a rifle. Loot rides the existing subscription --
+            -- re-sending the cells they already had, not the whole map.
+            inv         = BR.Inv and BR.Inv.publicFor(target) or nil,
+            loot        = BR.Loot and BR.Loot.viewFor(target) or nil,
         }
     end
 

@@ -158,7 +158,6 @@ local dirBlip = nil       -- centre marker: clamps to the minimap edge = directi
 local lastBlipAt = 0
 local lastBlipR = -1.0
 local lastPush = 0
-local lastComing = 0   -- the 30s SLOT last announced; 0 = fire on sight
 
 local function clearBlips()
     if curBlip then RemoveBlip(curBlip) curBlip = nil end
@@ -340,43 +339,13 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- free-loot hold stays dry everywhere.
     weatherWant(caught and 'thunder' or 'clear')
 
-    -- No per-phase warn toast: once the first shrink begins the storm bar
-    -- is PERMANENT (user call, 2026-08-04) and a toast repeating what the
-    -- timer already says was noise. The countdown notices below cover the
-    -- one stretch the bar sits out -- the long phase-1 hold.
-
-    -- The long first hold speaks through NOTICES, not a parked timer -- and
-    -- always in clean half-minute amounts: "2 minutes", "1m 30s", never
-    -- "2m 29s". Each notice fires when the countdown enters a new 30-second
-    -- slot and names THAT slot, so the cadence lands on the dot regardless
-    -- of when this client started listening. Landed players only -- the
-    -- drop has its own prompts.
-    --
-    -- THE LAST SLOT ANNOUNCED IS 90s. The 60 slot fires anywhere in its
-    -- (45s, 75s] window, while the bar appears at exactly 60s -- so "the
-    -- storm is coming in 1 minute" could precede a bar reading 1:00 by
-    -- fifteen silent seconds (filmed report, 2026-08-04). The bar's own
-    -- arrival at 60s IS the one-minute announcement; a toast that lies
-    -- about it is worse than none.
-    if rec.phase == 1 and st == BR.StormPhase.HOLDING and msLeft > 60000
-       and me == BR.PlayerState.ALIVE then
-        local slot = math.floor((msLeft + 15000) / 30000) * 30
-        if slot ~= lastComing and slot >= 90 then
-            lastComing = slot
-            local m, s = math.floor(slot / 60), slot % 60
-            local span
-            if m > 0 and s > 0 then span = ('%dm %ds'):format(m, s)
-            elseif m > 1 then span = ('%d minutes'):format(m)
-            elseif m == 1 then span = '1 minute'
-            else span = ('%d seconds'):format(s) end
-            TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
-                text = ('The storm is coming in %s.'):format(span),
-                tone = 'info', ms = 6000,
-            })
-        end
-    else
-        lastComing = 0
-    end
+    -- NO STORM TOASTS AT ALL (user call, 2026-08-05). This used to announce
+    -- the approach every thirty seconds through the phase-1 hold, because the
+    -- bar was hidden for that stretch and the wait needed a voice. The bar is
+    -- permanent now, from the first storm record onward, so the toasts were
+    -- a second clock -- coarser than the first, occasionally disagreeing with
+    -- it, and interrupting the one activity the hold exists for. The
+    -- countdown IS the announcement.
 
     -- Blips: radius blips cannot resize in place, so refresh on a cadence --
     -- brisk while shrinking, lazy while holding, and only when the radius
