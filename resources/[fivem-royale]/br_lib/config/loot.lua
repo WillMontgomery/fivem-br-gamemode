@@ -236,7 +236,7 @@ BR.Config.Loot = {
     -- "extremely heavy"; 12 overcorrected into a paperweight (user,
     -- 2026-08-06, both directions). 120 is a crate you can shunt with a car
     -- and cannot push over by walking into it.
-    crateMass       = 120.0,
+    crateMass       = 1200.0,
     labelDistance   = 8.0,   -- 3D text draw range
 
     -- Containers are a commitment in the open: you stand still for a second and

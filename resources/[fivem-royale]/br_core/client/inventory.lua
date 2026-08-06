@@ -159,6 +159,21 @@ local function applyActive(force)
         SetPedAmmo(ped, want, clip + reserve)
         SetAmmoInClip(ped, want, clip)
         SetCurrentPedWeapon(ped, want, true)
+
+        -- INFINITE AMMO OFF, EXPLICITLY.
+        --
+        -- Measured with our own writes suspended (/brprobe raw): the magazine
+        -- did not move at all while firing, and the totals ROSE by one per
+        -- shot. A magazine that never empties is exactly what infinite-ammo
+        -- clip does, and the rising totals are consistent with the engine
+        -- crediting back a round it never spent.
+        --
+        -- Nothing in this project turns it on, which is the point: it is a
+        -- PED flag with a default we do not control and which another resource
+        -- can set. Asserting it off costs two calls per weapon switch and
+        -- removes a whole class of "why is ammo behaving like that".
+        SetPedInfiniteAmmo(ped, false, want)
+        SetPedInfiniteAmmoClip(ped, false)
     else
         SetCurrentPedWeapon(ped, UNARMED, true)
     end

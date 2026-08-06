@@ -86,7 +86,17 @@ function Slot({
             style={{ backgroundColor: hex }}
           />
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-0.5 px-1">
-            <div style={{ color: hex }}>
+            {/* Same light plate as the panel: the weapon renders are dark grey
+                on transparency and vanish against a near-black slot. Lifting
+                the artwork rather than the whole slot keeps the white label
+                readable (user, 2026-08-06). */}
+            <div
+              className="rounded px-1.5 py-0.5"
+              style={{
+                color: hex,
+                backgroundColor: 'rgba(226,226,236,0.16)',
+              }}
+            >
               <ItemIcon slot={slot} size="2.3rem" />
             </div>
             <span
@@ -160,7 +170,13 @@ export default function InventoryBar({ inv }: { inv: InvPayload }) {
               ? '0 0 0 1px rgba(255,255,255,0.35)' : 'none',
           }}
         >
-          <div style={{ color: 'rgba(255,255,255,0.85)' }}>
+          <div
+            className="rounded px-1.5 py-0.5"
+            style={{
+              color: 'rgba(255,255,255,0.85)',
+              backgroundColor: 'rgba(226,226,236,0.16)',
+            }}
+          >
             <FistIcon size="2.3rem" />
           </div>
           <span

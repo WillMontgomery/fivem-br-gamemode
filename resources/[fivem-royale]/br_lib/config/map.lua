@@ -29,6 +29,9 @@ BR.Config.Map.POIs = {
     { id = 'lamesa',      name = 'La Mesa',          x =   800.0, y = -1600.0, z =  30.0, radius = 240.0, tier = 2 },
     { id = 'cypress',     name = 'Cypress Flats',    x =   700.0, y = -2000.0, z =  29.0, radius = 220.0, tier = 2 },
     { id = 'elysian',     name = 'Elysian Island',   x =   200.0, y = -2700.0, z =   6.0, radius = 260.0, tier = 3 },
+    -- Added 2026-08-06: the city had a hole between Legion Square and the
+    -- eastern industrial belt.
+    { id = 'pillbox',     name = 'Pillbox Hill',     x =   -70.0, y =  -600.0, z =  33.0, radius = 220.0, tier = 2 },
     { id = 'arena',       name = 'Maze Bank Arena',  x =  -250.0, y = -1900.0, z =  24.0, radius = 220.0, tier = 2 },
     { id = 'grove',       name = 'Grove Street',     x =   105.0, y = -1885.0, z =  21.0, radius = 200.0, tier = 2 },
     { id = 'terminal',    name = 'Terminal',         x =  1050.0, y = -2500.0, z =   6.0, radius = 280.0, tier = 2 },
@@ -52,6 +55,10 @@ BR.Config.Map.POIs = {
     { id = 'banham',      name = 'Banham Canyon',    x = -2540.0, y =  2320.0, z =  25.0, radius = 220.0, tier = 1 },
     { id = 'hookies',     name = 'Hookies',          x = -2200.0, y =  4290.0, z =   5.0, radius = 200.0, tier = 1 },
     { id = 'raton',       name = 'Raton Canyon',     x = -1450.0, y =  4450.0, z =  20.0, radius = 220.0, tier = 1 },
+    -- Added 2026-08-06: the west was thin between Chumash and Banham, which
+    -- is a long stretch of coast road with nothing to stop for.
+    { id = 'palomino_hw', name = 'Pacific Bluffs',   x = -3060.0, y =   330.0, z =  10.0, radius = 220.0, tier = 1 },
+    { id = 'tongva',      name = 'Tongva Hills',     x = -1550.0, y =  2200.0, z =  60.0, radius = 240.0, tier = 1 },
 
     -- North and county
     { id = 'chaparral',   name = 'Great Chaparral',  x =  -100.0, y =  2000.0, z =  70.0, radius = 260.0, tier = 1 },
@@ -69,6 +76,22 @@ BR.Config.Map.POIs = {
     { id = 'lighthouse',  name = 'El Gordo Lighthouse', x = 3335.0, y = 5160.0, z =  18.0, radius = 200.0, tier = 1 },
     { id = 'humane',      name = 'Humane Labs',      x =  3600.0, y =  3700.0, z =  30.0, radius = 260.0, tier = 3 },
     { id = 'zancudo',     name = 'Fort Zancudo',     x = -2100.0, y =  3200.0, z =  32.0, radius = 340.0, tier = 3 },
+
+    -- THE MOUNTAINS AND THE NORTH, TRIPLED (user call, 2026-08-06: "there's
+    -- especially nothing in the mountains"). Everything north of the city was
+    -- a handful of named towns with hundreds of empty metres between them, so
+    -- the whole northern third of the map was a place you crossed rather than
+    -- fought over. These are deliberately tier 1 -- sparse and worth stopping
+    -- at, not a reason to skip Sandy Shores.
+    { id = 'chiliad_n',   name = 'Chiliad North Face', x =   150.0, y =  6350.0, z = 320.0, radius = 240.0, tier = 1 },
+    { id = 'chiliad_trail', name = 'Chiliad Trailhead', x =   -80.0, y =  4900.0, z = 250.0, radius = 220.0, tier = 1 },
+    { id = 'cassidy',     name = 'Cassidy Creek',    x = -1000.0, y =  4400.0, z =  50.0, radius = 240.0, tier = 1 },
+    { id = 'tataviam',    name = 'Tataviam Mountains', x =  2600.0, y =  2100.0, z = 150.0, radius = 240.0, tier = 1 },
+    { id = 'braddock',    name = 'Braddock Pass',    x =  1750.0, y =  4900.0, z =  40.0, radius = 220.0, tier = 1 },
+    { id = 'altruist',    name = 'Altruist Camp',    x = -1150.0, y =  4900.0, z = 220.0, radius = 200.0, tier = 2 },
+    { id = 'northchum',   name = 'North Chumash',    x = -2600.0, y =  3100.0, z =  10.0, radius = 220.0, tier = 1 },
+    { id = 'catfish',     name = 'Catfish View',     x =  3450.0, y =  5150.0, z =  25.0, radius = 220.0, tier = 1 },
+    { id = 'sanchianski', name = 'San Chianski Range', x =  3200.0, y =  2400.0, z =  60.0, radius = 240.0, tier = 1 },
 
     -- The eastern desert
     { id = 'penitentiary', name = 'Bolingbroke Penitentiary', x = 1690.0, y = 2565.0, z = 45.0, radius = 260.0, tier = 3 },

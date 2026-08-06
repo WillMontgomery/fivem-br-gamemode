@@ -114,7 +114,18 @@ local function ammoWatch(seconds, raw)
     Citizen.CreateThread(function()
         local ped = PlayerPedId()
         local last = { a = -1, c = -1, t = -1 }
-        local until_ = GetGameTimer() + seconds * 1000
+        local started = GetGameTimer()
+        local until_ = started + seconds * 1000
+
+        -- Turn infinite ammo OFF for the measurement, and say so. A magazine
+        -- that never empties makes every other column unreadable, and it is a
+        -- ped flag with a default we do not set.
+        if raw then
+            local _, hnow = GetCurrentPedWeapon(ped, true)
+            if hnow then SetPedInfiniteAmmo(ped, false, hnow) end
+            SetPedInfiniteAmmoClip(ped, false)
+            print('  (infinite ammo + infinite clip asserted OFF for this run)')
+        end
 
         while GetGameTimer() < until_ do
             local a = GetAmmoInPedWeapon(ped, hash)
@@ -127,8 +138,13 @@ local function ammoWatch(seconds, raw)
                     local d = now - before
                     return d == 0 and '  =' or ('%+3d'):format(d)
                 end
-                print(('  %6s %s   %6s %s   %6s %s')
-                    :format(tostring(a), delta(a, last.a),
+                -- TIME AND SHOOTING STATE, because "+1 per shot" and "+1 per
+                -- second" produce the identical column and mean completely
+                -- different things. The first run could not tell them apart.
+                print(('  t%5dms  shooting=%-5s  %6s %s   %6s %s   %6s %s')
+                    :format(GetGameTimer() - started,
+                            tostring(IsPedShooting(ped)),
+                            tostring(a), delta(a, last.a),
                             tostring(c), delta(c, last.c),
                             tostring(t), delta(t, last.t)))
                 last.a, last.c, last.t = a, c, t

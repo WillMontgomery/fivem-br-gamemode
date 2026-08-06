@@ -81,7 +81,20 @@ function SlotCard({
       {slot ? (
         <>
           <div className="flex-1">
-            <div style={{ color: hex }} className="mb-1">
+            {/* A LIGHT PLATE BEHIND THE ARTWORK, not a lighter card.
+                The weapon PNGs are dark grey renders on transparency, so on a
+                near-black card they were barely visible (user, 2026-08-06) --
+                and brightening the whole panel would wash out the white text
+                everything else depends on. A small, low-contrast plate lifts
+                the gun off the background and nothing else changes. */}
+            <div
+              className="mb-2 rounded-md flex items-center justify-center py-2"
+              style={{
+                color: hex,
+                backgroundColor: 'rgba(226,226,236,0.16)',
+                border: '1px solid rgba(255,255,255,0.10)',
+              }}
+            >
               <ItemIcon slot={slot} size="3.4rem" />
             </div>
             <div className="text-lg font-semibold leading-tight">{slot.label}</div>

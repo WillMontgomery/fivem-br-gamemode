@@ -634,6 +634,16 @@ function BR.Native.check()
     -- The ammo report skips a reloading ped: mid-swap the magazine reads as
     -- whatever the animation has reached, which is not a number to build on.
     probe('IsPedReloading',          function() return IsPedReloading(ped) end)
+    probe('IsPedShooting',           function() return IsPedShooting(ped) end)
+    -- MEASURED: with our own ammo writes suspended, the magazine did not move
+    -- while firing and the totals rose by one per shot -- the signature of an
+    -- infinite-ammo clip. Nothing here turns it on, which is exactly why it is
+    -- asserted OFF on every weapon grant: it is a ped flag with a default we
+    -- do not control.
+    probe('SetPedInfiniteAmmo',      function()
+        SetPedInfiniteAmmo(ped, false, BR.Config.WeaponById['pistol'].hash)
+    end)
+    probe('SetPedInfiniteAmmoClip',  function() SetPedInfiniteAmmoClip(ped, false) end)
     -- Crate mass. Measured: PlaceObjectOnGroundProperly is what welds a crate
     -- down, and the default mass is what made the survivor feel like concrete.
     probe('SetObjectPhysicsParams',  function()
