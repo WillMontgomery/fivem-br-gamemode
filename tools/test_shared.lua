@@ -332,6 +332,45 @@ do
         'phase 2 holding deals its authored dps')
 end
 
+describe('storm.water')
+do
+    -- THE STORM MUST NOT CLOSE ON OPEN OCEAN.
+    --
+    -- The anchor is a POI and so is always on land, but nothing used to stop
+    -- the per-phase drift from walking seaward one circle at a time -- and
+    -- eight phases off a coastal anchor is enough to finish over water, with
+    -- nowhere left to stand (user, 2026-08-06).
+    --
+    -- Sited just inland of the Pacific rectangle (x > -3350) with enough slack
+    -- that an unconstrained draw reaches well past it, so a fix that does
+    -- nothing shows up immediately.
+    local cx, cy = -3200.0, 500.0
+    ok(not BR.Config.Map.IsWater(cx, cy), 'the test centre starts on dry land')
+
+    local wet, breaches, worst = 0, 0, 0.0
+    for i = 1, 600 do
+        local nx, ny = BR.NextStormCentre(BR.Rng(i), cx, cy, 2400.0, 1400.0, 1.0, nil)
+        if BR.Config.Map.IsWater(nx, ny) then wet = wet + 1 end
+        -- The pull-back must not cost containment: every step of it moves
+        -- strictly closer to a centre the circle already nested in.
+        local slop = BR.Dist(cx, cy, nx, ny) + 1400.0 - 2400.0
+        if slop > 1e-6 then
+            breaches = breaches + 1
+            if slop > worst then worst = slop end
+        end
+    end
+    ok(wet == 0, 'no drawn centre lands in authored water',
+        ('%d of 600 landed wet'):format(wet))
+    ok(breaches == 0, 'and pulling one back out of the sea keeps it nested',
+        ('%d breaches, worst %.3f'):format(breaches, worst))
+
+    -- A centre that is ALREADY wet has nothing better to offer than itself --
+    -- it must still return, not loop.
+    local sx, sy = BR.NextStormCentre(BR.Rng(7), -3800.0, 0.0, 2000.0, 1000.0, 1.0, nil)
+    ok(type(sx) == 'number' and type(sy) == 'number',
+        'a centre already at sea still resolves rather than hanging')
+end
+
 describe('storm.nesting')
 do
     -- THE critical invariant. If a new circle is not fully contained by the old

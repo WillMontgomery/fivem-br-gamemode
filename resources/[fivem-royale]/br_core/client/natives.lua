@@ -422,6 +422,13 @@ function BR.Native.applyGameRules()
     HideHudComponentThisFrame(7)   -- HUD_AREA_NAME
     HideHudComponentThisFrame(9)   -- HUD_STREET_NAME
 
+    -- GTA'S OWN WEAPON AND AMMO READOUT (user call, 2026-08-06). The
+    -- inventory bar IS the ammo counter -- it shows the magazine, the reserve
+    -- and which of five slots is up. The engine's version sits in the same
+    -- corner showing a subset of that, from its own idea of what the ped
+    -- holds, and the two disagree by design: ours is the server's number.
+    HideHudComponentThisFrame(2)   -- HUD_WEAPON_ICON (the ammo counter)
+
     -- The corner busy spinner ("Loading...") -- the engine raises it during
     -- session setup and other resources may leave one on. The convar
     -- sv_showBusySpinnerOnLoadingScreen only covers the phase BEFORE scripts
@@ -644,6 +651,28 @@ function BR.Native.check()
         SetPedInfiniteAmmo(ped, false, BR.Config.WeaponById['pistol'].hash)
     end)
     probe('SetPedInfiniteAmmoClip',  function() SetPedInfiniteAmmoClip(ped, false) end)
+    -- Closing GTA's pause menu out from under our own screens: a player killed
+    -- with the map open arrived in the lobby with the frontend still up.
+    probe('IsPauseMenuActive',       function() return IsPauseMenuActive() end)
+    probe('SetFrontendActive',       function()
+        -- Only ever called when the pause menu IS active, so this probe must
+        -- not call it blind -- SetFrontendActive(false) on a closed frontend
+        -- is harmless but proves nothing about the open case.
+        return IsPauseMenuActive() and 'menu open (not touched by probe)'
+            or 'menu closed'
+    end)
+    -- Crate drag. Prop physics has no useful friction, so a shunted crate is
+    -- slowed by scaling its own velocity down each tick.
+    probe('GetEntityVelocity',       function()
+        local v = GetEntityVelocity(ped)
+        return ('%.2f,%.2f,%.2f'):format(v.x, v.y, v.z)
+    end)
+    probe('SetEntityVelocity',       function()
+        -- On the PED, and with its own current velocity: this is a no-op that
+        -- still proves the native exists and takes three floats.
+        local v = GetEntityVelocity(ped)
+        SetEntityVelocity(ped, v.x, v.y, v.z)
+    end)
     -- Stops the engine choosing the weapon on pickup and on empty, which
     -- otherwise fights the active-slot model for control of the hand.
     -- ox_inventory sets this for the same reason.

@@ -18,6 +18,15 @@
 BR = BR or {}
 BR.Loot = BR.Loot or {}
 
+--- Has this player opened a container yet THIS MATCH?
+---
+--- Drives the crate glow, which switches off once it is true: the shine is
+--- teaching "these boxes open", and past the first one it is a permanent
+--- orange marker on scenery (user call, 2026-08-06). Reset with the match, so
+--- every round starts by teaching it again -- the next round may be somebody
+--- else's first.
+BR.Loot.openedAny = false
+
 local L = BR.Config.Loot
 
 local entries   = {}      -- [id] = entry, with prop bookkeeping attached
@@ -222,6 +231,9 @@ local function forgetAll()
     -- local referenced before its declaration silently resolves as a global.
     lastPrompt.id, lastPrompt.hold = nil, nil
     claimedByMe = {}
+    -- The glow teaches the interaction again next match: whoever is here then
+    -- may never have opened one.
+    BR.Loot.openedAny = false
     local page = BR.Dui.page('lootprompt', 'nui://br_ui/dui/prompt.html', 512, 256)
     BR.Dui.send(page, { t = 'prompt', show = false })
 end
@@ -511,6 +523,28 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.props', function()
                 -- which bounds how far it will accept. Rate-limited, because
                 -- a crate rolling down a hill would otherwise send one of
                 -- these per second for as long as it rolls.
+                -- DRAG, because prop physics has no friction worth the name.
+                -- A nudge from a car sent these skating twenty metres across
+                -- flat tarmac (user, 2026-08-06: "they slide like ice"). The
+                -- mass is right -- what is missing is anything to stop it
+                -- again, and SetObjectPhysicsParams' damping only bites in
+                -- the air. So the horizontal velocity is simply scaled down
+                -- each tick and zeroed once it is slower than walking pace.
+                -- Z IS LEFT ALONE: a crate knocked off a roof should still
+                -- fall like one.
+                local v = GetEntityVelocity(e.obj)
+                local vx, vy, vz = v.x, v.y, v.z
+                local speed2 = vx * vx + vy * vy
+                if speed2 > 0.0001 then
+                    local minV = L.crateDragMin or 0.35
+                    if speed2 < minV * minV then
+                        SetEntityVelocity(e.obj, 0.0, 0.0, vz)
+                    else
+                        local k = L.crateDrag or 0.82
+                        SetEntityVelocity(e.obj, vx * k, vy * k, vz)
+                    end
+                end
+
                 local c = GetEntityCoords(e.obj)
                 if BR.Dist2(c.x, c.y, e.x, e.y) > 1.0
                    and now - (e.movedAt or 0) > 2000 then
@@ -634,12 +668,26 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
     -- Every crate in the room lighting up at once was a wall of orange rather
     -- than a signal (user, 2026-08-06). One at a time reads as "this is the
     -- one you are walking towards", which is the only thing the glow is for.
-    local shineId, shineD2 = nil, (L.shineDistance or 18.0) ^ 2
-    for id, e in pairs(entries) do
-        if isContainer(e) and e.gzOk then
-            local d2 = BR.Dist2(p.x, p.y, e.x, e.y)
-            if d2 < shineD2 then shineId, shineD2 = id, d2 end
+    -- AND ONLY UNTIL THE FIRST ONE IS OPENED. The glow is teaching "these
+    -- boxes open"; after that it is a permanent orange marker on furniture.
+    local shineMax = L.shineDistance or 18.0
+    local shineId, shineD2 = nil, shineMax * shineMax
+    if not (L.shineUntilFirstOpen and BR.Loot.openedAny) then
+        for id, e in pairs(entries) do
+            if isContainer(e) and e.gzOk then
+                local d2 = BR.Dist2(p.x, p.y, e.x, e.y)
+                if d2 < shineD2 then shineId, shineD2 = id, d2 end
+            end
         end
+    end
+
+    -- FADED BY DISTANCE, not switched at a boundary: full strength stood over
+    -- the crate, nothing at all at the rim. The old version was the same
+    -- brightness everywhere inside the radius and then simply vanished.
+    local shineFade = 1.0
+    if shineId then
+        shineFade = 1.0 - (math.sqrt(shineD2) / shineMax)
+        if shineFade < 0.0 then shineFade = 0.0 end
     end
 
     -- A slow, shallow breath. The old pulse swung 0.72..1.0 in under a second,
@@ -682,21 +730,30 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
             if isContainer(e) then
                 local mine = (id == shineId)
                 if e.obj and DoesEntityExist(e.obj) then
-                    if mine and not e.outlined then
-                        e.outlined = true
-                        SetEntityDrawOutline(e.obj, true)
+                    if mine then
+                        -- The COLOUR is re-sent every frame even when the
+                        -- outline is already on: alpha is what carries the
+                        -- distance fade, so it has to keep moving as the
+                        -- player walks in. Only the on/off flag is latched.
+                        if not e.outlined then
+                            e.outlined = true
+                            SetEntityDrawOutline(e.obj, true)
+                        end
                         SetEntityDrawOutlineColor(SHINE[1], SHINE[2], SHINE[3],
-                            math.floor(120 * pulse))
-                    elseif not mine and e.outlined then
+                            math.floor((L.shineAlpha or 60) * pulse * shineFade))
+                    elseif e.outlined then
                         e.outlined = false
                         SetEntityDrawOutline(e.obj, false)
                     end
                 end
                 if mine then
-                    -- Half the old range and intensity: a hint at the crate in
-                    -- front of you, not a floodlight down the street.
+                    -- A hint at the crate in front of you, not a floodlight
+                    -- down the street -- and it dims to nothing as you back
+                    -- away rather than switching off.
                     DrawLightWithRange(e.x, e.y, gz + 0.5,
-                        SHINE[1], SHINE[2], SHINE[3], 2.4, 0.9 * pulse)
+                        SHINE[1], SHINE[2], SHINE[3],
+                        L.shineLightRange or 1.2,
+                        (L.shineLightPower or 0.30) * pulse * shineFade)
                 end
             end
 
@@ -732,6 +789,11 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
             if GetGameTimer() - hold.from >= (L.chestHoldMs or 1000) then
                 local id = hold.id
                 hold.id = nil
+                -- THE GLOW HAS DONE ITS JOB. Set on the hold completing rather
+                -- than on the server's reply: the player has demonstrably
+                -- learned the interaction by this point, and a refused claim
+                -- (someone beat them to it) taught them just as well.
+                BR.Loot.openedAny = true
                 TriggerServerEvent(BR.Net.LOOT_CLAIM, { id = id })
                 claimedByMe[id] = GetGameTimer()
                 setPrompt(nil)

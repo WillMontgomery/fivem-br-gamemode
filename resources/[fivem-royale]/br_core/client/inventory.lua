@@ -249,6 +249,32 @@ local function pushUi()
     })
 end
 
+--- How much of each thing an inventory holds, ignoring WHERE it is.
+---
+--- Keyed by item id for the slots and by '@pool' for the ammo pools, so the
+--- two cannot collide. Used to answer "did anything arrive" without a
+--- reordering counting as an arrival.
+--- @param slots table
+--- @param ammo table|nil
+--- @return table
+local function tally(slots, ammo)
+    local t = {}
+    for i = 1, SLOTS do
+        local s = slots[i]
+        if type(s) == 'table' and s.id then
+            t[s.id] = (t[s.id] or 0) + (s.count or 1)
+        end
+    end
+    if type(ammo) == 'table' then
+        for pool, n in pairs(ammo) do
+            if type(n) == 'number' then
+                t['@' .. tostring(pool)] = n
+            end
+        end
+    end
+    return t
+end
+
 --- Adopt a server payload.
 --- @param d table
 local function adopt(d)
@@ -258,13 +284,19 @@ local function adopt(d)
     -- rate-limited) still produces an INV_SET, so "the server sent an
     -- inventory" is not the same as "you picked something up" -- and the
     -- sound is the feedback that tells those apart.
+    --
+    -- COMPARED AS TOTALS, NOT SLOT BY SLOT. The per-slot version asked "does
+    -- slot i hold something different from before", which is true of BOTH
+    -- halves of a swap -- so shuffling items left and right in the panel
+    -- played the pickup sound every time (user, 2026-08-06). Nothing was
+    -- picked up; the same things were in different places. Counting each item
+    -- across the whole inventory makes reordering invisible, which is what it
+    -- should be.
     local gained = false
-    for i = 1, SLOTS do
-        local was, now = inv.slots[i], d.slots[i]
-        if type(now) == 'table' then
-            if not was or was.id ~= now.id or (now.count or 1) > (was.count or 1) then
-                gained = true
-            end
+    do
+        local before, after = tally(inv.slots, inv.ammo), tally(d.slots, d.ammo)
+        for key, n in pairs(after) do
+            if n > (before[key] or 0) then gained = true break end
         end
     end
 
@@ -634,13 +666,28 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
         total = granted
     end
 
-    local now = GetGameTimer()
-    if now - lastReport.at < 500 then return end
-    lastReport.at = now
-
     -- GET_AMMO_IN_CLIP is a BOOL with an out-param, so Lua gets two returns.
     local _, clip = GetAmmoInClip(ped, hash)
     clip = math.max(0, math.min(clip or 0, total))
+
+    -- THE DISPLAY DOES NOT WAIT FOR THE ROUND TRIP, OR FOR THE REPORT GATE.
+    --
+    -- The magazine is read straight off the gun in the player's hands, so
+    -- there is nothing to check with the server before showing it. It used to
+    -- move only when a report went out, once every 500ms, which at any real
+    -- rate of fire meant the counter lagged several rounds behind the shots
+    -- (user, 2026-08-06: "make it update like 3 or 4x"). This is every tick --
+    -- 10Hz -- and costs one NUI message on the frames where it changed.
+    --
+    -- The RESERVE stays the server's and still arrives with the next INV_SET.
+    if clip ~= slot.clip then
+        slot.clip = clip
+        pushUi()
+    end
+
+    local now = GetGameTimer()
+    if now - lastReport.at < (L.ammoReportMs or 150) then return end
+    lastReport.at = now
 
     -- No baseline yet (weapon just switched): take one and say nothing.
     if lastReport.total < 0 then
@@ -658,13 +705,6 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     TriggerServerEvent(BR.Net.INV_AMMO, {
         slot = inv.active, total = total, clip = clip,
     })
-
-    -- The display follows immediately rather than waiting for the round trip.
-    -- The clip is read straight off the gun, so showing it is the HUD agreeing
-    -- with what is in the player's hands; the RESERVE stays the server's and
-    -- arrives with the next INV_SET.
-    slot.clip = clip
-    pushUi()
 end)
 
 -- --------------------------------------------------------------------------

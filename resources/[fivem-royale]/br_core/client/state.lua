@@ -172,8 +172,35 @@ end
 
 --- Keep the participant flag current from MY state. Called wherever my
 --- state can change (snapshot, deltas).
+-- The last state this ran for, so a TRANSITION can be told from a repeat.
+local lastNoted = nil
+
+-- States where the gamemode's own full-screen UI takes the screen: the death
+-- verdict, the spectator handoff, the lobby menu.
+local OUR_SCREEN = {
+    [BR.PlayerState.DEAD]       = true,
+    [BR.PlayerState.SPECTATING] = true,
+    [BR.PlayerState.LOBBY]      = true,
+}
+
 local function noteMyState()
     local st = S.me.state
+
+    -- DYING WITH THE PAUSE MENU UP LEFT IT UP.
+    --
+    -- GTA's pause menu is a separate frontend, not a NUI layer, so nothing in
+    -- br_ui can cover it and nothing in br_ui closes it. A player killed while
+    -- looking at the map arrived in the lobby with the pause screen still
+    -- underneath our menu, with no way to reach either cleanly (user,
+    -- 2026-08-06). Closing it on the transition is the whole fix -- and only
+    -- on the TRANSITION, so a player who opens the pause menu in the lobby on
+    -- purpose keeps it.
+    if st ~= lastNoted then
+        lastNoted = st
+        if OUR_SCREEN[st] and IsPauseMenuActive() then
+            SetFrontendActive(false)
+        end
+    end
     if st == BR.PlayerState.WARMUP or st == BR.PlayerState.BUS
        or st == BR.PlayerState.FREEFALL or st == BR.PlayerState.GLIDE
        or st == BR.PlayerState.ALIVE or st == BR.PlayerState.DBNO then

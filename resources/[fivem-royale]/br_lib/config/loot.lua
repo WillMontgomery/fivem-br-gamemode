@@ -232,6 +232,43 @@ BR.Config.Loot = {
     shineHex        = '#FF961E',   -- the same orange, for the DUI prompt text
     shineDistance   = 18.0,
 
+    -- HOW BRIGHT, AND HOW IT ENDS.
+    --
+    -- The first version was a flat outline at alpha 120 plus a 2.4m light at
+    -- 0.9 intensity, on or off with a hard edge at shineDistance -- "too
+    -- bright", and it popped (user, 2026-08-06). Both numbers are roughly
+    -- halved, and the whole thing now FADES with distance instead of
+    -- switching: full strength at the crate, nothing at the rim. There is no
+    -- edge left to pop at.
+    shineAlpha      = 60,     -- outline alpha at the crate, before the pulse
+    shineLightRange = 1.2,    -- metres of cast light (was 2.4 -- a streetlight)
+    shineLightPower = 0.30,   -- intensity at the crate (was 0.9)
+
+    -- ONE CRATE IS ENOUGH OF A TUTORIAL (user call, 2026-08-06). The glow
+    -- exists to teach "these boxes open"; once a player has opened one they
+    -- know, and a permanent orange marker on every crate in the game is then
+    -- just noise on top of the prop itself. Client-local and per-match.
+    shineUntilFirstOpen = true,
+
+    -- CRATE DRAG, applied to a crate that is actually moving.
+    --
+    -- The mass is right now, but a nudge from a car sent them skating for
+    -- twenty metres -- prop physics has no friction worth the name and
+    -- SetObjectPhysicsParams exposes damping that only bites in the air
+    -- (user, 2026-08-06: "they slide like ice"). This is a straight velocity
+    -- scale per tick on the horizontal component only, so gravity and falls
+    -- are untouched: 0.82 at 10Hz kills a slide in about a second and a half
+    -- without making the crate feel glued.
+    crateDrag       = 0.82,
+    crateDragMin    = 0.35,   -- m/s below which it is simply stopped dead
+
+    -- How often the client tells the SERVER what the magazine is doing. The
+    -- HUD does not wait for this -- it follows the gun every tick -- so this
+    -- is purely how quickly the server's reserve arithmetic catches up.
+    -- Was 500ms, which also gated the display and left the counter several
+    -- rounds behind the shots (user, 2026-08-06).
+    ammoReportMs    = 150,
+
     -- Crate mass, in kg, via SetObjectPhysicsParams. Tuned in game, in four
     -- passes: the prop default read as "extremely heavy", 12 overcorrected
     -- into a paperweight, 120 was still a paperweight, and 1200 landed at

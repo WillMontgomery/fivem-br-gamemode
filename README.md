@@ -33,7 +33,7 @@ matches run at once in separate routing buckets, sharing the warmup pad and
 watching each other's flights take off. The Battle Bus flies an authored tour
 over Los Santos and everyone skydives out wherever they choose. On the ground
 there is loot: weapons, ammo, shields, throwables and chests scattered across
-86 points of interest and along the highways between them, streamed to each
+97 points of interest and along the highways between them, streamed to each
 client cell by cell as they move. When the last player lands, the match goes
 live and the storm starts — a shrinking circle homed on a point of interest
 near the flight path, with a rendered wall, map circles, screen effects and
@@ -132,7 +132,7 @@ actually is.
 
 | Term | Meaning |
 |---|---|
-| **POI** | Point of interest: 86 places (`br_lib/config/map.lua`) with a tier that drives loot density. 61 are north of the city, and 25 of those are **backcountry** — sited from the empty ground *between* the road corridors rather than from a place name, because named places are all on roads and the authored set had inherited the road network's shape. `tools/check_pois.lua` gates the spacing and the distance to the nearest corridor. They double as storm-anchor candidates. |
+| **POI** | Point of interest: 97 places (`br_lib/config/map.lua`) with a tier that drives loot density. 63 are north of the city, and 25 of those are **backcountry** — sited from the empty ground *between* the road corridors rather than from a place name, because named places are all on roads and the authored set had inherited the road network's shape. `tools/check_pois.lua` gates the spacing and the distance to the nearest corridor. They double as storm-anchor candidates. |
 | **Anchor** | The place a match's whole storm sequence homes on. Picked at warmup: one random waypoint of this match's tour, then one random POI 500–1500 units off it — route-coupled, always on land, never a pattern. |
 | **Record** | The one table the server publishes per phase: current circle, target circle, timestamps, dps. Whole-record broadcasts only, never incremental mutation. |
 | **Solver** | `BR.StormAt(record, now)` — a pure function both sides run to get the circle at any instant. A shrinking storm costs zero per-frame network traffic. |
@@ -235,7 +235,7 @@ differ every match** — `brlootseed <n>` pins one when you need to debug the
 same map twice. The seed never leaves the server: a client that could replay
 it would know where every item is.
 
-**How much, and where.** For each of the 86 POIs, by tier:
+**How much, and where.** For each of the 97 POIs, by tier:
 
 ```
 crates(tier)     = 20 | 20 | 24          (tier 1 | 2 | 3)

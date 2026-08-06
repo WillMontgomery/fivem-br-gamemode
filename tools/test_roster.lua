@@ -3701,6 +3701,44 @@ do
     ok(#eventsOf(BR.Net.INV_SET) > 0, 'and the result is pushed back')
 end
 
+describe('inv.warmup')
+do
+    -- A WARMUP INVENTORY IS A LIVE INVENTORY.
+    --
+    -- There is loot on the warmup island and the whole point of the island is
+    -- early PVP, so a player who picks a gun up there has to be able to hold
+    -- it. The server's LIVE table listed only ALIVE and DBNO, so every
+    -- INV_SELECT/SWAP/DROP/USE from warmup was dropped in silence while the
+    -- client happily sent them -- "it's impossible to select a weapon while in
+    -- warmup" (user, 2026-08-06).
+    lootMatch()
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    BR.Inv.give(1, { item = 'sawnoff', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 8 })
+    BR.Inv.of(1).active = 1
+
+    BR.Roster.setState(1, BR.PlayerState.WARMUP)
+    fire(BR.Net.INV_SELECT, 1, { slot = 2 })
+    ok(BR.Inv.of(1).active == 2, 'a warmup player can select a slot',
+        tostring(BR.Inv.of(1).active))
+
+    fire(BR.Net.INV_SWAP, 1, { from = 1, to = 2 })
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].item == 'sawnoff',
+        'and reorder what they are carrying')
+
+    -- A RIDER ON THE BUS STILL CANNOT. The distinction is feet on the ground,
+    -- not "is in a match" -- rummaging through a bag mid-drop is not a thing,
+    -- and the client suspends weapon application in the air anyway.
+    local was = BR.Inv.of(1).active
+    BR.Roster.setState(1, BR.PlayerState.BUS)
+    fire(BR.Net.INV_SELECT, 1, { slot = 1 })
+    ok(BR.Inv.of(1).active == was, 'but a rider on the bus still cannot',
+        tostring(BR.Inv.of(1).active))
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+end
+
 describe('loot.deathbox')
 do
     local m = lootMatch()

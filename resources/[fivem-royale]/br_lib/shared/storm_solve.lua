@@ -201,6 +201,39 @@ function BR.NextStormCentre(rng, cx, cy, curRadius, nextRadius, edgeBias, aabb, 
         end
     end
 
+    -- AND NOT INTO THE SEA.
+    --
+    -- The anchor is a POI and therefore always on land, but nothing stopped
+    -- the per-phase drift from walking seaward one circle at a time -- eight
+    -- phases of `slack * edgeBias` off a coastal anchor is enough to finish
+    -- over open water, and the final circle is where it matters most (user,
+    -- 2026-08-06: "rare (but possible) cases where the storm can close in to
+    -- an anchor point in the ocean").
+    --
+    -- Walked back along its own line toward the PREVIOUS centre, which is dry
+    -- by induction: phase 0 is the anchor POI. That makes this terminate, and
+    -- it keeps the draw's bearing -- the circle still moves the way the roll
+    -- said, just not as far. Containment is preserved for free, since every
+    -- step is strictly closer to the centre it was already contained by.
+    --
+    -- The mask is the same coarse rectangle set the loot generator uses, so
+    -- this does not claim to keep every circle off every inlet -- it stops the
+    -- open-ocean case, which is the one that ends a match with nowhere to
+    -- stand.
+    local water = BR.Config and BR.Config.Map and BR.Config.Map.IsWater
+    if water and water(nx, ny) then
+        for attempt = 1, 8 do
+            local t = 1.0 - attempt / 8.0
+            local tx, ty = cx + (nx - cx) * t, cy + (ny - cy) * t
+            if not water(tx, ty) then
+                return tx, ty
+            end
+        end
+        -- Every step of the way in was wet, which means the CURRENT centre is
+        -- too. Nothing better to offer than staying put.
+        return cx, cy
+    end
+
     return nx, ny
 end
 

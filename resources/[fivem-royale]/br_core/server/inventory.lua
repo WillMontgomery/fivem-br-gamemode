@@ -30,10 +30,20 @@ local SLOTS = L.slots or 5
 local MELEE_SLOT = L.meleeSlot or 0
 
 -- Which player states may touch an inventory at all. A rider on the bus has
--- one and can look at it; only a landed player can change it.
+-- one and can look at it; only a player with their feet on the ground can
+-- change it.
+--
+-- WARMUP COUNTS, and leaving it out was a real bug: there is loot on the
+-- warmup island and the whole point of it is early PVP, so a player could
+-- pick a rifle up and then not be able to SELECT it -- every INV_SELECT,
+-- INV_SWAP, INV_DROP and INV_USE was refused in silence (user, 2026-08-06:
+-- "it's impossible to select a weapon while in warmup"). The CLIENT had
+-- always allowed it -- canArm() lists WARMUP -- so the two ends disagreed and
+-- the visible symptom was a keypress that did nothing at all.
 local LIVE = {
-    [BR.PlayerState.ALIVE] = true,
-    [BR.PlayerState.DBNO]  = true,
+    [BR.PlayerState.ALIVE]  = true,
+    [BR.PlayerState.DBNO]   = true,
+    [BR.PlayerState.WARMUP] = true,
 }
 
 -- --------------------------------------------------------------------------
