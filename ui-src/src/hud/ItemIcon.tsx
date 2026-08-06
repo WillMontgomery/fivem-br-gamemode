@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import type { InvSlot } from '../bridge/types'
 
 /**
@@ -67,10 +68,49 @@ const PATHS: Record<Category, string> = {
   ammo: 'M6 3h4v6l2 3v9H4v-9l2-3zm8 2h4v5l1 2v9h-6v-9l1-2z',
 }
 
+/**
+ * REAL ARTWORK IF IT IS THERE, drawn shapes if it is not.
+ *
+ * Weapon PNGs go in `ui-src/public/items/<id>.png`, where `<id>` is the item
+ * id from br_lib (`carbinerifle.png`, `medkit.png`, ...). Vite copies
+ * `public/` verbatim into the build, so they end up at `items/<id>.png`
+ * alongside index.html and resolve without any import or bundler config.
+ *
+ * The fallback is not a nicety: a missing file must never leave an empty
+ * square, and the set will always be incomplete somewhere (there is no
+ * artwork for an ammo pool). `onError` swaps to the drawn icon, so adding a
+ * PNG is the entire act of adopting it -- no list to update in two places.
+ */
+function iconUrl(slot: InvSlot): string | null {
+  if (slot.kind === 'ammo') return null
+  return `items/${slot.id}.png`
+}
+
 export default function ItemIcon({
   slot, size = '1.6rem',
 }: { slot: InvSlot; size?: string }) {
   const cat = categoryOf(slot)
+  const [failed, setFailed] = useState(false)
+  const url = iconUrl(slot)
+
+  // The id changes when the slot's contents change; a stale `failed` would
+  // suppress the artwork of the NEXT item to land in this slot.
+  useEffect(() => setFailed(false), [slot.id])
+
+  if (url && !failed) {
+    return (
+      <img
+        src={url}
+        alt=""
+        width={size}
+        height={size}
+        onError={() => setFailed(true)}
+        style={{ display: 'block', width: size, height: size,
+                 objectFit: 'contain' }}
+      />
+    )
+  }
+
   return (
     <svg
       viewBox="0 0 24 24"

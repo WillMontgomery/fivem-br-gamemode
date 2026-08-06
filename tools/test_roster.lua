@@ -1540,6 +1540,105 @@ do
     ok(BR.Roster.get(1).landNotice == nil, 'the latch is cleared at wheels-up')
 end
 
+describe('party.balance')
+do
+    -- THE BUG THIS EXISTS FOR: two players queueing for squads landed in ONE
+    -- squad, and a match with a single team standing can never satisfy the win
+    -- condition -- in production the round would simply never start (user,
+    -- 2026-08-05). The floor is minSquads, not "whatever capacity demands".
+    local function sizesOf(m)
+        local sizes = {}
+        BR.Roster.each(
+            function(e) return e.matchId == m.id and e.squadId end,
+            function(_, e) sizes[e.squadId] = (sizes[e.squadId] or 0) + 1 end)
+        local out = {}
+        for _, n in pairs(sizes) do out[#out + 1] = n end
+        table.sort(out)
+        return out
+    end
+
+    reset()
+    -- devMode stays ON (the harness needs its low start gate); the SQUAD
+    -- floor is what this block is about, so pin the dev floor to the
+    -- production value of two rather than fighting minToStart.
+    local devFloor = BR.Config.Match.minSquadsDev
+    BR.Config.Match.minSquadsDev = 2
+    queueUp(1, 'A', BR.Mode.SQUAD.key)
+    queueUp(2, 'B', BR.Mode.SQUAD.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+
+    local m = theMatch()
+    ok(m ~= nil, 'a squad match forms')
+    local s = sizesOf(m)
+    ok(#s == 2 and s[1] == 1 and s[2] == 1,
+        'two unpartied players become TWO squads of one, not one squad of two',
+        table.concat(s, '/'))
+    ok(BR.Server.squadsAlive(m) == 2,
+        'so the win condition has something to resolve')
+
+    -- The maths, directly.
+    ok(BR.Party.squadTarget(2) == 2, 'target: 2 players -> 2 squads')
+    ok(BR.Party.squadTarget(8) == 2, 'target: 8 players -> 2 squads of four')
+    ok(BR.Party.squadTarget(9) == 3, 'target: 9 players -> 3 squads')
+    ok(BR.Party.squadTarget(1) == 1, 'target: a lone player is one squad')
+
+    -- A NINTH PLAYER REBALANCES 4/4 INTO 3/3/3, and everyone who moved is
+    -- told. Silently swapping someone's team between glances at the squad
+    -- panel is indistinguishable from a bug.
+    reset()
+    BR.Config.Match.minSquadsDev = 2
+    for i = 1, 8 do queueUp(i, 'P' .. i, BR.Mode.SQUAD.key) end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+
+    m = theMatch()
+    s = sizesOf(m)
+    ok(#s == 2 and s[1] == 4 and s[2] == 4, 'eight players make two full squads',
+        table.concat(s, '/'))
+
+    sent = {}
+    join(9, 'Ninth')
+    BR.Party.lateJoin(9, m)
+
+    s = sizesOf(m)
+    ok(#s == 3 and s[1] == 3 and s[2] == 3 and s[3] == 3,
+        'and a ninth rebalances them to three squads of three',
+        table.concat(s, '/'))
+
+    local told = 0
+    for _, ev in ipairs(eventsOf(BR.Net.NOTIFY)) do
+        if ev.args[1].text:find('rebalanced') then told = told + 1 end
+    end
+    ok(told > 0, 'the players who moved are told why', ('%d told'):format(told))
+
+    -- Parties are NEVER split by a rebalance. That is the one thing this
+    -- system must not do, whatever the arithmetic wants.
+    reset()
+    BR.Config.Match.minSquadsDev = 2
+    join(1, 'A'); join(2, 'B')
+    BR.Party.invite(1, 2); BR.Party.respond(2, true)
+    for i = 1, 6 do
+        if i > 2 then join(i, 'P' .. i) end
+        fire(BR.Net.QUEUE_JOIN, i, { mode = BR.Mode.SQUAD.key })
+    end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+
+    m = theMatch()
+    local a, b = BR.Roster.get(1), BR.Roster.get(2)
+    ok(a and b and a.squadId and a.squadId == b.squadId,
+        'a party stays together through formation')
+
+    join(9, 'Late')
+    BR.Party.lateJoin(9, m)
+    a, b = BR.Roster.get(1), BR.Roster.get(2)
+    ok(a and b and a.squadId == b.squadId,
+        'and through a rebalance')
+
+    BR.Config.Match.minSquadsDev = devFloor
+end
+
 describe('party.squadpos')
 do
     -- SECURITY-RELEVANT. br:squad:pos is the single deliberate exception to
@@ -3468,9 +3567,13 @@ do
     sent = {}
     fire(BR.Net.INV_USE, 1, { slot = 1 })
     ok(BR.Inv.of(1).using == nil, 'a pointless use never starts')
+    -- The wording distinguishes "you are full" from "this item cannot take
+    -- you further" -- a small shield potion at 50 shield is refused because
+    -- of ITS cap, not because the player is topped up.
     local refused = false
     for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do
-        if s.args[1].text:find('already') then refused = true end
+        local t = s.args[1].text
+        if t:find('already full') or t:find('only takes') then refused = true end
     end
     ok(refused, 'and says why')
 end

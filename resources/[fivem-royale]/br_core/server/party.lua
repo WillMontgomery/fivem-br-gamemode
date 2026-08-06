@@ -391,14 +391,62 @@ function BR.Party.prospectiveSquads(srcs, mode)
 
     if BR.Config.Match.autofill then
         squads = squads + math.ceil(math.max(0, solos - capacity) / maxSize)
+        -- AND THE SAME FLOOR FORMATION USES. This gate and formSquads have to
+        -- agree or the queue deadlocks: two unpartied players "would make one
+        -- squad" by capacity, the gate demands two, and the match never starts
+        -- while formation would happily have produced the two squads the gate
+        -- was asking for (user, 2026-08-05). One source of truth for the
+        -- count, consulted by both.
+        --
+        -- UNITS, not players: a party cannot be split, so four friends who
+        -- queued together are one unit and this floor cannot invent an
+        -- opponent for them.
+        local units = solos
+        for _ in pairs(sizes) do units = units + 1 end
+        squads = math.max(squads, BR.Party.squadTarget(#srcs, units))
     else
         squads = squads + solos
     end
     return squads
 end
 
+--- How many squads a match should have.
+---
+---     squads = min(units, max(minSquads, ceil(players / maxSquadSize)))
+---
+--- THE minSquads FLOOR IS THE POINT. Without it, two players queueing for
+--- squads landed in ONE squad -- and a match with a single team standing has
+--- already met the win condition, so in production the round would simply
+--- never start (user, 2026-08-05). Two players is two squads of one.
+---
+--- THE `units` CEILING IS WHY IT IS SAFE. A unit is something that cannot be
+--- split: a party, or a lone player. Four friends who queue as one party are
+--- ONE unit, and no arithmetic may turn them into two teams -- so that match
+--- still, correctly, refuses to start for want of an opponent. Passing
+--- players as units (the default) is the all-solos case.
+---
+--- @param players integer
+--- @param units integer|nil  splittable groups; defaults to `players`
+--- @return integer
+function BR.Party.squadTarget(players, units)
+    if players <= 0 then return 0 end
+    units = units or players
+    local maxSize = BR.Config.Match.maxSquadSize
+    -- Honours dev mode, same as the match's own start gate: a one-squad floor
+    -- while testing alone, two in production.
+    local floorN = BR.Config.Match.MinSquads(BR.Server.devMode)
+    return math.min(units, math.max(floorN, math.ceil(players / maxSize)))
+end
+
 function BR.Party.formSquads(m)
     local mode = m.mode
+
+    -- Remembered before the wipe below, so the rebalance notice can tell the
+    -- players who actually MOVED from the ones who did not.
+    local before = {}
+    BR.Roster.each(
+        function(e) return e.matchId == m.id end,
+        function(src, e) before[src] = e.squadId end)
 
     -- Clear stale squad identity on THIS match's players first; squadId is
     -- per-match, partyId is not. Scoped to the instance -- another match's
@@ -455,9 +503,28 @@ function BR.Party.formSquads(m)
         -- goes to the emptiest one with room. A part-full party gets topped up
         -- only once the new squads have caught up to its size, which is what
         -- keeps the teams even.
+        -- OPEN ENOUGH SQUADS FIRST, then deal.
+        --
+        -- The old version opened only what CAPACITY demanded -- so two solos
+        -- with no parties needed no extra capacity beyond one squad, both went
+        -- into it, and a match with a single team standing can never satisfy
+        -- the win condition. In production the round would never start (user,
+        -- 2026-08-05). The target comes from BR.Party.squadTarget, which has a
+        -- minSquads floor precisely for this.
+        local total = 0
+        for _, sq in ipairs(squads) do total = total + #sq.members end
+        total = total + #solos
+
+        -- Units: each existing party squad is one, plus each solo. A party of
+        -- four is a single unit and must never be spread across two teams.
+        local target = BR.Party.squadTarget(total, #squads + #solos)
+        while #squads < target do squads[#squads + 1] = { members = {} } end
+
+        -- Capacity can still fall short if the parties are lopsided (three
+        -- parties of four plus a solo, at a target of three squads); open one
+        -- more rather than dropping anybody.
         local capacity = 0
         for _, sq in ipairs(squads) do capacity = capacity + (maxSize - #sq.members) end
-
         local extra = math.ceil(math.max(0, #solos - capacity) / maxSize)
         for _ = 1, extra do squads[#squads + 1] = { members = {} } end
 
@@ -522,7 +589,7 @@ function BR.Party.formSquads(m)
                         end
                     end
                 end
-                if not partied then
+                if not partied and before[src] == nil then
                     BR.Server.notify(src,
                         'Squad filled automatically — check the squad panel.',
                         'info')
@@ -531,7 +598,71 @@ function BR.Party.formSquads(m)
         end
     end
 
-    print(('[br_core] formed %d squad(s) for %s'):format(#squads, mode))
+    -- A RESHUFFLE IS EXPLAINED. Being silently moved to a different team
+    -- between one glance at the squad panel and the next is indistinguishable
+    -- from a bug -- and rebalancing WILL move people, because that is what
+    -- keeps the teams even when someone joins late (user, 2026-08-05).
+    for _, sq in ipairs(squads) do
+        for _, src in ipairs(sq.members) do
+            local e = BR.Roster.get(src)
+            if e and before[src] and before[src] ~= e.squadId then
+                BR.Server.notify(src,
+                    'Squads rebalanced for the new player count.', 'info')
+            end
+        end
+    end
+
+    local sizes = {}
+    for _, sq in ipairs(squads) do sizes[#sizes + 1] = tostring(#sq.members) end
+    print(('[br_core] formed %d squad(s) for %s -- sizes %s')
+        :format(#squads, mode, table.concat(sizes, '/')))
+end
+
+--- Do the squads still make sense for the number of players in the match?
+---
+--- True when the ideal squad COUNT has changed (a late joiner pushed the match
+--- past a multiple of the cap) or when the teams have drifted more than one
+--- player apart. Both are "the shape is wrong", not "somebody moved".
+--- @param m table
+--- @return boolean
+function BR.Party.needsRebalance(m)
+    if m.mode ~= BR.Mode.SQUAD.key then return false end
+
+    local sizes, n = {}, 0
+    BR.Roster.each(
+        function(e) return e.matchId == m.id and BR.Server.isInMatch(e.state) end,
+        function(_, e)
+            n = n + 1
+            if e.squadId then sizes[e.squadId] = (sizes[e.squadId] or 0) + 1 end
+        end)
+    if n == 0 then return false end
+
+    local count, lo, hi = 0, math.huge, 0
+    for _, size in pairs(sizes) do
+        count = count + 1
+        if size < lo then lo = size end
+        if size > hi then hi = size end
+    end
+
+    -- Units the match could be split into: parties count once, solos once
+    -- each. Without this the target can exceed what is actually divisible and
+    -- the rebalance would fire forever, never reaching the shape it wants.
+    local units, seenParty = 0, {}
+    BR.Roster.each(
+        function(e) return e.matchId == m.id and BR.Server.isInMatch(e.state) end,
+        function(_, e)
+            if e.partyId then
+                if not seenParty[e.partyId] then
+                    seenParty[e.partyId] = true
+                    units = units + 1
+                end
+            else
+                units = units + 1
+            end
+        end)
+
+    if count ~= BR.Party.squadTarget(n, units) then return true end
+    return count > 0 and (hi - lo) > 1
 end
 
 --- Pull a late arrival into the match during WARMUP.
@@ -618,6 +749,17 @@ function BR.Party.lateJoin(src, m)
     entry.squadId, entry.colour = target, colour
     BR.Broadcast.delta({ op = 'update', src = src,
                          e = { squadId = target, colour = colour } })
+
+    -- AND THEN CHECK THE SHAPE. Slotting the new player into the emptiest
+    -- squad keeps them with their friends and is usually the whole job -- but
+    -- an eight-player match taking a ninth has no room anywhere, and dropping
+    -- them into a squad of one against two full teams is the imbalance this
+    -- rebalance exists to prevent (user, 2026-08-05: 4/4 + 1 should become
+    -- 3/3/3). Re-forming keeps parties whole and tells whoever moved why.
+    if BR.Party.needsRebalance(m) then
+        BR.Party.formSquads(m)
+        entry = BR.Roster.get(src) or entry
+    end
 
     BR.Server.notify(src, 'Joined the match -- dropping soon.', 'success')
     for other, e in pairs(BR.Server.roster) do

@@ -26,6 +26,9 @@ BR.Inv = BR.Inv or {}
 local L     = BR.Config.Loot
 local SLOTS = L.slots or 5
 
+-- Slot ZERO is fists: selectable, never fillable. See BR.Config.Loot.meleeSlot.
+local MELEE_SLOT = L.meleeSlot or 0
+
 -- Which player states may touch an inventory at all. A rider on the bus has
 -- one and can look at it; only a landed player can change it.
 local LIVE = {
@@ -226,7 +229,10 @@ function BR.Inv.give(src, stack)
         -- player drop something manually and pick up again, which is the same
         -- outcome with three extra steps.
         if left >= before then
-            local at = inv.active
+            -- Fists cannot be swapped out -- slot 0 holds nothing to displace
+            -- and must stay empty -- so a full-inventory swap made with an
+            -- empty hand lands in slot 1.
+            local at = math.max(inv.active, 1)
             local displaced = inv.slots[at] or nil
             inv.slots[at] = {
                 item = stack.item, kind = stack.kind,
@@ -264,7 +270,7 @@ function BR.Inv.give(src, stack)
     if free then
         at = free
     else
-        at = inv.active
+        at = math.max(inv.active, 1)   -- never slot 0: fists hold nothing
         displaced = inv.slots[at] or nil
     end
     inv.slots[at] = placed
@@ -272,7 +278,12 @@ function BR.Inv.give(src, stack)
     -- A weapon picked up into an EMPTY hand comes up in it. Picking your
     -- first gun off the floor and then having to press a number key to hold
     -- it is the kind of friction that gets you killed in the first minute.
-    if displaced or not inv.slots[inv.active] or inv.active == at then
+    --
+    -- FISTS ARE A DELIBERATE CHOICE, though: someone who selected slot 0 put
+    -- their gun away on purpose, and yanking a rifle back into their hands
+    -- because they walked over one undoes that.
+    if inv.active ~= MELEE_SLOT
+       and (displaced or not inv.slots[inv.active] or inv.active == at) then
         inv.active = at
     end
 
@@ -370,7 +381,10 @@ AddEventHandler(BR.Net.INV_SELECT, function(d)
     if not inv or type(d) ~= 'table' then return end
 
     local slot = math.tointeger(d.slot)
-    if not slot or slot < 1 or slot > SLOTS then return end
+    -- MELEE_SLOT (0) is selectable and holds nothing -- fists. Everything
+    -- downstream already handles an empty slot, so this needs no special case
+    -- beyond letting the index through.
+    if not slot or slot < MELEE_SLOT or slot > SLOTS then return end
     if inv.active == slot then return end
 
     inv.active = slot
@@ -438,11 +452,21 @@ AddEventHandler(BR.Net.INV_USE, function(d)
     -- at full shield and watching five seconds pass for no effect is worse
     -- than being told no.
     if c.armour and (e.armour or 0) >= (c.armourCap or 0) then
-        BR.Server.notify(src, 'Shield is already at that level.', 'warn')
+        BR.Server.notify(src,
+            (c.armourCap >= BR.Config.Match.maxArmour)
+                and 'Your shield is already full.'
+                or ('%s only takes your shield to %d.')
+                    :format(c.label, math.floor(c.armourCap)),
+            'warn')
         return
     end
     if c.health and (e.hp or 0) >= (c.healthCap or 0) then
-        BR.Server.notify(src, 'Health is already at that level.', 'warn')
+        BR.Server.notify(src,
+            (c.healthCap >= 100)
+                and 'Your health is already full.'
+                or ('%s only takes your health to %d.')
+                    :format(c.label, math.floor(c.healthCap)),
+            'warn')
         return
     end
 

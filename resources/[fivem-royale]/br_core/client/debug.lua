@@ -187,6 +187,23 @@ RegisterCommand('brloop', function(_, args)
     end
 end, false)
 
+--- Audition a frontend sound pair, so the loot sounds can be chosen by ear
+--- rather than by guessing at soundset names.
+---   /brsound HUD_MINI_GAME_SOUNDSET CHECKPOINT_PERFECT
+RegisterCommand('brsound', function(_, args)
+    local set, name = args[1], args[2]
+    if not set or not name then
+        print('  usage: brsound <soundSet> <soundName>')
+        print(('  loot open:   %s / %s'):format(
+            BR.Config.Loot.openSound.set, BR.Config.Loot.openSound.name))
+        print(('  loot pickup: %s / %s'):format(
+            BR.Config.Loot.pickupSound.set, BR.Config.Loot.pickupSound.name))
+        return
+    end
+    PlaySoundFrontend(-1, name, set, true)
+    print(('[br_core] played %s / %s'):format(set, name))
+end, false)
+
 RegisterCommand('brnativecheck', function()
     print('==============================================================')
     print('  native check -- assumptions vs this build')

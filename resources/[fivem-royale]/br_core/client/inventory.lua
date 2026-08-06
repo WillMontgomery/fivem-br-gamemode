@@ -22,6 +22,13 @@ local L        = BR.Config.Loot
 local SLOTS    = L.slots or 5
 local UNARMED  = BR.Config.Gadgets.UNARMED
 
+-- SLOT ZERO IS FISTS, and nothing can ever be put in it (user call,
+-- 2026-08-05). It sits left of slot 1 on the bar and cycles with the rest.
+-- Having a deliberate empty hand matters: you cannot open a crate or vault
+-- convincingly with a rifle up, and "put the gun away" should not mean
+-- dropping it.
+local MELEE_SLOT = BR.Config.Loot.meleeSlot or 0
+
 -- The mirror. Empty slots are `false`, exactly as they are on the wire and on
 -- the server -- one representation, no boundary conversion to get wrong.
 local inv = { slots = {}, ammo = {}, active = 1, using = nil }
@@ -30,6 +37,10 @@ for i = 1, SLOTS do inv.slots[i] = false end
 -- What is actually in the ped's hands right now, and whose hands they were.
 -- The ped handle matters: a respawn hands out a new one with no weapons on it.
 local applied, appliedPed = nil, 0
+
+--- When this player last gained anything. Zero means "has found nothing all
+--- match", which is what the mercy blips in client/loot.lua key on.
+BR.Inv.lastGainAt = 0
 
 -- Last ammo report, so the 2Hz push is silent when nothing was fired.
 local lastReport = { clip = -1, pool = -1, at = 0 }
@@ -50,11 +61,12 @@ local SUPPRESS = {
     14, 15,                   -- INPUT_WEAPON_WHEEL_NEXT/PREV (mouse wheel)
 }
 
--- SCROLL UP CYCLES, SCROLL DOWN DOES NOTHING (user call, 2026-08-05). One
--- direction through a wrapping cycle reaches every slot and needs no thought
--- about which way you are going; two directions on a five-item ring is a
--- decision nobody wants mid-fight. Control 15 is the wheel's "previous",
--- which is what a scroll UP reports -- 14 (down) stays disabled and inert.
+-- SCROLL UP CYCLES BACKWARDS, SCROLL DOWN DOES NOTHING (user call,
+-- 2026-08-05: "if 1 is selected, 5 is next"). One direction through a wrapping
+-- ring reaches every slot and needs no thought about which way you are going;
+-- two directions on a six-item ring is a decision nobody wants mid-fight.
+-- Control 15 is the wheel's "previous", which is what a scroll UP reports --
+-- 14 (down) stays disabled and inert.
 local WHEEL_UP = 15
 
 --- Can this player's ped be given anything at all?
@@ -145,6 +157,7 @@ local function clearLocal()
     inv.ammo, inv.active, inv.using = {}, 1, nil
     applied, appliedPed = nil, 0
     lastReport.clip, lastReport.pool = -1, -1
+    BR.Inv.lastGainAt = 0
 end
 
 -- --------------------------------------------------------------------------
@@ -168,6 +181,20 @@ end
 local function adopt(d)
     if type(d) ~= 'table' or type(d.slots) ~= 'table' then return end
 
+    -- Did anything actually ARRIVE? A pickup that was refused (too far, gone,
+    -- rate-limited) still produces an INV_SET, so "the server sent an
+    -- inventory" is not the same as "you picked something up" -- and the
+    -- sound is the feedback that tells those apart.
+    local gained = false
+    for i = 1, SLOTS do
+        local was, now = inv.slots[i], d.slots[i]
+        if type(now) == 'table' then
+            if not was or was.id ~= now.id or (now.count or 1) > (was.count or 1) then
+                gained = true
+            end
+        end
+    end
+
     for i = 1, SLOTS do
         local s = d.slots[i]
         inv.slots[i] = (type(s) == 'table') and s or false
@@ -178,6 +205,15 @@ local function adopt(d)
 
     applyActive(false)
     pushUi()
+
+    if gained then
+        -- Read by loot.lua's mercy blips: "has this player ever found
+        -- anything" is the difference between helping and nagging.
+        BR.Inv.lastGainAt = GetGameTimer()
+        if L.pickupSound then
+            PlaySoundFrontend(-1, L.pickupSound.name, L.pickupSound.set, true)
+        end
+    end
 end
 
 RegisterNetEvent(BR.Net.INV_SET)
@@ -343,17 +379,26 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
         DisableControlAction(0, SUPPRESS[i], true)
     end
 
-    -- MOUSE WHEEL UP CYCLES SLOTS, WRAPPING. Past slot 5 is slot 1.
+    -- MOUSE WHEEL UP CYCLES DOWNWARD THROUGH THE RING, wrapping past the fist
+    -- slot at the bottom to slot 5 at the top.
     if IsDisabledControlJustPressed(0, WHEEL_UP) then
-        TriggerServerEvent(BR.Net.INV_SELECT, { slot = (inv.active % SLOTS) + 1 })
+        local want = inv.active - 1
+        if want < MELEE_SLOT then want = SLOTS end
+        TriggerServerEvent(BR.Net.INV_SELECT, { slot = want })
     end
 
     -- SHOOTING A CONSUMABLE USES IT (user call, 2026-08-05). With a med kit
     -- selected the attack button has nothing else to do, and reaching for the
     -- trigger is what a player does with whatever is in their hands. The
     -- control is the player's own ATTACK binding, whatever they set it to.
+    -- NOT WHILE THE PANEL IS OPEN. Disabling a control does not stop
+    -- IsDisabledControlJustPressed from seeing it -- that is the entire point
+    -- of the disabled variants -- so clicking a slot card in the panel was
+    -- also firing this, using a consumable the player was only trying to drag
+    -- (user, 2026-08-05).
     local held = inv.slots[inv.active]
-    if held and held.kind == BR.ItemKind.CONSUMABLE and not inv.using then
+    if not panelOpen and held and held.kind == BR.ItemKind.CONSUMABLE
+       and not inv.using then
         DisableControlAction(0, 24, true)   -- ATTACK: no punching a potion
         DisableControlAction(0, 25, true)   -- AIM
         if IsDisabledControlJustPressed(0, 24) then
@@ -371,7 +416,15 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
         DisableControlAction(0, 24, true)   -- ATTACK
         DisableControlAction(0, 25, true)   -- AIM
         DisableControlAction(0, 68, true)   -- VEH_ATTACK
+        DisableControlAction(0, 69, true)   -- VEH_PASSENGER_ATTACK
+        DisableControlAction(0, 70, true)   -- VEH_ATTACK2
         DisableControlAction(0, 106, true)  -- VEH_MOUSE_CONTROL_OVERRIDE
+        DisableControlAction(0, 140, true)  -- MELEE_ATTACK_LIGHT
+        DisableControlAction(0, 141, true)  -- MELEE_ATTACK_HEAVY
+        DisableControlAction(0, 142, true)  -- MELEE_ATTACK_ALTERNATE
+        DisableControlAction(0, 257, true)  -- ATTACK2
+        DisableControlAction(0, 263, true)  -- MELEE_ATTACK1
+        DisableControlAction(0, 264, true)  -- MELEE_ATTACK2
     end
 end)
 

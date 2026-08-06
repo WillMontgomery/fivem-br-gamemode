@@ -171,12 +171,29 @@ BR.Config.Loot = {
     -- meets this system for the first time, and a crate they have to go
     -- looking for is a crate they never find. It should be impossible to walk
     -- twenty metres without tripping over one.
+    -- Spread across the ISLAND, not just the apron: the spawn point is moving
+    -- off the airport, and players have to meet loot wherever they end up
+    -- (user, 2026-08-05). Cayo is roughly a kilometre across, so this covers
+    -- most of it.
     warmup = {
-        crates      = 140,
+        crates      = 220,
         minRadius   = 12.0,    -- close enough to see one from the spawn point
-        radius      = 170.0,   -- around BR.Config.Match.warmupPos
+        radius      = 460.0,   -- around BR.Config.Match.warmupPos
         tier        = 2,
         respawnMs   = 30000,   -- a looted crate comes back, so the pad never empties
+    },
+
+    -- THE MERCY BLIPS. A player who lands somewhere empty and finds nothing
+    -- for a minute and a half cannot tell "no loot here" from "this mode is
+    -- broken", and it is the second conclusion they act on.
+    --
+    -- They end when BOTH are true: something has been picked up, and the
+    -- minimum display time has passed. Whichever is LATER -- help that
+    -- vanishes the instant it starts working is help nobody trusts.
+    mercyBlips = {
+        enabled    = true,
+        afterMs    = 90000,    -- empty-handed this long after landing
+        minShownMs = 180000,   -- and then shown at least this long
     },
 
     -- Streaming. Clients subscribe to a 3x3 neighbourhood of cells, so roughly
@@ -208,10 +225,16 @@ BR.Config.Loot = {
     -- anyone watching the building knows exactly where you are.
     chestHoldMs     = 1000,
 
-    -- The reveal, when a crate opens. Vanilla frontend sound, swap freely --
-    -- it is here rather than inline precisely so it can be auditioned.
-    openSound       = { name = 'Pickup_Weapon',
-                        set  = 'HUD_FRONTEND_CUSTOM_SOUNDSET' },
+    -- Frontend sounds. Here rather than inline precisely so they can be
+    -- auditioned -- /brsound <set> <name> plays any pair in-game.
+    --
+    -- openSound is the crate reveal; pickupSound fires whenever something
+    -- actually lands in the inventory, which is the feedback that tells you
+    -- the claim was accepted rather than refused.
+    openSound       = { name = 'CHECKPOINT_PERFECT',
+                        set  = 'HUD_MINI_GAME_SOUNDSET' },
+    pickupSound     = { name = 'PICK_UP',
+                        set  = 'HUD_FRONTEND_DEFAULT_SOUNDSET' },
 
     -- The GLYPH in the pickup prompt.
     --
@@ -239,6 +262,12 @@ BR.Config.Loot = {
     -- emptyInv and the HUD bar all already assume; changing it means changing
     -- all three together.
     slots           = 5,
+
+    -- Slot ZERO: fists. Always present, never fillable, left of slot 1 on the
+    -- bar and part of the scroll ring. A deliberate empty hand is a real
+    -- choice -- you cannot open a crate convincingly with a rifle up, and
+    -- putting the gun away should not mean dropping it.
+    meleeSlot       = 0,
 
     -- A found gun has to be usable, or the first weapon on the ground is a
     -- decoration. One clip loaded plus one in reserve is enough for a fight,

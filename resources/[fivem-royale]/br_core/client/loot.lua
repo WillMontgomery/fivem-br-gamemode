@@ -249,8 +249,16 @@ local function drain()
                         -- model streams in; re-check before building it.
                         if HasModelLoaded(model) and entries[id] and not entries[id].obj then
                             local gz = groundZ(e)
+                            -- THE LAST PARAMETER IS `dynamic`, and it was
+                            -- false -- which is why crates stayed welded to
+                            -- the ground however much of the rest of the
+                            -- physics setup said otherwise (user, 2026-08-05).
+                            -- Containers spawn dynamic; loose floor items stay
+                            -- static, because a rifle skittering down a hill
+                            -- is not a feature.
+                            local dynamic = isContainer(e) or isHusk(e)
                             local obj = CreateObjectNoOffset(model,
-                                e.x, e.y, gz + 0.35, false, false, false)
+                                e.x, e.y, gz + 0.35, false, false, dynamic)
                             if obj and obj ~= 0 then
                                 -- CRATES KEEP THEIR COLLISION. You walk up to
                                 -- one and it is a box in the world; the ray
@@ -319,6 +327,15 @@ local function addEntries(list)
                 local reskinned = have.kind ~= d.kind or have.prop ~= d.prop
 
                 if moved or reskinned then
+                    -- THE REVEAL, on the authoritative moment. Played here
+                    -- rather than when the hold completes locally: this fires
+                    -- when the crate ACTUALLY opened, so it cannot play for a
+                    -- claim the server refused, and everyone nearby hears the
+                    -- crate that opened next to them, not just its opener.
+                    if reskinned and d.kind == 'husk' and L.openSound then
+                        PlaySoundFrontend(-1, L.openSound.name,
+                            L.openSound.set, true)
+                    end
                     despawn(have)
                     have.x, have.y, have.z = d.x, d.y, d.z
                     have.kind, have.item, have.prop = d.kind, d.item, d.prop
@@ -602,12 +619,6 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
                 hold.id = nil
                 TriggerServerEvent(BR.Net.LOOT_CLAIM, { id = id })
                 pushPrompt(nil)
-                -- The reveal. Played locally the instant the hold completes
-                -- rather than waiting for the server's answer: the sound is
-                -- feedback for the ACTION, and a lock that clicks a round-trip
-                -- later feels broken even when it worked.
-                local snd = L.openSound
-                if snd then PlaySoundFrontend(-1, snd.name, snd.set, true) end
             end
             return
         end
@@ -683,6 +694,19 @@ end)
 local blipsOn = false
 local blips   = {}   -- [id] = handle
 
+-- THE MERCY BLIPS.
+--
+-- A player who lands somewhere empty and spends a minute and a half finding
+-- nothing has no way to tell "there is no loot here" from "this mode is
+-- broken" -- and the second conclusion is the one they act on. After 90
+-- seconds empty-handed the crates near them go on the map, with a notice
+-- saying so (user, 2026-08-05).
+--
+-- They stay until BOTH conditions are met: something has been picked up AND
+-- three minutes have passed. Whichever is later -- so the help does not
+-- vanish the instant it starts working.
+local mercy = { landedAt = 0, armedAt = 0, on = false }
+
 local function clearBlips()
     for id, b in pairs(blips) do
         if DoesBlipExist(b) then RemoveBlip(b) end
@@ -690,8 +714,44 @@ local function clearBlips()
     end
 end
 
+-- The mercy timer. Separate from the drawing below so the dev toggle and the
+-- automatic help share one blip implementation.
+BR.Loop.register(BR.Loop.SLOW, 'loot.mercy', function()
+    local cfg = L.mercyBlips
+    if not cfg or not cfg.enabled then return end
+
+    if BR.State.me.state ~= BR.PlayerState.ALIVE then
+        mercy.landedAt, mercy.armedAt, mercy.on = 0, 0, false
+        return
+    end
+
+    local now = GetGameTimer()
+    if mercy.landedAt == 0 then mercy.landedAt = now end
+
+    local gained = (BR.Inv and BR.Inv.lastGainAt or 0) > 0
+
+    if not mercy.on then
+        -- Only for someone who has actually found nothing. Picking something
+        -- up at any point before the timer means they know how this works.
+        if not gained and now - mercy.landedAt >= (cfg.afterMs or 90000) then
+            mercy.on, mercy.armedAt = true, now
+            TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
+                text = 'No loot nearby? Crates are marked on your map.',
+                tone = 'info', ms = 8000,
+            })
+        end
+        return
+    end
+
+    -- BOTH, not either: something found AND the minimum shown. Whichever
+    -- happens later.
+    if gained and now - mercy.armedAt >= (cfg.minShownMs or 180000) then
+        mercy.on = false
+    end
+end)
+
 BR.Loop.register(BR.Loop.SLOW, 'loot.devblips', function()
-    if not blipsOn then
+    if not blipsOn and not mercy.on then
         if next(blips) then clearBlips() end
         return
     end

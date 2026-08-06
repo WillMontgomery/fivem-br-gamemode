@@ -125,8 +125,15 @@ BR.Config.Match = {
 BR.Config.Ambient = {
     peds         = 0.3,
     scenarioPeds = 0.3,
-    vehicles     = 0.19,   -- 25%, then cut a further quarter (user calls,
-                           -- 2026-08-04 -- the roads were still too busy)
+    -- Raised from 0.19 (user, 2026-08-05: more vehicles, on and off road).
+    -- A battle royale needs rotation: a circle two kilometres away with no
+    -- car in sight is a walk, not a decision. Still well under vanilla, which
+    -- fills the freeway bumper to bumper.
+    vehicles     = 0.45,
+    -- Parked cars are where OFF-ROAD vehicles actually come from -- GTA's
+    -- density natives cannot filter by class, and the roaming traffic model
+    -- is overwhelmingly city cars on city roads. Full density means every
+    -- farm, quarry and trailhead has its own truck standing in it.
     parked       = 1.0,
     -- Ambient drivers drive BADLY: zero ability, maximum aggression --
     -- the apocalypse does not produce calm commuters.
