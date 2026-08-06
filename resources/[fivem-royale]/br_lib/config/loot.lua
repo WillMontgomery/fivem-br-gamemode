@@ -231,6 +231,11 @@ BR.Config.Loot = {
     shineColour     = { 255, 150, 30 },
     shineHex        = '#FF961E',   -- the same orange, for the DUI prompt text
     shineDistance   = 18.0,
+
+    -- A wooden crate should skitter when a car clips it, not shift like a
+    -- concrete block. The prop's default mass made it "extremely heavy"
+    -- (user, 2026-08-06) -- this is in kg, via SetObjectPhysicsParams.
+    crateMass       = 12.0,
     labelDistance   = 8.0,   -- 3D text draw range
 
     -- Containers are a commitment in the open: you stand still for a second and

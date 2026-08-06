@@ -42,6 +42,15 @@ local applied, appliedPed = nil, 0
 --- match", which is what the mercy blips in client/loot.lua key on.
 BR.Inv.lastGainAt = 0
 
+--- Set by /brprobe raw. While true, this file writes NOTHING to the ped's
+--- ammo and reports nothing to the server.
+---
+--- It exists because the first ammo measurement was contaminated by our own
+--- writes: the numbers being watched were partly ones we had just set, which
+--- makes "what does this native do" unanswerable. A probe has to be able to
+--- take our hands off the wheel.
+BR.Inv.suspendAmmo = false
+
 -- Last magazine count we reported. The reserve is NOT tracked here any more:
 -- the server derives it from how this number moves (see server/inventory.lua).
 local lastReport = { clip = -1, at = 0 }
@@ -113,7 +122,7 @@ end
 --- Make the ped hold whatever the active slot says, and nothing else.
 --- @param force boolean|nil  re-apply even if the mirror thinks it is current
 local function applyActive(force)
-    if not canArm() then return end
+    if not canArm() or BR.Inv.suspendAmmo then return end
 
     local ped = PlayerPedId()
     local slot = inv.slots[inv.active]
@@ -163,7 +172,7 @@ end
 --- engine has is a PICKUP. Pushing on any other change would fight the engine
 --- as the player fires -- see the note in applyActive.
 local function reapplyAmmo(serverClip)
-    if not canArm() then return end
+    if not canArm() or BR.Inv.suspendAmmo then return end
     local slot = inv.slots[inv.active]
     local hash = hashOf(slot)
     if not hash or applied ~= hash then return end
@@ -521,7 +530,7 @@ end)
 -- moved. This is the ONE number the client is the only observer of until M6
 -- validates shots server-side; see server/inventory.lua for why that is safe.
 BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
-    if not canArm() then return end
+    if not canArm() or BR.Inv.suspendAmmo then return end
 
     local now = GetGameTimer()
     if now - lastReport.at < 500 then return end
@@ -535,6 +544,18 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     -- (or none) -- and since the server accepts any decrease, reporting there
     -- would empty the new magazine before it was ever fired.
     if applied ~= hash then return end
+
+    -- NOT FROM A VEHICLE. In a car the engine stows most weapons, and
+    -- GetAmmoInClip for one the ped cannot currently hold reads ZERO -- which
+    -- this loop then reported as "the magazine emptied", so the counter fell
+    -- to 0/6 the moment the player got in and stayed there (user, 2026-08-06:
+    -- "nothing else changed"). A vehicle seat is not evidence about ammo.
+    if IsPedInAnyVehicle(PlayerPedId(), false) then return end
+
+    -- Nor while a reload is playing: the magazine is mid-swap and reads as
+    -- whatever the animation has reached, which is not a number to build a
+    -- reserve calculation on.
+    if IsPedReloading(PlayerPedId()) then return end
 
     -- THE CLIP IS THE ONLY NUMBER READ OFF THE ENGINE, and the reserve is
     -- derived from it SERVER-SIDE.

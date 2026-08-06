@@ -631,6 +631,22 @@ function BR.Native.check()
         DestroyDui(d)
         return h
     end)
+    -- The ammo report skips a reloading ped: mid-swap the magazine reads as
+    -- whatever the animation has reached, which is not a number to build on.
+    probe('IsPedReloading',          function() return IsPedReloading(ped) end)
+    -- Crate mass. Measured: PlaceObjectOnGroundProperly is what welds a crate
+    -- down, and the default mass is what made the survivor feel like concrete.
+    probe('SetObjectPhysicsParams',  function()
+        local m = GetHashKey(BR.Config.Loot.chestProp)
+        RequestModel(m)
+        local obj = CreateObjectNoOffset(m, 0.0, 0.0, -200.0, false, false, true)
+        if obj and obj ~= 0 then
+            SetObjectPhysicsParams(obj, 12.0, 0.1, -1.0, -1.0, -1.0, -1.0,
+                0.1, 0.1, 0.1, -1.0, -1.0)
+            DeleteEntity(obj)
+        end
+        SetModelAsNoLongerNeeded(m)
+    end)
     probe('DrawSprite',              function()
         DrawSprite('commonmenu', 'common_medal', -1.0, -1.0, 0.01, 0.01,
             0.0, 255, 255, 255, 0)

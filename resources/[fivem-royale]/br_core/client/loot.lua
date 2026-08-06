@@ -268,6 +268,10 @@ local function drain()
                         -- model streams in; re-check before building it.
                         if HasModelLoaded(model) and entries[id] and not entries[id].obj then
                             local gz = groundZ(e)
+                            -- Containers are dropped a hair above the ground
+                            -- and left to settle, because the native that
+                            -- would settle them for us is the very thing that
+                            -- welds them in place (see below).
                             -- THE LAST PARAMETER IS `dynamic`, and it was
                             -- false -- which is why crates stayed welded to
                             -- the ground however much of the rest of the
@@ -291,29 +295,50 @@ local function drain()
                                 if e.heading then
                                     SetEntityHeading(obj, e.heading)
                                 end
-                                PlaceObjectOnGroundProperly(obj)
+                                -- PLACEOBJECTONGROUNDPROPERLY IS WHAT WELDED
+                                -- THEM DOWN. Measured, not guessed: /brprobe
+                                -- crate spawned five variants differing by one
+                                -- decision each, and the ONLY one that moved
+                                -- was the one that skipped this call
+                                -- (2026-08-06, after three failed fixes).
+                                --
+                                -- So containers are placed by ARITHMETIC --
+                                -- we already have the ground height from the
+                                -- probe -- and never by the native that
+                                -- settles them into the terrain.
+                                --
+                                -- Loose floor items still use it: they are
+                                -- frozen anyway, and it makes a rifle lie flat
+                                -- on a slope instead of hovering.
+                                if not solid then
+                                    PlaceObjectOnGroundProperly(obj)
+                                end
+
                                 -- CRATES ARE PHYSICAL. Drive into one and it
                                 -- moves (user call, 2026-08-05). Only the
                                 -- LOCAL prop moves -- the entry's authoritative
                                 -- position never changes, so a crate shunted
                                 -- across a car park is still looted from where
                                 -- the server thinks it is, and every client
-                                -- sees its own version of the shunt. Worth it
-                                -- for a world that reacts; revisit if the
-                                -- disagreement ever matters.
-                                --
-                                -- Loose floor items stay frozen: a rifle
-                                -- skittering down a hill is not a feature.
+                                -- sees its own version of the shunt.
                                 FreezeEntityPosition(obj, not solid)
                                 if solid then
                                     SetEntityDynamic(obj, true)
                                     SetEntityHasGravity(obj, true)
-                                    -- THE ONE THAT ACTUALLY WAKES IT. An
-                                    -- object can be dynamic, unfrozen and
-                                    -- have gravity and still sit welded to
-                                    -- the ground because its physics are
-                                    -- asleep -- nothing had ever pushed it
-                                    -- (user, 2026-08-06, second report).
+                                    -- A CRATE IS NOT A SAFE. The default mass
+                                    -- for this prop made it shift like a
+                                    -- concrete block when a car hit it
+                                    -- ("extremely heavy", 2026-08-06); a
+                                    -- wooden crate should skitter.
+                                    SetObjectPhysicsParams(obj,
+                                        L.crateMass or 12.0,
+                                        0.1,               -- damping
+                                        -1.0, -1.0, -1.0,  -- inertia: engine default
+                                        -1.0,              -- gravity: default
+                                        0.1, 0.1, 0.1,     -- angular damping
+                                        -1.0, -1.0)
+                                    -- Physics can be dynamic, unfrozen and
+                                    -- gravity-bound and still ASLEEP.
                                     ActivatePhysics(obj)
                                 end
                                 SetEntityAsMissionEntity(obj, false, true)

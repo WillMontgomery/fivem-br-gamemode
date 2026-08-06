@@ -88,11 +88,25 @@ end
 --- This is the measurement that actually settles the model: fire a few rounds,
 --- reload, and read which columns moved. A static dump cannot tell you whether
 --- a number is a total or a reserve; watching it change can.
-local function ammoWatch(seconds)
+---
+--- `raw` suspends BR.Inv's own ammo writes for the duration. THE FIRST RUN OF
+--- THIS WAS CONTAMINATED WITHOUT IT: two of the three columns went UP by one
+--- per shot, which is not something a gun does -- it was our own code writing
+--- ammo back while the watch read it. A measurement of a system that includes
+--- the thing being questioned answers nothing.
+local function ammoWatch(seconds, raw)
     local hash = ammoDump()
     if not hash then return end
 
     print('')
+    if raw then
+        BR.Inv.suspendAmmo = true
+        print('  RAW MODE: br_core is not touching the ped\'s ammo. Every number')
+        print('  below is the engine on its own -- no writes of ours mixed in.')
+    else
+        print('  NOTE: br_core is still managing ammo, so some movement below is')
+        print('  ours. Use /brprobe raw for the engine alone.')
+    end
     print(('  WATCHING for %ds -- fire a few rounds, then reload.'):format(seconds))
     print('  Any line below is a CHANGE. Columns: pedWeapon | clip | byType')
     line()
@@ -123,7 +137,13 @@ local function ammoWatch(seconds)
         end
 
         line()
-        print('  done. A column that never moved while firing is NOT a total.')
+        BR.Inv.suspendAmmo = false
+        print('  done. Reading it:')
+        print('    a column that DROPS per shot is being consumed by firing')
+        print('    a column that only drops on RELOAD is the reserve')
+        print('    a column that RISES per shot is not ammo at all -- or')
+        print('      something is writing to it while you watch')
+        if raw then print('  (br_core ammo writes re-enabled)') end
     end)
 end
 
@@ -306,8 +326,20 @@ RegisterCommand('brprobe', function(_, args)
     local what = (args[1] or 'all'):lower()
 
     if what == 'ammo' then
-        head('probe: ammo')
-        ammoWatch(tonumber(args[2]) or 15)
+        head('probe: ammo (br_core still managing)')
+        ammoWatch(tonumber(args[2]) or 15, false)
+        return
+    elseif what == 'raw' then
+        head('probe: ammo, ENGINE ONLY')
+        ammoWatch(tonumber(args[2]) or 15, true)
+        return
+    elseif what == 'vehicle' then
+        head('probe: does a vehicle seat change the ammo readings?')
+        print('  Reading now, then get in a vehicle and read again.')
+        ammoDump()
+        val('IsPedInAnyVehicle', IsPedInAnyVehicle(PlayerPedId(), false))
+        print('  The clip reading dropping to 0 in a seat is EXPECTED -- the')
+        print('  engine stows the weapon. It must not be reported as ammo lost.')
         return
     elseif what == 'crate' then
         head('probe: crate physics')
@@ -330,7 +362,9 @@ RegisterCommand('brprobe', function(_, args)
     print('  ammo');   ammoDump();   line()
     print('')
     print('  Interactive modes:')
-    print('    /brprobe ammo [seconds]   watch ammo while you shoot and reload')
+    print('    /brprobe raw [seconds]    ammo with br_core NOT touching it')
+    print('    /brprobe ammo [seconds]   ammo as the game normally runs')
+    print('    /brprobe vehicle          what a vehicle seat does to the readings')
     print('    /brprobe armour           prove the 50/100 armour ceiling')
     print('    /brprobe crate            spawn labelled crates to push')
     print('    /brprobe clear            remove them')
