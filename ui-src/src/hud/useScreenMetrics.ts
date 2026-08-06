@@ -30,6 +30,22 @@ export function useScreenMetrics(): ScreenPayload | null {
     if (d.mapBottom != null) root.setProperty('--map-bottom', `${d.mapBottom}vh`)
     if (d.mapW != null)      root.setProperty('--map-w',      `${d.mapW}vw`)
     if (d.mapH != null)      root.setProperty('--map-h',      `${d.mapH}vh`)
+
+    // THE TOP ROW'S OWN BASELINE.
+    //
+    // Both top panels hang off this rather than off --safe-y directly, for two
+    // reasons. It keeps them at the SAME height as each other (they read as
+    // one row, and a squad panel sitting higher than the counters looked
+    // accidental), and it leaves the band immediately under the safe-zone top
+    // free -- which is where GTA draws its own instructional/help prompts, on
+    // the left, underneath ours (user, 2026-08-05).
+    //
+    // It is built from the player's safe zone, so it follows their margin
+    // slider exactly as the vitals strip does; HELP_BAND is the height of the
+    // engine's prompt band, which is a fraction of screen height and so is
+    // expressed in vh.
+    const HELP_BAND = 7.5
+    root.setProperty('--hud-top', `calc(${d.safeY}% + ${HELP_BAND}vh)`)
   })
 
   // Ultrawide handling, such as it can be.

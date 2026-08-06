@@ -27,26 +27,15 @@ local L = BR.Config.Loot
 -- and silent at load.
 local zoneFor
 
--- Which player states may see loot. LOBBY is the only one that cannot: a
--- bystander at the vista is not in the world. WARMUP sees the SHARED island
--- layout rather than any match's -- see zoneFor().
-local CAN_SEE = {
-    [BR.PlayerState.WARMUP]   = true,
-    [BR.PlayerState.BUS]      = true,
-    [BR.PlayerState.FREEFALL] = true,
-    [BR.PlayerState.GLIDE]    = true,
-    [BR.PlayerState.ALIVE]    = true,
-    [BR.PlayerState.DBNO]     = true,
-    [BR.PlayerState.DEAD]     = true,
-    [BR.PlayerState.SPECTATING] = true,
-}
-
--- Only a player standing on their own two feet can pick something up -- and on
--- the warmup pad, where the whole point is early practice PVP.
-local CAN_TAKE = {
-    [BR.PlayerState.ALIVE]  = true,
-    [BR.PlayerState.WARMUP] = true,
-}
+-- THE SAME TABLES THE CLIENT READS (br_lib/config/loot.lua). Written out twice
+-- they drifted, and the symptom was no loot anywhere with nothing in any log:
+-- the client simply never asked. WARMUP sees the SHARED island layout rather
+-- than any match's -- see zoneFor().
+--
+-- This side is still the security boundary; it just no longer has its own
+-- opinion about what the rule is.
+local CAN_SEE  = BR.Config.LootVisibleStates
+local CAN_TAKE = BR.Config.LootTakeStates
 
 -- --------------------------------------------------------------------------
 -- Wire shapes
@@ -700,7 +689,61 @@ RegisterCommand('brlootseed', function(_, args)
         :format(pinnedSeed))
 end, true)
 
---- Drop a crate (or any item) at a player's feet, for debugging.
+--- Build a stack from an item id, or a full crate when given none.
+--- @param item string|nil
+--- @param x number
+--- @param y number
+--- @param z number
+--- @return table|nil stack
+--- @return string|nil error
+local function devStack(item, x, y, z)
+    if not item then
+        return BR.MakeCrate(BR.Rng(GetGameTimer()), 3, x, y, z)
+    end
+
+    local w = BR.Config.WeaponById[item]
+    local c = BR.Config.ConsumableById[item]
+    if w then
+        return { item = item, rarity = w.rarity, count = 1, clip = w.clip,
+                 kind = w.clip and BR.ItemKind.WEAPON or BR.ItemKind.THROWABLE }
+    elseif c then
+        return { item = item, kind = BR.ItemKind.CONSUMABLE,
+                 rarity = c.rarity, count = 1 }
+    elseif BR.Config.AmmoPickups[item] then
+        return { item = item, kind = BR.ItemKind.AMMO,
+                 rarity = BR.Rarity.COMMON,
+                 count = BR.Config.AmmoPickups[item].amount }
+    end
+    return nil, ('unknown item: %s'):format(item)
+end
+
+--- Spawn a crate (or one item) for a player.
+--- @param src integer
+--- @param item string|nil
+--- @param at table|nil  a position, or nil for the player's sampled one
+--- @return string report
+local function devSpawn(src, item, at)
+    local e = BR.Roster.get(src)
+    if not e then return 'no roster entry' end
+
+    local pos = at or e.pos
+    if not pos then return 'no position sampled yet' end
+
+    local m = zoneFor(src)
+    if not m then
+        return ('%s is not anywhere with loot in it (state %s)')
+            :format(e.name, tostring(e.state))
+    end
+
+    local stack, err = devStack(item, pos.x, pos.y, pos.z)
+    if not stack then return err end
+
+    local spawned = BR.Loot.spawnStack(m, stack, pos.x, pos.y, pos.z)
+    return ('spawned #%s (%s) at %s')
+        :format(tostring(spawned and spawned.id), stack.kind, e.name)
+end
+
+--- Drop a crate (or any item) at a player's feet, from the server console.
 RegisterCommand('brcrate', function(_, args)
     local src = tonumber(args[1])
     if not src then
@@ -708,45 +751,34 @@ RegisterCommand('brcrate', function(_, args)
         print('    no itemId spawns a full crate; otherwise a single item')
         return
     end
-
-    local e = BR.Roster.get(src)
-    if not e or not e.pos then
-        print(('  %s has no sampled position yet'):format(tostring(src)))
-        return
-    end
-    local m = zoneFor(src)
-    if not m then
-        print(('  %d is not anywhere with loot in it (state %s)')
-            :format(src, tostring(e and e.state)))
-        return
-    end
-
-    local stack
-    if args[2] then
-        local w = BR.Config.WeaponById[args[2]]
-        local c = BR.Config.ConsumableById[args[2]]
-        if w then
-            stack = { item = args[2], rarity = w.rarity, count = 1, clip = w.clip,
-                      kind = w.clip and BR.ItemKind.WEAPON or BR.ItemKind.THROWABLE }
-        elseif c then
-            stack = { item = args[2], kind = BR.ItemKind.CONSUMABLE,
-                      rarity = c.rarity, count = 1 }
-        elseif BR.Config.AmmoPickups[args[2]] then
-            stack = { item = args[2], kind = BR.ItemKind.AMMO,
-                      rarity = BR.Rarity.COMMON,
-                      count = BR.Config.AmmoPickups[args[2]].amount }
-        else
-            print(('  unknown item: %s'):format(args[2]))
-            return
-        end
-    else
-        stack = BR.MakeCrate(BR.Rng(GetGameTimer()), 3, e.pos.x, e.pos.y, e.pos.z)
-    end
-
-    local spawned = BR.Loot.spawnStack(m, stack, e.pos.x, e.pos.y, e.pos.z)
-    print(('[br_core] spawned #%s (%s) at %s'):format(
-        tostring(spawned and spawned.id), stack.kind, e.name))
+    print('[br_core] ' .. devSpawn(src, args[2]))
 end, true)
+
+-- The client-side twin, so a crate can be spawned from F8 in front of the ped
+-- rather than from the server console where you cannot see it land. DEV MODE
+-- ONLY -- without that gate this is "any player spawns any weapon".
+--
+-- The position is the CLIENT's, which is fine here and only here: it is a
+-- convenience for a developer who could type the coordinates anyway, and the
+-- gate is what makes that acceptable.
+RegisterNetEvent(BR.Net.LOOT_DEV)
+AddEventHandler(BR.Net.LOOT_DEV, function(d)
+    local src = source
+    if not BR.Server.devMode then
+        BR.Server.notify(src, 'Dev mode is off.', 'warn')
+        return
+    end
+    if type(d) ~= 'table' then return end
+
+    local at = nil
+    if tonumber(d.x) and tonumber(d.y) and tonumber(d.z) then
+        at = { x = tonumber(d.x), y = tonumber(d.y), z = tonumber(d.z) }
+    end
+
+    local report = devSpawn(src, d.item, at)
+    print(('[br_core] brcrate (client, %d): %s'):format(src, report))
+    BR.Server.notify(src, report, 'info')
+end)
 
 -- The warmup pad refills itself. Whoever queued first must not be able to
 -- strip the island for everyone who arrives after them.

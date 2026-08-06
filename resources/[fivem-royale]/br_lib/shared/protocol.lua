@@ -65,6 +65,10 @@ BR.Net = {
     -- bounds how far it may move (see server/loot.lua) -- this is a
     -- suggestion, not an instruction.
     LOOT_FIX        = 'br:loot:fix',         -- C->S  { id, x, y, z }
+    -- DEV ONLY, refused unless the server is in dev mode. Exists so a crate
+    -- can be spawned from the F8 console standing in front of you, rather
+    -- than from the server console where you cannot see it land.
+    LOOT_DEV        = 'br:loot:dev',         -- C->S  { item?, x, y, z }
     INV_SET         = 'br:inv:set',          -- S->C  authoritative inventory mirror
     INV_SWAP        = 'br:inv:swap',         -- C->S  { from, to }
     INV_DROP        = 'br:inv:drop',         -- C->S  { slot }

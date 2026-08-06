@@ -34,19 +34,16 @@ local lastPrompt = { id = nil, at = 0, pct = -1 }
 
 local PROP_MAX = 80       -- hard ceiling on live objects, whatever the density
 
---- States in which loot is visible at all. LOBBY and WARMUP are absent: the
---- warmup pad is shared between matches and the vista is not in one.
+--- Both gates come from br_lib, because the server reads the SAME tables.
+--- When these were written out twice they drifted, and the symptom was no
+--- loot anywhere with no error to grep for -- see the note on
+--- BR.Config.LootVisibleStates.
 local function canSee()
-    local st = BR.State.me.state
-    return st == BR.PlayerState.BUS or st == BR.PlayerState.FREEFALL
-        or st == BR.PlayerState.GLIDE or st == BR.PlayerState.ALIVE
-        or st == BR.PlayerState.DBNO or st == BR.PlayerState.DEAD
-        or st == BR.PlayerState.SPECTATING
+    return BR.Config.LootVisibleStates[BR.State.me.state] == true
 end
 
---- Only a player on their feet can take something.
 local function canTake()
-    return BR.State.me.state == BR.PlayerState.ALIVE
+    return BR.Config.LootTakeStates[BR.State.me.state] == true
 end
 
 local function isContainer(e)
@@ -652,6 +649,22 @@ RegisterCommand('brlootblips', function()
             for _ in pairs(entries) do n = n + 1 end
             return n
         end)()))
+end, false)
+
+--- Spawn a crate two metres in front of the ped. Dev mode only (the server
+--- refuses otherwise) -- this is the one you want when debugging, because you
+--- can see the thing land.
+RegisterCommand('brcrate', function(_, args)
+    local ped = PlayerPedId()
+    local p   = GetEntityCoords(ped)
+    local f   = GetEntityForwardVector(ped)
+    TriggerServerEvent(BR.Net.LOOT_DEV, {
+        item = args[1],
+        x = p.x + f.x * 2.0,
+        y = p.y + f.y * 2.0,
+        z = p.z,
+    })
+    print(('[br_core] asked the server for %s'):format(args[1] or 'a crate'))
 end, false)
 
 --- Everything this client knows about the loot around it.

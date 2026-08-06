@@ -612,7 +612,15 @@ function BR.Native.check()
         local _, hit = GetShapeTestResult(h)
         return hit
     end)
-    probe('GetGameplayCamRot',       function() return GetGameplayCamRot(2) end)
+    -- The interaction ray's DIRECTION. BR.Native.aim() fires along the ped's
+    -- forward vector (user call: you turn towards a thing to interact with
+    -- it), so a nil here is a ray that always points at world origin.
+    probe('GetEntityForwardVector',  function() return GetEntityForwardVector(ped) end)
+    -- Reads the player's ACTUAL binding for the prompt's key badge. Without
+    -- it the prompt shows no key at all.
+    probe('GetControlInstructionalButton', function()
+        return GetControlInstructionalButton(2, BR.Config.Loot.promptControl or 51, true)
+    end)
     probe('GetScreenCoordFromWorldCoord', function()
         local _, sx, sy = GetScreenCoordFromWorldCoord(0.0, 0.0, 0.0)
         return sx, sy

@@ -71,7 +71,9 @@ export default function Hud({ visible }: { visible: boolean }) {
           <StormBar storm={storm} />
         </div>
 
-        <div className="absolute" style={{ top: 'var(--safe-y)', right: 'var(--safe-x)' }}>
+        {/* Top row: counters right, squad left, BOTH on --hud-top so they sit
+            at the same height and both clear the engine's help band. */}
+        <div className="absolute" style={{ top: 'var(--hud-top)', right: 'var(--safe-x)' }}>
           <Counters
             alive={hud.alive}
             squads={hud.squadsAlive}
@@ -82,7 +84,7 @@ export default function Hud({ visible }: { visible: boolean }) {
 
         <div
           className="absolute w-[16rem]"
-          style={{ top: 'calc(var(--safe-y) + 5rem)', right: 'var(--safe-x)' }}
+          style={{ top: 'calc(var(--hud-top) + 5rem)', right: 'var(--safe-x)' }}
         >
           <KillFeed entries={feed} />
         </div>
@@ -98,13 +100,7 @@ export default function Hud({ visible }: { visible: boolean }) {
         {hud.state !== 'freefall' && hud.state !== 'glide' && (
           <div
             className="absolute w-[13rem]"
-            style={{
-              // Pushed down to clear GTA's own help boxes, which draw in this
-              // exact corner and were landing under the panel (user,
-              // 2026-08-05).
-              top: 'calc(var(--safe-y) + 3vh)',
-              left: 'var(--safe-x)',
-            }}
+            style={{ top: 'var(--hud-top)', left: 'var(--safe-x)' }}
           >
             <SquadPanel squad={squad} />
           </div>

@@ -1111,6 +1111,44 @@ do
     ok(misfiled == 0, 'every entry files into the cell its position implies')
 end
 
+-- -------------------------------------------------------------- loot.gates ---
+
+describe('loot.gates')
+do
+    -- ONE DEFINITION, BOTH SIDES. The client decides whether to ASK for a
+    -- cell and the server whether to ANSWER; when those were written out
+    -- separately they drifted, and the symptom was no loot anywhere with
+    -- nothing in any log -- the client simply never asked, so the shared
+    -- warmup zone was never even built (user, 2026-08-05).
+    local vis = BR.Config.LootVisibleStates
+    local take = BR.Config.LootTakeStates
+
+    ok(vis[BR.PlayerState.WARMUP] == true,
+        'the warmup pad is visible -- the whole point of stocking it')
+    ok(take[BR.PlayerState.WARMUP] == true, 'and lootable, for practice PVP')
+    ok(vis[BR.PlayerState.ALIVE] == true and take[BR.PlayerState.ALIVE] == true,
+        'a live player sees and takes')
+
+    -- The vista is a menu with a view. A lobby bystander streaming a match's
+    -- items would be reading the map through someone else's game.
+    ok(vis[BR.PlayerState.LOBBY] == nil, 'the lobby sees nothing')
+    ok(take[BR.PlayerState.LOBBY] == nil, 'and takes nothing')
+
+    -- Falling players see (props have to exist before you land) but cannot
+    -- take -- there is nothing to stand on.
+    ok(vis[BR.PlayerState.FREEFALL] == true, 'a falling player is streamed loot')
+    ok(take[BR.PlayerState.FREEFALL] == nil, 'but cannot pick it up mid-air')
+    ok(take[BR.PlayerState.DEAD] == nil, 'and a corpse takes nothing')
+
+    -- Anything takeable must be visible, or the gates contradict each other.
+    local contradiction = {}
+    for state in pairs(take) do
+        if not vis[state] then contradiction[#contradiction + 1] = state end
+    end
+    ok(#contradiction == 0, 'nothing is takeable but invisible',
+        table.concat(contradiction, ', '))
+end
+
 -- -------------------------------------------------------------- loot.water ---
 
 describe('loot.water')

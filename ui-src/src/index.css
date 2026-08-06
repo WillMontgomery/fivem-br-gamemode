@@ -34,6 +34,12 @@
   --safe-x: 2.2%;
   --safe-y: 3.2%;
 
+  /* Baseline for the TOP ROW: the safe-zone top plus the height of GTA's own
+     instructional/help band, which draws in the top left and was landing
+     underneath our squad panel. Both top panels hang off this so they read as
+     one row. Overwritten at runtime from the real safe zone. */
+  --hud-top: calc(3.2% + 7.5vh);
+
   /* Footprint of GTA's native radar, which we deliberately do not replace. */
   --radar-w: 25rem;
   --radar-h: 12.5rem;

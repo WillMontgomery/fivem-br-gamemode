@@ -214,6 +214,35 @@ BR.Config.Loot = {
     startingItems   = {},
 }
 
+--- WHO CAN SEE LOOT, AND WHO CAN TAKE IT -- ONE DEFINITION, BOTH SIDES.
+---
+--- The client decides whether to ASK for a cell; the server decides whether to
+--- ANSWER. When those two disagreed there was no loot anywhere: WARMUP was
+--- added to the server's set and not the client's, so nobody on the pad ever
+--- subscribed, the shared warmup zone was therefore never built, and 140
+--- crates existed nowhere at all -- with no error, because nothing failed
+--- (user, 2026-08-05). A shared table is the only version of this that cannot
+--- drift.
+---
+--- The server's copy remains the security boundary. This is not a permission
+--- system; it is the single place the permission is written down.
+BR.Config.LootVisibleStates = {
+    [BR.PlayerState.WARMUP]     = true,   -- the shared pad layout
+    [BR.PlayerState.BUS]        = true,
+    [BR.PlayerState.FREEFALL]   = true,
+    [BR.PlayerState.GLIDE]      = true,
+    [BR.PlayerState.ALIVE]      = true,
+    [BR.PlayerState.DBNO]       = true,
+    [BR.PlayerState.DEAD]       = true,
+    [BR.PlayerState.SPECTATING] = true,
+    -- LOBBY is absent: the vista is a menu with a view, not a place.
+}
+
+BR.Config.LootTakeStates = {
+    [BR.PlayerState.ALIVE]  = true,
+    [BR.PlayerState.WARMUP] = true,   -- the pad exists for practice PVP
+}
+
 --- Roll a rarity for a given POI tier.
 --- @param rng table   a BR.Rng instance
 --- @param tier integer
