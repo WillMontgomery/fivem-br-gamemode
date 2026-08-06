@@ -39,15 +39,19 @@ function SlotCard({
   const hex = slot ? RARITY[slot.rarity].hex : 'rgba(255,255,255,0.15)'
 
   return (
+    // POINTER EVENTS, NOT HTML5 DRAG-AND-DROP.
+    //
+    // The draggable/onDrop version did nothing at all in game: CEF's HTML5
+    // drag support depends on dataTransfer being populated and on a drag image
+    // the embedded browser never produces, so `drop` simply never fired (user,
+    // 2026-08-05). Pointer down/up needs none of that and behaves identically
+    // in the browser harness and in the game.
+    //
+    // pointerUp on the SOURCE slot is a click (select); pointerUp on a
+    // DIFFERENT slot is a swap.
     <div
-      draggable={!!slot}
-      onDragStart={() => onDragStart(index)}
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={(e) => {
-        e.preventDefault()
-        onDrop(index)
-      }}
-      onClick={() => void fetchNui(CB.INV_SELECT, { slot: index })}
+      onPointerDown={() => { if (slot) onDragStart(index) }}
+      onPointerUp={() => onDrop(index)}
       className="relative rounded-lg p-3 flex flex-col gap-2 cursor-pointer
                  transition-colors duration-100"
       style={{
@@ -127,10 +131,20 @@ export default function InventoryPanel() {
   const inv = useUi(selInv)
   const [dragging, setDragging] = useState<number | null>(null)
 
+  // Releasing on the slot you pressed is a SELECT; releasing on a different
+  // one is a SWAP. One gesture, no modifier keys, and it works with a mouse
+  // that CEF will not give us a drag image for.
   const onDrop = (to: number) => {
     const from = dragging
     setDragging(null)
-    if (from == null || from === to) return
+    if (from == null) {
+      void fetchNui(CB.INV_SELECT, { slot: to })
+      return
+    }
+    if (from === to) {
+      void fetchNui(CB.INV_SELECT, { slot: to })
+      return
+    }
     void fetchNui(CB.INV_SWAP, { from, to })
   }
 
@@ -147,7 +161,7 @@ export default function InventoryPanel() {
             Inventory
           </h2>
           <span className="text-[0.6rem] uppercase tracking-[0.16em] text-white/35">
-            drag to reorder · click to equip
+            press one slot, release on another to swap
           </span>
         </div>
 

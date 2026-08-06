@@ -188,6 +188,7 @@ function BR.Inv.give(src, stack)
        or stack.kind == BR.ItemKind.THROWABLE then
         local left = stack.count or 1
         local max  = maxStackOf(stack)
+        local before = left
 
         -- Top up existing stacks first, lowest slot first, so a player who
         -- picks up their eighth bandage does not open a second stack while
@@ -216,7 +217,25 @@ function BR.Inv.give(src, stack)
             left = left - move
         end
 
-        if left >= (stack.count or 1) then return false, nil, 'full' end
+        -- NOTHING FITS? SWAP, DO NOT REFUSE (user call, 2026-08-05).
+        --
+        -- This used to answer "No room for that" and leave the item on the
+        -- floor. But the player deliberately reached for it -- they want it
+        -- more than whatever is in their hand -- so the active slot goes on
+        -- the ground and the new thing takes its place. Refusing made the
+        -- player drop something manually and pick up again, which is the same
+        -- outcome with three extra steps.
+        if left >= before then
+            local at = inv.active
+            local displaced = inv.slots[at] or nil
+            inv.slots[at] = {
+                item = stack.item, kind = stack.kind,
+                rarity = stack.rarity, count = math.min(max, left),
+            }
+            BR.Inv.push(src)
+            return true, displaced, nil
+        end
+
         BR.Inv.push(src)
         -- Partially taken: hand the remainder back so it stays in the world.
         if left > 0 then

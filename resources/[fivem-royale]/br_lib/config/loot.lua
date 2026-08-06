@@ -104,7 +104,11 @@ BR.Config.Loot = {
     -- props rather than networked entities. (Scaled down from 35/55/80 when
     -- the POI table grew from 22 to 49 for the storm-anchor scheme: the
     -- map-wide total is the budget, the per-POI number is just its share.)
-    budgetPerTier = { [1] = 20, [2] = 35, [3] = 60 },
+    -- CRATES CARRY THE LOOT NOW, floor items garnish it (user call,
+    -- 2026-08-05). Floor loot halved and crates roughly tripled: a crate is a
+    -- decision (walk to it, stand still, open it) and a floor item is a
+    -- freebie, so the interesting one should be the common one.
+    budgetPerTier = { [1] = 10, [2] = 16, [3] = 28 },
 
     -- Chests hold a guaranteed burst and are worth crossing open ground for.
     --
@@ -113,7 +117,11 @@ BR.Config.Loot = {
     -- is looted -- so a room you have already been through reads as looted
     -- from the doorway, which is exactly what the empty version is for. The
     -- husk stays for the rest of the match.
-    chestsPerTier = { [1] = 2, [2] = 4, [3] = 7 },
+    -- Tier 1 is the RURAL tier -- the filler towns and outposts nobody drops
+    -- at. It gets proportionally the biggest lift, because "rural areas don't
+    -- have enough crates" and a sparse POI you cannot gear up at is a POI
+    -- nobody visits twice (user, 2026-08-05).
+    chestsPerTier = { [1] = 9, [2] = 14, [3] = 22 },
     chestItems    = { min = 3, max = 5 },
     chestProp     = 'prop_box_wood05a',   -- sealed
     chestOpenProp = 'prop_box_wood05b',   -- open and empty: the husk
@@ -123,7 +131,9 @@ BR.Config.Loot = {
     -- stopping for. Rolled on the tier-1 table -- filler is a lifeline, not a
     -- reason to skip the named locations.
     filler = {
-        count         = 240,
+        -- Cut back with the floor budget: the roadside is a lifeline between
+        -- POIs, not a reason to skip them.
+        count         = 120,
         tier          = 1,
         -- ROADSIDE, NOT ON THE ROAD. The offset used to be a symmetric +-22m
         -- band, which includes ZERO -- so a share of every road's filler
@@ -141,6 +151,22 @@ BR.Config.Loot = {
     -- Everything found here is wiped when the bus departs: warmup PVP is
     -- practice, and arriving early must not be a head start (Fortnite's
     -- pre-game island rule).
+    -- A HANDFUL OF CRATES WHERE EACH PLAYER LANDS.
+    --
+    -- Dropping into empty countryside and finding nothing is how a player
+    -- concludes the mode has no loot in it. These are spawned per player when
+    -- they touch down -- generation cannot know where anyone will land.
+    --
+    -- The inner radius is the whole design: too close and it is obviously
+    -- staged (crates rain down around you), far enough out and it just reads
+    -- as a lucky drop zone. Outside the 45m the eye takes in on landing.
+    landing = {
+        crates    = 3,
+        minRadius = 55.0,
+        maxRadius = 130.0,
+        tier      = 2,
+    },
+
     -- DELIBERATELY OVERKILL (user call, 2026-08-05). The pad is where a player
     -- meets this system for the first time, and a crate they have to go
     -- looking for is a crate they never find. It should be impossible to walk
@@ -162,7 +188,12 @@ BR.Config.Loot = {
     -- block is 768m across, and 150 objects at that range would be paid for in
     -- frames for no visible benefit. Entries beyond this are registry rows that
     -- materialise as the player walks in.
-    propDistance    = 90.0,
+    -- Doubled (user call, 2026-08-05): you should be able to see a crate
+    -- across a POI, not have it fade in as you approach. Objects are the
+    -- expensive part of this system, so PROP_MAX in client/loot.lua is what
+    -- actually protects the frame budget -- this only decides how far the
+    -- candidates come from.
+    propDistance    = 180.0,
     propHysteresis  = 15.0,  -- despawn beyond propDistance + this, so a player
                              -- standing on the boundary does not thrash models
 
@@ -176,6 +207,11 @@ BR.Config.Loot = {
     -- Containers are a commitment in the open: you stand still for a second and
     -- anyone watching the building knows exactly where you are.
     chestHoldMs     = 1000,
+
+    -- The reveal, when a crate opens. Vanilla frontend sound, swap freely --
+    -- it is here rather than inline precisely so it can be auditioned.
+    openSound       = { name = 'Pickup_Weapon',
+                        set  = 'HUD_FRONTEND_CUSTOM_SOUNDSET' },
 
     -- The GLYPH in the pickup prompt.
     --

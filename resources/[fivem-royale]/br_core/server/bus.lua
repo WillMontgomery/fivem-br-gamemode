@@ -485,6 +485,11 @@ AddEventHandler(BR.Net.DROP_LANDED, function()
         -- moment it means anything.
         if BR.Inv and BR.Inv.grantStarting then BR.Inv.grantStarting(src) end
 
+        -- A few crates out at the edge of where they can see. Landing in
+        -- empty countryside and finding nothing is how a player concludes
+        -- the mode has no loot in it.
+        if BR.Loot and BR.Loot.landingCrates then BR.Loot.landingCrates(src) end
+
         -- The "waiting on the others" notice is NOT sent from here -- see
         -- BR.Bus.landingNotices, driven off the match tick. Hooking it to this
         -- event meant it depended on the landing report arriving at all, and

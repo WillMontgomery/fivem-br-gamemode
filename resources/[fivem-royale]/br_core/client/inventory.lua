@@ -348,6 +348,19 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
         TriggerServerEvent(BR.Net.INV_SELECT, { slot = (inv.active % SLOTS) + 1 })
     end
 
+    -- SHOOTING A CONSUMABLE USES IT (user call, 2026-08-05). With a med kit
+    -- selected the attack button has nothing else to do, and reaching for the
+    -- trigger is what a player does with whatever is in their hands. The
+    -- control is the player's own ATTACK binding, whatever they set it to.
+    local held = inv.slots[inv.active]
+    if held and held.kind == BR.ItemKind.CONSUMABLE and not inv.using then
+        DisableControlAction(0, 24, true)   -- ATTACK: no punching a potion
+        DisableControlAction(0, 25, true)   -- AIM
+        if IsDisabledControlJustPressed(0, 24) then
+            TriggerServerEvent(BR.Net.INV_USE, { slot = inv.active })
+        end
+    end
+
     -- While the panel is up the cursor belongs to the panel. Keep-input focus
     -- means the game still reads the mouse, so without this the camera spins
     -- as you reach for a slot (user, 2026-08-05). Movement is deliberately
@@ -397,6 +410,21 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
         payload.pool = { [w.ammo] = pool }
     end
     TriggerServerEvent(BR.Net.INV_AMMO, payload)
+
+    -- AND UPDATE OUR OWN MIRROR, which is what the HUD reads.
+    --
+    -- The server deliberately does not echo this back -- it would be a packet
+    -- per player per half-second to tell them what they just said -- but that
+    -- left NOTHING updating the display, so the ammo counter sat at whatever
+    -- the weapon was picked up with while the magazine emptied (user,
+    -- 2026-08-05). These numbers come from the engine, so writing them here is
+    -- not the client deciding anything: it is the display agreeing with the
+    -- gun in the player's hands.
+    slot.clip = clip
+    if w and w.ammo and slot.kind == BR.ItemKind.WEAPON then
+        inv.ammo[w.ammo] = pool
+    end
+    pushUi()
 end)
 
 -- --------------------------------------------------------------------------

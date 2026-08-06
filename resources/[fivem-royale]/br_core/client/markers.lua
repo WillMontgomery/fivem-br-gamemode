@@ -29,10 +29,25 @@ local function hexToRgb(hex)
     return tonumber(r, 16), tonumber(g, 16), tonumber(b, 16)
 end
 
+-- OUR OWN MARKER BLIPS, BY HANDLE.
+--
+-- The placement watcher finds the player's waypoint with GetFirstBlipInfoId(8)
+-- -- 8 is the waypoint sprite, and that is the standard trick. The moment
+-- destination markers ALSO became sprite 8, the watcher started finding THEM:
+-- it read another player's marker as a freshly placed waypoint, consumed it,
+-- and re-placed the reader's own marker there. Which is exactly the reported
+-- symptom -- a second marker deleting the first and taking its colour (user,
+-- 2026-08-05).
+--
+-- Keeping the sprite (it is the right icon) means the watcher has to know
+-- which sprite-8 blips are ours and skip them.
+local ownBlips = {}
+
 local function removeMarker(owner)
     local m = markers[owner]
     if m then
         if m.blip and DoesBlipExist(m.blip) then RemoveBlip(m.blip) end
+        if m.blip then ownBlips[m.blip] = nil end
         markers[owner] = nil
     end
 end
@@ -62,6 +77,7 @@ AddEventHandler(BR.Net.MARKER_SYNC, function(d)
     SetBlipColour(blip, blipColour)
     SetBlipScale(blip, 1.1)
     SetBlipAsShortRange(blip, false)
+    ownBlips[blip] = true
     markers[d.owner] = { x = d.x, y = d.y, colour = hex, blip = blip }
 end)
 
@@ -72,7 +88,13 @@ BR.Loop.register(BR.Loop.TICK, 'markers.place', function()
     local st = BR.State.me.state
     if st == BR.PlayerState.LOBBY or st == BR.PlayerState.LEFT then return end
 
-    local blip = GetFirstBlipInfoId(8)   -- 8 = the waypoint sprite
+    -- Walk the sprite-8 blips past our OWN markers to the real waypoint. Ours
+    -- wear the same sprite deliberately, so the first hit is very often a
+    -- teammate's destination rather than the thing the player just placed.
+    local blip = GetFirstBlipInfoId(8)
+    while DoesBlipExist(blip) and ownBlips[blip] do
+        blip = GetNextBlipInfoId(8)
+    end
     if not DoesBlipExist(blip) then return end
     local c = GetBlipInfoIdCoord(blip)
     SetWaypointOff()

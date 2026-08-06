@@ -3325,12 +3325,19 @@ do
     ok(displaced ~= nil and displaced.item == 'pistol',
         'and hands the displaced one back to the world')
 
-    -- A CONSUMABLE MUST NOT BE ABLE TO THROW AWAY A GUN. That is a misclick
-    -- costing a gunfight, which is why only weapons displace.
-    local ok3, _, reason = BR.Inv.give(1, { item = 'bandage',
+    -- A FULL INVENTORY SWAPS, IT NEVER REFUSES (user call, 2026-08-05).
+    -- Reaching for something means wanting it more than what is in hand, and
+    -- "No room for that" just made the player drop something manually and
+    -- pick up again -- the same outcome with three extra steps.
+    inv.active = 3
+    local ok3, displaced3, reason = BR.Inv.give(1, { item = 'bandage',
         kind = BR.ItemKind.CONSUMABLE, rarity = 1, count = 1 })
-    ok(not ok3 and reason == 'full',
-        'a consumable is refused rather than displacing a weapon')
+    ok(ok3 and reason == nil, 'a consumable into a full inventory is accepted')
+    ok(inv.slots[3] and inv.slots[3].item == 'bandage',
+        'it takes the active slot')
+    ok(displaced3 ~= nil and displaced3.item == 'heavysniper',
+        'and what was there goes to the world, not into the void',
+        tostring(displaced3 and displaced3.item))
 
     -- Stacking.
     BR.Inv.reset(1)
@@ -3420,18 +3427,24 @@ do
     -- TAKING FIRE INTERRUPTS. Committing to an 8s med kit while being shot
     -- should lose you the med kit, not heal you through it.
     e.armour = 0.0
+    -- Driven through the PED, not by poking entry.hp: the roster samples
+    -- health off the engine four times a second, so anything written straight
+    -- onto the entry is overwritten before the next tick reads it. Setting the
+    -- stub ped's health is what a real hit looks like from the server's side.
     sent = {}
     fire(BR.Net.INV_USE, 1, { slot = 1 })
-    e.hp = (e.hp or 100.0) - 20.0
+    pedHealth[1001] = BR.ToEngineHp(80.0)
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
     ok(BR.Inv.of(1).using == nil, 'damage cancels a use in progress')
     fakeTime = fakeTime + shield.useMs * 2
     BR.Sched.step(fakeTime)
     ok(#eventsOf(BR.Net.INV_EFFECT) == 0, 'and no effect ever lands')
-    ok(BR.Inv.of(1).slots[1].count == 1, 'the item survives the interruption')
+    ok(BR.Inv.of(1).slots[1] and BR.Inv.of(1).slots[1].count == 1,
+        'the item survives the interruption')
 
     -- Dying mid-use lands nothing either.
+    pedHealth[1001] = nil
     e.hp = 100.0
     fire(BR.Net.INV_USE, 1, { slot = 1 })
     sent = {}
@@ -3545,26 +3558,38 @@ do
     standOn(1, crate)
 
     local n = #crate.contents
+    local crateX = crate.x
     local before = m.loot.nextId
     sent = {}
     fire(BR.Net.LOOT_CLAIM, 1, { id = crate.id })
 
-    ok(m.loot.items[crate.id] == nil, 'opening consumes the sealed crate')
-    -- contents + one husk
-    ok(m.loot.nextId == before + n + 1,
-        'and leaves the contents plus an open husk',
+    -- THE CRATE STAYS, OPENED -- same id, same place, new model. Retiring it
+    -- and announcing a separate husk entry meant a delete, a round-trip and a
+    -- fresh model stream before the open crate appeared, which was visibly
+    -- slow (user, 2026-08-05).
+    local husk = m.loot.items[crate.id]
+    ok(husk ~= nil, 'the crate entry survives, as a husk')
+    ok(husk and husk.kind == 'husk', 'its kind flips to husk')
+    ok(husk and husk.prop == BR.Config.Loot.chestOpenProp,
+        'and it wears the open-and-empty crate model')
+    ok(husk and math.abs(husk.x - crateX) < 0.01,
+        'standing exactly where the sealed one was')
+    ok(husk and husk.contents == nil, 'holding nothing')
+    ok(m.loot.nextId == before + n,
+        'and exactly the contents were laid on the ground -- no extra entry',
         ('%d new'):format(m.loot.nextId - before))
 
-    local husk
-    for id = before + 1, m.loot.nextId do
-        local e = m.loot.items[id]
-        if e and e.kind == 'husk' then husk = e end
+    -- The change reaches everyone looking at that cell, under the SAME id, so
+    -- clients swap one model rather than deleting and rebuilding.
+    local reskinned = false
+    for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+        for _, entry in ipairs(s.args[1]) do
+            if entry.id == crate.id and entry.kind == 'husk' then
+                reskinned = true
+            end
+        end
     end
-    ok(husk ~= nil, 'the husk exists')
-    ok(husk and husk.prop == BR.Config.Loot.chestOpenProp,
-        'and is the open-and-empty crate model')
-    ok(husk and math.abs(husk.x - crate.x) < 0.01,
-        'standing exactly where the sealed one was')
+    ok(reskinned, 'and is re-announced under its original id')
 
     -- A HUSK IS NOT LOOT. Claiming it must do nothing at all -- an opened
     -- crate that could be opened again would duplicate its contents.
@@ -3620,13 +3645,15 @@ do
     BR.Roster.get(1).pos = { x = anyEntry.x, y = anyEntry.y, z = anyEntry.z }
     sent = {}
     fire(BR.Net.LOOT_CLAIM, 1, { id = anyId })
-    local gained = false
-    for _, s in ipairs(eventsOf(BR.Net.LOOT_GONE)) do
-        for _, id in ipairs(s.args[1]) do
-            if id == anyId then gained = true end
+    -- Opening turns the crate into its husk in place -- so the proof it was
+    -- opened is the re-announcement, not a removal.
+    local opened = false
+    for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+        for _, entry in ipairs(s.args[1]) do
+            if entry.id == anyId and entry.kind == 'husk' then opened = true end
         end
     end
-    ok(gained, 'and can be opened during warmup')
+    ok(opened, 'and can be opened during warmup')
 
     -- NOTHING FLIES. Everything found on the pad is wiped at wheels-up: the
     -- island is practice, and arriving early must not be a head start.

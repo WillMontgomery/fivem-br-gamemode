@@ -168,6 +168,32 @@ BR.Config.Map.Water = {
     { minX =   600.0, minY =  3750.0, maxX =  1300.0, maxY =  4450.0 },
 }
 
+--- Rectangles nothing may ever spawn in, for reasons other than water.
+---
+--- The runway is the whole list so far: the Battle Bus spawns and rolls down
+--- it, and a crate sitting on the tarmac is either an obstacle or something we
+--- would have to sweep up before every departure. Not spawning there in the
+--- first place is one line instead of a cleanup pass (user, 2026-08-05).
+BR.Config.Map.NoLoot = {
+    -- Cayo Perico airstrip, from the two ends the user surveyed, with a
+    -- margin either side for the wings.
+    { minX = 3932.59 - 25.0, minY = -4712.51 - 25.0,
+      maxX = 4525.47 + 25.0, maxY = -4456.65 + 25.0 },
+}
+
+--- Is this point somewhere loot is banned outright?
+--- @param x number
+--- @param y number
+--- @return boolean
+function BR.Config.Map.IsNoLoot(x, y)
+    for _, r in ipairs(BR.Config.Map.NoLoot) do
+        if x >= r.minX and x <= r.maxX and y >= r.minY and y <= r.maxY then
+            return true
+        end
+    end
+    return false
+end
+
 --- Is this point inside an authored water rectangle?
 --- @param x number
 --- @param y number

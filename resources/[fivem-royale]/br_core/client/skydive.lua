@@ -265,6 +265,18 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
             or cs == BR.Native.ChuteState.OPEN) then
         chuteSpent = true
         SetPedAmmo(ped, CHUTE, 0)
+    elseif not chuteSpent then
+        -- EXACTLY ONE, EVERY TICK, FOR THE WHOLE FALL.
+        --
+        -- Setting it once at the give was not enough: a count above one is
+        -- what the engine renders as a reserve, and something puts it back
+        -- (the parachute task's own setup is the suspect -- MP peds are
+        -- expected to carry a spare). Rather than keep guessing which path
+        -- does it, this simply refuses to let the count be anything but one
+        -- while the canopy is stowed. It is one native write at 10Hz.
+        if GetAmmoInPedWeapon(ped, CHUTE) > 1 then
+            SetPedAmmo(ped, CHUTE, 1)
+        end
     end
 
     -- THE FLOOR, UNCONDITIONALLY. Below the auto-deploy height with the

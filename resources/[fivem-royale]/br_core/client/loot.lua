@@ -32,7 +32,23 @@ local reported  = {}      -- [id] = true, entries already sent back as misplaced
 local hold = { id = nil, from = 0 }
 local lastPrompt = { id = nil, at = 0, pct = -1 }
 
-local PROP_MAX = 80       -- hard ceiling on live objects, whatever the density
+local PROP_MAX = 160      -- hard ceiling on live objects, whatever the density
+
+-- The crate pair, kept streamed for the whole session: they are the
+-- most-spawned models in the game and the sealed->open swap must be instant.
+local CRATE_MODEL      = GetHashKey(L.chestProp)
+local CRATE_OPEN_MODEL = GetHashKey(L.chestOpenProp)
+
+Citizen.CreateThread(function()
+    for _, model in ipairs({ CRATE_MODEL, CRATE_OPEN_MODEL }) do
+        RequestModel(model)
+        local waited = 0
+        while not HasModelLoaded(model) and waited < 10000 do
+            Citizen.Wait(100)
+            waited = waited + 100
+        end
+    end
+end)
 
 --- Both gates come from br_lib, because the server reads the SAME tables.
 --- When these were written out twice they drifted, and the symptom was no
@@ -43,7 +59,11 @@ local function canSee()
 end
 
 local function canTake()
-    return BR.Config.LootTakeStates[BR.State.me.state] == true
+    if BR.Config.LootTakeStates[BR.State.me.state] ~= true then return false end
+    -- NOT FROM A CAR (user call, 2026-08-05). Driving through a POI hoovering
+    -- up crates at 40mph is not looting, and the ray comes off the ped's
+    -- forward vector, which in a vehicle is the vehicle's.
+    return not IsPedInAnyVehicle(PlayerPedId(), false)
 end
 
 local function isContainer(e)
@@ -244,14 +264,34 @@ local function drain()
                                 if e.heading then
                                     SetEntityHeading(obj, e.heading)
                                 end
-                                FreezeEntityPosition(obj, true)
-                                SetEntityAsMissionEntity(obj, false, true)
                                 PlaceObjectOnGroundProperly(obj)
+                                -- CRATES ARE PHYSICAL. Drive into one and it
+                                -- moves (user call, 2026-08-05). Only the
+                                -- LOCAL prop moves -- the entry's authoritative
+                                -- position never changes, so a crate shunted
+                                -- across a car park is still looted from where
+                                -- the server thinks it is, and every client
+                                -- sees its own version of the shunt. Worth it
+                                -- for a world that reacts; revisit if the
+                                -- disagreement ever matters.
+                                --
+                                -- Loose floor items stay frozen: a rifle
+                                -- skittering down a hill is not a feature.
+                                FreezeEntityPosition(obj, not solid)
+                                if solid then SetEntityDynamic(obj, true) end
+                                SetEntityAsMissionEntity(obj, false, true)
                                 e.obj = obj
                                 byObject[obj] = id
                             end
                         end
-                        SetModelAsNoLongerNeeded(model)
+                        -- The two crate models stay resident. They are the
+                        -- most-spawned models in the game by a wide margin,
+                        -- and the sealed->open swap has to be instant --
+                        -- re-streaming the open crate at the moment it is
+                        -- looted is exactly the delay that was visible.
+                        if model ~= CRATE_MODEL and model ~= CRATE_OPEN_MODEL then
+                            SetModelAsNoLongerNeeded(model)
+                        end
                     end
                 end
             end
@@ -270,17 +310,31 @@ local function addEntries(list)
         if d.id then
             local have = entries[d.id]
             if have then
-                -- A RE-SEND IS A MOVE, not a duplicate. The repair round-trip
-                -- re-announces a corrected entry under its original id, so an
-                -- existing entry has to follow it rather than being ignored --
-                -- otherwise the client keeps rendering the crate in the sea it
-                -- just reported.
-                if math.abs((have.x or 0) - (d.x or 0)) > 0.01
-                   or math.abs((have.y or 0) - (d.y or 0)) > 0.01 then
+                -- A RE-SEND IS A CHANGE, not a duplicate. Two things arrive
+                -- this way: the repair round-trip re-announcing a corrected
+                -- position, and a sealed crate becoming its opened husk. Both
+                -- keep the id; both need the prop rebuilt.
+                local moved = math.abs((have.x or 0) - (d.x or 0)) > 0.01
+                    or math.abs((have.y or 0) - (d.y or 0)) > 0.01
+                local reskinned = have.kind ~= d.kind or have.prop ~= d.prop
+
+                if moved or reskinned then
                     despawn(have)
                     have.x, have.y, have.z = d.x, d.y, d.z
-                    have.gz, have.gzAt, have.gzOk = nil, 0, nil
+                    have.kind, have.item, have.prop = d.kind, d.item, d.prop
+                    have.rarity = d.rarity or have.rarity
+                    if moved then
+                        have.gz, have.gzAt, have.gzOk = nil, 0, nil
+                    end
                     queued[d.id] = nil
+                    -- Rebuilt on the NEXT prop pass at the latest, but a
+                    -- crate the player is standing over has to change NOW --
+                    -- so it jumps the queue.
+                    if reskinned then
+                        queued[d.id] = true
+                        table.insert(queue, 1, d.id)
+                        drain()
+                    end
                 end
             else
                 entries[d.id] = {
@@ -476,6 +530,10 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
     local glow2  = L.glowDistance * L.glowDistance
     local label2 = L.labelDistance * L.labelDistance
 
+    -- The shine pulses on a shared clock so every crate breathes together --
+    -- individually-phased glows read as flickering rather than as a beacon.
+    local pulse = 0.72 + 0.28 * math.sin(GetGameTimer() / 380.0)
+
     for _, e in pairs(entries) do
         local d2 = BR.Dist2(p.x, p.y, e.x, e.y)
         -- A husk is scenery. Glowing it would send players across open ground
@@ -492,6 +550,16 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
                 0.45, 0.45, 0.12,
                 c[1], c[2], c[3], 120,
                 false, false, 2, false, nil, nil, false)
+
+            -- CRATES SHINE. A real light in the world, not a screen effect:
+            -- it spills onto the ground and the wall behind, which is what
+            -- makes a crate readable through a doorway or round a corner
+            -- (user call, 2026-08-05). Containers only -- a lit-up floor
+            -- rifle would drown the crates it is meant to sit beside.
+            if isContainer(e) then
+                DrawLightWithRange(e.x, e.y, gz + 0.5,
+                    c[1], c[2], c[3], 4.0 * pulse, 1.6 * pulse)
+            end
 
             -- The floor label stays for LOOSE items: a rifle in the grass
             -- needs naming from further away than you would ever stand to
@@ -534,6 +602,12 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
                 hold.id = nil
                 TriggerServerEvent(BR.Net.LOOT_CLAIM, { id = id })
                 pushPrompt(nil)
+                -- The reveal. Played locally the instant the hold completes
+                -- rather than waiting for the server's answer: the sound is
+                -- feedback for the ACTION, and a lock that clicks a round-trip
+                -- later feels broken even when it worked.
+                local snd = L.openSound
+                if snd then PlaySoundFrontend(-1, snd.name, snd.set, true) end
             end
             return
         end
@@ -623,11 +697,19 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.devblips', function()
     end
 
     for id, e in pairs(entries) do
-        if not blips[id] or not DoesBlipExist(blips[id]) then
+        -- An opened crate loses its blip outright rather than turning white:
+        -- a map full of "already looted" markers is noise you have to read
+        -- past to find the ones that matter (user, 2026-08-05).
+        if isHusk(e) then
+            if blips[id] then
+                if DoesBlipExist(blips[id]) then RemoveBlip(blips[id]) end
+                blips[id] = nil
+            end
+        elseif not blips[id] or not DoesBlipExist(blips[id]) then
             local b = AddBlipForCoord(e.x, e.y, e.gz or e.z or 0.0)
             SetBlipSprite(b, isContainer(e) and 68 or 1)
             SetBlipScale(b, isContainer(e) and 0.7 or 0.45)
-            SetBlipColour(b, isHusk(e) and 0 or 5)
+            SetBlipColour(b, 5)
             SetBlipAsShortRange(b, true)
             blips[id] = b
         end

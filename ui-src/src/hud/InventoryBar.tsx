@@ -56,8 +56,11 @@ function Slot({
   }, [using, offset])
 
   return (
+    // Sized up from 3.6rem: at the old size the labels were unreadable at a
+    // glance, which is the only thing this bar is for (user, 2026-08-05).
+    // rem is tied to viewport height, so this scales with resolution.
     <div
-      className="relative w-[3.6rem] h-[3.6rem] rounded-md overflow-hidden"
+      className="relative w-[5.2rem] h-[5.2rem] rounded-md overflow-hidden"
       style={{
         // No color-mix() and no oklch(): CEF is Chrome 103 and drops what it
         // cannot parse, which makes the slot silently invisible.
@@ -67,7 +70,7 @@ function Slot({
       }}
     >
       <div
-        className="absolute top-0 left-0 px-1 text-[0.5rem] font-bold tabular-nums"
+        className="absolute top-0 left-0 px-1 text-[0.7rem] font-bold tabular-nums"
         style={{ color: 'rgba(255,255,255,0.55)' }}
       >
         {index}
@@ -84,10 +87,10 @@ function Slot({
           />
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-0.5 px-1">
             <div style={{ color: hex }}>
-              <ItemIcon slot={slot} />
+              <ItemIcon slot={slot} size="2.3rem" />
             </div>
             <span
-              className="text-[0.42rem] leading-none text-center uppercase tracking-wide"
+              className="text-[0.6rem] leading-tight text-center uppercase tracking-wide"
               style={{ color: 'rgba(255,255,255,0.75)' }}
             >
               {slot.label}
@@ -97,12 +100,12 @@ function Slot({
               missing before -- a weapon with clip 24 and count 1 fell through
               the count > 1 test and showed no number at all. */}
           {(slot.kind === 'weapon' ? slot.clip != null : slot.count > 1) && (
-            <div className="absolute bottom-0 right-0 px-1 text-[0.6rem] font-bold tabular-nums">
+            <div className="absolute bottom-0 right-0 px-1 text-[0.85rem] font-bold tabular-nums">
               {slot.kind === 'weapon' ? slot.clip : slot.count}
             </div>
           )}
           {KIND_HINT[slot.kind] && (
-            <div className="absolute top-0 right-0 px-1 text-[0.45rem] uppercase text-white/40">
+            <div className="absolute top-0 right-0 px-1 text-[0.55rem] uppercase text-white/40">
               {KIND_HINT[slot.kind]}
             </div>
           )}
@@ -132,10 +135,10 @@ export default function InventoryBar({ inv }: { inv: InvPayload }) {
           hand or a consumable -- a "0 / 0" under a bandage is noise. */}
       {active && active.kind === 'weapon' && (
         <div className="panel px-2.5 py-1 flex items-baseline gap-1.5">
-          <span className="text-lg font-bold tabular-nums leading-none">
+          <span className="text-2xl font-bold tabular-nums leading-none">
             {active.clip ?? 0}
           </span>
-          <span className="text-[0.7rem] tabular-nums text-white/45 leading-none">
+          <span className="text-base tabular-nums text-white/45 leading-none">
             / {reserve}
           </span>
         </div>

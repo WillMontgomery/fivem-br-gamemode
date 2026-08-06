@@ -1215,7 +1215,20 @@ do
     -- different crates in the same spot.
     local w1 = BR.BuildWarmupLayout(99)
     local w2 = BR.BuildWarmupLayout(99)
-    ok(#w1 == BR.Config.Loot.warmup.crates, 'the pad gets its authored crates')
+    -- Not the exact authored count: candidates that land on the runway are
+    -- dropped rather than forced somewhere else, and the runway cuts straight
+    -- through the pad's annulus. Most of them should survive.
+    ok(#w1 > BR.Config.Loot.warmup.crates * 0.6
+       and #w1 <= BR.Config.Loot.warmup.crates,
+        'the pad gets its authored crates, less what the runway rejects',
+        ('%d of %d'):format(#w1, BR.Config.Loot.warmup.crates))
+
+    local onRunway = 0
+    for _, e in ipairs(w1) do
+        if BR.Config.Map.IsNoLoot(e.x, e.y) then onRunway = onRunway + 1 end
+    end
+    ok(onRunway == 0, 'and none of them are on the runway',
+        ('%d on the tarmac'):format(onRunway))
 
     local same = #w1 == #w2
     for i = 1, #w1 do

@@ -382,7 +382,10 @@ AddEventHandler('playerDropped', function(reason)
     BR.Roster.remove(source)
 end)
 
-BR.Sched.every(500, 'roster.positions', samplePositions)
+-- 250ms: squad beacons are drawn straight from this, and at 2Hz a teammate's
+-- dot visibly hopped rather than moved. It also halves the staleness the loot
+-- claim check has to allow for.
+BR.Sched.every(250, 'roster.positions', samplePositions)
 BR.Sched.every(5000, 'roster.reconcile', reconcile)
 
 -- Players already connected when the resource starts (a restart mid-session).

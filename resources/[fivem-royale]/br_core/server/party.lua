@@ -670,7 +670,10 @@ end
 -- everywhere else -- nothing here can ever reach a player outside the squad,
 -- and the roster's public view still carries no positions at all. There is a
 -- wire test pinning both properties.
-BR.Sched.every(1000, 'party.squadpos', function()
+-- 250ms, matching the roster's own position sampling: pushing faster than the
+-- server samples would only re-send the same coordinates. A squadmate's dot
+-- now tracks them rather than hopping (user, 2026-08-05).
+BR.Sched.every(250, 'party.squadpos', function()
     -- Live states, checked per player against THEIR match: with parallel
     -- matches there is no single gate. Squad ids are match-namespaced, so
     -- grouping by squadId alone can never mix two matches' beacons.
@@ -695,10 +698,18 @@ BR.Sched.every(1000, 'party.squadpos', function()
         [BR.PlayerState.SPECTATING] = true,
         [BR.PlayerState.DBNO]       = true,
     }
+
+    -- NOBODY IS BEACONED FROM THE PLANE. Everyone aboard is at the same
+    -- coordinates, so the map showed a stack of squad dots sliding along the
+    -- flight path saying nothing at all -- and the plane's position is already
+    -- drawn for everyone (user, 2026-08-05). Beacons start meaning something
+    -- the moment people spread out, which is the moment they jump.
+    local aboard = { [BR.PlayerState.BUS] = true }
     local squads = {}
     BR.Roster.each(nil, function(src, e)
         local em = e.matchId and BR.Server.matches[e.matchId]
         if em and liveStates[em.state] and e.squadId and e.pos
+           and not aboard[e.state]
            and (BR.Server.isInMatch(e.state) or visibleStates[e.state]) then
             local sq = squads[e.squadId]
             if not sq then

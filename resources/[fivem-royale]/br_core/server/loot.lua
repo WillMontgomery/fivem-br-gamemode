@@ -147,23 +147,25 @@ function BR.Loot.spawnStack(m, stack, x, y, z)
     return e
 end
 
---- Leave an opened crate standing where the sealed one was.
+--- Turn a sealed crate INTO its opened husk, in place.
+---
+--- Same id, same position: the client mutates the entry it already holds and
+--- swaps one model for another. Retiring the crate and announcing a separate
+--- husk entry meant a delete, a network round-trip and a fresh model stream
+--- before the open crate appeared -- visibly slow (user, 2026-08-05). One
+--- message, one model swap.
 ---
 --- A husk is not loot: it cannot be claimed and it carries no rarity. It is
---- there so a room you have already swept reads as swept from the doorway,
---- which is the entire reason the open-crate model exists.
+--- there so a room you have already swept reads as swept from the doorway.
 --- @param m table
 --- @param crate table
-local function leaveHusk(m, crate)
-    if crate.kind ~= 'chest' then return end
-    BR.Loot.spawnStack(m, {
-        item    = 'husk',
-        kind    = 'husk',
-        rarity  = BR.Rarity.COMMON,
-        count   = 1,
-        prop    = L.chestOpenProp,
-        heading = crate.heading,
-    }, crate.x, crate.y, crate.z)
+local function toHusk(m, crate)
+    crate.kind     = 'husk'
+    crate.item     = 'husk'
+    crate.prop     = L.chestOpenProp
+    crate.rarity   = BR.Rarity.COMMON
+    crate.contents = nil
+    announce(m, crate)
 end
 
 --- Drop a stack at a player's feet. The inventory calls this.
@@ -234,6 +236,54 @@ end
 --- @param m table
 function BR.Loot.clear(m)
     if m then m.loot = nil end
+end
+
+--- Scatter a few crates around where a player just landed.
+---
+--- Generation cannot do this -- it runs at warmup and nobody has picked a drop
+--- yet. Dropping into empty countryside and finding nothing is how a player
+--- concludes the mode has no loot in it, so the loot comes to them (user call,
+--- 2026-08-05).
+---
+--- Deliberately NOT within sight of the landing point: the inner radius puts
+--- them past what the eye takes in on touchdown, so it reads as a lucky drop
+--- zone rather than as crates raining down around you.
+---
+--- Once per player per match.
+--- @param src integer
+function BR.Loot.landingCrates(src)
+    local e = BR.Roster.get(src)
+    if not e or not e.pos or e.landingLoot then return end
+
+    local m = BR.Server.matchOf(src)
+    if not m or not m.loot then return end
+
+    e.landingLoot = true
+
+    local cfg = L.landing
+    if not cfg or (cfg.crates or 0) <= 0 then return end
+
+    -- The MATCH's rng, so a replayed seed replays these too.
+    m.loot.rng = m.loot.rng or BR.Rng(m.loot.seed + 7717)
+    local rng = m.loot.rng
+
+    for _ = 1, cfg.crates do
+        local placed = false
+        for _ = 1, 6 do
+            local a = rng:float() * math.pi * 2.0
+            local r = cfg.minRadius
+                + rng:float() * math.max(1.0, cfg.maxRadius - cfg.minRadius)
+            local x = e.pos.x + math.cos(a) * r
+            local y = e.pos.y + math.sin(a) * r
+            if BR.LootPlaceable(x, y) then
+                local crate = BR.MakeCrate(rng, cfg.tier or 2, x, y, e.pos.z)
+                BR.Loot.spawnStack(m, crate, x, y, e.pos.z)
+                placed = true
+                break
+            end
+        end
+        local _ = placed
+    end
 end
 
 -- --------------------------------------------------------------------------
@@ -514,9 +564,19 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
     end
 
     if item.kind == 'chest' or item.kind == 'deathbox' then
-        retire(m, item)
-        scatter(m, item)
-        leaveHusk(m, item)
+        local contents = item.contents
+        if item.kind == 'chest' then
+            -- The crate STAYS, opened. Scatter first: toHusk clears the
+            -- contents off the entry.
+            scatter(m, item)
+            toHusk(m, item)
+        else
+            -- A death box has no husk -- an empty one lying around would
+            -- read as a body nobody had looted.
+            retire(m, item)
+            scatter(m, item)
+        end
+        local _ = contents
         if item.warmup then
             -- The pad must never end up stripped bare by whoever queued
             -- first: a looted crate comes back somewhere else on the island.

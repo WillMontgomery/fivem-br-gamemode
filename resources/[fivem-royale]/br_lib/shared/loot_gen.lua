@@ -176,6 +176,19 @@ function BR.LootChestContents(rng, tier)
     return out
 end
 
+--- May anything spawn at this point at all?
+---
+--- One gate for both bans -- authored water and authored no-loot zones (the
+--- runway) -- so a new exclusion is added in exactly one place and every
+--- caller picks it up.
+--- @param x number
+--- @param y number
+--- @return boolean
+function BR.LootPlaceable(x, y)
+    return not BR.Config.Map.IsWater(x, y)
+        and not BR.Config.Map.IsNoLoot(x, y)
+end
+
 --- Build one sealed crate, contents rolled.
 ---
 --- Every container in the game is this: `prop_box_wood05a` sealed, swapped for
@@ -343,7 +356,7 @@ function BR.BuildLootLayout(seed)
         for attempt = 1, 12 do
             local s = spread * BR.Lerp(1.0, 0.15, (attempt - 1) / 11.0)
             x, y = rng:pointInDisc(poi.x, poi.y, poi.radius * s)
-            if not BR.Config.Map.IsWater(x, y) then return x, y end
+            if BR.LootPlaceable(x, y) then return x, y end
         end
         return poi.x, poi.y
     end
@@ -396,7 +409,7 @@ function BR.BuildLootLayout(seed)
                 local x, y = px - dy * off, py + dx * off
 
                 if distToNearestPoi(x, y) >= (f.minPoiDist or 0)
-                   and not BR.Config.Map.IsWater(x, y) then
+                   and BR.LootPlaceable(x, y) then
                     local s = BR.RollLootStack(rng, f.tier or 1)
                     s.x, s.y, s.z = x, y, 0.0
                     s.road = road.id
@@ -434,17 +447,30 @@ function BR.BuildWarmupLayout(seed)
 
     local out = {}
     local inner = W.minRadius or 12.0
-    for i = 1, (W.crates or 0) do
+    local id = 0
+    for _ = 1, (W.crates or 0) do
         -- An annulus, not a disc: crates piled ON the spawn point would be
         -- looted before anyone had to walk anywhere. The inner radius is small
         -- though -- you should be able to see one the moment you land.
-        local a = rng:float() * math.pi * 2.0
-        local r = inner + rng:float() * math.max(1.0, W.radius - inner)
-        local e = BR.MakeCrate(rng, W.tier or 2,
-            pad.x + math.cos(a) * r, pad.y + math.sin(a) * r, pad.z, nil)
-        e.id = i
-        e.warmup = true
-        out[#out + 1] = e
+        --
+        -- Bounded retries keep the draw count identical per seed whether or
+        -- not a candidate lands on the runway.
+        local x, y
+        for _ = 1, 6 do
+            local a = rng:float() * math.pi * 2.0
+            local r = inner + rng:float() * math.max(1.0, W.radius - inner)
+            x, y = pad.x + math.cos(a) * r, pad.y + math.sin(a) * r
+            if BR.LootPlaceable(x, y) then break end
+            x = nil
+        end
+
+        if x then
+            id = id + 1
+            local e = BR.MakeCrate(rng, W.tier or 2, x, y, pad.z, nil)
+            e.id = id
+            e.warmup = true
+            out[#out + 1] = e
+        end
     end
     return out
 end
