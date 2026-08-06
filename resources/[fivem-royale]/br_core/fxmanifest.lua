@@ -47,6 +47,7 @@ client_scripts {
     'client/skydive.lua',
     'client/storm.lua',     -- rendering only; damage lands in state.lua
     'client/markers.lua',   -- pause-map pings: blips + world beams
+    'client/dui.lua',       -- browser pages as game textures; loot.lua uses it
     'client/inventory.lua', -- the inventory mirror; owns every weapon grant
     'client/loot.lua',      -- world props + pickup; needs BR.Inv (inventory.lua)
     'client/chat.lua',

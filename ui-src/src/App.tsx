@@ -39,7 +39,6 @@ export default function App() {
   useNuiEvent('hud',      (d) => s.setHud(d))
   useNuiEvent('squad',    (d) => s.setSquad(d))
   useNuiEvent('inv',      (d) => s.setInv(d))
-  useNuiEvent('prompt',   (d) => s.setPrompt(d))
   useNuiEvent('storm',    (d) => s.setStorm(d))
   useNuiEvent('dbno',     (d) => s.setDbno(d))
   useNuiEvent('spectate', (d) => s.setSpectate(d))

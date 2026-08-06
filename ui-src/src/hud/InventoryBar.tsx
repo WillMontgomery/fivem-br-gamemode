@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useUi } from '../store'
 import { RARITY } from '../bridge/types'
 import type { InvPayload, InvSlot } from '../bridge/types'
-import ItemIcon from './ItemIcon'
+import ItemIcon, { FistIcon } from './ItemIcon'
 
 /**
  * The always-on inventory bar.
@@ -145,6 +145,32 @@ export default function InventoryBar({ inv }: { inv: InvPayload }) {
       )}
 
       <div className="flex gap-1">
+        {/* SLOT ZERO: FISTS. Left of slot 1, always there, never fillable.
+            Part of the scroll ring, so putting the gun away is one flick
+            rather than a thing you have to drop something to do. */}
+        <div
+          className="relative w-[5.2rem] h-[5.2rem] rounded-md overflow-hidden
+                     flex flex-col items-center justify-center gap-0.5"
+          style={{
+            backgroundColor: inv.active === 0
+              ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.42)',
+            border: `1px solid ${inv.active === 0
+              ? '#ffffff' : 'rgba(255,255,255,0.18)'}`,
+            boxShadow: inv.active === 0
+              ? '0 0 0 1px rgba(255,255,255,0.35)' : 'none',
+          }}
+        >
+          <div style={{ color: 'rgba(255,255,255,0.85)' }}>
+            <FistIcon size="2.3rem" />
+          </div>
+          <span
+            className="text-[0.6rem] leading-tight uppercase tracking-wide"
+            style={{ color: 'rgba(255,255,255,0.6)' }}
+          >
+            Fists
+          </span>
+        </div>
+
         {inv.slots.map((slot, i) => (
           <Slot
             key={i}

@@ -119,17 +119,14 @@ function BR.Native.keyLabel(control)
     return nil
 end
 
---- Where a world point lands on screen, as 0..1 fractions.
---- @param x number
---- @param y number
---- @param z number
---- @return boolean onScreen
---- @return number sx
---- @return number sy
-function BR.Native.worldToScreen(x, y, z)
-    local ok, sx, sy = GetScreenCoordFromWorldCoord(x, y, z)
-    return ok == 1 or ok == true, sx or 0.0, sy or 0.0
-end
+-- BR.Native.worldToScreen was deleted with the NUI loot prompt.
+--
+-- It existed to tell the UI where a crate was on screen, which is the thing
+-- DUI removes the need for entirely: the prompt is now a texture drawn at a
+-- world position by SetDrawOrigin, so nothing has to project anything. Left
+-- as a note because "how do I put a UI element over a world object" is a
+-- question that will come up again, and the answer is now client/dui.lua
+-- rather than a screen-space round trip.
 
 --- @return integer one of BR.Native.ChuteState
 function BR.Native.chuteState()
@@ -621,9 +618,22 @@ function BR.Native.check()
     probe('GetControlInstructionalButton', function()
         return GetControlInstructionalButton(2, BR.Config.Loot.promptControl or 51, true)
     end)
-    probe('GetScreenCoordFromWorldCoord', function()
-        local _, sx, sy = GetScreenCoordFromWorldCoord(0.0, 0.0, 0.0)
-        return sx, sy
+    -- DUI: the loot prompt is a browser page rendered into a game texture and
+    -- drawn as a world sprite. Four natives, all load-bearing -- a nil in any
+    -- of them is a prompt that never appears at all.
+    probe('CreateRuntimeTxd',        function()
+        local txd = CreateRuntimeTxd('br_probe_txd')
+        return txd ~= nil
+    end)
+    probe('CreateDui + DestroyDui',  function()
+        local d = CreateDui('nui://br_ui/dui/prompt.html', 8, 8)
+        local h = GetDuiHandle(d)
+        DestroyDui(d)
+        return h
+    end)
+    probe('DrawSprite',              function()
+        DrawSprite('commonmenu', 'common_medal', -1.0, -1.0, 0.01, 0.01,
+            0.0, 255, 255, 255, 0)
     end)
     probe('GetWaterHeight',          function()
         local _, h = GetWaterHeight(0.0, 0.0, 0.0)

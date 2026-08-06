@@ -86,6 +86,26 @@ function iconUrl(slot: InvSlot): string | null {
   return `items/${slot.id}.png`
 }
 
+/** The fists slot has no item, so it is drawn from the same set by name. */
+export function FistIcon({ size = '1.6rem' }: { size?: string }) {
+  const [failed, setFailed] = useState(false)
+  if (failed) {
+    return (
+      <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true"
+           style={{ display: 'block' }}>
+        <path d="M7 10V6a2 2 0 1 1 4 0v3h1V5a2 2 0 1 1 4 0v4h1V7a2 2 0 1 1 4 0v8a6 6 0 0 1-6 6h-3a6 6 0 0 1-6-6v-3a2 2 0 1 1 4 0z"
+              fill="currentColor" />
+      </svg>
+    )
+  }
+  return (
+    <img src="items/fists.png" alt="" width={size} height={size}
+         onError={() => setFailed(true)}
+         style={{ display: 'block', width: size, height: size,
+                  objectFit: 'contain' }} />
+  )
+}
+
 export default function ItemIcon({
   slot, size = '1.6rem',
 }: { slot: InvSlot; size?: string }) {

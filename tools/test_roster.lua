@@ -3507,17 +3507,28 @@ do
     ok(BR.Inv.of(1).slots[1].count == 2,
         'and consumes nothing yet -- an interrupted use costs nothing')
 
-    -- Half way through: still nothing.
+    -- THE BAR FILLS AS YOU DRINK (user call, 2026-08-05). Half way through,
+    -- roughly half the armour has been applied -- and every message is a
+    -- TARGET, so a dropped one self-corrects rather than losing its share.
     fakeTime = fakeTime + math.floor(shield.useMs / 2)
     BR.Sched.step(fakeTime)
-    ok(#eventsOf(BR.Net.INV_EFFECT) == 0, 'no effect before the timer lands')
+    local partials = eventsOf(BR.Net.INV_EFFECT)
+    ok(#partials >= 1, 'the effect is applied progressively, not at the end')
+    local mid = partials[#partials] and partials[#partials].args[1]
+    ok(mid and mid.partial == true, 'and is flagged as an interim value')
+    ok(mid and mid.armour > 0 and mid.armour < shield.armour,
+        'partway between nothing and the full amount',
+        tostring(mid and mid.armour))
 
+    sent = {}
     fakeTime = fakeTime + shield.useMs
     BR.Sched.step(fakeTime)
     local effects = eventsOf(BR.Net.INV_EFFECT)
-    ok(#effects == 1, 'the effect lands exactly once')
-    ok(effects[1] and effects[1].args[1].armour == shield.armour,
-        'with the armour the item is worth')
+    local final = effects[#effects] and effects[#effects].args[1]
+    ok(final and final.armour == shield.armour,
+        'and lands on exactly what the item is worth',
+        tostring(final and final.armour))
+    ok(final and not final.partial, 'the last one is the real thing')
     ok(effects[1] and effects[1].args[1].armourCap == shield.armourCap,
         'and its own ceiling, so the client can clamp')
     ok(BR.Inv.of(1).slots[1].count == 1, 'completion is what consumes one')
@@ -3619,29 +3630,42 @@ do
 
     local before = m.loot.nextId
     BR.Combat.eliminate(1, 'test', 2)
-    ok(m.loot.nextId > before, 'an elimination leaves a box behind')
 
-    local box = m.loot.items[m.loot.nextId]
-    ok(box and box.kind == 'deathbox', 'and it is a container')
-    ok(box and math.abs(box.x - 900.0) < 0.01, 'where they fell')
-
-    local hasRifle = false
-    for _, s in ipairs(box.contents or {}) do
-        if s.item == 'carbinerifle' then hasRifle = true end
+    -- SCATTERED, NOT BOXED (user call, 2026-08-05). Right after a fight,
+    -- standing still to hold a key on a container is the last thing anyone
+    -- wants to do -- their kit lands around them and you run through it.
+    local spawned = {}
+    for id = before + 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e then spawned[#spawned + 1] = e end
     end
-    ok(hasRifle, 'holding what they were carrying')
+    ok(#spawned >= 2, 'an elimination scatters what they carried',
+        ('%d items'):format(#spawned))
+
+    local boxes, rifle, ammo = 0, false, false
+    local furthest = 0.0
+    for _, e in ipairs(spawned) do
+        if e.kind == 'deathbox' or e.kind == 'chest' then boxes = boxes + 1 end
+        if e.item == 'carbinerifle' then rifle = true end
+        if e.kind == BR.ItemKind.AMMO then ammo = true end
+        local d = BR.Dist(e.x, e.y, 900.0, 900.0)
+        if d > furthest then furthest = d end
+    end
+
+    ok(boxes == 0, 'with no container to open')
+    ok(rifle, 'their weapon is on the ground')
+    ok(ammo, 'and their ammo with it')
+    ok(furthest <= BR.Config.Loot.deathScatterRadius + 0.01,
+        'all of it within the scatter radius of where they fell',
+        ('%.1fm'):format(furthest))
     ok(BR.Inv.of(1).slots[1] == false, 'and the corpse carries nothing')
 
-    -- Opening it scatters the contents for whoever walks over.
+    -- Anyone can simply walk over it -- no hold, no container.
     BR.Roster.setState(2, BR.PlayerState.ALIVE)
-    standOn(2, box)
-    local n = #box.contents
-    local beforeOpen = m.loot.nextId
-    fire(BR.Net.LOOT_CLAIM, 2, { id = box.id })
-    ok(m.loot.items[box.id] == nil, 'opening consumes the box')
-    ok(m.loot.nextId == beforeOpen + n,
-        'and lays every item in it on the ground',
-        ('%d of %d'):format(m.loot.nextId - beforeOpen, n))
+    standOn(2, spawned[1])
+    sent = {}
+    fire(BR.Net.LOOT_CLAIM, 2, { id = spawned[1].id })
+    ok(m.loot.items[spawned[1].id] == nil, 'and picked up in one press')
 end
 
 describe('loot.crates')

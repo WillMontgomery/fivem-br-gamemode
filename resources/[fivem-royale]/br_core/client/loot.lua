@@ -30,7 +30,13 @@ local claimedAt = {}      -- [id] = gametimer, to stop a held key spamming claim
 local reported  = {}      -- [id] = true, entries already sent back as misplaced
 
 local hold = { id = nil, from = 0 }
-local lastPrompt = { id = nil, at = 0, pct = -1 }
+local lastPrompt = { id = nil, hold = nil }
+
+-- Crates THIS player opened. The reveal sound is for the person who did the
+-- opening, not for everyone standing near it (user, 2026-08-05) -- and the
+-- authoritative "it opened" signal arrives for every subscriber alike, so the
+-- distinction has to be remembered locally.
+local claimedByMe = {}
 
 local PROP_MAX = 160      -- hard ceiling on live objects, whatever the density
 
@@ -201,10 +207,12 @@ local function forgetAll()
     for id in pairs(entries) do forget(id) end
     entries, queue, queued, byObject, reported = {}, {}, {}, {}, {}
     myCell, hold.id = nil, nil
-    -- Inline rather than through pushPrompt(): that lives below this, and a
+    -- Inline rather than through setPrompt(): that lives below this, and a
     -- local referenced before its declaration silently resolves as a global.
-    lastPrompt.id, lastPrompt.pct = nil, -1
-    TriggerEvent('br:ui:sendLocal', BR.Nui.PROMPT, { show = false })
+    lastPrompt.id, lastPrompt.hold = nil, nil
+    claimedByMe = {}
+    local page = BR.Dui.page('lootprompt', 'nui://br_ui/dui/prompt.html', 512, 256)
+    BR.Dui.send(page, { t = 'prompt', show = false })
 end
 
 -- The spawn worker. Model loading is asynchronous, so this cannot live in a
@@ -327,12 +335,14 @@ local function addEntries(list)
                 local reskinned = have.kind ~= d.kind or have.prop ~= d.prop
 
                 if moved or reskinned then
-                    -- THE REVEAL, on the authoritative moment. Played here
-                    -- rather than when the hold completes locally: this fires
-                    -- when the crate ACTUALLY opened, so it cannot play for a
-                    -- claim the server refused, and everyone nearby hears the
-                    -- crate that opened next to them, not just its opener.
-                    if reskinned and d.kind == 'husk' and L.openSound then
+                    -- THE REVEAL, on the authoritative moment -- and only for
+                    -- the player who opened it. This fires when the crate
+                    -- ACTUALLY opened, so it cannot play for a claim the
+                    -- server refused; the claimedByMe check is what stops it
+                    -- firing for everyone standing nearby (user, 2026-08-05).
+                    if reskinned and d.kind == 'husk' and L.openSound
+                       and claimedByMe[d.id] then
+                        claimedByMe[d.id] = nil
                         PlaySoundFrontend(-1, L.openSound.name,
                             L.openSound.set, true)
                     end
@@ -486,53 +496,50 @@ local function targetEntry(px, py)
     return nearestEntry(px, py, L.pickupDistance)
 end
 
---- Push the world-anchored prompt to the UI, or clear it.
+--- The prompt page. One browser for the whole system, created on first use.
+local function promptPage()
+    return BR.Dui.page('lootprompt', 'nui://br_ui/dui/prompt.html', 512, 256)
+end
+
+--- Tell the prompt page WHAT to show. Position is not its business -- that is
+--- drawn natively, per frame, in the render loop.
 ---
---- Throttled and change-gated: the bridge to br_ui crosses a resource
---- boundary, and a per-frame push of an unchanged prompt would put 60 messages
---- a second on it for no visible difference. The RING is driven UI-side from
---- the same numbers, so a dropped frame here does not stall it.
+--- Sent on CHANGE ONLY. The old NUI version had to push screen coordinates
+--- across the resource bridge as the camera moved, which had to be throttled,
+--- which is exactly why the text visibly trailed the crate. Nothing here moves
+--- with the player at all.
 --- @param e table|nil
---- @param pct number|nil
-local function pushPrompt(e, pct)
-    local now = GetGameTimer()
-    local id  = e and e.id or nil
+--- @param holdMs number|nil  non-nil starts the ring animation
+local function setPrompt(e, holdMs)
+    local page = promptPage()
+    local id   = e and e.id or nil
 
     if not e then
         if lastPrompt.id == nil then return end
-        lastPrompt.id, lastPrompt.pct = nil, -1
-        TriggerEvent('br:ui:sendLocal', BR.Nui.PROMPT, { show = false })
+        lastPrompt.id, lastPrompt.hold = nil, nil
+        BR.Dui.send(page, { t = 'prompt', show = false })
         return
     end
 
-    local onScreen, sx, sy = BR.Native.worldToScreen(e.x, e.y, groundZ(e) + 0.9)
-    if not onScreen then
-        if lastPrompt.id ~= nil then
-            lastPrompt.id, lastPrompt.pct = nil, -1
-            TriggerEvent('br:ui:sendLocal', BR.Nui.PROMPT, { show = false })
-        end
-        return
-    end
-
-    pct = pct or 0.0
-    local moved = id ~= lastPrompt.id or math.abs(pct - lastPrompt.pct) > 0.01
-    if not moved and now - lastPrompt.at < 60 then return end
-
-    lastPrompt.id, lastPrompt.pct, lastPrompt.at = id, pct, now
+    -- A re-send would restart the ring animation from zero, so a hold that is
+    -- already running is left strictly alone.
+    if id == lastPrompt.id and holdMs == lastPrompt.hold then return end
+    lastPrompt.id, lastPrompt.hold = id, holdMs
 
     local container = isContainer(e)
-    TriggerEvent('br:ui:sendLocal', BR.Nui.PROMPT, {
+    local info = BR.RarityInfo[e.rarity] or BR.RarityInfo[BR.Rarity.COMMON]
+
+    BR.Dui.send(page, {
+        t      = 'prompt',
         show   = true,
-        x      = sx,
-        y      = sy,
         label  = labelOf(e),
         hint   = container and 'Hold to open' or 'Press to pick up',
         -- The player's ACTUAL binding, read back from the control. Rebinding
         -- INPUT_CONTEXT in GTA's settings changes what this says.
         key    = BR.Native.keyLabel(L.promptControl or 51),
-        rarity = e.rarity,
-        pct    = pct,
+        colour = info.hex,
         ring   = container,
+        holdMs = holdMs,
     })
 end
 
@@ -597,34 +604,50 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
     end
 
     if not canTake() then
-        pushPrompt(nil)
+        setPrompt(nil)
         return
     end
 
     -- THE HOLD. A crate is a commitment in the open -- a second standing
-    -- still, visible to anyone watching the building. The ring is drawn over
-    -- the crate itself by the UI, from the percentage sent here.
+    -- still, visible to anyone watching the building. The ring is a CSS
+    -- animation inside the DUI page, started once from its duration, so it
+    -- runs at the browser's own frame rate rather than being stepped from
+    -- here.
+    local shown = nil
     if hold.id then
         local e = entries[hold.id]
         if not e or BR.Dist2(p.x, p.y, e.x, e.y)
             > L.pickupDistance * L.pickupDistance then
             hold.id = nil
         else
-            local pct = BR.Clamp((GetGameTimer() - hold.from)
-                / (L.chestHoldMs or 1000), 0.0, 1.0)
-            pushPrompt(e, pct)
+            shown = e
+            setPrompt(e, L.chestHoldMs or 1000)
 
-            if pct >= 1.0 then
+            if GetGameTimer() - hold.from >= (L.chestHoldMs or 1000) then
                 local id = hold.id
                 hold.id = nil
                 TriggerServerEvent(BR.Net.LOOT_CLAIM, { id = id })
-                pushPrompt(nil)
+                claimedByMe[id] = GetGameTimer()
+                setPrompt(nil)
+                shown = nil
             end
-            return
         end
     end
 
-    pushPrompt(targetEntry(p.x, p.y), 0.0)
+    if not shown and not hold.id then
+        shown = targetEntry(p.x, p.y)
+        setPrompt(shown, nil)
+    end
+
+    -- DRAWN NATIVELY, EVERY FRAME. This is the half that used to lag: the
+    -- prompt is a sprite at a world position, so it is welded to the crate
+    -- however fast the camera moves, and nothing crosses the bridge to keep
+    -- it there.
+    if shown then
+        local gz = groundZ(shown)
+        BR.Dui.drawWorld(promptPage(), shown.x, shown.y, gz + 1.05, 1.0,
+            BR.Dist(p.x, p.y, shown.x, shown.y))
+    end
 end)
 
 -- --------------------------------------------------------------------------
@@ -743,9 +766,10 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.mercy', function()
         return
     end
 
-    -- BOTH, not either: something found AND the minimum shown. Whichever
-    -- happens later.
-    if gained and now - mercy.armedAt >= (cfg.minShownMs or 180000) then
+    -- EITHER, not both (user correction, 2026-08-05): they go away as soon as
+    -- something has been found, or after the timeout, whichever comes first.
+    -- Help that outstays the problem is just a wallhack left switched on.
+    if gained or now - mercy.armedAt >= (cfg.minShownMs or 180000) then
         mercy.on = false
     end
 end)

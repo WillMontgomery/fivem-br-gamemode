@@ -627,14 +627,26 @@ function BR.Loot.deathBox(m, src)
     BR.Inv.push(src)
     if #contents == 0 then return nil end
 
-    return BR.Loot.spawnStack(m, {
-        item     = 'deathbox',
-        kind     = 'deathbox',
-        rarity   = BR.LootContentsRarity(contents),
-        count    = 1,
-        prop     = L.deathBoxProp,
-        contents = contents,
-    }, e.pos.x, e.pos.y, e.pos.z)
+    -- SCATTERED, NOT BOXED (user call, 2026-08-05). A death box is one more
+    -- thing to walk up to and hold a key on, in the moment right after a
+    -- fight when standing still is the last thing you want to do. Their kit
+    -- lands around them and you run through it.
+    --
+    -- A ring rather than a random spray: everything ends up visible and
+    -- reachable, and nothing stacks inside anything else.
+    local n = #contents
+    local radius = L.deathScatterRadius or 4.6   -- ~15 feet
+    for i, stack in ipairs(contents) do
+        local a = (i / n) * math.pi * 2.0
+        -- Two rings once there are more than six items, so a full inventory
+        -- does not draw one enormous circle.
+        local r = radius * ((i % 2 == 0 and n > 6) and 0.55 or 1.0)
+        BR.Loot.spawnStack(m, stack,
+            e.pos.x + math.cos(a) * r,
+            e.pos.y + math.sin(a) * r,
+            e.pos.z)
+    end
+    return nil
 end
 
 -- --------------------------------------------------------------------------
@@ -855,7 +867,10 @@ BR.Sched.every(1000, 'loot.warmupRespawn', function()
             local rng = warmupZone.rng
             local inner = W.minRadius or 12.0
             local a = rng:float() * math.pi * 2.0
-            local r = inner + rng:float() * math.max(1.0, (W.radius or 170.0) - inner)
+            -- sqrt: uniform over the AREA, not over the radius -- see the
+            -- note in BR.BuildWarmupLayout.
+            local span = math.max(1.0, (W.radius or 460.0) - inner)
+            local r = inner + math.sqrt(rng:float()) * span
             local crate = BR.MakeCrate(rng, due[i].tier,
                 pad.x + math.cos(a) * r, pad.y + math.sin(a) * r, pad.z, nil)
             crate.warmup = true

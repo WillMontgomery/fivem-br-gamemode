@@ -10,7 +10,6 @@ import KillFeed from './KillFeed'
 import SquadPanel from './SquadPanel'
 import DbnoOverlay from './DbnoOverlay'
 import InventoryBar from './InventoryBar'
-import WorldPrompt from './WorldPrompt'
 
 /**
  * The in-match HUD.
@@ -134,9 +133,6 @@ export default function Hud({ visible }: { visible: boolean }) {
           </div>
         )}
 
-        {/* Anchored to a crate in the world, not to the safe zone -- it
-            positions itself from screen coordinates Lua computes. */}
-        <WorldPrompt />
 
         {dbno.downed && <DbnoOverlay dbno={dbno} />}
 

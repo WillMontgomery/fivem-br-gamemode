@@ -458,7 +458,13 @@ function BR.BuildWarmupLayout(seed)
         local x, y
         for _ = 1, 6 do
             local a = rng:float() * math.pi * 2.0
-            local r = inner + rng:float() * math.max(1.0, W.radius - inner)
+            -- SQRT, not a flat draw. A uniform random radius puts half the
+            -- crates inside the inner 30% of the annulus, because area grows
+            -- with r -- which is exactly the reported "most of the loot is
+            -- near the spawn points" (user, 2026-08-05). sqrt spreads them
+            -- evenly over the AREA.
+            local span = math.max(1.0, W.radius - inner)
+            local r = inner + math.sqrt(rng:float()) * span
             x, y = pad.x + math.cos(a) * r, pad.y + math.sin(a) * r
             if BR.LootPlaceable(x, y) then break end
             x = nil

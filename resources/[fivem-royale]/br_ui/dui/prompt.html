@@ -1,0 +1,193 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!--
+  THE WORLD PROMPT, rendered as a DUI texture.
+
+  This is NOT the NUI page. It is a separate document rendered off-screen into
+  a runtime texture, which Lua then draws in the world with DrawSprite. That
+  split is the whole point:
+
+    * POSITION is native and per-frame, so the prompt is welded to the crate
+      however fast the camera moves. The NUI version had to send screen
+      coordinates across the resource bridge, which meant throttling, which
+      meant the text visibly lagged behind the world.
+
+    * CONTENT is HTML, so the progress ring is a CSS-animated SVG rather than
+      something hand-rolled out of DrawRect calls. GTA has no arc-drawing
+      native at all.
+
+  The ring animates from a START TIME rather than from progress messages: Lua
+  says "a hold began, it lasts 1000ms" once, and the animation runs locally at
+  the browser's own frame rate. A dropped or late message cannot stutter it.
+
+  Kept deliberately dependency-free and inline -- it is loaded as a file:// -
+  style resource URL, not through Vite, so there is no build step between
+  editing this and seeing it in game.
+-->
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 512px;
+    height: 256px;
+    /* TRANSPARENT, and it must stay that way: whatever this page paints is
+       what appears floating in the world. A background colour here would be
+       a black rectangle hanging over the crate.
+
+       Note `color-scheme: normal` -- the same line ox_lib opens with. Dark
+       colour-scheme paints the CEF canvas opaque, which is the single most
+       expensive lesson in this project (a black screen over a healthy game). */
+    color-scheme: normal;
+    background: transparent;
+    overflow: hidden;
+    font-family: 'Segoe UI', system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  #root {
+    width: 512px;
+    height: 256px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    opacity: 0;
+    transition: opacity 120ms ease-out;
+  }
+  #root.on { opacity: 1; }
+
+  .ringwrap { position: relative; width: 128px; height: 128px; }
+  .ringwrap.hidden { display: none; }
+
+  svg { width: 128px; height: 128px; transform: rotate(-90deg); }
+  .track { fill: rgba(0,0,0,0.45); stroke: rgba(255,255,255,0.28); stroke-width: 7; }
+  .fill  { fill: none; stroke-width: 9; stroke-linecap: round;
+           /* 2 * pi * 52 */
+           stroke-dasharray: 326.7256;
+           stroke-dashoffset: 326.7256; }
+
+  /* The hold, run entirely in CSS from a start message. `animation-duration`
+     is set by script; nothing drives it frame by frame. */
+  @keyframes fill { to { stroke-dashoffset: 0; } }
+  .fill.running { animation: fill linear forwards; }
+
+  .key {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 44px; font-weight: 800; color: #fff;
+    text-shadow: 0 2px 6px rgba(0,0,0,0.9);
+  }
+
+  /* Loose items get a key badge instead of a ring. */
+  .badge {
+    min-width: 54px; height: 54px; padding: 0 12px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 32px; font-weight: 800; color: #fff;
+    background: rgba(0,0,0,0.62);
+    border: 3px solid rgba(255,255,255,0.65);
+    border-radius: 10px;
+    text-shadow: 0 2px 6px rgba(0,0,0,0.9);
+  }
+  .badge.hidden { display: none; }
+
+  .plate {
+    padding: 6px 18px;
+    background: rgba(0,0,0,0.62);
+    border-radius: 8px;
+    text-align: center;
+    max-width: 460px;
+  }
+  #label {
+    font-size: 32px; font-weight: 700; line-height: 1.1;
+    text-shadow: 0 2px 6px rgba(0,0,0,0.9);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #hint {
+    font-size: 19px; letter-spacing: 0.16em; text-transform: uppercase;
+    color: rgba(255,255,255,0.62); margin-top: 3px;
+  }
+</style>
+</head>
+<body>
+  <div id="root">
+    <div class="ringwrap hidden" id="ringwrap">
+      <svg viewBox="0 0 128 128">
+        <circle class="track" cx="64" cy="64" r="52"></circle>
+        <circle class="fill" id="fill" cx="64" cy="64" r="52"></circle>
+      </svg>
+      <div class="key" id="ringkey"></div>
+    </div>
+
+    <div class="badge hidden" id="badge"></div>
+
+    <div class="plate">
+      <div id="label"></div>
+      <div id="hint"></div>
+    </div>
+  </div>
+
+<script>
+(function () {
+  var root  = document.getElementById('root');
+  var ring  = document.getElementById('ringwrap');
+  var fill  = document.getElementById('fill');
+  var rkey  = document.getElementById('ringkey');
+  var badge = document.getElementById('badge');
+  var label = document.getElementById('label');
+  var hint  = document.getElementById('hint');
+
+  function restartHold(ms) {
+    // Re-trigger the animation: removing the class alone is not enough,
+    // because the browser coalesces the remove and the re-add into no change
+    // at all. Forcing a reflow between them is the standard cure.
+    fill.classList.remove('running');
+    void fill.offsetWidth;
+    fill.style.animationDuration = (ms || 1000) + 'ms';
+    fill.classList.add('running');
+  }
+
+  function stopHold() {
+    fill.classList.remove('running');
+    fill.style.animationDuration = '';
+  }
+
+  window.addEventListener('message', function (ev) {
+    var d = ev.data || {};
+    if (d.t !== 'prompt') return;
+
+    if (!d.show) {
+      root.classList.remove('on');
+      stopHold();
+      return;
+    }
+
+    label.textContent = d.label || '';
+    hint.textContent  = d.hint || '';
+    label.style.color = d.colour || '#ffffff';
+
+    if (d.ring) {
+      ring.classList.remove('hidden');
+      badge.classList.add('hidden');
+      rkey.textContent = d.key || '';
+      fill.style.stroke = d.colour || '#ffffff';
+      if (d.holdMs) { restartHold(d.holdMs); } else { stopHold(); }
+    } else {
+      ring.classList.add('hidden');
+      stopHold();
+      if (d.key) {
+        badge.classList.remove('hidden');
+        badge.textContent = d.key;
+      } else {
+        badge.classList.add('hidden');
+      }
+    }
+
+    root.classList.add('on');
+  });
+})();
+</script>
+</body>
+</html>

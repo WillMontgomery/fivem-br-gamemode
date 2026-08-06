@@ -117,11 +117,12 @@ BR.Config.Loot = {
     -- is looted -- so a room you have already been through reads as looted
     -- from the doorway, which is exactly what the empty version is for. The
     -- husk stays for the rest of the match.
-    -- Tier 1 is the RURAL tier -- the filler towns and outposts nobody drops
-    -- at. It gets proportionally the biggest lift, because "rural areas don't
-    -- have enough crates" and a sparse POI you cannot gear up at is a POI
-    -- nobody visits twice (user, 2026-08-05).
-    chestsPerTier = { [1] = 9, [2] = 14, [3] = 22 },
+    -- FLATTER THAN IT LOOKS. Tier 3 used to pay 2.4x tier 1, which made the
+    -- named hot drops the only rational choice and left the countryside a
+    -- transit corridor. It is now closer to 1.5x: a hot drop is still better,
+    -- but a rural POI can gear you up (user, 2026-08-05 -- "even it out a bit
+    -- between POIs and rural areas").
+    chestsPerTier = { [1] = 13, [2] = 16, [3] = 20 },
     chestItems    = { min = 3, max = 5 },
     chestProp     = 'prop_box_wood05a',   -- sealed
     chestOpenProp = 'prop_box_wood05b',   -- open and empty: the husk
@@ -131,9 +132,9 @@ BR.Config.Loot = {
     -- stopping for. Rolled on the tier-1 table -- filler is a lifeline, not a
     -- reason to skip the named locations.
     filler = {
-        -- Cut back with the floor budget: the roadside is a lifeline between
-        -- POIs, not a reason to skip them.
-        count         = 120,
+        -- Raised again: with the POI tiers flattened, the space BETWEEN them
+        -- needs enough to make crossing it a route rather than a gap.
+        count         = 260,
         tier          = 1,
         -- ROADSIDE, NOT ON THE ROAD. The offset used to be a symmetric +-22m
         -- band, which includes ZERO -- so a share of every road's filler
@@ -187,13 +188,13 @@ BR.Config.Loot = {
     -- for a minute and a half cannot tell "no loot here" from "this mode is
     -- broken", and it is the second conclusion they act on.
     --
-    -- They end when BOTH are true: something has been picked up, and the
-    -- minimum display time has passed. Whichever is LATER -- help that
-    -- vanishes the instant it starts working is help nobody trusts.
+    -- They end as soon as EITHER is true: something has been found, or the
+    -- timeout expires. Help that outstays the problem is a wallhack left
+    -- switched on.
     mercyBlips = {
         enabled    = true,
         afterMs    = 90000,    -- empty-handed this long after landing
-        minShownMs = 180000,   -- and then shown at least this long
+        minShownMs = 180000,   -- or this long, whichever comes first
     },
 
     -- Streaming. Clients subscribe to a 3x3 neighbourhood of cells, so roughly
@@ -235,6 +236,11 @@ BR.Config.Loot = {
                         set  = 'HUD_MINI_GAME_SOUNDSET' },
     pickupSound     = { name = 'PICK_UP',
                         set  = 'HUD_FRONTEND_DEFAULT_SOUNDSET' },
+    -- Switching slots. Deliberately the quietest of the three -- it fires
+    -- every time the wheel moves, so anything with character becomes
+    -- irritating within a minute.
+    switchSound     = { name = 'NAV_UP_DOWN',
+                        set  = 'HUD_FRONTEND_DEFAULT_SOUNDSET' },
 
     -- The GLYPH in the pickup prompt.
     --
@@ -254,9 +260,11 @@ BR.Config.Loot = {
     -- while being shot should lose you the med kit, not heal you through it.
     useCancelOnDamage = true,
 
-    -- Death boxes
-    deathBoxProp    = 'prop_box_ammo04a',
-    deathBoxSpread  = 0.8,
+    -- Death drops. A player's kit lands scattered AROUND them rather than in a
+    -- box: right after a fight, standing still to hold a key on a container is
+    -- the last thing anyone wants to do (user call, 2026-08-05). ~15 feet.
+    deathScatterRadius = 4.6,
+    deathBoxSpread     = 0.8,   -- still used by chest contents
 
     -- Inventory. Five is the number the keybinds (slot1..slot5), the UI's
     -- emptyInv and the HUD bar all already assume; changing it means changing

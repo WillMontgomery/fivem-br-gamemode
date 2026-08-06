@@ -475,7 +475,10 @@ AddEventHandler(BR.Net.INV_USE, function(d)
         item   = s.item,
         ms     = c.useMs,
         endsAt = GetGameTimer() + c.useMs,
-        hp0    = e.hp or 0,      -- the damage-cancel baseline
+        -- Baselines: hp0 doubles as the damage-cancel reference, and both are
+        -- what the per-tick partial effects interpolate FROM.
+        hp0     = e.hp or 0,
+        armour0 = e.armour or 0,
     }
     BR.Inv.push(src)
 end)
@@ -564,6 +567,33 @@ BR.Sched.every(250, 'inv.use', function()
 
             if L.useCancelOnDamage and (e.hp or 0) < (u.hp0 or 0) then
                 BR.Inv.cancelUse(src, 'Interrupted.')
+                return
+            end
+
+            -- THE BAR FILLS AS YOU DRINK (user call, 2026-08-05). Applying the
+            -- whole amount at the end made an 8-second med kit look like
+            -- nothing happening followed by a jump; feeding the interpolated
+            -- TARGET every tick makes the bar climb with the animation.
+            --
+            -- Targets, not deltas: the client only ever applies these upward,
+            -- so a dropped tick self-corrects on the next one instead of
+            -- losing that increment for good.
+            local c = BR.Config.ConsumableById[u.item]
+            if c and now < u.endsAt then
+                local total = math.max(1, u.ms or 1)
+                local pct = BR.Clamp((total - (u.endsAt - now)) / total, 0.0, 1.0)
+                local partial = { item = u.item, partial = true }
+                if c.armour then
+                    partial.armour = math.min(c.armourCap,
+                        (u.armour0 or 0) + c.armour * pct)
+                    partial.armourCap = c.armourCap
+                end
+                if c.health then
+                    partial.health = math.min(c.healthCap,
+                        (u.hp0 or 0) + c.health * pct)
+                    partial.healthCap = c.healthCap
+                end
+                TriggerClientEvent(BR.Net.INV_EFFECT, src, partial)
                 return
             end
 

@@ -124,14 +124,19 @@ local function applyActive(force)
         applied, appliedPed = nil, ped
         force = true
     end
-    if not force and want == applied then
-        -- Same weapon, but the ammo behind it may have moved (a pickup, a
-        -- report). Cheap enough to re-assert; SetPedAmmo is idempotent.
-        if want and slot then
-            SetPedAmmo(ped, want, reserveFor(slot) + (slot.clip or 0))
-        end
-        return
-    end
+    -- SAME WEAPON: DO NOTHING.
+    --
+    -- This used to re-assert the ammo here on the grounds that SetPedAmmo is
+    -- idempotent. It is not idempotent against the ENGINE: the player fires,
+    -- the engine decrements, and 100ms later this wrote the mirror's number
+    -- straight back over it. The gun never emptied and the counter never
+    -- moved -- which is exactly the "bullet counts do not update" report, and
+    -- it survived two rounds of looking at the display code because the
+    -- display was right and the ammo genuinely was not going down.
+    --
+    -- Ammo is now written to the ped in exactly one place: a fresh grant
+    -- below, or reapplyAmmo() when the SERVER's number goes UP (a pickup).
+    if not force and want == applied then return end
 
     RemoveAllPedWeapons(ped, true)
 
@@ -149,6 +154,29 @@ local function applyActive(force)
     end
 
     applied = want
+end
+
+--- Push the server's ammo numbers onto the ped, when they went UP.
+---
+--- The only legitimate reason for the server to know about more ammo than the
+--- engine has is a PICKUP. Pushing on any other change would fight the engine
+--- as the player fires -- see the note in applyActive.
+local function reapplyAmmo()
+    if not canArm() then return end
+    local slot = inv.slots[inv.active]
+    local hash = hashOf(slot)
+    if not hash or applied ~= hash then return end
+
+    local ped     = PlayerPedId()
+    local clip    = math.floor(slot.clip or 0)
+    local want    = reserveFor(slot) + clip
+    local have    = GetAmmoInPedWeapon(ped, hash)
+
+    if want > have then
+        SetPedAmmo(ped, hash, want)
+        SetAmmoInClip(ped, hash, clip)
+        lastReport.clip, lastReport.pool = -1, -1   -- resample next tick
+    end
 end
 
 --- Forget everything. Called at match teardown and on death.
@@ -199,11 +227,21 @@ local function adopt(d)
         local s = d.slots[i]
         inv.slots[i] = (type(s) == 'table') and s or false
     end
+    local wasActive = inv.active
     inv.ammo   = d.ammo or {}
-    inv.active = d.active or 1
+    inv.active = d.active or MELEE_SLOT
     inv.using  = d.using
 
+    -- The switch click. Only on an actual change, and only on OUR screen --
+    -- PlaySoundFrontend is local by definition.
+    if inv.active ~= wasActive and L.switchSound then
+        PlaySoundFrontend(-1, L.switchSound.name, L.switchSound.set, true)
+    end
+
     applyActive(false)
+    -- A pickup is the one case where the server legitimately knows about more
+    -- ammo than the ped is holding.
+    reapplyAmmo()
     pushUi()
 
     if gained then
@@ -425,6 +463,19 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
         DisableControlAction(0, 257, true)  -- ATTACK2
         DisableControlAction(0, 263, true)  -- MELEE_ATTACK1
         DisableControlAction(0, 264, true)  -- MELEE_ATTACK2
+
+        -- THE PAUSE KEY CLOSES THE PANEL INSTEAD OF PAUSING (user call,
+        -- 2026-08-05). Reaching for escape with a menu open means "close the
+        -- menu" everywhere else in games, and stacking GTA's pause screen on
+        -- top of ours is two interfaces fighting for the same input.
+        DisableControlAction(0, 199, true)  -- FRONTEND_PAUSE
+        DisableControlAction(0, 200, true)  -- FRONTEND_PAUSE_ALTERNATE
+        if IsDisabledControlJustPressed(0, 199)
+           or IsDisabledControlJustPressed(0, 200)
+           -- Right mouse: the universal "back out of this".
+           or IsDisabledControlJustPressed(0, 25) then
+            closePanel()
+        end
     end
 end)
 
