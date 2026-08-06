@@ -484,42 +484,62 @@ AddEventHandler(BR.Net.INV_USE, function(d)
 end)
 
 -- The ammo report. Decrease-only, see the header.
+-- THE CLIP IS REPORTED; THE RESERVE IS DEDUCED.
+--
+-- The client sends one number it can read honestly -- rounds in the magazine
+-- -- and the direction it moved says what happened:
+--
+--     clip DOWN  -> rounds were fired. The reserve is untouched.
+--     clip UP    -> a reload. The reserve paid for the difference.
+--
+-- That is the whole model, and it deliberately assumes nothing about any
+-- other ammo native. The previous version had the client compute the reserve
+-- as `GetAmmoInPedWeapon - clip`; on this build that number does not move
+-- when firing, so a shrinking clip made the reserve GROW, and the growth then
+-- fed back into the ped as free ammo (user, 2026-08-06).
+--
+-- It is still only as honest as the client, and that is fine for now: the
+-- worst a liar achieves is never reloading, which M6's shot validation takes
+-- away along with everything else in this category.
 RegisterNetEvent(BR.Net.INV_AMMO)
 AddEventHandler(BR.Net.INV_AMMO, function(d)
     local src = source
     local inv = BR.Inv.of(src)
     if not inv or type(d) ~= 'table' then return end
 
-    local changed = false
-
-    if type(d.pool) == 'table' then
-        for _, name in ipairs(BR.Config.AmmoOrder) do
-            local reported = tonumber(d.pool[name])
-            local have = inv.ammo[name] or 0
-            -- Strictly lower, and never negative. An "increase" is either a
-            -- cheat or a stale report that crossed a pickup in flight;
-            -- neither is worth acting on.
-            if reported and reported >= 0 and reported < have then
-                inv.ammo[name] = math.floor(reported)
-                changed = true
-            end
-        end
-    end
-
     local slot = math.tointeger(d.slot)
-    local clip = tonumber(d.clip)
-    if slot and clip and slot >= 1 and slot <= SLOTS then
-        local s = inv.slots[slot]
-        if s and s.clip and clip >= 0 and clip < s.clip then
-            s.clip = math.floor(clip)
-            changed = true
-        end
+    local clip = math.tointeger(d.clip)
+    if not slot or not clip or clip < 0 then return end
+    if slot < 1 or slot > SLOTS then return end
+
+    local s = inv.slots[slot]
+    if not s or s.kind ~= BR.ItemKind.WEAPON then return end
+
+    local w = BR.Config.WeaponById[s.item]
+    if not w then return end
+
+    -- A magazine cannot hold more than a magazine.
+    clip = math.min(clip, w.clip or clip)
+
+    local was = s.clip or 0
+    if clip == was then return end
+
+    if clip > was then
+        -- A RELOAD. Only as many rounds as the pool actually holds, so an
+        -- empty reserve cannot conjure a full magazine.
+        local wanted = clip - was
+        local pool   = w.ammo and (inv.ammo[w.ammo] or 0) or 0
+        local moved  = math.min(wanted, pool)
+        if w.ammo then inv.ammo[w.ammo] = pool - moved end
+        s.clip = was + moved
+    else
+        s.clip = clip
     end
 
-    -- Deliberately NOT pushed back. The client already knows -- it is where
-    -- the number came from -- and echoing it would put a 2Hz packet per
-    -- player on the wire to tell them what they just said.
-    local _ = changed
+    -- PUSHED BACK, unlike the old version: the reserve here is now something
+    -- the server WORKED OUT rather than something the client told it, so the
+    -- client has no other way to learn it.
+    BR.Inv.push(src)
 end)
 
 -- --------------------------------------------------------------------------

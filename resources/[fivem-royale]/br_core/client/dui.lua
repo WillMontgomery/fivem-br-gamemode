@@ -83,7 +83,17 @@ function BR.Dui.drawWorld(page, x, y, z, scale, dist)
     -- fills the screen and one across a car park is a smudge.
     local k = BR.Clamp(3.0 / math.max(dist, 0.5), 0.35, 1.6) * (scale or 1.0)
     local w = 0.12 * k
-    local h = w * (page.h / page.w)
+
+    -- ASPECT MATTERS, and leaving it out is what squashed the prompt.
+    --
+    -- DrawSprite's width and height are fractions of the SCREEN's width and
+    -- height respectively -- different units. A 512x256 texture drawn at
+    -- w=0.12, h=0.06 is only square if the screen is, and on 16:9 it comes out
+    -- half as tall as it should (user, 2026-08-06: "stretched horizontally").
+    -- Multiplying by the aspect ratio converts one into the other.
+    local sw, sh = GetActiveScreenResolution()
+    local aspect = (sh and sh > 0) and (sw / sh) or 1.7778
+    local h = w * (page.h / page.w) * aspect
 
     SetDrawOrigin(x, y, z, 0)
     DrawSprite(page.txd, page.tex, 0.0, 0.0, w, h, 0.0, 255, 255, 255, 255)

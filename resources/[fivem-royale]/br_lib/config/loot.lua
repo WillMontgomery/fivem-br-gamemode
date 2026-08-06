@@ -14,13 +14,13 @@ local R = BR.Rarity
 
 BR.Config.Consumables = {
     {
-        id = 'minishield', label = 'Small Shield Potion', rarity = R.COMMON,
+        id = 'minishield', label = 'Small Shield', rarity = R.COMMON,
         kind = BR.ItemKind.CONSUMABLE, prop = 'prop_bodyarmour_02',
         useMs = 3000, maxStack = 6,
         armour = 25, armourCap = 50,   -- small potions only take you to half shield
     },
     {
-        id = 'shield', label = 'Shield Potion', rarity = R.RARE,
+        id = 'shield', label = 'Shield', rarity = R.RARE,
         kind = BR.ItemKind.CONSUMABLE, prop = 'prop_bodyarmour_06',
         useMs = 5000, maxStack = 3,
         armour = 50, armourCap = 100,
@@ -122,7 +122,7 @@ BR.Config.Loot = {
     -- transit corridor. It is now closer to 1.5x: a hot drop is still better,
     -- but a rural POI can gear you up (user, 2026-08-05 -- "even it out a bit
     -- between POIs and rural areas").
-    chestsPerTier = { [1] = 13, [2] = 16, [3] = 20 },
+    chestsPerTier = { [1] = 20, [2] = 20, [3] = 24 },
     chestItems    = { min = 3, max = 5 },
     chestProp     = 'prop_box_wood05a',   -- sealed
     chestOpenProp = 'prop_box_wood05b',   -- open and empty: the husk
@@ -134,7 +134,7 @@ BR.Config.Loot = {
     filler = {
         -- Raised again: with the POI tiers flattened, the space BETWEEN them
         -- needs enough to make crossing it a route rather than a gap.
-        count         = 260,
+        count         = 420,
         tier          = 1,
         -- ROADSIDE, NOT ON THE ROAD. The offset used to be a symmetric +-22m
         -- band, which includes ZERO -- so a share of every road's filler

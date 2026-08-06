@@ -64,7 +64,7 @@ function Slot({
       style={{
         // No color-mix() and no oklch(): CEF is Chrome 103 and drops what it
         // cannot parse, which makes the slot silently invisible.
-        backgroundColor: active ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.42)',
+        backgroundColor: active ? 'rgba(52,44,80,0.92)' : 'rgba(14,11,24,0.88)',
         border: `1px solid ${active ? '#ffffff' : hex}`,
         boxShadow: active ? '0 0 0 1px rgba(255,255,255,0.35)' : 'none',
       }}
@@ -153,7 +153,7 @@ export default function InventoryBar({ inv }: { inv: InvPayload }) {
                      flex flex-col items-center justify-center gap-0.5"
           style={{
             backgroundColor: inv.active === 0
-              ? 'rgba(255,255,255,0.14)' : 'rgba(0,0,0,0.42)',
+              ? 'rgba(52,44,80,0.92)' : 'rgba(14,11,24,0.88)',
             border: `1px solid ${inv.active === 0
               ? '#ffffff' : 'rgba(255,255,255,0.18)'}`,
             boxShadow: inv.active === 0

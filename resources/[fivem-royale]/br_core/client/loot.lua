@@ -136,7 +136,18 @@ end
 local function solidGround(x, y, fromZ)
     local ok, gz = GetGroundZFor_3dCoord(x, y, fromZ, false)
     if not ok then return false, 0.0 end
-    -- Water ABOVE the ground here means the ground is a seabed.
+
+    -- SEA LEVEL IS ZERO, and that is the check that actually works.
+    --
+    -- GetWaterHeight answers for water VOLUMES the engine has streamed, so
+    -- over open ocean -- far from anything, which is exactly where stray loot
+    -- ends up -- it frequently returns nothing at all, and the probe below it
+    -- happily returns the seabed. Loot kept appearing to float (user,
+    -- 2026-08-06). A ground probe that lands at or below zero in this map is
+    -- a seabed, full stop; the volume check stays for inland lakes, which sit
+    -- well above zero and which the height rule cannot see.
+    if gz <= 0.0 then return false, gz end
+
     local okW, wz = GetWaterHeight(x, y, gz)
     if okW and wz and wz > gz + 0.3 then return false, gz end
     return true, gz
@@ -294,7 +305,17 @@ local function drain()
                                 -- Loose floor items stay frozen: a rifle
                                 -- skittering down a hill is not a feature.
                                 FreezeEntityPosition(obj, not solid)
-                                if solid then SetEntityDynamic(obj, true) end
+                                if solid then
+                                    SetEntityDynamic(obj, true)
+                                    SetEntityHasGravity(obj, true)
+                                    -- THE ONE THAT ACTUALLY WAKES IT. An
+                                    -- object can be dynamic, unfrozen and
+                                    -- have gravity and still sit welded to
+                                    -- the ground because its physics are
+                                    -- asleep -- nothing had ever pushed it
+                                    -- (user, 2026-08-06, second report).
+                                    ActivatePhysics(obj)
+                                end
                                 SetEntityAsMissionEntity(obj, false, true)
                                 e.obj = obj
                                 byObject[obj] = id
@@ -552,7 +573,6 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
     local ped = PlayerPedId()
     local p = GetEntityCoords(ped)
     local glow2  = L.glowDistance * L.glowDistance
-    local label2 = L.labelDistance * L.labelDistance
 
     -- The shine pulses on a shared clock so every crate breathes together --
     -- individually-phased glows read as flickering rather than as a beacon.
@@ -575,31 +595,33 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
                 c[1], c[2], c[3], 120,
                 false, false, 2, false, nil, nil, false)
 
-            -- CRATES SHINE. A real light in the world, not a screen effect:
-            -- it spills onto the ground and the wall behind, which is what
-            -- makes a crate readable through a doorway or round a corner
-            -- (user call, 2026-08-05). Containers only -- a lit-up floor
-            -- rifle would drown the crates it is meant to sit beside.
+            -- CRATES SHINE. An OUTLINE, primarily -- the world is pinned to
+            -- noon, and a light at midday is invisible, which is why the
+            -- previous version read as no glow at all (user, 2026-08-06).
+            -- SetEntityDrawOutline draws through geometry and reads in full
+            -- daylight, which is the whole requirement.
+            --
+            -- The light stays as well: it spills onto the ground and the wall
+            -- behind, and does the work indoors and in the storm's gloom where
+            -- the outline is doing least.
             if isContainer(e) then
+                if e.obj and DoesEntityExist(e.obj) then
+                    if not e.outlined then
+                        e.outlined = true
+                        SetEntityDrawOutline(e.obj, true)
+                        SetEntityDrawOutlineColor(c[1], c[2], c[3], 190)
+                    end
+                end
                 DrawLightWithRange(e.x, e.y, gz + 0.5,
-                    c[1], c[2], c[3], 4.0 * pulse, 1.6 * pulse)
+                    c[1], c[2], c[3], 5.0 * pulse, 2.4 * pulse)
             end
 
-            -- The floor label stays for LOOSE items: a rifle in the grass
-            -- needs naming from further away than you would ever stand to
-            -- pick it up. Containers are named by the prompt instead.
-            if d2 <= label2 and not isContainer(e) then
-                SetDrawOrigin(e.x, e.y, gz + 0.55, 0)
-                SetTextFont(4)
-                SetTextScale(0.0, 0.32)
-                SetTextColour(c[1], c[2], c[3], 220)
-                SetTextCentre(true)
-                SetTextOutline()
-                BeginTextCommandDisplayText('STRING')
-                AddTextComponentSubstringPlayerName(labelOf(e))
-                EndTextCommandDisplayText(0.0, 0.0)
-                ClearDrawOrigin()
-            end
+            -- NO DrawText ANYWHERE IN LOOT any more (user call, 2026-08-06).
+            -- The DUI prompt names whatever the player is actually facing,
+            -- with real typography and the right key on it; a second, worse
+            -- label floating over every item in the room was the engine text
+            -- renderer competing with it. The rarity disc is what carries
+            -- "something is here" at distance.
         end
     end
 

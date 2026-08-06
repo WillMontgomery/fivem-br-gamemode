@@ -292,7 +292,15 @@ BR.Config.Bus = {
                             -- more take-off-looking climb -- user call)
     turnRadius   = 1000.0,  -- fillet radius: this close to a waypoint, start turning
 
-    rollSpeed    = 80.0,    -- m/s at wheels-up (the roll builds up to this)
+    -- Wheels-up speed. The roll is uniform acceleration over the fixed
+    -- spawn -> rotatePoint distance (~420m), so
+    --
+    --     rollTime = 2 * distance / rollSpeed
+    --
+    -- 80 m/s gave ~10.5s on the tarmac; 88 gives ~9.5, which is the second
+    -- the user asked to cut (2026-08-06). Raising the speed rather than
+    -- moving rotatePoint keeps wheels-up at the real end of the runway.
+    rollSpeed    = 88.0,    -- m/s at wheels-up (the roll builds up to this)
     climbSpeed   = 270.0,   -- m/s through the climb and the initial turn
                             -- (150 originally; +80%, user call 2026-08-04 --
                             -- the ascent dragged. Still gradual: depart()'s

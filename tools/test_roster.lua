@@ -3591,31 +3591,63 @@ end
 
 describe('inv.ammo')
 do
+    -- THE CLIP IS REPORTED, THE RESERVE IS DEDUCED. The client sends the one
+    -- number it can read honestly; the direction it moves says what happened.
+    --
+    -- The old model had the client compute the reserve as
+    -- `GetAmmoInPedWeapon - clip`. On this build that first number does not
+    -- move when firing, so a shrinking clip made the reserve GROW -- and the
+    -- growth fed straight back into the ped as free ammo (user, 2026-08-06).
     lootMatch()
     BR.Inv.reset(1)
-    BR.Inv.give(1, { item = BR.AmmoType.LIGHT, kind = BR.ItemKind.AMMO,
-                     rarity = 1, count = 100 })
-    local inv = BR.Inv.of(1)
-    local start = inv.ammo[BR.AmmoType.LIGHT]
-
-    -- A report that RAISES ammo is either a cheat or a stale packet that
-    -- crossed a pickup in flight. Neither is worth acting on.
-    fire(BR.Net.INV_AMMO, 1, { pool = { [BR.AmmoType.LIGHT] = start + 500 } })
-    ok(inv.ammo[BR.AmmoType.LIGHT] == start, 'an increase is ignored')
-
-    fire(BR.Net.INV_AMMO, 1, { pool = { [BR.AmmoType.LIGHT] = start - 30 } })
-    ok(inv.ammo[BR.AmmoType.LIGHT] == start - 30, 'a decrease applies')
-
-    fire(BR.Net.INV_AMMO, 1, { pool = { [BR.AmmoType.LIGHT] = -50 } })
-    ok(inv.ammo[BR.AmmoType.LIGHT] == start - 30, 'a negative report is ignored')
-
-    -- The clip is the same contract.
+    local pistol = BR.Config.WeaponById['pistol']
     BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
-                     count = 1, clip = 12 })
+                     count = 1, clip = pistol.clip })
+    local inv = BR.Inv.of(1)
+    inv.ammo[BR.AmmoType.LIGHT] = 40
+
+    -- FIRING: the magazine empties, the reserve is untouched.
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, clip = pistol.clip - 5 })
+    ok(inv.slots[1].clip == pistol.clip - 5, 'a lower clip count applies')
+    ok(inv.ammo[BR.AmmoType.LIGHT] == 40,
+        'and firing does not touch the reserve',
+        tostring(inv.ammo[BR.AmmoType.LIGHT]))
+
+    -- RELOADING: the reserve pays for exactly the rounds that went in.
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, clip = pistol.clip })
+    ok(inv.slots[1].clip == pistol.clip, 'a reload fills the magazine')
+    ok(inv.ammo[BR.AmmoType.LIGHT] == 35,
+        'and the reserve pays exactly the difference',
+        tostring(inv.ammo[BR.AmmoType.LIGHT]))
+
+    -- AN EMPTY RESERVE CANNOT CONJURE A MAGAZINE. This is the whole reason
+    -- the reserve is deduced here rather than reported: a client claiming a
+    -- full clip out of nothing gets only what the pool actually held.
+    inv.ammo[BR.AmmoType.LIGHT] = 2
+    inv.slots[1].clip = 0
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, clip = pistol.clip })
+    ok(inv.slots[1].clip == 2, 'a reload is capped by the reserve',
+        tostring(inv.slots[1].clip))
+    ok(inv.ammo[BR.AmmoType.LIGHT] == 0, 'which is now empty')
+
+    -- And a magazine cannot exceed the weapon's own capacity.
+    inv.ammo[BR.AmmoType.LIGHT] = 500
+    inv.slots[1].clip = 0
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, clip = 9999 })
+    ok(inv.slots[1].clip == pistol.clip, 'a magazine cannot hold more than a magazine',
+        tostring(inv.slots[1].clip))
+
+    -- Nonsense is refused outright.
+    local before = inv.slots[1].clip
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, clip = -50 })
+    ok(inv.slots[1].clip == before, 'a negative report is ignored')
+
+    -- The client is told, because the reserve is now something the SERVER
+    -- worked out -- it has no other way to learn it.
+    sent = {}
+    inv.slots[1].clip = 0
     fire(BR.Net.INV_AMMO, 1, { slot = 1, clip = 4 })
-    ok(inv.slots[1].clip == 4, 'a lower clip count applies')
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, clip = 99 })
-    ok(inv.slots[1].clip == 4, 'a higher one does not')
+    ok(#eventsOf(BR.Net.INV_SET) > 0, 'and the result is pushed back')
 end
 
 describe('loot.deathbox')

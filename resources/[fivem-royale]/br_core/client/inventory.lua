@@ -42,8 +42,9 @@ local applied, appliedPed = nil, 0
 --- match", which is what the mercy blips in client/loot.lua key on.
 BR.Inv.lastGainAt = 0
 
--- Last ammo report, so the 2Hz push is silent when nothing was fired.
-local lastReport = { clip = -1, pool = -1, at = 0 }
+-- Last magazine count we reported. The reserve is NOT tracked here any more:
+-- the server derives it from how this number moves (see server/inventory.lua).
+local lastReport = { clip = -1, at = 0 }
 
 -- GTA'S OWN WEAPON UI HAS TO GO. The inventory replaces it wholesale, and
 -- leaving the engine's version bound to the same keys means every one of our
@@ -161,22 +162,23 @@ end
 --- The only legitimate reason for the server to know about more ammo than the
 --- engine has is a PICKUP. Pushing on any other change would fight the engine
 --- as the player fires -- see the note in applyActive.
-local function reapplyAmmo()
+local function reapplyAmmo(serverClip)
     if not canArm() then return end
     local slot = inv.slots[inv.active]
     local hash = hashOf(slot)
     if not hash or applied ~= hash then return end
 
-    local ped     = PlayerPedId()
-    local clip    = math.floor(slot.clip or 0)
-    local want    = reserveFor(slot) + clip
-    local have    = GetAmmoInPedWeapon(ped, hash)
+    -- ONLY WHEN THE SERVER'S NUMBERS WENT UP, and never by comparing against
+    -- the engine. Comparing against GetAmmoInPedWeapon is what produced
+    -- unlimited ammo: that native does not move when firing on this build, so
+    -- a mirror that had drifted upward looked like a gun that needed topping
+    -- up, forever (user, 2026-08-06).
+    local ped  = PlayerPedId()
+    local clip = math.floor(slot.clip or 0)
 
-    if want > have then
-        SetPedAmmo(ped, hash, want)
-        SetAmmoInClip(ped, hash, clip)
-        lastReport.clip, lastReport.pool = -1, -1   -- resample next tick
-    end
+    SetPedAmmo(ped, hash, reserveFor(slot) + clip)
+    SetAmmoInClip(ped, hash, clip)
+    lastReport.clip = serverClip or clip
 end
 
 --- Forget everything. Called at match teardown and on death.
@@ -184,7 +186,7 @@ local function clearLocal()
     for i = 1, SLOTS do inv.slots[i] = false end
     inv.ammo, inv.active, inv.using = {}, 1, nil
     applied, appliedPed = nil, 0
-    lastReport.clip, lastReport.pool = -1, -1
+    lastReport.clip = -1
     BR.Inv.lastGainAt = 0
 end
 
@@ -223,6 +225,29 @@ local function adopt(d)
         end
     end
 
+    -- Did the SERVER's ammo for the weapon in hand go up? A pickup, or a
+    -- reload it just paid for -- either way the ped needs the rounds putting
+    -- into it. Measured against the last thing the server said, never against
+    -- the engine.
+    local gainedAmmo = false
+    do
+        local nowSlot = d.slots[d.active or 0]
+        local wasSlot = inv.slots[inv.active]
+        if type(nowSlot) == 'table' then
+            local w = BR.Config.WeaponById[nowSlot.id]
+            if w and w.ammo then
+                local nowPool = (d.ammo and d.ammo[w.ammo]) or 0
+                local wasPool = inv.ammo[w.ammo] or 0
+                local nowClip = nowSlot.clip or 0
+                local wasClip = (wasSlot and wasSlot.id == nowSlot.id)
+                    and (wasSlot.clip or 0) or -1
+                if nowPool > wasPool or nowClip > wasClip then
+                    gainedAmmo = true
+                end
+            end
+        end
+    end
+
     for i = 1, SLOTS do
         local s = d.slots[i]
         inv.slots[i] = (type(s) == 'table') and s or false
@@ -239,9 +264,14 @@ local function adopt(d)
     end
 
     applyActive(false)
-    -- A pickup is the one case where the server legitimately knows about more
-    -- ammo than the ped is holding.
-    reapplyAmmo()
+
+    -- Push the server's ammo onto the ped when it went UP -- a pickup, or a
+    -- reload the server just paid for. `gainedAmmo` is measured against what
+    -- we last saw the server say, never against the engine.
+    if gainedAmmo then
+        local s = inv.slots[inv.active]
+        reapplyAmmo(s and s.clip)
+    end
     pushUi()
 
     if gained then
@@ -498,36 +528,36 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     -- would empty the new magazine before it was ever fired.
     if applied ~= hash then return end
 
-    local ped   = PlayerPedId()
-    local total = GetAmmoInPedWeapon(ped, hash)
+    -- THE CLIP IS THE ONLY NUMBER READ OFF THE ENGINE, and the reserve is
+    -- derived from it SERVER-SIDE.
+    --
+    -- The previous version computed reserve as `GetAmmoInPedWeapon - clip`,
+    -- on the documented assumption that the first is a TOTAL including the
+    -- magazine. On this build it does not behave that way: firing does not
+    -- move it, so subtracting a shrinking clip made the reserve GROW -- which
+    -- is the "12 is increasing per shot" report exactly. Worse, that inflated
+    -- number then fed reapplyAmmo, which topped the gun back up: the unlimited
+    -- ammo (user, 2026-08-06).
+    --
+    -- A magazine count is something the engine reports honestly, so that is
+    -- all we send. The server watches it: DOWN is firing (the reserve is
+    -- untouched), UP is a reload (the reserve pays for it). No assumption
+    -- about any other native's semantics survives in this path.
+    local ped = PlayerPedId()
     -- GET_AMMO_IN_CLIP is a BOOL with an out-param, so Lua gets two returns.
     local _, clip = GetAmmoInClip(ped, hash)
     clip = math.max(0, clip or 0)
-    local pool = math.max(0, total - clip)
 
-    if clip == lastReport.clip and pool == lastReport.pool then return end
-    lastReport.clip, lastReport.pool = clip, pool
+    if clip == lastReport.clip then return end
+    lastReport.clip = clip
 
-    local w = BR.Config.WeaponById[slot.id]
-    local payload = { slot = inv.active, clip = clip }
-    if w and w.ammo and slot.kind == BR.ItemKind.WEAPON then
-        payload.pool = { [w.ammo] = pool }
-    end
-    TriggerServerEvent(BR.Net.INV_AMMO, payload)
+    TriggerServerEvent(BR.Net.INV_AMMO, { slot = inv.active, clip = clip })
 
-    -- AND UPDATE OUR OWN MIRROR, which is what the HUD reads.
-    --
-    -- The server deliberately does not echo this back -- it would be a packet
-    -- per player per half-second to tell them what they just said -- but that
-    -- left NOTHING updating the display, so the ammo counter sat at whatever
-    -- the weapon was picked up with while the magazine emptied (user,
-    -- 2026-08-05). These numbers come from the engine, so writing them here is
-    -- not the client deciding anything: it is the display agreeing with the
-    -- gun in the player's hands.
+    -- The display follows immediately rather than waiting for the round trip.
+    -- The clip is read straight off the gun, so showing it is the HUD agreeing
+    -- with what is in the player's hands; the RESERVE stays the server's and
+    -- arrives with the next INV_SET.
     slot.clip = clip
-    if w and w.ammo and slot.kind == BR.ItemKind.WEAPON then
-        inv.ammo[w.ammo] = pool
-    end
     pushUi()
 end)
 
