@@ -1057,6 +1057,45 @@ do
     ok(fillerSeen > 0, 'filler is generated at all', ('%d points'):format(fillerSeen))
     ok(offRoad == 0, 'filler stays within lateralOffset of its road',
         ('%d strays'):format(offRoad))
+
+    -- ON THE ROAD IS NOT ROADSIDE. The offset used to be a symmetric band
+    -- through zero, so a share of every road's filler landed on the tarmac
+    -- (user, 2026-08-05). Nothing may sit inside minOffset of a centreline.
+    local onTarmac = 0
+    for _, e in ipairs(a) do
+        if e.road then
+            local road
+            for _, r in ipairs(BR.Config.Map.Roads) do
+                if r.id == e.road then road = r end
+            end
+            local near = math.huge
+            for i = 2, #road.points do
+                local p, q = road.points[i - 1], road.points[i]
+                local vx, vy = q.x - p.x, q.y - p.y
+                local wx, wy = e.x - p.x, e.y - p.y
+                local len2 = vx * vx + vy * vy
+                local t = len2 > 0 and ((wx * vx + wy * vy) / len2) or 0.0
+                t = BR.Clamp(t, 0.0, 1.0)
+                local d = BR.Dist(e.x, e.y, p.x + vx * t, p.y + vy * t)
+                if d < near then near = d end
+            end
+            if near < BR.Config.Loot.filler.minOffset - 0.5 then
+                onTarmac = onTarmac + 1
+            end
+        end
+    end
+    ok(onTarmac == 0, 'no filler lands on the road centreline',
+        ('%d on the tarmac'):format(onTarmac))
+
+    -- Authored water is rejected at generation. Not a complete water map by
+    -- design -- the client repair round-trip catches the rest -- but nothing
+    -- may be generated into a rectangle we have explicitly called sea.
+    local inSea = 0
+    for _, e in ipairs(a) do
+        if BR.Config.Map.IsWater(e.x, e.y) then inSea = inSea + 1 end
+    end
+    ok(inSea == 0, 'nothing is generated inside authored water',
+        ('%d in the sea'):format(inSea))
     ok(tooClose == 0, 'filler keeps clear of the POIs', ('%d too close'):format(tooClose))
     ok(stats.filler <= BR.Config.Loot.filler.count,
         'filler never exceeds its authored count')
@@ -1070,6 +1109,104 @@ do
         end
     end
     ok(misfiled == 0, 'every entry files into the cell its position implies')
+end
+
+-- -------------------------------------------------------------- loot.water ---
+
+describe('loot.water')
+do
+    -- THE RULE THAT KEEPS THE MASK HONEST. A water rectangle that swallows a
+    -- POI is not a conservative approximation, it is loot deleted from a real
+    -- place: the generator's fallback walks inward to the POI CENTRE, so a
+    -- centre inside water puts that POI's entire budget in the sea. The first
+    -- draft did exactly that to Chumash, Hookies and Galilee -- three coastal
+    -- towns on dry land -- and dropped 67 items in the Pacific.
+    local drowned = {}
+    for _, poi in ipairs(BR.Config.Map.POIs) do
+        if BR.Config.Map.IsWater(poi.x, poi.y) then
+            drowned[#drowned + 1] = poi.id
+        end
+    end
+    ok(#drowned == 0, 'no authored water rectangle contains a POI centre',
+        table.concat(drowned, ', '))
+
+    -- The warmup pad is not in the sea either.
+    local pad = BR.Config.Match.warmupPos
+    ok(not BR.Config.Map.IsWater(pad.x, pad.y), 'the warmup pad is on land')
+
+    -- And the mask actually does something: the middle of the Pacific is water.
+    ok(BR.Config.Map.IsWater(-3800.0, 0.0), 'the open Pacific reads as water')
+    ok(not BR.Config.Map.IsWater(0.0, 0.0), 'central Los Santos does not')
+end
+
+-- ------------------------------------------------------------- loot.crates ---
+
+describe('loot.crates')
+do
+    -- Containers are ONE model in two states: sealed, then open-and-empty.
+    local a = BR.BuildLootLayout(4242)
+    local crates, wrongProp = 0, 0
+    for _, e in ipairs(a) do
+        if e.kind == 'chest' then
+            crates = crates + 1
+            if e.prop ~= BR.Config.Loot.chestProp then wrongProp = wrongProp + 1 end
+            if e.heading == nil then wrongProp = wrongProp + 1 end
+        end
+    end
+    ok(crates > 0 and wrongProp == 0,
+        'every crate is the sealed wooden crate, with a heading to sit at')
+    ok(BR.Config.Loot.chestOpenProp ~= BR.Config.Loot.chestProp,
+        'the husk is a different model from the sealed crate')
+
+    -- Floor loot survives alongside the crates -- the Fortnite shape, not
+    -- crates-only (user call, 2026-08-05).
+    local floor = 0
+    for _, e in ipairs(a) do
+        if e.kind == BR.ItemKind.WEAPON then floor = floor + 1 end
+    end
+    ok(floor > 100, 'weapons still lie on the floor as well',
+        ('%d of them'):format(floor))
+end
+
+-- ------------------------------------------------------------- loot.warmup ---
+
+describe('loot.warmup')
+do
+    -- ONE shared layout: the warmup pad is a communal routing bucket, so a
+    -- per-match layout would put two players side by side looking at
+    -- different crates in the same spot.
+    local w1 = BR.BuildWarmupLayout(99)
+    local w2 = BR.BuildWarmupLayout(99)
+    ok(#w1 == BR.Config.Loot.warmup.crates, 'the pad gets its authored crates')
+
+    local same = #w1 == #w2
+    for i = 1, #w1 do
+        if math.abs(w1[i].x - w2[i].x) > 1e-9 then same = false end
+    end
+    ok(same, 'and the same seed lays them out identically')
+
+    local pad = BR.Config.Match.warmupPos
+    local tooClose, tooFar, notCrate = 0, 0, 0
+    for _, e in ipairs(w1) do
+        local d = BR.Dist(e.x, e.y, pad.x, pad.y)
+        -- An annulus: crates piled on the spawn point would be looted before
+        -- anyone had to walk anywhere.
+        if d < 24.0 then tooClose = tooClose + 1 end
+        if d > BR.Config.Loot.warmup.radius + 1.0 then tooFar = tooFar + 1 end
+        if e.kind ~= 'chest' or not e.warmup then notCrate = notCrate + 1 end
+        if not e.contents or #e.contents == 0 then notCrate = notCrate + 1 end
+    end
+    ok(tooClose == 0, 'no crate spawns on top of the spawn point')
+    ok(tooFar == 0, 'and none outside the authored radius')
+    ok(notCrate == 0, 'every warmup entry is a crate with contents')
+
+    local ids = {}
+    local dupe = false
+    for _, e in ipairs(w1) do
+        if ids[e.id] then dupe = true end
+        ids[e.id] = true
+    end
+    ok(not dupe, 'warmup ids are unique')
 end
 
 -- ------------------------------------------------------------- loot.stacks ---

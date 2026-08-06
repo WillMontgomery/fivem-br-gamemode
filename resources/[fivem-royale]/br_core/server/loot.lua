@@ -21,10 +21,17 @@ BR.Loot = BR.Loot or {}
 
 local L = BR.Config.Loot
 
--- Which player states may see and take loot. LOBBY and WARMUP are deliberately
--- absent: a bystander at the vista has no business streaming a match's items,
--- and the warmup pad is shared between matches.
+-- Forward declaration. zoneFor() needs the warmup zone, which is built further
+-- down, but the spawn helpers above it need zoneFor -- and a local referenced
+-- before its `local` statement resolves as a GLOBAL, which is nil at runtime
+-- and silent at load.
+local zoneFor
+
+-- Which player states may see loot. LOBBY is the only one that cannot: a
+-- bystander at the vista is not in the world. WARMUP sees the SHARED island
+-- layout rather than any match's -- see zoneFor().
 local CAN_SEE = {
+    [BR.PlayerState.WARMUP]   = true,
     [BR.PlayerState.BUS]      = true,
     [BR.PlayerState.FREEFALL] = true,
     [BR.PlayerState.GLIDE]    = true,
@@ -34,9 +41,11 @@ local CAN_SEE = {
     [BR.PlayerState.SPECTATING] = true,
 }
 
--- Only a player standing on their own two feet can pick something up.
+-- Only a player standing on their own two feet can pick something up -- and on
+-- the warmup pad, where the whole point is early practice PVP.
 local CAN_TAKE = {
-    [BR.PlayerState.ALIVE] = true,
+    [BR.PlayerState.ALIVE]  = true,
+    [BR.PlayerState.WARMUP] = true,
 }
 
 -- --------------------------------------------------------------------------
@@ -50,15 +59,16 @@ local CAN_TAKE = {
 --- @return table
 local function wireEntry(e)
     return {
-        id     = e.id,
-        kind   = e.kind,
-        item   = e.item,
-        rarity = e.rarity,
-        count  = e.count,
-        x      = e.x,
-        y      = e.y,
-        z      = e.z,
-        prop   = e.prop,
+        id      = e.id,
+        kind    = e.kind,
+        item    = e.item,
+        rarity  = e.rarity,
+        count   = e.count,
+        x       = e.x,
+        y       = e.y,
+        z       = e.z,
+        prop    = e.prop,
+        heading = e.heading,
     }
 end
 
@@ -119,7 +129,7 @@ local function retire(m, e)
 end
 
 --- Put a stack into the world.
---- @param m table
+--- @param m table    a match, or the shared warmup zone
 --- @param stack table
 --- @param x number
 --- @param y number
@@ -138,7 +148,9 @@ function BR.Loot.spawnStack(m, stack, x, y, z)
         clip   = stack.clip,
         x = x, y = y, z = z,
         prop   = stack.prop,
+        heading = stack.heading,
         contents = stack.contents,
+        warmup = stack.warmup,
         dropped = true,
     }
     index(m.loot, e)
@@ -146,14 +158,34 @@ function BR.Loot.spawnStack(m, stack, x, y, z)
     return e
 end
 
+--- Leave an opened crate standing where the sealed one was.
+---
+--- A husk is not loot: it cannot be claimed and it carries no rarity. It is
+--- there so a room you have already swept reads as swept from the doorway,
+--- which is the entire reason the open-crate model exists.
+--- @param m table
+--- @param crate table
+local function leaveHusk(m, crate)
+    if crate.kind ~= 'chest' then return end
+    BR.Loot.spawnStack(m, {
+        item    = 'husk',
+        kind    = 'husk',
+        rarity  = BR.Rarity.COMMON,
+        count   = 1,
+        prop    = L.chestOpenProp,
+        heading = crate.heading,
+    }, crate.x, crate.y, crate.z)
+end
+
 --- Drop a stack at a player's feet. The inventory calls this.
 --- @param src integer
 --- @param stack table
 --- @return table|nil entry
 function BR.Loot.dropForPlayer(src, stack)
-    local m = BR.Server.matchOf(src)
     local e = BR.Roster.get(src)
-    if not m or not m.loot or not e or not e.pos then return nil end
+    if not e or not e.pos then return nil end
+    local m = zoneFor(src)
+    if not m then return nil end
     return BR.Loot.spawnStack(m, stack, e.pos.x, e.pos.y, e.pos.z)
 end
 
@@ -176,12 +208,14 @@ function BR.Loot.begin(m, seed)
     seed = seed or (GetGameTimer() + m.id * 15485863)
 
     m.loot = {
-        seed   = seed,
-        nextId = 0,
-        items  = {},
-        cells  = {},
-        subs   = {},
-        at     = {},
+        seed    = seed,
+        nextId  = 0,
+        items   = {},
+        cells   = {},
+        subs    = {},
+        at      = {},
+        respawn = {},
+        fixed   = 0,
     }
 
     local entries, stats = BR.BuildLootLayout(seed)
@@ -207,6 +241,69 @@ function BR.Loot.clear(m)
 end
 
 -- --------------------------------------------------------------------------
+-- The shared warmup zone
+-- --------------------------------------------------------------------------
+
+-- ONE LAYOUT FOR EVERYBODY WAITING. The warmup pad is a COMMUNAL routing
+-- bucket -- every concurrent match's warmup players stand on it together --
+-- so a per-match layout would put two players side by side looking at
+-- different crates in the same spot.
+--
+-- It is a pseudo-match: same `loot` shape, so every function above operates on
+-- it unchanged. Id 0, which no real match can have (BR.Server.matchId starts
+-- at 1), so a stray lookup cannot collide.
+local warmupZone = nil
+
+--- [src] = the loot registry this player is currently subscribed to (a match
+--- id, or 0 for the shared warmup pad). Crossing between them invalidates
+--- every id the client is holding.
+local zoneOf = {}
+
+--- The shared warmup zone, built on first use.
+--- @return table
+local function warmup()
+    if warmupZone then return warmupZone end
+
+    local W = BR.Config.Loot.warmup
+    warmupZone = {
+        id     = 0,
+        warmup = true,
+        state  = BR.MatchState.WARMUP,
+        loot   = {
+            seed = GetGameTimer(), nextId = 0, items = {}, cells = {},
+            subs = {}, at = {}, respawn = {}, fixed = 0,
+        },
+    }
+    warmupZone.rng = BR.Rng(warmupZone.loot.seed + 5779)
+
+    for _, e in ipairs(BR.BuildWarmupLayout(warmupZone.loot.seed)) do
+        warmupZone.loot.nextId = math.max(warmupZone.loot.nextId, e.id)
+        index(warmupZone.loot, e)
+    end
+
+    print(('[br_core] loot: warmup pad stocked with %d crates (shared)')
+        :format(W.crates or 0))
+    return warmupZone
+end
+
+--- Which loot registry this player is looking at.
+---
+--- A WARMUP player sees the shared island; everyone else sees their own
+--- match. This is the single place that decision is made -- every handler
+--- below goes through it, so there is no path where a warmup player can reach
+--- a match's items or the reverse.
+--- @param src integer
+--- @return table|nil zone
+zoneFor = function(src)
+    local e = BR.Roster.get(src)
+    if not e then return nil end
+    if e.state == BR.PlayerState.WARMUP then return warmup() end
+    local m = BR.Server.matchOf(src)
+    if m and m.loot then return m end
+    return nil
+end
+
+-- --------------------------------------------------------------------------
 -- Streaming
 -- --------------------------------------------------------------------------
 
@@ -214,9 +311,10 @@ end
 --- @param src integer
 --- @return table|nil
 function BR.Loot.viewFor(src)
-    local m = BR.Server.matchOf(src)
     local e = BR.Roster.get(src)
-    if not m or not m.loot or not e or not CAN_SEE[e.state] then return nil end
+    if not e or not CAN_SEE[e.state] then return nil end
+    local m = zoneFor(src)
+    if not m then return nil end
 
     local keys = m.loot.subs[src]
     if not keys then return nil end
@@ -243,9 +341,30 @@ AddEventHandler(BR.Net.LOOT_CELL, function(d)
     local cy = math.tointeger(d.cy)
     if not cx or not cy then return end
 
-    local m = BR.Server.matchOf(src)
     local e = BR.Roster.get(src)
-    if not m or not m.loot or not e or not CAN_SEE[e.state] then return end
+    if not e or not CAN_SEE[e.state] then return end
+    local m = zoneFor(src)
+    if not m then return end
+
+    -- CROSSING BETWEEN THE PAD AND A MATCH is not a cell move, it is a new
+    -- world. Ids mean different things in the two registries, so the old
+    -- subscription is dropped whole (the client is told to forget those ids)
+    -- rather than diffed against the new one.
+    if zoneOf[src] ~= m.id then
+        local prev = zoneOf[src] == 0 and warmupZone or BR.Server.matchById(zoneOf[src])
+        if prev and prev.loot then
+            local stale = {}
+            for key in pairs(prev.loot.subs[src] or {}) do
+                for id in pairs(prev.loot.cells[key] or {}) do
+                    stale[#stale + 1] = id
+                end
+            end
+            prev.loot.subs[src] = nil
+            prev.loot.at[src] = nil
+            if #stale > 0 then TriggerClientEvent(BR.Net.LOOT_GONE, src, stale) end
+        end
+        zoneOf[src] = m.id
+    end
 
     local centre = BR.LootCellKey(cx, cy)
     if m.loot.at[src] == centre then return end   -- nothing moved
@@ -348,9 +467,10 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
     local id = math.tointeger(d.id)
     if not id then return end
 
-    local m = BR.Server.matchOf(src)
     local e = BR.Roster.get(src)
-    if not m or not m.loot or not e then return end
+    if not e then return end
+    local m = zoneFor(src)
+    if not m then return end
 
     if not CAN_TAKE[e.state] then
         BR.Server.notify(src, 'You cannot pick that up right now.', 'warn')
@@ -379,9 +499,22 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
         return
     end
 
+    if item.kind == 'husk' then
+        return   -- an already-looted crate; nothing to take
+    end
+
     if item.kind == 'chest' or item.kind == 'deathbox' then
         retire(m, item)
         scatter(m, item)
+        leaveHusk(m, item)
+        if item.warmup then
+            -- The pad must never end up stripped bare by whoever queued
+            -- first: a looted crate comes back somewhere else on the island.
+            m.loot.respawn[#m.loot.respawn + 1] = {
+                at   = GetGameTimer() + (BR.Config.Loot.warmup.respawnMs or 45000),
+                tier = BR.Config.Loot.warmup.tier or 2,
+            }
+        end
         return
     end
 
@@ -438,17 +571,112 @@ end
 -- Housekeeping
 -- --------------------------------------------------------------------------
 
+-- --------------------------------------------------------------------------
+-- The repair round-trip
+-- --------------------------------------------------------------------------
+
+--- How far a client may move an entry. Generous enough to walk an item off a
+--- rooftop or out of the surf, far too small to relocate loot somewhere
+--- useful to the reporter.
+local FIX_RADIUS = 30.0
+
+-- ONLY A CLIENT CAN GROUND-PROBE. GetGroundZFor_3dCoord and GetWaterHeight are
+-- client natives, and the server has no map at all -- so an entry that
+-- generation put in the sea or under a bridge can only be NOTICED out there.
+-- The client sends back the corrected position it worked out locally and the
+-- server decides whether to accept it.
+--
+-- The bound is what makes this safe to trust. A hostile client can nudge loot
+-- it can already see by up to 30m, once per entry -- which is a worse outcome
+-- for them than leaving it where it is, and strictly better than the status
+-- quo of items floating in the Pacific.
+RegisterNetEvent(BR.Net.LOOT_FIX)
+AddEventHandler(BR.Net.LOOT_FIX, function(d)
+    local src = source
+    if type(d) ~= 'table' then return end
+
+    local id = math.tointeger(d.id)
+    local x, y, z = tonumber(d.x), tonumber(d.y), tonumber(d.z)
+    if not id or not x or not y or not z then return end
+
+    local e = BR.Roster.get(src)
+    if not e or not CAN_SEE[e.state] then return end
+    local m = zoneFor(src)
+    if not m then return end
+
+    local item = m.loot.items[id]
+    if not item or item.repaired then return end
+
+    -- Must be a place this player is actually looking at, and a small move.
+    if not m.loot.subs[src] or not m.loot.subs[src][item.cell] then return end
+    if BR.Dist(x, y, item.x, item.y) > FIX_RADIUS then return end
+
+    item.repaired = true
+    m.loot.fixed = (m.loot.fixed or 0) + 1
+
+    -- Re-index: the correction can cross a cell boundary, and an entry filed
+    -- under the wrong cell is invisible to everyone who walks up to it.
+    local oldCell = m.loot.cells[item.cell]
+    if oldCell then oldCell[item.id] = nil end
+    item.x, item.y, item.z = x, y, z
+    index(m.loot, item)
+
+    -- Everyone looking at either cell hears about it; the id is unchanged, so
+    -- clients holding it move the entry rather than duplicating it.
+    announce(m, item)
+end)
+
+-- --------------------------------------------------------------------------
+-- Housekeeping
+-- --------------------------------------------------------------------------
+
+--- Every loot registry there is: the live matches plus the shared pad.
+--- @param fn function
+local function eachZone(fn)
+    BR.Server.eachMatch(function(m)
+        if m.loot then fn(m) end
+    end)
+    if warmupZone then fn(warmupZone) end
+end
+
 -- Subscriptions belong to players, and players leave. Left behind they would
 -- keep a departed src in every announce() loop for the rest of the match.
 BR.Sched.every(5000, 'loot.sweep', function()
-    BR.Server.eachMatch(function(m)
-        if not m.loot then return end
+    eachZone(function(m)
         for src in pairs(m.loot.subs) do
-            local e = BR.Roster.get(src)
-            if not e or e.matchId ~= m.id or not CAN_SEE[e.state] then
+            local ent = BR.Roster.get(src)
+            local stillHere = ent and CAN_SEE[ent.state]
+                and (m.warmup and ent.state == BR.PlayerState.WARMUP
+                     or (not m.warmup and ent.matchId == m.id))
+            if not stillHere then
                 m.loot.subs[src] = nil
                 m.loot.at[src] = nil
+                zoneOf[src] = nil
             end
         end
     end)
+end)
+
+-- The warmup pad refills itself. Whoever queued first must not be able to
+-- strip the island for everyone who arrives after them.
+BR.Sched.every(1000, 'loot.warmupRespawn', function()
+    if not warmupZone then return end
+
+    local now  = GetGameTimer()
+    local W    = BR.Config.Loot.warmup
+    local pad  = BR.Config.Match.warmupPos
+    local due  = warmupZone.loot.respawn
+
+    for i = #due, 1, -1 do
+        if now >= due[i].at then
+            local rng = warmupZone.rng
+            local a = rng:float() * math.pi * 2.0
+            local r = 25.0 + rng:float() * math.max(1.0, (W.radius or 190.0) - 25.0)
+            local crate = BR.MakeCrate(rng, due[i].tier,
+                pad.x + math.cos(a) * r, pad.y + math.sin(a) * r, pad.z, nil)
+            crate.warmup = true
+            BR.Loot.spawnStack(warmupZone, crate, crate.x, crate.y, crate.z)
+            table.remove(due, i)
+        end
+    end
 end)

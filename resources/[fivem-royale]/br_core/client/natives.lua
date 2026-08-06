@@ -50,6 +50,90 @@ BR.Native.ChuteState = {
 -- flag that does NOT give the player a chute. Skipping the explicit
 -- GiveWeaponToPed is still the single easiest way to break the drop.
 
+-- ------------------------------------------------------------------- aiming ---
+
+--- What is the player looking at?
+---
+--- Built for loot ("which crate am I in front of"), but deliberately generic:
+--- doors, revives, vehicles and interactables all want the same question
+--- answered, and answering it twice in two places is how two systems end up
+--- disagreeing about what the player is pointing at.
+---
+--- Uses the GAMEPLAY CAMERA, not the ped's facing. Those differ by up to 180
+--- degrees while looking around, and the player's expectation follows the
+--- camera every time -- you interact with what is on screen.
+---
+--- The probe is the SYNCHRONOUS variant: it costs more than the asynchronous
+--- one, but the asynchronous one answers on a later frame, and a prompt that
+--- appears a frame after you look at something is a prompt that flickers when
+--- you sweep past it.
+---
+--- @param maxDist number   metres ahead of the camera
+--- @param flags integer|nil shapetest flags; default 16 = objects only
+--- @return boolean hit
+--- @return table|nil coords  { x, y, z } where it hit
+--- @return integer entity    the entity hit, or 0
+function BR.Native.aim(maxDist, flags)
+    local cam = GetGameplayCamCoord()
+    local rot = GetGameplayCamRot(2)
+
+    local rz = math.rad(rot.z)
+    local rx = math.rad(rot.x)
+    local cosRx = math.cos(rx)
+    -- GTA's rotation order for a camera direction vector: yaw about Z, pitch
+    -- about X, with Y forward.
+    local dir = {
+        x = -math.sin(rz) * math.abs(cosRx),
+        y =  math.cos(rz) * math.abs(cosRx),
+        z =  math.sin(rx),
+    }
+
+    local d = maxDist or 4.0
+    local handle = StartExpensiveSynchronousShapeTestLosProbe(
+        cam.x, cam.y, cam.z,
+        cam.x + dir.x * d, cam.y + dir.y * d, cam.z + dir.z * d,
+        flags or 16,          -- 16 = objects
+        PlayerPedId(),        -- ignore ourselves
+        4)
+    local _, hit, endCoords, _, entity = GetShapeTestResult(handle)
+
+    if hit == 1 or hit == true then
+        return true, endCoords, entity or 0
+    end
+    return false, nil, 0
+end
+
+--- The key currently bound to a GTA control, as a letter we can print.
+---
+--- GET_CONTROL_INSTRUCTIONAL_BUTTON returns a glyph token ("t_E", "b_32")
+--- rather than a name, so the readable half is what comes after the prefix.
+--- This is how the interaction prompt shows a real key without hardcoding one:
+--- rebind INPUT_CONTEXT in GTA's settings and the prompt follows.
+---
+--- Returns nil when the token is not a plain key (a controller button, say),
+--- and the caller falls back to words.
+--- @param control integer
+--- @return string|nil
+function BR.Native.keyLabel(control)
+    local ok, raw = pcall(GetControlInstructionalButton, 2, control, true)
+    if not ok or type(raw) ~= 'string' then return nil end
+    local letter = raw:match('^t_(.+)$')
+    if letter and #letter <= 5 then return letter end
+    return nil
+end
+
+--- Where a world point lands on screen, as 0..1 fractions.
+--- @param x number
+--- @param y number
+--- @param z number
+--- @return boolean onScreen
+--- @return number sx
+--- @return number sy
+function BR.Native.worldToScreen(x, y, z)
+    local ok, sx, sy = GetScreenCoordFromWorldCoord(x, y, z)
+    return ok == 1 or ok == true, sx or 0.0, sy or 0.0
+end
+
 --- @return integer one of BR.Native.ChuteState
 function BR.Native.chuteState()
     return GetPedParachuteState(PlayerPedId())
@@ -522,6 +606,23 @@ function BR.Native.check()
     end)
     probe('GetPlayerHasReserveParachute', function()
         return GetPlayerHasReserveParachute(PlayerId())
+    end)
+    -- The interaction ray. Without it there is no pickup system at all -- the
+    -- prompt would never resolve a target.
+    probe('StartExpensiveSynchronousShapeTestLosProbe', function()
+        local h = StartExpensiveSynchronousShapeTestLosProbe(
+            0.0, 0.0, -200.0, 0.0, 0.0, -190.0, 16, PlayerPedId(), 4)
+        local _, hit = GetShapeTestResult(h)
+        return hit
+    end)
+    probe('GetGameplayCamRot',       function() return GetGameplayCamRot(2) end)
+    probe('GetScreenCoordFromWorldCoord', function()
+        local _, sx, sy = GetScreenCoordFromWorldCoord(0.0, 0.0, 0.0)
+        return sx, sy
+    end)
+    probe('GetWaterHeight',          function()
+        local _, h = GetWaterHeight(0.0, 0.0, 0.0)
+        return h
     end)
 
     -- The health model assumption that most affects gameplay: does a player ped

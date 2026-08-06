@@ -3477,6 +3477,181 @@ do
         ('%d of %d'):format(m.loot.nextId - beforeOpen, n))
 end
 
+describe('loot.crates')
+do
+    local m = lootMatch()
+
+    local crate
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.kind == 'chest' then crate = e break end
+    end
+    ok(crate ~= nil, 'the layout contains a crate')
+    ok(crate.prop == BR.Config.Loot.chestProp, 'sealed, as the wooden crate')
+
+    local cx, cy = BR.LootCellOf(crate.x, crate.y)
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+    standOn(1, crate)
+
+    local n = #crate.contents
+    local before = m.loot.nextId
+    sent = {}
+    fire(BR.Net.LOOT_CLAIM, 1, { id = crate.id })
+
+    ok(m.loot.items[crate.id] == nil, 'opening consumes the sealed crate')
+    -- contents + one husk
+    ok(m.loot.nextId == before + n + 1,
+        'and leaves the contents plus an open husk',
+        ('%d new'):format(m.loot.nextId - before))
+
+    local husk
+    for id = before + 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.kind == 'husk' then husk = e end
+    end
+    ok(husk ~= nil, 'the husk exists')
+    ok(husk and husk.prop == BR.Config.Loot.chestOpenProp,
+        'and is the open-and-empty crate model')
+    ok(husk and math.abs(husk.x - crate.x) < 0.01,
+        'standing exactly where the sealed one was')
+
+    -- A HUSK IS NOT LOOT. Claiming it must do nothing at all -- an opened
+    -- crate that could be opened again would duplicate its contents.
+    standOn(1, husk)
+    local beforeHusk = m.loot.nextId
+    fire(BR.Net.LOOT_CLAIM, 1, { id = husk.id })
+    ok(m.loot.items[husk.id] ~= nil, 'a husk cannot be claimed')
+    ok(m.loot.nextId == beforeHusk, 'and produces nothing')
+end
+
+describe('loot.warmup')
+do
+    -- The pad is a COMMUNAL bucket, so its loot is ONE shared layout -- two
+    -- players warming up for different matches must see the same crates.
+    -- Deliberately NOT in a match apiece: the pad zone is chosen by PLAYER
+    -- STATE, not by membership, which is what lets two players warming up for
+    -- different flights share one layout.
+    reset()
+    join(1, 'A')
+    join(2, 'B')
+    BR.Roster.setState(1, BR.PlayerState.WARMUP)
+    BR.Roster.setState(2, BR.PlayerState.WARMUP)
+
+    local pad = BR.Config.Match.warmupPos
+    local cx, cy = BR.LootCellOf(pad.x, pad.y)
+
+    sent = {}
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+    fire(BR.Net.LOOT_CELL, 2, { cx = cx, cy = cy })
+
+    local seenBy = { [1] = {}, [2] = {} }
+    for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+        for _, e in ipairs(s.args[1]) do
+            if seenBy[s.target] then seenBy[s.target][e.id] = e end
+        end
+    end
+
+    local n1, n2, agree = 0, 0, true
+    for id, e in pairs(seenBy[1]) do
+        n1 = n1 + 1
+        local other = seenBy[2][id]
+        if not other or math.abs(other.x - e.x) > 0.01 then agree = false end
+    end
+    for _ in pairs(seenBy[2]) do n2 = n2 + 1 end
+
+    ok(n1 > 0, 'a warmup player is streamed the pad crates',
+        ('%d crates'):format(n1))
+    ok(n1 == n2 and agree,
+        'and two players in DIFFERENT matches see the identical layout')
+
+    -- Warmup loot is takeable: the pad is for practice PVP.
+    local anyId, anyEntry = next(seenBy[1])
+    BR.Roster.get(1).pos = { x = anyEntry.x, y = anyEntry.y, z = anyEntry.z }
+    sent = {}
+    fire(BR.Net.LOOT_CLAIM, 1, { id = anyId })
+    local gained = false
+    for _, s in ipairs(eventsOf(BR.Net.LOOT_GONE)) do
+        for _, id in ipairs(s.args[1]) do
+            if id == anyId then gained = true end
+        end
+    end
+    ok(gained, 'and can be opened during warmup')
+
+    -- NOTHING FLIES. Everything found on the pad is wiped at wheels-up: the
+    -- island is practice, and arriving early must not be a head start.
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(mstate() == BR.MatchState.WARMUP, 'a match reaches warmup')
+
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'carbinerifle', kind = BR.ItemKind.WEAPON,
+                     rarity = 3, count = 1, clip = 30 })
+    BR.Inv.give(1, { item = BR.AmmoType.MEDIUM, kind = BR.ItemKind.AMMO,
+                     rarity = 1, count = 90 })
+    ok(BR.Inv.of(1).slots[1] ~= false, 'a warmup pickup is in hand')
+
+    BR.Match.transition(theMatch(), BR.MatchState.BUS)
+    ok(BR.Inv.of(1).slots[1] == false, 'and is gone the moment the bus departs')
+    ok((BR.Inv.of(1).ammo[BR.AmmoType.MEDIUM] or 0) == 0,
+        'ammo found on the pad does not fly either')
+end
+
+describe('loot.repair')
+do
+    -- Only a CLIENT can ground-probe, so a correction can only come from out
+    -- there -- and the bound on it is what makes accepting one safe.
+    local m = lootMatch()
+    local target
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.kind == BR.ItemKind.WEAPON then target = e break end
+    end
+
+    local cx, cy = BR.LootCellOf(target.x, target.y)
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+
+    local ox, oy = target.x, target.y
+
+    -- Out of bounds: a 400m "correction" is a relocation, not a repair.
+    fire(BR.Net.LOOT_FIX, 1, { id = target.id, x = ox + 400.0, y = oy, z = 5.0 })
+    ok(math.abs(m.loot.items[target.id].x - ox) < 0.01,
+        'a correction beyond the bound is refused')
+
+    -- In bounds: accepted, and the entry moves.
+    fire(BR.Net.LOOT_FIX, 1, { id = target.id, x = ox + 12.0, y = oy + 3.0, z = 44.0 })
+    ok(math.abs(m.loot.items[target.id].x - (ox + 12.0)) < 0.01,
+        'a correction within the bound is applied')
+    ok(math.abs(m.loot.items[target.id].z - 44.0) < 0.01,
+        'including the height the client probed')
+
+    -- ONCE PER ENTRY. Without this a client could walk an item across the map
+    -- 30m at a time.
+    fire(BR.Net.LOOT_FIX, 1, { id = target.id, x = ox + 24.0, y = oy, z = 44.0 })
+    ok(math.abs(m.loot.items[target.id].x - (ox + 12.0)) < 0.01,
+        'an entry can only be corrected once')
+
+    -- A player who is not subscribed to that cell cannot correct it at all.
+    local far
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.kind == BR.ItemKind.WEAPON and e.cell ~= target.cell
+           and not e.repaired then
+            far = e
+            break
+        end
+    end
+    if far then
+        local fx = far.x
+        BR.Roster.setState(2, BR.PlayerState.ALIVE)
+        fire(BR.Net.LOOT_FIX, 2, { id = far.id, x = fx + 5.0, y = far.y, z = 1.0 })
+        ok(math.abs(m.loot.items[far.id].x - fx) < 0.01,
+            'and only for cells they are actually subscribed to')
+    end
+end
+
 describe('loot.teardown')
 do
     local m = lootMatch()

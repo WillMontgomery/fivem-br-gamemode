@@ -145,6 +145,26 @@ export interface InvPayload {
 }
 
 /**
+ * The world-anchored interaction prompt.
+ *
+ * `x`/`y` are 0..1 screen fractions computed in Lua from the world position,
+ * so this element tracks a crate as the camera moves. `pct` drives the hold
+ * ring; `key` is the player's ACTUAL binding, read back from the control.
+ */
+export interface PromptPayload {
+  show: boolean
+  x?: number
+  y?: number
+  label?: string
+  hint?: string
+  key?: string | null
+  rarity?: Rarity
+  pct?: number
+  /** Containers get a ring; loose floor items get a key badge. */
+  ring?: boolean
+}
+
+/**
  * What Lua actually puts on the wire.
  *
  * An empty slot travels as `false`, not nil: a Lua array with a nil hole in it
@@ -322,6 +342,7 @@ export type Envelope =
   | { k: 'hud';      d: HudPayload }
   | { k: 'squad';    d: SquadPayload }
   | { k: 'inv';      d: WireInvPayload }
+  | { k: 'prompt';   d: PromptPayload }
   | { k: 'feed';     d: FeedEntry }
   | { k: 'storm';    d: StormPayload }
   | { k: 'dbno';     d: DbnoPayload }

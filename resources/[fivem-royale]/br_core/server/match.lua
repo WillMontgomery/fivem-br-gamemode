@@ -194,6 +194,13 @@ function BR.Match.onEnter(m, state, from)
                 and e.state == BR.PlayerState.WARMUP end,
             function(src) BR.Roster.setState(src, BR.PlayerState.BUS) end)
 
+        -- THE PAD'S LOOT DOES NOT FLY. Everything found during warmup is
+        -- wiped at wheels-up: the island exists to be practised on, and
+        -- arriving early must not be a head start over a late joiner who
+        -- boards with nothing (user call, 2026-08-05 -- Fortnite's pre-game
+        -- island rule).
+        BR.Inv.clearFor(m)
+
         -- The starting team count is taken HERE, before anyone can possibly
         -- be dead (warmup is invincible; the doors are still shut). Counting
         -- it at PLAYING was the bug where a player who died during the bus

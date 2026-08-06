@@ -176,6 +176,33 @@ function BR.LootChestContents(rng, tier)
     return out
 end
 
+--- Build one sealed crate, contents rolled.
+---
+--- Every container in the game is this: `prop_box_wood05a` sealed, swapped for
+--- `prop_box_wood05b` (open and empty) the moment it is looted. One model to
+--- learn, and a room you have already swept reads as swept from the doorway.
+--- @param rng table
+--- @param tier integer
+--- @param x number
+--- @param y number
+--- @param z number
+--- @param poi string|nil
+--- @return table entry
+function BR.MakeCrate(rng, tier, x, y, z, poi)
+    local contents = BR.LootChestContents(rng, tier)
+    return {
+        item     = 'chest',
+        kind     = 'chest',
+        rarity   = BR.LootContentsRarity(contents),
+        count    = 1,
+        x = x, y = y, z = z,
+        poi      = poi,
+        prop     = BR.Config.Loot.chestProp,
+        heading  = rng:float() * 360.0,
+        contents = contents,
+    }
+end
+
 --- The rarity a container displays: the best thing inside it. A chest full of
 --- common ammo and one legendary rifle should glow gold.
 --- @param contents table[]
@@ -304,6 +331,23 @@ function BR.BuildLootLayout(seed)
         return e
     end
 
+    -- A point inside a POI that is not in authored water. Bounded retries so
+    -- the same seed always burns the same number of draws.
+    -- Retries SHRINK toward the centre rather than re-rolling the same disc.
+    -- A coastal POI (Vespucci, Del Perro, Elysian, Paleto) has most of its
+    -- radius in the Pacific, so a fixed-radius retry just draws the sea again
+    -- -- 67 items ended up floating that way. The centre of a POI is on land
+    -- by definition, so walking inward always terminates somewhere real.
+    local function poiPoint(poi, spread)
+        local x, y
+        for attempt = 1, 12 do
+            local s = spread * BR.Lerp(1.0, 0.15, (attempt - 1) / 11.0)
+            x, y = rng:pointInDisc(poi.x, poi.y, poi.radius * s)
+            if not BR.Config.Map.IsWater(x, y) then return x, y end
+        end
+        return poi.x, poi.y
+    end
+
     -- POIs, in authored order. Ground loot first, then chests, so that adding a
     -- POI at the end of the table does not shift every existing item's id.
     for _, poi in ipairs(BR.Config.Map.POIs) do
@@ -311,7 +355,7 @@ function BR.BuildLootLayout(seed)
         for _ = 1, budget do
             -- 0.92 keeps items off the exact rim, where a first-pass radius is
             -- most likely to have overshot into water or a cliff face.
-            local x, y = rng:pointInDisc(poi.x, poi.y, poi.radius * 0.92)
+            local x, y = poiPoint(poi, 0.92)
             local s = BR.RollLootStack(rng, poi.tier)
             s.x, s.y, s.z = x, y, poi.z
             s.poi = poi.id
@@ -321,18 +365,8 @@ function BR.BuildLootLayout(seed)
 
         local chests = L.chestsPerTier[poi.tier] or 0
         for _ = 1, chests do
-            local x, y = rng:pointInDisc(poi.x, poi.y, poi.radius * 0.75)
-            local contents = BR.LootChestContents(rng, poi.tier)
-            add({
-                item     = 'chest',
-                kind     = 'chest',
-                rarity   = BR.LootContentsRarity(contents),
-                count    = 1,
-                x = x, y = y, z = poi.z,
-                poi      = poi.id,
-                prop     = rng:pick(L.chestProps),
-                contents = contents,
-            })
+            local x, y = poiPoint(poi, 0.75)
+            add(BR.MakeCrate(rng, poi.tier, x, y, poi.z, poi.id))
             stats.chest = stats.chest + 1
         end
     end
@@ -352,11 +386,17 @@ function BR.BuildLootLayout(seed)
                 local m    = roadMetrics(road)
                 local d    = rng:float() * m.total
                 local px, py, dx, dy = roadPointAt(road, d)
-                -- Perpendicular offset, either side.
-                local off = (rng:float() * 2.0 - 1.0) * f.lateralOffset
+                -- Perpendicular offset, one side or the other, NEVER on the
+                -- centreline: a signed band with a floor, not a symmetric
+                -- range through zero.
+                local lo   = f.minOffset or 0.0
+                local span = math.max(0.0, f.lateralOffset - lo)
+                local off  = (lo + rng:float() * span)
+                    * ((rng:int(0, 1) == 0) and -1.0 or 1.0)
                 local x, y = px - dy * off, py + dx * off
 
-                if distToNearestPoi(x, y) >= (f.minPoiDist or 0) then
+                if distToNearestPoi(x, y) >= (f.minPoiDist or 0)
+                   and not BR.Config.Map.IsWater(x, y) then
                     local s = BR.RollLootStack(rng, f.tier or 1)
                     s.x, s.y, s.z = x, y, 0.0
                     s.road = road.id
@@ -373,4 +413,36 @@ function BR.BuildLootLayout(seed)
     end
 
     return out, stats
+end
+
+--- Build the shared warmup layout: crates around the Cayo Perico pad.
+---
+--- ONE layout for everybody waiting, not one per match. The warmup pad is a
+--- COMMUNAL routing bucket -- every concurrent match's warmup players stand on
+--- it together -- so a per-match layout would put two players side by side
+--- looking at different crates in the same spot.
+---
+--- Crates only, and they come back on a timer: the pad exists to be practised
+--- on, and it must not be strippable by whoever queued first.
+---
+--- @param seed integer
+--- @return table[] entries
+function BR.BuildWarmupLayout(seed)
+    local W   = BR.Config.Loot.warmup
+    local pad = BR.Config.Match.warmupPos
+    local rng = BR.Rng(seed)
+
+    local out = {}
+    for i = 1, (W.crates or 0) do
+        -- An annulus, not a disc: crates piled on the spawn point would be
+        -- looted before anyone had to walk anywhere.
+        local a = rng:float() * math.pi * 2.0
+        local r = 25.0 + rng:float() * math.max(1.0, W.radius - 25.0)
+        local e = BR.MakeCrate(rng, W.tier or 2,
+            pad.x + math.cos(a) * r, pad.y + math.sin(a) * r, pad.z, nil)
+        e.id = i
+        e.warmup = true
+        out[#out + 1] = e
+    end
+    return out
 end

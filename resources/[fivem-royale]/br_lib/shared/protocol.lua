@@ -59,6 +59,12 @@ BR.Net = {
     LOOT_ADD        = 'br:loot:add',         -- S->C  array of loot entries entering scope
     LOOT_GONE       = 'br:loot:gone',        -- S->C  array of loot ids removed
     LOOT_CLAIM      = 'br:loot:claim',       -- C->S  { id }
+    -- The repair round-trip. Only a CLIENT can ground-probe or read water
+    -- height, so a client that finds an entry floating in the sea or buried
+    -- under the map sends back the corrected position it computed. The server
+    -- bounds how far it may move (see server/loot.lua) -- this is a
+    -- suggestion, not an instruction.
+    LOOT_FIX        = 'br:loot:fix',         -- C->S  { id, x, y, z }
     INV_SET         = 'br:inv:set',          -- S->C  authoritative inventory mirror
     INV_SWAP        = 'br:inv:swap',         -- C->S  { from, to }
     INV_DROP        = 'br:inv:drop',         -- C->S  { slot }
@@ -127,6 +133,7 @@ BR.Nui = {
     HUD       = 'hud',       -- vitals, alive count, kills (10 Hz, deltas)
     SQUAD     = 'squad',
     INV       = 'inv',
+    PROMPT    = 'prompt',    -- world-anchored interaction prompt + progress ring
     FEED      = 'feed',      -- kill feed + damage numbers
     STORM     = 'storm',     -- phase, radius, endsAt (4 Hz)
     DBNO      = 'dbno',

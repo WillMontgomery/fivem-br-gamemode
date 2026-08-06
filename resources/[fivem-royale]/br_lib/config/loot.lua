@@ -104,14 +104,16 @@ BR.Config.Loot = {
     budgetPerTier = { [1] = 20, [2] = 35, [3] = 60 },
 
     -- Chests hold a guaranteed burst and are worth crossing open ground for.
+    --
+    -- ONE MODEL, TWO STATES (user call, 2026-08-05). A sealed wooden crate,
+    -- swapped for the open-and-empty version of the same crate the moment it
+    -- is looted -- so a room you have already been through reads as looted
+    -- from the doorway, which is exactly what the empty version is for. The
+    -- husk stays for the rest of the match.
     chestsPerTier = { [1] = 2, [2] = 4, [3] = 7 },
     chestItems    = { min = 3, max = 5 },
-    chestProps    = {
-        'prop_box_ammo04a',
-        'prop_mil_crate_01',
-        'prop_box_wood02a',
-        'prop_gold_cont_01',
-    },
+    chestProp     = 'prop_box_wood05a',   -- sealed
+    chestOpenProp = 'prop_box_wood05b',   -- open and empty: the husk
 
     -- Sparse filler between the POIs. Without it a bad drop is a two-minute walk
     -- with empty hands; with it there is always something on the roadside worth
@@ -120,8 +122,27 @@ BR.Config.Loot = {
     filler = {
         count         = 240,
         tier          = 1,
-        lateralOffset = 22.0,   -- metres either side of the road centreline
+        -- ROADSIDE, NOT ON THE ROAD. The offset used to be a symmetric +-22m
+        -- band, which includes ZERO -- so a share of every road's filler
+        -- landed on the centreline (user, 2026-08-05: "are you sure the loot
+        -- will not spawn in the road?"). It is now a signed band with a floor:
+        -- 8-22m out, one side or the other, never on the tarmac.
+        minOffset     = 8.0,
+        lateralOffset = 22.0,
         minPoiDist    = 260.0,  -- do not double up on ground a POI already covers
+    },
+
+    -- WARMUP LOOT. The pad is a COMMUNAL bucket shared by every concurrent
+    -- match, so this is ONE layout everyone waiting shares -- not a per-match
+    -- one, which would put two players side by side seeing different crates.
+    -- Everything found here is wiped when the bus departs: warmup PVP is
+    -- practice, and arriving early must not be a head start (Fortnite's
+    -- pre-game island rule).
+    warmup = {
+        crates      = 26,
+        radius      = 190.0,   -- around BR.Config.Match.warmupPos
+        tier        = 2,
+        respawnMs   = 45000,   -- a looted crate comes back, so the pad never empties
     },
 
     -- Streaming. Clients subscribe to a 3x3 neighbourhood of cells, so roughly

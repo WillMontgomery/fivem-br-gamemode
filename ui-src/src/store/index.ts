@@ -13,8 +13,8 @@ import { create } from 'zustand'
 import type {
   ChatMessage, DbnoPayload, FeedEntry, FocusPayload, HudPayload,
   InvPayload, InvitePayload, LobbyPayload, MatchPayload, ScreenPayload,
-  SpectatePayload, SquadPayload, StormPayload, SummaryPayload, ToastPayload,
-  WireInvPayload,
+  PromptPayload, SpectatePayload, SquadPayload, StormPayload, SummaryPayload,
+  ToastPayload, WireInvPayload,
 } from '../bridge/types'
 
 /** Kill feed and chat are capped so a long match cannot grow the DOM forever. */
@@ -91,6 +91,9 @@ export interface UiState {
   setHud: (h: HudPayload) => void
   setSquad: (s: SquadPayload) => void
   setInv: (i: WireInvPayload) => void
+  /** The world-anchored interaction prompt, or null when nothing is in reach. */
+  prompt: PromptPayload | null
+  setPrompt: (p: PromptPayload) => void
   setStorm: (s: StormPayload | null) => void
   setDbno: (d: DbnoPayload) => void
   setSpectate: (s: SpectatePayload | null) => void
@@ -169,6 +172,7 @@ export const useUi = create<UiState>((set, get) => {
   hud: emptyHud,
   squad: { id: null, members: [] },
   inv: emptyInv,
+  prompt: null,
   storm: null,
   dbno: emptyDbno,
   spectate: null,
@@ -214,6 +218,9 @@ export const useUi = create<UiState>((set, get) => {
   },
   setSquad:    (squad) => set({ squad }),
   setInv:      (inv) => set({ inv: normaliseInv(inv) }),
+  // Normalised to null when hidden, so every consumer has ONE falsy test
+  // rather than remembering to check `.show` as well.
+  setPrompt:   (prompt) => set({ prompt: prompt && prompt.show ? prompt : null }),
   // Normalised at the boundary: an empty or shapeless payload (a nil that
   // crossed the Lua bridge becomes {}) must read as "no storm", never as a
   // storm whose every field is undefined.
@@ -290,6 +297,7 @@ export const selStorm    = (s: UiState) => s.storm
 export const selMatch    = (s: UiState) => s.match
 export const selSquad    = (s: UiState) => s.squad
 export const selInv      = (s: UiState) => s.inv
+export const selPrompt   = (s: UiState) => s.prompt
 export const selFeed     = (s: UiState) => s.feed
 export const selChat     = (s: UiState) => s.chat
 export const selDbno     = (s: UiState) => s.dbno

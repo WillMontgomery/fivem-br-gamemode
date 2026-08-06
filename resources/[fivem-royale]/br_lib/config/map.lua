@@ -138,6 +138,49 @@ BR.Config.Map.Roads = {
     },
 }
 
+--- Coarse water. Rectangles that are definitely sea or lake.
+---
+--- This is NOT a precise water map and does not try to be -- the client has
+--- GET_WATER_HEIGHT and reports anything that ground-probes into water back to
+--- the server, which relocates it. This list only exists to stop generation
+--- putting hundreds of items in the Pacific in the first place, so the repair
+--- round-trip handles dozens rather than hundreds.
+---
+--- Author more rectangles here whenever a run reports a cluster in the same
+--- stretch of water; `brloot` prints the relocation count.
+--- CONSERVATIVE BY CONSTRUCTION. A rectangle here must never contain a POI
+--- centre -- the first draft swallowed Chumash, Hookies and Galilee, all
+--- coastal towns on dry land, and the generator's inward-shrinking fallback
+--- then dropped 67 items on their centre points, in the sea. There is a test
+--- pinning that (test_shared, loot.water). When in doubt make a rectangle
+--- SMALLER: everything it misses is caught by the client repair round-trip,
+--- while everything it wrongly claims is loot deleted from a real location.
+BR.Config.Map.Water = {
+    -- The Pacific, west of the coast highway (short of Chumash at -3170).
+    { minX = -4000.0, minY = -4000.0, maxX = -3350.0, maxY =  2200.0 },
+    -- Open ocean south of Los Santos and the airport.
+    { minX = -4000.0, minY = -4000.0, maxX =  1600.0, maxY = -3300.0 },
+    -- The eastern seaboard past the industrial coast.
+    { minX =  2600.0, minY = -3600.0, maxX =  4500.0, maxY = -1600.0 },
+    -- North-west coast, past Paleto (short of Hookies at -2200).
+    { minX = -4000.0, minY =  4500.0, maxX = -2450.0, maxY =  8000.0 },
+    -- The Alamo Sea, inside its shoreline (short of Galilee at 1380).
+    { minX =   600.0, minY =  3750.0, maxX =  1300.0, maxY =  4450.0 },
+}
+
+--- Is this point inside an authored water rectangle?
+--- @param x number
+--- @param y number
+--- @return boolean
+function BR.Config.Map.IsWater(x, y)
+    for _, w in ipairs(BR.Config.Map.Water) do
+        if x >= w.minX and x <= w.maxX and y >= w.minY and y <= w.maxY then
+            return true
+        end
+    end
+    return false
+end
+
 --- Look up a POI by id.
 --- @param id string
 --- @return table|nil

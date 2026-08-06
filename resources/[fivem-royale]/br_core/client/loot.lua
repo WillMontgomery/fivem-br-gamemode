@@ -21,13 +21,16 @@ BR.Loot = BR.Loot or {}
 local L = BR.Config.Loot
 
 local entries   = {}      -- [id] = entry, with prop bookkeeping attached
+local byObject  = {}      -- [objectHandle] = id, so a ray hit resolves instantly
 local queue     = {}      -- ids waiting for a model
 local queued    = {}      -- [id] = true, so the queue cannot double up
 local draining  = false
 local myCell    = nil     -- last cell reported to the server
 local claimedAt = {}      -- [id] = gametimer, to stop a held key spamming claims
+local reported  = {}      -- [id] = true, entries already sent back as misplaced
 
 local hold = { id = nil, from = 0 }
+local lastPrompt = { id = nil, at = 0, pct = -1 }
 
 local PROP_MAX = 80       -- hard ceiling on live objects, whatever the density
 
@@ -48,6 +51,13 @@ end
 
 local function isContainer(e)
     return e.kind == 'chest' or e.kind == 'deathbox'
+end
+
+--- An already-opened crate. Scenery: no glow, no label, no prompt, and the
+--- server refuses to claim it. It exists so a room you have already swept
+--- reads as swept from the doorway.
+local function isHusk(e)
+    return e.kind == 'husk'
 end
 
 -- --------------------------------------------------------------------------
@@ -98,15 +108,62 @@ local function groundZ(e)
     local now = GetGameTimer()
     if e.gz and now - (e.gzAt or 0) < 10000 then return e.gz end
     local from = math.max((e.z or 0.0) + 50.0, 300.0)
-    local ok, gz = GetGroundZFor_3dCoord(e.x, e.y, from, false)
-    e.gz = ok and gz or (e.z or 0.0)
+    local ok, gz = solidGround(e.x, e.y, from)
+    e.gzOk = ok
+    e.gz   = ok and gz or (e.z or 0.0)
     e.gzAt = now
     return e.gz
 end
 
 local function despawn(e)
-    if e.obj and DoesEntityExist(e.obj) then DeleteEntity(e.obj) end
+    if e.obj then
+        byObject[e.obj] = nil
+        if DoesEntityExist(e.obj) then DeleteEntity(e.obj) end
+    end
     e.obj = nil
+end
+
+--- Is a point dry land with something solid under it?
+--- @param x number
+--- @param y number
+--- @param fromZ number
+--- @return boolean okay
+--- @return number groundZ
+local function solidGround(x, y, fromZ)
+    local ok, gz = GetGroundZFor_3dCoord(x, y, fromZ, false)
+    if not ok then return false, 0.0 end
+    -- Water ABOVE the ground here means the ground is a seabed.
+    local okW, wz = GetWaterHeight(x, y, gz)
+    if okW and wz and wz > gz + 0.3 then return false, gz end
+    return true, gz
+end
+
+--- Somewhere dry and solid near an entry that is not.
+---
+--- ONLY A CLIENT CAN COMPUTE THIS. The server has no map at all:
+--- GetGroundZFor_3dCoord and GetWaterHeight are client natives, so generation
+--- can put an item in the Pacific or inside a hillside and never find out.
+--- The correction goes back over LOOT_FIX and the server bounds it to 30m --
+--- it is a suggestion, not an instruction (see server/loot.lua).
+---
+--- Candidates walk outward on the golden angle: an even spread that never
+--- retraces its own ring, and identical on every client, so two players
+--- reporting the same crate suggest the same place for it.
+--- @param e table
+--- @return number|nil x
+--- @return number|nil y
+--- @return number|nil z
+local function dryPointNear(e)
+    local from = math.max((e.z or 0.0) + 50.0, 300.0)
+    for i = 1, 12 do
+        local ang = i * 2.39996323   -- golden angle in radians
+        local r   = 4.0 + i * 2.0    -- 6m out to 28m, inside the server's bound
+        local x   = e.x + math.cos(ang) * r
+        local y   = e.y + math.sin(ang) * r
+        local ok, gz = solidGround(x, y, from)
+        if ok then return x, y, gz end
+    end
+    return nil
 end
 
 local function forget(id)
@@ -120,8 +177,12 @@ end
 
 local function forgetAll()
     for id in pairs(entries) do forget(id) end
-    entries, queue, queued = {}, {}, {}
+    entries, queue, queued, byObject, reported = {}, {}, {}, {}, {}
     myCell, hold.id = nil, nil
+    -- Inline rather than through pushPrompt(): that lives below this, and a
+    -- local referenced before its declaration silently resolves as a global.
+    lastPrompt.id, lastPrompt.pct = nil, -1
+    TriggerEvent('br:ui:sendLocal', BR.Nui.PROMPT, { show = false })
 end
 
 -- The spawn worker. Model loading is asynchronous, so this cannot live in a
@@ -140,8 +201,22 @@ local function drain()
 
                 local e = entries[id]
                 if e and not e.obj then
+                    -- REPORT BEFORE BUILDING. An entry in the sea or inside a
+                    -- hillside gets a corrected position sent back rather than
+                    -- a prop built where nobody can reach it; the server
+                    -- re-announces it and the next pass builds it properly.
+                    groundZ(e)
+                    if not e.gzOk and not reported[id] then
+                        reported[id] = true
+                        local fx, fy, fz = dryPointNear(e)
+                        if fx then
+                            TriggerServerEvent(BR.Net.LOOT_FIX,
+                                { id = id, x = fx, y = fy, z = fz })
+                        end
+                    end
+
                     local model = modelOf(e)
-                    if model and IsModelValid(model) then
+                    if e.gzOk and model and IsModelValid(model) then
                         RequestModel(model)
                         local waited = 0
                         while not HasModelLoaded(model) and waited < 3000 do
@@ -155,14 +230,23 @@ local function drain()
                             local obj = CreateObjectNoOffset(model,
                                 e.x, e.y, gz + 0.35, false, false, false)
                             if obj and obj ~= 0 then
-                                -- Collision off: a hundred boxes underfoot at a
-                                -- hot drop is a player getting stuck on loot
-                                -- during a fight.
-                                SetEntityCollision(obj, false, false)
+                                -- CRATES KEEP THEIR COLLISION. You walk up to
+                                -- one and it is a box in the world; the ray
+                                -- that decides what you are looking at needs
+                                -- something to hit. Loose floor items do NOT
+                                -- -- a hundred rifles underfoot at a hot drop
+                                -- is a player snagging on loot mid-fight, and
+                                -- they are close enough to target by proximity.
+                                local solid = isContainer(e) or isHusk(e)
+                                SetEntityCollision(obj, solid, solid)
+                                if e.heading then
+                                    SetEntityHeading(obj, e.heading)
+                                end
                                 FreezeEntityPosition(obj, true)
                                 SetEntityAsMissionEntity(obj, false, true)
                                 PlaceObjectOnGroundProperly(obj)
                                 e.obj = obj
+                                byObject[obj] = id
                             end
                         end
                         SetModelAsNoLongerNeeded(model)
@@ -181,12 +265,29 @@ end
 
 local function addEntries(list)
     for _, d in ipairs(list or {}) do
-        if d.id and not entries[d.id] then
-            entries[d.id] = {
-                id = d.id, kind = d.kind, item = d.item,
-                rarity = d.rarity or BR.Rarity.COMMON, count = d.count or 1,
-                x = d.x, y = d.y, z = d.z, prop = d.prop,
-            }
+        if d.id then
+            local have = entries[d.id]
+            if have then
+                -- A RE-SEND IS A MOVE, not a duplicate. The repair round-trip
+                -- re-announces a corrected entry under its original id, so an
+                -- existing entry has to follow it rather than being ignored --
+                -- otherwise the client keeps rendering the crate in the sea it
+                -- just reported.
+                if math.abs((have.x or 0) - (d.x or 0)) > 0.01
+                   or math.abs((have.y or 0) - (d.y or 0)) > 0.01 then
+                    despawn(have)
+                    have.x, have.y, have.z = d.x, d.y, d.z
+                    have.gz, have.gzAt, have.gzOk = nil, 0, nil
+                    queued[d.id] = nil
+                end
+            else
+                entries[d.id] = {
+                    id = d.id, kind = d.kind, item = d.item,
+                    rarity = d.rarity or BR.Rarity.COMMON, count = d.count or 1,
+                    x = d.x, y = d.y, z = d.z, prop = d.prop,
+                    heading = d.heading,
+                }
+            end
         end
     end
 end
@@ -281,10 +382,85 @@ end)
 local function nearestEntry(px, py, maxDist)
     local best, bestD2 = nil, maxDist * maxDist
     for _, e in pairs(entries) do
-        local d2 = BR.Dist2(px, py, e.x, e.y)
-        if d2 < bestD2 then best, bestD2 = e, d2 end
+        if not isHusk(e) then
+            local d2 = BR.Dist2(px, py, e.x, e.y)
+            if d2 < bestD2 then best, bestD2 = e, d2 end
+        end
     end
     return best
+end
+
+--- What the player is interacting with right now.
+---
+--- LOOK-AT FIRST, PROXIMITY SECOND. A ray from the gameplay camera answers
+--- "which crate am I standing in front of" the way players expect -- you face
+--- the thing you want. Proximity is the fallback for loose floor items, which
+--- have no collision to hit and are picked up by walking over them.
+--- @param px number
+--- @param py number
+--- @return table|nil
+local function targetEntry(px, py)
+    local hit, _, entity = BR.Native.aim(L.pickupDistance + 1.5, 16)
+    if hit and entity and entity ~= 0 then
+        local id = byObject[entity]
+        local e = id and entries[id]
+        if e and not isHusk(e)
+           and BR.Dist2(px, py, e.x, e.y)
+               <= (L.pickupDistance + 1.5) * (L.pickupDistance + 1.5) then
+            return e
+        end
+    end
+    return nearestEntry(px, py, L.pickupDistance)
+end
+
+--- Push the world-anchored prompt to the UI, or clear it.
+---
+--- Throttled and change-gated: the bridge to br_ui crosses a resource
+--- boundary, and a per-frame push of an unchanged prompt would put 60 messages
+--- a second on it for no visible difference. The RING is driven UI-side from
+--- the same numbers, so a dropped frame here does not stall it.
+--- @param e table|nil
+--- @param pct number|nil
+local function pushPrompt(e, pct)
+    local now = GetGameTimer()
+    local id  = e and e.id or nil
+
+    if not e then
+        if lastPrompt.id == nil then return end
+        lastPrompt.id, lastPrompt.pct = nil, -1
+        TriggerEvent('br:ui:sendLocal', BR.Nui.PROMPT, { show = false })
+        return
+    end
+
+    local onScreen, sx, sy = BR.Native.worldToScreen(e.x, e.y, groundZ(e) + 0.9)
+    if not onScreen then
+        if lastPrompt.id ~= nil then
+            lastPrompt.id, lastPrompt.pct = nil, -1
+            TriggerEvent('br:ui:sendLocal', BR.Nui.PROMPT, { show = false })
+        end
+        return
+    end
+
+    pct = pct or 0.0
+    local moved = id ~= lastPrompt.id or math.abs(pct - lastPrompt.pct) > 0.01
+    if not moved and now - lastPrompt.at < 60 then return end
+
+    lastPrompt.id, lastPrompt.pct, lastPrompt.at = id, pct, now
+
+    local container = isContainer(e)
+    TriggerEvent('br:ui:sendLocal', BR.Nui.PROMPT, {
+        show   = true,
+        x      = sx,
+        y      = sy,
+        label  = labelOf(e),
+        hint   = container and 'Hold to open' or 'Press to pick up',
+        -- The player's ACTUAL binding, read back from the control. Rebinding
+        -- INPUT_CONTEXT in GTA's settings changes what this says.
+        key    = BR.Native.keyLabel(L.promptControl or 51),
+        rarity = e.rarity,
+        pct    = pct,
+        ring   = container,
+    })
 end
 
 -- Glow, labels, the prompt and the container hold, all off one pass over the
@@ -300,7 +476,10 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
 
     for _, e in pairs(entries) do
         local d2 = BR.Dist2(p.x, p.y, e.x, e.y)
-        if d2 <= glow2 then
+        -- A husk is scenery. Glowing it would send players across open ground
+        -- for a crate somebody already emptied, which is the exact opposite of
+        -- what the open-crate model is for.
+        if d2 <= glow2 and not isHusk(e) then
             local gz = groundZ(e)
             local info = BR.RarityInfo[e.rarity] or BR.RarityInfo[BR.Rarity.COMMON]
             local c = info.rgb
@@ -312,7 +491,10 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
                 c[1], c[2], c[3], 120,
                 false, false, 2, false, nil, nil, false)
 
-            if d2 <= label2 then
+            -- The floor label stays for LOOSE items: a rifle in the grass
+            -- needs naming from further away than you would ever stand to
+            -- pick it up. Containers are named by the prompt instead.
+            if d2 <= label2 and not isContainer(e) then
                 SetDrawOrigin(e.x, e.y, gz + 0.55, 0)
                 SetTextFont(4)
                 SetTextScale(0.0, 0.32)
@@ -327,26 +509,14 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
         end
     end
 
-    if not canTake() then return end
-
-    -- The prompt names the player's OWN binding. inputForCommand renders the
-    -- key they actually have bound; the config token is the escape hatch if
-    -- this build draws custom bindings as a hole (see PLAN.md and
-    -- /brpromptcheck) -- it changes the GLYPH, never which key works.
-    local target = nearestEntry(p.x, p.y, L.promptDistance)
-    if target then
-        local token = L.promptToken or BR.Native.inputForCommand('brinteract')
-        if isContainer(target) then
-            BR.Native.helpThisFrame(('Hold %s to open the %s')
-                :format(token, target.kind == 'chest' and 'chest' or 'loot box'))
-        else
-            BR.Native.helpThisFrame(('Press %s to pick up %s')
-                :format(token, labelOf(target)))
-        end
+    if not canTake() then
+        pushPrompt(nil)
+        return
     end
 
-    -- The container hold. A chest is a commitment in the open -- one second
-    -- standing still, visible to anyone watching the building.
+    -- THE HOLD. A crate is a commitment in the open -- a second standing
+    -- still, visible to anyone watching the building. The ring is drawn over
+    -- the crate itself by the UI, from the percentage sent here.
     if hold.id then
         local e = entries[hold.id]
         if not e or BR.Dist2(p.x, p.y, e.x, e.y)
@@ -355,20 +525,19 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
         else
             local pct = BR.Clamp((GetGameTimer() - hold.from)
                 / (L.chestHoldMs or 1000), 0.0, 1.0)
-            -- Drawn in Lua rather than through the NUI bridge: a progress bar
-            -- that has to cross a resource boundary at 60fps to move is a
-            -- progress bar that stutters.
-            DrawRect(0.5, 0.62, 0.14, 0.012, 0, 0, 0, 160)
-            DrawRect(0.5 - (0.14 * (1.0 - pct)) / 2.0, 0.62,
-                0.14 * pct, 0.012, 255, 255, 255, 220)
+            pushPrompt(e, pct)
 
             if pct >= 1.0 then
                 local id = hold.id
                 hold.id = nil
                 TriggerServerEvent(BR.Net.LOOT_CLAIM, { id = id })
+                pushPrompt(nil)
             end
+            return
         end
     end
+
+    pushPrompt(targetEntry(p.x, p.y), 0.0)
 end)
 
 -- --------------------------------------------------------------------------
@@ -380,7 +549,7 @@ local function interactPressed()
     if not canTake() then return end
 
     local p = GetEntityCoords(PlayerPedId())
-    local e = nearestEntry(p.x, p.y, L.pickupDistance)
+    local e = targetEntry(p.x, p.y)
     if not e then return end
 
     if isContainer(e) then
