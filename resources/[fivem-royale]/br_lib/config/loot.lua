@@ -232,11 +232,13 @@ BR.Config.Loot = {
     shineHex        = '#FF961E',   -- the same orange, for the DUI prompt text
     shineDistance   = 18.0,
 
-    -- Crate mass, in kg, via SetObjectPhysicsParams. The prop default read as
-    -- "extremely heavy"; 12 overcorrected into a paperweight (user,
-    -- 2026-08-06, both directions). 120 is a crate you can shunt with a car
-    -- and cannot push over by walking into it.
-    crateMass       = 1200.0,
+    -- Crate mass, in kg, via SetObjectPhysicsParams. Tuned in game, in four
+    -- passes: the prop default read as "extremely heavy", 12 overcorrected
+    -- into a paperweight, 120 was still a paperweight, and 1200 landed at
+    -- "about half what an EMPTY crate should weigh" -- so a FULL one is 4x
+    -- that again (user, 2026-08-06). Heavy enough that a car shunts it and a
+    -- shoulder does not.
+    crateMass       = 4800.0,
     labelDistance   = 8.0,   -- 3D text draw range
 
     -- Containers are a commitment in the open: you stand still for a second and

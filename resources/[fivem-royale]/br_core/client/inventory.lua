@@ -51,9 +51,14 @@ BR.Inv.lastGainAt = 0
 --- take our hands off the wheel.
 BR.Inv.suspendAmmo = false
 
--- Last magazine count we reported. The reserve is NOT tracked here any more:
--- the server derives it from how this number moves (see server/inventory.lua).
-local lastReport = { clip = -1, at = 0 }
+-- What we last told the server, and when.
+--
+-- `total` is the number that matters: GetAmmoInPedWeapon, the ped's WHOLE
+-- holding for this weapon, magazine included. `clip` rides along so the server
+-- can keep the split for the HUD, but it is never the thing decisions are made
+-- on. A total of -1 means "no baseline yet" -- the next read establishes one
+-- without reporting, so a weapon switch never looks like a burst of fire.
+local lastReport = { total = -1, clip = -1, at = 0 }
 
 -- GTA'S OWN WEAPON UI HAS TO GO. The inventory replaces it wholesale, and
 -- leaving the engine's version bound to the same keys means every one of our
@@ -153,27 +158,23 @@ local function applyActive(force)
     if want and slot then
         local clip    = math.floor(slot.clip or 0)
         local reserve = reserveFor(slot)
-        -- The engine's ammo number is TOTAL, clip included; giving the reserve
-        -- alone leaves a gun that is one magazine short of what the HUD says.
-        GiveWeaponToPed(ped, want, clip + reserve, false, true)
+
+        -- GIVE THE WEAPON WITH ZERO AMMO, THEN SET THE AMMO. This is
+        -- ox_inventory's order, and the reason for it is that
+        -- GIVE_WEAPON_TO_PED *ADDS* rounds to a weapon the ped already holds
+        -- rather than setting them. Passing `clip + reserve` here, as this
+        -- used to, means every re-grant of the same weapon topped the player
+        -- up by a full holding -- invisible while switching between two guns,
+        -- and compounding whenever anything re-applied the same one.
+        GiveWeaponToPed(ped, want, 0, false, true)
         SetPedAmmo(ped, want, clip + reserve)
         SetAmmoInClip(ped, want, clip)
         SetCurrentPedWeapon(ped, want, true)
 
-        -- INFINITE AMMO OFF, EXPLICITLY.
-        --
-        -- Measured with our own writes suspended (/brprobe raw): the magazine
-        -- did not move at all while firing, and the totals ROSE by one per
-        -- shot. A magazine that never empties is exactly what infinite-ammo
-        -- clip does, and the rising totals are consistent with the engine
-        -- crediting back a round it never spent.
-        --
-        -- Nothing in this project turns it on, which is the point: it is a
-        -- PED flag with a default we do not control and which another resource
-        -- can set. Asserting it off costs two calls per weapon switch and
-        -- removes a whole class of "why is ammo behaving like that".
-        SetPedInfiniteAmmo(ped, false, want)
-        SetPedInfiniteAmmoClip(ped, false)
+        -- AND THE ENGINE MAY NOT PICK THE WEAPON. Without this the engine
+        -- swaps to "something better" on pickup and on empty, which fights the
+        -- active-slot model for control of the hand.
+        SetWeaponsNoAutoswap(true)
     else
         SetCurrentPedWeapon(ped, UNARMED, true)
     end
@@ -205,12 +206,30 @@ local function reapplyAmmo(serverClip)
     lastReport.clip = serverClip or clip
 end
 
+--- Re-anchor the report baseline on what the SERVER just said.
+---
+--- Called after every INV_SET. The alternative -- clearing the baseline and
+--- letting the next engine read establish one -- silently throws away every
+--- other sample, because our own report is what produced the INV_SET in the
+--- first place. Anchoring on the server's numbers instead means the baseline is
+--- always the authority's view, which is exactly what the next decrease should
+--- be measured against.
+local function rebaseline()
+    local s = inv.slots[inv.active]
+    if s and s.kind == BR.ItemKind.WEAPON then
+        lastReport.clip  = math.floor(s.clip or 0)
+        lastReport.total = lastReport.clip + reserveFor(s)
+    else
+        lastReport.clip, lastReport.total = -1, -1
+    end
+end
+
 --- Forget everything. Called at match teardown and on death.
 local function clearLocal()
     for i = 1, SLOTS do inv.slots[i] = false end
     inv.ammo, inv.active, inv.using = {}, 1, nil
     applied, appliedPed = nil, 0
-    lastReport.clip = -1
+    lastReport.clip, lastReport.total = -1, -1
     BR.Inv.lastGainAt = 0
 end
 
@@ -296,6 +315,9 @@ local function adopt(d)
         local s = inv.slots[inv.active]
         reapplyAmmo(s and s.clip)
     end
+    -- The server has just spoken; that is what the next decrease is measured
+    -- against, whether or not anything was reapplied to the ped.
+    rebaseline()
     pushUi()
 
     if gained then
@@ -547,10 +569,6 @@ end)
 BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     if not canArm() or BR.Inv.suspendAmmo then return end
 
-    local now = GetGameTimer()
-    if now - lastReport.at < 500 then return end
-    lastReport.at = now
-
     local slot = inv.slots[inv.active]
     local hash = hashOf(slot)
     if not hash then return end
@@ -560,42 +578,86 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     -- would empty the new magazine before it was ever fired.
     if applied ~= hash then return end
 
+    local ped = PlayerPedId()
+
+    -- INFINITE AMMO OFF, EVERY TICK -- NOT ONCE PER WEAPON SWITCH.
+    --
+    -- Asserting it only at grant time was not enough: /brprobe raw, with every
+    -- one of our own writes suspended, still showed the magazine frozen and
+    -- the totals climbing by one per shot (user, 2026-08-06). A frozen
+    -- magazine is what infinite-ammo-clip does, so something is re-setting the
+    -- flag after we clear it. Two natives a tick is cheap enough that we can
+    -- simply keep clearing it rather than find out what.
+    SetPedInfiniteAmmo(ped, false, hash)
+    SetPedInfiniteAmmoClip(ped, false)
+
     -- NOT FROM A VEHICLE. In a car the engine stows most weapons, and
     -- GetAmmoInClip for one the ped cannot currently hold reads ZERO -- which
     -- this loop then reported as "the magazine emptied", so the counter fell
     -- to 0/6 the moment the player got in and stayed there (user, 2026-08-06:
     -- "nothing else changed"). A vehicle seat is not evidence about ammo.
-    if IsPedInAnyVehicle(PlayerPedId(), false) then return end
+    if IsPedInAnyVehicle(ped, false) then return end
 
     -- Nor while a reload is playing: the magazine is mid-swap and reads as
     -- whatever the animation has reached, which is not a number to build a
     -- reserve calculation on.
-    if IsPedReloading(PlayerPedId()) then return end
+    if IsPedReloading(ped) then return end
 
-    -- THE CLIP IS THE ONLY NUMBER READ OFF THE ENGINE, and the reserve is
-    -- derived from it SERVER-SIDE.
+    -- THE TOTAL IS THE NUMBER THAT MATTERS. The clip is only the split.
     --
-    -- The previous version computed reserve as `GetAmmoInPedWeapon - clip`,
-    -- on the documented assumption that the first is a TOTAL including the
-    -- magazine. On this build it does not behave that way: firing does not
-    -- move it, so subtracting a shrinking clip made the reserve GROW -- which
-    -- is the "12 is increasing per shot" report exactly. Worse, that inflated
-    -- number then fed reapplyAmmo, which topped the gun back up: the unlimited
-    -- ammo (user, 2026-08-06).
+    -- Four rounds of this bug were spent watching the wrong number. The model
+    -- before this one reported GetAmmoInClip and let the server infer firing
+    -- from the direction it moved -- but /brprobe raw showed the magazine
+    -- pinned at 5 while GetAmmoInPedWeapon climbed by one per shot, so the one
+    -- number we trusted was the one that never moved (user, 2026-08-06).
     --
-    -- A magazine count is something the engine reports honestly, so that is
-    -- all we send. The server watches it: DOWN is firing (the reserve is
-    -- untouched), UP is a reload (the reserve pays for it). No assumption
-    -- about any other native's semantics survives in this path.
-    local ped = PlayerPedId()
+    -- ox_inventory -- the inventory most FiveM servers actually run -- watches
+    -- GetAmmoInPedWeapon and guards it with `if currentAmmo < weaponAmmo`: it
+    -- refuses increases outright rather than explaining them. That guard is the
+    -- whole answer. The total is what firing consumes, a reload only moves
+    -- rounds between the two halves of it, and any RISE is by definition not
+    -- something the player did.
+    --
+    -- So: decrease-only on the total, and the clip rides along purely so the
+    -- server can keep the HUD's split honest.
+    local granted = math.floor((slot.clip or 0) + reserveFor(slot))
+    local total   = GetAmmoInPedWeapon(ped, hash) or 0
+
+    -- THE CLAMP, and the reason this is now immune to whatever is doing it.
+    -- The server said we hold `granted` rounds. The engine holding MORE than
+    -- that is impossible under honest play, so it is written back down instead
+    -- of being explained -- which fixes the runaway at the ped as well as in
+    -- the counter. Never upward: writing ammo up is what produced the
+    -- unlimited-ammo round.
+    if total > granted then
+        SetPedAmmo(ped, hash, granted)
+        total = granted
+    end
+
+    local now = GetGameTimer()
+    if now - lastReport.at < 500 then return end
+    lastReport.at = now
+
     -- GET_AMMO_IN_CLIP is a BOOL with an out-param, so Lua gets two returns.
     local _, clip = GetAmmoInClip(ped, hash)
-    clip = math.max(0, clip or 0)
+    clip = math.max(0, math.min(clip or 0, total))
 
-    if clip == lastReport.clip then return end
-    lastReport.clip = clip
+    -- No baseline yet (weapon just switched): take one and say nothing.
+    if lastReport.total < 0 then
+        lastReport.total, lastReport.clip = total, clip
+        return
+    end
 
-    TriggerServerEvent(BR.Net.INV_AMMO, { slot = inv.active, clip = clip })
+    -- Nothing moved, or the total went UP. Either way there is nothing to tell
+    -- the server -- and a rise must not be forwarded even as a split change,
+    -- or it arrives as a reload the reserve did not pay for.
+    if total > lastReport.total then return end
+    if total == lastReport.total and clip == lastReport.clip then return end
+
+    lastReport.total, lastReport.clip = total, clip
+    TriggerServerEvent(BR.Net.INV_AMMO, {
+        slot = inv.active, total = total, clip = clip,
+    })
 
     -- The display follows immediately rather than waiting for the round trip.
     -- The clip is read straight off the gun, so showing it is the HUD agreeing

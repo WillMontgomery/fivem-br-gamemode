@@ -35,11 +35,11 @@ BR.Config.Map.POIs = {
     { id = 'arena',       name = 'Maze Bank Arena',  x =  -250.0, y = -1900.0, z =  24.0, radius = 220.0, tier = 2 },
     { id = 'grove',       name = 'Grove Street',     x =   105.0, y = -1885.0, z =  21.0, radius = 200.0, tier = 2 },
     { id = 'terminal',    name = 'Terminal',         x =  1050.0, y = -2500.0, z =   6.0, radius = 280.0, tier = 2 },
-    { id = 'murrieta',    name = 'Murrieta Heights', x =  1030.0, y = -1700.0, z =  30.0, radius = 200.0, tier = 1 },
+    { id = 'murrieta',    name = 'Murrieta Heights', x =  1180.0, y = -1780.0, z =  30.0, radius = 200.0, tier = 1 },
     { id = 'elburro',     name = 'El Burro Heights', x =  1370.0, y = -2100.0, z =  32.0, radius = 200.0, tier = 1 },
     { id = 'littleseoul', name = 'Little Seoul',     x =  -640.0, y = -1100.0, z =  22.0, radius = 220.0, tier = 2 },
     { id = 'morningwood', name = 'Morningwood',      x = -1310.0, y =  -830.0, z =  30.0, radius = 200.0, tier = 1 },
-    { id = 'golf',        name = 'GWC Golf Club',    x = -1120.0, y =    30.0, z =  50.0, radius = 220.0, tier = 1 },
+    { id = 'golf',        name = 'GWC Golf Club',    x = -1050.0, y =    80.0, z =  50.0, radius = 220.0, tier = 1 },
 
     -- Vinewood and the hills
     { id = 'vinewood',    name = 'Vinewood Bowl',    x =   700.0, y =  1200.0, z = 350.0, radius = 220.0, tier = 3 },
@@ -47,7 +47,7 @@ BR.Config.Map.POIs = {
     { id = 'observatory', name = 'Galileo Observatory', x = -410.0, y = 1200.0, z = 330.0, radius = 200.0, tier = 2 },
     { id = 'casino',      name = 'Diamond Casino',   x =   925.0, y =    46.0, z =  80.0, radius = 220.0, tier = 3 },
     { id = 'landact',     name = 'Land Act Dam',     x =  1660.0, y =   -30.0, z = 110.0, radius = 200.0, tier = 1 },
-    { id = 'ulsa',        name = 'ULSA Campus',      x = -1600.0, y =   200.0, z =  60.0, radius = 220.0, tier = 1 },
+    { id = 'ulsa',        name = 'ULSA Campus',      x = -1750.0, y =   350.0, z =  60.0, radius = 220.0, tier = 1 },
 
     -- The west coast
     { id = 'kortz',       name = 'Kortz Center',     x = -2245.0, y =   265.0, z = 170.0, radius = 220.0, tier = 2 },
@@ -87,10 +87,10 @@ BR.Config.Map.POIs = {
     { id = 'chiliad_trail', name = 'Chiliad Trailhead', x =   -80.0, y =  4900.0, z = 250.0, radius = 220.0, tier = 1 },
     { id = 'cassidy',     name = 'Cassidy Creek',    x = -1000.0, y =  4400.0, z =  50.0, radius = 240.0, tier = 1 },
     { id = 'tataviam',    name = 'Tataviam Mountains', x =  2600.0, y =  2100.0, z = 150.0, radius = 240.0, tier = 1 },
-    { id = 'braddock',    name = 'Braddock Pass',    x =  1750.0, y =  4900.0, z =  40.0, radius = 220.0, tier = 1 },
+    { id = 'braddock',    name = 'Braddock Pass',    x =  2050.0, y =  4550.0, z =  40.0, radius = 220.0, tier = 1 },
     { id = 'altruist',    name = 'Altruist Camp',    x = -1150.0, y =  4900.0, z = 220.0, radius = 200.0, tier = 2 },
     { id = 'northchum',   name = 'North Chumash',    x = -2600.0, y =  3100.0, z =  10.0, radius = 220.0, tier = 1 },
-    { id = 'catfish',     name = 'Catfish View',     x =  3450.0, y =  5150.0, z =  25.0, radius = 220.0, tier = 1 },
+    { id = 'catfish',     name = 'Catfish View',     x =  2750.0, y =  3350.0, z =  35.0, radius = 220.0, tier = 1 },
     { id = 'sanchianski', name = 'San Chianski Range', x =  3200.0, y =  2400.0, z =  60.0, radius = 240.0, tier = 1 },
 
     -- The eastern desert
@@ -99,6 +99,56 @@ BR.Config.Map.POIs = {
     { id = 'quarry',      name = 'Davis Quartz Quarry', x = 2950.0, y = 2780.0, z =  40.0, radius = 260.0, tier = 2 },
     { id = 'palmer',      name = 'Palmer-Taylor Power Station', x = 2780.0, y = 1520.0, z = 32.0, radius = 240.0, tier = 2 },
     { id = 'palomino',    name = 'Palomino Highlands', x = 2400.0, y = 1600.0, z =  40.0, radius = 240.0, tier = 1 },
+
+    -- THE BACKCOUNTRY: 25 POIs sited in the gaps BETWEEN the road corridors
+    -- (user call, 2026-08-06: "all of your POIs seem centered around roads --
+    -- the largest gap we have is the space between the roads").
+    --
+    -- Everything above grew from the map's named places, and named places in
+    -- GTA are on roads, so the authored set inherited the road network's shape:
+    -- travel a highway and you cross POI after POI, leave it and there is
+    -- nothing for two kilometres. These are chosen the other way round -- from
+    -- the empty interiors -- and `tools/check_pois.lua` gates the result on
+    -- distance to the nearest road polyline as well as to the nearest POI.
+    --
+    -- Tier 1 almost throughout: the point is a reason to come off the highway,
+    -- not a reason to skip Sandy Shores.
+
+    -- West: the Tongva / Zancudo interior, between the Great Ocean Highway and
+    -- Route 68.
+    { id = 'mtjosiah',    name = 'Mount Josiah',     x = -1250.0, y =  1850.0, z = 190.0, radius = 220.0, tier = 1 },
+    { id = 'baytree',     name = 'Baytree Canyon',   x =  -800.0, y =  1550.0, z = 190.0, radius = 200.0, tier = 1 },
+    { id = 'tongva_v',    name = 'Tongva Valley',    x = -1900.0, y =  1350.0, z =  90.0, radius = 220.0, tier = 1 },
+    { id = 'pacific_r',   name = 'Pacific Ridge',    x = -2800.0, y =  1350.0, z =  40.0, radius = 200.0, tier = 1 },
+    { id = 'banham_w',    name = 'Banham Bluffs',    x = -2900.0, y =  1900.0, z =  25.0, radius = 200.0, tier = 1 },
+    { id = 'lagozancudo', name = 'Lago Zancudo',     x = -1750.0, y =  2800.0, z =  20.0, radius = 220.0, tier = 1 },
+    { id = 'zancudo_r',   name = 'Zancudo River',    x = -1450.0, y =  3450.0, z =  15.0, radius = 220.0, tier = 1 },
+
+    -- Centre: the Great Chaparral and the hills either side of Vinewood.
+    { id = 'hills_e',     name = 'East Vinewood Hills', x = 1150.0, y = 1400.0, z = 160.0, radius = 220.0, tier = 1 },
+    { id = 'chaparral_n', name = 'North Chaparral',  x =  -700.0, y =  3000.0, z =  90.0, radius = 240.0, tier = 1 },
+    { id = 'harmony_n',   name = 'North Harmony Ridge', x = 300.0, y =  3100.0, z =  90.0, radius = 220.0, tier = 1 },
+    { id = 'zancudo_f',   name = 'Zancudo Flats',    x =  -350.0, y =  3950.0, z =  20.0, radius = 220.0, tier = 1 },
+    { id = 'dryfields',   name = 'Senora Dry Fields', x = 2450.0, y =  3000.0, z =  50.0, radius = 240.0, tier = 1 },
+
+    -- North-west: the Paleto forest, off the coast road and off Senora.
+    { id = 'paleto_f',    name = 'Paleto Forest',    x =  -950.0, y =  5450.0, z = 130.0, radius = 240.0, tier = 1 },
+    { id = 'graybeard',   name = 'Graybeard Woods',  x = -1750.0, y =  5150.0, z =  50.0, radius = 220.0, tier = 1 },
+    { id = 'raton_n',     name = 'North Raton Canyon', x = -1900.0, y = 4700.0, z =  30.0, radius = 200.0, tier = 1 },
+    { id = 'calafia',     name = 'Calafia Bridge',   x = -1000.0, y =  6100.0, z =  35.0, radius = 220.0, tier = 2 },
+
+    -- The Chiliad massif, on every face of it.
+    { id = 'chiliad_ridge', name = 'Chiliad Ridge',  x =   150.0, y =  5450.0, z = 400.0, radius = 220.0, tier = 1 },
+    { id = 'chiliad_e',   name = 'Chiliad East Slope', x = 1150.0, y =  5350.0, z = 160.0, radius = 220.0, tier = 1 },
+    { id = 'alamo_n',     name = 'North Alamo Shore', x =  600.0, y =  4650.0, z =  35.0, radius = 220.0, tier = 1 },
+    { id = 'procopio_n',  name = 'Cove Road',        x =   900.0, y =  6300.0, z =  40.0, radius = 200.0, tier = 1 },
+
+    -- North-east: the Gordo massif and the San Chianski coast.
+    { id = 'mtgordo_w',   name = 'Gordo Ravine',     x =  2400.0, y =  5400.0, z = 150.0, radius = 220.0, tier = 1 },
+    { id = 'gordo_s',     name = 'Mount Gordo South Face', x = 2650.0, y = 4950.0, z = 130.0, radius = 220.0, tier = 1 },
+    { id = 'senora_n',    name = 'North Senora Flats', x = 2500.0, y =  4300.0, z =  40.0, radius = 240.0, tier = 2 },
+    { id = 'mthaan',      name = 'Mount Haan',       x =  3100.0, y =  4500.0, z = 110.0, radius = 220.0, tier = 2 },
+    { id = 'eastbeach',   name = 'East Coast Bluffs', x = 3600.0, y =  4350.0, z =  30.0, radius = 200.0, tier = 1 },
 }
 
 --- Major road corridors, as polylines.

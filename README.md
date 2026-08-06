@@ -33,7 +33,7 @@ matches run at once in separate routing buckets, sharing the warmup pad and
 watching each other's flights take off. The Battle Bus flies an authored tour
 over Los Santos and everyone skydives out wherever they choose. On the ground
 there is loot: weapons, ammo, shields, throwables and chests scattered across
-~49 points of interest and along the highways between them, streamed to each
+86 points of interest and along the highways between them, streamed to each
 client cell by cell as they move. When the last player lands, the match goes
 live and the storm starts — a shrinking circle homed on a point of interest
 near the flight path, with a rendered wall, map circles, screen effects and
@@ -132,7 +132,7 @@ actually is.
 
 | Term | Meaning |
 |---|---|
-| **POI** | Point of interest: ~49 named places (`br_lib/config/map.lua`) with a tier that drives loot density. They double as storm-anchor candidates. |
+| **POI** | Point of interest: 86 places (`br_lib/config/map.lua`) with a tier that drives loot density. 61 are north of the city, and 25 of those are **backcountry** — sited from the empty ground *between* the road corridors rather than from a place name, because named places are all on roads and the authored set had inherited the road network's shape. `tools/check_pois.lua` gates the spacing and the distance to the nearest corridor. They double as storm-anchor candidates. |
 | **Anchor** | The place a match's whole storm sequence homes on. Picked at warmup: one random waypoint of this match's tour, then one random POI 500–1500 units off it — route-coupled, always on land, never a pattern. |
 | **Record** | The one table the server publishes per phase: current circle, target circle, timestamps, dps. Whole-record broadcasts only, never incremental mutation. |
 | **Solver** | `BR.StormAt(record, now)` — a pure function both sides run to get the circle at any instant. A shrinking storm costs zero per-frame network traffic. |
@@ -155,7 +155,46 @@ actually is.
 | **Warmup loot** | One layout on the Cayo Perico pad, shared by every concurrent match — the pad is a communal routing bucket, so a per-match layout would put two players side by side seeing different crates. Looted crates respawn on a timer, and everything found there is wiped at wheels-up. |
 | **Slots** | Five, matching the `slot1`–`slot5` keybinds, plus **slot 0: fists** — always present, never fillable, left of slot 1 on the bar and part of the scroll ring. Weapons, throwables and consumables occupy a slot; ammo lives in a separate capped pool. Picking anything up with no free slot swaps it into the active slot and drops what was there onto the ground; nothing is ever refused, because reaching for an item means wanting it more than what is in hand. |
 | **Active slot** | The one thing the ped is holding. Every switch is `RemoveAllPedWeapons` + `GiveWeaponToPed`, so the weapon wheel cannot drift out of agreement with the inventory — and it is suspended while airborne, because that call would take the parachute with it. |
-| **Ammo reports** | The one number only the client can observe before M6 validates shots. Reports are accepted **only when they lower** the stored value, so the worst a liar can do is disarm themselves. |
+| **Ammo reports** | The one number only the client can observe before M6 validates shots. Reports are accepted **only when they lower** the stored value, so the worst a liar can do is disarm themselves. See below — the choice of *which* number cost five rounds. |
+
+#### The ammo model, and the four models before it
+
+The client reports **`GetAmmoInPedWeapon` — the total, magazine included** — and
+the server treats it as decrease-only. That is the whole rule:
+
+```
+FIRING   lowers the total.                    reserve = total - clip
+RELOAD   does not change the total at all.    (the split moves, nothing is spent)
+PICKUP   raises it, and the SERVER did that.  a client reporting a rise is refused
+```
+
+Everything else falls out of it. The reserve is never reported: it is what is
+left once the magazine comes out of the total, so an empty pool cannot conjure
+a magazine because there is nothing for the arithmetic to take it from.
+
+This looks obvious and was not. The models before it each tried to infer *what
+the player did* from a number, and each broke on a different engine quirk:
+computing the reserve as `GetAmmoInPedWeapon - clip` made it grow as the
+magazine shrank, which fed straight back into the ped as unlimited ammo;
+reporting the magazine alone and reading a rise as a reload worked until
+`/brprobe raw` showed the magazine **pinned at 5 while the total climbed by one
+per shot**, with every one of our own writes suspended.
+
+The answer came from reading [ox_inventory](https://github.com/overextended/ox_inventory),
+which guards its ammo read with `if currentAmmo < weaponAmmo` — it refuses
+increases rather than explaining them. Two consequences here:
+
+- **The client clamps the ped.** If the engine ever holds more than the server
+  granted, `SetPedAmmo` writes it back down. That kills the runaway at the ped
+  as well as in the counter, whatever is causing it. Never upward — writing
+  ammo up is what produced the unlimited-ammo round.
+- **`GiveWeaponToPed` is called with ammo 0**, then `SetPedAmmo` sets the
+  holding. That native *adds* rounds to a weapon the ped already has, so
+  passing the real count re-granted a full holding on every re-apply.
+
+Infinite ammo and infinite-ammo-clip are asserted **off every tick**, not once
+per weapon grant: the raw probe showed the flag surviving a grant-time clear.
+Two natives a tick is cheaper than finding out what re-sets it.
 
 ### Health units
 
@@ -196,16 +235,16 @@ differ every match** — `brlootseed <n>` pins one when you need to debug the
 same map twice. The seed never leaves the server: a client that could replay
 it would know where every item is.
 
-**How much, and where.** For each of the 49 POIs, by tier:
+**How much, and where.** For each of the 86 POIs, by tier:
 
 ```
-crates(tier)     = 9 | 14 | 22          (tier 1 | 2 | 3)
+crates(tier)     = 20 | 20 | 24          (tier 1 | 2 | 3)
 floor items(tier)= 10 | 16 | 28
 ```
 
 Crates land uniformly in a disc of `radius × 0.75`, floor items in
 `radius × 0.92` — off the rim, where a first-pass radius is most likely to
-have overshot into water or a cliff. Then 120 roadside filler items along the
+have overshot into water or a cliff. Then 420 roadside filler items along the
 authored corridors in `BR.Config.Map.Roads`, offset **8–22 m** perpendicular
 to the centreline, on one side or the other, never on it. Plus 3 crates per
 player, spawned when they land, 55–130 m out — the inner radius is the design:

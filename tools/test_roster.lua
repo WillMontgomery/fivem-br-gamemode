@@ -3611,13 +3611,18 @@ end
 
 describe('inv.ammo')
 do
-    -- THE CLIP IS REPORTED, THE RESERVE IS DEDUCED. The client sends the one
-    -- number it can read honestly; the direction it moves says what happened.
+    -- THE TOTAL IS AUTHORITATIVE AND DECREASE-ONLY. The clip is only the split.
     --
-    -- The old model had the client compute the reserve as
-    -- `GetAmmoInPedWeapon - clip`. On this build that first number does not
-    -- move when firing, so a shrinking clip made the reserve GROW -- and the
-    -- growth fed straight back into the ped as free ammo (user, 2026-08-06).
+    -- Two models came before this one and both tried to work out what the
+    -- player DID from a single number. The first computed the reserve as
+    -- `GetAmmoInPedWeapon - clip`; the second reported the magazine alone and
+    -- read a rise as a reload. Both collapse the moment one of those natives
+    -- misbehaves -- and one did: the magazine sat frozen while the total
+    -- climbed by one per shot (user, 2026-08-06).
+    --
+    -- So nothing is inferred any more. Firing lowers the total, a reload only
+    -- moves rounds between the halves of it, and a RISE is refused rather than
+    -- explained -- the same guard ox_inventory uses.
     lootMatch()
     BR.Inv.reset(1)
     local pistol = BR.Config.WeaponById['pistol']
@@ -3625,48 +3630,74 @@ do
                      count = 1, clip = pistol.clip })
     local inv = BR.Inv.of(1)
     inv.ammo[BR.AmmoType.LIGHT] = 40
+    local total = pistol.clip + 40
 
-    -- FIRING: the magazine empties, the reserve is untouched.
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, clip = pistol.clip - 5 })
-    ok(inv.slots[1].clip == pistol.clip - 5, 'a lower clip count applies')
+    -- FIRING: five rounds leave the world. The magazine falls with the total.
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = total - 5, clip = pistol.clip - 5 })
+    ok(inv.slots[1].clip == pistol.clip - 5, 'firing empties the magazine',
+        tostring(inv.slots[1].clip))
     ok(inv.ammo[BR.AmmoType.LIGHT] == 40,
-        'and firing does not touch the reserve',
+        'and does not touch the reserve',
         tostring(inv.ammo[BR.AmmoType.LIGHT]))
 
-    -- RELOADING: the reserve pays for exactly the rounds that went in.
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, clip = pistol.clip })
+    -- RELOADING: the total does not move at all. The split does, and the
+    -- reserve pays exactly the rounds that went into the magazine.
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = total - 5, clip = pistol.clip })
     ok(inv.slots[1].clip == pistol.clip, 'a reload fills the magazine')
     ok(inv.ammo[BR.AmmoType.LIGHT] == 35,
         'and the reserve pays exactly the difference',
         tostring(inv.ammo[BR.AmmoType.LIGHT]))
 
-    -- AN EMPTY RESERVE CANNOT CONJURE A MAGAZINE. This is the whole reason
-    -- the reserve is deduced here rather than reported: a client claiming a
-    -- full clip out of nothing gets only what the pool actually held.
+    -- A RISING TOTAL IS REFUSED. This is the entire fix: whatever was
+    -- inflating the engine's number, the server simply does not believe it.
+    local beforeClip = inv.slots[1].clip
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = total + 500, clip = pistol.clip })
+    ok(inv.ammo[BR.AmmoType.LIGHT] == 35,
+        'a client cannot report itself more ammo',
+        tostring(inv.ammo[BR.AmmoType.LIGHT]))
+    ok(inv.slots[1].clip == beforeClip, 'nor change anything by trying')
+
+    -- AN EMPTY RESERVE CANNOT CONJURE A MAGAZINE. The reserve is what is LEFT
+    -- once the magazine comes out of the total, so there is nothing for the
+    -- arithmetic to take it from.
     inv.ammo[BR.AmmoType.LIGHT] = 2
     inv.slots[1].clip = 0
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, clip = pistol.clip })
-    ok(inv.slots[1].clip == 2, 'a reload is capped by the reserve',
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 2, clip = pistol.clip })
+    ok(inv.slots[1].clip == 2, 'a reload is capped by what the reserve held',
         tostring(inv.slots[1].clip))
     ok(inv.ammo[BR.AmmoType.LIGHT] == 0, 'which is now empty')
 
     -- And a magazine cannot exceed the weapon's own capacity.
     inv.ammo[BR.AmmoType.LIGHT] = 500
     inv.slots[1].clip = 0
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, clip = 9999 })
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 500, clip = 9999 })
     ok(inv.slots[1].clip == pistol.clip, 'a magazine cannot hold more than a magazine',
         tostring(inv.slots[1].clip))
+    ok(inv.ammo[BR.AmmoType.LIGHT] == 500 - pistol.clip,
+        'and everything above it stays in the reserve',
+        tostring(inv.ammo[BR.AmmoType.LIGHT]))
+
+    -- RUNNING DRY takes the magazine with it: a total below a full magazine
+    -- cannot leave a full magazine behind.
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 3, clip = 3 })
+    ok(inv.slots[1].clip == 3 and inv.ammo[BR.AmmoType.LIGHT] == 0,
+        'the last three rounds are all in the magazine and none in reserve',
+        ('clip %s reserve %s'):format(inv.slots[1].clip,
+                                      inv.ammo[BR.AmmoType.LIGHT]))
 
     -- Nonsense is refused outright.
     local before = inv.slots[1].clip
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, clip = -50 })
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = -50, clip = -50 })
     ok(inv.slots[1].clip == before, 'a negative report is ignored')
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, clip = 1 })
+    ok(inv.slots[1].clip == before, 'and so is one carrying no total at all')
 
-    -- The client is told, because the reserve is now something the SERVER
-    -- worked out -- it has no other way to learn it.
+    -- The client is told, because the reserve is the SERVER's arithmetic -- it
+    -- has no other way to learn it.
+    inv.ammo[BR.AmmoType.LIGHT] = 400
+    inv.slots[1].clip = pistol.clip
     sent = {}
-    inv.slots[1].clip = 0
-    fire(BR.Net.INV_AMMO, 1, { slot = 1, clip = 4 })
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 400, clip = 4 })
     ok(#eventsOf(BR.Net.INV_SET) > 0, 'and the result is pushed back')
 end
 

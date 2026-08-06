@@ -644,6 +644,10 @@ function BR.Native.check()
         SetPedInfiniteAmmo(ped, false, BR.Config.WeaponById['pistol'].hash)
     end)
     probe('SetPedInfiniteAmmoClip',  function() SetPedInfiniteAmmoClip(ped, false) end)
+    -- Stops the engine choosing the weapon on pickup and on empty, which
+    -- otherwise fights the active-slot model for control of the hand.
+    -- ox_inventory sets this for the same reason.
+    probe('SetWeaponsNoAutoswap',    function() SetWeaponsNoAutoswap(true) end)
     -- Crate mass. Measured: PlaceObjectOnGroundProperly is what welds a crate
     -- down, and the default mass is what made the survivor feel like concrete.
     probe('SetObjectPhysicsParams',  function()

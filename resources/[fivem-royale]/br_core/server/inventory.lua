@@ -526,9 +526,11 @@ AddEventHandler(BR.Net.INV_AMMO, function(d)
     local inv = BR.Inv.of(src)
     if not inv or type(d) ~= 'table' then return end
 
-    local slot = math.tointeger(d.slot)
-    local clip = math.tointeger(d.clip)
-    if not slot or not clip or clip < 0 then return end
+    local slot  = math.tointeger(d.slot)
+    local total = math.tointeger(d.total)
+    local clip  = math.tointeger(d.clip)
+    if not slot or not total or not clip then return end
+    if total < 0 or clip < 0 then return end
     if slot < 1 or slot > SLOTS then return end
 
     local s = inv.slots[slot]
@@ -537,23 +539,41 @@ AddEventHandler(BR.Net.INV_AMMO, function(d)
     local w = BR.Config.WeaponById[s.item]
     if not w then return end
 
-    -- A magazine cannot hold more than a magazine.
-    clip = math.min(clip, w.clip or clip)
+    -- ONE NUMBER IS AUTHORITATIVE AND IT IS THE TOTAL.
+    --
+    -- The client reports what the engine says the ped holds for this weapon,
+    -- magazine included. That number is decrease-only here, which is the only
+    -- rule this handler needs:
+    --
+    --   FIRING  lowers the total. The rounds are gone.
+    --   RELOAD  does not change it at all -- it moves rounds from the reserve
+    --           into the magazine, and the split is what `clip` describes.
+    --   PICKUP  raises it, and the server did that itself, so a client
+    --           reporting a rise is either stale or lying. Refused either way.
+    --
+    -- The old version inferred all of this from the magazine count alone,
+    -- treating "clip went up" as a reload to be paid for. That works right up
+    -- until the magazine stops moving -- which is exactly what the engine did
+    -- (user, 2026-08-06) -- and then nothing is measurable at all. This is the
+    -- guard ox_inventory uses for the same reason.
+    local pool     = w.ammo and (inv.ammo[w.ammo] or 0) or 0
+    local wasClip  = s.clip or 0
+    local wasTotal = wasClip + pool
 
-    local was = s.clip or 0
-    if clip == was then return end
+    total = math.min(total, wasTotal)
 
-    if clip > was then
-        -- A RELOAD. Only as many rounds as the pool actually holds, so an
-        -- empty reserve cannot conjure a full magazine.
-        local wanted = clip - was
-        local pool   = w.ammo and (inv.ammo[w.ammo] or 0) or 0
-        local moved  = math.min(wanted, pool)
-        if w.ammo then inv.ammo[w.ammo] = pool - moved end
-        s.clip = was + moved
-    else
-        s.clip = clip
-    end
+    -- The magazine holds no more than a magazine, and no more than the player
+    -- has left in total.
+    clip = math.min(clip, w.clip or total, total)
+
+    if total == wasTotal and clip == wasClip then return end
+
+    -- The reserve is not reported and never has been: it is what is left over
+    -- once the magazine is taken out of the total. An empty pool therefore
+    -- cannot conjure a magazine -- there is nothing for the arithmetic to take
+    -- it from.
+    s.clip = clip
+    if w.ammo then inv.ammo[w.ammo] = total - clip end
 
     -- PUSHED BACK, unlike the old version: the reserve here is now something
     -- the server WORKED OUT rather than something the client told it, so the
