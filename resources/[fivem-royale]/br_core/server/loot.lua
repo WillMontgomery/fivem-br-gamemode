@@ -692,13 +692,24 @@ AddEventHandler(BR.Net.LOOT_FIX, function(d)
     if not m then return end
 
     local item = m.loot.items[id]
-    if not item or item.repaired then return end
+    if not item then return end
+
+    -- ONCE PER ENTRY -- EXCEPT FOR CONTAINERS, which are physical and can be
+    -- pushed around by a vehicle for as long as anyone cares to. A crate whose
+    -- registry position stopped following its prop is a crate you can see and
+    -- cannot open, so those get to keep moving; the per-move bound still
+    -- applies to each step, and a cooldown stops a rolling crate flooding the
+    -- server (user, 2026-08-06).
+    local isContainer = item.kind == 'chest' or item.kind == 'deathbox'
+    if item.repaired and not isContainer then return end
+    if isContainer and GetGameTimer() - (item.fixedAt or 0) < 1500 then return end
 
     -- Must be a place this player is actually looking at, and a small move.
     if not m.loot.subs[src] or not m.loot.subs[src][item.cell] then return end
     if BR.Dist(x, y, item.x, item.y) > FIX_RADIUS then return end
 
     item.repaired = true
+    item.fixedAt = GetGameTimer()
     m.loot.fixed = (m.loot.fixed or 0) + 1
 
     -- Re-index: the correction can cross a cell boundary, and an entry filed

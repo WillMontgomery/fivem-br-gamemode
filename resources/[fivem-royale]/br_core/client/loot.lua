@@ -489,11 +489,38 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.props', function()
     local far  = L.propDistance + (L.propHysteresis or 15.0)
     local live = 0
 
+    local now = GetGameTimer()
+
     for id, e in pairs(entries) do
         local d2 = BR.Dist2(p.x, p.y, e.x, e.y)
         if e.obj then
             live = live + 1
-            if d2 > far * far or not DoesEntityExist(e.obj) then despawn(e) end
+            if d2 > far * far or not DoesEntityExist(e.obj) then
+                despawn(e)
+            elseif isContainer(e) then
+                -- A PUSHED CRATE TAKES ITS ENTRY WITH IT.
+                --
+                -- The prop is physical now, but the REGISTRY position is what
+                -- the prompt, the reach test and the server's claim check all
+                -- use -- so a crate shunted by a car became unopenable, sitting
+                -- in plain sight (user, 2026-08-06). It could hardly be more
+                -- confusing: the thing you can see is not the thing the game
+                -- thinks is there.
+                --
+                -- The client follows the object locally and tells the server,
+                -- which bounds how far it will accept. Rate-limited, because
+                -- a crate rolling down a hill would otherwise send one of
+                -- these per second for as long as it rolls.
+                local c = GetEntityCoords(e.obj)
+                if BR.Dist2(c.x, c.y, e.x, e.y) > 1.0
+                   and now - (e.movedAt or 0) > 2000 then
+                    e.movedAt = now
+                    e.x, e.y, e.z = c.x, c.y, c.z
+                    e.gz, e.gzAt = c.z, now
+                    TriggerServerEvent(BR.Net.LOOT_FIX,
+                        { id = id, x = c.x, y = c.y, z = c.z })
+                end
+            end
         elseif d2 <= near * near and not queued[id] and live + #queue < PROP_MAX then
             queued[id] = true
             queue[#queue + 1] = id
