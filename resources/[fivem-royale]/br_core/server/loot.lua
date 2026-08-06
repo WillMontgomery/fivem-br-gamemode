@@ -193,6 +193,13 @@ end
 -- Lifecycle
 -- --------------------------------------------------------------------------
 
+--- Pinned layout seed, for testing. nil = a fresh layout per match.
+---
+--- Layouts are NOT the same every match by design: the seed folds in the game
+--- timer, so two matches never share a map. That is right for play and
+--- miserable for debugging, hence /brlootseed.
+local pinnedSeed = nil
+
 --- Generate a match's loot.
 ---
 --- Called at WARMUP, not at PLAYING: players land during BUS, and an item that
@@ -205,7 +212,7 @@ function BR.Loot.begin(m, seed)
     -- Folded with a prime of its own, exactly as the storm (7919) and the bus
     -- (104729) do, so two matches minted in the same server millisecond do not
     -- lay out the same map.
-    seed = seed or (GetGameTimer() + m.id * 15485863)
+    seed = seed or pinnedSeed or (GetGameTimer() + m.id * 15485863)
 
     m.loot = {
         seed    = seed,
@@ -421,9 +428,23 @@ local function inReach(e, item)
     local slack = 4.0
     local d = BR.Dist(e.pos.x, e.pos.y, item.x, item.y)
     if d > (L.pickupDistance + slack) then return false end
-    -- Vertical too, generously: a player on the floor above is not reaching
-    -- the rifle downstairs, but a first-pass POI z can be metres out.
-    return math.abs((e.pos.z or 0.0) - (item.z or 0.0)) < 12.0
+
+    -- THE HEIGHT CHECK ONLY APPLIES TO A HEIGHT WE ACTUALLY KNOW.
+    --
+    -- An entry's z is the POI's NOMINAL height until a client ground-probes
+    -- it, and those are authored from map knowledge -- tens of metres out on
+    -- any slope, and a flat 0.0 for roadside filler. Comparing a real player
+    -- z against that refused most legitimate pickups: the first crate you
+    -- reached happened to be near its nominal height, and every one after
+    -- that answered "Too far away" (user, 2026-08-05).
+    --
+    -- Once repaired, the z IS the ground under it, so the check is worth
+    -- having again: it stops someone on the floor above claiming the rifle
+    -- downstairs.
+    if item.repaired then
+        return math.abs((e.pos.z or 0.0) - (item.z or 0.0)) < 12.0
+    end
+    return true
 end
 
 --- Token-bucket rate limit on claims.
@@ -657,6 +678,76 @@ BR.Sched.every(5000, 'loot.sweep', function()
     end)
 end)
 
+-- --------------------------------------------------------------------------
+-- Dev commands
+-- --------------------------------------------------------------------------
+
+--- Pin the layout seed so every match lays out identically.
+RegisterCommand('brlootseed', function(_, args)
+    local n = tonumber(args[1])
+    if args[1] == 'off' or args[1] == 'none' then
+        pinnedSeed = nil
+        print('[br_core] loot seed unpinned -- every match gets a fresh layout')
+        return
+    end
+    if not n then
+        print('  usage: brlootseed <number|off>')
+        print(('  currently %s'):format(pinnedSeed and tostring(pinnedSeed) or 'unpinned'))
+        return
+    end
+    pinnedSeed = math.floor(n)
+    print(('[br_core] loot seed pinned to %d -- takes effect at the next warmup')
+        :format(pinnedSeed))
+end, true)
+
+--- Drop a crate (or any item) at a player's feet, for debugging.
+RegisterCommand('brcrate', function(_, args)
+    local src = tonumber(args[1])
+    if not src then
+        print('  usage: brcrate <serverId> [itemId]')
+        print('    no itemId spawns a full crate; otherwise a single item')
+        return
+    end
+
+    local e = BR.Roster.get(src)
+    if not e or not e.pos then
+        print(('  %s has no sampled position yet'):format(tostring(src)))
+        return
+    end
+    local m = zoneFor(src)
+    if not m then
+        print(('  %d is not anywhere with loot in it (state %s)')
+            :format(src, tostring(e and e.state)))
+        return
+    end
+
+    local stack
+    if args[2] then
+        local w = BR.Config.WeaponById[args[2]]
+        local c = BR.Config.ConsumableById[args[2]]
+        if w then
+            stack = { item = args[2], rarity = w.rarity, count = 1, clip = w.clip,
+                      kind = w.clip and BR.ItemKind.WEAPON or BR.ItemKind.THROWABLE }
+        elseif c then
+            stack = { item = args[2], kind = BR.ItemKind.CONSUMABLE,
+                      rarity = c.rarity, count = 1 }
+        elseif BR.Config.AmmoPickups[args[2]] then
+            stack = { item = args[2], kind = BR.ItemKind.AMMO,
+                      rarity = BR.Rarity.COMMON,
+                      count = BR.Config.AmmoPickups[args[2]].amount }
+        else
+            print(('  unknown item: %s'):format(args[2]))
+            return
+        end
+    else
+        stack = BR.MakeCrate(BR.Rng(GetGameTimer()), 3, e.pos.x, e.pos.y, e.pos.z)
+    end
+
+    local spawned = BR.Loot.spawnStack(m, stack, e.pos.x, e.pos.y, e.pos.z)
+    print(('[br_core] spawned #%s (%s) at %s'):format(
+        tostring(spawned and spawned.id), stack.kind, e.name))
+end, true)
+
 -- The warmup pad refills itself. Whoever queued first must not be able to
 -- strip the island for everyone who arrives after them.
 BR.Sched.every(1000, 'loot.warmupRespawn', function()
@@ -670,8 +761,9 @@ BR.Sched.every(1000, 'loot.warmupRespawn', function()
     for i = #due, 1, -1 do
         if now >= due[i].at then
             local rng = warmupZone.rng
+            local inner = W.minRadius or 12.0
             local a = rng:float() * math.pi * 2.0
-            local r = 25.0 + rng:float() * math.max(1.0, (W.radius or 190.0) - 25.0)
+            local r = inner + rng:float() * math.max(1.0, (W.radius or 170.0) - inner)
             local crate = BR.MakeCrate(rng, due[i].tier,
                 pad.x + math.cos(a) * r, pad.y + math.sin(a) * r, pad.z, nil)
             crate.warmup = true

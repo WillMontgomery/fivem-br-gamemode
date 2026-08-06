@@ -433,11 +433,13 @@ function BR.BuildWarmupLayout(seed)
     local rng = BR.Rng(seed)
 
     local out = {}
+    local inner = W.minRadius or 12.0
     for i = 1, (W.crates or 0) do
-        -- An annulus, not a disc: crates piled on the spawn point would be
-        -- looted before anyone had to walk anywhere.
+        -- An annulus, not a disc: crates piled ON the spawn point would be
+        -- looted before anyone had to walk anywhere. The inner radius is small
+        -- though -- you should be able to see one the moment you land.
         local a = rng:float() * math.pi * 2.0
-        local r = 25.0 + rng:float() * math.max(1.0, W.radius - 25.0)
+        local r = inner + rng:float() * math.max(1.0, W.radius - inner)
         local e = BR.MakeCrate(rng, W.tier or 2,
             pad.x + math.cos(a) * r, pad.y + math.sin(a) * r, pad.z, nil)
         e.id = i

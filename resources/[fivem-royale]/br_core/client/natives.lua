@@ -52,48 +52,45 @@ BR.Native.ChuteState = {
 
 -- ------------------------------------------------------------------- aiming ---
 
---- What is the player looking at?
+--- What is the player standing in front of?
 ---
---- Built for loot ("which crate am I in front of"), but deliberately generic:
+--- Built for loot ("which crate am I facing"), but deliberately generic:
 --- doors, revives, vehicles and interactables all want the same question
 --- answered, and answering it twice in two places is how two systems end up
 --- disagreeing about what the player is pointing at.
 ---
---- Uses the GAMEPLAY CAMERA, not the ped's facing. Those differ by up to 180
---- degrees while looking around, and the player's expectation follows the
---- camera every time -- you interact with what is on screen.
+--- FROM THE PED, NOT THE CAMERA (user call, 2026-08-05). The camera version
+--- lets you loot something by glancing at it while walking past; the ped's
+--- own facing means you have to turn towards the thing, which is what "stand
+--- in front of it" means and what the interaction distance is measured from.
+--- The ray starts at chest height so it clears the crate's own footprint and
+--- angles down slightly, since everything interactable is on the floor.
 ---
 --- The probe is the SYNCHRONOUS variant: it costs more than the asynchronous
 --- one, but the asynchronous one answers on a later frame, and a prompt that
---- appears a frame after you look at something is a prompt that flickers when
---- you sweep past it.
+--- appears a frame after you turn to something is a prompt that flickers.
 ---
---- @param maxDist number   metres ahead of the camera
+--- @param maxDist number   metres ahead of the ped
 --- @param flags integer|nil shapetest flags; default 16 = objects only
 --- @return boolean hit
 --- @return table|nil coords  { x, y, z } where it hit
 --- @return integer entity    the entity hit, or 0
 function BR.Native.aim(maxDist, flags)
-    local cam = GetGameplayCamCoord()
-    local rot = GetGameplayCamRot(2)
+    local ped = PlayerPedId()
+    local p   = GetEntityCoords(ped)
+    local fwd = GetEntityForwardVector(ped)
+    local d   = maxDist or 4.0
 
-    local rz = math.rad(rot.z)
-    local rx = math.rad(rot.x)
-    local cosRx = math.cos(rx)
-    -- GTA's rotation order for a camera direction vector: yaw about Z, pitch
-    -- about X, with Y forward.
-    local dir = {
-        x = -math.sin(rz) * math.abs(cosRx),
-        y =  math.cos(rz) * math.abs(cosRx),
-        z =  math.sin(rx),
-    }
+    -- Chest height forward, ankle height at the far end: a flat ray at chest
+    -- height sails over a crate on the floor, and a flat one at ankle height
+    -- catches every kerb between here and there.
+    local sx, sy, sz = p.x, p.y, p.z + 0.55
+    local ex, ey, ez = p.x + fwd.x * d, p.y + fwd.y * d, p.z - 0.35
 
-    local d = maxDist or 4.0
     local handle = StartExpensiveSynchronousShapeTestLosProbe(
-        cam.x, cam.y, cam.z,
-        cam.x + dir.x * d, cam.y + dir.y * d, cam.z + dir.z * d,
-        flags or 16,          -- 16 = objects
-        PlayerPedId(),        -- ignore ourselves
+        sx, sy, sz, ex, ey, ez,
+        flags or 16,   -- 16 = objects
+        ped,           -- ignore ourselves
         4)
     local _, hit, endCoords, _, entity = GetShapeTestResult(handle)
 

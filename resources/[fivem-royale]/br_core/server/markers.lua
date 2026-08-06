@@ -45,7 +45,11 @@ AddEventHandler(BR.Net.MARKER_SET, function(d)
         owner  = src,
         x      = d.x + 0.0,
         y      = d.y + 0.0,
-        colour = entry.colour,   -- nil in solo; the client picks a default
+        -- The MEMBER index, not the squad colour. entry.colour is shared by
+        -- the whole squad, which made every teammate's destination the same
+        -- colour while their blips were all different (user, 2026-08-05).
+        -- nil in solo; the client falls back to its own colour.
+        i      = BR.Party.memberIndex(src),
     })
 end)
 

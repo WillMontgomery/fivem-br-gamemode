@@ -50,10 +50,12 @@ local SUPPRESS = {
     14, 15,                   -- INPUT_WEAPON_WHEEL_NEXT/PREV (mouse wheel)
 }
 
--- Scroll cycles OUR slots instead. Read as DISABLED controls, which is what
--- they are after the loop above -- the wheel binding is still whatever the
--- player has it set to in GTA's own settings.
-local WHEEL_NEXT, WHEEL_PREV = 14, 15
+-- SCROLL UP CYCLES, SCROLL DOWN DOES NOTHING (user call, 2026-08-05). One
+-- direction through a wrapping cycle reaches every slot and needs no thought
+-- about which way you are going; two directions on a five-item ring is a
+-- decision nobody wants mid-fight. Control 15 is the wheel's "previous",
+-- which is what a scroll UP reports -- 14 (down) stays disabled and inert.
+local WHEEL_UP = 15
 
 --- Can this player's ped be given anything at all?
 ---
@@ -237,11 +239,33 @@ BR.Keys.on('drop', function(pressed)
     TriggerServerEvent(BR.Net.INV_DROP, { slot = inv.active })
 end)
 
+-- THE USE KEY ALWAYS DOES SOMETHING IF THERE IS ANYTHING TO DO.
+--
+-- Strictly, you use what is in your hand. But a player who has just picked up
+-- their first shield potion into slot 2 while a rifle sits in slot 1 presses
+-- the key, nothing happens, and the reasonable conclusion is that the item is
+-- broken (user, 2026-08-05: "there's no way to use it"). So: the active slot
+-- if it is consumable, otherwise the lowest slot that is.
 BR.Keys.on('use', function(pressed)
     if not pressed or not canArm() then return end
+
+    local slot = nil
     local s = inv.slots[inv.active]
-    if not s or s.kind ~= BR.ItemKind.CONSUMABLE then return end
-    TriggerServerEvent(BR.Net.INV_USE, { slot = inv.active })
+    if s and s.kind == BR.ItemKind.CONSUMABLE then
+        slot = inv.active
+    else
+        for i = 1, SLOTS do
+            local c = inv.slots[i]
+            if c and c.kind == BR.ItemKind.CONSUMABLE then slot = i break end
+        end
+    end
+
+    if not slot then return end
+    -- Bring it up first, so the thing being drunk is the thing in hand.
+    if slot ~= inv.active then
+        TriggerServerEvent(BR.Net.INV_SELECT, { slot = slot })
+    end
+    TriggerServerEvent(BR.Net.INV_USE, { slot = slot })
 end)
 
 -- The TAB panel. LUA OWNS WHETHER IT IS OPEN, because Lua owns the cursor:
@@ -319,15 +343,9 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
         DisableControlAction(0, SUPPRESS[i], true)
     end
 
-    -- MOUSE WHEEL CYCLES SLOTS, WRAPPING. Past slot 5 is slot 1 -- a cycle
-    -- with ends is a cycle you have to think about (user, 2026-08-05).
-    local step = 0
-    if IsDisabledControlJustPressed(0, WHEEL_NEXT) then step = 1
-    elseif IsDisabledControlJustPressed(0, WHEEL_PREV) then step = -1 end
-
-    if step ~= 0 then
-        local want = ((inv.active - 1 + step) % SLOTS) + 1
-        TriggerServerEvent(BR.Net.INV_SELECT, { slot = want })
+    -- MOUSE WHEEL UP CYCLES SLOTS, WRAPPING. Past slot 5 is slot 1.
+    if IsDisabledControlJustPressed(0, WHEEL_UP) then
+        TriggerServerEvent(BR.Net.INV_SELECT, { slot = (inv.active % SLOTS) + 1 })
     end
 
     -- While the panel is up the cursor belongs to the panel. Keep-input focus

@@ -431,6 +431,40 @@ BR.Sched.every(500, 'bus.eject', function()
     end)
 end)
 
+--- Tell whoever is already down that the match is waiting on the others.
+---
+--- DRIVEN OFF THE MATCH TICK, not off the landing report. The first version
+--- hung this on DROP_LANDED, which meant it only fired if that event arrived
+--- and if the state flip happened in the same instant -- and the landing
+--- report is the single most historically unreliable message in this project
+--- (the stuck-lander promotion exists because it goes missing). Polling the
+--- roster instead means every path into ALIVE gets the notice, including the
+--- promotion itself.
+---
+--- Once per player per flight; the latch is cleared at BUS entry.
+--- @param m table
+function BR.Bus.landingNotices(m)
+    if m.state ~= BR.MatchState.BUS then return end
+
+    local airborne = BR.Server.countIn(m, function(e)
+        return e.state == BR.PlayerState.FREEFALL
+            or e.state == BR.PlayerState.GLIDE
+            or e.state == BR.PlayerState.BUS
+    end)
+    if airborne <= 0 then return end
+
+    BR.Roster.each(
+        function(e) return e.matchId == m.id
+            and e.state == BR.PlayerState.ALIVE and not e.landNotice end,
+        function(src, e)
+            e.landNotice = true
+            BR.Server.notify(src,
+                'The match will start once all players have landed.', 'info')
+            print(('[br_core] landing notice -> %s (%d): %d still airborne')
+                :format(e.name, src, airborne))
+        end)
+end
+
 -- Landing. FREEFALL -> ALIVE happens when the CLIENT reports touchdown, not
 -- when the match flips to PLAYING -- a player still gliding when the bus
 -- route expires keeps falling, and only becomes fair game on the ground.
@@ -451,28 +485,11 @@ AddEventHandler(BR.Net.DROP_LANDED, function()
         -- moment it means anything.
         if BR.Inv and BR.Inv.grantStarting then BR.Inv.grantStarting(src) end
 
-        -- THE MATCH IS NOT LIVE UNTIL EVERYONE IS DOWN, and a player standing
-        -- in an empty field with no storm and no timer has no way to know
-        -- that -- it reads as the match being broken (user, 2026-08-05).
-        -- Say it out loud, once, and only while it is still true.
-        local m = BR.Server.matchOf(src)
-        if m and m.state ~= BR.MatchState.PLAYING then
-            local airborne = BR.Server.countIn(m, function(e)
-                return e.state == BR.PlayerState.FREEFALL
-                    or e.state == BR.PlayerState.GLIDE
-                    or e.state == BR.PlayerState.BUS
-            end)
-            if airborne > 0 then
-                BR.Server.notify(src,
-                    'The match will start once all players have landed.', 'info')
-            end
-            -- Logged either way: "the landing notice does not work in solos"
-            -- has two very different causes -- nobody else was actually still
-            -- in the air (correct, and the common case testing alone), or the
-            -- count is wrong. This line tells them apart from the console.
-            print(('[br_core] landing notice: match %d state %s, %d still airborne')
-                :format(m.id, m.state, airborne))
-        end
+        -- The "waiting on the others" notice is NOT sent from here -- see
+        -- BR.Bus.landingNotices, driven off the match tick. Hooking it to this
+        -- event meant it depended on the landing report arriving at all, and
+        -- the report has a documented history of going missing (the
+        -- stuck-lander promotion exists precisely because of it).
     else
         -- Refusals are AUDIBLE (the jump handler's rule, applied here after
         -- a landing report vanished into this branch untraced). ALIVE is the

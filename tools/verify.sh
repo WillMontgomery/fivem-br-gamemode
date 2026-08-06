@@ -116,6 +116,25 @@ else
     echo "${GRN}ok${RST}   no unmarked scope-poisoned natives (${marked} file(s) with marked exceptions)"
 fi
 
+# --- 3b. forward-local gate ----------------------------------------------------
+#
+# A `local function f` called from ABOVE its own declaration resolves as a
+# GLOBAL, which is nil. No syntax error, luac -p is happy, and the unit tests
+# never reach it because these are client files. In the game the call throws,
+# the loop registry suspends that callback after five errors, and a whole
+# subsystem goes silent behind one console line.
+#
+# This has cost two playtest rounds -- most recently BR.Loot's ground probe,
+# which took every crate on the map with it.
+
+echo "${DIM}== forward locals ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    # shellcheck disable=SC2046
+    "$LUA" tools/check_forward_locals.lua $(find resources -name '*.lua' | sort) || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
 # --- 4. manifest coverage -----------------------------------------------------
 #
 # Every .lua under a resource must be declared in its fxmanifest, or it simply

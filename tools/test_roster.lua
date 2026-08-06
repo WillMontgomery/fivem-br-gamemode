@@ -1468,21 +1468,40 @@ do
         return out
     end
 
+    -- POLLED, NOT HOOKED TO THE LANDING REPORT. The notice comes off the match
+    -- tick now: hanging it on DROP_LANDED meant it only fired if that event
+    -- arrived, and that event has a documented history of going missing (the
+    -- stuck-lander promotion exists because of it).
     sent = {}
     fire(BR.Net.DROP_LANDED, 1)
-    local first = noticesTo(1)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+
     local told = false
-    for _, n in ipairs(first) do
+    for _, n in ipairs(noticesTo(1)) do
         if n.text and n.text:find('landed') then told = true end
     end
     ok(told, 'the first player down is told the match is waiting on the others')
 
+    -- ONCE. The tick runs four times a second; a notice per tick would be a
+    -- wall of toasts for the whole descent.
+    sent = {}
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    local repeated = 0
+    for _, n in ipairs(noticesTo(1)) do
+        if n.text and n.text:find('landed') then repeated = repeated + 1 end
+    end
+    ok(repeated == 0, 'and only once, however many ticks pass',
+        ('%d repeats'):format(repeated))
+
     -- The LAST player down must not be told to wait for himself.
     sent = {}
     fire(BR.Net.DROP_LANDED, 2)
-    local second = noticesTo(2)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
     local toldAgain = false
-    for _, n in ipairs(second) do
+    for _, n in ipairs(noticesTo(2)) do
         if n.text and n.text:find('landed') then toldAgain = true end
     end
     ok(not toldAgain, 'the last player down is told nothing -- nobody is left')
@@ -1500,12 +1519,25 @@ do
     BR.Roster.setState(2, BR.PlayerState.FREEFALL)
     sent = {}
     fire(BR.Net.DROP_LANDED, 1)
-    local live = noticesTo(1)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
     local liveTold = false
-    for _, n in ipairs(live) do
+    for _, n in ipairs(noticesTo(1)) do
         if n.text and n.text:find('landed') then liveTold = true end
     end
     ok(not liveTold, 'a live match never announces a wait')
+
+    -- A SECOND FLIGHT RE-ARMS IT. The latch lives on the roster entry and is
+    -- cleared at BUS entry; without that, a player told once would never be
+    -- told again for the rest of the session.
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    BR.Roster.get(1).landNotice = true      -- as if a previous flight told them
+    forceState(BR.MatchState.BUS)
+    ok(BR.Roster.get(1).landNotice == nil, 'the latch is cleared at wheels-up')
 end
 
 describe('party.squadpos')
@@ -3027,8 +3059,27 @@ do
     end
     ok(got[1] ~= nil and got[2] ~= nil and got[3] == nil,
         'a squad marker reaches owner and squadmates, nobody else')
-    ok(got[2] and got[2].colour == '#F87171' and got[2].x == 100.0,
-        'and carries the owner colour and position')
+    -- The MEMBER INDEX, not the squad colour. entry.colour is shared by the
+    -- whole squad, so relaying it made every teammate's destination marker the
+    -- same colour while their minimap dots were all different (user,
+    -- 2026-08-05). The index keys BR.SquadColours, which the beacons use too.
+    ok(got[2] and got[2].i ~= nil and got[2].x == 100.0,
+        'and carries the owner MEMBER INDEX and position',
+        tostring(got[2] and got[2].i))
+    ok(got[2] and got[2].colour == nil,
+        'and no longer carries the squad-wide colour')
+
+    -- Two members of one squad must get DIFFERENT indices, or the whole point
+    -- of the change is lost.
+    sent = {}
+    fire(BR.Net.MARKER_SET, 2, { x = 300.0, y = 400.0 })
+    local other
+    for _, s in ipairs(eventsOf(BR.Net.MARKER_SYNC)) do
+        if s.target == 1 then other = s.args[1] end
+    end
+    ok(other and other.i ~= got[2].i,
+        'two squadmates get distinct member indices',
+        ('%s vs %s'):format(tostring(got[2].i), tostring(other and other.i)))
 
     sent = {}
     fire(BR.Net.MARKER_CLEAR, 1)

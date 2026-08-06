@@ -1191,7 +1191,9 @@ do
         local d = BR.Dist(e.x, e.y, pad.x, pad.y)
         -- An annulus: crates piled on the spawn point would be looted before
         -- anyone had to walk anywhere.
-        if d < 24.0 then tooClose = tooClose + 1 end
+        if d < BR.Config.Loot.warmup.minRadius - 0.5 then
+            tooClose = tooClose + 1
+        end
         if d > BR.Config.Loot.warmup.radius + 1.0 then tooFar = tooFar + 1 end
         if e.kind ~= 'chest' or not e.warmup then notCrate = notCrate + 1 end
         if not e.contents or #e.contents == 0 then notCrate = notCrate + 1 end

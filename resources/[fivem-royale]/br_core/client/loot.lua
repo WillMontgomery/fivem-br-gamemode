@@ -99,31 +99,12 @@ local function labelOf(e)
     return name
 end
 
---- Ground height under an entry, cached. The server has no ground probe (the
---- native is client-side), so the authored z is only ever a hint -- and for
---- roadside filler it is not even that.
---- @param e table
---- @return number
-local function groundZ(e)
-    local now = GetGameTimer()
-    if e.gz and now - (e.gzAt or 0) < 10000 then return e.gz end
-    local from = math.max((e.z or 0.0) + 50.0, 300.0)
-    local ok, gz = solidGround(e.x, e.y, from)
-    e.gzOk = ok
-    e.gz   = ok and gz or (e.z or 0.0)
-    e.gzAt = now
-    return e.gz
-end
-
-local function despawn(e)
-    if e.obj then
-        byObject[e.obj] = nil
-        if DoesEntityExist(e.obj) then DeleteEntity(e.obj) end
-    end
-    e.obj = nil
-end
-
 --- Is a point dry land with something solid under it?
+---
+--- DECLARED BEFORE groundZ ON PURPOSE. A `local function` referenced above its
+--- own declaration resolves as a GLOBAL, which is nil -- and a nil call inside
+--- a loop callback gets that callback suspended after five errors, which is
+--- exactly how every crate on the map disappeared once already.
 --- @param x number
 --- @param y number
 --- @param fromZ number
@@ -164,6 +145,30 @@ local function dryPointNear(e)
         if ok then return x, y, gz end
     end
     return nil
+end
+
+--- Ground height under an entry, cached. The server has no ground probe (the
+--- native is client-side), so the authored z is only ever a hint -- and for
+--- roadside filler it is not even that.
+--- @param e table
+--- @return number
+local function groundZ(e)
+    local now = GetGameTimer()
+    if e.gz and now - (e.gzAt or 0) < 10000 then return e.gz end
+    local from = math.max((e.z or 0.0) + 50.0, 300.0)
+    local ok, gz = solidGround(e.x, e.y, from)
+    e.gzOk = ok
+    e.gz   = ok and gz or (e.z or 0.0)
+    e.gzAt = now
+    return e.gz
+end
+
+local function despawn(e)
+    if e.obj then
+        byObject[e.obj] = nil
+        if DoesEntityExist(e.obj) then DeleteEntity(e.obj) end
+    end
+    e.obj = nil
 end
 
 local function forget(id)
@@ -596,6 +601,58 @@ end)
 -- --------------------------------------------------------------------------
 -- Debug
 -- --------------------------------------------------------------------------
+
+-- --------------------------------------------------------------------------
+-- Dev: loot blips
+-- --------------------------------------------------------------------------
+
+-- OFF BY DEFAULT AND NEVER ON IN A REAL MATCH. A blip per item is a wallhack
+-- with a nice interface; this exists so a developer can find the crate they
+-- are trying to debug. /brlootblips toggles it.
+local blipsOn = false
+local blips   = {}   -- [id] = handle
+
+local function clearBlips()
+    for id, b in pairs(blips) do
+        if DoesBlipExist(b) then RemoveBlip(b) end
+        blips[id] = nil
+    end
+end
+
+BR.Loop.register(BR.Loop.SLOW, 'loot.devblips', function()
+    if not blipsOn then
+        if next(blips) then clearBlips() end
+        return
+    end
+
+    for id, e in pairs(entries) do
+        if not blips[id] or not DoesBlipExist(blips[id]) then
+            local b = AddBlipForCoord(e.x, e.y, e.gz or e.z or 0.0)
+            SetBlipSprite(b, isContainer(e) and 68 or 1)
+            SetBlipScale(b, isContainer(e) and 0.7 or 0.45)
+            SetBlipColour(b, isHusk(e) and 0 or 5)
+            SetBlipAsShortRange(b, true)
+            blips[id] = b
+        end
+    end
+    for id, b in pairs(blips) do
+        if not entries[id] then
+            if DoesBlipExist(b) then RemoveBlip(b) end
+            blips[id] = nil
+        end
+    end
+end)
+
+RegisterCommand('brlootblips', function()
+    blipsOn = not blipsOn
+    if not blipsOn then clearBlips() end
+    print(('[br_core] loot blips %s (%d entries in scope)')
+        :format(blipsOn and 'ON' or 'off', (function()
+            local n = 0
+            for _ in pairs(entries) do n = n + 1 end
+            return n
+        end)()))
+end, false)
 
 --- Everything this client knows about the loot around it.
 RegisterCommand('brloot', function()

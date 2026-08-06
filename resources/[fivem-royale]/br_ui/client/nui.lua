@@ -217,6 +217,12 @@ end)
 for _, name in ipairs({
     BR.NuiCb.QUEUE, BR.NuiCb.QUEUE_LEAVE,
     BR.NuiCb.SQUAD_INVITE, BR.NuiCb.SQUAD_RESPOND,
+    -- JOINREQ/JOINRESP were declared in the protocol, handled in br_core and
+    -- called by the UI -- and never registered HERE, so every "join this
+    -- party" click came back HTTP 404 with nothing happening on any client.
+    -- Only visible with three players, which is when a join list first has
+    -- anything in it (user, 2026-08-05).
+    BR.NuiCb.SQUAD_JOINREQ, BR.NuiCb.SQUAD_JOINRESP,
     BR.NuiCb.SQUAD_KICK, BR.NuiCb.SQUAD_LEAVE,
     BR.NuiCb.INV_SWAP, BR.NuiCb.INV_DROP, BR.NuiCb.INV_USE, BR.NuiCb.INV_SELECT,
 }) do

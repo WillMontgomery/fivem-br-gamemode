@@ -98,7 +98,13 @@ export default function Hud({ visible }: { visible: boolean }) {
         {hud.state !== 'freefall' && hud.state !== 'glide' && (
           <div
             className="absolute w-[13rem]"
-            style={{ top: 'var(--safe-y)', left: 'var(--safe-x)' }}
+            style={{
+              // Pushed down to clear GTA's own help boxes, which draw in this
+              // exact corner and were landing under the panel (user,
+              // 2026-08-05).
+              top: 'calc(var(--safe-y) + 3vh)',
+              left: 'var(--safe-x)',
+            }}
           >
             <SquadPanel squad={squad} />
           </div>

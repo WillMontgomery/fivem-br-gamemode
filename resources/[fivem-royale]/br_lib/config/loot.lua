@@ -27,13 +27,16 @@ BR.Config.Consumables = {
     },
     {
         id = 'bandage', label = 'Bandage', rarity = R.COMMON,
-        kind = BR.ItemKind.CONSUMABLE, prop = 'prop_ld_health_pack',
+        -- The small medical crate: reads as "a bit of health" on the floor
+        -- without being mistaken for the full kit (user-sourced, 2026-08-05).
+        kind = BR.ItemKind.CONSUMABLE, prop = 'xm_prop_smug_crate_s_medical',
         useMs = 4000, maxStack = 8,
         health = 15, healthCap = 75,   -- bandages cannot finish the job
     },
     {
         id = 'medkit', label = 'Med Kit', rarity = R.EPIC,
-        kind = BR.ItemKind.CONSUMABLE, prop = 'prop_ld_health_pack',
+        -- The med bag: visibly the bigger of the two.
+        kind = BR.ItemKind.CONSUMABLE, prop = 'xm_prop_x17_bag_med_01a',
         useMs = 8000, maxStack = 2,
         health = 100, healthCap = 100,
     },
@@ -138,11 +141,16 @@ BR.Config.Loot = {
     -- Everything found here is wiped when the bus departs: warmup PVP is
     -- practice, and arriving early must not be a head start (Fortnite's
     -- pre-game island rule).
+    -- DELIBERATELY OVERKILL (user call, 2026-08-05). The pad is where a player
+    -- meets this system for the first time, and a crate they have to go
+    -- looking for is a crate they never find. It should be impossible to walk
+    -- twenty metres without tripping over one.
     warmup = {
-        crates      = 26,
-        radius      = 190.0,   -- around BR.Config.Match.warmupPos
+        crates      = 140,
+        minRadius   = 12.0,    -- close enough to see one from the spawn point
+        radius      = 170.0,   -- around BR.Config.Match.warmupPos
         tier        = 2,
-        respawnMs   = 45000,   -- a looted crate comes back, so the pad never empties
+        respawnMs   = 30000,   -- a looted crate comes back, so the pad never empties
     },
 
     -- Streaming. Clients subscribe to a 3x3 neighbourhood of cells, so roughly

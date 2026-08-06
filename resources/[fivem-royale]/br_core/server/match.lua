@@ -175,6 +175,10 @@ function BR.Match.onEnter(m, state, from)
     elseif state == BR.MatchState.BUS then
         m.descent = nil     -- fresh per flight: the descent-grace bookkeeping
         m.landCheck = nil   -- and the stuck-lander bookkeeping runs here too
+        -- One "waiting on the others" notice per player per flight.
+        BR.Roster.each(
+            function(e) return e.matchId == m.id end,
+            function(_, e) e.landNotice = nil end)
 
         -- The flight decides how long BUS lasts, so the deadline is set HERE
         -- -- transition() broadcasts it right after onEnter returns, as the
@@ -513,6 +517,13 @@ local function matchTick(m, now)
 
     if m.state == BR.MatchState.WARMUP then
         BR.Match.shortenWarmupIfFull(m)
+    end
+
+    -- Whoever is already on the ground learns the match is waiting on the
+    -- rest. Polled rather than hooked to the landing report, which has a long
+    -- history of not arriving -- see BR.Bus.landingNotices.
+    if m.state == BR.MatchState.BUS then
+        BR.Bus.landingNotices(m)
     end
 
     -- AN ABANDONED MATCH DIES -- but DYING IS NOT LEAVING. Everyone

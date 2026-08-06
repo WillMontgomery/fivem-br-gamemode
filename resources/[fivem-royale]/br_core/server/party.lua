@@ -635,6 +635,31 @@ function BR.Party.lateJoin(src, m)
     print(('[br_core] %s (%d) late-joined warmup on %s'):format(entry.name, src, target))
 end
 
+--- A player's stable position within their own squad.
+---
+--- Sorted by server id, so every client numbers the squad identically and a
+--- teammate keeps the same colour for the whole match. This is the index that
+--- BR.SquadColour() is keyed on -- the squad BEACONS and the destination
+--- MARKERS both have to use it or a teammate is two different colours in two
+--- places (user, 2026-08-05).
+--- @param src integer
+--- @return integer|nil
+function BR.Party.memberIndex(src)
+    local entry = BR.Roster.get(src)
+    if not entry or not entry.squadId then return nil end
+
+    local members = {}
+    BR.Roster.each(
+        function(e) return e.squadId == entry.squadId end,
+        function(other) members[#members + 1] = other end)
+    table.sort(members)
+
+    for i, other in ipairs(members) do
+        if other == src then return i end
+    end
+    return nil
+end
+
 -- ---------------------------------------------------------- squad beacons ---
 
 -- Squadmate positions, to squad members ONLY.

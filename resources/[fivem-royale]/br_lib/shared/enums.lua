@@ -47,6 +47,37 @@ BR.RarityInfo = {
 }
 
 --- What a loot entry / inventory slot actually holds.
+--- Per-SQUADMATE colour, by their stable member index.
+---
+--- ONE PALETTE FOR EVERYTHING THAT IDENTIFIES A TEAMMATE: their minimap blip,
+--- their destination marker's blip, and the world beam of that marker. There
+--- used to be two -- an index palette for blips and the SQUAD colour for
+--- markers -- and the squad colour is shared by the whole squad, so every
+--- teammate's destination marker came out the same colour while their blips
+--- were all different (user, 2026-08-05).
+---
+--- NEVER PURPLE, in any slot: purple belongs to the storm alone.
+--- `blip` is a GTA blip colour index; `rgb` is for DrawMarker.
+BR.SquadColours = {
+    { blip =  3, hex = '#60A5FA', rgb = { 96, 165, 250} },
+    { blip =  2, hex = '#4ADE80', rgb = { 74, 222, 128} },
+    { blip =  5, hex = '#FBBF24', rgb = {251, 191,  36} },
+    { blip =  1, hex = '#F87171', rgb = {248, 113, 113} },
+    { blip =  8, hex = '#F472B6', rgb = {244, 114, 182} },
+    { blip = 15, hex = '#2DD4BF', rgb = { 45, 212, 191} },
+    { blip = 17, hex = '#FB923C', rgb = {251, 146,  60} },
+    { blip = 18, hex = '#6EE7F9', rgb = {110, 231, 249} },
+}
+
+--- The colour for a member index, wrapping. Never nil.
+--- @param i integer|nil
+--- @return table
+function BR.SquadColour(i)
+    local n = #BR.SquadColours
+    local idx = ((math.tointeger(i or 1) or 1) - 1) % n + 1
+    return BR.SquadColours[idx]
+end
+
 BR.ItemKind = {
     WEAPON     = 'weapon',
     AMMO       = 'ammo',

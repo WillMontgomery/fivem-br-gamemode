@@ -13,9 +13,12 @@
 
 BR = BR or {}
 
--- Member index -> blip colour. Stable because the server sorts members by
--- server id before numbering them, so every client colours the squad the same.
-local BLIP_COLOURS = { 3, 2, 5, 1, 8, 27, 15, 12 }
+-- Colours live in BR.SquadColours (br_lib/shared/enums.lua), keyed on the
+-- member index the server assigns -- stable because it sorts by server id, so
+-- every client colours the squad identically. The local table this replaced
+-- disagreed with the one markers.lua used, which is why a teammate's dot and
+-- their destination marker were different colours (and included purple, which
+-- belongs to the storm).
 
 local blips    = {}   -- [src] = blip handle
 local tags     = {}   -- [src] = { tag = gamerTagId, ped = pedHandle }
@@ -78,7 +81,7 @@ AddEventHandler(BR.Net.SQUAD_POS, function(list)
                 b = AddBlipForCoord(m.x + 0.0, m.y + 0.0, 0.0)
                 SetBlipSprite(b, 1)
                 SetBlipScale(b, 0.85)
-                SetBlipColour(b, BLIP_COLOURS[((m.i - 1) % #BLIP_COLOURS) + 1])
+                SetBlipColour(b, BR.SquadColour(m.i).blip)
                 SetBlipAsShortRange(b, false)   -- squadmates matter at any range
                 BeginTextCommandSetBlipName('STRING')
                 AddTextComponentSubstringPlayerName(m.name)
@@ -221,21 +224,35 @@ BR.Loop.register(BR.Loop.FRAME, 'squadmates.noff', function()
     lastHp, lastArmour = hp, armour
 
     if not prevHp then return end
-    if hp >= prevHp and armour >= prevArmour then return end
 
+    -- HasEntityBeenDamagedByEntity IS A STICKY FLAG, not "was I hit this
+    -- frame". It stays true until the damage record is cleared, so a
+    -- squadmate who bumped you in a car thirty seconds ago would still read
+    -- as your attacker when an ENEMY finally shoots you -- and their damage
+    -- would be undone.
+    --
+    -- So the record is cleared EVERY frame a mate flag is set, not only when
+    -- something was restored. That narrows the window to a single frame: for
+    -- a false positive an enemy's bullet and a teammate's would have to land
+    -- inside the same frame. It is not zero, and it is the honest limit of
+    -- doing this client-side -- M6's server-side validation replaces the
+    -- whole approach with never applying the shot in the first place.
+    local byMate = false
     for src in pairs(mates) do
         local player = GetPlayerFromServerId(src) -- scope-ok: undoing damage needs the attacker's local ped; out of scope they cannot have shot us
         local matePed = (player ~= -1) and GetPlayerPed(player) or 0 -- scope-ok: same
         if matePed ~= 0 and HasEntityBeenDamagedByEntity(ped, matePed, true) then
-            if hp < prevHp then SetEntityHealth(ped, prevHp) end
-            if armour < prevArmour then SetPedArmour(ped, math.floor(prevArmour)) end
-            lastHp, lastArmour = prevHp, prevArmour
-            -- Without this the flag stays set and every later frame reads as a
-            -- fresh teamkill, restoring damage an ENEMY did.
-            ClearEntityLastDamageEntity(ped)
-            break
+            byMate = true
         end
     end
+
+    if byMate then ClearEntityLastDamageEntity(ped) end
+    if not byMate then return end
+    if hp >= prevHp and armour >= prevArmour then return end
+
+    if hp < prevHp then SetEntityHealth(ped, prevHp) end
+    if armour < prevArmour then SetPedArmour(ped, math.floor(prevArmour)) end
+    lastHp, lastArmour = prevHp, prevArmour
 end)
 
 -- Shared-lobby hygiene. The lobby is ONE routing bucket now, so other lobby

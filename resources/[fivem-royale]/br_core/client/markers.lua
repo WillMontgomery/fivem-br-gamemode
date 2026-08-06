@@ -16,14 +16,10 @@ BR = BR or {}
 
 local markers = {}   -- [owner] = { x, y, colour, blip, gz, gzAt }
 
--- The squad palette (party.lua COLOURS) mapped to the nearest blip colour
--- index -- blips take indices, not RGB. NEVER PURPLE, in any slot
--- including the fallback: purple belongs to the storm alone, and a marker
--- has nothing to do with the storm (user call, 2026-08-04).
-local BLIP_BY_HEX = {
-    ['#6EE7F9'] = 18, ['#2DD4BF'] = 15, ['#FBBF24'] = 5, ['#F472B6'] = 8,
-    ['#4ADE80'] = 2,  ['#FB923C'] = 17, ['#60A5FA'] = 3, ['#F87171'] = 1,
-}
+-- Colours come from BR.SquadColours (br_lib/shared/enums.lua), keyed on the
+-- owner's stable member index -- the SAME table the minimap beacons use, so a
+-- teammate is one colour everywhere. NEVER PURPLE, in any slot including the
+-- fallback: purple belongs to the storm alone (user call, 2026-08-04).
 local SOLO_COLOUR = '#FBBF24'   -- amber: reads "ping", nothing like the storm
 
 local function hexToRgb(hex)
@@ -50,13 +46,23 @@ AddEventHandler(BR.Net.MARKER_SYNC, function(d)
     end
 
     removeMarker(d.owner)   -- a re-place moves it: old blip goes first
-    local colour = d.colour or SOLO_COLOUR
+
+    -- ONE PALETTE, KEYED ON THE MEMBER INDEX. The same table the minimap
+    -- beacons use, so a teammate is one colour everywhere: their dot, their
+    -- destination, and the beam standing on it. Solo has no index and keeps
+    -- the amber default.
+    local colour = d.i and BR.SquadColour(d.i) or nil
+    local hex = colour and colour.hex or SOLO_COLOUR
+    local blipColour = colour and colour.blip or 5
+
     local blip = AddBlipForCoord(d.x, d.y, 0.0)
-    SetBlipSprite(blip, 1)
-    SetBlipColour(blip, BLIP_BY_HEX[colour] or 5)   -- unknown hex -> amber, never purple
+    -- Sprite 8, radar_waypoint: a destination, visibly not a player. Both
+    -- were sprite 1 and the map could not tell them apart (user, 2026-08-05).
+    SetBlipSprite(blip, 8)
+    SetBlipColour(blip, blipColour)
     SetBlipScale(blip, 1.1)
     SetBlipAsShortRange(blip, false)
-    markers[d.owner] = { x = d.x, y = d.y, colour = colour, blip = blip }
+    markers[d.owner] = { x = d.x, y = d.y, colour = hex, blip = blip }
 end)
 
 -- The placement watcher: a fresh waypoint while in a match becomes a marker.
