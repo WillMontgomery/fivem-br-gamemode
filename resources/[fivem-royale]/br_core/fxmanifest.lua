@@ -51,6 +51,7 @@ client_scripts {
     'client/inventory.lua', -- the inventory mirror; owns every weapon grant
     'client/loot.lua',      -- world props + pickup; needs BR.Inv (inventory.lua)
     'client/chat.lua',
+    'client/probe.lua',    -- /brprobe: what the natives ACTUALLY do on this build
     'client/debug.lua',
 }
 

@@ -82,17 +82,28 @@ function BR.Dui.drawWorld(page, x, y, z, scale, dist)
     -- Clamped at both ends: unclamped, a prompt you are standing on top of
     -- fills the screen and one across a car park is a smudge.
     local k = BR.Clamp(3.0 / math.max(dist, 0.5), 0.35, 1.6) * (scale or 1.0)
-    local w = 0.12 * k
+    -- 0.12 -> 0.09: a quarter smaller (user, 2026-08-06).
+    local w = 0.09 * k
 
     -- ASPECT MATTERS, and leaving it out is what squashed the prompt.
     --
     -- DrawSprite's width and height are fractions of the SCREEN's width and
     -- height respectively -- different units. A 512x256 texture drawn at
-    -- w=0.12, h=0.06 is only square if the screen is, and on 16:9 it comes out
-    -- half as tall as it should (user, 2026-08-06: "stretched horizontally").
-    -- Multiplying by the aspect ratio converts one into the other.
-    local sw, sh = GetActiveScreenResolution()
-    local aspect = (sh and sh > 0) and (sw / sh) or 1.7778
+    -- w=0.12, h=0.06 is only square if the screen is, and on 16:9 it came out
+    -- half as tall as it should. Multiplying by the aspect converts one unit
+    -- into the other.
+    --
+    -- GetAspectRatio, NOT the resolution. They agree on an ordinary 16:9
+    -- monitor and diverge exactly where it matters: ultrawide, letterboxed and
+    -- multi-monitor setups, where the RENDERED aspect is not the window's.
+    -- GetAspectRatio is what the renderer itself uses, so it is what a sprite
+    -- drawn by the renderer has to be corrected by -- and it means 21:9 needs
+    -- no special case at all (user, 2026-08-06).
+    local aspect = GetAspectRatio(false)
+    if not aspect or aspect <= 0.1 then
+        local sw, sh = GetActiveScreenResolution()
+        aspect = (sh and sh > 0) and (sw / sh) or 1.7778
+    end
     local h = w * (page.h / page.w) * aspect
 
     SetDrawOrigin(x, y, z, 0)

@@ -309,6 +309,14 @@ AddEventHandler(BR.Net.INV_EFFECT, function(d)
     local ped = PlayerPedId()
 
     if d.armour then
+        -- RE-ASSERT THE CEILING FIRST. GTA's default max armour is 50, and
+        -- SetPlayerMaxArmour is a PLAYER setting that goes back to the default
+        -- with a new ped -- which every respawn hands out. initHealthModel set
+        -- it once at match start, so by the time anyone drank a shield potion
+        -- the cap was 50 again and SetPedArmour silently clamped: "shield
+        -- cannot get above 50" (user, 2026-08-06). Cheap, and exactly where it
+        -- matters.
+        SetPlayerMaxArmour(PlayerId(), BR.Config.Match.maxArmour)
         local target = math.min(d.armour, d.armourCap or BR.Config.Match.maxArmour)
         if target > GetPedArmour(ped) then
             SetPedArmour(ped, math.floor(target))

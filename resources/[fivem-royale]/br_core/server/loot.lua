@@ -590,7 +590,12 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
 
     local ok, displaced, reason = BR.Inv.give(src, item)
     if not ok then
-        if reason == 'full' then
+        if reason == 'carrymax' then
+            local c = BR.Config.ConsumableById[item.item]
+            BR.Server.notify(src, ('You can only carry %d %s.')
+                :format(c and c.carryMax or 0,
+                        (c and c.label or 'of those') .. 's'), 'warn')
+        elseif reason == 'full' then
             BR.Server.notify(src, 'No room for that.', 'warn')
         elseif reason == 'ammofull' then
             BR.Server.notify(src, 'Already carrying the maximum.', 'warn')

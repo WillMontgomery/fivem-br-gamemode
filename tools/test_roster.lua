@@ -3448,10 +3448,30 @@ do
     end
     ok(inv.slots[1] and inv.slots[1].count == band.maxStack,
         'consumables fill one slot to maxStack first')
-    BR.Inv.give(1, { item = 'bandage', kind = BR.ItemKind.CONSUMABLE,
-                     rarity = 1, count = 1 })
-    ok(inv.slots[2] and inv.slots[2].item == 'bandage',
-        'and open a second stack only when the first is full')
+
+    -- THE CARRY CEILING IS ACROSS EVERY SLOT, not per stack. Capping the
+    -- stack alone just produced two stacks of three (user, 2026-08-06).
+    local okMore, _, whyMore = BR.Inv.give(1, { item = 'bandage',
+        kind = BR.ItemKind.CONSUMABLE, rarity = 1, count = 1 })
+    ok(not okMore and whyMore == 'carrymax',
+        'and refuse a second stack once carryMax is reached',
+        tostring(whyMore))
+    ok(inv.slots[2] == false, 'so no second stack is opened')
+
+    -- Something WITHOUT a carry ceiling still spills into a second slot.
+    local mini = BR.Config.ConsumableById['minishield']
+    ok(mini.carryMax == nil, 'small shields have no carry ceiling')
+    for _ = 1, mini.maxStack + 1 do
+        BR.Inv.give(1, { item = 'minishield', kind = BR.ItemKind.CONSUMABLE,
+                         rarity = 1, count = 1 })
+    end
+    local stacks = 0
+    for i = 1, BR.Config.Loot.slots do
+        local s = inv.slots[i]
+        if s and s.item == 'minishield' then stacks = stacks + 1 end
+    end
+    ok(stacks == 2, 'and opens a second stack once the first is full',
+        ('%d stacks'):format(stacks))
 
     -- Ammo pools are capped.
     BR.Inv.reset(1)

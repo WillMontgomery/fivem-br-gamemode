@@ -548,7 +548,10 @@ local function setPrompt(e, holdMs)
     lastPrompt.id, lastPrompt.hold = id, holdMs
 
     local container = isContainer(e)
+    -- A CRATE'S TEXT IS THE SHINE'S ORANGE, not a rarity colour -- the two are
+    -- the same signal and must not disagree. Loose items keep their rarity.
     local info = BR.RarityInfo[e.rarity] or BR.RarityInfo[BR.Rarity.COMMON]
+    local colour = container and (L.shineHex or '#FF961E') or info.hex
 
     BR.Dui.send(page, {
         t      = 'prompt',
@@ -558,7 +561,7 @@ local function setPrompt(e, holdMs)
         -- The player's ACTUAL binding, read back from the control. Rebinding
         -- INPUT_CONTEXT in GTA's settings changes what this says.
         key    = BR.Native.keyLabel(L.promptControl or 51),
-        colour = info.hex,
+        colour = colour,
         ring   = container,
         holdMs = holdMs,
     })
@@ -574,16 +577,35 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
     local p = GetEntityCoords(ped)
     local glow2  = L.glowDistance * L.glowDistance
 
-    -- The shine pulses on a shared clock so every crate breathes together --
-    -- individually-phased glows read as flickering rather than as a beacon.
-    local pulse = 0.72 + 0.28 * math.sin(GetGameTimer() / 380.0)
+    -- ONE CRATE GLOWS: the nearest, and only inside the shine radius.
+    --
+    -- Every crate in the room lighting up at once was a wall of orange rather
+    -- than a signal (user, 2026-08-06). One at a time reads as "this is the
+    -- one you are walking towards", which is the only thing the glow is for.
+    local shineId, shineD2 = nil, (L.shineDistance or 18.0) ^ 2
+    for id, e in pairs(entries) do
+        if isContainer(e) and e.gzOk then
+            local d2 = BR.Dist2(p.x, p.y, e.x, e.y)
+            if d2 < shineD2 then shineId, shineD2 = id, d2 end
+        end
+    end
 
-    for _, e in pairs(entries) do
+    -- A slow, shallow breath. The old pulse swung 0.72..1.0 in under a second,
+    -- which read as flashing; this is a fade you notice without being nagged
+    -- by it.
+    local pulse = 0.55 + 0.20 * math.sin(GetGameTimer() / 900.0)
+    local SHINE = L.shineColour or { 255, 150, 30 }
+
+    for id, e in pairs(entries) do
         local d2 = BR.Dist2(p.x, p.y, e.x, e.y)
         -- A husk is scenery. Glowing it would send players across open ground
         -- for a crate somebody already emptied, which is the exact opposite of
         -- what the open-crate model is for.
-        if d2 <= glow2 and not isHusk(e) then
+        --
+        -- gzOk gates the DRAWING too, not just the prop: an entry rejected for
+        -- standing in the sea still had its rarity disc painted on the waves
+        -- (user, 2026-08-06).
+        if d2 <= glow2 and not isHusk(e) and e.gzOk then
             local gz = groundZ(e)
             local info = BR.RarityInfo[e.rarity] or BR.RarityInfo[BR.Rarity.COMMON]
             local c = info.rgb
@@ -595,25 +617,35 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
                 c[1], c[2], c[3], 120,
                 false, false, 2, false, nil, nil, false)
 
-            -- CRATES SHINE. An OUTLINE, primarily -- the world is pinned to
-            -- noon, and a light at midday is invisible, which is why the
-            -- previous version read as no glow at all (user, 2026-08-06).
-            -- SetEntityDrawOutline draws through geometry and reads in full
-            -- daylight, which is the whole requirement.
+            -- CRATES SHINE ORANGE. Always orange, never the rarity colour: the
+            -- glow says "a crate is here", and what is inside is not knowable
+            -- until it is opened, so colouring it by contents was both a lie
+            -- and a second meaning for a channel that already has one (user
+            -- call, 2026-08-06).
             --
-            -- The light stays as well: it spills onto the ground and the wall
-            -- behind, and does the work indoors and in the storm's gloom where
-            -- the outline is doing least.
+            -- An OUTLINE carries it, not the light: the world is pinned to
+            -- noon, where a light is very nearly invisible -- which is why the
+            -- previous version read as no glow at all. The light stays at low
+            -- intensity for interiors and storm gloom.
             if isContainer(e) then
+                local mine = (id == shineId)
                 if e.obj and DoesEntityExist(e.obj) then
-                    if not e.outlined then
+                    if mine and not e.outlined then
                         e.outlined = true
                         SetEntityDrawOutline(e.obj, true)
-                        SetEntityDrawOutlineColor(c[1], c[2], c[3], 190)
+                        SetEntityDrawOutlineColor(SHINE[1], SHINE[2], SHINE[3],
+                            math.floor(120 * pulse))
+                    elseif not mine and e.outlined then
+                        e.outlined = false
+                        SetEntityDrawOutline(e.obj, false)
                     end
                 end
-                DrawLightWithRange(e.x, e.y, gz + 0.5,
-                    c[1], c[2], c[3], 5.0 * pulse, 2.4 * pulse)
+                if mine then
+                    -- Half the old range and intensity: a hint at the crate in
+                    -- front of you, not a floodlight down the street.
+                    DrawLightWithRange(e.x, e.y, gz + 0.5,
+                        SHINE[1], SHINE[2], SHINE[3], 2.4, 0.9 * pulse)
+                end
             end
 
             -- NO DrawText ANYWHERE IN LOOT any more (user call, 2026-08-06).
@@ -827,6 +859,49 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.devblips', function()
         end
     end
 end)
+
+-- POI blips, so "where are the points of interest" is answerable without
+-- reading the config. Dev only, and off by default -- it is the whole map.
+local poiBlips = {}
+
+RegisterCommand('brpois', function()
+    if next(poiBlips) then
+        for _, b in ipairs(poiBlips) do
+            if DoesBlipExist(b) then RemoveBlip(b) end
+        end
+        poiBlips = {}
+        print('[br_core] POI blips off')
+        return
+    end
+
+    -- Colour by tier, so the density question ("why is there so much loot
+    -- here") is answerable at a glance: 3 = hot drop, 1 = rural filler.
+    local byTier = { [1] = 2, [2] = 5, [3] = 1 }   -- green, yellow, red
+    for _, poi in ipairs(BR.Config.Map.POIs) do
+        local b = AddBlipForCoord(poi.x, poi.y, poi.z)
+        SetBlipSprite(b, 1)
+        SetBlipColour(b, byTier[poi.tier] or 0)
+        SetBlipScale(b, 0.9)
+        SetBlipAsShortRange(b, false)
+        BeginTextCommandSetBlipName('STRING')
+        AddTextComponentSubstringPlayerName(
+            ('[T%d] %s'):format(poi.tier, poi.name))
+        EndTextCommandSetBlipName(b)
+        poiBlips[#poiBlips + 1] = b
+
+        -- The radius too: the crate budget is spread across THIS disc, so the
+        -- circle is the answer to "why is it all in one corner".
+        local r = AddBlipForRadius(poi.x, poi.y, poi.z, poi.radius)
+        SetBlipColour(r, byTier[poi.tier] or 0)
+        SetBlipAlpha(r, 60)
+        poiBlips[#poiBlips + 1] = r
+    end
+
+    print(('[br_core] POI blips ON -- %d points of interest')
+        :format(#BR.Config.Map.POIs))
+    print('  red = tier 3 (hot drop), yellow = tier 2, green = tier 1 (rural)')
+    print('  the shaded circle is the radius the crate budget spreads across')
+end, false)
 
 RegisterCommand('brlootblips', function()
     blipsOn = not blipsOn

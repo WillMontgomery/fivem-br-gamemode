@@ -30,14 +30,14 @@ BR.Config.Consumables = {
         -- The small medical crate: reads as "a bit of health" on the floor
         -- without being mistaken for the full kit (user-sourced, 2026-08-05).
         kind = BR.ItemKind.CONSUMABLE, prop = 'xm_prop_smug_crate_s_medical',
-        useMs = 4000, maxStack = 8,
+        useMs = 4000, maxStack = 3, carryMax = 3,
         health = 15, healthCap = 75,   -- bandages cannot finish the job
     },
     {
         id = 'medkit', label = 'Med Kit', rarity = R.EPIC,
         -- The med bag: visibly the bigger of the two.
         kind = BR.ItemKind.CONSUMABLE, prop = 'xm_prop_x17_bag_med_01a',
-        useMs = 8000, maxStack = 2,
+        useMs = 8000, maxStack = 3, carryMax = 3,
         health = 100, healthCap = 100,
     },
 }
@@ -220,6 +220,17 @@ BR.Config.Loot = {
     pickupRateLimit = 4,     -- claims per second before it counts as suspicious
     promptDistance  = 2.5,
     glowDistance    = 25.0,  -- rarity marker draw range
+
+    -- THE CRATE SHINE. Always orange, never the rarity colour: what is inside
+    -- is not knowable until it is opened, so tinting by contents was a lie --
+    -- and the glow already means one thing ("a crate is here"), which is one
+    -- meaning per channel (user call, 2026-08-06).
+    --
+    -- ONE crate shines at a time, the nearest within this radius. Every crate
+    -- in a room lighting up was a wall of orange rather than a signal.
+    shineColour     = { 255, 150, 30 },
+    shineHex        = '#FF961E',   -- the same orange, for the DUI prompt text
+    shineDistance   = 18.0,
     labelDistance   = 8.0,   -- 3D text draw range
 
     -- Containers are a commitment in the open: you stand still for a second and

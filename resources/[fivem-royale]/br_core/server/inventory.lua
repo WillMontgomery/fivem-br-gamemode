@@ -191,6 +191,25 @@ function BR.Inv.give(src, stack)
        or stack.kind == BR.ItemKind.THROWABLE then
         local left = stack.count or 1
         local max  = maxStackOf(stack)
+
+        -- A CARRY CEILING ACROSS EVERY SLOT, not just per stack. Without it,
+        -- capping the stack at three simply produced two stacks of three
+        -- (user call, 2026-08-06: "no higher quantities of either item should
+        -- be allowed").
+        local c = BR.Config.ConsumableById[stack.item]
+        if c and c.carryMax then
+            local held = 0
+            for i = 1, SLOTS do
+                local s = inv.slots[i]
+                if s and s.item == stack.item then held = held + (s.count or 0) end
+            end
+            local room = math.max(0, c.carryMax - held)
+            if room <= 0 then
+                return false, nil, 'carrymax'
+            end
+            left = math.min(left, room)
+        end
+
         local before = left
 
         -- Top up existing stacks first, lowest slot first, so a player who
