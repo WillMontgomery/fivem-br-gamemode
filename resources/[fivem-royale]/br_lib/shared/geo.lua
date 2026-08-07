@@ -219,3 +219,31 @@ function BR.PickChord(rng, cx, cy, radius, maxOffset)
     return cx + ox - dx * half, cy + oy - dy * half,
            cx + ox + dx * half, cy + oy + dy * half
 end
+
+--- Normalise a GTA hash to its UNSIGNED 32-bit value.
+---
+--- THE ENGINE HANDS BACK SIGNED HASHES. GetCurrentPedWeapon, GetHashKey,
+--- GetEntityModel and friends return a signed 32-bit int, so any hash with the
+--- top bit set comes back NEGATIVE -- 0xDB1AA450 arrives as -619916720. The
+--- config authors them as positive literals, so the two never compare equal and
+--- never hit the same table key.
+---
+--- This cost half the arsenal. TWENTY of forty weapons have the top bit set,
+--- and every one of them had unlimited ammo: the ammo reporter refuses to
+--- report unless the engine agrees what is in the hand, the comparison could
+--- never be true, so nothing was ever deducted. The Advanced Rifle and the
+--- Machine Pistol were simply the two the user happened to pick up
+--- (2026-08-06). It also explains the "unknown (0x9D07F764)" in an earlier
+--- probe -- that WAS our MG; WeaponByHash just could not find it.
+---
+--- Nothing about it is visible: printing both sides with %08X masks them back
+--- to the same digits, which is exactly what the first diagnostic did.
+---
+--- Use this on BOTH sides of any hash comparison, and on every hash used as a
+--- table key.
+--- @param h integer|nil
+--- @return integer|nil
+function BR.NormHash(h)
+    if not h then return nil end
+    return h & 0xFFFFFFFF
+end

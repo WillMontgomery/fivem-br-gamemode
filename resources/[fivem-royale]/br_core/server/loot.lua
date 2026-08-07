@@ -677,6 +677,79 @@ local FIX_RADIUS = 30.0
 -- it can already see by up to 30m, once per entry -- which is a worse outcome
 -- for them than leaving it where it is, and strictly better than the status
 -- quo of items floating in the Pacific.
+-- NPC WEAPON DROPS.
+--
+-- Ambient peds are client-side: the server has never heard of them, cannot see
+-- them die, and cannot verify a kill. So this is a REPORT, and it is treated
+-- like every other client report on this project -- believed only within
+-- limits that make lying pointless rather than impossible.
+--
+--   * the reporter must be alive in a match;
+--   * the drop lands at the CORPSE, and the corpse must be within
+--     `npcDrop.range` of the player the server last sampled -- so a report
+--     cannot place loot across the map;
+--   * the item must be a real firearm from our own table;
+--   * and there is a rate limit AND a per-match ceiling, which is what
+--     actually bounds the exploit. Farming ambient NPCs is slower than
+--     opening crates by design, so the honest path stays the fast one.
+--
+-- The drop is the weapon with an EMPTY magazine plus nothing else: an NPC
+-- pistol is a lifeline for someone who landed badly, not a substitute for
+-- finding a crate.
+local npcDrops = {}   -- [src] = { at = <ms>, count = <int> }
+
+RegisterNetEvent(BR.Net.NPC_DROP)
+AddEventHandler(BR.Net.NPC_DROP, function(d)
+    local src = source
+    if type(d) ~= 'table' then return end
+
+    local cfg = BR.Config.Loot.npcDrop or {}
+    if cfg.enabled == false then return end
+
+    local e = BR.Roster.get(src)
+    if not e or not e.pos then return end
+    if e.state ~= BR.PlayerState.ALIVE and e.state ~= BR.PlayerState.WARMUP then
+        return
+    end
+
+    local m = zoneFor(src)
+    if not m then return end
+
+    local x, y, z = tonumber(d.x), tonumber(d.y), tonumber(d.z)
+    if not x or not y or not z then return end
+
+    local w = BR.Config.WeaponById[tostring(d.item)]
+    if not w or not w.ammo then return end
+
+    -- Range: the same slack the pickup check uses, because roster positions
+    -- are sampled at 2Hz and a sprinting player's honest report is stale.
+    local range = cfg.range or 60.0
+    if BR.Dist(e.pos.x, e.pos.y, x, y) > range then return end
+
+    local now = GetGameTimer()
+    local rec = npcDrops[src]
+    if not rec then rec = { at = 0, count = 0 } npcDrops[src] = rec end
+    if now - rec.at < (cfg.minIntervalMs or 4000) then return end
+    if rec.count >= (cfg.maxPerMatch or 12) then return end
+    rec.at, rec.count = now, rec.count + 1
+
+    BR.Loot.spawnStack(m, {
+        item   = w.id,
+        kind   = BR.ItemKind.WEAPON,
+        rarity = w.rarity or BR.Rarity.COMMON,
+        count  = 1,
+        -- EMPTY. The gun is the prize; the ammo still has to be found.
+        clip   = 0,
+    }, x, y, z)
+end)
+
+--- Forget a player's NPC-drop budget. Called when they leave a match, so the
+--- ceiling is per match rather than per session.
+--- @param src integer
+function BR.Loot.clearNpcDrops(src)
+    npcDrops[src] = nil
+end
+
 RegisterNetEvent(BR.Net.LOOT_FIX)
 AddEventHandler(BR.Net.LOOT_FIX, function(d)
     local src = source

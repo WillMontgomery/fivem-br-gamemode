@@ -22,7 +22,7 @@
 -- Run via tools/verify.sh, or directly:  lua tools/check_weapons.lua
 
 local ROOT = 'resources/[fivem-royale]/br_lib/'
-for _, f in ipairs({ 'shared/enums.lua', 'config/weapons.lua' }) do
+for _, f in ipairs({ 'shared/enums.lua', 'shared/geo.lua', 'config/weapons.lua' }) do
     local chunk, err = loadfile(ROOT .. f)
     if not chunk then
         io.write('\27[31mload error\27[0m ', f, ': ', tostring(err), '\n')
@@ -114,10 +114,56 @@ for _, w in ipairs(BR.Config.Weapons or {}) do
     end
 end
 
+-- THE SIGNED-HASH TRAP, pinned.
+--
+-- The engine returns hashes as SIGNED 32-bit ints, so a hash with the top bit
+-- set arrives negative. Twenty of the forty weapons here are in that half, and
+-- every one of them had unlimited ammo until 2026-08-06: the lookup missed,
+-- the "is the engine holding what we think" guard could never be true, and the
+-- ammo reporter bailed on every tick. Nothing errored, and printing both sides
+-- as %08X masked them back to identical digits.
+--
+-- So: every weapon must resolve through WeaponByHash from BOTH the positive
+-- literal AND the signed form the engine would hand back.
+local signedChecked, topBit = 0, 0
+local function signed32(h)
+    return (h >= 0x80000000) and (h - 0x100000000) or h
+end
+
+for _, list in ipairs({ BR.Config.Weapons, BR.Config.Throwables }) do
+    for _, w in ipairs(list or {}) do
+        if w.hash then
+            signedChecked = signedChecked + 1
+            if w.hash >= 0x80000000 then topBit = topBit + 1 end
+
+            if BR.Config.WeaponByHash[BR.NormHash(w.hash)] == nil then
+                fail('%q does not resolve from its positive hash', w.id)
+            end
+            if BR.Config.WeaponByHash[BR.NormHash(signed32(w.hash))] == nil then
+                fail('%q does not resolve from the SIGNED hash the engine returns '
+                     .. '(0x%08X -> %d)', w.id, w.hash, signed32(w.hash))
+            end
+            -- And the allowlist, which is fed straight from engine values.
+            if not BR.Config.IsAllowedWeapon(signed32(w.hash)) then
+                fail('%q reads as DISALLOWED when passed the signed hash', w.id)
+            end
+        end
+    end
+end
+
+-- The gadgets go through the same doors.
+for name, h in pairs(BR.Config.Gadgets or {}) do
+    if not BR.Config.IsAllowedWeapon(signed32(h)) then
+        fail('gadget %s reads as disallowed from its signed hash', name)
+    end
+end
+
 -- ------------------------------------------------------------------- report --
 
 if fails == 0 then
-    io.write(('\27[32mok\27[0m   %d weapon hashes match their names\n'):format(checked))
+    io.write(('\27[32mok\27[0m   %d weapon hashes match their names; %d resolve from '
+        .. 'both signed and unsigned (%d have the top bit set)\n')
+        :format(checked, signedChecked, topBit))
 else
     io.write(('\27[31m%d weapon table problem(s)\27[0m\n'):format(fails))
 end

@@ -55,7 +55,9 @@ local function ammoDump()
         return nil
     end
 
-    local w = BR.Config.WeaponByHash[hash]
+    -- Normalised: the engine hands this back signed, and an unnormalised
+    -- lookup was reporting our own MG and Machine Pistol as "unknown".
+    local w = BR.Config.WeaponByHash[BR.NormHash(hash)]
     print(('  weapon                             %s (0x%08X)')
         :format(w and w.id or 'unknown', hash & 0xFFFFFFFF))
     if w then

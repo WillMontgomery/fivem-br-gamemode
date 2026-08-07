@@ -447,6 +447,24 @@ BR.Config.Loot = {
     -- not enough to stop looting ammo.
     weaponReserveClips = 1,
 
+    -- KILLING AN NPC DROPS THEIR GUN, as one of OUR entries (user call,
+    -- 2026-08-06). The vanilla pickup was removed because it had no DUI, no
+    -- rarity and no route into the inventory -- the answer was never "no
+    -- drop", it was "our drop".
+    --
+    -- The server cannot see ambient peds die, so this is a client report, and
+    -- the limits below are what make lying pointless rather than impossible:
+    -- one drop every few seconds with a hard per-match ceiling is strictly
+    -- slower than opening crates, so the honest path stays the fast one.
+    -- The gun arrives EMPTY -- it is a lifeline after a bad landing, not a
+    -- substitute for finding a crate.
+    npcDrop = {
+        enabled       = true,
+        range         = 60.0,   -- corpse must be this close to the reporter
+        minIntervalMs = 4000,   -- one drop per reporter per this long
+        maxPerMatch   = 12,     -- and no more than this many all match
+    },
+
     -- Starting kit. Deliberately nothing but the drop itself -- landing unarmed
     -- is what makes the first thirty seconds tense.
     startingItems   = {},

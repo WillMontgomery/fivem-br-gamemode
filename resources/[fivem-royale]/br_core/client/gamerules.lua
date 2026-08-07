@@ -111,6 +111,9 @@ RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)
     if d.state == BR.MatchState.WARMUP or d.state == BR.MatchState.CLEANUP then
         reportedDeath = false
+        -- Ped handles are recycled between matches, so a stale entry here
+        -- would silently refuse a legitimate drop later.
+        looted = {}
     end
 end)
 
@@ -138,14 +141,49 @@ end)
 -- only -- not over every object in the world.
 local PICKUP_SWEEP_RANGE = 120.0
 
+-- Peds we have already turned into a drop, so one corpse pays once. Cleared
+-- with the match; a handful of entries at a time in practice.
+local looted = {}
+
 BR.Loop.register(BR.Loop.TICK, 'gamerules.pickups', function()
     local ped = PlayerPedId()
     local p = GetEntityCoords(ped)
+    local canLoot = BR.State.me.state == BR.PlayerState.ALIVE
+                 or BR.State.me.state == BR.PlayerState.WARMUP
 
-    -- 1. Nearby peds keep their guns when they die.
+    -- 1. Nearby peds keep their guns when they die -- and if WE killed one,
+    --    it becomes a proper loot entry instead.
+    --
+    --    KILLING AN NPC SHOULD PAY, IT JUST SHOULD NOT PAY IN GTA'S CURRENCY
+    --    (user, 2026-08-06). The vanilla pickup was removed last round because
+    --    it had no DUI, no rarity and no route into the inventory; the answer
+    --    is not "no drop", it is "our drop". So the corpse is read once, its
+    --    weapon looked up in our own table, and the SERVER asked to place a
+    --    real entry -- which then behaves exactly like every other item on the
+    --    ground.
     for _, other in ipairs(GetGamePool('CPed')) do
         if other ~= ped and DoesEntityExist(other) then
             SetPedDropsWeaponsWhenDead(other, false)
+
+            if canLoot and not looted[other] and IsPedDeadOrDying(other, true) then
+                looted[other] = true
+                -- Ours only: the kill has to be attributable to this player,
+                -- or standing near a road where NPCs crash would print money.
+                if HasEntityBeenDamagedByEntity(other, ped, true) then
+                    local okW, wh = GetCurrentPedWeapon(other, true)
+                    local w = okW and BR.Config.WeaponByHash[BR.NormHash(wh)] or nil
+                    -- Only real firearms, and only in reach: the server checks
+                    -- the range too, this just avoids the round trip.
+                    if w and w.ammo then
+                        local c = GetEntityCoords(other)
+                        if BR.Dist2(c.x, c.y, p.x, p.y) < 40.0 * 40.0 then
+                            TriggerServerEvent(BR.Net.NPC_DROP, {
+                                item = w.id, x = c.x, y = c.y, z = c.z,
+                            })
+                        end
+                    end
+                end
+            end
         end
     end
 

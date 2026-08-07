@@ -65,6 +65,11 @@ BR.Net = {
     -- bounds how far it may move (see server/loot.lua) -- this is a
     -- suggestion, not an instruction.
     LOOT_FIX        = 'br:loot:fix',         -- C->S  { id, x, y, z }
+    -- C->S { item, x, y, z }. An NPC the reporter killed dropped a weapon.
+    -- Client-observed by necessity: ambient peds are client-side and the
+    -- server has never heard of them. Rate-limited and range-checked at the
+    -- far end -- see the handler for why that is enough.
+    NPC_DROP        = 'br:loot:npcdrop',
     -- DEV ONLY, refused unless the server is in dev mode. Exists so a crate
     -- can be spawned from the F8 console standing in front of you, rather
     -- than from the server console where you cannot see it land.

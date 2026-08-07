@@ -693,7 +693,12 @@ end
 --- which is at most PROP_MAX and usually a handful.
 BR.Loop.register(BR.Loop.TICK, 'loot.crates', function()
     for id, e in pairs(entries) do
-        if e.obj and isContainer(e) and DoesEntityExist(e.obj) then
+        -- HUSKS TOO. An opened crate is the same physical box with a different
+        -- lid: it already got the mass (both go through the `solid` branch at
+        -- spawn) but it was excluded HERE, so an empty crate kept sliding like
+        -- ice long after the sealed ones stopped (user, 2026-08-06). Mass and
+        -- drag have to travel together or the pair is half a system.
+        if e.obj and (isContainer(e) or isHusk(e)) and DoesEntityExist(e.obj) then
             -- DRAG, because prop physics has no friction worth the name and
             -- SetObjectPhysicsParams' damping only bites in the air. The
             -- horizontal velocity is scaled down and zeroed once it is slower

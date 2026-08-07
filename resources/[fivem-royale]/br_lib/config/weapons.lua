@@ -105,13 +105,17 @@ BR.Config.AmmoCaps = {
 BR.Config.WeaponByHash = {}
 BR.Config.WeaponById   = {}
 
+-- KEYED BY THE NORMALISED HASH, and every lookup must normalise too. The
+-- engine returns hashes SIGNED, so the twenty weapons here whose hash has the
+-- top bit set arrive negative and would miss a table keyed by the positive
+-- literal -- see BR.NormHash for what that cost.
 for _, w in ipairs(BR.Config.Weapons) do
-    BR.Config.WeaponByHash[w.hash] = w
-    BR.Config.WeaponById[w.id]     = w
+    BR.Config.WeaponByHash[BR.NormHash(w.hash)] = w
+    BR.Config.WeaponById[w.id]                  = w
 end
 for _, t in ipairs(BR.Config.Throwables) do
-    BR.Config.WeaponByHash[t.hash] = t
-    BR.Config.WeaponById[t.id]     = t
+    BR.Config.WeaponByHash[BR.NormHash(t.hash)] = t
+    BR.Config.WeaponById[t.id]                  = t
 end
 
 --- Is this weapon hash one the gamemode permits at all?
@@ -119,9 +123,14 @@ end
 --- @param hash integer
 --- @return boolean
 function BR.Config.IsAllowedWeapon(hash)
-    return BR.Config.WeaponByHash[hash] ~= nil
-        or hash == BR.Config.Gadgets.PARACHUTE
-        or hash == BR.Config.Gadgets.UNARMED
+    -- Normalised on the way in: this is fed straight from engine values, which
+    -- are signed. Unnormalised, every top-bit-set weapon in the game would
+    -- read as "not allowed" -- i.e. as a cheat signal, for using a rifle we
+    -- shipped.
+    local h = BR.NormHash(hash)
+    return BR.Config.WeaponByHash[h] ~= nil
+        or h == BR.NormHash(BR.Config.Gadgets.PARACHUTE)
+        or h == BR.NormHash(BR.Config.Gadgets.UNARMED)
 end
 
 --- Expected damage for a hit, before body-part multipliers.
@@ -131,7 +140,11 @@ end
 --- @param distance number|nil
 --- @return number
 function BR.Config.ExpectedDamage(hash, rarity, distance)
-    local w = BR.Config.WeaponByHash[hash]
+    -- Normalised: M6's damage validator feeds this straight from
+    -- weaponDamageEvent, which reports signed hashes. Unnormalised, half the
+    -- arsenal would validate as 0 expected damage -- i.e. every hit with a
+    -- carbine would look like a cheat.
+    local w = BR.Config.WeaponByHash[BR.NormHash(hash)]
     if not w or not w.damage then return 0.0 end
 
     local dmg = w.damage * (BR.RarityInfo[rarity or BR.Rarity.COMMON].damageMult)

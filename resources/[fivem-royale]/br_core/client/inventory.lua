@@ -646,8 +646,14 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     -- whole class: the vehicle case, the animation window that the old
     -- IsPedInAnyVehicle guard raced against, and any future stow we have not
     -- thought of.
+    -- NORMALISED ON BOTH SIDES. The engine returns this hash SIGNED and the
+    -- config authors it positive, so twenty of the forty weapons in the game
+    -- could never satisfy a raw comparison -- and every one of them therefore
+    -- had unlimited ammo, silently, because this guard fired on every tick
+    -- (user's /brprobe ammo, 2026-08-06: config hash and "ENGINE holds"
+    -- printed identically and still compared unequal).
     local heldOk, held = GetCurrentPedWeapon(ped, true)
-    if not heldOk or held ~= hash then return end
+    if not heldOk or BR.NormHash(held) ~= BR.NormHash(hash) then return end
 
     -- Nor while a reload is playing: the magazine is mid-swap and reads as
     -- whatever the animation has reached, which is not a number to build a
@@ -771,7 +777,8 @@ function BR.Inv.reportState()
     elseif not slot then                    why = 'active slot is empty'
     elseif not hash then                    why = 'slot holds nothing weapon-shaped'
     elseif applied ~= hash then             why = 'our own grant has not landed yet'
-    elseif not heldOk or held ~= hash then  why = 'the ENGINE says the ped holds a different weapon'
+    elseif not heldOk or BR.NormHash(held) ~= BR.NormHash(hash) then
+                                            why = 'the ENGINE says the ped holds a different weapon'
     elseif IsPedInAnyVehicle(ped, false) then why = 'in a vehicle'
     elseif IsPedReloading(ped) then         why = 'mid-reload'
     end
