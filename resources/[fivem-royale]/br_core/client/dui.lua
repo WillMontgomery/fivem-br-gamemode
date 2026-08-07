@@ -120,39 +120,54 @@ function BR.Dui.drawWorld(page, x, y, z, scale, dist)
     ClearDrawOrigin()
 end
 
---- Draw a page FLAT IN THE WORLD, lying face-up like a label stuck on a lid.
+--- Draw a page as a label STUCK TO AN ENTITY'S TOP FACE.
 ---
---- The screen-facing version (drawWorld) is a sprite that always turns to the
---- camera, so walking around a crate spins its label -- which is right for a
---- floating prompt and wrong for something meant to read as printed ON the
---- crate (user, 2026-08-06). This one is a quad in world space: it has a fixed
---- heading, it does not turn, and the player sees it foreshortened exactly as
---- they would a real label.
+--- Not "flat in the world at some coordinates" -- the first version of this
+--- was, and it showed: the label sat at the loot entry's REGISTERED position
+--- while the crate had been shoved somewhere else, it used the crate's
+--- GENERATION heading rather than the pose the physics had actually settled
+--- into, and it ignored pitch and roll entirely, so a crate resting on a slope
+--- wore a label lying dead flat beside it (user screenshots, 2026-08-06).
 ---
---- DRAWN WITH BOTH WINDINGS. GTA's polys are single-sided and which winding
---- faces up depends on conventions this code cannot check without being in the
---- game -- so it draws the quad twice, once each way. Four triangles instead
---- of two is nothing next to being invisible from above.
+--- Every corner now comes from GET_OFFSET_FROM_ENTITY_IN_WORLD_COORDS, which
+--- is the entity's own matrix. That single change buys the anchoring, the
+--- yaw, the pitch and the roll together -- there is no orientation maths here
+--- to get wrong, and a crate rolling down a hill wears its label the whole way
+--- down.
 ---
 --- @param page table
---- @param x number
---- @param y number
---- @param z number      world height of the label plane
---- @param size number   width in METRES (the height follows the page aspect)
---- @param heading number|nil  degrees; the label's fixed facing
+--- @param entity integer  the prop to label
+--- @param size number|nil  label WIDTH in metres (height follows the page)
+--- @param lift number|nil  metres above the top face, to beat z-fighting
 --- @param alpha number|nil
-function BR.Dui.drawFlat(page, x, y, z, size, heading, alpha)
+function BR.Dui.drawOnEntity(page, entity, size, lift, alpha)
     if not BR.Dui.ready(page) then return end
+    if not entity or entity == 0 or not DoesEntityExist(entity) then return end
 
-    local hw = (size or 0.9) * 0.5
+    -- The lid, in the MODEL's own local space. Reading it off the model rather
+    -- than hardcoding a height means the same call labels the sealed crate and
+    -- the shorter open husk correctly, and would label a future container of
+    -- any size.
+    local mn, mx = GetModelDimensions(GetEntityModel(entity))
+    if not mn or not mx then return end
+    local ox, oy = (mn.x + mx.x) * 0.5, (mn.y + mx.y) * 0.5
+    local oz = mx.z + (lift or 0.02)
+
+    local hw = (size or 0.55) * 0.5
     local hh = hw * (page.h / page.w)
 
-    local rad = math.rad(heading or 0.0)
-    local c, s = math.cos(rad), math.sin(rad)
-    -- Local (dx, dy) -> world, rotated about the label's centre. dy is the
-    -- label's "up" on the lid, which is a compass direction once it is flat.
+    -- NEVER OVERHANG THE LID. A label wider than the box reads as floating
+    -- next to it rather than printed on it -- which is most of what was wrong
+    -- with the screenshots.
+    local fitW, fitH = (mx.x - mn.x) * 0.45, (mx.y - mn.y) * 0.45
+    local k = 1.0
+    if hw > fitW then k = math.min(k, fitW / hw) end
+    if hh > fitH then k = math.min(k, fitH / hh) end
+    hw, hh = hw * k, hh * k
+
     local function corner(dx, dy)
-        return x + dx * c - dy * s, y + dx * s + dy * c, z
+        local v = GetOffsetFromEntityInWorldCoords(entity, ox + dx, oy + dy, oz)
+        return v.x, v.y, v.z
     end
 
     local ax, ay, az = corner(-hw,  hh)   -- top-left
@@ -160,25 +175,43 @@ function BR.Dui.drawFlat(page, x, y, z, size, heading, alpha)
     local cx, cy, cz = corner(-hw, -hh)   -- bottom-left
     local dx, dy, dz = corner( hw, -hh)   -- bottom-right
 
+    -- WINDING PICKED FROM THE CAMERA, not guessed.
+    --
+    -- GTA's polys are single-sided. The first attempt hedged by drawing the
+    -- quad both ways round, which is exactly why the label came out MIRRORED:
+    -- both faces render, and the one pointing away wins the draw order. So
+    -- work out which way the quad is facing and emit one winding -- the one
+    -- whose normal points at the camera.
+    local ux, uy, uz = bx - ax, by - ay, bz - az
+    local vx, vy, vz = cx - ax, cy - ay, cz - az
+    local nx = uy * vz - uz * vy
+    local ny = uz * vx - ux * vz
+    local nz = ux * vy - uy * vx
+
+    local cam = GetGameplayCamCoord()
+    local mx2, my2, mz2 = (ax + dx) * 0.5, (ay + dy) * 0.5, (az + dz) * 0.5
+    local flip = (nx * (cam.x - mx2) + ny * (cam.y - my2) + nz * (cam.z - mz2)) < 0.0
+
     local a = alpha or 255
     local txd, tex = page.txd, page.tex
 
-    -- Triangle 1: TL, TR, BL.  Triangle 2: BL, TR, BR.
-    DrawSpritePoly(ax, ay, az, bx, by, bz, cx, cy, cz,
-        255, 255, 255, a, txd, tex,
-        0.0, 0.0, 1.0,  1.0, 0.0, 1.0,  0.0, 1.0, 1.0)
-    DrawSpritePoly(cx, cy, cz, bx, by, bz, dx, dy, dz,
-        255, 255, 255, a, txd, tex,
-        0.0, 1.0, 1.0,  1.0, 0.0, 1.0,  1.0, 1.0, 1.0)
-
-    -- ...and the same two with the winding reversed, so one pair faces up
-    -- whichever convention this build uses.
-    DrawSpritePoly(cx, cy, cz, bx, by, bz, ax, ay, az,
-        255, 255, 255, a, txd, tex,
-        0.0, 1.0, 1.0,  1.0, 0.0, 1.0,  0.0, 0.0, 1.0)
-    DrawSpritePoly(dx, dy, dz, bx, by, bz, cx, cy, cz,
-        255, 255, 255, a, txd, tex,
-        1.0, 1.0, 1.0,  1.0, 0.0, 1.0,  0.0, 1.0, 1.0)
+    if flip then
+        -- Vertices AND their UVs swapped together, so this is the same image
+        -- seen from the other side rather than a mirror of it.
+        DrawSpritePoly(ax, ay, az, cx, cy, cz, bx, by, bz,
+            255, 255, 255, a, txd, tex,
+            0.0, 0.0, 1.0,  0.0, 1.0, 1.0,  1.0, 0.0, 1.0)
+        DrawSpritePoly(cx, cy, cz, dx, dy, dz, bx, by, bz,
+            255, 255, 255, a, txd, tex,
+            0.0, 1.0, 1.0,  1.0, 1.0, 1.0,  1.0, 0.0, 1.0)
+    else
+        DrawSpritePoly(ax, ay, az, bx, by, bz, cx, cy, cz,
+            255, 255, 255, a, txd, tex,
+            0.0, 0.0, 1.0,  1.0, 0.0, 1.0,  0.0, 1.0, 1.0)
+        DrawSpritePoly(cx, cy, cz, bx, by, bz, dx, dy, dz,
+            255, 255, 255, a, txd, tex,
+            0.0, 1.0, 1.0,  1.0, 0.0, 1.0,  1.0, 1.0, 1.0)
+    end
 end
 
 --- Tear a page down. A DUI outlives the resource that made it otherwise.

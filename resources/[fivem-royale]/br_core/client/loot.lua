@@ -38,6 +38,20 @@ local myCell    = nil     -- last cell reported to the server
 local claimedAt = {}      -- [id] = gametimer, to stop a held key spamming claims
 local reported  = {}      -- [id] = true, entries already sent back as misplaced
 
+--- Where a container's prop ACTUALLY ended up, by entry id.
+---
+--- Kept outside `entries` on purpose: opening a crate mutates the entry in
+--- place on the server (kind 'chest' -> 'husk') and the client replaces its
+--- whole entry table with the new payload, so anything stored on the entry is
+--- gone by the time the husk needs it. This survives that, and it is what lets
+--- the open crate appear exactly where the sealed one was rather than back at
+--- the position it was generated at, upright, having visibly teleported (user,
+--- 2026-08-06).
+---
+--- { x, y, z, rx, ry, rz } -- a full pose, because a crate that has been shunted
+--- or has settled on a slope has pitch and roll worth keeping too.
+local poses = {}
+
 local hold = { id = nil, from = 0 }
 local lastPrompt = { id = nil, hold = nil }
 
@@ -220,6 +234,7 @@ local function forget(id)
     despawn(e)
     entries[id] = nil
     queued[id] = nil
+    poses[id] = nil
     if hold.id == id then hold.id = nil end
 end
 
@@ -292,8 +307,20 @@ local function drain()
                             -- static, because a rifle skittering down a hill
                             -- is not a feature.
                             local dynamic = isContainer(e) or isHusk(e)
+                            -- THE HUSK INHERITS THE CRATE'S POSE. If this entry
+                            -- already had a prop in the world -- which it did
+                            -- whenever a sealed crate has just become an open
+                            -- one -- put the replacement exactly where the old
+                            -- one was, at the same attitude. Otherwise the box
+                            -- you just opened jumps back to where it was
+                            -- generated and stands up straight (user,
+                            -- 2026-08-06).
+                            local pose = poses[id]
+                            local sx, sy, sz = e.x, e.y, gz + 0.35
+                            if pose then sx, sy, sz = pose.x, pose.y, pose.z end
+
                             local obj = CreateObjectNoOffset(model,
-                                e.x, e.y, gz + 0.35, false, false, dynamic)
+                                sx, sy, sz, false, false, dynamic)
                             if obj and obj ~= 0 then
                                 -- CRATES KEEP THEIR COLLISION. You walk up to
                                 -- one and it is a box in the world; the ray
@@ -304,7 +331,13 @@ local function drain()
                                 -- they are close enough to target by proximity.
                                 local solid = isContainer(e) or isHusk(e)
                                 SetEntityCollision(obj, solid, solid)
-                                if e.heading then
+                                if pose then
+                                    -- Order 2 is the same convention
+                                    -- GetEntityRotation was read with, so the
+                                    -- pose round-trips exactly.
+                                    SetEntityRotation(obj, pose.rx, pose.ry,
+                                        pose.rz, 2, true)
+                                elseif e.heading then
                                     SetEntityHeading(obj, e.heading)
                                 end
                                 -- PLACEOBJECTONGROUNDPROPERLY IS WHAT WELDED
@@ -545,7 +578,20 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.props', function()
                     end
                 end
 
+                -- REMEMBER WHERE IT ACTUALLY IS, every tick. Cheap, and it is
+                -- the only record of the pose that survives the entry being
+                -- replaced when the crate becomes a husk.
                 local c = GetEntityCoords(e.obj)
+                local r = GetEntityRotation(e.obj, 2)
+                local pose = poses[id]
+                if pose then
+                    pose.x, pose.y, pose.z = c.x, c.y, c.z
+                    pose.rx, pose.ry, pose.rz = r.x, r.y, r.z
+                else
+                    poses[id] = { x = c.x, y = c.y, z = c.z,
+                                  rx = r.x, ry = r.y, rz = r.z }
+                end
+
                 if BR.Dist2(c.x, c.y, e.x, e.y) > 1.0
                    and now - (e.movedAt or 0) > 2000 then
                     e.movedAt = now
@@ -826,13 +872,14 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
         -- as the player circles it (user, 2026-08-06). Loose items keep the
         -- screen-facing sprite: there is no surface to print on, and a label
         -- lying flat on the ground over a pistol would be unreadable.
-        if isContainer(shown) and L.crateLabelFlat ~= false then
-            BR.Dui.drawFlat(promptPage(), shown.x, shown.y,
-                gz + (L.crateLabelZ or 0.95),
-                L.crateLabelSize or 0.85,
-                -- The crate's OWN heading, so the label sits square with the
-                -- lid rather than at an angle across it.
-                shown.heading or 0.0)
+        -- ANCHORED TO THE PROP, not to the entry. The registry position is
+        -- where the crate was GENERATED; the prop is where it actually is
+        -- after settling, or after a car hit it. Passing the entity also hands
+        -- the label the crate's full orientation for free.
+        if isContainer(shown) and shown.obj and L.crateLabelFlat ~= false
+           and DoesEntityExist(shown.obj) then
+            BR.Dui.drawOnEntity(promptPage(), shown.obj,
+                L.crateLabelSize or 0.55, L.crateLabelLift or 0.02)
         else
             -- No `dist`: a fixed size, not one that inflates on approach.
             BR.Dui.drawWorld(promptPage(), shown.x, shown.y, gz + 1.05, 1.0)

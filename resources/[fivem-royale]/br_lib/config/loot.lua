@@ -324,9 +324,19 @@ BR.Config.Loot = {
     -- to face the camera, so it reads as printed on the box (user call,
     -- 2026-08-06). Set crateLabelFlat = false to go back to the floating
     -- screen-facing prompt.
+    -- THE LID HEIGHT IS READ OFF THE MODEL now rather than configured. The
+    -- previous version placed the label at ground + 0.95, which on a crate
+    -- roughly 0.8m tall left it hanging "about 6 inches over the plywood"
+    -- (user, 2026-08-06) -- a guessed constant against a measured object.
+    -- GetModelDimensions gives the real top face, whatever the prop.
     crateLabelFlat  = true,
-    crateLabelZ     = 0.95,   -- metres above the ground probe: the lid
-    crateLabelSize  = 0.85,   -- label WIDTH in metres; height follows the page
+    crateLabelSize  = 0.55,   -- label WIDTH in metres, clamped to fit the lid
+
+    -- Metres proud of that top face, purely to beat z-fighting. THIS IS THE
+    -- NUMBER TO CHANGE if the label still floats or sinks: the bounding box
+    -- top includes the raised battens around the lid, so a small NEGATIVE
+    -- value drops it onto the plywood between them.
+    crateLabelLift  = 0.02,
 
     -- CRATE DRAG, applied to a crate that is actually moving.
     --
@@ -337,9 +347,11 @@ BR.Config.Loot = {
     -- scale per tick on the horizontal component only, so gravity and falls
     -- are untouched: 0.82 at 10Hz kills a slide in about a second and a half
     -- without making the crate feel glued.
-    -- TRIPLED, 2026-08-06: 0.82 kept 82% of the speed per tick, which was
-    -- still a long skate. 0.46 loses roughly three times as much per tick.
-    crateDrag       = 0.46,
+    -- Tuned down twice on 2026-08-06: 0.82 was a long skate, 0.46 was working
+    -- but still slid, and the user asked to double the drag again. 0.23 keeps
+    -- under a quarter of the speed each tick -- a crate stops within about its
+    -- own length of being hit.
+    crateDrag       = 0.23,
     crateDragMin    = 0.35,   -- m/s below which it is simply stopped dead
 
     -- How often the client tells the SERVER what the magazine is doing. The
