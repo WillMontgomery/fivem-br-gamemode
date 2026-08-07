@@ -245,18 +245,14 @@ BR.Config.Combat = {
 
 --- weaponDamageEvent's `hitComponent`, decoded.
 ---
---- CONFIRMED SHAPE, UNCONFIRMED MEANING. The payload was captured in game on
---- 2026-08-06 and `hitComponent` is definitely there, carrying small integers
---- (0, 14, 17 across four samples). The NUMBER->BODY PART mapping below is the
---- one the FiveM community circulates; it is NOT from an authoritative source
---- and this project has been bitten before by treating community tables as
---- fact.
+--- CONFIRMED IN GAME, 2026-08-07. The community mapping was suspect until a
+--- deliberate headshot came back as component 20 -- exactly where the table
+--- says HEAD is -- alongside a one-shot kill. Earlier samples at 0, 14 and 17
+--- (pelvis, left wrist, right elbow) are consistent with spraying at a moving
+--- target, so the table is taken as correct.
 ---
---- So it is used for ONE thing -- the headshot bonus -- and nothing else
---- depends on it being right. /brdamagelog prints hitComponent on every
---- sample: one deliberate headshot confirms or refutes the whole table in a
---- single line, and until that happens a wrong entry costs a damage multiplier,
---- not a broken match.
+--- This is what makes damage-by-bone possible: the payload tells us WHERE the
+--- round landed, so a leg hit and a headshot need not be worth the same thing.
 BR.Config.HitComponent = {
     PELVIS       = 0,
     LEFT_HIP     = 1,  LEFT_LEG      = 2,  LEFT_FOOT    = 3,
@@ -275,6 +271,77 @@ BR.Config.HitComponent = {
 function BR.Config.IsHeadshot(c)
     local H = BR.Config.HitComponent
     return c == H.HEAD or c == H.NECK or c == H.UNDER_NECK
+end
+
+--- Damage multiplier by body part.
+---
+--- THIS IS A BALANCE DECISION, AND IT IS A DEPARTURE FROM GTA. The captured
+--- headshot is the evidence: a Mini SMG whose base damage we call 23 reported
+--- `weaponDamage 234` and killed outright. GTA's own headshot multiplier is
+--- effectively lethal for any weapon -- one round anywhere near the head ends
+--- a fight regardless of what the gun is.
+---
+--- A battle royale generally does not want that. Fortnite headshots are a
+--- large multiplier, not an instant kill, because a mode built on looting has
+--- to let a player who found armour and a good gun survive one unlucky round.
+--- So headshots hurt a great deal and still leave a fight to win.
+---
+--- Sniper rifles get there anyway through raw damage: a Heavy Sniper at 216
+--- base times 2.0 is far past any health pool, which is the right place for a
+--- one-shot to live.
+---
+--- Keyed by hitComponent; anything unlisted is 1.0.
+--- TWO HEADSHOTS TO KILL (user call, 2026-08-07), and 2.5 is the arithmetic
+--- of that rather than a taste. Health is 100 display units, so "two shots"
+--- means a headshot must land in (50, 100]:
+---
+---     Mini SMG   23 x 2.5 =  58   -> 2 headshots
+---     Pistol     26 x 2.5 =  65   -> 2
+---     Carbine    32 x 2.5 =  80   -> 2
+---     Revolver   97 x 2.5 = 243   -> 1, and a hand cannon should
+---     Heavy Sniper 216 x 2.5      -> 1, which is where one-shots belong
+---
+--- So the rule holds for every automatic weapon and sidearm, and the two
+--- weapons that break it are the two that are supposed to.
+BR.Config.BodyMult = {
+    [BR.Config.HitComponent.HEAD]        = 2.3,
+    [BR.Config.HitComponent.NECK]        = 1.8,
+    [BR.Config.HitComponent.UNDER_NECK]  = 1.8,
+
+    -- Centre mass is the honest target: full damage, and the biggest area on
+    -- the model. Everything below it is a consolation prize.
+    [BR.Config.HitComponent.CHEST]       = 1.0,
+    [BR.Config.HitComponent.UPPER_TORSO] = 1.0,
+    [BR.Config.HitComponent.LOWER_TORSO] = 0.95,
+    [BR.Config.HitComponent.PELVIS]      = 0.95,
+
+    -- LIMBS HURT LESS, and noticeably so (user call, 2026-08-07). Spraying at
+    -- a running target and clipping an arm should not trade evenly with
+    -- someone who put their rounds in the chest.
+    [BR.Config.HitComponent.LEFT_SHOULDER]   = 0.75,
+    [BR.Config.HitComponent.RIGHT_SHOULDER]  = 0.75,
+    [BR.Config.HitComponent.LEFT_UPPER_ARM]  = 0.65,
+    [BR.Config.HitComponent.RIGHT_UPPER_ARM] = 0.65,
+    [BR.Config.HitComponent.LEFT_ELBOW]      = 0.55,
+    [BR.Config.HitComponent.RIGHT_ELBOW]     = 0.55,
+    [BR.Config.HitComponent.LEFT_WRIST]      = 0.50,
+    [BR.Config.HitComponent.RIGHT_WRIST]     = 0.50,
+
+    [BR.Config.HitComponent.LEFT_HIP]    = 0.80,
+    [BR.Config.HitComponent.RIGHT_HIP]   = 0.80,
+    [BR.Config.HitComponent.LEFT_LEG]    = 0.65,
+    [BR.Config.HitComponent.RIGHT_LEG]   = 0.65,
+    [BR.Config.HitComponent.LEFT_FOOT]   = 0.50,
+    [BR.Config.HitComponent.RIGHT_FOOT]  = 0.50,
+}
+
+--- The multiplier for a hit component. Unknown parts are worth full damage --
+--- an unrecognised bone should never silently zero a hit.
+--- @param c integer|nil
+--- @return number
+function BR.Config.BodyMultFor(c)
+    if c == nil then return 1.0 end
+    return BR.Config.BodyMult[c] or 1.0
 end
 
 --- Descent classification, shared by the BUS ceiling and the stuck-lander net.

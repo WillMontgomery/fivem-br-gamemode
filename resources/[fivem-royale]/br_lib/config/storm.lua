@@ -201,7 +201,17 @@ BR.Config.Storm = {
         -- Raising the ceiling does NOT slow down matches where everyone
         -- landed together: the pricing still returns ~40s when nobody is far.
         -- It only stops the cap from turning a long run into a death sentence.
-        { radius = 2600.0, wait = 120, shrink = 360, dps = 1.0,  warn = 30 },
+        -- BOTH KNOBS, NOT ONE (user call, 2026-08-07). The first fix raised
+        -- this ceiling from 120s to 360s so the sweep pricing could actually
+        -- give a far-end jumper time to cross -- correct, but on its own it
+        -- makes every spread-out match drag. Halving the damage instead means
+        -- being caught by circle one costs a real bite out of your health
+        -- rather than your life, so the pace can stay brisk.
+        --
+        -- 240s of sweep at 0.5 dps is 120 damage for someone who never moves,
+        -- and a player who starts running the moment it closes takes a
+        -- fraction of that. Later phases are untouched and still lethal.
+        { radius = 2600.0, wait = 120, shrink = 240, dps = 0.5,  warn = 30 },
         { radius = 1600.0, wait = 120, shrink = 120, dps = 1.25, warn = 30 },
         { radius =  950.0, wait =  90, shrink =  90, dps = 1.7,  warn = 20 },
         { radius =  520.0, wait =  75, shrink =  75, dps = 2.2,  warn = 20 },

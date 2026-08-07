@@ -718,7 +718,17 @@ BR.Loop.register(BR.Loop.TICK, 'loot.crates', function()
                 -- Provable rather than inferred: /brloot prints this, so
                 -- "the drag is not running" and "the drag is not enough" can
                 -- be told apart without another round of guessing.
+                -- SPLIT BY KIND, because "the weight only works on empty
+                -- crates" (user, 2026-08-07) is a claim these two counters
+                -- settle in one line: if sealed is 0 and husk is not, the
+                -- loop is skipping sealed crates; if both move, the drag is
+                -- running on both and the difference is somewhere else.
                 BR.Loot.dragTicks = (BR.Loot.dragTicks or 0) + 1
+                if isHusk(e) then
+                    BR.Loot.dragHusk = (BR.Loot.dragHusk or 0) + 1
+                else
+                    BR.Loot.dragSealed = (BR.Loot.dragSealed or 0) + 1
+                end
             end
 
             -- Remember where it ACTUALLY is. This is the only record of the
@@ -1216,8 +1226,19 @@ RegisterCommand('brloot', function()
     -- "the drag is not strong enough" are two different readings rather than
     -- one guess. It was 0 for as long as the drag sat on the 1Hz band and
     -- nobody could tell (user, 2026-08-06).
-    print(('  crate drag: %d applications, k=%.2f, floor %.2f m/s')
-        :format(BR.Loot.dragTicks or 0, L.crateDrag or 0.0, L.crateDragMin or 0.0))
+    print(('  crate drag: %d applications (sealed %d, husk %d), k=%.2f, floor %.2f m/s')
+        :format(BR.Loot.dragTicks or 0, BR.Loot.dragSealed or 0,
+                BR.Loot.dragHusk or 0, L.crateDrag or 0.0, L.crateDragMin or 0.0))
+    -- And how many of each are physical right now, so "no sealed crate was
+    -- ever dragged" can be told from "no sealed crate was ever pushed".
+    local nSealed, nHusk = 0, 0
+    for _, e in pairs(entries) do
+        if e.obj then
+            if isHusk(e) then nHusk = nHusk + 1
+            elseif isContainer(e) then nSealed = nSealed + 1 end
+        end
+    end
+    print(('  crate props live: %d sealed, %d husk'):format(nSealed, nHusk))
     print(('  crate mass: %.0f kg  (glow off after %d opened; %d opened)')
         :format(L.crateMass or 0.0, L.shineOpenLimit or 0, BR.Loot.openedCount or 0))
 end, false)

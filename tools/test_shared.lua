@@ -451,13 +451,51 @@ do
 
     -- Damage is recomputed from OUR tables, never read off the event -- the
     -- payload's own damage figure is precisely the field a multiplier edits.
-    local base = BR.ShotDamage(rifle.hash, BR.Rarity.COMMON, 10.0, false, cfg)
-    local head = BR.ShotDamage(rifle.hash, BR.Rarity.COMMON, 10.0, true, cfg)
-    ok(base > 0.0, 'a hit computes real damage', tostring(base))
-    ok(math.abs(head - base * cfg.headshotMult) < 1e-6,
-        'and a headshot multiplies it', ('%.1f vs %.1f'):format(head, base))
-    ok(BR.ShotDamage(signed, BR.Rarity.COMMON, 10.0, false, cfg) == base,
-        'damage is identical whether the hash arrives signed or unsigned')
+    local H = BR.Config.HitComponent
+    local chest = BR.ShotDamage(rifle.hash, BR.Rarity.COMMON, 10.0, H.CHEST, cfg)
+    local head  = BR.ShotDamage(rifle.hash, BR.Rarity.COMMON, 10.0, H.HEAD, cfg)
+    local wrist = BR.ShotDamage(rifle.hash, BR.Rarity.COMMON, 10.0, H.LEFT_WRIST, cfg)
+    ok(chest > 0.0, 'a hit computes real damage', tostring(chest))
+    ok(head > chest and wrist < chest,
+        'damage varies by bone: head above chest, wrist below',
+        ('head %.1f chest %.1f wrist %.1f'):format(head, chest, wrist))
+    ok(BR.ShotDamage(signed, BR.Rarity.COMMON, 10.0, H.CHEST, cfg) == chest,
+        'and is identical whether the hash arrives signed or unsigned')
+
+    -- An UNKNOWN component is worth full damage, never zero. A bone we have
+    -- not mapped must not silently delete a hit.
+    ok(BR.ShotDamage(rifle.hash, BR.Rarity.COMMON, 10.0, 999, cfg) == chest,
+        'an unmapped body part is worth full damage')
+    ok(BR.ShotDamage(rifle.hash, BR.Rarity.COMMON, 10.0, nil, cfg) == chest,
+        'and so is a missing one')
+
+    -- TWO HEADSHOTS TO KILL, for every weapon that is not a hand cannon
+    -- (user call, 2026-08-07). Health is 100, so a headshot has to land in
+    -- (50, 100] -- above half, at or under a full bar.
+    local twoShot, oneShot = {}, {}
+    for _, w in ipairs(BR.Config.Weapons) do
+        local d = BR.ShotDamage(w.hash, BR.Rarity.COMMON, 5.0, H.HEAD, cfg)
+        if d > 100.0 then
+            oneShot[#oneShot + 1] = w.id
+        elseif d > 50.0 then
+            twoShot[#twoShot + 1] = w.id
+        end
+    end
+    ok(#twoShot > 10, 'most weapons take two headshots to kill',
+        ('%d weapons'):format(#twoShot))
+    -- The exceptions must be the ones that SHOULD one-shot, and "should" is
+    -- expressed as raw damage rather than by matching names: anything hitting
+    -- for 60+ to the chest is a sniper, a revolver or a shotgun by
+    -- construction, and a name test would quietly pass a future weapon called
+    -- something unexpected.
+    local surprises = {}
+    for _, id in ipairs(oneShot) do
+        local w = BR.Config.WeaponById[id]
+        if (w.damage or 0) < 60 then surprises[#surprises + 1] = id end
+    end
+    ok(#surprises == 0,
+        'and the only one-shot headshots come from weapons that hit for 60+',
+        table.concat(surprises, ', '))
 end
 
 describe('bus.doors')
@@ -948,8 +986,17 @@ do
     ok(worstDps <= 100.0 / 15.0 + 0.05,
         'no phase kills a full-health player in under 15s',
         ('worst dps %.1f'):format(worstDps))
-    ok(math.abs(100.0 / phases[1].dps - 100.0) < 1.0,
-        'phase 1 takes a hundred seconds to kill')
+    -- PHASE 1 IS THE FORGIVING ONE, deliberately. A far-end jumper has a
+    -- legitimate several-minute run to circle one, so being caught by it must
+    -- cost health rather than the match (user, 2026-08-07). Every later phase
+    -- is where the storm is supposed to be frightening.
+    ok(100.0 / phases[1].dps >= 150.0,
+        'phase 1 takes at least 150s of standing still to kill',
+        ('%.0fs at %.2f dps'):format(100.0 / phases[1].dps, phases[1].dps))
+    for i = 2, #phases do
+        ok(phases[i].dps > phases[1].dps,
+            ('phase %d hurts more than phase 1'):format(i))
+    end
 
     -- The free-loot floor: an all-inside drop still gets one full minute
     -- (hold.minSeconds); the priced hold stretches it from there.

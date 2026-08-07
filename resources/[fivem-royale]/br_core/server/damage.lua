@@ -204,17 +204,18 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                     -- multiplier edits, so it is evidence of intent and never
                     -- an input.
                     local head = BR.Config.IsHeadshot(data.hitComponent)
-                    local dmg  = BR.ShotDamage(data.weaponType, ctx.rarity,
-                                               dist, head, cfg)
+                    local dmg, mult = BR.ShotDamage(data.weaponType, ctx.rarity,
+                                                    dist, data.hitComponent, cfg)
                     BR.Damage.lastHit = {
                         shooter = shooter, victim = victim,
                         ours = dmg, theirs = data.weaponDamage,
-                        head = head, component = data.hitComponent,
+                        head = head, component = data.hitComponent, mult = mult,
                         willKill = data.willKill, at = now,
                     }
                     if cfg.logHits then
-                        print(('[br_core] hit %d -> %d: ours %.1f, client said %s%s')
-                            :format(shooter, victim, dmg,
+                        print(('[br_core] hit %d -> %d: ours %.1f (x%.2f, part %s), client said %s%s')
+                            :format(shooter, victim, dmg, mult,
+                                    tostring(data.hitComponent),
                                     tostring(data.weaponDamage),
                                     head and '  HEADSHOT' or ''))
                     end

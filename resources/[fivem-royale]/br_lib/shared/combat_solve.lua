@@ -104,17 +104,20 @@ end
 --- shooter's game said, which is precisely the field a damage multiplier
 --- edits.
 ---
+--- DAMAGE VARIES BY BONE, which is the whole reason hitComponent is read.
+--- The payload says exactly where the round landed, so a wrist and a head are
+--- not worth the same thing -- see BR.Config.BodyMult for the numbers and why
+--- they deliberately differ from GTA's own.
+---
 --- @param weapon integer   weapon hash (signed or unsigned)
 --- @param rarity integer|nil
 --- @param dist number|nil
---- @param headshot boolean|nil
+--- @param component integer|nil  weaponDamageEvent's hitComponent
 --- @param cfg table        BR.Config.Combat
---- @return number
-function BR.ShotDamage(weapon, rarity, dist, headshot, cfg)
+--- @return number damage, number multiplier
+function BR.ShotDamage(weapon, rarity, dist, component, cfg)
     cfg = cfg or {}
     local base = BR.Config.ExpectedDamage(weapon, rarity, dist)
-    if headshot then
-        base = base * (cfg.headshotMult or 2.0)
-    end
-    return base
+    local mult = BR.Config.BodyMultFor(component)
+    return base * mult, mult
 end
