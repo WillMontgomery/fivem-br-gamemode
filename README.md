@@ -33,7 +33,7 @@ matches run at once in separate routing buckets, sharing the warmup pad and
 watching each other's flights take off. The Battle Bus flies an authored tour
 over Los Santos and everyone skydives out wherever they choose. On the ground
 there is loot: weapons, ammo, shields, throwables and chests scattered across
-97 points of interest and along the highways between them, streamed to each
+101 points of interest and along the highways between them, streamed to each
 client cell by cell as they move. When the last player lands, the match goes
 live and the storm starts — a shrinking circle homed on a point of interest
 near the flight path, with a rendered wall, map circles, screen effects and
@@ -132,7 +132,7 @@ actually is.
 
 | Term | Meaning |
 |---|---|
-| **POI** | Point of interest: 97 places (`br_lib/config/map.lua`) with a tier that drives loot density. 63 are north of the city, and 25 of those are **backcountry** — sited from the empty ground *between* the road corridors rather than from a place name, because named places are all on roads and the authored set had inherited the road network's shape. `tools/check_pois.lua` gates the spacing and the distance to the nearest corridor. They double as storm-anchor candidates. |
+| **POI** | Point of interest: 101 places (`br_lib/config/map.lua`) with a tier that drives loot density. 65 are north of the city, and 25 of those are **backcountry** — sited from the empty ground *between* the road corridors rather than from a place name, because named places are all on roads and the authored set had inherited the road network's shape. `tools/check_pois.lua` gates the spacing and the distance to the nearest corridor. They double as storm-anchor candidates. |
 | **Anchor** | The place a match's whole storm sequence homes on. Picked at warmup: one random waypoint of this match's tour, then one random POI 500–1500 units off it — route-coupled, always on land, never a pattern. |
 | **Record** | The one table the server publishes per phase: current circle, target circle, timestamps, dps. Whole-record broadcasts only, never incremental mutation. |
 | **Solver** | `BR.StormAt(record, now)` — a pure function both sides run to get the circle at any instant. A shrinking storm costs zero per-frame network traffic. |
@@ -235,16 +235,18 @@ differ every match** — `brlootseed <n>` pins one when you need to debug the
 same map twice. The seed never leaves the server: a client that could replay
 it would know where every item is.
 
-**How much, and where.** For each of the 97 POIs, by tier:
+**How much, and where.** For each of the 101 POIs, by tier:
 
 ```
 crates(tier)     = 20 | 20 | 24          (tier 1 | 2 | 3)
-floor items(tier)= 10 | 16 | 28
+floor items(tier)=  5 |  8 | 14
 ```
 
-Crates land uniformly in a disc of `radius × 0.75`, floor items in
-`radius × 0.92` — off the rim, where a first-pass radius is most likely to
-have overshot into water or a cliff. Then 420 roadside filler items along the
+Crates land uniformly **by area** in a disc of `radius × 0.95`, floor items in
+`radius × 0.97` — just off the rim, where a first-pass radius is most likely to
+have overshot into water or a cliff. (Crates used only the inner 75% of the
+radius until 2026-08-06, which is 56% of the area and read as clustered in the
+middle.) Then 420 roadside filler items along the
 authored corridors in `BR.Config.Map.Roads`, offset **8–22 m** perpendicular
 to the centreline, on one side or the other, never on it. Plus 3 crates per
 player, spawned when they land, 55–130 m out — the inner radius is the design:
@@ -264,18 +266,33 @@ Re-rolling the same disc just draws the sea again for a coastal POI; walking
 inward always terminates, because a POI centre is on land by definition.
 There is a test asserting no water rectangle may contain one.
 
-**What is inside.** Each roll picks a kind, then a rarity, then an item:
+**What is inside.** Each roll picks a kind, then a rarity, then an item — and
+**a crate rolls on a different table from the floor**:
 
 ```
-kind   ~ weighted(weapon 34, ammo 30, consumable 28, throwable 8)
+crate kind ~ weighted(weapon 34, ammo 30, consumable 28, throwable 8)
+floor kind ~ weighted(ammo 74, weapon 16, consumable 6, throwable 4)
+```
+
+Loose ground loot is deliberately almost all ammo, and **bandages and med kits
+cannot spawn on the floor at all** (`chestOnly` on the consumable, with a
+separate precomputed bucket table so a loose roll still burns the same number of
+RNG draws). The crate has to be the thing worth crossing open ground for, and it
+is not if a rifle on the floor is as likely as one in a box. Healing will
+eventually also come from reboot vans. Shields are not restricted.
+
+A crate holds **2–4 items, weighted 1:2:1**, so three is typical and it is never
+empty. The rarity roll is shared:
+
+```
 rarity ~ weighted(RarityWeights[tier])      -- tier 3: 25/28/27/15/5
 item   ~ uniform(bucket[rarity]), walking DOWN if that bucket is empty
 ```
 
 The walk-down matters: there is no legendary consumable, and a nil item would
-be an invisible prop. A crate rolls `3–5` items at `min(tier + 1, 3)` — one
-tier hotter than the ground around it, which is what makes crossing open
-ground for one worth the exposure. Its glow colour is the best thing inside.
+be an invisible prop. A crate's contents roll at `min(tier + 1, 3)` — one tier
+hotter than the ground around it, which is what makes crossing open ground for
+one worth the exposure. Its glow colour is the best thing inside.
 
 **Determinism.** Every walk is over an **array**, never a hash — `pairs()`
 order is undefined, so `AmmoOrder`, `WeaponsByRarity` and `ConsumablesByRarity`

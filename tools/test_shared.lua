@@ -332,6 +332,129 @@ do
         'phase 2 holding deals its authored dps')
 end
 
+describe('loot.floor')
+do
+    -- HEALING COMES OUT OF CRATES, NEVER OFF THE FLOOR (user call,
+    -- 2026-08-06). Health is what a fight is fought with, so finding it should
+    -- cost the exposure of standing at a container -- and later, of driving to
+    -- a reboot van. Tripping over a bandage in the street undoes both.
+    local layout = BR.BuildLootLayout(31337)
+
+    local floorHeal, chestHeal = 0, 0
+    local floorKinds, counts = {}, {}
+    for _, e in ipairs(layout) do
+        if e.kind == 'chest' then
+            local n = 0
+            for _, s in ipairs(e.contents or {}) do
+                n = n + 1
+                if s.item == 'bandage' or s.item == 'medkit' then
+                    chestHeal = chestHeal + 1
+                end
+            end
+            counts[n] = (counts[n] or 0) + 1
+        else
+            floorKinds[e.kind] = (floorKinds[e.kind] or 0) + 1
+            if e.item == 'bandage' or e.item == 'medkit' then
+                floorHeal = floorHeal + 1
+            end
+        end
+    end
+
+    ok(floorHeal == 0, 'no bandage or med kit ever spawns loose on the ground',
+        ('%d found'):format(floorHeal))
+    ok(chestHeal > 0, 'but crates carry them', ('%d in crates'):format(chestHeal))
+
+    -- Shields are NOT crate-only -- only the two healing items are, which is
+    -- what was actually asked for.
+    local floorShield = 0
+    for _, e in ipairs(layout) do
+        if e.kind ~= 'chest'
+           and (e.item == 'shield' or e.item == 'minishield') then
+            floorShield = floorShield + 1
+        end
+    end
+    ok(floorShield > 0, 'shields still spawn loose', tostring(floorShield))
+
+    -- LOOSE LOOT IS MOSTLY AMMO. The crate is meant to be the thing worth
+    -- crossing open ground for; when a rifle on the floor is as likely as one
+    -- in a box, the box is not worth its exposure.
+    local floorTotal = 0
+    for _, n in pairs(floorKinds) do floorTotal = floorTotal + n end
+    local ammoShare = (floorKinds[BR.ItemKind.AMMO] or 0) / math.max(1, floorTotal)
+    ok(ammoShare > 0.6, 'most loose ground loot is ammo',
+        ('%.0f%%'):format(ammoShare * 100))
+
+    -- CRATE CONTENTS: 2..4, peaking at three, with two and four alike.
+    ok((counts[1] or 0) == 0 and (counts[5] or 0) == 0,
+        'a crate never holds fewer than 2 or more than 4')
+    ok((counts[3] or 0) > (counts[2] or 0) and (counts[3] or 0) > (counts[4] or 0),
+        'three is the most common haul',
+        ('2:%d 3:%d 4:%d'):format(counts[2] or 0, counts[3] or 0, counts[4] or 0))
+    -- Equally probable either side: within 15% of each other over ~2000 crates.
+    local lo, hi = counts[2] or 0, counts[4] or 0
+    ok(math.abs(lo - hi) / math.max(1, (lo + hi) / 2) < 0.15,
+        'two and four are equally likely',
+        ('2:%d 4:%d'):format(lo, hi))
+end
+
+describe('storm.breakout')
+do
+    -- THE CIRCLE MUST BE ABLE TO LEAVE THE CIRCLE.
+    --
+    -- Strict nesting means a player at the centre is never obliged to move and
+    -- can hold one building on the hope of a favourable draw. A breakout puts
+    -- the next circle partly outside the current one, so everyone runs (user
+    -- call, 2026-08-06). This is safe only because the wall SWEEPS to the new
+    -- circle over a duration priced off the furthest player's run -- nobody is
+    -- damaged for standing where they legally stood.
+    local bo = { chance = 0.65, overhang = 1.8, minRadius = 300.0 }
+    local R, r = 1600.0, 950.0
+    local slack = R - r
+
+    local outside, breached, worst = 0, 0, 0.0
+    for i = 1, 800 do
+        local nx, ny = BR.NextStormCentre(BR.Rng(i), 0.0, 0.0, R, r, 1.0, nil, nil, bo)
+        local d = BR.Dist(0.0, 0.0, nx, ny)
+        -- The CENTRE outside the current circle is the thing being asked for.
+        if d > R then outside = outside + 1 end
+        -- ...but never past the budget the phase priced its sweep against.
+        local budget = slack + bo.overhang * r
+        if d > budget + 1e-6 then
+            breached = breached + 1
+            if d - budget > worst then worst = d - budget end
+        end
+    end
+    ok(outside > 0, 'a breakout can put the next centre outside the current circle',
+        ('%d of 800'):format(outside))
+    ok(breached == 0, 'and never further than the phase reach budget',
+        ('%d breaches, worst %.3f'):format(breached, worst))
+
+    -- WITHOUT the config it is the old strict rule, unchanged. Every existing
+    -- caller that passes no breakout table keeps exact containment.
+    local violations = 0
+    for i = 1, 800 do
+        local nx, ny = BR.NextStormCentre(BR.Rng(i), 0.0, 0.0, R, r, 1.0, nil)
+        if BR.Dist(0.0, 0.0, nx, ny) + r > R + 1e-6 then
+            violations = violations + 1
+        end
+    end
+    ok(violations == 0, 'omitting the breakout config keeps strict nesting',
+        ('%d violations'):format(violations))
+
+    -- THE ENDGAME IS NOT A COIN FLIP. Below minRadius the circle is small
+    -- enough that a breakout decides the match on who happened to be nearer,
+    -- so those phases stay nested.
+    local lateBreaks = 0
+    for i = 1, 400 do
+        local nx, ny = BR.NextStormCentre(BR.Rng(i), 0.0, 0.0, 520.0, 260.0, 1.0, nil, nil, bo)
+        if BR.Dist(0.0, 0.0, nx, ny) + 260.0 > 520.0 + 1e-6 then
+            lateBreaks = lateBreaks + 1
+        end
+    end
+    ok(lateBreaks == 0, 'and a circle under minRadius never breaks out',
+        ('%d of 400'):format(lateBreaks))
+end
+
 describe('storm.water')
 do
     -- THE STORM MUST NOT CLOSE ON OPEN OCEAN.

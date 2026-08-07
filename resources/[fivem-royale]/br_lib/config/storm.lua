@@ -55,6 +55,36 @@ BR.Config.Storm = {
     edgeHugM      = 250.0,
     edgeHugPhases = 2,
 
+    -- BREAKOUT: the next circle is allowed to leave the current one.
+    --
+    -- Every circle used to be strictly contained by its predecessor, which is
+    -- Fortnite's rule and is safe -- but it means a player sitting at the
+    -- centre is never obliged to move, and can hold a building for the whole
+    -- match on the hope of a favourable draw. The user has never seen the
+    -- centre move outside the current circle, and wants that to be the NORM
+    -- rather than the exception (2026-08-06): "this will force ALL players to
+    -- move instead of allowing them to hide and hope for the best".
+    --
+    -- `overhang` is extra offset allowed beyond the nesting limit, as a
+    -- fraction of the NEXT radius. The centre lands outside the current circle
+    -- whenever the draw exceeds curRadius; at 1.8 the reachable maximum is
+    -- curRadius + 0.8 * nextRadius, so that happens often and the two circles
+    -- still overlap -- a long run, not a teleport.
+    --
+    -- THIS IS SAFE ONLY BECAUSE THE WALL SWEEPS. Damage is dealt by where the
+    -- wall IS, and the wall travels from the old circle to the new one over
+    -- the phase's shrink time, which is itself priced off the furthest
+    -- player's run. Nobody is ever damaged for standing where they legally
+    -- stood; they are given the sweep to leave.
+    breakout = {
+        chance    = 0.65,   -- how often a phase is allowed to break out
+        overhang  = 1.8,    -- extra offset, as a fraction of the next radius
+        -- ...but never in the endgame. Below this radius the circle is small
+        -- enough that a breakout is a coin flip on who happened to be nearer,
+        -- and the edge-hug rule is already making those phases a run.
+        minRadius = 300.0,
+    },
+
     -- SHRINK TIME IS PRICED PER PHASE, like the hold: at each phase entry
     -- the furthest in-match player's run to the TARGET circle's edge sets
     -- the wall's travel time -- everyone already inside means the sweep
@@ -94,10 +124,12 @@ BR.Config.Storm = {
     -- onto land. Anchors are checked in the test suite so the overhang stays
     -- bounded rather than accidental.
     --
-    -- Containment always beats these bounds. If clamping a circle into the AABB
-    -- would stop it nesting inside its predecessor, NextStormCentre pulls it back
-    -- instead -- a circle poking into the sea is cosmetic, a circle that escapes
-    -- its predecessor puts players in the storm unfairly.
+    -- The phase's reach budget always beats these bounds. If clamping a circle
+    -- into the AABB would push it further than the budget allows,
+    -- NextStormCentre pulls it back instead -- a circle poking into the sea is
+    -- cosmetic, a circle further out than the phase priced is a run nobody was
+    -- given time for. (The budget is the containment slack, plus the breakout
+    -- overhang on the phases that roll one.)
     mapAABB = {
         min = { x = -3600.0, y = -3600.0 },
         max = { x =  4500.0, y =  8000.0 },

@@ -32,6 +32,12 @@ BR.Config.Consumables = {
         kind = BR.ItemKind.CONSUMABLE, prop = 'xm_prop_smug_crate_s_medical',
         useMs = 4000, maxStack = 3, carryMax = 3,
         health = 15, healthCap = 75,   -- bandages cannot finish the job
+        -- HEALING COMES OUT OF CRATES, never off the floor (user call,
+        -- 2026-08-06). Health is the resource a fight is fought with, so
+        -- finding it should cost the exposure of standing at a container --
+        -- and later, of driving to a reboot van. Tripping over a bandage in
+        -- the street undoes both.
+        chestOnly = true,
     },
     {
         id = 'medkit', label = 'Med Kit', rarity = R.EPIC,
@@ -39,6 +45,7 @@ BR.Config.Consumables = {
         kind = BR.ItemKind.CONSUMABLE, prop = 'xm_prop_x17_bag_med_01a',
         useMs = 8000, maxStack = 3, carryMax = 3,
         health = 100, healthCap = 100,
+        chestOnly = true,
     },
 }
 
@@ -57,6 +64,22 @@ end
 for _, c in ipairs(BR.Config.Consumables) do
     local b = BR.Config.ConsumablesByRarity[c.rarity]
     if b then b[#b + 1] = c end
+end
+
+--- The same buckets with the crate-only items taken out, for LOOSE ground
+--- rolls. Precomputed rather than filtered at roll time: a filter would either
+--- burn a different number of RNG draws depending on what it rejected, or
+--- allocate a table per roll -- and the first of those quietly desynchronises
+--- two servers running the same seed.
+BR.Config.ConsumablesByRarityFloor = {}
+for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+    BR.Config.ConsumablesByRarityFloor[r] = {}
+end
+for _, c in ipairs(BR.Config.Consumables) do
+    if not c.chestOnly then
+        local b = BR.Config.ConsumablesByRarityFloor[c.rarity]
+        if b then b[#b + 1] = c end
+    end
 end
 
 --- Ammo pickups. Dropped alongside weapons so a found gun is usable.
@@ -90,12 +113,30 @@ BR.Config.RarityWeights = {
     [3] = { [R.COMMON] = 25, [R.UNCOMMON] = 28, [R.RARE] = 27, [R.EPIC] = 15, [R.LEGENDARY] = 5 },
 }
 
---- What kind of thing a ground-loot roll produces.
+--- What kind of thing a roll INSIDE A CRATE produces.
 BR.Config.KindWeights = {
     { kind = BR.ItemKind.WEAPON,     weight = 34 },
     { kind = BR.ItemKind.AMMO,       weight = 30 },
     { kind = BR.ItemKind.CONSUMABLE, weight = 28 },
     { kind = BR.ItemKind.THROWABLE,  weight =  8 },
+}
+
+--- What kind of thing a LOOSE GROUND roll produces.
+---
+--- Deliberately almost all ammo (user call, 2026-08-06: loose loot "should be
+--- rare except for ammo"). The crate is meant to be the thing worth crossing
+--- open ground for, and when a rifle on the floor is as likely as one in a box
+--- there is no reason to take the box's exposure. Loose ammo is the exception
+--- because ammo is what a found gun needs to be a gun at all.
+---
+--- Healing is not on this table at any weight -- see `chestOnly` on the
+--- consumables. Bandages and med kits come out of crates, and eventually out
+--- of the reboot vans.
+BR.Config.FloorKindWeights = {
+    { kind = BR.ItemKind.AMMO,       weight = 74 },
+    { kind = BR.ItemKind.WEAPON,     weight = 16 },
+    { kind = BR.ItemKind.CONSUMABLE, weight =  6 },
+    { kind = BR.ItemKind.THROWABLE,  weight =  4 },
 }
 
 BR.Config.Loot = {
@@ -108,7 +149,22 @@ BR.Config.Loot = {
     -- 2026-08-05). Floor loot halved and crates roughly tripled: a crate is a
     -- decision (walk to it, stand still, open it) and a floor item is a
     -- freebie, so the interesting one should be the common one.
-    budgetPerTier = { [1] = 10, [2] = 16, [3] = 28 },
+    -- CUT AGAIN, 2026-08-06: loose loot should be "rare except for ammo", so
+    -- there is less of it and what remains is mostly ammo (see
+    -- BR.Config.FloorKindWeights). Roughly halved a second time.
+    budgetPerTier = { [1] = 5, [2] = 8, [3] = 14 },
+
+    -- HOW FAR OUT THE ROLLS REACH, as a fraction of the POI radius.
+    --
+    -- pointInDisc already samples uniformly by AREA, so density inside the
+    -- sampled disc is even -- but crates only ever used the inner 75% of the
+    -- radius, which is 56% of the area, and that is what read as "clustered in
+    -- the middle" (user, 2026-08-06). Pushed out to nearly the whole radius.
+    -- Not to exactly 1.0: the rim is where a first-pass radius is most likely
+    -- to have overshot into water or a cliff face, and every point that lands
+    -- there costs a retry.
+    poiSpread   = 0.97,   -- loose floor items
+    chestSpread = 0.95,   -- crates (was 0.75)
 
     -- Chests hold a guaranteed burst and are worth crossing open ground for.
     --
@@ -123,7 +179,19 @@ BR.Config.Loot = {
     -- but a rural POI can gear you up (user, 2026-08-05 -- "even it out a bit
     -- between POIs and rural areas").
     chestsPerTier = { [1] = 20, [2] = 20, [3] = 24 },
-    chestItems    = { min = 3, max = 5 },
+    -- HOW MANY THINGS ARE IN A CRATE. Never zero -- opening one is a
+    -- commitment in the open and it has to pay. 3-5 was too generous (user,
+    -- 2026-08-06); this peaks at three with two and four equally likely either
+    -- side, so a crate has a typical haul rather than a range. min/max are
+    -- kept in agreement with the weights for anything that reads the bounds.
+    chestItems    = {
+        min = 2, max = 4,
+        weights = {
+            { n = 2, weight = 1 },
+            { n = 3, weight = 2 },
+            { n = 4, weight = 1 },
+        },
+    },
     chestProp     = 'prop_box_wood05a',   -- sealed
     chestOpenProp = 'prop_box_wood05b',   -- open and empty: the husk
 
@@ -244,11 +312,21 @@ BR.Config.Loot = {
     shineLightRange = 1.2,    -- metres of cast light (was 2.4 -- a streetlight)
     shineLightPower = 0.30,   -- intensity at the crate (was 0.9)
 
-    -- ONE CRATE IS ENOUGH OF A TUTORIAL (user call, 2026-08-06). The glow
-    -- exists to teach "these boxes open"; once a player has opened one they
-    -- know, and a permanent orange marker on every crate in the game is then
-    -- just noise on top of the prop itself. Client-local and per-match.
-    shineUntilFirstOpen = true,
+    -- THE GLOW IS A TUTORIAL, AND IT ENDS (user call, 2026-08-06). It exists
+    -- to teach "these boxes open"; a permanent orange marker on every crate in
+    -- the game is then just noise on top of the prop itself. Two crates rather
+    -- than one, because the first one is often opened by accident while
+    -- working out the key. Client-local and per-match; set 0 to disable the
+    -- glow outright, or a huge number to keep it all match.
+    shineOpenLimit  = 2,
+
+    -- THE CRATE LABEL. Drawn flat on the lid rather than as a sprite turning
+    -- to face the camera, so it reads as printed on the box (user call,
+    -- 2026-08-06). Set crateLabelFlat = false to go back to the floating
+    -- screen-facing prompt.
+    crateLabelFlat  = true,
+    crateLabelZ     = 0.95,   -- metres above the ground probe: the lid
+    crateLabelSize  = 0.85,   -- label WIDTH in metres; height follows the page
 
     -- CRATE DRAG, applied to a crate that is actually moving.
     --
@@ -259,7 +337,9 @@ BR.Config.Loot = {
     -- scale per tick on the horizontal component only, so gravity and falls
     -- are untouched: 0.82 at 10Hz kills a slide in about a second and a half
     -- without making the crate feel glued.
-    crateDrag       = 0.82,
+    -- TRIPLED, 2026-08-06: 0.82 kept 82% of the speed per tick, which was
+    -- still a long skate. 0.46 loses roughly three times as much per tick.
+    crateDrag       = 0.46,
     crateDragMin    = 0.35,   -- m/s below which it is simply stopped dead
 
     -- How often the client tells the SERVER what the magazine is doing. The
@@ -392,8 +472,12 @@ end
 --- Roll what kind of item a ground slot holds.
 --- @param rng table
 --- @return string kind
-function BR.Config.RollKind(rng)
-    local pick = rng:weighted(BR.Config.KindWeights)
+--- @param rng table
+--- @param weights table|nil  defaults to the crate table; pass
+---                           BR.Config.FloorKindWeights for loose ground loot
+--- @return string kind
+function BR.Config.RollKind(rng, weights)
+    local pick = rng:weighted(weights or BR.Config.KindWeights)
     return pick and pick.kind or BR.ItemKind.WEAPON
 end
 

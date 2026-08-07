@@ -18,14 +18,14 @@
 BR = BR or {}
 BR.Loot = BR.Loot or {}
 
---- Has this player opened a container yet THIS MATCH?
+--- How many containers this player has opened THIS MATCH.
 ---
---- Drives the crate glow, which switches off once it is true: the shine is
---- teaching "these boxes open", and past the first one it is a permanent
---- orange marker on scenery (user call, 2026-08-06). Reset with the match, so
---- every round starts by teaching it again -- the next round may be somebody
---- else's first.
-BR.Loot.openedAny = false
+--- Drives the crate glow, which switches off once it reaches
+--- BR.Config.Loot.shineOpenLimit: the shine is teaching "these boxes open",
+--- and past that it is a permanent orange marker on scenery (user call,
+--- 2026-08-06). Reset with the match, so every round starts by teaching it
+--- again -- the next round may be somebody else's first.
+BR.Loot.openedCount = 0
 
 local L = BR.Config.Loot
 
@@ -233,7 +233,7 @@ local function forgetAll()
     claimedByMe = {}
     -- The glow teaches the interaction again next match: whoever is here then
     -- may never have opened one.
-    BR.Loot.openedAny = false
+    BR.Loot.openedCount = 0
     local page = BR.Dui.page('lootprompt', 'nui://br_ui/dui/prompt.html', 512, 256)
     BR.Dui.send(page, { t = 'prompt', show = false })
 end
@@ -672,7 +672,7 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
     -- boxes open"; after that it is a permanent orange marker on furniture.
     local shineMax = L.shineDistance or 18.0
     local shineId, shineD2 = nil, shineMax * shineMax
-    if not (L.shineUntilFirstOpen and BR.Loot.openedAny) then
+    if BR.Loot.openedCount < (L.shineOpenLimit or 2) then
         for id, e in pairs(entries) do
             if isContainer(e) and e.gzOk then
                 local d2 = BR.Dist2(p.x, p.y, e.x, e.y)
@@ -684,10 +684,15 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
     -- FADED BY DISTANCE, not switched at a boundary: full strength stood over
     -- the crate, nothing at all at the rim. The old version was the same
     -- brightness everywhere inside the radius and then simply vanished.
+    -- SQUARED, because linear was imperceptible (user, 2026-08-06: "doesn't
+    -- really fade, I can't tell the difference"). Halfway to the rim a linear
+    -- curve is still at 50% -- which just reads as "on". Squared puts the same
+    -- point at 25% and spends most of the radius visibly dying.
     local shineFade = 1.0
     if shineId then
-        shineFade = 1.0 - (math.sqrt(shineD2) / shineMax)
-        if shineFade < 0.0 then shineFade = 0.0 end
+        local t = math.sqrt(shineD2) / shineMax
+        if t > 1.0 then t = 1.0 end
+        shineFade = (1.0 - t) * (1.0 - t)
     end
 
     -- A slow, shallow breath. The old pulse swung 0.72..1.0 in under a second,
@@ -789,11 +794,12 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
             if GetGameTimer() - hold.from >= (L.chestHoldMs or 1000) then
                 local id = hold.id
                 hold.id = nil
-                -- THE GLOW HAS DONE ITS JOB. Set on the hold completing rather
-                -- than on the server's reply: the player has demonstrably
-                -- learned the interaction by this point, and a refused claim
-                -- (someone beat them to it) taught them just as well.
-                BR.Loot.openedAny = true
+                -- THE GLOW HAS DONE ITS JOB. Counted on the hold completing
+                -- rather than on the server's reply: the player has
+                -- demonstrably learned the interaction by this point, and a
+                -- refused claim (someone beat them to it) taught them just as
+                -- well.
+                BR.Loot.openedCount = BR.Loot.openedCount + 1
                 TriggerServerEvent(BR.Net.LOOT_CLAIM, { id = id })
                 claimedByMe[id] = GetGameTimer()
                 setPrompt(nil)
@@ -813,8 +819,24 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
     -- it there.
     if shown then
         local gz = groundZ(shown)
-        BR.Dui.drawWorld(promptPage(), shown.x, shown.y, gz + 1.05, 1.0,
-            BR.Dist(p.x, p.y, shown.x, shown.y))
+        -- A CRATE WEARS ITS LABEL; everything else floats one.
+        --
+        -- On a container the prompt is drawn flat on the lid at a fixed
+        -- heading, so it reads as printed on the box and does not swing round
+        -- as the player circles it (user, 2026-08-06). Loose items keep the
+        -- screen-facing sprite: there is no surface to print on, and a label
+        -- lying flat on the ground over a pistol would be unreadable.
+        if isContainer(shown) and L.crateLabelFlat ~= false then
+            BR.Dui.drawFlat(promptPage(), shown.x, shown.y,
+                gz + (L.crateLabelZ or 0.95),
+                L.crateLabelSize or 0.85,
+                -- The crate's OWN heading, so the label sits square with the
+                -- lid rather than at an angle across it.
+                shown.heading or 0.0)
+        else
+            -- No `dist`: a fixed size, not one that inflates on approach.
+            BR.Dui.drawWorld(promptPage(), shown.x, shown.y, gz + 1.05, 1.0)
+        end
     end
 end)
 

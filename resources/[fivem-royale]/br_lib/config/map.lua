@@ -41,6 +41,14 @@ BR.Config.Map.POIs = {
     { id = 'grove',       name = 'Grove Street',     x =   105.0, y = -1885.0, z =  21.0, radius = 200.0, tier = 2 },
     { id = 'terminal',    name = 'Terminal',         x =  1050.0, y = -2500.0, z =   6.0, radius = 380.0, tier = 3 },
     { id = 'buccaneer',   name = 'Buccaneer Way',    x =   500.0, y = -2600.0, z =   5.0, radius = 260.0, tier = 2 },
+
+    -- THE RUNWAY ITSELF, not just the terminal side of the airport (user,
+    -- 2026-08-06: "more loot on the runway at LSIA, not just around the
+    -- road"). The lsia POI is centred on the terminal, so even at radius 400
+    -- the tarmac and the western apron -- the open ground that makes LSIA
+    -- worth dropping on -- fell outside it.
+    { id = 'lsia_rw',     name = 'LSIA Runway',      x = -1400.0, y = -3100.0, z =  14.0, radius = 300.0, tier = 2 },
+    { id = 'lsia_apron',  name = 'LSIA West Apron',  x = -1700.0, y = -2950.0, z =  14.0, radius = 260.0, tier = 2 },
     { id = 'murrieta',    name = 'Murrieta Heights', x =  1180.0, y = -1780.0, z =  30.0, radius = 200.0, tier = 1 },
     { id = 'elburro',     name = 'El Burro Heights', x =  1370.0, y = -2100.0, z =  32.0, radius = 200.0, tier = 1 },
     { id = 'littleseoul', name = 'Little Seoul',     x =  -640.0, y = -1100.0, z =  22.0, radius = 220.0, tier = 2 },
@@ -109,6 +117,11 @@ BR.Config.Map.POIs = {
     { id = 'palmer',      name = 'Palmer-Taylor Power Station', x = 2780.0, y = 1520.0, z = 32.0, radius = 240.0, tier = 2 },
     { id = 'palomino',    name = 'Palomino Highlands', x = 2400.0, y = 1600.0, z =  40.0, radius = 240.0, tier = 1 },
     { id = 'noose',       name = 'NOOSE HQ',         x =  2535.0, y =  -383.0, z =  93.0, radius = 260.0, tier = 3 },
+
+    -- The derrick fields in the Grand Senora Desert -- open ground with cover,
+    -- and nothing on it until now (user, 2026-08-06).
+    { id = 'oilfields',   name = 'Oil Fields',       x =  1550.0, y =  1950.0, z =  80.0, radius = 240.0, tier = 1 },
+    { id = 'derrick',     name = 'Derrick Road',     x =  1850.0, y =  2250.0, z =  70.0, radius = 220.0, tier = 1 },
 
     -- THE CITY, DENSIFIED (user call, 2026-08-06: "it's a dense area and
     -- should be densely looted"). Los Santos had eighteen POIs for the
@@ -392,12 +405,13 @@ BR.Config.Bus = {
     -- Surveyed in-game by the user. Spawn z is the surveyed 4.19 + 0.8
     -- (two rounds of "raise it a bit" -- the Titan's gear sat in the runway).
     spawn        = { x = 4484.61, y = -4497.98, z = 4.99, heading = 106.12 },
-    -- Wheels-up here, straight out. Moved 15.24m (50 ft) back UP the runway
-    -- toward the spawn on 2026-08-06 -- the roll was eating too much tarmac
-    -- before the nose came up (user). The roll is a fixed distance divided by
-    -- rollSpeed, so shortening it also shaves a fraction of a second off the
-    -- tarmac time; that is intended.
-    rotatePoint  = { x = 4104.54, y = -4636.95 },
+    -- Wheels-up here, straight out. Moved back UP the runway toward the spawn
+    -- twice on 2026-08-06: 15.24m (50 ft), then another 22.86m (75 ft) because
+    -- the climb-out was still clipping trees off the end (user). 38.1m total
+    -- off a 420m roll. The roll is a fixed distance divided by rollSpeed, so
+    -- shortening it also shaves a fraction of a second off the tarmac time;
+    -- that is intended.
+    rotatePoint  = { x = 4126.01, y = -4629.10 },
     climbDist    = 1800.0,  -- metres past rotation to reach cruise altitude
                             -- (2500 originally; cut ~40% for a steeper,
                             -- more take-off-looking climb -- user call)

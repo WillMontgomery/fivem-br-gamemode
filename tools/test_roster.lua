@@ -2422,8 +2422,23 @@ do
     ok(rec2.phase == 2, 'a finished shrink advances the phase')
     ok(rec2.cx0 == c1x and rec2.cy0 == c1y and rec2.r0 == r1,
         'the new record starts at the old target circle')
-    ok(BR.Dist(rec2.cx0, rec2.cy0, rec2.cx1, rec2.cy1) + rec2.r1 <= rec2.r0 + 1e-6,
-        'and its own target nests in turn')
+    -- ITS OWN TARGET STAYS WITHIN THE PHASE'S REACH BUDGET.
+    --
+    -- This used to assert strict nesting. It no longer holds by design: a
+    -- phase may roll a BREAKOUT and put the next circle partly outside the
+    -- current one, so that sitting still is never a winning move (user call,
+    -- 2026-08-06). What must still hold is the budget the phase priced its
+    -- sweep against -- slack, plus the breakout overhang when one is allowed.
+    local bo = BR.Config.Storm.breakout
+    local slack2 = rec2.r0 - rec2.r1
+    local reach2 = slack2
+    if bo and rec2.r1 >= (bo.minRadius or 0.0) then
+        reach2 = slack2 + (bo.overhang or 0.0) * rec2.r1
+    end
+    ok(BR.Dist(rec2.cx0, rec2.cy0, rec2.cx1, rec2.cy1) <= reach2 + 1e-6,
+        'and its own target stays inside the phase reach budget',
+        ('offset %.1f, budget %.1f'):format(
+            BR.Dist(rec2.cx0, rec2.cy0, rec2.cx1, rec2.cy1), reach2))
     ok(#eventsOf(BR.Net.STORM_SYNC) >= 1, 'the new phase is rebroadcast')
 
     -- THE AUTHORITY PROOF. Player 2's ped health never moves -- this client

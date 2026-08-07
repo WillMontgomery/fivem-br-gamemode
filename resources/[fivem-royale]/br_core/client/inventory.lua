@@ -175,6 +175,14 @@ local function applyActive(force)
         -- swaps to "something better" on pickup and on empty, which fights the
         -- active-slot model for control of the hand.
         SetWeaponsNoAutoswap(true)
+
+        -- PASSENGERS SHOOT. GTA gates drive-bys per player, and with it off a
+        -- passenger simply cannot fire at all -- which in a battle royale
+        -- makes a car a rolling coffin for everyone who is not driving (user,
+        -- 2026-08-06: "any seat which is not the driver should be able to do
+        -- this"). The engine still applies its own rule about which weapons
+        -- are usable from a seat; this only stops us being the reason.
+        SetPlayerCanDoDriveBy(PlayerId(), true)
     else
         SetCurrentPedWeapon(ped, UNARMED, true)
     end
@@ -623,12 +631,23 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     SetPedInfiniteAmmo(ped, false, hash)
     SetPedInfiniteAmmoClip(ped, false)
 
-    -- NOT FROM A VEHICLE. In a car the engine stows most weapons, and
-    -- GetAmmoInClip for one the ped cannot currently hold reads ZERO -- which
-    -- this loop then reported as "the magazine emptied", so the counter fell
-    -- to 0/6 the moment the player got in and stayed there (user, 2026-08-06:
-    -- "nothing else changed"). A vehicle seat is not evidence about ammo.
-    if IsPedInAnyVehicle(ped, false) then return end
+    -- ONLY WHEN THE ENGINE AGREES THE PED IS HOLDING IT.
+    --
+    -- `applied` is our own bookkeeping -- what we last GAVE the ped -- and it
+    -- keeps saying "carbine" through every frame in which the engine has
+    -- quietly stowed the thing: getting into a car, the get-in animation, a
+    -- cutscene, a ragdoll. In all of those GetAmmoInPedWeapon reads 0 for a
+    -- weapon the ped is not currently holding, and 0 is a DECREASE, so the
+    -- report emptied the player's gun and the reserve with it -- permanently,
+    -- because decrease-only never gives it back (user, 2026-08-06: "the HUD is
+    -- showing 0 bullets while in a vehicle").
+    --
+    -- Asking the engine what is in the hand costs one native and closes the
+    -- whole class: the vehicle case, the animation window that the old
+    -- IsPedInAnyVehicle guard raced against, and any future stow we have not
+    -- thought of.
+    local heldOk, held = GetCurrentPedWeapon(ped, true)
+    if not heldOk or held ~= hash then return end
 
     -- Nor while a reload is playing: the magazine is mid-swap and reads as
     -- whatever the animation has reached, which is not a number to build a

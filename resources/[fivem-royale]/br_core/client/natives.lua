@@ -677,6 +677,20 @@ function BR.Native.check()
     -- otherwise fights the active-slot model for control of the hand.
     -- ox_inventory sets this for the same reason.
     probe('SetWeaponsNoAutoswap',    function() SetWeaponsNoAutoswap(true) end)
+    -- Passengers must be able to fire; without this GTA refuses drive-bys
+    -- outright and a car is a coffin for everyone who is not driving.
+    probe('SetPlayerCanDoDriveBy',   function()
+        SetPlayerCanDoDriveBy(PlayerId(), true)
+    end)
+    -- The world-space crate label: a textured quad lying flat on the lid.
+    probe('DrawSpritePoly',          function()
+        -- Degenerate (all three vertices identical) so the probe draws
+        -- nothing visible while still proving the signature binds.
+        local c = GetEntityCoords(ped)
+        DrawSpritePoly(c.x, c.y, c.z, c.x, c.y, c.z, c.x, c.y, c.z,
+            255, 255, 255, 0, 'deadline', 'deadline',
+            0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 1.0)
+    end)
     -- Crate mass. Measured: PlaceObjectOnGroundProperly is what welds a crate
     -- down, and the default mass is what made the survivor feel like concrete.
     probe('SetObjectPhysicsParams',  function()

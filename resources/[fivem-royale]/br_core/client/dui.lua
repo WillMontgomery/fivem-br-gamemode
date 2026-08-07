@@ -79,9 +79,18 @@ end
 function BR.Dui.drawWorld(page, x, y, z, scale, dist)
     if not BR.Dui.ready(page) then return end
 
-    -- Clamped at both ends: unclamped, a prompt you are standing on top of
-    -- fills the screen and one across a car park is a smudge.
-    local k = BR.Clamp(3.0 / math.max(dist, 0.5), 0.35, 1.6) * (scale or 1.0)
+    -- A FIXED SIZE BY DEFAULT.
+    --
+    -- This used to scale as 3/dist, clamped to 0.35..1.6 -- so the prompt grew
+    -- as the player walked in, which read as the label inflating in their face
+    -- rather than as perspective ("a bit jarring", user 2026-08-06). The
+    -- prompt is UI pinned to a world point, not an object in the world, and UI
+    -- does not change size. Pass a `dist` only where the old behaviour is
+    -- actually wanted.
+    local k = (scale or 1.0)
+    if dist then
+        k = BR.Clamp(3.0 / math.max(dist, 0.5), 0.35, 1.6) * k
+    end
     -- 0.12 -> 0.09: a quarter smaller (user, 2026-08-06).
     local w = 0.09 * k
 
@@ -109,6 +118,67 @@ function BR.Dui.drawWorld(page, x, y, z, scale, dist)
     SetDrawOrigin(x, y, z, 0)
     DrawSprite(page.txd, page.tex, 0.0, 0.0, w, h, 0.0, 255, 255, 255, 255)
     ClearDrawOrigin()
+end
+
+--- Draw a page FLAT IN THE WORLD, lying face-up like a label stuck on a lid.
+---
+--- The screen-facing version (drawWorld) is a sprite that always turns to the
+--- camera, so walking around a crate spins its label -- which is right for a
+--- floating prompt and wrong for something meant to read as printed ON the
+--- crate (user, 2026-08-06). This one is a quad in world space: it has a fixed
+--- heading, it does not turn, and the player sees it foreshortened exactly as
+--- they would a real label.
+---
+--- DRAWN WITH BOTH WINDINGS. GTA's polys are single-sided and which winding
+--- faces up depends on conventions this code cannot check without being in the
+--- game -- so it draws the quad twice, once each way. Four triangles instead
+--- of two is nothing next to being invisible from above.
+---
+--- @param page table
+--- @param x number
+--- @param y number
+--- @param z number      world height of the label plane
+--- @param size number   width in METRES (the height follows the page aspect)
+--- @param heading number|nil  degrees; the label's fixed facing
+--- @param alpha number|nil
+function BR.Dui.drawFlat(page, x, y, z, size, heading, alpha)
+    if not BR.Dui.ready(page) then return end
+
+    local hw = (size or 0.9) * 0.5
+    local hh = hw * (page.h / page.w)
+
+    local rad = math.rad(heading or 0.0)
+    local c, s = math.cos(rad), math.sin(rad)
+    -- Local (dx, dy) -> world, rotated about the label's centre. dy is the
+    -- label's "up" on the lid, which is a compass direction once it is flat.
+    local function corner(dx, dy)
+        return x + dx * c - dy * s, y + dx * s + dy * c, z
+    end
+
+    local ax, ay, az = corner(-hw,  hh)   -- top-left
+    local bx, by, bz = corner( hw,  hh)   -- top-right
+    local cx, cy, cz = corner(-hw, -hh)   -- bottom-left
+    local dx, dy, dz = corner( hw, -hh)   -- bottom-right
+
+    local a = alpha or 255
+    local txd, tex = page.txd, page.tex
+
+    -- Triangle 1: TL, TR, BL.  Triangle 2: BL, TR, BR.
+    DrawSpritePoly(ax, ay, az, bx, by, bz, cx, cy, cz,
+        255, 255, 255, a, txd, tex,
+        0.0, 0.0, 1.0,  1.0, 0.0, 1.0,  0.0, 1.0, 1.0)
+    DrawSpritePoly(cx, cy, cz, bx, by, bz, dx, dy, dz,
+        255, 255, 255, a, txd, tex,
+        0.0, 1.0, 1.0,  1.0, 0.0, 1.0,  1.0, 1.0, 1.0)
+
+    -- ...and the same two with the winding reversed, so one pair faces up
+    -- whichever convention this build uses.
+    DrawSpritePoly(cx, cy, cz, bx, by, bz, ax, ay, az,
+        255, 255, 255, a, txd, tex,
+        0.0, 1.0, 1.0,  1.0, 0.0, 1.0,  0.0, 0.0, 1.0)
+    DrawSpritePoly(dx, dy, dz, bx, by, bz, cx, cy, cz,
+        255, 255, 255, a, txd, tex,
+        1.0, 1.0, 1.0,  1.0, 0.0, 1.0,  0.0, 1.0, 1.0)
 end
 
 --- Tear a page down. A DUI outlives the resource that made it otherwise.

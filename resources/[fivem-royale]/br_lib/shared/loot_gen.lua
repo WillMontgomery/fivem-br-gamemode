@@ -81,12 +81,21 @@ end
 --- `item` is the id, never the numeric ground-entry id -- those are different
 --- namespaces and conflating them was easy to do and hard to see.
 
---- Roll one ground-loot stack for a POI tier.
+--- Roll one loot stack for a POI tier.
+---
+--- `floor` marks a LOOSE GROUND roll rather than a crate roll, and changes two
+--- things: the kind table (loose loot is mostly ammo) and the consumable
+--- buckets (healing is crate-only). Both are swapped for whole precomputed
+--- tables rather than filtered afterwards, so a roll always burns the same
+--- number of RNG draws either way and the layout still replays from a seed.
+---
 --- @param rng table   a BR.Rng instance
 --- @param tier integer
+--- @param floor boolean|nil  true for loose ground loot
 --- @return table stack
-function BR.RollLootStack(rng, tier)
-    local kind   = BR.Config.RollKind(rng)
+function BR.RollLootStack(rng, tier, floor)
+    local kind   = BR.Config.RollKind(rng,
+        floor and BR.Config.FloorKindWeights or nil)
     local rarity = BR.Config.RollRarity(rng, tier)
 
     if kind == BR.ItemKind.AMMO then
@@ -103,7 +112,9 @@ function BR.RollLootStack(rng, tier)
     end
 
     if kind == BR.ItemKind.CONSUMABLE then
-        local c = BR.LootPickOfRarity(rng, BR.Config.ConsumablesByRarity, rarity)
+        local c = BR.LootPickOfRarity(rng,
+            floor and BR.Config.ConsumablesByRarityFloor
+                  or  BR.Config.ConsumablesByRarity, rarity)
         return {
             item   = c.id,
             kind   = BR.ItemKind.CONSUMABLE,
@@ -166,7 +177,20 @@ end
 --- @return table[] stacks
 function BR.LootChestContents(rng, tier)
     local cfg = BR.Config.Loot.chestItems
-    local n   = rng:int(cfg.min, cfg.max)
+
+    -- WEIGHTED, NOT UNIFORM. A flat 2..4 makes every count equally likely; the
+    -- shape asked for is a peak at three with two and four equally probable
+    -- either side (user, 2026-08-06), so a crate has a typical haul rather
+    -- than a range. Never zero -- an empty crate is a wasted commitment in
+    -- the open.
+    local n
+    if cfg.weights then
+        local pick = rng:weighted(cfg.weights)
+        n = pick and pick.n or cfg.min
+    else
+        n = rng:int(cfg.min, cfg.max)
+    end
+
     local hot = math.min(tier + 1, 3)
 
     local out = {}
@@ -366,10 +390,11 @@ function BR.BuildLootLayout(seed)
     for _, poi in ipairs(BR.Config.Map.POIs) do
         local budget = L.budgetPerTier[poi.tier] or 0
         for _ = 1, budget do
-            -- 0.92 keeps items off the exact rim, where a first-pass radius is
-            -- most likely to have overshot into water or a cliff face.
-            local x, y = poiPoint(poi, 0.92)
-            local s = BR.RollLootStack(rng, poi.tier)
+            -- Just short of the rim, where a first-pass radius is most likely
+            -- to have overshot into water or a cliff face.
+            local x, y = poiPoint(poi, L.poiSpread or 0.97)
+            -- `true`: a LOOSE roll -- mostly ammo, and no healing.
+            local s = BR.RollLootStack(rng, poi.tier, true)
             s.x, s.y, s.z = x, y, poi.z
             s.poi = poi.id
             add(s)
@@ -378,7 +403,7 @@ function BR.BuildLootLayout(seed)
 
         local chests = L.chestsPerTier[poi.tier] or 0
         for _ = 1, chests do
-            local x, y = poiPoint(poi, 0.75)
+            local x, y = poiPoint(poi, L.chestSpread or 0.95)
             add(BR.MakeCrate(rng, poi.tier, x, y, poi.z, poi.id))
             stats.chest = stats.chest + 1
         end
@@ -410,7 +435,9 @@ function BR.BuildLootLayout(seed)
 
                 if distToNearestPoi(x, y) >= (f.minPoiDist or 0)
                    and BR.LootPlaceable(x, y) then
-                    local s = BR.RollLootStack(rng, f.tier or 1)
+                    -- Roadside filler is the loosest loot there is: mostly
+                    -- ammo, never healing.
+                    local s = BR.RollLootStack(rng, f.tier or 1, true)
                     s.x, s.y, s.z = x, y, 0.0
                     s.road = road.id
                     add(s)

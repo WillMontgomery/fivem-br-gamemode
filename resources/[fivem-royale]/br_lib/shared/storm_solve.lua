@@ -146,26 +146,49 @@ end
 --- @param minDist number|nil  minimum offset from the current centre -- the
 ---                        edge-hug rule for the final phases pushes the next
 ---                        centre out to at least (slack - edgeHugM). Clamped
----                        to the slack, so containment always wins.
+---                        to the phase's reach budget.
+--- @param breakout table|nil  { chance, overhang, minRadius } -- lets this
+---                        phase's circle leave the current one entirely. Omit
+---                        for the strict nesting rule.
 --- @return number, number  next centre
-function BR.NextStormCentre(rng, cx, cy, curRadius, nextRadius, edgeBias, aabb, minDist)
+function BR.NextStormCentre(rng, cx, cy, curRadius, nextRadius, edgeBias, aabb, minDist, breakout)
     local slack = curRadius - nextRadius
     if slack <= 0 then
         return cx, cy
     end
 
-    -- A config value above 1.0 would push the new centre further than the slack
-    -- allows and silently break containment, so clamp rather than trusting it.
+    -- BREAKOUT: this phase may leave the current circle entirely.
+    --
+    -- Rolled FIRST, before any draw that depends on it, so the decision costs
+    -- exactly one RNG value whether or not it fires -- a conditional draw
+    -- would make the sequence depend on the outcome and two servers on the
+    -- same seed would diverge from here on.
+    --
+    -- What it changes is the budget: `slack` is the containment limit, and a
+    -- breakout raises the ceiling on how far the centre may sit from the old
+    -- one. Everything downstream still works in terms of `reach`, so the
+    -- edge-hug and the AABB pull-back need no special case.
+    local reach = slack
+    if breakout and breakout.chance and breakout.chance > 0
+       and nextRadius >= (breakout.minRadius or 0.0) then
+        local roll = rng:float()
+        if roll < breakout.chance then
+            reach = slack + (breakout.overhang or 0.0) * nextRadius
+        end
+    end
+
+    -- A config value above 1.0 would push the new centre past the reach budget
+    -- and silently overshoot it, so clamp rather than trusting it.
     edgeBias = BR.Clamp(edgeBias or 0.55, 0.0, 1.0)
 
     -- pointInDisc applies the sqrt that keeps the distribution uniform rather
     -- than centre-clustered. Without it every match's zone path feels the same.
-    local nx, ny = rng:pointInDisc(cx, cy, slack * edgeBias)
+    local nx, ny = rng:pointInDisc(cx, cy, reach * edgeBias)
 
     -- The edge hug: push a too-central draw outward along its own bearing
     -- until it clears the minimum. A zero-length draw gets a random bearing
     -- -- there is no "outward" from the exact centre.
-    minDist = BR.Clamp(minDist or 0.0, 0.0, slack)
+    minDist = BR.Clamp(minDist or 0.0, 0.0, reach)
     local off = BR.Dist(cx, cy, nx, ny)
     if off < minDist then
         local ang
@@ -182,20 +205,22 @@ function BR.NextStormCentre(rng, cx, cy, curRadius, nextRadius, edgeBias, aabb, 
         nx, ny = BR.ClampCircleToAABB(nx, ny, nextRadius, aabb)
 
         -- Clamping to the map bounds can push the centre further from the old
-        -- one than the slack permits -- most easily when the current circle
-        -- already overhangs the bounds, which the opening circle routinely does.
+        -- one than the reach budget permits -- most easily when the current
+        -- circle already overhangs the bounds, which the opening circle
+        -- routinely does.
         --
-        -- CONTAINMENT WINS OVER BOUNDS. A circle poking into the ocean is a
-        -- cosmetic problem; a circle that is not contained by its predecessor
-        -- puts a player who was standing legitimately inside the safe zone into
-        -- the storm through no fault of their own, and presents as an
-        -- unreproducible "I was taking damage inside the circle" bug report.
+        -- THE REACH BUDGET WINS OVER BOUNDS. A circle poking into the ocean is
+        -- a cosmetic problem; a circle further out than the phase intended is
+        -- a run nobody was given time for, because the shrink duration was
+        -- priced off the distance the solver chose.
         --
-        -- So pull the centre back along the line toward the previous centre
-        -- until the new circle is contained again.
+        -- Note this is a bound on the OFFSET, not on containment: when the
+        -- breakout roll fires, `reach` exceeds the slack on purpose and the
+        -- new circle is legitimately not nested. What must never happen is
+        -- exceeding whatever budget this phase actually settled on.
         local d = BR.Dist(cx, cy, nx, ny)
-        if d > slack and d > 1e-9 then
-            local t = slack / d
+        if d > reach and d > 1e-9 then
+            local t = reach / d
             nx = cx + (nx - cx) * t
             ny = cy + (ny - cy) * t
         end
