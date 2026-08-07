@@ -170,15 +170,25 @@ BR.Loop.register(BR.Loop.TICK, 'gamerules.pickups', function()
                 -- Ours only: the kill has to be attributable to this player,
                 -- or standing near a road where NPCs crash would print money.
                 if HasEntityBeenDamagedByEntity(other, ped, true) then
+                    -- THEIR INVENTORY, WHICH FOR AN NPC IS THE GUN IN THEIR
+                    -- HAND AND WHAT WAS IN IT (user, 2026-08-06: "I only want
+                    -- them to drop their inventory the same as a player
+                    -- would"). Nothing is invented: no rolled rarity, no bonus
+                    -- ammo, no consumables. An unarmed pedestrian drops
+                    -- nothing at all, which is the same rule a player follows.
                     local okW, wh = GetCurrentPedWeapon(other, true)
                     local w = okW and BR.Config.WeaponByHash[BR.NormHash(wh)] or nil
-                    -- Only real firearms, and only in reach: the server checks
-                    -- the range too, this just avoids the round trip.
                     if w and w.ammo then
                         local c = GetEntityCoords(other)
                         if BR.Dist2(c.x, c.y, p.x, p.y) < 40.0 * 40.0 then
+                            -- What the ped actually had, capped at one
+                            -- magazine so a scripted NPC with a huge reserve
+                            -- cannot become an ammo piñata.
+                            local carried = GetAmmoInPedWeapon(other, wh) or 0
                             TriggerServerEvent(BR.Net.NPC_DROP, {
-                                item = w.id, x = c.x, y = c.y, z = c.z,
+                                item = w.id,
+                                clip = math.min(carried, w.clip or 0),
+                                x = c.x, y = c.y, z = c.z,
                             })
                         end
                     end

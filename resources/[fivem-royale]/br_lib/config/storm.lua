@@ -190,7 +190,18 @@ BR.Config.Storm = {
         -- doubled back to 120). Note the start-cap payback in
         -- server/storm.lua ADDS trimmed hold seconds on top of this.
         -- dps column reads as kill time: 100, 80, 60, 45, 35, 25, 20, 15s.
-        { radius = 2600.0, wait = 120, shrink = 120, dps = 1.0,  warn = 30 },
+        -- PHASE 1'S SHRINK CEILING IS DELIBERATELY HUGE. The sweep is priced
+        -- off the furthest player's run, floored at 40s and capped by this --
+        -- and at 120s the cap was doing the deciding rather than the pricing:
+        -- a player who dropped at the far end of the tour had 120s to cross
+        -- ground that takes three or four minutes, and simply died to circle
+        -- one (user, 2026-08-06: "kills me too many times when I'm furthest
+        -- away... but when close by, the short timer is perfect").
+        --
+        -- Raising the ceiling does NOT slow down matches where everyone
+        -- landed together: the pricing still returns ~40s when nobody is far.
+        -- It only stops the cap from turning a long run into a death sentence.
+        { radius = 2600.0, wait = 120, shrink = 360, dps = 1.0,  warn = 30 },
         { radius = 1600.0, wait = 120, shrink = 120, dps = 1.25, warn = 30 },
         { radius =  950.0, wait =  90, shrink =  90, dps = 1.7,  warn = 20 },
         { radius =  520.0, wait =  75, shrink =  75, dps = 2.2,  warn = 20 },

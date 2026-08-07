@@ -33,23 +33,47 @@ local lastShot = {}
 -- Recording state for /brdamagelog.
 local recording = 0
 
+-- Ped handle -> player src, rebuilt on a cadence.
+--
+-- Resolving this per BULLET matters: an automatic weapon raises one of these
+-- events per round, and a linear scan over the roster per round is work that
+-- scales with both fire rate and player count at once. The map is rebuilt
+-- lazily instead, and a miss falls through to a scan -- so a ped that
+-- streamed in since the last rebuild still resolves, just once.
+local pedMap, pedMapAt = {}, 0
+
+local function rebuildPedMap()
+    pedMap = {}
+    BR.Roster.each(
+        function(e) return e.state ~= BR.PlayerState.LEFT end,
+        function(src)
+            local ped = GetPlayerPed(src)
+            if ped and ped ~= 0 then pedMap[ped] = src end
+        end)
+    pedMapAt = GetGameTimer()
+end
+
 --- Resolve a network id to a player src, or nil if it is not a player.
 ---
---- Ped-to-src is the whole reason hitGlobalIds is worth reading: a shot that
---- hits an ambient ped is not our business, and one that hits a player is the
---- only kind this file has an opinion about.
+--- This is the whole reason hitGlobalIds is worth reading: a shot into an
+--- ambient ped is not our business, and one into a player is the only kind
+--- this file has an opinion about.
 --- @param netId integer
 --- @return integer|nil
 local function playerFromNetId(netId)
     if not netId then return nil end
     local ent = NetworkGetEntityFromNetworkId(netId)
     if not ent or ent == 0 then return nil end
-    local ped = NetworkGetEntityOwner and ent or ent
-    -- GetPlayerFromEntity is not available for every build; the roster is the
-    -- authority anyway, so match on the ped handle the roster already knows.
-    for _, src in ipairs(GetPlayers()) do
-        local n = tonumber(src)
-        if n and GetPlayerPed(n) == ped then return n end
+
+    local src = pedMap[ent]
+    if src then return src end
+
+    -- Miss: either the map is stale or the ped is an NPC. Rebuilding is cheap
+    -- and bounded, but only worth doing once a second -- otherwise every shot
+    -- into scenery would rebuild it.
+    if GetGameTimer() - pedMapAt > 1000 then
+        rebuildPedMap()
+        return pedMap[ent]
     end
     return nil
 end
@@ -157,11 +181,42 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                     -- REFUSALS ARE LOUD WHILE ENFORCEMENT IS OFF. The whole
                     -- purpose of this phase is to find out how often the
                     -- validator would have been WRONG about an honest shot,
-                    -- and a silent refusal teaches nothing.
+                    -- and a silent refusal teaches nothing. Every line printed
+                    -- here during normal play is a FALSE POSITIVE -- a shot
+                    -- that would have been wrongly cancelled -- so an empty
+                    -- log over a full match is the signal that enforcement is
+                    -- safe to switch on.
+                    BR.Damage.refusals = (BR.Damage.refusals or 0) + 1
                     print(('[br_core] shot refused: %d -> %d, %s (%.0fm, %dms)')
                         :format(shooter, victim, tostring(why), dist, since))
                     if cfg.enforce then
                         CancelEvent()
+                    end
+                else
+                    -- WHAT THE SERVER THINKS THE HIT WAS WORTH.
+                    --
+                    -- Recomputed from our own tables and NEVER read off the
+                    -- event: `weaponDamage` in the payload is the shooter's
+                    -- own number (27 and 33 in the captured samples), and
+                    -- `overrideDefaultDamage` arrives TRUE -- which is to say
+                    -- the client is already telling the server what the hit
+                    -- should cost. That field is precisely what a damage
+                    -- multiplier edits, so it is evidence of intent and never
+                    -- an input.
+                    local head = BR.Config.IsHeadshot(data.hitComponent)
+                    local dmg  = BR.ShotDamage(data.weaponType, ctx.rarity,
+                                               dist, head, cfg)
+                    BR.Damage.lastHit = {
+                        shooter = shooter, victim = victim,
+                        ours = dmg, theirs = data.weaponDamage,
+                        head = head, component = data.hitComponent,
+                        willKill = data.willKill, at = now,
+                    }
+                    if cfg.logHits then
+                        print(('[br_core] hit %d -> %d: ours %.1f, client said %s%s')
+                            :format(shooter, victim, dmg,
+                                    tostring(data.weaponDamage),
+                                    head and '  HEADSHOT' or ''))
                     end
                 end
             end

@@ -733,13 +733,19 @@ AddEventHandler(BR.Net.NPC_DROP, function(d)
     if rec.count >= (cfg.maxPerMatch or 12) then return end
     rec.at, rec.count = now, rec.count + 1
 
+    -- WHAT THE NPC WAS CARRYING, clamped by the server to what the weapon can
+    -- physically hold. Not a rolled loot stack: an NPC drops their inventory,
+    -- the same as a player does, and inventing rarity or bonus ammo on top of
+    -- a pedestrian would make clearing traffic better than opening a crate.
+    local clip = math.tointeger(tonumber(d.clip) or 0) or 0
+    clip = math.max(0, math.min(clip, w.clip or 0))
+
     BR.Loot.spawnStack(m, {
         item   = w.id,
         kind   = BR.ItemKind.WEAPON,
         rarity = w.rarity or BR.Rarity.COMMON,
         count  = 1,
-        -- EMPTY. The gun is the prize; the ammo still has to be found.
-        clip   = 0,
+        clip   = clip,
     }, x, y, z)
 end)
 

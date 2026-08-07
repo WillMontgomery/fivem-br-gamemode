@@ -154,8 +154,20 @@ end)
 -- in `markers`, and are unaffected.
 BR.Keys.on('clearWaypoint', function(pressed)
     if not pressed then return end
-    if not IsWaypointActive() then return end
-    SetWaypointOff()
+
+    -- BOTH KINDS OF MARK, one key.
+    --
+    -- There were two ways to put a mark on the map and no obvious way to take
+    -- either off. GTA's own waypoint needs the pause map and a second click on
+    -- the flag; OUR squad ping could only be cleared by pressing the ping key
+    -- again while standing within 120m of it -- which is useless for the ping
+    -- you placed on a building across the valley, and undiscoverable anyway
+    -- (user, 2026-08-06). This clears whichever exists, unconditionally and
+    -- from anywhere.
+    if IsWaypointActive() then SetWaypointOff() end
+    if markers[BR.State.me.src] then
+        TriggerServerEvent(BR.Net.MARKER_CLEAR)
+    end
 end)
 
 -- Between matches the world is a different place; markers do not carry over.

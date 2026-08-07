@@ -242,3 +242,37 @@ BR.Config.Combat = {
     -- prints every key it sees, so this is the tool that replaces guessing.
     logSamples    = 15,
 }
+
+--- weaponDamageEvent's `hitComponent`, decoded.
+---
+--- CONFIRMED SHAPE, UNCONFIRMED MEANING. The payload was captured in game on
+--- 2026-08-06 and `hitComponent` is definitely there, carrying small integers
+--- (0, 14, 17 across four samples). The NUMBER->BODY PART mapping below is the
+--- one the FiveM community circulates; it is NOT from an authoritative source
+--- and this project has been bitten before by treating community tables as
+--- fact.
+---
+--- So it is used for ONE thing -- the headshot bonus -- and nothing else
+--- depends on it being right. /brdamagelog prints hitComponent on every
+--- sample: one deliberate headshot confirms or refutes the whole table in a
+--- single line, and until that happens a wrong entry costs a damage multiplier,
+--- not a broken match.
+BR.Config.HitComponent = {
+    PELVIS       = 0,
+    LEFT_HIP     = 1,  LEFT_LEG      = 2,  LEFT_FOOT    = 3,
+    RIGHT_HIP    = 4,  RIGHT_LEG     = 5,  RIGHT_FOOT   = 6,
+    LOWER_TORSO  = 7,  UPPER_TORSO   = 8,  CHEST        = 9,
+    UNDER_NECK   = 10,
+    LEFT_SHOULDER = 11, LEFT_UPPER_ARM = 12, LEFT_ELBOW = 13, LEFT_WRIST = 14,
+    RIGHT_SHOULDER = 15, RIGHT_UPPER_ARM = 16, RIGHT_ELBOW = 17, RIGHT_WRIST = 18,
+    NECK         = 19,
+    HEAD         = 20,
+}
+
+--- Is this hit component a headshot?
+--- @param c integer|nil
+--- @return boolean
+function BR.Config.IsHeadshot(c)
+    local H = BR.Config.HitComponent
+    return c == H.HEAD or c == H.NECK or c == H.UNDER_NECK
+end
