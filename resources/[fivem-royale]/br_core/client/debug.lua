@@ -173,6 +173,70 @@ RegisterCommand('brperf', function(_, args)
     end
 end, false)
 
+--- The hitch hunter.
+---
+---   /brhitch          read the frame-time distribution
+---   /brhitch reset    start a fresh window
+---
+--- An average cannot find a hitch. A 40ms stall once every few seconds moves
+--- the average by a rounding error and is the only thing the player notices,
+--- so this reports the DISTRIBUTION and the tail instead -- and names the
+--- callbacks that were expensive on the worst frame.
+---
+--- READ IT IN THIS ORDER:
+---   1. If almost everything is in the <17ms bucket and the worst frame is
+---      under ~34ms, the client is fine and the "hitch" is elsewhere.
+---   2. If the tail buckets have counts but the br_core band totals are tiny,
+---      the stall is NOT ours -- another resource, streaming, or the engine.
+---   3. Only if a br_core callback shows up in "worst frame by callback" with
+---      a real number is it ours, and then /brloop off <name> proves it in one
+---      step: turn it off, play, and look again.
+RegisterCommand('brhitch', function(_, args)
+    if args[1] == 'reset' then
+        BR.Loop.resetStats()
+        print('[br_core] perf window reset -- play for 30s, then /brhitch')
+        return
+    end
+
+    local f = BR.Loop.frameStats()
+    if f.samples < 60 then
+        print('[br_core] only ' .. f.samples .. ' frames sampled. Let it run a few seconds.')
+        return
+    end
+
+    print('--- frame time distribution (' .. f.samples .. ' frames) ---')
+    local prev = 0
+    for _, b in ipairs(f.buckets) do
+        local pct = 100.0 * b.count / math.max(1, f.samples)
+        local label = b.upTo and ('%3d-%3dms'):format(prev, b.upTo)
+                             or  ('   >%3dms'):format(prev)
+        -- A bar, because a column of numbers hides the shape that matters.
+        local bar = string.rep('#', math.floor(pct / 2.0 + 0.5))
+        print(('  %s  %6d  %5.1f%%  %s'):format(label, b.count, pct, bar))
+        prev = b.upTo or prev
+    end
+    print(('  worst frame: %dms'):format(f.worstMs))
+
+    if f.worstBy and #f.worstBy > 0 then
+        print('--- worst frame, by callback ---')
+        for i = 1, math.min(5, #f.worstBy) do
+            local e = f.worstBy[i]
+            print(('  %-24s %-5s %dms'):format(e.name, e.band, e.ms))
+        end
+    else
+        print('  no br_core callback measured above 0ms on the worst frame')
+        print('  -> the stall was very likely NOT br_core. Check other')
+        print('     resources, asset streaming, or the engine itself.')
+    end
+
+    print('--- band totals ---')
+    for band, b in pairs(BR.Loop.bandStats()) do
+        print(('  %-6s passes %-7d avg %.3fms  peak %dms')
+            :format(band, b.passes, b.avgMs, b.peakMs))
+    end
+    print('  (then: /brperf for per-callback totals, /brloop off <name> to bisect)')
+end, false)
+
 RegisterCommand('brloop', function(_, args)
     local action, name = args[1], args[2]
     if not action or not name then

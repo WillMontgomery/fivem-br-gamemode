@@ -544,7 +544,29 @@ AddEventHandler(BR.Net.INV_AMMO, function(d)
     if slot < 1 or slot > SLOTS then return end
 
     local s = inv.slots[slot]
-    if not s or s.kind ~= BR.ItemKind.WEAPON then return end
+    if not s then return end
+
+    -- THROWABLES ARE COUNTED, NOT MAGAZINED.
+    --
+    -- A grenade's "ammo" IS its stack: the engine holds three of them and
+    -- throwing one leaves two. This handler used to accept WEAPON only and
+    -- drop everything else on the floor, so a thrown grenade was never
+    -- deducted from anything -- infinite grenades, for as long as the slot
+    -- existed. Same decrease-only rule: the engine's count may fall, never
+    -- rise, and the slot empties when it hits zero.
+    if s.kind == BR.ItemKind.THROWABLE then
+        local have = s.count or 0
+        if total >= have then return end
+        if total <= 0 then
+            inv.slots[slot] = false
+        else
+            s.count = total
+        end
+        BR.Inv.push(src)
+        return
+    end
+
+    if s.kind ~= BR.ItemKind.WEAPON then return end
 
     local w = BR.Config.WeaponById[s.item]
     if not w then return end

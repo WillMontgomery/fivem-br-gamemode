@@ -145,6 +145,19 @@ BR.Loop.register(BR.Loop.FRAME, 'markers.beam', function()
     end
 end)
 
+-- CLEARING THE PLAYER'S OWN MAP WAYPOINT.
+--
+-- GTA's only way to remove one is to open the pause map, find the flag and
+-- click it again -- which mid-match means going to a full-screen menu to undo
+-- a misclick (user, 2026-08-06). SetWaypointOff is the engine's own call for
+-- it and touches nothing else: squad pings are our blips, tracked separately
+-- in `markers`, and are unaffected.
+BR.Keys.on('clearWaypoint', function(pressed)
+    if not pressed then return end
+    if not IsWaypointActive() then return end
+    SetWaypointOff()
+end)
+
 -- Between matches the world is a different place; markers do not carry over.
 RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)

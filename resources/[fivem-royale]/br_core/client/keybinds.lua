@@ -108,6 +108,12 @@ tap ('ping',        'brping',      'Royale: Place a marker',             'Z')
 
 -- Map and spectating
 tap ('map',         'brmap',       'Royale: Map',                        'M')
+-- CLEARING A WAYPOINT. GTA's own way to remove one is to open the pause map,
+-- find the flag and click it again -- which in a battle royale means opening a
+-- full-screen menu mid-fight to undo a misclick (user, 2026-08-06: "there is
+-- no way to remove a user-made waypoint"). BACKSPACE by default, rebindable
+-- like everything else here.
+tap ('clearWaypoint', 'brclearwp', 'Royale: Clear map waypoint',          'BACK')
 tap ('specNext',    'brspecnext',  'Royale: Spectate next player',       'RIGHT')
 tap ('specPrev',    'brspecprev',  'Royale: Spectate previous player',   'LEFT')
 
@@ -116,4 +122,5 @@ BR.Keys.actions = {
     'deploy', 'inventory', 'interact', 'drop', 'use',
     'slot1', 'slot2', 'slot3', 'slot4', 'slot5',
     'chatGlobal', 'chatSquad', 'ping', 'map', 'specNext', 'specPrev',
+    'clearWaypoint',
 }

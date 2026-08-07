@@ -129,6 +129,39 @@ function BR.PickStormAnchor(rng, waypoints, pois, band)
     return best, wp
 end
 
+--- The breakout budget for one phase, with the chance RAMPED by progress.
+---
+--- The first circle must never break out and the last should nearly always
+--- (user call, 2026-08-06). The reason is that the opening circle is enormous
+--- and already contains most of the map -- moving it outside itself asks
+--- players to cross the whole island before they have a gun -- while the late
+--- circles are small, everyone is armed, and a static circle is where a
+--- passive player wins by having picked the right building.
+---
+--- Linear from chanceStart at phase 1 to chanceEnd at the last phase.
+---
+--- @param cfg table      BR.Config.Storm
+--- @param phase integer  1-based phase being entered
+--- @return table|nil     { chance, overhang, minRadius } for NextStormCentre
+function BR.StormBreakoutFor(cfg, phase)
+    local bo = cfg and cfg.breakout
+    if not bo then return nil end
+
+    local n = #(cfg.phases or {})
+    local t = 1.0
+    if n > 1 then
+        t = BR.Clamp((phase - 1) / (n - 1), 0.0, 1.0)
+    end
+
+    local a = bo.chanceStart or 0.0
+    local b = bo.chanceEnd or 0.0
+    return {
+        chance    = a + (b - a) * t,
+        overhang  = bo.overhang,
+        minRadius = bo.minRadius,
+    }
+end
+
 --- Choose the centre of the next circle.
 ---
 --- Sampled uniformly inside the slack between the current and next radius, so the
@@ -168,12 +201,22 @@ function BR.NextStormCentre(rng, cx, cy, curRadius, nextRadius, edgeBias, aabb, 
     -- breakout raises the ceiling on how far the centre may sit from the old
     -- one. Everything downstream still works in terms of `reach`, so the
     -- edge-hug and the AABB pull-back need no special case.
+    -- `overhang` is a fraction of the CURRENT radius, not the next one.
+    --
+    -- It was the next radius, and that was backwards: the overhang shrank
+    -- exactly as the circles did, so the late phases -- the ones where a
+    -- static circle most rewards sitting still -- got the least movement, and
+    -- the FINAL phase (next radius 0) could not break out at all however high
+    -- the chance was set. Against the current radius the budget stays
+    -- meaningful all the way down: the centre escapes the current circle
+    -- whenever overhang > nextRadius/curRadius, which is a ratio that falls as
+    -- the match closes. The rule gets easier to satisfy as it matters more.
     local reach = slack
     if breakout and breakout.chance and breakout.chance > 0
-       and nextRadius >= (breakout.minRadius or 0.0) then
+       and curRadius >= (breakout.minRadius or 0.0) then
         local roll = rng:float()
         if roll < breakout.chance then
-            reach = slack + (breakout.overhang or 0.0) * nextRadius
+            reach = slack + (breakout.overhang or 0.0) * curRadius
         end
     end
 

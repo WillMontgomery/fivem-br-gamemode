@@ -320,6 +320,11 @@ BR.Config.Loot = {
     -- glow outright, or a huge number to keep it all match.
     shineOpenLimit  = 2,
 
+    -- How often the "which crate shines" search runs. That search is a full
+    -- walk of every streamed entry; the FADE is still per-frame, so this only
+    -- controls how quickly the glow can jump to a different crate.
+    shineScanMs     = 100,
+
     -- THE CRATE LABEL. Drawn flat on the lid rather than as a sprite turning
     -- to face the camera, so it reads as printed on the box (user call,
     -- 2026-08-06). Set crateLabelFlat = false to go back to the floating
@@ -330,13 +335,19 @@ BR.Config.Loot = {
     -- (user, 2026-08-06) -- a guessed constant against a measured object.
     -- GetModelDimensions gives the real top face, whatever the prop.
     crateLabelFlat  = true,
-    crateLabelSize  = 0.55,   -- label WIDTH in metres, clamped to fit the lid
+    -- Doubled 0.55 -> 1.1 (user, 2026-08-06). `crateLabelFit` is what stops it
+    -- overhanging; at 0.48 the label may cover almost the whole lid, which is
+    -- what doubling the size actually needs -- at the old 0.45 clamp the
+    -- bigger number would simply have been clipped back to the same size.
+    crateLabelSize  = 1.1,    -- label WIDTH in metres, clamped to fit the lid
+    crateLabelFit   = 0.48,   -- max half-extent of the lid the label may use
 
-    -- Metres proud of that top face, purely to beat z-fighting. THIS IS THE
-    -- NUMBER TO CHANGE if the label still floats or sinks: the bounding box
-    -- top includes the raised battens around the lid, so a small NEGATIVE
-    -- value drops it onto the plywood between them.
-    crateLabelLift  = 0.02,
+    -- Metres proud of that top face. NEGATIVE, and deliberately: the bounding
+    -- box top is the raised battens around the lid, not the plywood between
+    -- them, so sitting exactly on it still reads as floating. -0.10 is the 4
+    -- inches the user asked for after the first pass (2026-08-06). This is the
+    -- number to change if it clips into the wood or lifts off it.
+    crateLabelLift  = -0.10,
 
     -- CRATE DRAG, applied to a crate that is actually moving.
     --

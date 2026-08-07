@@ -682,6 +682,15 @@ function BR.Native.check()
     probe('SetPlayerCanDoDriveBy',   function()
         SetPlayerCanDoDriveBy(PlayerId(), true)
     end)
+    -- Clearing the player's own map waypoint from a keybind, because GTA's
+    -- only built-in way is to re-click the flag in the pause map.
+    probe('IsWaypointActive',        function() return IsWaypointActive() end)
+    probe('SetWaypointOff',          function()
+        -- Not called blind: turning off a waypoint the player set on purpose
+        -- would be the probe changing the game.
+        return IsWaypointActive() and 'waypoint set (not cleared by probe)'
+            or 'no waypoint'
+    end)
     -- Anchoring the crate label to the crate: every corner of the quad is an
     -- offset in the PROP's local space, which is what buys yaw, pitch and roll
     -- without any orientation maths of our own.

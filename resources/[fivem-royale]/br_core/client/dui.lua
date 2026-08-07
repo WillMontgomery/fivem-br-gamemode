@@ -21,6 +21,11 @@ BR.Dui = BR.Dui or {}
 
 local pages = {}   -- [name] = { dui, txd, tex, w, h }
 
+--- Model bounding boxes, cached by model hash. A model's dimensions never
+--- change, and drawOnEntity would otherwise ask the engine for them on every
+--- frame the player is looking at a crate.
+local DIMS = {}
+
 --- Create (or fetch) a DUI page and its runtime texture.
 ---
 --- @param name string   unique; also the texture name
@@ -148,8 +153,21 @@ function BR.Dui.drawOnEntity(page, entity, size, lift, alpha)
     -- than hardcoding a height means the same call labels the sealed crate and
     -- the shorter open husk correctly, and would label a future container of
     -- any size.
-    local mn, mx = GetModelDimensions(GetEntityModel(entity))
-    if not mn or not mx then return end
+    -- CACHED PER MODEL. GetModelDimensions is a model-table lookup, and this
+    -- runs every frame the player is looking at a crate -- exactly the kind of
+    -- per-frame engine call that shows up as hitching rather than as a
+    -- steady cost. The answer is a constant for a given model.
+    local model = GetEntityModel(entity)
+    local dims = DIMS[model]
+    if not dims then
+        local a, b = GetModelDimensions(model)
+        if not a or not b then return end
+        dims = { minx = a.x, miny = a.y, minz = a.z,
+                 maxx = b.x, maxy = b.y, maxz = b.z }
+        DIMS[model] = dims
+    end
+    local mn = { x = dims.minx, y = dims.miny, z = dims.minz }
+    local mx = { x = dims.maxx, y = dims.maxy, z = dims.maxz }
     local ox, oy = (mn.x + mx.x) * 0.5, (mn.y + mx.y) * 0.5
     local oz = mx.z + (lift or 0.02)
 
@@ -159,7 +177,8 @@ function BR.Dui.drawOnEntity(page, entity, size, lift, alpha)
     -- NEVER OVERHANG THE LID. A label wider than the box reads as floating
     -- next to it rather than printed on it -- which is most of what was wrong
     -- with the screenshots.
-    local fitW, fitH = (mx.x - mn.x) * 0.45, (mx.y - mn.y) * 0.45
+    local fit = (BR.Config.Loot.crateLabelFit or 0.45)
+    local fitW, fitH = (mx.x - mn.x) * fit, (mx.y - mn.y) * fit
     local k = 1.0
     if hw > fitW then k = math.min(k, fitW / hw) end
     if hh > fitH then k = math.min(k, fitH / hh) end

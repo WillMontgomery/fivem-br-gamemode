@@ -69,6 +69,76 @@ end
 -- Band-level accumulators, keyed by band.
 local bandStats = {}
 
+-- FRAME-TIME HISTOGRAM -- the hitch detector.
+--
+-- Per-callback averages cannot find a hitch, and that is not a flaw in them:
+-- a stall of 40ms once every few seconds moves an average by a rounding error
+-- while being the only thing the player actually notices. What matters is the
+-- DISTRIBUTION and the tail.
+--
+-- This measures the gap between successive FRAME passes, which is the real
+-- frame time -- our callbacks, every other resource, and the engine itself.
+-- That is deliberate: it answers "is the client hitching" first, and only then
+-- "is it us", which is the order those questions have to be asked in. If the
+-- frame histogram shows stalls and the band totals do not, the stall is not
+-- ours.
+local BUCKETS = { 17, 25, 34, 50, 100 }   -- ms; last bucket is everything above
+local frameStats = {
+    samples = 0,
+    lastAt  = 0,
+    worstMs = 0,
+    counts  = { 0, 0, 0, 0, 0, 0 },
+    -- What the worst frame cost, per callback, so a spike has a suspect
+    -- attached rather than just a number.
+    worstBy = nil,
+}
+
+local function noteFrame(now)
+    local last = frameStats.lastAt
+    frameStats.lastAt = now
+    if last <= 0 then return end
+
+    local dt = now - last
+    frameStats.samples = frameStats.samples + 1
+
+    local slot = #BUCKETS + 1
+    for i = 1, #BUCKETS do
+        if dt < BUCKETS[i] then slot = i break end
+    end
+    frameStats.counts[slot] = frameStats.counts[slot] + 1
+
+    if dt > frameStats.worstMs then
+        frameStats.worstMs = dt
+        -- Snapshot who was expensive on the pass that produced it.
+        local by = {}
+        for band, list in pairs(registry) do
+            for _, e in ipairs(list) do
+                if (e.lastMs or 0) > 0 then
+                    by[#by + 1] = { name = e.name, band = band, ms = e.lastMs }
+                end
+            end
+        end
+        table.sort(by, function(a, b) return a.ms > b.ms end)
+        frameStats.worstBy = by
+    end
+end
+
+--- Frame-time distribution since the last reset.
+--- @return table { samples, worstMs, worstBy, buckets = { {upTo, count}, ... } }
+function BR.Loop.frameStats()
+    local buckets = {}
+    for i = 1, #BUCKETS do
+        buckets[i] = { upTo = BUCKETS[i], count = frameStats.counts[i] }
+    end
+    buckets[#BUCKETS + 1] = { upTo = nil, count = frameStats.counts[#BUCKETS + 1] }
+    return {
+        samples = frameStats.samples,
+        worstMs = frameStats.worstMs,
+        worstBy = frameStats.worstBy,
+        buckets = buckets,
+    }
+end
+
 --- Register a callback into one of the three loops.
 ---
 --- @param band string    one of BR.Loop.FRAME / TICK / SLOW
@@ -198,6 +268,9 @@ function BR.Loop.resetStats()
     for _, bs in pairs(bandStats) do
         bs.passes, bs.totalMs, bs.peakMs = 0, 0, 0
     end
+    frameStats.samples, frameStats.worstMs = 0, 0
+    frameStats.worstBy, frameStats.lastAt = nil, 0
+    for i = 1, #frameStats.counts do frameStats.counts[i] = 0 end
 end
 
 --- Run a single pass over one band.
@@ -214,6 +287,10 @@ function BR.Loop.step(band)
     local bandStart = t
     local swept = false
 
+    -- Only the frame band is a frame. TICK and SLOW passes say nothing about
+    -- how smooth the picture is.
+    if band == BR.Loop.FRAME then noteFrame(t) end
+
     for i = 1, #list do
         local e = list[i]
         if e.dead then
@@ -228,6 +305,7 @@ function BR.Loop.step(band)
 
             e.calls  = e.calls + 1
             e.totalMs = e.totalMs + elapsed
+            e.lastMs = elapsed          -- for the hitch snapshot
             if elapsed > e.peakMs then e.peakMs = elapsed end
 
             if ok then

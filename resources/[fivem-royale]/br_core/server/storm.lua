@@ -68,7 +68,8 @@ local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec)
     -- fair -- the furthest player's run to the TARGET's edge sets the wall's
     -- travel time, so a circle that moved further simply takes longer to close.
     local cx1, cy1 = BR.NextStormCentre(m.stormRng, cx0, cy0, r0, p.radius,
-        cfg.edgeBiasMax, cfg.mapAABB, minDist, cfg.breakout)
+        cfg.edgeBiasMax, cfg.mapAABB, minDist,
+        BR.StormBreakoutFor(cfg, phase))
 
     -- Price the sweep for the furthest player's run to the target's edge --
     -- THIS match's players only.

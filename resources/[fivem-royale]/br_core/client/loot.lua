@@ -27,6 +27,11 @@ BR.Loot = BR.Loot or {}
 --- again -- the next round may be somebody else's first.
 BR.Loot.openedCount = 0
 
+--- How many times the crate drag has actually scaled a velocity. Printed by
+--- /brloot: it is the difference between "the drag is not running" and "the
+--- drag is not strong enough", which cost a round of guessing to tell apart.
+BR.Loot.dragTicks = 0
+
 local L = BR.Config.Loot
 
 local entries   = {}      -- [id] = entry, with prop bookkeeping attached
@@ -54,6 +59,11 @@ local poses = {}
 
 local hold = { id = nil, from = 0 }
 local lastPrompt = { id = nil, hold = nil }
+
+-- Which crate is currently the one that shines, and when that was last
+-- decided. Held across frames so the search does not have to run in every one.
+local shineId = nil
+local shineAt = 0
 
 -- Crates THIS player opened. The reveal sound is for the person who did the
 -- opening, not for everyone standing near it (user, 2026-08-05) -- and the
@@ -556,42 +566,7 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.props', function()
                 -- which bounds how far it will accept. Rate-limited, because
                 -- a crate rolling down a hill would otherwise send one of
                 -- these per second for as long as it rolls.
-                -- DRAG, because prop physics has no friction worth the name.
-                -- A nudge from a car sent these skating twenty metres across
-                -- flat tarmac (user, 2026-08-06: "they slide like ice"). The
-                -- mass is right -- what is missing is anything to stop it
-                -- again, and SetObjectPhysicsParams' damping only bites in
-                -- the air. So the horizontal velocity is simply scaled down
-                -- each tick and zeroed once it is slower than walking pace.
-                -- Z IS LEFT ALONE: a crate knocked off a roof should still
-                -- fall like one.
-                local v = GetEntityVelocity(e.obj)
-                local vx, vy, vz = v.x, v.y, v.z
-                local speed2 = vx * vx + vy * vy
-                if speed2 > 0.0001 then
-                    local minV = L.crateDragMin or 0.35
-                    if speed2 < minV * minV then
-                        SetEntityVelocity(e.obj, 0.0, 0.0, vz)
-                    else
-                        local k = L.crateDrag or 0.82
-                        SetEntityVelocity(e.obj, vx * k, vy * k, vz)
-                    end
-                end
-
-                -- REMEMBER WHERE IT ACTUALLY IS, every tick. Cheap, and it is
-                -- the only record of the pose that survives the entry being
-                -- replaced when the crate becomes a husk.
                 local c = GetEntityCoords(e.obj)
-                local r = GetEntityRotation(e.obj, 2)
-                local pose = poses[id]
-                if pose then
-                    pose.x, pose.y, pose.z = c.x, c.y, c.z
-                    pose.rx, pose.ry, pose.rz = r.x, r.y, r.z
-                else
-                    poses[id] = { x = c.x, y = c.y, z = c.z,
-                                  rx = r.x, ry = r.y, rz = r.z }
-                end
-
                 if BR.Dist2(c.x, c.y, e.x, e.y) > 1.0
                    and now - (e.movedAt or 0) > 2000 then
                     e.movedAt = now
@@ -702,6 +677,62 @@ end
 -- Glow, labels, the prompt and the container hold, all off one pass over the
 -- entries in range. Disable with /brloop disable loot.render -- the loot still
 -- works, which is the same drill the storm renderer answers to.
+--- Crate physics: drag, and remembering where each crate actually is.
+---
+--- SEPARATE FROM loot.props, AND TEN TIMES FASTER, and that separation is the
+--- whole fix. The drag used to live inside loot.props -- which is registered
+--- on the SLOW band, once per SECOND. A crate hit by a car therefore skated at
+--- full speed for a whole second before anything touched it, then again, and
+--- again: the damping was real, ran exactly as written, and was completely
+--- invisible ("I'm thinking the weight or drag or whatever just isn't working
+--- at all", user 2026-08-06). It was working; it was being asked once a
+--- second. At 10Hz the same coefficient is applied ten times as often, which
+--- is the order of magnitude that was missing.
+---
+--- This does no scanning: it walks only the entries that already HAVE a prop,
+--- which is at most PROP_MAX and usually a handful.
+BR.Loop.register(BR.Loop.TICK, 'loot.crates', function()
+    for id, e in pairs(entries) do
+        if e.obj and isContainer(e) and DoesEntityExist(e.obj) then
+            -- DRAG, because prop physics has no friction worth the name and
+            -- SetObjectPhysicsParams' damping only bites in the air. The
+            -- horizontal velocity is scaled down and zeroed once it is slower
+            -- than walking pace. Z IS LEFT ALONE: a crate knocked off a roof
+            -- should still fall like one.
+            local v = GetEntityVelocity(e.obj)
+            local vx, vy, vz = v.x, v.y, v.z
+            local speed2 = vx * vx + vy * vy
+            if speed2 > 0.0001 then
+                local minV = L.crateDragMin or 0.35
+                if speed2 < minV * minV then
+                    SetEntityVelocity(e.obj, 0.0, 0.0, vz)
+                else
+                    local k = L.crateDrag or 0.23
+                    SetEntityVelocity(e.obj, vx * k, vy * k, vz)
+                end
+                -- Provable rather than inferred: /brloot prints this, so
+                -- "the drag is not running" and "the drag is not enough" can
+                -- be told apart without another round of guessing.
+                BR.Loot.dragTicks = (BR.Loot.dragTicks or 0) + 1
+            end
+
+            -- Remember where it ACTUALLY is. This is the only record of the
+            -- pose that survives the entry being replaced when the crate
+            -- becomes a husk.
+            local c = GetEntityCoords(e.obj)
+            local r = GetEntityRotation(e.obj, 2)
+            local pose = poses[id]
+            if pose then
+                pose.x, pose.y, pose.z = c.x, c.y, c.z
+                pose.rx, pose.ry, pose.rz = r.x, r.y, r.z
+            else
+                poses[id] = { x = c.x, y = c.y, z = c.z,
+                              rx = r.x, ry = r.y, rz = r.z }
+            end
+        end
+    end
+end)
+
 BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
     if not canSee() or not next(entries) then return end
 
@@ -716,14 +747,39 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
     -- one you are walking towards", which is the only thing the glow is for.
     -- AND ONLY UNTIL THE FIRST ONE IS OPENED. The glow is teaching "these
     -- boxes open"; after that it is a permanent orange marker on furniture.
+    -- WHICH crate shines is recomputed at 10Hz, not 60Hz.
+    --
+    -- This is a full walk of every streamed entry, and it was running once per
+    -- FRAME purely to answer a question whose answer changes at walking pace.
+    -- At a dense POI that is several hundred distance checks per frame for a
+    -- glow that fades over metres -- and it is a prime suspect for the frame
+    -- hitching that appeared as the POI count grew (user, 2026-08-06). The
+    -- FADE below still runs every frame, so nothing looks any less smooth.
     local shineMax = L.shineDistance or 18.0
-    local shineId, shineD2 = nil, shineMax * shineMax
-    if BR.Loot.openedCount < (L.shineOpenLimit or 2) then
-        for id, e in pairs(entries) do
-            if isContainer(e) and e.gzOk then
-                local d2 = BR.Dist2(p.x, p.y, e.x, e.y)
-                if d2 < shineD2 then shineId, shineD2 = id, d2 end
+    local now = GetGameTimer()
+    if now - shineAt >= (L.shineScanMs or 100) then
+        shineAt = now
+        shineId = nil
+        local best = shineMax * shineMax
+        if BR.Loot.openedCount < (L.shineOpenLimit or 2) then
+            for id, e in pairs(entries) do
+                if isContainer(e) and e.gzOk then
+                    local d2 = BR.Dist2(p.x, p.y, e.x, e.y)
+                    if d2 < best then shineId, best = id, d2 end
+                end
             end
+        end
+    end
+
+    -- ...but the DISTANCE to it is measured fresh every frame, so the fade is
+    -- smooth even though the choice of crate is not re-decided.
+    local shineD2 = shineMax * shineMax
+    if shineId then
+        local se = entries[shineId]
+        if se then
+            shineD2 = BR.Dist2(p.x, p.y, se.x, se.y)
+        else
+            shineId = nil
         end
     end
 
@@ -1133,6 +1189,16 @@ RegisterCommand('brloot', function()
     else
         print('  nothing within 50m')
     end
+
+    -- PROOF THE DRAG IS RUNNING. This counter increments on every tick that
+    -- actually scaled a crate's velocity, so "the drag is not running" and
+    -- "the drag is not strong enough" are two different readings rather than
+    -- one guess. It was 0 for as long as the drag sat on the 1Hz band and
+    -- nobody could tell (user, 2026-08-06).
+    print(('  crate drag: %d applications, k=%.2f, floor %.2f m/s')
+        :format(BR.Loot.dragTicks or 0, L.crateDrag or 0.0, L.crateDragMin or 0.0))
+    print(('  crate mass: %.0f kg  (glow off after %d opened; %d opened)')
+        :format(L.crateMass or 0.0, L.shineOpenLimit or 0, BR.Loot.openedCount or 0))
 end, false)
 
 --- Which prompt glyph actually renders.

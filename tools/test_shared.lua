@@ -407,7 +407,7 @@ do
     -- call, 2026-08-06). This is safe only because the wall SWEEPS to the new
     -- circle over a duration priced off the furthest player's run -- nobody is
     -- damaged for standing where they legally stood.
-    local bo = { chance = 0.65, overhang = 1.8, minRadius = 300.0 }
+    local bo = { chance = 0.85, overhang = 0.9, minRadius = 0.0 }
     local R, r = 1600.0, 950.0
     local slack = R - r
 
@@ -418,7 +418,7 @@ do
         -- The CENTRE outside the current circle is the thing being asked for.
         if d > R then outside = outside + 1 end
         -- ...but never past the budget the phase priced its sweep against.
-        local budget = slack + bo.overhang * r
+        local budget = slack + bo.overhang * R
         if d > budget + 1e-6 then
             breached = breached + 1
             if d - budget > worst then worst = d - budget end
@@ -441,18 +441,38 @@ do
     ok(violations == 0, 'omitting the breakout config keeps strict nesting',
         ('%d violations'):format(violations))
 
-    -- THE ENDGAME IS NOT A COIN FLIP. Below minRadius the circle is small
-    -- enough that a breakout decides the match on who happened to be nearer,
-    -- so those phases stay nested.
-    local lateBreaks = 0
+    -- THE FINAL PHASE MUST BE ABLE TO MOVE, and this is what the overhang
+    -- being a fraction of the CURRENT radius buys. Phase 8 closes to radius
+    -- ZERO; an overhang scaled by the NEXT radius would be zero times
+    -- anything, so the one phase that most needs to force a run was the one
+    -- phase that mathematically could not.
+    local finalMoves = 0
     for i = 1, 400 do
-        local nx, ny = BR.NextStormCentre(BR.Rng(i), 0.0, 0.0, 520.0, 260.0, 1.0, nil, nil, bo)
-        if BR.Dist(0.0, 0.0, nx, ny) + 260.0 > 520.0 + 1e-6 then
-            lateBreaks = lateBreaks + 1
-        end
+        local nx, ny = BR.NextStormCentre(BR.Rng(i), 0.0, 0.0, 40.0, 0.0, 1.0, nil, nil, bo)
+        if BR.Dist(0.0, 0.0, nx, ny) > 40.0 then finalMoves = finalMoves + 1 end
     end
-    ok(lateBreaks == 0, 'and a circle under minRadius never breaks out',
-        ('%d of 400'):format(lateBreaks))
+    ok(finalMoves > 0, 'the last phase can still land outside its predecessor',
+        ('%d of 400'):format(finalMoves))
+
+    -- THE RAMP: nothing in phase 1, 85% by phase 8.
+    local cfg = BR.Config.Storm
+    local first = BR.StormBreakoutFor(cfg, 1)
+    local last  = BR.StormBreakoutFor(cfg, #cfg.phases)
+    ok(first and math.abs(first.chance) < 1e-9,
+        'the opening phase never breaks out',
+        first and tostring(first.chance))
+    ok(last and math.abs(last.chance - 0.85) < 1e-6,
+        'and the last phase does 85% of the time',
+        last and tostring(last.chance))
+
+    -- Monotonic in between -- a ramp, not a step.
+    local prev, monotonic = -1.0, true
+    for phase = 1, #cfg.phases do
+        local c = BR.StormBreakoutFor(cfg, phase).chance
+        if c < prev - 1e-9 then monotonic = false end
+        prev = c
+    end
+    ok(monotonic, 'and the chance never falls as the phases progress')
 end
 
 describe('storm.water')

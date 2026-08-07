@@ -76,13 +76,32 @@ BR.Config.Storm = {
     -- the phase's shrink time, which is itself priced off the furthest
     -- player's run. Nobody is ever damaged for standing where they legally
     -- stood; they are given the sweep to leave.
+    -- THE CHANCE RAMPS WITH THE PHASE, from nothing to almost always (user
+    -- call, 2026-08-06: "the likelihood ... should increase from a baseline of
+    -- 0 in the first phase", "85% chance at phase 8"). The opening circle is
+    -- enormous and already holds most of the map -- moving it outside itself
+    -- would ask players to cross the island before they have a gun. The late
+    -- circles are small, everyone is armed, and a static circle is exactly
+    -- where a passive player wins by having picked the right building.
+    --
+    -- Linear across the 8 phases: 0% at phase 1, 85% at phase 8.
     breakout = {
-        chance    = 0.65,   -- how often a phase is allowed to break out
-        overhang  = 1.8,    -- extra offset, as a fraction of the next radius
-        -- ...but never in the endgame. Below this radius the circle is small
-        -- enough that a breakout is a coin flip on who happened to be nearer,
-        -- and the edge-hug rule is already making those phases a run.
-        minRadius = 300.0,
+        chanceStart = 0.0,
+        chanceEnd   = 0.85,
+
+        -- Extra offset beyond the nesting limit, as a fraction of the CURRENT
+        -- radius. Against the current radius rather than the next one, because
+        -- the next radius reaches zero on the final phase and an overhang
+        -- scaled by it would make the phase that most needs to move the one
+        -- that mathematically cannot. The centre escapes the current circle
+        -- whenever this exceeds nextRadius/curRadius -- a ratio that falls as
+        -- the match closes, so the rule gets easier exactly as it matters more.
+        overhang    = 0.9,
+
+        -- A floor on the CURRENT radius, kept as a knob and off by default:
+        -- the ramp already keeps the early phases still, and the user wants
+        -- the endgame to move.
+        minRadius   = 0.0,
     },
 
     -- SHRINK TIME IS PRICED PER PHASE, like the hold: at each phase entry
