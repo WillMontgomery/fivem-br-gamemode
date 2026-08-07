@@ -586,10 +586,27 @@ local function matchTick(m, now)
             end,
             function(src, e)
                 if e.pos and (now - (e.posAt or 0)) < 3000 then
-                    local last = m.descent.z[src]
-                    m.descent.falling[src] =
-                        (last ~= nil and e.pos.z < last - 1.0) or nil
-                    m.descent.z[src] = e.pos.z
+                    -- A RATE, not a per-tick delta. A canopy descends about
+                    -- 2 m/s, which is half a metre per 250ms tick -- under
+                    -- the old 1.0m test it read as NOT descending, so the
+                    -- ceiling refused to wait for the one thing it exists to
+                    -- wait for. Judged per second, freefall and canopy both
+                    -- clear the bar and a hung client still does not.
+                    local prev = m.descent.z[src]
+                    local verdict = BR.ClassifyDescent(
+                        prev and prev.z, prev and prev.at,
+                        e.pos.z, e.posAt or now,
+                        BR.Config.Match.descendRate)
+                    if verdict then
+                        m.descent.falling[src] = (verdict == 'falling') or nil
+                    end
+                    -- Only record a sample when it is genuinely new: the tick
+                    -- is 4Hz and positions arrive at 2Hz, so half of all ticks
+                    -- would otherwise overwrite the baseline with the same
+                    -- reading and make every rate zero.
+                    if not prev or prev.at ~= (e.posAt or now) then
+                        m.descent.z[src] = { z = e.pos.z, at = e.posAt or now }
+                    end
                 else
                     m.descent.falling[src] = nil
                 end
@@ -638,19 +655,41 @@ local function matchTick(m, now)
             end,
             function(src, e)
                 if e.pos and (now - (e.posAt or 0)) < 3000 then
-                    local last = m.landCheck.z[src]
-                    if last and math.abs(e.pos.z - last) < 1.0 then
-                        m.landCheck.still[src] = (m.landCheck.still[src] or 0) + 1
-                        if m.landCheck.still[src] >= 20 then   -- ~5s at the 250ms tick
-                            print(('[br_core] %s (%d) has been at constant altitude 5s -- promoting to ALIVE')
-                                :format(e.name, src))
+                    -- THE SAME RATE TEST, and this is the half that actually
+                    -- hurt players. Under the old per-tick delta a parachutist
+                    -- looked stationary, so this net PROMOTED THEM TO ALIVE
+                    -- WHILE THEY WERE STILL IN THE AIR -- which sent them the
+                    -- "match starts once everyone has landed" toast before
+                    -- they had landed, dropped the airborne count to zero, and
+                    -- took the match live under a player still on canopy
+                    -- (user, 2026-08-06). It was meant to catch a client whose
+                    -- landing report was lost, and it caught ordinary flying.
+                    --
+                    -- Stillness is now counted in WALL TIME, so the threshold
+                    -- means five seconds whatever the tick rate happens to be.
+                    local prev = m.landCheck.z[src]
+                    local verdict = BR.ClassifyDescent(
+                        prev and prev.z, prev and prev.at,
+                        e.pos.z, e.posAt or now,
+                        BR.Config.Match.descendRate)
+
+                    if verdict == 'still' then
+                        local since = m.landCheck.still[src] or (e.posAt or now)
+                        m.landCheck.still[src] = since
+                        local heldMs = (e.posAt or now) - since
+                        if heldMs >= (BR.Config.Match.stuckLanderMs or 5000) then
+                            print(('[br_core] %s (%d) has held one altitude %.1fs -- promoting to ALIVE')
+                                :format(e.name, src, heldMs / 1000.0))
                             BR.Roster.setState(src, BR.PlayerState.ALIVE)
                             m.landCheck.still[src] = nil
                         end
-                    else
-                        m.landCheck.still[src] = 0
+                    elseif verdict == 'falling' then
+                        m.landCheck.still[src] = nil
                     end
-                    m.landCheck.z[src] = e.pos.z
+
+                    if not prev or prev.at ~= (e.posAt or now) then
+                        m.landCheck.z[src] = { z = e.pos.z, at = e.posAt or now }
+                    end
                 end
             end)
     end

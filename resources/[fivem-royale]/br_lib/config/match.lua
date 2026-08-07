@@ -276,3 +276,12 @@ function BR.Config.IsHeadshot(c)
     local H = BR.Config.HitComponent
     return c == H.HEAD or c == H.NECK or c == H.UNDER_NECK
 end
+
+--- Descent classification, shared by the BUS ceiling and the stuck-lander net.
+---
+--- 0.7 m/s sits between the two things that must be told apart: a parachute
+--- descends around 2 m/s and clears it comfortably, while a hung client at a
+--- frozen altitude reads 0. Freefall is ~50 m/s and was never in doubt -- it
+--- was the CANOPY the old per-tick test could not see.
+BR.Config.Match.descendRate  = 0.7      -- m/s; below this is not descending
+BR.Config.Match.stuckLanderMs = 5000    -- held at one altitude this long -> ALIVE

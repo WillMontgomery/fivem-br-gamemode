@@ -311,3 +311,42 @@ function BR.Dist3(x1, y1, z1, x2, y2, z2)
     local dx, dy, dz = x2 - x1, y2 - y1, z2 - z1
     return math.sqrt(dx * dx + dy * dy + dz * dz)
 end
+
+--- Is this player falling, hovering, or unknowable right now?
+---
+--- ALTITUDE MUST BE JUDGED AS A RATE, NOT AS A PER-TICK DELTA, and getting
+--- that wrong broke two separate things at once (user, 2026-08-06: the "match
+--- will start once all players have landed" toast fired before anyone had
+--- landed, and the match went live with a player still under canopy).
+---
+--- Both nets in match.lua compared `abs(z - lastZ) < 1.0` between 250ms ticks.
+--- A freefalling player drops ~50 m/s and trips that easily. A player under a
+--- PARACHUTE drops about 2 m/s -- half a metre per tick -- so they read as
+--- perfectly stationary, and:
+---
+---   * the stuck-lander net promoted them to ALIVE while they were still in
+---     the air, which is what sent the landing toast early and let the match
+---     go PLAYING under them;
+---   * the descent-yield net decided nobody was descending, so the BUS
+---     ceiling refused to wait for the very glider it exists to wait for.
+---
+--- One threshold, expressed per SECOND, fixes both -- and it stops depending
+--- on the tick rate, which is what made the bug invisible in the first place.
+--- Samples with no fresh timestamp return nil rather than a guess: roster
+--- positions arrive at 2Hz and the tick runs at 4Hz, so half of all ticks see
+--- the same reading twice and must not be counted as "not moving".
+---
+--- @param prevZ number|nil
+--- @param prevAt number|nil
+--- @param z number
+--- @param at number         the sample's own timestamp, not the tick's
+--- @param threshold number|nil  m/s; below this is "not descending"
+--- @return string|nil  'falling', 'still', or nil when it cannot be told
+function BR.ClassifyDescent(prevZ, prevAt, z, at, threshold)
+    if not prevZ or not prevAt then return nil end
+    local dt = (at - prevAt) / 1000.0
+    if dt <= 0.0 then return nil end          -- no fresh sample
+
+    local rate = (prevZ - z) / dt              -- positive = descending
+    return rate >= (threshold or 0.7) and 'falling' or 'still'
+end

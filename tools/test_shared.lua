@@ -333,6 +333,47 @@ do
         'phase 2 holding deals its authored dps')
 end
 
+describe('descent.classify')
+do
+    -- THE CANOPY IS THE CASE THAT MATTERS. Both altitude nets in match.lua
+    -- compared a per-TICK delta of 1.0m at a 250ms tick, which a parachute --
+    -- about 2 m/s, so half a metre per tick -- could never trip. So a gliding
+    -- player read as stationary, the stuck-lander net promoted them to ALIVE
+    -- in mid-air, and the match went live under them (user, 2026-08-06).
+    local rate = BR.Config.Match.descendRate
+
+    -- Freefall: never in doubt, then or now.
+    ok(BR.ClassifyDescent(500.0, 0, 450.0, 1000, rate) == 'falling',
+        'freefall reads as falling')
+
+    -- A PARACHUTE, at the rate that broke it: 2 m/s over a 250ms tick is
+    -- 0.5m, which the old 1.0m per-tick test called "not moving".
+    ok(BR.ClassifyDescent(300.0, 0, 299.5, 250, rate) == 'falling',
+        'and so does a canopy at 2 m/s over a single 250ms tick')
+
+    -- A hung client at a frozen altitude still reads as still, which is the
+    -- whole reason the stuck-lander net exists.
+    ok(BR.ClassifyDescent(120.0, 0, 120.0, 1000, rate) == 'still',
+        'a frozen altitude still reads as still')
+
+    -- Standing on the ground, with the tiny jitter a sampled position has.
+    ok(BR.ClassifyDescent(12.0, 0, 11.95, 1000, rate) == 'still',
+        'and so does sampling jitter on the ground')
+
+    -- NO FRESH SAMPLE IS NOT AN ANSWER. The tick is 4Hz and positions arrive
+    -- at 2Hz, so half of all ticks see the same reading twice -- counting
+    -- those as "not moving" is exactly how a falling player accumulated
+    -- stillness.
+    ok(BR.ClassifyDescent(300.0, 500, 299.0, 500, rate) == nil,
+        'two samples with the same timestamp answer nothing')
+    ok(BR.ClassifyDescent(nil, nil, 300.0, 500, rate) == nil,
+        'and neither does the first sample of all')
+
+    -- Going UP (a glider catching lift, or a lift) is not descending.
+    ok(BR.ClassifyDescent(100.0, 0, 105.0, 1000, rate) == 'still',
+        'climbing is not descending')
+end
+
 describe('combat.validate')
 do
     -- M6. Every check here runs against what the SERVER believes -- roster
