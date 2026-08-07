@@ -19,7 +19,22 @@ local cfg = BR.Config.Storm
 --- "storm closing" toasts at the vista menu, storm blips on their pause
 --- map, and (with the distance gate gone) a purple wall on the horizon.
 local function activeRecord()
-    if BR.State.match.state ~= BR.MatchState.PLAYING then return nil end
+    local ms = BR.State.match.state
+    -- ENDED COUNTS, and that is the whole fix for the storm snapping off early.
+    --
+    -- The match flips to ENDED at the START of the verdict sequence, and the
+    -- fade to black takes a couple of seconds after that. Tearing the storm
+    -- down on the transition therefore killed the colour grade, the rain and
+    -- the vignette a beat BEFORE the screen faded -- so the last thing a
+    -- player saw was the weather being switched off, which reads as a bug
+    -- rather than as the match ending (user, 2026-08-06).
+    --
+    -- CLEANUP is where it really goes away, and by then the screen is black.
+    -- Damage is the server's and stopped at ENDED regardless; this is only
+    -- what the client draws.
+    if ms ~= BR.MatchState.PLAYING and ms ~= BR.MatchState.ENDED then
+        return nil
+    end
     if BR.State.me.state == BR.PlayerState.LOBBY then return nil end
     return BR.State.storm
 end

@@ -127,6 +127,13 @@ fi
 # This has cost two playtest rounds -- most recently BR.Loot's ground probe,
 # which took every crate on the map with it.
 
+echo "${DIM}== weapon table ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_weapons.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
 echo "${DIM}== POI siting ==${RST}"
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_pois.lua || rc=1

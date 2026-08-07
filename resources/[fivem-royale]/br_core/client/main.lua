@@ -123,6 +123,66 @@ local function noteFrame(now)
     end
 end
 
+--- Time a callback properly, by running it MANY times back to back.
+---
+--- The per-callback numbers in /brperf are all 0.0000ms and always will be:
+--- GetGameTimer has 1ms resolution, a healthy callback costs far less than
+--- that, so every individual measurement rounds to zero -- and a total built
+--- from zeros stays zero however many samples it has. The comment above
+--- claiming accumulation recovers the average is simply wrong, and the
+--- all-zeros /brperf output the user pasted (2026-08-06) is what that looks
+--- like in practice.
+---
+--- N calls in a tight loop DO exceed a millisecond, and total/N is then a real
+--- per-call cost. That is the only way to get one out of this runtime.
+---
+--- CAUTION: this really runs the callback, N times, out of band. Most are
+--- idempotent per-frame draws; a few have side effects. It is opt-in per name
+--- for that reason.
+---
+--- @param name string
+--- @param iterations integer|nil
+--- @return table|nil { name, band, iterations, totalMs, perCallMs }
+function BR.Loop.bench(name, iterations)
+    local target, targetBand
+    for band, list in pairs(registry) do
+        for _, e in ipairs(list) do
+            if e.name == name then target, targetBand = e, band end
+        end
+    end
+    if not target then return nil end
+
+    local n = iterations or 500
+    -- One warm-up pass, so first-call model loads and cache fills are not
+    -- charged to the measurement.
+    pcall(target.fn, 0)
+
+    local t0 = GetGameTimer()
+    for _ = 1, n do pcall(target.fn, 0) end
+    local total = GetGameTimer() - t0
+
+    return {
+        name       = name,
+        band       = targetBand,
+        iterations = n,
+        totalMs    = total,
+        perCallMs  = total / n,
+    }
+end
+
+--- Every registered callback name, for tooling that wants to walk them.
+--- @return table
+function BR.Loop.names()
+    local out = {}
+    for band, list in pairs(registry) do
+        for _, e in ipairs(list) do
+            out[#out + 1] = { name = e.name, band = band }
+        end
+    end
+    table.sort(out, function(a, b) return a.name < b.name end)
+    return out
+end
+
 --- Frame-time distribution since the last reset.
 --- @return table { samples, worstMs, worstBy, buckets = { {upTo, count}, ... } }
 function BR.Loop.frameStats()

@@ -80,6 +80,31 @@ local function ammoDump()
     val('GetPedAmmoTypeFromWeapon', atype)
     val('GetPedAmmoByType', GetPedAmmoByType(ped, atype))
 
+    -- WHY THE REPORT IS OR IS NOT GOING OUT. Six guards can stop it and they
+    -- all look the same from outside -- the gun never runs dry. This names the
+    -- one that fired.
+    if BR.Inv and BR.Inv.reportState then
+        local s = BR.Inv.reportState()
+        line()
+        print('  ammo report state (why the server is or is not being told):')
+        val('  active slot', s.slotIndex)
+        val('  item', s.item)
+        val('  config hash', s.wantHash and ('0x%08X'):format(s.wantHash & 0xFFFFFFFF))
+        val('  we last granted', s.appliedHash and ('0x%08X'):format(s.appliedHash & 0xFFFFFFFF))
+        val('  ENGINE holds', s.engineHash and ('0x%08X'):format(s.engineHash & 0xFFFFFFFF),
+            'must equal the config hash or nothing is reported')
+        val('  engine total', s.engineTotal)
+        val('  server clip', s.serverClip)
+        val('  server reserve', s.serverPool)
+        val('  last reported total', s.lastTotal)
+        if s.blockedBy then
+            print('  >> REPORTS ARE BLOCKED: ' .. s.blockedBy)
+            print('     That is why this weapon never runs out.')
+        else
+            print('  >> reporting normally')
+        end
+    end
+
     return hash
 end
 

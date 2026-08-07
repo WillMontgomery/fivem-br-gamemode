@@ -749,6 +749,47 @@ function BR.Inv.local_()
     return inv
 end
 
+--- WHY IS THE AMMO REPORT NOT GOING OUT?
+---
+--- The report loop bails on six separate conditions, and every one of them
+--- presents identically from the outside: the gun never runs dry. The Advanced
+--- Rifle did exactly that while every other weapon behaved (user, 2026-08-06),
+--- and no amount of reading the loop can say WHICH guard fired on a live ped.
+---
+--- So it reports itself. /brprobe ammo prints this, and the answer is a single
+--- line rather than another round of hypotheses.
+--- @return table
+function BR.Inv.reportState()
+    local ped   = PlayerPedId()
+    local slot  = inv.slots[inv.active]
+    local hash  = hashOf(slot)
+    local heldOk, held = GetCurrentPedWeapon(ped, true)
+
+    local why = nil
+    if not canArm() then                    why = 'state is not ALIVE/DBNO/WARMUP'
+    elseif BR.Inv.suspendAmmo then          why = 'suspended by /brprobe raw'
+    elseif not slot then                    why = 'active slot is empty'
+    elseif not hash then                    why = 'slot holds nothing weapon-shaped'
+    elseif applied ~= hash then             why = 'our own grant has not landed yet'
+    elseif not heldOk or held ~= hash then  why = 'the ENGINE says the ped holds a different weapon'
+    elseif IsPedInAnyVehicle(ped, false) then why = 'in a vehicle'
+    elseif IsPedReloading(ped) then         why = 'mid-reload'
+    end
+
+    return {
+        slotIndex = inv.active,
+        item      = slot and slot.id or nil,
+        wantHash  = hash,
+        appliedHash = applied,
+        engineHash  = heldOk and held or nil,
+        engineTotal = hash and GetAmmoInPedWeapon(ped, hash) or nil,
+        serverClip  = slot and slot.clip or nil,
+        serverPool  = slot and reserveFor(slot) or nil,
+        lastTotal   = lastReport.total,
+        blockedBy   = why,
+    }
+end
+
 --- Force the active slot back onto the ped.
 ---
 --- Called by skydive.lua after its hard disarm (RemoveAllPedWeapons, which

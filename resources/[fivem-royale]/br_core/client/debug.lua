@@ -164,13 +164,72 @@ RegisterCommand('brperf', function(_, args)
         print(('  %-6s passes %-7d avg %.3fms  peak %dms')
             :format(band, b.passes, b.avgMs, b.peakMs))
     end
-    print('--- callbacks (relative share) ---')
+    -- HONEST UNITS. GetGameTimer resolves to 1ms and a healthy callback costs
+    -- far less, so every sample rounds to zero and the total stays zero -- a
+    -- column of "0.0000ms" that looks like data and is not (user's paste,
+    -- 2026-08-06). Anything that never reached a millisecond is reported as
+    -- "<1ms", which is the truth, and /brbench is how to get a real number.
+    print('--- callbacks (peak cost; "<1ms" means never measurable) ---')
     for _, s in ipairs(BR.Loop.stats()) do
-        print(('  %-24s %-5s calls %-7d avg %.4fms peak %.4fms%s%s')
-            :format(s.name, s.band, s.calls, s.avgMs, s.peakMs,
+        local cost = (s.peakMs > 0)
+            and ('total %5dms peak %dms'):format(s.totalMs, s.peakMs)
+            or  ('   <1ms per call, never measurable')
+        print(('  %-24s %-5s calls %-7d %s%s%s')
+            :format(s.name, s.band, s.calls, cost,
                     s.errors > 0 and ('  errors ' .. s.errors) or '',
                     s.suspended and '  SUSPENDED' or (s.enabled and '' or '  disabled')))
     end
+    print('  For a real per-call cost: /brbench <name> [iterations]')
+end, false)
+
+--- Time one callback properly, by running it many times back to back.
+---
+---   /brbench loot.render          500 iterations
+---   /brbench loot.render 2000
+---   /brbench all                  every callback, 200 each
+---
+--- This exists because /brperf structurally cannot measure a sub-millisecond
+--- callback: 1ms timer resolution means each sample rounds to zero and the
+--- total never leaves zero. N calls in a row DO exceed a millisecond, so
+--- total/N is a real number.
+---
+--- It runs the callbacks for real, out of band. Most are idempotent per-frame
+--- draws; read the list before benching "all" on a live match.
+RegisterCommand('brbench', function(_, args)
+    local which = args[1]
+    if not which then
+        print('  usage: brbench <callbackName|all> [iterations]')
+        print('  names:')
+        for _, e in ipairs(BR.Loop.names()) do
+            print(('    %-24s %s'):format(e.name, e.band))
+        end
+        return
+    end
+
+    local iters = tonumber(args[2])
+
+    if which == 'all' then
+        local rows = {}
+        for _, e in ipairs(BR.Loop.names()) do
+            local r = BR.Loop.bench(e.name, iters or 200)
+            if r then rows[#rows + 1] = r end
+        end
+        table.sort(rows, function(a, b) return a.perCallMs > b.perCallMs end)
+        print('--- per-call cost, most expensive first ---')
+        for _, r in ipairs(rows) do
+            print(('  %-24s %-5s %8.4fms/call  (%dms over %d calls)')
+                :format(r.name, r.band, r.perCallMs, r.totalMs, r.iterations))
+        end
+        return
+    end
+
+    local r = BR.Loop.bench(which, iters)
+    if not r then
+        print(('[br_core] no such callback: %s   (see /brbench for the list)'):format(which))
+        return
+    end
+    print(('  %s (%s): %.4fms per call -- %dms over %d calls')
+        :format(r.name, r.band, r.perCallMs, r.totalMs, r.iterations))
 end, false)
 
 --- The hitch hunter.

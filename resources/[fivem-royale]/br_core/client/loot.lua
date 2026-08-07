@@ -1049,10 +1049,26 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.mercy', function()
     if not mercy.on then
         -- Only for someone who has actually found nothing. Picking something
         -- up at any point before the timer means they know how this works.
-        if not gained and now - mercy.landedAt >= (cfg.afterMs or 90000) then
+        if not gained and now - mercy.landedAt >= (cfg.afterMs or 60000) then
             mercy.on, mercy.armedAt = true, now
+            -- THE NOTICE SAYS HOW LONG IT LASTS (user call, 2026-08-06).
+            -- Help that vanishes without warning reads as a bug; help with a
+            -- stated duration reads as a grace period, and the player knows to
+            -- use it now. Derived from the config rather than written out, so
+            -- retuning minShownMs cannot leave the text lying.
+            local mins = (cfg.minShownMs or 60000) / 60000.0
+            local howLong
+            if mins >= 2.0 then
+                howLong = ('%d minutes'):format(math.floor(mins + 0.5))
+            elseif mins >= 1.0 then
+                howLong = '1 minute'
+            else
+                howLong = ('%d seconds'):format(
+                    math.floor((cfg.minShownMs or 60000) / 1000 + 0.5))
+            end
             TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
-                text = 'No loot nearby? Crates are marked on your map.',
+                text = ('No loot nearby? Crates are marked on your map for %s.')
+                    :format(howLong),
                 tone = 'info', ms = 8000,
             })
         end

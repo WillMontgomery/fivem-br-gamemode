@@ -261,8 +261,11 @@ BR.Config.Loot = {
     -- switched on.
     mercyBlips = {
         enabled    = true,
-        afterMs    = 90000,    -- empty-handed this long after landing
-        minShownMs = 180000,   -- or this long, whichever comes first
+        -- ONE MINUTE, both halves (user call, 2026-08-06). The toast quotes
+        -- minShownMs back to the player, so these two numbers and the wording
+        -- cannot drift apart.
+        afterMs    = 60000,    -- empty-handed this long after landing
+        minShownMs = 60000,    -- and the blips last this long once shown
     },
 
     -- Streaming. Clients subscribe to a 3x3 neighbourhood of cells, so roughly
@@ -350,7 +353,7 @@ BR.Config.Loot = {
     -- guessing: /brlabel <lift> changes this live, in game, and prints what to
     -- paste back here. The plywood is only a few centimetres under the batten
     -- tops, so the useful range is small.
-    crateLabelLift  = -0.035,
+    crateLabelLift  = -0.050,
 
     -- CRATE DRAG, applied to a crate that is actually moving.
     --
