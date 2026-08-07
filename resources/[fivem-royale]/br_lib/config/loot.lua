@@ -344,10 +344,13 @@ BR.Config.Loot = {
 
     -- Metres proud of that top face. NEGATIVE, and deliberately: the bounding
     -- box top is the raised battens around the lid, not the plywood between
-    -- them, so sitting exactly on it still reads as floating. -0.10 is the 4
-    -- inches the user asked for after the first pass (2026-08-06). This is the
-    -- number to change if it clips into the wood or lifts off it.
-    crateLabelLift  = -0.10,
+    -- them, so sitting exactly on it still reads as floating.
+    --
+    -- Guessed twice now -- 0.02 floated, -0.10 sank inside the box -- so stop
+    -- guessing: /brlabel <lift> changes this live, in game, and prints what to
+    -- paste back here. The plywood is only a few centimetres under the batten
+    -- tops, so the useful range is small.
+    crateLabelLift  = -0.035,
 
     -- CRATE DRAG, applied to a crate that is actually moving.
     --

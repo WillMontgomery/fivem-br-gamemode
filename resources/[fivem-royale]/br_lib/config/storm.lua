@@ -89,14 +89,26 @@ BR.Config.Storm = {
         chanceStart = 0.0,
         chanceEnd   = 0.85,
 
-        -- Extra offset beyond the nesting limit, as a fraction of the CURRENT
-        -- radius. Against the current radius rather than the next one, because
-        -- the next radius reaches zero on the final phase and an overhang
-        -- scaled by it would make the phase that most needs to move the one
-        -- that mathematically cannot. The centre escapes the current circle
-        -- whenever this exceeds nextRadius/curRadius -- a ratio that falls as
-        -- the match closes, so the rule gets easier exactly as it matters more.
-        overhang    = 0.9,
+        -- THE CIRCLES MAY SEPARATE COMPLETELY, and this is how far apart
+        -- (user call, 2026-08-06). The new circle can sit wholly outside the
+        -- old one; the GAP between their edges is capped at this fraction of
+        -- the predecessor's radius:
+        --
+        --     d_max = curRadius + nextRadius + gapMax * curRadius
+        --
+        -- Half a radius of clear ground between the two is a real rotation --
+        -- everyone moves, nobody is already there -- without being a sprint
+        -- across the county.
+        gapMax      = 0.5,
+
+        -- A breakout is only fair if the sweep gives players time to cross it,
+        -- and the authored per-phase `shrink` is a CEILING on that time -- it
+        -- was written for nested circles, where the furthest anyone can be
+        -- from the next circle is one radius. A separated circle can be three
+        -- times that, so a breakout phase is allowed a longer sweep. Without
+        -- this the wall simply outruns everybody and the breakout stops being
+        -- a rotation and becomes a cull.
+        shrinkFactor = 2.5,
 
         -- A floor on the CURRENT radius, kept as a knob and off by default:
         -- the ramp already keeps the early phases still, and the user wants

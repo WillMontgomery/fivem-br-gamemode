@@ -682,6 +682,30 @@ function BR.Native.check()
     probe('SetPlayerCanDoDriveBy',   function()
         SetPlayerCanDoDriveBy(PlayerId(), true)
     end)
+    -- Killing an NPC makes the engine drop their weapon as a vanilla pickup,
+    -- which has none of our loot's affordances and puts a gun in the ped's
+    -- hands the inventory has never heard of.
+    probe('SetPedDropsWeaponsWhenDead', function()
+        SetPedDropsWeaponsWhenDead(ped, false)
+    end)
+    probe('GetGamePool(CPickup)',    function()
+        return ('%d pickups in the world'):format(#GetGamePool('CPickup'))
+    end)
+    probe('DoesPickupExist',         function()
+        local pool = GetGamePool('CPickup')
+        return #pool > 0 and tostring(DoesPickupExist(pool[1])) or 'no pickups'
+    end)
+    probe('GetPickupCoords',         function()
+        local pool = GetGamePool('CPickup')
+        if #pool == 0 then return 'no pickups' end
+        local c = GetPickupCoords(pool[1])
+        return c and ('%.1f,%.1f,%.1f'):format(c.x, c.y, c.z) or 'nil'
+    end)
+    probe('RemovePickup',            function()
+        -- NOT called blind: removing a live pickup would be the probe changing
+        -- the world. Existence of the binding is what is being checked.
+        return ('%d pickups present'):format(#GetGamePool('CPickup'))
+    end)
     -- Clearing the player's own map waypoint from a keybind, because GTA's
     -- only built-in way is to re-click the flag in the pause map.
     probe('IsWaypointActive',        function() return IsWaypointActive() end)

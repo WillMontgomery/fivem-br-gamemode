@@ -157,7 +157,7 @@ function BR.StormBreakoutFor(cfg, phase)
     local b = bo.chanceEnd or 0.0
     return {
         chance    = a + (b - a) * t,
-        overhang  = bo.overhang,
+        gapMax    = bo.gapMax,
         minRadius = bo.minRadius,
     }
 end
@@ -201,22 +201,29 @@ function BR.NextStormCentre(rng, cx, cy, curRadius, nextRadius, edgeBias, aabb, 
     -- breakout raises the ceiling on how far the centre may sit from the old
     -- one. Everything downstream still works in terms of `reach`, so the
     -- edge-hug and the AABB pull-back need no special case.
-    -- `overhang` is a fraction of the CURRENT radius, not the next one.
+    -- A BREAKOUT MAY SEPARATE THE CIRCLES ENTIRELY.
     --
-    -- It was the next radius, and that was backwards: the overhang shrank
-    -- exactly as the circles did, so the late phases -- the ones where a
-    -- static circle most rewards sitting still -- got the least movement, and
-    -- the FINAL phase (next radius 0) could not break out at all however high
-    -- the chance was set. Against the current radius the budget stays
-    -- meaningful all the way down: the centre escapes the current circle
-    -- whenever overhang > nextRadius/curRadius, which is a ratio that falls as
-    -- the match closes. The rule gets easier to satisfy as it matters more.
-    local reach = slack
+    -- Stated as the geometry rather than as a fudge factor, because that is
+    -- how it was asked for (user, 2026-08-06): the new circle may sit wholly
+    -- outside the old one, and the GAP between their edges is capped at
+    -- `gapMax` times the predecessor's radius.
+    --
+    --     d_max = curRadius + nextRadius + gapMax * curRadius
+    --              \___________________/   \_________________/
+    --                 edges just touch        the gap allowed
+    --
+    -- Two earlier formulations were wrong in instructive ways. Scaling the
+    -- budget by the NEXT radius made the final phase (next radius 0) unable to
+    -- move at all. Scaling it by the current radius fixed that but could never
+    -- separate the circles on the early phases, where nextRadius/curRadius is
+    -- large. Expressing the thing we actually want removes both accidents.
+    local reach, broke = slack, false
     if breakout and breakout.chance and breakout.chance > 0
        and curRadius >= (breakout.minRadius or 0.0) then
-        local roll = rng:float()
-        if roll < breakout.chance then
-            reach = slack + (breakout.overhang or 0.0) * curRadius
+        if rng:float() < breakout.chance then
+            broke = true
+            reach = curRadius + nextRadius
+                  + (breakout.gapMax or 0.5) * curRadius
         end
     end
 
@@ -294,15 +301,15 @@ function BR.NextStormCentre(rng, cx, cy, curRadius, nextRadius, edgeBias, aabb, 
             local t = 1.0 - attempt / 8.0
             local tx, ty = cx + (nx - cx) * t, cy + (ny - cy) * t
             if not water(tx, ty) then
-                return tx, ty
+                return tx, ty, broke
             end
         end
         -- Every step of the way in was wet, which means the CURRENT centre is
         -- too. Nothing better to offer than staying put.
-        return cx, cy
+        return cx, cy, broke
     end
 
-    return nx, ny
+    return nx, ny, broke
 end
 
 --- Build the record for a phase transition.

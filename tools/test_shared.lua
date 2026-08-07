@@ -407,18 +407,21 @@ do
     -- call, 2026-08-06). This is safe only because the wall SWEEPS to the new
     -- circle over a duration priced off the furthest player's run -- nobody is
     -- damaged for standing where they legally stood.
-    local bo = { chance = 0.85, overhang = 0.9, minRadius = 0.0 }
+    local bo = { chance = 0.85, gapMax = 0.5, minRadius = 0.0 }
     local R, r = 1600.0, 950.0
-    local slack = R - r
 
-    local outside, breached, worst = 0, 0, 0.0
+    -- The budget, stated as the geometry: edges touching, plus a gap of at
+    -- most half the predecessor's radius.
+    local budget = R + r + bo.gapMax * R
+
+    local outside, disjoint, breached, worst = 0, 0, 0, 0.0
     for i = 1, 800 do
         local nx, ny = BR.NextStormCentre(BR.Rng(i), 0.0, 0.0, R, r, 1.0, nil, nil, bo)
         local d = BR.Dist(0.0, 0.0, nx, ny)
-        -- The CENTRE outside the current circle is the thing being asked for.
+        -- The CENTRE outside the current circle is the weaker ask...
         if d > R then outside = outside + 1 end
-        -- ...but never past the budget the phase priced its sweep against.
-        local budget = slack + bo.overhang * R
+        -- ...and the WHOLE CIRCLE outside it is the stronger one.
+        if d > R + r then disjoint = disjoint + 1 end
         if d > budget + 1e-6 then
             breached = breached + 1
             if d - budget > worst then worst = d - budget end
@@ -426,8 +429,19 @@ do
     end
     ok(outside > 0, 'a breakout can put the next centre outside the current circle',
         ('%d of 800'):format(outside))
-    ok(breached == 0, 'and never further than the phase reach budget',
+    ok(disjoint > 0, 'and can separate the two circles entirely',
+        ('%d of 800'):format(disjoint))
+    ok(breached == 0, 'but the gap between them never exceeds gapMax * curRadius',
         ('%d breaches, worst %.3f'):format(breached, worst))
+
+    -- The flag has to come back, or the server cannot lengthen the sweep to
+    -- match -- and an unreachable circle is a cull, not a rotation.
+    local sawFlag = false
+    for i = 1, 200 do
+        local _, _, broke = BR.NextStormCentre(BR.Rng(i), 0.0, 0.0, R, r, 1.0, nil, nil, bo)
+        if broke then sawFlag = true break end
+    end
+    ok(sawFlag, 'and reports that it broke out, so the sweep can be priced for it')
 
     -- WITHOUT the config it is the old strict rule, unchanged. Every existing
     -- caller that passes no breakout table keeps exact containment.

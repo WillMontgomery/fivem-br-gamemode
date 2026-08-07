@@ -81,8 +81,8 @@ BR.Config.Weapons = {
 BR.Config.Throwables = {
     { id = 'grenade',    name = 'WEAPON_GRENADE',      hash = 0x93E220BD, label = 'Grenade',       rarity = R.RARE,     maxStack = 3 },
     { id = 'molotov',    name = 'WEAPON_MOLOTOV',      hash = 0x24B17070, label = 'Molotov',       rarity = R.UNCOMMON, maxStack = 3 },
-    { id = 'sticky',     name = 'WEAPON_STICKYBOMB',   hash = 0x2C3731D9, label = 'Sticky Bomb',   rarity = R.EPIC,     maxStack = 2 },
-    { id = 'smoke',      name = 'WEAPON_SMOKEGRENADE', hash = 0xFDBC8A50, label = 'Smoke Grenade', rarity = R.COMMON,   maxStack = 4 },
+    { id = 'sticky',     name = 'WEAPON_STICKYBOMB',   hash = 0x2C3731D9, label = 'Sticky Bomb',   rarity = R.EPIC,     maxStack = 3 },
+    { id = 'smoke',      name = 'WEAPON_SMOKEGRENADE', hash = 0xFDBC8A50, label = 'Smoke Grenade', rarity = R.COMMON,   maxStack = 3 },
 }
 
 --- Utility weapon hashes referenced directly by gameplay code.

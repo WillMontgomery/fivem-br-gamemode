@@ -2432,8 +2432,12 @@ do
     local bo = BR.Config.Storm.breakout
     local slack2 = rec2.r0 - rec2.r1
     local reach2 = slack2
-    if bo and rec2.r1 >= (bo.minRadius or 0.0) then
-        reach2 = slack2 + (bo.overhang or 0.0) * rec2.r1
+    if bo and rec2.r0 >= (bo.minRadius or 0.0) then
+        -- The breakout budget, stated as the geometry: edges touching plus a
+        -- gap of at most gapMax * the predecessor's radius. Computed from the
+        -- LIVE config rather than a literal, so retuning the storm cannot
+        -- leave this test asserting a number nothing uses any more.
+        reach2 = rec2.r0 + rec2.r1 + (bo.gapMax or 0.0) * rec2.r0
     end
     ok(BR.Dist(rec2.cx0, rec2.cy0, rec2.cx1, rec2.cy1) <= reach2 + 1e-6,
         'and its own target stays inside the phase reach budget',

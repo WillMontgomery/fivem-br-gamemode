@@ -1201,6 +1201,36 @@ RegisterCommand('brloot', function()
         :format(L.crateMass or 0.0, L.shineOpenLimit or 0, BR.Loot.openedCount or 0))
 end, false)
 
+--- Tune the crate label WITHOUT a deploy.
+---
+---   /brlabel                  show the current numbers
+---   /brlabel <lift>           metres relative to the lid (negative = down)
+---   /brlabel <lift> <size>    ...and the label width in metres
+---
+--- This exists because the lift has now been guessed twice from outside the
+--- game -- 0.02 floated it, -0.10 sank it into the box -- and each guess cost
+--- a deploy and a playtest round to evaluate (user, 2026-08-06). Stand at a
+--- crate, nudge it until it sits on the plywood, and paste the printed line
+--- into br_lib/config/loot.lua. Client-local and not persisted: it is a ruler,
+--- not a setting.
+RegisterCommand('brlabel', function(_, args)
+    local lift = tonumber(args[1])
+    local size = tonumber(args[2])
+    if lift then L.crateLabelLift = lift end
+    if size then L.crateLabelSize = size end
+
+    print(('[br_core] crate label: lift %.3f  size %.2f  fit %.2f')
+        :format(L.crateLabelLift or 0.0, L.crateLabelSize or 0.0,
+                L.crateLabelFit or 0.45))
+    if lift or size then
+        print(('  paste into br_lib/config/loot.lua:'))
+        print(('    crateLabelLift  = %.3f,'):format(L.crateLabelLift or 0.0))
+        print(('    crateLabelSize  = %.2f,'):format(L.crateLabelSize or 0.0))
+    else
+        print('  usage: brlabel <lift> [size]   (lift is metres, negative = down)')
+    end
+end, false)
+
 --- Which prompt glyph actually renders.
 ---
 --- PLAN.md records that ~INPUT_<hash>~ for a RegisterKeyMapping binding drew

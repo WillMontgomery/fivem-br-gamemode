@@ -114,6 +114,54 @@ AddEventHandler(BR.Net.STATE, function(d)
     end
 end)
 
+-- --------------------------------------------------------------------------
+-- Vanilla weapon pickups
+-- --------------------------------------------------------------------------
+
+-- GTA'S OWN LOOT MUST NOT EXIST IN A GAME THAT HAS ITS OWN.
+--
+-- Kill an ambient NPC and the engine drops their weapon as a `CPickup` -- a
+-- vanilla pickup with a vanilla glow that you collect by walking over it
+-- (user, 2026-08-06). It is not one of our entries, so it has no DUI, no
+-- rarity, no marker, and picking it up puts a gun in the ped's hands that the
+-- inventory has never heard of -- which the active-slot model then strips off
+-- again on the next weapon switch. Every part of that is confusing.
+--
+-- Two lines of defence, because the first one alone is not enough:
+--
+--   1. Stop peds dropping in the first place, for every ped near us. This is
+--      the clean fix, but only reaches peds currently streamed in.
+--   2. Sweep whatever appears anyway. Covers peds that died before they were
+--      near us, and anything else in the game that spawns a pickup.
+--
+-- CPickup is its own game pool, so the sweep is a short walk over pickups
+-- only -- not over every object in the world.
+local PICKUP_SWEEP_RANGE = 120.0
+
+BR.Loop.register(BR.Loop.TICK, 'gamerules.pickups', function()
+    local ped = PlayerPedId()
+    local p = GetEntityCoords(ped)
+
+    -- 1. Nearby peds keep their guns when they die.
+    for _, other in ipairs(GetGamePool('CPed')) do
+        if other ~= ped and DoesEntityExist(other) then
+            SetPedDropsWeaponsWhenDead(other, false)
+        end
+    end
+
+    -- 2. Anything that got through goes away. RemovePickup is the engine's own
+    --    call for this -- DeleteEntity does not apply to a pickup handle.
+    for _, pickup in ipairs(GetGamePool('CPickup')) do
+        if DoesPickupExist(pickup) then
+            local c = GetPickupCoords(pickup)
+            if c and BR.Dist2(c.x, c.y, p.x, p.y)
+                < PICKUP_SWEEP_RANGE * PICKUP_SWEEP_RANGE then
+                RemovePickup(pickup)
+            end
+        end
+    end
+end)
+
 AddEventHandler('onClientResourceStart', function(res)
     if res ~= GetCurrentResourceName() then return end
     BR.Native.applyWorldSetup()

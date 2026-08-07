@@ -67,8 +67,8 @@ local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec)
     -- current one, and the sweep pricing immediately below is what keeps that
     -- fair -- the furthest player's run to the TARGET's edge sets the wall's
     -- travel time, so a circle that moved further simply takes longer to close.
-    local cx1, cy1 = BR.NextStormCentre(m.stormRng, cx0, cy0, r0, p.radius,
-        cfg.edgeBiasMax, cfg.mapAABB, minDist,
+    local cx1, cy1, brokeOut = BR.NextStormCentre(m.stormRng, cx0, cy0, r0,
+        p.radius, cfg.edgeBiasMax, cfg.mapAABB, minDist,
         BR.StormBreakoutFor(cfg, phase))
 
     -- Price the sweep for the furthest player's run to the target's edge --
@@ -82,8 +82,23 @@ local function enterPhase(m, phase, cx0, cy0, r0, now, waitSec)
                 if d > furthest then furthest = d end
             end
         end)
+    -- A BREAKOUT BUYS A LONGER SWEEP.
+    --
+    -- The authored per-phase `shrink` is the ceiling on travel time, and it was
+    -- written for NESTED circles -- where the furthest anyone can be from the
+    -- next circle's edge is about one radius. A circle that has separated from
+    -- its predecessor can be three times that away, and at 9 m/s the wall
+    -- would simply outrun everyone: the rotation the breakout is meant to
+    -- force becomes a cull instead. So the ceiling is lifted for exactly the
+    -- phases that broke out, and the pricing below still decides how much of
+    -- it is actually used -- if everybody happens to be near the new circle,
+    -- the sweep is short regardless.
+    local ceiling = p.shrink
+    if brokeOut then
+        ceiling = p.shrink * ((cfg.breakout and cfg.breakout.shrinkFactor) or 1.0)
+    end
     local shrinkSec = BR.Clamp(furthest / cfg.shrinkPace.metersPerSec,
-        cfg.shrinkPace.minSeconds, p.shrink)
+        cfg.shrinkPace.minSeconds, ceiling)
 
     m.storm = BR.BuildStormRecord(phase, cx0, cy0, r0, cx1, cy1, p.radius,
         now, (waitSec or p.wait) * 1000 * timeScale,
