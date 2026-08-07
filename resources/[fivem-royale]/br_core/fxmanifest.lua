@@ -27,6 +27,7 @@ shared_scripts {
     '@br_lib/config/weapons.lua',
     '@br_lib/config/loot.lua',
     '@br_lib/shared/storm_solve.lua',
+    '@br_lib/shared/combat_solve.lua',
     '@br_lib/shared/loot_gen.lua',  -- reads the loot/weapon/map config at call time
 }
 
@@ -68,6 +69,7 @@ server_scripts {
     'server/storm.lua',     -- phase authority + the damage ledger
     'server/inventory.lua', -- BR.Inv: the authoritative inventory model
     'server/loot.lua',      -- world loot: layout, streaming, claim arbitration
+    'server/damage.lua',    -- M6: weaponDamageEvent validation and attribution
     'server/markers.lua',   -- player map markers: relay + squad scoping
     'server/chat.lua',
     'server/debug.lua',

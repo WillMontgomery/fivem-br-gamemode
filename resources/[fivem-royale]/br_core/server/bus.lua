@@ -288,6 +288,15 @@ function BR.Bus.depart(m)
     route.rotateAt   = pts[route.rotateIdx or 1].t   -- wheels leave the runway
     route.jumpFrom   = pts[route.jumpIdx].t
     route.doorsClose = pts[route.closeIdx].t
+
+    -- ...and WIDEN the window for anything the tour actually flies over. The
+    -- authored indices assume every route has the same shape; the zones make
+    -- the ports and the airport jumpable whenever the flight crosses them.
+    -- Never before wheels-up: LSIA is a zone and the bus takes off from an
+    -- airstrip.
+    route.jumpFrom, route.doorsClose = BR.BusDoorWindow(
+        pts, BR.Config.Map.DoorZones or {},
+        route.jumpFrom, route.doorsClose, route.rotateAt)
     route.tEnd       = pts[#pts].t
     route.serverNow  = now
 

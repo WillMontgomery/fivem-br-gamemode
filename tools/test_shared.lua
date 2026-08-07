@@ -21,6 +21,7 @@ for _, f in ipairs({
     'config/loot.lua',
     'shared/storm_solve.lua',
     'shared/loot_gen.lua',
+    'shared/combat_solve.lua',
 }) do
     local chunk, err = loadfile(ROOT .. f)
     if not chunk then
@@ -330,6 +331,143 @@ do
     _, _, _, st, _, dps = BR.StormAt(p2, 60000)
     ok(st == BR.StormPhase.HOLDING and dps == 2.0,
         'phase 2 holding deals its authored dps')
+end
+
+describe('combat.validate')
+do
+    -- M6. Every check here runs against what the SERVER believes -- roster
+    -- positions, the inventory it maintains -- never against anything the
+    -- shooter reported, so a client that lies about its weapon, its range or
+    -- its rate of fire is failing against numbers it does not control.
+    local cfg = BR.Config.Combat
+    local rifle = BR.Config.WeaponById['carbinerifle']
+
+    local function ctx(over)
+        local c = {
+            sameSrc = false, sameMatch = true, shooterLive = true,
+            victimLive = true, sameSquad = false,
+            heldItem = 'carbinerifle', clip = 30,
+        }
+        for k, v in pairs(over or {}) do c[k] = v end
+        return c
+    end
+
+    local ok1 = BR.ValidateShot(
+        { weapon = rifle.hash, dist = 50.0, sinceLastMs = 500 }, ctx(), cfg)
+    ok(ok1, 'an ordinary shot is accepted')
+
+    -- THE SIGNED HASH, AGAIN. weaponDamageEvent reports the weapon hash
+    -- signed, exactly like GetCurrentPedWeapon -- and carbinerifle is one of
+    -- the twenty with the top bit set. Without normalisation inside the
+    -- validator, half the arsenal would read as "not a weapon this gamemode
+    -- issues", i.e. every carbine hit would be refused as a cheat.
+    local signed = rifle.hash - 0x100000000
+    local okSigned, whySigned = BR.ValidateShot(
+        { weapon = signed, dist = 50.0, sinceLastMs = 500 }, ctx(), cfg)
+    ok(okSigned, 'and so is the same shot with the SIGNED hash the engine sends',
+        tostring(whySigned))
+
+    -- Refusals.
+    local _, why = BR.ValidateShot(
+        { weapon = rifle.hash, dist = 50.0, sinceLastMs = 500 },
+        ctx({ sameSquad = true }), cfg)
+    ok(why == BR.ShotRefusal.SAME_SQUAD, 'a squadmate cannot be shot', tostring(why))
+
+    _, why = BR.ValidateShot(
+        { weapon = rifle.hash, dist = 50.0, sinceLastMs = 500 },
+        ctx({ heldItem = 'pistol' }), cfg)
+    ok(why == BR.ShotRefusal.NOT_HELD,
+        'a shot from a weapon the server did not issue is refused', tostring(why))
+
+    _, why = BR.ValidateShot(
+        { weapon = rifle.hash, dist = 50.0, sinceLastMs = 500 },
+        ctx({ clip = 0 }), cfg)
+    ok(why == BR.ShotRefusal.NO_AMMO,
+        'and one from an empty magazine', tostring(why))
+
+    _, why = BR.ValidateShot(
+        { weapon = rifle.hash, dist = 9000.0, sinceLastMs = 500 }, ctx(), cfg)
+    ok(why == BR.ShotRefusal.TOO_FAR, 'a shot from orbit is refused', tostring(why))
+
+    _, why = BR.ValidateShot(
+        { weapon = rifle.hash, dist = 50.0, sinceLastMs = 1 }, ctx(), cfg)
+    ok(why == BR.ShotRefusal.TOO_FAST,
+        'and one faster than the weapon can cycle', tostring(why))
+
+    _, why = BR.ValidateShot(
+        { weapon = 0xDEADBEEF, dist = 50.0, sinceLastMs = 500 }, ctx(), cfg)
+    ok(why == BR.ShotRefusal.NO_WEAPON,
+        'a weapon we never issued is refused', tostring(why))
+
+    -- SLACK MUST NOT REFUSE HONEST PLAY, and this is the assertion that
+    -- matters most. Roster positions are sampled at 2Hz, so both players can
+    -- be ~4.5m stale at a sprint; a shot at the weapon's nominal maximum has
+    -- to survive that or the game is unplayable for the honest player.
+    local edge = rifle.maxRange + 20.0
+    ok(BR.ValidateShot({ weapon = rifle.hash, dist = edge, sinceLastMs = 500 },
+        ctx(), cfg), 'a shot at nominal max range plus sampling lag still lands',
+        ('%.0fm vs maxRange %.0f'):format(edge, rifle.maxRange))
+
+    -- Damage is recomputed from OUR tables, never read off the event -- the
+    -- payload's own damage figure is precisely the field a multiplier edits.
+    local base = BR.ShotDamage(rifle.hash, BR.Rarity.COMMON, 10.0, false, cfg)
+    local head = BR.ShotDamage(rifle.hash, BR.Rarity.COMMON, 10.0, true, cfg)
+    ok(base > 0.0, 'a hit computes real damage', tostring(base))
+    ok(math.abs(head - base * cfg.headshotMult) < 1e-6,
+        'and a headshot multiplies it', ('%.1f vs %.1f'):format(head, base))
+    ok(BR.ShotDamage(signed, BR.Rarity.COMMON, 10.0, false, cfg) == base,
+        'damage is identical whether the hash arrives signed or unsigned')
+end
+
+describe('bus.doors')
+do
+    -- THE DOOR WINDOW IS THE UNION, never a replacement. A tour that crosses
+    -- the ports after the authored close index used to fly over the best drop
+    -- on the map with the doors shut (user, 2026-08-06).
+    local zones = { { x = 1000.0, y = 0.0, radius = 200.0 } }
+    local pts = {
+        { x =    0.0, y = 0.0, t = 1000 },
+        { x =  500.0, y = 0.0, t = 2000 },
+        { x = 1000.0, y = 0.0, t = 3000 },   -- inside the zone
+        { x = 1500.0, y = 0.0, t = 4000 },
+    }
+
+    -- A zone crossing LATER than the authored close pushes the close out.
+    local o, c = BR.BusDoorWindow(pts, zones, 1500, 2500, nil)
+    ok(o == 1500 and c == 3000,
+        'a late zone crossing keeps the doors open until it is passed',
+        ('open %d close %d'):format(o, c))
+
+    -- A zone crossing EARLIER than the authored open pulls the open in.
+    o, c = BR.BusDoorWindow(pts, zones, 3500, 4000, nil)
+    ok(o == 3000 and c == 4000,
+        'and an early one opens them sooner',
+        ('open %d close %d'):format(o, c))
+
+    -- WIDENING ONLY. A zone inside the authored window changes nothing --
+    -- it must never make the jumpable stretch shorter than it already was.
+    o, c = BR.BusDoorWindow(pts, zones, 1000, 4000, nil)
+    ok(o == 1000 and c == 4000, 'a zone inside the window narrows nothing',
+        ('open %d close %d'):format(o, c))
+
+    -- NEVER BEFORE WHEELS-UP. LSIA is a door zone and the bus takes off from
+    -- an airstrip, so without this the doors could open on the runway.
+    o, c = BR.BusDoorWindow(pts, zones, 3500, 4000, 3200)
+    ok(o == 3200, 'and never before the aircraft has rotated', tostring(o))
+
+    -- No zones at all leaves the authored window untouched.
+    o, c = BR.BusDoorWindow(pts, {}, 1500, 2500, nil)
+    ok(o == 1500 and c == 2500, 'no zones means the authored window stands')
+
+    -- The real config must actually cover the two places asked for.
+    local function covered(x, y)
+        for _, z in ipairs(BR.Config.Map.DoorZones or {}) do
+            if (x - z.x) ^ 2 + (y - z.y) ^ 2 <= z.radius ^ 2 then return true end
+        end
+        return false
+    end
+    ok(covered(-1037.0, -2737.0), 'LSIA is inside a door zone')
+    ok(covered(525.59, -3089.33), 'and so are the port docks')
 end
 
 describe('loot.floor')

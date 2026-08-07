@@ -247,3 +247,67 @@ function BR.NormHash(h)
     if not h then return nil end
     return h & 0xFFFFFFFF
 end
+
+--- When the Battle Bus doors should be open, given a timed route.
+---
+--- The doors used to open and close at two authored route INDICES, which works
+--- while every route is the same shape and stops working the moment they are
+--- not. A tour that crosses the ports or LSIA late -- after the authored close
+--- index -- flew over the best drop on the map with the doors shut (user,
+--- 2026-08-06: "any flight that goes near the ports or LSIA, open the doors
+--- when they cross those approximate areas").
+---
+--- So the window is the UNION of the authored one and every zone crossing: it
+--- opens at the earlier of the two and closes at the later. Widening only --
+--- a zone can never make the jumpable stretch shorter than it was.
+---
+--- @param pts table      route points, each { x, y, t } with t already solved
+--- @param zones table    { { x, y, radius }, ... }
+--- @param openT number   the authored door-open time
+--- @param closeT number  the authored door-close time
+--- @param notBefore number|nil  never open before this (wheels-up)
+--- @return number openT, number closeT
+function BR.BusDoorWindow(pts, zones, openT, closeT, notBefore)
+    if not pts or not zones then return openT, closeT end
+
+    local firstT, lastT = nil, nil
+    for _, p in ipairs(pts) do
+        if p.t then
+            for _, z in ipairs(zones) do
+                local dx, dy = p.x - z.x, p.y - z.y
+                if dx * dx + dy * dy <= (z.radius or 0.0) ^ 2 then
+                    if not firstT or p.t < firstT then firstT = p.t end
+                    if not lastT  or p.t > lastT  then lastT  = p.t end
+                    break
+                end
+            end
+        end
+    end
+
+    if firstT and firstT < openT then openT = firstT end
+    if lastT  and lastT  > closeT then closeT = lastT end
+
+    -- NEVER BEFORE WHEELS-UP. A zone that happens to sit near the airstrip --
+    -- LSIA is a zone, and the bus takes off from an airstrip -- must not open
+    -- the doors while the aircraft is still on the ground.
+    if notBefore and openT < notBefore then openT = notBefore end
+    if closeT < openT then closeT = openT end
+
+    return openT, closeT
+end
+
+--- 3D distance. Combat needs it where the rest of the project does not: a
+--- shot from a rooftop to the street below is a real engagement whose 2D
+--- distance badly understates the range it was taken at, and range is one of
+--- the things M6 refuses shots on.
+--- @param x1 number
+--- @param y1 number
+--- @param z1 number
+--- @param x2 number
+--- @param y2 number
+--- @param z2 number
+--- @return number
+function BR.Dist3(x1, y1, z1, x2, y2, z2)
+    local dx, dy, dz = x2 - x1, y2 - y1, z2 - z1
+    return math.sqrt(dx * dx + dy * dy + dz * dz)
+end

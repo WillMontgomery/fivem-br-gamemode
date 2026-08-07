@@ -210,3 +210,35 @@ end
 function BR.IsDeadHp(engine)
     return engine <= BR.Config.Match.healthFloor
 end
+
+--- M6 combat validation.
+---
+--- `enforce` IS OFF UNTIL THE PAYLOAD IS CONFIRMED IN GAME. FiveM's
+--- weaponDamageEvent payload is not documented anywhere authoritative -- the
+--- natives reference lists the event and says the list is "largely
+--- undocumented", and the anticheats that use it read only the one or two
+--- fields they happen to need. Guessing the rest of the field names and
+--- shipping enforcement on top of them is exactly the pattern that cost this
+--- project six rounds on the ammo counter.
+---
+--- So: /brdamagelog records real payloads first, and this flag turns on once
+--- the field names are known rather than assumed. With it off, the validator
+--- runs, logs its verdict and cancels NOTHING -- so a wrong assumption is a
+--- console line rather than players unable to shoot each other.
+BR.Config.Combat = {
+    enforce       = false,
+
+    -- Slack, and it is load-bearing. Roster positions are sampled at 2Hz, so
+    -- at the instant of a shot both players can be half a second stale --
+    -- about 4.5m each at a sprint. Refusing an honest shot is a broken game;
+    -- accepting a marginal one is a rounding error no aimbot can exploit.
+    rangeSlack    = 1.35,   -- multiplier on the weapon's authored maxRange
+    rangeSlackM   = 12.0,   -- ...plus this, for the sampling lag itself
+    intervalSlack = 0.6,    -- a shot may arrive this fraction early
+
+    headshotMult  = 2.0,
+
+    -- How many payloads /brdamagelog captures before it stops on its own. It
+    -- prints every key it sees, so this is the tool that replaces guessing.
+    logSamples    = 15,
+}

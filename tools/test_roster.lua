@@ -1956,15 +1956,36 @@ do
     ok(maxJump < 80.0, 'speed changes ramp instead of stepping',
         ('largest adjacent speed jump: %.0f m/s'):format(maxJump))
 
-    -- THE DOORS OPEN AT THE LEG-1 WAYPOINT -- the coastline the players saw
-    -- on the map, not some geometric boundary halfway across the mainland.
+    -- THE DOORS OPEN AT THE LEG-1 WAYPOINT, *OR* EARLIER OVER A DOOR ZONE.
+    --
+    -- This used to assert the leg-1 waypoint alone. That is no longer the
+    -- contract: a tour that crosses the ports or LSIA opens the doors there
+    -- too, wherever that falls in the route (user, 2026-08-06). What still has
+    -- to hold is that the bus is FLYING when they open -- at cruise altitude,
+    -- after rotation -- and that the opening point is somewhere the players
+    -- were actually shown, i.e. the first waypoint or a door zone.
     local doorX, doorY, doorZ = BR.PathPosAt(r.points, r.jumpFrom)
     ok(math.abs(doorZ - BR.Config.Bus.altitude) < 1.0,
         'the bus is at cruise altitude when the doors open')
+    ok(r.jumpFrom >= r.rotateAt,
+        'and the doors never open before the wheels leave the runway',
+        ('jumpFrom %d, rotateAt %d'):format(r.jumpFrom, r.rotateAt))
+
     local w1 = r.waypoints[1]
-    ok(BR.Dist(doorX, doorY, w1.x, w1.y) <= BR.Config.Bus.turnRadius + 50.0,
-        'the doors open on arrival at the first authored waypoint',
-        ('door at %.0f,%.0f -- wp1 at %.0f,%.0f'):format(doorX, doorY, w1.x, w1.y))
+    local atWp1 = BR.Dist(doorX, doorY, w1.x, w1.y) <= BR.Config.Bus.turnRadius + 50.0
+    local inZone = false
+    for _, z in ipairs(BR.Config.Map.DoorZones or {}) do
+        if BR.Dist(doorX, doorY, z.x, z.y) <= z.radius then inZone = true end
+    end
+    ok(atWp1 or inZone,
+        'the doors open at the first authored waypoint or over a door zone',
+        ('door at %.0f,%.0f -- wp1 at %.0f,%.0f, inZone=%s')
+            :format(doorX, doorY, w1.x, w1.y, tostring(inZone)))
+
+    -- AND THE WINDOW ONLY EVER WIDENS. A zone must never shorten the jumpable
+    -- stretch -- that would make some tours worse than before the feature.
+    ok(r.doorsClose >= r.jumpFrom,
+        'the door window is never inverted by a zone')
 
     -- The last AUTHORED point is where the doors-closing warning fires; the
     -- path then overruns ~5s so stragglers get a last call instead of the

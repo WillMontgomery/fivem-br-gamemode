@@ -49,6 +49,14 @@ BR.Config.Map.POIs = {
     -- worth dropping on -- fell outside it.
     { id = 'lsia_rw',     name = 'LSIA Runway',      x = -1400.0, y = -3100.0, z =  14.0, radius = 300.0, tier = 2 },
     { id = 'lsia_apron',  name = 'LSIA West Apron',  x = -1700.0, y = -2950.0, z =  14.0, radius = 260.0, tier = 2 },
+
+    -- The port strip along the southern waterfront, surveyed in game by the
+    -- user (2026-08-06). Tier 2: the south end already has Terminal and
+    -- Elysian Island as tier-3 draws, and these fill the ground between them
+    -- rather than adding a fourth reason to fight over the same kilometre.
+    { id = 'port_w',      name = 'Port of LS West',  x =   198.75, y = -3024.54, z =   6.0, radius = 240.0, tier = 2 },
+    { id = 'port_c',      name = 'Port of LS Docks', x =   525.59, y = -3089.33, z =   6.0, radius = 240.0, tier = 2 },
+    { id = 'port_e',      name = 'Port of LS East',  x =  1011.77, y = -3118.76, z =   6.0, radius = 240.0, tier = 2 },
     { id = 'murrieta',    name = 'Murrieta Heights', x =  1180.0, y = -1780.0, z =  30.0, radius = 200.0, tier = 1 },
     { id = 'elburro',     name = 'El Burro Heights', x =  1370.0, y = -2100.0, z =  32.0, radius = 200.0, tier = 1 },
     { id = 'littleseoul', name = 'Little Seoul',     x =  -640.0, y = -1100.0, z =  22.0, radius = 220.0, tier = 2 },
@@ -195,6 +203,27 @@ BR.Config.Map.POIs = {
     { id = 'senora_n',    name = 'North Senora Flats', x = 2500.0, y =  4300.0, z =  40.0, radius = 240.0, tier = 2 },
     { id = 'mthaan',      name = 'Mount Haan',       x =  3100.0, y =  4500.0, z = 110.0, radius = 220.0, tier = 2 },
     { id = 'eastbeach',   name = 'East Coast Bluffs', x = 3600.0, y =  4350.0, z =  30.0, radius = 200.0, tier = 1 },
+}
+
+--- Where the Battle Bus opens its doors regardless of where it is in the tour.
+---
+--- The door window was two authored route INDICES, which assumes every tour
+--- has the same shape. A flight that crosses the ports or the airport late --
+--- past the authored close index -- flew over the best drop on the map with
+--- the doors shut (user, 2026-08-06). These zones widen the window instead:
+--- doors open at the earlier of the authored point and the first zone entry,
+--- and close at the later of the authored point and the last zone exit.
+---
+--- NOT TOO generous, and the test suite is why. The first draft used 1200 and
+--- 1400m radii on the reasoning that "near the ports" is approximate and
+--- opening early costs nothing -- and `match.bus` immediately failed: the
+--- departure path from Cayo Perico runs out over the ocean SOUTH of Los
+--- Santos, clipped the port zone at (792, -4375), and opened the doors over
+--- open water seconds after wheels-up. These radii cover the land and stop
+--- short of that approach.
+BR.Config.Map.DoorZones = {
+    { id = 'lsia',  x = -1037.0, y = -2737.0, radius = 900.0 },
+    { id = 'ports', x =   600.0, y = -2950.0, radius = 800.0 },
 }
 
 --- Major road corridors, as polylines.
