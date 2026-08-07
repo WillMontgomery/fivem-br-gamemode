@@ -138,6 +138,31 @@ BR.Config.Ambient = {
     -- Ambient drivers drive BADLY: zero ability, maximum aggression --
     -- the apocalypse does not produce calm commuters.
     erratic      = true,
+
+    -- HOW BADLY. The first pass used style 786468 at 30 m/s and still read as
+    -- calm, and the reason is in the flags: 786468 is
+    -- avoid-vehicles + avoid-objects + shortest-path + stay-on-road, so a
+    -- "rushed" driver still politely drove round everything in its way.
+    --
+    -- 262656 is shortest-path (262144) + allow-wrong-way (512) and NOTHING
+    -- else. What is missing is the point: no stopping at lights, no avoiding
+    -- vehicles, no avoiding peds, no avoiding objects. They take the quickest
+    -- line to wherever they are going and drive through whatever is on it.
+    --
+    -- Paired with ability 0.0 (worst possible driver) and aggression 1.0,
+    -- which together decide how much they oversteer and how willingly they
+    -- ram. Deliberately NOT panic: peds fleeing gunfire is a different system
+    -- and not what is wanted here (user, 2026-08-07) -- these are commuters
+    -- who drive like maniacs, not civilians running for their lives.
+    erraticStyle      = 262656,
+    erraticSpeed      = 45.0,    -- m/s cruise target (was 30)
+    erraticAbility    = 0.0,     -- 0 = worst driver in Los Santos
+    erraticAggression = 1.0,
+    erraticRange      = 250.0,
+    -- Re-tasked this often rather than once ever: the engine replaces a ped's
+    -- task on collisions and arrivals, and a driver that reverts stays calm
+    -- for the rest of its life.
+    erraticRetaskMs   = 8000,
 }
 
 -- Sprint stamina, Fortnite-shaped: a meter that drains while sprinting and
@@ -335,13 +360,43 @@ BR.Config.BodyMult = {
     [BR.Config.HitComponent.RIGHT_FOOT]  = 0.50,
 }
 
+--- A HEADSHOT IS A CLOSE-RANGE PAYOFF (user call, 2026-08-07).
+---
+--- Landing one across a car park should reward aim; landing one across the
+--- map should not simply delete somebody. So the head multiplier is at full
+--- strength inside `full` metres and decays to `far` by `fade`, which makes
+--- close-quarters aim the thing it rewards rather than range.
+---
+--- Snipers are untouched by this in the way that matters: a Heavy Sniper hits
+--- for 216 to the CHEST, so it remains a one-shot at any distance through raw
+--- damage. What this removes is the SMG headshot from 200 metres.
+BR.Config.HeadshotRange = {
+    full = 30.0,    -- full multiplier at or inside this
+    fade = 120.0,   -- decayed to `far` at or beyond this
+    far  = 1.25,    -- what a very long headshot is worth
+}
+
 --- The multiplier for a hit component. Unknown parts are worth full damage --
 --- an unrecognised bone should never silently zero a hit.
 --- @param c integer|nil
+--- @param dist number|nil  metres; only the head group cares
 --- @return number
-function BR.Config.BodyMultFor(c)
+function BR.Config.BodyMultFor(c, dist)
     if c == nil then return 1.0 end
-    return BR.Config.BodyMult[c] or 1.0
+    local mult = BR.Config.BodyMult[c] or 1.0
+
+    if dist and BR.Config.IsHeadshot(c) then
+        local r = BR.Config.HeadshotRange
+        local span = (r.fade or 120.0) - (r.full or 30.0)
+        if span > 0.0 then
+            local t = BR.Clamp((dist - (r.full or 30.0)) / span, 0.0, 1.0)
+            -- Never BELOW the far value, and never above the close one: a
+            -- head hit is always at least as good as a chest hit.
+            mult = BR.Lerp(mult, math.max(r.far or 1.25, 1.0), t)
+        end
+    end
+
+    return mult
 end
 
 --- Descent classification, shared by the BUS ceiling and the stuck-lander net.

@@ -39,27 +39,51 @@ BR.Loop.register(BR.Loop.SLOW, 'gamerules.madDrivers', function()
 
     if maddenedCount > 300 then maddened = {} maddenedCount = 0 end
 
-    local mp = GetEntityCoords(PlayerPedId())
+    local A   = BR.Config.Ambient
+    local now = GetGameTimer()
+    local mp  = GetEntityCoords(PlayerPedId())
+
     for _, veh in ipairs(GetGamePool('CVehicle')) do
-        if not maddened[veh] and DoesEntityExist(veh)
-           and #(GetEntityCoords(veh) - mp) < 250.0 then
-            -- Mark only once a driver is actually TREATED: marking on
+        -- RE-TASKED ON A CADENCE, NOT ONCE AND FOREVER.
+        --
+        -- The old version marked a vehicle done the first time it was
+        -- treated and never looked at it again -- but the engine hands the
+        -- ped new tasks all the time (a collision, a blocked road, arriving
+        -- somewhere), and the moment it does, the driver reverts to a calm
+        -- commuter for the rest of its life. That is the most likely reason
+        -- some drivers stayed sane while others did not.
+        local due = (maddened[veh] or 0) <= now
+        if due and DoesEntityExist(veh)
+           and #(GetEntityCoords(veh) - mp) < (A.erraticRange or 250.0) then
+            -- Marked only once a driver is actually TREATED: marking on
             -- sight branded empty or not-yet-crewed vehicles as done, and
             -- their drivers stayed calm forever ("some peds drive like
             -- assholes, but not all", live report).
             local drv = GetPedInVehicleSeat(veh, -1)
             if drv ~= 0 and not IsPedAPlayer(drv) then
-                maddened[veh] = true
-                maddenedCount = maddenedCount + 1
-                -- Ability/aggressiveness alone changed nothing visible
-                -- (live report: "drivers are still very much calm") -- the
-                -- ambient cruise TASK is what actually drives. Replace it:
-                -- wander fast with style 786468 (rushed -- runs lights,
-                -- overtakes, swerves for nothing).
-                SetDriverAbility(drv, 0.0)
-                SetDriverAggressiveness(drv, 1.0)
-                TaskVehicleDriveWander(drv, veh, 30.0, 786468)
-                SetDriveTaskMaxCruiseSpeed(drv, 30.0)
+                if not maddened[veh] then maddenedCount = maddenedCount + 1 end
+                maddened[veh] = now + (A.erraticRetaskMs or 8000)
+
+                -- Ability/aggressiveness alone changed nothing visible (live
+                -- report: "drivers are still very much calm") -- the ambient
+                -- cruise TASK is what actually drives, so it gets replaced.
+                --
+                -- THE STYLE IS THE WHOLE THING. 786468 still carried the
+                -- avoid-vehicles and avoid-objects flags, so a "rushed"
+                -- driver still politely went round everything. See
+                -- BR.Config.Ambient.erraticStyle for the flags that are left
+                -- and, more importantly, the ones that are not.
+                SetDriverAbility(drv, A.erraticAbility or 0.0)
+                SetDriverAggressiveness(drv, A.erraticAggression or 1.0)
+                SetPedKeepTask(drv, true)
+                TaskVehicleDriveWander(drv, veh,
+                    A.erraticSpeed or 45.0, A.erraticStyle or 262656)
+                SetDriveTaskMaxCruiseSpeed(drv, A.erraticSpeed or 45.0)
+                -- Two more that make the difference between "fast" and
+                -- "unhinged": they will not brake for a red light and they
+                -- will not wait for a gap.
+                SetDriveTaskDrivingStyle(drv, A.erraticStyle or 262656)
+                SetDriverRacingModifier(drv, 1.0)
             end
         end
     end

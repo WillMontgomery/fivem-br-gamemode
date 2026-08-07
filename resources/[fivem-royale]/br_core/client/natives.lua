@@ -682,6 +682,18 @@ function BR.Native.check()
     probe('SetPlayerCanDoDriveBy',   function()
         SetPlayerCanDoDriveBy(PlayerId(), true)
     end)
+    -- Ambient drivers who drive like maniacs. Ability and aggression alone did
+    -- nothing visible -- the driving TASK and its style flags are what decide
+    -- whether a ped stops at a light or drives through the junction.
+    probe('SetPedKeepTask',          function() SetPedKeepTask(ped, true) end)
+    probe('SetDriveTaskDrivingStyle', function()
+        -- On the PLAYER's ped, which has no drive task: a no-op that still
+        -- proves the binding exists.
+        SetDriveTaskDrivingStyle(ped, 262656)
+    end)
+    probe('SetDriverRacingModifier', function()
+        SetDriverRacingModifier(ped, 1.0)
+    end)
     -- Killing an NPC makes the engine drop their weapon as a vanilla pickup,
     -- which has none of our loot's affordances and puts a gun in the ped's
     -- hands the inventory has never heard of.

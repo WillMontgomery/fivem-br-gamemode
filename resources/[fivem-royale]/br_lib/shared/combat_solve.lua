@@ -118,6 +118,8 @@ end
 function BR.ShotDamage(weapon, rarity, dist, component, cfg)
     cfg = cfg or {}
     local base = BR.Config.ExpectedDamage(weapon, rarity, dist)
-    local mult = BR.Config.BodyMultFor(component)
+    -- Distance goes in twice, and means different things each time: the
+    -- weapon's own falloff above, and the headshot's close-range payoff here.
+    local mult = BR.Config.BodyMultFor(component, dist)
     return base * mult, mult
 end

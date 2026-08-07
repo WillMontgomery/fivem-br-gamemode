@@ -462,6 +462,35 @@ do
     ok(BR.ShotDamage(signed, BR.Rarity.COMMON, 10.0, H.CHEST, cfg) == chest,
         'and is identical whether the hash arrives signed or unsigned')
 
+    -- A HEADSHOT IS A CLOSE-RANGE PAYOFF (user call, 2026-08-07). Across a
+    -- car park it should reward aim; across the map it should not simply
+    -- delete somebody.
+    local R = BR.Config.HeadshotRange
+    local near = BR.Config.BodyMultFor(H.HEAD, R.full - 5.0)
+    local mid  = BR.Config.BodyMultFor(H.HEAD, (R.full + R.fade) * 0.5)
+    local far  = BR.Config.BodyMultFor(H.HEAD, R.fade + 200.0)
+    ok(near > mid and mid > far,
+        'the head multiplier decays with distance',
+        ('near %.2f mid %.2f far %.2f'):format(near, mid, far))
+    ok(math.abs(near - BR.Config.BodyMult[H.HEAD]) < 1e-6,
+        'full strength inside the close band')
+    ok(far >= 1.0,
+        'and a long headshot is still never worth LESS than a chest hit',
+        tostring(far))
+
+    -- Only the head group cares about range. A chest hit is a chest hit.
+    ok(BR.Config.BodyMultFor(H.CHEST, 5.0)
+        == BR.Config.BodyMultFor(H.CHEST, 500.0),
+        'body multipliers other than the head do not vary with range')
+
+    -- A SNIPER IS STILL A SNIPER. The falloff must not quietly turn the
+    -- long-range weapons into non-threats: they one-shot through raw damage
+    -- to the CHEST, which this never touches.
+    local hs = BR.Config.WeaponById['heavysniper']
+    ok(BR.ShotDamage(hs.hash, BR.Rarity.COMMON, 300.0, H.CHEST, cfg) > 100.0,
+        'a heavy sniper still one-shots centre mass at 300m',
+        ('%.0f'):format(BR.ShotDamage(hs.hash, BR.Rarity.COMMON, 300.0, H.CHEST, cfg)))
+
     -- An UNKNOWN component is worth full damage, never zero. A bone we have
     -- not mapped must not silently delete a hit.
     ok(BR.ShotDamage(rifle.hash, BR.Rarity.COMMON, 10.0, 999, cfg) == chest,
