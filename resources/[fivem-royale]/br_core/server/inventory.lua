@@ -536,6 +536,17 @@ AddEventHandler(BR.Net.INV_AMMO, function(d)
     local inv = BR.Inv.of(src)
     if not inv or type(d) ~= 'table' then return end
 
+    -- RETIRED BY M6. Once the server counts rounds off validated shot events
+    -- it has a better answer than the client's, and accepting both means two
+    -- authorities for one number -- the reload the server just paid for gets
+    -- overwritten by a client report that has not seen it yet.
+    --
+    -- Left registered rather than deleted for one reason: a client running
+    -- with server ammo disabled (`/brdamage off`) still needs this path, and
+    -- deleting the handler would make that a silent failure rather than a
+    -- config choice.
+    if (BR.Config.Combat or {}).serverAmmo then return end
+
     local slot  = math.tointeger(d.slot)
     local total = math.tointeger(d.total)
     local clip  = math.tointeger(d.clip)

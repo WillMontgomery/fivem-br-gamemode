@@ -154,6 +154,61 @@ end
 --- that makes this worth doing: a client that drops the HIT_DAMAGE event keeps
 --- its health bar and still dies here, at the same moment an honest one would.
 ---
+--- Spend one round from the shooter's magazine, server-side.
+---
+--- THIS IS WHAT M6 WAS FOR. The ammo model until now was the M5 placeholder:
+--- the client reported its own magazine and the server believed any decrease,
+--- on the reasoning that the worst a liar could do was disarm themselves. That
+--- was a holding position, and it is no longer needed -- every shot now arrives
+--- as a server event the server has already validated, so the server can
+--- simply count them.
+---
+--- Called on EVERY validated shot, hit or miss. A miss still costs a round,
+--- which is the entire difference between counting shots and counting hits.
+--- @param src integer
+--- @param weapon integer  weapon hash from the event
+function BR.Damage.spendRound(src, weapon)
+    local inv = BR.Inv and BR.Inv.of(src)
+    if not inv then return end
+
+    local slot = inv.slots[inv.active]
+    if not slot or slot.kind ~= BR.ItemKind.WEAPON then return end
+
+    local w = BR.Config.WeaponById[slot.item]
+    if not w then return end
+    -- Only the weapon actually being fired. A shot from something else means
+    -- the slot and the ped disagree, and guessing which is right is how the
+    -- ammo model went wrong the first time.
+    if BR.NormHash(w.hash) ~= BR.NormHash(weapon) then return end
+    -- Melee has no magazine to spend.
+    if w.melee or not w.clip then return end
+
+    local clip = slot.clip or 0
+    if clip <= 0 then
+        -- An empty magazine that is still firing. The validator already
+        -- refuses this (NO_AMMO), so reaching here means enforcement is off --
+        -- worth counting rather than silently allowing.
+        BR.Damage.dryShots = (BR.Damage.dryShots or 0) + 1
+        return
+    end
+
+    slot.clip = clip - 1
+
+    -- RELOAD IS THE SERVER'S TOO, now that it can see the magazine empty.
+    -- Without this the gun would simply stop at zero and never refill, because
+    -- the client report that used to carry reloads is gone.
+    if slot.clip <= 0 and w.ammo then
+        local pool = inv.ammo[w.ammo] or 0
+        if pool > 0 then
+            local moved = math.min(w.clip, pool)
+            inv.ammo[w.ammo] = pool - moved
+            slot.clip = moved
+        end
+    end
+
+    BR.Inv.push(src)
+end
+
 --- @param shooter integer
 --- @param victim integer
 --- @param amount number   display units, already multiplied by body part
@@ -213,6 +268,18 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
 
     local shooter = tonumber(sender)
     if not shooter then return end
+
+    -- ONE ROUND, ONCE PER EVENT, AND BEFORE ANY OF THE HIT LOGIC.
+    --
+    -- Deliberately not inside the per-victim loop below: a shotgun pellet
+    -- spread or a round that clips two players raises one event listing
+    -- several hits, and charging a magazine per victim would empty a gun in
+    -- three shots. It is also outside the "did we hit a player" test, because
+    -- a MISS costs a round too -- that is the whole difference between
+    -- counting shots and counting hits.
+    if cfg.serverAmmo then
+        BR.Damage.spendRound(shooter, data.weaponType)
+    end
 
     -- hitGlobalIds is the documented-by-usage field; hitGlobalId is the
     -- singular form some builds send. Read both rather than betting on one.

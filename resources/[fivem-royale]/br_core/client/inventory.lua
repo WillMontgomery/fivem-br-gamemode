@@ -781,6 +781,16 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
         pushUi()
     end
 
+    -- THE DISPLAY STILL FOLLOWS THE GUN, but the REPORT may be retired.
+    --
+    -- With M6's server ammo on, the server counts rounds off the shot events
+    -- it already validates, so it has a better answer than this one and does
+    -- not want ours -- two authorities for one number means the reload the
+    -- server just paid for is overwritten by a report that has not seen it.
+    -- The clamp above still runs, because keeping the ped in agreement with
+    -- the server's number is this file's job either way.
+    if (BR.Config.Combat or {}).serverAmmo then return end
+
     local now = GetGameTimer()
     if now - lastReport.at < (L.ammoReportMs or 150) then return end
     lastReport.at = now

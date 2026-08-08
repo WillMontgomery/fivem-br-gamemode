@@ -123,6 +123,37 @@ local function describeCause(raw)
     return causeByHash[raw & 0xFFFFFFFF] or 'unknown'
 end
 
+--- Who killed this player, according to the SERVER's own record of who has
+--- been shooting them.
+---
+--- THE CLIENT IS NEVER ASKED, and it no longer could answer usefully anyway.
+--- M6 cancels the engine's damage and applies its own, so GTA's idea of who
+--- shot whom is gone by the time the ped dies -- the killing blow is our
+--- SetEntityHealth, and the client honestly reports no killer. That is why
+--- every elimination read "0 eliminations" on the summary (user, 2026-08-08):
+--- the attribution was waiting for M6 and M6 had removed the thing it was
+--- waiting on.
+---
+--- `lastHitBy` is written by the validated damage path, so it is a fact the
+--- server established, not a claim it received. The window is what makes storm
+--- and fall damage credit the shooter: finish someone who was already bleeding
+--- from your rifle and it is still your kill.
+--- @param entry table  the victim's roster entry
+--- @return integer|nil killer src
+function BR.Combat.attributedKiller(entry)
+    if not entry or not entry.lastHitBy then return nil end
+
+    local window = BR.Config.Match.assistWindowMs or 10000
+    if GetGameTimer() - (entry.lastHitAt or 0) > window then return nil end
+
+    -- Never credit somebody for their own death, and never credit a player who
+    -- has since left.
+    if entry.lastHitBy == entry.src then return nil end
+    if not BR.Roster.get(entry.lastHitBy) then return nil end
+
+    return entry.lastHitBy
+end
+
 --- Client-reported death. A hint, not an instruction.
 RegisterNetEvent(BR.Net.PLAYER_DIED)
 AddEventHandler(BR.Net.PLAYER_DIED, function(data)
@@ -147,10 +178,7 @@ AddEventHandler(BR.Net.PLAYER_DIED, function(data)
         cause = 'storm'
     end
 
-    -- Resolving the killer from a network id is left to M6, where it can be
-    -- validated properly against weapon, distance and fire rate. Crediting a
-    -- kill on an unvalidated client claim would be trivially forgeable.
-    BR.Combat.eliminate(src, cause, nil)
+    BR.Combat.eliminate(src, cause, BR.Combat.attributedKiller(entry))
 end)
 
 --- Independent confirmation from server-side health.
@@ -183,7 +211,10 @@ BR.Sched.every(1000, 'combat.deathcheck', function()
             end
             print(('[br_core] server observed %s (%d) dead (hp %d) -- eliminating')
                 :format(entry.name, src, entry.engineHp))
-            BR.Combat.eliminate(src, cause, nil)
+            -- Attributed the same way as a client-reported death: the server's
+            -- own record of who has been shooting them. A player who bleeds
+            -- out from a rifle wound still credits the rifle.
+            BR.Combat.eliminate(src, cause, BR.Combat.attributedKiller(entry))
         end
     end)
 end)

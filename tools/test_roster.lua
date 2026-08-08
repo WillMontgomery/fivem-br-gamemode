@@ -101,6 +101,7 @@ for _, f in ipairs({
     'br_core/server/inventory.lua',
     'br_core/server/loot.lua',
     'br_core/server/markers.lua',
+    'br_core/server/damage.lua',
 }) do
     local chunk, err = loadfile(ROOT .. f)
     if not chunk then
@@ -3674,6 +3675,94 @@ do
     ok(refused, 'and says why')
 end
 
+describe('inv.serverammo')
+do
+    -- M6: THE SERVER COUNTS THE ROUNDS. Every shot is a validated server
+    -- event, so the magazine is spent from events the server authorised rather
+    -- than from a number the client reported about itself. This retires the M5
+    -- placeholder entirely -- see the block after this one, which now only
+    -- covers the fallback path when server ammo is switched off.
+    lootMatch()
+    BR.Inv.reset(1)
+    local rifle = BR.Config.WeaponById['carbinerifle']
+    BR.Inv.give(1, { item = 'carbinerifle', kind = BR.ItemKind.WEAPON,
+                     rarity = 3, count = 1, clip = rifle.clip })
+    local inv = BR.Inv.of(1)
+    inv.ammo[BR.AmmoType.MEDIUM] = 60
+    inv.active = 1
+
+    BR.Damage.spendRound(1, rifle.hash)
+    ok(inv.slots[1].clip == rifle.clip - 1, 'a shot costs one round',
+        tostring(inv.slots[1].clip))
+    ok(inv.ammo[BR.AmmoType.MEDIUM] == 60, 'and does not touch the reserve')
+
+    -- THE SIGNED HASH AGAIN. weaponDamageEvent reports it either way, and
+    -- carbinerifle is one of the thirty with the top bit set -- unnormalised,
+    -- this would silently never match and the gun would never run dry.
+    BR.Damage.spendRound(1, rifle.hash - 0x100000000)
+    ok(inv.slots[1].clip == rifle.clip - 2,
+        'and it counts the same when the hash arrives signed',
+        tostring(inv.slots[1].clip))
+
+    -- A shot from a weapon that is not the one in the active slot means the
+    -- slot and the ped disagree; guessing which is right is how the ammo model
+    -- went wrong the first time, so it spends nothing.
+    local before = inv.slots[1].clip
+    BR.Damage.spendRound(1, BR.Config.WeaponById['pistol'].hash)
+    ok(inv.slots[1].clip == before,
+        'a shot from another weapon spends nothing')
+
+    -- EMPTYING THE MAGAZINE RELOADS IT, because the client report that used to
+    -- carry reloads is gone. Without this the gun stops at zero forever.
+    inv.slots[1].clip = 1
+    inv.ammo[BR.AmmoType.MEDIUM] = 60
+    BR.Damage.spendRound(1, rifle.hash)
+    ok(inv.slots[1].clip == rifle.clip,
+        'emptying the magazine refills it from the reserve',
+        tostring(inv.slots[1].clip))
+    ok(inv.ammo[BR.AmmoType.MEDIUM] == 60 - rifle.clip,
+        'and the reserve pays for exactly that',
+        tostring(inv.ammo[BR.AmmoType.MEDIUM]))
+
+    -- An empty reserve leaves the magazine empty rather than conjuring one.
+    inv.slots[1].clip = 1
+    inv.ammo[BR.AmmoType.MEDIUM] = 0
+    BR.Damage.spendRound(1, rifle.hash)
+    ok(inv.slots[1].clip == 0, 'a dry reserve leaves the magazine empty',
+        tostring(inv.slots[1].clip))
+
+    -- Melee has no magazine to spend.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'machete', kind = BR.ItemKind.WEAPON,
+                     rarity = 3, count = 1 })
+    BR.Inv.of(1).active = 1
+    local meleeClipBefore = BR.Inv.of(1).slots[1].clip
+    BR.Damage.spendRound(1, BR.Config.WeaponById['machete'].hash)
+    ok(BR.Inv.of(1).slots[1].clip == meleeClipBefore,
+        'and melee has no magazine to spend',
+        ('%s -> %s'):format(tostring(meleeClipBefore),
+                            tostring(BR.Inv.of(1).slots[1].clip)))
+
+    -- THE CLIENT REPORT IS REFUSED while this is on. Two authorities for one
+    -- number means the reload the server just paid for is overwritten by a
+    -- report that has not seen it yet.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'carbinerifle', kind = BR.ItemKind.WEAPON,
+                     rarity = 3, count = 1, clip = rifle.clip })
+    BR.Inv.of(1).ammo[BR.AmmoType.MEDIUM] = 60
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 5, clip = 5 })
+    ok(BR.Inv.of(1).slots[1].clip == rifle.clip,
+        'and a client ammo report is ignored outright',
+        tostring(BR.Inv.of(1).slots[1].clip))
+end
+
+-- THE FALLBACK PATH, still live when `/brdamage off` turns the takeover back
+-- into an audit. If the server is not applying damage it is not seeing shots
+-- either, and a magazine nothing decrements is better than one nothing
+-- refills -- so the M5 model stays behind a flag rather than being deleted.
+local savedServerAmmo = BR.Config.Combat.serverAmmo
+BR.Config.Combat.serverAmmo = false
+
 describe('inv.ammo')
 do
     -- THE TOTAL IS AUTHORITATIVE AND DECREASE-ONLY. The clip is only the split.
@@ -3766,6 +3855,7 @@ do
     ok(#eventsOf(BR.Net.INV_SET) > 0, 'and the result is pushed back')
 end
 
+-- Fallback coverage ends here; the takeover is the default again.BR.Config.Combat.serverAmmo = savedServerAmmo
 describe('inv.warmup')
 do
     -- A WARMUP INVENTORY IS A LIVE INVENTORY.
@@ -3802,6 +3892,64 @@ do
     ok(BR.Inv.of(1).active == was, 'but a rider on the bus still cannot',
         tostring(BR.Inv.of(1).active))
     BR.Roster.setState(1, BR.PlayerState.ALIVE)
+end
+
+describe('combat.attribution')
+do
+    -- WHO GETS THE KILL, and why it cannot come from the client any more.
+    --
+    -- M6 cancels the engine's damage and applies its own, so GTA's idea of who
+    -- shot whom is gone by the time the ped dies -- the killing blow is our
+    -- own health write, and an honest client reports no killer. Every
+    -- elimination therefore read "0 eliminations" on the summary until the
+    -- server started answering this itself (user, 2026-08-08).
+    lootMatch()
+    local victim = BR.Roster.get(2)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+
+    -- Nothing recorded: nobody is credited. A fall in an empty field is
+    -- nobody's kill.
+    victim.lastHitBy, victim.lastHitAt = nil, nil
+    ok(BR.Combat.attributedKiller(victim) == nil,
+        'a death with no recorded damage credits nobody')
+
+    -- The validated damage path recorded a hit: that is the killer.
+    victim.lastHitBy, victim.lastHitAt = 1, fakeTime
+    ok(BR.Combat.attributedKiller(victim) == 1,
+        'a recent validated hit credits the shooter')
+
+    -- THE ASSIST WINDOW IS THE POINT. Finish someone who was already bleeding
+    -- from your rifle -- storm, fall, anything -- and it is still your kill.
+    victim.lastHitAt = fakeTime - (BR.Config.Match.assistWindowMs - 1000)
+    ok(BR.Combat.attributedKiller(victim) == 1,
+        'and still credits them inside the assist window')
+
+    victim.lastHitAt = fakeTime - (BR.Config.Match.assistWindowMs + 1000)
+    ok(BR.Combat.attributedKiller(victim) == nil,
+        'but not once the window has passed')
+
+    -- Never yourself, and never somebody who has left.
+    victim.lastHitBy, victim.lastHitAt = 2, fakeTime
+    ok(BR.Combat.attributedKiller(victim) == nil,
+        'nobody is credited for their own death')
+
+    victim.lastHitBy, victim.lastHitAt = 999, fakeTime
+    ok(BR.Combat.attributedKiller(victim) == nil,
+        'nor is a player who has since disconnected')
+
+    -- END TO END: the kill lands on the roster and on the wire.
+    victim.lastHitBy, victim.lastHitAt = 1, fakeTime
+    BR.Roster.get(1).kills = 0
+    sent = {}
+    fire(BR.Net.PLAYER_DIED, 2, { cause = 'unknown' })
+    ok(BR.Roster.get(1).kills == 1, 'an attributed death increments the killer',
+        tostring(BR.Roster.get(1).kills))
+
+    local feed = eventsOf(BR.Net.KILL_FEED)
+    local last = feed[#feed] and feed[#feed].args[1]
+    ok(last and last.killerSrc == 1,
+        'and the kill feed names them rather than showing an anonymous death',
+        tostring(last and last.killerSrc))
 end
 
 describe('loot.deathbox')

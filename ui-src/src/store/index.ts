@@ -230,13 +230,23 @@ export const useUi = create<UiState>((set, get) => {
   setPauseHiding: (pauseHiding) => set({ pauseHiding }),
   setLeaving: (leaving) => set({ leaving }),
   setLobby:    (lobby) => set({ lobby }),
-  // MERGED, NOT REPLACED. The screen envelope is sent from two places now:
-  // the 1Hz metrics publish carries the full rectangle, and the scope watcher
-  // sends `{ scoped }` alone the instant it changes. A replacing setter would
-  // let that one-field message wipe the minimap rectangle and drop every
-  // bottom-anchored panel to the corner for a second.
+  // THE SCOPE FLAG NEVER TOUCHES THE METRICS.
+  //
+  // Two senders share this envelope: the 1Hz publish carries the full minimap
+  // rectangle, and the scope watcher sends `{ scoped }` alone the instant it
+  // changes. Merging that one-field message into `screen` was enough to break
+  // the layout -- if it arrived while `screen` was still null it created an
+  // object with a scoped flag and NO rectangle, so every panel anchored to
+  // --map-* fell back to the document origin and the inventory bar rendered in
+  // the top-left before snapping down (user, 2026-08-08).
+  //
+  // So `scoped` is lifted out and stored on its own, and `screen` is only
+  // touched by a payload that actually carries metrics. `width` is the tell:
+  // the metrics publish always sends it and the scope watcher never does.
   setScreen:   (screen) => set((s) => ({
-    screen: { ...(s.screen ?? {}), ...screen } as typeof s.screen,
+    screen: screen.width !== undefined
+      ? ({ ...(s.screen ?? {}), ...screen } as typeof s.screen)
+      : s.screen,
     worldReady: screen.worldReady !== undefined ? screen.worldReady : s.worldReady,
     scoped: screen.scoped !== undefined ? screen.scoped : s.scoped,
   })),

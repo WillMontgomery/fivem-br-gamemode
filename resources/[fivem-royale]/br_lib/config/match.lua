@@ -264,6 +264,17 @@ BR.Config.Combat = {
     applyOwnDamage = true,
     logHits       = false,
 
+    -- THE SERVER COUNTS THE ROUNDS NOW. Every shot arrives as a validated
+    -- server event, so it can simply be counted -- which retires the M5
+    -- placeholder where the client reported its own magazine and the server
+    -- believed any decrease. With this on, INV_AMMO is refused outright and
+    -- the reload is the server's too.
+    --
+    -- Backed out by `/brdamage off` along with the rest of the takeover: if
+    -- the server stops applying damage it also stops seeing shots, and a gun
+    -- whose magazine nothing decrements is better than one nothing refills.
+    serverAmmo    = true,
+
     -- Slack, and it is load-bearing. Roster positions are sampled at 2Hz, so
     -- at the instant of a shot both players can be half a second stale --
     -- about 4.5m each at a sprint. Refusing an honest shot is a broken game;
