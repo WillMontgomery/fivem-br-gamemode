@@ -142,6 +142,12 @@ local function contextFor(shooter, victim, weapon)
                    or b.state == BR.PlayerState.DBNO,
         sameSquad   = a.squadId ~= nil and a.squadId == b.squadId,
 
+        -- EITHER of them being on the practice pad makes it a warmup hit.
+        -- Requiring both would let somebody standing off the pad hurt a player
+        -- on it, which is the one thing the pad promises not to happen.
+        warmup      = a.state == BR.PlayerState.WARMUP
+                   or b.state == BR.PlayerState.WARMUP,
+
         -- AN EMPTY ACTIVE SLOT IS FISTS, not "unknown". Slot 0 holds nothing
         -- by design, so a player throwing a punch has no stack here at all --
         -- and reporting nil made the validator refuse every punch in the game

@@ -25,6 +25,7 @@ Everything uses stock GTA V assets — no custom models, maps, or streamed files
 | M6 | Combat, damage validation, kill attribution | **WIP** |
 | M7 | DBNO, revives, spectating, match summary, stats | **PLANNED** |
 | M8 | Vehicles, aerial supply drops, fuel, rescue | **SCOPING** |
+| M9 | Moderation web UI, Discord webhook, in-game reports, admin ACEs, logging | **SCOPING** |
 
 **Working now:** the loop, end to end, minus validated gunplay. Players queue
 from a lobby above Cayo Perico, form persistent parties, and warm up on the

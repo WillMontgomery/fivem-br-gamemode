@@ -83,6 +83,30 @@ local function maxStackOf(stack)
     return 1   -- weapons never stack: two rifles are two slots
 end
 
+--- How many of one item the WHOLE inventory may hold, across every slot.
+---
+--- Distinct from maxStackOf, which is per slot. Without this a player could
+--- fill three slots with three grenades each and carry nine -- the per-slot
+--- cap says nothing about how many slots you may open (user call,
+--- 2026-08-08: throwables are three per item, full stop).
+---
+--- Throwables reuse their own maxStack as the carry cap, so the two numbers
+--- cannot drift apart: one slot of three, and the fourth grenade stays on the
+--- floor.
+--- @param stack table
+--- @return integer|nil  nil means uncapped
+local function carryMaxOf(stack)
+    if stack.kind == BR.ItemKind.CONSUMABLE then
+        local c = BR.Config.ConsumableById[stack.item]
+        return c and c.carryMax or nil
+    end
+    if stack.kind == BR.ItemKind.THROWABLE then
+        local t = BR.Config.WeaponById[stack.item]
+        return t and t.maxStack or nil
+    end
+    return nil
+end
+
 --- The wire view of a player's inventory.
 --- @param src integer
 --- @return table|nil
@@ -207,13 +231,14 @@ function BR.Inv.give(src, stack)
         -- (user call, 2026-08-06: "no higher quantities of either item should
         -- be allowed").
         local c = BR.Config.ConsumableById[stack.item]
-        if c and c.carryMax then
+        local carry = carryMaxOf(stack)
+        if carry then
             local held = 0
             for i = 1, SLOTS do
                 local s = inv.slots[i]
                 if s and s.item == stack.item then held = held + (s.count or 0) end
             end
-            local room = math.max(0, c.carryMax - held)
+            local room = math.max(0, carry - held)
             if room <= 0 then
                 return false, nil, 'carrymax'
             end

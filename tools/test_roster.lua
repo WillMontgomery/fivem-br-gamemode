@@ -3848,6 +3848,49 @@ do
         'throwing one grenade leaves two, even with server ammo on',
         tostring(inv.slots[1] and inv.slots[1].count))
 
+    -- THREE PER ITEM, ACROSS THE WHOLE INVENTORY (user call, 2026-08-08).
+    -- The per-slot cap says nothing about how many slots you may open, so
+    -- without a carry cap a player could fill three slots and walk around
+    -- with nine grenades.
+    BR.Inv.reset(1)
+    for _ = 1, 4 do
+        BR.Inv.give(1, { item = 'grenade', kind = BR.ItemKind.THROWABLE,
+                         rarity = 3, count = 3 })
+    end
+    local held = 0
+    for i = 0, 5 do
+        local s = BR.Inv.of(1).slots[i]
+        if s and s.item == 'grenade' then held = held + (s.count or 0) end
+    end
+    ok(held == 3, 'a player can carry three of a throwable and no more',
+        tostring(held))
+
+    -- ...and the fourth is REFUSED rather than silently eaten, so the entry
+    -- stays on the floor for somebody who has room.
+    local okGive, _, reason = BR.Inv.give(1, {
+        item = 'grenade', kind = BR.ItemKind.THROWABLE, rarity = 3, count = 1 })
+    ok(not okGive and reason == 'carrymax',
+        'and the one that does not fit stays in the world', tostring(reason))
+
+    -- Different throwables are capped independently: three grenades AND
+    -- three smokes is fine, it is nine of one that is not.
+    BR.Inv.give(1, { item = 'smoke', kind = BR.ItemKind.THROWABLE,
+                     rarity = 1, count = 3 })
+    local smokes = 0
+    for i = 0, 5 do
+        local s = BR.Inv.of(1).slots[i]
+        if s and s.item == 'smoke' then smokes = smokes + (s.count or 0) end
+    end
+    ok(smokes == 3, 'and each kind is capped on its own', tostring(smokes))
+
+    -- Back to the stack the rest of this block works against.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'grenade', kind = BR.ItemKind.THROWABLE,
+                     rarity = 3, count = 3 })
+    inv = BR.Inv.of(1)
+    inv.active = 1
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 2, clip = 2 })
+
     -- A RISE IS STILL REFUSED. Decrease-only is the whole safety argument.
     fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 9, clip = 9 })
     ok(inv.slots[1].count == 2, 'and a report that conjures more is ignored',

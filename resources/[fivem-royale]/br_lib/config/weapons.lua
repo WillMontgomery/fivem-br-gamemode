@@ -99,7 +99,11 @@ BR.Config.Weapons = {
 --- distance the server can compute without knowing where the grenade landed.
 BR.Config.Throwables = {
     { id = 'grenade',    name = 'WEAPON_GRENADE',      hash = 0x93E220BD, label = 'Grenade',       rarity = R.RARE,     maxStack = 3, explosive = true, damage = 90, blastRadius = 10.0, maxRange = 45.0 },
-    { id = 'molotov',    name = 'WEAPON_MOLOTOV',      hash = 0x24B17070, label = 'Molotov',       rarity = R.UNCOMMON, maxStack = 3, explosive = true, damage = 30, blastRadius =  6.0, maxRange = 40.0 },
+    -- Molotov at 42: the impact was raised 40% (user, 2026-08-08). The FIRE
+    -- afterwards is not ours at all -- standing in a burning pool is the
+    -- engine's own fire damage on a path we do not take over, and the user
+    -- judged it aggressive but realistic, so it is deliberately left alone.
+    { id = 'molotov',    name = 'WEAPON_MOLOTOV',      hash = 0x24B17070, label = 'Molotov',       rarity = R.UNCOMMON, maxStack = 3, explosive = true, damage = 42, blastRadius =  6.0, maxRange = 40.0 },
     { id = 'sticky',     name = 'WEAPON_STICKYBOMB',   hash = 0x2C3731D9, label = 'Sticky Bomb',   rarity = R.EPIC,     maxStack = 3, explosive = true, damage = 110, blastRadius = 10.0, maxRange = 40.0 },
     -- No damage field, deliberately: smoke is cover, not a weapon. It resolves
     -- as a known weapon (so it is never a refusal) and deals 0.
@@ -152,12 +156,14 @@ BR.Config.Melee = {
 --- loot -- they are the thing you have when you have nothing. They are
 --- registered into the lookup tables below by hand for exactly that reason.
 ---
---- Damage is deliberately poor: at 15 a swing on a 400ms cycle, an unarmoured
---- player takes about seven punches. Fists are a threat to somebody who landed
---- badly, not an alternative to finding a gun.
+--- Damage is deliberately poor -- but it was poor to the point of tedium at
+--- 15, where an unarmoured player took seven punches and a fistfight outlasted
+--- everyone's patience (user, 2026-08-08). At 30 it is four, which is a fight
+--- rather than a war of attrition, and still comfortably worse than the
+--- weakest melee weapon in a crate.
 BR.Config.Fists = {
     id = 'fists', name = 'WEAPON_UNARMED', hash = 0xA2719263, label = 'Fists',
-    rarity = R.COMMON, damage = 15, melee = true,
+    rarity = R.COMMON, damage = 30, melee = true,
     maxRange = 3.0, minInterval = 400,
 }
 

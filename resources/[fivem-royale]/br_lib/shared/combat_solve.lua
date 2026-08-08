@@ -21,6 +21,8 @@ BR.ShotRefusal = {
     NO_WEAPON   = 'weapon is not one this gamemode issues',
     NOT_HELD    = 'shooter does not hold that weapon',
     NOT_THROWN  = 'shooter did not throw that explosive',
+    WARMUP      = 'warmup deals no damage',
+    SELF_BLAST  = 'caught in their own blast',
     NO_AMMO     = 'shooter has no rounds for it',
     TOO_FAR     = 'beyond the weapon\'s range',
     TOO_FAST    = 'faster than the weapon can cycle',
@@ -47,6 +49,13 @@ BR.ShotRefusal = {
 ---           is a dozen in thirty seconds rather than one.
 ---
 --- Only the second kind counts toward the threshold.
+---
+--- SELF IS IN THE SECOND LIST, deliberately. A player cannot shoot their own
+--- ped in this game -- there is no honest input that produces it -- so a
+--- bullet naming the shooter as its own victim is somebody's tooling, not
+--- somebody's mistake (user call, 2026-08-08). The one honest way to hurt
+--- yourself is your OWN GRENADE, and that arrives as SELF_BLAST instead, which
+--- is refused for damage and counted as nothing.
 BR.ShotSuspicious = {
     [BR.ShotRefusal.NO_WEAPON]  = true,
     [BR.ShotRefusal.NOT_HELD]   = true,
@@ -54,6 +63,7 @@ BR.ShotSuspicious = {
     [BR.ShotRefusal.TOO_FAR]    = true,
     [BR.ShotRefusal.TOO_FAST]   = true,
     [BR.ShotRefusal.NOT_THROWN] = true,
+    [BR.ShotRefusal.SELF]       = true,
 }
 
 --- Is this shot physically possible, given what the SERVER believes?
@@ -78,8 +88,33 @@ BR.ShotSuspicious = {
 function BR.ValidateShot(shot, ctx, cfg)
     cfg = cfg or {}
 
-    if ctx.sameSrc then return false, BR.ShotRefusal.SELF end
+    -- SHOOTING YOURSELF IS NOT A THING YOU CAN DO, except with your own
+    -- grenade. Splitting the two matters because one of them is a cheat
+    -- signal and the other is Tuesday: there is no input in this game that
+    -- makes your own bullet name your own ped, but standing too close to a
+    -- blast you threw is ordinary play. Resolved before anything else so the
+    -- weapon lookup below can decide which it was.
+    if ctx.sameSrc then
+        local sw = BR.Config.WeaponByHash[BR.NormHash(shot.weapon or 0)]
+        if sw and sw.explosive then
+            return false, BR.ShotRefusal.SELF_BLAST
+        end
+        return false, BR.ShotRefusal.SELF
+    end
     if not ctx.sameMatch then return false, BR.ShotRefusal.OTHER_MATCH end
+
+    -- WARMUP IS A PRACTICE PAD, NOT A SAFE ZONE. Nothing stops a player
+    -- swinging at somebody on it -- the punch plays, the impact reads -- and
+    -- nothing comes off anybody's health (user call, 2026-08-08). Refusing the
+    -- damage rather than blocking the input is what makes that true for
+    -- everyone: the engine's own hit is cancelled, so a client that thinks it
+    -- landed a killing blow is simply wrong, and the ped is resynced.
+    --
+    -- Checked BEFORE liveness, because WARMUP is not ALIVE and would otherwise
+    -- come back as NOT_LIVE -- which reads in a log as a desync rather than as
+    -- a rule.
+    if ctx.warmup then return false, BR.ShotRefusal.WARMUP end
+
     if not ctx.shooterLive or not ctx.victimLive then
         return false, BR.ShotRefusal.NOT_LIVE
     end

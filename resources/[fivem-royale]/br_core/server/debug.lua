@@ -114,6 +114,8 @@ RegisterCommand('brhelp', function()
     print('  brwhy <id>           why is this player in the state they are in')
     print('  brloot [matchId]     world loot: counts by kind and rarity, subscriptions')
     print('  brinv <id>           one player\'s inventory, slot by slot')
+    print('  brweapons [filter]   list every grantable item id')
+    print('  brarm <id|all> <item> [rarity]  weapon + FULL reserve (dev mode)')
     print('  brgive <id> <item> [n]  put an item straight into a player\'s hands')
     print('  brcrate <id> [item]  drop a crate (or one item) at a player\'s feet')
     print('  brlootseed <n|off>   pin the loot layout so it repeats between matches')
@@ -439,7 +441,43 @@ RegisterCommand('brinv', function(_, args)
     end
 end, RESTRICTED)
 
+--- Refuse a command unless the server was started in dev mode.
+---
+--- These hand out gear the loot table is deliberately stingy with, which makes
+--- them a testing tool and nothing else. On a live server they would be a way
+--- for anyone holding the console to arm a friend, so they are gated on the
+--- same convar that already relaxes the minimum player count -- one switch for
+--- "this box is not a real match", rather than a second thing to remember.
+--- @param what string
+--- @return boolean
+local function devOnly(what)
+    if BR.Server.devMode then return true end
+    print(('  %s is dev-mode only. Start the server with br_devMode true '
+        .. '(or sv_devMode true) to use it.'):format(what))
+    return false
+end
+
+--- Resolve a target argument to a list of server ids: a number, or "all".
+--- @param arg string|nil
+--- @return table|nil
+local function targets(arg)
+    if arg == 'all' or arg == '*' then
+        local out = {}
+        BR.Roster.each(function(e) return e.state ~= BR.PlayerState.LEFT end,
+            function(src) out[#out + 1] = src end)
+        return out
+    end
+    local n = tonumber(arg)
+    if not n then return nil end
+    if not BR.Roster.get(n) then
+        print(('  no roster entry for %d'):format(n))
+        return {}
+    end
+    return { n }
+end
+
 RegisterCommand('brgive', function(_, args)
+    if not devOnly('brgive') then return end
     local src  = tonumber(args[1])
     local item = args[2]
     local n    = tonumber(args[3]) or 1
@@ -447,6 +485,7 @@ RegisterCommand('brgive', function(_, args)
         print('  usage: brgive <serverId> <itemId> [count]')
         print('    itemId is a weapon/throwable id (carbinerifle), a consumable')
         print('    id (medkit), or an ammo pool (light|smg|medium|shells|heavy)')
+        print('    brweapons lists every id; brarm is the one for testing guns')
         return
     end
     if not BR.Roster.get(src) then
@@ -475,6 +514,116 @@ RegisterCommand('brgive', function(_, args)
     print(('  %s %s x%d -> %s%s'):format(ok and 'gave' or 'REFUSED', item, n, src,
         ok and (displaced and (' (displaced ' .. displaced.item .. ')') or '')
            or (' -- ' .. tostring(reason))))
+end, RESTRICTED)
+
+--- ARM A PLAYER FOR A TEST, in one command.
+---
+---   brarm <id|all> <itemId> [rarity]     a weapon, full reserve
+---   brarm <id|all> <itemId> legendary
+---
+--- Exists because the loot table is intentionally stingy and the only other
+--- way to get a specific gun in your hands was to find it (user, 2026-08-08:
+--- "it's frustrating to test things like the weapons"). brgive puts one item
+--- in a slot; this puts a weapon in your hands WITH the reserve topped to the
+--- pool cap, which is what "let me actually shoot this" needs.
+---
+--- Rarity matters and is why it is an argument: every damage number in the
+--- game runs through BR.RarityInfo[rarity].damageMult, so testing a carbine
+--- means nothing without saying which carbine.
+RegisterCommand('brarm', function(_, args)
+    if not devOnly('brarm') then return end
+
+    local who  = targets(args[1])
+    local item = args[2]
+    if not who or not item then
+        print('  usage: brarm <serverId|all> <itemId> [common|uncommon|rare|epic|legendary]')
+        print('    grants the weapon AND fills its ammo pool to the cap.')
+        print('    brweapons lists every id.')
+        return
+    end
+    if #who == 0 then return end
+
+    local w = BR.Config.WeaponById[item]
+    if not w then
+        print(('  %q is not a weapon, throwable or melee id -- try brweapons')
+            :format(item))
+        return
+    end
+
+    local rarity = w.rarity
+    if args[3] then
+        local byName = {
+            common = BR.Rarity.COMMON, uncommon = BR.Rarity.UNCOMMON,
+            rare = BR.Rarity.RARE, epic = BR.Rarity.EPIC,
+            legendary = BR.Rarity.LEGENDARY,
+        }
+        rarity = byName[tostring(args[3]):lower()] or tonumber(args[3]) or rarity
+    end
+
+    local kind = BR.ItemKind.WEAPON
+    if w.maxStack then kind = BR.ItemKind.THROWABLE end
+
+    for _, src in ipairs(who) do
+        local stack = {
+            item = item, kind = kind, rarity = rarity,
+            count = (kind == BR.ItemKind.THROWABLE) and (w.maxStack or 1) or 1,
+            clip = w.clip,
+        }
+        local ok, _, reason = BR.Inv.give(src, stack)
+        if ok and w.ammo then
+            -- FULL RESERVE, not the one clip a found weapon comes with. The
+            -- point of this command is to stop the test being about ammo.
+            local inv = BR.Inv.of(src)
+            if inv then
+                inv.ammo[w.ammo] = BR.Config.AmmoCaps[w.ammo] or 200
+                BR.Inv.push(src)
+            end
+        end
+        local e = BR.Roster.get(src)
+        print(('  %s %s (%s) -> %s (%d)%s'):format(
+            ok and 'armed' or 'REFUSED', item,
+            (BR.RarityInfo[rarity] or {}).label or tostring(rarity),
+            e and e.name or '?', src,
+            ok and '' or (' -- ' .. tostring(reason))))
+    end
+end, RESTRICTED)
+
+--- Every id brgive/brarm will accept, so testing does not mean reading config.
+---   brweapons            everything
+---   brweapons sniper     only ids containing "sniper"
+RegisterCommand('brweapons', function(_, args)
+    local filter = args[1] and tostring(args[1]):lower() or nil
+    local function show(list, what)
+        local rows = {}
+        for _, w in ipairs(list or {}) do
+            if not filter or w.id:lower():find(filter, 1, true) then
+                rows[#rows + 1] = ('    %-16s %-24s %s'):format(
+                    w.id, w.label or '',
+                    w.damage and ('dmg ' .. w.damage) or '')
+            end
+        end
+        if #rows == 0 then return end
+        print(('  %s'):format(what))
+        for _, r in ipairs(rows) do print(r) end
+    end
+    header('grantable ids' .. (filter and (' matching "' .. filter .. '"') or ''))
+    show(BR.Config.Weapons, 'firearms')
+    show(BR.Config.Throwables, 'throwables')
+    show(BR.Config.Melee, 'melee')
+    show({ BR.Config.Fists }, 'always carried (not loot)')
+    local cons = {}
+    for _, c in ipairs(BR.Config.Consumables or {}) do
+        if not filter or c.id:lower():find(filter, 1, true) then
+            cons[#cons + 1] = c.id
+        end
+    end
+    if #cons > 0 then
+        print('  consumables')
+        print('    ' .. table.concat(cons, ', '))
+    end
+    line('-')
+    print('  brarm <id|all> <itemId> [rarity]   weapon + full reserve (dev mode)')
+    print('  brgive <id> <itemId> [n]           one item into a slot (dev mode)')
 end, RESTRICTED)
 
 RegisterCommand('brwhy', function(_, args)

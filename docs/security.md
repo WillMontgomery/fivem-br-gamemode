@@ -73,19 +73,52 @@ every refusal printed during honest play is a false positive; that log came
 back empty, which is what unlocked enforcement.
 
 **Not every refusal is a cheat signal, and conflating them makes the threshold
-useless.** Refusals split in two:
+useless.** Every refused shot resolves to exactly one reason, and each reason
+is classed once:
 
-- **Rules** — friendly fire, shooting yourself, throwing a punch during warmup,
-  a shot that raced a match boundary. An honest client produces these
-  constantly, and since fists are a real weapon *every* player has the means to
-  produce them at any time. They are declined and not counted.
-- **Means** — a weapon the server never issued, a magazine it never filled, a
-  range or a cadence the weapon does not have. There is no honest way to
-  produce these. A dozen inside thirty seconds triggers the configured
-  response, which defaults to logging rather than kicking: a validator that has
-  never wrongly refused an honest player *today* is still a bet on tomorrow,
-  and banning your own players is a worse failure than tolerating a cheater who
-  is already unable to hurt anyone.
+| Refusal | What produced it | Counted? |
+|---|---|---|
+| `WARMUP` | a hit on or from the practice pad | no — warmup deals no damage by design |
+| `SAME_SQUAD` | friendly fire | no |
+| `SELF_BLAST` | caught in a grenade you threw yourself | no |
+| `NOT_LIVE` | one of the two is not alive in this match | no |
+| `OTHER_MATCH` | a shot that raced a match boundary | no |
+| `NO_WEAPON` | a weapon this gamemode does not issue at all | **yes** |
+| `NOT_HELD` | a weapon the server did not put in *your* hands | **yes** |
+| `NO_AMMO` | a magazine the server never filled | **yes** |
+| `TOO_FAR` | beyond the weapon's range, plus slack | **yes** |
+| `TOO_FAST` | faster than the weapon can cycle, plus slack | **yes** |
+| `NOT_THROWN` | an explosion from something you never threw | **yes** |
+| `SELF` | your own bullet naming your own ped | **yes** |
+
+The split is the difference between *rules* and *means*. An honest client
+produces the top group constantly — and since fists are a real weapon, every
+player has the means to at any moment, so counting them would trip an
+anticheat built for trainers on the first warmup scrap. There is no honest
+input that produces the bottom group.
+
+`SELF` is in the second list deliberately: you cannot shoot yourself in this
+game. The one honest way to hurt yourself is your own grenade, and that
+resolves to `SELF_BLAST` instead.
+
+**The exact trigger.** There is one escalating rule and these are its numbers:
+
+> **12** countable refusals from the same player inside a **30-second** rolling
+> window fires `refusalAction` **once**, and once only, for that window. The
+> window restarts empty on the next refusal after it lapses; there is no
+> permanent record and no second escalation tier.
+
+`refusalAction` is one of `log` (default — a console line naming the player,
+the count and the last reason), `notify` (that, plus an in-game warning to the
+player that their shots are not landing) or `kick`. Configured at
+`BR.Config.Combat.refusalAction`, with `refusalLimit` and `refusalWindowMs`
+next to it. Nothing else in the game escalates on repetition — no strike
+count survives a window, a match, or a session.
+
+The default is `log` on purpose. A validator that has never wrongly refused an
+honest player *today* is still a bet on tomorrow, and banning your own players
+is a worse failure than tolerating a cheater who is already unable to hurt
+anyone.
 
 **Three damage paths, one event.** Bullets, melee and explosions all arrive as
 `weaponDamageEvent` with the same `damageType` (3 — measured, not assumed), so

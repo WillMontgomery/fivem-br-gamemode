@@ -65,6 +65,38 @@ local lastPrompt = { id = nil, hold = nil }
 local shineId = nil
 local shineAt = 0
 
+--- The entry whose prop currently has SetEntityDrawOutline switched on.
+---
+--- TRACKED SEPARATELY FROM shineId, and that is the whole fix for crates that
+--- glowed orange forever (user, 2026-08-08: "unopened chests still glow after
+--- they've opened a couple"). Turning the outline OFF used to live inside the
+--- render loop's per-entry branch, which is guarded by `d2 <= glow2 and not
+--- isHusk(e) and e.gzOk`. Every one of those guards is a way to leave a lit
+--- crate lit:
+---
+---   * WALK AWAY fast enough and the entry falls outside glow2 on the very
+---     next pass, so the branch that would clear it never runs again;
+---   * OPEN IT and it becomes a husk, which the branch skips by design --
+---     so the crate you just emptied keeps shining;
+---   * open two and shineId goes nil for the rest of the match, which stops
+---     anything NEW lighting up but never revisits what already is.
+---
+--- The leak accumulates: every crate ever approached and left stays orange,
+--- which is exactly "they all glow and opening them does not stop it". One
+--- id, cleared unconditionally, cannot accumulate.
+local outlinedId = nil
+
+--- Switch the outline off wherever it currently is.
+--- @param entriesTbl table
+local function clearOutline(entriesTbl)
+    if not outlinedId then return end
+    local e = entriesTbl[outlinedId]
+    outlinedId = nil
+    if e and e.obj and DoesEntityExist(e.obj) then
+        SetEntityDrawOutline(e.obj, false)
+    end
+end
+
 -- Crates THIS player opened. The reveal sound is for the person who did the
 -- opening, not for everyone standing near it (user, 2026-08-05) -- and the
 -- authoritative "it opened" signal arrives for every subscriber alike, so the
@@ -249,9 +281,11 @@ local function forget(id)
 end
 
 local function forgetAll()
+    clearOutline(entries)
     for id in pairs(entries) do forget(id) end
     entries, queue, queued, byObject, reported = {}, {}, {}, {}, {}
     myCell, hold.id = nil, nil
+    shineId, outlinedId = nil, nil
     -- Inline rather than through setPrompt(): that lives below this, and a
     -- local referenced before its declaration silently resolves as a global.
     lastPrompt.id, lastPrompt.hold = nil, nil
@@ -818,6 +852,13 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
     local pulse = 0.55 + 0.20 * math.sin(GetGameTimer() / 900.0)
     local SHINE = L.shineColour or { 255, 150, 30 }
 
+    -- PUT OUT WHATEVER IS LIT AND SHOULD NOT BE, unconditionally and before
+    -- anything else. This runs whether or not the crate is still in range,
+    -- still a crate, or still anything at all -- which is precisely what the
+    -- old in-loop version could not do, and why crates stayed orange for the
+    -- rest of the match once you walked away from them or opened them.
+    if outlinedId and outlinedId ~= shineId then clearOutline(entries) end
+
     for id, e in pairs(entries) do
         local d2 = BR.Dist2(p.x, p.y, e.x, e.y)
         -- A husk is scenery. Glowing it would send players across open ground
@@ -863,22 +904,23 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
             -- intensity for interiors and storm gloom.
             if isContainer(e) then
                 local mine = (id == shineId)
-                if e.obj and DoesEntityExist(e.obj) then
-                    if mine then
-                        -- The COLOUR is re-sent every frame even when the
-                        -- outline is already on: alpha is what carries the
-                        -- distance fade, so it has to keep moving as the
-                        -- player walks in. Only the on/off flag is latched.
-                        if not e.outlined then
-                            e.outlined = true
-                            SetEntityDrawOutline(e.obj, true)
-                        end
-                        SetEntityDrawOutlineColor(SHINE[1], SHINE[2], SHINE[3],
-                            math.floor((L.shineAlpha or 60) * pulse * shineFade))
-                    elseif e.outlined then
-                        e.outlined = false
-                        SetEntityDrawOutline(e.obj, false)
+                -- Only the SWITCHING ON lives here now. Switching off is done
+                -- once per pass, above, against the id that is actually lit --
+                -- see clearOutline and the note on outlinedId for the three
+                -- ways this branch used to be skipped while a crate was still
+                -- glowing.
+                if mine and e.obj and DoesEntityExist(e.obj) then
+                    -- The COLOUR is re-sent every frame even when the outline
+                    -- is already on: alpha is what carries the distance fade,
+                    -- so it has to keep moving as the player walks in. Only
+                    -- the on/off flag is latched.
+                    if outlinedId ~= id then
+                        clearOutline(entries)
+                        outlinedId = id
+                        SetEntityDrawOutline(e.obj, true)
                     end
+                    SetEntityDrawOutlineColor(SHINE[1], SHINE[2], SHINE[3],
+                        math.floor((L.shineAlpha or 60) * pulse * shineFade))
                 end
                 if mine then
                     -- A hint at the crate in front of you, not a floodlight
@@ -1081,7 +1123,20 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.mercy', function()
     local now = GetGameTimer()
     if mercy.landedAt == 0 then mercy.landedAt = now end
 
+    -- "HAS THIS PLAYER FOUND ANYTHING" INCLUDES OPENING A CRATE.
+    --
+    -- This used to read BR.Inv.lastGainAt alone -- i.e. "is anything in your
+    -- inventory". But opening a chest does not put anything in your inventory:
+    -- it SCATTERS the contents on the ground for you to pick up. So a player
+    -- who walked up to a crate, held the key, watched it burst open and then
+    -- got into a fight still counted as empty-handed, and the courtesy blips
+    -- lit up the map for them anyway (user, 2026-08-08: "courtesy blips show
+    -- even after a client has opened a chest").
+    --
+    -- openedCount is the right signal and it is already maintained for the
+    -- glow: somebody who has opened a crate has demonstrably found the loot.
     local gained = (BR.Inv and BR.Inv.lastGainAt or 0) > 0
+                or (BR.Loot.openedCount or 0) > 0
 
     if not mercy.on then
         -- Only for someone who has actually found nothing. Picking something

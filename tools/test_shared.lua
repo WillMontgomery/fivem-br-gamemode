@@ -422,6 +422,26 @@ do
     ok(why2 == BR.ShotRefusal.NOT_HELD,
         'a conjured rifle over an empty slot is still refused', tostring(why2))
 
+    -- WARMUP IS A PRACTICE PAD, NOT A SAFE ZONE (user call, 2026-08-08).
+    -- Nothing stops the swing; nothing comes off anybody's health. And it must
+    -- read as WARMUP rather than NOT_LIVE, because the two mean different
+    -- things in a log: one is a rule, the other is a desync.
+    local _, why3 = BR.ValidateShot(
+        { weapon = CAPTURED_UNARMED, dist = 1.2, sinceLastMs = 600 },
+        ctx({ warmup = true }), cfg)
+    ok(why3 == BR.ShotRefusal.WARMUP, 'a warmup punch deals no damage',
+        tostring(why3))
+    ok(not BR.ShotSuspicious[BR.ShotRefusal.WARMUP],
+        'and never counts toward the anticheat threshold')
+
+    -- Either side being on the pad is enough -- otherwise somebody standing
+    -- off it could hurt a player on it, which is the one thing it promises.
+    local _, why4 = BR.ValidateShot(
+        { weapon = BR.Config.WeaponById['carbinerifle'].hash, dist = 20.0 },
+        ctx({ warmup = true, heldItem = 'carbinerifle', clip = 30 }), cfg)
+    ok(why4 == BR.ShotRefusal.WARMUP, 'and it covers guns too, not just fists',
+        tostring(why4))
+
     -- Fists are not loot and must never appear in anything the layout rolls
     -- against, or they would spawn in crates.
     for _, m in ipairs(BR.Config.Melee) do
@@ -517,6 +537,26 @@ do
                                    BR.Rarity.COMMON, 5.0, HEAD, cfg)
     ok(rmult > 1.0, 'while the same bone through a rifle is a headshot',
         tostring(rmult))
+
+    -- YOUR OWN BLAST IS THE ONE HONEST WAY TO HURT YOURSELF, and it is the
+    -- reason SELF had to be split. A bullet naming its own shooter as victim
+    -- is somebody's tooling -- there is no input that produces it -- so that
+    -- one counts. Standing too close to a grenade you threw is Tuesday.
+    local _, whySelf = BR.ValidateShot({ weapon = CAPTURED_GRENADE, dist = 1.0 },
+        ctx({ sameSrc = true }), cfg)
+    ok(whySelf == BR.ShotRefusal.SELF_BLAST,
+        'catching your own blast is its own outcome', tostring(whySelf))
+    ok(not BR.ShotSuspicious[BR.ShotRefusal.SELF_BLAST],
+        'and is not counted as cheating')
+
+    local rifleHash = BR.Config.WeaponById['carbinerifle'].hash
+    local _, whySelf2 = BR.ValidateShot({ weapon = rifleHash, dist = 0.0 },
+        ctx({ sameSrc = true, heldItem = 'carbinerifle', clip = 30 }), cfg)
+    ok(whySelf2 == BR.ShotRefusal.SELF,
+        'while shooting yourself with a rifle is not a thing you can do',
+        tostring(whySelf2))
+    ok(BR.ShotSuspicious[BR.ShotRefusal.SELF],
+        'and does fire the anticheat response')
 
     -- Smoke resolves as a weapon (so it is never a refusal) and deals nothing.
     local smoke = BR.Config.WeaponById['smoke']
