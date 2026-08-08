@@ -30,6 +30,10 @@ local cfg = BR.Config.Combat or {}
 -- Last shot time per shooter, for the rate-of-fire check. Keyed by src.
 local lastShot = {}
 
+-- Explosives in flight, per shooter: thrown[src][item] = timestamp of the last
+-- one spent. See BR.Damage.noteThrow for why a timestamp and not a count.
+local thrown = {}
+
 -- Recording state for /brdamagelog.
 local recording = 0
 
@@ -78,18 +82,57 @@ local function playerFromNetId(netId)
     return nil
 end
 
+--- Record that a player spent one of a throwable, so the explosion it causes
+--- can be recognised as theirs.
+---
+--- A TIMESTAMP RATHER THAN A COUNT, and the difference matters. A count would
+--- have to be decremented when the thing goes off, and the server cannot know
+--- that: a grenade thrown into the sea never produces a damage event, so its
+--- count would never come back and the player would accumulate phantom credit
+--- forever. A window expires on its own.
+---
+--- The window is generous on purpose (BR.Config.Combat.explosiveGraceMs). It
+--- is not the security boundary -- the inventory is. A player can only be here
+--- at all if the server issued them that explosive and watched them spend one;
+--- the window merely stops that credit lasting the whole match.
+--- @param src integer
+--- @param item string
+function BR.Damage.noteThrow(src, item)
+    if not item then return end
+    local t = thrown[src]
+    if not t then t = {}; thrown[src] = t end
+    t[item] = GetGameTimer()
+end
+
+--- Did this player throw one of these recently enough to own the blast?
+--- @param src integer
+--- @param item string
+--- @return boolean
+function BR.Damage.threwRecently(src, item)
+    local t = thrown[src]
+    local at = t and t[item]
+    if not at then return false end
+    return (GetGameTimer() - at) <= (cfg.explosiveGraceMs or 30000)
+end
+
 --- Everything the validator needs about a shooter/victim pair, from the
 --- SERVER's own model. Nothing here comes off the wire.
 --- @param shooter integer
 --- @param victim integer
+--- @param weapon integer|nil  weapon hash from the event, for the throw check
 --- @return table|nil
-local function contextFor(shooter, victim)
+local function contextFor(shooter, victim, weapon)
     local a = BR.Roster.get(shooter)
     local b = BR.Roster.get(victim)
     if not a or not b then return nil end
 
     local inv  = BR.Inv and BR.Inv.of(shooter) or nil
     local held = inv and inv.slots[inv.active] or nil
+
+    -- Only to answer "did they throw this", never to decide whether the
+    -- weapon is legitimate -- that is BR.ValidateShot's job and it does it
+    -- against the same table.
+    local w = weapon and BR.Config.WeaponByHash[BR.NormHash(weapon)] or nil
 
     return {
         sameSrc     = shooter == victim,
@@ -98,9 +141,21 @@ local function contextFor(shooter, victim)
         victimLive  = b.state == BR.PlayerState.ALIVE
                    or b.state == BR.PlayerState.DBNO,
         sameSquad   = a.squadId ~= nil and a.squadId == b.squadId,
-        heldItem    = held and held.item or nil,
+
+        -- AN EMPTY ACTIVE SLOT IS FISTS, not "unknown". Slot 0 holds nothing
+        -- by design, so a player throwing a punch has no stack here at all --
+        -- and reporting nil made the validator refuse every punch in the game
+        -- as NO_WEAPON (user's log, 2026-08-08).
+        --
+        -- This does NOT reopen the trainer hole that `ctx.heldItem ~= w.id`
+        -- was written to close. The hole was that nil never disagrees with
+        -- anything; 'fists' disagrees with everything except fists. A carbine
+        -- conjured over an empty slot still fails, and now it fails saying so.
+        heldItem    = held and held.item or 'fists',
         clip        = held and held.clip or nil,
         rarity      = held and held.rarity or nil,
+        threwRecently = (w ~= nil) and BR.Damage.threwRecently(shooter, w.id)
+                        or false,
         posA        = a.pos,
         posB        = b.pos,
     }
@@ -173,6 +228,13 @@ local refusalOf = {}
 --- @param src integer
 --- @param why string|nil
 function BR.Damage.noteRefusal(src, why)
+    -- RULES ARE NOT CHEATING. Friendly fire, a punch thrown in warmup and a
+    -- shot that raced a match boundary are all things an honest client does --
+    -- and since fists became a real weapon EVERY player has the means to
+    -- generate them constantly. Counting those would mean the first warmup
+    -- scrap of every match trips a threshold built for trainers.
+    if not BR.ShotSuspicious[why] then return end
+
     local now = GetGameTimer()
     local window = cfg.refusalWindowMs or 30000
 
@@ -331,8 +393,13 @@ function BR.Damage.applyHit(shooter, victim, amount, meta)
     e.lastHitWeapon = meta and meta.weapon or nil
 
     if e.hp <= 0.0 then
-        BR.Combat.eliminate(victim,
-            (meta and meta.headshot) and 'headshot' or 'gunshot', shooter)
+        local how = 'gunshot'
+        if meta and meta.explosive then
+            how = 'explosion'
+        elseif meta and meta.headshot then
+            how = 'headshot'
+        end
+        BR.Combat.eliminate(victim, how, shooter)
     end
 end
 
@@ -347,23 +414,29 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     local shooter = tonumber(sender)
     if not shooter then return end
 
-    -- ONLY THE DAMAGE TYPES WE HAVE MEASURED.
+    -- ONLY THE DAMAGE TYPES WE HAVE MEASURED -- WHICH TURNS OUT TO BE ALL OF
+    -- THEM THAT MATTER.
     --
-    -- weaponDamageEvent carries every kind of damage -- gunfire, melee,
-    -- explosions, fire, falls, vehicle impacts -- and `damageType` says which.
-    -- Exactly one value has been confirmed in game: 3, on every captured
-    -- bullet payload. The rest are unknown numbers.
+    -- The expectation was that gunfire, melee and explosions would each carry
+    -- their own `damageType` and that this gate would sort them. They do not.
+    -- Measured 2026-08-08 with /brdamagelog:
     --
-    -- Passing them through is the deliberate choice, and it is not the same as
-    -- ignoring them. Refusing an unknown type would mean grenades doing
-    -- nothing the moment a thrown weapon reports as something other than a
-    -- bullet; taking one over on a guess would apply our weapon table to a
-    -- fall. Passing through leaves the engine in charge of exactly the paths
-    -- M5 already left it in charge of, and no more.
+    --   bullet     (WEAPON_CARBINERIFLE etc)  damageType 3
+    --   melee      (WEAPON_UNARMED, 0xA2719263)  damageType 3
+    --   explosion  (WEAPON_GRENADE, 0x93E220BD)  damageType 3
     --
-    -- Counted rather than dropped silently, so an unmeasured type announces
-    -- itself once instead of being invisible until somebody notices melee
-    -- hits for the wrong number.
+    -- So damageType is NOT the discriminator; `weaponType` is, and the three
+    -- paths are told apart by the weapon table instead (w.melee, w.explosive).
+    -- The three payloads differ in ways that corroborate this: the punch
+    -- carried hasActionResult=true with a melee actionResultName, the grenade
+    -- carried hasActionResult=false, hitComponent 0 and weaponDamage 500.
+    --
+    -- The gate stays anyway, and is worth its keep for the types NOBODY has
+    -- produced yet: fire, falls, drowning, vehicle impacts. Taking one of
+    -- those over on a guess would apply the weapon table to a fall. Passing it
+    -- through leaves the engine in charge of exactly the paths M5 left it in
+    -- charge of, and counting it means an unmeasured type announces itself
+    -- once instead of being invisible until somebody notices.
     local dtype = math.tointeger(data.damageType or -1) or -1
     if not (cfg.takeOver or {})[dtype] then
         BR.Damage.seenTypes = BR.Damage.seenTypes or {}
@@ -397,20 +470,32 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     end
     if not ids then return end
 
+    -- CADENCE IS PER EVENT, NOT PER VICTIM, and this used to be inside the
+    -- loop below. A shotgun blast that catches two players -- or a grenade
+    -- that catches four -- arrives as ONE event listing several hits, so the
+    -- second victim was measured against a "last shot" stamped microseconds
+    -- earlier by the first, and refused as TOO_FAST. The shooter was
+    -- competing with themselves. Same reasoning that already put spendRound
+    -- outside the loop.
+    local now = GetGameTimer()
+    local since = now - (lastShot[shooter] or 0)
+
+    -- Explosives do not stamp it. A detonation is not a trigger pull, and
+    -- letting one set the clock means the next honest rifle round is measured
+    -- from the moment your own grenade went off.
+    local fired = BR.Config.WeaponByHash[BR.NormHash(data.weaponType or 0)]
+    if not (fired and fired.explosive) then lastShot[shooter] = now end
+
     for _, netId in ipairs(ids) do
         local victim = playerFromNetId(netId)
         if victim then
-            local ctx = contextFor(shooter, victim)
+            local ctx = contextFor(shooter, victim, data.weaponType)
             if ctx then
                 local dist = 0.0
                 if ctx.posA and ctx.posB then
                     dist = BR.Dist3(ctx.posA.x, ctx.posA.y, ctx.posA.z,
                                     ctx.posB.x, ctx.posB.y, ctx.posB.z)
                 end
-
-                local now = GetGameTimer()
-                local since = now - (lastShot[shooter] or 0)
-                lastShot[shooter] = now
 
                 local ok, why = BR.ValidateShot(
                     { weapon = data.weaponType, dist = dist, sinceLastMs = since },
@@ -426,8 +511,14 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                     -- log over a full match is the signal that enforcement is
                     -- safe to switch on.
                     BR.Damage.refusals = (BR.Damage.refusals or 0) + 1
-                    print(('[br_core] shot refused: %d -> %d, %s (%.0fm, %dms)')
-                        :format(shooter, victim, tostring(why), dist, since))
+                    -- ...but a rules refusal is not printed unless asked for.
+                    -- Warmup fistfights would otherwise fill the console with
+                    -- lines that mean "the game said no", drowning the ones
+                    -- that mean "somebody has a weapon we did not issue".
+                    if BR.ShotSuspicious[why] or cfg.logHits then
+                        print(('[br_core] shot refused: %d -> %d, %s (%.0fm, %dms)')
+                            :format(shooter, victim, tostring(why), dist, since))
+                    end
                     BR.Damage.noteRefusal(shooter, why)
                     if cfg.enforce then
                         CancelEvent()
@@ -495,6 +586,7 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                         BR.Damage.applyHit(shooter, victim, dmg, {
                             weapon    = data.weaponType,
                             headshot  = head,
+                            explosive = fired and fired.explosive or false,
                             component = data.hitComponent,
                             dist      = dist,
                         })
@@ -535,6 +627,7 @@ end, true)
 --- @param src integer
 function BR.Damage.forget(src)
     lastShot[src] = nil
+    thrown[src]   = nil
 end
 
 --- Turn the damage takeover on and off WITHOUT A REDEPLOY.

@@ -50,7 +50,7 @@ this", "claim entry 412" — and renders whatever comes back. Consequences:
 The general shape: **a client can ask for things, and every answer is computed
 from state it does not hold.**
 
-**3. Damage is validated at the source (M6, in progress).** FiveM raises
+**3. Damage is validated at the source (M6).** FiveM raises
 `weaponDamageEvent` on the *server* before damage is applied network-wide, and
 `CancelEvent()` there stops it reaching anyone — a genuine veto rather than a
 report after the fact. Every shot is checked against the server's own model:
@@ -68,8 +68,36 @@ part that was hit — so a modified `weaponDamage` is *evidence*, never input.
 Slack is deliberate and documented: roster positions sample at 2 Hz, so both
 players can be ~4.5 m stale at a sprint. Refusing an honest shot is a broken
 game; accepting a marginal one is a rounding error no aimbot can exploit. The
-validator runs in log-only mode first, and every refusal printed during honest
-play is a false positive to be fixed before enforcement is switched on.
+validator ran in log-only mode for a full playtest first, on the rule that
+every refusal printed during honest play is a false positive; that log came
+back empty, which is what unlocked enforcement.
+
+**Not every refusal is a cheat signal, and conflating them makes the threshold
+useless.** Refusals split in two:
+
+- **Rules** — friendly fire, shooting yourself, throwing a punch during warmup,
+  a shot that raced a match boundary. An honest client produces these
+  constantly, and since fists are a real weapon *every* player has the means to
+  produce them at any time. They are declined and not counted.
+- **Means** — a weapon the server never issued, a magazine it never filled, a
+  range or a cadence the weapon does not have. There is no honest way to
+  produce these. A dozen inside thirty seconds triggers the configured
+  response, which defaults to logging rather than kicking: a validator that has
+  never wrongly refused an honest player *today* is still a bet on tomorrow,
+  and banning your own players is a worse failure than tolerating a cheater who
+  is already unable to hurt anyone.
+
+**Three damage paths, one event.** Bullets, melee and explosions all arrive as
+`weaponDamageEvent` with the same `damageType` (3 — measured, not assumed), so
+they are told apart by `weaponType` against the weapon table. Explosions are
+validated differently on purpose, because a grenade breaks three assumptions a
+bullet satisfies: the thrower is holding *fists* by the time it goes off (so
+possession is checked against a recent throw the server watched them spend, not
+against what is in their hand); the bound on distance is the throw *plus* the
+blast; and a cluster of stickies detonating in the same millisecond is not a
+weapon cycling impossibly fast. Blast damage is flat — the only distance the
+server knows is thrower-to-victim, and the victim standing *on* the grenade is
+the far one, so falloff would make a direct hit the weakest hit in the game.
 
 **What this is not.** There is no signature scanning, no injected-DLL
 detection, no behavioural heuristics — nothing that tries to identify a cheat

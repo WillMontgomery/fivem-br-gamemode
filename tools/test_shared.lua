@@ -372,6 +372,160 @@ do
         'and having no magazine is not the same as having no ammo')
 end
 
+describe('combat.fists')
+do
+    -- THE PUNCH THAT WAS A CHEAT SIGNAL.
+    --
+    -- Slot 0 is fists and holds nothing, so a player throwing a punch has an
+    -- empty active slot. The validator resolved WEAPON_UNARMED against
+    -- WeaponByHash, missed, and refused it as "weapon is not one this gamemode
+    -- issues" -- so fists did no damage in a game where everyone lands
+    -- unarmed, and a dozen honest swings tripped the anticheat threshold.
+    local cfg = BR.Config.Combat
+
+    -- The literal weaponType from the user's /brdamagelog capture, 2026-08-08.
+    -- Pinned as the number the engine actually sent rather than as
+    -- BR.Config.Fists.hash, so this test proves the two agree.
+    local CAPTURED_UNARMED = 2725352035   -- 0xA2719263
+
+    ok(BR.Config.WeaponByHash[BR.NormHash(CAPTURED_UNARMED)] == BR.Config.Fists,
+        'the captured unarmed hash resolves to fists')
+    ok(BR.Config.Fists.damage and BR.Config.Fists.damage > 0,
+        'and fists do damage', tostring(BR.Config.Fists.damage))
+
+    local function ctx(over)
+        local c = {
+            sameSrc = false, sameMatch = true, shooterLive = true,
+            victimLive = true, sameSquad = false, heldItem = 'fists',
+        }
+        for k, v in pairs(over or {}) do c[k] = v end
+        return c
+    end
+
+    ok(BR.ValidateShot(
+        { weapon = CAPTURED_UNARMED, dist = 1.2, sinceLastMs = 600 }, ctx(), cfg),
+        'a punch in reach lands')
+
+    local _, why = BR.ValidateShot(
+        { weapon = CAPTURED_UNARMED, dist = 40.0, sinceLastMs = 600 }, ctx(), cfg)
+    ok(why == BR.ShotRefusal.TOO_FAR,
+        'and cannot reach across the street', tostring(why))
+
+    -- THE TRAINER HOLE STAYS CLOSED. contextFor now reports 'fists' where it
+    -- used to report nil, and the whole point of the nil->'fists' change is
+    -- that 'fists' DISAGREES with everything except fists, where nil agreed
+    -- with everything.
+    local rifle = BR.Config.WeaponById['carbinerifle']
+    local _, why2 = BR.ValidateShot(
+        { weapon = rifle.hash, dist = 20.0, sinceLastMs = 500 },
+        ctx({ clip = 30 }), cfg)
+    ok(why2 == BR.ShotRefusal.NOT_HELD,
+        'a conjured rifle over an empty slot is still refused', tostring(why2))
+
+    -- Fists are not loot and must never appear in anything the layout rolls
+    -- against, or they would spawn in crates.
+    for _, m in ipairs(BR.Config.Melee) do
+        ok(m.id ~= 'fists', 'fists are not in the melee loot list')
+    end
+    for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+        for _, m in ipairs(BR.Config.MeleeByRarity[r] or {}) do
+            ok(m.id ~= 'fists', 'and not in any rarity bucket')
+        end
+    end
+end
+
+describe('combat.explosive')
+do
+    -- THE GRENADE THAT KILLED SOMEBODY FOR NOBODY.
+    --
+    -- Throwables carried no `damage` field, so ExpectedDamage returned 0.0 and
+    -- applyHit bailed on `amount <= 0`. The validator accepted the hit, the
+    -- server applied nothing, and the engine's own blast still killed the
+    -- victim on their own machine -- an elimination credited to "(unknown)"
+    -- in the user's log, 2026-08-08.
+    local cfg = BR.Config.Combat
+
+    -- Literal weaponType from the same capture.
+    local CAPTURED_GRENADE = 2481070269   -- 0x93E220BD
+
+    local nade = BR.Config.WeaponByHash[BR.NormHash(CAPTURED_GRENADE)]
+    ok(nade and nade.id == 'grenade',
+        'the captured grenade hash resolves to a grenade')
+    ok(nade.explosive and nade.damage and nade.damage > 0,
+        'which is explosive and does damage', tostring(nade.damage))
+
+    local function ctx(over)
+        local c = {
+            sameSrc = false, sameMatch = true, shooterLive = true,
+            victimLive = true, sameSquad = false,
+            -- The realistic case: the last grenade is gone from the slot by
+            -- the time it goes off, so the thrower is holding fists.
+            heldItem = 'fists', threwRecently = true,
+        }
+        for k, v in pairs(over or {}) do c[k] = v end
+        return c
+    end
+
+    ok(BR.ValidateShot({ weapon = CAPTURED_GRENADE, dist = 6.0 }, ctx(), cfg),
+        'a blast from a grenade you threw lands, with empty hands')
+
+    local _, why = BR.ValidateShot({ weapon = CAPTURED_GRENADE, dist = 6.0 },
+        ctx({ threwRecently = false }), cfg)
+    ok(why == BR.ShotRefusal.NOT_THROWN,
+        'a blast from one you never threw does not', tostring(why))
+
+    -- Still holding them (more than one in the stack) is the other honest case.
+    ok(BR.ValidateShot({ weapon = CAPTURED_GRENADE, dist = 6.0 },
+        ctx({ heldItem = 'grenade', threwRecently = false }), cfg),
+        'and holding the stack is enough on its own')
+
+    -- RANGE IS THROW PLUS BLAST. A victim can be a whole blast radius further
+    -- from the thrower than the grenade ever travelled.
+    ok(BR.ValidateShot({ weapon = CAPTURED_GRENADE, dist = 50.0 }, ctx(), cfg),
+        'a long throw with the victim on the far edge is in bounds')
+    local _, why2 = BR.ValidateShot(
+        { weapon = CAPTURED_GRENADE, dist = 250.0 }, ctx(), cfg)
+    ok(why2 == BR.ShotRefusal.TOO_FAR,
+        'but a blast two hundred metres away is not', tostring(why2))
+
+    -- NO RATE CHECK. A cluster of stickies detonates together; every one of
+    -- those is a legitimate event in the same millisecond.
+    ok(BR.ValidateShot({ weapon = CAPTURED_GRENADE, dist = 6.0, sinceLastMs = 0 },
+        ctx(), cfg),
+        'two detonations in the same millisecond are both legitimate')
+
+    -- FLAT DAMAGE, and this is the check that would catch falloff creeping
+    -- back in. The only distance the server knows is thrower-to-victim, and a
+    -- grenade is thrown AWAY from the thrower -- so the victim standing on it
+    -- is the FAR one. Falloff would make the direct hit the weakest hit.
+    local near = BR.ShotDamage(CAPTURED_GRENADE, BR.Rarity.COMMON, 5.0, 0, cfg)
+    local far  = BR.ShotDamage(CAPTURED_GRENADE, BR.Rarity.COMMON, 44.0, 0, cfg)
+    ok(near > 0.0 and math.abs(near - far) < 0.001,
+        'blast damage does not fall off with distance from the thrower',
+        ('%.1f vs %.1f'):format(near, far))
+
+    -- ...and no bone multiplier. hitComponent came back 0 on the capture: a
+    -- blast does not land on a head.
+    local HEAD = 20
+    local _, mult = BR.ShotDamage(CAPTURED_GRENADE, BR.Rarity.COMMON, 5.0,
+                                  HEAD, cfg)
+    ok(mult == 1.0, 'and no headshot multiplier applies to a blast',
+        tostring(mult))
+    -- Load-bearing: the same component through a rifle must NOT be 1.0, or
+    -- the assertion above is passing because head multipliers do nothing.
+    local _, rmult = BR.ShotDamage(BR.Config.WeaponById['carbinerifle'].hash,
+                                   BR.Rarity.COMMON, 5.0, HEAD, cfg)
+    ok(rmult > 1.0, 'while the same bone through a rifle is a headshot',
+        tostring(rmult))
+
+    -- Smoke resolves as a weapon (so it is never a refusal) and deals nothing.
+    local smoke = BR.Config.WeaponById['smoke']
+    ok(BR.ValidateShot({ weapon = smoke.hash, dist = 4.0 },
+        ctx({ heldItem = 'smoke' }), cfg), 'smoke is never a refusal')
+    ok(BR.ShotDamage(smoke.hash, BR.Rarity.COMMON, 4.0, 0, cfg) == 0.0,
+        'and does no damage')
+end
+
 describe('descent.classify')
 do
     -- THE CANOPY IS THE CASE THAT MATTERS. Both altitude nets in match.lua

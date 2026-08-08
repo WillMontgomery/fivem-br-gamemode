@@ -20,6 +20,7 @@ BR.ShotRefusal = {
     OK          = nil,
     NO_WEAPON   = 'weapon is not one this gamemode issues',
     NOT_HELD    = 'shooter does not hold that weapon',
+    NOT_THROWN  = 'shooter did not throw that explosive',
     NO_AMMO     = 'shooter has no rounds for it',
     TOO_FAR     = 'beyond the weapon\'s range',
     TOO_FAST    = 'faster than the weapon can cycle',
@@ -27,6 +28,32 @@ BR.ShotRefusal = {
     SAME_SQUAD  = 'friendly fire',
     NOT_LIVE    = 'one of them is not alive in this match',
     OTHER_MATCH = 'different matches',
+}
+
+--- WHICH REFUSALS ARE ACTUALLY A CHEAT SIGNAL.
+---
+--- Not all of them are, and treating them alike makes the anticheat threshold
+--- meaningless. Two categories:
+---
+---   RULES.  Friendly fire, shooting yourself, shooting during warmup, a shot
+---           that raced a match boundary. These are things an HONEST client
+---           does constantly -- the game simply declines them. Fists made this
+---           urgent: everyone has them at all times, so a warmup scrap now
+---           produces a dozen NOT_LIVE refusals in seconds and would trip a
+---           threshold built for people using trainers.
+---   MEANS.  A weapon the server never issued, a magazine it never filled, a
+---           range or a cadence the weapon does not have. There is no honest
+---           way to produce these, only a race -- which is why the threshold
+---           is a dozen in thirty seconds rather than one.
+---
+--- Only the second kind counts toward the threshold.
+BR.ShotSuspicious = {
+    [BR.ShotRefusal.NO_WEAPON]  = true,
+    [BR.ShotRefusal.NOT_HELD]   = true,
+    [BR.ShotRefusal.NO_AMMO]    = true,
+    [BR.ShotRefusal.TOO_FAR]    = true,
+    [BR.ShotRefusal.TOO_FAST]   = true,
+    [BR.ShotRefusal.NOT_THROWN] = true,
 }
 
 --- Is this shot physically possible, given what the SERVER believes?
@@ -64,6 +91,35 @@ function BR.ValidateShot(shot, ctx, cfg)
     -- i.e. half the arsenal would read as a cheat.
     local w = BR.Config.WeaponByHash[BR.NormHash(shot.weapon)]
     if not w then return false, BR.ShotRefusal.NO_WEAPON end
+
+    -- AN EXPLOSION IS NOT A SHOT, and three of the checks below quietly assume
+    -- it is. All three would refuse an honest grenade:
+    --
+    --   HELD.  A grenade detonates a second or more after it leaves the hand,
+    --          and throwing your last one empties the slot -- so by the time
+    --          the damage event arrives the thrower is holding FISTS. What is
+    --          checked instead is that the server issued them that explosive
+    --          and saw them spend one, recently. That is a real bound: the
+    --          server decides what is in the inventory, so a client cannot
+    --          conjure a grenade it was never given.
+    --   RANGE. The bound is the throw PLUS the blast. The victim may be a
+    --          whole blast radius further from the thrower than the grenade
+    --          ever travelled, and the weapon's "range" describes neither.
+    --   RATE.  There is no action to cycle. A cluster of stickies detonates
+    --          together, and every one of those is a legitimate event in the
+    --          same millisecond -- TOO_FAST would refuse all but the first.
+    if w.explosive then
+        if ctx.heldItem ~= w.id and not ctx.threwRecently then
+            return false, BR.ShotRefusal.NOT_THROWN
+        end
+        local reach = (w.maxRange or 0.0) * (cfg.rangeSlack or 1.35)
+                    + (w.blastRadius or 0.0)
+                    + (cfg.rangeSlackM or 12.0)
+        if (shot.dist or 0.0) > reach then
+            return false, BR.ShotRefusal.TOO_FAR
+        end
+        return true, nil
+    end
 
     -- THE SERVER KNOWS WHAT IT PUT IN THEIR HANDS, AND AN EMPTY SLOT IS AN
     -- ANSWER.
@@ -128,6 +184,17 @@ end
 --- @return number damage, number multiplier
 function BR.ShotDamage(weapon, rarity, dist, component, cfg)
     cfg = cfg or {}
+
+    -- EXPLOSIONS HAVE NO BONE AND NO FALLOFF. hitComponent came back 0 on the
+    -- captured grenade -- a blast does not land on a wrist -- and the distance
+    -- the server has is thrower-to-victim, which for a thrown weapon runs the
+    -- wrong way (see ExpectedDamage). Flat damage is the honest model until
+    -- the server can see where the thing actually landed.
+    local w = BR.Config.WeaponByHash[BR.NormHash(weapon)]
+    if w and w.explosive then
+        return BR.Config.ExpectedDamage(weapon, rarity, nil), 1.0
+    end
+
     local base = BR.Config.ExpectedDamage(weapon, rarity, dist)
     -- Distance goes in twice, and means different things each time: the
     -- weapon's own falloff above, and the headshot's close-range payoff here.

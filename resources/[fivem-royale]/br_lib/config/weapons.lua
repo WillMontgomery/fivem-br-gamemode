@@ -78,11 +78,32 @@ BR.Config.Weapons = {
 
 --- Throwables. Smoke is not filler: it is the only tool that makes a contested
 --- revive possible, so it is in from the start rather than added later.
+---
+--- THESE CARRY DAMAGE NUMBERS BECAUSE THE SERVER OWNS THEM NOW, and until
+--- 2026-08-08 they did not -- which made every grenade in the game do exactly
+--- nothing through our path. The validator accepted the hit, BR.ShotDamage
+--- asked ExpectedDamage for a number, `w.damage` was nil so it returned 0.0,
+--- and applyHit bailed on `amount <= 0`. The engine's own blast still killed
+--- the victim on their own machine, so the kill happened and was credited to
+--- nobody -- "eliminated Xeon (1) -- placement 2 (unknown)" in the user's log.
+---
+--- `explosive` is not decoration. It changes three things that are all wrong
+--- for a thrown weapon: the held check (you are holding fists by the time it
+--- goes off), the range bound (throw PLUS blast) and the damage falloff (the
+--- victim furthest from the THROWER is the one standing on it). See
+--- BR.ValidateShot and BR.ShotDamage.
+---
+--- maxRange is how far the thing can be THROWN -- an overhand grenade in GTA
+--- travels about 40m -- and blastRadius is how far the explosion reaches from
+--- where it lands. Their sum is the only honest bound on thrower-to-victim
+--- distance the server can compute without knowing where the grenade landed.
 BR.Config.Throwables = {
-    { id = 'grenade',    name = 'WEAPON_GRENADE',      hash = 0x93E220BD, label = 'Grenade',       rarity = R.RARE,     maxStack = 3 },
-    { id = 'molotov',    name = 'WEAPON_MOLOTOV',      hash = 0x24B17070, label = 'Molotov',       rarity = R.UNCOMMON, maxStack = 3 },
-    { id = 'sticky',     name = 'WEAPON_STICKYBOMB',   hash = 0x2C3731D9, label = 'Sticky Bomb',   rarity = R.EPIC,     maxStack = 3 },
-    { id = 'smoke',      name = 'WEAPON_SMOKEGRENADE', hash = 0xFDBC8A50, label = 'Smoke Grenade', rarity = R.COMMON,   maxStack = 3 },
+    { id = 'grenade',    name = 'WEAPON_GRENADE',      hash = 0x93E220BD, label = 'Grenade',       rarity = R.RARE,     maxStack = 3, explosive = true, damage = 90, blastRadius = 10.0, maxRange = 45.0 },
+    { id = 'molotov',    name = 'WEAPON_MOLOTOV',      hash = 0x24B17070, label = 'Molotov',       rarity = R.UNCOMMON, maxStack = 3, explosive = true, damage = 30, blastRadius =  6.0, maxRange = 40.0 },
+    { id = 'sticky',     name = 'WEAPON_STICKYBOMB',   hash = 0x2C3731D9, label = 'Sticky Bomb',   rarity = R.EPIC,     maxStack = 3, explosive = true, damage = 110, blastRadius = 10.0, maxRange = 40.0 },
+    -- No damage field, deliberately: smoke is cover, not a weapon. It resolves
+    -- as a known weapon (so it is never a refusal) and deals 0.
+    { id = 'smoke',      name = 'WEAPON_SMOKEGRENADE', hash = 0xFDBC8A50, label = 'Smoke Grenade', rarity = R.COMMON,   maxStack = 3, explosive = true, blastRadius = 6.0, maxRange = 40.0 },
 }
 
 --- MELEE. Crate-only, and deliberately a separate list from the firearms.
@@ -112,6 +133,32 @@ BR.Config.Melee = {
     { id = 'machete',   name = 'WEAPON_MACHETE',      hash = 0xDD5DF8D9, label = 'Machete',               rarity = R.RARE,      damage = 58, melee = true, maxRange = 3.0, minInterval = 450 },
     { id = 'hatchet',   name = 'WEAPON_HATCHET',      hash = 0xF9DCBF2D, label = 'Hatchet',               rarity = R.EPIC,      damage = 64, melee = true, maxRange = 3.0, minInterval = 450 },
     { id = 'battleaxe', name = 'WEAPON_BATTLEAXE',    hash = 0xCD274149, label = 'Battle Axe',            rarity = R.EPIC,      damage = 70, melee = true, maxRange = 3.0, minInterval = 450 },
+}
+
+--- FISTS, and they are a real weapon here for a reason that cost a playtest.
+---
+--- Slot 0 is fists and holds nothing, so a player punching somebody has an
+--- EMPTY active slot. The validator resolves WEAPON_UNARMED (0xA2719263)
+--- against WeaponByHash, missed, and refused the punch as "weapon is not one
+--- this gamemode issues" -- captured verbatim in the user's own log,
+--- 2026-08-08. Two consequences, both bad:
+---
+---   * fists did no damage at all, in a game where every player lands unarmed
+---     and the first thirty seconds of a hot drop are a fistfight;
+---   * every punch counted toward the refusal threshold, so an honest
+---     scrap of a dozen swings tripped the anticheat.
+---
+--- NOT IN BR.Config.Melee and not in any rarity bucket, because fists are not
+--- loot -- they are the thing you have when you have nothing. They are
+--- registered into the lookup tables below by hand for exactly that reason.
+---
+--- Damage is deliberately poor: at 15 a swing on a 400ms cycle, an unarmoured
+--- player takes about seven punches. Fists are a threat to somebody who landed
+--- badly, not an alternative to finding a gun.
+BR.Config.Fists = {
+    id = 'fists', name = 'WEAPON_UNARMED', hash = 0xA2719263, label = 'Fists',
+    rarity = R.COMMON, damage = 15, melee = true,
+    maxRange = 3.0, minInterval = 400,
 }
 
 --- Utility weapon hashes referenced directly by gameplay code.
@@ -150,6 +197,12 @@ for _, m in ipairs(BR.Config.Melee) do
     BR.Config.WeaponByHash[BR.NormHash(m.hash)] = m
     BR.Config.WeaponById[m.id]                  = m
 end
+
+-- Fists, by hand: they are resolvable as a weapon but they are not loot, so
+-- they are deliberately absent from every list the layout generator rolls
+-- against. Registering them here and nowhere else is what keeps both true.
+BR.Config.WeaponByHash[BR.NormHash(BR.Config.Fists.hash)] = BR.Config.Fists
+BR.Config.WeaponById[BR.Config.Fists.id]                  = BR.Config.Fists
 
 --- Melee bucketed by rarity, in authored order -- same construction and same
 --- reason as every other bucket table here: the loot layout must replay
@@ -195,7 +248,13 @@ function BR.Config.ExpectedDamage(hash, rarity, distance)
     local dmg = w.damage * (BR.RarityInfo[rarity or BR.Rarity.COMMON].damageMult)
 
     -- Linear falloff over the back half of the weapon's range, floored at 55%.
-    if distance and w.maxRange then
+    --
+    -- EXPLOSIVES ARE EXEMPT, because `distance` means something different for
+    -- them and applying this would be exactly backwards. The only distance the
+    -- server knows is thrower-to-victim, and a grenade is thrown AWAY from the
+    -- thrower -- so the victim standing on top of it is the FAR one. Falloff
+    -- would make the direct hit the weakest hit in the game.
+    if distance and w.maxRange and not w.explosive then
         local half = w.maxRange * 0.5
         if distance > half then
             local t = (distance - half) / half

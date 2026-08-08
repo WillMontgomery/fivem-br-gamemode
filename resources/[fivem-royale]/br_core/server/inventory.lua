@@ -548,17 +548,6 @@ AddEventHandler(BR.Net.INV_AMMO, function(d)
     local inv = BR.Inv.of(src)
     if not inv or type(d) ~= 'table' then return end
 
-    -- RETIRED BY M6. Once the server counts rounds off validated shot events
-    -- it has a better answer than the client's, and accepting both means two
-    -- authorities for one number -- the reload the server just paid for gets
-    -- overwritten by a client report that has not seen it yet.
-    --
-    -- Left registered rather than deleted for one reason: a client running
-    -- with server ammo disabled (`/brdamage off`) still needs this path, and
-    -- deleting the handler would make that a silent failure rather than a
-    -- config choice.
-    if (BR.Config.Combat or {}).serverAmmo then return end
-
     local slot  = math.tointeger(d.slot)
     local total = math.tointeger(d.total)
     local clip  = math.tointeger(d.clip)
@@ -577,6 +566,21 @@ AddEventHandler(BR.Net.INV_AMMO, function(d)
     -- deducted from anything -- infinite grenades, for as long as the slot
     -- existed. Same decrease-only rule: the engine's count may fall, never
     -- rise, and the slot empties when it hits zero.
+    -- AND THIS BRANCH SURVIVES serverAmmo, which the round-counting one below
+    -- does not. That is not an oversight either way:
+    --
+    -- The server counts RIFLE rounds off validated weaponDamageEvents, because
+    -- every shot raises one. A THROW raises nothing. The only event a grenade
+    -- produces is its detonation -- which lands a second or more later, may
+    -- never arrive at all (into water, off a cliff, at nobody), and is
+    -- cancelled by this very validator when it does. Counting throws off
+    -- detonations would give infinite grenades to anyone who missed.
+    --
+    -- So the M5 client report stays the authority here, and it stays safe for
+    -- the same reason it always was: decrease-only, so the worst a liar can do
+    -- is throw their own grenades away. Between 2026-08-07 and 2026-08-08 the
+    -- serverAmmo early-return sat ABOVE this branch and nothing decremented
+    -- throwables at all -- literally unlimited grenades.
     if s.kind == BR.ItemKind.THROWABLE then
         local have = s.count or 0
         if total >= have then return end
@@ -585,11 +589,28 @@ AddEventHandler(BR.Net.INV_AMMO, function(d)
         else
             s.count = total
         end
+        -- ...and the throw is remembered, because the explosion arrives after
+        -- the slot is empty and the validator has to know it was ours.
+        if BR.Damage and BR.Damage.noteThrow then
+            BR.Damage.noteThrow(src, s.item)
+        end
         BR.Inv.push(src)
         return
     end
 
     if s.kind ~= BR.ItemKind.WEAPON then return end
+
+    -- RETIRED BY M6, for magazined weapons only. Once the server counts rounds
+    -- off validated shot events it has a better answer than the client's, and
+    -- accepting both means two authorities for one number -- the reload the
+    -- server just paid for gets overwritten by a client report that has not
+    -- seen it yet.
+    --
+    -- Left registered rather than deleted for one reason: a client running
+    -- with server ammo disabled (`/brdamage off`) still needs this path, and
+    -- deleting the handler would make that a silent failure rather than a
+    -- config choice.
+    if (BR.Config.Combat or {}).serverAmmo then return end
 
     local w = BR.Config.WeaponById[s.item]
     if not w then return end

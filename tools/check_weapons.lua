@@ -103,6 +103,32 @@ end
 check(BR.Config.Weapons, 'weapon')
 check(BR.Config.Throwables, 'throwable')
 check(BR.Config.Melee, 'melee')
+-- Fists are not a list, but they ARE resolved from an engine hash on every
+-- punch, so the same joaat proof has to cover them. This is the check that
+-- would have caught the hash being wrong; the thing that made fists fail in
+-- game was that they were not registered at all.
+check({ BR.Config.Fists }, 'fists')
+
+-- ...and registered, which is a separate claim from being spelled correctly.
+-- Fists are deliberately outside every loot list, so nothing else in this gate
+-- would notice if the by-hand registration below the tables were dropped.
+if BR.Config.WeaponByHash[BR.NormHash(BR.Config.Fists.hash)] ~= BR.Config.Fists then
+    fail('fists do not resolve through WeaponByHash -- every punch in the game '
+         .. 'would be refused as an unknown weapon')
+end
+
+-- An explosive with no blast radius would be range-checked as though the
+-- victim had to be where the grenade landed.
+for _, t in ipairs(BR.Config.Throwables or {}) do
+    if t.explosive then
+        if not t.blastRadius or t.blastRadius <= 0 then
+            fail('throwable %q is explosive but has no blastRadius', t.id)
+        end
+        if not t.maxRange or t.maxRange <= 0 then
+            fail('throwable %q is explosive but has no maxRange (throw distance)', t.id)
+        end
+    end
+end
 
 -- A firearm without a magazine size or an ammo pool cannot take part in the
 -- ammo model at all -- it would read as unlimited for a different reason.

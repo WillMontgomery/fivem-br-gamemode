@@ -37,6 +37,14 @@ local pedCoords = {}
 function GetEntityCoords(ped)
     return pedCoords[ped] or { x = 0.0, y = 0.0, z = 0.0 }
 end
+-- weaponDamageEvent plumbing, so the handler itself can be driven rather than
+-- only the pure validator underneath it. Network ids ARE the ped handles here,
+-- which is enough fidelity: the server only ever uses a netId to get back to a
+-- player, and GetPlayerPed already returns 1000 + src.
+function NetworkGetEntityFromNetworkId(id) return id end
+function NetworkGetNetworkIdFromEntity(ped) return ped end
+function CancelEvent() end
+
 --- Place a player's PED (positions flow ped -> sampler -> roster, never the
 --- other way, so tests must set them the same way the game would).
 local function setPos(src, x, y, z)
@@ -3757,6 +3765,121 @@ do
         tostring(BR.Inv.of(1).slots[1].clip))
 end
 
+describe('combat.multivictim')
+do
+    -- THE SHOOTER WAS COMPETING WITH THEMSELVES.
+    --
+    -- One weaponDamageEvent can list SEVERAL hits: a shotgun spread catching
+    -- two players, a round that clips one and lands in another, a blast
+    -- catching four. The rate-of-fire check was computed and STAMPED inside
+    -- the per-victim loop, so the second victim in the list was measured
+    -- against a "last shot" the first victim had just written microseconds
+    -- earlier -- and refused as faster than the weapon can cycle.
+    --
+    -- Nobody would have read that as a bug in the validator. It presents as
+    -- shotguns doing single-target damage in a crowd, plus a slow drip of
+    -- refusals blamed on lag.
+    --
+    -- Same reasoning that already put spendRound outside the loop: an event is
+    -- one trigger pull no matter how many people it catches.
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    queueUp(3, 'C', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    for s = 1, 3 do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
+
+    local pistol = BR.Config.WeaponById['pistol']
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = pistol.clip })
+    BR.Inv.of(1).ammo[BR.AmmoType.LIGHT] = 40
+    BR.Inv.of(1).active = 1
+
+    for s = 1, 3 do BR.Roster.get(s).pos = { x = s * 2.0, y = 0.0, z = 30.0 } end
+    local hpBefore2 = BR.Roster.get(2).hp
+    local hpBefore3 = BR.Roster.get(3).hp
+
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = pistol.hash, hitComponent = 0,
+        weaponDamage = 26, hitGlobalIds = { 1002, 1003 },
+    })
+
+    ok(BR.Roster.get(2).hp < hpBefore2, 'the first victim in the list is hit',
+        ('%s -> %s'):format(tostring(hpBefore2), tostring(BR.Roster.get(2).hp)))
+    ok(BR.Roster.get(3).hp < hpBefore3,
+        'and so is the second, rather than being refused as too fast',
+        ('%s -> %s'):format(tostring(hpBefore3), tostring(BR.Roster.get(3).hp)))
+
+    -- ONE ROUND FOR THE WHOLE EVENT. Charging a magazine per victim would
+    -- empty a shotgun in three shots.
+    ok(BR.Inv.of(1).slots[1].clip == pistol.clip - 1,
+        'and the event costs exactly one round, not one per victim',
+        tostring(BR.Inv.of(1).slots[1].clip))
+end
+
+describe('inv.throwables')
+do
+    -- UNLIMITED GRENADES, for one commit.
+    --
+    -- serverAmmo counts rifle rounds off validated weaponDamageEvents, and its
+    -- early-return sat at the TOP of the INV_AMMO handler -- above the
+    -- throwable branch. But a THROW raises no event at all: the only thing a
+    -- grenade produces is its detonation, which arrives seconds later, may
+    -- never arrive (into water, at nobody), and is cancelled by the validator
+    -- when it does. So nothing decremented throwables, from either side.
+    --
+    -- The client report stays the authority for these, and stays safe for the
+    -- reason it always was: decrease-only, so the worst a liar achieves is
+    -- throwing their own grenades away.
+    ok(BR.Config.Combat.serverAmmo, 'server ammo is on for this block')
+
+    lootMatch()
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'grenade', kind = BR.ItemKind.THROWABLE,
+                     rarity = 3, count = 3 })
+    local inv = BR.Inv.of(1)
+    inv.active = 1
+
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 2, clip = 2 })
+    ok(inv.slots[1] and inv.slots[1].count == 2,
+        'throwing one grenade leaves two, even with server ammo on',
+        tostring(inv.slots[1] and inv.slots[1].count))
+
+    -- A RISE IS STILL REFUSED. Decrease-only is the whole safety argument.
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 9, clip = 9 })
+    ok(inv.slots[1].count == 2, 'and a report that conjures more is ignored',
+        tostring(inv.slots[1].count))
+
+    -- THE THROW IS REMEMBERED, because the blast arrives after the slot is
+    -- empty and the validator has to know the grenade was ours.
+    ok(BR.Damage.threwRecently(1, 'grenade'),
+        'and the server remembers who threw it')
+    ok(not BR.Damage.threwRecently(1, 'sticky'),
+        'but not for something they never threw')
+
+    -- Throwing the last one empties the slot, and the memory is what carries
+    -- the detonation that follows.
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 0, clip = 0 })
+    ok(not inv.slots[1] or inv.slots[1] == false,
+        'the last grenade empties the slot')
+    ok(BR.Damage.threwRecently(1, 'grenade'),
+        'and the blast still resolves to the thrower with empty hands')
+
+    -- ...until the window closes.
+    local was = fakeTime
+    fakeTime = fakeTime + (BR.Config.Combat.explosiveGraceMs or 30000) + 1000
+    ok(not BR.Damage.threwRecently(1, 'grenade'),
+        'the credit expires rather than lasting the match')
+    fakeTime = was
+
+    BR.Damage.forget(1)
+    ok(not BR.Damage.threwRecently(1, 'grenade'),
+        'and a disconnect forgets it outright')
+end
+
 -- THE FALLBACK PATH, still live when `/brdamage off` turns the takeover back
 -- into an audit. If the server is not applying damage it is not seeing shots
 -- either, and a magazine nothing decrements is better than one nothing
@@ -3938,6 +4061,33 @@ do
     ok(cfg.refusalAction == 'log',
         'and the default response is to log rather than to kick',
         tostring(cfg.refusalAction))
+
+    -- RULES ARE NOT CHEATING, and fists are what made this matter: every
+    -- player has them at all times, so a warmup scrap or a squadmate caught in
+    -- a spray produces refusals by the dozen. Counting those means the
+    -- threshold fires on ordinary play.
+    BR.Damage.forgetRefusals(1)
+    sent = {}
+    for _ = 1, cfg.refusalLimit * 3 do
+        BR.Damage.noteRefusal(1, BR.ShotRefusal.NOT_LIVE)
+        BR.Damage.noteRefusal(1, BR.ShotRefusal.SAME_SQUAD)
+        BR.Damage.noteRefusal(1, BR.ShotRefusal.SELF)
+    end
+    ok(#sent == 0,
+        'punching in warmup and hitting a squadmate never trip the threshold',
+        tostring(#sent))
+
+    -- ...and the ones that mean something still do, from the same clean slate.
+    BR.Damage.forgetRefusals(1)
+    cfg.refusalAction = 'notify'
+    sent = {}
+    for _ = 1, cfg.refusalLimit do
+        BR.Damage.noteRefusal(1, BR.ShotRefusal.NO_WEAPON)
+    end
+    ok(#sent > 0, 'while a weapon the server never issued still does',
+        tostring(#sent))
+    cfg.refusalAction = 'log'
+    BR.Damage.forgetRefusals(1)
 end
 
 describe('combat.attribution')

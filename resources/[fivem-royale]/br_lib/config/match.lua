@@ -294,29 +294,50 @@ BR.Config.Combat = {
 
     -- WHICH DAMAGE TYPES WE TAKE OVER.
     --
-    -- weaponDamageEvent carries every kind of damage, not just gunfire, and
-    -- `damageType` says which. Exactly ONE value has been observed in game:
-    -- 3, on every captured bullet payload. Melee, explosions, fire, falls and
-    -- vehicle impacts all have their own numbers and NONE of them have been
-    -- confirmed here.
+    -- The assumption was that gunfire, melee and explosions would each carry a
+    -- different `damageType` and that this table would sort them out. They do
+    -- not. Measured with /brdamagelog on 2026-08-08:
     --
-    -- So the validator takes over the type it knows and PASSES THE REST
-    -- THROUGH untouched. That is deliberate, and it is not the same as
-    -- ignoring them: refusing an unknown type would mean grenades doing
-    -- nothing the moment a thrown weapon reports as something other than a
-    -- bullet, and taking one over on a guessed number would apply our damage
-    -- table to a fall. Passing through leaves the engine in charge of paths we
-    -- have not measured, which is exactly where M5 left them.
+    --   bullet     WEAPON_CARBINERIFLE  damageType 3
+    --   melee      WEAPON_UNARMED       damageType 3
+    --   explosion  WEAPON_GRENADE       damageType 3
     --
-    -- /brdamagelog prints damageType on every sample. One melee hit and one
-    -- grenade settle this, and then those numbers move into `takeOver`.
+    -- One number for all three. `damageType` is not the discriminator here --
+    -- `weaponType` is, and the weapon table tells the paths apart by w.melee
+    -- and w.explosive instead. Which means this gate was already letting melee
+    -- and explosions through and nobody had to widen it.
+    --
+    -- It is kept for the types nobody has produced yet: fire, drowning, falls,
+    -- vehicle impacts. Taking one of those over on a guess would apply the
+    -- weapon damage table to a fall down a staircase; passing it through
+    -- leaves the engine in charge of exactly what M5 left it in charge of, and
+    -- an unknown type prints once rather than vanishing.
     damageTypes = {
-        BULLET = 3,     -- CONFIRMED in game, 2026-08-06
+        BULLET    = 3,  -- CONFIRMED in game, 2026-08-06
+        MELEE     = 3,  -- CONFIRMED in game, 2026-08-08 (same number)
+        EXPLOSION = 3,  -- CONFIRMED in game, 2026-08-08 (same number)
     },
     -- Types the validator owns. Anything else is left to the engine and
     -- counted, so an unknown type shows up as a log line rather than as
     -- silence.
     takeOver = { [3] = true },
+
+    -- HOW LONG A THROWN EXPLOSIVE STAYS YOURS.
+    --
+    -- A grenade goes off a second or more after it leaves the hand, and
+    -- throwing the last one empties the slot -- so the validator cannot ask
+    -- "are you holding a grenade" when the blast lands. It asks whether the
+    -- server watched you spend one recently instead.
+    --
+    -- This is not the security boundary; the inventory is. Nobody reaches this
+    -- check without the server having issued them the explosive and seen the
+    -- count fall. The window only stops that credit lasting the whole match.
+    --
+    -- Generous because the alternative is refusing honest kills: 30s covers a
+    -- grenade cook, a bounce, and a sticky bomb stuck to a car that the thrower
+    -- waits to detonate. A sticky left longer than this is refused, which is
+    -- the one known limitation and is bounded by how rare stickies are.
+    explosiveGraceMs = 30000,
 
     -- Slack, and it is load-bearing. Roster positions are sampled at 2Hz, so
     -- at the instant of a shot both players can be half a second stale --
