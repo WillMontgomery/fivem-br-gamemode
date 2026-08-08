@@ -173,6 +173,19 @@ local function isHusk(e)
     return e.kind == 'husk'
 end
 
+--- The pitch an item RESTS at, in degrees.
+---
+--- Only long things lie down. A rifle standing on end sinks into the terrain
+--- however carefully its centre is placed; lying flat it sits on it. An ammo
+--- box or a medkit is a box -- it spawns the right way up, and tipping it onto
+--- its side is worse rather than better (user, 2026-08-08).
+--- @param e table
+--- @return number
+local function restPitchOf(e)
+    if e.kind == BR.ItemKind.WEAPON then return L.restPitch or 90.0 end
+    return L.hoverPitch or 0.0
+end
+
 -- --------------------------------------------------------------------------
 -- Models
 -- --------------------------------------------------------------------------
@@ -288,6 +301,9 @@ local function groundZ(e)
 end
 
 local function despawn(e)
+    -- The settled height belongs to THAT object handle and that pose. A prop
+    -- rebuilt after streaming out has to be measured again.
+    e.restZ, e.settled = nil, false
     if e.obj then
         byObject[e.obj] = nil
         if DoesEntityExist(e.obj) then DeleteEntity(e.obj) end
@@ -478,7 +494,32 @@ local function drain()
                                 -- frozen anyway, and it makes a rifle lie flat
                                 -- on a slope instead of hovering.
                                 if not solid then
+                                    -- POSE FIRST, THEN SETTLE, THEN REMEMBER.
+                                    --
+                                    -- The native works off the model's
+                                    -- bounding box, and a rifle lying flat has
+                                    -- a very different box from one standing
+                                    -- on end -- settle before posing and it
+                                    -- lands at the wrong height for the pose
+                                    -- it is about to take.
+                                    SetEntityRotation(obj, restPitchOf(e), 0.0,
+                                        e.heading or 0.0, 2, true)
                                     PlaceObjectOnGroundProperly(obj)
+
+                                    -- WHERE IT ACTUALLY ENDED UP is the number
+                                    -- the hover rises from and returns to, and
+                                    -- it is not knowable any other way: it
+                                    -- depends on the model and the slope.
+                                    --
+                                    -- Captured HERE rather than at the first
+                                    -- settle because the object is frozen a
+                                    -- few lines below, and this native does
+                                    -- not move a frozen entity. Two earlier
+                                    -- guesses -- the bare ground z, then
+                                    -- ground + 0.35 -- buried it and then
+                                    -- floated it (user, 2026-08-08).
+                                    local c = GetEntityCoords(obj)
+                                    e.restZ = c.z
                                 end
 
                                 -- CRATES ARE PHYSICAL. Drive into one and it
@@ -901,21 +942,28 @@ local function animate(e, d2, dt, now)
     if isContainer(e) or isHusk(e) then return end
 
     local gz = groundZ(e)
-    -- WHERE "ON THE GROUND" ACTUALLY IS, and getting this wrong is what sank
-    -- every item. Props here are built at `gz + restLift` and, being static,
-    -- simply stayed there -- so `gz` was never their resting height, it was
-    -- 0.35m below it. Writing gz every frame buried them (user, 2026-08-08:
-    -- "not coming back down to be flush with the ground"). One number, shared
-    -- with the spawn, so the two cannot disagree again.
-    local rest = gz + (L.restLift or 0.35)
 
-    -- PITCH IS THE OTHER HALF OF THE CLIPPING. A rifle standing on end sinks
-    -- into the terrain however carefully its centre is placed; lying flat it
-    -- sits on it. So the item LIES DOWN when it settles and STANDS UP when it
-    -- rises to be taken, which is also the read the hover wants -- an object
-    -- presenting itself rather than one dropped.
-    local pitch = (L.restPitch or 90.0)
-                + ((L.hoverPitch or 0.0) - (L.restPitch or 90.0)) * ease(e.lift or 0.0)
+    -- WHERE "ON THE GROUND" ACTUALLY IS -- ASKED, NOT CALCULATED.
+    --
+    -- Two wrong answers first. `gz` buried everything, because the spawn drops
+    -- props at `gz + 0.35`. Then `gz + 0.35` left them floating, because the
+    -- spawn ALSO calls PlaceObjectOnGroundProperly straight afterwards, which
+    -- settles them onto the surface -- so the number the animation was
+    -- restoring had never been where they actually sat (user, 2026-08-08).
+    --
+    -- Neither number was ever knowable from here: it depends on the model's
+    -- bounding box and the slope under it. So the native that already knows
+    -- is asked, once per settle, and its answer is remembered as `restZ`.
+    local rest = e.restZ or (gz + (L.restLift or 0.35))
+
+    -- PITCH IS THE OTHER HALF OF THE CLIPPING, BUT ONLY FOR LONG THINGS.
+    --
+    -- A rifle standing on end sinks into the terrain however carefully its
+    -- centre is placed; lying flat it sits on it. An ammo box or a medkit is
+    -- a box -- it spawns the right way up and tipping it onto its side is
+    -- worse, not better (user, 2026-08-08). So only weapons lie down.
+    local rp = restPitchOf(e)
+    local pitch = rp + ((L.hoverPitch or 0.0) - rp) * ease(e.lift or 0.0)
 
     -- ARRIVAL. A parabola, not a straight line: the extra height is what
     -- makes it read as thrown rather than slid.
@@ -951,13 +999,16 @@ local function animate(e, d2, dt, now)
 
     local k = ease(e.lift)
     if k <= 0.001 then
-        -- Fully at rest. Written once on the way down rather than every frame
+        -- Fully at rest. Done once on the way down rather than every frame
         -- forever: a hundred items on the floor should cost nothing.
         if e.settled then return end
         e.settled = true
+
+        -- Back to exactly where the spawn settled it -- see the note there
+        -- for why that height is captured once and never recomputed. The prop
+        -- is frozen by now, so PlaceObjectOnGroundProperly would do nothing.
+        SetEntityRotation(e.obj, rp, 0.0, e.spin or (e.heading or 0.0), 2, true)
         SetEntityCoordsNoOffset(e.obj, e.x, e.y, rest, false, false, false)
-        SetEntityRotation(e.obj, L.restPitch or 90.0, 0.0,
-                          e.spin or (e.heading or 0.0), 2, true)
         return
     end
     e.settled = false
@@ -1373,22 +1424,31 @@ BR.Keys.on('interact', function(pressed)
     interactPressed()
 end)
 
--- TWO INPUTS, ONE ACTION. The prompt draws ~INPUT_CONTEXT~ because a custom
--- binding's token renders as a blank hole on this build (settled in-game
--- 2026-08-05, /brpromptcheck), and a prompt showing a key that does nothing is
--- worse than no prompt -- so GTA's own context control works too. Ours still
--- works alongside it, and both are things the player configures.
+-- ONE INPUT, AND THE PLAYER'S OWN.
+--
+-- This used to ALSO poll GTA's context control (51) directly, as a workaround
+-- for a label problem: a custom binding's `~INPUT_<hash>~` token renders as a
+-- blank hole on this build, and a prompt showing a key that does nothing is
+-- worse than no prompt -- so vanilla E was wired up alongside the binding to
+-- make the sign honest.
+--
+-- That workaround is now the bug. With the label read correctly from the
+-- keymapping, rebinding interact to R left BOTH R and E working, and E was a
+-- ghost key mentioned nowhere (user, 2026-08-08). It also quietly broke this
+-- project's oldest standing rule -- no code polls a raw control id -- since
+-- nothing a player does in the pause menu could ever turn control 51 off.
+--
+-- The keymapping is the only input now. BR.Keys owns it, the pause menu
+-- configures it, and the prompt names it.
+--
+-- The release side lives here rather than in the BR.Keys handler for one
+-- reason: a hold that is interrupted by anything OTHER than letting go --
+-- walking out of range, the item being claimed by somebody else -- clears
+-- hold.id elsewhere, and this is the frame check that notices the key is no
+-- longer down at all.
 BR.Loop.register(BR.Loop.FRAME, 'loot.interact', function()
     if not canTake() then return end
-    local control = L.promptControl
-    if not control then return end
-
-    if IsControlJustPressed(0, control) then
-        interactPressed()
-    elseif hold.id and not IsControlPressed(0, control)
-           and not BR.Keys.isHeld('interact') then
-        -- Released: either input letting go cancels, so long as neither is
-        -- still down.
+    if hold.id and not BR.Keys.isHeld('interact') then
         hold.id = nil
     end
 end)
