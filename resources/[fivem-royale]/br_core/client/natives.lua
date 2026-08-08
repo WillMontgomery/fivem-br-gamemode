@@ -625,6 +625,18 @@ function BR.Native.check()
     -- forward vector (user call: you turn towards a thing to interact with
     -- it), so a nil here is a ray that always points at world origin.
     probe('GetEntityForwardVector',  function() return GetEntityForwardVector(ped) end)
+    -- LOOT CHOREOGRAPHY. Loose items arc out of crates, hover when you are in
+    -- range and fly to your hands when taken -- all of which is these two
+    -- natives called per frame on a prop. A nil in either is not a subtle
+    -- failure: it throws every frame, and five throws suspend loot.render,
+    -- which takes the glow, the labels and the prompt with it.
+    --
+    -- NoOffset specifically: SetEntityCoords applies a model-height offset
+    -- that would sink the item into the ground as it lands.
+    probe('SetEntityCoordsNoOffset', function()
+        return SetEntityCoordsNoOffset ~= nil
+    end)
+    probe('SetEntityHeading', function() return GetEntityHeading(ped) end)
     -- Reads the player's ACTUAL binding for the prompt's key badge. Without
     -- it the prompt shows no key at all.
     probe('GetControlInstructionalButton', function()

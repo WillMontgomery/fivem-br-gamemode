@@ -58,6 +58,23 @@ local function wireEntry(e)
         z       = e.z,
         prop    = e.prop,
         heading = e.heading,
+        -- WHERE THIS THING CAME FROM, when it came from somewhere.
+        --
+        -- Three floats, present only on entries that were born mid-match --
+        -- a crate bursting open, a player dropping something -- and absent on
+        -- the generated layout, which was always just there. The client uses
+        -- it to arc the prop from its origin to its resting place instead of
+        -- popping it into existence.
+        --
+        -- SENT WITH THE THING IT DESCRIBES, deliberately, rather than
+        -- prefetched during the open-hold. Prefetching a container's contents
+        -- before the claim is confirmed would hand the client a list of what
+        -- is inside crates it has not opened, which is a wallhack for three
+        -- floats' worth of latency we do not actually need: the origin
+        -- travels in the same message as the item.
+        fx      = e.fx,
+        fy      = e.fy,
+        fz      = e.fz,
     }
 end
 
@@ -124,11 +141,15 @@ end
 --- @param y number
 --- @param z number
 --- @return table|nil entry
-function BR.Loot.spawnStack(m, stack, x, y, z)
+--- @param from table|nil  { x, y, z } the item visibly travels FROM, if any
+function BR.Loot.spawnStack(m, stack, x, y, z, from)
     if not m or not m.loot or not stack then return nil end
 
     m.loot.nextId = m.loot.nextId + 1
     local e = {
+        fx = from and from.x or nil,
+        fy = from and from.y or nil,
+        fz = from and from.z or nil,
         id     = m.loot.nextId,
         item   = stack.item,
         kind   = stack.kind,
@@ -177,7 +198,12 @@ function BR.Loot.dropForPlayer(src, stack)
     if not e or not e.pos then return nil end
     local m = zoneFor(src)
     if not m then return nil end
-    return BR.Loot.spawnStack(m, stack, e.pos.x, e.pos.y, e.pos.z)
+    -- FROM THE HAND, not from the floor. The dropped item arcs out of the
+    -- player's grip and lands, which is the same movement the crate burst
+    -- uses in reverse. e.pos is the ped's ROOT, so waist is an offset up.
+    return BR.Loot.spawnStack(m, stack, e.pos.x, e.pos.y, e.pos.z,
+        { x = e.pos.x, y = e.pos.y,
+          z = e.pos.z + (L.waistHeight or 0.75) })
 end
 
 -- --------------------------------------------------------------------------
@@ -510,12 +536,18 @@ local function scatter(m, container)
     -- two players opening the same chest see the same arrangement.
     local spread = L.deathBoxSpread or 0.8
     local radius = math.max(spread, 0.55 * n * spread)
+    -- Everything comes OUT OF THE BOX, a little above its base, so the client
+    -- can arc it rather than popping it into existence at the scatter point.
+    local from = {
+        x = container.x, y = container.y,
+        z = (container.z or 0.0) + (L.crateMouthHeight or 0.6),
+    }
     for i, stack in ipairs(contents) do
         local a = (i / n) * math.pi * 2.0
         BR.Loot.spawnStack(m, stack,
             container.x + math.cos(a) * radius,
             container.y + math.sin(a) * radius,
-            container.z)
+            container.z, from)
     end
 end
 

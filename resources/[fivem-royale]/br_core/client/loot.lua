@@ -65,6 +65,26 @@ local lastPrompt = { id = nil, hold = nil }
 local shineId = nil
 local shineAt = 0
 
+--- Props that are no longer loot, only scenery on its way out.
+---
+--- THE ENTRY DIES THE INSTANT THE SERVER CONFIRMS THE CLAIM. That is the whole
+--- design, and it is the user's (2026-08-08): the moment an item is taken it
+--- stops being targetable, stops prompting and leaves the registry -- so
+--- nothing that follows can be interacted with, mistargeted, or double-claimed.
+--- What is left is a prop with no function, and a prop with no function is
+--- free to be animated however it likes.
+---
+--- Which sidesteps the trap in doing this the other way round: keeping the
+--- entry alive for the length of the animation would mean a window in which
+--- the player can still see a prompt for something that is already in their
+--- inventory.
+---
+--- Swept by forgetAll() and onResourceStop like everything else that holds an
+--- object handle -- an undeleted local object outlives the resource.
+--- @type table<integer, table>
+local retiring = {}
+local retireSeq = 0
+
 --- Until when the spawn worker may build props faster than its steady rate.
 --- Set on the first cell subscription of a life -- i.e. on landing. See
 --- drain() for why the trickle is wrong at exactly that moment.
@@ -275,6 +295,37 @@ local function despawn(e)
     e.obj = nil
 end
 
+--- Hand a prop over to the retiring list instead of deleting it.
+---
+--- Only for loose items with a body already in the world. A crate becomes a
+--- husk rather than vanishing, and a husk is scenery that stays.
+--- @param e table
+--- @param toX number|nil  where it should fly to; nil means straight up
+--- @param toY number|nil
+--- @param toZ number|nil
+local function retireProp(e, toX, toY, toZ)
+    if not e.obj or not DoesEntityExist(e.obj) then return false end
+    local c = GetEntityCoords(e.obj)
+    retireSeq = retireSeq + 1
+    retiring[retireSeq] = {
+        obj = e.obj,
+        fromX = c.x, fromY = c.y, fromZ = c.z,
+        toX = toX or c.x, toY = toY or c.y, toZ = toZ or (c.z + 1.0),
+        at = GetGameTimer(),
+    }
+    byObject[e.obj] = nil
+    e.obj = nil        -- despawn() must not delete it now
+    return true
+end
+
+--- Delete every retiring prop immediately. Teardown, not animation.
+local function clearRetiring()
+    for k, r in pairs(retiring) do
+        if r.obj and DoesEntityExist(r.obj) then DeleteEntity(r.obj) end
+        retiring[k] = nil
+    end
+end
+
 local function forget(id)
     local e = entries[id]
     if not e then return end
@@ -283,10 +334,12 @@ local function forget(id)
     queued[id] = nil
     poses[id] = nil
     if hold.id == id then hold.id = nil end
+    if outlinedId == id then outlinedId = nil end
 end
 
 local function forgetAll()
     clearOutline(entries)
+    clearRetiring()
     for id in pairs(entries) do forget(id) end
     entries, queue, queued, byObject, reported = {}, {}, {}, {}, {}
     myCell, hold.id = nil, nil
@@ -524,6 +577,12 @@ local function addEntries(list)
                     rarity = d.rarity or BR.Rarity.COMMON, count = d.count or 1,
                     x = d.x, y = d.y, z = d.z, prop = d.prop,
                     heading = d.heading,
+                    -- Where it came from, if it came from anywhere: a crate
+                    -- bursting open or a player's hand. Absent on the
+                    -- generated layout, which was always just there.
+                    fx = d.fx, fy = d.fy, fz = d.fz,
+                    bornAt = d.fx and GetGameTimer() or nil,
+                    lift = 0.0,
                 }
             end
         end
@@ -537,7 +596,18 @@ end)
 
 RegisterNetEvent(BR.Net.LOOT_GONE)
 AddEventHandler(BR.Net.LOOT_GONE, function(ids)
-    for _, id in ipairs(ids or {}) do forget(id) end
+    for _, id in ipairs(ids or {}) do
+        local e = entries[id]
+        -- SOMETHING I TOOK FLIES TO ME. Somebody else's pickup just goes --
+        -- LOOT_GONE does not say who claimed it, and inventing a direction
+        -- would be a lie about where a player is standing.
+        if e and claimedByMe[id] and not isContainer(e) and not isHusk(e) then
+            local ped = PlayerPedId()
+            local p = GetEntityCoords(ped)
+            retireProp(e, p.x, p.y, p.z + (L.waistHeight or 0.75))
+        end
+        forget(id)
+    end
 end)
 
 -- A br_ui restart does not touch this, but a RECONNECT does: the snapshot
@@ -683,6 +753,31 @@ end
 --- @param px number
 --- @param py number
 --- @return table|nil
+--- Is the player actually LOOKING at this thing?
+---
+--- Walking down a corridor of loot used to flicker a prompt for whichever item
+--- happened to be nearest, including ones behind you (user, 2026-08-08). The
+--- ray-cast branch below already implies facing; this is the proximity
+--- fallback, which did not.
+---
+--- Ped forward rather than camera forward: the prompt is about what the
+--- CHARACTER can reach, and in third person the camera can be looking
+--- somewhere the ped is not.
+--- @param ped integer
+--- @param px number
+--- @param py number
+--- @param e table
+--- @return boolean
+local function facing(ped, px, py, e)
+    local dx, dy = e.x - px, e.y - py
+    local len = math.sqrt(dx * dx + dy * dy)
+    -- Standing on top of it: there is no direction to disagree with.
+    if len < 0.35 then return true end
+
+    local f = GetEntityForwardVector(ped)
+    return ((dx / len) * f.x + (dy / len) * f.y) >= (L.promptFacingDot or 0.55)
+end
+
 local function targetEntry(px, py)
     local hit, _, entity = BR.Native.aim(L.pickupDistance + 1.5, 16)
     if hit and entity and entity ~= 0 then
@@ -694,7 +789,15 @@ local function targetEntry(px, py)
             return e
         end
     end
-    return nearestEntry(px, py, L.pickupDistance)
+
+    local near = nearestEntry(px, py, L.pickupDistance)
+    -- A container is exempt: a crate is a metre-wide box you are standing at,
+    -- and making players line up with one to open it is friction for nothing.
+    if near and not isContainer(near)
+       and not facing(PlayerPedId(), px, py, near) then
+        return nil
+    end
+    return near
 end
 
 --- The prompt page. One browser for the whole system, created on first use.
@@ -745,6 +848,124 @@ local function setPrompt(e, holdMs)
         ring   = container,
         holdMs = holdMs,
     })
+end
+
+--- Smoothstep, so eases start and end at rest rather than jerking into motion.
+--- @param t number 0..1
+--- @return number
+local function ease(t)
+    if t <= 0.0 then return 0.0 end
+    if t >= 1.0 then return 1.0 end
+    return t * t * (3.0 - 2.0 * t)
+end
+
+--- Move a value toward a target by at most `step`.
+local function approach(v, target, step)
+    if v < target then return math.min(target, v + step) end
+    return math.max(target, v - step)
+end
+
+--- Animate one loose item's prop for this frame.
+---
+--- LOOSE ITEMS ONLY. Crates and husks are physics objects with collision that
+--- the drag loop owns; hovering one would fight that loop and also lie -- a
+--- crate is furniture, and furniture does not float.
+---
+--- Three things stack, in order:
+---
+---   ARRIVAL  an item born from a crate or a drop flies an arc from where it
+---            came from to where it lands. Runs once, from the entry's own
+---            birth stamp, so it looks the same for a player who was already
+---            standing there and one who walked up mid-flight.
+---   HOVER    inside prompt range it rises to about waist height. Eased both
+---            ways: a snap reads as a bug, a rise reads as "take me".
+---   BOB+SPIN a slow turn and a shallow breath, scaled by how lifted it is --
+---            so an item resting on the ground is perfectly still.
+--- @param e table
+--- @param d2 number  squared distance to the player
+--- @param dt number  ms since the last frame
+--- @param now number
+local function animate(e, d2, dt, now)
+    if not e.obj or not DoesEntityExist(e.obj) then return end
+    if isContainer(e) or isHusk(e) then return end
+
+    local gz = groundZ(e)
+    local x, y, z = e.x, e.y, gz
+
+    -- ARRIVAL. A parabola, not a straight line: the extra height is what
+    -- makes it read as thrown rather than slid.
+    local arriveMs = L.arriveMs or 520
+    if e.fx and e.bornAt and (now - e.bornAt) < arriveMs then
+        local t = (now - e.bornAt) / arriveMs
+        local k = ease(t)
+        x = e.fx + (e.x - e.fx) * k
+        y = e.fy + (e.y - e.fy) * k
+        z = (e.fz or gz) + (gz - (e.fz or gz)) * k
+            + math.sin(t * math.pi) * (L.arriveArc or 0.55)
+        SetEntityCoordsNoOffset(e.obj, x, y, z, false, false, false)
+        -- Spinning through the air, and it keeps the phase for the hover.
+        e.spin = ((e.spin or 0.0) + (L.spinDegPerSec or 55.0) * 3.0
+                  * (dt / 1000.0)) % 360.0
+        SetEntityHeading(e.obj, e.spin)
+        e.lift = 0.0
+        return
+    end
+
+    -- HOVER, toward 1 when the player is close enough to be offered it.
+    local pr = L.promptDistance or 2.5
+    local want = (d2 <= pr * pr) and 1.0 or 0.0
+    local ms = (want > (e.lift or 0.0)) and (L.hoverRiseMs or 320)
+                                        or (L.hoverFallMs or 420)
+    e.lift = approach(e.lift or 0.0, want, dt / math.max(ms, 1))
+
+    local k = ease(e.lift)
+    if k <= 0.001 then
+        -- Fully at rest. Written once on the way down rather than every frame
+        -- forever: a hundred items on the floor should cost nothing.
+        if e.settled then return end
+        e.settled = true
+        SetEntityCoordsNoOffset(e.obj, e.x, e.y, gz, false, false, false)
+        return
+    end
+    e.settled = false
+
+    local bob = math.sin(now / math.max(L.bobPeriodMs or 1900, 1) * math.pi * 2.0)
+                * (L.bobAmplitude or 0.06) * k
+    SetEntityCoordsNoOffset(e.obj, e.x, e.y,
+        gz + k * (L.hoverHeight or 0.55) + bob, false, false, false)
+
+    e.spin = ((e.spin or 0.0) + (L.spinDegPerSec or 55.0) * k * (dt / 1000.0))
+             % 360.0
+    SetEntityHeading(e.obj, e.spin)
+end
+
+--- Fly every retiring prop to its destination, then delete it.
+---
+--- These are not loot any more -- see the note on `retiring`. Nothing here can
+--- be targeted, prompted or claimed; it is scenery being cleared away.
+--- @param now number
+local function stepRetiring(now)
+    local ms = L.takeMs or 400
+    for k, r in pairs(retiring) do
+        local t = (now - r.at) / ms
+        if t >= 1.0 or not r.obj or not DoesEntityExist(r.obj) then
+            if r.obj and DoesEntityExist(r.obj) then DeleteEntity(r.obj) end
+            retiring[k] = nil
+        else
+            local p = ease(t)
+            SetEntityCoordsNoOffset(r.obj,
+                r.fromX + (r.toX - r.fromX) * p,
+                r.fromY + (r.toY - r.fromY) * p,
+                -- Lifts clear of the ground first, then travels -- otherwise
+                -- it ploughs through the floor on the way to a waist.
+                r.fromZ + (r.toZ - r.fromZ) * p + math.sin(t * math.pi) * 0.25,
+                false, false, false)
+            SetEntityHeading(r.obj, (t * 540.0) % 360.0)
+            -- Shrinking would be nicer than spinning, but there is no scale
+            -- native for a plain object -- SetEntityScale does not exist for
+            -- these. The spin plus the arc is what sells it.
+        end
+    end
 end
 
 -- Glow, labels, the prompt and the container hold, all off one pass over the
@@ -821,8 +1042,17 @@ BR.Loop.register(BR.Loop.TICK, 'loot.crates', function()
     end
 end)
 
-BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
+BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
+    local frameNow = GetGameTimer()
+
+    -- BEFORE THE EARLY-OUT, and deliberately. A retiring prop is no longer an
+    -- entry, so claiming the last item in scope would otherwise leave it
+    -- frozen in mid-air forever -- `next(entries)` is false and nothing runs.
+    if next(retiring) then stepRetiring(frameNow) end
+
     if not canSee() or not next(entries) then return end
+
+    dt = (dt and dt > 0) and math.min(dt, 100) or 16
 
     local ped = PlayerPedId()
     local p = GetEntityCoords(ped)
@@ -908,6 +1138,7 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
         -- standing in the sea still had its rarity disc painted on the waves
         -- (user, 2026-08-06).
         if d2 <= glow2 and not isHusk(e) and e.gzOk then
+            animate(e, d2, dt, frameNow)
             local gz = groundZ(e)
             local info = BR.RarityInfo[e.rarity] or BR.RarityInfo[BR.Rarity.COMMON]
             local c = info.rgb
@@ -1046,7 +1277,15 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
                 L.crateLabelSize or 0.55, L.crateLabelLift or 0.02)
         else
             -- No `dist`: a fixed size, not one that inflates on approach.
-            BR.Dui.drawWorld(promptPage(), shown.x, shown.y, gz + 1.05, 1.0)
+            --
+            -- RIDES THE ITEM UP. The prop hovers to about waist height when
+            -- the player is close enough to be offered it, and a label left
+            -- at a fixed altitude would slide down the item as it rose.
+            -- `shown.lift` is the same eased 0..1 the animation uses, so the
+            -- two cannot drift apart.
+            local lift = ease(shown.lift or 0.0) * (L.hoverHeight or 0.55)
+            BR.Dui.drawWorld(promptPage(), shown.x, shown.y,
+                gz + 1.05 + lift, L.promptScale or 1.35)
         end
     end
 end)

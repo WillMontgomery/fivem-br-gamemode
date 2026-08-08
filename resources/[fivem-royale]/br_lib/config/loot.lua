@@ -334,6 +334,52 @@ BR.Config.Loot = {
     landingBurst    = 8,
     landingBurstMs  = 4000,
 
+    -- ----------------------------------------------------------------------
+    -- CHOREOGRAPHY. Items are objects, not sprites that blink in and out.
+    -- ----------------------------------------------------------------------
+    --
+    -- Entirely presentational: none of this changes what the server decides,
+    -- who gets an item, or when. Every number here is a client-side ease.
+    --
+    -- Where the world thinks a player's hands are, measured from the ped's
+    -- ROOT (which is at their feet). Used at both ends: a dropped item leaves
+    -- from here, and a taken one travels back to here.
+    waistHeight     = 0.75,
+    -- Where a crate's contents come OUT of it, above the crate's base.
+    crateMouthHeight = 0.6,
+
+    -- THE ARRIVAL ARC: born somewhere else, landing here. Only entries that
+    -- carry an origin (crate contents, dropped items) animate; the generated
+    -- layout was always just there and appears without ceremony.
+    arriveMs        = 520,
+    arriveArc       = 0.55,   -- extra metres at the top of the parabola
+
+    -- THE HOVER. Inside prompt range an item rises off the ground, bobs and
+    -- turns; outside it, it settles back. Both directions eased, because a
+    -- snap reads as a bug and this is meant to read as "you can take this".
+    hoverHeight     = 0.55,
+    hoverRiseMs     = 320,
+    hoverFallMs     = 420,
+    bobAmplitude    = 0.06,
+    bobPeriodMs     = 1900,
+    spinDegPerSec   = 55.0,
+
+    -- THE PICKUP. The prompt and the marker go first, then the prop flies to
+    -- the taker and vanishes. By the time any of this is on screen the item is
+    -- already gone from the registry -- it is scenery being cleared away, not
+    -- something you could still interact with (user call, 2026-08-08).
+    takeMs          = 400,
+
+    -- FACING. The prompt only appears for an item the player is actually
+    -- looking at -- otherwise walking down a corridor of loot flickers a
+    -- prompt for whatever happens to be nearest. Cosine of the half-angle, so
+    -- 0.55 is roughly a 113-degree cone.
+    promptFacingDot = 0.55,
+
+    -- How big the floating "press to pick up" panel draws. 1.0 was the old
+    -- fixed size and read small next to the crate label (user, 2026-08-08).
+    promptScale     = 1.35,
+
     -- How often the "which crate shines" search runs. That search is a full
     -- walk of every streamed entry; the FADE is still per-frame, so this only
     -- controls how quickly the glow can jump to a different crate.

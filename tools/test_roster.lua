@@ -3820,6 +3820,82 @@ do
         tostring(BR.Inv.of(1).slots[1].clip))
 end
 
+describe('loot.origin')
+do
+    -- WHERE A THING CAME FROM TRAVELS WITH IT.
+    --
+    -- Items born mid-match -- a crate bursting open, a player dropping
+    -- something -- carry fx/fy/fz so the client can arc the prop from its
+    -- origin instead of popping it into existence at the destination.
+    --
+    -- SENT WITH THE ITEM, not prefetched during the open-hold. Prefetching a
+    -- container's contents before the claim is confirmed would hand the client
+    -- a list of what is inside crates it has not opened -- a wallhack, for
+    -- three floats of latency nobody needs.
+    local m = lootMatch()
+    BR.Inv.reset(1)
+    BR.Roster.get(1).pos = { x = 500.0, y = 500.0, z = 40.0 }
+
+    -- Subscribe so this player actually receives the announcements.
+    local cx, cy = BR.LootCellOf(500.0, 500.0)
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+
+    -- A DROP comes out of the dropper's hands, not off the floor.
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    sent = {}
+    fire(BR.Net.INV_DROP, 1, { slot = 1 })
+    local dropped = nil
+    for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+        for _, entry in ipairs(s.args[1]) do
+            if entry.item == 'pistol' then dropped = entry end
+        end
+    end
+    ok(dropped ~= nil, 'dropping an item announces it')
+    ok(dropped and dropped.fz ~= nil and dropped.fz > dropped.z,
+        'and it comes from ABOVE where it lands -- the dropper\'s hands',
+        dropped and ('%s from %s'):format(tostring(dropped.z),
+                                          tostring(dropped.fz)) or 'nil')
+
+    -- THE GENERATED LAYOUT HAS NO ORIGIN. It was always just there, and an
+    -- arc from nowhere would be an item flying out of the ground on the first
+    -- frame a player sees it.
+    local layoutHasOrigin = false
+    for _, e in pairs(m.loot.items) do
+        if not e.dropped and e.fx then layoutHasOrigin = true end
+    end
+    ok(not layoutHasOrigin, 'while the generated layout carries no origin')
+
+    -- A CRATE'S CONTENTS COME OUT OF THE CRATE.
+    local crate = nil
+    for _, e in pairs(m.loot.items) do
+        if e.kind == 'chest' and e.contents and #e.contents > 0 then
+            crate = e break
+        end
+    end
+    if crate then
+        BR.Roster.get(1).pos = { x = crate.x, y = crate.y, z = crate.z }
+        local ccx, ccy = BR.LootCellOf(crate.x, crate.y)
+        fire(BR.Net.LOOT_CELL, 1, { cx = ccx, cy = ccy })
+        sent = {}
+        fire(BR.Net.LOOT_CLAIM, 1, { id = crate.id })
+        local scattered = 0
+        for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+            for _, entry in ipairs(s.args[1]) do
+                if entry.fx and math.abs(entry.fx - crate.x) < 0.01
+                   and math.abs(entry.fy - crate.y) < 0.01 then
+                    scattered = scattered + 1
+                end
+            end
+        end
+        ok(scattered > 0,
+            'and a crate\'s contents come out of the crate, not out of nowhere',
+            tostring(scattered))
+    else
+        ok(false, 'no chest with contents in the layout to test against')
+    end
+end
+
 describe('combat.paths')
 do
     -- THREE ANSWERS TO "WHOSE HIT IS THIS", decided by weaponType.

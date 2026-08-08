@@ -182,6 +182,19 @@ function BR.Storm.begin(m)
     print(('[br_core] storm: match %d homing on %s (%.0f, %.0f) -- opening r %.0f, hold %.0fs (furthest %.0fm)')
         :format(m.id, tostring(a.name), a.x, a.y, r0, waitSec, furthest))
     enterPhase(m, 1, a.x, a.y, r0, GetGameTimer(), waitSec)
+
+    -- A MATCH STARTED UNDER A FREEZE INHERITS IT. Without this, freezing the
+    -- storm and then starting a fresh match quietly gives you a live one --
+    -- which is the failure you would not notice until the wall was on top of
+    -- you, an hour into whatever you were actually testing.
+    if BR.Storm.isFrozen and BR.Storm.isFrozen() then
+        local now = GetGameTimer()
+        m.storm = BR.BuildStormRecord(1, a.x, a.y, r0, a.x, a.y, r0,
+            now, 24 * 60 * 60 * 1000, 1000, 0.0)
+        publish(m)
+        print(('[br_core] storm: match %d starts FROZEN (brstormfreeze is on)')
+            :format(m.id))
+    end
 end
 
 --- Which player states the storm can hurt. Airborne players are untouchable
@@ -314,6 +327,73 @@ RegisterCommand('brphase', function(_, args)
     print(('[br_core] admin: match %d storm jumped to phase %d'):format(m.id, n))
     enterPhase(m, n, cx, cy, r, GetGameTimer())
 end, true)
+
+--- FREEZE THE STORM WHERE IT STANDS. Dev mode only.
+---
+---   brstormfreeze          freeze every live match's wall at its current
+---                          radius: no more phases, no more damage
+---   brstormfreeze off      thaw -- re-enter the current phase from where the
+---                          wall is now, so the resume is seamless
+---
+--- Exists so a match can be left running indefinitely while something else is
+--- being tested, without the storm eventually deciding the session (user,
+--- 2026-08-08). The alternative -- `brstormscale 1.0` and racing it -- makes
+--- every long test a stopwatch.
+---
+--- IMPLEMENTED AS A RECORD, NOT A FLAG, and that is the whole trick. Skipping
+--- the phase job would not have worked: BR.StormAt solves the wall from the
+--- record's own timeline, so the circle would go on shrinking to r1 and sit
+--- there at FINISHED with the last phase's dps still burning. Instead the
+--- current record is REPLACED with one whose r0 = r1 = wherever the wall is
+--- this instant, dps 0, and a hold long enough to outlast any session. Every
+--- client solves that to a stationary, harmless circle with no special case at
+--- either end, and nothing else in the file needs to know.
+local frozen = false
+
+RegisterCommand('brstormfreeze', function(_, args)
+    if not BR.Server.devMode then
+        print('  brstormfreeze is dev-mode only (br_devMode true)')
+        return
+    end
+
+    local thaw = (args[1] == 'off' or args[1] == 'thaw')
+    local now = GetGameTimer()
+    local touched = 0
+
+    BR.Server.eachMatch(function(m)
+        if not m.storm then return end
+        local cx, cy, r = BR.StormAt(m.storm, now)
+        local phase = m.storm.phase
+
+        if thaw then
+            -- Re-enter the phase we were in, from where the wall is now.
+            enterPhase(m, phase, cx, cy, r, now)
+        else
+            -- A day of holding. Long enough that no session outlives it, and
+            -- still a real number rather than an infinity that would poison
+            -- every subtraction the clients do with it.
+            m.storm = BR.BuildStormRecord(phase, cx, cy, r, cx, cy, r,
+                now, 24 * 60 * 60 * 1000, 1000, 0.0)
+            publish(m)
+        end
+        touched = touched + 1
+    end)
+
+    frozen = not thaw
+    print(('[br_core] storm %s (%d match%s)'):format(
+        thaw and 'THAWED -- phases and damage resume'
+             or 'FROZEN -- no phases, no damage, wall stays put',
+        touched, touched == 1 and '' or 'es'))
+    if not thaw and touched == 0 then
+        print('  (no live storm yet -- it will freeze as soon as one starts)')
+    end
+end, true)
+
+--- Is the storm currently held by brstormfreeze?
+--- Read by BR.Storm.begin so a match starting AFTER the freeze inherits it
+--- rather than quietly running a live storm under a frozen session.
+--- @return boolean
+function BR.Storm.isFrozen() return frozen end
 
 RegisterCommand('brstormscale', function(_, args)
     local s = tonumber(args[1])
