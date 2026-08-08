@@ -292,6 +292,32 @@ BR.Config.Combat = {
     refusalLimit    = 12,
     refusalWindowMs = 30000,
 
+    -- WHICH DAMAGE TYPES WE TAKE OVER.
+    --
+    -- weaponDamageEvent carries every kind of damage, not just gunfire, and
+    -- `damageType` says which. Exactly ONE value has been observed in game:
+    -- 3, on every captured bullet payload. Melee, explosions, fire, falls and
+    -- vehicle impacts all have their own numbers and NONE of them have been
+    -- confirmed here.
+    --
+    -- So the validator takes over the type it knows and PASSES THE REST
+    -- THROUGH untouched. That is deliberate, and it is not the same as
+    -- ignoring them: refusing an unknown type would mean grenades doing
+    -- nothing the moment a thrown weapon reports as something other than a
+    -- bullet, and taking one over on a guessed number would apply our damage
+    -- table to a fall. Passing through leaves the engine in charge of paths we
+    -- have not measured, which is exactly where M5 left them.
+    --
+    -- /brdamagelog prints damageType on every sample. One melee hit and one
+    -- grenade settle this, and then those numbers move into `takeOver`.
+    damageTypes = {
+        BULLET = 3,     -- CONFIRMED in game, 2026-08-06
+    },
+    -- Types the validator owns. Anything else is left to the engine and
+    -- counted, so an unknown type shows up as a log line rather than as
+    -- silence.
+    takeOver = { [3] = true },
+
     -- Slack, and it is load-bearing. Roster positions are sampled at 2Hz, so
     -- at the instant of a shot both players can be half a second stale --
     -- about 4.5m each at a sprint. Refusing an honest shot is a broken game;

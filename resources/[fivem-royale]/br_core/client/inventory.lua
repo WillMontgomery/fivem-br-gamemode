@@ -526,6 +526,37 @@ BR.Loop.register(BR.Loop.TICK, 'inv.apply', function()
     -- 2026-08-05).
     if panelOpen and IsPauseMenuActive() then closePanel() end
 
+    -- A WEAPON WE DID NOT ISSUE DOES NOT STAY IN THE HAND.
+    --
+    -- applyActive only acts when the ACTIVE SLOT changes, so a weapon that
+    -- appeared by some other route -- a trainer, anything -- simply sat there
+    -- until the next switch. The server already refuses its shots, so nothing
+    -- was ever at stake; what it produced was the corpse-that-is-alive desync,
+    -- because the engine applies damage locally before the server sees it
+    -- (user, 2026-08-08).
+    --
+    -- Taking it out of the hand is what stops that happening at all, rather
+    -- than correcting it a round trip later. This is defence in depth and not
+    -- the defence: a cheat that disables this file entirely is still refused
+    -- server-side, which is the half that actually matters.
+    do
+        local ped = PlayerPedId()
+        local ok, held = GetCurrentPedWeapon(ped, true)
+        if ok then
+            local h = BR.NormHash(held)
+            local wantHash = BR.NormHash(hashOf(inv.slots[inv.active]))
+            -- Fists and the parachute are never ours to strip: the chute is
+            -- granted by skydive.lua and removing it at 400 metres is a death.
+            local allowed = h == BR.NormHash(UNARMED)
+                or h == BR.NormHash(BR.Config.Gadgets.PARACHUTE)
+                or (wantHash ~= nil and h == wantHash)
+            if not allowed then
+                RemoveWeaponFromPed(ped, held)
+                applied = nil          -- force the active slot back on
+            end
+        end
+    end
+
     applyActive(false)
 end)
 

@@ -687,6 +687,35 @@ function BR.Native.check()
     probe('SetPlayerCanDoDriveBy',   function()
         SetPlayerCanDoDriveBy(PlayerId(), true)
     end)
+    -- Taking a weapon the server never issued back out of the hand, so a
+    -- trainer-spawned rifle cannot even produce the local corpse.
+    probe('RemoveWeaponFromPed',     function()
+        -- A weapon the player will not have: proves the binding without
+        -- disarming anybody mid-probe.
+        RemoveWeaponFromPed(ped, GetHashKey('WEAPON_RAILGUN'))
+    end)
+    -- Undoing a refused shot on the SHOOTER's screen. The engine applies
+    -- damage locally before the server sees the event, so a cancelled shot
+    -- still leaves a corpse there -- and health alone does not revive a ped
+    -- that has entered the death state.
+    probe('ResurrectPed',            function()
+        -- On the player's own ped, which is alive: a no-op that proves the
+        -- binding without disturbing anything.
+        if not IsEntityDead(ped) then ResurrectPed(ped) end
+        return 'not called on a live ped'
+    end)
+    probe('ClearPedTasksImmediately', function()
+        -- NOT called on the player -- it would cancel whatever they are doing.
+        return IsEntityDead(ped) and 'ped is dead' or 'ped alive (not called)'
+    end)
+    probe('NetworkDoesNetworkIdExist', function()
+        return NetworkDoesNetworkIdExist(NetworkGetNetworkIdFromEntity(ped))
+    end)
+    probe('NetworkGetEntityFromNetworkId', function()
+        local id = NetworkGetNetworkIdFromEntity(ped)
+        return NetworkGetEntityFromNetworkId(id) == ped
+            and 'round-trips to the same ped' or 'MISMATCH'
+    end)
     -- The mouse wheel belongs to the scope while aiming, not to slot cycling.
     probe('IsPlayerFreeAiming',      function()
         return IsPlayerFreeAiming(PlayerId())

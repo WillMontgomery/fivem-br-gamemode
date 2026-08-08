@@ -101,17 +101,17 @@ BR.Config.Throwables = {
 --- that two-shots is a legendary find, a Broken Bottle is what you swing when
 --- the drop went badly.
 BR.Config.Melee = {
-    { id = 'knuckle',   name = 'WEAPON_KNUCKLE',      hash = 0xD8DF3C3C, label = 'Brass Knuckles',        rarity = R.COMMON,    damage = 32, melee = true },
-    { id = 'bottle',    name = 'WEAPON_BOTTLE',       hash = 0xF9E6AA4B, label = 'Broken Bottle',         rarity = R.COMMON,    damage = 32, melee = true },
-    { id = 'crowbar',   name = 'WEAPON_CROWBAR',      hash = 0x84BD7BFD, label = 'Crowbar',               rarity = R.UNCOMMON,  damage = 40, melee = true },
-    { id = 'bat',       name = 'WEAPON_BAT',          hash = 0x958A4A8F, label = 'Baseball Bat',          rarity = R.UNCOMMON,  damage = 44, melee = true },
-    { id = 'wrench',    name = 'WEAPON_WRENCH',       hash = 0x19044EE0, label = 'Pipe Wrench',           rarity = R.UNCOMMON,  damage = 46, melee = true },
-    { id = 'dagger',    name = 'WEAPON_DAGGER',       hash = 0x92A27487, label = 'Antique Cavalry Dagger',rarity = R.RARE,      damage = 52, melee = true },
-    { id = 'knife',     name = 'WEAPON_KNIFE',        hash = 0x99B507EA, label = 'Knife',                 rarity = R.RARE,      damage = 52, melee = true },
-    { id = 'switchblade',name= 'WEAPON_SWITCHBLADE',  hash = 0xDFE37640, label = 'Switchblade',           rarity = R.RARE,      damage = 54, melee = true },
-    { id = 'machete',   name = 'WEAPON_MACHETE',      hash = 0xDD5DF8D9, label = 'Machete',               rarity = R.RARE,      damage = 58, melee = true },
-    { id = 'hatchet',   name = 'WEAPON_HATCHET',      hash = 0xF9DCBF2D, label = 'Hatchet',               rarity = R.EPIC,      damage = 64, melee = true },
-    { id = 'battleaxe', name = 'WEAPON_BATTLEAXE',    hash = 0xCD274149, label = 'Battle Axe',            rarity = R.EPIC,      damage = 70, melee = true },
+    { id = 'knuckle',   name = 'WEAPON_KNUCKLE',      hash = 0xD8DF3C3C, label = 'Brass Knuckles',        rarity = R.COMMON,    damage = 32, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'bottle',    name = 'WEAPON_BOTTLE',       hash = 0xF9E6AA4B, label = 'Broken Bottle',         rarity = R.COMMON,    damage = 32, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'crowbar',   name = 'WEAPON_CROWBAR',      hash = 0x84BD7BFD, label = 'Crowbar',               rarity = R.UNCOMMON,  damage = 40, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'bat',       name = 'WEAPON_BAT',          hash = 0x958A4A8F, label = 'Baseball Bat',          rarity = R.UNCOMMON,  damage = 44, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'wrench',    name = 'WEAPON_WRENCH',       hash = 0x19044EE0, label = 'Pipe Wrench',           rarity = R.UNCOMMON,  damage = 46, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'dagger',    name = 'WEAPON_DAGGER',       hash = 0x92A27487, label = 'Antique Cavalry Dagger',rarity = R.RARE,      damage = 52, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'knife',     name = 'WEAPON_KNIFE',        hash = 0x99B507EA, label = 'Knife',                 rarity = R.RARE,      damage = 52, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'switchblade',name= 'WEAPON_SWITCHBLADE',  hash = 0xDFE37640, label = 'Switchblade',           rarity = R.RARE,      damage = 54, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'machete',   name = 'WEAPON_MACHETE',      hash = 0xDD5DF8D9, label = 'Machete',               rarity = R.RARE,      damage = 58, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'hatchet',   name = 'WEAPON_HATCHET',      hash = 0xF9DCBF2D, label = 'Hatchet',               rarity = R.EPIC,      damage = 64, melee = true, maxRange = 3.0, minInterval = 450 },
+    { id = 'battleaxe', name = 'WEAPON_BATTLEAXE',    hash = 0xCD274149, label = 'Battle Axe',            rarity = R.EPIC,      damage = 70, melee = true, maxRange = 3.0, minInterval = 450 },
 }
 
 --- Utility weapon hashes referenced directly by gameplay code.

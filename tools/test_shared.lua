@@ -333,6 +333,45 @@ do
         'phase 2 holding deals its authored dps')
 end
 
+describe('combat.melee')
+do
+    -- MELEE IS VALIDATED LIKE ANYTHING ELSE, and needed two fields to be.
+    -- Without a maxRange the range check is skipped entirely, and without a
+    -- minInterval so is the rate check -- so a machete could have "hit"
+    -- somebody across the street, as fast as the events arrived.
+    local cfg = BR.Config.Combat
+    for _, m in ipairs(BR.Config.Melee) do
+        ok(m.maxRange and m.maxRange > 0 and m.maxRange < 6.0,
+            ('%s has a swing reach'):format(m.id), tostring(m.maxRange))
+        ok(m.minInterval and m.minInterval > 0,
+            ('%s has a swing cycle'):format(m.id), tostring(m.minInterval))
+    end
+
+    local machete = BR.Config.WeaponById['machete']
+    local function ctx(over)
+        local c = {
+            sameSrc = false, sameMatch = true, shooterLive = true,
+            victimLive = true, sameSquad = false, heldItem = 'machete',
+        }
+        for k, v in pairs(over or {}) do c[k] = v end
+        return c
+    end
+
+    ok(BR.ValidateShot({ weapon = machete.hash, dist = 1.5, sinceLastMs = 600 },
+        ctx(), cfg), 'a swing in reach lands')
+
+    local _, why = BR.ValidateShot(
+        { weapon = machete.hash, dist = 40.0, sinceLastMs = 600 }, ctx(), cfg)
+    ok(why == BR.ShotRefusal.TOO_FAR,
+        'a machete cannot reach across the street', tostring(why))
+
+    -- A melee weapon has no magazine, so the ammo check must not refuse it --
+    -- `clip` is nil for melee and nil is not "empty".
+    ok(BR.ValidateShot({ weapon = machete.hash, dist = 1.5, sinceLastMs = 600 },
+        ctx({ clip = nil }), cfg),
+        'and having no magazine is not the same as having no ammo')
+end
+
 describe('descent.classify')
 do
     -- THE CANOPY IS THE CASE THAT MATTERS. Both altitude nets in match.lua

@@ -347,6 +347,36 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     local shooter = tonumber(sender)
     if not shooter then return end
 
+    -- ONLY THE DAMAGE TYPES WE HAVE MEASURED.
+    --
+    -- weaponDamageEvent carries every kind of damage -- gunfire, melee,
+    -- explosions, fire, falls, vehicle impacts -- and `damageType` says which.
+    -- Exactly one value has been confirmed in game: 3, on every captured
+    -- bullet payload. The rest are unknown numbers.
+    --
+    -- Passing them through is the deliberate choice, and it is not the same as
+    -- ignoring them. Refusing an unknown type would mean grenades doing
+    -- nothing the moment a thrown weapon reports as something other than a
+    -- bullet; taking one over on a guess would apply our weapon table to a
+    -- fall. Passing through leaves the engine in charge of exactly the paths
+    -- M5 already left it in charge of, and no more.
+    --
+    -- Counted rather than dropped silently, so an unmeasured type announces
+    -- itself once instead of being invisible until somebody notices melee
+    -- hits for the wrong number.
+    local dtype = math.tointeger(data.damageType or -1) or -1
+    if not (cfg.takeOver or {})[dtype] then
+        BR.Damage.seenTypes = BR.Damage.seenTypes or {}
+        if not BR.Damage.seenTypes[dtype] then
+            BR.Damage.seenTypes[dtype] = true
+            print(('[br_core] damageType %d is not one we validate -- left to '
+                .. 'the engine. Capture it with /brdamagelog and add it to '
+                .. 'BR.Config.Combat.takeOver once its meaning is known.')
+                :format(dtype))
+        end
+        return
+    end
+
     -- ONE ROUND, ONCE PER EVENT, AND BEFORE ANY OF THE HIT LOGIC.
     --
     -- Deliberately not inside the per-victim loop below: a shotgun pellet

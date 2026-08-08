@@ -589,15 +589,45 @@ end)
 RegisterNetEvent(BR.Net.HIT_RESYNC)
 AddEventHandler(BR.Net.HIT_RESYNC, function(d)
     if type(d) ~= 'table' or not d.netId then return end
-    if not NetworkDoesNetworkIdExist(d.netId) then return end
-
-    local ped = NetworkGetEntityFromNetworkId(d.netId)
-    if not ped or ped == 0 or not DoesEntityExist(ped) then return end
 
     local hp = math.floor(tonumber(d.hp) or 0)
-    if hp > 0 and GetEntityHealth(ped) < hp then
-        SetEntityHealth(ped, hp)
-    end
+    if hp <= 0 then return end
+
+    -- RESURRECTING, NOT JUST RE-HEALING, AND NOT JUST ONCE.
+    --
+    -- The first version only called SetEntityHealth, which sets a number on a
+    -- corpse: once a ped has ENTERED the death state, health alone does not
+    -- bring it back. The result was a body that lay there for the better part
+    -- of ten seconds before OneSync eventually re-created it at the right
+    -- position (user, 2026-08-08).
+    --
+    -- Retried, because of an ordering problem that cannot be avoided: the
+    -- refusal arrives a round trip AFTER the engine applied the damage
+    -- locally, so the ped may still be mid-death when the first attempt lands
+    -- and the death completes over the top of it. A few attempts across a
+    -- second costs nothing and covers that window.
+    Citizen.CreateThread(function()
+        for _ = 1, 6 do
+            if not NetworkDoesNetworkIdExist(d.netId) then return end
+            local ped = NetworkGetEntityFromNetworkId(d.netId)
+            if not ped or ped == 0 or not DoesEntityExist(ped) then return end
+
+            if IsEntityDead(ped) then
+                -- ResurrectPed leaves the death TASK running, so the ped can
+                -- stand up and immediately play dying again. Clearing tasks is
+                -- what actually ends it.
+                ResurrectPed(ped)
+                ClearPedTasksImmediately(ped)
+                SetEntityHealth(ped, hp)
+            elseif GetEntityHealth(ped) < hp then
+                SetEntityHealth(ped, hp)
+                return
+            else
+                return   -- already correct; the owner's sync got there first
+            end
+            Citizen.Wait(150)
+        end
+    end)
 end)
 
 RegisterNetEvent(BR.Net.HIT_DAMAGE)
