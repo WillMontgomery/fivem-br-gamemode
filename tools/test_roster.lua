@@ -3820,6 +3820,122 @@ do
         tostring(BR.Inv.of(1).slots[1].clip))
 end
 
+describe('combat.paths')
+do
+    -- THREE ANSWERS TO "WHOSE HIT IS THIS", decided by weaponType.
+    --
+    -- The validator used to gate on damageType. A punch that arrived as
+    -- damageType 1 fell through to the engine, which applied GTA's own melee
+    -- damage ON TOP of ours -- two punches killed a full-health player (user,
+    -- 2026-08-08). Chasing that with a longer list of numbers leaves every gap
+    -- in the list as a damage path handed back to the client.
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    BR.Inv.reset(1)
+    for s = 1, 2 do BR.Roster.get(s).pos = { x = s * 1.0, y = 0.0, z = 30.0 } end
+
+    local UNARMED = 2725352035
+    local FALL    = BR.Config.Environmental[1].hash
+
+    -- 1. THE WORLD'S. A fall is not a weapon and must never be refused --
+    -- under the old rule it was "a weapon this gamemode does not issue",
+    -- i.e. a cancelled hit and an anticheat strike against a player who fell
+    -- off a roof.
+    BR.Damage.forgetRefusals(1)
+    local refusalsBefore = BR.Damage.refusals or 0
+    local envBefore = BR.Damage.envHits or 0
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 2, 2, {
+        damageType = 3, weaponType = FALL, hitComponent = 0,
+        weaponDamage = 40, hitGlobalIds = { 1002 },
+    })
+    ok((BR.Damage.envHits or 0) > envBefore,
+        'a fall is recognised as the world hurting somebody')
+    ok((BR.Damage.refusals or 0) == refusalsBefore,
+        'and is never refused')
+
+    -- 2. NEITHER. A weapon nobody was issued is the one thing left worth
+    -- refusing, and widening the pass-through must not have opened it.
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = 0x12345678, hitComponent = 0,
+        weaponDamage = 90, hitGlobalIds = { 1002 },
+    })
+    ok((BR.Damage.refusals or 0) > refusalsBefore,
+        'while a weapon nobody was issued is still refused')
+
+    -- 3. OURS -- including a punch, whatever damageType it claims to be. This
+    -- is the exact payload shape that used to fall through.
+    local hp0 = BR.Roster.get(2).hp
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 1, weaponType = UNARMED, hitComponent = 8,
+        weaponDamage = 25, hitGlobalIds = { 1002 },
+    })
+    local hp1 = BR.Roster.get(2).hp
+    ok(hp1 < hp0, 'a punch reported as damageType 1 is still ours to apply',
+        ('%s -> %s'):format(tostring(hp0), tostring(hp1)))
+    ok(math.abs((hp0 - hp1) - BR.Config.Fists.damage) < 0.01,
+        'and costs exactly the fists number, not ours plus the engine\'s',
+        tostring(hp0 - hp1))
+
+    -- ONE SWING, ONE HIT. Melee is an animation with several contact points
+    -- and the engine may report it more than once; applying twice is how a
+    -- punch came to hit for double. The duplicate is dropped rather than
+    -- REFUSED -- it arrives microseconds later, so validating it would refuse
+    -- it as TOO_FAST, which is a countable refusal, which would file
+    -- anticheat strikes against people for punching.
+    local dupBefore = BR.Damage.meleeDupes or 0
+    local refBefore = BR.Damage.refusals or 0
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = UNARMED, hitComponent = 8,
+        weaponDamage = 25, hitGlobalIds = { 1002 },
+    })
+    ok(BR.Roster.get(2).hp == hp1,
+        'the same swing arriving twice costs one hit',
+        tostring(BR.Roster.get(2).hp))
+    ok((BR.Damage.meleeDupes or 0) > dupBefore, 'and is counted as a duplicate')
+    ok((BR.Damage.refusals or 0) == refBefore,
+        'and is never counted as a refusal')
+
+    -- SELF-DAMAGE IS ALLOWED, REPEATED SELF-DAMAGE IS NOT. You can stand in
+    -- your own grenade; refusing that outright made explosives free to spam at
+    -- your own feet (user pushback, 2026-08-08).
+    BR.Damage.forget(1)
+    BR.Damage.forgetRefusals(1)
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'grenade', kind = BR.ItemKind.THROWABLE,
+                     rarity = 3, count = 3 })
+    BR.Inv.of(1).active = 1
+    BR.Roster.get(1).hp = 100.0
+
+    local selfHp0 = BR.Roster.get(1).hp
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = 2481070269, hitComponent = 0,
+        weaponDamage = 500, hitGlobalIds = { 1001 },
+    })
+    ok(BR.Roster.get(1).hp < selfHp0,
+        'your own grenade hurts you', tostring(BR.Roster.get(1).hp))
+
+    local refSelf = BR.Damage.refusals or 0
+    BR.Roster.get(1).hp = 100.0
+    for _ = 1, 4 do
+        fakeTime = fakeTime + 50
+        fire('weaponDamageEvent', 1, 1, {
+            damageType = 3, weaponType = 2481070269, hitComponent = 0,
+            weaponDamage = 500, hitGlobalIds = { 1001 },
+        })
+    end
+    ok((BR.Damage.refusals or 0) > refSelf,
+        'but doing it over and over is refused and counted')
+end
+
 describe('inv.throwables')
 do
     -- UNLIMITED GRENADES, for one commit.

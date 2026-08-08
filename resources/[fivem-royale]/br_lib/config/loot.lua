@@ -323,6 +323,17 @@ BR.Config.Loot = {
     -- glow outright, or a huge number to keep it all match.
     shineOpenLimit  = 2,
 
+    -- THE LANDING BURST. Props stream in two per pass so a dense POI does not
+    -- stutter, which is right everywhere except the one moment a player has
+    -- nothing to do but watch: the first seconds after touchdown, when a POI
+    -- that is actually full of loot looks empty (user, 2026-08-08). For this
+    -- long after the first cell subscription of a life, the spawn worker
+    -- builds faster -- and it is also the cheapest time to spend frames, since
+    -- the drop is already a loading moment and nobody is in a fight yet.
+    drainPerPass    = 2,
+    landingBurst    = 8,
+    landingBurstMs  = 4000,
+
     -- How often the "which crate shines" search runs. That search is a full
     -- walk of every streamed entry; the FADE is still per-frame, so this only
     -- controls how quickly the glow can jump to a different crate.

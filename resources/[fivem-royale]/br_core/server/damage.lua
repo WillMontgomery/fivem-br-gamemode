@@ -34,6 +34,20 @@ local lastShot = {}
 -- one spent. See BR.Damage.noteThrow for why a timestamp and not a count.
 local thrown = {}
 
+-- Last applied melee hit, keyed shooter:victim:weapon -> timestamp.
+--
+-- ONE SWING MUST COST ONE HIT. A melee attack in GTA is an animation with
+-- several contact points, and the engine is under no obligation to raise
+-- exactly one weaponDamageEvent for it -- the punch that arrived as damageType
+-- 1 was a hint that melee reports through more than one path. Now that
+-- ownership is decided by the WEAPON rather than the type, every one of those
+-- paths lands here, and two events for one swing would apply our damage twice.
+--
+-- Only melee is deduplicated. A rifle firing at 85ms intervals is genuinely
+-- several hits and must never be collapsed; a machete cannot swing twice in
+-- 200ms and anything claiming otherwise is one swing counted twice.
+local meleeHit = {}
+
 -- Recording state for /brdamagelog.
 local recording = 0
 
@@ -104,6 +118,29 @@ function BR.Damage.noteThrow(src, item)
     t[item] = GetGameTimer()
 end
 
+-- Self-inflicted hits, per player: { since, count }.
+local selfHits = {}
+
+--- Count a self-inflicted hit and say whether it has become a pattern.
+---
+--- Called BEFORE validation, because the answer is an input to it. One
+--- self-hit is ordinary -- you stood in your own grenade -- so it is allowed
+--- and lands like anybody else's. Several in a few seconds is not bad play,
+--- it is somebody exercising a path, and the shot is refused and counted.
+--- @param src integer
+--- @return boolean  true when this hit is one too many
+function BR.Damage.noteSelfHit(src)
+    local now = GetGameTimer()
+    local window = cfg.selfWindowMs or 5000
+    local r = selfHits[src]
+    if not r or now - r.since > window then
+        r = { since = now, count = 0 }
+        selfHits[src] = r
+    end
+    r.count = r.count + 1
+    return r.count > (cfg.selfLimit or 2)
+end
+
 --- Did this player throw one of these recently enough to own the blast?
 --- @param src integer
 --- @param item string
@@ -134,8 +171,13 @@ local function contextFor(shooter, victim, weapon)
     -- against the same table.
     local w = weapon and BR.Config.WeaponByHash[BR.NormHash(weapon)] or nil
 
+    local sameSrc = shooter == victim
+
     return {
-        sameSrc     = shooter == victim,
+        sameSrc     = sameSrc,
+        -- Counted here rather than in the validator, because it is a fact
+        -- about history and the validator is a pure function of one shot.
+        selfRepeat  = sameSrc and BR.Damage.noteSelfHit(shooter) or false,
         sameMatch   = a.matchId ~= nil and a.matchId == b.matchId,
         shooterLive = a.state == BR.PlayerState.ALIVE,
         victimLive  = b.state == BR.PlayerState.ALIVE
@@ -420,40 +462,42 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     local shooter = tonumber(sender)
     if not shooter then return end
 
-    -- ONLY THE DAMAGE TYPES WE HAVE MEASURED -- WHICH TURNS OUT TO BE ALL OF
-    -- THEM THAT MATTER.
+    -- THE WEAPON DECIDES WHOSE HIT THIS IS. NOT `damageType`.
     --
-    -- The expectation was that gunfire, melee and explosions would each carry
-    -- their own `damageType` and that this gate would sort them. They do not.
-    -- Measured 2026-08-08 with /brdamagelog:
+    -- This used to gate on damageType and it was wrong twice over. First the
+    -- 2026-08-08 capture showed bullets, melee AND grenades all reporting
+    -- damageType 3, so it discriminated nothing. Then a punch arrived as
+    -- damageType 1 -- so melee has more than one type -- and fell through to
+    -- the engine, which applied GTA's own melee damage ON TOP of ours. Two
+    -- punches killed a full-health player (user, 2026-08-08).
     --
-    --   bullet     (WEAPON_CARBINERIFLE etc)  damageType 3
-    --   melee      (WEAPON_UNARMED, 0xA2719263)  damageType 3
-    --   explosion  (WEAPON_GRENADE, 0x93E220BD)  damageType 3
+    -- Chasing that with a longer list of numbers is the same mistake with more
+    -- steps: the list is unbounded and every gap in it is a damage path
+    -- silently handed back to the client. `weaponType` is the field that
+    -- actually says what happened, and there are exactly three answers:
     --
-    -- So damageType is NOT the discriminator; `weaponType` is, and the three
-    -- paths are told apart by the weapon table instead (w.melee, w.explosive).
-    -- The three payloads differ in ways that corroborate this: the punch
-    -- carried hasActionResult=true with a melee actionResultName, the grenade
-    -- carried hasActionResult=false, hitComponent 0 and weaponDamage 500.
+    --   OURS         a weapon this gamemode issues -> validate and apply.
+    --   THE WORLD'S  a fall, a fire, drowning, a car -> the engine's, always.
+    --   NEITHER      a weapon nobody was given -> the only thing left to
+    --                refuse, and the only thing worth refusing.
     --
-    -- The gate stays anyway, and is worth its keep for the types NOBODY has
-    -- produced yet: fire, falls, drowning, vehicle impacts. Taking one of
-    -- those over on a guess would apply the weapon table to a fall. Passing it
-    -- through leaves the engine in charge of exactly the paths M5 left it in
-    -- charge of, and counting it means an unmeasured type announces itself
-    -- once instead of being invisible until somebody notices.
-    local dtype = math.tointeger(data.damageType or -1) or -1
-    if not (cfg.takeOver or {})[dtype] then
-        BR.Damage.seenTypes = BR.Damage.seenTypes or {}
-        if not BR.Damage.seenTypes[dtype] then
-            BR.Damage.seenTypes[dtype] = true
-            print(('[br_core] damageType %d is not one we validate -- left to '
-                .. 'the engine. Capture it with /brdamagelog and add it to '
-                .. 'BR.Config.Combat.takeOver once its meaning is known.')
-                :format(dtype))
+    -- damageType is kept in the logs because it is useful evidence, and it is
+    -- no longer a decision.
+    local fired = BR.Config.WeaponByHash[BR.NormHash(data.weaponType or 0)]
+    if not fired then
+        local env = BR.Config.EnvironmentalFor(data.weaponType)
+        if env then
+            -- The world hurt somebody. Not our business, and never a refusal:
+            -- storm, falls and fire have always been the engine's, and an
+            -- exploding car is the same kind of thing (user question,
+            -- 2026-08-08: would NOT_THROWN block ambient explosions? It
+            -- cannot -- those never reach the validator at all).
+            BR.Damage.envHits = (BR.Damage.envHits or 0) + 1
+            return
         end
-        return
+        -- Falls through to the loop below, where it is refused as NO_WEAPON
+        -- against a real victim. Deliberately NOT returned here: a trainer
+        -- weapon is exactly the case this whole file exists for.
     end
 
     -- ONE ROUND, ONCE PER EVENT, AND BEFORE ANY OF THE HIT LOGIC.
@@ -489,7 +533,6 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
     -- Explosives do not stamp it. A detonation is not a trigger pull, and
     -- letting one set the clock means the next honest rifle round is measured
     -- from the moment your own grenade went off.
-    local fired = BR.Config.WeaponByHash[BR.NormHash(data.weaponType or 0)]
     if not (fired and fired.explosive) then lastShot[shooter] = now end
 
     for _, netId in ipairs(ids) do
@@ -503,11 +546,41 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                                     ctx.posB.x, ctx.posB.y, ctx.posB.z)
                 end
 
-                local ok, why = BR.ValidateShot(
-                    { weapon = data.weaponType, dist = dist, sinceLastMs = since },
-                    ctx, cfg)
+                -- ONE SWING, ONE HIT -- AND RESOLVED BEFORE VALIDATION, not
+                -- after. A duplicate arrives microseconds behind the original,
+                -- so the rate check would refuse it as TOO_FAST -- which is a
+                -- COUNTABLE refusal. Validating duplicates would have had the
+                -- engine's own double-reporting file anticheat strikes against
+                -- players for punching. It is not a refusal; it is the same
+                -- swing arriving twice, and the second copy is simply dropped.
+                local dupe = false
+                if fired and fired.melee then
+                    local key = shooter .. ':' .. victim .. ':'
+                                .. tostring(BR.NormHash(data.weaponType or 0))
+                    local last = meleeHit[key]
+                    local window = (fired.minInterval or 400)
+                                 * (cfg.meleeDedupe or 0.5)
+                    if last and (now - last) < window then
+                        dupe = true
+                        BR.Damage.meleeDupes = (BR.Damage.meleeDupes or 0) + 1
+                    else
+                        meleeHit[key] = now
+                    end
+                end
 
-                if not ok then
+                local ok, why
+                if dupe then
+                    -- Cancelled all the same: the engine's copy of a duplicate
+                    -- is just as unwelcome as our own would be.
+                    if cfg.applyOwnDamage then CancelEvent() end
+                else
+                    ok, why = BR.ValidateShot(
+                        { weapon = data.weaponType, dist = dist,
+                          sinceLastMs = since }, ctx, cfg)
+                end
+
+                if dupe then           -- nothing further; already handled
+                elseif not ok then
                     -- REFUSALS ARE LOUD WHILE ENFORCEMENT IS OFF. The whole
                     -- purpose of this phase is to find out how often the
                     -- validator would have been WRONG about an honest shot,
@@ -634,6 +707,12 @@ end, true)
 function BR.Damage.forget(src)
     lastShot[src] = nil
     thrown[src]   = nil
+    selfHits[src] = nil
+    for k in pairs(meleeHit) do
+        if k:find('^' .. src .. ':') or k:find(':' .. src .. ':') then
+            meleeHit[k] = nil
+        end
+    end
 end
 
 --- Turn the damage takeover on and off WITHOUT A REDEPLOY.

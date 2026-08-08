@@ -65,6 +65,11 @@ local lastPrompt = { id = nil, hold = nil }
 local shineId = nil
 local shineAt = 0
 
+--- Until when the spawn worker may build props faster than its steady rate.
+--- Set on the first cell subscription of a life -- i.e. on landing. See
+--- drain() for why the trickle is wrong at exactly that moment.
+local burstUntil = 0
+
 --- The entry whose prop currently has SetEntityDrawOutline switched on.
 ---
 --- TRACKED SEPARATELY FROM shineId, and that is the whole fix for crates that
@@ -286,6 +291,7 @@ local function forgetAll()
     entries, queue, queued, byObject, reported = {}, {}, {}, {}, {}
     myCell, hold.id = nil, nil
     shineId, outlinedId = nil, nil
+    burstUntil = 0
     -- Inline rather than through setPrompt(): that lives below this, and a
     -- local referenced before its declaration silently resolves as a global.
     lastPrompt.id, lastPrompt.hold = nil, nil
@@ -300,13 +306,27 @@ end
 -- The spawn worker. Model loading is asynchronous, so this cannot live in a
 -- loop callback -- and a burst of RequestModel in one frame is exactly how a
 -- landing at a dense POI turns into a stutter. Two per pass, then yield.
+--
+-- ...EXCEPT FOR THE FIRST FEW SECONDS AFTER LANDING, where the trickle is the
+-- problem rather than the fix. Two per pass across 50-150 streamed entries is
+-- several seconds of a POI that looks empty, and a player who has just landed
+-- has nothing else to do but look at it (user, 2026-08-08). The stutter this
+-- rate exists to avoid is also least costly right then: the drop is already a
+-- loading moment, and nobody is in a firefight three seconds after touchdown.
+local function perPass()
+    if burstUntil > 0 and GetGameTimer() < burstUntil then
+        return L.landingBurst or 8
+    end
+    return L.drainPerPass or 2
+end
+
 local function drain()
     if draining then return end
     draining = true
 
     Citizen.CreateThread(function()
         while #queue > 0 do
-            for _ = 1, 2 do
+            for _ = 1, perPass() do
                 local id = table.remove(queue, 1)
                 if not id then break end
                 queued[id] = nil
@@ -549,9 +569,23 @@ end)
 -- Loops
 -- --------------------------------------------------------------------------
 
--- Cell subscription. 1Hz is the band whose comment has said "loot cells" since
--- M0; a 256m cell takes 25 seconds to cross on foot and 8 in a car.
-BR.Loop.register(BR.Loop.SLOW, 'loot.cells', function()
+-- Cell subscription.
+--
+-- MOVED FROM 1Hz TO 10Hz, AND THE REASON IS THE LANDING, not the walking.
+--
+-- A 256m cell takes 25 seconds to cross on foot, so 1Hz was ample for the
+-- steady state and the band's comment has said "loot cells" since M0. But the
+-- moment that matters is not crossing a boundary, it is the FIRST
+-- subscription: a player is only allowed to see loot once they are ALIVE, and
+-- that arrives up to 250ms after touchdown (the delta flush). Add up to a
+-- second waiting for the next SLOW tick, then the round trip, then models
+-- streaming in two at a time, and a player stands in an empty POI for several
+-- seconds wondering what to do (user, 2026-08-08).
+--
+-- This is the cheapest of the three loot loops -- a state check, a coordinate
+-- read and a string compare, with an early-out on every tick after the first.
+-- loot.props, which is a full walk of every streamed entry, stays on SLOW.
+BR.Loop.register(BR.Loop.TICK, 'loot.cells', function()
     if not canSee() then
         if myCell then forgetAll() end
         return
@@ -562,7 +596,12 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.cells', function()
     local key = BR.LootCellKey(cx, cy)
     if key == myCell then return end
 
+    -- THE FIRST SUBSCRIPTION OF A LIFE GETS A BURST BUDGET. Walking into a
+    -- new cell can afford to trickle; landing cannot, because the player is
+    -- standing in a POI that looks empty. See drain().
+    local first = (myCell == nil)
     myCell = key
+    if first then burstUntil = GetGameTimer() + (L.landingBurstMs or 4000) end
     TriggerServerEvent(BR.Net.LOOT_CELL, { cx = cx, cy = cy })
 end)
 

@@ -80,7 +80,6 @@ is classed once:
 |---|---|---|
 | `WARMUP` | a hit on or from the practice pad | no — warmup deals no damage by design |
 | `SAME_SQUAD` | friendly fire | no |
-| `SELF_BLAST` | caught in a grenade you threw yourself | no |
 | `NOT_LIVE` | one of the two is not alive in this match | no |
 | `OTHER_MATCH` | a shot that raced a match boundary | no |
 | `NO_WEAPON` | a weapon this gamemode does not issue at all | **yes** |
@@ -89,7 +88,7 @@ is classed once:
 | `TOO_FAR` | beyond the weapon's range, plus slack | **yes** |
 | `TOO_FAST` | faster than the weapon can cycle, plus slack | **yes** |
 | `NOT_THROWN` | an explosion from something you never threw | **yes** |
-| `SELF` | your own bullet naming your own ped | **yes** |
+| `SELF` | hurting yourself *repeatedly* — 3+ times in 5s | **yes** |
 
 The split is the difference between *rules* and *means*. An honest client
 produces the top group constantly — and since fists are a real weapon, every
@@ -97,16 +96,34 @@ player has the means to at any moment, so counting them would trip an
 anticheat built for trainers on the first warmup scrap. There is no honest
 input that produces the bottom group.
 
-`SELF` is in the second list deliberately: you cannot shoot yourself in this
-game. The one honest way to hurt yourself is your own grenade, and that
-resolves to `SELF_BLAST` instead.
+**Self-damage is allowed.** You can stand in your own grenade and it hurts
+you, like anyone else's would. What is refused and counted is *repetition* —
+three self-inflicted hits inside five seconds is somebody exercising a path
+rather than playing badly.
+
+**`OTHER_MATCH` is not counted, and the reason is worth stating.** Matches run
+in parallel in separate routing buckets, so two players in different matches
+cannot normally see or shoot each other at all — which makes this refusal
+almost exclusively a *boundary race*. A player finishing an automatic burst at
+the instant their match ends, or at the instant the other player is moved to
+the lobby, generates one of these per round still in flight. That is a dozen
+refusals from a single honest trigger pull, which would fire the response on
+its own. Producing it deliberately would first require defeating bucket
+isolation, which is a much louder failure with its own detection.
 
 **The exact trigger.** There is one escalating rule and these are its numbers:
 
-> **12** countable refusals from the same player inside a **30-second** rolling
+> **8** countable refusals from the same player inside a **10-second** rolling
 > window fires `refusalAction` **once**, and once only, for that window. The
 > window restarts empty on the next refusal after it lapses; there is no
-> permanent record and no second escalation tier.
+> permanent record and no second escalation tier *yet* — one is planned in M9.
+
+These numbers were tightened from 12-in-30s once rules refusals were separated
+out: what is left in the countable stream has no honest explanation, so eight
+of them inside ten seconds is a decision rather than a bad minute. It does
+demand precision from the detection, which is exactly why the action still
+defaults to `log` and why it wants pressure testing with more than three
+clients before it is trusted to kick.
 
 `refusalAction` is one of `log` (default — a console line naming the player,
 the count and the last reason), `notify` (that, plus an in-game warning to the
@@ -120,9 +137,20 @@ honest player *today* is still a bet on tomorrow, and banning your own players
 is a worse failure than tolerating a cheater who is already unable to hurt
 anyone.
 
-**Three damage paths, one event.** Bullets, melee and explosions all arrive as
-`weaponDamageEvent` with the same `damageType` (3 — measured, not assumed), so
-they are told apart by `weaponType` against the weapon table. Explosions are
+**One event, three answers, and `weaponType` gives all of them.**
+`weaponDamageEvent` fires for everything that hurts a player — gunfire, melee,
+explosions, but also falls, fire, drowning and being run over. `damageType`
+looks like it should sort those out and does not: bullets, melee *and*
+grenades all report 3, and melee sometimes reports 1. So the weapon hash
+decides, against three tables:
+
+- **ours** — a weapon this gamemode issues → validate and apply;
+- **the world's** — `WEAPON_FALL`, `WEAPON_FIRE`, `WEAPON_EXPLOSION` and the
+  rest → always the engine's, never a refusal. An ambient car explosion or a
+  fall off a roof never reaches the validator at all;
+- **neither** — a weapon nobody was issued → the only thing worth refusing.
+
+Explosions are
 validated differently on purpose, because a grenade breaks three assumptions a
 bullet satisfies: the thrower is holding *fists* by the time it goes off (so
 possession is checked against a recent throw the server watched them spend, not

@@ -538,25 +538,44 @@ do
     ok(rmult > 1.0, 'while the same bone through a rifle is a headshot',
         tostring(rmult))
 
-    -- YOUR OWN BLAST IS THE ONE HONEST WAY TO HURT YOURSELF, and it is the
-    -- reason SELF had to be split. A bullet naming its own shooter as victim
-    -- is somebody's tooling -- there is no input that produces it -- so that
-    -- one counts. Standing too close to a grenade you threw is Tuesday.
-    local _, whySelf = BR.ValidateShot({ weapon = CAPTURED_GRENADE, dist = 1.0 },
-        ctx({ sameSrc = true }), cfg)
-    ok(whySelf == BR.ShotRefusal.SELF_BLAST,
-        'catching your own blast is its own outcome', tostring(whySelf))
-    ok(not BR.ShotSuspicious[BR.ShotRefusal.SELF_BLAST],
-        'and is not counted as cheating')
+    -- HURTING YOURSELF IS ALLOWED; DOING IT REPEATEDLY IS NOT.
+    --
+    -- The first version refused self-damage outright, on the reasoning that
+    -- you cannot shoot yourself in this game. Too strong, and the user pushed
+    -- back on it: you can absolutely stand in your own grenade, and refusing
+    -- that makes explosives free to spam at your own feet in a crowd. What
+    -- remains a signal is REPETITION, which is a fact about history and
+    -- therefore the server's to count -- this function only decides what to do
+    -- once it is told.
+    ok(BR.ValidateShot({ weapon = CAPTURED_GRENADE, dist = 1.0 },
+        ctx({ sameSrc = true }), cfg),
+        'catching your own blast hurts you like anybody else would')
 
-    local rifleHash = BR.Config.WeaponById['carbinerifle'].hash
-    local _, whySelf2 = BR.ValidateShot({ weapon = rifleHash, dist = 0.0 },
-        ctx({ sameSrc = true, heldItem = 'carbinerifle', clip = 30 }), cfg)
-    ok(whySelf2 == BR.ShotRefusal.SELF,
-        'while shooting yourself with a rifle is not a thing you can do',
-        tostring(whySelf2))
+    local _, whySelf = BR.ValidateShot({ weapon = CAPTURED_GRENADE, dist = 1.0 },
+        ctx({ sameSrc = true, selfRepeat = true }), cfg)
+    ok(whySelf == BR.ShotRefusal.SELF,
+        'but doing it again and again is refused', tostring(whySelf))
     ok(BR.ShotSuspicious[BR.ShotRefusal.SELF],
-        'and does fire the anticheat response')
+        'and that is the one that fires the anticheat response')
+
+    -- THE WORLD'S DAMAGE IS NEVER A REFUSAL. A fall, a fire, drowning, a car:
+    -- every one of these arrives as a weaponDamageEvent with a weaponType hash
+    -- indistinguishable from a gun's, and every one of them would have been
+    -- cancelled and counted as cheating by the old "is it in our weapon table"
+    -- rule. This is also the answer to whether NOT_THROWN could block an
+    -- ambient car explosion: it cannot, because WEAPON_EXPLOSION never reaches
+    -- the validator at all.
+    for _, e in ipairs(BR.Config.Environmental) do
+        ok(BR.Config.EnvironmentalFor(e.hash) ~= nil,
+            ('%s is recognised as the world\'s doing'):format(e.id))
+        ok(BR.Config.WeaponByHash[BR.NormHash(e.hash)] == nil,
+            ('and %s is never treated as a weapon we issued'):format(e.id))
+    end
+    -- Signed too: the engine hands these back the same way it hands back
+    -- weapon hashes, and half of them have the top bit set.
+    local fall = BR.Config.Environmental[1]
+    ok(BR.Config.EnvironmentalFor(fall.hash - 0x100000000) ~= nil,
+        'and they resolve from the signed form the engine returns')
 
     -- Smoke resolves as a weapon (so it is never a refusal) and deals nothing.
     local smoke = BR.Config.WeaponById['smoke']

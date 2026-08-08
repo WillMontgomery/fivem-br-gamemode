@@ -167,6 +167,63 @@ BR.Config.Fists = {
     maxRange = 3.0, minInterval = 400,
 }
 
+--- THE WORLD'S OWN DAMAGE, which is not a weapon and must not be refused.
+---
+--- weaponDamageEvent fires for everything that hurts a ped, and most of it is
+--- not somebody shooting: a fall, a fire, drowning, being run over, a car
+--- exploding next to you. GTA names each of these with a `weaponType` hash
+--- exactly like a real weapon, so from the handler's point of view they are
+--- indistinguishable from a gun -- and a gun we do not issue is a cheat
+--- signal that gets cancelled.
+---
+--- WITHOUT THIS TABLE THE VALIDATOR HAD TO CHOOSE BADLY. It gated on
+--- `damageType` instead, which the 2026-08-08 capture proved is not a
+--- discriminator (bullets, melee and grenades all report 3), and a punch that
+--- arrived as damageType 1 fell through to the engine -- so GTA applied its
+--- own melee damage ON TOP of ours and two punches killed a full-health
+--- player (user, 2026-08-08).
+---
+--- With it, the rule is simple and reads the same way the rest of this file
+--- does: if we issued the weapon, the hit is OURS. If the world caused it, it
+--- is the ENGINE'S. If it is neither, it is a weapon nobody was given, which
+--- is the only case left worth refusing.
+---
+--- Every hash is joaat of the name and re-derived by tools/check_weapons.lua,
+--- so a typo fails the build instead of turning a fall into a cheat report.
+BR.Config.Environmental = {
+    { id = 'fall',        name = 'WEAPON_FALL',                hash = 0xCDC174B0 },
+    { id = 'drown',       name = 'WEAPON_DROWNING',            hash = 0xFF58C4FB },
+    { id = 'drownveh',    name = 'WEAPON_DROWNING_IN_VEHICLE', hash = 0x736F5990 },
+    { id = 'rammed',      name = 'WEAPON_RAMMED_BY_CAR',       hash = 0x07FC7D7A },
+    { id = 'runover',     name = 'WEAPON_RUN_OVER_BY_CAR',     hash = 0xA36D413E },
+    -- The ambient blast: a car fire, a gas pump, a barrel. NOT our grenades --
+    -- those arrive as WEAPON_GRENADE and are validated properly.
+    { id = 'explosion',   name = 'WEAPON_EXPLOSION',           hash = 0x2024F4E8 },
+    { id = 'fire',        name = 'WEAPON_FIRE',                hash = 0xDF8E89EB },
+    { id = 'fence',       name = 'WEAPON_ELECTRIC_FENCE',      hash = 0x92BD4EBB },
+    { id = 'barbedwire',  name = 'WEAPON_BARBED_WIRE',         hash = 0x48E7B178 },
+    { id = 'animal',      name = 'WEAPON_ANIMAL',              hash = 0xF9FBAEBE },
+    { id = 'cougar',      name = 'WEAPON_COUGAR',              hash = 0x08D4BE52 },
+    { id = 'watercannon', name = 'WEAPON_HIT_BY_WATER_CANNON', hash = 0xCC34325E },
+    { id = 'bleeding',    name = 'WEAPON_BLEEDING',            hash = 0x8B7333FB },
+    { id = 'flare',       name = 'WEAPON_SMOKE_FLARE',         hash = 0x86F721C4 },
+    { id = 'rotors',      name = 'WEAPON_ROTORS',              hash = 0xC53C030C },
+    { id = 'helicrash',   name = 'WEAPON_HELI_CRASH',          hash = 0x145F1012 },
+    { id = 'exhaustion',  name = 'WEAPON_EXHAUSTION',          hash = 0x364A29EC },
+}
+
+BR.Config.EnvironmentalByHash = {}
+for _, w in ipairs(BR.Config.Environmental) do
+    BR.Config.EnvironmentalByHash[BR.NormHash(w.hash)] = w
+end
+
+--- Is this damage the world's rather than a player's?
+--- @param hash integer
+--- @return table|nil
+function BR.Config.EnvironmentalFor(hash)
+    return BR.Config.EnvironmentalByHash[BR.NormHash(hash or 0)]
+end
+
 --- Utility weapon hashes referenced directly by gameplay code.
 BR.Config.Gadgets = {
     PARACHUTE = 0xFBAB5776,  -- GADGET_PARACHUTE, granted at drop, removed on landing

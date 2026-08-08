@@ -96,6 +96,11 @@ BR.Config.Map.POIs = {
     { id = 'sandy',       name = 'Sandy Shores',     x =  1900.0, y =  3700.0, z =  32.0, radius = 320.0, tier = 3 },
     { id = 'stab',        name = 'Stab City',        x =    85.0, y =  3690.0, z =  39.0, radius = 200.0, tier = 2 },
     { id = 'galilee',     name = 'Galilee',          x =  1380.0, y =  4360.0, z =  42.0, radius = 200.0, tier = 1 },
+    -- The equestrian estate east of Vinewood. Spelled "La Fuente Blanca" in
+    -- game; the request said "Le Fuerta Blanca" and this is the place it
+    -- means. Tier 1 (green): a walled compound with a big house and stables,
+    -- which is a fine quiet landing and a terrible place to be caught in.
+    { id = 'fuenteblanca', name = 'La Fuente Blanca', x = 1395.0, y =  1145.0, z = 114.0, radius = 200.0, tier = 1 },
     { id = 'grapeseed',   name = 'Grapeseed',        x =  1700.0, y =  4800.0, z =  42.0, radius = 260.0, tier = 2 },
     { id = 'paleto',      name = 'Paleto Bay',       x =  -150.0, y =  6300.0, z =  31.0, radius = 300.0, tier = 3 },
     { id = 'sawmill',     name = 'Paleto Forest Sawmill', x = -560.0, y = 5300.0, z = 70.0, radius = 220.0, tier = 2 },

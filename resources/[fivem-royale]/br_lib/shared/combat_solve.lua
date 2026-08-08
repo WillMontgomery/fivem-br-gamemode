@@ -22,7 +22,6 @@ BR.ShotRefusal = {
     NOT_HELD    = 'shooter does not hold that weapon',
     NOT_THROWN  = 'shooter did not throw that explosive',
     WARMUP      = 'warmup deals no damage',
-    SELF_BLAST  = 'caught in their own blast',
     NO_AMMO     = 'shooter has no rounds for it',
     TOO_FAR     = 'beyond the weapon\'s range',
     TOO_FAST    = 'faster than the weapon can cycle',
@@ -50,12 +49,10 @@ BR.ShotRefusal = {
 ---
 --- Only the second kind counts toward the threshold.
 ---
---- SELF IS IN THE SECOND LIST, deliberately. A player cannot shoot their own
---- ped in this game -- there is no honest input that produces it -- so a
---- bullet naming the shooter as its own victim is somebody's tooling, not
---- somebody's mistake (user call, 2026-08-08). The one honest way to hurt
---- yourself is your OWN GRENADE, and that arrives as SELF_BLAST instead, which
---- is refused for damage and counted as nothing.
+--- SELF IS IN THE SECOND LIST, but it only ever fires on REPETITION. One
+--- self-hit is allowed outright and never reaches here -- standing in your own
+--- grenade is ordinary play. Several in a few seconds is somebody exercising
+--- something, and that is what this counts.
 BR.ShotSuspicious = {
     [BR.ShotRefusal.NO_WEAPON]  = true,
     [BR.ShotRefusal.NOT_HELD]   = true,
@@ -88,18 +85,21 @@ BR.ShotSuspicious = {
 function BR.ValidateShot(shot, ctx, cfg)
     cfg = cfg or {}
 
-    -- SHOOTING YOURSELF IS NOT A THING YOU CAN DO, except with your own
-    -- grenade. Splitting the two matters because one of them is a cheat
-    -- signal and the other is Tuesday: there is no input in this game that
-    -- makes your own bullet name your own ped, but standing too close to a
-    -- blast you threw is ordinary play. Resolved before anything else so the
-    -- weapon lookup below can decide which it was.
+    -- HURTING YOURSELF IS ALLOWED. DOING IT OVER AND OVER IS NOT.
+    --
+    -- The first version refused self-damage outright, on the reasoning that
+    -- you cannot shoot yourself in this game. That was too strong and the user
+    -- pushed back on it: you absolutely can stand in your own grenade, and
+    -- refusing it makes explosives free to spam at your own feet in a crowd.
+    --
+    -- So a single self-hit lands like anybody else's. What stays a red flag is
+    -- REPETITION -- a player taking damage from themselves several times in a
+    -- few seconds is not playing badly, they are exercising something. That
+    -- count is the server's (BR.Damage.noteSelfHit) and arrives as
+    -- ctx.selfRepeat; the pure function only decides what to do about it.
     if ctx.sameSrc then
-        local sw = BR.Config.WeaponByHash[BR.NormHash(shot.weapon or 0)]
-        if sw and sw.explosive then
-            return false, BR.ShotRefusal.SELF_BLAST
-        end
-        return false, BR.ShotRefusal.SELF
+        if ctx.selfRepeat then return false, BR.ShotRefusal.SELF end
+        return true, nil
     end
     if not ctx.sameMatch then return false, BR.ShotRefusal.OTHER_MATCH end
 

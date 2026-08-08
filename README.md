@@ -24,6 +24,7 @@ Everything uses stock GTA V assets — no custom models, maps, or streamed files
 | M5 | Loot spawning, pickups, 5-slot inventory | **DONE** |
 | M6 | Combat, damage validation, kill attribution | **WIP** |
 | M7 | DBNO, revives, spectating, match summary, stats | **PLANNED** |
+| M7b | Persistence off the game host — DynamoDB / AWS serverless | **PLANNED** |
 | M8 | Vehicles, aerial supply drops, fuel, rescue | **SCOPING** |
 | M9 | Moderation web UI, Discord webhook, in-game reports, admin ACEs, logging | **SCOPING** |
 

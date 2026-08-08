@@ -544,9 +544,42 @@ RegisterCommand('brarm', function(_, args)
     if #who == 0 then return end
 
     local w = BR.Config.WeaponById[item]
+    local c = BR.Config.ConsumableById[item]
+
+    -- CONSUMABLES TOO. This refused them at first, which made the obvious
+    -- follow-up to a damage test -- heal the ped back up -- impossible
+    -- (user, 2026-08-08). A medkit is exactly as much "arm me for a test" as
+    -- a rifle is.
+    if not w and c then
+        local n = tonumber(args[3]) or c.carryMax or c.maxStack or 1
+        for _, src in ipairs(who) do
+            local okGive, _, reason = BR.Inv.give(src, {
+                item = item, kind = BR.ItemKind.CONSUMABLE,
+                rarity = c.rarity, count = n,
+            })
+            print(('  %s %s x%d -> %d%s'):format(
+                okGive and 'gave' or 'REFUSED', item, n, src,
+                okGive and '' or (' -- ' .. tostring(reason))))
+        end
+        return
+    end
+
+    -- AMMO POOLS TOO, for the same reason.
+    if not w and BR.Config.AmmoPickups[item] then
+        for _, src in ipairs(who) do
+            local okGive = BR.Inv.give(src, {
+                item = item, kind = BR.ItemKind.AMMO,
+                rarity = BR.Rarity.COMMON, count = tonumber(args[3]) or 1,
+            })
+            print(('  %s %s -> %d'):format(okGive and 'gave' or 'REFUSED',
+                item, src))
+        end
+        return
+    end
+
     if not w then
-        print(('  %q is not a weapon, throwable or melee id -- try brweapons')
-            :format(item))
+        print(('  %q is not a weapon, throwable, melee or consumable id '
+            .. '-- try brweapons'):format(item))
         return
     end
 

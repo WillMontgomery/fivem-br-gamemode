@@ -109,6 +109,24 @@ check(BR.Config.Melee, 'melee')
 -- game was that they were not registered at all.
 check({ BR.Config.Fists }, 'fists')
 
+-- THE WORLD'S OWN DAMAGE. These are matched against live engine hashes on
+-- every fall, fire and car crash, and a typo here does not fail quietly -- it
+-- turns falling off a roof into "a weapon this gamemode does not issue", i.e.
+-- a cancelled hit and an anticheat strike against the player who fell.
+check(BR.Config.Environmental, 'environmental')
+
+for _, w in ipairs(BR.Config.Environmental or {}) do
+    if BR.Config.EnvironmentalFor(w.hash) ~= w then
+        fail('%q does not resolve through EnvironmentalFor', w.id)
+    end
+    -- An environmental source that is ALSO a weapon would be owned by the
+    -- validator and never pass through, which is the failure that would put
+    -- our damage table on a drowning.
+    if BR.Config.WeaponByHash[BR.NormHash(w.hash)] then
+        fail('%q is in both the weapon table and the environmental table', w.id)
+    end
+end
+
 -- ...and registered, which is a separate claim from being spelled correctly.
 -- Fists are deliberately outside every loot list, so nothing else in this gate
 -- would notice if the by-hand registration below the tables were dropped.

@@ -812,6 +812,33 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
         pushUi()
     end
 
+    -- THROWABLES REPORT REGARDLESS OF serverAmmo, and the server's INV_AMMO
+    -- handler has the matching exception for the same reason.
+    --
+    -- Server ammo counts rounds off validated shot events. A THROW raises no
+    -- event: the only thing a grenade produces is its detonation, seconds
+    -- later, sometimes never (into water, at nobody). So this report is the
+    -- ONLY signal that a grenade left the hand -- and with the blanket return
+    -- below sitting above it, the counter sat at 3 while the player threw
+    -- them, right up until the "last one taken with it" special case fired
+    -- and the whole slot vanished at once (user, 2026-08-08).
+    --
+    -- Still decrease-only at both ends, so it is as safe as it ever was: the
+    -- worst a liar achieves is throwing away their own grenades.
+    if slot.kind == BR.ItemKind.THROWABLE then
+        local count = total
+        if count ~= (slot.count or 0) and count < (slot.count or 0) then
+            -- Shown immediately rather than waiting for the round trip, the
+            -- same way the magazine is. The server still gets the last word
+            -- with the next INV_SET.
+            slot.count = count
+            pushUi()
+            TriggerServerEvent(BR.Net.INV_AMMO,
+                { slot = inv.active, total = count, clip = count })
+        end
+        return
+    end
+
     -- THE DISPLAY STILL FOLLOWS THE GUN, but the REPORT may be retired.
     --
     -- With M6's server ammo on, the server counts rounds off the shot events

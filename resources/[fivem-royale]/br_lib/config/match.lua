@@ -288,39 +288,63 @@ BR.Config.Combat = {
     -- shot, and banning your own players is a worse failure than tolerating a
     -- cheater who is already unable to hurt anyone. "notify" tells them their
     -- shots are not landing; "kick" drops them.
+    -- TIGHTENED TO 8 IN 10s (user call, 2026-08-08), from 12 in 30s.
+    --
+    -- The looser window was chosen when nothing had been measured. Since then
+    -- a full playtest has produced no false positives at all, and separating
+    -- rules refusals from means refusals took the ordinary-play noise out
+    -- entirely -- so the countable stream is now only things with no honest
+    -- explanation, and eight of those inside ten seconds is a decision rather
+    -- than a bad minute.
+    --
+    -- It does demand precision from the detection, which is why the action
+    -- still defaults to `log` and why this wants pressure testing with more
+    -- than three clients before it is trusted to kick. M9 adds the second
+    -- escalation tier on top of this.
     refusalAction   = "log",      -- "log" | "notify" | "kick"
-    refusalLimit    = 12,
-    refusalWindowMs = 30000,
+    refusalLimit    = 8,
+    refusalWindowMs = 10000,
 
-    -- WHICH DAMAGE TYPES WE TAKE OVER.
+    -- HURTING YOURSELF IS ALLOWED; DOING IT REPEATEDLY IS NOT.
     --
-    -- The assumption was that gunfire, melee and explosions would each carry a
-    -- different `damageType` and that this table would sort them out. They do
-    -- not. Measured with /brdamagelog on 2026-08-08:
+    -- You can stand in your own grenade, and refusing that outright made
+    -- explosives free to spam at your own feet. But a player taking damage
+    -- from themselves three times in five seconds is exercising a path rather
+    -- than playing, so the third one is refused and counted.
+    selfLimit    = 2,
+    selfWindowMs = 5000,
+
+    -- ONE SWING, ONE HIT. A melee attack is an animation with several contact
+    -- points and the engine may raise more than one event for it -- which is
+    -- how a punch came to apply our damage twice. Duplicates inside this
+    -- fraction of the weapon's own swing cycle are cancelled without being
+    -- applied. Melee only: a rifle at 85ms is genuinely several hits.
+    meleeDedupe  = 0.5,
+
+    -- `damageType` IS NOT A DISCRIMINATOR, AND THIS IS THE EVIDENCE.
     --
-    --   bullet     WEAPON_CARBINERIFLE  damageType 3
-    --   melee      WEAPON_UNARMED       damageType 3
-    --   explosion  WEAPON_GRENADE       damageType 3
+    -- The plan was to gate the takeover on damageType. Measured with
+    -- /brdamagelog:
     --
-    -- One number for all three. `damageType` is not the discriminator here --
-    -- `weaponType` is, and the weapon table tells the paths apart by w.melee
-    -- and w.explosive instead. Which means this gate was already letting melee
-    -- and explosions through and nobody had to widen it.
+    --   bullet     WEAPON_CARBINERIFLE  damageType 3   (2026-08-06)
+    --   melee      WEAPON_UNARMED       damageType 3   (2026-08-08)
+    --   explosion  WEAPON_GRENADE       damageType 3   (2026-08-08)
+    --   melee      WEAPON_UNARMED       damageType 1   (2026-08-08, later)
     --
-    -- It is kept for the types nobody has produced yet: fire, drowning, falls,
-    -- vehicle impacts. Taking one of those over on a guess would apply the
-    -- weapon damage table to a fall down a staircase; passing it through
-    -- leaves the engine in charge of exactly what M5 left it in charge of, and
-    -- an unknown type prints once rather than vanishing.
-    damageTypes = {
-        BULLET    = 3,  -- CONFIRMED in game, 2026-08-06
-        MELEE     = 3,  -- CONFIRMED in game, 2026-08-08 (same number)
-        EXPLOSION = 3,  -- CONFIRMED in game, 2026-08-08 (same number)
-    },
-    -- Types the validator owns. Anything else is left to the engine and
-    -- counted, so an unknown type shows up as a log line rather than as
-    -- silence.
-    takeOver = { [3] = true },
+    -- Three different things share 3, and one of them ALSO reports 1. The
+    -- field says nothing reliable about what happened -- and gating on it meant
+    -- a punch fell through to the engine, which applied GTA's own melee damage
+    -- ON TOP of ours and killed a full-health player in two hits.
+    --
+    -- The gate is gone. `weaponType` decides, against three tables:
+    -- WeaponByHash (ours -> validate and apply), Environmental (the world's ->
+    -- always the engine's, so a car fire or a fall is never a refusal), and
+    -- neither (a weapon nobody was issued -> the only thing worth refusing).
+    -- Chasing damageType with a longer list of numbers would have left every
+    -- gap in that list as a damage path handed silently back to the client.
+    --
+    -- Kept as a record of what was measured. Nothing reads it.
+    damageTypesSeen = { 1, 3 },
 
     -- HOW LONG A THROWN EXPLOSIVE STAYS YOURS.
     --
