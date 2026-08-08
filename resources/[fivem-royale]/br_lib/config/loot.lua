@@ -354,6 +354,26 @@ BR.Config.Loot = {
     arriveMs        = 520,
     arriveArc       = 0.55,   -- extra metres at the top of the parabola
 
+    -- WHERE "ON THE GROUND" IS. Props are built at ground + this and, being
+    -- static, stay there -- so it IS their resting height. The animation
+    -- reads the same number; writing a bare ground z instead buried every
+    -- item half a metre (user, 2026-08-08).
+    restLift        = 0.35,
+
+    -- LYING DOWN vs STANDING UP, in degrees of pitch.
+    --
+    -- A rifle standing on end sinks into the terrain however carefully its
+    -- centre is placed -- which was the visible clipping. Lying flat it sits
+    -- ON the ground. So an item lies down when it settles and stands up as it
+    -- rises to be taken, which is also the read the hover wants: an object
+    -- presenting itself rather than one that was dropped.
+    --
+    -- If these come out inverted in game -- items flat while hovering and
+    -- upright in the dirt -- swap the two numbers. Which way a given weapon
+    -- prop's local axes point is not something the config can know.
+    restPitch       = 90.0,
+    hoverPitch      = 0.0,
+
     -- THE HOVER. Inside prompt range an item rises off the ground, bobs and
     -- turns; outside it, it settles back. Both directions eased, because a
     -- snap reads as a bug and this is meant to read as "you can take this".

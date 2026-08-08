@@ -38,6 +38,12 @@ BR.Config.Map.POIs = {
     { id = 'lamesa',      name = 'La Mesa',          x =   800.0, y = -1600.0, z =  30.0, radius = 240.0, tier = 2 },
     { id = 'cypress',     name = 'Cypress Flats',    x =   700.0, y = -2000.0, z =  29.0, radius = 220.0, tier = 2 },
     { id = 'elysian',     name = 'Elysian Island',   x =   200.0, y = -2700.0, z =   6.0, radius = 260.0, tier = 3 },
+    -- The container docks west of Elysian. Coordinates surveyed in game by the
+    -- user (2026-08-08) rather than guessed off a map, which is why the
+    -- decimals are there. Tier 3: a hot drop, and the terrain suits it --
+    -- stacked containers are cover you have to climb, so a contested landing
+    -- here is decided by who gets high first rather than who lands first.
+    { id = 'docks',       name = 'Terminal Docks',   x =  -412.2, y = -2744.4, z =   6.0, radius = 260.0, tier = 3 },
     -- Added 2026-08-06: the city had a hole between Legion Square and the
     -- eastern industrial belt.
     { id = 'pillbox',     name = 'Pillbox Hill',     x =   -70.0, y =  -600.0, z =  33.0, radius = 220.0, tier = 2 },

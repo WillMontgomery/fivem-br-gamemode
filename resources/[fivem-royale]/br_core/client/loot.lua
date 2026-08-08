@@ -433,7 +433,12 @@ local function drain()
                             -- generated and stands up straight (user,
                             -- 2026-08-06).
                             local pose = poses[id]
-                            local sx, sy, sz = e.x, e.y, gz + 0.35
+                            -- SHARED WITH THE ANIMATION. Static props are
+                            -- built here and never moved again unless they
+                            -- animate, so this height IS their resting
+                            -- height -- and animate() writing a different one
+                            -- is what buried them.
+                            local sx, sy, sz = e.x, e.y, gz + (L.restLift or 0.35)
                             if pose then sx, sy, sz = pose.x, pose.y, pose.z end
 
                             local obj = CreateObjectNoOffset(model,
@@ -580,7 +585,7 @@ local function addEntries(list)
                     -- Where it came from, if it came from anywhere: a crate
                     -- bursting open or a player's hand. Absent on the
                     -- generated layout, which was always just there.
-                    fx = d.fx, fy = d.fy, fz = d.fz,
+                    fx = d.fx, fy = d.fy, fl = d.fl,
                     bornAt = d.fx and GetGameTimer() or nil,
                     lift = 0.0,
                 }
@@ -896,7 +901,21 @@ local function animate(e, d2, dt, now)
     if isContainer(e) or isHusk(e) then return end
 
     local gz = groundZ(e)
-    local x, y, z = e.x, e.y, gz
+    -- WHERE "ON THE GROUND" ACTUALLY IS, and getting this wrong is what sank
+    -- every item. Props here are built at `gz + restLift` and, being static,
+    -- simply stayed there -- so `gz` was never their resting height, it was
+    -- 0.35m below it. Writing gz every frame buried them (user, 2026-08-08:
+    -- "not coming back down to be flush with the ground"). One number, shared
+    -- with the spawn, so the two cannot disagree again.
+    local rest = gz + (L.restLift or 0.35)
+
+    -- PITCH IS THE OTHER HALF OF THE CLIPPING. A rifle standing on end sinks
+    -- into the terrain however carefully its centre is placed; lying flat it
+    -- sits on it. So the item LIES DOWN when it settles and STANDS UP when it
+    -- rises to be taken, which is also the read the hover wants -- an object
+    -- presenting itself rather than one dropped.
+    local pitch = (L.restPitch or 90.0)
+                + ((L.hoverPitch or 0.0) - (L.restPitch or 90.0)) * ease(e.lift or 0.0)
 
     -- ARRIVAL. A parabola, not a straight line: the extra height is what
     -- makes it read as thrown rather than slid.
@@ -904,16 +923,22 @@ local function animate(e, d2, dt, now)
     if e.fx and e.bornAt and (now - e.bornAt) < arriveMs then
         local t = (now - e.bornAt) / arriveMs
         local k = ease(t)
-        x = e.fx + (e.x - e.fx) * k
-        y = e.fy + (e.y - e.fy) * k
-        z = (e.fz or gz) + (gz - (e.fz or gz)) * k
+        -- THE ORIGIN'S HEIGHT IS A LIFT ABOVE OUR OWN GROUND, never a z off
+        -- the wire. The server's z is a first-pass hint with no ground probe
+        -- behind it, and when it sat below the real terrain the contents of a
+        -- crate rose UP OUT OF THE FLOOR (user, 2026-08-08).
+        local sz = gz + (e.fl or (L.crateMouthHeight or 0.6))
+        local x = e.fx + (e.x - e.fx) * k
+        local y = e.fy + (e.y - e.fy) * k
+        local z = sz + (rest - sz) * k
             + math.sin(t * math.pi) * (L.arriveArc or 0.55)
         SetEntityCoordsNoOffset(e.obj, x, y, z, false, false, false)
-        -- Spinning through the air, and it keeps the phase for the hover.
+        -- Tumbling through the air, and it keeps the phase for the hover.
         e.spin = ((e.spin or 0.0) + (L.spinDegPerSec or 55.0) * 3.0
                   * (dt / 1000.0)) % 360.0
-        SetEntityHeading(e.obj, e.spin)
+        SetEntityRotation(e.obj, L.hoverPitch or 0.0, 0.0, e.spin, 2, true)
         e.lift = 0.0
+        e.settled = false
         return
     end
 
@@ -930,7 +955,9 @@ local function animate(e, d2, dt, now)
         -- forever: a hundred items on the floor should cost nothing.
         if e.settled then return end
         e.settled = true
-        SetEntityCoordsNoOffset(e.obj, e.x, e.y, gz, false, false, false)
+        SetEntityCoordsNoOffset(e.obj, e.x, e.y, rest, false, false, false)
+        SetEntityRotation(e.obj, L.restPitch or 90.0, 0.0,
+                          e.spin or (e.heading or 0.0), 2, true)
         return
     end
     e.settled = false
@@ -938,11 +965,11 @@ local function animate(e, d2, dt, now)
     local bob = math.sin(now / math.max(L.bobPeriodMs or 1900, 1) * math.pi * 2.0)
                 * (L.bobAmplitude or 0.06) * k
     SetEntityCoordsNoOffset(e.obj, e.x, e.y,
-        gz + k * (L.hoverHeight or 0.55) + bob, false, false, false)
+        rest + k * (L.hoverHeight or 0.55) + bob, false, false, false)
 
     e.spin = ((e.spin or 0.0) + (L.spinDegPerSec or 55.0) * k * (dt / 1000.0))
              % 360.0
-    SetEntityHeading(e.obj, e.spin)
+    SetEntityRotation(e.obj, pitch, 0.0, e.spin, 2, true)
 end
 
 --- Fly every retiring prop to its destination, then delete it.
@@ -1669,13 +1696,19 @@ RegisterCommand('brpromptcheck', function()
     -- read back the letter a player has rebound `brinteract` to. If the
     -- "bound" line disagrees with what you set in Settings > Key Bindings,
     -- the prompt is lying and keyLabelForCommand needs another approach.
+    -- WHICH FORM ANSWERED IS THE WHOLE DIAGNOSTIC. The first version printed
+    -- the label and the vanilla fallback side by side, and for `brinteract`
+    -- both said E -- one because the lookup missed, the other because E is
+    -- the vanilla context key. Two columns agreeing by coincidence hid the
+    -- bug for a round, so the SOURCE is printed now.
     print('=== prompt key label (what the DUI shows) ===')
-    for _, cmd in ipairs({ 'brinteract', 'brdrop', 'brinventory' }) do
-        print(('  %-12s bound %-6s vanilla-fallback %s'):format(
-            cmd,
-            tostring(BR.Native.keyLabelForCommand(cmd, nil) or '(none)'),
-            tostring(BR.Native.keyLabel(L.promptControl or 51) or '(none)')))
+    for _, cmd in ipairs({ 'brinteract', 'brdrop', 'brinventory', 'bruse' }) do
+        local label, via = BR.Native.keyLabelForCommand(cmd, L.promptControl or 51)
+        print(('  %-12s %-6s  via %s'):format(
+            cmd, tostring(label or '(none)'), tostring(via or 'nothing')))
     end
+    print('  "via +brXXX" or "via brXXX" = the player\'s own binding.')
+    print('  "via vanilla" = we could not read it and fell back to control 51.')
 
     print('=== prompt tokens ===')
     print(('  custom  %s'):format(custom))

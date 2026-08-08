@@ -143,16 +143,39 @@ end
 --- @param command string   the RegisterKeyMapping command name, no slash
 --- @param fallbackControl integer  vanilla control to label if that fails
 --- @return string|nil
+--- @param command string   the RegisterKeyMapping command name, no slash
+--- @param fallbackControl integer|nil
+--- @return string|nil label, string|nil which form answered
 function BR.Native.keyLabelForCommand(command, fallbackControl)
-    local id = (GetHashKey(command) | 0x80000000) & 0xFFFFFFFF
-    local ok, raw = pcall(GetControlInstructionalButton, 2, id, true)
-    if ok and type(raw) == 'string' then
-        local letter = raw:match('^t_(.+)$')
-        -- An UNBOUND command comes back as the empty label rather than as an
-        -- error, and "" is not a key anybody can press.
-        if letter and #letter > 0 and #letter <= 5 then return letter end
+    -- BOTH FORMS, AND THE PLUS ONE FIRST.
+    --
+    -- keybinds.lua registers TAP actions as `brdrop` and HOLD actions as
+    -- `+brinteract` -- and the keymapping is registered under the name with
+    -- the plus, so that is the name whose hash the engine knows. Asking for
+    -- `brinteract` asks about a control nobody registered.
+    --
+    -- Which is exactly what the first version did, and the output said so
+    -- without my reading it: `brdrop bound G` (a tap -- correct), while
+    -- `brinteract bound E` with the key rebound to R (a hold -- the lookup
+    -- missed and the vanilla fallback answered, and the fallback happens to
+    -- be E, so the two were indistinguishable). Two columns that agree by
+    -- coincidence hid the bug for a round.
+    for _, name in ipairs({ '+' .. command, command }) do
+        local id = (GetHashKey(name) | 0x80000000) & 0xFFFFFFFF
+        local ok, raw = pcall(GetControlInstructionalButton, 2, id, true)
+        if ok and type(raw) == 'string' and raw ~= '' then
+            -- Most keys come back as `t_E`. Some -- TAB, arrows -- use a
+            -- different prefix or none at all, so a raw short string is
+            -- accepted rather than discarded (brinventory read as "(none)"
+            -- on TAB purely because of the old strict match).
+            local letter = raw:match('^t_(.+)$') or raw
+            if #letter > 0 and #letter <= 6 then
+                return letter, name
+            end
+        end
     end
-    return fallbackControl and BR.Native.keyLabel(fallbackControl) or nil
+    local fb = fallbackControl and BR.Native.keyLabel(fallbackControl) or nil
+    return fb, fb and 'vanilla' or nil
 end
 
 -- BR.Native.worldToScreen was deleted with the NUI loot prompt.
@@ -673,6 +696,10 @@ function BR.Native.check()
         return SetEntityCoordsNoOffset ~= nil
     end)
     probe('SetEntityHeading', function() return GetEntityHeading(ped) end)
+    -- PITCH, not just yaw: an item lies flat on the ground and stands up to be
+    -- taken, and heading alone cannot express that. Rotation order 2 is the
+    -- one every GTA example uses for ZXY euler angles.
+    probe('SetEntityRotation', function() return GetEntityRotation(ped, 2) end)
     -- Reads the player's ACTUAL binding for the prompt's key badge. Without
     -- it the prompt shows no key at all.
     probe('GetControlInstructionalButton', function()

@@ -74,7 +74,17 @@ local function wireEntry(e)
         -- travels in the same message as the item.
         fx      = e.fx,
         fy      = e.fy,
-        fz      = e.fz,
+        -- HEIGHT ABOVE THE GROUND, NOT AN ABSOLUTE Z, and that distinction is
+        -- a bug fix. The server's z for any entry is a first-pass hint -- only
+        -- the client has a ground probe, which is why groundZ() exists there
+        -- at all. Sending the container's authored z as the arc's start meant
+        -- items burst UPWARD OUT OF THE FLOOR when that hint sat below the
+        -- real ground (user, 2026-08-08).
+        --
+        -- A lift is unambiguous: the client adds it to the ground height it
+        -- resolved itself, so the arc starts at the crate's mouth or the
+        -- player's hands wherever the terrain actually is.
+        fl      = e.flift,
     }
 end
 
@@ -141,7 +151,9 @@ end
 --- @param y number
 --- @param z number
 --- @return table|nil entry
---- @param from table|nil  { x, y, z } the item visibly travels FROM, if any
+--- @param from table|nil  { x, y, lift } the item visibly travels FROM.
+--- `lift` is metres ABOVE THE GROUND, never an absolute z -- only the client
+--- can resolve ground height, so an absolute z from here is a guess.
 function BR.Loot.spawnStack(m, stack, x, y, z, from)
     if not m or not m.loot or not stack then return nil end
 
@@ -149,7 +161,7 @@ function BR.Loot.spawnStack(m, stack, x, y, z, from)
     local e = {
         fx = from and from.x or nil,
         fy = from and from.y or nil,
-        fz = from and from.z or nil,
+        flift = from and from.lift or nil,
         id     = m.loot.nextId,
         item   = stack.item,
         kind   = stack.kind,
@@ -202,8 +214,7 @@ function BR.Loot.dropForPlayer(src, stack)
     -- player's grip and lands, which is the same movement the crate burst
     -- uses in reverse. e.pos is the ped's ROOT, so waist is an offset up.
     return BR.Loot.spawnStack(m, stack, e.pos.x, e.pos.y, e.pos.z,
-        { x = e.pos.x, y = e.pos.y,
-          z = e.pos.z + (L.waistHeight or 0.75) })
+        { x = e.pos.x, y = e.pos.y, lift = L.waistHeight or 0.75 })
 end
 
 -- --------------------------------------------------------------------------
@@ -540,7 +551,7 @@ local function scatter(m, container)
     -- can arc it rather than popping it into existence at the scatter point.
     local from = {
         x = container.x, y = container.y,
-        z = (container.z or 0.0) + (L.crateMouthHeight or 0.6),
+        lift = L.crateMouthHeight or 0.6,
     }
     for i, stack in ipairs(contents) do
         local a = (i / n) * math.pi * 2.0

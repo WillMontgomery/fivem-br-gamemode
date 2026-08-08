@@ -3951,10 +3951,15 @@ do
         end
     end
     ok(dropped ~= nil, 'dropping an item announces it')
-    ok(dropped and dropped.fz ~= nil and dropped.fz > dropped.z,
+    -- A LIFT ABOVE THE GROUND, never an absolute z. Only the client has a
+    -- ground probe, so an absolute height from the server is a guess -- and
+    -- when that guess sat below the terrain, crate contents burst upward out
+    -- of the floor (user, 2026-08-08).
+    ok(dropped and dropped.fl ~= nil and dropped.fl > 0.0,
         'and it comes from ABOVE where it lands -- the dropper\'s hands',
-        dropped and ('%s from %s'):format(tostring(dropped.z),
-                                          tostring(dropped.fz)) or 'nil')
+        dropped and tostring(dropped.fl) or 'nil')
+    ok(dropped and dropped.fz == nil,
+        'and never as an absolute z the client would have to trust')
 
     -- THE GENERATED LAYOUT HAS NO ORIGIN. It was always just there, and an
     -- arc from nowhere would be an item flying out of the ground on the first

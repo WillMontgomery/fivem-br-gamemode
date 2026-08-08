@@ -767,13 +767,35 @@ BR.Sched.every(500, 'damage.fires', function()
             if not was or hp >= was then return end
 
             for _, f in ipairs(fires) do
-                if f.matchId == e.matchId and f.owner ~= src then
+                if f.matchId == e.matchId then
                     local dx, dy = e.pos.x - f.x, e.pos.y - f.y
                     local dz = e.pos.z - f.z
                     if dx * dx + dy * dy <= r2 and math.abs(dz) < 8.0 then
                         e.lastHitBy = f.owner
                         e.lastHitAt = now
                         e.lastHitWeapon = f.item
+
+                        -- SELF-HARM IS COUNTED HERE, because there is nowhere
+                        -- else left to count it.
+                        --
+                        -- The repeat guard used to live in the validator, on
+                        -- weaponDamageEvent. It could never fire: dropping
+                        -- three grenades at your own feet raises NO
+                        -- weaponDamageEvent at all (user capture,
+                        -- 2026-08-08 -- the log stayed empty and the player
+                        -- died), exactly like the molotov. Explosions are the
+                        -- only realistic way to hurt yourself, so the one path
+                        -- that could see it was the one path that never ran.
+                        --
+                        -- The damage still cannot be refused -- it is the
+                        -- engine's, applied on the victim's own machine -- but
+                        -- the PATTERN is now visible, which is what the rule
+                        -- was ever about. Blowing yourself up once is a
+                        -- mistake; doing it three times in five seconds is
+                        -- somebody exercising something.
+                        if f.owner == src and BR.Damage.noteSelfHit(src) then
+                            BR.Damage.noteRefusal(src, BR.ShotRefusal.SELF)
+                        end
                         return
                     end
                 end
