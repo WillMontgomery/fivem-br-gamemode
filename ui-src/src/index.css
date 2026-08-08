@@ -176,7 +176,18 @@ html, body, #root {
 --------------------------------------------------------------------------- */
 .bar-fill {
   transform-origin: left center;
-  transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  /* LINEAR, AND LONGER THAN THE SERVER'S STEP. This was a 220ms strong
+     ease-out, which is the right curve for a one-off change and the wrong one
+     for a RAMP -- and a consumable is a ramp: the server applies it in
+     interpolated pieces every 250ms. An ease-out covers most of its distance
+     in the first third of the time and then crawls, so a sequence of them
+     reads as jump, crawl, jump, crawl (user, twice: "not a linear, smooth
+     animation", then "better, not perfect").
+
+     Linear removes the crawl, and 300ms > the 250ms step means each piece is
+     still animating when the next arrives, so consecutive steps blend into
+     one continuous motion instead of landing and restarting. */
+  transition: transform 300ms linear;
   will-change: transform;
 }
 

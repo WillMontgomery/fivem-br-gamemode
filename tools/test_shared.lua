@@ -1755,14 +1755,26 @@ do
     ok(BR.Config.WeaponsOfRarity(BR.Rarity.LEGENDARY)[1] ~= nil,
         'WeaponsOfRarity still answers after the rewrite')
 
-    -- Weapon stacks carry a clip; the HUD reads it and a nil would render "/".
+    -- FIREARM stacks carry a clip; the HUD reads it and a nil would render "/".
+    -- MELEE deliberately does not: a machete has no magazine, and the bar keys
+    -- on exactly this to decide whether to draw an ammo counter at all -- so a
+    -- clip of 0 would be worse than no clip, printing "0 / 0" under a hatchet.
     local wr = BR.Rng(55)
-    local noClip = 0
+    local noClip, meleeSeen = 0, 0
     for _ = 1, 400 do
         local s = BR.RollLootStack(wr, 3)
-        if s.kind == BR.ItemKind.WEAPON and not s.clip then noClip = noClip + 1 end
+        if s.kind == BR.ItemKind.WEAPON then
+            local w = BR.Config.WeaponById[s.item]
+            if w and w.melee then
+                meleeSeen = meleeSeen + 1
+                if s.clip then noClip = noClip + 1 end   -- melee must NOT have one
+            elseif not s.clip then
+                noClip = noClip + 1
+            end
+        end
     end
-    ok(noClip == 0, 'every weapon stack carries a clip size')
+    ok(noClip == 0, 'every firearm stack has a clip and no melee stack does')
+    ok(meleeSeen > 0, 'and crates do roll melee', ('%d of 400'):format(meleeSeen))
 
     ok(BR.LootLabel({ kind = BR.ItemKind.AMMO, item = BR.AmmoType.HEAVY }) == 'Heavy Ammo',
         'LootLabel resolves ammo')

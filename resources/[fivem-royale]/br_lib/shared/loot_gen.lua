@@ -135,6 +135,27 @@ function BR.RollLootStack(rng, tier, floor)
         }
     end
 
+    -- MELEE IS A CRATE PRIZE (user call, 2026-08-07). It rides the WEAPON kind
+    -- rather than inventing a new one -- a machete occupies a slot, is held in
+    -- the hand and is dropped on death exactly like a rifle, so every path
+    -- downstream already works. The only difference is where it can be found.
+    --
+    -- The draw happens on EVERY weapon roll, floor or crate, so the RNG
+    -- sequence does not depend on which table is being rolled -- a conditional
+    -- draw is how two servers on one seed quietly diverge.
+    local meleeRoll = rng:float()
+    if not floor and meleeRoll < (BR.Config.Loot.meleeChance or 0.18) then
+        local m = BR.LootPickOfRarity(rng, BR.Config.MeleeByRarity, rarity)
+        if m then
+            return {
+                item   = m.id,
+                kind   = BR.ItemKind.WEAPON,
+                rarity = m.rarity,
+                count  = 1,
+            }
+        end
+    end
+
     local w = BR.LootPickOfRarity(rng, BR.Config.WeaponsByRarity, rarity)
     return {
         item   = w.id,

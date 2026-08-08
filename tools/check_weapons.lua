@@ -102,6 +102,7 @@ end
 
 check(BR.Config.Weapons, 'weapon')
 check(BR.Config.Throwables, 'throwable')
+check(BR.Config.Melee, 'melee')
 
 -- A firearm without a magazine size or an ammo pool cannot take part in the
 -- ammo model at all -- it would read as unlimited for a different reason.
@@ -130,7 +131,7 @@ local function signed32(h)
     return (h >= 0x80000000) and (h - 0x100000000) or h
 end
 
-for _, list in ipairs({ BR.Config.Weapons, BR.Config.Throwables }) do
+for _, list in ipairs({ BR.Config.Weapons, BR.Config.Throwables, BR.Config.Melee }) do
     for _, w in ipairs(list or {}) do
         if w.hash then
             signedChecked = signedChecked + 1

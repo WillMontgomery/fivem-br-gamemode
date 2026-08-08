@@ -85,6 +85,35 @@ BR.Config.Throwables = {
     { id = 'smoke',      name = 'WEAPON_SMOKEGRENADE', hash = 0xFDBC8A50, label = 'Smoke Grenade', rarity = R.COMMON,   maxStack = 3 },
 }
 
+--- MELEE. Crate-only, and deliberately a separate list from the firearms.
+---
+--- They have no magazine and no ammo pool, so they cannot take part in the
+--- ammo model at all -- which is why they are not in BR.Config.Weapons, whose
+--- gate (tools/check_weapons.lua) requires both. Everything else treats them
+--- as ordinary weapons: same lookups, same allowlist, same body-part damage.
+---
+--- HASHES COMPUTED, NOT RECALLED. Every one of these was produced by hashing
+--- the name with joaat rather than copied from a table, and the gate re-derives
+--- them on every commit -- so a typo here fails the build instead of shipping a
+--- machete nobody can pick up.
+---
+--- Damage is banded by rarity rather than by GTA's own numbers: a Stone Hatchet
+--- that two-shots is a legendary find, a Broken Bottle is what you swing when
+--- the drop went badly.
+BR.Config.Melee = {
+    { id = 'knuckle',   name = 'WEAPON_KNUCKLE',      hash = 0xD8DF3C3C, label = 'Brass Knuckles',        rarity = R.COMMON,    damage = 32, melee = true },
+    { id = 'bottle',    name = 'WEAPON_BOTTLE',       hash = 0xF9E6AA4B, label = 'Broken Bottle',         rarity = R.COMMON,    damage = 32, melee = true },
+    { id = 'crowbar',   name = 'WEAPON_CROWBAR',      hash = 0x84BD7BFD, label = 'Crowbar',               rarity = R.UNCOMMON,  damage = 40, melee = true },
+    { id = 'bat',       name = 'WEAPON_BAT',          hash = 0x958A4A8F, label = 'Baseball Bat',          rarity = R.UNCOMMON,  damage = 44, melee = true },
+    { id = 'wrench',    name = 'WEAPON_WRENCH',       hash = 0x19044EE0, label = 'Pipe Wrench',           rarity = R.UNCOMMON,  damage = 46, melee = true },
+    { id = 'dagger',    name = 'WEAPON_DAGGER',       hash = 0x92A27487, label = 'Antique Cavalry Dagger',rarity = R.RARE,      damage = 52, melee = true },
+    { id = 'knife',     name = 'WEAPON_KNIFE',        hash = 0x99B507EA, label = 'Knife',                 rarity = R.RARE,      damage = 52, melee = true },
+    { id = 'switchblade',name= 'WEAPON_SWITCHBLADE',  hash = 0xDFE37640, label = 'Switchblade',           rarity = R.RARE,      damage = 54, melee = true },
+    { id = 'machete',   name = 'WEAPON_MACHETE',      hash = 0xDD5DF8D9, label = 'Machete',               rarity = R.RARE,      damage = 58, melee = true },
+    { id = 'hatchet',   name = 'WEAPON_HATCHET',      hash = 0xF9DCBF2D, label = 'Hatchet',               rarity = R.EPIC,      damage = 64, melee = true },
+    { id = 'battleaxe', name = 'WEAPON_BATTLEAXE',    hash = 0xCD274149, label = 'Battle Axe',            rarity = R.EPIC,      damage = 70, melee = true },
+}
+
 --- Utility weapon hashes referenced directly by gameplay code.
 BR.Config.Gadgets = {
     PARACHUTE = 0xFBAB5776,  -- GADGET_PARACHUTE, granted at drop, removed on landing
@@ -116,6 +145,22 @@ end
 for _, t in ipairs(BR.Config.Throwables) do
     BR.Config.WeaponByHash[BR.NormHash(t.hash)] = t
     BR.Config.WeaponById[t.id]                  = t
+end
+for _, m in ipairs(BR.Config.Melee) do
+    BR.Config.WeaponByHash[BR.NormHash(m.hash)] = m
+    BR.Config.WeaponById[m.id]                  = m
+end
+
+--- Melee bucketed by rarity, in authored order -- same construction and same
+--- reason as every other bucket table here: the loot layout must replay
+--- identically from a seed, so nothing rolls against a hash-keyed table.
+BR.Config.MeleeByRarity = {}
+for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+    BR.Config.MeleeByRarity[r] = {}
+end
+for _, m in ipairs(BR.Config.Melee) do
+    local b = BR.Config.MeleeByRarity[m.rarity]
+    if b then b[#b + 1] = m end
 end
 
 --- Is this weapon hash one the gamemode permits at all?

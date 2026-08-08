@@ -831,13 +831,25 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function()
             local gz = groundZ(e)
             local info = BR.RarityInfo[e.rarity] or BR.RarityInfo[BR.Rarity.COMMON]
             local c = info.rgb
-            -- A flat disc rather than a sphere: it reads as "something is
-            -- here" from across a room without swallowing the item itself.
-            DrawMarker(1, e.x, e.y, gz - 0.05,
-                0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                0.45, 0.45, 0.12,
-                c[1], c[2], c[3], 120,
-                false, false, 2, false, nil, nil, false)
+
+            -- NO DISC UNDER A CRATE (user, 2026-08-07: "are you drawing a blue
+            -- marker under every unopened crate? We don't need that").
+            --
+            -- The disc exists to say "something is here" for a loose item,
+            -- which is a small prop easily lost in scenery. A crate is a
+            -- metre-wide box with an orange outline and a label on the lid --
+            -- it announces itself. The disc under it was a third signal for a
+            -- thing that already had two, in the RARITY colour, which also
+            -- quietly leaked what was inside before it was opened.
+            if not isContainer(e) then
+                -- A flat disc rather than a sphere: it reads as "something is
+                -- here" from across a room without swallowing the item itself.
+                DrawMarker(1, e.x, e.y, gz - 0.05,
+                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                    0.45, 0.45, 0.12,
+                    c[1], c[2], c[3], 120,
+                    false, false, 2, false, nil, nil, false)
+            end
 
             -- CRATES SHINE ORANGE. Always orange, never the rarity colour: the
             -- glow says "a crate is here", and what is inside is not knowable
@@ -1126,7 +1138,10 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.devblips', function()
             end
         elseif not blips[id] or not DoesBlipExist(blips[id]) then
             local b = AddBlipForCoord(e.x, e.y, e.gz or e.z or 0.0)
-            SetBlipSprite(b, isContainer(e) and 68 or 1)
+            -- 457 is the briefcase (user call, 2026-08-07): a courtesy blip is
+            -- saying "there is loot over there", and a briefcase reads as loot
+            -- at a glance where the generic 68 did not.
+            SetBlipSprite(b, isContainer(e) and 457 or 1)
             SetBlipScale(b, isContainer(e) and 0.7 or 0.45)
             SetBlipColour(b, 5)
             SetBlipAsShortRange(b, true)

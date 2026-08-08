@@ -143,7 +143,10 @@ export default function InventoryBar({ inv }: { inv: InvPayload }) {
     <div className="flex flex-col items-end gap-1">
       {/* Ammo for the weapon actually in hand. Nothing is shown for an empty
           hand or a consumable -- a "0 / 0" under a bandage is noise. */}
-      {active && active.kind === 'weapon' && (
+      {/* MELEE HAS NO AMMO PANEL. A machete carries no clip, and `clip == null`
+          is exactly how the server says so -- printing "0 / 0" under a hatchet
+          is the same noise the comment above warns about for consumables. */}
+      {active && active.kind === 'weapon' && active.clip != null && (
         <div className="panel px-2.5 py-1 flex items-baseline gap-1.5">
           <span className="text-2xl font-bold tabular-nums leading-none">
             {active.clip ?? 0}

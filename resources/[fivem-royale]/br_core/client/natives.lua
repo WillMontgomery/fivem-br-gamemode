@@ -682,6 +682,10 @@ function BR.Native.check()
     probe('SetPlayerCanDoDriveBy',   function()
         SetPlayerCanDoDriveBy(PlayerId(), true)
     end)
+    -- The mouse wheel belongs to the scope while aiming, not to slot cycling.
+    probe('IsPlayerFreeAiming',      function()
+        return IsPlayerFreeAiming(PlayerId())
+    end)
     -- Ambient drivers who drive like maniacs. Ability and aggression alone did
     -- nothing visible -- the driving TASK and its style flags are what decide
     -- whether a ped stops at a light or drives through the junction.

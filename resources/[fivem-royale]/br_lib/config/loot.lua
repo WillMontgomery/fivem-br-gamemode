@@ -378,6 +378,11 @@ BR.Config.Loot = {
     -- rounds behind the shots (user, 2026-08-06).
     ammoReportMs    = 150,
 
+    -- How often a CRATE weapon roll produces melee instead of a firearm.
+    -- Crate-only: a machete on the roadside is a consolation prize, a machete
+    -- in a box you crossed open ground for is a decision (user, 2026-08-07).
+    meleeChance     = 0.18,
+
     -- Crate mass, in kg, via SetObjectPhysicsParams. Tuned in game, in four
     -- passes: the prop default read as "extremely heavy", 12 overcorrected
     -- into a paperweight, 120 was still a paperweight, and 1200 landed at

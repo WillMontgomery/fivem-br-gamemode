@@ -548,9 +548,20 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
     -- wheel kept cycling slots while the player was scrolling the pause map,
     -- and kept stealing the scroll that a sniper scope uses to zoom (user,
     -- 2026-08-07). In both cases the wheel belongs to something else.
+    -- ONE NATIVE, AND IT IS A PROBED ONE.
+    --
+    -- The first version of this line also called GetFollowPedCamViewMode and
+    -- IsAimCamThirdPersonViewActive, neither of which this project had ever
+    -- probed -- and an unknown binding throws. Five consecutive throws suspend
+    -- the callback, and THIS callback is the one that suppresses GTA's weapon
+    -- wheel and disables ATTACK while a consumable is in hand. So the whole
+    -- file went quiet at once: the wheel came back and using a shield made the
+    -- ped throw a punch (user, 2026-08-07, both reported together).
+    --
+    -- The standing rule exists for exactly this and I broke it: a probe for
+    -- every native a subsystem leans on, BEFORE the in-game test. Aiming is
+    -- all this actually needs to know.
     local scoped = IsPlayerFreeAiming(PlayerId())
-        and GetFollowPedCamViewMode() ~= nil
-        and IsAimCamThirdPersonViewActive() == false
 
     -- MOUSE WHEEL UP CYCLES DOWNWARD THROUGH THE RING, wrapping past the fist
     -- slot at the bottom to slot 5 at the top.
@@ -664,6 +675,14 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     -- had unlimited ammo, silently, because this guard fired on every tick
     -- (user's /brprobe ammo, 2026-08-06: config hash and "ENGINE holds"
     -- printed identically and still compared unequal).
+    -- MELEE HAS NO AMMO TO REPORT. A machete has no magazine and no pool, so
+    -- everything below it -- the clamp, the decrease-only total, the report --
+    -- is arithmetic about a number that does not exist.
+    do
+        local w = BR.Config.WeaponById[slot.id]
+        if w and w.melee then return end
+    end
+
     -- THROWING THE LAST ONE TAKES THE WEAPON WITH IT.
     --
     -- A throwable is not a gun that runs empty -- the engine REMOVES it from

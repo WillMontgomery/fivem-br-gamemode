@@ -176,7 +176,7 @@ BR.Config.Stamina = {
     -- short (2026-08-07). 6.5 gives about 15 -- long enough to cross a street
     -- and break line of sight, which is what the meter is for, without making
     -- it free.
-    drainPerSec  = 6.5,
+    drainPerSec  = 8.33,   -- 100 / 12: twelve seconds of sprint (user, 2026-08-07)
     regenPerSec  = 25.0,   -- ~4 seconds to refill
     regenDelayMs = 900,    -- breath caught before the refill starts
     minToSprint  = 15.0,   -- an emptied meter must climb back here to sprint
