@@ -13,10 +13,18 @@ local function hasSquad()
     return BR.State.me.squadId ~= nil or BR.State.me.partyId ~= nil
 end
 
+--- NOT OVER THE PAUSE MENU. GTA's pause screen is a separate frontend with its
+--- own input focus, so opening our chat under it gives the player two things
+--- reading the keyboard and a text box they cannot see (user, 2026-08-07).
+--- @return boolean
+local function canChat()
+    return not IsPauseMenuActive()
+end
+
 -- The MAIN chat key defaults to the people you are playing WITH: squad when
 -- you have one, everyone when you do not.
 BR.Keys.on('chatGlobal', function(pressed)
-    if not pressed then return end
+    if not pressed or not canChat() then return end
     TriggerEvent('br:ui:openChat',
         hasSquad() and BR.ChatChannel.SQUAD or BR.ChatChannel.GLOBAL)
 end)
@@ -25,7 +33,7 @@ end)
 -- opening global -- pressing "talk to my squad" and reaching the whole
 -- server would be worse than nothing happening.
 BR.Keys.on('chatSquad', function(pressed)
-    if not pressed then return end
+    if not pressed or not canChat() then return end
     if not hasSquad() then return end
     TriggerEvent('br:ui:openChat', BR.ChatChannel.SQUAD)
 end)

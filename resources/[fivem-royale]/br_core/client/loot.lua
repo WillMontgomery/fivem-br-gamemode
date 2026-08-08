@@ -1053,8 +1053,18 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.mercy', function()
 
     if BR.State.me.state ~= BR.PlayerState.ALIVE then
         mercy.landedAt, mercy.armedAt, mercy.on = 0, 0, false
+        mercy.done = false
         return
     end
+
+    -- ONCE PER LIFE. Without this the blips never go away, and the reason is
+    -- not the expiry -- that works -- it is what happens on the very next
+    -- pass. `mercy.on` goes false, control falls into the arming branch, and
+    -- the arming test is `now - landedAt >= afterMs`, which is still true and
+    -- will be true forever. So it re-armed a second later, every second,
+    -- indefinitely (user, 2026-08-07: "courtesy loot blips don't remove after
+    -- 1 minute" -- they were removed, and then immediately put back).
+    if mercy.done then return end
 
     local now = GetGameTimer()
     if mercy.landedAt == 0 then mercy.landedAt = now end
@@ -1093,8 +1103,9 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.mercy', function()
     -- EITHER, not both (user correction, 2026-08-05): they go away as soon as
     -- something has been found, or after the timeout, whichever comes first.
     -- Help that outstays the problem is just a wallhack left switched on.
-    if gained or now - mercy.armedAt >= (cfg.minShownMs or 180000) then
-        mercy.on = false
+    if gained or now - mercy.armedAt >= (cfg.minShownMs or 60000) then
+        mercy.on   = false
+        mercy.done = true   -- and never again this life
     end
 end)
 

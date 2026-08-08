@@ -140,6 +140,70 @@ local function record(sender, data)
 end
 
 -- --------------------------------------------------------------------------
+-- Applying it
+-- --------------------------------------------------------------------------
+
+--- Apply a validated hit, server-authoritatively.
+---
+--- ARMOUR FIRST, then health, both in DISPLAY units -- the same order the
+--- storm uses and the same order the shield item implies. The server's roster
+--- entry is the ledger; the victim's client is told to show it, and the 2Hz
+--- health sample confirms it afterwards.
+---
+--- ELIMINATION COMES FROM THE LEDGER, not from the ped. That is the property
+--- that makes this worth doing: a client that drops the HIT_DAMAGE event keeps
+--- its health bar and still dies here, at the same moment an honest one would.
+---
+--- @param shooter integer
+--- @param victim integer
+--- @param amount number   display units, already multiplied by body part
+--- @param meta table      { weapon, headshot, component, dist }
+function BR.Damage.applyHit(shooter, victim, amount, meta)
+    if amount <= 0.0 then return end
+
+    local e = BR.Roster.get(victim)
+    if not e then return end
+
+    local armour = e.armour or 0.0
+    local hp     = e.hp or 100.0
+
+    -- Armour soaks first, and only what it has.
+    local toArmour = math.min(armour, amount)
+    local toHealth = amount - toArmour
+
+    e.armour = armour - toArmour
+    e.hp     = math.max(0.0, hp - toHealth)
+
+    -- ...and the victim is told to look like it. Engine units on the wire, to
+    -- match STORM_DAMAGE's contract.
+    TriggerClientEvent(BR.Net.HIT_DAMAGE, victim, {
+        amount      = math.floor(BR.ToEngineHpDelta(toHealth) + 0.5),
+        armour      = math.floor(toArmour + 0.5),
+        armourFirst = true,
+    })
+
+    -- The shooter gets a hitmarker. This is the one piece of feedback that
+    -- cancelling the engine's damage would otherwise take away.
+    TriggerClientEvent(BR.Net.DAMAGE_FEED, shooter, {
+        amount   = math.floor(amount + 0.5),
+        headshot = meta and meta.headshot or false,
+        killed   = e.hp <= 0.0,
+    })
+
+    -- Attribution, for the kill feed and for anything that finishes them
+    -- later: the assist window means storm or fall damage on a wounded player
+    -- still credits whoever shot them.
+    e.lastHitBy = shooter
+    e.lastHitAt = GetGameTimer()
+    e.lastHitWeapon = meta and meta.weapon or nil
+
+    if e.hp <= 0.0 then
+        BR.Combat.eliminate(victim,
+            (meta and meta.headshot) and 'headshot' or 'gunshot', shooter)
+    end
+end
+
+-- --------------------------------------------------------------------------
 -- The handler
 -- --------------------------------------------------------------------------
 
@@ -219,6 +283,29 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                                     tostring(data.weaponDamage),
                                     head and '  HEADSHOT' or ''))
                     end
+
+                    -- THE TAKEOVER. Cancel GTA's damage and apply ours.
+                    --
+                    -- It has to be both halves or neither: leaving the engine's
+                    -- damage in place and "correcting" health afterwards means
+                    -- the client's number lands first, which is the exact
+                    -- window a multiplier cheat needs. Cancelling without
+                    -- applying means nobody can hurt anybody.
+                    --
+                    -- The ledger pattern is the storm's, and for the same
+                    -- reason: the server cannot write a ped, so it keeps the
+                    -- authoritative number and TELLS the victim to show it. A
+                    -- client that ignores the instruction keeps its health bar
+                    -- and dies at exactly the same moment as an honest one.
+                    if cfg.applyOwnDamage then
+                        CancelEvent()
+                        BR.Damage.applyHit(shooter, victim, dmg, {
+                            weapon    = data.weaponType,
+                            headshot  = head,
+                            component = data.hitComponent,
+                            dist      = dist,
+                        })
+                    end
                 end
             end
         end
@@ -256,3 +343,30 @@ end, true)
 function BR.Damage.forget(src)
     lastShot[src] = nil
 end
+
+--- Turn the damage takeover on and off WITHOUT A REDEPLOY.
+---
+---   brdamage            what it is doing now
+---   brdamage off        stop cancelling and applying; GTA's numbers again
+---   brdamage on
+---   brdamage strict     also cancel refused shots
+---
+--- This exists because flipping the takeover changes every gunfight in the
+--- match at once, and the failure mode -- nobody can hurt anybody -- is the
+--- kind you want to back out of in one command rather than one deploy.
+RegisterCommand('brdamage', function(_, args)
+    local a = args[1]
+    if a == 'off' then
+        cfg.applyOwnDamage, cfg.enforce = false, false
+        print('[br_core] damage takeover OFF -- GTA applies its own numbers again')
+    elseif a == 'on' then
+        cfg.applyOwnDamage = true
+        print('[br_core] damage takeover ON')
+    elseif a == 'strict' then
+        cfg.applyOwnDamage, cfg.enforce = true, true
+        print('[br_core] damage takeover ON, refused shots cancelled')
+    end
+    print(('  applyOwnDamage=%s  enforce=%s  logHits=%s  refusals so far=%d')
+        :format(tostring(cfg.applyOwnDamage), tostring(cfg.enforce),
+                tostring(cfg.logHits), BR.Damage.refusals or 0))
+end, true)

@@ -91,6 +91,11 @@ BR.Net = {
     -- Combat / DBNO
     HEALTH_SYNC     = 'br:health:sync',      -- S->C  { hp, armour } authoritative correction
     DAMAGE_FEED     = 'br:damage:feed',      -- S->C  { amount, dir, headshot } for hitmarkers
+    -- S->C { amount, armourFirst }. The server telling a victim to apply a
+    -- validated gunshot to their own ped. Same shape and same reasoning as
+    -- STORM_DAMAGE: the server cannot write a ped, so it keeps the ledger and
+    -- instructs the client to show it.
+    HIT_DAMAGE      = 'br:hit:damage',
     KILL_FEED       = 'br:kill:feed',        -- S->C  { killer, victim, weapon, headshot }
     DBNO_SET        = 'br:dbno:set',         -- S->C  { downed, bleedEndsAt, byName }
     REVIVE_START    = 'br:revive:start',     -- C->S  { target }

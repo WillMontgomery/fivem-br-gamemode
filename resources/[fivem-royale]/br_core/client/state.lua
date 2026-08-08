@@ -566,6 +566,35 @@ AddEventHandler(BR.Net.STORM_DAMAGE, function(d)
     BR.Native.applyDamage(amount, d.armourFirst)
 end)
 
+-- A VALIDATED GUNSHOT, applied to our own ped on instruction.
+--
+-- M6 cancels the engine's own damage and applies the SERVER's number instead,
+-- which is what makes our weapon table real rather than decorative. The split
+-- arrives already worked out -- the server took armour first and told us how
+-- much of each -- because it is the server's ledger that decides the
+-- elimination, and a client that quietly disagreed here would only be lying to
+-- its own health bar.
+RegisterNetEvent(BR.Net.HIT_DAMAGE)
+AddEventHandler(BR.Net.HIT_DAMAGE, function(d)
+    if type(d) ~= 'table' then return end
+
+    -- Armour is a display-unit number and the ped's own; health arrives in
+    -- ENGINE units, same as STORM_DAMAGE.
+    local armour = math.floor(tonumber(d.armour) or 0)
+    if armour > 0 then
+        local ped = PlayerPedId()
+        SetPedArmour(ped, math.max(0, GetPedArmour(ped) - armour))
+    end
+
+    local amount = math.floor(tonumber(d.amount) or 0)
+    if amount > 0 then
+        -- armourFirst is FALSE here on purpose: the server already took the
+        -- armour above, so letting the native take it again would charge the
+        -- shield twice for one bullet.
+        BR.Native.applyDamage(amount, false)
+    end
+end)
+
 RegisterNetEvent(BR.Net.LOBBY_STATUS)
 AddEventHandler(BR.Net.LOBBY_STATUS, function(d)
     -- Resolve "am I queued?" here rather than shipping the id list to the UI.

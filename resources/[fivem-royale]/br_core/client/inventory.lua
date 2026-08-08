@@ -541,9 +541,21 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
         DisableControlAction(0, SUPPRESS[i], true)
     end
 
+    -- NOT WHILE THE PAUSE MENU IS UP, and not while aiming down a scope.
+    --
+    -- Disabling a control does not stop IsDisabledControlJustPressed from
+    -- seeing it -- that is the entire point of the disabled variants -- so the
+    -- wheel kept cycling slots while the player was scrolling the pause map,
+    -- and kept stealing the scroll that a sniper scope uses to zoom (user,
+    -- 2026-08-07). In both cases the wheel belongs to something else.
+    local scoped = IsPlayerFreeAiming(PlayerId())
+        and GetFollowPedCamViewMode() ~= nil
+        and IsAimCamThirdPersonViewActive() == false
+
     -- MOUSE WHEEL UP CYCLES DOWNWARD THROUGH THE RING, wrapping past the fist
     -- slot at the bottom to slot 5 at the top.
-    if IsDisabledControlJustPressed(0, WHEEL_UP) then
+    if not IsPauseMenuActive() and not scoped
+       and IsDisabledControlJustPressed(0, WHEEL_UP) then
         local want = inv.active - 1
         if want < MELEE_SLOT then want = SLOTS end
         TriggerServerEvent(BR.Net.INV_SELECT, { slot = want })
@@ -652,6 +664,26 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
     -- had unlimited ammo, silently, because this guard fired on every tick
     -- (user's /brprobe ammo, 2026-08-06: config hash and "ENGINE holds"
     -- printed identically and still compared unequal).
+    -- THROWING THE LAST ONE TAKES THE WEAPON WITH IT.
+    --
+    -- A throwable is not a gun that runs empty -- the engine REMOVES it from
+    -- the ped when the last one leaves the hand. So the guard below, which
+    -- exists to stop us reporting for a weapon the ped is not holding, fired
+    -- on exactly the moment we most needed to report: the slot never reached
+    -- zero, so it kept its grenade, and cycling slots handed out another one
+    -- (user, 2026-08-07). Same shape as the ammo bug -- a guard that is right
+    -- in general and wrong at the one boundary that matters.
+    --
+    -- Checked BEFORE the held-weapon guard, because by now it is gone.
+    if slot.kind == BR.ItemKind.THROWABLE
+       and not HasPedGotWeapon(ped, hash, false) then
+        if (slot.count or 0) > 0 then
+            TriggerServerEvent(BR.Net.INV_AMMO,
+                { slot = inv.active, total = 0, clip = 0 })
+        end
+        return
+    end
+
     local heldOk, held = GetCurrentPedWeapon(ped, true)
     if not heldOk or BR.NormHash(held) ~= BR.NormHash(hash) then return end
 

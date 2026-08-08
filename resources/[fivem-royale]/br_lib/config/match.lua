@@ -172,7 +172,11 @@ BR.Config.Ambient = {
 -- about it crosses the wire.
 BR.Config.Stamina = {
     max          = 100.0,
-    drainPerSec  = 12.5,   -- ~8 seconds of full sprint
+    -- 12.5 was ~8 seconds of sprint, which a second playtester called too
+    -- short (2026-08-07). 6.5 gives about 15 -- long enough to cross a street
+    -- and break line of sight, which is what the meter is for, without making
+    -- it free.
+    drainPerSec  = 6.5,
     regenPerSec  = 25.0,   -- ~4 seconds to refill
     regenDelayMs = 900,    -- breath caught before the refill starts
     minToSprint  = 15.0,   -- an emptied meter must climb back here to sprint
@@ -238,20 +242,25 @@ end
 
 --- M6 combat validation.
 ---
---- `enforce` IS OFF UNTIL THE PAYLOAD IS CONFIRMED IN GAME. FiveM's
---- weaponDamageEvent payload is not documented anywhere authoritative -- the
---- natives reference lists the event and says the list is "largely
---- undocumented", and the anticheats that use it read only the one or two
---- fields they happen to need. Guessing the rest of the field names and
---- shipping enforcement on top of them is exactly the pattern that cost this
---- project six rounds on the ammo counter.
+--- THE SEQUENCING THAT GOT US HERE, kept because it is the reusable part.
+--- FiveM's weaponDamageEvent payload is not documented anywhere authoritative,
+--- so nothing was enforced until real payloads had been recorded with
+--- /brdamagelog and the field names were facts rather than guesses. Then the
+--- validator ran in log-only mode for a full playtest, on the rule that every
+--- refusal printed during honest play is a FALSE POSITIVE. That log came back
+--- empty (2026-08-07), which is what unlocked both flags below.
 ---
---- So: /brdamagelog records real payloads first, and this flag turns on once
---- the field names are known rather than assumed. With it off, the validator
---- runs, logs its verdict and cancels NOTHING -- so a wrong assumption is a
---- console line rather than players unable to shoot each other.
+--- Guessing the field names and shipping enforcement on top of them is exactly
+--- the pattern that cost this project six rounds on the ammo counter.
 BR.Config.Combat = {
-    enforce       = false,
+    -- Both ON as of 2026-08-07: a full playtest produced no "shot refused"
+    -- lines, which is the false-positive gate this was waiting for.
+    -- `/brdamage off` backs BOTH out live, without a redeploy -- flipping the
+    -- takeover changes every gunfight at once and the failure mode is the kind
+    -- you want to leave in one command rather than one deploy.
+    enforce       = true,
+    applyOwnDamage = true,
+    logHits       = false,
 
     -- Slack, and it is load-bearing. Roster positions are sampled at 2Hz, so
     -- at the instant of a shot both players can be half a second stale --
