@@ -38,7 +38,13 @@
      instructional/help band, which draws in the top left and was landing
      underneath our squad panel. Both top panels hang off this so they read as
      one row. Overwritten at runtime from the real safe zone. */
-  --hud-top: calc(3.2% + 7.5vh);
+  /* THE TOP CORNERS SIT WHERE THE CENTRE PANEL SITS.
+     This was safe-y + 7.5vh, pushed down to clear the engine's help band --
+     the "Press SPACE to open the glider" boxes that draw in the top-left. The
+     HUD is now hidden outright during freefall and glide, and the scope
+     hiding covers the other overlay case, so nothing is left to clear (user,
+     2026-08-08). Level with the storm bar, which anchors on --safe-y. */
+  --hud-top: var(--safe-y);
 
   /* Footprint of GTA's native radar, which we deliberately do not replace. */
   --radar-w: 25rem;

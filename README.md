@@ -103,8 +103,10 @@ Each of these stands on its own:
 |---|---|
 | **[Terminology](docs/terminology.md)** | The words the code, the logs and the commit history use — roster, mirror, digest, scope gate, cell, husk, ledger — and what each one actually is. Read this first if you are reading the source. |
 | **[Generated systems](docs/generation.md)** | How loot layouts, flight routes and storm circles are produced, **with the formulas**. Seeds, budgets, rejection sampling, and why every walk is over an array rather than a hash. |
+| **[The arithmetic of a match](docs/match-math.md)** | Every number a match is built from and why it is that number — seeds, the flight chord, storm phases and pacing, breakout geometry, loot budgets and rarity, and the full damage formula. |
 | **[Cheat resistance](docs/security.md)** | Why the client is never the authority on anything that decides a match. The three layers, a table of concrete attacks and why each fails, and an explicit statement of what this is *not*. |
 | **[Running and developing](docs/running.md)** | Server setup, the UI build, `tools/verify.sh`, and the in-game diagnostic commands. |
+| **[Testing](docs/testing.md)** | The suites and gates, when to run them, the rules that keep them honest, and the real bugs each one has caught. |
 | **[Platform constraints](docs/platform.md)** | FiveM and CEF behaviours discovered the hard way — the ones that cost days — and what each one taught. |
 
 `PLAN.md` (untracked, local) carries the working milestone log.

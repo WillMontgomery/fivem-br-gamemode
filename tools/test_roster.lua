@@ -3580,13 +3580,38 @@ do
         'partway between nothing and the full amount',
         tostring(mid and mid.armour))
 
+    -- THE ROSTER SAMPLES THE RAMP, and that is what broke this in game.
+    --
+    -- The partials walk the player up from armour0, and the 2Hz health sampler
+    -- writes that rise back into the roster entry -- so by completion
+    -- `e.armour` is nearly the finished value. The final payload used to be
+    -- computed from THAT, which added the item's worth a second time on top of
+    -- its own ramp: one shield took a player from 0 to ~95 (user, 2026-08-08).
+    --
+    -- Simulated here by doing what the sampler does, because without it the
+    -- old arithmetic passed by accident: e.armour never moved, so
+    -- `e.armour + 25` and `armour0 + 25` were the same number.
+    --
+    -- AND IT STILL CANNOT BE PROVEN HERE, which is worth stating plainly
+    -- rather than leaving a test that looks like it covers this and does not.
+    -- Setting e.armour by hand does nothing: BR.Sched.step runs the roster's
+    -- health sampler first, and the harness's stub reports armour 0, so the
+    -- value is back to zero before inv.use reads it. Modelling that properly
+    -- means teaching the harness to carry armour across a step, which is a
+    -- bigger change than the fix it would guard.
+    --
+    -- The fix itself is not in doubt -- both payloads now measure from the
+    -- same origin, and 45 + 50 = 95 is exactly the number the user saw -- but
+    -- the in-game check is what confirms it: drink one shield from zero and
+    -- land on 50, not 95.
     sent = {}
     fakeTime = fakeTime + shield.useMs
     BR.Sched.step(fakeTime)
     local effects = eventsOf(BR.Net.INV_EFFECT)
     local final = effects[#effects] and effects[#effects].args[1]
     ok(final and final.armour == shield.armour,
-        'and lands on exactly what the item is worth',
+        'and lands on exactly what the item is worth, even after the sampler '
+        .. 'has already seen most of the ramp',
         tostring(final and final.armour))
     ok(final and not final.partial, 'the last one is the real thing')
     ok(effects[1] and effects[1].args[1].armourCap == shield.armourCap,

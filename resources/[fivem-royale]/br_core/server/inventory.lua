@@ -697,15 +697,28 @@ BR.Sched.every(250, 'inv.use', function()
 
             local c = BR.Config.ConsumableById[u.item]
             if c then
+                -- ANCHORED ON WHERE THIS USE STARTED, exactly like the partials
+                -- above -- and NOT on the roster's current reading.
+                --
+                -- This is the shield bug, and it double-counted its own ramp.
+                -- The partials walk the player from armour0 to armour0 + 50 and
+                -- the roster samples that rise at 2Hz, so by the time the use
+                -- completed `e.armour` already read ~45. The final payload then
+                -- computed 45 + 50 = 95, which is precisely the "one shield took
+                -- me to ~95% from 0%" report (user, 2026-08-08).
+                --
+                -- Every message in a use is a TARGET measured from the same
+                -- origin. That is what makes a dropped partial harmless, and it
+                -- is only true if the last one uses the same origin as the rest.
                 local payload = { item = u.item }
                 if c.armour then
                     payload.armour    = math.min(c.armourCap,
-                        (e.armour or 0) + c.armour)
+                        (u.armour0 or 0) + c.armour)
                     payload.armourCap = c.armourCap
                 end
                 if c.health then
                     payload.health    = math.min(c.healthCap,
-                        (e.hp or 0) + c.health)
+                        (u.hp0 or 0) + c.health)
                     payload.healthCap = c.healthCap
                 end
                 TriggerClientEvent(BR.Net.INV_EFFECT, src, payload)

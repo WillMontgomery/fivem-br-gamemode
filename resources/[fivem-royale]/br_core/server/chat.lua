@@ -55,6 +55,32 @@ local function deliver(targets, msg)
     end
 end
 
+--- Everyone who should hear "global" chat from this sender.
+---
+--- GLOBAL IS PER MATCH, NOT PER SERVER, and it was not. This used to deliver
+--- with a nil target list, which is TriggerClientEvent(-1) -- every connected
+--- client, across every concurrent match and the lobby (user asked directly,
+--- 2026-08-08: "can you confirm the chat events are contained within the
+--- bucket?" -- they were not).
+---
+--- Two matches run in separate routing buckets precisely so they cannot see or
+--- affect each other, and a chat channel that spans them undoes that: it leaks
+--- callouts between matches, lets a dead player in match 2 narrate match 1,
+--- and scales the message fan-out with the whole server instead of with one
+--- lobby. Players in NO match hear each other, which is the lobby.
+--- @param src integer
+--- @return table
+local function globalTargets(src)
+    local m = BR.Server.matchOf(src)
+    if m then return BR.Server.audience(m) end
+
+    local out = {}
+    for other, p in pairs(BR.Server.roster) do
+        if not p.matchId then out[#out + 1] = other end
+    end
+    return out
+end
+
 --- Everyone in the sender's squad, including the sender. Solo players get a
 --- squad channel that reaches only themselves rather than an error.
 --- @param src integer
@@ -82,6 +108,29 @@ AddEventHandler(BR.Net.CHAT_SEND, function(data)
 
     local text = sanitise(data and data.text)
     if #text == 0 then return end
+
+    -- NOTHING STARTING WITH A SLASH GOES OUT.
+    --
+    -- This gamemode has no chat commands. A message beginning with `/` is
+    -- therefore one of two things and neither should be broadcast: somebody
+    -- probing for an admin command they hope exists, or a new player typing
+    -- what worked on another server. Today both were relayed verbatim to the
+    -- lobby, which publishes the probe to everyone and makes the newcomer look
+    -- foolish (user call, 2026-08-08).
+    --
+    -- Refused with a reply rather than in silence -- the honest half of that
+    -- audience is trying to do something and deserves to know why nothing
+    -- happened.
+    if text:sub(1, 1) == '/' then
+        TriggerClientEvent(BR.Net.CHAT_MSG, src, {
+            channel = BR.ChatChannel.SYSTEM,
+            from = 0, name = 'System',
+            text = 'This gamemode has no chat commands, and messages starting '
+                .. 'with "/" are not sent.',
+            at = GetGameTimer(),
+        })
+        return
+    end
 
     if not allow(src) then
         TriggerClientEvent(BR.Net.CHAT_MSG, src, {
@@ -111,7 +160,9 @@ AddEventHandler(BR.Net.CHAT_SEND, function(data)
     if channel == BR.ChatChannel.SQUAD then
         deliver(squadTargets(src), msg)
     else
-        deliver(nil, msg)
+        -- NEVER nil, which would be TriggerClientEvent(-1) and would cross
+        -- every match on the server. See globalTargets.
+        deliver(globalTargets(src), msg)
     end
 end)
 
