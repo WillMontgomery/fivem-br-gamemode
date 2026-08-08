@@ -32,6 +32,10 @@ import InventoryBar from './InventoryBar'
  * summary screens.
  */
 export default function Hud({ visible }: { visible: boolean }) {
+  // A SNIPER SCOPE IS A FULL-SCREEN SCALEFORM and our panels sit on top of it.
+  // Only scoped weapons do this -- aiming a pistol draws no overlay, so the
+  // HUD stays up for it (user, 2026-08-07).
+  const scoped = useUi((s) => s.scoped)
   const hud   = useUi(selHud)
   const storm = useUi(selStorm)
   const squad = useUi(selSquad)
@@ -51,8 +55,8 @@ export default function Hud({ visible }: { visible: boolean }) {
   return (
     <div
       className="hud-layer fixed inset-0 transition-opacity duration-200"
-      style={{ opacity: visible ? 1 : 0 }}
-      aria-hidden={!visible}
+      style={{ opacity: (visible && !scoped) ? 1 : 0 }}
+      aria-hidden={!visible || scoped}
     >
       {/* Storm vignette is full-bleed: it should ignore the safe zone, because
           it is an effect rather than an element to read. Always mounted so the

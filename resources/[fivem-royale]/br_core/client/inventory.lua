@@ -582,6 +582,26 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
     -- also firing this, using a consumable the player was only trying to drag
     -- (user, 2026-08-05).
     local held = inv.slots[inv.active]
+
+    -- YOU CAN ONLY SWING WHAT YOU CAN SWING.
+    --
+    -- The melee controls are live whatever is in your hands, so a player
+    -- holding a shield potion or a rifle who taps the light-attack key threw a
+    -- punch into the air -- most visibly mid-drink, where the animation fights
+    -- the use (user, 2026-08-07). Fists and actual melee weapons swing;
+    -- everything else refuses.
+    do
+        local w = held and BR.Config.WeaponById[held.id] or nil
+        local canSwing = (inv.active == MELEE_SLOT) or (w and w.melee) or false
+        if not canSwing then
+            DisableControlAction(0, 140, true)  -- MELEE_ATTACK_LIGHT
+            DisableControlAction(0, 141, true)  -- MELEE_ATTACK_HEAVY
+            DisableControlAction(0, 142, true)  -- MELEE_ATTACK_ALTERNATE
+            DisableControlAction(0, 263, true)  -- MELEE_ATTACK1
+            DisableControlAction(0, 264, true)  -- MELEE_ATTACK2
+        end
+    end
+
     if not panelOpen and held and held.kind == BR.ItemKind.CONSUMABLE
        and not inv.using then
         DisableControlAction(0, 24, true)   -- ATTACK: no punching a potion

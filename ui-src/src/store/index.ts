@@ -58,6 +58,10 @@ export interface UiState {
    *  filmed appear/vanish/reappear flap (2026-08-04). Dev harness starts
    *  true: the browser has no world to wait for. */
   worldReady: boolean
+  /** True while a sniper scope scaleform is up. The HUD hides for it and only
+   *  for it -- aiming a pistol draws no overlay, so blanking the interface
+   *  would just cost the player their health bar in a fight. */
+  scoped: boolean
 
   /** True from the moment ESC is pressed in the lobby until Lua hands the
    *  lobby its focus back after the pause menu closes -- the menu fades out
@@ -180,6 +184,7 @@ export const useUi = create<UiState>((set, get) => {
   focus: 'none',
   lobby: null,
   screen: null,
+  scoped: false,
   worldReady: import.meta.env.DEV,
   pauseHiding: false,
   leaving: false,
@@ -225,9 +230,15 @@ export const useUi = create<UiState>((set, get) => {
   setPauseHiding: (pauseHiding) => set({ pauseHiding }),
   setLeaving: (leaving) => set({ leaving }),
   setLobby:    (lobby) => set({ lobby }),
+  // MERGED, NOT REPLACED. The screen envelope is sent from two places now:
+  // the 1Hz metrics publish carries the full rectangle, and the scope watcher
+  // sends `{ scoped }` alone the instant it changes. A replacing setter would
+  // let that one-field message wipe the minimap rectangle and drop every
+  // bottom-anchored panel to the corner for a second.
   setScreen:   (screen) => set((s) => ({
-    screen,
+    screen: { ...(s.screen ?? {}), ...screen } as typeof s.screen,
     worldReady: screen.worldReady !== undefined ? screen.worldReady : s.worldReady,
+    scoped: screen.scoped !== undefined ? screen.scoped : s.scoped,
   })),
   setInvite:   (invite) => set({ invite }),
   clearInvite: () => set({ invite: null }),

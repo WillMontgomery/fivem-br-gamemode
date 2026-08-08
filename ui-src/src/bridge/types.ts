@@ -233,6 +233,10 @@ export interface ScreenPayload {
    *  is fully interactive over it -- and fades it out when this flips.
    *  Rides the screen envelope so a br_ui restart re-learns it. */
   worldReady?: boolean
+  /** True while a sniper scope scaleform covers the screen. Sent on its own,
+   *  the instant it changes -- which is why setScreen MERGES rather than
+   *  replaces: this one-field envelope must not wipe the minimap rectangle. */
+  scoped?: boolean
 }
 
 /**

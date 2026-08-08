@@ -27,6 +27,10 @@ BR.Config.Map.POIs = {
     { id = 'lsia',        name = 'LS International', x = -1037.0, y = -2737.0, z =  20.0, radius = 400.0, tier = 3 },
     { id = 'vespucci',    name = 'Vespucci Beach',   x = -1200.0, y = -1500.0, z =  10.0, radius = 260.0, tier = 2 },
     { id = 'delperro',    name = 'Del Perro Pier',   x = -1850.0, y = -1240.0, z =  13.0, radius = 200.0, tier = 2 },
+    -- The beach itself, north of the pier: open sand with the boardwalk and
+    -- the apartment blocks behind it. A hot drop by request (user,
+    -- 2026-08-07) -- the west coast had a tier-2 pier and nothing else.
+    { id = 'delperro_bch', name = 'Del Perro Beach', x = -1550.0, y = -1050.0, z =   3.0, radius = 300.0, tier = 3 },
     { id = 'downtown',    name = 'Legion Square',    x =   200.0, y =  -900.0, z =  30.0, radius = 280.0, tier = 3 },
     { id = 'mirrorpark',  name = 'Mirror Park',      x =  1050.0, y =  -650.0, z =  57.0, radius = 220.0, tier = 2 },
     { id = 'rockford',    name = 'Rockford Hills',   x =  -800.0, y =  -200.0, z =  40.0, radius = 240.0, tier = 2 },

@@ -82,6 +82,39 @@ end
 --- player alt-tabs, switches monitor, or edits display settings, the safe
 --- zone changes the moment they touch the calibration slider, and the radar
 --- toggles with match state -- so this is polled rather than sent once.
+-- SCOPES ONLY, NOT AIMING GENERALLY.
+--
+-- "Hide the HUD while aiming" is too broad: aiming a pistol leaves the screen
+-- alone, and blanking the interface for it costs the player their health bar
+-- in a fight. What actually clashes is a SCALEFORM -- the sniper scope draws a
+-- full-screen overlay, and our panels sit on top of it (user, 2026-08-07:
+-- "anything that doesn't display scaleforms while aiming should still have HUD
+-- on, but HUD+scaleforms = bad").
+--
+-- Which weapons do that is a property of the weapon, so it is answered from
+-- OUR table (`scoped = true`) rather than by asking the engine about camera
+-- modes -- the last time this file guessed at a camera native it suspended a
+-- callback and brought GTA's weapon wheel back.
+local scopedNow = false
+
+BR.Loop.register(BR.Loop.TICK, 'screen.scope', function()
+    local want = false
+
+    if IsPlayerFreeAiming(PlayerId()) and BR.Inv and BR.Inv.local_ then
+        local inv  = BR.Inv.local_()
+        local slot = inv and inv.slots[inv.active] or nil
+        local w    = slot and BR.Config.WeaponById[slot.id] or nil
+        want = (w and w.scoped) and true or false
+    end
+
+    if want == scopedNow then return end
+    scopedNow = want
+
+    -- The radar goes with it: a minimap over a scope is the same problem.
+    DisplayRadar(not want)
+    TriggerEvent('br:ui:sendLocal', BR.Nui.SCREEN, { scoped = want })
+end)
+
 BR.Loop.register(BR.Loop.SLOW, 'screen.metrics', function()
     local w, h = GetActiveScreenResolution()
     local safe = GetSafeZoneSize()
