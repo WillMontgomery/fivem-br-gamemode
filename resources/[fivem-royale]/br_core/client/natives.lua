@@ -119,6 +119,42 @@ function BR.Native.keyLabel(control)
     return nil
 end
 
+--- What key is bound to one of OUR commands, as a printable label.
+---
+--- THE PROMPT WAS LYING ABOUT THE KEY. It read GetControlInstructionalButton
+--- for control 51 (INPUT_CONTEXT), which is GTA's own context key -- not the
+--- `brinteract` binding the player can change in the pause menu. Rebinding
+--- interact to anything else left every prompt in the game still saying E
+--- (user, 2026-08-08). The INPUT was always right; only the LABEL was wrong,
+--- so the key worked and the sign above it did not.
+---
+--- FiveM encodes a RegisterKeyMapping command as a synthetic control id --
+--- `GetHashKey(command) | 0x80000000` -- which is the same number
+--- inputForCommand() formats into a `~INPUT_...~` token. Feeding that id back
+--- to GetControlInstructionalButton is the natural way to ask "what is this
+--- bound to now", and it is the ONE thing here that has not been confirmed on
+--- this build: PLAN records that the `~INPUT_<hash>~` TOKEN renders as a hole
+--- in native help text, which may or may not say anything about this call.
+---
+--- So it is written to degrade rather than to be right: try the command's own
+--- binding, fall back to the vanilla control's label, and print both side by
+--- side in /brpromptcheck so one look in game settles it. A prompt showing the
+--- wrong key is bad; a prompt showing no key at all is worse.
+--- @param command string   the RegisterKeyMapping command name, no slash
+--- @param fallbackControl integer  vanilla control to label if that fails
+--- @return string|nil
+function BR.Native.keyLabelForCommand(command, fallbackControl)
+    local id = (GetHashKey(command) | 0x80000000) & 0xFFFFFFFF
+    local ok, raw = pcall(GetControlInstructionalButton, 2, id, true)
+    if ok and type(raw) == 'string' then
+        local letter = raw:match('^t_(.+)$')
+        -- An UNBOUND command comes back as the empty label rather than as an
+        -- error, and "" is not a key anybody can press.
+        if letter and #letter > 0 and #letter <= 5 then return letter end
+    end
+    return fallbackControl and BR.Native.keyLabel(fallbackControl) or nil
+end
+
 -- BR.Native.worldToScreen was deleted with the NUI loot prompt.
 --
 -- It existed to tell the UI where a crate was on screen, which is the thing

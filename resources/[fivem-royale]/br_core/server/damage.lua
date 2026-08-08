@@ -677,6 +677,123 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
 end)
 
 -- --------------------------------------------------------------------------
+-- Explosions and fire: attribution without ownership
+-- --------------------------------------------------------------------------
+--
+-- WE CANNOT TAKE FIRE DAMAGE OVER, AND WE CAN STILL SAY WHOSE IT WAS.
+--
+-- Measured 2026-08-08: /brdamagelog armed, a molotov thrown at a player, the
+-- player died, and NOT ONE PAYLOAD PRINTED. Burning damage never raises
+-- weaponDamageEvent -- it is applied on the victim's own machine through a
+-- path the server does not see. No amount of validator work reaches it.
+--
+-- The cost was not the damage number. It was the KILL: attribution reads
+-- e.lastHitBy, nothing ever wrote to it, and a molotov kill was credited to
+-- nobody at all.
+--
+-- `explosionEvent` does fire on the server, carries the thrower and the
+-- position, and fires for grenades, sticky bombs and molotovs alike. So the
+-- damage stays the engine's and the LEDGER becomes ours: whoever lit the fire
+-- owns every point of health lost inside it.
+--
+-- ONLY PLAYERS ACTUALLY LOSING HEALTH ARE ATTRIBUTED. Standing in somebody's
+-- fire unharmed credits them nothing, which is what keeps a generous radius
+-- and a twenty-second window from handing out kills the storm did.
+
+-- Live fires: { owner, x, y, z, item, until_ }.
+local fires = {}
+
+--- Note an explosion, and remember it if it was one of ours.
+--- @param owner integer
+--- @param ev table
+local function noteExplosion(owner, ev)
+    local item = (cfg.explosionTypes or {})[math.tointeger(ev.explosionType) or -1]
+    if not item then return end   -- a car, a petrol pump: nobody's kill
+
+    local e = BR.Roster.get(owner)
+    if not e or not e.matchId then return end
+
+    local now = GetGameTimer()
+    -- A blast is instantaneous; a molotov keeps burning. Both are the same
+    -- record with a different lifetime.
+    local life = (item == 'molotov') and (cfg.fireLifeMs or 20000)
+                                      or (cfg.blastAttributeMs or 1200)
+
+    fires[#fires + 1] = {
+        owner = owner, matchId = e.matchId, item = item,
+        x = ev.posX or 0.0, y = ev.posY or 0.0, z = ev.posZ or 0.0,
+        until_ = now + life,
+    }
+    BR.Damage.explosions = (BR.Damage.explosions or 0) + 1
+end
+
+AddEventHandler('explosionEvent', function(sender, ev)
+    if type(ev) ~= 'table' then return end
+    local owner = tonumber(sender)
+    if owner then noteExplosion(owner, ev) end
+end)
+
+--- Credit health lost inside somebody's fire to whoever lit it.
+---
+--- Runs off the roster's own 2Hz health sampling, so it sees the same numbers
+--- the storm does and needs no client cooperation. A player whose health did
+--- not move is not burning, whatever they are standing in.
+BR.Sched.every(500, 'damage.fires', function()
+    if #fires == 0 then return end
+
+    local now = GetGameTimer()
+    local live = {}
+    for _, f in ipairs(fires) do
+        if now < f.until_ then live[#live + 1] = f end
+    end
+    fires = live
+    if #fires == 0 then return end
+
+    local r = cfg.fireRadius or 6.0
+    local r2 = r * r
+
+    BR.Roster.each(
+        function(e) return e.state == BR.PlayerState.ALIVE
+                        or e.state == BR.PlayerState.DBNO end,
+        function(src, e)
+            if not e.pos then return end
+
+            local hp = (e.hp or 100.0) + (e.armour or 0.0)
+            local was = e.burnHp
+            e.burnHp = hp
+            -- Not hurt since the last sample: nothing to attribute. This is
+            -- the whole guard -- without it, standing near a burnt-out patch
+            -- would credit its owner for a storm death.
+            if not was or hp >= was then return end
+
+            for _, f in ipairs(fires) do
+                if f.matchId == e.matchId and f.owner ~= src then
+                    local dx, dy = e.pos.x - f.x, e.pos.y - f.y
+                    local dz = e.pos.z - f.z
+                    if dx * dx + dy * dy <= r2 and math.abs(dz) < 8.0 then
+                        e.lastHitBy = f.owner
+                        e.lastHitAt = now
+                        e.lastHitWeapon = f.item
+                        return
+                    end
+                end
+            end
+        end)
+end)
+
+--- Forget a player's fires. Called on disconnect and at match teardown, so a
+--- reconnect cannot inherit credit for a fire lit by whoever held the id
+--- before them.
+--- @param src integer
+function BR.Damage.forgetFires(src)
+    local keep = {}
+    for _, f in ipairs(fires) do
+        if f.owner ~= src then keep[#keep + 1] = f end
+    end
+    fires = keep
+end
+
+-- --------------------------------------------------------------------------
 -- Tooling
 -- --------------------------------------------------------------------------
 
@@ -708,6 +825,7 @@ function BR.Damage.forget(src)
     lastShot[src] = nil
     thrown[src]   = nil
     selfHits[src] = nil
+    if BR.Damage.forgetFires then BR.Damage.forgetFires(src) end
     for k in pairs(meleeHit) do
         if k:find('^' .. src .. ':') or k:find(':' .. src .. ':') then
             meleeHit[k] = nil

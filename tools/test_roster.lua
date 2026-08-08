@@ -3820,6 +3820,105 @@ do
         tostring(BR.Inv.of(1).slots[1].clip))
 end
 
+describe('combat.fire')
+do
+    -- A MOLOTOV KILL BELONGED TO NOBODY.
+    --
+    -- Measured 2026-08-08: /brdamagelog armed for 15 payloads, a molotov
+    -- thrown at a player, the player DIED, and not one payload printed.
+    -- Burning damage never raises weaponDamageEvent -- it is applied on the
+    -- victim's own machine through a path the server does not see, so no
+    -- amount of validator work reaches it.
+    --
+    -- The damage was never the point. The KILL was: attribution reads
+    -- e.lastHitBy, nothing had written to it, and the feed credited nobody.
+    -- explosionEvent DOES reach the server, so the damage stays the engine's
+    -- and the LEDGER becomes ours.
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+
+    -- BOTH HEALTH AND POSITION FLOW PED -> SAMPLER -> ROSTER, never the other
+    -- way. Writing entry.hp or entry.pos directly here would be overwritten by
+    -- roster.positions before damage.fires ever saw it -- which is the mistake
+    -- this project already documents. So the test moves and burns the PED.
+    setPos(1, 0.0, 0.0, 30.0)
+    setPos(2, 3.0, 0.0, 30.0)
+    pedHealth[1002] = 200
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+
+    local b = BR.Roster.get(2)
+    b.lastHitBy, b.lastHitWeapon = nil, nil
+
+    -- Player 1 lands a molotov next to player 2.
+    fire('explosionEvent', 1, 1,
+        { explosionType = 3, posX = 3.0, posY = 0.0, posZ = 30.0 })
+
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+    ok(b.lastHitBy == nil, 'standing in a fresh fire unharmed credits nobody')
+
+    -- Now the engine burns them. The server sees the health FALL; it never
+    -- sees the hit.
+    pedHealth[1002] = 164
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+    ok(b.lastHitBy == 1,
+        'health lost inside a fire is credited to whoever lit it',
+        tostring(b.lastHitBy))
+    ok(b.lastHitWeapon == 'molotov', 'and names the weapon',
+        tostring(b.lastHitWeapon))
+
+    -- ...which is the whole reason this exists.
+    ok(BR.Combat.attributedKiller(b) == 1,
+        'so a molotov kill finally has a killer',
+        tostring(BR.Combat.attributedKiller(b)))
+
+    -- UNHARMED IS NOT ATTRIBUTED. Without this guard a generous radius and a
+    -- twenty-second window would hand out kills the storm did.
+    b.lastHitBy, b.lastHitWeapon = nil, nil
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+    ok(b.lastHitBy == nil, 'and standing in it unhurt still credits nobody')
+
+    -- A PETROL PUMP IS NOT SOMEBODY'S KILL. Only the three explosive types
+    -- this gamemode actually issues are claimed -- and this has to be tested
+    -- INSIDE the window it would have credited, or it passes because the
+    -- record expired rather than because the type was refused.
+    fakeTime = fakeTime + (BR.Config.Combat.fireLifeMs or 20000) + 2000
+    BR.Sched.step(fakeTime)
+    b.lastHitBy, b.lastHitWeapon = nil, nil
+
+    fire('explosionEvent', 1, 1,
+        { explosionType = 7, posX = 3.0, posY = 0.0, posZ = 30.0 })
+    pedHealth[1002] = 120
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+    ok(b.lastHitBy == nil,
+        'an exploding car credits nobody, even standing in it while burning',
+        tostring(b.lastHitBy))
+
+    -- THE FIRE GOES OUT. Credit must not outlive the flames, or a storm death
+    -- half a minute later belongs to whoever last threw something.
+    fire('explosionEvent', 1, 1,
+        { explosionType = 3, posX = 3.0, posY = 0.0, posZ = 30.0 })
+    fakeTime = fakeTime + (BR.Config.Combat.fireLifeMs or 20000) + 2000
+    BR.Sched.step(fakeTime)
+    pedHealth[1002] = 80
+    fakeTime = fakeTime + 600
+    BR.Sched.step(fakeTime)
+    ok(b.lastHitBy == nil, 'and a burnt-out fire credits nobody',
+        tostring(b.lastHitBy))
+
+    -- Leave the stub as it was found: later blocks read this ped's health.
+    pedHealth[1002] = nil
+end
+
 describe('loot.origin')
 do
     -- WHERE A THING CAME FROM TRAVELS WITH IT.

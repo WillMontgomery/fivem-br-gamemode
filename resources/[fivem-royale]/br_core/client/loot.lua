@@ -841,9 +841,15 @@ local function setPrompt(e, holdMs)
         show   = true,
         label  = labelOf(e),
         hint   = container and 'Hold to open' or 'Press to pick up',
-        -- The player's ACTUAL binding, read back from the control. Rebinding
-        -- INPUT_CONTEXT in GTA's settings changes what this says.
-        key    = BR.Native.keyLabel(L.promptControl or 51),
+        -- THE PLAYER'S OWN BINDING, asked for by COMMAND rather than by
+        -- control. This used to read control 51 -- GTA's context key -- which
+        -- is not the thing `brinteract` is bound to, so rebinding interact in
+        -- the pause menu left every prompt still saying E. The vanilla control
+        -- remains the fallback, because it also still works (see the two-inputs
+        -- note further down) and a prompt with no key at all is worse than one
+        -- naming the second of two working keys.
+        key    = BR.Native.keyLabelForCommand('brinteract',
+                                              L.promptControl or 51),
         colour = colour,
         ring   = container,
         holdMs = holdMs,
@@ -1152,14 +1158,29 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
             -- it announces itself. The disc under it was a third signal for a
             -- thing that already had two, in the RARITY colour, which also
             -- quietly leaked what was inside before it was opened.
+            -- THE DISC YIELDS TO THE ITEM ITSELF.
+            --
+            -- Its whole job is "something is here", answered from across a
+            -- room for a small prop lost in scenery. Once the item has risen
+            -- to meet you and is turning in the air, that question is already
+            -- answered far better than a disc can -- and a marker left burning
+            -- under a floating object reads as two things, not one (user call,
+            -- 2026-08-08).
+            --
+            -- Tied to the SAME eased lift the hover uses, so it dies exactly
+            -- as the item rises and fades back in over exactly as long as the
+            -- item takes to settle. Two curves would drift; one cannot.
             if not isContainer(e) then
-                -- A flat disc rather than a sphere: it reads as "something is
-                -- here" from across a room without swallowing the item itself.
-                DrawMarker(1, e.x, e.y, gz - 0.05,
-                    0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                    0.45, 0.45, 0.12,
-                    c[1], c[2], c[3], 120,
-                    false, false, 2, false, nil, nil, false)
+                local a = math.floor(120 * (1.0 - ease(e.lift or 0.0)))
+                if a > 0 then
+                    -- A flat disc rather than a sphere: it reads as "something
+                    -- is here" without swallowing the item itself.
+                    DrawMarker(1, e.x, e.y, gz - 0.05,
+                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                        0.45, 0.45, 0.12,
+                        c[1], c[2], c[3], a,
+                        false, false, 2, false, nil, nil, false)
+                end
             end
 
             -- CRATES SHINE ORANGE. Always orange, never the rarity colour: the
@@ -1642,6 +1663,20 @@ end, false)
 --- either way the KEY is the player's own binding; only the picture changes.
 RegisterCommand('brpromptcheck', function()
     local custom = BR.Native.inputForCommand('brinteract')
+
+    -- WHAT THE DUI WILL ACTUALLY PRINT. The token test below is about the
+    -- native HELP TEXT glyph; this is the separate question of whether we can
+    -- read back the letter a player has rebound `brinteract` to. If the
+    -- "bound" line disagrees with what you set in Settings > Key Bindings,
+    -- the prompt is lying and keyLabelForCommand needs another approach.
+    print('=== prompt key label (what the DUI shows) ===')
+    for _, cmd in ipairs({ 'brinteract', 'brdrop', 'brinventory' }) do
+        print(('  %-12s bound %-6s vanilla-fallback %s'):format(
+            cmd,
+            tostring(BR.Native.keyLabelForCommand(cmd, nil) or '(none)'),
+            tostring(BR.Native.keyLabel(L.promptControl or 51) or '(none)')))
+    end
+
     print('=== prompt tokens ===')
     print(('  custom  %s'):format(custom))
     print('  vanilla ~INPUT_CONTEXT~')

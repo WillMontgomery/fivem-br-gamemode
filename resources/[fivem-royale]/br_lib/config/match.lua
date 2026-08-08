@@ -346,6 +346,40 @@ BR.Config.Combat = {
     -- Kept as a record of what was measured. Nothing reads it.
     damageTypesSeen = { 1, 3 },
 
+    -- FIRE IS THE ENGINE'S, AND WE CANNOT HAVE IT.
+    --
+    -- Measured 2026-08-08: /brdamagelog armed for 15 payloads, a molotov
+    -- thrown at a player, the player DIED, and not one payload printed.
+    -- Burning damage does not raise weaponDamageEvent at all -- it is applied
+    -- on the victim's own machine through a path the server never sees.
+    --
+    -- Which means our molotov `damage` number can never apply, and worse: a
+    -- molotov kill was credited to NOBODY, because attribution reads the
+    -- ledger and nothing ever wrote to it.
+    --
+    -- So explosions are attributed from a different event entirely.
+    -- `explosionEvent` DOES fire server-side, carries the thrower and the
+    -- position, and fires for grenades, sticky bombs and molotovs alike. We
+    -- cannot take the damage over; we can absolutely say whose it was.
+    --
+    -- Types are GTA's own explosion enum. Only the three this gamemode issues
+    -- are claimed: a petrol pump going up is not somebody's kill.
+    explosionTypes = {
+        [0]  = 'grenade',
+        [2]  = 'sticky',
+        [3]  = 'molotov',
+    },
+    -- How long a fire keeps crediting the person who lit it. Molotov flames
+    -- burn for a good while and a player who runs through them ten seconds
+    -- later was still killed by whoever threw it. Attribution only lands on
+    -- players who are ACTUALLY LOSING HEALTH inside the radius, so a generous
+    -- window costs nothing.
+    fireLifeMs     = 20000,
+    fireRadius     = 6.0,
+    -- Blast attribution is instant and short: the bang either caught you or
+    -- it did not.
+    blastAttributeMs = 1200,
+
     -- HOW LONG A THROWN EXPLOSIVE STAYS YOURS.
     --
     -- A grenade goes off a second or more after it leaves the hand, and
