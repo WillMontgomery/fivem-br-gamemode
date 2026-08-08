@@ -263,6 +263,11 @@ function BR.Match.onEnter(m, state, from)
     elseif state == BR.MatchState.CLEANUP then
         BR.Bus.clear(m)
         BR.Loot.clear(m)
+        -- A DEBUG FREEZE DOES NOT OUTLIVE ITS MATCH. brstormfreeze holds ONE
+        -- match still while something else is tested in it; carrying it into
+        -- the next round means that round silently has no storm, and a battle
+        -- royale with no storm never ends.
+        if BR.Storm.thawOnMatchEnd then BR.Storm.thawOnMatchEnd() end
         BR.Match.resetPlayers(m)
     end
 end

@@ -395,6 +395,23 @@ end, true)
 --- @return boolean
 function BR.Storm.isFrozen() return frozen end
 
+--- Drop the freeze at the end of a match.
+---
+--- A DEBUG SWITCH SHOULD NOT OUTLIVE THE THING IT WAS SET FOR (user call,
+--- 2026-08-08). Freezing is something you do to hold ONE match still while
+--- testing something else in it; carrying it into the next match means the
+--- next round silently has no storm, and a battle royale with no storm never
+--- ends -- which is a far more confusing failure than having to type the
+--- command again.
+---
+--- Called from BR.Storm.clear, so it rides the teardown every match already
+--- performs rather than needing its own hook.
+function BR.Storm.thawOnMatchEnd()
+    if not frozen then return end
+    frozen = false
+    print('[br_core] storm freeze lifted -- the match it was holding has ended')
+end
+
 RegisterCommand('brstormscale', function(_, args)
     local s = tonumber(args[1])
     if not s then

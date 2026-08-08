@@ -376,9 +376,18 @@ BR.Config.Loot = {
     -- 0.55 is roughly a 113-degree cone.
     promptFacingDot = 0.55,
 
-    -- How big the floating "press to pick up" panel draws. 1.0 was the old
-    -- fixed size and read small next to the crate label (user, 2026-08-08).
-    promptScale     = 1.35,
+    -- How big the floating "press to pick up" panel draws, and how far above
+    -- the ITEM it floats.
+    --
+    -- 1.35 was too timid to notice: what the eye actually caught was the label
+    -- climbing, because the item beneath it had started hovering half a metre
+    -- and the label was pinned to a fixed world height ON TOP of that -- two
+    -- rises stacked ("I think you doubled the elevation, not the size", user
+    -- 2026-08-08). Now the offset is measured from the item, so the label
+    -- keeps a constant gap however high the thing floats, and the size is a
+    -- number nobody has to squint at.
+    promptScale     = 2.0,
+    promptLift      = 0.75,   -- metres above the item, hovering or resting
 
     -- How often the "which crate shines" search runs. That search is a full
     -- walk of every streamed entry; the FADE is still per-frame, so this only

@@ -16,6 +16,57 @@ local CHUTE = GetHashKey('GADGET_PARACHUTE')   -- 0xFBAB5776, verified
 
 local dropping = false
 
+--- Tell the server we are down, and KEEP TELLING IT UNTIL IT AGREES.
+---
+--- THE REPORT USED TO BE FIRE-AND-FORGET, and it is the single most
+--- historically unreliable message in this project -- the server-side
+--- stuck-lander promotion exists precisely because it goes missing. When it
+--- does, nothing retried: the player stayed FREEFALL until that net noticed
+--- five seconds of stillness, and since the net needs two fresh 2Hz position
+--- samples either side of those five seconds, the real wait was closer to ten.
+--- A solo player landed and then stood in an empty world with no HUD and no
+--- inventory for over ten seconds (user, 2026-08-08).
+---
+--- Every consequence of landing hangs off the ALIVE state -- the HUD, the
+--- inventory bar, loot visibility, being shootable -- so one dropped packet
+--- costs all of it.
+---
+--- The fix is the same shape as the chute REMOVAL directly below, and for the
+--- same reason: a message that must arrive is re-sent until the world reflects
+--- it, rather than sent once and hoped for. The server is still the only
+--- authority -- it validates the state transition exactly as before and
+--- ignores a duplicate -- so the worst case is a handful of tiny events.
+local function reportLanded()
+    TriggerServerEvent(BR.Net.DROP_LANDED)
+
+    Citizen.CreateThread(function()
+        for attempt = 1, 12 do
+            Citizen.Wait(400)
+
+            -- The server has agreed: our own mirror says we are on the
+            -- ground. Nothing to re-send.
+            local st = BR.State.me.state
+            if st ~= BR.PlayerState.FREEFALL
+               and st ~= BR.PlayerState.GLIDE
+               and st ~= BR.PlayerState.BUS then
+                if attempt > 1 then
+                    print(('[br_core] landing confirmed after %d re-sends')
+                        :format(attempt - 1))
+                end
+                return
+            end
+
+            -- Airborne again is not a lost packet. A player who was promoted
+            -- and then walked off a cliff must not be re-reporting a landing.
+            if dropping then return end
+
+            TriggerServerEvent(BR.Net.DROP_LANDED)
+        end
+        print('[br_core] landing report never took -- server still thinks we '
+            .. 'are airborne after 12 attempts')
+    end)
+end
+
 -- THE LANDING LATCH. The landing test is "chute away, feet on something" --
 -- which is also true in the instant AFTER THE JUMP, before the exit
 -- velocity and parachute task have taken hold: the ped still reads as
@@ -249,7 +300,7 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
             dropping = false
             disarmChute(ped)
             SetPlayerCanLeaveParachuteSmokeTrail(PlayerId(), false)
-            TriggerServerEvent(BR.Net.DROP_LANDED)
+            reportLanded()
             print('[br_core] drop: finished from a vehicle seat -- the machine was still armed')
         end
         return
@@ -377,7 +428,7 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
         -- reads this alongside its warmup/bus invincibility rule).
         BR.State.dropGraceUntil = GetGameTimer() + BR.Config.Drop.landedGraceMs
 
-        TriggerServerEvent(BR.Net.DROP_LANDED)
+        reportLanded()
         TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
             text = 'Loot up before the storm comes!', tone = 'info', ms = 6000,
         })
@@ -388,8 +439,8 @@ end)
 -- THE STANDING DISARM. Everything above depends on the landing branch firing,
 -- and the landing branch has now been wrong in four different ways across four
 -- sessions -- attached canopies, vehicle seats, water, the state machine never
--- arming at all. This is the net under all of it: a player the SERVER считает
--- calls landed (ALIVE/DBNO), standing on the ground, must not be holding a
+-- arming at all. This is the net under all of it: a player the SERVER calls
+-- landed (ALIVE/DBNO), standing on the ground, must not be holding a
 -- parachute, whatever route they took to get there.
 --
 -- HasPedGotWeapon first, so the ordinary case is one cheap call at 10Hz and the

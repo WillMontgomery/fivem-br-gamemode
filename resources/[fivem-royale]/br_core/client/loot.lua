@@ -1278,14 +1278,16 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
         else
             -- No `dist`: a fixed size, not one that inflates on approach.
             --
-            -- RIDES THE ITEM UP. The prop hovers to about waist height when
-            -- the player is close enough to be offered it, and a label left
-            -- at a fixed altitude would slide down the item as it rose.
+            -- MEASURED FROM THE ITEM, not from the ground. The prop rises
+            -- half a metre when the player is close enough to be offered it,
+            -- and the first version added that lift to a FIXED world height --
+            -- so the label climbed twice as far as the thing it labels. A
+            -- constant gap above the item is what reads as attached.
             -- `shown.lift` is the same eased 0..1 the animation uses, so the
             -- two cannot drift apart.
             local lift = ease(shown.lift or 0.0) * (L.hoverHeight or 0.55)
             BR.Dui.drawWorld(promptPage(), shown.x, shown.y,
-                gz + 1.05 + lift, L.promptScale or 1.35)
+                gz + lift + (L.promptLift or 0.75), L.promptScale or 2.0)
         end
     end
 end)
