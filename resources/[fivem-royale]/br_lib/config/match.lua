@@ -275,6 +275,23 @@ BR.Config.Combat = {
     -- whose magazine nothing decrements is better than one nothing refills.
     serverAmmo    = true,
 
+    -- WHAT A REFUSAL DOES, beyond being cancelled.
+    --
+    -- A stream of refusals is a real signal rather than noise: the validator
+    -- ran in log-only mode for a full playtest on the rule that every refusal
+    -- during honest play is a FALSE POSITIVE, and that log came back empty. So
+    -- somebody generating a dozen in half a minute is doing something the
+    -- server did not issue them the means to do.
+    --
+    -- Still defaults to LOG. A validator that has never wrongly refused an
+    -- honest player today may still do so the first time a pickup races a
+    -- shot, and banning your own players is a worse failure than tolerating a
+    -- cheater who is already unable to hurt anyone. "notify" tells them their
+    -- shots are not landing; "kick" drops them.
+    refusalAction   = "log",      -- "log" | "notify" | "kick"
+    refusalLimit    = 12,
+    refusalWindowMs = 30000,
+
     -- Slack, and it is load-bearing. Roster positions are sampled at 2Hz, so
     -- at the instant of a shot both players can be half a second stale --
     -- about 4.5m each at a sprint. Refusing an honest shot is a broken game;

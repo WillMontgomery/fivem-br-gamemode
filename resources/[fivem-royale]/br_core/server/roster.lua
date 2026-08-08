@@ -170,6 +170,16 @@ function BR.Roster.remove(src)
     entry.state = BR.PlayerState.LEFT
     roster[src] = nil
 
+    -- Per-player combat bookkeeping goes with them. Server ids are recycled,
+    -- so a stale rate-of-fire timestamp or refusal count would be inherited by
+    -- whoever connects into that slot next -- and the first thing they would
+    -- notice is their opening shot refused as "too fast".
+    if BR.Damage then
+        if BR.Damage.forget then BR.Damage.forget(src) end
+        if BR.Damage.forgetRefusals then BR.Damage.forgetRefusals(src) end
+    end
+    if BR.Loot and BR.Loot.clearNpcDrops then BR.Loot.clearNpcDrops(src) end
+
     BR.Broadcast.delta({ op = 'remove', src = src })
     print(('[br_core] - %s (%d) left -- %d connected'):format(entry.name, src, BR.Server.count()))
     return entry

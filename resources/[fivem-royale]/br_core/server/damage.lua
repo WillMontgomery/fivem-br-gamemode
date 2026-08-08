@@ -154,6 +154,84 @@ end
 --- that makes this worth doing: a client that drops the HIT_DAMAGE event keeps
 --- its health bar and still dies here, at the same moment an honest one would.
 ---
+-- Refusals per shooter, with the window they fell in.
+local refusalOf = {}
+
+--- Count a refused shot against its shooter, and act if there are enough.
+---
+--- THE THRESHOLD IS ONLY DEFENSIBLE BECAUSE IT WAS MEASURED. The validator ran
+--- in log-only mode for a full playtest on the rule that every refusal during
+--- honest play is a false positive, and that log came back EMPTY -- so a stream
+--- of them is not noise, it is somebody doing something the server did not
+--- issue them the means to do.
+---
+--- The action still defaults to logging rather than kicking. A validator that
+--- has never wrongly refused an honest player TODAY may still do so the first
+--- time a pickup races a shot, and banning your own players is a worse failure
+--- than tolerating a cheater who is already unable to hurt anyone. Turn it up
+--- deliberately: `BR.Config.Combat.refusalAction`.
+--- @param src integer
+--- @param why string|nil
+function BR.Damage.noteRefusal(src, why)
+    local now = GetGameTimer()
+    local window = cfg.refusalWindowMs or 30000
+
+    local r = refusalOf[src]
+    if not r or now - r.since > window then
+        r = { since = now, count = 0 }
+        refusalOf[src] = r
+    end
+    r.count = r.count + 1
+
+    local limit = cfg.refusalLimit or 12
+    if r.count ~= limit then return end   -- fire once per window, not per shot
+
+    local e = BR.Roster.get(src)
+    local name = e and e.name or ('src ' .. src)
+    print(('[br_core] ANTICHEAT: %s (%d) had %d shots refused in %ds -- last: %s')
+        :format(name, src, r.count, window / 1000, tostring(why)))
+
+    local action = cfg.refusalAction or 'log'
+    if action == 'notify' or action == 'kick' then
+        BR.Server.notify(src,
+            'Your weapon is not one this match issued you. Shots are not landing.',
+            'warn')
+    end
+    if action == 'kick' then
+        DropPlayer(src, 'Weapon validation failed repeatedly.')
+    end
+end
+
+--- Forget a player's refusal history. Called on disconnect.
+--- @param src integer
+function BR.Damage.forgetRefusals(src)
+    refusalOf[src] = nil
+end
+
+--- Tell a shooter that the victim they think they killed is fine.
+---
+--- The server's ledger is the truth about the victim's health; this hands that
+--- truth to the one client whose local copy disagrees. Sent only to the
+--- shooter, because nobody else's view was ever wrong.
+--- @param shooter integer
+--- @param victim integer
+function BR.Damage.resync(shooter, victim)
+    local e = BR.Roster.get(victim)
+    if not e then return end
+
+    local ped = GetPlayerPed(victim)
+    if not ped or ped == 0 then return end
+
+    local netId = NetworkGetNetworkIdFromEntity(ped)
+    if not netId or netId == 0 then return end
+
+    TriggerClientEvent(BR.Net.HIT_RESYNC, shooter, {
+        netId = netId,
+        -- Engine units, because the client writes this straight onto a ped.
+        hp    = math.floor(BR.ToEngineHp(e.hp or 100.0) + 0.5),
+    })
+end
+
 --- Spend one round from the shooter's magazine, server-side.
 ---
 --- THIS IS WHAT M6 WAS FOR. The ammo model until now was the M5 placeholder:
@@ -320,8 +398,26 @@ AddEventHandler('weaponDamageEvent', function(sender, data)
                     BR.Damage.refusals = (BR.Damage.refusals or 0) + 1
                     print(('[br_core] shot refused: %d -> %d, %s (%.0fm, %dms)')
                         :format(shooter, victim, tostring(why), dist, since))
+                    BR.Damage.noteRefusal(shooter, why)
                     if cfg.enforce then
                         CancelEvent()
+
+                        -- PUT THE VICTIM BACK ON THE SHOOTER'S SCREEN.
+                        --
+                        -- CancelEvent stops the damage REPLICATING; it does not
+                        -- undo it. GTA already applied it locally on the
+                        -- shooter's machine before the server saw the event, so
+                        -- a refused burst leaves them looking at a corpse that
+                        -- is alive and playing on every other screen (user's
+                        -- own test with a trainer, 2026-08-08).
+                        --
+                        -- Nothing is at stake -- the victim was never hurt and
+                        -- no kill was credited -- but it is worth correcting
+                        -- anyway, because the same desync would hit an HONEST
+                        -- player whose shot was refused by a race, and there it
+                        -- would read as the game being broken rather than as
+                        -- cheating not working.
+                        BR.Damage.resync(shooter, victim)
                     end
                 else
                     -- WHAT THE SERVER THINKS THE HIT WAS WORTH.

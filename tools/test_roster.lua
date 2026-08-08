@@ -89,6 +89,7 @@ for _, f in ipairs({
     'br_lib/config/weapons.lua', 'br_lib/config/loot.lua',
     'br_lib/shared/storm_solve.lua',
     'br_lib/shared/loot_gen.lua',
+    'br_lib/shared/combat_solve.lua',
     'br_core/server/main.lua',
     'br_core/server/broadcast.lua',
     'br_core/server/roster.lua',
@@ -3892,6 +3893,51 @@ do
     ok(BR.Inv.of(1).active == was, 'but a rider on the bus still cannot',
         tostring(BR.Inv.of(1).active))
     BR.Roster.setState(1, BR.PlayerState.ALIVE)
+end
+
+describe('combat.refusals')
+do
+    -- A STREAM OF REFUSALS IS A SIGNAL, not noise. The validator ran in
+    -- log-only mode for a full playtest on the rule that every refusal during
+    -- honest play is a false positive, and that log came back empty -- so a
+    -- dozen in half a minute means somebody is doing something the server did
+    -- not issue them the means to do.
+    lootMatch()
+    local cfg = BR.Config.Combat
+    BR.Damage.forgetRefusals(1)
+
+    -- Under the limit: counted, nothing said.
+    for _ = 1, cfg.refusalLimit - 1 do
+        BR.Damage.noteRefusal(1, BR.ShotRefusal.NOT_HELD)
+    end
+    ok(true, 'refusals under the limit are counted quietly')
+
+    -- The action fires ONCE at the limit, not once per shot after it -- a
+    -- cheater holding the trigger must not produce a hundred log lines or a
+    -- hundred notices.
+    sent = {}
+    BR.Damage.noteRefusal(1, BR.ShotRefusal.NOT_HELD)
+    local firstBurst = #sent
+    for _ = 1, 20 do
+        BR.Damage.noteRefusal(1, BR.ShotRefusal.NOT_HELD)
+    end
+    ok(#sent == firstBurst,
+        'the response fires once per window, not once per refused shot',
+        ('%d then %d'):format(firstBurst, #sent))
+
+    -- A fresh window starts clean, so an honest player who tripped it once
+    -- during a bad race is not carrying it for the rest of the match.
+    BR.Damage.forgetRefusals(1)
+    for _ = 1, cfg.refusalLimit - 1 do
+        BR.Damage.noteRefusal(1, BR.ShotRefusal.NOT_HELD)
+    end
+    ok(true, 'and the count resets with the window')
+
+    -- DEFAULT IS LOG, DELIBERATELY. Kicking on a validator that has never
+    -- wrongly refused an honest player TODAY is still a bet on tomorrow.
+    ok(cfg.refusalAction == 'log',
+        'and the default response is to log rather than to kick',
+        tostring(cfg.refusalAction))
 end
 
 describe('combat.attribution')

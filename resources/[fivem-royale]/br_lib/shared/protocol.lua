@@ -96,6 +96,11 @@ BR.Net = {
     -- STORM_DAMAGE: the server cannot write a ped, so it keeps the ledger and
     -- instructs the client to show it.
     HIT_DAMAGE      = 'br:hit:damage',
+    -- S->C { netId, hp }. A shot was REFUSED, so the shooter's local copy of
+    -- the victim is wrong -- GTA applied the damage on their machine before
+    -- the server ever saw the event, and CancelEvent stops replication, not
+    -- that. This tells them to put the ped back.
+    HIT_RESYNC      = 'br:hit:resync',
     KILL_FEED       = 'br:kill:feed',        -- S->C  { killer, victim, weapon, headshot }
     DBNO_SET        = 'br:dbno:set',         -- S->C  { downed, bleedEndsAt, byName }
     REVIVE_START    = 'br:revive:start',     -- C->S  { target }

@@ -574,6 +574,32 @@ end)
 -- much of each -- because it is the server's ledger that decides the
 -- elimination, and a client that quietly disagreed here would only be lying to
 -- its own health bar.
+-- A SHOT OF OURS WAS REFUSED, so the ped we think we hit is wrong.
+--
+-- The engine applies damage locally on the shooter's machine before the server
+-- ever sees the event, and the server's CancelEvent stops it REPLICATING
+-- rather than undoing it. So a refused burst leaves this client looking at a
+-- corpse that is alive everywhere else. The server sends the health it holds
+-- for that player and this puts it back.
+--
+-- Local only, and deliberately: we do not own that ped, so this is correcting
+-- our own copy rather than asserting anything about theirs. If the write does
+-- not take, the owner's next sync corrects it anyway -- this only shortens the
+-- window.
+RegisterNetEvent(BR.Net.HIT_RESYNC)
+AddEventHandler(BR.Net.HIT_RESYNC, function(d)
+    if type(d) ~= 'table' or not d.netId then return end
+    if not NetworkDoesNetworkIdExist(d.netId) then return end
+
+    local ped = NetworkGetEntityFromNetworkId(d.netId)
+    if not ped or ped == 0 or not DoesEntityExist(ped) then return end
+
+    local hp = math.floor(tonumber(d.hp) or 0)
+    if hp > 0 and GetEntityHealth(ped) < hp then
+        SetEntityHealth(ped, hp)
+    end
+end)
+
 RegisterNetEvent(BR.Net.HIT_DAMAGE)
 AddEventHandler(BR.Net.HIT_DAMAGE, function(d)
     if type(d) ~= 'table' then return end
