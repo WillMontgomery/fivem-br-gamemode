@@ -65,8 +65,19 @@ function BR.ValidateShot(shot, ctx, cfg)
     local w = BR.Config.WeaponByHash[BR.NormHash(shot.weapon)]
     if not w then return false, BR.ShotRefusal.NO_WEAPON end
 
-    -- The server knows what it put in their hands.
-    if ctx.heldItem and ctx.heldItem ~= w.id then
+    -- THE SERVER KNOWS WHAT IT PUT IN THEIR HANDS, AND AN EMPTY SLOT IS AN
+    -- ANSWER.
+    --
+    -- This used to read `if ctx.heldItem and ctx.heldItem ~= w.id`, which
+    -- skipped the whole check when the slot was empty -- and that is exactly
+    -- the state a weapon from outside the inventory leaves you in. A carbine
+    -- conjured by a trainer, fired with no inventory weapon at all, passed
+    -- validation and dealt full damage, because nil never disagrees with
+    -- anything. It also spent no ammo, since there was no slot to spend from.
+    --
+    -- Requiring a match in BOTH directions closes it: if the server did not
+    -- issue you a weapon, you cannot shoot anyone with one.
+    if ctx.heldItem ~= w.id then
         return false, BR.ShotRefusal.NOT_HELD
     end
 

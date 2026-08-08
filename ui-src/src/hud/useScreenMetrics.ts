@@ -16,6 +16,19 @@ export function useScreenMetrics(): ScreenPayload | null {
   const [metrics, setMetrics] = useState<ScreenPayload | null>(null)
 
   useNuiEvent('screen', (d) => {
+    // METRICS ONLY. The screen envelope has a second sender: the scope watcher
+    // publishes `{ scoped }` alone the instant a scope opens or closes, and
+    // that payload carries no safe zone at all.
+    //
+    // Without this guard those writes became `--safe-x: undefined%`, which is
+    // not a length -- so `bottom: var(--safe-y)` stopped resolving, every
+    // absolutely-positioned panel fell back to the document origin, and the
+    // inventory bar rendered in the top-left until the next 1Hz metrics
+    // publish put the real numbers back. That is the snap (user, 2026-08-08,
+    // reported twice: the first fix was in the store, and the store is not
+    // what writes these).
+    if (d.safeX == null || d.safeY == null) return
+
     setMetrics(d)
     const root = document.documentElement.style
     root.setProperty('--safe-x', `${d.safeX}%`)
@@ -34,18 +47,22 @@ export function useScreenMetrics(): ScreenPayload | null {
     // THE TOP ROW'S OWN BASELINE.
     //
     // Both top panels hang off this rather than off --safe-y directly, for two
-    // reasons. It keeps them at the SAME height as each other (they read as
-    // one row, and a squad panel sitting higher than the counters looked
-    // accidental), and it leaves the band immediately under the safe-zone top
-    // free -- which is where GTA draws its own instructional/help prompts, on
-    // the left, underneath ours (user, 2026-08-05).
+    // reasons. It keeps them at the SAME height as each other -- a squad panel
+    // sitting higher than the counters looked accidental -- and it is built
+    // from the player's safe zone, so it follows their margin slider exactly
+    // as the vitals strip does.
     //
-    // It is built from the player's safe zone, so it follows their margin
-    // slider exactly as the vitals strip does; HELP_BAND is the height of the
-    // engine's prompt band, which is a fraction of screen height and so is
-    // expressed in vh.
-    const HELP_BAND = 7.5
-    root.setProperty('--hud-top', `calc(${d.safeY}% + ${HELP_BAND}vh)`)
+    // THE HELP-BAND OFFSET IS GONE. This used to add 7.5vh to clear the band
+    // where GTA draws its own instructional prompts. That is no longer needed:
+    // the HUD is hidden outright during freefall and glide, which is when
+    // those prompts appear, and scope hiding covers the other overlay case --
+    // so the corners now sit level with the storm bar (user, 2026-08-07).
+    //
+    // Note this line, not index.css, is what actually decides: the stylesheet
+    // fallback only applies until the first metrics envelope arrives, and
+    // setting --hud-top there while still adding an offset here meant the
+    // panels never moved at all.
+    root.setProperty('--hud-top', `${d.safeY}%`)
   })
 
   // Ultrawide handling, such as it can be.

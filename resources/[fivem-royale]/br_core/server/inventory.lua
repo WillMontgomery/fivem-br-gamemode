@@ -289,9 +289,21 @@ function BR.Inv.give(src, stack)
     end
 
     local w = BR.Config.WeaponById[stack.item]
+
+    -- NO MAGAZINE MEANS NO NUMBER, not a zero. The `or 0` fallback gave melee
+    -- a clip of 0, and the HUD reads `clip ~= nil` to decide whether to draw a
+    -- counter at all -- so a machete arrived wearing "0 / 0" and a slot badge
+    -- reading 0 (user, 2026-08-08). Absent and empty are different facts and
+    -- the wire has to keep them apart.
+    local clip = stack.clip or (w and w.clip)
+    if clip == nil and w and not w.melee then
+        clip = 0   -- a firearm with no authored magazine is a config error,
+                   -- but it should still render as empty rather than as melee
+    end
+
     local placed = {
         item = stack.item, kind = stack.kind, rarity = stack.rarity,
-        count = 1, clip = stack.clip or (w and w.clip) or 0,
+        count = 1, clip = clip,
     }
 
     local displaced = nil

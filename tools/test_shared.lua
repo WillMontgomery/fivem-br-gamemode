@@ -420,6 +420,21 @@ do
     ok(why == BR.ShotRefusal.NOT_HELD,
         'a shot from a weapon the server did not issue is refused', tostring(why))
 
+    -- AN EMPTY SLOT IS AN ANSWER, and this is the trainer case. A weapon
+    -- conjured from outside the inventory leaves the slot empty, and the
+    -- earlier version skipped the check entirely when it was nil -- so the
+    -- shot validated, dealt full damage, and spent no ammo because there was
+    -- no slot to spend from.
+    -- Built by hand rather than through ctx(): `{ heldItem = nil }` is a table
+    -- with no heldItem key at all, so it overrides nothing.
+    local empty = ctx()
+    empty.heldItem = nil
+    _, why = BR.ValidateShot(
+        { weapon = rifle.hash, dist = 50.0, sinceLastMs = 500 }, empty, cfg)
+    ok(why == BR.ShotRefusal.NOT_HELD,
+        'and so is a shot from a player holding nothing the server issued',
+        tostring(why))
+
     _, why = BR.ValidateShot(
         { weapon = rifle.hash, dist = 50.0, sinceLastMs = 500 },
         ctx({ clip = 0 }), cfg)
