@@ -7,6 +7,10 @@ number. This is the page to read before changing any of them.
 
 ---
 
+> **Two matches on the same server are never identical. Not unlikely — impossible.**
+> Across separate server runs the odds are roughly **1 in 4.3 billion** (2³²).
+> The proof is one line of algebra and it is in §1.
+
 Nothing here is decided by a client. Every value below is computed on the
 server, from a seed the server keeps, and published as a record that clients
 *interpolate* rather than recompute. That distinction is load-bearing and it
@@ -14,21 +18,105 @@ comes up in every section.
 
 ---
 
+## 0. Why any of this is generated at all
+
+An authored map is the obvious alternative: pick the good drop spots, place the
+loot by hand, script the circles. Plenty of games do it. For **this** game it
+would be worse, for four reasons that compound.
+
+**A battle royale is a game about incomplete information, and an authored map
+deletes it.** The whole tension of a drop is *not knowing* what is down there
+before you commit. On a fixed map that is true exactly once per player. By the
+tenth match everyone knows which building holds the good crate, and the drop
+stops being a decision — it becomes a race to a known coordinate, won by
+whoever alt-tabbed least. Every match here lays out ~3,200 items freshly, so
+"is this POI worth it" is a real question on match one thousand.
+
+**Randomness is what makes the storm a director rather than a timer.** The
+anchor is chosen from the flight path, so the circle usually contains ground
+people actually dropped on — but which ground changes every time. Combined with
+the breakout rule, that means the map has no permanent centre. There is no
+Tilted Towers to memorise, no one building that wins the endgame, and a squad
+that always plays the same rotation is punished by the map rather than
+rewarded by it.
+
+**It makes the game cheap to change.** Rebalancing an authored map means moving
+hundreds of hand-placed objects. Here it means editing one number and running
+`tools/verify.sh`. Loose loot was halved twice in a week and healing was moved
+into crates entirely — both are a config line, both are covered by tests that
+fail if the resulting distribution is wrong.
+
+**And it is what makes the layout unknowable to a cheat.** The seed never
+leaves the server. A client cannot derive where anything is because it does not
+have the input; all it ever receives is the 3×3 cell of items it is standing
+in. On an authored map the layout is in the resource files — every player has a
+copy, and a wallhack is a text editor.
+
+The cost is that the generator has to be *correct*, because a bad draw is a
+broken match rather than a bad screenshot. That is why every formula below is a
+pure function tested outside the game, and why there are gates for the things
+that are data rather than logic (see [Testing](testing.md)).
+
+---
+
 ## 1. Seeds, and why the same match never repeats
 
-Three independent seeds per match, derived from the match id and the server
-clock:
+Three independent seeds per match, each folded with a **different prime**:
 
 ```
-lootSeed  = mix(matchId, now)
-stormSeed = mix(matchId, now, 7919)
-busSeed   = mix(matchId, now, 104729)
+lootSeed  = now + matchId × 15485863
+stormSeed = now + matchId ×     7919
+busSeed   = now + matchId ×   104729
 ```
 
-The two constants are primes, and they exist for one reason: two matches
-minted in the same server millisecond would otherwise share a seed and replay
-each other's map, route and circles exactly. Mixing a different prime into each
-subsystem also stops the storm and the bus from correlating within one match.
+where `now` is `GetGameTimer()` — milliseconds since the resource started.
+Each seed is expanded through SplitMix32 into the four 32-bit state words of an
+xoshiro-style generator (`br_lib/shared/rng.lua`), because Lua's built-in RNG
+is neither portable nor reproducible across runtimes.
+
+### The exact odds of two identical matches
+
+A match is fully determined by its three seeds, so two matches are identical if
+and only if all three collide. Write that out for matches `(t₁, id₁)` and
+`(t₂, id₂)`:
+
+```
+t₁ + id₁ × 15485863  =  t₂ + id₂ × 15485863
+t₁ + id₁ ×     7919  =  t₂ + id₂ ×     7919
+```
+
+Subtract the second from the first:
+
+```
+(id₁ − id₂) × (15485863 − 7919) = 0     ⟹    id₁ = id₂     ⟹    t₁ = t₂
+```
+
+**So two matches are identical only if they have the same match id at the same
+millisecond.** Match ids are allocated by increment and never reused, so within
+a single server run the probability is *exactly zero* — not small, structurally
+impossible. That is a stronger guarantee than one seed would give, and it is
+what the three different primes buy.
+
+Across separate server runs, ids restart from the same base, so identity needs
+the same id to be minted at the same millisecond offset. Treating that offset as
+uniform over a 32-bit range gives **≈ 1 in 4.3 × 10⁹**, and in practice far less
+— matches start when players queue, not on a schedule.
+
+For scale, the space the seeds *address* is much larger than the seeds
+themselves. One layout alone draws roughly:
+
+| Draws | From |
+|---|---|
+| ~3,200 items × (position, kind, rarity, item) | the loot layout |
+| ~24 | storm centres and breakout rolls |
+| ~10 | route chord, tour choice, anchor |
+
+The binding constraint is therefore the seed, not the outcome space — which is
+exactly the right way round. Widening the seed widens everything downstream.
+
+**The seed never leaves the server.** `brlootseed <n>` pins a layout for
+debugging, server-side only. A client that could derive it would know where
+every item on the map is.
 
 **The seed never leaves the server.** A client that could derive the loot
 layout would know where every item on the map is; a client that could derive

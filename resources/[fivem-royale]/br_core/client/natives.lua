@@ -404,7 +404,12 @@ function BR.Native.applyGameRules()
     -- in-match state. This replaces the point calls spawn.lua made at
     -- ENDED/WAITING, which said the right thing for match participants and
     -- the wrong thing for everyone idling in the lobby.
-    DisplayRadar(st ~= BR.PlayerState.LOBBY and st ~= BR.PlayerState.BUS)
+    -- ...and never over a scope. This runs every FRAME, so it is the call that
+    -- actually decides: screen.lua sets DisplayRadar when the scope state
+    -- changes, and without this line that setting would be overwritten here
+    -- within a millisecond and the minimap would sit on the scaleform.
+    DisplayRadar(st ~= BR.PlayerState.LOBBY and st ~= BR.PlayerState.BUS
+        and not (BR.Screen and BR.Screen.scoped))
 
     -- GTA's own feed ("X joined", "Y died", weapon unlocks, whatever any other
     -- resource posts). The gamemode owns its presentation -- eliminations go

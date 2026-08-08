@@ -95,22 +95,45 @@ end
 -- OUR table (`scoped = true`) rather than by asking the engine about camera
 -- modes -- the last time this file guessed at a camera native it suspended a
 -- callback and brought GTA's weapon wheel back.
+--- True while a scope scaleform is up. Read by natives.lua, which owns the
+--- per-frame DisplayRadar call -- see below for why that matters.
+BR.Screen = BR.Screen or {}
+BR.Screen.scoped = false
+
 local scopedNow = false
 
 BR.Loop.register(BR.Loop.TICK, 'screen.scope', function()
     local want = false
 
-    if IsPlayerFreeAiming(PlayerId()) and BR.Inv and BR.Inv.local_ then
-        local inv  = BR.Inv.local_()
-        local slot = inv and inv.slots[inv.active] or nil
-        local w    = slot and BR.Config.WeaponById[slot.id] or nil
-        want = (w and w.scoped) and true or false
+    if IsPlayerFreeAiming(PlayerId()) then
+        -- ASK THE ENGINE WHAT IS IN THE HAND, not our inventory.
+        --
+        -- The first version read the active INVENTORY slot, which is wrong for
+        -- a reason the screenshot made obvious: it only knows about weapons WE
+        -- issued. A sniper equipped any other way -- vMenu, a future starting
+        -- kit, anything -- left the slot empty, so the check found no weapon,
+        -- decided nothing was scoped, and the HUD drew straight over the scope
+        -- (user, 2026-08-08).
+        --
+        -- The ped is the thing actually holding a rifle, so the ped is what to
+        -- ask. Our table still decides whether that weapon HAS a scope; the
+        -- engine only says which weapon it is.
+        local ok, hash = GetCurrentPedWeapon(PlayerPedId(), true)
+        if ok then
+            local w = BR.Config.WeaponByHash[BR.NormHash(hash)]
+            want = (w and w.scoped) and true or false
+        end
     end
 
     if want == scopedNow then return end
     scopedNow = want
+    BR.Screen.scoped = want
 
     -- The radar goes with it: a minimap over a scope is the same problem.
+    -- Setting it here is not enough on its own -- natives.lua re-asserts
+    -- DisplayRadar every FRAME from the player's state, so a 10Hz call here
+    -- would be overwritten within milliseconds. That loop reads
+    -- BR.Screen.scoped for exactly this reason.
     DisplayRadar(not want)
     TriggerEvent('br:ui:sendLocal', BR.Nui.SCREEN, { scoped = want })
 end)
