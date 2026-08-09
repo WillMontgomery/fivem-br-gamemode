@@ -218,22 +218,56 @@ RegisterCommand('brroster', function(_, args)
         :format(#rows, BR.Server.aliveCount(), BR.Server.squadsAlive()))
 end, RESTRICTED)
 
+--- Squad membership, BUILT FROM THE ROSTER.
+---
+--- It used to walk `BR.Server.squads`, a table that has not been written to
+--- since parties took over squad formation: BR.Party.formSquads stamps
+--- `squadId` onto each roster entry and keeps its working list local. So this
+--- iterated an empty table and printed "(no squads)" through every squad match
+--- ever played -- while the squads themselves were completely fine (owner, in
+--- game, 2026-08-09). The field is gone now; the roster is the source of truth
+--- for this exactly as it is for everything else, and a debug command that
+--- reads a cache nobody fills is worse than no command at all, because it
+--- answers confidently.
 RegisterCommand('brsquads', function()
     header('squads')
-    local any = false
-    for id, sq in pairs(BR.Server.squads) do
-        any = true
-        local names = {}
-        for _, src in ipairs(sq.members or {}) do
-            local p = BR.Server.roster[src]
-            names[#names + 1] = ('%s(%d,%s)'):format(
-                p and p.name or '?', src, p and p.state or '?')
+
+    -- Grouped in one pass, then sorted, so the output is stable between runs.
+    local bySquad, ids = {}, {}
+    BR.Roster.each(
+        function(e) return e.squadId ~= nil end,
+        function(src, e)
+            local g = bySquad[e.squadId]
+            if not g then
+                g = {}
+                bySquad[e.squadId] = g
+                ids[#ids + 1] = e.squadId
+            end
+            g[#g + 1] = { src = src, e = e }
+        end)
+    table.sort(ids, function(a, b) return tostring(a) < tostring(b) end)
+
+    for _, id in ipairs(ids) do
+        local members = bySquad[id]
+        table.sort(members, function(a, b) return a.src < b.src end)
+
+        local names, standing = {}, 0
+        for _, m in ipairs(members) do
+            if BR.Server.isInMatch(m.e.state) then standing = standing + 1 end
+            names[#names + 1] = ('%s(%d,%s)'):format(m.e.name, m.src, m.e.state)
         end
-        print(('  [%s] alive=%s placement=%s')
-            :format(tostring(id), tostring(sq.alive), tostring(sq.placement or '-')))
+
+        print(('  [%s] match %s  %d/%d still in'):format(
+            tostring(id), tostring(members[1].e.matchId), standing, #members))
         print(('      %s'):format(table.concat(names, ', ')))
     end
-    if not any then print('  (no squads)') end
+
+    if #ids == 0 then
+        -- ...and SAY WHY, because "(no squads)" was the line that sent somebody
+        -- looking for a formation bug that did not exist.
+        print('  (no squads -- squadIds are stamped at WARMUP by BR.Party.formSquads,')
+        print('   and solo matches never have any: every player is their own team)')
+    end
 end, RESTRICTED)
 
 RegisterCommand('brstorm', function()
