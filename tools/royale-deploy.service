@@ -55,7 +55,18 @@ RemainAfterExit=no
 # second clone of its own under $SERVER_ROOT/.gamemode-src, which it
 # `reset --hard`s and `clean -fd`s on every run, because what gets served has
 # to be a deployment artifact rather than somebody's workspace.
-ExecStart=/opt/misc/fivem-br-gamemode/tools/deploy.sh
+#
+# Invoked through `bash` rather than executed directly, on purpose: none of
+# this repo's shell scripts carried the executable bit until 2026-08-09 (it was
+# developed on Windows, where the bit is not meaningful), so `./tools/deploy.sh`
+# failed with Permission denied on every fresh clone. Naming the interpreter
+# makes the unit immune to that whatever state a given checkout is in.
+ExecStart=/bin/bash /opt/misc/fivem-br-gamemode/tools/deploy.sh
+
+# Belt and braces for the same reason: deploy.sh used to default to an SSH
+# clone URL, which needed a deploy key on file to fetch a public repo. Setting
+# it here means this unit works against an older checkout of the script too.
+Environment=BR_REPO=https://github.com/WillMontgomery/fivem-br-gamemode.git
 
 # Only restarts if the deploy succeeded -- ExecStartPost does not run when
 # ExecStart fails. That ordering is the point: a failed sync leaves the server
