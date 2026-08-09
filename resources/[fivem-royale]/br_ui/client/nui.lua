@@ -310,6 +310,13 @@ for _, name in ipairs({
     -- anything in it (user, 2026-08-05).
     BR.NuiCb.SQUAD_JOINREQ, BR.NuiCb.SQUAD_JOINRESP,
     BR.NuiCb.SQUAD_KICK, BR.NuiCb.SQUAD_LEAVE,
+    -- MODE_SET WAS MISSING, and the failure is invisible from the Lua side:
+    -- br_core handles it off `br:ui:action`, but nothing registered the
+    -- ENDPOINT, so every mode click came back HTTP 404 and the click did
+    -- nothing (user, 2026-08-09). It also explains an older report -- picking
+    -- Solo not leaving the party -- which was diagnosed as a server-side gap
+    -- when the request had never arrived at all.
+    BR.NuiCb.MODE_SET,
     BR.NuiCb.INV_SWAP, BR.NuiCb.INV_DROP, BR.NuiCb.INV_USE, BR.NuiCb.INV_SELECT,
     -- The locker changes the PED, which is br_core's to own -- br_ui owns the
     -- page and the callbacks, br_core owns what they mean.

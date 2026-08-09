@@ -147,23 +147,33 @@ export default function PartyCard() {
               }}
             >
               {m.leader ? '★ ' : ''}{m.name}
-              {/* REMOVING SOMEONE DOES NOT REMOVE THEM FROM THE FIGHT. They
-                  stay on the squad until the match ends -- pulling a player
-                  out of a team mid-match would strip three people's health
-                  bars and blips over one person's decision. */}
+              {/* A LABEL, NOT A GLYPH. This was a bare × at 0.72rem, which is
+                  "super super small and has no label to tell me what it does"
+                  (user, 2026-08-09) -- and it is a destructive action, which
+                  is the last place to be terse. It says Remove.
+                  REMOVING SOMEONE DOES NOT REMOVE THEM FROM THE FIGHT: they
+                  stay on the squad until the match ends, because pulling a
+                  player out of a team mid-match would strip three people's
+                  health bars and blips over one person's decision. */}
               {inParty && iAmLeader && m.src !== you && (
                 <button
                   type="button"
-                  data-plain
-                  className="text-[0.72rem] leading-none"
-                  style={{ color: 'rgba(255,255,255,0.35)' }}
-                  title={`Remove ${m.name} from the party — they stay on your squad for this match`}
+                  className="btn plate px-2 py-0.5 ml-1 text-[0.68rem] font-semibold
+                             uppercase tracking-[0.08em]"
+                  style={{
+                    ['--edgec' as string]: 'var(--color-danger-edge)',
+                    ['--plate-fill' as string]: 'rgba(52,20,24,0.9)',
+                    ['--cut-max' as string]: '0.25rem',
+                    color: '#ffd7d7',
+                  }}
+                  title={`${m.name} stays on your squad for this match`}
+                  onPointerEnter={() => play('ui.hover')}
                   onClick={() => {
                     play('ui.back')
                     void fetchNui(CB.SQUAD_KICK, { target: m.src })
                   }}
                 >
-                  &times;
+                  Remove
                 </button>
               )}
             </span>
@@ -199,15 +209,18 @@ export default function PartyCard() {
           </div>
           <div className="flex flex-wrap gap-1.5">
             {recruitable.map((m) => (
+              // "+ Name" said nothing about what the plus would do. The verb
+              // is on the button now, at a size somebody can hit.
               <button
                 key={m.src}
                 type="button"
                 disabled={full}
-                className="plate btn px-2.5 py-1 text-[0.78rem] font-semibold"
+                className="plate btn px-3 py-1.5 text-[0.8rem] font-semibold"
                 style={{
                   ['--edgec' as string]: full
-                    ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.22)',
-                  ['--plate-fill' as string]: 'rgba(26,30,42,0.94)',
+                    ? 'rgba(255,255,255,0.12)' : 'var(--color-royale-accent)',
+                  ['--plate-fill' as string]: full
+                    ? 'rgba(26,30,42,0.94)' : 'rgba(10,44,56,0.94)',
                   ['--cut-max' as string]: '0.4rem',
                   opacity: full ? 0.4 : 1,
                 }}
@@ -217,7 +230,7 @@ export default function PartyCard() {
                   void fetchNui(CB.SQUAD_INVITE, { target: m.src })
                 }}
               >
-                + {m.name}
+                Invite {m.name}
               </button>
             ))}
           </div>

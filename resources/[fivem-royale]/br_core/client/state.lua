@@ -592,6 +592,23 @@ end)
 RegisterNetEvent(BR.Net.SQUAD_INVITED)
 AddEventHandler(BR.Net.SQUAD_INVITED, function(inv)
     TriggerEvent('br:ui:sendLocal', BR.Nui.INVITE, inv or { cancel = true })
+
+    -- IN A MATCH, THE CARD IS BEHIND THE PAUSE MENU. The lobby draws the
+    -- invite card on screen; mid-match the only place that answers an invite
+    -- is the pause menu's party card -- so an invite that expires in a minute
+    -- would arrive, sit somewhere nobody is looking, and lapse (user,
+    -- 2026-08-09). The notice is the part that reaches them.
+    --
+    -- Only in a match: in the lobby the card IS on screen, and a notice
+    -- pointing at a card the player is already looking at is noise.
+    if inv and not inv.cancel
+       and S.me.state ~= BR.PlayerState.LOBBY then
+        local key = BR.Keys and BR.Keys.labelFor and BR.Keys.labelFor('brpausemenu')
+        BR.Notify(
+            ('%s invited you to their party — %s to answer'):format(
+                inv.name or 'Someone', key and ('press ' .. key) or 'open the pause menu'),
+            'info', { key = 'party.invite', ms = 12000 })
+    end
 end)
 
 -- A join REQUEST rides the same interface slot as an invite -- one card,

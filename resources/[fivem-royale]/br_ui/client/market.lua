@@ -145,7 +145,27 @@ AddEventHandler(BR.Net.SUMMARY, function(s)
     -- the bar is not already moving when the player looks at it. .end-late
     -- flies the supporting lines in at 3.6s; this arrives just behind them.
     Citizen.SetTimeout(4200, function()
-        BR.Market.award(earned)
+        -- THE VERDICT SCREEN ALWAYS SHOWS THE LEVEL-UP, while the data is
+        -- synthetic (owner, 2026-08-09: "display the normal animation for
+        -- when players get from 2/3 XP, level up, then get to 1/3 XP on the
+        -- next level").
+        --
+        -- The animation for crossing a level is the interesting one and the
+        -- one worth looking at, and a random award lands on it perhaps one
+        -- match in four. So the profile is POSED first: two thirds along the
+        -- current level, and the award is whatever reaches one third of the
+        -- next. The bar then runs to full, holds, flips the number and
+        -- refills -- the real sequence, on a guaranteed case.
+        --
+        -- DELETE THIS BLOCK when a server issues real XP. It is staging, not
+        -- economy: `earned` above is already the shape of the real formula
+        -- and is what the print reports.
+        PROFILE.xp = math.floor(PROFILE.needed * 2 / 3)
+        local nextNeeded = math.floor(PROFILE.needed * 1.15)
+        local staged = (PROFILE.needed - PROFILE.xp) + math.floor(nextNeeded / 3)
+        TriggerEvent('br:ui:sendLocal', BR.Nui.PROGRESS, PROFILE)
+
+        BR.Market.award(staged)
         print(('[br_ui] match XP: +%d (placement %d/%d, %d kills)')
             :format(earned, placement, total, kills))
     end)

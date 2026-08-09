@@ -485,8 +485,29 @@ local function closePanel()
     TriggerEvent('br:ui:popFocus', 'inventory')
 end
 
+--- When the panel last changed state, so one press cannot count twice.
+local lastToggle = 0
+
 BR.Keys.on('inventory', function(pressed)
     if not pressed then return end
+
+    -- HOLDING THE KEY MADE IT BLINK (user, 2026-08-09: "cannot reliably
+    -- open/close it, especially while holding TAB").
+    --
+    -- The raw layer reads the keyboard directly, and opening the panel hands
+    -- CEF the focus -- at which point the game stops seeing the key that is
+    -- still physically held. The state goes down -> up -> down as focus
+    -- settles, each transition is a real edge, and each edge toggles the
+    -- panel. Nothing here is wrong about any single press; the key is simply
+    -- being observed through a boundary that moves.
+    --
+    -- A press inside this window is treated as the one press it was. 250ms is
+    -- longer than the focus handover and far shorter than a deliberate
+    -- open-then-close.
+    local now = GetGameTimer()
+    if now - lastToggle < 250 then return end
+    lastToggle = now
+
     if panelOpen then
         closePanel()
         return

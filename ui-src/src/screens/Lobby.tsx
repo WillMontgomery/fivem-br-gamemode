@@ -42,6 +42,11 @@ export default function Lobby({
   const worldReady = useUi((s) => s.worldReady)
   const locker = useUi((s) => s.locker)
   const [queued, setQueued] = useState(false)
+  // WHY READY UP IS UNAVAILABLE, if it is. The party panel owns the answer --
+  // it knows which way the player said they wanted a squad and whether they
+  // have got one yet -- and this is where the button lives, so the reason
+  // travels up rather than the button moving down.
+  const [readyBlock, setReadyBlock] = useState<string | null>(null)
   const [mode, setMode] = useState<'solo' | 'squad'>('solo')
 
   const inParty = squad.members.length > 1
@@ -294,7 +299,7 @@ export default function Lobby({
             layout still would be fixing the wrong thing. It is stable across
             the mode switch, which is the case that was jarring. */}
         <div className="mt-6 min-h-[13rem]">
-          <PartyPanel disabled={searching} mode={mode} />
+          <PartyPanel disabled={searching} mode={mode} onBlocked={setReadyBlock} />
         </div>
 
         {/* THE ACTION. One object, the loudest on the screen, and the only
@@ -357,7 +362,24 @@ export default function Lobby({
                 </p>
               )}
 
-              <Btn variant="primary" size="xl" full cue="ui.ready" onPress={queue}>
+              {/* BLOCKED, AND IT SAYS WHY. Picking Create or Join is stating
+                  an intention, not fulfilling it -- readying up from there
+                  would queue you alone into the very squad you were in the
+                  middle of building (owner, 2026-08-09). The button goes dead
+                  and the line above it names what is missing. */}
+              {readyBlock && (
+                <p
+                  className="text-[0.82rem] mb-2.5 tscale"
+                  style={{ color: 'rgba(255,255,255,0.5)' }}
+                >
+                  {readyBlock}
+                </p>
+              )}
+              <Btn
+                variant="primary" size="xl" full cue="ui.ready"
+                disabled={readyBlock != null}
+                onPress={queue}
+              >
                 Ready up
               </Btn>
             </>

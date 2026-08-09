@@ -22,9 +22,13 @@ import { CB } from '../bridge/types'
 export default function PartyPanel({
   disabled,
   mode,
+  onBlocked,
 }: {
   disabled: boolean
   mode: 'solo' | 'squad'
+  /** Why READY UP should be unavailable, or null. Reported upward because the
+   *  button lives on the lobby and the reason lives here. */
+  onBlocked?: (reason: string | null) => void
 }) {
   const squad = useUi(selSquad)
   const lobby = useUi(selLobby)
@@ -81,6 +85,26 @@ export default function PartyPanel({
       return next.size === prev.size ? prev : next
     })
   }, [players])
+
+  // CREATE AND JOIN ARE INTENTIONS, NOT OUTCOMES. Sitting on either tab with
+  // no party yet means the player is mid-way through building one -- readying
+  // up from there queues them alone into the squad they were assembling
+  // (owner, 2026-08-09). Random is different: it IS the answer, so it never
+  // blocks.
+  useEffect(() => {
+    if (!onBlocked) return
+    if (mode !== 'squad' || inParty) { onBlocked(null); return }
+    if (subMode === 'create') {
+      onBlocked('Invite someone first, or switch to Random.')
+    } else if (subMode === 'join') {
+      onBlocked('Join a squad first, or switch to Random.')
+    } else {
+      onBlocked(null)
+    }
+    // Cleared on unmount too: the lobby keeps this component mounted, but a
+    // mode change to solo must not leave a stale reason on the button.
+    return () => onBlocked(null)
+  }, [mode, inParty, subMode, onBlocked])
 
   const toggle = (src: number) => {
     setSelected((prev) => {

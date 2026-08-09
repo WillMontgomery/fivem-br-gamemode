@@ -119,13 +119,46 @@ function BR.Pause.openFrontendMap(page)
         print(('[br_ui] frontend page %d -- %s')
             :format(page, ok and 'ok' or ('FAILED ' .. tostring(err))))
 
-        -- 199 and 200 are PAUSE, 202 is FRONTEND CANCEL: the keys a player
-        -- actually reaches for to leave a menu. Our own map key gets out too,
-        -- by clearing the flag this loop is watching.
-        while frontendMap
-              and not IsControlJustPressed(2, 202)
-              and not IsControlJustPressed(2, 200)
-              and not IsControlJustPressed(2, 199) do
+        -- WATCHING FOR THE WAY OUT, AND WATCHING IT EVERY WAY THERE IS.
+        --
+        -- Two rounds of this listened for controls 199/200/202 only, and both
+        -- times the answer in game was "it is not working any differently"
+        -- (user, 2026-08-09). While the frontend has the input, a control
+        -- pressed inside it can arrive DISABLED, on a different index, or not
+        -- as a control at all -- so this stops relying on any single reading:
+        --
+        --   * the frontend cancel/pause controls, enabled AND disabled;
+        --   * INPUT_FRONTEND_RRIGHT/ACCEPT-adjacent ids used by the map page;
+        --   * and Escape read RAW, straight off the keyboard, which is the one
+        --     reading the frontend cannot intercept.
+        --
+        -- Right mouse cannot be read raw -- the raw natives are keyboard-only
+        -- -- so it has to come through a control, which is why the list is
+        -- broad rather than precise. A false positive here costs a map that
+        -- closes slightly too eagerly; a false negative is a player stuck in
+        -- a menu, which is what we have had twice.
+        local EXITS = { 202, 200, 199, 177, 194, 195, 25 }
+        local function wantsOut()
+            for _, c in ipairs(EXITS) do
+                if IsControlJustPressed(2, c) or IsDisabledControlJustPressed(2, c) then
+                    if BR.Pause.mapDebug then
+                        print(('[br_ui] map: exit control %d'):format(c))
+                    end
+                    return true
+                end
+            end
+            -- Escape, raw. IsRawKeyDown reports the HELD state, so this fires
+            -- on the frame it goes down and every frame after -- which is
+            -- fine, because the first one already leaves.
+            local ok, down = pcall(IsRawKeyDown, 0x1B)
+            if ok and down then
+                if BR.Pause.mapDebug then print('[br_ui] map: exit raw ESC') end
+                return true
+            end
+            return false
+        end
+
+        while frontendMap and not wantsOut() do
             Citizen.Wait(0)
         end
 
@@ -347,6 +380,11 @@ BR.Pause.mapPage = nil
 
 RegisterCommand('brmapmode', function(_, args)
     local mode = tostring(args[1] or '')
+    if mode == 'debug' then
+        BR.Pause.mapDebug = not BR.Pause.mapDebug
+        print(('[br_ui] map debug: %s'):format(tostring(BR.Pause.mapDebug)))
+        return
+    end
     if mode == 'frontend' or mode == 'bigmap' or mode == 'fullscreen' then
         BR.Pause.mapMode = mode
         BR.Pause.mapPage = tonumber(args[2])
@@ -360,6 +398,8 @@ RegisterCommand('brmapmode', function(_, args)
     print('  bigmap     -- SetBigmapActive: full map over live gameplay, no frontend')
     print('  frontend   -- ActivateFrontendMenu + GoDeeper + TheKick (cfx recipe)')
     print('  fullscreen -- PauseToggleFullscreenMap alone, no frontend at all')
+    print(('  debug: %s   (brmapmode debug -- print which input closes it)')
+        :format(tostring(BR.Pause.mapDebug == true)))
     print('  usage: brmapmode bigmap | fullscreen | frontend [pageId]')
 end, false)
 
