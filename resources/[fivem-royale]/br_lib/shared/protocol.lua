@@ -194,6 +194,8 @@ BR.Nui = {
     -- them, and mid-match it describes the squad -- which is why party
     -- management had nothing to read.
     PARTY     = 'party',
+    -- Who is speaking right now, so the squad panel can say so.
+    VOICE     = 'voice',
     INV       = 'inv',
     PROMPT    = 'prompt',    -- world-anchored interaction prompt + progress ring
     FEED      = 'feed',      -- kill feed + damage numbers
@@ -285,6 +287,9 @@ BR.NuiCb = {
     PAUSE_FOCUS  = 'br/pause/focus',
     -- The manual, which is a page on the lobby AND a tab in the pause menu.
     HELP_FOCUS   = 'br/help/focus',
+    -- Opens FiveM's own voice page: push-to-talk and the microphone are
+    -- client settings no script can write.
+    VOICE_SETTINGS = 'br/voice/settings',
     PAUSE_ACTION = 'br/pause/action',
     -- Rebind one command. { command, key } -- an empty key unbinds it.
     KEYBIND_SET  = 'br/settings/keybind',

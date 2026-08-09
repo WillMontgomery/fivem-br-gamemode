@@ -58,7 +58,7 @@ function useDeathSequence(m: SquadMember) {
   return { phase, flash }
 }
 
-function Row({ m }: { m: SquadMember }) {
+function Row({ m, talking }: { m: SquadMember; talking: boolean }) {
   const { phase, flash } = useDeathSequence(m)
 
   const dead = phase === 'dead'
@@ -102,7 +102,26 @@ function Row({ m }: { m: SquadMember }) {
 
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline justify-between gap-2">
-          <span className="text-[0.72rem] font-semibold truncate">{m.name}</span>
+          <span className="flex items-center gap-1 min-w-0">
+            {/* SPEAKING. Voice had no visual at all -- somebody talks and
+                nothing on screen says who (owner, 2026-08-09). The name is
+                where it belongs: this panel is already the list of who your
+                squad IS, and a mark beside a name needs no legend.
+                It sits BEFORE the name so it never moves the name around as
+                it appears, and it is a filled dot rather than a glyph -- read
+                peripherally, in a corner, at 0.72rem. */}
+            {talking && (
+              <span
+                className="shrink-0 rounded-full mate-talk"
+                style={{
+                  width: '0.34rem', height: '0.34rem',
+                  background: 'var(--color-royale-accent)',
+                }}
+                title={`${m.name} is speaking`}
+              />
+            )}
+            <span className="text-[0.72rem] font-semibold truncate">{m.name}</span>
+          </span>
           {(dead || downed) && (
             <span
               key={dead ? 'out' : 'down'}
@@ -151,17 +170,24 @@ function Row({ m }: { m: SquadMember }) {
   )
 }
 
-export default function SquadPanel({ squad }: { squad: SquadPayload }) {
+export default function SquadPanel({ squad, talking = [] }:
+  { squad: SquadPayload; talking?: number[] }) {
   // Unchanged and load-bearing: a solo player has no squad panel, and the
   // party-vs-squad fallback that feeds this channel is what made the worst M2
   // bug. Do not widen this test.
   if (!squad.id || squad.members.length <= 1) return null
 
+  // Read AFTER the early return so a solo player subscribes to nothing --
+  // this store field changes whenever anybody starts or stops speaking.
+  const talkingSet = new Set(talking)
+
   // No outer .panel: each row is its own plate now, so a shared box around
   // them was a second frame doing nothing but adding an edge.
   return (
     <div className="flex flex-col gap-1">
-      {squad.members.map((m) => <Row key={m.src} m={m} />)}
+      {squad.members.map((m) => (
+        <Row key={m.src} m={m} talking={talkingSet.has(m.src)} />
+      ))}
     </div>
   )
 }

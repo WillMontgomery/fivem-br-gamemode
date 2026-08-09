@@ -47,6 +47,14 @@ local DEFAULTS = {
     -- slider can reach: PlaySoundFrontend has no per-cue volume.
     volUi       = 0.70,
     volMusic    = 0.50,
+    -- VOICE. 'squad' routes to a channel only your squad hears; 'nearby' is
+    -- proximity; 'off' stops transmitting entirely. Solo has no squad to
+    -- route to, so the client falls back to nearby -- see br_core voice.lua,
+    -- which owns everything the natives do with these.
+    voiceMode   = 'nearby',
+    -- 0..1, applied per player with MumbleSetVolumeOverrideByServerId. There
+    -- is no master-output native, so "volume" is every voice at once.
+    volVoice    = 0.80,
     -- Proposed to the server on join. Empty means "use my platform name".
     gamertag    = '',
 }
@@ -56,11 +64,14 @@ local RANGE = {
     textScale = { 0.90, 1.15 },
     volUi     = { 0.00, 1.00 },
     volMusic  = { 0.00, 1.00 },
+    volVoice  = { 0.00, 1.00 },
 }
 
 local COLOURBLIND = {
     off = true, deuter = true, protan = true, tritan = true,
 }
+
+local VOICE_MODE = { squad = true, nearby = true, off = true }
 
 local current = nil
 
@@ -91,6 +102,7 @@ local function sanitise(raw)
     end
 
     if not COLOURBLIND[out.colourblind] then out.colourblind = 'off' end
+    if not VOICE_MODE[out.voiceMode] then out.voiceMode = 'nearby' end
 
     -- A gamertag is shown to other players, so the rules are the server's
     -- eventually -- but there is no reason to send it something obviously
@@ -138,7 +150,12 @@ end
 --- it otherwise -- the interface would silently revert to 1.00 for the rest of
 --- the session.
 function BR.Settings.push()
-    TriggerEvent('br:ui:sendLocal', BR.Nui.SETTINGS, BR.Settings.get())
+    local s = BR.Settings.get()
+    TriggerEvent('br:ui:sendLocal', BR.Nui.SETTINGS, s)
+    -- AND TO LUA. Everything above is presentation the PAGE applies; voice is
+    -- the first setting whose effect is a native, and br_core owns natives.
+    -- One event rather than br_core reaching into this resource's storage.
+    TriggerEvent('br:settings:changed', s)
 end
 
 AddEventHandler('br:ui:ready', function()
@@ -170,6 +187,7 @@ RegisterNUICallback(BR.NuiCb.SETTINGS_SAVE, function(data, cb)
     -- gets the final say. Proposed, not asserted: the roster is what the
     -- interface ends up showing.
     TriggerServerEvent(BR.Net.SETTINGS_NAME, { name = stored.gamertag })
+    TriggerEvent('br:settings:changed', stored)
 
     cb({ ok = true, settings = stored })
 end)
@@ -251,4 +269,11 @@ end, false)
 AddEventHandler('onClientResourceStart', function(res)
     if res ~= RES then return end
     BR.Settings.get()   -- warm the cache, so a corrupt value is reported at boot
+end)
+
+-- PUSH-TO-TALK IS A CLIENT SETTING, so this is a door rather than a control.
+-- br_core owns the natives and knows the page id; this only forwards.
+RegisterNUICallback(BR.NuiCb.VOICE_SETTINGS, function(_, cb)
+    TriggerEvent('br:voice:openSettings')
+    cb({ ok = true })
 end)

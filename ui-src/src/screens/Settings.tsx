@@ -31,6 +31,12 @@ import Keybinds from './Keybinds'
  */
 
 type Draft = SettingsPayload
+/** Voice routing, in the order a player is most likely to want it. */
+const VOICE_MODES: { id: Draft['voiceMode']; label: string; sub: string }[] = [
+  { id: 'squad',  label: 'Squad',  sub: 'Only your team, at any distance' },
+  { id: 'nearby', label: 'Nearby', sub: 'Anyone close enough to see' },
+  { id: 'off',    label: 'Off',    sub: 'You are not transmitting' },
+]
 
 const CB_MODES: { id: Draft['colourblind']; label: string; sub: string }[] = [
   { id: 'off',    label: 'Off',           sub: 'Standard palette' },
@@ -234,6 +240,10 @@ export default function Settings({
   // BR.Roster.setName. `hud.state` is the server's word on where we are, so
   // this stays a mirror rather than a second opinion.
   const nameLocked = useUi((s) => s.hud.state !== 'lobby')
+  // SQUAD VOICE ONLY EXISTS IN SQUADS. In solo there is no squad room to
+  // route to, and an option that silently behaves as another one is a lie
+  // the settings screen would be telling.
+  const squadMode = useUi((s) => s.match.mode === 'squad')
 
   // The draft is seeded from the store and pushed straight back into it on
   // every change -- which is what makes the preview live. It is NOT a
@@ -387,6 +397,94 @@ export default function Settings({
               />
               <p className="micro-label">
                 Music is not in the game yet — this is stored for when it is.
+              </p>
+          </Section>
+
+          <Section title="Voice">
+              {/* WHO HEARS YOU. The server decides which rooms exist and who
+                  may be in them; this only chooses which of the ones you were
+                  given you actually use -- so it can decline a room, never
+                  enter one. See br_core/client/voice.lua.
+
+                  SQUAD IS ABSENT IN SOLO, because there is no squad room to
+                  route to and an option that silently behaves as another one
+                  is a lie the settings screen would be telling. */}
+              <div className="flex flex-col gap-1.5">
+                <div className="micro-label">Who hears you</div>
+                <div className="flex gap-1.5">
+                  {VOICE_MODES.filter((m) => m.id !== 'squad' || squadMode).map((m) => (
+                    <button
+                      key={m.id}
+                      type="button"
+                      className={`btn plate px-3 py-2 text-left flex-1${
+                        draft.voiceMode === m.id ? ' is-active' : ''}`}
+                      style={{
+                        ['--edgec' as string]: draft.voiceMode === m.id
+                          ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.16)',
+                        ['--plate-fill' as string]: draft.voiceMode === m.id
+                          ? 'rgba(12,58,72,0.94)' : 'rgba(24,28,40,0.92)',
+                        ['--cut-max' as string]: '0.4rem',
+                      }}
+                      onPointerEnter={() => play('ui.hover')}
+                      onClick={() => { play('ui.select'); set('voiceMode', m.id) }}
+                    >
+                      <span
+                        className="block text-[0.9rem] ts"
+                        style={{
+                          ['--fs' as string]: '0.9rem',
+                          color: draft.voiceMode === m.id
+                            ? 'var(--color-royale-accent)' : '#ffffff',
+                        }}
+                      >
+                        {m.label}
+                      </span>
+                      <span
+                        className="micro-label ts"
+                        style={{ ['--fs' as string]: '0.62rem', textTransform: 'none' }}
+                      >
+                        {m.sub}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <Slider
+                label="Voice volume" value={draft.volVoice} dflt={DEFAULT_SETTINGS.volVoice}
+                min={0} max={1} step={0.01}
+                format={(v) => (v === 0 ? 'Muted' : `${Math.round(v * 100)}%`)}
+                onChange={(v) => set('volVoice', v)}
+              />
+              <p className="micro-label" style={{ textTransform: 'none' }}>
+                Applied to every voice at once — the game has no separate master
+                level.
+              </p>
+
+              {/* THE DOOR, NOT A FAKE CONTROL. Push-to-talk versus voice
+                  activation, the input device and the master output level are
+                  CLIENT settings -- the same class as key bindings, and
+                  unreachable from script for the same reason. A toggle here
+                  would be a toggle that does nothing. */}
+              <button
+                type="button"
+                className="btn plate px-4 py-2 self-start font-display uppercase
+                           tracking-[0.12em] text-[0.78rem]"
+                style={{
+                  ['--edgec' as string]: 'rgba(255,255,255,0.22)',
+                  ['--plate-fill' as string]: 'rgba(30,34,48,0.94)',
+                  ['--cut-max' as string]: '0.4rem',
+                }}
+                onPointerEnter={() => play('ui.hover')}
+                onClick={() => {
+                  play('ui.select')
+                  void fetchNui(CB.VOICE_SETTINGS, {})
+                }}
+              >
+                Push-to-talk &amp; microphone
+              </button>
+              <p className="micro-label" style={{ textTransform: 'none' }}>
+                Push-to-talk, your microphone and the output level live in the
+                game&apos;s own voice settings. This opens them.
               </p>
           </Section>
           <Section title="Identity">

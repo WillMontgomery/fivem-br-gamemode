@@ -144,7 +144,16 @@ AddEventHandler(BR.Net.SUMMARY, function(s)
     -- A beat after the verdict lands, so the slam owns the first moment and
     -- the bar is not already moving when the player looks at it. .end-late
     -- flies the supporting lines in at 3.6s; this arrives just behind them.
-    Citizen.SetTimeout(4200, function()
+    -- 2.0s, DOWN FROM 4.2s. The verdict screen only exists while the match is
+    -- tearing down, and the award has to land AND animate inside that window
+    -- -- the fill alone is 1.4s and the level-up sequence adds two more. At
+    -- 4.2s it was arriving with barely a second of screen left, or after the
+    -- screen had gone, which is why it had never actually been seen (user,
+    -- 2026-08-09, twice).
+    --
+    -- The slam still gets the first moment: it lands at ~1.2s and .end-late
+    -- flies the supporting lines in behind it.
+    Citizen.SetTimeout(2000, function()
         -- THE VERDICT SCREEN ALWAYS SHOWS THE LEVEL-UP, while the data is
         -- synthetic (owner, 2026-08-09: "display the normal animation for
         -- when players get from 2/3 XP, level up, then get to 1/3 XP on the

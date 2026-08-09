@@ -984,3 +984,13 @@ html, body, #root {
  * Declared at the END of this file on purpose: it has to beat both Tailwind's
  * utilities (injected at the top) and every component rule above. */
 .ts { font-size: calc(var(--fs, 1em) * var(--text-scale)); }
+
+/* SOMEBODY IS SPEAKING. A slow breath rather than a blink: this sits in the
+ * corner of the eye for as long as a person is talking, and anything sharper
+ * would be a distraction competing with the game for exactly as long as a
+ * teammate is trying to say something. */
+@keyframes talkPulse {
+  0%, 100% { opacity: 0.55; transform: scale(0.85); }
+  50%      { opacity: 1;    transform: scale(1.15); }
+}
+.mate-talk { animation: talkPulse 900ms ease-in-out infinite; }

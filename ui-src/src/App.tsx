@@ -48,6 +48,7 @@ export default function App() {
   useNuiEvent('hud',      (d) => s.setHud(d))
   useNuiEvent('squad',    (d) => s.setSquad(d))
   useNuiEvent('party',    (d) => s.setParty(d))
+  useNuiEvent('voice',    (d) => s.setTalking(d.talking ?? []))
   useNuiEvent('inv',      (d) => s.setInv(d))
   useNuiEvent('storm',    (d) => s.setStorm(d))
   useNuiEvent('dbno',     (d) => s.setDbno(d))

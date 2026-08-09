@@ -319,6 +319,16 @@ end)
 --- When the menu last changed state, so one press cannot count twice.
 local lastToggle = 0
 
+-- ANY FRONTEND PAGE, from anywhere. The map uses it; so does the settings
+-- screen's "open voice settings" button, which is the same handover for the
+-- same reason -- push-to-talk is a client setting no script can write, and a
+-- door is better than a control that lies.
+AddEventHandler('br:map:frontend:page', function(page)
+    BR.Pause.close()
+    TriggerEvent('br:ui:closeSettings')
+    BR.Pause.openFrontendMap(tonumber(page))
+end)
+
 AddEventHandler('br:ui:pauseToggle', function()
     -- TWO PATHS CAN SEE ONE ESCAPE. The interface has its own keydown handler
     -- -- Escape backs out of a confirm, then a tab, then closes -- and the raw

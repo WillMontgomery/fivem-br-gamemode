@@ -389,6 +389,12 @@ export interface SettingsPayload {
    *  slider CAN reach -- PlaySoundFrontend has no per-cue volume. */
   volUi: number
   volMusic: number
+  /** Voice routing: 'squad' uses the squad room the server granted, 'nearby'
+   *  declines it and stays on proximity, 'off' stops transmitting. It can only
+   *  ever DECLINE a room -- the server decides which exist. */
+  voiceMode: 'squad' | 'nearby' | 'off'
+  /** 0..1, applied per player -- there is no master output native. */
+  volVoice: number
   /** Proposed to the server; empty means "use my platform name". */
   gamertag: string
 }
@@ -518,6 +524,9 @@ export type Envelope =
   // are different groups -- the squad is this round's team, the party is who
   // you keep -- and one channel can only describe one of them.
   | { k: 'party';    d: SquadPayload }
+  // Who is speaking right now, by server id. Voice was the one system in the
+  // game with no visual at all.
+  | { k: 'voice';    d: { talking: number[] } }
   | { k: 'inv';      d: WireInvPayload }
   | { k: 'feed';     d: FeedEntry }
   | { k: 'hit';      d: HitPayload }
@@ -575,6 +584,7 @@ export const CB = {
   MARKET_BUY:     'br/market/buy',
   PAUSE_FOCUS:    'br/pause/focus',
   HELP_FOCUS:     'br/help/focus',
+  VOICE_SETTINGS: 'br/voice/settings',
   PAUSE_ACTION:   'br/pause/action',
   KEYBIND_SET:    'br/settings/keybind',
   ERROR:        'br/err',

@@ -40,6 +40,7 @@ export default function Hud({ visible }: { visible: boolean }) {
   const hud   = useUi(selHud)
   const storm = useUi(selStorm)
   const squad = useUi(selSquad)
+  const talking = useUi((s) => s.talking)
   const feed  = useUi(selFeed)
   const dbno  = useUi(selDbno)
   const match = useUi(selMatch)
@@ -118,7 +119,7 @@ export default function Hud({ visible }: { visible: boolean }) {
             className="absolute w-[13rem]"
             style={{ top: 'var(--hud-top)', left: 'var(--safe-x)' }}
           >
-            <SquadPanel squad={squad} />
+            <SquadPanel squad={squad} talking={talking} />
           </div>
         )}
 
