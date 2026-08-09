@@ -14,7 +14,9 @@ import type {
   ChatMessage, DbnoPayload, FeedEntry, FocusPayload, HudPayload,
   InvPayload, InvitePayload, LobbyPayload, MatchPayload, ScreenPayload,
   SpectatePayload, SquadPayload, StormPayload, SummaryPayload,
-  LockerPayload, SettingsPayload, ToastPayload, WireInvPayload,
+  CurtainKind, KeybindAction, LockerPayload, MarketPayload, ProgressPayload,
+  SettingsPayload,
+  ToastPayload, WireInvPayload, XpAward,
 } from '../bridge/types'
 import { applySettings, DEFAULT_SETTINGS } from '../settings/apply'
 
@@ -64,6 +66,19 @@ export interface UiState {
    *  that opens onto nothing reads as broken. */
   locker: LockerPayload
 
+  /** Level and XP. SYNTHETIC until a server writes one -- see
+   *  screens/Progress.tsx for what is and is not real here. */
+  progress: ProgressPayload
+  /** A post-match award, which is what animates the bar. Cleared by the
+   *  component once the animation has played out. */
+  xpAward: XpAward | null
+
+  /** The store catalogue and the player's balance. Also synthetic. */
+  market: MarketPayload
+
+  /** Every rebindable action and its current key. Lua owns both. */
+  keybinds: KeybindAction[]
+
   /** Real screen metrics from the game -- including the minimap rectangle the
    *  bars, chat and notices anchor to. Null in the browser dev harness until
    *  the mock provides one. */
@@ -90,6 +105,8 @@ export interface UiState {
   /** True while the voluntary-leave interstitial covers the screen: black
    *  plus a quiet "Leaving the match" while the world swaps underneath. */
   leaving: boolean
+  /** What the curtain is covering, so it can say the right thing. */
+  curtain: CurtainKind
 
   /** Queue progress while WAITING. Null until the server reports. */
   lobby: LobbyPayload | null
@@ -120,7 +137,7 @@ export interface UiState {
   setSummary: (s: SummaryPayload | null) => void
   setFocus: (f: FocusPayload['screen']) => void
   setPauseHiding: (v: boolean) => void
-  setLeaving: (v: boolean) => void
+  setLeaving: (v: boolean, kind?: CurtainKind) => void
   setLobby: (l: LobbyPayload) => void
   setScreen: (s: ScreenPayload) => void
   setInvite: (i: InvitePayload) => void
@@ -130,6 +147,11 @@ export interface UiState {
   pushNotice: (t: ToastPayload) => void
   setSettings: (s: SettingsPayload) => void
   setLocker: (l: LockerPayload) => void
+  setProgress: (p: ProgressPayload) => void
+  awardXp: (a: XpAward) => void
+  clearXpAward: () => void
+  setMarket: (m: MarketPayload) => void
+  setKeybinds: (k: KeybindAction[]) => void
   openChat: (channel: ChatMessage['channel']) => void
   closeChat: () => void
   hydrate: (s: {
@@ -319,12 +341,17 @@ export const useUi = create<UiState>((set, get) => {
   focus: 'none',
   settings: DEFAULT_SETTINGS,
   locker: { peds: [], chosen: '' },
+  progress: { level: 1, xp: 0, needed: 1000 },
+  xpAward: null,
+  market: { balance: 0, items: [] },
+  keybinds: [],
   lobby: null,
   screen: null,
   scoped: false,
   worldReady: import.meta.env.DEV,
   pauseHiding: false,
   leaving: false,
+  curtain: 'leaving',
   invite: null,
   clockOffset: 0,
   chatOpen: false,
@@ -369,7 +396,7 @@ export const useUi = create<UiState>((set, get) => {
   setSummary:  (summary) => set({ summary }),
   setFocus:    (focus) => set({ focus }),
   setPauseHiding: (pauseHiding) => set({ pauseHiding }),
-  setLeaving: (leaving) => set({ leaving }),
+  setLeaving: (leaving, curtain) => set(curtain ? { leaving, curtain } : { leaving }),
   setLobby:    (lobby) => set({ lobby }),
   // THE SCOPE FLAG NEVER TOUCHES THE METRICS.
   //
@@ -461,6 +488,11 @@ export const useUi = create<UiState>((set, get) => {
     set({ settings })
   },
   setLocker: (locker) => set({ locker }),
+  setProgress: (progress) => set({ progress }),
+  awardXp: (xpAward) => set({ xpAward }),
+  clearXpAward: () => set({ xpAward: null }),
+  setMarket: (market) => set({ market }),
+  setKeybinds: (keybinds) => set({ keybinds }),
 
   openChat:  (chatChannel) => set({ chatOpen: true, chatChannel }),
   closeChat: () => set({ chatOpen: false }),

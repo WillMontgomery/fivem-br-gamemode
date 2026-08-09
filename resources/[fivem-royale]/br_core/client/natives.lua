@@ -447,25 +447,45 @@ function BR.Native.applyGameRules()
     -- The shot is a character portrait now (BR.LobbyCam) and the ped IS the
     -- subject -- hiding it would leave the camera pointed at scenery.
     --
-    -- IT IS STILL INVISIBLE TO EVERYONE ELSE, which is the part that has not
-    -- changed: every client hides the other lobby peds locally
-    -- (client/squadmates.lua), so a shared bucket full of players standing on
-    -- one spot renders as one person on every screen.
+    -- INVISIBLE TO EVERYONE ELSE, AND THE OWNER IS THE ONE WHO SAYS SO.
     --
+    -- The first attempt at this had each client hide the OTHER lobby peds for
+    -- itself (client/squadmates.lua) while every owner forced its own ped
+    -- visible here, every frame. Visibility set by an entity's owner
+    -- replicates, so the owner's per-frame "visible" beat the remote hide and
+    -- players saw each other standing in one spot (user, 2026-08-09).
+    --
+    -- The right primitive is the one that says exactly this:
+    -- _NETWORK_SET_ENTITY_INVISIBLE_TO_NETWORK -- invisible to other players
+    -- over the network, still drawn locally. Paired with
+    -- SetLocalPlayerVisibleLocally so this client keeps seeing its own
+    -- character, which is the entire point of the lobby shot.
+    --
+    -- Called by HASH rather than by name: it is an underscore-prefixed native,
+    -- so the Lua binding name is not something to guess at, and InvokeNative
+    -- is exact. Lua 5.4 wraps an over-large hex literal to the right 64-bit
+    -- pattern, so this parses and passes luac.
+    --
+    -- The remote-side hide in squadmates.lua STAYS as a second line: it costs
+    -- ten native calls a second and it covers the window before a joining
+    -- player's own client has applied this to itself.
+    local lobbyShot = st == BR.PlayerState.LOBBY
+    SetEntityVisible(ped, st ~= BR.PlayerState.BUS, false)
+    Citizen.InvokeNative(0xF1CA12B18AEF5298, ped, lobbyShot)
+    if lobbyShot then
+        SetLocalPlayerVisibleLocally(true)
+        -- The lobby freeze: the ped must not walk, fall or ragdoll out of a
+        -- locked shot. It deliberately never RELEASES here -- spawn placement
+        -- holds its own temporary freezes while collision loads, and stomping
+        -- those drops players through the world.
+        FreezeEntityPosition(ped, true)
+    end
+
     -- The bus rider stays hidden, and is NOT frozen: it rides attached inside
     -- the plane, and the old per-frame BUS freeze was still re-freezing for
     -- the ~250ms after a jump while the roster still said BUS -- fighting
     -- TaskParachute in exactly the frames it needed the ped falling. That
     -- race was the dead SPACE key.
-    --
-    -- The lobby freeze stays too: the ped must not walk, fall or ragdoll out
-    -- of a locked shot. It deliberately never RELEASES here -- spawn
-    -- placement holds its own temporary freezes while collision loads, and
-    -- stomping those drops players through the world.
-    SetEntityVisible(ped, st ~= BR.PlayerState.BUS, false)
-    if st == BR.PlayerState.LOBBY then
-        FreezeEntityPosition(ped, true)
-    end
 
     -- The radar follows MY state, owned here like every other per-frame
     -- rule: hidden in the LOBBY (it used to poke out under the menu after a
@@ -478,7 +498,13 @@ function BR.Native.applyGameRules()
     -- actually decides: screen.lua sets DisplayRadar when the scope state
     -- changes, and without this line that setting would be overwritten here
     -- within a millisecond and the minimap would sit on the scaleform.
+    -- ...and never DURING A TRIP. The player's state flips to WARMUP the
+    -- moment the server says so, which is the moment the transition STARTS --
+    -- so keying the radar on state alone popped the minimap up at the top of
+    -- the fade and left it sitting on a black screen for the whole teleport
+    -- (user, 2026-08-09). The trip owns the screen until it says otherwise.
     DisplayRadar(st ~= BR.PlayerState.LOBBY and st ~= BR.PlayerState.BUS
+        and not (BR.Spawn and BR.Spawn.traveling)
         and not (BR.Screen and BR.Screen.scoped))
 
     -- GTA's own feed ("X joined", "Y died", weapon unlocks, whatever any other
@@ -610,6 +636,17 @@ function BR.Native.check()
     -- is still up and never raising it again -- so a nil binding here would
     -- not fail loudly, it would leave a player in the lobby looking through
     -- the gameplay camera at nothing.
+    -- THE ONE THAT KEEPS PLAYERS OUT OF EACH OTHER'S LOBBY SHOT.
+    -- _NETWORK_SET_ENTITY_INVISIBLE_TO_NETWORK, called by hash because it is
+    -- underscore-prefixed and its Lua binding name is not worth guessing at.
+    -- A nil binding here would be silent: everyone would simply see everyone,
+    -- which is a design failure rather than an error.
+    probe('_NetworkSetEntityInvisibleToNetwork', function()
+        Citizen.InvokeNative(0xF1CA12B18AEF5298, ped, false)
+    end)
+    probe('SetLocalPlayerVisibleLocally', function()
+        SetLocalPlayerVisibleLocally(true)
+    end)
     probe('DoesCamExist',            function()
         local c = CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA',
             0.0, 0.0, -200.0, 0.0, 0.0, 0.0, 50.0, false, 0)

@@ -4,6 +4,7 @@ import Ring from '../hud/Ring'
 import { useEffect, useRef, useState } from 'react'
 import { useUi, selMatch, selLobby, selSquad } from '../store'
 import PartyPanel from './PartyPanel'
+import Progress from './Progress'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 
@@ -22,7 +23,13 @@ import { CB } from '../bridge/types'
  * Mounted always, shown only when the match is WAITING, so the transition costs
  * no mount work.
  */
-export default function Lobby({ visible }: { visible: boolean }) {
+export default function Lobby({
+  visible, under = false,
+}: {
+  visible: boolean
+  /** A sub-screen (locker, market, settings) is over this one. */
+  under?: boolean
+}) {
   const match = useUi(selMatch)
   const lobby = useUi(selLobby)
   const squad = useUi(selSquad)
@@ -51,10 +58,20 @@ export default function Lobby({ visible }: { visible: boolean }) {
 
   const pickMode = (m: 'solo' | 'squad') => {
     setMode(m)
-    // Solo and a party cannot coexist; picking solo leaves the party, now.
-    // The server enforces the same rule on queue -- this just makes the
-    // consequence visible at the moment of choice instead of at Ready up.
-    if (m === 'solo' && inParty) void fetchNui(CB.SQUAD_LEAVE, {})
+    // TELL THE SERVER, UNCONDITIONALLY, AND LET IT DECIDE.
+    //
+    // This used to be `if (m === 'solo' && inParty) fetchNui(SQUAD_LEAVE)` --
+    // a rule enforced by the client, gated on a boolean the client derived
+    // from a payload that has two different shapes (party in the lobby, squad
+    // in a match). When that derivation was wrong, picking Solo silently did
+    // not leave the party and there was nothing on the server to catch it
+    // (user, 2026-08-09).
+    //
+    // Now the UI reports the CHOICE and the server applies the consequence.
+    // It is idempotent, so this fires on every press without the UI needing
+    // to know what state it is in -- which is exactly the knowledge that
+    // failed.
+    void fetchNui(CB.MODE_SET, { mode: m })
   }
 
   // THE SERVER IS THE AUTHORITY ON WHETHER WE ARE QUEUED.
@@ -179,11 +196,16 @@ export default function Lobby({ visible }: { visible: boolean }) {
           because that is where the player's character stands. The old centred
           card put the menu exactly where the character should be and read as a
           web modal floating over a game. */}
+      {/* `page-under` when a sub-screen is up: the column recedes rather than
+          sitting behind them. The locker's scrim only covers the left half
+          (the right half IS the character) and the market's is lighter still,
+          so without this the base menu showed through both -- two screens
+          stacked instead of one navigating (user, 2026-08-09). */}
       <div
-        className="interactive absolute inset-y-0 left-0 w-[38rem] max-w-[62vw]
+        className={`interactive absolute inset-y-0 left-0 w-[38rem] max-w-[62vw]
                    flex flex-col justify-center px-[3.5rem] py-[3rem]
-                   transition-opacity duration-700"
-        style={{
+                   transition-opacity duration-700${under ? ' page-under' : ''}`}
+        style={under ? undefined : {
           opacity: worldReady ? 1 : 0,
           pointerEvents: worldReady ? 'auto' : 'none',
         }}
@@ -196,6 +218,16 @@ export default function Lobby({ visible }: { visible: boolean }) {
           <p className="text-[0.95rem] text-white/40 mt-2 tracking-wide">
             Drop in. Loot up. Outlast the storm.
           </p>
+        </div>
+
+        {/* LEVEL AND XP, UNDER THE WORDMARK AND ABOVE EVERYTHING ELSE.
+            It is the answer to "what did all that playing get me", and a
+            progression system buried behind a menu stops motivating anybody.
+            This is also where the post-match award animates, which is why it
+            sits on the screen the player lands on after a match rather than
+            on the verdict card that flashes past. */}
+        <div className="mt-6">
+          <Progress />
         </div>
 
         {/* MODE IS A CHOICE BETWEEN TWO THINGS, so it is two tiles rather than
@@ -304,6 +336,9 @@ export default function Lobby({ visible }: { visible: boolean }) {
             things you can do on this screen (user, 2026-08-09). They are a
             PAIR, so they split the column evenly and sit on the same line
             weight as the mode tiles above them. */}
+        {/* THE THREE OTHER PLACES YOU CAN GO. Each ASKS Lua for the cursor
+            rather than opening a screen locally -- the focus stack decides
+            what is on screen, so there is one source of truth about it. */}
         <div className="mt-6 flex gap-2.5">
           {/* HIDDEN UNTIL LUA HAS SENT A ROSTER, rather than opening onto an
               empty list -- a screen with nothing in it reads as broken, and
@@ -311,26 +346,24 @@ export default function Lobby({ visible }: { visible: boolean }) {
           {locker.peds.length > 0 && (
             <div className="flex-1">
               <Btn
-                variant="default"
-                size="md"
-                full
-                cue="ui.select"
+                variant="default" size="md" full cue="ui.select"
                 onPress={() => { void fetchNui(CB.LOCKER_FOCUS, { open: true }) }}
               >
-                Character
+                Locker
               </Btn>
             </div>
           )}
           <div className="flex-1">
             <Btn
-              variant="default"
-              size="md"
-              full
-              cue="ui.select"
-              // ASKS, never opens. Settings follows the focus stack, so the
-              // button's whole job is to request the cursor -- the screen
-              // appears when Lua says it owns it. The lobby keeps its own
-              // focus underneath and gets it back when settings pops.
+              variant="default" size="md" full cue="ui.select"
+              onPress={() => { void fetchNui(CB.MARKET_FOCUS, { open: true }) }}
+            >
+              Market
+            </Btn>
+          </div>
+          <div className="flex-1">
+            <Btn
+              variant="default" size="md" full cue="ui.select"
               onPress={() => { void fetchNui(CB.SETTINGS_FOCUS, { open: true }) }}
             >
               Settings

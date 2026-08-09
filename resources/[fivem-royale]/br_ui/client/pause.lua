@@ -1,0 +1,109 @@
+-- The pause menu.
+--
+-- IT REPLACES GTA'S, IT DOES NOT LAYER OVER IT. The engine's frontend is a
+-- scaleform, not a NUI layer: nothing we draw can cover it and it cannot cover
+-- us, so the two can never be on screen together. The key is therefore
+-- captured before the engine sees it, and OUR menu comes up.
+--
+-- ESC IS NOT THE KEY, AND CANNOT BE. FiveM cannot rebind the engine's pause
+-- control away from Escape, and DisableControlAction on it for the whole match
+-- would mean a player whose NUI has broken cannot reach the game's own menu at
+-- all -- a soft lock with no escape hatch, which is exactly the class of bug
+-- br_ui's focus watchdog exists to prevent. So the pause menu is bound to a
+-- key of the player's choosing (F1 by default, rebindable in Settings ->
+-- Controls) and Escape still opens GTA's, which stays as the way out of
+-- anything we get wrong.
+--
+-- The MAP is deliberately handed back to the engine. GTA's map is a scaleform
+-- we cannot reproduce, and re-rendering Los Santos in CEF would cost real
+-- frames -- the same reason the minimap is the engine's and not ours.
+
+local RES = GetCurrentResourceName()
+
+BR = BR or {}
+BR.Pause = {}
+
+--- Whether our menu is up. Tracked so the keybind toggles rather than
+--- re-pushing focus onto a screen that is already showing.
+local open = false
+
+function BR.Pause.open()
+    if open then return end
+    open = true
+    TriggerEvent('br:ui:pushFocus', 'pause')
+end
+
+function BR.Pause.close()
+    if not open then return end
+    open = false
+    TriggerEvent('br:ui:popFocus', 'pause')
+end
+
+RegisterNUICallback(BR.NuiCb.PAUSE_FOCUS, function(data, cb)
+    if data and data.open then BR.Pause.open() else BR.Pause.close() end
+    cb({ ok = true })
+end)
+
+--- The verbs on the front page.
+---
+--- EVERY ONE OF THEM IS br_core's TO PERFORM, not ours: leaving a match is a
+--- server round trip, leaving a squad is a roster change, and disconnecting is
+--- a native br_core already wraps. br_ui owns the page and forwards the verb,
+--- which is the same split the locker and the inventory use.
+RegisterNUICallback(BR.NuiCb.PAUSE_ACTION, function(data, cb)
+    local action = tostring(data and data.action or '')
+
+    if action == 'map' then
+        -- Our menu goes first: the frontend cannot open while NUI holds the
+        -- cursor. This is the same handshake the lobby's ESC path uses, and
+        -- it is br_core that actually raises the scaleform.
+        BR.Pause.close()
+        TriggerEvent('br:ui:pauseRequest')
+        cb({ ok = true })
+        return
+    end
+
+    if action == 'quit' then
+        -- No confirmation here -- the page already asked. Two confirmations
+        -- for one decision trains people to click through both.
+        BR.Pause.close()
+        ExecuteCommand('quit')
+        cb({ ok = true })
+        return
+    end
+
+    if action == 'server' then
+        BR.Pause.close()
+        ExecuteCommand('disconnect')
+        cb({ ok = true })
+        return
+    end
+
+    -- 'lobby' and 'squad' are gameplay: br_core decides what they mean.
+    BR.Pause.close()
+    TriggerEvent('br:ui:pauseAction', action)
+    cb({ ok = true })
+end)
+
+-- ---------------------------------------------------------------- keybind ---
+
+-- Registered with NO default here: br_ui/client/keybinds.lua owns every
+-- mapping in this project and applies them from kvp at boot, so that there is
+-- exactly one source of truth about which key does what. F1 is this command's
+-- default IN THAT TABLE, not in the engine's.
+RegisterCommand('brpausemenu', function()
+    if open then BR.Pause.close() else BR.Pause.open() end
+end, false)
+RegisterKeyMapping('brpausemenu', 'Royale: Pause menu', 'keyboard', '')
+
+-- The page can be closed from under us: a match ending, a br_core restart,
+-- the focus watchdog. Watching the focus envelope keeps `open` honest instead
+-- of letting it drift into a state where the keybind toggles the wrong way.
+AddEventHandler('br:ui:focusChanged', function(screen)
+    if screen ~= 'pause' then open = false end
+end)
+
+AddEventHandler('onResourceStop', function(res)
+    if res ~= RES then return end
+    open = false
+end)

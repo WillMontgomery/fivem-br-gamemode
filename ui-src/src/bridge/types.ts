@@ -407,10 +407,75 @@ export interface LockerPayload {
   chosen: string
 }
 
+/**
+ * LEVEL AND XP.
+ *
+ * There is no XP system in this game yet -- no persistence, no server ledger.
+ * `SummaryPayload.xpEarned` has been on the wire since M2 and nothing has ever
+ * written a non-zero value into it. This is the CONTRACT for one, so the
+ * interface can be argued about before the server half is written; Lua sends a
+ * real profile when there is one and the browser harness seeds a plausible one
+ * meanwhile. Nothing in the UI knows the difference.
+ */
+export interface ProgressPayload {
+  level: number
+  /** XP into the current level, not lifetime. */
+  xp: number
+  /** What the current level costs. */
+  needed: number
+}
+
+/** The post-match award, which is what animates the bar. Carries where the
+ *  player WAS, because the fill has to start from there. */
+export interface XpAward {
+  xp: number
+  fromLevel: number
+  fromXp: number
+  fromNeeded: number
+}
+
+/**
+ * One thing on sale.
+ *
+ * COSMETIC ONLY, ENFORCED BY THE CATALOGUE rather than by this type: `kind`
+ * has no member that could affect a fight, and adding one would be the
+ * decision, not an accident. See screens/Market.tsx for the reasoning per
+ * category.
+ */
+export interface MarketItem {
+  id: string
+  name: string
+  sub?: string
+  kind: 'character' | 'trail' | 'banner' | 'verdict'
+  price: number
+  rarity?: Rarity
+  owned?: boolean
+}
+
+export interface MarketPayload {
+  /** Earned, never bought. */
+  balance: number
+  items: MarketItem[]
+}
+
+/** One rebindable action, from br_ui/client/keybinds.lua. */
+export interface KeybindAction {
+  group: string
+  /** The RegisterCommand name -- what FiveM's `bind` console command targets. */
+  command: string
+  label: string
+  /** Currently bound key, or '' for unbound. */
+  key: string
+  default: string
+}
+
+/** What the black curtain is covering. See screens/LeaveScreen.tsx. */
+export type CurtainKind = 'leaving' | 'dropping'
+
 /** Which screen currently owns NUI focus. Lua is the authority. */
 export interface FocusPayload {
   screen: 'none' | 'lobby' | 'squad' | 'inventory' | 'summary' | 'chat'
-        | 'settings' | 'locker'
+        | 'settings' | 'locker' | 'market' | 'pause'
   /** Which channel a chat focus should open in. Rides along here rather than
    *  needing its own envelope kind. */
   channel?: ChatChannel
@@ -447,9 +512,13 @@ export type Envelope =
   | { k: 'screen';   d: ScreenPayload }
   | { k: 'lobby';    d: LobbyPayload }
   | { k: 'invite';   d: InvitePayload }
-  | { k: 'leaving';  d: { show: boolean } }
+  | { k: 'leaving';  d: { show: boolean; kind?: CurtainKind } }
   | { k: 'settings'; d: SettingsPayload }
   | { k: 'locker';   d: LockerPayload }
+  | { k: 'progress'; d: ProgressPayload }
+  | { k: 'market';   d: MarketPayload }
+  | { k: 'keybinds'; d: { actions: KeybindAction[] } }
+  | { k: 'xp';       d: XpAward }
 
 export type EnvelopeKind = Envelope['k']
 
@@ -460,6 +529,7 @@ export type WireEnvelope = Envelope & { t: 'br'; v: number; s: number }
 export const CB = {
   QUEUE:        'br/lobby/queue',
   QUEUE_LEAVE:  'br/lobby/leave',
+  MODE_SET:     'br/lobby/mode',
   SQUAD_INVITE: 'br/squad/invite',
   SQUAD_RESPOND: 'br/squad/respond',
   SQUAD_KICK:   'br/squad/kick',
@@ -482,6 +552,11 @@ export const CB = {
   LOCKER_PICK:    'br/locker/pick',
   LOCKER_SPIN:    'br/locker/spin',
   LOCKER_FOCUS:   'br/locker/focus',
+  MARKET_FOCUS:   'br/market/focus',
+  MARKET_BUY:     'br/market/buy',
+  PAUSE_FOCUS:    'br/pause/focus',
+  PAUSE_ACTION:   'br/pause/action',
+  KEYBIND_SET:    'br/settings/keybind',
   ERROR:        'br/err',
   ENV:          'br/ui/env',
 } as const

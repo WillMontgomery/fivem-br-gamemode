@@ -135,6 +135,35 @@ end
 -- moment the menu closes -- if the player is still a lobby player.
 local pausePhase, pauseAt = nil, 0
 
+-- THE PAUSE MENU'S GAMEPLAY VERBS. br_ui owns the page and forwards the verb;
+-- what it MEANS is br_core's, the same split the locker and inventory use.
+AddEventHandler('br:ui:pauseAction', function(action)
+    if action == 'lobby' then
+        -- The existing, proven leave path -- interstitial, server round trip,
+        -- teleport home -- rather than a second implementation of it.
+        ExecuteCommand('brleave')
+
+    elseif action == 'squad' then
+        -- DEFERRED, ON PURPOSE, and this is the user's design (2026-08-09):
+        -- the player stays with their squad for the rest of THIS match and is
+        -- split from them at cleanup. Pulling someone out mid-match would
+        -- strip three other people's health bars, blips and overhead names in
+        -- the middle of a fight -- punishing them for a decision that was not
+        -- theirs -- and would hand the leaver a free wallhack-free respawn
+        -- into a solo they never queued for.
+        --
+        -- The party is what survives a match; the SQUAD dies with it. So the
+        -- honest way to say "I am done with these people" is to leave the
+        -- PARTY, which changes nothing about the round in progress and
+        -- everything about the next one.
+        TriggerServerEvent(BR.Net.SQUAD_LEAVE)
+        TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
+            text = 'You will leave the squad when this match ends.',
+            tone = 'info', key = 'squad.leaving', ms = 6000,
+        })
+    end
+end)
+
 AddEventHandler('br:ui:pauseRequest', function()
     Citizen.SetTimeout(250, function()
         ActivateFrontendMenu(GetHashKey('FE_MENU_VERSION_SP_PAUSE'), false, -1)
@@ -494,6 +523,8 @@ AddEventHandler('br:ui:action', function(name, data)
         TriggerServerEvent(BR.Net.SQUAD_JOINRESP, data)
     elseif name == BR.NuiCb.SQUAD_LEAVE then
         TriggerServerEvent(BR.Net.SQUAD_LEAVE)
+    elseif name == BR.NuiCb.MODE_SET then
+        TriggerServerEvent(BR.Net.MODE_SET, data)
     elseif BR.Server and BR.Server.devMode then
         print(('[br_core] unhandled UI action: %s'):format(tostring(name)))
     end

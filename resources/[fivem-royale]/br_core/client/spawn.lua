@@ -336,7 +336,21 @@ function BR.Spawn.toWarmupPad()
     BR.Spawn.traveling = true
 
     Citizen.CreateThread(function()
-        DoScreenFadeOut(400)
+        -- 1. THE CURTAIN FIRST, AND IT IS NUI, NOT THE GAME'S FADE.
+        --
+        -- DoScreenFadeOut blacks the WORLD. It does not touch the HUD, which
+        -- we draw over the world, or the radar, which the engine draws -- so
+        -- a game fade on its own left both of them floating on a black
+        -- rectangle for the whole trip, and the lobby menu vanished in one
+        -- frame underneath (user, 2026-08-09). An opaque NUI curtain covers
+        -- every layer at once and fades in rather than cutting.
+        TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING,
+            { show = true, kind = 'dropping' })
+        Citizen.Wait(450)   -- the curtain's own 600ms fade, mostly landed
+
+        -- 2. Then the world goes dark too, so nothing renders a teleport
+        --    underneath the curtain if it is ever less than fully opaque.
+        DoScreenFadeOut(300)
         local t0 = GetGameTimer()
         while not IsScreenFadedOut() and GetGameTimer() - t0 < 1200 do
             Citizen.Wait(50)
@@ -362,23 +376,39 @@ function BR.Spawn.toWarmupPad()
         local theta = math.random() * 2.0 * math.pi
         local dist = r * math.sqrt(math.random())
 
+        -- THE LAST THING TO LIFT IS THE CURTAIN, and it lifts on the world
+        -- being ready rather than on a timer. placeAt waits for collision and
+        -- calls reveal() (the game's fade back in) before this runs, so by
+        -- the time the curtain goes the pad is under the player's feet and
+        -- the HUD is already drawn -- the player fades INTO the warmup, which
+        -- is the whole point of the ordering.
+        local function landed()
+            BR.Spawn.traveling = false
+            -- One breath after the world fade so the two do not both move at
+            -- once; the curtain then takes its own 600ms to clear.
+            Citizen.SetTimeout(250, function()
+                TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING, { show = false })
+            end)
+        end
+
         BR.Spawn.respawn(
             pad.x + math.cos(theta) * dist,
             pad.y + math.sin(theta) * dist,
             pad.z,
             pad.heading,
             false,
-            function() BR.Spawn.traveling = false end)
+            landed)
 
         -- placeAt refuses to start while another placement is running, in
-        -- which case the callback above never fires and `traveling` would
-        -- pin the player in a state with no camera and no fade. The deadline
-        -- is the escape, not the plan.
+        -- which case the callback above never fires -- and the curtain would
+        -- stay down over a perfectly healthy game, which is the same
+        -- unrecoverable black screen this file exists to prevent. The
+        -- deadline is the escape, not the plan.
         Citizen.SetTimeout(9000, function()
             if BR.Spawn.traveling then
                 print('[br_core] warmup placement did not report back -- releasing')
-                BR.Spawn.traveling = false
                 BR.Spawn.reveal()
+                landed()
             end
         end)
     end)

@@ -21,6 +21,36 @@ export function emit<E extends Envelope>(env: E): void {
   dispatch({ t: 'br', v: 1, s: ++seq, ...env } as WireEnvelope)
 }
 
+/**
+ * SYNTHETIC PROGRESSION AND CATALOGUE.
+ *
+ * Neither system exists server-side yet -- see screens/Progress.tsx and
+ * screens/Market.tsx, which say so in full. This is what makes the screens
+ * arguable before anybody writes the persistence half: real numbers, real
+ * prices, real level costs, all invented here and nowhere else, so deleting
+ * this block is the entire act of switching to the real thing.
+ */
+const MOCK_PROGRESS = { level: 14, xp: 2380, needed: 4000 }
+
+const MOCK_MARKET = {
+  balance: 7450,
+  items: [
+    { id: 'ped_juggalo',  name: 'Juggalo',    sub: 'Character',  kind: 'character' as const, price: 1500, rarity: 2 as const },
+    { id: 'ped_clown',    name: 'Clown',      sub: 'Character',  kind: 'character' as const, price: 2500, rarity: 3 as const },
+    { id: 'ped_trooper',  name: 'Trooper',    sub: 'Character',  kind: 'character' as const, price: 4000, rarity: 4 as const, owned: true },
+    { id: 'ped_yeti',     name: 'Yeti',       sub: 'Character',  kind: 'character' as const, price: 9000, rarity: 5 as const },
+    { id: 'ped_diver',    name: 'Diver',      sub: 'Character',  kind: 'character' as const, price: 1500, rarity: 2 as const },
+    { id: 'ped_agent',    name: 'Agent',      sub: 'Character',  kind: 'character' as const, price: 3000, rarity: 3 as const },
+    { id: 'trail_ember',  name: 'Ember',      sub: 'Chute trail', kind: 'trail' as const, price: 800,  rarity: 2 as const },
+    { id: 'trail_void',   name: 'Void',       sub: 'Chute trail', kind: 'trail' as const, price: 2000, rarity: 4 as const },
+    { id: 'trail_gold',   name: 'Bullion',    sub: 'Chute trail', kind: 'trail' as const, price: 6000, rarity: 5 as const },
+    { id: 'ban_storm',    name: 'Stormchaser', sub: 'Banner',    kind: 'banner' as const, price: 1200, rarity: 3 as const },
+    { id: 'ban_first',    name: 'Day One',    sub: 'Banner',     kind: 'banner' as const, price: 0,    rarity: 5 as const, owned: true },
+    { id: 'vd_royale',    name: 'Victory Royale', sub: 'Verdict', kind: 'verdict' as const, price: 0, rarity: 1 as const, owned: true },
+    { id: 'vd_lastone',   name: 'Last One Standing', sub: 'Verdict', kind: 'verdict' as const, price: 3500, rarity: 4 as const },
+  ],
+}
+
 /** Mirrors br_lib/config/peds.lua closely enough to lay the screen out. */
 const MOCK_PEDS = [
   { id: 'streetguy', name: 'Street' }, { id: 'streetgirl', name: 'Downtown' },
@@ -57,10 +87,15 @@ export async function mockFetch<Res>(name: CallbackName, data?: unknown): Promis
   // this the browser's Settings button would open nothing at all -- and the
   // difference between "the button is broken" and "the mock does not answer"
   // is not visible from the screen.
-  if (name === 'br/settings/focus' || name === 'br/locker/focus') {
+  const FOCUS_CB: Record<string, 'settings' | 'locker' | 'market' | 'pause'> = {
+    'br/settings/focus': 'settings',
+    'br/locker/focus': 'locker',
+    'br/market/focus': 'market',
+    'br/pause/focus': 'pause',
+  }
+  if (FOCUS_CB[name]) {
     const open = (data as { open?: boolean } | undefined)?.open === true
-    const screen = name === 'br/locker/focus' ? 'locker' : 'settings'
-    emit({ k: 'focus', d: { screen: open ? screen : 'lobby' } })
+    emit({ k: 'focus', d: { screen: open ? FOCUS_CB[name]! : 'lobby' } })
     return { ok: true } as Res
   }
 
@@ -113,6 +148,26 @@ export function startMockDriver(): void {
   // until it arrives -- so a harness that never sends it is a harness where
   // the locker cannot be opened at all.
   emit({ k: 'locker', d: { peds: MOCK_PEDS, chosen: 'streetguy' } })
+  emit({ k: 'progress', d: MOCK_PROGRESS })
+  // Mirrors br_ui/client/keybinds.lua's ACTIONS table. Without it the
+  // controls tab renders its empty state, which is a different screen from
+  // the one that ships.
+  emit({
+    k: 'keybinds',
+    d: {
+      actions: [
+        { group: 'Combat', command: 'brinventory', label: 'Inventory', key: 'TAB', default: 'TAB' },
+        { group: 'Combat', command: 'brslot1', label: 'Slot 1', key: '1', default: '1' },
+        { group: 'Combat', command: 'brslot2', label: 'Slot 2', key: '2', default: '2' },
+        { group: 'World', command: 'brinteract', label: 'Interact / loot', key: 'E', default: 'E' },
+        { group: 'World', command: 'brmarker', label: 'Place map marker', key: 'B', default: 'B' },
+        { group: 'Social', command: 'brchat', label: 'Chat', key: 'T', default: 'T' },
+        { group: 'Interface', command: 'brpausemenu', label: 'Pause menu', key: 'F1', default: 'F1' },
+        { group: 'Interface', command: 'brleave', label: 'Leave the match', key: '', default: '' },
+      ],
+    },
+  })
+  emit({ k: 'market', d: MOCK_MARKET })
 
   emit({
     k: 'snapshot',

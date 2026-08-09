@@ -20,6 +20,14 @@ BR.Net = {
     -- Lobby / squads
     QUEUE_JOIN      = 'br:queue:join',       -- C->S  { mode }
     QUEUE_LEAVE     = 'br:queue:leave',      -- C->S
+    -- C->S { mode }. The player picked a mode tile. Sent at the MOMENT OF
+    -- CHOICE rather than only at ready-up, because picking Solo has a
+    -- consequence -- it leaves your party -- and a consequence the server
+    -- only applies later is one the client has to remember to ask for. It
+    -- used to: Lobby.tsx fired a SQUAD_LEAVE off a locally-derived "am I in a
+    -- party" boolean, and when that stopped leaving the party there was no
+    -- server-side rule to fall back on (user, 2026-08-09).
+    MODE_SET        = 'br:mode:set',
     -- Parties are persistent; squads are formed from them per match. The events
     -- are named "squad" for continuity with the UI, but they operate on parties.
     SQUAD_INVITE    = 'br:squad:invite',     -- C->S  { target }
@@ -188,6 +196,22 @@ BR.Nui = {
     -- every successful swap -- the page never assumes an apply worked, since
     -- a model that fails to stream leaves you wearing the old one.
     LOCKER    = 'locker',
+    -- LEVEL AND XP, AND THE STORE. Neither system exists server-side yet --
+    -- there is no persistence to hang them on. The envelopes and the screens
+    -- are built first so the shape can be argued about before anybody writes
+    -- the ledger; br_ui seeds a synthetic profile and catalogue, and the day a
+    -- server sends real ones nothing in the interface changes.
+    PROGRESS  = 'progress',
+    -- The post-match award, sent AFTER the new profile so the bar knows both
+    -- where it is going and where it came from. Separate from PROGRESS
+    -- because most progress pushes are not awards -- a reconnect should
+    -- restore the bar, not replay a celebration.
+    XP        = 'xp',
+    MARKET    = 'market',
+    -- Every RegisterKeyMapping command we own, with the key currently bound
+    -- to it, so the settings screen can list and rebind them without sending
+    -- the player into GTA's own menus to find them.
+    KEYBINDS  = 'keybinds',
 }
 
 --- NUI -> Lua callback names, namespaced. Every one of these MUST resolve on
@@ -195,6 +219,7 @@ BR.Nui = {
 BR.NuiCb = {
     QUEUE        = 'br/lobby/queue',
     QUEUE_LEAVE  = 'br/lobby/leave',
+    MODE_SET     = 'br/lobby/mode',
     SQUAD_INVITE = 'br/squad/invite',
     SQUAD_RESPOND = 'br/squad/respond',
     SQUAD_JOINREQ = 'br/squad/joinreq',
@@ -231,6 +256,14 @@ BR.NuiCb = {
     LOCKER_PICK  = 'br/locker/pick',
     LOCKER_SPIN  = 'br/locker/spin',
     LOCKER_FOCUS = 'br/locker/focus',
+    MARKET_FOCUS = 'br/market/focus',
+    MARKET_BUY   = 'br/market/buy',
+    -- The pause menu. FOCUS opens and closes it; ACTION carries the one verb
+    -- the player picked ('lobby' | 'squad' | 'server' | 'quit').
+    PAUSE_FOCUS  = 'br/pause/focus',
+    PAUSE_ACTION = 'br/pause/action',
+    -- Rebind one command. { command, key } -- an empty key unbinds it.
+    KEYBIND_SET  = 'br/settings/keybind',
 }
 
 BR.NUI_ENVELOPE_VERSION = 1

@@ -452,13 +452,19 @@ html, body, #root {
   padding: 0;
   /* It ARRIVES. An urgent surface that fades in politely is a contradiction,
      and at the top of the screen a drop reads as something landing on you.
-     The pulse starts after the drop so the two never fight. */
-  animation: hotDrop 420ms var(--ease-snap) both,
-             hotEdge 1.6s ease-in-out 420ms infinite;
+     The pulse starts after the drop so the two never fight.
+
+     620ms, NOT 420. At 420 with a snap curve the placard was on screen before
+     the eye had followed it -- it registered as a flicker rather than as an
+     arrival, which is the opposite of what a drop-in is for (user,
+     2026-08-09). Slower, with the overshoot softened, so it reads as a
+     thing landing. */
+  animation: hotDrop 620ms var(--ease-out) both,
+             hotEdge 1.6s ease-in-out 620ms infinite;
 }
 @keyframes hotDrop {
-  0%   { opacity: 0; transform: translateY(-2rem) scale(0.94); }
-  60%  { opacity: 1; transform: translateY(0.18rem) scale(1); }
+  0%   { opacity: 0; transform: translateY(-2.2rem) scale(0.96); }
+  70%  { opacity: 1; transform: translateY(0.12rem) scale(1); }
   100% { opacity: 1; transform: translateY(0) scale(1); }
 }
 @keyframes hotEdge {
@@ -470,12 +476,64 @@ html, body, #root {
   color: #140508;
   font-family: 'Anton', 'Segoe UI', sans-serif;
   font-size: 0.7rem;
+  /* UPPERCASE, and it was the missing half of the type spec. Anton is a
+     display face at 0.24em tracking: mixed case at that spacing puts the
+     gaps between letters on a par with the gaps between words, so
+     "Storm moving in" read as three loose fragments rather than one phrase
+     (user, 2026-08-09). Caps have a flat top line and no descenders, which
+     is what wide tracking is designed around. */
+  text-transform: uppercase;
   letter-spacing: 0.24em;
   padding: 0.15rem 0.75rem;
   text-align: center;
   line-height: 1.5;
 }
 .panel-hot > .hotbody { padding: 0.65rem 1rem; text-align: center; }
+
+/* ---------------------------------------------------------------------------
+   PAGE TRANSITIONS -- the lobby and its sub-screens.
+
+   A menu that CUTS between pages reads as a website; a menu whose pages
+   arrive reads as a front end. The vocabulary is deliberately one gesture,
+   used in both directions, so the lobby and the locker and the market all
+   feel like the same object turning rather than three screens taking turns:
+
+     IN   the page rises very slightly and slides in from the left, over
+          260ms on the standard ease-out.
+     OUT  the same, reversed and quicker (200ms, ease-in) -- an exit should
+          get out of the way faster than an entrance arrives, or the two
+          overlap and the screen looks congested.
+
+   The LOBBY does not unmount when a sub-page opens; it steps aside (see
+   .page-under) so the sub-page appears to come from somewhere rather than
+   from nothing.
+
+   Transform and opacity only, so none of this touches the layout thread --
+   check-ui R7 enforces that and would fail the build otherwise.
+--------------------------------------------------------------------------- */
+@keyframes pageIn {
+  from { opacity: 0; transform: translate3d(-1.4rem, 0.5rem, 0); }
+  to   { opacity: 1; transform: translate3d(0, 0, 0); }
+}
+@keyframes pageOut {
+  from { opacity: 1; transform: translate3d(0, 0, 0); }
+  to   { opacity: 0; transform: translate3d(-1.4rem, 0.5rem, 0); }
+}
+.page-in  { animation: pageIn 260ms var(--ease-out) both; }
+/* pointer-events off on the way out: a page mid-exit is still on screen for
+   200ms and must not eat a click meant for the page arriving behind it. */
+.page-out { animation: pageOut 200ms ease-in both; pointer-events: none; }
+
+/* The lobby, while a sub-page is over it. It does not go away -- it recedes,
+   which is what makes the sub-page feel layered on top rather than swapped
+   in. Scale, not blur: a filter on a full-screen layer costs real frames on
+   the machines this has to run on. */
+.page-under {
+  transition: opacity 260ms var(--ease-out), transform 260ms var(--ease-out);
+  opacity: 0;
+  transform: translate3d(-1.4rem, 0, 0) scale(0.985);
+  pointer-events: none;
+}
 
 /* ---------------------------------------------------------------------------
    BUTTONS -- travel, not a colour change.

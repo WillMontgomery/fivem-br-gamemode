@@ -5,6 +5,8 @@ import { CB } from '../bridge/types'
 import type { SettingsPayload } from '../bridge/types'
 import Btn from '../ui/Btn'
 import { play } from '../audio/cues'
+import { DEFAULT_SETTINGS } from '../settings/apply'
+import Keybinds from './Keybinds'
 
 /**
  * Settings.
@@ -48,7 +50,7 @@ const CB_MODES: { id: Draft['colourblind']; label: string; sub: string }[] = [
  * having, and none of the appearance, which is the part that is wrong.
  */
 function Slider({
-  label, value, min, max, step, format, onChange,
+  label, value, min, max, step, format, onChange, dflt,
 }: {
   label: string
   value: number
@@ -57,14 +59,56 @@ function Slider({
   step: number
   format: (v: number) => string
   onChange: (v: number) => void
+  /** Where this control sits when nobody has touched it. */
+  dflt: number
 }) {
   const pct = ((value - min) / (max - min)) * 100
+  // Floats, so compared with a tolerance rather than ==. A control sitting a
+  // hundredth off its default because of a drag is still at its default as
+  // far as anybody looking at the screen is concerned.
+  const moved = Math.abs(value - dflt) > 0.001
+
   return (
     <label className="block">
-      <div className="flex items-baseline justify-between mb-1.5">
+      <div className="flex items-baseline justify-between mb-1.5 gap-2">
         <span className="text-[0.82rem] text-white/70 tscale">{label}</span>
-        <span className="font-display text-[0.95rem] tabular-nums text-white/90">
-          {format(value)}
+
+        {/* RESET APPEARS ONLY ON A CONTROL THAT HAS MOVED.
+            A row of reset buttons next to untouched controls is noise, and it
+            makes "did I change this?" a thing you have to work out by reading
+            numbers. Showing it only where it applies makes the affordance
+            answer that question by existing (user, 2026-08-09).
+
+            It occupies no layout when hidden -- the value sits in a
+            fixed-width cell to its right, so nothing shifts when it appears. */}
+        <span className="flex items-baseline gap-2 shrink-0">
+          {moved && (
+            <button
+              type="button"
+              className="btn plate px-1.5 py-0.5 text-[0.6rem] font-display
+                         uppercase tracking-[0.12em]"
+              style={{
+                ['--edgec' as string]: 'rgba(255,255,255,0.22)',
+                ['--plate-fill' as string]: 'rgba(30,34,48,0.94)',
+                ['--cut-max' as string]: '0.25rem',
+                color: 'rgba(255,255,255,0.6)',
+              }}
+              title={`Back to ${format(dflt)}`}
+              onPointerEnter={() => play('ui.hover')}
+              onClick={(e) => { e.preventDefault(); play('ui.back'); onChange(dflt) }}
+            >
+              Reset
+            </button>
+          )}
+          <span
+            className="font-display text-[0.95rem] tabular-nums text-right"
+            style={{
+              minWidth: '3.4rem',
+              color: moved ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.9)',
+            }}
+          >
+            {format(value)}
+          </span>
         </span>
       </div>
       <div className="relative h-[1.1rem] flex items-center">
@@ -150,14 +194,37 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
-export default function Settings() {
+export default function Settings({
+  inline = false, onDone,
+}: {
+  /** Embedded in another screen (the pause menu) rather than owning the
+   *  viewport: drops the full-screen backdrop and the outer scroll, because
+   *  the host already has both. */
+  inline?: boolean
+  /** Where Save and Cancel go when embedded. Without it they release focus,
+   *  which would close the HOST as well. */
+  onDone?: () => void
+} = {}) {
   const stored = useUi(selSettings)
   const setSettings = useUi((s) => s.setSettings)
   // CLOSING IS RELEASING FOCUS, and nothing else. This screen is rendered
   // because Lua says it owns the cursor, so a local "closed" flag would be a
   // second opinion about the same fact -- which is how you end up with a
   // cursor over no menu.
-  const close = () => { void fetchNui(CB.SETTINGS_FOCUS, { open: false }) }
+  //
+  // Unless it is EMBEDDED, in which case the host owns the focus and this is
+  // a tab, not a screen -- releasing focus here would close the pause menu
+  // out from under the player.
+  const close = () => {
+    if (onDone) { onDone(); return }
+    void fetchNui(CB.SETTINGS_FOCUS, { open: false })
+  }
+
+  // The SERVER's rule, mirrored here so the field can explain itself. It
+  // accepts a rename only while the player is in the LOBBY state -- see
+  // BR.Roster.setName. `hud.state` is the server's word on where we are, so
+  // this stays a mirror rather than a second opinion.
+  const nameLocked = useUi((s) => s.hud.state !== 'lobby')
 
   // The draft is seeded from the store and pushed straight back into it on
   // every change -- which is what makes the preview live. It is NOT a
@@ -219,7 +286,12 @@ export default function Settings() {
 
   // Escape closes, because it is the key everyone tries first and a
   // full-screen menu that ignores it feels broken.
+  //
+  // NOT WHEN EMBEDDED: the pause menu owns Escape there, and two capturing
+  // handlers both calling preventDefault means whichever registered last
+  // decides -- which is a race, not a design.
   useEffect(() => {
+    if (inline) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       e.preventDefault()
@@ -230,36 +302,28 @@ export default function Settings() {
     return () => window.removeEventListener('keydown', onKey, true)
   })
 
-  return (
-    <div
-      className="interactive fixed inset-0 z-50 overflow-y-auto thin-scroll"
-      style={{
-        // OPAQUE, unlike every other surface. See the note at the top.
-        backgroundColor: 'rgba(8, 9, 14, 0.985)',
-      }}
-    >
-      <div
-        className="mx-auto py-10"
-        style={{ width: '62rem', maxWidth: '92vw' }}
-      >
+  const body = (
+    <>
+      {!inline && (
         <div className="flex items-baseline justify-between mb-8">
           <h2 className="font-display text-[2.6rem] uppercase tracking-[0.14em] leading-none">
             Settings
           </h2>
           <span className="micro-label">Esc to go back</span>
         </div>
+      )}
 
         <div className="grid grid-cols-2 gap-x-10">
           <div>
             <Section title="Interface">
               <Slider
-                label="Interface size" value={draft.uiScale}
+                label="Interface size" value={draft.uiScale} dflt={DEFAULT_SETTINGS.uiScale}
                 min={0.8} max={1.3} step={0.01}
                 format={(v) => `${Math.round(v * 100)}%`}
                 onChange={(v) => set('uiScale', v)}
               />
               <Slider
-                label="Text size" value={draft.textScale}
+                label="Text size" value={draft.textScale} dflt={DEFAULT_SETTINGS.textScale}
                 min={0.9} max={1.15} step={0.01}
                 format={(v) => `${Math.round(v * 100)}%`}
                 onChange={(v) => set('textScale', v)}
@@ -277,7 +341,7 @@ export default function Settings() {
 
             <Section title="Audio">
               <Slider
-                label="Interface sounds" value={draft.volUi}
+                label="Interface sounds" value={draft.volUi} dflt={DEFAULT_SETTINGS.volUi}
                 min={0} max={1} step={0.01}
                 format={(v) => (v === 0 ? 'Muted' : `${Math.round(v * 100)}%`)}
                 onChange={(v) => {
@@ -289,7 +353,7 @@ export default function Settings() {
                 }}
               />
               <Slider
-                label="Music" value={draft.volMusic}
+                label="Music" value={draft.volMusic} dflt={DEFAULT_SETTINGS.volMusic}
                 min={0} max={1} step={0.01}
                 format={(v) => (v === 0 ? 'Muted' : `${Math.round(v * 100)}%`)}
                 onChange={(v) => set('volMusic', v)}
@@ -357,48 +421,67 @@ export default function Settings() {
             </Section>
 
             <Section title="Identity">
+              {/* LOCKED IN A MATCH, AND IT SAYS SO IN THREE WAYS: the field is
+                  disabled, it wears a lock, and the line underneath explains
+                  WHY rather than just that. The server already refuses a
+                  rename outside the lobby (br_core/server/roster.lua), so
+                  without this the player could type a new name, press Save,
+                  and watch nothing happen with no explanation offered --
+                  which reads as a broken field rather than as a rule (user,
+                  2026-08-09). */}
               <label className="block">
                 <span className="block text-[0.82rem] text-white/70 mb-1.5 tscale">
                   Display name
                 </span>
-                <input
-                  value={draft.gamertag}
-                  maxLength={20}
-                  placeholder="Your platform name"
-                  onChange={(e) => set('gamertag', e.target.value)}
-                  onKeyDown={(e) => e.stopPropagation()}
-                  className="plate w-full px-3 py-2 bg-transparent outline-none
-                             text-[0.9rem] placeholder:text-white/25"
-                  style={{
-                    ['--edgec' as string]: 'rgba(255,255,255,0.16)',
-                    ['--plate-fill' as string]: 'rgba(24,28,40,0.94)',
-                    ['--cut-max' as string]: '0.45rem',
-                  }}
-                />
+                <div className="relative">
+                  <input
+                    value={draft.gamertag}
+                    maxLength={20}
+                    disabled={nameLocked}
+                    placeholder={nameLocked ? '' : 'Your platform name'}
+                    onChange={(e) => set('gamertag', e.target.value)}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    className={`plate w-full px-3 py-2 bg-transparent outline-none
+                                text-[0.9rem] placeholder:text-white/25${
+                                  nameLocked ? ' pr-9 cursor-not-allowed' : ''}`}
+                    style={{
+                      ['--edgec' as string]: 'rgba(255,255,255,0.16)',
+                      ['--plate-fill' as string]: 'rgba(24,28,40,0.94)',
+                      ['--cut-max' as string]: '0.45rem',
+                      color: nameLocked ? 'rgba(255,255,255,0.4)' : undefined,
+                    }}
+                  />
+                  {nameLocked && (
+                    <span
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                      style={{ color: 'rgba(255,255,255,0.35)' }}
+                      aria-hidden="true"
+                    >
+                      {/* Drawn, not a glyph: there is no icon font here and a
+                          unicode padlock renders as a different picture on
+                          every platform. */}
+                      <svg width="0.95rem" height="0.95rem" viewBox="0 0 24 24">
+                        <path
+                          fill="currentColor"
+                          d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0
+                             2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm0 2a3 3 0 0 1 3 3v3H9V7a3 3
+                             0 0 1 3-3zm0 11a2 2 0 0 1 1 3.73V20h-2v-1.27A2 2 0 0 1 12 15z"
+                        />
+                      </svg>
+                    </span>
+                  )}
+                </div>
               </label>
               <p className="micro-label">
-                3–20 characters. Applied in the lobby only — renaming mid-match
-                would rewrite the kill feed everyone else is reading. Leave it
-                empty to use your platform name.
+                {nameLocked
+                  ? 'Locked while you are in a match — your name is in the kill'
+                    + ' feed everyone else is reading. It unlocks in the lobby.'
+                  : '3–20 characters. Leave it empty to use your platform name.'}
               </p>
             </Section>
 
             <Section title="Controls">
-              <Btn
-                variant="default"
-                size="md"
-                full
-                cue="ui.select"
-                onPress={() => { void fetchNui(CB.KEYBINDS, {}) }}
-              >
-                Open key bindings
-              </Btn>
-              <p className="micro-label">
-                Every key in this game is rebindable, and they live in GTA&apos;s
-                own pause menu under Settings &rarr; Key Bindings &rarr; FiveM.
-                A rebinder in here would be a second list that disagrees with
-                the one the game actually reads.
-              </p>
+              <Keybinds />
             </Section>
           </div>
         </div>
@@ -411,6 +494,24 @@ export default function Settings() {
             Cancel
           </Btn>
         </div>
+    </>
+  )
+
+  // EMBEDDED: no backdrop, no viewport, no scroll container. The pause menu
+  // supplies all three, and nesting a second `fixed inset-0` inside it would
+  // cover the tabs that got you here.
+  if (inline) return body
+
+  return (
+    <div
+      className="interactive fixed inset-0 z-50 overflow-y-auto thin-scroll"
+      style={{
+        // OPAQUE, unlike every other surface. See the note at the top.
+        backgroundColor: 'rgba(8, 9, 14, 0.985)',
+      }}
+    >
+      <div className="mx-auto py-10" style={{ width: '62rem', maxWidth: '92vw' }}>
+        {body}
       </div>
     </div>
   )

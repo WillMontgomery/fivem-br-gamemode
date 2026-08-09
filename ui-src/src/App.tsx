@@ -12,6 +12,12 @@ import InventoryPanel from './screens/InventoryPanel'
 import Notices from './hud/Notices'
 import Settings from './screens/Settings'
 import Locker from './screens/Locker'
+import Market from './screens/Market'
+import PauseMenu from './screens/PauseMenu'
+import Page from './ui/Page'
+
+/** The lobby's sub-screens. The base menu recedes under any of them. */
+const LOBBY_SUBSCREENS = new Set(['settings', 'locker', 'market'])
 
 /**
  * Root.
@@ -57,12 +63,18 @@ export default function App() {
   // components that need to REASON about the layout -- chat and notices pick
   // their anchor by whether the radar is on screen.
   useNuiEvent('screen',   (d) => s.setScreen(d))
-  useNuiEvent('leaving',  (d) => s.setLeaving(d.show))
+  useNuiEvent('leaving',  (d) => s.setLeaving(d.show, d.kind))
   // Pushed on every br:ui:ready, not only the first: br_ui restarting
   // mid-match hands CEF a fresh page at default scale, and without a re-push
   // the player's interface would silently revert for the rest of the session.
   useNuiEvent('settings', (d) => s.setSettings(d))
   useNuiEvent('locker',   (d) => s.setLocker(d))
+  useNuiEvent('progress', (d) => s.setProgress(d))
+  useNuiEvent('market',   (d) => s.setMarket(d))
+  useNuiEvent('keybinds', (d) => s.setKeybinds(d.actions))
+  // Separate from 'progress' on purpose: a reconnect restores the bar, it
+  // does not replay a celebration.
+  useNuiEvent('xp',       (d) => s.awardXp(d))
 
   // Lua owns focus. When it hands focus to chat, the input opens; when it takes
   // focus away, the input closes. The UI never decides this on its own.
@@ -156,13 +168,21 @@ export default function App() {
           card was just noise. The store keeps the messages; it is only
           unmounted, and remounts blank-slate clean at the next warmup. */}
       {!tearingDown && !showLobby && <Chat barsVisible={hudUp} />}
-      <Lobby visible={showLobby && !s.pauseHiding} />
+      {/* THE LOBBY STEPS ASIDE FOR ITS SUB-SCREENS rather than sitting behind
+          them. The locker's scrim only covers the left half (the right half
+          IS the character), and the market's is lighter still -- so the base
+          menu was visible underneath both of them, reading as two screens
+          stacked rather than one navigating (user, 2026-08-09). */}
+      <Lobby
+        visible={showLobby && !s.pauseHiding}
+        under={LOBBY_SUBSCREENS.has(s.focus)}
+      />
       {showEnd && s.summary && <EndScreen summary={s.summary} />}
       {/* The voluntary-leave interstitial covers EVERYTHING -- including
           the lobby that mounts underneath it mid-trip -- until Lua says
           the vista is real, then fades out over the waiting menu. Always
           mounted so the exit is a fade, not a pop. */}
-      <LeaveScreen show={s.leaving} />
+      <LeaveScreen show={s.leaving} kind={s.curtain} />
       {/* The TAB panel. Lua owns whether it is open -- the `inventory` keybind
           pushes NUI focus and this follows -- so there is no local toggle to
           drift out of agreement with the cursor. Keep-input focus means the
@@ -185,11 +205,17 @@ export default function App() {
           owns the cursor must be the same thing, or they drift apart and the
           player ends up with a menu they cannot click or a cursor over no
           menu. Both routes in ask Lua; neither opens it locally. */}
-      {s.focus === 'settings' && <Settings />}
+      <Page show={s.focus === 'settings'}><Settings /></Page>
       {/* The locker is the lobby wearing a different panel: the camera and
           the ped are already there, so this screen is a list and a scrim.
           Same focus rule as everything else. */}
-      {s.focus === 'locker' && <Locker />}
+      <Page show={s.focus === 'locker'}><Locker /></Page>
+      {/* The market is the third face of the same screen. It has no ped to
+          show, so it takes the whole width. */}
+      <Page show={s.focus === 'market'}><Market /></Page>
+      {/* The pause menu REPLACES GTA's, so it sits above everything our own
+          screens draw and below only the curtain. */}
+      <Page show={s.focus === 'pause'}><PauseMenu /></Page>
       {/* The safe-area outline is a SETTING, not a screen: it belongs over
           everything the player is trying to judge against it, including the
           settings screen that turned it on. */}

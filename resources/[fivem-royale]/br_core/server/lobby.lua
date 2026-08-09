@@ -159,6 +159,30 @@ AddEventHandler(BR.Net.QUEUE_LEAVE, function()
     BR.Lobby.leave(source)
 end)
 
+--- The player picked a mode tile.
+---
+--- SOLO AND A PARTY CANNOT COEXIST, and the rule is applied HERE, at the
+--- moment of choice, rather than only when they ready up. It was previously
+--- the client's job: the lobby screen fired a SQUAD_LEAVE off its own derived
+--- "am I in a party" boolean, and when that stopped working the party simply
+--- survived into a solo queue with nothing on the server to catch it (user,
+--- 2026-08-09).
+---
+--- Idempotent and cheap: BR.Party.leave returns immediately for a player who
+--- has no party, so the UI can send this on every tile press without caring
+--- what state it is in -- which is the point, because the UI knowing what
+--- state it is in was the thing that failed.
+RegisterNetEvent(BR.Net.MODE_SET)
+AddEventHandler(BR.Net.MODE_SET, function(data)
+    local src = source
+    local entry = BR.Roster.get(src)
+    if not entry or entry.state ~= BR.PlayerState.LOBBY then return end
+
+    if BR.ResolveMode(data and data.mode).key == BR.Mode.SOLO.key then
+        BR.Party.leave(src)
+    end
+end)
+
 AddEventHandler('playerDropped', function()
     queue[source] = nil
 end)

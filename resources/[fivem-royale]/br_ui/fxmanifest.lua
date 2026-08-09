@@ -23,6 +23,9 @@ client_scripts {
     -- and every one of them is consumed by the page. br_core owns the game;
     -- br_ui owns how it is presented.
     'client/settings.lua',
+    'client/keybinds.lua',  -- owns every key mapping; applies them at boot
+    'client/pause.lua',     -- our pause menu, in place of GTA's
+    'client/market.lua',    -- the storefront; synthetic until a server exists
 }
 
 files {

@@ -116,16 +116,25 @@ end
 -- is mid-teleport with the screen black, and pointing a camera at coordinates
 -- the ped has not reached yet films empty island.
 BR.Loop.register(BR.Loop.TICK, 'lobbycam.follow', function()
+    -- A TRIP OWNS THE TEARDOWN, AND THIS TICK MUST KEEP ITS HANDS OFF.
+    --
+    -- This used to stop the camera as soon as the state stopped being LOBBY,
+    -- which is the same tick readying up sets it -- so the view snapped back
+    -- to the gameplay camera INSTANTLY, and the player then watched the
+    -- teleport happen before the fade they were supposed to be behind (user,
+    -- 2026-08-09: "the player teleports before a fade to black"). The trip
+    -- fades first and drops the camera under the black; all this has to do is
+    -- not race it.
+    if BR.Spawn.traveling then return end
+
     local want = BR.State.me.state == BR.PlayerState.LOBBY
-        and not BR.Spawn.traveling
 
     if want and not BR.LobbyCam.active() then
         BR.LobbyCam.start()
     elseif not want and BR.LobbyCam.active() then
-        -- Not under a fade: this is the path for a state change nobody
-        -- choreographed (an admin force, a resource restart). The warmup
-        -- transition takes the camera down itself, under black, before the
-        -- state ever gets here.
+        -- The uncoreographed path: an admin force, a resource restart, a
+        -- state change nobody fades for. Better an abrupt cut than a camera
+        -- left pointing at an empty hillside for the rest of the match.
         BR.LobbyCam.stop()
     end
 end)

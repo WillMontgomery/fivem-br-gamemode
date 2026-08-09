@@ -78,10 +78,16 @@ BR.Config.Match = {
     -- `fov` is a normal-ish lens. Anything wider at six feet gives the ped a
     -- caricature nose; anything narrower crops them at the chest, which the
     -- locker cannot use.
+    -- The heights came down a foot after the first playtest (user,
+    -- 2026-08-09): mid-torso put the lens above the character's centre of
+    -- mass and the shot read as looking DOWN at them, which is the least
+    -- flattering angle a character select can have. The aim drops slightly
+    -- less than the camera, so the lens now tilts a touch UP -- the standard
+    -- hero framing, and it puts more of the outfit in shot for the locker.
     lobbyCam        = {
         dist   = 1.83,   -- 6 ft in front of the ped
-        height = 0.95,   -- camera height above the ped's root: mid-torso
-        aim    = 0.90,   -- what it looks at, so the framing is not tilted
+        height = 0.65,   -- camera height above the ped's root
+        aim    = 0.68,   -- what it looks at; above `height` => tilted up
         offset = 0.58,   -- aim shifted left => ped sits right of centre
         fov    = 50.0,
     },

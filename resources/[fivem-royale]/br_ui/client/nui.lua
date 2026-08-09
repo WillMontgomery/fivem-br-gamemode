@@ -89,6 +89,11 @@ local function applyFocus()
     lastTop = want.screen
 
     send(BR.Nui.FOCUS, { screen = want.screen, channel = chatChannel })
+    -- Same fact, for Lua listeners. A screen that tracks its own open/closed
+    -- flag has to learn when something ELSE took the stack -- a match ending,
+    -- the watchdog, a resource restart -- or its flag drifts and its keybind
+    -- starts toggling the wrong way.
+    TriggerEvent('br:ui:focusChanged', want.screen)
 end
 
 --- Take focus for a screen. Idempotent per screen.
