@@ -15,10 +15,22 @@ import { useEffect, useRef, useState } from 'react'
  * animates on the layout thread and costs real frames every time damage
  * lands, which is precisely when frames matter most.
  */
-function Fill({ value, colour }: { value: number; colour: string }) {
+function Fill({ value, colour, segments = 0, num }: {
+  value: number
+  colour: string
+  /**
+   * Segment count. Shield is segmented because a segmented shield is most of
+   * why a shield reads as a resource rather than as a second health bar --
+   * you can see at a glance how many potions' worth you have lost. Health is
+   * continuous, because it is.
+   */
+  segments?: number
+  /** Show the value on the bar. */
+  num?: boolean
+}) {
   const pct = Math.max(0, Math.min(1, value / 100))
   return (
-    <div className="h-full w-full rounded-full bg-black/60 border border-white/10 overflow-hidden">
+    <div className="relative h-full w-full rounded-full bg-black/60 border border-white/10 overflow-hidden">
       <div
         className="bar-fill h-full rounded-full"
         style={{
@@ -31,6 +43,31 @@ function Fill({ value, colour }: { value: number; colour: string }) {
             'linear-gradient(90deg, rgba(0,0,0,0.45) 0%, rgba(0,0,0,0) 60%)',
         }}
       />
+      {segments > 1 && (
+        // Notches painted OVER the fill, so they do not move with it. A
+        // repeating gradient rather than N elements: one paint, no layout,
+        // and it costs nothing on the 60fps path.
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{
+            backgroundImage: `repeating-linear-gradient(90deg,`
+              + ` transparent 0 calc(${100 / segments}% - 1.5px),`
+              + ` rgba(11,12,18,0.95) calc(${100 / segments}% - 1.5px) ${100 / segments}%)`,
+          }}
+        />
+      )}
+      {num && value > 0 && (
+        <span
+          className="absolute right-1 top-1/2 font-display leading-none tabular-nums"
+          style={{
+            transform: 'translateY(-50%)',
+            fontSize: '0.62rem',
+            textShadow: '0 1px 2px rgba(0,0,0,0.95)',
+          }}
+        >
+          {Math.round(value)}
+        </span>
+      )}
     </div>
   )
 }
@@ -62,13 +99,19 @@ export default function Vitals({ hp, armour, stamina = 100 }:
   // exactly where it always was.
   return (
     <div className="relative">
-      <div className="flex gap-[3px] items-stretch h-[0.6rem]">
+      {/* Slightly taller than the old 0.6rem: the numerals have to fit, and a
+          strip you cannot read a number off is a strip that made you look
+          twice. */}
+      <div className="flex gap-[3px] items-stretch h-[0.75rem]">
         <div className="basis-[62%] relative" title="Health">
-          <Fill value={hp} colour="var(--color-hp)" />
+          <Fill value={hp} colour="var(--color-hp)" num />
           {hit > 0 && <div key={hit} className="vitals-hit-flash" />}
         </div>
         <div className="basis-[38%]" title="Shield">
-          <Fill value={armour} colour="var(--color-shield)" />
+          {/* Four segments: the shield cap is 100 and a big potion is 50, so
+              each notch is half a potion. The notches are the reason a
+              shield reads as a resource you are spending. */}
+          <Fill value={armour} colour="var(--color-shield)" segments={4} num />
         </div>
       </div>
       {/* Sprint stamina: full-width, same height as the health bar (user

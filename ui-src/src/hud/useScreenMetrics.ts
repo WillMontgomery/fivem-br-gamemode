@@ -75,16 +75,27 @@ export function useScreenMetrics(): ScreenPayload | null {
   // This is a judgement call rather than something the engine tells us -- the
   // base game does not do it -- so it is deliberately mild and only ever pulls
   // elements inward, never pushes them out.
+  //
+  // THE ENGINE'S ASPECT WINS. This used to derive its own from
+  // window.innerWidth/innerHeight while `aspect` sat unread in the screen
+  // envelope -- typed, mocked, published, and consumed by nothing. The engine
+  // value is the authority: it is what GTA itself lays the safe zone out
+  // against, and it survives a resolution change that the window may report
+  // late or not at all. The window ratio stays as the fallback for the browser
+  // harness, where there is no engine to ask.
+  const engineAspect = metrics?.aspect
   useEffect(() => {
     const apply = () => {
-      const aspect = window.innerWidth / window.innerHeight
+      const aspect = engineAspect && engineAspect > 0
+        ? engineAspect
+        : window.innerWidth / window.innerHeight
       const usable = aspect > 2.1 ? `${((2.1 / aspect) * 100).toFixed(2)}%` : '100%'
       document.documentElement.style.setProperty('--usable-w', usable)
     }
     apply()
     window.addEventListener('resize', apply)
     return () => window.removeEventListener('resize', apply)
-  }, [])
+  }, [engineAspect])
 
   return metrics
 }

@@ -135,7 +135,7 @@ export default function Lobby({ visible }: { visible: boolean }) {
         opacity: visible ? 1 : 0,
         pointerEvents: visible ? 'auto' : 'none',
         background:
-          'radial-gradient(ellipse at 50% 40%, rgba(20, 12, 40, 0.72), rgba(6, 8, 14, 0.94))',
+          'radial-gradient(ellipse at 50% 40%, rgba(10, 30, 42, 0.72), rgba(6, 8, 14, 0.94))',
       }}
       aria-hidden={!visible}
     >
@@ -150,7 +150,7 @@ export default function Lobby({ visible }: { visible: boolean }) {
         style={{
           opacity: worldReady ? 0 : 1,
           background:
-            'radial-gradient(ellipse at 50% 42%, rgb(36, 22, 62), rgb(6, 8, 14) 78%)',
+            'radial-gradient(ellipse at 50% 42%, rgb(14, 48, 62), rgb(6, 8, 14) 78%)',
         }}
       />
       {/* Sized with REAL dimensions (42rem = the old 35 + 20%), never
@@ -170,7 +170,7 @@ export default function Lobby({ visible }: { visible: boolean }) {
         }}
       >
         <div className="text-center mb-6">
-          <h1 className="text-6xl font-bold tracking-tight">
+          <h1 className="font-display text-7xl tracking-tight">
             FiveM <span style={{ color: 'var(--color-royale-accent)' }}>Royale</span>
           </h1>
           <p className="text-xl text-white/45 mt-1">

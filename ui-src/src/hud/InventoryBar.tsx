@@ -59,18 +59,26 @@ function Slot({
     // Sized up from 3.6rem: at the old size the labels were unreadable at a
     // glance, which is the only thing this bar is for (user, 2026-08-05).
     // rem is tied to viewport height, so this scales with resolution.
+    //
+    // A SLOT IS A PLATE. Square at rest; the held slot takes .is-active, which
+    // cuts the corners open and grows it. Shape and size say "this is the one
+    // in your hands" -- so it survives being read in peripheral vision, which
+    // a border colour alone does not.
+    //
+    // --edgec drives the border AND both chamfers from one value, so a rarity
+    // can never end up with a mismatched diagonal.
     <div
-      className="relative w-[5.2rem] h-[5.2rem] rounded-md overflow-hidden"
+      className={`plate relative w-[5.2rem] h-[5.2rem] overflow-hidden${active ? ' is-active' : ''}`}
       style={{
         // No color-mix() and no oklch(): CEF is Chrome 103 and drops what it
         // cannot parse, which makes the slot silently invisible.
-        backgroundColor: active ? 'rgba(52,44,80,0.92)' : 'rgba(14,11,24,0.88)',
-        border: `1px solid ${active ? '#ffffff' : hex}`,
-        boxShadow: active ? '0 0 0 1px rgba(255,255,255,0.35)' : 'none',
+        ['--edgec' as string]: active ? '#ffffff' : hex,
+        transform: active ? 'translateY(-0.25rem) scale(1.06)' : undefined,
+        zIndex: active ? 1 : 0,
       }}
     >
       <div
-        className="absolute top-0 left-0 px-1 text-[0.7rem] font-bold tabular-nums"
+        className="absolute top-0 left-0 px-1 font-display text-[0.72rem] tabular-nums"
         style={{ color: 'rgba(255,255,255,0.55)' }}
       >
         {index}
@@ -110,7 +118,8 @@ function Slot({
               missing before -- a weapon with clip 24 and count 1 fell through
               the count > 1 test and showed no number at all. */}
           {(slot.kind === 'weapon' ? slot.clip != null : slot.count > 1) && (
-            <div className="absolute bottom-0 right-0 px-1 text-[0.85rem] font-bold tabular-nums">
+            <div className="absolute bottom-0 right-0 px-1 font-display text-[0.95rem] tabular-nums"
+              style={{ textShadow: 'var(--shadow-text)' }}>
               {slot.kind === 'weapon' ? slot.clip : slot.count}
             </div>
           )}
@@ -148,10 +157,13 @@ export default function InventoryBar({ inv }: { inv: InvPayload }) {
           is the same noise the comment above warns about for consumables. */}
       {active && active.kind === 'weapon' && active.clip != null && (
         <div className="panel px-2.5 py-1 flex items-baseline gap-1.5">
-          <span className="text-2xl font-bold tabular-nums leading-none">
+          {/* Anton: this is the number read under pressure, and it is the
+              reason the display family exists. */}
+          <span className="font-display text-2xl tabular-nums leading-none"
+                style={{ textShadow: 'var(--shadow-text)' }}>
             {active.clip ?? 0}
           </span>
-          <span className="text-base tabular-nums text-white/45 leading-none">
+          <span className="font-display text-base tabular-nums text-white/45 leading-none">
             / {reserve}
           </span>
         </div>
@@ -162,15 +174,15 @@ export default function InventoryBar({ inv }: { inv: InvPayload }) {
             Part of the scroll ring, so putting the gun away is one flick
             rather than a thing you have to drop something to do. */}
         <div
-          className="relative w-[5.2rem] h-[5.2rem] rounded-md overflow-hidden
-                     flex flex-col items-center justify-center gap-0.5"
+          className={`plate relative w-[5.2rem] h-[5.2rem] overflow-hidden
+                     flex flex-col items-center justify-center gap-0.5${
+                       inv.active === 0 ? ' is-active' : ''}`}
           style={{
-            backgroundColor: inv.active === 0
-              ? 'rgba(52,44,80,0.92)' : 'rgba(14,11,24,0.88)',
-            border: `1px solid ${inv.active === 0
-              ? '#ffffff' : 'rgba(255,255,255,0.18)'}`,
-            boxShadow: inv.active === 0
-              ? '0 0 0 1px rgba(255,255,255,0.35)' : 'none',
+            ['--edgec' as string]: inv.active === 0
+              ? '#ffffff' : 'rgba(255,255,255,0.18)',
+            transform: inv.active === 0
+              ? 'translateY(-0.25rem) scale(1.06)' : undefined,
+            zIndex: inv.active === 0 ? 1 : 0,
           }}
         >
           <div

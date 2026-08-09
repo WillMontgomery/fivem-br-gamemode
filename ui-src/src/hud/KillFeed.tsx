@@ -34,25 +34,31 @@ export default function KillFeed({ entries }: { entries: FeedEntry[] }) {
           key={e.id}
           className="panel px-3 py-1.5 text-[0.8125rem] flex items-center gap-1.5 max-w-full"
           style={{
-            ...(e.mine ? { borderColor: 'var(--color-accent-edge)' } : {}),
+            // .panel has no border any more, so an own-kill is marked with a
+            // blade on the leading edge rather than a border colour that
+            // would now silently do nothing.
+            ...(e.mine ? {
+              borderLeft: '2px solid var(--color-royale-accent)',
+              borderRadius: '0 var(--r-panel) var(--r-panel) 0',
+            } : {}),
             animation: `noticeIn 200ms ease-out both, `
                      + `noticeOut ${FADE_MS}ms ease-in ${FEED_TTL_MS - FADE_MS}ms both`,
           }}
         >
           {e.killer ? (
             <>
-              <span className="font-semibold truncate max-w-[7rem]"
-                    style={{ color: e.mine ? 'var(--color-royale-accent2)' : 'white' }}>
+              <span className="font-semibold truncate max-w-[11rem]"
+                    style={{ color: e.mine ? 'var(--color-royale-accent)' : 'white' }}>
                 {e.killer}
               </span>
               {e.headshot && <span title="Headshot" className="text-[0.6875rem]">&#9679;</span>}
               <span className="text-white/35">&rarr;</span>
-              <span className="truncate max-w-[7rem] text-white/70">{e.victim}</span>
+              <span className="truncate max-w-[11rem] text-white/70">{e.victim}</span>
             </>
           ) : (
             <>
-              <span className="font-semibold truncate max-w-[7rem]"
-                    style={{ color: e.mine ? 'var(--color-royale-accent2)' : 'white' }}>
+              <span className="font-semibold truncate max-w-[11rem]"
+                    style={{ color: e.mine ? 'var(--color-royale-accent)' : 'white' }}>
                 {e.victim}
               </span>
               <span className="text-white/55">

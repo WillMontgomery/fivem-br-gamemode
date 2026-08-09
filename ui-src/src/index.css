@@ -61,22 +61,60 @@
   /* Narrowed past ~21:9 so anchored columns do not end up needing a head turn. */
   --usable-w: 100%;
 
-  /* Palette. Hex, for the reason at the top of this file. */
-  --color-royale-bg:      #14151f;
+  /* PALETTE — one colour, one meaning, game-wide. Hex, for the reason at the
+     top of this file.
+
+     The old palette had ONE PURPLE doing five jobs: brand mark, every button,
+     the lobby backdrop, own-kill highlights -- and it sat a shade from Epic
+     loot (#a855f7), so a purple glow on the ground was about to mean both
+     "rare item" and "the storm". Threat and invitation cannot share a hue.
+
+       cyan    you may act        buttons, focus, your own kills, your marker
+       gold    victory            and nothing else
+       magenta the storm          never anything friendly
+       red     you are losing health
+  */
+  --color-royale-bg:      #0b0c12;
   --color-royale-panel:   #1d1e2b;
   --color-royale-edge:    #33354a;
-  --color-royale-accent:  #a855f7;
-  --color-royale-accent2: #4cc9f0;
+  --color-royale-accent:  #22d3ee;
+  --color-royale-accent2: #facc15;
 
   --color-hp:      #4ade80;
   --color-shield:  #38bdf8;
-  --color-storm:   #9333ea;
+  --color-storm:   #c026d3;
   --color-danger:  #ef4444;
 
+  /* RARITY IS CANONICAL. Players arrive knowing these from every other battle
+     royale; redesigning them costs recognition and buys nothing. Mirrored in
+     bridge/types.ts RARITY, which is what components actually read -- these
+     exist so Lua-side markers and CSS can share one source of truth. */
+  --rarity-1: #9ca3af;
+  --rarity-2: #22c55e;
+  --rarity-3: #3b82f6;
+  --rarity-4: #a855f7;
+  --rarity-5: #f59e0b;
+
   /* Pre-mixed translucent variants, replacing color-mix() at the point of use. */
-  --color-storm-fade:  rgba(147, 51, 234, 0.55);
+  --color-storm-fade:  rgba(192, 38, 211, 0.55);
   --color-danger-edge: rgba(239, 68, 68, 0.55);
-  --color-accent-edge: rgba(168, 85, 247, 0.60);
+  --color-accent-edge: rgba(34, 211, 238, 0.60);
+
+  /* SURFACE GEOMETRY.
+     --cut is the bevel a .plate opens to when it takes focus; at rest a plate
+     is perfectly square. Per-component overrides set --cut-max, never --cut:
+     setting --cut directly leaves the plate permanently bevelled, which stops
+     the shape carrying any information at all. */
+  --r-panel: 0.7rem;
+  --cut-max: 0.75rem;
+  --cut: 0px;
+
+  /* Legibility over the world. Anything drawn without a panel behind it wears
+     this -- the desert at noon is the failing case and it is not rare. */
+  --shadow-text: 0 1px 2px rgba(0, 0, 0, 0.9), 0 0 8px rgba(0, 0, 0, 0.55);
+
+  --ease-out:  cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-snap: cubic-bezier(0.16, 1.1, 0.3, 1);
 }
 
 /* The HUD lays out inside this box rather than the raw viewport, so safe zone
@@ -157,7 +195,10 @@ html, body, #root {
   overflow: hidden;
   user-select: none;
   pointer-events: none;
-  font-family: 'Rajdhani', 'Segoe UI', system-ui, sans-serif;
+  /* Barlow carries every word. Anton carries every quantity and every shout,
+     and is applied per-element (.font-display) rather than inherited -- it has
+     no lowercase personality and is unreadable as body text. */
+  font-family: 'Barlow', 'Segoe UI', system-ui, sans-serif;
   color: white;
 }
 
@@ -197,13 +238,133 @@ html, body, #root {
   will-change: transform;
 }
 
+/* ---------------------------------------------------------------------------
+   THREE SURFACES, THREE JOBS.
+
+   There used to be one class, used for the counters, the kill feed, the storm
+   bar, the timer, the notices and the downed card -- so nothing could be
+   louder than anything else, because everything was the same object.
+
+   These differ on FILL, BORDER and GEOMETRY at the same time. One axis of
+   difference is not a system: an earlier cut separated them by 2px of radius
+   and a corner nick and every element still read identically at a glance.
+
+     .panel      recedes    borderless, translucent, rounded
+     .plate      hardware   near-opaque, square, bright edge, bevels on focus
+     .panel-hot  demands    a placard with an inverted cap bar
+--------------------------------------------------------------------------- */
+
+/* RECEDES. No border at all -- that single decision does most of the work. It
+   stops being an object and becomes a scrim behind text. */
 .panel {
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(255, 255, 255, 0.01)),
-    rgba(14, 14, 22, 0.82);
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  border-radius: 0.9rem;
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0) 42%),
+    rgba(8, 9, 14, 0.70);
+  border: 0;
+  border-radius: var(--r-panel);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
 }
+
+/* HARDWARE. Near-opaque, so it OCCLUDES the world rather than tinting it --
+   that is what makes it read as a physical control rather than a readout.
+
+   --edgec drives the border AND both redrawn chamfers, so a component that
+   recolours its edge (a rarity slot, a selected tab) can never end up with a
+   mismatched diagonal. Recolour the variable, never the border.
+
+   The polygon is written HERE and not composed into a variable on :root. A
+   custom property containing var() is substituted where it is DECLARED, so a
+   --clip-plate on :root bakes in :root's --cut and inherits a frozen literal --
+   every per-component override silently does nothing. That shipped once. */
+.plate {
+  --edgec: rgba(255, 255, 255, 0.30);
+  position: relative;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.015) 46%),
+    rgba(12, 14, 22, 0.97);
+  border: 1px solid var(--edgec);
+  border-radius: 0;
+  clip-path: polygon(
+    0 0,
+    calc(100% - var(--cut)) 0,
+    100% var(--cut),
+    100% 100%,
+    var(--cut) 100%,
+    0 calc(100% - var(--cut)));
+  transition: clip-path 200ms var(--ease-out),
+              transform 200ms var(--ease-out),
+              border-color 140ms;
+}
+
+/* THE BEVEL IS THE FOCUS INDICATOR. At rest a plate is perfectly square; on
+   focus the perimeter expands diagonally and the plate grows, so focus reads
+   from shape and size together rather than from colour alone.
+
+   The clip transition may or may not be honoured by CEF -- it is belt and
+   braces. The growth and the diagonals are plain transforms and are never in
+   doubt, so the expansion reads correctly either way. */
+.plate.is-active { --cut: var(--cut-max); }
+
+.plate::after,
+.plate::before {
+  content: '';
+  position: absolute;
+  width: var(--cut-max);
+  height: var(--cut-max);
+  pointer-events: none;
+  transform: scale(0);
+  transition: transform 200ms var(--ease-out);
+  /* clip-path removes the border along both diagonals; without redrawing them
+     each cut corner reads as an unfinished edge. */
+  background: linear-gradient(45deg,
+    transparent calc(50% - 0.6px),
+    var(--edgec) calc(50% - 0.6px),
+    var(--edgec) calc(50% + 0.6px),
+    transparent calc(50% + 0.6px));
+}
+.plate::after  { top: 0; right: 0; transform-origin: top right; }
+.plate::before { bottom: 0; left: 0; transform-origin: bottom left; }
+.plate.is-active::after,
+.plate.is-active::before { transform: scale(1); }
+
+/* DEMANDS. A different ARRANGEMENT, not a recoloured box: a solid cap bar
+   carrying an inverted label, body beneath, and a border that breathes.
+   Nothing else in the interface has a header, so it stays identifiable in
+   peripheral vision and survives colourblind modes -- which a coloured line on
+   one edge does not. */
+.panel-hot {
+  --hot: var(--color-danger);
+  background: rgba(8, 9, 14, 0.94);
+  border: 2px solid var(--hot);
+  border-radius: 3px;
+  overflow: hidden;
+  padding: 0;
+  /* It ARRIVES. An urgent surface that fades in politely is a contradiction,
+     and at the top of the screen a drop reads as something landing on you.
+     The pulse starts after the drop so the two never fight. */
+  animation: hotDrop 420ms var(--ease-snap) both,
+             hotEdge 1.6s ease-in-out 420ms infinite;
+}
+@keyframes hotDrop {
+  0%   { opacity: 0; transform: translateY(-2rem) scale(0.94); }
+  60%  { opacity: 1; transform: translateY(0.18rem) scale(1); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes hotEdge {
+  0%, 100% { border-color: var(--hot); }
+  50%      { border-color: rgba(255, 255, 255, 0.55); }
+}
+.panel-hot > .cap {
+  background: var(--hot);
+  color: #140508;
+  font-family: 'Anton', 'Segoe UI', sans-serif;
+  font-size: 0.7rem;
+  letter-spacing: 0.24em;
+  padding: 0.15rem 0.75rem;
+  text-align: center;
+  line-height: 1.5;
+}
+.panel-hot > .hotbody { padding: 0.65rem 1rem; text-align: center; }
 
 /* The match-result slam: the verdict lands on a transparent screen first,
    huge and fast with a small overshoot on impact; the backdrop and the
@@ -250,6 +411,99 @@ html, body, #root {
   to { opacity: 0; }
 }
 
+/* ---------------------------------------------------------------------------
+   FEEDBACK PRIMITIVES.
+
+   Every state change the player caused gets acknowledged. A number that
+   changes silently did not happen.
+
+   Transform and opacity only, per the rules at the top of the animation block.
+   rarityPop in particular is transform-ONLY on purpose: an earlier cut ramped
+   opacity 0 -> 1, which fades in an element that is already on screen, and
+   that read as the border flashing.
+--------------------------------------------------------------------------- */
+@keyframes punch {
+  0%   { transform: scale(1); }
+  30%  { transform: scale(1.35); }
+  100% { transform: scale(1); }
+}
+@keyframes rarityPop {
+  0%   { transform: scale(0.72); }
+  55%  { transform: scale(1.12); }
+  100% { transform: scale(1); }
+}
+@keyframes bannerIn {
+  0%   { transform: scale(1.35) translateY(0.75rem); opacity: 0; }
+  35%  { transform: scale(1) translateY(0); opacity: 1; }
+  82%  { opacity: 1; }
+  100% { transform: translateY(-0.4rem); opacity: 0; }
+}
+
+/* A counter change is an EVENT, not an update: the number punches and flashes
+   toward the colour that says who caused it -- cyan when it was you, white
+   when the world moved. --flashc is set per element. */
+@keyframes countFlash {
+  0%   { color: #ffffff; }
+  22%  { color: var(--flashc, #ffffff); }
+  100% { color: #ffffff; }
+}
+.counted {
+  animation: punch 420ms var(--ease-out) both,
+             countFlash 700ms ease-out both;
+}
+
+/* The floating delta above a counter. Must be rendered OUTSIDE the clipped
+   plate -- inside, the chamfer slices it off. */
+@keyframes deltaFloat {
+  0%   { opacity: 0; transform: translateY(0.4rem) scale(0.85); }
+  22%  { opacity: 1; transform: translateY(0) scale(1); }
+  70%  { opacity: 1; transform: translateY(-0.5rem); }
+  100% { opacity: 0; transform: translateY(-1.2rem); }
+}
+.count-delta {
+  position: absolute;
+  top: -0.4rem;
+  right: 0.25rem;
+  font-family: 'Anton', 'Segoe UI', sans-serif;
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  text-shadow: var(--shadow-text);
+  animation: deltaFloat 950ms var(--ease-out) both;
+}
+
+/* ---------------------------------------------------------------------------
+   SQUADMATE STATE.
+
+   A mate dying used to be an opacity change, which is the least legible thing
+   a HUD can do -- it reads as a render glitch. It is now a three-beat
+   sequence: the row flashes, the bars DRAIN (slower than a damage move, so it
+   reads as dying rather than as being hit), then OUT stamps in.
+
+   Downed is deliberately a different shape: the colour tag pulses and the
+   health bar goes red. Recoverable and finished must never look alike.
+--------------------------------------------------------------------------- */
+@keyframes mateHit   { 0% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes matePulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+@keyframes stampIn {
+  0%   { opacity: 0; transform: scale(2.4); }
+  55%  { opacity: 1; transform: scale(0.9); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.mate-flash {
+  position: absolute;
+  inset: -3px -7px;
+  border-radius: 4px;
+  pointer-events: none;
+  background: rgba(239, 68, 68, 0.55);
+  border: 1px solid rgba(239, 68, 68, 0.9);
+  animation: mateHit 700ms ease-out both;
+}
+.mate-stamp { animation: stampIn 430ms var(--ease-snap) both; }
+.mate-pulse { animation: matePulse 800ms ease-in-out infinite; }
+/* The drain is slower than .bar-fill's normal move, so a death does not read
+   as a large hit. */
+.mate-drain { transition: transform 620ms ease-in !important; }
+
 /* ~3x the original effect (user call: "purple is good but not strong
    enough") and NO PULSE (second user call, same day): the vignette fades
    in and out over the same 5 seconds the client-side THUNDER weather
@@ -259,21 +513,56 @@ html, body, #root {
   position: fixed;
   inset: 0;
   pointer-events: none;
+  /* Magenta, tracking the storm's new colour. */
   background: radial-gradient(ellipse at center,
-    rgba(147, 51, 234, 0) 22%,
-    rgba(147, 51, 234, 0.38) 62%,
-    rgba(124, 30, 220, 0.88) 100%);
+    rgba(192, 38, 211, 0) 22%,
+    rgba(192, 38, 211, 0.38) 62%,
+    rgba(160, 26, 190, 0.88) 100%);
   transition: opacity 5s ease-in-out;
 }
 
-/* The leave interstitial's spinner -- the loadscreen's ring, HUD-scaled. */
+/* ---------------------------------------------------------------------------
+   LOADING — circular, always. Never a horizontal bar.
+
+   A bar implies a scale, and almost nothing this game waits on has an honest
+   denominator: "streaming the world", "waiting for the server", "finding a
+   match" have no percentage that is not invented. A ring can be indeterminate
+   without lying, and becomes determinate without changing component when a
+   real number does exist.
+
+   Indeterminate is the canonical web spinner: the svg ROTATES (one composited
+   transform, so a loader running for four minutes costs nothing) while the
+   arc's dash grows and shrinks. That second animation is what stops it reading
+   as a dead ring being spun around.
+--------------------------------------------------------------------------- */
+@keyframes ringRotate { 100% { transform: rotate(360deg); } }
+@keyframes ringDash {
+  0%   { stroke-dasharray: 1 var(--circ);   stroke-dashoffset: 0; }
+  50%  { stroke-dasharray: calc(var(--circ) * 0.62) var(--circ);
+         stroke-dashoffset: calc(var(--circ) * -0.16); }
+  100% { stroke-dasharray: calc(var(--circ) * 0.62) var(--circ);
+         stroke-dashoffset: calc(var(--circ) * -0.78); }
+}
+.ring { position: relative; display: inline-flex; align-items: center;
+        justify-content: center; flex: none; }
+.ring svg { display: block; }
+.ring .ring-track { fill: none; stroke: rgba(255, 255, 255, 0.11); }
+.ring .ring-arc   { fill: none; stroke: var(--color-royale-accent);
+                    stroke-linecap: round;
+                    transition: stroke-dashoffset 280ms var(--ease-out); }
+.ring.is-indeterminate svg      { animation: ringRotate 1.9s linear infinite; }
+.ring.is-indeterminate .ring-arc { animation: ringDash 1.5s ease-in-out infinite;
+                                   transition: none; }
+
+/* Kept as an alias so LeaveScreen does not have to change shape in this
+   batch: same ring language, drawn with a border instead of an svg. */
 @keyframes leaveSpin { to { transform: rotate(360deg); } }
 .leave-spinner {
   width: 1.4rem;
   height: 1.4rem;
   border-radius: 50%;
-  border: 0.22rem solid rgba(168, 85, 247, 0.22);
-  border-top-color: #a855f7;
+  border: 0.22rem solid rgba(34, 211, 238, 0.22);
+  border-top-color: var(--color-royale-accent);
   animation: leaveSpin 900ms linear infinite;
 }
 /* The same fly-up the verdict screen's late lines use, but starting almost

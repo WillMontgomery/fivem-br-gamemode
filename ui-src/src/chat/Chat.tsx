@@ -26,10 +26,15 @@ import type { ChatChannel, ChatMessage } from '../bridge/types'
  * cannot intercept clicks.
  */
 
+// ALL was on accent2, which is now VICTORY GOLD -- and gold means victory and
+// nothing else, or it stops meaning anything when it appears. Global chat is
+// not an event, so it takes plain white; squad keeps the squad green; system
+// moves off storm magenta for the same reason gold had to move, and takes a
+// neutral grey because a system line is chrome, not a threat.
 const CHANNEL_STYLE: Record<ChatChannel, { label: string; colour: string }> = {
-  global: { label: 'ALL',    colour: 'var(--color-royale-accent2)' },
+  global: { label: 'ALL',    colour: 'rgba(255,255,255,0.75)' },
   squad:  { label: 'SQUAD',  colour: 'var(--color-hp)' },
-  system: { label: 'SYSTEM', colour: 'var(--color-storm)' },
+  system: { label: 'SYSTEM', colour: 'rgba(160,168,190,0.9)' },
 }
 
 const MAX_LENGTH = 200

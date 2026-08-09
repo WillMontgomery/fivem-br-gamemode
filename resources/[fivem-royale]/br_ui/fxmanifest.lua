@@ -24,6 +24,18 @@ files {
     'ui/index.html',
     'ui/assets/*.js',
     'ui/assets/*.css',
+    -- THE FONTS, and the reason this line is easy to forget: a missing font
+    -- does not error. CEF falls back to Segoe UI, the layout still looks
+    -- plausible, and the whole game silently renders in the operating
+    -- system's UI font while the browser preview looks perfect. Globbed
+    -- rather than named because Vite content-hashes the filenames.
+    --
+    -- Both extensions: Fontsource's @font-face lists woff2 first and woff as
+    -- the fallback. CEF takes the woff2, so the woff is never fetched -- but
+    -- it ships in the build output either way, and half a font pair is
+    -- exactly the sort of thing that only surfaces on some other engine build.
+    'ui/assets/*.woff2',
+    'ui/assets/*.woff',
     -- Item artwork, copied verbatim out of ui-src/public by Vite. Without
     -- this line CEF cannot fetch them and every slot silently falls back to
     -- its drawn icon -- which looks like the artwork "not working" rather

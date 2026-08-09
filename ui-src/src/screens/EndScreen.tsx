@@ -64,16 +64,23 @@ export default function EndScreen({ summary }: { summary: SummaryPayload }) {
         <div className="text-center">
           {summary.won ? (
             <h1
-              className="end-slam text-7xl font-black tracking-tight"
-              style={{ color: 'var(--color-royale-accent)' }}
+              // GOLD, AND GOLD ONLY HERE. The brand is cyan; victory is the one
+              // thing in the game allowed this colour, which is what makes it
+              // mean something when it appears.
+              className="end-slam font-display text-8xl tracking-tight"
+              style={{
+                color: 'var(--color-royale-accent2)',
+                textShadow: '0 0 3rem rgba(250,204,21,0.35)',
+              }}
             >
               VICTORY ROYALE
             </h1>
           ) : (
             <h1
-              className={`end-slam font-black tracking-tight text-white/95 ${
+              className={`end-slam font-display tracking-tight text-white/95 ${
                 slam.length > 12 ? 'text-6xl' : 'text-8xl'
               }`}
+              style={{ textShadow: 'var(--shadow-text)' }}
             >
               {slam}
             </h1>

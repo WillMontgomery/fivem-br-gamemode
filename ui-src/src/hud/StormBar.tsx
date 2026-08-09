@@ -62,36 +62,52 @@ export default function StormBar({ storm }: { storm: StormPayload | null }) {
   // until it stops.
   const label = shrinking ? 'Storm closing now' : 'Storm moving in'
 
-  // TWO STATES, CROSSFADED (user call, 2026-08-04): inside, the label and
-  // countdown; caught outside, a pulsing imperative and NO timer -- when
-  // you are in the storm the number that matters is your health, not the
-  // wall's schedule. The keyed swap restarts the fade both directions.
+  // TWO SURFACES, NOT ONE RESTYLED (user call, 2026-08-04, rebuilt 2026-08-08).
+  //
+  // Safe is a `.panel` and it recedes: a label and a countdown. Caught out is a
+  // `.panel-hot` -- a structurally different object with a cap bar and an
+  // inverted label, which drops in from above rather than fading. Recolouring
+  // one box red is something any element could do; growing a header is
+  // something only the urgent surface does, so it survives peripheral vision
+  // and colourblind modes both.
+  //
+  // The number also changes, because the useful one changes. Inside, it is the
+  // wall's schedule. Caught out, the schedule is irrelevant -- what matters is
+  // how far you have to run.
+  if (hurting) {
+    return (
+      <div className="panel-hot" style={{ minWidth: '13rem' }}>
+        <div className="cap">Get out of the storm</div>
+        <div className="hotbody">
+          <span
+            className="font-display block leading-none tabular-nums"
+            style={{ fontSize: '1.4rem', textShadow: 'var(--shadow-text)' }}
+          >
+            {Math.max(0, Math.round(storm.edgeDistance))}m
+          </span>
+          <span className="text-[0.55rem] font-semibold uppercase tracking-[0.18em] text-white/50">
+            outside the circle
+          </span>
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div className="panel px-4 py-2">
-      {hurting ? (
-        <div
-          key="out"
-          className="stormbar-swap storm-warning text-sm font-black uppercase tracking-[0.18em] leading-none"
-        >
-          Get out of the storm!
-        </div>
-      ) : (
-        <div key="in" className="stormbar-swap flex items-baseline gap-3">
-          <span
-            className="text-[0.625rem] uppercase tracking-[0.18em]"
-            style={{ color: 'rgba(255,255,255,0.45)' }}
-          >
-            {label}
-          </span>
-          <span
-            ref={timeRef}
-            className="text-lg font-bold tabular-nums leading-none"
-            style={{ color: shrinking ? 'var(--color-storm)' : 'white' }}
-          >
-            --
-          </span>
-        </div>
-      )}
+    <div className="panel px-4 py-2 stormbar-swap flex items-baseline gap-3">
+      <span
+        className="text-[0.625rem] font-semibold uppercase tracking-[0.18em]"
+        style={{ color: 'rgba(255,255,255,0.45)' }}
+      >
+        {label}
+      </span>
+      <span
+        ref={timeRef}
+        className="font-display text-lg tabular-nums leading-none"
+        style={{ color: shrinking ? 'var(--color-storm)' : 'white' }}
+      >
+        --
+      </span>
     </div>
   )
 }
