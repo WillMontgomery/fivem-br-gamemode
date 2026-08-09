@@ -55,17 +55,25 @@ function SlotCard({
     <div
       onPointerDown={() => { if (slot) onDragStart(index) }}
       onPointerUp={() => onDrop(index)}
-      className="relative rounded-lg p-3 flex flex-col gap-2 cursor-pointer
-                 transition-colors duration-100"
+      // A CARD IS A PLATE, same as the bar. Square at rest; the held slot
+      // takes .is-active, which cuts its corners open -- so the panel and the
+      // bar say "this one is in your hands" the same way, and a player only
+      // learns the language once.
+      className={`plate relative p-3 flex flex-col gap-2 cursor-pointer${
+        active ? ' is-active' : ''}`}
       style={{
-        backgroundColor: active ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.45)',
-        border: `1px solid ${active ? '#ffffff' : hex}`,
+        ['--edgec' as string]: active ? '#ffffff' : hex,
+        // Lifted off near-black so the dark weapon renders read without a
+        // second panel behind each one.
+        ['--plate-fill' as string]: active
+          ? 'rgba(46,52,70,0.95)' : 'rgba(32,36,50,0.94)',
+        ['--cut-max' as string]: '1rem',
         opacity: dragging === index ? 0.45 : 1,
         minHeight: '11rem',
       }}
     >
       <div className="flex items-baseline justify-between">
-        <span className="text-base font-bold tabular-nums text-white/50">
+        <span className="font-display text-base tabular-nums text-white/50">
           {index}
         </span>
         {slot && (
@@ -81,19 +89,14 @@ function SlotCard({
       {slot ? (
         <>
           <div className="flex-1">
-            {/* A LIGHT PLATE BEHIND THE ARTWORK, not a lighter card.
-                The weapon PNGs are dark grey renders on transparency, so on a
-                near-black card they were barely visible (user, 2026-08-06) --
-                and brightening the whole panel would wash out the white text
-                everything else depends on. A small, low-contrast plate lifts
-                the gun off the background and nothing else changes. */}
+            {/* NO PLATE BEHIND THE ARTWORK. The weapon renders are dark and
+                needed lifting off a near-black card -- now solved by lifting
+                the CARD (--plate-fill), which was always the right layer. A
+                rounded box inside a square card is a box in a box (user,
+                2026-08-08). */}
             <div
-              className="mb-2 rounded-md flex items-center justify-center py-2"
-              style={{
-                color: hex,
-                backgroundColor: 'rgba(226,226,236,0.16)',
-                border: '1px solid rgba(255,255,255,0.10)',
-              }}
+              className="mb-2 flex items-center justify-center py-2"
+              style={{ color: hex }}
             >
               <ItemIcon slot={slot} size="3.4rem" />
             </div>
@@ -206,10 +209,10 @@ export default function InventoryPanel() {
     <div className="fixed inset-0 z-40 flex items-center justify-center pointer-events-none">
       <div
         className="panel pointer-events-auto px-8 py-7 w-[62rem] max-w-[95vw]"
-        style={{ backgroundColor: 'rgba(10,8,20,0.88)' }}
+        style={{ backgroundColor: 'rgba(10,12,20,0.90)' }}
       >
         <div className="flex items-baseline justify-between mb-4">
-          <h2 className="text-2xl font-black uppercase tracking-[0.18em]">
+          <h2 className="font-display text-3xl uppercase tracking-[0.18em]">
             Inventory
           </h2>
           <span className="text-[0.8rem] uppercase tracking-[0.16em] text-white/35">
@@ -237,7 +240,7 @@ export default function InventoryPanel() {
         <div className="mt-4 pt-3 border-t border-white/10 flex gap-5">
           {Object.keys(AMMO_LABEL).map((pool) => (
             <div key={pool} className="text-right">
-              <div className="text-xl font-bold tabular-nums leading-none">
+              <div className="font-display text-xl tabular-nums leading-none">
                 {inv.ammo[pool] ?? 0}
               </div>
               <div className="text-[0.7rem] uppercase tracking-[0.16em] text-white/40 mt-1">

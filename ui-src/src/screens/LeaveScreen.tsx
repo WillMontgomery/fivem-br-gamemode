@@ -12,6 +12,9 @@
  * black away instantly -- the exit is a 600ms fade to the lobby waiting
  * underneath, so the menu appears to fade in from black.
  */
+
+import Ring from '../hud/Ring'
+
 export default function LeaveScreen({ show }: { show: boolean }) {
   return (
     <div
@@ -26,7 +29,10 @@ export default function LeaveScreen({ show }: { show: boolean }) {
         </h1>
       )}
       <div className="flex items-center gap-3">
-        <div className="leave-spinner" />
+        {/* The shared ring, so there is ONE loading indicator in the game rather
+            than a bespoke spinner per screen. Indeterminate: nothing here has an
+            honest percentage -- we are waiting on collision to stream. */}
+        <Ring size={1.6} stroke={0.18} label="Leaving the match" />
         <span className="text-sm uppercase tracking-[0.18em] text-white/40">
           Cleaning up the world…
         </span>

@@ -278,10 +278,15 @@ html, body, #root {
    every per-component override silently does nothing. That shipped once. */
 .plate {
   --edgec: rgba(255, 255, 255, 0.30);
+  /* --plate-fill so a component can lift its own base without every plate in
+     the interface following it. The inventory needs this: the weapon artwork
+     is dark, and dark-on-near-black is a silhouette you have to squint at
+     (user, 2026-08-08). */
+  --plate-fill: rgba(12, 14, 22, 0.97);
   position: relative;
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.10), rgba(255, 255, 255, 0.015) 46%),
-    rgba(12, 14, 22, 0.97);
+    var(--plate-fill);
   border: 1px solid var(--edgec);
   border-radius: 0;
   clip-path: polygon(

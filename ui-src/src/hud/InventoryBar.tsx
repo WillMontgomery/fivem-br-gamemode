@@ -73,6 +73,10 @@ function Slot({
         // No color-mix() and no oklch(): CEF is Chrome 103 and drops what it
         // cannot parse, which makes the slot silently invisible.
         ['--edgec' as string]: active ? '#ffffff' : hex,
+        // Lifted off near-black: the weapon artwork is dark, and dark on
+        // dark is a shape you have to squint at (user, 2026-08-08).
+        ['--plate-fill' as string]: active
+          ? 'rgba(46,52,70,0.95)' : 'rgba(32,36,50,0.94)',
         transform: active ? 'translateY(-0.25rem) scale(1.06)' : undefined,
         zIndex: active ? 1 : 0,
       }}
@@ -94,17 +98,13 @@ function Slot({
             style={{ backgroundColor: hex }}
           />
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-0.5 px-1">
-            {/* Same light plate as the panel: the weapon renders are dark grey
-                on transparency and vanish against a near-black slot. Lifting
-                the artwork rather than the whole slot keeps the white label
-                readable (user, 2026-08-06). */}
-            <div
-              className="rounded px-1.5 py-0.5"
-              style={{
-                color: hex,
-                backgroundColor: 'rgba(226,226,236,0.16)',
-              }}
-            >
+            {/* NO SECOND PANEL BEHIND THE ART. The weapon renders are dark and
+                used to need lifting off a near-black slot -- that is now
+                solved by lifting the SLOT (--plate-fill) instead, which was
+                always the right layer for it. A rounded box inside a square
+                card is a box in a box, and it fought the plate's geometry
+                (user, 2026-08-08). */}
+            <div style={{ color: hex }}>
               <ItemIcon slot={slot} size="2.3rem" />
             </div>
             <span
@@ -178,6 +178,8 @@ export default function InventoryBar({ inv }: { inv: InvPayload }) {
                      flex flex-col items-center justify-center gap-0.5${
                        inv.active === 0 ? ' is-active' : ''}`}
           style={{
+            ['--plate-fill' as string]: inv.active === 0
+              ? 'rgba(46,52,70,0.95)' : 'rgba(32,36,50,0.94)',
             ['--edgec' as string]: inv.active === 0
               ? '#ffffff' : 'rgba(255,255,255,0.18)',
             transform: inv.active === 0
@@ -186,11 +188,7 @@ export default function InventoryBar({ inv }: { inv: InvPayload }) {
           }}
         >
           <div
-            className="rounded px-1.5 py-0.5"
-            style={{
-              color: 'rgba(255,255,255,0.85)',
-              backgroundColor: 'rgba(226,226,236,0.16)',
-            }}
+            style={{ color: 'rgba(255,255,255,0.85)' }}
           >
             <FistIcon size="2.3rem" />
           </div>
