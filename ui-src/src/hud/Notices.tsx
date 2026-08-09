@@ -1,5 +1,6 @@
 import { useUi, selNotices, selScreen } from '../store'
 import type { ToastPayload } from '../bridge/types'
+import NoticeRow from './NoticeRow'
 
 /**
  * The notification stack.
@@ -30,9 +31,6 @@ const TONE_COLOUR: Record<NonNullable<ToastPayload['tone']>, string> = {
   danger:  'var(--color-danger)',
 }
 
-/** How long the fade-out at the end of a notice's life runs. Kept in sync
- *  with the `noticeOut` keyframes duration below in index.css. */
-const FADE_OUT_MS = 450
 
 export default function Notices({ barsVisible = true }: { barsVisible?: boolean }) {
   const notices = useUi(selNotices)
@@ -59,19 +57,7 @@ export default function Notices({ barsVisible = true }: { barsVisible?: boolean 
       style={{ ...pos, pointerEvents: 'none', zIndex: 40 }}
     >
       {[...notices].reverse().map((n) => (
-        <div
-          key={n.id}
-          className="panel px-3.5 py-1.5 text-[0.8125rem] text-white/85
-                     flex items-center gap-2"
-          style={{
-            // .panel has no border any more, so the tone rides a blade on the
-            // leading edge and the radius squares off on that side.
-            borderLeft: `2px solid ${TONE_COLOUR[n.tone ?? 'info']}`,
-            borderRadius: '0 var(--r-panel) var(--r-panel) 0',
-            animation: `noticeIn 220ms cubic-bezier(0.2, 0.9, 0.3, 1) both, `
-                     + `noticeOut ${FADE_OUT_MS}ms ease-in ${Math.max(0, n.ms - FADE_OUT_MS)}ms both`,
-          }}
-        >
+        <NoticeRow key={n.id} tone={TONE_COLOUR[n.tone ?? 'info']} lifeMs={n.ms}>
           <span>{n.text}</span>
           {/* COALESCED REPEATS. Four ammo pickups is one line reading x4, not
               four lines shoving each other off the stack. */}
@@ -79,12 +65,15 @@ export default function Notices({ barsVisible = true }: { barsVisible?: boolean 
             <span
               key={n.count}
               className="font-display text-[0.85rem] leading-none"
-              style={{ color: TONE_COLOUR[n.tone ?? 'info'], animation: 'punch 320ms var(--ease-out) both' }}
+              style={{
+                color: TONE_COLOUR[n.tone ?? 'info'],
+                animation: 'punch 320ms var(--ease-out) both',
+              }}
             >
               &times;{n.count}
             </span>
           )}
-        </div>
+        </NoticeRow>
       ))}
     </div>
   )

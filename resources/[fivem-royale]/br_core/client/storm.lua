@@ -457,10 +457,20 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
         dirBlip = nil
     end
 
-    -- The HUD envelope, at ~4Hz. The countdown is NOT ticked here -- endsAt
-    -- is a server timestamp and the UI derives the digits locally, same as
-    -- the warmup timer.
-    if gt - lastPush >= 250 then
+    -- The HUD envelope. The countdown is NOT ticked here -- endsAt is a server
+    -- timestamp and the UI derives the digits locally, same as the warmup
+    -- timer -- so 4Hz is plenty for everything except one field.
+    --
+    -- EXCEPT WHEN YOU ARE OUTSIDE. Then the readout is a DISTANCE, and a
+    -- distance that updates four times a second while you sprint at 7 m/s
+    -- jumps almost two metres a frame and reads as broken (user, 2026-08-08).
+    -- Outside the circle this runs at the full tick rate; the loop is 10Hz, so
+    -- that is the ceiling without moving this to the frame band, and the
+    -- envelope is small.
+    --
+    -- Inside, nothing here changes fast enough to be worth the traffic.
+    local pushEvery = (edge > 0) and 100 or 250
+    if gt - lastPush >= pushEvery then
         lastPush = gt
         local endsAt = 0
         if st == BR.StormPhase.PRE or st == BR.StormPhase.HOLDING then

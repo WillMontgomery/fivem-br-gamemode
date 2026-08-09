@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNuiEvent } from '../bridge/useNuiEvent'
+import { play } from '../audio/cues'
 
 
 /**
@@ -18,8 +19,10 @@ import { useNuiEvent } from '../bridge/useNuiEvent'
  * reads; putting them in zustand would re-render every subscriber on every
  * bullet. The component owns them and the HUD never knows.
  *
- * The audio for both fires from Lua (BR.Sfx, throttled at 60ms) -- engine audio
- * ducks against gunfire and a browser tag does not.
+ * SPLIT AUDIO, deliberately. The per-bullet MARKER is a native cue fired from
+ * Lua (BR.Sfx, throttled at 60ms) because it fires during shooting and has to
+ * duck. The elimination is ours, synthesised here: it fires once per kill and
+ * being bespoke matters more than being mixed.
  */
 
 /** How long a marker lives. Short: it fires hundreds of times a match. */
@@ -46,6 +49,9 @@ export default function HitFeedback() {
     // The KILL_FEED sender carries a name and only a name -- that is the
     // banner. The DAMAGE_FEED sender carries the numbers and drives the marker.
     if (d.name) {
+      // Ours, not the engine's: this is a reward moment, and
+      // CHALLENGE_UNLOCKED is unmistakably a GTA Online sound.
+      play('elim')
       setBanner({ id, name: d.name })
       window.clearTimeout(bannerTimer.current)
       bannerTimer.current = window.setTimeout(() => setBanner(null), BANNER_MS)

@@ -1,4 +1,5 @@
 import Btn from '../ui/Btn'
+import { play } from '../audio/cues'
 import Ring from '../hud/Ring'
 import { useEffect, useRef, useState } from 'react'
 import { useUi, selMatch, selLobby, selSquad } from '../store'
@@ -211,10 +212,10 @@ export default function Lobby({ visible }: { visible: boolean }) {
                 key={m.id}
                 type="button"
                 disabled={searching}
-                onPointerEnter={() => { if (!searching) void fetchNui(CB.SFX, { cue: 'ui.hover' }) }}
+                onPointerEnter={() => { if (!searching) play('ui.hover') }}
                 onClick={() => {
-                  if (searching) { void fetchNui(CB.SFX, { cue: 'ui.error' }); return }
-                  void fetchNui(CB.SFX, { cue: 'ui.select' })
+                  if (searching) { play('ui.error'); return }
+                  play('ui.select')
                   pickMode(m.id)
                 }}
                 className={`plate btn flex-1 text-left px-4 py-3.5${
@@ -238,10 +239,19 @@ export default function Lobby({ visible }: { visible: boolean }) {
           </div>
         </div>
 
-        {/* Parties persist between matches, so this is always relevant -- not
-            only while queueing. It knows the mode because a party has no
-            meaning in solo. */}
-        <div className="mt-6">
+        {/* A FIXED SHELF, NOT A GROWING ONE.
+            Switching Solo to Squads adds the party controls, and letting the
+            column grow around them shoved the wordmark up and the button down
+            every time the player changed their mind (user, 2026-08-08). The
+            space is reserved whether or not anything is in it, so the two
+            tiles and READY UP never move -- only the contents of this box
+            change. Solo simply leaves it empty.
+
+            min-height rather than height: the party panel grows with the
+            number of invitable players, and clipping that list to keep the
+            layout still would be fixing the wrong thing. It is stable across
+            the mode switch, which is the case that was jarring. */}
+        <div className="mt-6 min-h-[13rem]">
           <PartyPanel disabled={searching} mode={mode} />
         </div>
 

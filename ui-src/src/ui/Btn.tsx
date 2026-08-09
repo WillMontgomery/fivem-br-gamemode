@@ -1,6 +1,6 @@
-import { fetchNui } from '../bridge/nui'
-import { CB } from '../bridge/types'
 import type { ReactNode } from 'react'
+import { play } from '../audio/cues'
+import type { Cue } from '../audio/cues'
 
 /**
  * The button.
@@ -20,9 +20,10 @@ import type { ReactNode } from 'react'
  *   * it makes a sound, through Lua's cue table. Hover and press are different
  *     cues, because a menu that only speaks on click feels dead between clicks.
  *
- * The audio goes out through the SFX callback rather than an <audio> tag: Lua
- * owns the cue table and the throttle, so the UI never learns a sound-set name
- * and a wrong one is fixed in a single place.
+ * THE AUDIO IS OURS, synthesised in the browser -- not a GTA frontend sound.
+ * The engine's menu sounds are instantly recognisable as GTA Online's menus,
+ * which is the one association a standalone mode should not be making. Native
+ * audio is kept for per-bullet combat cues only, where engine ducking matters.
  */
 
 type Variant = 'primary' | 'default' | 'ghost' | 'danger'
@@ -44,7 +45,7 @@ export default function Btn({
   active = false,
   disabled = false,
   full = false,
-  cue = 'ui.select',
+  cue = 'ui.select' as Cue,
   title,
 }: {
   children: ReactNode
@@ -56,7 +57,7 @@ export default function Btn({
   disabled?: boolean
   full?: boolean
   /** Which cue fires on press. Ready-up gets its own; back gets ui.back. */
-  cue?: string
+  cue?: Cue
   title?: string
 }) {
   const v = VARIANT[variant]
@@ -68,17 +69,17 @@ export default function Btn({
     xl: 'px-8 py-5 text-[1.6rem]',
   }[size]
 
-  const sfx = (c: string) => { void fetchNui(CB.SFX, { cue: c }) }
+
 
   return (
     <button
       type="button"
       title={title}
       disabled={disabled}
-      onPointerEnter={() => { if (!disabled) sfx('ui.hover') }}
+      onPointerEnter={() => { if (!disabled) play('ui.hover') }}
       onClick={() => {
-        if (disabled) { sfx('ui.error'); return }
-        sfx(cue)
+        if (disabled) { play('ui.error'); return }
+        play(cue)
         onPress?.()
       }}
       // .plate carries the shape and the bevel-on-active; `btn` carries the

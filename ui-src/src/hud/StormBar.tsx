@@ -74,40 +74,55 @@ export default function StormBar({ storm }: { storm: StormPayload | null }) {
   // The number also changes, because the useful one changes. Inside, it is the
   // wall's schedule. Caught out, the schedule is irrelevant -- what matters is
   // how far you have to run.
-  if (hurting) {
-    return (
-      <div className="panel-hot" style={{ minWidth: '13rem' }}>
-        <div className="cap">Get out of the storm</div>
-        <div className="hotbody">
+  // ONE SURFACE, TWO STATES (user, 2026-08-08: "we should be using that for
+  // storm moving in too"). The placard was only appearing when caught out,
+  // which meant the readout a player looks at for the whole match was a plain
+  // panel and the good one was reserved for the rare case.
+  //
+  // What changes between them is the CAP COLOUR and the NUMBER -- red and your
+  // distance when you are in it, storm magenta and the wall's schedule when
+  // you are not. The arrangement is the same, so the swap reads as the same
+  // object changing its mind rather than as two different widgets.
+  //
+  // `--hot` drives the cap fill and the border together; the drop-in animation
+  // is keyed off the state so it replays on the swap and only on the swap.
+  return (
+    <div
+      key={hurting ? 'out' : 'in'}
+      className="panel-hot"
+      style={{
+        minWidth: '13rem',
+        ['--hot' as string]: hurting
+          ? 'var(--color-danger)'
+          : shrinking ? 'var(--color-storm)' : 'rgba(120,132,160,0.85)',
+      }}
+    >
+      <div className="cap">{hurting ? 'Get out of the storm' : label}</div>
+      <div className="hotbody">
+        {hurting ? (
+          <>
+            {/* The wall's schedule is useless when you are already in it. The
+                number that matters is how far you have to run. */}
+            <span
+              className="font-display block leading-none tabular-nums"
+              style={{ fontSize: '1.4rem', textShadow: 'var(--shadow-text)' }}
+            >
+              {Math.max(0, Math.round(storm.edgeDistance))}m
+            </span>
+            <span className="text-[0.55rem] font-semibold uppercase tracking-[0.18em] text-white/50">
+              outside the circle
+            </span>
+          </>
+        ) : (
           <span
+            ref={timeRef}
             className="font-display block leading-none tabular-nums"
             style={{ fontSize: '1.4rem', textShadow: 'var(--shadow-text)' }}
           >
-            {Math.max(0, Math.round(storm.edgeDistance))}m
+            --
           </span>
-          <span className="text-[0.55rem] font-semibold uppercase tracking-[0.18em] text-white/50">
-            outside the circle
-          </span>
-        </div>
+        )}
       </div>
-    )
-  }
-
-  return (
-    <div className="panel px-4 py-2 stormbar-swap flex items-baseline gap-3">
-      <span
-        className="text-[0.625rem] font-semibold uppercase tracking-[0.18em]"
-        style={{ color: 'rgba(255,255,255,0.45)' }}
-      >
-        {label}
-      </span>
-      <span
-        ref={timeRef}
-        className="font-display text-lg tabular-nums leading-none"
-        style={{ color: shrinking ? 'var(--color-storm)' : 'white' }}
-      >
-        --
-      </span>
     </div>
   )
 }

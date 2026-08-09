@@ -342,9 +342,10 @@ local function adopt(d)
 
     -- The switch click. Only on an actual change, and only on OUR screen --
     -- PlaySoundFrontend is local by definition.
-    -- Through BR.Sfx so every interface cue shares one table and one throttle.
-    if inv.active ~= wasActive then
-        BR.Sfx.play('ui.select')
+    -- The switch click stays the engine's: it fires mid-fight and wants the
+    -- same ducking the pickup does.
+    if inv.active ~= wasActive and L.switchSound then
+        PlaySoundFrontend(-1, L.switchSound.name, L.switchSound.set, true)
     end
 
     applyActive(false)
@@ -366,17 +367,14 @@ local function adopt(d)
         -- anything" is the difference between helping and nagging.
         BR.Inv.lastGainAt = GetGameTimer()
 
-        -- THE PICKUP CUE CARRIES RARITY. One flat sound for everything from a
-        -- box of shells to a Legendary rifle throws away the most useful thing
-        -- audio can do here: tell you what you got without making you look.
-        -- The rarity is taken from the best NEW thing in the inventory, so a
-        -- handful of ammo picked up alongside a gold gun still sounds gold.
-        local best = 0
-        for i = 1, SLOTS do
-            local s = inv.slots[i]
-            if type(s) == 'table' and (s.rarity or 0) > best then best = s.rarity end
+        -- BACK TO GTA'S OWN PICK_UP (user, 2026-08-08). The rarity-tiered
+        -- version replaced a sound that was already right: a pickup is a world
+        -- event, it fires while shooting, and the engine cue ducks correctly
+        -- against gunfire. Rarity is carried by the slot's colour and its
+        -- rarityPop, which is where it belongs.
+        if L.pickupSound then
+            PlaySoundFrontend(-1, L.pickupSound.name, L.pickupSound.set, true)
         end
-        BR.Sfx.play(BR.Config.LootCue(best))
     end
 end
 

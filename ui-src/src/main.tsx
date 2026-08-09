@@ -53,6 +53,23 @@ if (!root) {
 // rather than merely unstyled.
 document.documentElement.classList.add('dark')
 
+// AUDITIONING OUR OWN CUES.
+//
+// /brsfx in Lua can only play the native combat cues -- everything else is
+// synthesised in the browser and Lua cannot reach it. Exposed on window so the
+// palette can be heard from the F8 console with:
+//
+//     brcues()            play every cue, 700ms apart
+//     brcues('ui.back')   play one
+void import('./audio/cues').then((a) => {
+  ;(window as unknown as { brcues: (c?: string) => void }).brcues = (c) => {
+    if (c) { a.play(c as never); return }
+    a.CUE_NAMES.forEach((name, i) => {
+      setTimeout(() => { console.log('cue:', name); a.play(name) }, i * 700)
+    })
+  }
+})
+
 createRoot(root).render(
   <StrictMode>
     <HeroUIProvider>

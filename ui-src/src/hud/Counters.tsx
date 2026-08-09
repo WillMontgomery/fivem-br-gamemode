@@ -101,7 +101,16 @@ export default function Counters({
       <Counter
         value={alive}
         label="Alive"
-        sub={mode === 'squad' ? `${squads} squads` : undefined}
+        // NOT GATED ON `mode` ALONE. It read "1 squads" in a solo match (user,
+        // 2026-08-08) -- whatever the match reported, the mode string was not
+        // what this assumed. So the test is now about the NUMBER, which cannot
+        // lie: a squad count only tells you something when there is more than
+        // one of them AND it differs from the alive count. In solo those are
+        // equal, so it disappears on its own with no mode check at all.
+        // Pluralised too, because "1 squads" was wrong even when it was right.
+        sub={mode === 'squad' && squads > 1 && squads !== alive
+          ? `${squads} squads`
+          : undefined}
         // White: the world moved. Someone died and it was not your doing.
         colour="#ffffff"
         big

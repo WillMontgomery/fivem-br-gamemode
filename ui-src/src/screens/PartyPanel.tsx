@@ -1,4 +1,5 @@
-import { Button, Chip } from '@heroui/react'
+import Btn from '../ui/Btn'
+import { play } from '../audio/cues'
 import { useEffect, useState } from 'react'
 import { useUi, selSquad, selLobby } from '../store'
 import { fetchNui } from '../bridge/nui'
@@ -108,7 +109,9 @@ export default function PartyPanel({
       {/* An incoming invite outranks everything else here: it expires, so it
           must not be something you have to go looking for. */}
       {invite && (
-        <div className="rise flex items-center gap-2 rounded-lg border border-white/20 px-3 py-2">
+        <div className="rise plate flex items-center gap-2 px-3 py-2"
+             style={{ ['--edgec' as string]: 'var(--color-royale-accent)',
+                      ['--plate-fill' as string]: 'rgba(10,44,56,0.94)' }}>
           <span className="flex-1 text-xl">
             <span className="font-semibold">{invite.name}</span>
             <span className="text-white/60">
@@ -118,8 +121,8 @@ export default function PartyPanel({
 {' '}({invite.size}/{invite.max})
             </span>
           </span>
-          <Button size="sm" color="primary" onPress={() => respond(true)}>Accept</Button>
-          <Button size="sm" variant="bordered" onPress={() => respond(false)}>Decline</Button>
+          <Btn size="sm" variant="primary" onPress={() => respond(true)}>Accept</Btn>
+          <Btn size="sm" variant="ghost" cue="ui.back" onPress={() => respond(false)}>Decline</Btn>
         </div>
       )}
 
@@ -137,12 +140,13 @@ export default function PartyPanel({
             const someoneReady = squad.members.some((x) => readyIds.has(x.src))
             const ready = readyIds.has(m.src)
             return (
-              <Chip
+              <span
                 key={m.src}
-                size="sm"
-                variant="bordered"
-                className={someoneReady && !ready ? 'opacity-55' : undefined}
-                style={{ borderColor: m.colour }}
+                className={`plate px-2.5 py-1 text-[0.72rem] font-semibold
+                  flex items-center gap-1.5 ${someoneReady && !ready ? 'opacity-55' : ''}`}
+                style={{ ['--edgec' as string]: m.colour,
+                         ['--plate-fill' as string]: 'rgba(26,30,42,0.94)',
+                         ['--cut-max' as string]: '0.4rem' }}
                 title={
                   someoneReady
                     ? ready ? 'Readied up' : 'Not readied up yet'
@@ -158,7 +162,7 @@ export default function PartyPanel({
                     {ready ? '✓' : '…'}
                   </span>
                 )}
-              </Chip>
+              </span>
             )
           })}
 
@@ -168,33 +172,38 @@ export default function PartyPanel({
               resolves into a member, a decline notice, or an expiry notice,
               so the animation always has an ending. */}
           {(squad.pending ?? []).map((p) => (
-            <Chip
+            <span
               key={`pending-${p.src}`}
-              size="sm"
-              variant="bordered"
-              className="border-dashed opacity-70 animate-pulse"
+              className="plate px-2.5 py-1 text-[0.72rem] font-semibold opacity-60 animate-pulse"
+              style={{
+                ['--edgec' as string]: 'rgba(255,255,255,0.25)',
+                ['--plate-fill' as string]: 'rgba(20,24,34,0.9)',
+                ['--cut-max' as string]: '0.4rem',
+              }}
               title={`Waiting for ${p.name} to answer`}
             >
               {p.name} &hellip;
-            </Chip>
+            </span>
           ))}
         </div>
       ) : (
         <>
-          {/* Not in a party yet: pick HOW to get one. */}
+          {/* Not in a party yet: pick HOW to get one. Three plates in a row,
+              the selected one bevelled -- the same "this is the chosen one"
+              language the mode tiles and the inventory use. */}
           <div className="flex gap-1.5">
             {(['create', 'join', 'random'] as const).map((sm) => (
-              <Button
+              <Btn
                 key={sm}
-                size="md"
-                color={subMode === sm ? 'primary' : 'default'}
-                variant={subMode === sm ? 'solid' : 'bordered'}
-                isDisabled={disabled}
+                size="sm"
+                variant={subMode === sm ? 'primary' : 'default'}
+                active={subMode === sm}
+                disabled={disabled}
+                full
                 onPress={() => setSubMode(sm)}
-                className="flex-1 capitalize"
               >
                 {sm}
-              </Button>
+              </Btn>
             ))}
           </div>
 
@@ -216,8 +225,11 @@ export default function PartyPanel({
                       key={p.src}
                       type="button"
                       onClick={() => void askToJoin(p.src)}
-                      className="rounded-full border border-white/15 px-2.5 py-1 text-[1.0625rem]
-                                 text-white/70 hover:border-white/35 transition-colors"
+                      className="plate btn px-2.5 py-1 text-[0.78rem] font-semibold"
+                      style={{ ['--edgec' as string]: 'rgba(255,255,255,0.22)',
+                               ['--plate-fill' as string]: 'rgba(26,30,42,0.94)',
+                               ['--cut-max' as string]: '0.4rem' }}
+                      onPointerEnter={() => play('ui.hover')}
                       title={`Ask to join ${p.name}'s squad`}
                     >
                       ★ {p.name}
@@ -252,12 +264,13 @@ export default function PartyPanel({
                   key={p.src}
                   type="button"
                   onClick={() => toggle(p.src)}
-                  className={
-                    'rounded-full border px-2.5 py-1 text-[1.0625rem] transition-colors ' +
-                    (on
-                      ? 'border-primary bg-primary/25 text-white'
-                      : 'border-white/15 text-white/70 hover:border-white/35')
-                  }
+                  className={`plate btn px-2.5 py-1 text-[0.78rem] font-semibold${on ? ' is-active' : ''}`}
+                  style={{
+                    ['--edgec' as string]: on ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.22)',
+                    ['--plate-fill' as string]: on ? 'rgba(10,44,56,0.94)' : 'rgba(26,30,42,0.94)',
+                    ['--cut-max' as string]: '0.4rem',
+                  }}
+                  onPointerEnter={() => play('ui.hover')}
                 >
                   {on ? '✓ ' : ''}{p.name}
                   {p.queued && <span className="text-white/35 text-[0.625rem]"> · queued</span>}
@@ -266,25 +279,27 @@ export default function PartyPanel({
             })}
           </div>
 
-          <Button
+          <Btn
             size="sm"
-            variant="bordered"
-            isDisabled={selected.size === 0}
+            variant={selected.size === 0 ? 'default' : 'primary'}
+            disabled={selected.size === 0}
+            full
             onPress={inviteSelected}
           >
             {selected.size === 0
               ? 'Select players to invite'
               : `Invite ${selected.size} player${selected.size === 1 ? '' : 's'}`}
-          </Button>
+          </Btn>
         </div>
       )}
 
       {/* Leaving must be obvious and always available. A party you cannot get
           out of is worse than no party system. */}
       {mode === 'squad' && inParty && (
-        <Button size="md" variant="bordered" onPress={() => fetchNui(CB.SQUAD_LEAVE, {})}>
+        <Btn size="sm" variant="danger" cue="ui.back" full
+             onPress={() => fetchNui(CB.SQUAD_LEAVE, {})}>
           Leave party
-        </Button>
+        </Btn>
       )}
 
     </div>
