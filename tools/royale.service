@@ -1,0 +1,69 @@
+# FiveM Royale -- systemd unit.
+#
+#   sudo cp tools/royale.service /etc/systemd/system/royale.service
+#   sudo nano /etc/systemd/system/royale.service     # set User= and the paths
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now royale
+#
+# WHAT THIS FIXES. Until now the server was started by running a script in an
+# interactive SSH session, which means it dies when that terminal dies and does
+# not come back after a reboot. Under systemd it survives both, restarts itself
+# if it crashes, and its output goes somewhere durable instead of scrollback.
+#
+# THE SEGFAULT CAVEAT, READ THIS BEFORE ASSUMING THE UNIT IS BROKEN. Recent
+# FXServer Linux artifacts are widely reported to crash when systemd launches
+# them DIRECTLY. That is why this unit goes through `bash -c` rather than
+# naming run.sh as ExecStart -- the shell wrapper is the documented workaround.
+# If it still segfaults on this host, use tools/royale-tmux.service instead;
+# it is the same idea with a terminal multiplexer in between, which is the
+# environment the artifacts are known to be happy in.
+
+[Unit]
+Description=FiveM Royale (FXServer)
+Documentation=https://github.com/WillMontgomery/fivem-br-gamemode
+After=network-online.target
+Wants=network-online.target
+
+# MariaDB is optional -- br_stats disables itself cleanly without it -- so this
+# is Wants, not Requires. A database that fails to start must not stop the game.
+Wants=mariadb.service
+After=mariadb.service
+
+[Service]
+Type=simple
+
+# CHANGE THIS to whoever owns /opt/fivem-server-classic. Check with `whoami`.
+# Running the game server as root is a needless risk: it is the process most
+# exposed to the public internet on this box.
+User=ubuntu
+Group=ubuntu
+
+WorkingDirectory=/opt/fivem-server-classic
+
+# `exec` so bash replaces itself with FXServer rather than lingering as a
+# parent systemd would have to signal through -- that way systemd's stop and
+# restart reach the real process.
+ExecStart=/bin/bash -c 'exec ./run.sh +exec server.cfg'
+
+Restart=always
+RestartSec=10
+
+# Do not give up. The default is 5 restarts in 10s before systemd marks the
+# unit failed and stops trying, which is exactly the wrong behaviour for a game
+# server that crash-loops at 3am -- it would stay down until someone noticed.
+StartLimitIntervalSec=0
+
+# FXServer holds a socket per player plus its own file handles. The default
+# 1024 is comfortable at 48 players and not at the 2048 this is heading for.
+LimitNOFILE=65536
+
+# Stopping: FXServer handles SIGTERM and needs a moment to close out cleanly.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=royale
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,75 @@
+# FiveM Royale -- systemd unit, tmux variant. THE FALLBACK.
+#
+# Use tools/royale.service first. Come here only if FXServer segfaults on
+# startup under that one, which recent Linux artifacts are reported to do when
+# systemd launches them directly.
+#
+#   sudo apt install -y tmux
+#   sudo cp tools/royale-tmux.service /etc/systemd/system/royale.service
+#   sudo nano /etc/systemd/system/royale.service     # set User= and the paths
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now royale
+#
+# tmux is a terminal multiplexer: it keeps a terminal session alive with no
+# human attached to it. FXServer is known to be happy inside one, which is what
+# this unit buys and the only reason it exists.
+#
+# TWO THINGS IT GIVES UP, both worth knowing before choosing it:
+#
+#   1. Weaker supervision. systemd starts the tmux session and then loses sight
+#      of the game server inside it, so `Restart=always` cannot see a crash --
+#      only a `systemctl stop`. ExecStartPost below narrows that a little by
+#      failing fast if the session never came up, but a mid-life crash leaves
+#      the unit "active" with nothing running. Prefer royale.service if it works.
+#
+#   2. The journal gets nothing. Output lives in tmux's scrollback and vanishes
+#      with the session, which is exactly the problem M9's "log to disk" item
+#      (9e) exists to solve.
+#
+# ONE THING IT GAINS, and it is not nothing: `tmux send-keys` becomes a way to
+# type into FXServer's console from outside. That is the cheap version of the
+# command channel Slice 2 needs -- fire-and-forget, no exit code, no output
+# capture, but it works and it is available the moment this unit is running.
+# If you end up here, say so: it changes what Slice 2 has to build.
+
+[Unit]
+Description=FiveM Royale (FXServer, under tmux)
+Documentation=https://github.com/WillMontgomery/fivem-br-gamemode
+After=network-online.target
+Wants=network-online.target
+Wants=mariadb.service
+After=mariadb.service
+
+[Service]
+Type=forking
+
+# CHANGE THIS to whoever owns /opt/fivem-server-classic. Check with `whoami`.
+User=ubuntu
+Group=ubuntu
+
+WorkingDirectory=/opt/fivem-server-classic
+
+# -d detaches immediately, which is what makes Type=forking correct here.
+# The session name `royale` is what `tmux attach -t royale` and any future
+# `tmux send-keys -t royale` will use -- do not rename it casually.
+ExecStart=/usr/bin/tmux new-session -d -s royale './run.sh +exec server.cfg'
+
+# Fail the unit if the session is not actually there a moment later, rather
+# than reporting success for a server that died on startup.
+ExecStartPost=/bin/sh -c 'sleep 5; /usr/bin/tmux has-session -t royale'
+
+ExecStop=/usr/bin/tmux kill-session -t royale
+
+Restart=always
+RestartSec=10
+StartLimitIntervalSec=0
+LimitNOFILE=65536
+
+# tmux owns the game server, not systemd's cgroup bookkeeping. Killing the
+# cgroup out from under it would take the session down without the clean
+# shutdown ExecStop is there to give.
+KillMode=none
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

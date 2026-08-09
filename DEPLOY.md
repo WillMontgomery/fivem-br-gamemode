@@ -8,8 +8,11 @@ Target: **Legacy FiveM** (standard FXServer Linux artifacts) on Ubuntu.
 
 ```bash
 sudo apt update
-sudo apt install -y curl xz-utils tmux mariadb-server
+sudo apt install -y curl xz-utils rsync mariadb-server
 ```
+
+`tmux` is deliberately not in that list any more — the server runs under
+systemd (see below), and tmux is only needed for the fallback unit.
 
 ### FXServer artifacts
 
@@ -29,15 +32,54 @@ tar xf fx.tar.xz && rm fx.tar.xz
 > artifact is broken. **Test this before writing any gameplay code** — it is a
 > cheap check that becomes expensive to discover later.
 
-> **Run under tmux, not directly under systemd.** Recent Linux artifacts have a
-> known segfault when launched directly by systemd. Either use `tmux`, or write a
-> unit that launches through a shell wrapper.
+### Running the server
+
+**Run it under systemd, using the unit in `tools/`.** Not from an interactive
+SSH session: a server started by hand in a terminal dies when that terminal
+does, and does not come back after a reboot. That was how this server actually
+ran until 2026-08-09, and it is the reason the unit exists.
 
 ```bash
-tmux new -s royale
-cd ~/fxserver && ./run.sh +exec server.cfg
-# detach with ctrl-b then d
+sudo cp tools/royale.service /etc/systemd/system/royale.service
+sudo nano /etc/systemd/system/royale.service   # set User= and the paths
+sudo systemctl daemon-reload
+sudo systemctl enable --now royale
 ```
+
+Then:
+
+```bash
+systemctl status royale        # is it up
+journalctl -u royale -f        # the console output, live
+sudo systemctl restart royale  # bounce it
+```
+
+> **The segfault caveat.** Recent Linux artifacts are widely reported to crash
+> when systemd launches them **directly**. `tools/royale.service` goes through
+> `bash -c` for exactly that reason — the shell wrapper is the documented
+> workaround. If it still segfaults on your host, swap in
+> `tools/royale-tmux.service`, which runs the same thing inside a `tmux`
+> session (`sudo apt install -y tmux` first). That variant supervises the
+> process less well and puts nothing in the journal, so it is the fallback
+> rather than the default — but it also makes `tmux send-keys` available, which
+> is a cheap version of the admin command channel M9 needs.
+
+**Deploying is a separate step from running**, and keeping them separate is
+deliberate: a `systemctl restart` should relaunch what is already on disk, not
+silently pull new code. Sync with `tools/deploy.sh`, then restart:
+
+```bash
+./tools/deploy.sh && sudo systemctl restart royale
+```
+
+> **If you are still using a hand-written `pull-and-start.sh`**, `tools/deploy.sh`
+> replaces it and fixes three things. `sudo git pull` has no `set -e` and no
+> non-interactive handling, so a diverged clone hangs or half-completes and the
+> copy afterwards runs anyway. `cp -r` never deletes a file that was removed
+> upstream, unlike `rsync --delete`. And an unquoted `[fivem-royale]` is a bash
+> **glob** — a character class matching one character from `f,i,v,e,m-r,y,a,l`
+> — which works today only because `resources/` happens to contain no
+> single-character entry for it to match.
 
 ---
 
