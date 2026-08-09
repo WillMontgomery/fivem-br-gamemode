@@ -255,26 +255,49 @@ BR.Loop.register(BR.Loop.FRAME, 'squadmates.noff', function()
     lastHp, lastArmour = prevHp, prevArmour
 end)
 
--- Shared-lobby hygiene. The lobby is ONE routing bucket now, so other lobby
--- players' peds can stream in -- every one of them frozen, invisible-on-
--- their-own-client, at the exact vista point the camera occupies. Their own
--- client's invisibility does not reliably replicate, so this client hides
--- them locally, and un-hides anyone who has moved on to a match state.
-local hiddenLobbyPeds = {}
-BR.Loop.register(BR.Loop.TICK, 'squadmates.lobbyhide', function()
+-- IN THE LOBBY YOU SEE EXACTLY ONE PERSON: YOURSELF.
+--
+-- The lobby is one shared routing bucket standing on one mark, so every other
+-- lobby player's ped streams in on top of yours. Three attempts to hide them
+-- failed, and the reason each failed is worth writing down, because they are
+-- all the same mistake in different clothes:
+--
+--   1. The OWNER hides itself with SetEntityVisible. Visibility is a
+--      NETWORKED property, so it also hides them from themselves -- and the
+--      lobby is now a character shot, so that is the one thing we cannot do.
+--   2. Each client hides the OTHERS with SetEntityVisible, at 10Hz. Also a
+--      networked write, and the owner asserts its own visibility every FRAME
+--      -- so the owner wins 6 times out of 7 and everyone flickers or simply
+--      stays visible.
+--   3. The owner calls _NETWORK_SET_ENTITY_INVISIBLE_TO_NETWORK on itself.
+--      The native that describes exactly what we want, and widely reported
+--      not to work under OneSync (cfx forum, 2024-2025). It did not.
+--
+-- SET_ENTITY_LOCALLY_INVISIBLE is the one that cannot lose, and the reason is
+-- in its own documentation: "sets the provided entity not visible FOR
+-- YOURSELF for the CURRENT FRAME". It is not a property at all -- there is
+-- nothing for the owner to overwrite and nothing to replicate. It just has to
+-- be re-asserted every frame, which is why every previous attempt on a TICK
+-- loop was structurally unable to work.
+--
+-- FRAME, and gated on MY OWN STATE rather than on each other player's. If I
+-- am in the lobby then everyone in my scope is in the lobby with me -- a
+-- player in a match is in a different routing bucket and cannot be near me --
+-- so "hide everyone else" is both simpler and more robust than consulting a
+-- roster mirror that may be a beat behind. Outside the lobby the loop does
+-- nothing but read one state field.
+--
+-- No bookkeeping and nothing to un-hide: the flag lasts one frame, so the
+-- moment this stops calling, they are visible again.
+BR.Loop.register(BR.Loop.FRAME, 'squadmates.lobbyhide', function()
+    if BR.State.me.state ~= BR.PlayerState.LOBBY then return end
+
+    local me = PlayerId()
     for _, player in ipairs(GetActivePlayers()) do -- scope-ok: presentation-only hiding of co-located lobby peds
-        if player ~= PlayerId() then
-            local srv = GetPlayerServerId(player)
+        if player ~= me then
             local ped = GetPlayerPed(player) -- scope-ok: same presentation-only use
             if ped and ped ~= 0 then
-                local e = BR.State.roster[srv]
-                if e and e.state == BR.PlayerState.LOBBY then
-                    SetEntityVisible(ped, false, false)
-                    hiddenLobbyPeds[ped] = true
-                elseif hiddenLobbyPeds[ped] then
-                    SetEntityVisible(ped, true, false)
-                    hiddenLobbyPeds[ped] = nil
-                end
+                SetEntityLocallyInvisible(ped)
             end
         end
     end

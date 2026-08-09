@@ -511,6 +511,21 @@ html, body, #root {
    Transform and opacity only, so none of this touches the layout thread --
    check-ui R7 enforces that and would fail the build otherwise.
 --------------------------------------------------------------------------- */
+/* THE WRAPPER MUST BE THE VIEWPORT, because it is transformed.
+   A transformed element becomes the containing block for every
+   `position: fixed` descendant -- they stop resolving against the viewport
+   and resolve against IT. Every screen inside a .page is `fixed inset-0`, and
+   without this rule the wrapper is a zero-height block at the top of the
+   document, so each screen collapsed to 0x0 and drew off the top of the
+   screen (user, 2026-08-09). Sizing the wrapper to the viewport makes the
+   child's `inset-0` resolve to exactly the box it always expected.
+
+   z-index here, not on the children: the transform makes this a stacking
+   context, so a child's z-50 only ever competes INSIDE it. 50 puts the whole
+   group above the HUD (40) and below the black curtain (60), which has to be
+   able to cover a menu mid-transition. */
+.page { position: fixed; inset: 0; z-index: 50; }
+
 @keyframes pageIn {
   from { opacity: 0; transform: translate3d(-1.4rem, 0.5rem, 0); }
   to   { opacity: 1; transform: translate3d(0, 0, 0); }

@@ -39,5 +39,22 @@ export default function Page({
   }, [show])
 
   if (!mounted) return null
-  return <div className={show ? 'page-in' : 'page-out'}>{held.current}</div>
+
+  // `.page` IS NOT COSMETIC AND MUST NOT BE REMOVED.
+  //
+  // This wrapper carries an animated TRANSFORM, and a transformed element
+  // becomes the CONTAINING BLOCK for every `position: fixed` descendant --
+  // they stop resolving against the viewport and resolve against this div
+  // instead. Every screen in here is `fixed inset-0`, and this div, as a bare
+  // block in App's fragment, is zero-height at the top of the document. So
+  // each one collapsed to a 0x0 box and rendered off the top of the screen
+  // (user, 2026-08-09: "way above our vertical draw space", "opens a blank
+  // page").
+  //
+  // `.page` makes the wrapper the viewport rect itself, so a fixed child
+  // resolves to exactly the box it would have had anyway. The transform stays
+  // and the children never learn about any of this.
+  return (
+    <div className={`page ${show ? 'page-in' : 'page-out'}`}>{held.current}</div>
+  )
 }
