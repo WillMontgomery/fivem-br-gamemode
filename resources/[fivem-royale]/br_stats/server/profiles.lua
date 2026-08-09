@@ -11,16 +11,22 @@ local cache = {}   -- [license] = profile
 
 --- Rockstar license for a player. Stable across name changes and reconnects,
 --- which is why it is the key rather than the name or the (per-session) server id.
+---
+--- A THIN CONSUMER OF BR.Identity SINCE M9, not a second implementation. There
+--- used to be a hand-rolled GetPlayerIdentifiers loop here, and moderation was
+--- about to need the same scan for the other identifier types -- at which point
+--- the project would have had two readers of the same natives, disagreeing the
+--- first time one of them learned something the other did not.
+---
+--- The qualified form is deliberate and load-bearing: this is `br_players`'
+--- primary key, and every row already stored uses `license:abc...`. Returning
+--- BR.Identity's bare value would have been a silent re-keying of the whole
+--- table dressed up as a refactor.
+---
 --- @param src integer
---- @return string|nil
+--- @return string|nil  e.g. 'license:abc123', or nil if FiveM reported none
 local function licenseOf(src)
-    for i = 0, GetNumPlayerIdentifiers(src) - 1 do
-        local id = GetPlayerIdentifier(src, i)
-        if id and id:sub(1, 8) == 'license:' then
-            return id
-        end
-    end
-    return nil
+    return BR.Identity.qualified('license', BR.Identity.licenseOf(src))
 end
 
 BR.Profiles.licenseOf = licenseOf

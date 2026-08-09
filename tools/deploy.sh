@@ -125,7 +125,8 @@ for f in \
     "$SRC_GROUP/br_lib/fxmanifest.lua" \
     "$SRC_GROUP/br_core/fxmanifest.lua" \
     "$SRC_GROUP/br_ui/fxmanifest.lua" \
-    "$SRC_GROUP/br_ui/ui/index.html"
+    "$SRC_GROUP/br_ui/ui/index.html" \
+    "$SRC_GROUP/br_ringmaster/fxmanifest.lua"
 do
     [ -f "$f" ] || die "missing from the clone: ${f#$SRC_DIR/}
   If it is the ui/ bundle, someone committed UI source without rebuilding.
@@ -170,7 +171,7 @@ echo
 echo "The server does not pick this up on its own while running. Either restart"
 echo "it, or from the server console:"
 echo "     refresh"
-echo "     restart br_lib; restart br_core; restart br_ui; restart br_stats"
+echo "     restart br_lib; restart br_core; restart br_ui; restart br_stats; restart br_ringmaster"
 echo
 echo "${DIM}Note: resources/$TARGET_CATEGORY is a FiveM category folder. If this is a"
 echo "new install, make sure server.cfg still ensures br_lib, br_core, br_ui and"
