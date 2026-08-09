@@ -154,6 +154,7 @@ BR.Nui = {
     INV       = 'inv',
     PROMPT    = 'prompt',    -- world-anchored interaction prompt + progress ring
     FEED      = 'feed',      -- kill feed + damage numbers
+    HIT       = 'hit',       -- YOU connected: {amount, headshot, killed, name}
     STORM     = 'storm',     -- phase, radius, endsAt (4 Hz)
     DBNO      = 'dbno',
     SPECTATE  = 'spectate',
@@ -186,6 +187,11 @@ BR.NuiCb = {
     CHAT_SEND    = 'br/chat/send',
     CHAT_FOCUS   = 'br/chat/focus',  -- UI tells Lua the input opened/closed
     PAUSE        = 'br/pause',       -- ESC in the lobby: open GTA's pause menu
+    -- Menu audio. React knows a button was pressed; Lua owns the cue table and
+    -- the throttle, so the UI names a CUE ('ui.select') and never a sound set.
+    -- Native rather than an <audio> tag because engine audio ducks against
+    -- gunfire and a browser tag does not.
+    SFX          = 'br/sfx',
     ERROR        = 'br/err',  -- CEF exception sink; without this a crash is a blank screen
     ENV          = 'br/ui/env',  -- CEF capability report, printed at startup
 }

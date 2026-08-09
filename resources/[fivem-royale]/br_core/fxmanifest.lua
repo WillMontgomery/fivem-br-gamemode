@@ -26,6 +26,7 @@ shared_scripts {
     '@br_lib/config/map.lua',
     '@br_lib/config/weapons.lua',
     '@br_lib/config/loot.lua',
+    '@br_lib/config/audio.lua',
     '@br_lib/shared/storm_solve.lua',
     '@br_lib/shared/combat_solve.lua',
     '@br_lib/shared/loot_gen.lua',  -- reads the loot/weapon/map config at call time
@@ -43,6 +44,7 @@ client_scripts {
     'client/state.lua',
     'client/stamina.lua',   -- needs BR.State (state.lua) and the loops
     'client/squadmates.lua',
+    'client/sfx.lua',      -- one cue table; everything else asks it for a sound
     'client/keybinds.lua',
     'client/bus.lua',       -- needs BR.Keys (keybinds) and BR.State (main)
     'client/skydive.lua',

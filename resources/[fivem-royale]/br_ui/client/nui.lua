@@ -207,6 +207,14 @@ end)
 -- ESC in the lobby: GTA's pause menu cannot open while NUI holds focus, so
 -- the page captures the key and asks. The focus drops HERE (this resource
 -- owns the stack); raising the actual menu is br_core's call.
+-- Menu audio. The UI names a CUE, never a sound set: br_core owns the table
+-- and the throttle, so a wrong name is fixed in one place. Native rather than
+-- an <audio> tag in the page because engine audio ducks against gunfire.
+callback(BR.NuiCb.SFX, function(data)
+    if data.cue then TriggerEvent('br:ui:sfx', tostring(data.cue)) end
+    return { ok = true }
+end)
+
 callback(BR.NuiCb.PAUSE, function()
     popFocus('lobby')
     TriggerEvent('br:ui:pauseRequest')

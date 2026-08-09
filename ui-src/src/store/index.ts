@@ -38,7 +38,14 @@ export interface UiState {
   /** The on-screen notice stack: party events, action results, match alerts.
    *  Newest last; each expires on its own timer. `ms` is that timer, kept on
    *  the notice so the fly-in/fade-out animation can match it exactly. */
-  notices: (ToastPayload & { id: number; ms: number })[]
+  notices: (ToastPayload & {
+    id: number
+    ms: number
+    /** How many times this notice has fired. Rendered as xN from 2 up. */
+    count: number
+    /** Its removal timer, so a coalesced repeat can reset the clock. */
+    timer: number
+  })[]
   /** Notices that arrived while the pause menu was open. They display on
    *  unpause -- unless they sat here longer than PAUSE_QUEUE_MS, in which
    *  case the moment has passed and they are dropped silently. */
@@ -158,14 +165,54 @@ export const useUi = create<UiState>((set, get) => {
    *  live path and the unpause flush land here, so queued notices get the
    *  same lifetime and animation as ones that never waited. */
   const showNotice = (t: ToastPayload) => {
-    const id = ++noticeId
     const ms = t.ms ?? TOAST_MS
-    setTimeout(() => {
+
+    // COALESCE REPEATS.
+    //
+    // Three ammo pickups in two seconds is ONE notice reading x3, not three
+    // lines racing each other off the top of the stack. Without this, a burst
+    // of loot evicts everything else in the stack -- including a storm warning,
+    // which is a gameplay bug wearing a UI costume.
+    //
+    // Matched on the TEXT, because the wire has no identity field: a notice
+    // cannot currently be addressed by its sender. Adding a `key` is the right
+    // fix and it is a protocol change, so it is filed rather than smuggled in
+    // here (#23).
+    const existing = get().notices.find((n) => n.text === t.text)
+    if (existing) {
+      window.clearTimeout(existing.timer)
+      const timer = window.setTimeout(() => {
+        set((s) => ({ notices: s.notices.filter((n) => n.id !== existing.id) }))
+      }, ms)
+      set((s) => ({
+        notices: s.notices.map((n) => (n.id === existing.id
+          ? { ...n, count: (n.count ?? 1) + 1, ms, timer }
+          : n)),
+      }))
+      return
+    }
+
+    const id = ++noticeId
+    const timer = window.setTimeout(() => {
       set((s) => (s.notices.some((n) => n.id === id)
         ? { notices: s.notices.filter((n) => n.id !== id) }
         : {}))
     }, ms)
-    set((s) => ({ notices: [...s.notices, { ...t, id, ms }].slice(-NOTICES_MAX) }))
+
+    set((s) => {
+      const next = [...s.notices, { ...t, id, ms, count: 1, timer }]
+      if (next.length <= NOTICES_MAX) return { notices: next }
+      // PRIORITY PUSHES, IT DOES NOT QUEUE. When the stack is full the oldest
+      // COSMETIC notice is evicted, never a warning -- losing "the storm is
+      // closing" behind three loot pickups is exactly the failure the cap was
+      // meant to prevent.
+      // next.length > NOTICES_MAX here, so next[0] always exists -- but the
+      // compiler cannot know that from `find`, and asserting is cheaper than
+      // pretending the array might be empty.
+      const victim = next.find((n) => n.tone !== 'warn' && n.tone !== 'danger') ?? next[0]!
+      window.clearTimeout(victim.timer)
+      return { notices: next.filter((n) => n !== victim) }
+    })
   }
 
   return {

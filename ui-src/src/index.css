@@ -202,6 +202,16 @@ html, body, #root {
   color: white;
 }
 
+/* The small all-caps label above a group. Barlow 600 at .2em is the project's
+   existing convention and it was being retyped in every screen. */
+.micro-label {
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.38);
+}
+
 .interactive {
   pointer-events: auto;
   user-select: auto;
@@ -371,6 +381,36 @@ html, body, #root {
 }
 .panel-hot > .hotbody { padding: 0.65rem 1rem; text-align: center; }
 
+/* ---------------------------------------------------------------------------
+   BUTTONS -- travel, not a colour change.
+
+   A button that only changes colour on press feels like a web page. One that
+   MOVES feels like hardware, and that is the entire difference between a menu
+   and a front end. The press is a 1px drop plus a scale, which is transform
+   only and free; hover lifts the edge rather than flooding the fill, so a row
+   of buttons does not strobe as the mouse crosses it.
+--------------------------------------------------------------------------- */
+.btn {
+  cursor: pointer;
+  pointer-events: auto;
+  line-height: 1;
+  transition: transform 90ms var(--ease-out),
+              filter 120ms ease,
+              clip-path 200ms var(--ease-out);
+  will-change: transform;
+}
+.btn:hover  { filter: brightness(1.18); }
+/* The travel. Down and slightly smaller: the same direction a real key moves,
+   which is why it reads as a press rather than as a wobble. */
+.btn:active { transform: translateY(1px) scale(0.975); filter: brightness(0.94); }
+.btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(34, 211, 238, 0.55);
+}
+.btn--off { opacity: 0.4; cursor: not-allowed; }
+.btn--off:hover  { filter: none; }
+.btn--off:active { transform: none; }
+
 /* The match-result slam: the verdict lands on a transparent screen first,
    huge and fast with a small overshoot on impact; the backdrop and the
    supporting lines arrive later (see .end-*). transform/opacity only. */
@@ -442,6 +482,60 @@ html, body, #root {
   35%  { transform: scale(1) translateY(0); opacity: 1; }
   82%  { opacity: 1; }
   100% { transform: translateY(-0.4rem); opacity: 0; }
+}
+
+/* ---------------------------------------------------------------------------
+   HIT FEEDBACK -- the two moments that had no UI at all.
+
+   The marker fires hundreds of times a match, so it is four strokes and no
+   panel: it has to be readable in the quarter second it exists, over whatever
+   the player is aiming at, and it has to cost nothing.
+--------------------------------------------------------------------------- */
+@keyframes hitMark {
+  0%   { transform: translate(-50%, -50%) scale(1.7); opacity: 0; }
+  18%  { transform: translate(-50%, -50%) scale(1);   opacity: 1; }
+  100% { transform: translate(-50%, -50%) scale(1);   opacity: 0; }
+}
+.hitmarker {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  pointer-events: none;
+  z-index: 45;
+  fill: none;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  /* The drop shadow is on the FILTER, not a box-shadow on an animating box --
+     four thin white strokes over a bright sky are invisible without it. */
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.95));
+  animation: hitMark 420ms ease-out both;
+}
+
+.elim-banner {
+  position: fixed;
+  left: 50%;
+  bottom: 22%;
+  transform: translateX(-50%);
+  pointer-events: none;
+  text-align: center;
+  white-space: nowrap;
+  z-index: 45;
+  animation: bannerIn 1700ms cubic-bezier(0.16, 1.1, 0.3, 1) both;
+}
+.elim-banner__label {
+  font-family: 'Anton', 'Segoe UI', sans-serif;
+  font-size: 0.85rem;
+  letter-spacing: 0.26em;
+  text-transform: uppercase;
+  color: var(--color-royale-accent);
+  text-shadow: var(--shadow-text);
+}
+.elim-banner__name {
+  font-family: 'Anton', 'Segoe UI', sans-serif;
+  font-size: 2.2rem;
+  line-height: 1.05;
+  color: #ffffff;
+  text-shadow: var(--shadow-text);
 }
 
 /* A counter change is an EVENT, not an update: the number punches and flashes

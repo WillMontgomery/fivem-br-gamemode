@@ -1,4 +1,5 @@
-import { Button, Card, CardBody, CardHeader, Spinner } from '@heroui/react'
+import Btn from '../ui/Btn'
+import Ring from '../hud/Ring'
 import { useEffect, useRef, useState } from 'react'
 import { useUi, selMatch, selLobby, selSquad } from '../store'
 import PartyPanel from './PartyPanel'
@@ -130,12 +131,20 @@ export default function Lobby({ visible }: { visible: boolean }) {
 
   return (
     <div
-      className="fixed inset-0 flex items-center justify-center transition-opacity duration-200"
+      className="fixed inset-0 transition-opacity duration-200"
       style={{
         opacity: visible ? 1 : 0,
         pointerEvents: visible ? 'auto' : 'none',
+        // A SCRIM WEIGHTED TO THE LEFT, not a centred vignette.
+        //
+        // The menu lives in the left column and the right third is left clear
+        // for the player's ped to stand in. A radial centred on the screen
+        // dimmed exactly the part we want to show off and washed out the part
+        // we want readable -- so this is a horizontal gradient that is opaque
+        // where the text is and nearly clear where the character is.
         background:
-          'radial-gradient(ellipse at 50% 40%, rgba(10, 30, 42, 0.72), rgba(6, 8, 14, 0.94))',
+          'linear-gradient(90deg, rgba(5,10,16,0.94) 0%, rgba(5,10,16,0.88) 38%,'
+          + ' rgba(6,10,18,0.45) 62%, rgba(6,10,18,0.12) 100%)',
       }}
       aria-hidden={!visible}
     >
@@ -162,89 +171,120 @@ export default function Lobby({ visible }: { visible: boolean }) {
           Opacity rides worldReady: transparent under the loadscreen, fading
           in as the backdrop fades out. Pointer events follow -- an invisible
           menu must not be clickable. */}
+      {/* THE LEFT COLUMN.
+          Identity at the top, the decision in the middle, one loud action at
+          the bottom -- and the right third of the screen deliberately empty,
+          because that is where the player's character stands. The old centred
+          card put the menu exactly where the character should be and read as a
+          web modal floating over a game. */}
       <div
-        className="interactive relative w-[42rem] max-w-[85vw] transition-opacity duration-700"
+        className="interactive absolute inset-y-0 left-0 w-[38rem] max-w-[62vw]
+                   flex flex-col justify-center px-[3.5rem] py-[3rem]
+                   transition-opacity duration-700"
         style={{
           opacity: worldReady ? 1 : 0,
           pointerEvents: worldReady ? 'auto' : 'none',
         }}
       >
-        <div className="text-center mb-6">
-          <h1 className="font-display text-7xl tracking-tight">
-            FiveM <span style={{ color: 'var(--color-royale-accent)' }}>Royale</span>
+        <div>
+          <h1 className="font-display text-[4.6rem] leading-[0.9] tracking-tight">
+            FiveM<br />
+            <span style={{ color: 'var(--color-royale-accent)' }}>Royale</span>
           </h1>
-          <p className="text-xl text-white/45 mt-1">
+          <p className="text-[0.95rem] text-white/40 mt-2 tracking-wide">
             Drop in. Loot up. Outlast the storm.
           </p>
         </div>
 
-        <Card className="border border-white/10">
-          <CardHeader className="pb-0 flex-col items-start gap-1">
-            <h2 className="text-2xl font-semibold">
-              {matchRunning ? 'Next match' : 'Find a match'}
-            </h2>
-            {/* Only ever seen by a player who is OUT of the running match --
-                a participant never has this screen up. During warmup the door
-                is still open: readying up joins THIS match, not the next. */}
-            {matchRunning && (
-              <p className="text-[1rem] text-white/40">
-                {match.state === 'warmup'
-                  ? 'A match is forming — ready up to jump straight in.'
-                  : 'A match is in progress — ready up to join the next one.'}
-              </p>
-            )}
-          </CardHeader>
-
-          <CardBody className="flex flex-col gap-4">
-            <div className="flex gap-2">
-              {(['solo', 'squad'] as const).map((m) => (
-                <Button
-                  key={m}
-                  size="lg"
-                  color={mode === m ? 'primary' : 'default'}
-                  variant={mode === m ? 'solid' : 'bordered'}
-                  isDisabled={searching}
-                  onPress={() => pickMode(m)}
-                  className="flex-1 capitalize"
+        {/* MODE IS A CHOICE BETWEEN TWO THINGS, so it is two tiles rather than
+            a pair of buttons in a row. The tile carries what the mode MEANS --
+            "one life, 47 rivals" is the actual difference, and it was nowhere
+            on the old screen. */}
+        <div className="mt-8">
+          <div className="micro-label">Mode</div>
+          <div className="flex gap-2.5 mt-2">
+            {([
+              { id: 'solo',  name: 'Solo',   sub: 'One life. Everyone else is a rival.' },
+              { id: 'squad', name: 'Squads', sub: 'Teams of four. Revives allowed.' },
+            ] as const).map((m) => (
+              <button
+                key={m.id}
+                type="button"
+                disabled={searching}
+                onPointerEnter={() => { if (!searching) void fetchNui(CB.SFX, { cue: 'ui.hover' }) }}
+                onClick={() => {
+                  if (searching) { void fetchNui(CB.SFX, { cue: 'ui.error' }); return }
+                  void fetchNui(CB.SFX, { cue: 'ui.select' })
+                  pickMode(m.id)
+                }}
+                className={`plate btn flex-1 text-left px-4 py-3.5${
+                  mode === m.id ? ' is-active' : ''}${searching ? ' btn--off' : ''}`}
+                style={{
+                  ['--plate-fill' as string]: mode === m.id
+                    ? 'rgba(12,58,72,0.94)' : 'rgba(24,28,40,0.92)',
+                  ['--edgec' as string]: mode === m.id
+                    ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.20)',
+                }}
+              >
+                <div
+                  className="font-display text-[1.35rem] leading-none"
+                  style={{ color: mode === m.id ? 'var(--color-royale-accent)' : '#ffffff' }}
                 >
-                  {m}
-                </Button>
-              ))}
-            </div>
+                  {m.name.toUpperCase()}
+                </div>
+                <div className="text-[0.72rem] text-white/40 mt-1.5 leading-snug">{m.sub}</div>
+              </button>
+            ))}
+          </div>
+        </div>
 
-            {/* Parties persist between matches, so this is always relevant --
-                not only while queueing. It knows the mode because a party has
-                no meaning in solo. */}
-            <PartyPanel disabled={searching} mode={mode} />
+        {/* Parties persist between matches, so this is always relevant -- not
+            only while queueing. It knows the mode because a party has no
+            meaning in solo. */}
+        <div className="mt-6">
+          <PartyPanel disabled={searching} mode={mode} />
+        </div>
 
-            {searching ? (
-              <div className="flex flex-col gap-2">
-                <div className="flex flex-col items-center gap-1 py-1">
-                  <div className="flex items-center gap-3">
-                    <Spinner size="sm" />
-                    <span className="text-xl text-white/70">{headline}</span>
-                  </div>
-
-                  {/* The supporting numbers. A spinner on its own is
-                      indistinguishable from a queue that is not working, which
-                      is exactly how this looked while the button did nothing. */}
+        {/* THE ACTION. One object, the loudest on the screen, and the only
+            thing wearing the brand colour. */}
+        <div className="mt-8">
+          {searching ? (
+            <>
+              <div className="flex items-center gap-3 mb-3">
+                <Ring size={1.5} stroke={0.17} label="Searching for a match" />
+                <div>
+                  <div className="text-[1.05rem] text-white/80 leading-tight">{headline}</div>
+                  {/* A spinner alone is indistinguishable from a queue that is
+                      not working, which is exactly how this looked while the
+                      button was wired to nothing. */}
                   {detail.length > 0 && (
-                    <span className="text-[1rem] tabular-nums text-white/40">
+                    <div className="text-[0.78rem] tabular-nums text-white/40 mt-0.5">
                       {detail.join(' · ')}
-                    </span>
+                    </div>
                   )}
                 </div>
-                <Button size="lg" variant="bordered" onPress={leave}>Not ready</Button>
               </div>
-            ) : (
-              <Button color="primary" size="lg" onPress={queue}>
+              <Btn variant="default" size="lg" full cue="ui.back" onPress={leave}>
+                Not ready
+              </Btn>
+            </>
+          ) : (
+            <>
+              {matchRunning && (
+                <p className="text-[0.8rem] text-white/40 mb-2.5">
+                  {match.state === 'warmup'
+                    ? 'A match is forming — ready up to jump straight in.'
+                    : 'A match is in progress — ready up to join the next one.'}
+                </p>
+              )}
+              <Btn variant="primary" size="xl" full cue="ui.ready" onPress={queue}>
                 Ready up
-              </Button>
-            )}
-          </CardBody>
-        </Card>
+              </Btn>
+            </>
+          )}
+        </div>
 
-        <p className="text-center text-[1rem] text-white/30 mt-4">
+        <p className="text-[0.72rem] text-white/25 mt-6">
           Rebind controls in Pause &rarr; Settings &rarr; Key Bindings
         </p>
       </div>

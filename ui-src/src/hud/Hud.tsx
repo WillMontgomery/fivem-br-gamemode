@@ -10,6 +10,7 @@ import KillFeed from './KillFeed'
 import SquadPanel from './SquadPanel'
 import DbnoOverlay from './DbnoOverlay'
 import InventoryBar from './InventoryBar'
+import HitFeedback from './HitFeedback'
 
 /**
  * The in-match HUD.
@@ -63,6 +64,11 @@ export default function Hud({ visible }: { visible: boolean }) {
           5s opacity transition can play both directions -- in step with the
           client-side weather blend. */}
       <div className="storm-vignette" style={{ opacity: outside ? 1 : 0 }} />
+
+      {/* Outside .hud-safe on purpose: the marker is dead screen-centre and
+          the banner is centre-lower. Neither belongs inside a box that is
+          inset by the safe zone -- the crosshair is not safe-zone relative. */}
+      <HitFeedback />
 
       <div className="hud-safe">
         {/* Top row */}

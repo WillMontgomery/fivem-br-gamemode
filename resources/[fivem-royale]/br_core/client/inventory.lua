@@ -342,8 +342,9 @@ local function adopt(d)
 
     -- The switch click. Only on an actual change, and only on OUR screen --
     -- PlaySoundFrontend is local by definition.
-    if inv.active ~= wasActive and L.switchSound then
-        PlaySoundFrontend(-1, L.switchSound.name, L.switchSound.set, true)
+    -- Through BR.Sfx so every interface cue shares one table and one throttle.
+    if inv.active ~= wasActive then
+        BR.Sfx.play('ui.select')
     end
 
     applyActive(false)
@@ -364,9 +365,18 @@ local function adopt(d)
         -- Read by loot.lua's mercy blips: "has this player ever found
         -- anything" is the difference between helping and nagging.
         BR.Inv.lastGainAt = GetGameTimer()
-        if L.pickupSound then
-            PlaySoundFrontend(-1, L.pickupSound.name, L.pickupSound.set, true)
+
+        -- THE PICKUP CUE CARRIES RARITY. One flat sound for everything from a
+        -- box of shells to a Legendary rifle throws away the most useful thing
+        -- audio can do here: tell you what you got without making you look.
+        -- The rarity is taken from the best NEW thing in the inventory, so a
+        -- handful of ammo picked up alongside a gold gun still sounds gold.
+        local best = 0
+        for i = 1, SLOTS do
+            local s = inv.slots[i]
+            if type(s) == 'table' and (s.rarity or 0) > best then best = s.rarity end
         end
+        BR.Sfx.play(BR.Config.LootCue(best))
     end
 end
 

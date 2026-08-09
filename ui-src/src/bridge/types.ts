@@ -166,6 +166,24 @@ export interface FeedEntry {
   mine: boolean
 }
 
+/**
+ * YOU connected.
+ *
+ * Two senders, deliberately. DAMAGE_FEED (the shooter's private damage channel,
+ * one per bullet) carries amount/headshot and drives the marker. KILL_FEED
+ * carries the victim's NAME and drives the banner -- it is the only event that
+ * knows it, and widening the per-bullet channel to include a name would put one
+ * on the wire hundreds of times a match to be used once.
+ */
+export interface HitPayload {
+  amount?: number
+  headshot?: boolean
+  /** The hit was fatal. Punctuates the marker. */
+  killed?: boolean
+  /** Present only on the KILL_FEED sender: whose name the banner shows. */
+  name?: string
+}
+
 export interface DbnoPayload {
   downed: boolean
   bleedEndsAt: number
@@ -327,6 +345,7 @@ export type Envelope =
   | { k: 'squad';    d: SquadPayload }
   | { k: 'inv';      d: WireInvPayload }
   | { k: 'feed';     d: FeedEntry }
+  | { k: 'hit';      d: HitPayload }
   | { k: 'storm';    d: StormPayload }
   | { k: 'dbno';     d: DbnoPayload }
   | { k: 'spectate'; d: SpectatePayload }
@@ -362,6 +381,8 @@ export const CB = {
   CHAT_SEND:    'br/chat/send',
   CHAT_FOCUS:   'br/chat/focus',
   PAUSE:        'br/pause',
+  /** Menu audio. The UI names a CUE; Lua owns the table and the throttle. */
+  SFX:          'br/sfx',
   ERROR:        'br/err',
   ENV:          'br/ui/env',
 } as const

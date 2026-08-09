@@ -532,13 +532,53 @@ AddEventHandler(BR.Net.KILL_FEED, function(d)
 
     -- Shaped to the UI's FeedEntry contract. weapon carries the cause until
     -- M6 brings real weapon attribution.
+    local mine = d.victimSrc == S.me.src or d.killerSrc == S.me.src
     TriggerEvent('br:ui:sendLocal', BR.Nui.FEED, {
         id       = BR.Clock.now(),
         killer   = d.killer or '',
         victim   = d.victim or '',
         weapon   = d.cause or '',
         headshot = false,
-        mine     = d.victimSrc == S.me.src or d.killerSrc == S.me.src,
+        mine     = mine,
+    })
+
+    -- YOUR kill gets a moment; everyone else's is a line in the feed.
+    --
+    -- The banner is sent from HERE rather than from DAMAGE_FEED because this is
+    -- the event that knows the victim's NAME. DAMAGE_FEED knows a hit killed
+    -- someone but not who -- it is the shooter's private damage channel, and
+    -- widening it would put a name on the wire for every bullet rather than
+    -- for every death.
+    if d.killerSrc == S.me.src and d.victimSrc ~= S.me.src then
+        BR.Sfx.play('elim')
+        TriggerEvent('br:ui:sendLocal', BR.Nui.HIT, {
+            killed = true,
+            name   = d.victim or '',
+        })
+    end
+end)
+
+-- HIT CONFIRMATION.
+--
+-- The server has been sending this to the shooter since M6 -- amount, headshot
+-- and whether it killed -- and nothing has ever consumed it. It is the one
+-- piece of feedback that taking damage away from the engine would otherwise
+-- have cost us, which is exactly why damage.lua sends it.
+--
+-- The cue is throttled in BR.Sfx (60ms), not here: an unthrottled full-auto
+-- burst is thirty overlapping sounds, and that has no visual symptom.
+RegisterNetEvent(BR.Net.DAMAGE_FEED)
+AddEventHandler(BR.Net.DAMAGE_FEED, function(d)
+    if not d then return end
+
+    BR.Sfx.play(d.headshot and 'hit.crit' or 'hit')
+
+    -- The banner for a kill rides KILL_FEED (it has the name); this is the
+    -- marker only. `killed` still travels so the marker can punctuate.
+    TriggerEvent('br:ui:sendLocal', BR.Nui.HIT, {
+        amount   = d.amount or 0,
+        headshot = d.headshot or false,
+        killed   = d.killed or false,
     })
 end)
 
