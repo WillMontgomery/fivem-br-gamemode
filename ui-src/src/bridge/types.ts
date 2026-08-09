@@ -467,10 +467,6 @@ export interface KeybindAction {
   vk?: number
   /** Readable name for that code, resolved by Lua. '' when unbound. */
   key: string
-  /** The second key, same shape. Every action may have two, as in GTA's own
-   *  controls screen -- either one fires it. */
-  altVk?: number
-  altKey: string
   default: string
   /** True when the player has changed this row. Drives the reset affordance,
    *  which is the ONLY way back for a default the capture cannot type --

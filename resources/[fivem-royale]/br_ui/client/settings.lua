@@ -183,6 +183,14 @@ RegisterNUICallback(BR.NuiCb.SETTINGS_FOCUS, function(data, cb)
     cb({ ok = true })
 end)
 
+-- Somebody else needs this screen gone: the Controls tab can hand over to
+-- GTA's own key bindings, and the frontend is a scaleform -- nothing we draw
+-- can sit over it, so a settings screen left open underneath would keep the
+-- cursor with no way to reach it.
+AddEventHandler('br:ui:closeSettings', function()
+    TriggerEvent('br:ui:popFocus', 'settings')
+end)
+
 RegisterNUICallback(BR.NuiCb.KEYBINDS, function(_, cb)
     -- FIVEM KEYBINDS LIVE IN GTA'S PAUSE MENU, and there is no native that
     -- rebinds a RegisterKeyMapping command from script. Building a rebinder

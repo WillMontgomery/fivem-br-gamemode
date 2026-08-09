@@ -7,6 +7,7 @@ import Settings from './Settings'
 import { play } from '../audio/cues'
 import Progress from './Progress'
 import NoticeLog from './NoticeLog'
+import Help from './Help'
 
 /**
  * The pause menu.
@@ -33,11 +34,12 @@ import NoticeLog from './NoticeLog'
  * one embeds the real thing, so a control added there appears here for free.
  */
 
-type Tab = 'main' | 'notices' | 'settings'
+type Tab = 'main' | 'notices' | 'help' | 'settings'
 
 const TAB_LABEL: Record<Tab, string> = {
   main: 'Match',
   notices: 'Notifications',
+  help: 'Help',
   settings: 'Settings',
 }
 
@@ -132,7 +134,7 @@ export default function PauseMenu() {
               menu at all (user, 2026-08-09). It is the hero of the Match tab
               now; these are just the tabs. */}
           <div className="flex gap-2">
-            {(['main', 'notices', 'settings'] as Tab[]).map((t) => (
+            {(['main', 'notices', 'help', 'settings'] as Tab[]).map((t) => (
               <button
                 key={t}
                 type="button"
@@ -261,6 +263,8 @@ export default function PauseMenu() {
           </>
         ) : tab === 'notices' ? (
           <NoticeLog />
+        ) : tab === 'help' ? (
+          <Help />
         ) : (
           // THE LOBBY'S SETTINGS SCREEN, EMBEDDED. `inline` drops its own
           // full-screen backdrop and its Cancel/Save footer closes the tab

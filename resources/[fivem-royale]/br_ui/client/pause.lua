@@ -61,8 +61,17 @@ end
 --- It still does not SUPPRESS the other tabs. Nothing does; they are the same
 --- scaleform. This lands on the map with the tabs above it, which is what
 --- GTA Online itself looks like.
-function BR.Pause.openFrontendMap()
+--- Pause menu page ids, from the list the owner linked (pastebin qxuhwjPT).
+--- Only the two we actually navigate to; nothing here is guessed.
+BR.Pause.PAGE = {
+    MAP    = 0,     -- the map's own fullscreen view, via GoDeeper + TheKick
+    KEYMAP = 1148,  -- Settings > Key Bindings, where a mouse button CAN be set
+}
+
+--- @param page integer|nil
+function BR.Pause.openFrontendMap(page)
     if frontendMap then return end
+    BR.Pause.pendingPage = page
     frontendMap = true
     -- br_core suppresses GTA's frontend every frame now that Escape is ours.
     -- This is the one time we WANT it, so it has to know to stand down --
@@ -90,13 +99,13 @@ function BR.Pause.openFrontendMap()
             return
         end
 
+        local page = BR.Pause.pendingPage or BR.Pause.mapPage or BR.Pause.PAGE.MAP
         local ok, err = pcall(function()
-            PauseMenuceptionGoDeeper(BR.Pause.mapPage or 0)
+            PauseMenuceptionGoDeeper(page)
             PauseMenuceptionTheKick()
         end)
-        print(('[br_ui] map: frontend, page %d -- %s')
-            :format(BR.Pause.mapPage or 0,
-                    ok and 'ok' or ('FAILED ' .. tostring(err))))
+        print(('[br_ui] frontend page %d -- %s')
+            :format(page, ok and 'ok' or ('FAILED ' .. tostring(err))))
 
         -- 199 and 200 are PAUSE, 202 is FRONTEND CANCEL: the keys a player
         -- actually reaches for to leave a menu. Our own map key gets out too,
@@ -130,6 +139,22 @@ end)
 --- which is the same split the locker and the inventory use.
 RegisterNUICallback(BR.NuiCb.PAUSE_ACTION, function(data, cb)
     local action = tostring(data and data.action or '')
+
+    if action == 'keymap' then
+        -- STRAIGHT TO GTA'S KEY BINDINGS PAGE (1148), not to the top of a
+        -- pause menu with directions. It is the one thing our own controls
+        -- screen genuinely cannot do -- a mouse button is invisible to the
+        -- raw-key layer -- so the handover should cost one click, not five.
+        --
+        -- Both of our screens have to come down first: the frontend is a
+        -- scaleform, so nothing we draw can sit over it, and a menu left open
+        -- underneath would keep the cursor.
+        BR.Pause.close()
+        TriggerEvent('br:ui:closeSettings')
+        BR.Pause.openFrontendMap(BR.Pause.PAGE.KEYMAP)
+        cb({ ok = true })
+        return
+    end
 
     if action == 'map' then
         -- THREE ROUTES, SWITCHABLE, BECAUSE THIS IS A QUESTION THE GAME
