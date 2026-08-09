@@ -40,6 +40,17 @@ export async function mockFetch<Res>(name: CallbackName, data?: unknown): Promis
     })
   }
 
+  // FOCUS IS LUA'S, so the harness has to play Lua. Settings is rendered off
+  // `focus === 'settings'` rather than off a local flag, which means without
+  // this the browser's Settings button would open nothing at all -- and the
+  // difference between "the button is broken" and "the mock does not answer"
+  // is not visible from the screen.
+  if (name === 'br/settings/focus') {
+    const open = (data as { open?: boolean } | undefined)?.open === true
+    emit({ k: 'focus', d: { screen: open ? 'settings' : 'lobby' } })
+    return { ok: true } as Res
+  }
+
   // SETTINGS ECHO. Lua clamps and returns what it actually stored, and the
   // screen renders the echo rather than its own draft -- so a mock that
   // returns nothing would make the browser harness behave differently from

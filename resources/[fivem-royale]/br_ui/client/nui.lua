@@ -65,13 +65,16 @@ local function applyFocus()
     focusHeld = want
     SetNuiFocus(want, want)
 
-    -- Keep-input is for screens meant to be used WHILE playing (the future
-    -- inventory). The lobby is a menu, and CHAT captures everything typed
-    -- into it -- WASD while composing a message walked the player into the
-    -- storm mid-sentence (user call, 2026-08-04).
+    -- Keep-input is for screens meant to be used WHILE playing (the
+    -- inventory). The lobby is a menu, CHAT captures everything typed into it
+    -- -- WASD while composing a message walked the player into the storm
+    -- mid-sentence (user call, 2026-08-04) -- and SETTINGS is a full-screen
+    -- opaque menu that can be opened from a keybind mid-match, where keeping
+    -- input would mean running while reading a slider.
     if want then
         local top = focusStack[#focusStack]
-        SetNuiFocusKeepInput(top ~= 'lobby' and top ~= 'chat')
+        SetNuiFocusKeepInput(
+            top ~= 'lobby' and top ~= 'chat' and top ~= 'settings')
     else
         SetNuiFocusKeepInput(false)
     end

@@ -175,11 +175,15 @@ export default function App() {
           unpause (dropped after 30s of waiting). */}
       {!showLobby && !s.hud.paused && <Notices barsVisible={hudUp} />}
       {/* LAST, SO IT IS ON TOP OF EVERYTHING. Settings is opaque and full
-          screen, and it can be opened from a keybind mid-match as well as
-          from the lobby -- so it has to cover the HUD, not sit under it.
-          Focus for the mid-match case is asked for by the opener; the lobby
-          already holds the cursor. */}
-      {s.settingsOpen && <Settings />}
+          screen, and it opens from a keybind mid-match as well as from the
+          lobby -- so it has to cover the HUD, not sit under it.
+
+          DRIVEN BY FOCUS, like the inventory panel, and for the same reason:
+          the thing that decides whether the screen is up and the thing that
+          owns the cursor must be the same thing, or they drift apart and the
+          player ends up with a menu they cannot click or a cursor over no
+          menu. Both routes in ask Lua; neither opens it locally. */}
+      {s.focus === 'settings' && <Settings />}
       {/* The safe-area outline is a SETTING, not a screen: it belongs over
           everything the player is trying to judge against it, including the
           settings screen that turned it on. */}

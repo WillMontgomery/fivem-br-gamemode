@@ -58,9 +58,6 @@ export interface UiState {
    *  value the game clamped visibly snaps rather than sitting here as a
    *  number that was never stored. */
   settings: SettingsPayload
-  /** Whether the settings screen is up. Local to the page -- Lua is told, so
-   *  it can grant the cursor, but the screen is not Lua's to own. */
-  settingsOpen: boolean
 
   /** Real screen metrics from the game -- including the minimap rectangle the
    *  bars, chat and notices anchor to. Null in the browser dev harness until
@@ -127,7 +124,6 @@ export interface UiState {
   pushChat: (c: ChatMessage) => void
   pushNotice: (t: ToastPayload) => void
   setSettings: (s: SettingsPayload) => void
-  setSettingsOpen: (open: boolean) => void
   openChat: (channel: ChatMessage['channel']) => void
   closeChat: () => void
   hydrate: (s: {
@@ -316,7 +312,6 @@ export const useUi = create<UiState>((set, get) => {
   pendingNotices: [],
   focus: 'none',
   settings: DEFAULT_SETTINGS,
-  settingsOpen: false,
   lobby: null,
   screen: null,
   scoped: false,
@@ -458,8 +453,6 @@ export const useUi = create<UiState>((set, get) => {
     applySettings(settings)
     set({ settings })
   },
-  setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
-
   openChat:  (chatChannel) => set({ chatOpen: true, chatChannel }),
   closeChat: () => set({ chatOpen: false }),
 

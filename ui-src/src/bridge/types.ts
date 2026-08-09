@@ -395,7 +395,7 @@ export interface SettingsPayload {
 
 /** Which screen currently owns NUI focus. Lua is the authority. */
 export interface FocusPayload {
-  screen: 'none' | 'lobby' | 'squad' | 'inventory' | 'summary' | 'chat'
+  screen: 'none' | 'lobby' | 'squad' | 'inventory' | 'summary' | 'chat' | 'settings'
   /** Which channel a chat focus should open in. Rides along here rather than
    *  needing its own envelope kind. */
   channel?: ChatChannel

@@ -191,6 +191,25 @@ RegisterNUICallback(BR.NuiCb.KEYBINDS, function(_, cb)
     cb({ ok = true })
 end)
 
+-- ---------------------------------------------------------------- keybind ---
+
+-- SETTINGS IS REACHABLE FROM ANYWHERE, not only from the lobby card. A player
+-- who finds the interface too small discovers that mid-match, in the middle of
+-- a fight, and telling them to die first is not an answer.
+--
+-- Through RegisterKeyMapping like every other bind in this project, so it is
+-- rebindable in the pause menu -- and UNBOUND by default: a mispressed key
+-- that opens an opaque full-screen menu over a firefight is worse than no
+-- shortcut at all. The lobby button is the discoverable route.
+--
+-- The screen follows FOCUS, exactly as the inventory panel does, so there is
+-- one source of truth about whether it is open and it is the same one that
+-- owns the cursor.
+RegisterCommand('brsettings_open', function()
+    TriggerEvent('br:ui:pushFocus', 'settings')
+end, false)
+RegisterKeyMapping('brsettings_open', 'Royale: Settings', 'keyboard', '')
+
 -- ---------------------------------------------------------------- console ---
 
 RegisterCommand('brsettings', function(_, args)

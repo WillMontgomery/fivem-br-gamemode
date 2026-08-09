@@ -153,7 +153,11 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 export default function Settings() {
   const stored = useUi(selSettings)
   const setSettings = useUi((s) => s.setSettings)
-  const close = useUi((s) => s.setSettingsOpen)
+  // CLOSING IS RELEASING FOCUS, and nothing else. This screen is rendered
+  // because Lua says it owns the cursor, so a local "closed" flag would be a
+  // second opinion about the same fact -- which is how you end up with a
+  // cursor over no menu.
+  const close = () => { void fetchNui(CB.SETTINGS_FOCUS, { open: false }) }
 
   // The draft is seeded from the store and pushed straight back into it on
   // every change -- which is what makes the preview live. It is NOT a
@@ -200,8 +204,7 @@ export default function Settings() {
       CB.SETTINGS_SAVE, draft)
     if (res?.settings) setSettings(res.settings)
     setSaving(false)
-    close(false)
-    void fetchNui(CB.SETTINGS_FOCUS, { open: false })
+    close()
   }
 
   const cancel = () => {
@@ -211,8 +214,7 @@ export default function Settings() {
     // rather than to the document directly.
     mine.current = null
     setSettings(baseline.current)
-    close(false)
-    void fetchNui(CB.SETTINGS_FOCUS, { open: false })
+    close()
   }
 
   // Escape closes, because it is the key everyone tries first and a

@@ -33,7 +33,6 @@ export default function Lobby({ visible }: { visible: boolean }) {
   // When Lua flips it, two 700ms fades run together: the menu fades IN
   // while the opaque backdrop fades OUT to the world.
   const worldReady = useUi((s) => s.worldReady)
-  const openSettings = useUi((s) => s.setSettingsOpen)
   const [queued, setQueued] = useState(false)
   const [mode, setMode] = useState<'solo' | 'squad'>('solo')
 
@@ -304,14 +303,11 @@ export default function Lobby({ visible }: { visible: boolean }) {
             variant="ghost"
             size="sm"
             cue="ui.select"
-            onPress={() => {
-              openSettings(true)
-              // The lobby already holds the cursor, so this is belt and
-              // braces -- but the same screen opens from a keybind mid-match
-              // where nothing else does, and one opener that always asks is
-              // better than two that each assume.
-              void fetchNui(CB.SETTINGS_FOCUS, { open: true })
-            }}
+            // ASKS, never opens. Settings follows the focus stack, so the
+            // button's whole job is to request the cursor -- the screen
+            // appears when Lua says it owns it. The lobby keeps its own focus
+            // underneath and gets it back when settings pops.
+            onPress={() => { void fetchNui(CB.SETTINGS_FOCUS, { open: true }) }}
           >
             Settings
           </Btn>
