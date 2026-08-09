@@ -286,10 +286,20 @@ From the repo root:
 ./tools/verify.sh
 ```
 
-Three gates: Lua 5.4 syntax on every file, unit tests for the pure logic
-(geometry, storm solver, seeded RNG, loop registry, XP curve), and a scope gate
-that fails the build if a scope-limited native appears in client code without an
-explicit `-- scope-ok:` marker.
+The gates, in the order they run:
+
+| Gate | Fails when |
+|---|---|
+| syntax | `luac -p` rejects any `.lua` under `resources/` |
+| tests | any unit suite fails (pure logic: geometry, storm solver, seeded RNG, loop registry, scheduler, roster, XP curve) |
+| scope | a scope-limited native appears in `br_core/client/` without an explicit `-- scope-ok:` marker |
+| weapon table | `tools/check_weapons.lua` finds an inconsistency |
+| POI siting | `tools/check_pois.lua` finds a badly-placed POI |
+| forward locals | a `local function` is called above its own declaration (invisible to `luac -p`, nil at runtime) |
+| manifest coverage | a `.lua` exists under a resource but is declared in no fxmanifest — so it silently never loads |
+| shared coverage | a `br_lib/shared/*.lua` appears in no consuming resource's `shared_scripts` — the gap that let two finished modules sit dead |
+| secrets | anything credential-shaped is about to be committed, anywhere in the repo |
+| slice-1 boundary | `tools/dispatch.sh` grows a verb beyond `status`/`telemetry`, or `br_ringmaster` gains a write path (see PLAN.md, M9 Slice 1) |
 
 Requires Lua 5.4 (`winget install --id DEVCOM.Lua -e`, or your distro's package).
 The script finds `luac` on its own.
