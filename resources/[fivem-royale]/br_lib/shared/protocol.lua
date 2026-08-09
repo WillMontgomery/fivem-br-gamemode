@@ -181,6 +181,13 @@ BR.Nui = {
     STATE     = 'state',     -- match state transition
     HUD       = 'hud',       -- vitals, alive count, kills (10 Hz, deltas)
     SQUAD     = 'squad',
+    -- THE PARTY, ALWAYS, alongside whatever the squad channel is carrying.
+    -- In a match those are different groups: the squad is who you are
+    -- fighting with and is fixed for the round; the party is who you will
+    -- still be with next round. One channel could only ever describe one of
+    -- them, and mid-match it describes the squad -- which is why party
+    -- management had nothing to read.
+    PARTY     = 'party',
     INV       = 'inv',
     PROMPT    = 'prompt',    -- world-anchored interaction prompt + progress ring
     FEED      = 'feed',      -- kill feed + damage numbers

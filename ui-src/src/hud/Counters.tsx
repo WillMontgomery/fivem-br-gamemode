@@ -88,8 +88,15 @@ function Counter({
 }
 
 export default function Counters({
-  alive, squads, kills, mode,
-}: { alive: number; squads: number; kills: number; mode: string }) {
+  alive, squads, kills, mode, squadKills,
+}: {
+  alive: number; squads: number; kills: number; mode: string
+  /** The squad's total, YOURS INCLUDED. Undefined in solo, and undefined
+   *  rather than 0 when there is no squad to total -- a "Squad 0" beside your
+   *  own count would read as a team that has done nothing rather than as a
+   *  team that does not exist. */
+  squadKills?: number
+}) {
   return (
     <div className="flex items-start gap-2">
       <Counter
@@ -97,6 +104,14 @@ export default function Counters({
         label="Elims"
         // Cyan: you did this. The colour answers "was that me?" without words.
         colour="var(--color-royale-accent)"
+        // THE SQUAD'S TOTAL, subordinate to your own (user, 2026-08-09). It
+        // rides the same slot the alive counter uses for "N squads": a second
+        // number that qualifies the first rather than competing with it, so
+        // the hero numeral is still the one you are personally responsible
+        // for. Hidden when it equals your own -- "3 / squad 3" is noise.
+        sub={squadKills != null && squadKills !== kills
+          ? `${squadKills} squad`
+          : undefined}
       />
       <Counter
         value={alive}

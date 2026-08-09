@@ -447,13 +447,16 @@ export default function Settings({
                 className={nameError ? 'text-[0.78rem] tscale' : 'micro-label'}
                 style={nameError ? { color: 'var(--color-danger)' } : undefined}
               >
+                {/* SHORT, BOTH WAYS. The locked line explained the reasoning
+                    and the unlocked line explained the rule; neither is what
+                    somebody standing at a text box wants to read (owner,
+                    2026-08-09). Say what is true and stop. */}
                 {nameError
                   ? nameError
                   : nameLocked
-                    ? 'Locked while you are in a match — your name is in the kill'
-                      + ' feed everyone else is reading. It unlocks in the lobby.'
-                    : '3–20 characters, and it has to be something everyone else'
-                      + ' can be shown. Leave it empty to use your platform name.'}
+                    ? 'You cannot change this while in a match.'
+                    : 'A preferred name. It can obscure other identifiers in game.'
+                      + ' Leave it empty to use your platform name.'}
               </p>
           </Section>
           </div>

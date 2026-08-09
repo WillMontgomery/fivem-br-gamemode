@@ -90,6 +90,15 @@ export default function Lobby({
   // They can queue -- the server holds the queue until the next WAITING.
   const matchRunning = match.state !== 'waiting'
 
+  // AM I THE ONE HOLDING THE PARTY UP? Somebody else in my party is queued
+  // and I am not. The same `readyIds` the party chips already read from, so
+  // the prompt above the button and the ticks beside the names can never
+  // disagree about who is waiting on whom.
+  const readyIds = new Set(lobby?.readyIds ?? [])
+  const waitingOnMe = squad.members.length > 1
+    && !searching
+    && squad.members.some((m) => m.src !== squad.you && readyIds.has(m.src))
+
   // WHAT ARE WE WAITING FOR?
   //
   // "2 / 2 queued" was the old answer and it told the player nothing: it did
@@ -320,6 +329,34 @@ export default function Lobby({
                     : 'A match is in progress — ready up to join the next one.'}
                 </p>
               )}
+
+              {/* SOLO LEAVES YOUR PARTY, and it says so BEFORE the button
+                  rather than as a notice afterwards (user, 2026-08-09).
+                  Readying up in solo drops you out of the party server-side;
+                  a player who has just spent a minute assembling one deserves
+                  to know that the next click undoes it. */}
+              {mode === 'solo' && squad.members.length > 1 && (
+                <p
+                  className="text-[0.82rem] mb-2.5 tscale"
+                  style={{ color: 'var(--color-warn, #FFB020)' }}
+                >
+                  Playing solo will remove you from your party.
+                </p>
+              )}
+
+              {/* YOUR PARTY IS WAITING. Nobody standing in a lobby knows that
+                  three other people are already queued and watching the
+                  counter -- and the person they are waiting on is the one who
+                  cannot see it. */}
+              {mode === 'squad' && waitingOnMe && (
+                <p
+                  className="text-[0.85rem] mb-2.5 tscale font-semibold"
+                  style={{ color: 'var(--color-royale-accent)' }}
+                >
+                  Ready up! Your party is waiting.
+                </p>
+              )}
+
               <Btn variant="primary" size="xl" full cue="ui.ready" onPress={queue}>
                 Ready up
               </Btn>

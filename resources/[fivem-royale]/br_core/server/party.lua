@@ -93,6 +93,10 @@ function BR.Party.public(partyId)
             armour = e and e.armour or 0,
             leader = (src == p.leader),
             colour = COLOURS[((i - 1) % #COLOURS) + 1],
+            -- Per-member eliminations, so the HUD can total the squad's. The
+            -- roster already tracks it; nothing was sending it, so "how is my
+            -- team doing" had no answer anywhere on screen.
+            kills  = e and e.kills or 0,
         }
     end
 

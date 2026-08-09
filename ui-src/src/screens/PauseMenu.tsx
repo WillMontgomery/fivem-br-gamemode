@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useUi, selSquad } from '../store'
+import { useUi, selSquad, selMatch } from '../store'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 import Btn from '../ui/Btn'
@@ -7,6 +7,7 @@ import Settings from './Settings'
 import { play } from '../audio/cues'
 import Progress from './Progress'
 import NoticeLog from './NoticeLog'
+import PartyCard from './PartyCard'
 import Help from './Help'
 
 /**
@@ -110,7 +111,12 @@ export default function PauseMenu() {
   }, [asked])
   const [confirming, setConfirming] = useState<string | null>(null)
   const squad = useUi(selSquad)
+  const match = useUi(selMatch)
   const inSquad = squad.members.length > 1
+  // The PARTY, not the squad: "leave squad" is the wrong words for a group
+  // you keep, and leaving the match takes it with you.
+  const party = useUi((s) => s.party)
+  const inParty = party.members.length > 1
 
   const close = () => { void fetchNui(CB.PAUSE_FOCUS, { open: false }) }
 
@@ -226,6 +232,11 @@ export default function PauseMenu() {
               </Btn>
             </div>
 
+            {/* THE PARTY, SQUADS ONLY. In solo there is no squad to recruit
+                from and no party that would outlive the match, so the card is
+                absent rather than empty. */}
+            {match.mode === 'squad' && <PartyCard />}
+
             {/* ONE CARD, THREE ROWS, FULL WIDTH (owner's call, 2026-08-09).
                 Three separate plates gave three ways of leaving the same
                 visual weight as the map and ate half the screen -- which is
@@ -241,7 +252,7 @@ export default function PauseMenu() {
                 ['--cut-max' as string]: '0.6rem',
               }}
             >
-              {EXITS.filter((e) => !e.squadOnly || inSquad).map((e, i) => (
+              {EXITS.filter((e) => !e.squadOnly || (inSquad && !inParty)).map((e, i) => (
                 <div
                   key={e.id}
                   className="flex items-center gap-6 py-3"
@@ -275,7 +286,11 @@ export default function PauseMenu() {
                         color: confirming === e.id ? 'var(--color-danger)' : undefined,
                       }}
                     >
-                      {confirming === e.id ? e.confirm : e.sub}
+                      {confirming === e.id
+                      ? (e.id === 'lobby' && inParty
+                          ? `${e.confirm} You will also leave your party.`
+                          : e.confirm)
+                      : e.sub}
                     </div>
                   </div>
 

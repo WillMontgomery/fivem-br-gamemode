@@ -31,6 +31,9 @@ export interface UiState {
   match: MatchPayload
   hud: HudPayload
   squad: SquadPayload
+  /** The PARTY -- who you keep after this match. Same shape as squad, its own
+   *  channel, because mid-match they are different groups. */
+  party: SquadPayload
   inv: InvPayload
   storm: StormPayload | null
   dbno: DbnoPayload
@@ -158,6 +161,7 @@ export interface UiState {
   setMatch: (m: MatchPayload) => void
   setHud: (h: HudPayload) => void
   setSquad: (s: SquadPayload) => void
+  setParty: (p: SquadPayload) => void
   setInv: (i: WireInvPayload) => void
   setStorm: (s: StormPayload | null) => void
   setDbno: (d: DbnoPayload) => void
@@ -416,6 +420,7 @@ export const useUi = create<UiState>((set, get) => {
   match: emptyMatch,
   hud: emptyHud,
   squad: { id: null, members: [] },
+  party: { id: null, members: [] },
   inv: emptyInv,
   storm: null,
   dbno: emptyDbno,
@@ -483,6 +488,7 @@ export const useUi = create<UiState>((set, get) => {
     set({ hud })
   },
   setSquad:    (squad) => set({ squad }),
+  setParty:    (party) => set({ party }),
   setInv:      (inv) => set({ inv: normaliseInv(inv) }),
   // Normalised at the boundary: an empty or shapeless payload (a nil that
   // crossed the Lua bridge becomes {}) must read as "no storm", never as a

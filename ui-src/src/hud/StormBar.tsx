@@ -34,7 +34,11 @@ export default function StormBar({ storm }: { storm: StormPayload | null }) {
         const total = Math.ceil(left / 1000)
         const m = Math.floor(total / 60)
         const sec = total % 60
-        const next = m > 0 ? `${m}:${String(sec).padStart(2, '0')}` : `${sec}s`
+        // NO TRAILING `s`, to match the warmup clock (owner's call,
+        // 2026-08-09). Two clocks in the same place on the screen formatting
+        // the same quantity differently is the kind of inconsistency that
+        // reads as a bug even when nobody can say why.
+        const next = m > 0 ? `${m}:${String(sec).padStart(2, '0')}` : `${sec}`
         // Only touch the DOM when the rendered text actually changes.
         if (node.textContent !== next) node.textContent = next
       }

@@ -189,12 +189,43 @@ export default function PartyPanel({
               >
                 {m.leader ? '★ ' : ''}{m.name}
                 {someoneReady && (
+                  // THE TICK LANDS, it does not appear. `key={ready}` remounts
+                  // the span on the transition, so the punch animation replays
+                  // exactly once per player readying up -- which is the moment
+                  // worth noticing on a screen where everything else is still
+                  // (owner's call, 2026-08-09). The waiting state gets no
+                  // animation at all: it is the absence of news.
                   <span
-                    className="ml-1 text-[0.78rem]"
-                    style={{ color: ready ? 'var(--color-hp)' : 'rgba(255,255,255,0.4)' }}
+                    key={String(ready)}
+                    className="ml-1 text-[0.78rem] leading-none"
+                    style={{
+                      color: ready ? 'var(--color-hp)' : 'rgba(255,255,255,0.4)',
+                      animation: ready ? 'punch 380ms var(--ease-out) both' : undefined,
+                      display: 'inline-block',
+                    }}
                   >
                     {ready ? '✓' : '…'}
                   </span>
+                )}
+
+                {/* REMOVE, and only the leader sees it. It is a `×` on the
+                    chip rather than a row in a menu because the chip IS the
+                    member -- there is nowhere else for it to live that would
+                    not need a second list of the same people. */}
+                {iAmLeader && m.src !== squad.you && !disabled && (
+                  <button
+                    type="button"
+                    data-plain
+                    className="ml-0.5 text-[0.72rem] leading-none"
+                    style={{ color: 'rgba(255,255,255,0.35)' }}
+                    title={`Remove ${m.name} from the party`}
+                    onClick={() => {
+                      play('ui.back')
+                      void fetchNui(CB.SQUAD_KICK, { target: m.src })
+                    }}
+                  >
+                    &times;
+                  </button>
                 )}
               </span>
             )

@@ -81,6 +81,8 @@ export interface StormPayload {
 export interface SquadMember {
   src: number
   name: string
+  /** Eliminations by this member. Summed for the squad total on the HUD. */
+  kills?: number
   /** True for the party leader. */
   leader?: boolean
   state: PlayerState
@@ -508,6 +510,10 @@ export type Envelope =
   | { k: 'state';    d: MatchPayload }
   | { k: 'hud';      d: HudPayload }
   | { k: 'squad';    d: SquadPayload }
+  // The PARTY, always, alongside whatever `squad` is carrying. Mid-match they
+  // are different groups -- the squad is this round's team, the party is who
+  // you keep -- and one channel can only describe one of them.
+  | { k: 'party';    d: SquadPayload }
   | { k: 'inv';      d: WireInvPayload }
   | { k: 'feed';     d: FeedEntry }
   | { k: 'hit';      d: HitPayload }

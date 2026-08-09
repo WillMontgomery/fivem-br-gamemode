@@ -88,6 +88,13 @@ export default function Hud({ visible }: { visible: boolean }) {
             squads={hud.squadsAlive}
             kills={hud.kills}
             mode={match.mode}
+            // SUMMED HERE, not sent as a field. Every squadmate's own count is
+            // already on the wire for the squad panel, so a separate total
+            // would be a second source for the same fact -- and the two would
+            // disagree the moment one of them lagged a push.
+            squadKills={squad.members.length > 1
+              ? squad.members.reduce((n, m) => n + (m.kills ?? 0), 0)
+              : undefined}
           />
         </div>
 

@@ -139,6 +139,15 @@ local pausePhase, pauseAt = nil, 0
 -- what it MEANS is br_core's, the same split the locker and inventory use.
 AddEventHandler('br:ui:pauseAction', function(action)
     if action == 'lobby' then
+        -- LEAVING THE MATCH LEAVES THE PARTY (owner's call, 2026-08-09), and
+        -- the confirm says so before the button is pressed. Walking out on
+        -- three people and staying in their party means they queue for the
+        -- next match with somebody who has already gone -- the party would be
+        -- holding a slot for a player who left, which is the same broken
+        -- state a disconnect used to leave behind.
+        if S.party and S.party.id then
+            TriggerServerEvent(BR.Net.SQUAD_LEAVE)
+        end
         -- The existing, proven leave path -- interstitial, server round trip,
         -- teleport home -- rather than a second implementation of it.
         ExecuteCommand('brleave')
@@ -923,6 +932,18 @@ end
 --- still exists.
 function pushSquadOrParty()
     local me = S.me
+
+    -- THE PARTY GOES OUT EVERY TIME, on its own channel, whatever the squad
+    -- channel ends up carrying. Mid-match the two are different groups and
+    -- the squad wins the SQUAD channel -- so without this the interface can
+    -- see who it is fighting with and has no idea who it is PARTIED with,
+    -- which is exactly what in-match party management needs to know.
+    local party = S.party
+    TriggerEvent('br:ui:sendLocal', BR.Nui.PARTY,
+        party and { id = party.id, leader = party.leader,
+                    members = party.members, pending = party.pending,
+                    you = me.src }
+              or  { id = nil, members = {}, you = me.src })
 
     -- `you` rides along on every payload. The interface has no other way to
     -- know its own server id, and without it "am I the leader?" degenerates to
