@@ -54,6 +54,31 @@ RegisterNUICallback(BR.NuiCb.PAUSE_ACTION, function(data, cb)
     local action = tostring(data and data.action or '')
 
     if action == 'map' then
+        -- TWO ROUTES, AND THE OTHER ONE IS YOURS TO JUDGE.
+        --
+        -- PAUSE_MENUCEPTION_GO_DEEPER (0x77F16B447824DA6C) sets the pause
+        -- menu's current page, so ActivateFrontendMenu followed by it does
+        -- land you on the map. What it does NOT do is remove the rest of the
+        -- frontend -- the tabs are the same scaleform, and going deeper into
+        -- a page is navigation, not suppression. It is a real option and it
+        -- is worth looking at, which is why it is switchable rather than
+        -- argued about: `brmapmode frontend <pageId>` to try it, `brmapmode
+        -- bigmap` to come back. The page ids are the list you linked; nothing
+        -- here guesses one.
+        if BR.Pause.mapMode == 'frontend' then
+            BR.Pause.close()
+            Citizen.SetTimeout(200, function()
+                ActivateFrontendMenu(GetHashKey('FE_MENU_VERSION_SP_PAUSE'), false, -1)
+                if BR.Pause.mapPage then
+                    Citizen.SetTimeout(150, function()
+                        PauseMenuceptionGoDeeper(BR.Pause.mapPage)
+                    end)
+                end
+            end)
+            cb({ ok = true })
+            return
+        end
+
         -- THE BIG MINIMAP, NOT GTA'S PAUSE MENU.
         --
         -- The question was whether the rest of the pause menu's scaleforms
@@ -116,6 +141,30 @@ end)
 RegisterCommand('brpause', function()
     if open then BR.Pause.close() else BR.Pause.open() end
     print(('[br_ui] pause menu %s'):format(open and 'open' or 'closed'))
+end, false)
+
+-- Which route the Map button takes. 'bigmap' draws GTA's full map over live
+-- gameplay with no frontend at all; 'frontend' opens the real pause menu and
+-- optionally navigates to a page. Switchable so the two can be compared in
+-- game rather than argued about from documentation.
+BR.Pause.mapMode = 'bigmap'
+BR.Pause.mapPage = nil
+
+RegisterCommand('brmapmode', function(_, args)
+    local mode = tostring(args[1] or '')
+    if mode == 'frontend' or mode == 'bigmap' then
+        BR.Pause.mapMode = mode
+        BR.Pause.mapPage = tonumber(args[2])
+        print(('[br_ui] map mode: %s%s'):format(mode,
+            BR.Pause.mapPage and (' page ' .. BR.Pause.mapPage) or ''))
+        return
+    end
+    print('=== map mode ===')
+    print(('  mode: %s'):format(tostring(BR.Pause.mapMode)))
+    print(('  page: %s'):format(tostring(BR.Pause.mapPage)))
+    print('  bigmap   -- SetBigmapActive: full map over live gameplay, no frontend')
+    print('  frontend -- ActivateFrontendMenu, optionally + PauseMenuceptionGoDeeper')
+    print('  usage: brmapmode bigmap | brmapmode frontend [pageId]')
 end, false)
 
 -- The page can be closed from under us: a match ending, a br_core restart,

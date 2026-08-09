@@ -160,6 +160,19 @@ function BR.Native.keyLabelForCommand(command, fallbackControl)
     -- missed and the vanilla fallback answered, and the fallback happens to
     -- be E, so the two were indistinguishable). Two columns that agree by
     -- coincidence hid the bug for a round.
+    -- OUR OWN BINDING FIRST, when we are the one routing the key.
+    --
+    -- Everything below asks the ENGINE what a RegisterKeyMapping command is
+    -- bound to -- and the engine only knows its own stored mapping, which
+    -- nothing can change from script. Once the raw-key layer owns the
+    -- routing, the engine's answer is a stale default: interact rebound to R
+    -- still reported E, so every world prompt went on saying E (user,
+    -- 2026-08-09). BR.Keys is the authority whenever it is running, and
+    -- returns nil when it is not, so the engine lookup stays the answer for
+    -- exactly the builds that still rely on it.
+    local mine = BR.Keys and BR.Keys.labelFor and BR.Keys.labelFor(command)
+    if mine then return mine, 'raw' end
+
     for _, name in ipairs({ '+' .. command, command }) do
         local id = (GetHashKey(name) | 0x80000000) & 0xFFFFFFFF
         local ok, raw = pcall(GetControlInstructionalButton, 2, id, true)

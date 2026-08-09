@@ -2097,6 +2097,27 @@ do
     ok(not (V('Admin')), 'impersonating the system is refused')
     ok(not (V('S3rv3r')), 'and so is a leetspoken version of it')
 
+    -- SLURS, HATE AND HARASSMENT. Not a taste question: these are names that
+    -- other players cannot mute, because they are printed in the kill feed
+    -- and the squad panel.
+    for _, bad in ipairs({
+        'Retard', 'r3tard', 'F4ggot', 'tr4ny', 'Nazi', 'H1TLER', 'kkk',
+        'Wetback', 'Chink', 'Beaner', 'incel', 'MakeMeASandwich',
+        'getinthekitchen', 'Rapist', 'Spastic', 'Femoid', 'wh1tepower',
+    }) do
+        ok(not (V(bad)), ('"%s" is refused'):format(bad))
+    end
+
+    -- AND THE WORDS THAT MERELY CONTAIN THEM MUST NOT BE. Every one of these
+    -- is caught by an entry above unless INNOCENT rescues it -- which is the
+    -- whole reason that list exists and why it grows with the blocklist.
+    for _, fine in ipairs({
+        'Suspicion', 'Raccoon', 'Tycoon', 'Montenegro', 'Therapist',
+        'Grapes', 'Homogeneous', 'Shoes', 'VanDyke', 'Abolish', 'Platoon',
+    }) do
+        ok(V(fine), ('"%s" is allowed'):format(fine))
+    end
+
     -- The reason is player-facing and specific enough to act on.
     local _, why = V('ab')
     ok(type(why) == 'string' and why:find('3'),

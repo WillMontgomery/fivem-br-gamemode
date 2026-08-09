@@ -60,6 +60,18 @@ local poses = {}
 local hold = { id = nil, from = 0 }
 local lastPrompt = { id = nil, hold = nil }
 
+-- REBINDING A KEY HAS TO REDRAW THE PROMPT THAT NAMES IT.
+--
+-- The payload is only rebuilt when the target entry (or its hold time)
+-- changes, which is right for the sixty frames a second nothing happens in --
+-- and wrong for the one moment a player rebinds interact while standing in
+-- front of a crate: the prompt kept saying the old key until they walked away
+-- and back (user, 2026-08-09). Forgetting the cached id is enough; the next
+-- frame rebuilds it with the new label.
+AddEventHandler('br:keys:changed', function()
+    lastPrompt.id, lastPrompt.hold = nil, nil
+end)
+
 -- Which crate is currently the one that shines, and when that was last
 -- decided. Held across frames so the search does not have to run in every one.
 local shineId = nil

@@ -115,15 +115,25 @@ export default function Hud({ visible }: { visible: boolean }) {
           </div>
         )}
 
-        {/* Vitals sit exactly where GTA's own minimap strip was: overlapping
-            the radar's lower edge, spanning its width. Positioned FIXED
-            against the viewport (not inside hud-safe's padding) because the
-            --map-* variables are viewport-true coordinates of the real radar. */}
+        {/* Vitals sit UNDER the radar, spanning its width -- not over it.
+            Positioned FIXED against the viewport (not inside hud-safe's
+            padding) because the --map-* variables are viewport-true
+            coordinates of the real radar.
+
+            THE OFFSET IS NEGATIVE NOW. It was `+ 0.3rem`, which tucked a
+            0.75rem strip just inside the radar's lower edge. Making the
+            numerals legible meant growing the bar, and a taller bar anchored
+            at its BOTTOM grows upward -- so it climbed over the minimap
+            (user, 2026-08-09). Dropping the anchor below the radar's bottom
+            edge puts the whole strip back underneath it.
+
+            --vitals-drop is one number on purpose: the exact clearance is a
+            thing only an eye in game can settle, and this is the knob. */}
         <div
           className="fixed"
           style={{
             left: 'var(--map-left)',
-            bottom: 'calc(var(--map-bottom) + 0.3rem)',
+            bottom: 'calc(var(--map-bottom) - var(--vitals-drop))',
             width: 'var(--map-w)',
           }}
         >

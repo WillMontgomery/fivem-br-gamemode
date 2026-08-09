@@ -78,6 +78,11 @@
   /* Narrowed past ~21:9 so anchored columns do not end up needing a head turn. */
   --usable-w: 100%;
 
+  /* How far the vitals strip hangs BELOW the radar's bottom edge. One number,
+     because the right clearance depends on the player's safe-zone slider and
+     is settled by looking at it in game, not by arithmetic here. */
+  --vitals-drop: 0.85rem;
+
   /* PALETTE — one colour, one meaning, game-wide. Hex, for the reason at the
      top of this file.
 

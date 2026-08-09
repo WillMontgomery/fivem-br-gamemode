@@ -61,15 +61,13 @@ function Fill({ value, colour, segments = 0, num }: {
           className="absolute right-1.5 top-1/2 font-display leading-none tabular-nums"
           style={{
             transform: 'translateY(-50%)',
-            // 0.95rem, up from 0.62. Health and shield are the two numbers a
+            // 0.88rem, up from 0.62. Health and shield are the two numbers a
             // player checks mid-fight without looking away from what they are
             // shooting at, and at 0.62rem they were unreadable "even in good
-            // conditions" (user, 2026-08-09). The bar grew with them rather
-            // than the number being moved out of it, so the strip stays one
-            // object anchored where players have learned it is -- and it all
-            // still sits inside the safe-zone margin, because the strip's
-            // WIDTH is unchanged and only its height moved.
-            fontSize: '0.95rem',
+            // conditions" (user, 2026-08-09). The bar grew to hold them
+            // rather than the number being moved out of it, so the strip
+            // stays one object anchored where players have learned it is.
+            fontSize: '0.88rem',
             // Heavier shadow to match: a bigger numeral over a bright fill
             // needs more separation, not less.
             textShadow: '0 1px 3px rgba(0,0,0,0.98), 0 0 6px rgba(0,0,0,0.7)',
@@ -109,13 +107,13 @@ export default function Vitals({ hp, armour, stamina = 100 }:
   // exactly where it always was.
   return (
     <div className="relative">
-      {/* 1.25rem, grown twice. It was 0.6rem, then 0.75 so the numerals would
-          fit -- and they still could not be read at a glance. The bar is the
-          container for the number, so making the number legible means making
-          the bar tall enough to hold it. Height only: the width is untouched,
-          so the strip stays exactly as far inside the safe-zone margin as it
-          has always been. */}
-      <div className="flex gap-[3px] items-stretch h-[1.25rem]">
+      {/* 1.05rem, grown twice: 0.6, then 0.75 so the numerals would fit, and
+          they still could not be read at a glance. The bar is the container
+          for the number, so making the number legible means making the bar
+          tall enough to hold it -- and the whole strip then moved DOWN, clear
+          of the radar, because a bottom-anchored bar grows upward and this
+          one had started covering the minimap. See --vitals-drop in Hud.tsx. */}
+      <div className="flex gap-[3px] items-stretch h-[1.05rem]">
         <div className="basis-[62%] relative" title="Health">
           <Fill value={hp} colour="var(--color-hp)" num />
           {hit > 0 && <div key={hit} className="vitals-hit-flash" />}
@@ -127,12 +125,22 @@ export default function Vitals({ hp, armour, stamina = 100 }:
           <Fill value={armour} colour="var(--color-shield)" segments={4} num />
         </div>
       </div>
-      {/* Sprint stamina: full-width, same height as the health bar (user
-          call), hanging below the row. Fades away entirely at full,
+      {/* Sprint stamina: full-width and the SAME HEIGHT as health and
+          shield (user call, restated 2026-08-09 -- it had drifted thinner
+          than both), hanging below the row. Fades away entirely at full,
           Fortnite-style -- hold SPRINT while running to drain it. */}
       <div
-        className="absolute left-0 right-0 h-[0.5rem] transition-opacity duration-300"
-        style={{ top: 'calc(100% + 3px)', opacity: stamina >= 99.5 ? 0 : 1 }}
+        className="absolute left-0 right-0 h-[1.05rem] transition-opacity duration-300"
+        // ABOVE the row now, not below, and that swap is what let the health
+        // strip come down off the minimap at all.
+        //
+        // There are only a couple of rem between the radar's bottom edge and
+        // the safe margin -- not enough for the strip AND a bar hanging under
+        // it. Something has to overlap the radar, and it should be the one
+        // that is USUALLY NOT THERE: stamina fades out entirely at full, so
+        // for most of a match this space is empty, while health and shield
+        // are on screen every second of it.
+        style={{ bottom: 'calc(100% + 3px)', opacity: stamina >= 99.5 ? 0 : 1 }}
         title="Stamina"
       >
         <Fill value={stamina} colour="rgba(255,255,255,0.9)" />

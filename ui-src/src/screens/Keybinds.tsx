@@ -133,6 +133,20 @@ export default function Keybinds() {
             ? `${rejected} is reserved and cannot be bound.`
             : 'Click a key to rebind it. Taking a key clears whatever held it.'}
       </p>
+
+      {/* THE ONE THING A PLAYER WILL OTHERWISE FIND OUT THE CONFUSING WAY.
+          GTA's own key-bindings list keeps showing the defaults this project
+          registered, because nothing can change the engine's stored mapping
+          from script -- so after rebinding here, that list disagrees and is
+          not what the game is reading (user, 2026-08-09: "FiveM's keybinds
+          haven't been changed"). Saying so is cheaper than letting somebody
+          discover it and conclude the rebinder is broken. */}
+      {rawActive && (
+        <p className="micro-label" style={{ opacity: 0.75 }}>
+          This list is what the game uses. GTA&apos;s own key bindings screen
+          still shows its defaults and no longer affects play.
+        </p>
+      )}
     </div>
   )
 }

@@ -296,6 +296,22 @@ function BR.Keys.vkName(code)
     return nil
 end
 
+--- The readable key a command is ACTUALLY on, or nil.
+---
+--- THE AUTHORITY WHEN THE RAW LAYER IS RUNNING, and the reason anything else
+--- has to ask: the engine still believes its own RegisterKeyMapping default,
+--- because nothing can change that from script. So GetControlInstructionalButton
+--- kept answering "E" after interact was rebound to R, and every DUI prompt in
+--- the world went on saying E (user, 2026-08-09).
+--- @param command string
+--- @return string|nil
+function BR.Keys.labelFor(command)
+    if not BR.Keys.rawActive then return nil end
+    local code = load()[command]
+    if not code then return nil end
+    return BR.Keys.vkName(code) or ('#' .. code)
+end
+
 --- Bind one command to one virtual-key code, or to nothing.
 --- @param command string
 --- @param code integer|nil  nil or 0 unbinds
@@ -325,6 +341,10 @@ function BR.Keys.set(command, code)
     SetResourceKvp(KVP, json.encode(store))
 
     BR.Keys.push()
+    -- ANYTHING THAT DRAWS A KEY HAS TO REDRAW IT. The world prompts cache
+    -- their payload per entry, so without this the crate you are standing in
+    -- front of keeps naming the old key until you walk away and back.
+    TriggerEvent('br:keys:changed')
     return true
 end
 

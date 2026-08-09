@@ -96,6 +96,14 @@ local INNOCENT = {
     'cumbria', 'cumberland', 'circumstance', 'document', 'accumulate',
     'titan', 'titanium', 'constitution', 'competition',
     'administrator', 'admiral',
+    -- Ordinary words that contain a slur once the folding has run. Each of
+    -- these is here because the entry that catches it is worth keeping.
+    'suspicion', 'suspicious', 'auspic', 'hospic', 'homogene', 'homograph',
+    'raccoon', 'cocoon', 'tycoon', 'lagoon', 'monsoon', 'platoon', 'harpoon',
+    'negros', 'montenegro', 'renegade', 'shoe', 'shoes', 'tahoe', 'oboe',
+    'abort', 'about', 'above', 'abolish', 'abomin',
+    'grape', 'grapes', 'therapist', 'therapy', 'drape', 'scrape',
+    'dykstra', 'vandyke',
 }
 
 --- Substrings that make a name unavailable, written in FOLDED form.
@@ -118,11 +126,42 @@ local BLOCKED = {
     'penis', 'vagina', 'dildo', 'boner', 'blowjob', 'handjob', 'jerkof',
     'masturbat', 'orgasm', 'porn', 'hentai', 'nsfw', 'creampie', 'titfuk',
     'bonerman', 'cock', 'tits', 'nipl', 'nutsak', 'testicl', 'scrotum',
-    -- slurs and hate. Kept short on purpose: these are the ones that must
-    -- never appear over another player's head, and none of them is a
-    -- fragment of an innocent word.
-    'nigr', 'niger', 'nigа', 'fagot', 'fagit', 'retard', 'trany', 'kike',
-    'spic', 'chink', 'wetback', 'nazi', 'hitler', 'holocaust', 'kkk',
+    -- SLURS, HATE AND HARASSMENT.
+    --
+    -- This is the part of the list that is not about taste. Everything above
+    -- is somebody being crude; everything here is a name that makes the game
+    -- unwelcoming for a specific person the moment it appears over someone's
+    -- head -- and unlike a chat message, they cannot mute it, because it is
+    -- printed in the kill feed, the squad panel and the verdict screen.
+    --
+    -- Every entry is checked against the FOLDED name, so the leetspeak and
+    -- separator variants come for free. None of them is a fragment of an
+    -- ordinary English word; anything that was (`spic` inside "suspicion",
+    -- `homo` inside "homogeneous") is handled by INNOCENT above rather than
+    -- by leaving the slur out.
+    --
+    -- racial
+    'nigr', 'niger', 'nigga', 'nigor', 'negro', 'coon', 'kike', 'kyke',
+    'chink', 'gook', 'spic', 'wetback', 'beaner', 'raghead', 'towelhead',
+    'sandnigr', 'paki', 'abo', 'darkie', 'jigaboo', 'wigger', 'zipperhead',
+    -- religious and ethnic hatred
+    'nazi', 'hitler', 'holocaust', 'gaschamber', 'hailhitler', 'heilhitler',
+    'kkk', 'whitepower', 'whitepride', '1488', 'fourteenwords', 'jewrat',
+    'antisemit', 'islamophob', 'deathtoall',
+    -- homophobic and transphobic
+    'fagot', 'fagit', 'faggot', 'dyke', 'trany', 'tranie', 'shemale',
+    'heshe', 'homophob', 'transphob',
+    -- ableist
+    'retard', 'retrd', 'spastic', 'mongoloid', 'cripl',
+    -- sexist and misogynist, including the harassment phrasings that are the
+    -- actual problem rather than the individual words
+    'misogyn', 'getinthekitchen', 'backtothekitchen', 'makemeasandwich',
+    'womenbelong', 'girlsuck', 'girlscant', 'rapist', 'rapeher', 'rapeu',
+    'gropr', 'incel', 'femoid', 'roastie', 'thot',
+    -- 'hoe' is deliberately ABSENT. It sits inside phoenix, shoe, hoedown
+    -- and Tahoe, and 'whore' already covers the slur it was there for -- a
+    -- rule that rejects Phoenix to catch nothing new costs more than it
+    -- earns. The test suite found it, which is the point of the suite.
     -- impersonation. A name is drawn beside system text; one that claims to
     -- BE the system is a lie the interface would be telling for them.
     'admin', 'moderator', 'server', 'console', 'system', 'staf',
