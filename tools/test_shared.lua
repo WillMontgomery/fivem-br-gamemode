@@ -15,6 +15,7 @@ for _, f in ipairs({
     'shared/rng.lua',
     'shared/geo.lua',
     'shared/clock.lua',
+    'shared/sched.lua',
     'shared/outbox.lua',
     'shared/identity.lua',
     'config/match.lua',

@@ -54,6 +54,7 @@ end
 
 loadAll({
     'br_lib/shared/enums.lua',
+    'br_lib/shared/sched.lua',
     'br_lib/shared/identity.lua',
     'br_lib/shared/outbox.lua',
     'br_ringmaster/server/config.lua',
