@@ -4,6 +4,7 @@ import { fetchNui } from '../bridge/nui'
 import { CB, RARITY } from '../bridge/types'
 import type { InvSlot } from '../bridge/types'
 import ItemIcon from '../hud/ItemIcon'
+import { play } from '../audio/cues'
 
 /**
  * The TAB panel.
@@ -114,39 +115,53 @@ function SlotCard({
               until it is over (user, 2026-08-05). These do the same job with
               no ambiguity, and the press-release gesture still works for
               anyone who finds it. */}
+          {/* stopPropagation on the pointer events, not just the click: the
+              CARD owns press-and-release as a swap gesture, so without it
+              nudging an item left also starts dragging the card. */}
           <div className="flex gap-1 mb-1">
-            <button
-              type="button"
-              disabled={!canLeft}
-              className="flex-1 rounded py-1 text-sm leading-none
-                         bg-white/10 hover:bg-white/25 disabled:opacity-25"
-              onPointerDown={(e) => e.stopPropagation()}
-              onPointerUp={(e) => e.stopPropagation()}
-              onClick={(e) => { e.stopPropagation(); onMove(index, index - 1) }}
-            >
-              ◀
-            </button>
-            <button
-              type="button"
-              disabled={!canRight}
-              className="flex-1 rounded py-1 text-sm leading-none
-                         bg-white/10 hover:bg-white/25 disabled:opacity-25"
-              onPointerDown={(e) => e.stopPropagation()}
-              onPointerUp={(e) => e.stopPropagation()}
-              onClick={(e) => { e.stopPropagation(); onMove(index, index + 1) }}
-            >
-              ▶
-            </button>
+            {([-1, 1] as const).map((dir) => (
+              <button
+                key={dir}
+                type="button"
+                disabled={dir < 0 ? !canLeft : !canRight}
+                className={`btn plate flex-1 py-1 text-sm leading-none${
+                  (dir < 0 ? !canLeft : !canRight) ? ' btn--off' : ''}`}
+                style={{
+                  ['--edgec' as string]: 'rgba(255,255,255,0.22)',
+                  ['--plate-fill' as string]: 'rgba(30,34,48,0.94)',
+                  ['--cut-max' as string]: '0.35rem',
+                }}
+                onPointerDown={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
+                onPointerEnter={() => play('ui.hover')}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  play('ui.select')
+                  onMove(index, index + dir)
+                }}
+              >
+                {dir < 0 ? '◀' : '▶'}
+              </button>
+            ))}
           </div>
 
           <div className="flex gap-1.5">
             {slot.kind === 'consumable' && (
               <button
                 type="button"
-                className="flex-1 rounded px-2 py-1.5 text-[0.8rem] uppercase
-                           tracking-wider bg-white/15 hover:bg-white/25"
+                className="btn plate flex-1 px-2 py-1.5 font-display text-[0.8rem]
+                           uppercase tracking-[0.1em]"
+                style={{
+                  ['--edgec' as string]: 'var(--color-hp)',
+                  ['--plate-fill' as string]: 'rgba(18,46,30,0.94)',
+                  ['--cut-max' as string]: '0.4rem',
+                }}
+                onPointerDown={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
+                onPointerEnter={() => play('ui.hover')}
                 onClick={(e) => {
                   e.stopPropagation()
+                  play('ui.select')
                   void fetchNui(CB.INV_USE, { slot: index })
                 }}
               >
@@ -155,10 +170,19 @@ function SlotCard({
             )}
             <button
               type="button"
-              className="flex-1 rounded px-2 py-1.5 text-[0.8rem] uppercase
-                         tracking-wider bg-white/10 hover:bg-white/20"
+              className="btn plate flex-1 px-2 py-1.5 font-display text-[0.8rem]
+                         uppercase tracking-[0.1em]"
+              style={{
+                ['--edgec' as string]: 'rgba(255,255,255,0.22)',
+                ['--plate-fill' as string]: 'rgba(30,34,48,0.94)',
+                ['--cut-max' as string]: '0.4rem',
+              }}
+              onPointerDown={(e) => e.stopPropagation()}
+              onPointerUp={(e) => e.stopPropagation()}
+              onPointerEnter={() => play('ui.hover')}
               onClick={(e) => {
                 e.stopPropagation()
+                play('ui.back')
                 void fetchNui(CB.INV_DROP, { slot: index })
               }}
             >

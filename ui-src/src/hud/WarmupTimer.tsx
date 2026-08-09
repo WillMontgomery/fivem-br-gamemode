@@ -57,7 +57,7 @@ export default function WarmupTimer() {
       <span className="text-[0.625rem] uppercase tracking-[0.18em] text-white/45">
         Warmup
       </span>
-      <span ref={timeRef} className="text-lg font-bold tabular-nums leading-none">
+      <span ref={timeRef} className="font-display text-lg tabular-nums leading-none">
         --
       </span>
       <span className="text-[0.6875rem] text-white/40">until drop</span>

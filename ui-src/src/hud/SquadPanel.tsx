@@ -70,23 +70,36 @@ function Row({ m }: { m: SquadMember }) {
   const hp = dead || dying ? 0 : Math.max(0, Math.min(1, m.hp / 100))
   const sh = dead || dying ? 0 : Math.max(0, Math.min(1, (m.armour ?? 0) / 100))
 
+  // A MATE IS A PLATE. Each row is its own object carrying that player's
+  // colour on its edge, rather than a stripe inside one shared box -- so a
+  // four-stack reads as four people at a glance instead of as a list, and the
+  // colour is on the thing rather than beside it.
   return (
-    <div className="relative flex items-center gap-2" style={{ opacity: dead ? 0.34 : 1,
-      transition: 'opacity 460ms ease' }}>
+    <div
+      className="plate relative flex items-center gap-2 px-2 py-1.5"
+      style={{
+        ['--edgec' as string]: dead ? 'rgba(255,255,255,0.14)' : m.colour,
+        ['--plate-fill' as string]: downed
+          ? 'rgba(52,20,24,0.92)' : 'rgba(20,23,33,0.90)',
+        ['--cut-max' as string]: '0.45rem',
+        opacity: dead ? 0.34 : 1,
+        transition: 'opacity 460ms ease',
+      }}
+    >
       {flash > 0 && <div key={flash} className="mate-flash" />}
 
       <span
-        className={`w-1.5 h-6 rounded-full shrink-0${downed ? ' mate-pulse' : ''}`}
+        className={`w-1 self-stretch rounded-sm shrink-0${downed ? ' mate-pulse' : ''}`}
         style={{ background: m.colour }}
       />
 
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline justify-between gap-2">
-          <span className="text-[0.6875rem] font-semibold truncate">{m.name}</span>
+          <span className="text-[0.72rem] font-semibold truncate">{m.name}</span>
           {(dead || downed) && (
             <span
               key={dead ? 'out' : 'down'}
-              className="mate-stamp text-[0.625rem] font-semibold tracking-wider"
+              className="mate-stamp font-display text-[0.62rem] tracking-[0.18em]"
               style={{ color: dead ? 'rgba(255,255,255,0.5)' : 'var(--color-danger)' }}
             >
               {dead ? 'OUT' : 'DOWN'}
@@ -96,7 +109,10 @@ function Row({ m }: { m: SquadMember }) {
 
         {!dead && (
           <>
-            <div className="h-1 mt-0.5 rounded-full bg-black/55 overflow-hidden">
+            {/* Taller than the old 1px hairlines: a squadmate's health is a
+                thing you check mid-fight, and a line you have to look twice
+                at is a line you stop looking at. */}
+            <div className="h-[0.2rem] mt-1 rounded-full bg-black/55 overflow-hidden">
               <div
                 className={`bar-fill h-full rounded-full${dying ? ' mate-drain' : ''}`}
                 style={{
@@ -106,7 +122,7 @@ function Row({ m }: { m: SquadMember }) {
                 }}
               />
             </div>
-            <div className="h-1 mt-0.5 rounded-full bg-black/55 overflow-hidden">
+            <div className="h-[0.2rem] mt-[0.15rem] rounded-full bg-black/55 overflow-hidden">
               <div
                 className={`bar-fill h-full rounded-full${dying ? ' mate-drain' : ''}`}
                 style={{
@@ -129,8 +145,10 @@ export default function SquadPanel({ squad }: { squad: SquadPayload }) {
   // bug. Do not widen this test.
   if (!squad.id || squad.members.length <= 1) return null
 
+  // No outer .panel: each row is its own plate now, so a shared box around
+  // them was a second frame doing nothing but adding an edge.
   return (
-    <div className="panel px-3 py-2 flex flex-col gap-1.5">
+    <div className="flex flex-col gap-1">
       {squad.members.map((m) => <Row key={m.src} m={m} />)}
     </div>
   )

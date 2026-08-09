@@ -6,11 +6,12 @@
   "description": "NUI for FiveM Royale. Builds into resources/[fivem-royale]/br_ui/ui.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build && npm run check:css",
+    "build": "tsc --noEmit && vite build && npm run check:css && npm run check:ui",
     "build:only": "vite build",
     "watch": "vite build --watch",
     "typecheck": "tsc --noEmit",
-    "check:css": "node scripts/check-css.mjs"
+    "check:css": "node scripts/check-css.mjs",
+    "check:ui": "node scripts/check-ui.mjs"
   },
   "//": "Pinned to the HeroUI 2.x line and Tailwind 3.x deliberately. FiveM's CEF is Chrome 103, which cannot parse oklch/oklab/lch/color-mix -- and HeroUI 3 + Tailwind 4 emit those throughout their colour systems. scripts/check-css.mjs fails the build if any reach the bundle.",
   "dependencies": {

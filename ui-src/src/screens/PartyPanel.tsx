@@ -112,17 +112,51 @@ export default function PartyPanel({
         <div className="rise plate flex items-center gap-2 px-3 py-2"
              style={{ ['--edgec' as string]: 'var(--color-royale-accent)',
                       ['--plate-fill' as string]: 'rgba(10,44,56,0.94)' }}>
-          <span className="flex-1 text-xl">
+          <span className="flex-1 text-[0.95rem]">
             <span className="font-semibold">{invite.name}</span>
             <span className="text-white/60">
               {invite.kind === 'joinreq' ? ' wants to join your party' : ' invited you'}
             </span>
-            <span className="text-white/40 text-[1rem]">
+            <span className="text-white/40 text-[0.8rem]">
 {' '}({invite.size}/{invite.max})
             </span>
           </span>
           <Btn size="sm" variant="primary" onPress={() => respond(true)}>Accept</Btn>
           <Btn size="sm" variant="ghost" cue="ui.back" onPress={() => respond(false)}>Decline</Btn>
+        </div>
+      )}
+
+      {/* INVITES YOU HAVE SENT, WHOEVER YOU ARE.
+          These used to live inside the in-a-party branch, which meant the one
+          person who most needs them -- someone inviting their first friend, so
+          still a party of one -- never saw them at all. An invite that has been
+          sent and an invite that failed to send looked identical (user,
+          2026-08-08).
+
+          A chip resolves one of three ways and the animation always has an
+          ending: into a member when they accept, or into a notice when they
+          decline or it expires. */}
+      {mode === 'squad' && (squad.pending ?? []).length > 0 && !inParty && (
+        <div>
+          <div className="micro-label mb-1.5">Invites sent</div>
+          <div className="flex flex-wrap gap-1.5">
+            {(squad.pending ?? []).map((p) => (
+              <span
+                key={`out-${p.src}`}
+                className="plate px-2.5 py-1 text-[0.72rem] font-semibold
+                           flex items-center gap-1.5 animate-pulse"
+                style={{
+                  ['--edgec' as string]: 'var(--color-royale-accent)',
+                  ['--plate-fill' as string]: 'rgba(10,44,56,0.9)',
+                  ['--cut-max' as string]: '0.4rem',
+                }}
+                title={`Waiting for ${p.name} to answer`}
+              >
+                {p.name}
+                <span style={{ color: 'var(--color-royale-accent)' }}>…</span>
+              </span>
+            ))}
+          </div>
         </div>
       )}
 
@@ -195,7 +229,7 @@ export default function PartyPanel({
             {(['create', 'join', 'random'] as const).map((sm) => (
               <Btn
                 key={sm}
-                size="sm"
+                size="lg"
                 variant={subMode === sm ? 'primary' : 'default'}
                 active={subMode === sm}
                 disabled={disabled}
@@ -208,7 +242,7 @@ export default function PartyPanel({
           </div>
 
           {subMode === 'random' && (
-            <p className="text-[1rem] text-white/35">
+            <p className="micro-label">
               You&rsquo;ll be matched with random teammates.
             </p>
           )}
@@ -216,7 +250,7 @@ export default function PartyPanel({
           {subMode === 'join' && !disabled && (
             leaders.length > 0 ? (
               <div className="flex flex-col gap-1.5">
-                <span className="text-[0.9375rem] uppercase tracking-wider text-white/35">
+                <span className="micro-label">
                   Squads looking for players &mdash; ask to join
                 </span>
                 <div className="thin-scroll flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
@@ -238,7 +272,7 @@ export default function PartyPanel({
                 </div>
               </div>
             ) : (
-              <p className="text-[1rem] text-white/35">
+              <p className="micro-label">
                 No open squads to join right now.
               </p>
             )
@@ -252,7 +286,7 @@ export default function PartyPanel({
       {mode === 'squad' && (inParty || subMode === 'create')
         && !disabled && iAmLeader && invitable.length > 0 && (
         <div className="flex flex-col gap-1.5">
-          <span className="text-[0.9375rem] uppercase tracking-wider text-white/35">
+          <span className="micro-label">
             Players online &mdash; select to invite
           </span>
 
@@ -280,7 +314,7 @@ export default function PartyPanel({
           </div>
 
           <Btn
-            size="sm"
+            size="md"
             variant={selected.size === 0 ? 'default' : 'primary'}
             disabled={selected.size === 0}
             full
@@ -296,7 +330,7 @@ export default function PartyPanel({
       {/* Leaving must be obvious and always available. A party you cannot get
           out of is worse than no party system. */}
       {mode === 'squad' && inParty && (
-        <Btn size="sm" variant="danger" cue="ui.back" full
+        <Btn size="md" variant="danger" cue="ui.back" full
              onPress={() => fetchNui(CB.SQUAD_LEAVE, {})}>
           Leave party
         </Btn>

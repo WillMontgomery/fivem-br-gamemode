@@ -43,7 +43,7 @@ export default function DbnoOverlay({ dbno }: { dbno: DbnoPayload }) {
           You are down
         </div>
 
-        <div className="text-3xl font-bold my-1 tabular-nums" style={{ color: 'var(--color-danger)' }}>
+        <div className="font-display text-4xl my-1 tabular-nums" style={{ color: 'var(--color-danger)' }}>
           <span ref={timeRef}>--</span>
         </div>
 

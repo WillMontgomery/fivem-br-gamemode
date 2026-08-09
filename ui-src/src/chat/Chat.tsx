@@ -193,9 +193,14 @@ export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) 
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => canSquadChat
               && openChat(channel === 'global' ? 'squad' : 'global')}
-            className="text-[0.625rem] font-bold uppercase tracking-wider px-2 py-1 rounded-md shrink-0
-                       border border-white/15 hover:border-white/35 transition-colors"
-            style={{ color: CHANNEL_STYLE[channel].colour }}
+            className="btn plate text-[0.6rem] font-semibold uppercase tracking-[0.14em]
+                       px-2 py-1 shrink-0"
+            style={{
+              color: CHANNEL_STYLE[channel].colour,
+              ['--edgec' as string]: 'rgba(255,255,255,0.22)',
+              ['--plate-fill' as string]: 'rgba(24,28,40,0.92)',
+              ['--cut-max' as string]: '0.35rem',
+            }}
             title={canSquadChat ? 'Switch channel (Tab)' : undefined}
           >
             {CHANNEL_STYLE[channel].label}

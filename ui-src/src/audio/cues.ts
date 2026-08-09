@@ -47,8 +47,6 @@ let volume = 0.7
 /** Lazily create the graph. Returns null when Web Audio is unavailable. */
 function ac(): AudioContext | null {
   if (ctx) {
-    // A context created before the first gesture starts suspended; resuming is
-    // free once one has happened.
     if (ctx.state === 'suspended') void ctx.resume()
     return ctx
   }
@@ -60,6 +58,31 @@ function ac(): AudioContext | null {
   master.gain.value = volume
   master.connect(ctx.destination)
   return ctx
+}
+
+/**
+ * THE UNLOCK, and why the lobby only made a sound *sometimes*.
+ *
+ * A context created outside a user gesture starts SUSPENDED, and `resume()` is
+ * asynchronous. Creating it lazily inside the first `play()` therefore loses
+ * that first cue and any that land in the millisecond or two before the resume
+ * settles -- so hovering a button made a noise, or did not, depending on
+ * whether anything had unlocked the context yet. The result feels like a flaky
+ * sound system rather than a missing one, which is much harder to report.
+ *
+ * Fixed by resuming from a real input event, once, before any cue is asked
+ * for. `pointerdown` and `keydown` both count as gestures; the listeners
+ * remove themselves.
+ */
+function unlock() {
+  const a = ac()
+  if (a && a.state === 'suspended') void a.resume()
+  window.removeEventListener('pointerdown', unlock)
+  window.removeEventListener('keydown', unlock)
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('pointerdown', unlock)
+  window.addEventListener('keydown', unlock)
 }
 
 export function setUiVolume(v: number) {

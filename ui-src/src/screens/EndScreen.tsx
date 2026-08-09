@@ -1,4 +1,4 @@
-import { Spinner } from '@heroui/react'
+import Ring from '../hud/Ring'
 import { useEffect, useState } from 'react'
 import type { SummaryPayload } from '../bridge/types'
 
@@ -97,7 +97,7 @@ export default function EndScreen({ summary }: { summary: SummaryPayload }) {
         </div>
 
         <div className="end-late flex items-center gap-3">
-          <Spinner size="sm" />
+          <Ring size={1.3} stroke={0.15} label="Cleaning up" />
           <span key={busy} className="rise text-sm text-white/60">{busy}</span>
         </div>
       </div>
