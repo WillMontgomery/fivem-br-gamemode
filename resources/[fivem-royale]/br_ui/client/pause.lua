@@ -27,6 +27,11 @@ BR.Pause = {}
 --- re-pushing focus onto a screen that is already showing.
 local open = false
 
+--- Whether GTA's own frontend is up because WE put it there, showing the map.
+--- Its watcher thread reads this every frame, so clearing it is how anything
+--- else asks the map to close.
+local frontendMap = false
+
 function BR.Pause.open()
     if open then return end
     open = true
@@ -37,6 +42,71 @@ function BR.Pause.close()
     if not open then return end
     open = false
     TriggerEvent('br:ui:popFocus', 'pause')
+end
+
+--- GTA's own pause menu, driven straight to its map page.
+---
+--- THIS IS THE COMMUNITY RECIPE (cfx forum, "one button main map"), and the
+--- difference from what was here is the part I had wrong: it WAITS ON THE
+--- MENU'S OWN STATE rather than guessing at a delay. Every timing-based
+--- version of this is reported to bring the map up "at irregular intervals",
+--- which is exactly what a fixed 200ms racing a scaleform load looks like.
+---
+--- Two more pieces that were missing. PAUSE_MENUCEPTION_THE_KICK after
+--- GoDeeper: going deeper sets the page, the kick is what commits it -- which
+--- is why GoDeeper alone appeared to do nothing. And SetFrontendActive(false)
+--- to leave, because the menu is being entered sideways and its own back
+--- button has nowhere sensible to go back to.
+---
+--- It still does not SUPPRESS the other tabs. Nothing does; they are the same
+--- scaleform. This lands on the map with the tabs above it, which is what
+--- GTA Online itself looks like.
+function BR.Pause.openFrontendMap()
+    if frontendMap then return end
+    frontendMap = true
+
+    Citizen.CreateThread(function()
+        -- FE_MENU_VERSION_MP_PAUSE, not SP: the multiplayer pause menu is the
+        -- one the map is the point of.
+        ActivateFrontendMenu(GetHashKey('FE_MENU_VERSION_MP_PAUSE'), false, -1)
+
+        -- The wait is the fix, but it cannot be unbounded: if the menu never
+        -- comes up -- another resource holding the frontend, a state that
+        -- refuses it -- this thread would spin at Wait(0) for the rest of the
+        -- session, and a busy loop nobody can see is the worst kind.
+        local deadline = GetGameTimer() + 5000
+        while (not IsPauseMenuActive() or IsPauseMenuRestarting())
+              and GetGameTimer() < deadline do
+            Citizen.Wait(0)
+        end
+        if not IsPauseMenuActive() then
+            print('[br_ui] map: pause menu never became active; giving up')
+            frontendMap = false
+            return
+        end
+
+        local ok, err = pcall(function()
+            PauseMenuceptionGoDeeper(BR.Pause.mapPage or 0)
+            PauseMenuceptionTheKick()
+        end)
+        print(('[br_ui] map: frontend, page %d -- %s')
+            :format(BR.Pause.mapPage or 0,
+                    ok and 'ok' or ('FAILED ' .. tostring(err))))
+
+        -- 199 and 200 are PAUSE, 202 is FRONTEND CANCEL: the keys a player
+        -- actually reaches for to leave a menu. Our own map key gets out too,
+        -- by clearing the flag this loop is watching.
+        while frontendMap
+              and not IsControlJustPressed(2, 202)
+              and not IsControlJustPressed(2, 200)
+              and not IsControlJustPressed(2, 199) do
+            Citizen.Wait(0)
+        end
+
+        pcall(PauseMenuceptionTheKick)
+        SetFrontendActive(false)
+        frontendMap = false
+    end)
 end
 
 RegisterNUICallback(BR.NuiCb.PAUSE_FOCUS, function(data, cb)
@@ -54,42 +124,31 @@ RegisterNUICallback(BR.NuiCb.PAUSE_ACTION, function(data, cb)
     local action = tostring(data and data.action or '')
 
     if action == 'map' then
-        -- TWO ROUTES, AND THE OTHER ONE IS YOURS TO JUDGE.
+        -- THREE ROUTES, SWITCHABLE, BECAUSE THIS IS A QUESTION THE GAME
+        -- ANSWERS AND NOT ONE THE DOCUMENTATION DOES.
         --
-        -- PAUSE_MENUCEPTION_GO_DEEPER (0x77F16B447824DA6C) sets the pause
-        -- menu's current page, so ActivateFrontendMenu followed by it does
-        -- land you on the map. What it does NOT do is remove the rest of the
-        -- frontend -- the tabs are the same scaleform, and going deeper into
-        -- a page is navigation, not suppression. It is a real option and it
-        -- is worth looking at, which is why it is switchable rather than
-        -- argued about: `brmapmode frontend <pageId>` to try it, `brmapmode
-        -- bigmap` to come back. The page ids are the list you linked; nothing
-        -- here guesses one.
-        if BR.Pause.mapMode == 'frontend' or BR.Pause.mapMode == 'fullscreen' then
-            -- PAUSE_TOGGLE_FULLSCREEN_MAP (0x2DE6C5E2E996F178, "toggles pause
-            -- menu map rendering") is the closest thing anyone has to the
-            -- native you were actually asking for, and it is worth trying two
-            -- ways rather than one: `fullscreen` calls it ALONE, on the chance
-            -- it draws the map with no frontend at all, and `frontend` calls
-            -- it alongside ActivateFrontendMenu, where it is documented to
-            -- belong. pcall because a native this obscure is exactly the kind
-            -- that is missing from a build, and a missing one must not take
-            -- the pause menu down with it.
+        --   bigmap      SetBigmapActive -- the radar, expanded (default)
+        --   frontend    the real pause menu, driven to its map page
+        --   fullscreen  PauseToggleFullscreenMap alone
+        --
+        -- `brmapmode` switches between them in game.
+        if BR.Pause.mapMode == 'frontend' then
             BR.Pause.close()
-            local frontend = BR.Pause.mapMode == 'frontend'
-            Citizen.SetTimeout(200, function()
-                local ok, err = pcall(PauseToggleFullscreenMap, true)
-                print(('[br_ui] map: PauseToggleFullscreenMap(true) %s')
-                    :format(ok and 'ok' or ('FAILED ' .. tostring(err))))
-                if frontend then
-                    ActivateFrontendMenu(GetHashKey('FE_MENU_VERSION_SP_PAUSE'), false, -1)
-                    if BR.Pause.mapPage then
-                        Citizen.SetTimeout(150, function()
-                            PauseMenuceptionGoDeeper(BR.Pause.mapPage)
-                        end)
-                    end
-                end
-            end)
+            BR.Pause.openFrontendMap()
+            cb({ ok = true })
+            return
+        end
+
+        if BR.Pause.mapMode == 'fullscreen' then
+            -- PAUSE_TOGGLE_FULLSCREEN_MAP (0x2DE6C5E2E996F178, "toggles pause
+            -- menu map rendering") on its own, on the chance it draws the map
+            -- with no frontend at all. pcall because a native this obscure is
+            -- exactly the kind that is missing from a build, and a missing one
+            -- must not take the pause menu down with it.
+            BR.Pause.close()
+            local ok, err = pcall(PauseToggleFullscreenMap, true)
+            print(('[br_ui] map: PauseToggleFullscreenMap(true) %s')
+                :format(ok and 'ok' or ('FAILED ' .. tostring(err))))
             BR.Pause.fullscreenMap = true
             cb({ ok = true })
             return
@@ -159,6 +218,13 @@ AddEventHandler('br:ui:pauseToggle', function()
     -- Same rule for the frontend routes: whatever the map key turned on, the
     -- map key turns off. A player should never have to know WHICH native drew
     -- the thing in front of them to get rid of it.
+    if frontendMap then
+        -- Cleared, not closed here: the watcher thread owns the teardown, and
+        -- two callers racing SetFrontendActive is how a frontend gets left up
+        -- with nothing listening.
+        frontendMap = false
+        return
+    end
     if BR.Pause.fullscreenMap then
         pcall(PauseToggleFullscreenMap, false)
         BR.Pause.fullscreenMap = false
@@ -176,8 +242,13 @@ end, false)
 
 -- Which route the Map button takes. 'bigmap' draws GTA's full map over live
 -- gameplay with no frontend at all; 'frontend' opens the real pause menu and
--- optionally navigates to a page. Switchable so the two can be compared in
--- game rather than argued about from documentation.
+-- drives it to its map page; 'fullscreen' is PauseToggleFullscreenMap on its
+-- own. Switchable so the three can be compared in game rather than argued
+-- about from documentation.
+--
+-- bigmap is the default because the world keeps running underneath it, which
+-- in a battle royale is not a small thing: the frontend routes are a PAUSE
+-- MENU, and pressing them mid-match means standing still in front of one.
 BR.Pause.mapMode = 'bigmap'
 BR.Pause.mapPage = nil
 
@@ -194,7 +265,7 @@ RegisterCommand('brmapmode', function(_, args)
     print(('  mode: %s'):format(tostring(BR.Pause.mapMode)))
     print(('  page: %s'):format(tostring(BR.Pause.mapPage)))
     print('  bigmap     -- SetBigmapActive: full map over live gameplay, no frontend')
-    print('  frontend   -- PauseToggleFullscreenMap + ActivateFrontendMenu [+ GoDeeper]')
+    print('  frontend   -- ActivateFrontendMenu + GoDeeper + TheKick (cfx recipe)')
     print('  fullscreen -- PauseToggleFullscreenMap alone, no frontend at all')
     print('  usage: brmapmode bigmap | fullscreen | frontend [pageId]')
 end, false)
@@ -214,5 +285,16 @@ AddEventHandler('onResourceStop', function(res)
     if BR.Pause.bigmap then
         TriggerEvent('br:map:big', false)
         BR.Pause.bigmap = false
+    end
+    -- Same for the frontend: a pause menu we opened and then stopped listening
+    -- for would be a menu the player cannot leave by any route we told them
+    -- about. The thread is going away with the resource, so close it here.
+    if frontendMap then
+        frontendMap = false
+        SetFrontendActive(false)
+    end
+    if BR.Pause.fullscreenMap then
+        pcall(PauseToggleFullscreenMap, false)
+        BR.Pause.fullscreenMap = false
     end
 end)
