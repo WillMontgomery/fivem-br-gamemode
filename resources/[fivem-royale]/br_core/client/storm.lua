@@ -415,7 +415,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
                 local a = math.floor(cfg.blip.currentAlpha
                     * (1.0 - msLeft / fadeMs) + 0.5)
                 curBlip = BR.Native.radiusBlip(curBlip, cx, cy, r,
-                    cfg.blip.currentColour, a)
+                    cfg.blip.currentColour, a, 'Safe Zone')
                 lastBlipR = r
                 if nextBlip then RemoveBlip(nextBlip) nextBlip = nil end
             elseif curBlip then
@@ -424,7 +424,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
         elseif math.abs(r - lastBlipR) > 1.0 or not curBlip then
             lastBlipR = r
             curBlip = BR.Native.radiusBlip(curBlip, cx, cy, r,
-                cfg.blip.currentColour, cfg.blip.currentAlpha)
+                cfg.blip.currentColour, cfg.blip.currentAlpha, 'Safe Zone')
             -- REBUILT TOGETHER, ALWAYS IN THIS ORDER. The target ring used to
             -- be created once and left alone -- so every current-circle
             -- rebuild landed ON TOP of it, then the next phase put it back on
@@ -434,7 +434,7 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
         end
         if not nextBlip and rec.r1 > 1.0 then
             nextBlip = BR.Native.radiusBlip(nil, rec.cx1, rec.cy1, rec.r1,
-                cfg.blip.nextColour, cfg.blip.nextAlpha)
+                cfg.blip.nextColour, cfg.blip.nextAlpha, 'Next Safe Zone')
         end
 
     end

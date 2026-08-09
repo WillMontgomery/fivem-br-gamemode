@@ -115,6 +115,51 @@ BR.Config.Match = {
     warmupBucket    = 2,
     matchBucketBase = 100,
 
+    -- VOICE. FiveM ships its own Mumble server and client, so there is no
+    -- third-party voice resource here and none is wanted.
+    --
+    -- WHAT THE ENGINE DOES NOT DO FOR US: proximity voice is computed from
+    -- player POSITIONS, and two matches occupy the same coordinates. Routing
+    -- buckets stop players seeing each other; they are not documented to stop
+    -- players HEARING each other, and betting a whole match's comms on an
+    -- undocumented side effect is how you find out in front of 48 people.
+    --
+    -- So every match gets its own Mumble channel explicitly. Two channels per
+    -- player:
+    --
+    --   PROXIMITY  one per match. Everyone in the match shares it, and
+    --              talkerProximity decides how far a voice carries INSIDE it.
+    --              Nobody outside the match is in the channel at all, so
+    --              distance never enters into it for them.
+    --   SQUAD      one per squad. No distance limit -- the point of squad
+    --              comms is that they work across the map.
+    --
+    -- Channel numbers are opaque integers to the client. They are derived
+    -- from matchId, which is NEVER public (roster.lua PUBLIC_FIELDS), so the
+    -- server hands each player their two numbers over VOICE_SET.
+    voice = {
+        enabled          = true,
+
+        -- How far an ordinary voice carries, in metres. Deliberately short:
+        -- being heard is a positional tell, and a wide radius turns every
+        -- rooftop into a public address system.
+        talkerProximity  = 25.0,
+
+        -- Channel id bases. Kept far apart and far from 0, which is the
+        -- default channel every client starts in -- a squad channel that
+        -- collided with a match channel would put two squads in one room.
+        lobbyChannel     = 1000,
+        warmupChannel    = 1001,
+        matchBase        = 2000,   -- + matchId
+        squadBase        = 5000,   -- + matchId * squadStride + squad index
+        squadStride      = 16,     -- max squads per match this scheme allows
+
+        -- Whether a squad hears each other at any range. Off means squads are
+        -- proximity-only, which is a legitimate (harsher) design and one
+        -- command away.
+        squadIsGlobal    = true,
+    },
+
     -- HEALTH UNITS -- read this before touching any health number anywhere.
     --
     -- There are two scales in play and mixing them is the most likely source of

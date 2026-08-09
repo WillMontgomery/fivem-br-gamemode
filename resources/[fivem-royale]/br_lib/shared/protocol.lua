@@ -69,6 +69,12 @@ BR.Net = {
     MARKER_CLEAR    = 'br:marker:clear',     -- C->S  remove my marker
     MARKER_SYNC     = 'br:marker:sync',      -- S->C  { op, owner, x, y, colour }
 
+    -- Voice channels. The client cannot work these out for itself: a channel
+    -- is derived from the match, and matchId is deliberately NEVER public
+    -- (see PUBLIC_FIELDS in server/roster.lua). So the server hands each
+    -- player the two numbers and nothing else.
+    VOICE_SET       = 'br:voice:set',        -- S->C  { prox, squad }
+
     -- Loot / inventory
     LOOT_CELL       = 'br:loot:cell',        -- C->S  { cx, cy } subscribe to a grid cell
     LOOT_ADD        = 'br:loot:add',         -- S->C  array of loot entries entering scope

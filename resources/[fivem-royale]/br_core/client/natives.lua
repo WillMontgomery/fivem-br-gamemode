@@ -878,6 +878,35 @@ function BR.Native.check()
     -- taken, and heading alone cannot express that. Rotation order 2 is the
     -- one every GTA example uses for ZXY euler angles.
     probe('SetEntityRotation', function() return GetEntityRotation(ped, 2) end)
+
+    -- VOICE. FiveM's built-in Mumble, which is what keeps two parallel matches
+    -- from sharing a room. A nil here is not a crash -- client/voice.lua
+    -- degrades to whatever the engine does by default -- but the default is
+    -- "everybody in channel 0", i.e. every match audible to every other, and
+    -- the symptom is somebody answering a rotation call from another game.
+    -- So it is probed loudly rather than discovered quietly.
+    --
+    -- Read-only calls only: setting a channel here would move the player out
+    -- of whatever room they are legitimately in.
+    probe('MumbleIsConnected',   function() return MumbleIsConnected() end)
+    probe('MumbleSetVoiceChannel', function()
+        return MumbleSetVoiceChannel ~= nil
+    end)
+    probe('MumbleClearVoiceChannel', function()
+        return MumbleClearVoiceChannel ~= nil
+    end)
+    probe('MumbleSetVoiceTarget', function()
+        return MumbleSetVoiceTarget ~= nil
+    end)
+    probe('MumbleAddVoiceTargetChannel', function()
+        return MumbleAddVoiceTargetChannel ~= nil
+    end)
+    probe('MumbleAddVoiceChannelListen', function()
+        return MumbleAddVoiceChannelListen ~= nil
+    end)
+    probe('NetworkSetTalkerProximity', function()
+        return NetworkSetTalkerProximity ~= nil
+    end)
     -- Reads the player's ACTUAL binding for the prompt's key badge. Without
     -- it the prompt shows no key at all.
     probe('GetControlInstructionalButton', function()

@@ -110,6 +110,7 @@ for _, f in ipairs({
     'br_core/server/inventory.lua',
     'br_core/server/loot.lua',
     'br_core/server/markers.lua',
+    'br_core/server/voice.lua',
     'br_core/server/damage.lua',
 }) do
     local chunk, err = loadfile(ROOT .. f)
@@ -3878,6 +3879,141 @@ do
     ok(BR.Inv.of(1).slots[1].clip == pistol.clip - 1,
         'and the event costs exactly one round, not one per victim',
         tostring(BR.Inv.of(1).slots[1].clip))
+end
+
+describe('voice.channels')
+do
+    -- THE PROPERTY THAT MATTERS IS SEPARATION, and it is the one thing the
+    -- engine will not do for us: FiveM's Mumble mixes by POSITION, and two
+    -- parallel matches stand on the same coordinates. Routing buckets stop
+    -- players seeing each other; they are not documented to stop them hearing
+    -- each other, so the channels are explicit.
+    local V = BR.Config.Match.voice
+
+    local function channelsFor(src)
+        local e = BR.Roster.get(src)
+        return e and e.voiceProx or nil, e and e.voiceSquad or nil
+    end
+
+    -- Two SEPARATE matches, which is the case the whole file exists for.
+    reset()
+    for s = 1, 4 do queueUp(s, 'P' .. s, BR.Mode.SQUAD.key) end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+
+    local mA = theMatch()
+    ok(mA ~= nil, 'a match formed')
+
+    -- Force it out of warmup so the next ready-ups mint a second instance
+    -- rather than late-joining this one.
+    BR.Match.transition(mA, BR.MatchState.BUS)
+
+    for s = 5, 8 do queueUp(s, 'Q' .. s, BR.Mode.SQUAD.key) end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+
+    local matches = {}
+    BR.Server.eachMatch(function(m) matches[#matches + 1] = m end)
+    ok(#matches == 2, 'and a second one formed alongside it', tostring(#matches))
+
+    fakeTime = fakeTime + 1200
+    BR.Sched.step(fakeTime)
+
+    local proxA = channelsFor(1)
+    local proxB = channelsFor(5)
+    ok(proxA ~= nil and proxB ~= nil, 'everybody has a proximity channel',
+        ('%s / %s'):format(tostring(proxA), tostring(proxB)))
+    ok(proxA ~= proxB,
+        'and two different matches are NEVER in the same one',
+        ('%s vs %s'):format(tostring(proxA), tostring(proxB)))
+
+    -- Inside one match, everyone shares the proximity room -- that is what
+    -- makes "global" mean the match rather than the server.
+    local p1 = channelsFor(1)
+    local sameMatchShared = true
+    BR.Roster.each(
+        function(e) return e.matchId == mA.id end,
+        function(src)
+            if channelsFor(src) ~= p1 then sameMatchShared = false end
+        end)
+    ok(sameMatchShared, 'while one match shares exactly one proximity room')
+
+    -- Squads inside a match must NOT share a squad room, or two squads hear
+    -- each other's plans at unlimited range -- worse than no squad voice.
+    local seen, collided = {}, false
+    BR.Roster.each(
+        function(e) return e.matchId == mA.id and e.squadId end,
+        function(src, e)
+            local _, sq = channelsFor(src)
+            if sq then
+                if seen[sq] and seen[sq] ~= e.squadId then collided = true end
+                seen[sq] = e.squadId
+            end
+        end)
+    ok(not collided, 'and no two squads share a squad room')
+
+    -- A squad channel must never collide with ANY proximity channel either.
+    local overlap = false
+    BR.Roster.each(
+        function(e) return e.state ~= BR.PlayerState.LEFT end,
+        function(src)
+            local prox, sq = channelsFor(src)
+            if sq and prox and sq == prox then overlap = true end
+            if sq and (sq == V.lobbyChannel or sq == V.warmupChannel) then
+                overlap = true
+            end
+        end)
+    ok(not overlap, 'and a squad room is never also a proximity room')
+
+    -- Nobody is left in channel 0, which is where every Mumble client starts
+    -- and therefore the one room that is shared by default.
+    local inZero = false
+    BR.Roster.each(
+        function(e) return e.state ~= BR.PlayerState.LEFT end,
+        function(src)
+            local prox = channelsFor(src)
+            if not prox or prox == 0 then inZero = true end
+        end)
+    ok(not inZero, 'and nobody is left in the default channel 0')
+
+    -- THE WHOLE SPACE, not just the four players who happen to be online.
+    --
+    -- The live checks above can only fail on a collision that this particular
+    -- roster happens to produce -- and with one squad per match they cannot
+    -- see a squad collision at all. These sweep every match id and squad
+    -- index the scheme claims to support, which is what actually pins the
+    -- BASES apart: raising squadBase onto matchBase is a config edit nobody
+    -- would notice until two rooms merged in front of players.
+    local proxSeen, squadSeen = {}, {}
+    local dupProx, dupSquad, cross = nil, nil, nil
+    local MATCHES = 64
+    for mid = 1, MATCHES do
+        local p = BR.Voice.proxChannel(mid, nil)
+        if proxSeen[p] then dupProx = p end
+        proxSeen[p] = mid
+
+        for idx = 1, V.squadStride do
+            local sc = BR.Voice.squadChannel(mid, idx)
+            if squadSeen[sc] then dupSquad = sc end
+            squadSeen[sc] = ('m%d/%d'):format(mid, idx)
+        end
+    end
+    for _, lone in ipairs({ V.lobbyChannel, V.warmupChannel }) do
+        proxSeen[lone] = 'lone'
+    end
+    for ch in pairs(squadSeen) do
+        if proxSeen[ch] then cross = ch end
+    end
+
+    ok(dupProx == nil, 'no two matches can ever share a proximity room',
+        tostring(dupProx))
+    ok(dupSquad == nil, 'no two squads can ever share a squad room',
+        tostring(dupSquad))
+    ok(cross == nil,
+        'and the squad range never overlaps the proximity range',
+        tostring(cross))
+    ok(not squadSeen[0] and not proxSeen[0],
+        'and nothing is ever assigned channel 0')
 end
 
 describe('combat.fire')

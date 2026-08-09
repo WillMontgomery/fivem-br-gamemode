@@ -77,6 +77,15 @@ AddEventHandler(BR.Net.MARKER_SYNC, function(d)
     SetBlipColour(blip, blipColour)
     SetBlipScale(blip, 1.1)
     SetBlipAsShortRange(blip, false)
+    -- Named, so the legend says WHOSE destination this is rather than
+    -- whatever GTA calls sprite 8.
+    --
+    -- The owner's name comes from the roster mirror, not from the payload:
+    -- MARKER_SYNC carries owner/x/y/i and nothing else, so reading d.name
+    -- would have quietly fallen back to the generic label forever.
+    local who = BR.State.roster[d.owner]
+    BR.Native.blipName(blip,
+        who and who.name and (who.name .. "'s Marker") or 'Squad Marker')
     ownBlips[blip] = true
     markers[d.owner] = { x = d.x, y = d.y, colour = hex, blip = blip }
 end)

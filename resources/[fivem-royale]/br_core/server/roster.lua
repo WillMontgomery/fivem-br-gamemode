@@ -235,6 +235,10 @@ function BR.Roster.remove(src)
         if BR.Damage.forgetRefusals then BR.Damage.forgetRefusals(src) end
     end
     if BR.Loot and BR.Loot.clearNpcDrops then BR.Loot.clearNpcDrops(src) end
+    -- Same recycled-id argument, and a worse outcome: the cached voice
+    -- channels are what suppress a re-push, so whoever connects into this
+    -- slot next would be told nothing and stay in the previous holder's room.
+    if BR.Voice and BR.Voice.forget then BR.Voice.forget(src) end
 
     BR.Broadcast.delta({ op = 'remove', src = src })
     print(('[br_core] - %s (%d) left -- %d connected'):format(entry.name, src, BR.Server.count()))

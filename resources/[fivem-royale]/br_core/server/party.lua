@@ -604,6 +604,13 @@ function BR.Party.formSquads(m)
     -- with concurrent matches, a bare 'sq1' in two of them would conflate
     -- everything keyed on squadId -- the win condition, squad beacons,
     -- marker audiences -- across match boundaries.
+    -- The reader for the format one line below. Kept ADJACENT to the writer
+    -- deliberately: it parses the id rather than storing an index beside it,
+    -- so the only thing keeping the two honest is that they are impossible to
+    -- read separately. Used by voice channels, which need an INTEGER per
+    -- squad and cannot use a string id.
+    -- (declared here as a forward assignment; see BR.Party.squadIndex below)
+
     for i, sq in ipairs(squads) do
         local id = ('m%dsq%d'):format(m.id, i)
         local colour = COLOURS[((i - 1) % #COLOURS) + 1]
@@ -835,6 +842,21 @@ end
 --- places (user, 2026-08-05).
 --- @param src integer
 --- @return integer|nil
+--- The integer index inside a squad id ('m3sq2' -> 2), or nil.
+---
+--- Squad ids are namespaced strings and most of the codebase wants them that
+--- way. Voice channels are the exception: a Mumble channel is a number, and
+--- one has to be derived per squad without inventing a second source of truth
+--- for "which squad is this". Parsing the id the formSquads loop wrote is
+--- that, and the two live next to each other so the format cannot quietly
+--- change under this.
+--- @param squadId string|nil
+--- @return integer|nil
+function BR.Party.squadIndex(squadId)
+    if type(squadId) ~= 'string' then return nil end
+    return tonumber(squadId:match('sq(%d+)$'))
+end
+
 function BR.Party.memberIndex(src)
     local entry = BR.Roster.get(src)
     if not entry or not entry.squadId then return nil end

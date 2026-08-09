@@ -58,6 +58,7 @@ client_scripts {
     'client/inventory.lua', -- the inventory mirror; owns every weapon grant
     'client/loot.lua',      -- world props + pickup; needs BR.Inv (inventory.lua)
     'client/chat.lua',
+    'client/voice.lua',   -- Mumble channels; server/voice.lua decides them
     'client/probe.lua',    -- /brprobe: what the natives ACTUALLY do on this build
     'client/debug.lua',
 }
@@ -78,6 +79,7 @@ server_scripts {
     'server/damage.lua',    -- M6: weaponDamageEvent validation and attribution
     'server/markers.lua',   -- player map markers: relay + squad scoping
     'server/chat.lua',
+    'server/voice.lua',    -- voice channel authority: one room per match, one per squad
     'server/debug.lua',
 }
 

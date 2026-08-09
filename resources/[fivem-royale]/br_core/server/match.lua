@@ -163,6 +163,12 @@ function BR.Match.onEnter(m, state, from)
         -- people join and leave parties in the lobby.
         BR.Party.formSquads(m)
 
+        -- ...and squads are what voice channels are cut from, so the push
+        -- happens IMMEDIATELY after rather than waiting for the 1Hz sweep.
+        -- A second in the wrong room at the start of warmup is a second of
+        -- somebody's plan going to the wrong people.
+        if BR.Voice then BR.Voice.pushMatch(m) end
+
         -- The flight is drawn NOW, not at departure: warmup is when players
         -- study the route on the map and pick their drop.
         BR.Bus.plan(m)
