@@ -515,6 +515,11 @@ export default function Settings({
                       variant="primary" size="sm" cue="ui.select"
                       onPress={() => {
                         setVoiceConfirm(false)
+                        // The lobby FADES rather than being yanked. Lua is
+                        // about to empty the focus stack and raise a
+                        // scaleform; this is the same flag ESC-in-the-lobby
+                        // used, and it clears itself when focus comes back.
+                        useUi.getState().setPauseHiding(true)
                         void fetchNui(CB.VOICE_SETTINGS, {})
                       }}
                     >

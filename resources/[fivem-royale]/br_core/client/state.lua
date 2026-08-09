@@ -196,6 +196,18 @@ RegisterCommand('brparty', function()
         tostring(S.me.squadId), S.me.squadId and 1 or 0))
 end, false)
 
+-- GTA'S FRONTEND CLOSED AND IT WAS US WHO OPENED IT.
+--
+-- br_ui empties the focus stack before handing the screen to the engine's
+-- menu -- it has to, because anything of ours left up draws OVER a scaleform.
+-- Handing focus back is br_core's call for the same reason the pause watcher
+-- above is: this file is the one that knows where the player actually is.
+AddEventHandler('br:ui:frontendClosed', function()
+    if S.me.state == BR.PlayerState.LOBBY then
+        TriggerEvent('br:ui:pushFocus', 'lobby')
+    end
+end)
+
 AddEventHandler('br:ui:pauseRequest', function()
     Citizen.SetTimeout(250, function()
         ActivateFrontendMenu(GetHashKey('FE_MENU_VERSION_SP_PAUSE'), false, -1)

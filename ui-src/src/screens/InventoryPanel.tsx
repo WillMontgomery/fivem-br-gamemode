@@ -242,13 +242,15 @@ export default function InventoryPanel() {
         className="panel pointer-events-auto px-8 py-7 w-[62rem] max-w-[95vw]"
         style={{ backgroundColor: 'rgba(10,12,20,0.90)' }}
       >
-        <div className="flex items-baseline justify-between mb-4">
+        {/* NO INSTRUCTIONS. The arrows are arrows, a card is a thing you
+            click, and the key that opened this closes it -- a line of text
+            explaining that is a line admitting the screen does not explain
+            itself (owner, 2026-08-09). The gestures have not changed; only
+            the caption telling you about them is gone. */}
+        <div className="mb-4">
           <h2 className="font-display text-3xl uppercase tracking-[0.18em]">
             Inventory
           </h2>
-          <span className="text-[0.8rem] uppercase tracking-[0.16em] text-white/35">
-            arrows reorder · click to equip · TAB or right-click to close
-          </span>
         </div>
 
         <div className="grid grid-cols-5 gap-2">

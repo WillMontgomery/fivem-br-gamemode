@@ -234,6 +234,11 @@ function BR.Pause.openFrontendPlain()
             print('[br_ui] settings: pause menu never became active; giving up')
             frontendMap = false
             TriggerEvent('br:map:frontend', false)
+            -- GIVING UP STILL HANDS THE MENU BACK. The focus stack was
+            -- emptied before this thread started, so returning quietly here
+            -- would leave the player in a lobby they cannot see or click --
+            -- a worse outcome than the frontend simply not opening.
+            TriggerEvent('br:ui:frontendClosed')
             return
         end
 
@@ -247,6 +252,11 @@ function BR.Pause.openFrontendPlain()
 
         frontendMap = false
         TriggerEvent('br:map:frontend', false)
+        -- AND THE PLAYER GETS THEIR MENU BACK. We emptied the focus stack to
+        -- get out of the frontend's way; leaving it empty would drop them in
+        -- the lobby with no cursor and nothing to click. br_core decides what
+        -- to restore, because it is the one that knows where they are.
+        TriggerEvent('br:ui:frontendClosed')
     end)
 end
 
@@ -265,8 +275,22 @@ end)
 -- Our screens come down first: the frontend is a scaleform, so a menu left
 -- open underneath would hold the cursor with nothing able to draw over it.
 RegisterNUICallback(BR.NuiCb.VOICE_SETTINGS, function(_, cb)
+    -- EVERY SCREEN COMES DOWN, not just the one that asked.
+    --
+    -- Closing the settings page and the pause menu was not enough: in the
+    -- LOBBY the focus stack still has `lobby` underneath, so the lobby menu
+    -- stayed up and drew over GTA's frontend (owner, 2026-08-09). A scaleform
+    -- cannot be covered by NUI and NUI cannot be covered by it, so anything
+    -- of ours left on screen is simply on top of the menu the player was sent
+    -- to use.
+    --
+    -- clearFocus empties the stack rather than popping one screen, which is
+    -- the same thing ESC-in-the-lobby did when it raised the engine's menu.
+    -- br_core hands focus back when the frontend closes -- see the restore
+    -- below.
     BR.Pause.close()
     TriggerEvent('br:ui:closeSettings')
+    TriggerEvent('br:ui:clearFocus')
     BR.Pause.openFrontendPlain()
     cb({ ok = true })
 end)
