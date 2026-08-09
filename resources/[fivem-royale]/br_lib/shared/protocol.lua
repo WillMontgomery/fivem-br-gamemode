@@ -147,6 +147,15 @@ BR.Net = {
     -- the one preference other people can see, so it is the one the server
     -- gets a say in. Accepted in the lobby only.
     SETTINGS_NAME   = 'br:settings:name',
+
+    -- C->S. Leave the server from our own pause menu.
+    --
+    -- THE CLIENT CANNOT DO THIS ITSELF: `disconnect` is a restricted console
+    -- command and ExecuteCommand gets "Access denied" (user, 2026-08-09). The
+    -- server can, with DropPlayer, which is also the more honest place for it
+    -- -- leaving is something the server should know about rather than
+    -- discover.
+    LEAVE_SERVER    = 'br:leave:server',
 }
 
 --- Chat channels. `squad` is routed server-side to squad members only -- the

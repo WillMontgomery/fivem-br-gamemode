@@ -18,6 +18,7 @@ version '0.1.0'
 shared_scripts {
     '@br_lib/shared/enums.lua',
     '@br_lib/shared/protocol.lua',
+    '@br_lib/shared/names.lua',   -- display-name rules; client and server share them
     '@br_lib/shared/rng.lua',
     '@br_lib/shared/geo.lua',
     '@br_lib/shared/clock.lua',

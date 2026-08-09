@@ -11,6 +11,7 @@ local ROOT = 'resources/[fivem-royale]/br_lib/'
 for _, f in ipairs({
     'shared/enums.lua',
     'shared/protocol.lua',
+    'shared/names.lua',
     'shared/rng.lua',
     'shared/geo.lua',
     'shared/clock.lua',
@@ -2051,6 +2052,55 @@ do
         'LootLabel resolves consumables')
     ok(BR.LootLabel({ kind = BR.ItemKind.WEAPON, item = 'heavysniper' }) ~= 'Weapon',
         'LootLabel resolves weapons')
+end
+
+-- ------------------------------------------------------------------ names ---
+
+describe('names')
+do
+    local V = BR.ValidateName
+
+    -- ORDINARY NAMES MUST PASS. This is the half that matters most: a filter
+    -- that rejects real people is worse than one that lets something through,
+    -- because the second gets reported and the first gets uninstalled.
+    for _, name in ipairs({
+        'Kestrel', 'Rook', 'xX_Vandal_Xx', 'Ember 99', 'MrShifty',
+        'Cucumber', 'Scunthorpe', 'Assassin', 'Bassline', 'Analyst',
+        'Class', 'Shitake',   -- near-misses on purpose
+    }) do
+        ok(V(name), ('"%s" is allowed'):format(name))
+    end
+
+    -- Empty means "use my platform name" and is legal.
+    local emptyOk, _, cleaned = V('   ')
+    ok(emptyOk and cleaned == '', 'blank is allowed and means "platform name"')
+
+    ok(not (V('ab')), 'too short is refused')
+    ok(not (V(('x'):rep(21))), 'too long is refused')
+    ok(not (V('1234')), 'digits alone are refused')
+
+    -- The obvious dodges, which are the only ones worth testing: a literal
+    -- wordlist catches nobody.
+    for _, bad in ipairs({
+        'fuck', 'FUCK', 'FuCk', 'f u c k', 'f.u.c.k', 'f-u-c-k',
+        'fuuuuck', 'fvck', 'ph', -- 'ph' is a control: it must NOT be blocked
+    }) do
+        if bad == 'ph' then
+            ok(V(bad .. 'oenix'), 'a word starting "ph" is fine')
+        else
+            ok(not (V(bad)), ('"%s" is refused'):format(bad))
+        end
+    end
+
+    ok(not (V('5h1t')), 'leetspeak is folded before matching')
+    ok(not (V('P00PMAN')), 'zeroes fold to letters')
+    ok(not (V('Admin')), 'impersonating the system is refused')
+    ok(not (V('S3rv3r')), 'and so is a leetspoken version of it')
+
+    -- The reason is player-facing and specific enough to act on.
+    local _, why = V('ab')
+    ok(type(why) == 'string' and why:find('3'),
+        'a too-short name says what the minimum is', tostring(why))
 end
 
 -- ------------------------------------------------------------------ focus ---

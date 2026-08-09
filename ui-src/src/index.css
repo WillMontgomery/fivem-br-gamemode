@@ -200,18 +200,6 @@
    rather than replacing it. */
 .tscale { font-size: calc(1em * var(--text-scale)); }
 
-/* THE SAFE AREA, DRAWN. The HUD lays out inside a box derived from the game's
-   own safe-zone slider, and "is my HUD cut off, or is that where it goes?" is
-   otherwise unanswerable from inside the game. Diagnostic, off by default,
-   and deliberately ugly -- nobody should leave it on by accident. */
-.safe-outline {
-  position: fixed;
-  left: var(--safe-x); right: var(--safe-x);
-  top: var(--safe-y); bottom: var(--safe-y);
-  border: 1px dashed rgba(34, 211, 238, 0.55);
-  pointer-events: none;
-  z-index: 60;
-}
 
 /* The HUD lays out inside this box rather than the raw viewport, so safe zone
    and ultrawide clamping are applied once instead of per component. */

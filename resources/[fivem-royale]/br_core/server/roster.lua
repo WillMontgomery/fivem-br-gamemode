@@ -152,16 +152,14 @@ function BR.Roster.setName(src, proposed)
     if not entry then return false end
     if entry.state ~= BR.PlayerState.LOBBY then return false end
 
-    local clean = tostring(proposed or '')
-        :gsub('^%s+', ''):gsub('%s+$', '')
-        -- Control characters and the brackets our own feed wording uses: a
-        -- name is drawn beside phrases like "[DEAD]" and next to the kill
-        -- feed's own punctuation, and one that can forge those is a name that
-        -- can lie about the game state.
-        :gsub('[%c<>~^]', '')
-        :sub(1, 20)
-
-    if #clean > 0 and #clean < 3 then return false end
+    -- THE SHARED RULE, and the server is the one that counts. The client runs
+    -- the same BR.ValidateName so a player learns instantly, but that copy is
+    -- a courtesy -- a modified client that skips it is refused here.
+    local ok, reason, clean = BR.ValidateName(proposed)
+    if not ok then
+        BR.Server.notify(src, reason or 'That name is not available.', 'warn')
+        return false
+    end
 
     entry.gamertag = (#clean > 0) and clean or nil
     local name = entry.gamertag or GetPlayerName(src) or entry.name
@@ -175,6 +173,19 @@ end
 RegisterNetEvent(BR.Net.SETTINGS_NAME)
 AddEventHandler(BR.Net.SETTINGS_NAME, function(data)
     BR.Roster.setName(source, data and data.name)
+end)
+
+-- LEAVING THE SERVER IS THE SERVER'S TO DO. The client's own `disconnect`
+-- console command is restricted and refuses with "Access denied", so the
+-- pause menu asks instead. DropPlayer is the supported route and it means the
+-- server sees the departure rather than inferring it from a socket closing.
+RegisterNetEvent(BR.Net.LEAVE_SERVER)
+AddEventHandler(BR.Net.LEAVE_SERVER, function()
+    local src = source
+    local entry = BR.Roster.get(src)
+    print(('[br_core] %s (%d) left the server from the pause menu')
+        :format(entry and entry.name or '?', src))
+    DropPlayer(src, 'You left from the pause menu.')
 end)
 
 function BR.Roster.add(src)

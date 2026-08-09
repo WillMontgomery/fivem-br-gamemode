@@ -216,10 +216,6 @@ export default function App() {
       {/* The pause menu REPLACES GTA's, so it sits above everything our own
           screens draw and below only the curtain. */}
       <Page show={s.focus === 'pause'}><PauseMenu /></Page>
-      {/* The safe-area outline is a SETTING, not a screen: it belongs over
-          everything the player is trying to judge against it, including the
-          settings screen that turned it on. */}
-      {s.settings.safeArea && <div className="safe-outline" />}
     </>
   )
 }

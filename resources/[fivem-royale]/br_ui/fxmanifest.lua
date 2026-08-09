@@ -14,6 +14,7 @@ ui_page 'ui/index.html'
 shared_scripts {
     '@br_lib/shared/enums.lua',
     '@br_lib/shared/protocol.lua',
+    '@br_lib/shared/names.lua',   -- display-name rules; client and server share them
 }
 
 client_scripts {

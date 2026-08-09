@@ -116,6 +116,22 @@ export async function mockFetch<Res>(name: CallbackName, data?: unknown): Promis
   // mirror br_ui/client/settings.lua.
   if (name === 'br/settings/save') {
     const d = (data ?? {}) as Record<string, unknown>
+
+    // A REFUSAL IS PART OF THE CONTRACT, so the harness has to be able to
+    // produce one. The real rule is BR.ValidateName in br_lib -- shared by
+    // the client and the server, and unit tested there. This is a stub of it
+    // that exists only so the screen's error state is reachable in a browser;
+    // it is deliberately crude, because duplicating the real list here would
+    // create a second one to keep in step.
+    const tag = String(d.gamertag ?? '').trim()
+    const folded = tag.toLowerCase().replace(/[^a-z]/g, '')
+    if (tag.length > 0 && tag.length < 3) {
+      return { ok: false, field: 'gamertag', reason: 'Too short — 3 characters minimum.' } as Res
+    }
+    if (/fuck|shit|poop|admin/.test(folded)) {
+      return { ok: false, field: 'gamertag', reason: 'That name is not available.' } as Res
+    }
+
     const num = (k: string, lo: number, hi: number, dflt: number) => {
       const v = Number(d[k])
       return Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : dflt
@@ -129,7 +145,6 @@ export async function mockFetch<Res>(name: CallbackName, data?: unknown): Promis
           .includes(String(d.colourblind)) ? d.colourblind : 'off',
         volUi: num('volUi', 0, 1, 0.7),
         volMusic: num('volMusic', 0, 1, 0.5),
-        safeArea: d.safeArea === true,
         gamertag: String(d.gamertag ?? '').trim().slice(0, 20),
       },
     } as Res

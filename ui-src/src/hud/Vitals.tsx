@@ -58,11 +58,21 @@ function Fill({ value, colour, segments = 0, num }: {
       )}
       {num && value > 0 && (
         <span
-          className="absolute right-1 top-1/2 font-display leading-none tabular-nums"
+          className="absolute right-1.5 top-1/2 font-display leading-none tabular-nums"
           style={{
             transform: 'translateY(-50%)',
-            fontSize: '0.62rem',
-            textShadow: '0 1px 2px rgba(0,0,0,0.95)',
+            // 0.95rem, up from 0.62. Health and shield are the two numbers a
+            // player checks mid-fight without looking away from what they are
+            // shooting at, and at 0.62rem they were unreadable "even in good
+            // conditions" (user, 2026-08-09). The bar grew with them rather
+            // than the number being moved out of it, so the strip stays one
+            // object anchored where players have learned it is -- and it all
+            // still sits inside the safe-zone margin, because the strip's
+            // WIDTH is unchanged and only its height moved.
+            fontSize: '0.95rem',
+            // Heavier shadow to match: a bigger numeral over a bright fill
+            // needs more separation, not less.
+            textShadow: '0 1px 3px rgba(0,0,0,0.98), 0 0 6px rgba(0,0,0,0.7)',
           }}
         >
           {Math.round(value)}
@@ -99,10 +109,13 @@ export default function Vitals({ hp, armour, stamina = 100 }:
   // exactly where it always was.
   return (
     <div className="relative">
-      {/* Slightly taller than the old 0.6rem: the numerals have to fit, and a
-          strip you cannot read a number off is a strip that made you look
-          twice. */}
-      <div className="flex gap-[3px] items-stretch h-[0.75rem]">
+      {/* 1.25rem, grown twice. It was 0.6rem, then 0.75 so the numerals would
+          fit -- and they still could not be read at a glance. The bar is the
+          container for the number, so making the number legible means making
+          the bar tall enough to hold it. Height only: the width is untouched,
+          so the strip stays exactly as far inside the safe-zone margin as it
+          has always been. */}
+      <div className="flex gap-[3px] items-stretch h-[1.25rem]">
         <div className="basis-[62%] relative" title="Health">
           <Fill value={hp} colour="var(--color-hp)" num />
           {hit > 0 && <div key={hit} className="vitals-hit-flash" />}
@@ -118,7 +131,7 @@ export default function Vitals({ hp, armour, stamina = 100 }:
           call), hanging below the row. Fades away entirely at full,
           Fortnite-style -- hold SPRINT while running to drain it. */}
       <div
-        className="absolute left-0 right-0 h-[0.6rem] transition-opacity duration-300"
+        className="absolute left-0 right-0 h-[0.5rem] transition-opacity duration-300"
         style={{ top: 'calc(100% + 3px)', opacity: stamina >= 99.5 ? 0 : 1 }}
         title="Stamina"
       >

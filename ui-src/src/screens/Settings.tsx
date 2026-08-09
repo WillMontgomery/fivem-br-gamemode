@@ -136,53 +136,6 @@ function Slider({
   )
 }
 
-function Toggle({
-  label, sub, on, onChange,
-}: {
-  label: string
-  sub?: string
-  on: boolean
-  onChange: (v: boolean) => void
-}) {
-  return (
-    <button
-      type="button"
-      className={`btn plate w-full px-3 py-2.5 flex items-center gap-3 text-left${
-        on ? ' is-active' : ''}`}
-      style={{
-        ['--edgec' as string]: on
-          ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.16)',
-        ['--plate-fill' as string]: 'rgba(24,28,40,0.94)',
-        ['--cut-max' as string]: '0.45rem',
-      }}
-      onPointerEnter={() => play('ui.hover')}
-      onClick={() => { play('ui.toggle'); onChange(!on) }}
-    >
-      <span
-        className="w-[2.1rem] h-[1.1rem] rounded-full shrink-0 relative"
-        style={{
-          background: on ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.16)',
-          transition: 'background 160ms ease',
-        }}
-      >
-        <span
-          className="absolute top-[0.15rem] w-[0.8rem] h-[0.8rem] rounded-full bg-white"
-          style={{
-            left: on ? 'calc(100% - 0.95rem)' : '0.15rem',
-            transition: 'left 160ms var(--ease-out)',
-          }}
-        />
-      </span>
-      <span className="min-w-0">
-        <span className="block text-[0.85rem] tscale">{label}</span>
-        {sub && (
-          <span className="block micro-label mt-0.5">{sub}</span>
-        )}
-      </span>
-    </button>
-  )
-}
-
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section>
@@ -210,10 +163,14 @@ function Section({ title, children }: { title: string; children: React.ReactNode
  * first (size, volume) before the things most people never change.
  */
 const TABS = [
-  { id: 'interface',     label: 'Interface' },
-  { id: 'audio',         label: 'Audio' },
+  // GENERAL absorbs Interface, Audio and Identity. Five tabs for what is
+  // really eight controls made the screen look bigger than it is, and made
+  // the player click three times to see three sliders (user, 2026-08-09).
+  // Controls and Accessibility stay separate because each is genuinely its
+  // own thing: one is a twenty-row table, the other is a decision with a
+  // preview.
+  { id: 'general',       label: 'General' },
   { id: 'controls',      label: 'Controls' },
-  { id: 'identity',      label: 'Identity' },
   { id: 'accessibility', label: 'Accessibility' },
 ] as const
 
@@ -284,7 +241,9 @@ export default function Settings({
   // interface is not already showing.
   const [draft, setDraft] = useState<Draft>(stored)
   const [saving, setSaving] = useState(false)
-  const [tab, setTab] = useState<Tab>('interface')
+  const [tab, setTab] = useState<Tab>('general')
+  /** Why the last save refused the name, if it did. */
+  const [nameError, setNameError] = useState<string | null>(null)
 
   // WHAT CANCEL GOES BACK TO. Captured once, when the screen opens -- and the
   // screen is conditionally rendered, so mounting IS opening.
@@ -319,11 +278,27 @@ export default function Settings({
 
   const save = async () => {
     setSaving(true)
+    setNameError(null)
     play('ui.ready')
-    const res = await fetchNui<Draft, { ok: boolean; settings?: SettingsPayload }>(
-      CB.SETTINGS_SAVE, draft)
-    if (res?.settings) setSettings(res.settings)
+    const res = await fetchNui<Draft, {
+      ok: boolean; settings?: SettingsPayload; field?: string; reason?: string
+    }>(CB.SETTINGS_SAVE, draft)
     setSaving(false)
+
+    // A REFUSED NAME KEEPS THE SCREEN OPEN. Closing on a failed save would
+    // discard the thing the player typed and tell them nothing -- the only
+    // sign would be their old name still on the roster, which reads as the
+    // save silently not working (user, 2026-08-09).
+    if (res && res.ok === false) {
+      play('ui.error')
+      if (res.field === 'gamertag') {
+        setNameError(res.reason ?? 'That name is not available.')
+        setTab('general')
+      }
+      return
+    }
+
+    if (res?.settings) setSettings(res.settings)
     close()
   }
 
@@ -374,7 +349,8 @@ export default function Settings({
           button all slid away with it (user, 2026-08-09). Only the pane moves
           now; everything that orients you stays put. */}
       <div className="pane thin-scroll">
-        {tab === 'interface' && (
+        {tab === 'general' && (
+          <div className="flex flex-col gap-8">
           <Section title="Interface">
               <Slider
                 label="Interface size" value={draft.uiScale} dflt={DEFAULT_SETTINGS.uiScale}
@@ -388,19 +364,8 @@ export default function Settings({
                 format={(v) => `${Math.round(v * 100)}%`}
                 onChange={(v) => set('textScale', v)}
               />
-              {/* The one control that explains itself by existing: turn it on
-                  and the box the HUD lives in is drawn, which is the only way
-                  to answer "is my HUD cut off, or is that where it goes". */}
-              <Toggle
-                label="Show safe area"
-                sub="Draws the box the HUD lays out inside"
-                on={draft.safeArea}
-                onChange={(v) => set('safeArea', v)}
-              />
           </Section>
-        )}
 
-        {tab === 'audio' && (
           <Section title="Audio">
               <Slider
                 label="Interface sounds" value={draft.volUi} dflt={DEFAULT_SETTINGS.volUi}
@@ -424,6 +389,74 @@ export default function Settings({
                 Music is not in the game yet — this is stored for when it is.
               </p>
           </Section>
+          <Section title="Identity">
+              {/* LOCKED IN A MATCH, AND IT SAYS SO IN THREE WAYS: the field is
+                  disabled, it wears a lock, and the line underneath explains
+                  WHY rather than just that. The server already refuses a
+                  rename outside the lobby (br_core/server/roster.lua), so
+                  without this the player could type a new name, press Save,
+                  and watch nothing happen with no explanation offered --
+                  which reads as a broken field rather than as a rule (user,
+                  2026-08-09). */}
+              <label className="block">
+                <span className="block text-[0.82rem] text-white/70 mb-1.5 tscale">
+                  Display name
+                </span>
+                <div className="relative">
+                  <input
+                    value={draft.gamertag}
+                    maxLength={20}
+                    disabled={nameLocked}
+                    placeholder={nameLocked ? '' : 'Your platform name'}
+                    onChange={(e) => { setNameError(null); set('gamertag', e.target.value) }}
+                    onKeyDown={(e) => e.stopPropagation()}
+                    className={`plate w-full px-3 py-2 bg-transparent outline-none
+                                text-[0.9rem] placeholder:text-white/25${
+                                  nameLocked ? ' pr-9 cursor-not-allowed' : ''}`}
+                    style={{
+                      ['--edgec' as string]: nameError
+                        ? 'var(--color-danger)' : 'rgba(255,255,255,0.16)',
+                      ['--plate-fill' as string]: nameError
+                        ? 'rgba(52,20,24,0.92)' : 'rgba(24,28,40,0.94)',
+                      ['--cut-max' as string]: '0.45rem',
+                      color: nameLocked ? 'rgba(255,255,255,0.4)' : undefined,
+                    }}
+                  />
+                  {nameLocked && (
+                    <span
+                      className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                      style={{ color: 'rgba(255,255,255,0.35)' }}
+                      aria-hidden="true"
+                    >
+                      {/* Drawn, not a glyph: there is no icon font here and a
+                          unicode padlock renders as a different picture on
+                          every platform. */}
+                      <svg width="0.95rem" height="0.95rem" viewBox="0 0 24 24">
+                        <path
+                          fill="currentColor"
+                          d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0
+                             2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm0 2a3 3 0 0 1 3 3v3H9V7a3 3
+                             0 0 1 3-3zm0 11a2 2 0 0 1 1 3.73V20h-2v-1.27A2 2 0 0 1 12 15z"
+                        />
+                      </svg>
+                    </span>
+                  )}
+                </div>
+              </label>
+              <p
+                className={nameError ? 'text-[0.78rem] tscale' : 'micro-label'}
+                style={nameError ? { color: 'var(--color-danger)' } : undefined}
+              >
+                {nameError
+                  ? nameError
+                  : nameLocked
+                    ? 'Locked while you are in a match — your name is in the kill'
+                      + ' feed everyone else is reading. It unlocks in the lobby.'
+                    : '3–20 characters, and it has to be something everyone else'
+                      + ' can be shown. Leave it empty to use your platform name.'}
+              </p>
+          </Section>
+          </div>
         )}
 
         {tab === 'accessibility' && (
@@ -483,67 +516,6 @@ export default function Settings({
           </Section>
         )}
 
-        {tab === 'identity' && (
-          <Section title="Identity">
-              {/* LOCKED IN A MATCH, AND IT SAYS SO IN THREE WAYS: the field is
-                  disabled, it wears a lock, and the line underneath explains
-                  WHY rather than just that. The server already refuses a
-                  rename outside the lobby (br_core/server/roster.lua), so
-                  without this the player could type a new name, press Save,
-                  and watch nothing happen with no explanation offered --
-                  which reads as a broken field rather than as a rule (user,
-                  2026-08-09). */}
-              <label className="block">
-                <span className="block text-[0.82rem] text-white/70 mb-1.5 tscale">
-                  Display name
-                </span>
-                <div className="relative">
-                  <input
-                    value={draft.gamertag}
-                    maxLength={20}
-                    disabled={nameLocked}
-                    placeholder={nameLocked ? '' : 'Your platform name'}
-                    onChange={(e) => set('gamertag', e.target.value)}
-                    onKeyDown={(e) => e.stopPropagation()}
-                    className={`plate w-full px-3 py-2 bg-transparent outline-none
-                                text-[0.9rem] placeholder:text-white/25${
-                                  nameLocked ? ' pr-9 cursor-not-allowed' : ''}`}
-                    style={{
-                      ['--edgec' as string]: 'rgba(255,255,255,0.16)',
-                      ['--plate-fill' as string]: 'rgba(24,28,40,0.94)',
-                      ['--cut-max' as string]: '0.45rem',
-                      color: nameLocked ? 'rgba(255,255,255,0.4)' : undefined,
-                    }}
-                  />
-                  {nameLocked && (
-                    <span
-                      className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
-                      style={{ color: 'rgba(255,255,255,0.35)' }}
-                      aria-hidden="true"
-                    >
-                      {/* Drawn, not a glyph: there is no icon font here and a
-                          unicode padlock renders as a different picture on
-                          every platform. */}
-                      <svg width="0.95rem" height="0.95rem" viewBox="0 0 24 24">
-                        <path
-                          fill="currentColor"
-                          d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0
-                             2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm0 2a3 3 0 0 1 3 3v3H9V7a3 3
-                             0 0 1 3-3zm0 11a2 2 0 0 1 1 3.73V20h-2v-1.27A2 2 0 0 1 12 15z"
-                        />
-                      </svg>
-                    </span>
-                  )}
-                </div>
-              </label>
-              <p className="micro-label">
-                {nameLocked
-                  ? 'Locked while you are in a match — your name is in the kill'
-                    + ' feed everyone else is reading. It unlocks in the lobby.'
-                  : '3–20 characters. Leave it empty to use your platform name.'}
-              </p>
-          </Section>
-        )}
 
         {tab === 'controls' && (
           <Section title="Controls">

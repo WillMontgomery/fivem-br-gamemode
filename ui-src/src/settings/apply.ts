@@ -25,7 +25,6 @@ export const DEFAULT_SETTINGS: SettingsPayload = {
   colourblind: 'off',
   volUi: 0.7,
   volMusic: 0.5,
-  safeArea: false,
   gamertag: '',
 }
 

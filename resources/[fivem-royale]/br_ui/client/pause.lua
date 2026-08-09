@@ -54,27 +54,31 @@ RegisterNUICallback(BR.NuiCb.PAUSE_ACTION, function(data, cb)
     local action = tostring(data and data.action or '')
 
     if action == 'map' then
-        -- Our menu goes first: the frontend cannot open while NUI holds the
-        -- cursor. This is the same handshake the lobby's ESC path uses, and
-        -- it is br_core that actually raises the scaleform.
+        -- THE BIG MINIMAP, NOT GTA'S PAUSE MENU.
+        --
+        -- The question was whether the rest of the pause menu's scaleforms
+        -- can be suppressed when we only want the map. They cannot -- the
+        -- tabs are part of that scaleform and ActivateFrontendMenu's
+        -- component argument only chooses which one is FOCUSED (-1 is
+        -- already the map).
+        --
+        -- SET_BIGMAP_ACTIVE avoids the question entirely: it expands the
+        -- minimap to the full-screen map GTA Online uses, drawn over live
+        -- gameplay, with no frontend, no tabs and no pause. It is what every
+        -- resource that wants "just the map" actually uses, and it is better
+        -- than what was asked for -- the world keeps running underneath.
         BR.Pause.close()
-        TriggerEvent('br:ui:pauseRequest')
-        cb({ ok = true })
-        return
-    end
-
-    if action == 'quit' then
-        -- No confirmation here -- the page already asked. Two confirmations
-        -- for one decision trains people to click through both.
-        BR.Pause.close()
-        ExecuteCommand('quit')
+        SetBigmapActive(true, true)
+        BR.Pause.bigmap = true
         cb({ ok = true })
         return
     end
 
     if action == 'server' then
+        -- The client's own `disconnect` is a restricted console command and
+        -- comes back "Access denied" (user, 2026-08-09). The server drops us.
         BR.Pause.close()
-        ExecuteCommand('disconnect')
+        TriggerServerEvent(BR.Net.LEAVE_SERVER)
         cb({ ok = true })
         return
     end
@@ -96,6 +100,14 @@ end)
 -- crosses resources, which is the same hop br_core already uses to reach the
 -- interface.
 AddEventHandler('br:ui:pauseToggle', function()
+    -- THE BIG MAP IS A STATE THE SAME KEY GETS YOU OUT OF. It is drawn over
+    -- live gameplay with no cursor and no menu, so without this the only way
+    -- back would be a key the player has not been told about.
+    if BR.Pause.bigmap then
+        SetBigmapActive(false, false)
+        BR.Pause.bigmap = false
+        return
+    end
     if open then BR.Pause.close() else BR.Pause.open() end
 end)
 
@@ -116,4 +128,10 @@ end)
 AddEventHandler('onResourceStop', function(res)
     if res ~= RES then return end
     open = false
+    -- A big map left active would survive this resource and there would be
+    -- nothing left listening for the key that closes it.
+    if BR.Pause.bigmap then
+        SetBigmapActive(false, false)
+        BR.Pause.bigmap = false
+    end
 end)

@@ -47,9 +47,6 @@ local DEFAULTS = {
     -- slider can reach: PlaySoundFrontend has no per-cue volume.
     volUi       = 0.70,
     volMusic    = 0.50,
-    -- Draw the safe-area box the HUD lays out inside. Diagnostic, and the
-    -- only honest way to answer "is my HUD cut off or is that the design".
-    safeArea    = false,
     -- Proposed to the server on join. Empty means "use my platform name".
     gamertag    = '',
 }
@@ -151,16 +148,27 @@ end)
 -- ------------------------------------------------------------- callbacks ---
 
 RegisterNUICallback(BR.NuiCb.SETTINGS_SAVE, function(data, cb)
+    -- THE NAME IS CHECKED BEFORE ANYTHING IS STORED, and the answer comes
+    -- back with the save so the screen can say so while the player is still
+    -- looking at the field. The same BR.ValidateName runs on the server,
+    -- which is the actual boundary -- this copy exists to make the refusal
+    -- instant rather than to be trusted.
+    local nameOk, reason = BR.ValidateName(data and data.gamertag)
+    if not nameOk then
+        cb({ ok = false, field = 'gamertag', reason = reason })
+        return
+    end
+
     local ok, stored = pcall(BR.Settings.save, data)
     if not ok then
         print(('[br_ui] settings save failed: %s'):format(tostring(stored)))
-        cb({ ok = false })
+        cb({ ok = false, reason = 'Could not save.' })
         return
     end
 
     -- The gamertag is the one setting somebody else can see, so the server
-    -- gets a say. Proposed, not asserted: the page shows whatever comes back
-    -- on the roster.
+    -- gets the final say. Proposed, not asserted: the roster is what the
+    -- interface ends up showing.
     TriggerServerEvent(BR.Net.SETTINGS_NAME, { name = stored.gamertag })
 
     cb({ ok = true, settings = stored })
@@ -226,7 +234,7 @@ RegisterCommand('brsettings', function(_, args)
     local s = BR.Settings.get()
     print('=== settings ===')
     for _, k in ipairs({ 'uiScale', 'textScale', 'colourblind',
-                         'volUi', 'volMusic', 'safeArea', 'gamertag' }) do
+                         'volUi', 'volMusic', 'gamertag' }) do
         print(('  %-12s %s'):format(k, tostring(s[k])))
     end
     print('  usage: brsettings [reset]')

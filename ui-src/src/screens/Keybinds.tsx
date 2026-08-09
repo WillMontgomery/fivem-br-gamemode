@@ -103,14 +103,20 @@ export default function Keybinds() {
         </div>
       )}
 
+      {/* NARROW, NOT FULL WIDTH. A settings pane is ~60rem and these rows are
+          a short label and a key -- stretched across all of it, the label and
+          its key ended up so far apart that reading across was guesswork
+          (user, 2026-08-09). 30rem puts them within one eye movement, and the
+          rows alternate so the eye can hold a line. */}
       {groups.map((g) => (
-        <div key={g}>
+        <div key={g} style={{ width: '30rem', maxWidth: '100%' }}>
           <div className="micro-label mb-1.5">{g}</div>
-          <div className="flex flex-col gap-1">
-            {actions.filter((a) => a.group === g).map((a) => (
+          <div className="flex flex-col">
+            {actions.filter((a) => a.group === g).map((a, i) => (
               <Row
                 key={a.command}
                 action={a}
+                zebra={i % 2 === 1}
                 enabled={rawActive}
                 listening={listening === a.command}
                 onListen={() => { play('ui.select'); setListening(a.command) }}
@@ -132,16 +138,21 @@ export default function Keybinds() {
 }
 
 function Row({
-  action, listening, enabled, onListen,
+  action, listening, enabled, zebra, onListen,
 }: {
   action: KeybindAction
   listening: boolean
   enabled: boolean
+  /** Alternate row shading, so a long list can be read across. */
+  zebra: boolean
   onListen: () => void
 }) {
   const unbound = !action.key
   return (
-    <div className="flex items-center gap-3">
+    <div
+      className="flex items-center gap-3 px-2 py-1 rounded-sm"
+      style={{ background: zebra ? 'rgba(255,255,255,0.035)' : 'transparent' }}
+    >
       <span className="text-[0.82rem] text-white/70 tscale flex-1 min-w-0 truncate">
         {action.label}
       </span>

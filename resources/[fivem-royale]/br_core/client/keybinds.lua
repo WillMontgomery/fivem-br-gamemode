@@ -344,13 +344,28 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
     for _, b in ipairs(BR.Keys.bindings) do
         local code = map[b.command]
         if code then
-            if IsRawKeyJustPressed(code) then
-                rawDown[b.command] = true
-                fire(b.action, true)
-                if not b.hold then fire(b.action, false) end
-            elseif b.hold and rawDown[b.command] and IsRawKeyJustReleased(code) then
-                rawDown[b.command] = nil
-                fire(b.action, false)
+            -- EDGES ARE DERIVED, NOT ASKED FOR.
+            --
+            -- The first cut called IS_RAW_KEY_JUST_PRESSED, which DOES NOT
+            -- EXIST -- only IS_RAW_KEY_PRESSED is declared in
+            -- fivem/ext/native-decls. So the probe threw, the layer refused
+            -- to start, and the settings screen honestly reported that
+            -- rebinding was unavailable (user, 2026-08-09: "not sure why I
+            -- got 'Rebinding is unavailable'"). It was right; the native was
+            -- imaginary.
+            --
+            -- One native and a remembered bit gives both edges, which is all
+            -- the missing one would have done anyway.
+            local down = IsRawKeyPressed(code)
+            local was = rawDown[b.command] == true
+            if down ~= was then
+                rawDown[b.command] = down or nil
+                if down then
+                    fire(b.action, true)
+                    if not b.hold then fire(b.action, false) end
+                elseif b.hold then
+                    fire(b.action, false)
+                end
             end
         end
     end
@@ -375,9 +390,12 @@ AddEventHandler('onClientResourceStart', function(res)
     -- has no raw-key natives the flag stays false, the RegisterKeyMapping
     -- handlers keep working exactly as they always have, and the settings
     -- screen says so rather than offering a rebinder that cannot bind.
-    local ok = pcall(function()
-        return IsRawKeyJustPressed(0x77) and IsRawKeyJustReleased(0x77)
-    end)
+    -- IS_RAW_KEY_PRESSED, and only that one: it is the single raw-key native
+    -- actually declared (CFX, client, takes a Windows virtual-key code). The
+    -- "just pressed" and "just released" variants that would have been
+    -- convenient do not exist, which is what the first version probed for and
+    -- correctly failed to find.
+    local ok = pcall(function() return IsRawKeyPressed(0x77) end)
     BR.Keys.rawActive = ok
     print(('[br_core] raw key layer %s'):format(ok and 'active' or 'UNAVAILABLE'))
     load()

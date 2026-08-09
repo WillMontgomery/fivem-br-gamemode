@@ -60,11 +60,11 @@ const EXITS: {
     sub: 'Disconnects you from FiveM Royale.',
     confirm: 'Disconnect from the server?',
   },
-  {
-    id: 'quit', label: 'Quit FiveM', variant: 'danger',
-    sub: 'Closes the game entirely.',
-    confirm: 'Quit FiveM?',
-  },
+  // QUIT FIVEM IS NOT HERE, and cannot be. The client's own `quit` console
+  // command is restricted -- "Access denied" -- and there is no server-side
+  // equivalent: a server can drop you from itself, not close your game. An
+  // option that cannot work is worse than one that is absent, so it is
+  // absent (user, 2026-08-09). Alt+F4 and FiveM's own menu still exist.
 ]
 
 export default function PauseMenu() {
@@ -139,6 +139,28 @@ export default function PauseMenu() {
                 {t === 'main' ? 'Match' : 'Settings'}
               </button>
             ))}
+            {/* THE MAP IS A DESTINATION, so it sits with the other two --
+                and it is not a tab, because it hands the screen to the game
+                rather than swapping a pane. SetBigmapActive draws GTA's full
+                map over live gameplay with no frontend and no pause; the
+                same key that opened this menu closes it again. */}
+            <button
+              type="button"
+              className="btn plate px-4 py-2 font-display uppercase tracking-[0.12em]
+                         text-[0.8rem]"
+              style={{
+                ['--edgec' as string]: 'rgba(255,255,255,0.16)',
+                ['--plate-fill' as string]: 'rgba(24,28,40,0.92)',
+                ['--cut-max' as string]: '0.45rem',
+              }}
+              onPointerEnter={() => play('ui.hover')}
+              onClick={() => {
+                play('ui.select')
+                void fetchNui(CB.PAUSE_ACTION, { action: 'map' })
+              }}
+            >
+              Map
+            </button>
           </div>
           </div>
         </div>
@@ -202,18 +224,14 @@ export default function PauseMenu() {
               ))}
             </div>
 
-            <div className="flex gap-3 mt-6">
+            {/* RESUME IS THE ONLY PRIMARY, AND IT IS ALONE.
+                It sat next to Map wearing the brand colour, which made two
+                unrelated things look like a pair of equals -- one closes this
+                menu, the other opens a different view (user, 2026-08-09).
+                Map has moved up beside the tabs, where destinations live. */}
+            <div className="mt-6">
               <Btn variant="primary" size="lg" cue="ui.back" onPress={close}>
                 Resume
-              </Btn>
-              {/* HANDS THE SCREEN BACK TO THE ENGINE. Our menu drops first --
-                  GTA's frontend is a scaleform and cannot share the screen
-                  with NUI focus. */}
-              <Btn
-                variant="default" size="lg" cue="ui.select"
-                onPress={() => { void fetchNui(CB.PAUSE_ACTION, { action: 'map' }) }}
-              >
-                Map
               </Btn>
             </div>
           </>

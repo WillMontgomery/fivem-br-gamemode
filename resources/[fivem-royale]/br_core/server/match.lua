@@ -234,6 +234,7 @@ function BR.Match.onEnter(m, state, from)
         -- path that reaches PLAYING with states still settling ends instantly,
         -- and the log reads as though a match was played and won in one tick.
         m.startedAt = GetGameTimer()
+
         m.landCheck = nil   -- fresh stuck-lander bookkeeping per match
 
         -- The flight is over, so nobody is waiting for it. The "waiting for

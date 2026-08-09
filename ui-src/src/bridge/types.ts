@@ -387,8 +387,6 @@ export interface SettingsPayload {
    *  slider CAN reach -- PlaySoundFrontend has no per-cue volume. */
   volUi: number
   volMusic: number
-  /** Draw the box the HUD lays out inside. */
-  safeArea: boolean
   /** Proposed to the server; empty means "use my platform name". */
   gamertag: string
 }
