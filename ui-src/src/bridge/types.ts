@@ -405,6 +405,10 @@ export interface SettingsPayload {
 export interface LockerPayload {
   peds: { id: string; name: string }[]
   chosen: string
+  /** The id currently being streamed in, if any. A model that is not already
+   *  in memory takes a moment, and until this existed the button looked like
+   *  it had not registered the click. */
+  loading?: string | null
 }
 
 /**

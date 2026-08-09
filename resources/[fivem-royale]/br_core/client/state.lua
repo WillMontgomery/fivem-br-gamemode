@@ -603,10 +603,13 @@ AddEventHandler(BR.Net.SQUAD_INVITED, function(inv)
     -- pointing at a card the player is already looking at is noise.
     if inv and not inv.cancel
        and S.me.state ~= BR.PlayerState.LOBBY then
-        local key = BR.Keys and BR.Keys.labelFor and BR.Keys.labelFor('brpausemenu')
+        -- NO KEY NAME IN THE TEXT. It read the binding and printed "#27" --
+        -- Escape had no entry in the name table -- and a notice that names a
+        -- key it cannot name is worse than one that names a place (user,
+        -- 2026-08-09). The key is fixed now; the wording is simpler anyway.
         BR.Notify(
-            ('%s invited you to their party — %s to answer'):format(
-                inv.name or 'Someone', key and ('press ' .. key) or 'open the pause menu'),
+            ('%s invited you to their party — answer it in the pause menu')
+                :format(inv.name or 'Someone'),
             'info', { key = 'party.invite', ms = 12000 })
     end
 end)

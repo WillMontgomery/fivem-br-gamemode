@@ -4,6 +4,7 @@ import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 import Btn from '../ui/Btn'
 import { play } from '../audio/cues'
+import Ring from '../hud/Ring'
 
 /**
  * The locker.
@@ -118,6 +119,12 @@ export default function Locker() {
             <div className="grid grid-cols-2 gap-2">
               {locker.peds.map((p) => {
                 const on = p.id === locker.chosen
+                // STREAMING IN. A model that is not already in memory takes a
+                // beat to arrive, and a button that looks identical before and
+                // after the click reads as a button that did nothing -- so
+                // people click again, which is the race the Lua side now
+                // absorbs. This is the half that stops them wanting to.
+                const busy = locker.loading === p.id
                 return (
                   <button
                     key={p.id}
@@ -143,10 +150,14 @@ export default function Locker() {
                     }}
                   >
                     <span
-                      className="block text-[0.95rem] tscale"
+                      className="flex items-center gap-2 text-[0.95rem] tscale"
                       style={{ color: on ? 'var(--color-royale-accent)' : '#ffffff' }}
                     >
                       {p.name}
+                      {/* The loading ring the rest of the interface uses, at
+                          label size. Same object, same meaning: something is
+                          happening and it is not finished. */}
+                      {busy && <Ring size={0.85} stroke={0.16} label="Loading" />}
                     </span>
                   </button>
                 )

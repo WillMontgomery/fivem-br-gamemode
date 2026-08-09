@@ -125,6 +125,9 @@ function BR.Locker.spinBy(delta)
         ((BR.Config.Match.lobbyPos.heading + spin) % 360.0))
 end
 
+--- Which id is mid-swap, so the screen can say so. Nil when nothing is.
+local loadingId = nil
+
 --- Send the roster and the current choice to the interface.
 function BR.Locker.push()
     local list = {}
@@ -132,7 +135,13 @@ function BR.Locker.push()
         list[#list + 1] = { id = p.id, name = p.name }
     end
     TriggerEvent('br:ui:sendLocal', BR.Nui.LOCKER,
-        { peds = list, chosen = BR.Locker.chosen() })
+        -- `loading` is the id being STREAMED IN right now. A model that is not
+        -- already in memory takes a moment to arrive, and until it does the
+        -- button looked like it had not registered the click -- so players
+        -- clicked again (user, 2026-08-09: "a delay ... they don't know
+        -- why"). Naming which one is loading lets the screen mark that one
+        -- button rather than blocking the whole page.
+        { peds = list, chosen = BR.Locker.chosen(), loading = loadingId })
 end
 
 AddEventHandler('br:ui:ready', function()
@@ -167,8 +176,40 @@ end)
 -- they mean.
 AddEventHandler('br:ui:action', function(name, data)
     if name == BR.NuiCb.LOCKER_PICK then
-        BR.Locker.apply(data and data.id, function(ok)
-            if ok then BR.Locker.push() end
+        local id = data and data.id
+
+        -- THE LAST PRESS WINS, and a press during a swap is not dropped.
+        --
+        -- Clicking quickly did nothing at all (user, 2026-08-09). Each pick
+        -- starts a model request that takes as long as it takes, and a second
+        -- pick arriving mid-flight raced the first: two apply() calls, two
+        -- callbacks, and the loser could land AFTER the winner and put the
+        -- earlier model back -- or the in-flight request could simply swallow
+        -- the newer choice.
+        --
+        -- So a pick during a swap is REMEMBERED rather than run, and applied
+        -- when the current one finishes. Remembered, not queued: pressing
+        -- four buttons quickly should end on the fourth, not play all four
+        -- back in sequence.
+        if loadingId then
+            BR.Locker.queued = id
+            return
+        end
+
+        loadingId = id
+        BR.Locker.push()   -- the button can show it is working
+
+        BR.Locker.apply(id, function(ok)
+            loadingId = nil
+            local nextId = BR.Locker.queued
+            BR.Locker.queued = nil
+            BR.Locker.push()
+            if nextId and nextId ~= id then
+                TriggerEvent('br:ui:action', BR.NuiCb.LOCKER_PICK, { id = nextId })
+            end
+            if not ok then
+                BR.Notify('That character could not be loaded.', 'warn')
+            end
         end)
     elseif name == BR.NuiCb.LOCKER_SPIN then
         BR.Locker.spinBy(data and data.delta)

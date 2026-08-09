@@ -386,6 +386,9 @@ end
 --- to its number, which is ugly and honest -- better than a wrong name.
 local VK_NAME = {
     [0x08] = 'Backspace', [0x09] = 'Tab', [0x0D] = 'Enter', [0x10] = 'Shift',
+    -- ESCAPE WAS MISSING, and the pause menu's own default is Escape -- so
+    -- every place that names the key printed "#27" (user, 2026-08-09).
+    [0x1B] = 'Esc', [0x2C] = 'PrtSc', [0x91] = 'ScrLk', [0x13] = 'Pause',
     [0x11] = 'Ctrl', [0x12] = 'Alt', [0x14] = 'Caps', [0x20] = 'Space',
     [0x21] = 'Page Up', [0x22] = 'Page Down', [0x23] = 'End', [0x24] = 'Home',
     [0x25] = 'Left', [0x26] = 'Up', [0x27] = 'Right', [0x28] = 'Down',

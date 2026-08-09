@@ -323,7 +323,26 @@ end
 --- @param quiet boolean|nil  suppress the message (used when switching parties)
 function BR.Party.leave(src, quiet)
     local entry = BR.Roster.get(src)
-    if not entry or not entry.partyId then return end
+    if not entry then return end
+
+    -- NOTHING TO LEAVE STILL GETS AN ANSWER, and that is the fix for a
+    -- Leave party button that does nothing.
+    --
+    -- This used to return silently when the server had no party for the
+    -- player. A client whose copy is stale -- and it CAN be: the SQUAD
+    -- channel carries the in-match squad for a whole match, so a party
+    -- change during one has to reach them by a route that was not always
+    -- taken -- then shows a party the server does not have. Every press of
+    -- the button asks the server to leave a party it has already forgotten,
+    -- the server says nothing, and the button is dead forever (user,
+    -- 2026-08-09: "neither player can leave the party").
+    --
+    -- Answering "you have no party" costs one message and makes the stale
+    -- client correct itself on the first press.
+    if not entry.partyId then
+        syncEmpty(src)
+        return
+    end
 
     local party = parties[entry.partyId]
     entry.partyId = nil
@@ -1086,6 +1105,41 @@ AddEventHandler(BR.Net.SQUAD_JOINRESP, function(data)
         tonumber(data and data.requester), data and data.accept)
     result(src, ok, reason)
 end)
+
+-- WHAT THE SERVER ACTUALLY HAS, printed. Two live reports have come down to
+-- "the client shows a party the server does not have" (or the reverse), and
+-- from the outside those are indistinguishable from a dead button. This is the
+-- other half of /brparty on the client: run both, compare.
+RegisterCommand('brparties', function()
+    print('=== parties ===')
+    local n = 0
+    for id, p in pairs(parties) do
+        n = n + 1
+        local names = {}
+        for _, src in ipairs(p.members) do
+            local e = BR.Roster.get(src)
+            names[#names + 1] = ('%s(%d)%s'):format(
+                e and e.name or '?', src, src == p.leader and '*' or '')
+        end
+        print(('  %-6s leader %-4s  %s'):format(id, tostring(p.leader),
+            table.concat(names, ' ')))
+    end
+    if n == 0 then print('  (none)') end
+
+    print('  roster partyIds:')
+    BR.Roster.each(nil, function(src, e)
+        print(('    %-4s %-18s partyId %-6s state %s'):format(
+            src, e.name, tostring(e.partyId), tostring(e.state)))
+    end)
+
+    print('  pending invites:')
+    local any = false
+    for target, inv in pairs(invites) do
+        any = true
+        print(('    -> %-4s from %-4s party %s'):format(target, inv.from, inv.partyId))
+    end
+    if not any then print('    (none)') end
+end, true)
 
 RegisterNetEvent(BR.Net.SQUAD_LEAVE)
 AddEventHandler(BR.Net.SQUAD_LEAVE, function()

@@ -823,6 +823,18 @@ function BR.Match.leaveMatch(src)
     TriggerClientEvent(BR.Net.TO_LOBBY, src)
     BR.Server.notify(src, 'You left the match.', 'info')
 
+    -- AND THEIR PARTY DISPLAY IS RE-ASSERTED, the same way it is when a match
+    -- is destroyed. The SQUAD channel spends the whole match carrying the
+    -- in-match squad, so a party change during one -- including leaving it on
+    -- the way out through the pause menu -- may never have reached this
+    -- client. Walking back into the lobby with a party the server does not
+    -- have is how "neither player can leave the party" starts (user,
+    -- 2026-08-09): the button asks to leave something already gone.
+    --
+    -- The match-destroy path does this per player; a voluntary exit skips
+    -- that path entirely, which is exactly why it needs its own call.
+    BR.Party.resync(src)
+
     print(('[br_core] %s (%d) left the match'):format(entry.name, src))
 end
 
