@@ -90,12 +90,15 @@ export default function NoticeLog() {
               // The same object as the live notice -- .panel with a tone blade
               // on the leading edge -- so a line in the history is recognisably
               // the line that was on screen, not a log entry about it.
-              className="panel ts px-3.5 py-2 text-white/85
-                         flex items-center gap-2"
+              className="plate ts px-3.5 py-2 text-white/90 flex items-center gap-2"
               style={{
+                // The same object as the live notice, down to the surface:
+                // a plate with the tone on its edge. See NoticeRow.
                 ['--fs' as string]: '0.85rem',
+                ['--edgec' as string]: tone,
+                ['--plate-fill' as string]: 'rgba(18,21,30,0.94)',
+                ['--cut-max' as string]: '0.3rem',
                 borderLeft: `2px solid ${tone}`,
-                borderRadius: '0 var(--r-panel) var(--r-panel) 0',
               }}
             >
               <span className="min-w-0">{n.text}</span>

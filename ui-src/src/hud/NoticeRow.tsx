@@ -113,13 +113,24 @@ export default function NoticeRow({
         // `tscale`: a notice is a line of prose in a box that grows with it,
         // which is exactly the shape that can honour a text-size preference
         // without clipping. The HUD plates cannot, and deliberately do not.
-        className="panel tscale px-3.5 py-1.5 text-[0.8125rem] text-white/85
-                   flex items-center gap-2"
+        className="plate ts px-3.5 py-1.5 text-white/90 flex items-center gap-2"
         style={{
-          // .panel has no border any more, so the tone rides a blade on the
-          // leading edge and the radius squares off on that side.
+          // A PLATE, NOT A PANEL, and that is the design system's own rule
+          // rather than a preference: `.panel` is the surface that RECEDES --
+          // translucent, borderless, rounded -- and a notice is an EVENT. It
+          // announces something. Events are plates: near-opaque, square, with
+          // a bright edge that carries the tone.
+          //
+          // It shipped as a rounded panel and stayed that way through the
+          // whole overhaul (user, 2026-08-09: "still using rounded corners.
+          // Not the square ones you spec'd ages ago").
+          ['--fs' as string]: '0.8125rem',
+          ['--edgec' as string]: tone,
+          ['--plate-fill' as string]: 'rgba(18,21,30,0.94)',
+          ['--cut-max' as string]: '0.3rem',
+          // The tone also rides a blade on the leading edge -- the edge alone
+          // is a hairline, and this is read peripherally.
           borderLeft: `2px solid ${tone}`,
-          borderRadius: '0 var(--r-panel) var(--r-panel) 0',
         }}
       >
         {children}
