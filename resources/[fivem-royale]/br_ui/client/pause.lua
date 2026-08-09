@@ -64,6 +64,10 @@ end
 function BR.Pause.openFrontendMap()
     if frontendMap then return end
     frontendMap = true
+    -- br_core suppresses GTA's frontend every frame now that Escape is ours.
+    -- This is the one time we WANT it, so it has to know to stand down --
+    -- otherwise the map opens into a menu that is being closed underneath it.
+    TriggerEvent('br:map:frontend', true)
 
     Citizen.CreateThread(function()
         -- FE_MENU_VERSION_MP_PAUSE, not SP: the multiplayer pause menu is the
@@ -82,6 +86,7 @@ function BR.Pause.openFrontendMap()
         if not IsPauseMenuActive() then
             print('[br_ui] map: pause menu never became active; giving up')
             frontendMap = false
+            TriggerEvent('br:map:frontend', false)
             return
         end
 
@@ -106,6 +111,9 @@ function BR.Pause.openFrontendMap()
         pcall(PauseMenuceptionTheKick)
         SetFrontendActive(false)
         frontendMap = false
+        -- Suppression resumes only once the frontend is genuinely down, so
+        -- there is no frame in which both are trying to own it.
+        TriggerEvent('br:map:frontend', false)
     end)
 end
 
@@ -206,7 +214,19 @@ end)
 -- br_core/client/keybinds.lua registers it (F1) and fires this; TriggerEvent
 -- crosses resources, which is the same hop br_core already uses to reach the
 -- interface.
+--- When the menu last changed state, so one press cannot count twice.
+local lastToggle = 0
+
 AddEventHandler('br:ui:pauseToggle', function()
+    -- TWO PATHS CAN SEE ONE ESCAPE. The interface has its own keydown handler
+    -- -- Escape backs out of a confirm, then a tab, then closes -- and the raw
+    -- key layer is watching the same key from Lua. Whether the game sees a key
+    -- while CEF holds focus is not something to rely on either way, so a press
+    -- inside this window is treated as the one press it was.
+    local now = GetGameTimer()
+    if now - lastToggle < 220 then return end
+    lastToggle = now
+
     -- THE BIG MAP IS A STATE THE SAME KEY GETS YOU OUT OF. It is drawn over
     -- live gameplay with no cursor and no menu, so without this the only way
     -- back would be a key the player has not been told about.
@@ -296,6 +316,7 @@ AddEventHandler('onResourceStop', function(res)
     if frontendMap then
         frontendMap = false
         SetFrontendActive(false)
+        TriggerEvent('br:map:frontend', false)
     end
     if BR.Pause.fullscreenMap then
         pcall(PauseToggleFullscreenMap, false)

@@ -77,7 +77,11 @@ local group = 'Combat'
 --- @param command string     console command / binding id
 --- @param description string shown in the pause menu
 --- @param key string         default key, e.g. 'TAB'
-local function tap(action, command, description, key)
+--- @param raw integer|nil    raw-layer default, when it must DIFFER from the
+---                           engine's. Only the pause menu needs this: its key
+---                           is Escape, and Escape is not something
+---                           RegisterKeyMapping can be given.
+local function tap(action, command, description, key, raw)
     RegisterCommand(command, function()
         -- The RAW LAYER WINS WHEN IT IS RUNNING. The command stays registered
         -- so GTA's own list still shows it, but firing from both paths would
@@ -90,7 +94,7 @@ local function tap(action, command, description, key)
     RegisterKeyMapping(command, description, 'keyboard', key)
     BR.Keys.bindings[#BR.Keys.bindings + 1] = {
         action = action, command = command, label = description,
-        default = key, hold = false, group = group,
+        default = key, hold = false, group = group, raw = raw,
     }
 end
 
@@ -164,12 +168,25 @@ group = 'Interface'
 -- open it -- there was no key, and no row in the settings screen to give it
 -- one (user, 2026-08-09: "how can I test the pause menu?").
 --
--- F1 for the pause menu, because Escape belongs to GTA's own and taking it
--- would leave a player with no way out if our NUI ever breaks. Settings is
--- deliberately unbound: it is reachable from the lobby and from the pause
--- menu, and a mispressed key that throws a full-screen opaque menu over a
--- firefight is worse than no shortcut.
-tap ('pause',       'brpausemenu', 'Royale: Pause menu',                 'F1')
+-- ESCAPE, because we are replacing GTA's pause menu rather than sitting
+-- beside it (user call, 2026-08-09). DISABLE_FRONTEND_THIS_FRAME
+-- (0x6D3465A73092F0E6) is the documented way to take the engine's menu away --
+-- it stops the frontend being TOGGLED, from the keyboard and from a
+-- controller's Start alike, which is why this can be done at all now and could
+-- not be by disabling control 199/200.
+--
+-- Two guards, because a pause menu you cannot open is a soft lock:
+--   * the suppression follows the binding (BR.Keys.ownsEscape) -- rebind our
+--     menu off Escape and GTA's comes straight back;
+--   * and it needs the raw layer, so a client without it keeps the engine's
+--     menu and reaches ours on F1.
+-- F1 stays as the ENGINE-side default for exactly that fallback; the raw
+-- layer's own default is Escape, which RegisterKeyMapping cannot be given.
+--
+-- Settings is deliberately unbound: it is reachable from the lobby and from
+-- the pause menu, and a mispressed key that throws a full-screen opaque menu
+-- over a firefight is worse than no shortcut.
+tap ('pause',       'brpausemenu', 'Royale: Pause menu',                 'F1', 0x1B)
 tap ('settingsMenu', 'brsettingsmenu', 'Royale: Settings',               '')
 
 -- br_ui owns the pages; this owns the keys. TriggerEvent crosses resources,
@@ -240,6 +257,16 @@ local vk = nil
 --- no more claim to than the engine does.
 local chosen = {}
 
+--- The SECOND key each command may have, same shape as `vk`.
+---
+--- Every game with a keyboard settings screen has two slots per action, and
+--- for the same reason: a player who wants Q *and* the side mouse button, or
+--- who is learning a new layout without giving up the old one, should not have
+--- to choose (user, 2026-08-09). Ours is a plain second table -- the reader
+--- checks both, everything else treats them identically, and a command with
+--- nothing in this table behaves exactly as it did before.
+local alt = nil
+
 --- The virtual-key codes for the DEFAULT keys above, so the raw layer can
 --- reproduce them for a player who has never rebound anything.
 ---
@@ -255,32 +282,52 @@ local DEFAULT_VK = {
     F1 = 0x70, F2 = 0x71, F3 = 0x72, F4 = 0x73, F5 = 0x74,
 }
 
+--- One stored slot, as three distinct answers.
+---
+--- A number is a key. `false` (or a legacy 0) is "deliberately on no key". And
+--- nil is silence, which is the only one that takes a default.
+--- @return integer|false|nil
+local function readSlot(stored)
+    if stored == false or stored == 0 then return false end
+    return tonumber(stored)
+end
+
 local function load()
     if vk then return vk end
-    vk = {}
+    vk, alt = {}, {}
     local raw = GetResourceKvpString(KVP)
     if raw and #raw > 0 then
         local ok, res = pcall(json.decode, raw)
         if ok and type(res) == 'table' then
+            -- MIGRATION, AND IT COSTS ONE LINE. The first shape was a flat
+            -- command -> code table; the second has named slots. A save from
+            -- before this change has no `primary` field, so the table ITSELF
+            -- is the primary map -- and nobody loses their bindings to a
+            -- refactor they did not ask for.
+            local first  = type(res.primary) == 'table' and res.primary or res
+            local second = type(res.alt) == 'table' and res.alt or {}
             for _, b in ipairs(BR.Keys.bindings) do
-                local stored = res[b.command]
-                -- 0 and false both mean "cleared". 0 is what the settings
-                -- screen sends for the × button and what older saves hold;
-                -- false is what this writes now. Both have to read back as an
-                -- explicit choice, not as silence.
-                if stored == false or stored == 0 then
-                    vk[b.command], chosen[b.command] = false, true
-                else
-                    local v = tonumber(stored)
-                    if v then vk[b.command], chosen[b.command] = v, true end
-                end
+                local p, a = readSlot(first[b.command]), readSlot(second[b.command])
+                if p ~= nil then vk[b.command], chosen[b.command] = p, true end
+                if a ~= nil then alt[b.command], chosen[b.command] = a, true end
             end
         end
     end
     for _, b in ipairs(BR.Keys.bindings) do
-        if vk[b.command] == nil then vk[b.command] = DEFAULT_VK[b.default] end
+        -- `b.raw` is a raw-layer default that DIFFERS from the one registered
+        -- with the engine -- the pause menu is Escape here and F1 there,
+        -- because the engine cannot be given Escape and we can.
+        if vk[b.command] == nil then vk[b.command] = b.raw or DEFAULT_VK[b.default] end
     end
     return vk
+end
+
+--- Persist both slots.
+local function save()
+    local p, a = {}, {}
+    for c, v in pairs(vk) do p[c] = v end
+    for c, v in pairs(alt) do a[c] = v end
+    SetResourceKvp(KVP, json.encode({ primary = p, alt = a }))
 end
 
 --- Push the whole table to the interface.
@@ -291,13 +338,21 @@ function BR.Keys.push()
         -- screen draws both as "Unbound", and the wire should not carry a
         -- boolean in a field typed as a number.
         local code = load()[b.command] or nil
+        local code2 = alt[b.command] or nil
         out[#out + 1] = {
             group   = b.group,
             command = b.command,
             label   = (b.label:gsub('^Royale:%s*', '')),
             vk      = code,
             key     = code and (BR.Keys.vkName(code) or ('#' .. code)) or '',
+            altVk   = code2,
+            altKey  = code2 and (BR.Keys.vkName(code2) or ('#' .. code2)) or '',
             default = b.default,
+            -- Whether this row is on its default, so the screen can offer a
+            -- way back. It is the only way back for a key the capture cannot
+            -- take -- Escape cancels a capture, so Escape can never be typed
+            -- into one.
+            custom  = chosen[b.command] == true,
         }
     end
     TriggerEvent('br:ui:sendLocal', BR.Nui.KEYBINDS,
@@ -354,46 +409,97 @@ function BR.Keys.labelFor(command)
     -- is the case where it genuinely knows more than we do: a player who
     -- rebinds in GTA's own list has changed something we never see.
     if not (BR.Keys.rawActive or chosen[command]) then return nil end
-    local code = load()[command]
+    -- The PRIMARY is what a prompt names. A second key is a convenience for
+    -- the player who set it; printing both over a crate would be noise.
+    local code = load()[command] or alt[command]
     if not code then return nil, chosen[command] == true end
     return BR.Keys.vkName(code) or ('#' .. code), true
+end
+
+--- Is our pause menu the thing Escape opens?
+---
+--- ASKED BEFORE THE ENGINE'S OWN MENU IS SUPPRESSED, and that is the whole
+--- point of it being a question rather than a constant. DisableFrontendThisFrame
+--- takes GTA's pause menu away; doing that unconditionally would mean a player
+--- who rebinds our pause menu to something else has no pause menu at all and
+--- no way back. So the suppression follows the binding: hold Escape and the
+--- frontend is ours, give Escape up and it is the engine's again.
+--- @return boolean
+function BR.Keys.ownsEscape()
+    if not BR.Keys.rawActive then return false end
+    load()
+    return vk['brpausemenu'] == 0x1B or alt['brpausemenu'] == 0x1B
+end
+
+--- Is this a command we registered?
+local function known(command)
+    for _, b in ipairs(BR.Keys.bindings) do
+        if b.command == command then return b end
+    end
+    return nil
+end
+
+--- Put a command back on its default key, both slots.
+---
+--- The way back for a key the CAPTURE CANNOT TAKE. Escape cancels a capture --
+--- it has to, or a player who opens the row by accident is trapped in it --
+--- so Escape can never be typed into one, and the pause menu's own default is
+--- Escape. Without this, rebinding pause once would be one-way.
+--- @param command string
+function BR.Keys.reset(command)
+    local b = known(command)
+    if not b then return false end
+
+    load()
+    vk[command] = b.raw or DEFAULT_VK[b.default]
+    alt[command] = nil
+    chosen[command] = nil
+
+    save()
+    BR.Keys.push()
+    TriggerEvent('br:keys:changed')
+    return true
 end
 
 --- Bind one command to one virtual-key code, or to nothing.
 --- @param command string
 --- @param code integer|nil  nil or 0 unbinds
-function BR.Keys.set(command, code)
-    local known = false
-    for _, b in ipairs(BR.Keys.bindings) do
-        if b.command == command then known = true break end
-    end
-    if not known then return false end
+--- @param slot integer|nil  1 (default) or 2 for the alternate key
+function BR.Keys.set(command, code, slot)
+    if not known(command) then return false end
 
     load()
+    slot = (tonumber(slot) == 2) and 2 or 1
+    local map = (slot == 2) and alt or vk
     code = tonumber(code)
     if code == 0 then code = nil end
 
     -- CONFLICTS RESOLVE IN FAVOUR OF THE NEW BINDING, which is what every game
     -- does: whatever held that key is left unbound, and the screen shows which
     -- one lost it. Refusing instead would send the player hunting.
+    --
+    -- ACROSS BOTH SLOTS, including this command's other one. A key that is a
+    -- command's primary AND its alternate is one binding wearing two hats: it
+    -- looks like a spare that does not exist, and clearing the primary would
+    -- leave the action still firing with nothing on screen to explain it.
     if code then
-        for c, v in pairs(vk) do
-            -- FALSE, NOT NIL. Nil is "no opinion", and no opinion means the
-            -- default comes back on the next restart -- onto the very key
-            -- that just took this one, so the two collide again and the
-            -- player has no way to see why.
-            if c ~= command and v == code then
-                vk[c], chosen[c] = false, true
+        for _, pair in ipairs({ { vk, 1 }, { alt, 2 } }) do
+            local m, n = pair[1], pair[2]
+            for c, v in pairs(m) do
+                -- FALSE, NOT NIL. Nil is "no opinion", and no opinion means
+                -- the default comes back on the next restart -- onto the very
+                -- key that just took this one, so the two collide again and
+                -- the player has no way to see why.
+                if v == code and not (c == command and n == slot) then
+                    m[c], chosen[c] = false, true
+                end
             end
         end
     end
-    vk[command] = code or false
+    map[command] = code or false
     chosen[command] = true
 
-    local store = {}
-    for c, v in pairs(vk) do store[c] = v end
-    SetResourceKvp(KVP, json.encode(store))
-
+    save()
     BR.Keys.push()
     -- ANYTHING THAT DRAWS A KEY HAS TO REDRAW IT. The world prompts cache
     -- their payload per entry, so without this the crate you are standing in
@@ -416,8 +522,8 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
 
     local map = load()
     for _, b in ipairs(BR.Keys.bindings) do
-        local code = map[b.command]
-        if code then
+        local code, code2 = map[b.command], alt[b.command]
+        if code or code2 then
             -- EDGES ARE DERIVED, NOT ASKED FOR.
             --
             -- The first cut called IS_RAW_KEY_JUST_PRESSED, which DOES NOT
@@ -430,7 +536,12 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
             --
             -- One native and a remembered bit gives both edges, which is all
             -- the missing one would have done anyway.
-            local down = IsRawKeyPressed(code)
+            -- EITHER KEY. Two slots is one action, so the action is down
+            -- while ANY of its keys is -- and holding both and releasing one
+            -- must not fire a release, which falling out of an `or` gives for
+            -- free.
+            local down = (code and IsRawKeyPressed(code))
+                      or (code2 and IsRawKeyPressed(code2)) or false
             local was = rawDown[b.command] == true
             if down ~= was then
                 rawDown[b.command] = down or nil
@@ -450,7 +561,12 @@ end)
 -- what they mean.
 AddEventHandler('br:ui:action', function(name, data)
     if name ~= BR.NuiCb.KEYBIND_SET then return end
-    BR.Keys.set(tostring(data and data.command or ''), data and data.vk)
+    local command = tostring(data and data.command or '')
+    if data and data.reset then
+        BR.Keys.reset(command)
+        return
+    end
+    BR.Keys.set(command, data and data.vk, data and data.slot)
 end)
 
 AddEventHandler('br:ui:ready', function()
@@ -478,7 +594,7 @@ end)
 
 RegisterCommand('brkeys', function(_, args)
     if args[1] == 'reset' then
-        vk, chosen = nil, {}
+        vk, alt, chosen = nil, nil, {}
         DeleteResourceKvp(KVP)
         load()
         BR.Keys.push()
@@ -486,11 +602,13 @@ RegisterCommand('brkeys', function(_, args)
         return
     end
     print('=== keybinds ===')
-    print(('  raw layer: %s'):format(tostring(BR.Keys.rawActive)))
+    print(('  raw layer: %s   escape is ours: %s'):format(
+        tostring(BR.Keys.rawActive), tostring(BR.Keys.ownsEscape())))
     for _, b in ipairs(BR.Keys.bindings) do
-        local code = load()[b.command]
-        print(('  %-9s %-28s %s'):format(b.group, b.label,
-            code and (BR.Keys.vkName(code) or ('#' .. code)) or '(unbound)'))
+        local code, code2 = load()[b.command], alt[b.command]
+        print(('  %-9s %-28s %-10s %s'):format(b.group, b.label,
+            code and (BR.Keys.vkName(code) or ('#' .. code)) or '(unbound)',
+            code2 and (BR.Keys.vkName(code2) or ('#' .. code2)) or ''))
     end
     print('  usage: brkeys [reset]')
 end, false)

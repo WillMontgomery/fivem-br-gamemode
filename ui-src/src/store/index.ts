@@ -53,7 +53,7 @@ export interface UiState {
    *  unpause -- unless they sat here longer than PAUSE_QUEUE_MS, in which
    *  case the moment has passed and they are dropped silently. */
   pendingNotices: (ToastPayload & { queuedAt: number })[]
-  /** EVERY notice that has been shown this session, newest FIRST.
+  /** Every notice of THIS MATCH, newest FIRST. Emptied as a new round opens.
    *
    *  A notice is on screen for four seconds and then it is gone forever, which
    *  is right for the screen and wrong for the player who was aiming at
@@ -446,11 +446,19 @@ export const useUi = create<UiState>((set, get) => {
   // offset is refreshed here. Transitions are infrequent, but drift over a
   // 45-second warmup is far below one second -- well inside what a countdown
   // rounded to whole seconds can show.
-  setMatch: (match) => set(
-    match.serverNow
-      ? { match, clockOffset: match.serverNow - Date.now() }
-      : { match }
-  ),
+  // THE HISTORY IS PER MATCH, NOT PER SESSION (user call, 2026-08-09). Last
+  // round's pickups are not what somebody is looking for when they open the
+  // list mid-fight, and a log that only ever grows makes the one line that
+  // matters harder to find. Cleared as a NEW match opens -- on the edge into
+  // `warmup`, which is the first state of a round and fires once.
+  setMatch: (match) => {
+    const fresh = match.state === 'warmup' && get().match.state !== 'warmup'
+    set({
+      match,
+      ...(match.serverNow ? { clockOffset: match.serverNow - Date.now() } : {}),
+      ...(fresh ? { noticeLog: [] } : {}),
+    })
+  },
   // Unpausing flushes the notice queue: whatever arrived under the pause
   // menu shows now -- except entries older than PAUSE_QUEUE_MS, whose
   // moment has passed (user call, 2026-08-04).

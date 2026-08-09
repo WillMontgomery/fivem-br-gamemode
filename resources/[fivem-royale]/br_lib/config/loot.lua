@@ -315,13 +315,16 @@ BR.Config.Loot = {
     shineLightRange = 1.2,    -- metres of cast light (was 2.4 -- a streetlight)
     shineLightPower = 0.30,   -- intensity at the crate (was 0.9)
 
-    -- THE GLOW IS A TUTORIAL, AND IT ENDS (user call, 2026-08-06). It exists
-    -- to teach "these boxes open"; a permanent orange marker on every crate in
-    -- the game is then just noise on top of the prop itself. Two crates rather
-    -- than one, because the first one is often opened by accident while
-    -- working out the key. Client-local and per-match; set 0 to disable the
-    -- glow outright, or a huge number to keep it all match.
-    shineOpenLimit  = 2,
+    -- OFF. The glow was a tutorial that ended after two crates (2026-08-06);
+    -- it is now off from the first one (user call, 2026-08-09: "let's just
+    -- turn off the crate glow altogether"). The crates are a distinct prop
+    -- with a label over them and a prompt when you are near, which is enough
+    -- to say "these open" without painting the world orange.
+    --
+    -- 0 disables it outright; 2 is what it was; a huge number keeps it up all
+    -- match. Everything below still works and /brshine still tunes it live --
+    -- this is one number, so turning it back on costs nothing.
+    shineOpenLimit  = 0,
 
     -- THE LANDING BURST. Props stream in two per pass so a dense POI does not
     -- stutter, which is right everywhere except the one moment a player has

@@ -463,11 +463,19 @@ export interface KeybindAction {
   command: string
   label: string
   /** Windows virtual-key code, or absent when unbound. This is what travels:
-   *  Lua reads the key with IS_RAW_KEY_JUST_PRESSED, which takes a VK code. */
+   *  Lua reads the key with IS_RAW_KEY_PRESSED, which takes a VK code. */
   vk?: number
   /** Readable name for that code, resolved by Lua. '' when unbound. */
   key: string
+  /** The second key, same shape. Every action may have two, as in GTA's own
+   *  controls screen -- either one fires it. */
+  altVk?: number
+  altKey: string
   default: string
+  /** True when the player has changed this row. Drives the reset affordance,
+   *  which is the ONLY way back for a default the capture cannot type --
+   *  Escape cancels a capture, so Escape can never be pressed into one. */
+  custom?: boolean
 }
 
 /** What the black curtain is covering. See screens/LeaveScreen.tsx. */

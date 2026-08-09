@@ -235,6 +235,13 @@ end
 
 AddEventHandler('br:map:big', function(on) BR.Native.setBigmap(on == true) end)
 
+-- br_ui raises this while it is deliberately holding GTA's own frontend open
+-- for the map. The per-frame loop stops suppressing the frontend for exactly
+-- as long as it is up -- see the note beside DisableFrontendThisFrame.
+AddEventHandler('br:map:frontend', function(on)
+    BR.Native.frontendMap = on == true
+end)
+
 -- BR.Native.worldToScreen was deleted with the NUI loot prompt.
 --
 -- It existed to tell the UI where a crate was on screen, which is the thing
@@ -556,6 +563,28 @@ function BR.Native.applyGameRules()
         or (st ~= BR.PlayerState.LOBBY and st ~= BR.PlayerState.BUS
         and not (BR.Spawn and BR.Spawn.traveling)
         and not (BR.Screen and BR.Screen.scoped)))
+
+    -- GTA'S PAUSE MENU IS OURS NOW.
+    --
+    -- DISABLE_FRONTEND_THIS_FRAME (0x6D3465A73092F0E6) is the documented way
+    -- to stop the frontend being TOGGLED -- the natives db points at it from
+    -- the deprecated SET_PAUSE_MENU_ACTIVE for exactly this. It works on the
+    -- input, not on a control id, so it covers Escape AND a controller's
+    -- Start, which disabling controls 199/200 never reliably did.
+    --
+    -- THREE THINGS HAVE TO BE TRUE FIRST, and each is a way out of a soft
+    -- lock rather than caution for its own sake:
+    --   * the raw layer is running, so our menu has a key at all;
+    --   * our pause menu is actually ON Escape -- rebind it away and the
+    --     engine's menu comes straight back, on the next frame;
+    --   * and we are not the ones who opened the frontend. The map route
+    --     drives GTA's own menu on purpose and watches 199/200/202 to leave
+    --     it; suppressing the frontend underneath that would trap a player
+    --     inside the map with no way out.
+    if BR.Keys and BR.Keys.ownsEscape and BR.Keys.ownsEscape()
+       and not BR.Native.frontendMap then
+        DisableFrontendThisFrame()
+    end
 
     -- GTA's own feed ("X joined", "Y died", weapon unlocks, whatever any other
     -- resource posts). The gamemode owns its presentation -- eliminations go

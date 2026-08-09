@@ -68,8 +68,10 @@ export default function NoticeLog() {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between">
+        {/* THIS MATCH, and it means it: the store empties the log as a new
+            round opens, so the count never carries somebody else's game. */}
         <div className="micro-label">
-          {log.length} {log.length === 1 ? 'notification' : 'notifications'} this session
+          {log.length} {log.length === 1 ? 'notification' : 'notifications'} this match
         </div>
         <Btn variant="ghost" size="sm" cue="ui.back" onPress={clearLog}>
           Clear

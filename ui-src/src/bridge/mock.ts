@@ -171,14 +171,14 @@ export function startMockDriver(): void {
     k: 'keybinds',
     d: {
       actions: [
-        { group: 'Combat', command: 'brinventory', label: 'Inventory', key: 'TAB', default: 'TAB' },
-        { group: 'Combat', command: 'brslot1', label: 'Slot 1', key: '1', default: '1' },
-        { group: 'Combat', command: 'brslot2', label: 'Slot 2', key: '2', default: '2' },
-        { group: 'World', command: 'brinteract', label: 'Interact / loot', key: 'E', default: 'E' },
-        { group: 'World', command: 'brmarker', label: 'Place map marker', key: 'B', default: 'B' },
-        { group: 'Social', command: 'brchat', label: 'Chat', key: 'T', default: 'T' },
-        { group: 'Interface', command: 'brpausemenu', label: 'Pause menu', key: 'F1', default: 'F1' },
-        { group: 'Interface', command: 'brleave', label: 'Leave the match', key: '', default: '' },
+        { group: 'Combat', command: 'brinventory', label: 'Inventory', key: 'TAB', altKey: '', default: 'TAB' },
+        { group: 'Combat', command: 'brslot1', label: 'Slot 1', key: '1', altKey: '', default: '1' },
+        { group: 'Combat', command: 'brslot2', label: 'Slot 2', key: '2', altKey: '', default: '2' },
+        { group: 'World', command: 'brinteract', label: 'Interact / loot', key: 'E', altKey: 'F', default: 'E', custom: true },
+        { group: 'World', command: 'brmarker', label: 'Place map marker', key: 'B', altKey: '', default: 'B' },
+        { group: 'Social', command: 'brchat', label: 'Chat', key: 'T', altKey: '', default: 'T' },
+        { group: 'Interface', command: 'brpausemenu', label: 'Pause menu', key: 'Escape', altKey: '', default: 'F1' },
+        { group: 'Interface', command: 'brleave', label: 'Leave the match', key: '', altKey: '', default: '' },
       ],
     },
   })

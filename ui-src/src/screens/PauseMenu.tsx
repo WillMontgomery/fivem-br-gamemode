@@ -79,7 +79,6 @@ export default function PauseMenu() {
   const [confirming, setConfirming] = useState<string | null>(null)
   const squad = useUi(selSquad)
   const inSquad = squad.members.length > 1
-  const logCount = useUi((s) => s.noticeLog.length)
 
   const close = () => { void fetchNui(CB.PAUSE_FOCUS, { open: false }) }
 
@@ -150,14 +149,6 @@ export default function PauseMenu() {
                 onClick={() => { play('ui.select'); setTab(t) }}
               >
                 {TAB_LABEL[t]}
-                {/* An unread count would be a lie: there is no read state and
-                    inventing one means a badge that never clears. The total is
-                    honest and still tells you whether it is worth a look. */}
-                {t === 'notices' && logCount > 0 && (
-                  <span className="ml-2 opacity-60 font-display tabular-nums">
-                    {logCount}
-                  </span>
-                )}
               </button>
             ))}
           </div>
