@@ -244,6 +244,10 @@ export default function Settings({
   // route to, and an option that silently behaves as another one is a lie
   // the settings screen would be telling.
   const squadMode = useUi((s) => s.match.mode === 'squad')
+  // The handover confirm. Local, not a store field: it is a question this
+  // screen is asking, and nothing else in the interface needs to know it was
+  // asked.
+  const [voiceConfirm, setVoiceConfirm] = useState(false)
 
   // The draft is seeded from the store and pushed straight back into it on
   // every change -- which is what makes the preview live. It is NOT a
@@ -456,22 +460,88 @@ export default function Settings({
                 level.
               </p>
 
-              {/* NO BUTTON, BECAUSE THE BUTTON WENT TO THE WRONG PLACE.
-                  Push-to-talk, the input device and the output level are
-                  CLIENT settings -- the same class as key bindings, and
-                  unreachable from script for the same reason.
+              {/* THE HANDOVER, WITH ITS CARDS ON THE TABLE.
+                  These are CLIENT settings -- the same class as key bindings
+                  -- and no script can read or write them. Deep-linking the
+                  page was tried and does not work (GoDeeper reaches the map,
+                  not Settings), so this opens the menu and the player walks
+                  the last two steps.
 
-                  The attempt to at least deep-link them opened the pause menu
-                  on page 1139 (SETTINGS_VOICE_CHAT) and landed on the MAP
-                  instead: PauseMenuceptionGoDeeper does not reach that page
-                  from the multiplayer pause menu, and there is no other way in
-                  (user, 2026-08-09). A button that opens the wrong screen is
-                  worse than a sentence that names the right one. */}
-              <p className="micro-label" style={{ textTransform: 'none' }}>
-                Push-to-talk, your microphone and the output level are FiveM
-                settings rather than ours — press Escape twice to reach the
-                game&apos;s own menu, under Settings › Voice Chat.
-              </p>
+                  Which means the screen owes them two things before it takes
+                  it over: WHAT is behind the button, so the trip is worth
+                  making, and WHAT IS ABOUT TO HAPPEN, so a full-screen game
+                  menu appearing is something they chose rather than something
+                  that happened to them (owner, 2026-08-09). */}
+              <div className="flex flex-col gap-1.5">
+                <div className="micro-label">In the game&apos;s own menu</div>
+                <ul
+                  className="micro-label ts"
+                  style={{
+                    ['--fs' as string]: '0.62rem',
+                    textTransform: 'none',
+                    listStyle: 'disc',
+                    paddingLeft: '1.1rem',
+                    lineHeight: 1.7,
+                  }}
+                >
+                  <li>Push-to-talk or voice activation</li>
+                  <li>Microphone volume and sensitivity</li>
+                  <li>Input device</li>
+                  <li>Output device</li>
+                  <li>Sound effects and music volume while someone is talking</li>
+                </ul>
+              </div>
+
+              {voiceConfirm ? (
+                <div
+                  className="plate px-4 py-3 flex flex-col gap-3"
+                  style={{
+                    ['--edgec' as string]: 'var(--color-royale-accent)',
+                    ['--plate-fill' as string]: 'rgba(12,40,50,0.94)',
+                    ['--cut-max' as string]: '0.5rem',
+                  }}
+                >
+                  <p
+                    className="ts"
+                    style={{ ['--fs' as string]: '0.88rem', lineHeight: 1.5 }}
+                  >
+                    These settings can only be changed from GTA&nbsp;V&apos;s own
+                    pause menu. Choose OK to open it, then go to the{' '}
+                    <span className="font-semibold">Settings</span> tab and pick{' '}
+                    <span className="font-semibold">Voice Chat</span>.
+                  </p>
+                  <div className="flex gap-2">
+                    <Btn
+                      variant="primary" size="sm" cue="ui.select"
+                      onPress={() => {
+                        setVoiceConfirm(false)
+                        void fetchNui(CB.VOICE_SETTINGS, {})
+                      }}
+                    >
+                      OK
+                    </Btn>
+                    <Btn variant="default" size="sm" cue="ui.back"
+                         onPress={() => setVoiceConfirm(false)}>
+                      Stay here
+                    </Btn>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="btn plate px-4 py-2 self-start font-display uppercase
+                             tracking-[0.12em] text-[0.78rem]"
+                  style={{
+                    ['--edgec' as string]: 'rgba(255,255,255,0.22)',
+                    ['--plate-fill' as string]: 'rgba(30,34,48,0.94)',
+                    ['--cut-max' as string]: '0.4rem',
+                  }}
+                  onPointerEnter={() => play('ui.hover')}
+                  onClick={() => { play('ui.select'); setVoiceConfirm(true) }}
+                >
+                  Microphone &amp; push-to-talk
+                </button>
+              )}
           </Section>
           <Section title="Identity">
               {/* LOCKED IN A MATCH, AND IT SAYS SO IN THREE WAYS: the field is

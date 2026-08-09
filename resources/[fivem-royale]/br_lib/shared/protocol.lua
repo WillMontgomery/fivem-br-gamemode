@@ -287,6 +287,9 @@ BR.NuiCb = {
     PAUSE_FOCUS  = 'br/pause/focus',
     -- The manual, which is a page on the lobby AND a tab in the pause menu.
     HELP_FOCUS   = 'br/help/focus',
+    -- Opens GTA's own pause menu so the player can reach the settings no
+    -- script can write: microphone, push-to-talk, output device.
+    VOICE_SETTINGS = 'br/voice/settings',
     PAUSE_ACTION = 'br/pause/action',
     -- Rebind one command. { command, key } -- an empty key unbinds it.
     KEYBIND_SET  = 'br/settings/keybind',

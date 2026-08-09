@@ -200,8 +200,74 @@ function BR.Pause.openFrontendMap(page)
     end)
 end
 
+--- GTA's own pause menu, opened PLAINLY, for the player to navigate.
+---
+--- A DIFFERENT JOB FROM THE MAP, hence a different function. The map is a
+--- destination: we drive straight to it, and the exit watcher above is
+--- deliberately trigger-happy because there is nothing in there to click.
+---
+--- This one is the opposite. Voice settings and key bindings live several
+--- levels into the Settings tab, and the player has to walk there themselves
+--- -- so we must NOT grab their inputs. Right-click, Escape and the arrow keys
+--- are how the menu is used; an exit watcher would close it the moment they
+--- tried to go anywhere.
+---
+--- So nothing is navigated and nothing is intercepted. We open it, then wait
+--- for GTA to tell us it is gone, and take our frontend suppression back at
+--- that point. Deep-linking was the previous attempt and it does not work:
+--- PauseMenuceptionGoDeeper reaches the map and not the Settings pages, which
+--- is why the voice button used to open the map (user, 2026-08-09).
+function BR.Pause.openFrontendPlain()
+    if frontendMap then return end
+    frontendMap = true
+    TriggerEvent('br:map:frontend', true)
+
+    Citizen.CreateThread(function()
+        ActivateFrontendMenu(GetHashKey('FE_MENU_VERSION_SP_PAUSE'), false, -1)
+
+        local deadline = GetGameTimer() + 5000
+        while (not IsPauseMenuActive() or IsPauseMenuRestarting())
+              and GetGameTimer() < deadline do
+            Citizen.Wait(0)
+        end
+        if not IsPauseMenuActive() then
+            print('[br_ui] settings: pause menu never became active; giving up')
+            frontendMap = false
+            TriggerEvent('br:map:frontend', false)
+            return
+        end
+
+        -- THEIR MENU, THEIR PACE. Ten minutes is not a timeout anybody will
+        -- reach adjusting a microphone; it exists so a frontend that somehow
+        -- never reports closing cannot leave our suppression off forever.
+        local until_ = GetGameTimer() + 600000
+        while IsPauseMenuActive() and GetGameTimer() < until_ do
+            Citizen.Wait(100)
+        end
+
+        frontendMap = false
+        TriggerEvent('br:map:frontend', false)
+    end)
+end
+
 RegisterNUICallback(BR.NuiCb.PAUSE_FOCUS, function(data, cb)
     if data and data.open then BR.Pause.open(data.tab) else BR.Pause.close() end
+    cb({ ok = true })
+end)
+
+-- THE WAY TO THE SETTINGS WE CANNOT WRITE.
+--
+-- Microphone device, sensitivity, push-to-talk and the rest are client
+-- settings; no script can read or write them. Removing the button left
+-- players with no route to their own microphone at all (owner, 2026-08-09),
+-- which is worse than a handover that needs one extra click.
+--
+-- Our screens come down first: the frontend is a scaleform, so a menu left
+-- open underneath would hold the cursor with nothing able to draw over it.
+RegisterNUICallback(BR.NuiCb.VOICE_SETTINGS, function(_, cb)
+    BR.Pause.close()
+    TriggerEvent('br:ui:closeSettings')
+    BR.Pause.openFrontendPlain()
     cb({ ok = true })
 end)
 

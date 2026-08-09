@@ -584,6 +584,7 @@ export const CB = {
   MARKET_BUY:     'br/market/buy',
   PAUSE_FOCUS:    'br/pause/focus',
   HELP_FOCUS:     'br/help/focus',
+  VOICE_SETTINGS: 'br/voice/settings',
   PAUSE_ACTION:   'br/pause/action',
   KEYBIND_SET:    'br/settings/keybind',
   ERROR:        'br/err',
