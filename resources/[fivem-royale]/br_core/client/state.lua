@@ -79,6 +79,21 @@ end)
 ---
 --- Both paths are idempotent: pushFocus ignores a screen already on the stack.
 --- @param state string
+
+--- Screens that only make sense while standing in the lobby.
+---
+--- THEY HAVE TO BE POPPED WITH IT, or they outlive it. 'lobby' is not the
+--- only thing that can be on the stack -- the locker and the settings screen
+--- sit ON TOP of it -- and popping only 'lobby' leaves the stack non-empty,
+--- which means NUI focus is never released and the player walks into warmup
+--- holding a cursor with no menu under it (user, 2026-08-09).
+---
+--- Settings is in this list even though it can legitimately be opened
+--- mid-match: the case here is specifically LEAVING the lobby, and a
+--- full-screen opaque menu is not something to arrive at the warmup pad
+--- inside. Reopening it takes one keypress.
+local LOBBY_SCREENS = { 'settings', 'locker', 'lobby' }
+
 local function applyFocusForState(state)
     -- NEVER during the teardown -- FOR PARTICIPANTS. At ENDED the server
     -- flips every roster entry to LOBBY (that is what drives the trip
@@ -90,7 +105,9 @@ local function applyFocusForState(state)
     -- 2026-08-04).
     if state == BR.MatchState.ENDED or state == BR.MatchState.CLEANUP then
         if roundParticipant then
-            TriggerEvent('br:ui:popFocus', 'lobby')
+            for _, s in ipairs(LOBBY_SCREENS) do
+                TriggerEvent('br:ui:popFocus', s)
+            end
         elseif S.me.state == BR.PlayerState.LOBBY then
             TriggerEvent('br:ui:pushFocus', 'lobby')
         end
@@ -105,7 +122,9 @@ local function applyFocusForState(state)
         mark('focus')
         TriggerEvent('br:ui:pushFocus', 'lobby')
     else
-        TriggerEvent('br:ui:popFocus', 'lobby')
+        for _, s in ipairs(LOBBY_SCREENS) do
+            TriggerEvent('br:ui:popFocus', s)
+        end
     end
 end
 

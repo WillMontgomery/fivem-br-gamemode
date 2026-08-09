@@ -18,6 +18,10 @@ local RES = GetCurrentResourceName()
 local seq = 0
 local focusStack = {}   -- array of screen names, top of stack owns focus
 local focusHeld = false
+-- The last screen the PAGE was told about. Compared against the top of the
+-- stack, because "is anything focused" and "which screen owns it" are
+-- different questions and only the second one drives the interface.
+local lastTop = 'none'
 local chatChannel = BR.ChatChannel.GLOBAL  -- which channel a chat focus opens in
 
 -- ---------------------------------------------------------------- sending ---
@@ -58,31 +62,33 @@ exports('send', send)
 
 -- ----------------------------------------------------------------- focus ---
 
+--- Reconcile the engine and the page with the stack.
+---
+--- THE DECISION IS BR.FocusResolve, in br_lib, because it is pure and this is
+--- the code path that has now been got wrong twice -- see the long note there.
+--- This function's only job is to APPLY the answer and to not do redundant
+--- work; it must never decide anything itself, or the thing under test stops
+--- being the thing that runs.
 local function applyFocus()
-    local want = #focusStack > 0
-    if want == focusHeld then return end
+    local want = BR.FocusResolve(focusStack)
 
-    focusHeld = want
-    SetNuiFocus(want, want)
-
-    -- Keep-input is for screens meant to be used WHILE playing (the
-    -- inventory). The lobby is a menu, CHAT captures everything typed into it
-    -- -- WASD while composing a message walked the player into the storm
-    -- mid-sentence (user call, 2026-08-04) -- and SETTINGS is a full-screen
-    -- opaque menu that can be opened from a keybind mid-match, where keeping
-    -- input would mean running while reading a slider.
-    if want then
-        local top = focusStack[#focusStack]
-        SetNuiFocusKeepInput(
-            top ~= 'lobby' and top ~= 'chat' and top ~= 'settings')
-    else
-        SetNuiFocusKeepInput(false)
+    -- Guarded individually rather than behind one early return. That early
+    -- return -- `if want == focusHeld then return end` -- was the bug:
+    -- pushing a screen onto an ALREADY-FOCUSED stack left held true before
+    -- and after, so the page was never told and the screen never opened.
+    if want.held ~= focusHeld then
+        focusHeld = want.held
+        SetNuiFocus(want.held, want.held)
     end
 
-    send(BR.Nui.FOCUS, {
-        screen  = want and focusStack[#focusStack] or 'none',
-        channel = chatChannel,
-    })
+    -- Follows the TOP, so it is re-evaluated on every change: opening a menu
+    -- over the inventory has to take game input back.
+    SetNuiFocusKeepInput(want.keepInput)
+
+    if want.screen == lastTop then return end
+    lastTop = want.screen
+
+    send(BR.Nui.FOCUS, { screen = want.screen, channel = chatChannel })
 end
 
 --- Take focus for a screen. Idempotent per screen.
@@ -121,20 +127,32 @@ exports('clearFocus', clearFocus)
 --- always one of a small number of things -- nothing pushed focus, something
 --- popped it, or the push arrived before this resource was listening. Printing
 --- the stack answers that in one command instead of by inference.
+local FORCEABLE = {
+    lobby = true, chat = true, settings = true, locker = true, inventory = true,
+}
+
 RegisterCommand('brfocus', function(_, args)
-    if args[1] == 'lobby' or args[1] == 'chat' then
-        pushFocus(args[1])
-        print(('[br_ui] forced focus: %s'):format(args[1]))
-        return
-    end
     if args[1] == 'clear' then
         clearFocus()
         print('[br_ui] focus cleared')
         return
     end
+    if args[1] == 'pop' and args[2] then
+        popFocus(args[2])
+        print(('[br_ui] popped: %s'):format(args[2]))
+        return
+    end
+    if args[1] and FORCEABLE[args[1]] then
+        pushFocus(args[1])
+        print(('[br_ui] forced focus: %s'):format(args[1]))
+        return
+    end
 
     print('=== br_ui focus ===')
     print(('  SetNuiFocus held : %s'):format(tostring(focusHeld)))
+    print(('  page was told    : %s'):format(tostring(lastTop)))
+    print(('  keeps input      : %s'):format(
+        tostring(BR.FocusResolve(focusStack).keepInput)))
     print(('  stack depth      : %d'):format(#focusStack))
     for i, s in ipairs(focusStack) do
         print(('    %d. %s%s'):format(i, s, i == #focusStack and '   <- owns focus' or ''))
@@ -143,7 +161,8 @@ RegisterCommand('brfocus', function(_, args)
         print('    (empty -- no screen has asked for focus)')
     end
     print(('  chat channel     : %s'):format(tostring(chatChannel)))
-    print('  usage: brfocus [lobby|chat|clear]')
+    print('  usage: brfocus [lobby|chat|settings|locker|inventory]')
+    print('         brfocus pop <screen>   |   brfocus clear')
 end, false)
 
 AddEventHandler('br:ui:pushFocus', pushFocus)

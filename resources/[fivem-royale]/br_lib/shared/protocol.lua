@@ -235,6 +235,48 @@ BR.NuiCb = {
 
 BR.NUI_ENVELOPE_VERSION = 1
 
+--- Screens that leave the GAME's input alive underneath them.
+---
+--- AN ALLOWLIST, NOT A DENY LIST. This started as "everything except lobby and
+--- chat", so every screen added afterwards defaulted to KEEPING INPUT -- the
+--- dangerous answer -- until somebody remembered to exclude it. A menu nobody
+--- listed is now a menu you cannot run around inside, which is the safe way to
+--- be wrong.
+---
+--- Only the inventory earns it: it is meant to be used DURING a fight, and
+--- that is the whole reason the match keeps running while it is open.
+BR.FocusKeepsInput = { inventory = true }
+
+--- What the engine and the page should be told, for a given focus stack.
+---
+--- PURE, AND IN br_lib, SO IT CAN BE TESTED. Focus is the single worst
+--- non-crash bug this interface can produce -- a leak means the player cannot
+--- move, cannot shoot, and cannot fix it without reconnecting -- and it has now
+--- been got wrong twice in ways that were only findable by playing:
+---
+---   1. The stack was a boolean, so two screens closing out of order left
+---      focus half-held.
+---   2. The bridge only ACTED when "is anything focused" changed, so pushing a
+---      screen onto an already-focused stack changed nothing the page could
+---      see. Settings and the locker opened from the lobby did nothing at all
+---      -- while still leaving an entry on the stack that nothing would pop,
+---      so readying up carried the cursor into the match (user, 2026-08-09).
+---
+--- Both are the same mistake: deriving behaviour from a summary of the stack
+--- instead of from the stack. This returns the whole answer, every time, and
+--- the caller diffs it against what it last applied.
+--- @param stack string[]
+--- @return table  { held, screen, keepInput }
+function BR.FocusResolve(stack)
+    local n = stack and #stack or 0
+    local screen = (n > 0) and stack[n] or 'none'
+    return {
+        held      = n > 0,
+        screen    = screen,
+        keepInput = (n > 0) and (BR.FocusKeepsInput[screen] == true) or false,
+    }
+end
+
 --- Lua 5.4 distinguishes integer 5 from float 5.0 and they serialise differently
 --- through SendNUIMessage. Normalise every numeric payload field once, here, at
 --- the boundary -- not in twelve places downstream.

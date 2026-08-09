@@ -2051,6 +2051,54 @@ do
         'LootLabel resolves weapons')
 end
 
+-- ------------------------------------------------------------------ focus ---
+
+describe('focus')
+do
+    -- FOCUS IS THE WORST BUG THIS INTERFACE CAN PRODUCE. A leak means the
+    -- player cannot move, cannot shoot, and cannot recover without
+    -- reconnecting -- and it has been got wrong twice, both times by deriving
+    -- behaviour from a SUMMARY of the stack rather than from the stack.
+    local R = BR.FocusResolve
+
+    ok(R({}).held == false, 'an empty stack holds nothing')
+    ok(R({}).screen == 'none', 'and reports no screen')
+    ok(R({}).keepInput == false, 'and never keeps input')
+
+    ok(R({ 'lobby' }).held, 'one screen takes focus')
+    ok(R({ 'lobby' }).screen == 'lobby', 'and is the screen')
+
+    -- THE 2026-08-09 BUG, in one assertion. Pushing settings onto an
+    -- already-focused stack leaves `held` unchanged, which is exactly why the
+    -- bridge's old `if want == focusHeld then return end` sent nothing and the
+    -- screen never opened. The SCREEN is what changed, and the screen is what
+    -- the page renders from.
+    local before, after = R({ 'lobby' }), R({ 'lobby', 'settings' })
+    ok(before.held == after.held, 'stacking a screen does not change `held`')
+    ok(before.screen ~= after.screen, 'but it DOES change the screen -- the bit that matters')
+    ok(after.screen == 'settings', 'and the top of the stack is what owns it')
+
+    -- Keep-input is an ALLOWLIST. Every screen not named is a menu, which is
+    -- the safe default: the deny-list version silently gave game input to
+    -- every screen added after it was written.
+    ok(R({ 'inventory' }).keepInput, 'the inventory keeps game input -- it is used mid-fight')
+    for _, s in ipairs({ 'lobby', 'chat', 'settings', 'locker', 'summary', 'squad' }) do
+        ok(not R({ s }).keepInput, ('%s does not keep game input'):format(s))
+    end
+
+    -- A menu OVER the inventory has to take input back, or the player is
+    -- reading a slider while running.
+    ok(not R({ 'inventory', 'settings' }).keepInput,
+        'a menu opened over the inventory takes input back')
+    ok(R({ 'settings', 'inventory' }).keepInput,
+        'and the inventory opened over a menu gets it again')
+
+    -- Popping back down has to be visible too -- the return trip is how a
+    -- screen ever closes.
+    ok(R({ 'lobby', 'settings' }).screen ~= R({ 'lobby' }).screen,
+        'popping back to the lobby is a change the page can see')
+end
+
 -- ----------------------------------------------------------------- result ---
 
 io.write(('\n%s%d passed%s'):format('\27[32m', pass, '\27[0m'))

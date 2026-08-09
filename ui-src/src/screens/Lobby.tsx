@@ -299,32 +299,43 @@ export default function Lobby({ visible }: { visible: boolean }) {
             player to go and find GTA's pause menu, which is instructions
             where a button belongs -- and there was nowhere at all to reach
             interface scale, colourblind modes or volume. */}
-        <div className="mt-6 flex gap-2">
+        {/* SECONDARY, NOT TINY. These were `sm` -- 0.72rem against READY UP's
+            1.6rem -- which read as fine print rather than as the other two
+            things you can do on this screen (user, 2026-08-09). They are a
+            PAIR, so they split the column evenly and sit on the same line
+            weight as the mode tiles above them. */}
+        <div className="mt-6 flex gap-2.5">
           {/* HIDDEN UNTIL LUA HAS SENT A ROSTER, rather than opening onto an
               empty list -- a screen with nothing in it reads as broken, and
               the push arrives within a frame of the interface being alive. */}
           {locker.peds.length > 0 && (
-            <Btn
-              variant="ghost"
-              size="sm"
-              cue="ui.select"
-              onPress={() => { void fetchNui(CB.LOCKER_FOCUS, { open: true }) }}
-            >
-              Character
-            </Btn>
+            <div className="flex-1">
+              <Btn
+                variant="default"
+                size="md"
+                full
+                cue="ui.select"
+                onPress={() => { void fetchNui(CB.LOCKER_FOCUS, { open: true }) }}
+              >
+                Character
+              </Btn>
+            </div>
           )}
-          <Btn
-            variant="ghost"
-            size="sm"
-            cue="ui.select"
-            // ASKS, never opens. Settings follows the focus stack, so the
-            // button's whole job is to request the cursor -- the screen
-            // appears when Lua says it owns it. The lobby keeps its own focus
-            // underneath and gets it back when settings pops.
-            onPress={() => { void fetchNui(CB.SETTINGS_FOCUS, { open: true }) }}
-          >
-            Settings
-          </Btn>
+          <div className="flex-1">
+            <Btn
+              variant="default"
+              size="md"
+              full
+              cue="ui.select"
+              // ASKS, never opens. Settings follows the focus stack, so the
+              // button's whole job is to request the cursor -- the screen
+              // appears when Lua says it owns it. The lobby keeps its own
+              // focus underneath and gets it back when settings pops.
+              onPress={() => { void fetchNui(CB.SETTINGS_FOCUS, { open: true }) }}
+            >
+              Settings
+            </Btn>
+          </div>
         </div>
       </div>
     </div>
