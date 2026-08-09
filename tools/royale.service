@@ -10,13 +10,35 @@
 # not come back after a reboot. Under systemd it survives both, restarts itself
 # if it crashes, and its output goes somewhere durable instead of scrollback.
 #
-# THE SEGFAULT CAVEAT, READ THIS BEFORE ASSUMING THE UNIT IS BROKEN. Recent
-# FXServer Linux artifacts are widely reported to crash when systemd launches
-# them DIRECTLY. That is why this unit goes through `bash -c` rather than
-# naming run.sh as ExecStart -- the shell wrapper is the documented workaround.
-# If it still segfaults on this host, use tools/royale-tmux.service instead;
-# it is the same idea with a terminal multiplexer in between, which is the
-# environment the artifacts are known to be happy in.
+# WHY STDIN IS HELD OPEN, AND WHY THAT IS THE WHOLE TRICK.
+#
+# Observed on this host 2026-08-09, and it is worth writing down because the
+# symptom names a cause that is not the cause:
+#
+#     [ citizen-server-main] -> Quitting: Ctrl-C pressed in server console.
+#     royale.service: Main process exited, code=exited, status=1/FAILURE
+#
+# Nobody pressed Ctrl-C. FXServer reads its console from stdin, and systemd
+# hands a service a stdin that is immediately at end-of-file. FXServer reads
+# that EOF and treats it as an interactive quit -- so it shuts down cleanly
+# about two seconds into boot, every time, and Restart=always turns that into a
+# tidy little boot loop.
+#
+# The community folklore for this is "recent artifacts segfault under systemd".
+# On this host they do not segfault at all; they exit 0-ish and politely say
+# why. Same fix either way: give the process a stdin that never reaches EOF.
+# `< <(sleep infinity)` is that -- process substitution hands FXServer the read
+# end of a pipe whose write end is held open by a sleeping child that never
+# writes anything. The read blocks forever, no EOF ever arrives, and the server
+# stays up.
+#
+# The cost: FXServer's console is now write-only. You can read it with
+# journalctl and you cannot type into it. That is fine today (nothing needs to)
+# and is exactly the gap M9's supervisor closes in Slice 2, by holding that
+# pipe itself and being able to write down it.
+#
+# If this still will not stay up, tools/royale-tmux.service is the fallback --
+# a pty keeps stdin open by a different route.
 
 [Unit]
 Description=FiveM Royale (FXServer)
@@ -44,7 +66,11 @@ WorkingDirectory=/opt/fivem-server-classic
 # `exec` so bash replaces itself with FXServer rather than lingering as a
 # parent systemd would have to signal through -- that way systemd's stop and
 # restart reach the real process.
-ExecStart=/bin/bash -c 'exec ./run.sh +exec server.cfg'
+#
+# `< <(sleep infinity)` is the stdin-never-EOFs trick described above. Without
+# it this boot-loops. It needs bash rather than sh -- process substitution is
+# not POSIX -- which is the other reason ExecStart goes through a shell.
+ExecStart=/bin/bash -c 'exec ./run.sh +exec server.cfg < <(sleep infinity)'
 
 Restart=always
 RestartSec=10

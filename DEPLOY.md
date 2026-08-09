@@ -59,15 +59,33 @@ journalctl -u royale -f        # the console output, live
 sudo systemctl restart royale  # bounce it
 ```
 
-> **The segfault caveat.** Recent Linux artifacts are widely reported to crash
-> when systemd launches them **directly**. `tools/royale.service` goes through
-> `bash -c` for exactly that reason — the shell wrapper is the documented
-> workaround. If it still segfaults on your host, swap in
-> `tools/royale-tmux.service`, which runs the same thing inside a `tmux`
-> session (`sudo apt install -y tmux` first). That variant supervises the
-> process less well and puts nothing in the journal, so it is the fallback
-> rather than the default — but it also makes `tmux send-keys` available, which
-> is a cheap version of the admin command channel M9 needs.
+> **Why the unit holds stdin open, and why FXServer boot-loops without it.**
+> Measured on this server, 2026-08-09. A naive unit produces:
+>
+> ```
+> [ citizen-server-main] -> Quitting: Ctrl-C pressed in server console.
+> royale.service: Main process exited, code=exited, status=1/FAILURE
+> ```
+>
+> Nobody pressed Ctrl-C. FXServer reads its console from stdin, and systemd
+> hands a service a stdin that is immediately at end-of-file; FXServer reads
+> that EOF and treats it as an interactive quit. It shuts down about two
+> seconds into boot, `Restart=always` brings it back, and it does it again.
+>
+> The usual advice for this calls it "a segfault under systemd". On this host
+> there is no segfault — the server exits cleanly and says exactly why. Same
+> fix regardless: `< <(sleep infinity)` in `ExecStart` gives FXServer the read
+> end of a pipe nothing ever writes to and nothing ever closes, so the read
+> blocks forever and no EOF arrives.
+>
+> **The cost: the console becomes write-only.** `journalctl` reads it; nothing
+> can type into it. That is fine today, and it is the gap M9's supervisor
+> closes in Slice 2 by holding that pipe itself.
+>
+> If it still will not stay up, swap in `tools/royale-tmux.service`
+> (`sudo apt install -y tmux` first), which keeps stdin open via a pty instead.
+> It supervises less well and puts nothing in the journal, so it is the
+> fallback rather than the default.
 
 **Deploying is a separate step from running**, and keeping them separate is
 deliberate: a `systemctl restart` should relaunch what is already on disk, not
