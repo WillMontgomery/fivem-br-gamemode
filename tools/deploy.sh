@@ -25,7 +25,11 @@ set -euo pipefail
 
 # --- configuration -----------------------------------------------------------
 
-REPO="${BR_REPO:-git@github.com:WillMontgomery/fivem-br-gamemode.git}"
+# HTTPS, not SSH. The repo is public, so a read-only clone needs no credential
+# at all -- and defaulting to git@ meant the server needed a deploy key on file
+# purely to fetch something anyone can curl. One less secret on the box that is
+# most exposed to the internet.
+REPO="${BR_REPO:-https://github.com/WillMontgomery/fivem-br-gamemode.git}"
 BRANCH="${BR_BRANCH:-main}"
 
 SERVER_ROOT="${BR_SERVER_ROOT:-/opt/fivem-server-classic}"

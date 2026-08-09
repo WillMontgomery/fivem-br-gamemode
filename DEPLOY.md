@@ -87,13 +87,46 @@ sudo systemctl restart royale  # bounce it
 > It supervises less well and puts nothing in the journal, so it is the
 > fallback rather than the default.
 
-**Deploying is a separate step from running**, and keeping them separate is
-deliberate: a `systemctl restart` should relaunch what is already on disk, not
-silently pull new code. Sync with `tools/deploy.sh`, then restart:
+### Deploying
+
+Install the deploy unit once:
 
 ```bash
-./tools/deploy.sh && sudo systemctl restart royale
+sudo cp tools/royale-deploy.service /etc/systemd/system/ && sudo systemctl daemon-reload
 ```
+
+Then deploying is one command, any time:
+
+```bash
+sudo systemctl start royale-deploy
+```
+
+It syncs from `origin/main` and restarts the game — and only restarts if the
+sync succeeded, so a failed pull leaves the server running the last known-good
+code instead of bouncing it into a broken tree. Watch it with
+`journalctl -u royale-deploy -n 50`.
+
+> **Why deploying is a separate unit rather than something `royale.service`
+> does on every start.** The obvious version — have the server pull whenever it
+> starts — is one line and it quietly breaks what systemd is for.
+> `royale.service` carries `Restart=always`, so a crash at 3am respawns
+> automatically. If starting also pulled, a crash would silently deploy
+> whatever happened to be on `main` at that moment: the server that comes back
+> is not the one that went down, the crash is no longer reproducible, and a bad
+> commit picked up by a crash-loop gets re-pulled on every restart. It would
+> also mean there is no such thing as a safe restart, which M9's scheduled
+> maintenance depends on — restarting the process at a controlled moment
+> *without* changing the code.
+>
+> Split, you keep both: `royale-deploy` is the deploy, `restart royale` is the
+> restart, and a crash is just a restart. Still one command either way.
+
+**Two clones live on the box, with different jobs.**
+`/opt/misc/fivem-br-gamemode` is the checkout you `git pull` by hand — it is
+where the deploy *script* comes from. `deploy.sh` manages a second clone under
+`/opt/fivem-server-classic/.gamemode-src`, which it `reset --hard`s and
+`clean -fd`s every run, because what gets served has to be a deployment
+artifact rather than somebody's workspace.
 
 > **If you are still using a hand-written `pull-and-start.sh`**, `tools/deploy.sh`
 > replaces it and fixes three things. `sudo git pull` has no `set -e` and no

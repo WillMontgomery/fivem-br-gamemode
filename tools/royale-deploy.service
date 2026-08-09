@@ -1,0 +1,70 @@
+# Deploy FiveM Royale, then restart it. One command.
+#
+#   sudo cp tools/royale-deploy.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#
+# Then, whenever you want the server running the latest main:
+#
+#   sudo systemctl start royale-deploy
+#
+# It is a oneshot: it runs, syncs, restarts the game, and exits. There is no
+# `enable` and it must not be enabled -- it is a verb, not a service.
+#
+# WHY THIS IS A SEPARATE UNIT RATHER THAN AN ExecStartPre ON royale.service.
+#
+# The obvious version -- "have the server pull every time it starts" -- is one
+# line, and it quietly breaks the thing that makes systemd worth having.
+# royale.service carries Restart=always, so a crash at 3am respawns the server
+# automatically. If starting also pulled, then:
+#
+#   * a crash would silently deploy whatever happens to be on main at that
+#     moment, so the server that comes back is NOT the one that went down, and
+#     the crash is no longer reproducible;
+#   * a bad commit could be picked up by a crash-loop and re-pulled on every
+#     restart, turning one broken deploy into a server that cannot recover
+#     without a human;
+#   * `systemctl restart royale` would stop being a safe operation. Right now
+#     it is the honest "turn it off and on again", and that is worth keeping --
+#     M9's scheduled-maintenance flow depends on being able to restart the
+#     process at a controlled moment WITHOUT also changing the code.
+#
+# Splitting it costs nothing and keeps both behaviours: this unit is the
+# deploy, `systemctl restart royale` is the restart, and a crash is just a
+# restart. Same convenience, one command either way.
+
+[Unit]
+Description=Deploy FiveM Royale from origin/main and restart it
+After=network-online.target
+Wants=network-online.target
+
+# Documented rather than enforced with Requisite=: running the deploy while the
+# game is stopped is legitimate (that is how you recover a server that will not
+# start), and a hard requirement would refuse exactly then.
+Documentation=file:///opt/misc/fivem-br-gamemode/DEPLOY.md
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+
+# Runs as root: deploy.sh writes into /opt/fivem-server-classic/resources, and
+# the restart below needs privilege too.
+#
+# THERE ARE TWO CLONES ON THIS BOX AND THEY HAVE DIFFERENT JOBS. This path is
+# the checkout you `git pull` by hand -- it is where the deploy SCRIPT comes
+# from, so updating the deploy logic is a normal pull. deploy.sh then manages a
+# second clone of its own under $SERVER_ROOT/.gamemode-src, which it
+# `reset --hard`s and `clean -fd`s on every run, because what gets served has
+# to be a deployment artifact rather than somebody's workspace.
+ExecStart=/opt/misc/fivem-br-gamemode/tools/deploy.sh
+
+# Only restarts if the deploy succeeded -- ExecStartPost does not run when
+# ExecStart fails. That ordering is the point: a failed sync leaves the server
+# running the last known-good code instead of bouncing it into a broken tree.
+ExecStartPost=/usr/bin/systemctl restart royale
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=royale-deploy
+
+# Deliberately NO [Install] section. There is nothing to enable: this unit
+# should never run on boot, only when a human (or, later, Ringmaster) asks.
