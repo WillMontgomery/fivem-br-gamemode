@@ -15,6 +15,7 @@ for _, f in ipairs({
     'shared/geo.lua',
     'shared/clock.lua',
     'shared/outbox.lua',
+    'shared/identity.lua',
     'config/match.lua',
     'config/storm.lua',
     'config/map.lua',
@@ -2213,6 +2214,81 @@ do
     ok(ob:emit('a', {}, 0) == false, 'a disabled outbox refuses the event')
     ok(ob:depth() == 0, 'and queues nothing')
     ok(ob:stats().droppedOff == 1, 'but still counts what would have been sent')
+end
+
+-- --------------------------------------------------------------- identity ---
+--
+-- These decide who a person IS for bans and admin grants. A wrong answer here
+-- files a ban against the wrong human.
+
+describe('identity')
+do
+    local P = BR.Identity.parse
+
+    -- The prefix trap. `license2` is a DIFFERENT FiveM identifier from
+    -- `license`, not a variant, so a `raw:sub(1, 7) == 'license'` style test
+    -- would file two people's identifiers under one key.
+    local byKind = P({ 'license2:bbb' })
+    ok(byKind.license == nil,     'license2 does not satisfy license')
+    ok(byKind.license2 == 'bbb',  'and is kept under its own key')
+
+    local both = P({ 'license:aaa', 'license2:bbb' })
+    ok(both.license == 'aaa' and both.license2 == 'bbb',
+        'the two coexist without colliding')
+end
+
+do
+    -- IP is refused. This is a deliberate product decision, not an oversight,
+    -- so it gets a test that fails loudly if someone "fixes" the allowlist.
+    local byKind, ordered, dropped = BR.Identity.parse({
+        'license:aaa', 'ip:203.0.113.7', 'discord:123',
+    })
+    ok(byKind.ip == nil,  'ip is never collected')
+    ok(dropped == 1,      'and the refusal is counted')
+    ok(#ordered == 2,     'the rest survive')
+end
+
+do
+    -- An allowlist means anything unanticipated is excluded by construction --
+    -- including identifier types FiveM has not invented yet.
+    local byKind, _, dropped = BR.Identity.parse({ 'quantumid:xyz', 'license:aaa' })
+    ok(byKind.quantumid == nil, 'an unknown identifier type is refused')
+    ok(dropped == 1,            'and counted')
+end
+
+do
+    -- Deterministic order. "Never iterate a hash" applies here as much as it
+    -- does to the loot tables: `ordered` follows ALLOWED, not input order.
+    local _, ordered = BR.Identity.parse({ 'live:c', 'discord:b', 'license:a' })
+    ok(ordered[1].kind == 'license', 'ordered starts at license')
+    ok(ordered[2].kind == 'discord', 'then discord')
+    ok(ordered[3].kind == 'live',    'then live -- input order is irrelevant')
+end
+
+do
+    -- Junk in the list must not become junk in the record.
+    local byKind, ordered, dropped = BR.Identity.parse({
+        'nocolonhere', 'license:', ':aaa', '', 'steam:110000100000000',
+    })
+    ok(byKind.steam == '110000100000000', 'a good identifier survives the junk')
+    ok(#ordered == 1,  'and nothing else does')
+    ok(dropped == 4,   'every malformed entry is counted')
+end
+
+do
+    -- Duplicates: first wins. A second value for the same kind has no better
+    -- claim than the first, and picking the later one would let a spoofed
+    -- trailing entry override a real leading one.
+    local byKind, _, dropped = BR.Identity.parse({ 'discord:first', 'discord:second' })
+    ok(byKind.discord == 'first', 'the first value for a kind wins')
+    ok(dropped == 1,              'the duplicate is counted')
+end
+
+do
+    ok(select('#', BR.Identity.parse({})) == 3, 'an empty list is not an error')
+    local byKind, ordered, dropped = BR.Identity.parse(nil)
+    ok(next(byKind) == nil and #ordered == 0 and dropped == 0,
+        'nor is a nil list')
 end
 
 -- ----------------------------------------------------------------- result ---
