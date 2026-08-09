@@ -52,8 +52,22 @@ export default function PartyPanel({
   // would only produce a rejection. Anyone we have ALREADY invited shows as a
   // pending chip instead -- listing them here too would invite double-sends.
   const pendingSrcs = new Set((squad.pending ?? []).map((p) => p.src))
-  const invitable = players.filter(
-    (p) => !p.inParty && !p.inMatch && !pendingSrcs.has(p.src))
+
+  // WHY SOMEBODY IS NOT INVITABLE IS NOW PART OF THE LIST.
+  //
+  // This used to be a filter, and the section was hidden entirely when it came
+  // back empty -- so "there is somebody else in this lobby and I cannot invite
+  // them" showed up as no list at all, with nothing to say whether they were
+  // in a party, in a match, or whether the feature was simply broken (user,
+  // 2026-08-09). Everyone connected is listed; the ones who cannot be picked
+  // say what is stopping them.
+  const listed = players
+    .filter((p) => p.src !== squad.you && !pendingSrcs.has(p.src))
+    .map((p) => ({
+      ...p,
+      blocked: p.inParty ? 'in a party' : p.inMatch ? 'in a match' : null,
+    }))
+  const invitable = listed.filter((p) => !p.blocked)
 
   // The Join tab's targets: leaders of real parties who are not mid-match.
   const leaders = players.filter((p) => p.leader && !p.inMatch)
@@ -315,30 +329,43 @@ export default function PartyPanel({
           somebody to invite, so an empty server does not display an empty
           box; also shown while already leading a party (inviting more). */}
       {mode === 'squad' && (inParty || subMode === 'create')
-        && !disabled && iAmLeader && invitable.length > 0 && (
+        && !disabled && iAmLeader && (
         <div className="flex flex-col gap-1.5">
           <span className="micro-label">
             Players online &mdash; select to invite
           </span>
 
+          {/* NOT HIDDEN WHEN EMPTY. An absent list and a list with nobody in
+              it look identical, and only one of them is a working feature. */}
+          {listed.length === 0 && (
+            <p className="micro-label" style={{ textTransform: 'none' }}>
+              Nobody else is connected right now.
+            </p>
+          )}
+
           <div className="thin-scroll flex flex-wrap gap-1.5 max-h-24 overflow-y-auto">
-            {invitable.map((p) => {
+            {listed.map((p) => {
               const on = selected.has(p.src)
               return (
                 <button
                   key={p.src}
                   type="button"
-                  onClick={() => toggle(p.src)}
+                  disabled={p.blocked != null}
+                  onClick={() => { if (!p.blocked) toggle(p.src) }}
                   className={`plate btn px-2.5 py-1 text-[0.78rem] font-semibold${on ? ' is-active' : ''}`}
                   style={{
                     ['--edgec' as string]: on ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.22)',
                     ['--plate-fill' as string]: on ? 'rgba(10,44,56,0.94)' : 'rgba(26,30,42,0.94)',
                     ['--cut-max' as string]: '0.4rem',
+                    opacity: p.blocked ? 0.45 : 1,
                   }}
-                  onPointerEnter={() => play('ui.hover')}
+                  onPointerEnter={() => { if (!p.blocked) play('ui.hover') }}
+                  title={p.blocked ? `${p.name} is ${p.blocked}` : undefined}
                 >
                   {on ? '✓ ' : ''}{p.name}
-                  {p.queued && <span className="text-white/35 text-[0.625rem]"> · queued</span>}
+                  {p.blocked
+                    ? <span className="text-white/35 text-[0.625rem]"> · {p.blocked}</span>
+                    : p.queued && <span className="text-white/35 text-[0.625rem]"> · queued</span>}
                 </button>
               )
             })}
