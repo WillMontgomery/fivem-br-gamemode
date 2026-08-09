@@ -478,6 +478,11 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
             SetBlipColour(dirBlip, cfg.blip.nextColour)
             SetBlipScale(dirBlip, 2.0)
             SetBlipAsShortRange(dirBlip, false)
+            -- The legend entry. Without it this arrow had no name in the
+            -- pause menu at all, which is the one screen where a player who
+            -- does not already know what the purple arrow means goes to find
+            -- out (user, 2026-08-09).
+            BR.Native.blipName(dirBlip, 'Safe Zone — this way')
         else
             SetBlipCoords(dirBlip, sx, sy, 0.0)
         end

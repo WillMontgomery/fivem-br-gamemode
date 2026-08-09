@@ -129,8 +129,28 @@ function BR.Pause.openFrontendMap(page)
             Citizen.Wait(0)
         end
 
-        pcall(PauseMenuceptionTheKick)
+        -- LEAVING IS SetFrontendActive(false) AND NOTHING ELSE.
+        --
+        -- The recipe kicks first, and that is what was putting GTA's pause
+        -- menu on screen instead of dismissing: the kick un-deepens the menu,
+        -- so it pops back UP to the tabs -- and then the deactivate lands a
+        -- frame or more later, leaving the frontend visible in between (user,
+        -- 2026-08-09: "right click shows the GTA V pause menu instead of
+        -- dismissing back to game"). Going straight out skips the page it was
+        -- surfacing.
         SetFrontendActive(false)
+
+        -- AND IT IS RE-ASSERTED, because one call is not reliably enough:
+        -- the same press that got us here is still being handled by the
+        -- scaleform, which can bring the menu straight back on the next
+        -- frame. Half a second of insisting costs nothing and removes the
+        -- whole class of "it flickered back".
+        local until_ = GetGameTimer() + 500
+        while GetGameTimer() < until_ do
+            if IsPauseMenuActive() then SetFrontendActive(false) end
+            Citizen.Wait(0)
+        end
+
         frontendMap = false
         -- Suppression resumes only once the frontend is genuinely down, so
         -- there is no frame in which both are trying to own it.

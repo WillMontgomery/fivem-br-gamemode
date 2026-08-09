@@ -339,10 +339,11 @@ export default function PauseMenu() {
         ) : tab === 'notices' ? (
           <NoticeLog />
         ) : tab === 'help' ? (
-          // INLINE, so it is a tab and not a second full-screen page stacked
-          // inside this one. The standalone frame -- with its own Back button
-          // -- is what /help and the lobby button raise.
-          <Help inline onDone={() => setTab('main')} />
+          // THE FULL PAGE, not a cramped tab body (owner's call, 2026-08-09:
+          // "make the pause menu help back to full page"). `onDone` is what
+          // makes Back work here -- it hands the close to this menu instead of
+          // releasing a focus that was never taken.
+          <Help onDone={() => setTab('main')} />
         ) : (
           // THE LOBBY'S SETTINGS SCREEN, EMBEDDED. `inline` drops its own
           // full-screen backdrop and its Cancel/Save footer closes the tab

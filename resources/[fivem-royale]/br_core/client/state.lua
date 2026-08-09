@@ -173,6 +173,29 @@ AddEventHandler('br:ui:pauseAction', function(action)
     end
 end)
 
+-- WHAT THE INTERFACE ACTUALLY BELIEVES ABOUT THE PARTY.
+--
+-- The pause menu's party controls are gated on "am I the leader", which is
+-- `party.leader == party.you` -- three values that all come from here, and if
+-- any one of them is nil every control silently disappears rather than
+-- failing loudly (user, 2026-08-09: "doesn't seem like anything is working
+-- other than leave party"). This prints the three.
+RegisterCommand('brparty', function()
+    local p = S.party
+    print('=== party ===')
+    print(('  me (you)   : %s'):format(tostring(S.me.src)))
+    print(('  party id   : %s'):format(tostring(p and p.id)))
+    print(('  leader     : %s'):format(tostring(p and p.leader)))
+    print(('  am leader  : %s'):format(tostring(p ~= nil and p.leader == S.me.src)))
+    print(('  members    : %d'):format(p and p.members and #p.members or 0))
+    for _, m in ipairs((p and p.members) or {}) do
+        print(('    %-4s %-18s %s'):format(m.src, m.name,
+            m.leader and '(leader)' or ''))
+    end
+    print(('  squad id   : %s   size %d'):format(
+        tostring(S.me.squadId), S.me.squadId and 1 or 0))
+end, false)
+
 AddEventHandler('br:ui:pauseRequest', function()
     Citizen.SetTimeout(250, function()
         ActivateFrontendMenu(GetHashKey('FE_MENU_VERSION_SP_PAUSE'), false, -1)

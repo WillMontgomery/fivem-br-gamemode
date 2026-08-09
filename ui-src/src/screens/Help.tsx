@@ -42,17 +42,19 @@ export default function Help({ inline = false, onDone }:
     return () => window.clearTimeout(t)
   }, [loaded])
 
-  // ONE CLOSE, AND BOTH DOORS USE IT. The Back button used to call
-  // HELP_FOCUS directly, which is right for the standalone page and does
-  // nothing at all when this is a tab inside the pause menu -- focus is
-  // 'pause' there, so popping 'help' pops something that was never pushed
-  // (user, 2026-08-09: "the back button doesn't work"). Inline hands the
-  // close back to its parent; standalone releases its own focus.
+  // ONE CLOSE, AND WHOEVER OWNS THE SCREEN GETS IT. The Back button used to
+  // call HELP_FOCUS directly, which is right for the page raised by /help and
+  // does nothing at all inside the pause menu -- focus is 'pause' there, so
+  // popping 'help' pops something that was never pushed (user, 2026-08-09).
+  //
+  // `onDone` is the owner: the pause menu passes one and gets its tab back,
+  // the standalone page passes none and this releases its own focus. Note
+  // that is INDEPENDENT of `inline`, which is only about the frame -- the
+  // pause menu wants the full page AND its own close.
   const close = () => {
     play('ui.back')
-    if (inline) { onDone?.(); return }
+    if (onDone) { onDone(); return }
     void fetchNui(CB.HELP_FOCUS, { open: false })
-    onDone?.()
   }
 
   // Escape closes, the same key every other page here answers to. Not when

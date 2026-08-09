@@ -325,11 +325,34 @@ end
 --- @param existing integer|nil
 --- @param x number
 --- @param y number
+--- Give a blip a name, which is what the PAUSE MENU legend reads.
+---
+--- EVERY BLIP WE MAKE NEEDS ONE. A blip with no name inherits whatever GTA
+--- calls that sprite by default -- so the courtesy loot markers announced
+--- themselves in the pause menu as whatever heist the briefcase sprite was
+--- drawn for, and the storm's direction arrow had no entry at all (user,
+--- 2026-08-09). Neither is visible on the minimap, which is why both survived
+--- this long: the legend is the one place a blip has to explain itself, and it
+--- is the one place nobody looks while playing.
+---
+--- The three calls are a set and the order is fixed; 'STRING' is the text
+--- entry that means "the literal I am about to hand you".
+--- @param blip integer
+--- @param name string
+function BR.Native.blipName(blip, name)
+    if not blip or not DoesBlipExist(blip) then return end
+    BeginTextCommandSetBlipName('STRING')
+    AddTextComponentString(name)
+    EndTextCommandSetBlipName(blip)
+end
+
 --- @param radius number
 --- @param colour integer
 --- @param alpha integer
+--- @param name string|nil  legend entry; these are rebuilt constantly, so it
+---                         has to be re-applied on every rebuild
 --- @return integer blip
-function BR.Native.radiusBlip(existing, x, y, radius, colour, alpha)
+function BR.Native.radiusBlip(existing, x, y, radius, colour, alpha, name)
     if existing and DoesBlipExist(existing) then
         RemoveBlip(existing)
     end
@@ -337,6 +360,7 @@ function BR.Native.radiusBlip(existing, x, y, radius, colour, alpha)
     SetBlipColour(blip, colour)
     SetBlipAlpha(blip, alpha)
     SetBlipHighDetail(blip, true)
+    if name then BR.Native.blipName(blip, name) end
     return blip
 end
 

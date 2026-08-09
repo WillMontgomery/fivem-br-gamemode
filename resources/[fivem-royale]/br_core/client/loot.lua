@@ -1600,6 +1600,10 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.devblips', function()
             SetBlipScale(b, isContainer(e) and 0.7 or 0.45)
             SetBlipColour(b, 5)
             SetBlipAsShortRange(b, true)
+            -- NAMED, or GTA names it for us -- and it names a sprite by
+            -- whatever mission it was drawn for, so the pause-menu legend
+            -- read as something from a heist (user, 2026-08-09). Funny once.
+            BR.Native.blipName(b, isContainer(e) and 'Supply Crate' or 'Loot')
             blips[id] = b
         end
     end
