@@ -187,7 +187,11 @@ end
 --- @param y number
 --- @param z number
 --- @param heading number|nil
-function BR.Spawn.respawn(x, y, z, heading, exact)
+--- @param exact boolean|nil
+--- @param cb function|nil  called once the player is genuinely placed. Only
+---        the non-exact path is asynchronous; the exact path calls it before
+---        returning, so a caller never has to know which one it took.
+function BR.Spawn.respawn(x, y, z, heading, exact, cb)
     local ped = PlayerPedId()
 
     NetworkResurrectLocalPlayer(x, y, z, heading or 0.0, true, false)
@@ -198,23 +202,28 @@ function BR.Spawn.respawn(x, y, z, heading, exact)
     BR.Native.initHealthModel()
 
     if exact then
-        -- EXACTLY these coordinates, no ground snap: the lobby vista floats
-        -- above the hillside on purpose (it is a camera position wearing a
-        -- ped), and placeAt's ground-finding would march the ped down the
-        -- slope. The per-frame LOBBY freeze rule holds them there.
+        -- EXACTLY these coordinates, no ground snap. The lobby spot is a
+        -- CAMERA MARK: the shot is framed from the authored position, six
+        -- feet in front of wherever the ped's feet land, so a ground probe
+        -- that moved them half a metre downhill would move the subject out of
+        -- its own frame. placeAt's ground-finding is right for the warmup
+        -- scatter and wrong here. The per-frame LOBBY freeze holds them.
         SetEntityCoordsNoOffset(ped, x, y, z, false, false, false)
         SetEntityHeading(ped, heading or 0.0)
         FreezeEntityPosition(ped, true)
         BR.Spawn.reveal()
+        if cb then cb() end
         return
     end
 
-    BR.Spawn.placeAt(x, y, z, heading)
+    BR.Spawn.placeAt(x, y, z, heading, cb)
 end
 
---- Bring the player into the world for the first time: straight into the
---- lobby vista. Visibility is owned by the game rules (invisible while the
---- state is LOBBY), so nothing here needs to hide anyone.
+--- Bring the player into the world for the first time: straight onto the
+--- lobby mark, where BR.LobbyCam frames them. Visibility is owned by the game
+--- rules (client/natives.lua) and OTHER players' lobby peds are hidden by
+--- each client for itself (client/squadmates.lua), so nothing here has to
+--- hide anyone.
 local function initialSpawn()
     if spawned then return end
     spawned = true
@@ -300,32 +309,81 @@ end)
 --- Return the player to the warmup pad, alive, scattered slightly so a full
 --- lobby does not stack everyone on one point.
 ---
+--- BEHIND A FADE, IN THIS ORDER, AND THE ORDER IS THE WHOLE POINT: black
+--- first, THEN the camera released, then the teleport, then collision under
+--- our feet, then light.
+---
+--- The lobby is a locked character shot now, and handing the view back to the
+--- game while it is on screen snaps from a portrait to a third-person
+--- gameplay camera in a single frame -- which reads as a bug rather than as
+--- the match starting. Doing it under black costs nothing and is invisible,
+--- which is the same argument BR.Spawn.toLobby already makes for the trip in
+--- the other direction (user, 2026-08-08).
+---
 --- respawn rather than placeAt: this runs between matches, and whoever died in
---- the last one is still a corpse until something resurrects them.
+--- the last one is still a corpse until something resurrects them. placeAt's
+--- own reveal() at the end of its collision wait IS the fade back in -- there
+--- is deliberately no second one here to race it.
+--- @return boolean  whether the trip actually started
 function BR.Spawn.toWarmupPad()
-    -- A NEW MATCH IS PLACING US IN THE WORLD: whatever end-of-match dark
-    -- hold was running is over -- even though its WAITING handover never
-    -- arrived. Under parallel matches a player who dies, returns to the
-    -- lobby and readies up during the old match's summary jumps ENDED ->
-    -- (new match's) WARMUP directly, and holdBlack -- released only by
-    -- WAITING, and respected by the anti-black watchdog -- parked exactly
-    -- those players on a permanent black screen at the warmup pad (live
-    -- repro, 2026-08-04: consistently the client that had DIED).
-    if BR.Spawn.holdBlack then
+    -- REFUSED, NOT SWALLOWED. The caller latches on "I have gathered this
+    -- player", so a silent refusal here (a trip home still finishing when the
+    -- next match's warmup arrives -- entirely possible now that readying up
+    -- during a summary jumps ENDED straight to WARMUP) would leave them
+    -- standing in the lobby for the whole warmup with the flag saying it had
+    -- been handled.
+    if BR.Spawn.traveling then return false end
+    BR.Spawn.traveling = true
+
+    Citizen.CreateThread(function()
+        DoScreenFadeOut(400)
+        local t0 = GetGameTimer()
+        while not IsScreenFadedOut() and GetGameTimer() - t0 < 1200 do
+            Citizen.Wait(50)
+        end
+
+        -- A NEW MATCH IS PLACING US IN THE WORLD: whatever end-of-match dark
+        -- hold was running is over -- even though its WAITING handover never
+        -- arrived. Under parallel matches a player who dies, returns to the
+        -- lobby and readies up during the old match's summary jumps ENDED ->
+        -- (new match's) WARMUP directly, and holdBlack -- released only by
+        -- WAITING, and respected by the anti-black watchdog -- parked exactly
+        -- those players on a permanent black screen at the warmup pad (live
+        -- repro, 2026-08-04: consistently the client that had DIED).
+        --
+        -- Cleared WITHOUT fading in here: the fade belongs to placeAt, at the
+        -- far end, once there is ground to stand on.
         BR.Spawn.holdBlack = false
-        DoScreenFadeIn(600)
-    end
 
-    local pad = BR.Config.Match.warmupPos
-    local r = BR.Config.Match.warmupRadius * 0.5
-    local theta = math.random() * 2.0 * math.pi
-    local dist = r * math.sqrt(math.random())
+        BR.LobbyCam.stop()
 
-    BR.Spawn.respawn(
-        pad.x + math.cos(theta) * dist,
-        pad.y + math.sin(theta) * dist,
-        pad.z,
-        pad.heading)
+        local pad = BR.Config.Match.warmupPos
+        local r = BR.Config.Match.warmupRadius * 0.5
+        local theta = math.random() * 2.0 * math.pi
+        local dist = r * math.sqrt(math.random())
+
+        BR.Spawn.respawn(
+            pad.x + math.cos(theta) * dist,
+            pad.y + math.sin(theta) * dist,
+            pad.z,
+            pad.heading,
+            false,
+            function() BR.Spawn.traveling = false end)
+
+        -- placeAt refuses to start while another placement is running, in
+        -- which case the callback above never fires and `traveling` would
+        -- pin the player in a state with no camera and no fade. The deadline
+        -- is the escape, not the plan.
+        Citizen.SetTimeout(9000, function()
+            if BR.Spawn.traveling then
+                print('[br_core] warmup placement did not report back -- releasing')
+                BR.Spawn.traveling = false
+                BR.Spawn.reveal()
+            end
+        end)
+    end)
+
+    return true
 end
 
 RegisterNetEvent(BR.Net.STATE)
@@ -359,9 +417,12 @@ end)
 local gathered = false
 BR.Loop.register(BR.Loop.TICK, 'spawn.gather', function()
     if BR.State.me.state == BR.PlayerState.WARMUP then
+        -- The latch is set by the TRIP STARTING, not by having tried. A
+        -- refusal (a trip home still finishing) leaves it clear so the next
+        -- tick tries again, 100ms later, which is the whole retry policy this
+        -- needs.
         if not gathered then
-            gathered = true
-            BR.Spawn.toWarmupPad()
+            gathered = BR.Spawn.toWarmupPad()
         end
     else
         gathered = false
@@ -474,6 +535,17 @@ end)
 local darkTicks = 0
 BR.Loop.register(BR.Loop.SLOW, 'spawn.antiblack', function()
     if placing or not spawned then
+        darkTicks = 0
+        return
+    end
+
+    -- A TRIP IS A DELIBERATELY DARK SCREEN TOO. toLobby and toWarmupPad both
+    -- fade out, then wait for collision at the far end -- which can be
+    -- several seconds, comfortably past this watchdog's two-tick patience.
+    -- Recovering there does not rescue anything; it fades the world in
+    -- halfway through a teleport and then the trip fades it out again. Both
+    -- ends of every trip call reveal() themselves.
+    if BR.Spawn.traveling then
         darkTicks = 0
         return
     end

@@ -45,11 +45,46 @@ BR.Config.Match = {
     -- hands one AFK partymate the whole lobby.
     partyGraceSeconds = 45,
 
-    -- The LOBBY: a vista point above Cayo Perico, used as the backdrop
-    -- behind the menu. Players in the LOBBY state sit here invisible and in
-    -- a PERSONAL routing bucket -- the lobby is a menu with a view, not a
-    -- place, so nobody's ped may wander through the shot.
-    lobbyPos        = { x = 4798.33, y = -5031.61, z = 36.59, heading = 44.05 },
+    -- THE LOBBY IS A CHARACTER SHOT NOW, not a landscape.
+    --
+    -- It used to be an empty vista with the player invisible in it: a menu
+    -- with a view. Standing YOUR ped in frame is what makes the locker and
+    -- the ped picker possible at all, and it is what every battle royale does
+    -- with this screen -- the thing you are about to play as, looking back at
+    -- you (user, 2026-08-08).
+    --
+    -- Everyone stands on this exact spot, in the SAME routing bucket, and
+    -- each client hides every OTHER lobby ped locally (client/squadmates.lua)
+    -- -- so nobody's character walks through your shot while the bucket stays
+    -- shared. A per-player bucket would have done the same job and cost the
+    -- one thing the shared bucket buys: players in the lobby can still be
+    -- reached by anything that addresses the lobby as a place.
+    lobbyPos        = { x = 5039.27, y = -5721.95, z = 17.08, heading = 208.31 },
+
+    -- THE LOBBY CAMERA. Locked, because a lobby camera the player can swing
+    -- is a lobby camera pointed at the sky within ten seconds.
+    --
+    -- `dist` is the user's six feet, in metres, measured along the ped's OWN
+    -- forward vector -- so the camera is always looking the ped in the face
+    -- whatever heading the spawn is authored at.
+    --
+    -- `offset` is the part that is a design decision rather than a
+    -- measurement: it slides the AIM point sideways so the ped lands in the
+    -- right third of the screen instead of dead centre, because the left
+    -- third is the menu (see screens/Lobby.tsx, which reserves exactly that
+    -- gap). Aiming off-centre rather than moving the camera keeps the ped
+    -- face-on; moving the camera would put them in three-quarter profile.
+    --
+    -- `fov` is a normal-ish lens. Anything wider at six feet gives the ped a
+    -- caricature nose; anything narrower crops them at the chest, which the
+    -- locker cannot use.
+    lobbyCam        = {
+        dist   = 1.83,   -- 6 ft in front of the ped
+        height = 0.95,   -- camera height above the ped's root: mid-torso
+        aim    = 0.90,   -- what it looks at, so the framing is not tilted
+        offset = 0.58,   -- aim shifted left => ped sits right of centre
+        fov    = 50.0,
+    },
 
     -- Warmup pad: the Cayo Perico airstrip apron. The island is enabled by
     -- br_environment whenever a match is not PLAYING -- if players spawn into

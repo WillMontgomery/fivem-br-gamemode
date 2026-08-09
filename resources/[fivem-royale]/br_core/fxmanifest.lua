@@ -40,6 +40,7 @@ client_scripts {
     'client/loading.lua',   -- owns BR.State.worldReady; screen.lua reads it
     'client/screen.lua',
     'client/spawn.lua',
+    'client/lobbycam.lua',  -- reads BR.Spawn.traveling; must follow spawn.lua
     'client/gamerules.lua',
     'client/state.lua',
     'client/stamina.lua',   -- needs BR.State (state.lua) and the loops

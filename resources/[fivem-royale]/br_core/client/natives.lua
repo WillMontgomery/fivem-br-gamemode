@@ -440,18 +440,29 @@ function BR.Native.applyGameRules()
         or st == BR.PlayerState.GLIDE
         or GetGameTimer() < (BR.State.dropGraceUntil or 0))
 
-    -- The lobby is a menu with a view -- no ped in the shot, and no ped
-    -- FALLING OUT of the shot: the vista point floats above the hillside,
-    -- so an unfrozen ped drops on camera. The bus rider is hidden too, but
-    -- NOT frozen: it rides attached inside the plane, and the old per-frame
-    -- BUS freeze was still re-freezing for the ~250ms after a jump while
-    -- the roster still said BUS -- fighting TaskParachute in exactly the
-    -- frames it needed the ped falling. That race was the dead SPACE key.
-    -- The freeze deliberately never RELEASES here: spawn placement holds
-    -- its own temporary freezes while collision loads, and stomping those
-    -- drops players through the world.
-    SetEntityVisible(ped,
-        st ~= BR.PlayerState.LOBBY and st ~= BR.PlayerState.BUS, false)
+    -- YOUR PED IS THE LOBBY NOW, so it is no longer hidden there.
+    --
+    -- This used to read `st ~= LOBBY and st ~= BUS`, from when the lobby was
+    -- an empty vista and any visible ped was something that had gone wrong.
+    -- The shot is a character portrait now (BR.LobbyCam) and the ped IS the
+    -- subject -- hiding it would leave the camera pointed at scenery.
+    --
+    -- IT IS STILL INVISIBLE TO EVERYONE ELSE, which is the part that has not
+    -- changed: every client hides the other lobby peds locally
+    -- (client/squadmates.lua), so a shared bucket full of players standing on
+    -- one spot renders as one person on every screen.
+    --
+    -- The bus rider stays hidden, and is NOT frozen: it rides attached inside
+    -- the plane, and the old per-frame BUS freeze was still re-freezing for
+    -- the ~250ms after a jump while the roster still said BUS -- fighting
+    -- TaskParachute in exactly the frames it needed the ped falling. That
+    -- race was the dead SPACE key.
+    --
+    -- The lobby freeze stays too: the ped must not walk, fall or ragdoll out
+    -- of a locked shot. It deliberately never RELEASES here -- spawn
+    -- placement holds its own temporary freezes while collision loads, and
+    -- stomping those drops players through the world.
+    SetEntityVisible(ped, st ~= BR.PlayerState.BUS, false)
     if st == BR.PlayerState.LOBBY then
         FreezeEntityPosition(ped, true)
     end
@@ -592,6 +603,19 @@ function BR.Native.check()
         local b = AddBlipForCoord(0.0, 0.0, 0.0)
         SetBlipAlpha(b, 120)
         RemoveBlip(b)
+    end)
+    -- The lobby camera's LIFECYCLE, not its creation: brunstuck calls
+    -- DestroyAllCams, which leaves BR.LobbyCam holding a handle to a camera
+    -- that no longer exists. DoesCamExist is what stops it believing the shot
+    -- is still up and never raising it again -- so a nil binding here would
+    -- not fail loudly, it would leave a player in the lobby looking through
+    -- the gameplay camera at nothing.
+    probe('DoesCamExist',            function()
+        local c = CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA',
+            0.0, 0.0, -200.0, 0.0, 0.0, 0.0, 50.0, false, 0)
+        local exists = DoesCamExist(c)
+        DestroyCam(c, true)
+        return exists
     end)
     probe('DrawMarker',              function()
         DrawMarker(1, 0.0, 0.0, -200.0, 0,0,0, 0,0,0, 1.0,1.0,1.0, 0,0,0, 0, false, false, 2, false, nil, nil, false)
