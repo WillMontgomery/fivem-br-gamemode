@@ -65,6 +65,21 @@ local function newEntry(src)
         lastDamageBy = nil,
         lastDamageAt = 0,
 
+        -- DBNO bookkeeping (M7). All server-side, none of it public: the
+        -- client is TOLD its own downed state on BR.Net.DBNO_SET, and other
+        -- players learn about it only from the `state` field, which is.
+        --   dbnoUntil   when the bleed runs out (server ms)
+        --   dbnoCount   knocks this match; each one bleeds faster
+        --   downedBy    who gets the kill if nobody touches them again --
+        --               deliberately outlives assistWindowMs, unlike lastHitBy
+        --   reviverSrc  who is holding on them right now
+        --   reviveFrom  when that hold started
+        dbnoUntil  = nil,
+        dbnoCount  = 0,
+        downedBy   = nil,
+        reviverSrc = nil,
+        reviveFrom = nil,
+
         joinedAt   = GetGameTimer(),
         bucket     = 0,
     }
@@ -235,6 +250,11 @@ function BR.Roster.remove(src)
         if BR.Damage.forgetRefusals then BR.Damage.forgetRefusals(src) end
     end
     if BR.Loot and BR.Loot.clearNpcDrops then BR.Loot.clearNpcDrops(src) end
+    -- Same recycled-id argument again, with a second reason on top: whoever
+    -- this player was in the middle of picking up would otherwise keep a
+    -- reviver that no longer exists, and their progress ring would sit at
+    -- whatever percentage the disconnect froze it at until the bleed ran out.
+    if BR.Combat and BR.Combat.forget then BR.Combat.forget(src) end
     -- Same recycled-id argument, and a worse outcome: the cached voice
     -- channels are what suppress a re-push, so whoever connects into this
     -- slot next would be told nothing and stay in the previous holder's room.
@@ -404,7 +424,21 @@ local function samplePositions()
             local hp = math.floor(BR.ToDisplayHp(entry.engineHp) + 0.5)
             local armour = math.floor((entry.engineArmour or 0) + 0.5)
 
-            if hp ~= entry.hp or armour ~= entry.armour then
+            -- A DOWNED PLAYER'S HEALTH IS THE LEDGER'S, NOT THE PED'S.
+            --
+            -- Their ped is parked at the DBNO floor and their real "health" is
+            -- a countdown living on this entry, so sampling would achieve one
+            -- of two wrong things: agree with the floor and churn nothing, or
+            -- -- on a client that was slow to apply the knock, or is simply
+            -- ignoring it -- drag the entry back to full and show the squad
+            -- panel a downed teammate on 100hp.
+            --
+            -- Written as a condition rather than an early return ON PURPOSE:
+            -- this is the body of a loop over the WHOLE roster, and a `return`
+            -- here would stop sampling everybody who sorted after the first
+            -- downed player -- positions included.
+            if entry.state ~= BR.PlayerState.DBNO
+               and (hp ~= entry.hp or armour ~= entry.armour) then
                 BR.Roster.update(src, { hp = hp, armour = armour })
             end
         end

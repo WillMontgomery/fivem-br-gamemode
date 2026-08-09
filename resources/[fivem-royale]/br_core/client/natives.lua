@@ -519,6 +519,20 @@ function BR.Native.applyGameRules()
     -- descent matters most -- a chute that fails to open must cost the drop,
     -- never the life; the invincibility holds until the landing grace runs
     -- out no matter how hard the ground arrives.
+    --
+    -- ...AND WHILE DOWNED, WHICH IS A DIFFERENT ARGUMENT ENTIRELY (M7). A
+    -- downed player's health is the bleed timer on the server, not the number
+    -- on this ped -- so there is nothing here left for the engine to take, and
+    -- everything it could still do is wrong. Enemy fire is already stopped
+    -- from replicating by the server's CancelEvent, so the only thing this
+    -- blocks is THIS client's own engine killing its own ped down a path we
+    -- have never taken over: fire, a fall, drowning, a car. Without it,
+    -- gamerules.death reports a death the server then has to refuse, and the
+    -- player flickers between down and dead.
+    --
+    -- The honest cost, stated rather than hidden: a downed player cannot burn
+    -- to death. They can be finished with a gun, which is the interaction that
+    -- matters, and the storm still runs their clock out.
     local st = BR.State.me.state
     SetPlayerInvincible(pid,
         st == BR.PlayerState.WARMUP
@@ -526,6 +540,7 @@ function BR.Native.applyGameRules()
         or st == BR.PlayerState.LOBBY
         or st == BR.PlayerState.FREEFALL
         or st == BR.PlayerState.GLIDE
+        or st == BR.PlayerState.DBNO
         or GetGameTimer() < (BR.State.dropGraceUntil or 0))
 
     -- YOUR PED IS THE LOBBY NOW, so it is no longer hidden there.
@@ -729,6 +744,24 @@ function BR.Native.check()
         return GetAmmoInPedWeapon(ped, BR.Config.Gadgets.PARACHUTE)
     end)
     probe('SetPedCanRagdoll',        function() SetPedCanRagdoll(ped, true) end)
+    -- THE DOWNED STATE'S NATIVES (M7). Every one of these is called on a ped
+    -- that is lying on the floor and cannot fight back, which is the worst
+    -- possible place to discover a nil binding: an unknown native throws, five
+    -- throws suspend the frame callback, and the callback that would have stood
+    -- them back up goes with it. The crawl ASSETS are resolved separately at
+    -- first use (client/dbno.lua) because their absence is a degrade rather
+    -- than a fault; these are the bindings themselves.
+    probe('SetPedMovementClipset',   function()
+        -- Requested, not applied: applying one here would leave the caller of
+        -- /brnativecheck walking oddly until something reset it.
+        return RequestClipSet('move_crawl')
+    end)
+    probe('HasClipSetLoaded',        function() return HasClipSetLoaded('move_crawl') end)
+    probe('ResetPedMovementClipset', function() ResetPedMovementClipset(ped, 0.0) end)
+    probe('SetPedMoveRateOverride',  function() SetPedMoveRateOverride(ped, 1.0) end)
+    probe('TaskPlayAnim',            function()
+        return HasAnimDictLoaded('move_injured_ground')
+    end)
     probe('GetEntityHealth',         function() return GetEntityHealth(ped) end)
     probe('SetEntityMaxHealth',      function() SetEntityMaxHealth(ped, BR.Config.Match.maxHealth) end)
     probe('GetPedArmour',            function() return GetPedArmour(ped) end)

@@ -110,7 +110,13 @@ BR.Net = {
     INV_AMMO        = 'br:inv:ammo',         -- C->S  { pool = { light = n, ... }, clip, slot }
 
     -- Combat / DBNO
-    HEALTH_SYNC     = 'br:health:sync',      -- S->C  { hp, armour } authoritative correction
+    -- S->C { hp, armour } in DISPLAY units, an authoritative correction.
+    --
+    -- DISPLAY rather than engine, unlike HIT_DAMAGE and STORM_DAMAGE, and the
+    -- difference is deliberate: those two carry a DELTA to apply, this carries
+    -- an ABSOLUTE value to become. BR.ToEngineHp is the converter and
+    -- BR.Native.setDisplayHealth is the one call that should ever perform it.
+    HEALTH_SYNC     = 'br:health:sync',
     DAMAGE_FEED     = 'br:damage:feed',      -- S->C  { amount, dir, headshot } for hitmarkers
     -- S->C { amount, armourFirst }. The server telling a victim to apply a
     -- validated gunshot to their own ped. Same shape and same reasoning as
@@ -123,10 +129,23 @@ BR.Net = {
     -- that. This tells them to put the ped back.
     HIT_RESYNC      = 'br:hit:resync',
     KILL_FEED       = 'br:kill:feed',        -- S->C  { killer, victim, weapon, headshot }
-    DBNO_SET        = 'br:dbno:set',         -- S->C  { downed, bleedEndsAt, byName }
+    -- S->C { downed, bleedEndsAt, byName, reviverName, revivePct }.
+    --
+    -- The WHOLE downed state, every time, rather than a patch. There are five
+    -- fields, they change on events a human causes, and a merge protocol for
+    -- that would be more code than the feature -- the same call SETTINGS made.
+    --
+    -- `bleedEndsAt` is a SERVER timestamp: the interface must compare it
+    -- against `Date.now() + clockOffset`, never against Date.now(). The server
+    -- clock and the browser clock share no origin.
+    DBNO_SET        = 'br:dbno:set',
     REVIVE_START    = 'br:revive:start',     -- C->S  { target }
     REVIVE_STOP     = 'br:revive:stop',      -- C->S
-    REVIVE_PROGRESS = 'br:revive:progress',  -- S->C  { pct }
+    -- S->C { pct, target, reviverName }. Sent to BOTH parties while a revive
+    -- runs: the reviver needs it for their hold ring, and the downed player
+    -- needs to know somebody is actually coming for them -- which is the one
+    -- piece of information that decides whether they hang on or give up.
+    REVIVE_PROGRESS = 'br:revive:progress',
 
     -- Spectate / end
     SPECTATE_SET    = 'br:spectate:set',     -- S->C  { targetSrc, x, y, z }

@@ -192,6 +192,36 @@ BR.Config.Match = {
     dbnoReviveDist  = 1.5,
     dbnoReviveHp    = 30,     -- displayed HP after a successful revive
 
+    -- WHAT SHOOTING A DOWNED PLAYER DOES (owner's call, 2026-08-09): it takes
+    -- time off the bleed rather than health off a second health bar. There is
+    -- no knocked-HP pool, because the bleed timer already IS the downed
+    -- player's health -- denominated in seconds, visible to them as a
+    -- countdown, and visible to everyone else as a body still crawling.
+    --
+    -- THE NUMBER IS A GUESS AND IS WRITTEN DOWN AS ONE, like the molotov's 42.
+    -- At 0.35 a 30-damage rifle round takes 10.5s off a fresh 45s knock -- four
+    -- rounds finish it -- and a shotgun blast (~90) takes 31s. That feels right
+    -- on paper and has never been played. Tune it before defending it.
+    dbnoBleedPerDamage = 0.35,
+
+    -- The display health the LEDGER holds a downed player at. It has to be
+    -- greater than zero for two separate reasons and both are load-bearing:
+    -- BR.Damage.applyHit only sends the shooter their `netId`/`hp` correction
+    -- while the victim's hp is above zero (that correction is what stops a
+    -- downed player reading as a permanent corpse on the shooter's screen),
+    -- and the roster's own health sampling would otherwise see a zero and hand
+    -- the server-observed death check a body to eliminate.
+    dbnoHp          = 5,
+
+    -- Slack on the SERVER's revive distance check, in metres. Positions are
+    -- sampled at 250ms, so the server's idea of where two players are standing
+    -- is always slightly behind the client's -- the same skew the loot claim
+    -- check allows for, for the same reason.
+    dbnoReviveSlack = 1.0,
+
+    -- How fast a downed player crawls, as a fraction of walking pace.
+    dbnoCrawlSpeed  = 0.55,
+
     -- Server-side sampling and broadcast rates. These are the knobs to turn if
     -- the server tick starts running long at full player count.
     posSampleHz     = 2,

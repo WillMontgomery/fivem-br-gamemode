@@ -166,7 +166,32 @@ local function canSee()
     return BR.Config.LootVisibleStates[BR.State.me.state] == true
 end
 
+-- SOMETHING ELSE HAS THE INTERACT KEY RIGHT NOW.
+--
+-- There is one interact key and, since M7, two things that want it: a crate on
+-- the floor and a squadmate on the floor. They cannot both prompt, and picking
+-- up a rifle instead of picking up a person is the wrong way round to be wrong.
+--
+-- A yield rather than a shared interaction registry, deliberately. The registry
+-- is the tidier end state and is the right move the day a THIRD consumer shows
+-- up; today it means restructuring the hottest frame pass in the client to
+-- serve one caller, and this pass has cost two playtests already.
+local suppressed = false
+
+--- Stand down: no prompt, no hold, no claim. Raised by client/dbno.lua while a
+--- downed squadmate is within reach.
+--- @param on boolean
+function BR.Loot.suppress(on)
+    on = on == true
+    if on == suppressed then return end
+    suppressed = on
+    -- Drop any hold in progress. Walking up to a downed mate mid-crate must
+    -- not leave a timer running behind the revive prompt.
+    if on then hold.id = nil end
+end
+
 local function canTake()
+    if suppressed then return false end
     if BR.Config.LootTakeStates[BR.State.me.state] ~= true then return false end
     -- NOT FROM A CAR (user call, 2026-08-05). Driving through a POI hoovering
     -- up crates at 40mph is not looting, and the ray comes off the ped's

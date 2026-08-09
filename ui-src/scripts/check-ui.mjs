@@ -391,6 +391,47 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R10  Sizes are in rem, because rem is the only unit the player can reach.
+//
+// CAUGHT LATE, AND BY THE OWNER RATHER THAN BY THIS FILE: the DBNO placard's
+// bleed bars shipped as `h-[3px]`. The root font size is
+// `clamp(11px, calc(1.481vh * var(--ui-scale)), 28px)` and every size in the
+// interface is in rem, so ONE number scales 720p to 4K and carries the
+// player's interface-size slider with it. A px size opts out of both: it stays
+// a 3px hairline at every setting, on every resolution, while the placard
+// around it doubles. Nothing errors and nothing looks broken at the developer's
+// own resolution, which is exactly the class of miss this file exists for.
+//
+// NARROW ON PURPOSE. Only properties that describe a SIZE, and only above one
+// pixel -- a 1px border or a 1px gap is a hairline by intent and is supposed to
+// stay one whatever the scale. Borders, gaps and 0 are never flagged.
+// ---------------------------------------------------------------------------
+{
+  // Tailwind arbitrary values: h-[3px], text-[14px], min-w-[200px], bottom-[8px].
+  const TW = /\b(?:min-|max-)?(?:w|h|text|top|bottom|left|right|inset|basis)-\[(\d+(?:\.\d+)?)px\]/g
+  // Inline styles: fontSize: '14px', minWidth: "200px", height: '3px'.
+  const INLINE = /\b(?:width|height|minWidth|maxWidth|minHeight|maxHeight|fontSize|top|bottom|left|right)\s*:\s*['"](\d+(?:\.\d+)?)px['"]/g
+
+  for (const f of files.filter((x) => x.endsWith('.tsx'))) {
+    const body = stripComments(read(f))
+    for (const [i, line] of body.split('\n').entries()) {
+      for (const re of [TW, INLINE]) {
+        re.lastIndex = 0
+        let m
+        while ((m = re.exec(line)) !== null) {
+          // Hairlines stay hairlines. 0 is not a size.
+          if (parseFloat(m[1]) <= 1) continue
+          fail('R10 rem', `${rel(f)}:${i + 1}`,
+            `${m[0]} sizes in px -- the interface-size slider and every`
+            + ` resolution above 1080p move rem and nothing else. Use rem`
+            + ` (3px at the 16px default is 0.2rem).`)
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

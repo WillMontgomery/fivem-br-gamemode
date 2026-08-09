@@ -4759,6 +4759,385 @@ do
         tostring(last and last.killerSrc))
 end
 
+-- --------------------------------------------------------------- M7: DBNO ---
+
+--- A squad match: `n` players, ONE squad, all ALIVE and standing on the same
+--- spot. DBNO is squads-only, so nearly every block below wants exactly this.
+---
+--- devMode + startSquads = 1 is what stops the match tick declaring the single
+--- remaining squad the winner and tearing the instance down underneath the
+--- assertions -- the same lone-developer hold `brforce playing` relies on.
+local function squadMatch(n)
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.autofill = true
+
+    for i = 1, n do join(i, 'P' .. i) end
+    for i = 2, n do
+        BR.Party.invite(1, i)
+        BR.Party.respond(i, true)
+    end
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.WARMUP) end)
+
+    local m = fakeMatch(BR.Mode.SQUAD.key)
+    BR.Party.formSquads(m)
+    m.state = BR.MatchState.PLAYING
+    m.startSquads = 1
+
+    for i = 1, n do
+        BR.Roster.setState(i, BR.PlayerState.ALIVE)
+        setPos(i, 0.0, 0.0, 30.0)
+        BR.Roster.get(i).pos = { x = 0.0, y = 0.0, z = 30.0 }
+    end
+
+    sent = {}
+    return m
+end
+
+--- Advance the clock and run the schedulers, which is what drives the bleed.
+local function tick(ms)
+    fakeTime = fakeTime + ms
+    BR.Sched.step(fakeTime)
+end
+
+--- The last DBNO_SET a player was sent, or nil.
+local function lastDbno(src)
+    local found = nil
+    for _, s in ipairs(sent) do
+        if s.event == BR.Net.DBNO_SET and s.target == src then found = s.args[1] end
+    end
+    return found
+end
+
+describe('dbno.knock')
+do
+    -- SQUADS ONLY, AND ONLY WHILE SOMEBODY IS STANDING. Every one of these is a
+    -- separate reason for defeat() to fall through to a real death, and the
+    -- expensive way to find that out is a playtest where a solo player lies on
+    -- the floor for forty-five seconds waiting for a teammate they do not have.
+    local m = squadMatch(2)
+
+    BR.Combat.defeat(1, 'gunshot', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+        'a squad player with a standing mate goes DOWN, not out',
+        BR.Roster.get(1).state)
+    ok(BR.Roster.get(1).placement == nil,
+        'and a knock assigns no placement -- they have not finished anything')
+
+    local push = lastDbno(1)
+    ok(push ~= nil and push.downed == true,
+        'the downed player is told, on the wire')
+    ok(push and push.bleedEndsAt == BR.Roster.get(1).dbnoUntil,
+        'with the bleed deadline the server is actually holding')
+    ok(push and push.byName == 'P2', 'and who put them there', push and push.byName)
+
+    ok(BR.Roster.get(2).downs == 1, 'the knocker is credited with a down')
+    ok(BR.Roster.get(2).kills == 0, 'but NOT with a kill -- a revive may undo it')
+
+    -- The last standing mate is what makes it possible; without one it is a
+    -- death however many bodies the squad still has on the floor.
+    BR.Combat.defeat(2, 'gunshot', 1)
+    ok(BR.Roster.get(2).state == BR.PlayerState.DEAD,
+        'the last player of a squad dies rather than joining the pile',
+        BR.Roster.get(2).state)
+
+    -- Already down: running out of health again is the end of it.
+    BR.Combat.defeat(1, 'gunshot', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+        'defeating a player who is already down eliminates them')
+
+    -- Solo has no downed state at all.
+    reset()
+    BR.Server.devMode = true
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    tick(300)
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    BR.Combat.defeat(1, 'gunshot', 2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+        'a solo player is never downed -- nobody could pick them up')
+
+    -- A mate who is still on canopy counts: they can land and revive.
+    m = squadMatch(2)
+    BR.Roster.setState(2, BR.PlayerState.GLIDE)
+    BR.Combat.defeat(1, 'gunshot', nil)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+        'a squadmate still under canopy is a standing mate')
+
+    -- A mate who is themselves DOWN does not.
+    m = squadMatch(3)
+    BR.Combat.defeat(2, 'gunshot', nil)
+    BR.Combat.defeat(3, 'gunshot', nil)
+    ok(BR.Roster.get(2).state == BR.PlayerState.DBNO
+       and BR.Roster.get(3).state == BR.PlayerState.DBNO, 'two of three are down')
+    BR.Combat.defeat(1, 'gunshot', nil)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+        'the last one standing dies: two downed mates cannot revive anybody',
+        BR.Roster.get(1).state)
+end
+
+describe('dbno.bleed')
+do
+    -- THE BLEED TIMER IS THE HEALTH BAR. Everything here is about that one
+    -- decision: knocks get shorter, damage buys seconds off it, and it running
+    -- out is the death.
+    squadMatch(3)
+
+    BR.Combat.defeat(1, 'gunshot', 2)
+    local first = BR.Roster.get(1).dbnoUntil - fakeTime
+    ok(first == BR.Config.Match.dbnoBleedBase * 1000,
+        'the first knock bleeds for the base time', first)
+
+    BR.Combat.revive(1, 2)
+    BR.Combat.defeat(1, 'gunshot', 2)
+    local second = BR.Roster.get(1).dbnoUntil - fakeTime
+    ok(second == (BR.Config.Match.dbnoBleedBase
+                  + BR.Config.Match.dbnoBleedStep) * 1000,
+        'the second knock in the same match is shorter', second)
+
+    -- ...all the way down to the floor, which is what stops a squad farming
+    -- revives out of one long fight.
+    for _ = 1, 10 do
+        BR.Combat.revive(1, 2)
+        BR.Combat.defeat(1, 'gunshot', 2)
+    end
+    ok(BR.Roster.get(1).dbnoUntil - fakeTime
+       == BR.Config.Match.dbnoBleedMin * 1000,
+        'and never drops below the minimum',
+        BR.Roster.get(1).dbnoUntil - fakeTime)
+
+    -- DAMAGE BUYS SECONDS, NOT HEALTH.
+    squadMatch(3)
+    BR.Combat.defeat(1, 'gunshot', 2)
+    local before = BR.Roster.get(1).dbnoUntil
+    local hpBefore = BR.Roster.get(1).hp
+
+    BR.Damage.applyHit(3, 1, 30.0, { weapon = 0 })
+    ok(BR.Roster.get(1).hp == hpBefore,
+        'a hit on a downed player takes no health', BR.Roster.get(1).hp)
+    ok(BR.Roster.get(1).dbnoUntil
+       == before - math.floor(30.0 * BR.Config.Match.dbnoBleedPerDamage * 1000),
+        'it takes exactly dbnoBleedPerDamage seconds per point off the clock',
+        before - BR.Roster.get(1).dbnoUntil)
+
+    -- The ledger holds them above zero, which is what keeps the shooter's own
+    -- copy of them correctable rather than a permanent corpse.
+    ok(BR.Roster.get(1).hp > 0.0,
+        'a downed player is never at zero on the ledger', BR.Roster.get(1).hp)
+
+    -- AND THE SAMPLER LEAVES THAT NUMBER ALONE. Their ped is parked at the
+    -- floor and the countdown is the real health, so a client that was slow to
+    -- apply the knock -- or is simply ignoring it -- must not drag the entry
+    -- back to full and show the squad panel a downed teammate on 100hp.
+    -- (pedHealth for these players reads a healthy 200, so without the guard
+    -- one pass of roster.positions is enough to do exactly that.)
+    tick(600)
+    ok(BR.Roster.get(1).hp == BR.Config.Match.dbnoHp,
+        'and the position sampler does not overwrite it',
+        BR.Roster.get(1).hp)
+
+    -- Enough damage finishes them, and it is the FINISHER who is credited.
+    BR.Damage.applyHit(3, 1, 500.0, { weapon = 0 })
+    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+        'running the clock out with gunfire finishes them')
+    ok(BR.Roster.get(3).kills == 1,
+        'and the kill goes to whoever finished them, not whoever knocked them',
+        BR.Roster.get(3).kills)
+
+    -- THE KNOCKING BLOW IS CLAMPED ON THE WIRE, and this is the half that
+    -- cannot be seen from the ledger at all: the server's own hp lands on the
+    -- DBNO floor either way, because the knock writes it there. What the
+    -- CLIENT is told to apply to its own ped is what decides whether that ped
+    -- is still breathing when DBNO_SET arrives a moment behind it -- and an
+    -- unclamped overkill would kill it locally first, which the server would
+    -- then see and eliminate them for.
+    squadMatch(2)
+    sent = {}
+    BR.Damage.applyHit(2, 1, 500.0, { weapon = 0 })
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO, 'an overkill shot knocks')
+
+    local hit = nil
+    for _, s in ipairs(sent) do
+        if s.event == BR.Net.HIT_DAMAGE and s.target == 1 then hit = s.args[1] end
+    end
+    local ceiling = math.floor(
+        BR.ToEngineHpDelta(100.0 - BR.Config.Match.dbnoHp) + 0.5)
+    ok(hit ~= nil and hit.amount <= ceiling,
+        'and the victim is told to apply only enough to reach the DBNO floor',
+        ('told %s, ceiling %d'):format(tostring(hit and hit.amount), ceiling))
+    ok(hit ~= nil and hit.amount > 0,
+        'while still being told to apply something')
+end
+
+describe('dbno.bleedout')
+do
+    -- THE REASON downedBy EXISTS AT ALL.
+    --
+    -- attributedKiller expires at assistWindowMs (10s) and a bleed runs 15-45s,
+    -- so a player who is knocked and then simply left alone bleeds out with
+    -- nothing in the assist window at all. Crediting from lastHitBy would have
+    -- given every one of those kills to nobody -- the same shape as the "0
+    -- eliminations" summary M6 had to fix.
+    squadMatch(3)
+    BR.Combat.defeat(1, 'gunshot', 2)
+    local victim = BR.Roster.get(1)
+    ok(victim.downedBy == 2, 'the knock records who did it')
+
+    -- Walk past the assist window with nobody touching them.
+    tick(BR.Config.Match.assistWindowMs + 2000)
+    ok(BR.Combat.attributedKiller(victim) == nil,
+        'the assist window really has expired by now')
+    ok(victim.state == BR.PlayerState.DBNO, 'and they are still bleeding')
+
+    sent = {}
+    tick(BR.Config.Match.dbnoBleedBase * 1000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+        'the clock running out is the death', BR.Roster.get(1).state)
+    ok(BR.Roster.get(2).kills == 1,
+        'and the knocker is still credited, long past the assist window',
+        BR.Roster.get(2).kills)
+
+    local feed = eventsOf(BR.Net.KILL_FEED)
+    local last = feed[#feed] and feed[#feed].args[1]
+    ok(last and last.killerSrc == 2,
+        'the kill feed names them rather than showing an anonymous death',
+        tostring(last and last.killerSrc))
+    ok(last and last.cause == 'bledout', 'and says how it ended',
+        tostring(last and last.cause))
+
+    -- THE STORM BLEEDS THEM TOO, through the same conversion rather than a
+    -- second rule. A knock inside the wall is a short one.
+    squadMatch(3)
+    BR.Combat.defeat(1, 'gunshot', 2)
+    local left = BR.Roster.get(1).dbnoUntil
+    BR.Combat.bleed(1, 20.0, nil, nil)
+    ok(BR.Roster.get(1).dbnoUntil < left,
+        'storm damage takes time off the bleed')
+    ok(BR.Roster.get(1).downedBy == 2,
+        'and does NOT steal the knock from whoever put them there')
+end
+
+describe('dbno.revive')
+do
+    squadMatch(2)
+    BR.Combat.defeat(1, 'gunshot', nil)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO, 'p1 is down')
+
+    -- OUT OF REACH IS OUT OF REACH, and it is judged from the SERVER's own
+    -- position samples -- never from anything the client said.
+    setPos(2, 50.0, 0.0, 30.0)
+    BR.Roster.get(2).pos = { x = 50.0, y = 0.0, z = 30.0 }
+    fire(BR.Net.REVIVE_START, 2, { target = 1 })
+    ok(BR.Roster.get(1).reviverSrc == nil,
+        'a revive from across the street is refused')
+
+    setPos(2, 0.5, 0.0, 30.0)
+    BR.Roster.get(2).pos = { x = 0.5, y = 0.0, z = 30.0 }
+    sent = {}
+    fire(BR.Net.REVIVE_START, 2, { target = 1 })
+    ok(BR.Roster.get(1).reviverSrc == 2, 'and accepted from arm\'s length')
+    ok((lastDbno(1) or {}).reviverName == 'P2',
+        'the downed player is told somebody is coming for them')
+
+    -- Progress reaches BOTH parties: the reviver needs their ring, and the
+    -- player on the floor needs to know whether to hang on.
+    sent = {}
+    tick(1000)
+    local prog = eventsOf(BR.Net.REVIVE_PROGRESS)
+    local toReviver, toDowned = false, false
+    for _, s in ipairs(prog) do
+        if s.target == 2 then toReviver = true end
+        if s.target == 1 then toDowned = true end
+    end
+    ok(toReviver and toDowned, 'revive progress goes to both of them')
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+        'and one second is not eight')
+
+    tick(BR.Config.Match.dbnoReviveTime * 1000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.ALIVE,
+        'the full hold picks them up', BR.Roster.get(1).state)
+    ok(BR.Roster.get(1).hp == BR.Config.Match.dbnoReviveHp,
+        'at the configured health, not full', BR.Roster.get(1).hp)
+    ok(BR.Roster.get(1).dbnoUntil == nil and BR.Roster.get(1).downedBy == nil,
+        'and the knock is undone rather than paused')
+    ok(BR.Roster.get(2).revives == 1, 'the reviver is credited')
+
+    -- CANCELLED BY THE REVIVER'S OWN DAMAGE. Picking somebody up is the thing
+    -- you cannot do while being shot -- that is what the eight seconds are for.
+    squadMatch(3)
+    BR.Combat.defeat(1, 'gunshot', nil)
+    fire(BR.Net.REVIVE_START, 2, { target = 1 })
+    ok(BR.Roster.get(1).reviverSrc == 2, 'the hold starts')
+    tick(1000)
+    BR.Roster.get(2).lastHitAt = fakeTime
+    tick(300)
+    ok(BR.Roster.get(1).reviverSrc == nil,
+        'and is dropped the moment the reviver takes a hit')
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO, 'leaving them down')
+
+    -- Walking away drops it too, through the same per-tick re-check.
+    fire(BR.Net.REVIVE_START, 3, { target = 1 })
+    ok(BR.Roster.get(1).reviverSrc == 3, 'somebody else picks up the job')
+    setPos(3, 40.0, 0.0, 30.0)
+    tick(300)
+    ok(BR.Roster.get(1).reviverSrc == nil, 'walking away drops the hold')
+
+    -- FIRST HAND ON WINS: a second mate must not restart the clock.
+    squadMatch(3)
+    BR.Combat.defeat(1, 'gunshot', nil)
+    fire(BR.Net.REVIVE_START, 2, { target = 1 })
+    local startedAt = BR.Roster.get(1).reviveFrom
+    tick(1000)
+    fire(BR.Net.REVIVE_START, 3, { target = 1 })
+    ok(BR.Roster.get(1).reviverSrc == 2, 'the second mate does not take over')
+    ok(BR.Roster.get(1).reviveFrom == startedAt,
+        'and does not restart the clock')
+
+    -- Letting go stops it, and progress does not survive the release.
+    fire(BR.Net.REVIVE_STOP, 2)
+    ok(BR.Roster.get(1).reviverSrc == nil, 'releasing the key stops the revive')
+    fire(BR.Net.REVIVE_START, 2, { target = 1 })
+    ok(BR.Roster.get(1).reviveFrom == fakeTime,
+        'and starting again starts from zero')
+
+    -- A revive can never come from outside the squad, whatever the client says.
+    squadMatch(2)
+    join(9, 'Stranger')
+    BR.Roster.setState(9, BR.PlayerState.ALIVE)
+    BR.Roster.get(9).pos = { x = 0.0, y = 0.0, z = 30.0 }
+    BR.Roster.get(9).matchId = BR.Roster.get(1).matchId
+    BR.Combat.defeat(1, 'gunshot', nil)
+    fire(BR.Net.REVIVE_START, 9, { target = 1 })
+    ok(BR.Roster.get(1).reviverSrc == nil,
+        'an enemy standing over you is not a medic')
+end
+
+describe('dbno.teardown')
+do
+    -- The knock count is per MATCH. A player picked up three times last round
+    -- must start the next one on a full timer, or the shortening rule quietly
+    -- becomes a per-session punishment.
+    local m = squadMatch(2)
+    BR.Combat.defeat(1, 'gunshot', 2)
+    BR.Combat.revive(1, 2)
+    ok(BR.Roster.get(1).dbnoCount == 1, 'the knock was counted')
+
+    BR.Match.transition(m, BR.MatchState.CLEANUP)
+    ok(BR.Roster.get(1).dbnoCount == 0, 'and cleanup forgets it')
+    ok(BR.Roster.get(1).dbnoUntil == nil, 'along with any bleed still running')
+
+    -- A reviver who disconnects mid-hold does not leave the body pinned to a
+    -- player who is no longer on the server.
+    squadMatch(2)
+    BR.Combat.defeat(1, 'gunshot', nil)
+    fire(BR.Net.REVIVE_START, 2, { target = 1 })
+    ok(BR.Roster.get(1).reviverSrc == 2, 'the hold is running')
+    leave(2)
+    ok(BR.Roster.get(1).reviverSrc == nil,
+        'and the disconnect clears it rather than freezing the ring')
+end
+
 describe('loot.deathbox')
 do
     local m = lootMatch()

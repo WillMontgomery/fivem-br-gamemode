@@ -1,17 +1,24 @@
--- Elimination.
---
--- The seed of the M6 combat pipeline. For now it does the one thing M1 cannot
--- work without: turning a dead player into a dead ROSTER ENTRY, so the win
--- condition can actually fire and a match can end.
+-- Elimination, and the downed state that now sits in front of it.
 --
 -- AUTHORITY. The client reports its own death, because it is the only party that
 -- can observe it immediately. The server decides what that means, and
 -- independently confirms it by reading the player's health server-side. A client
 -- that never reports still dies; a client that reports falsely is ignored.
--- Full damage validation arrives in M6.
+--
+-- M7 PUT A DECISION IN THE MIDDLE. Running out of health used to mean one
+-- thing, so four separate paths called eliminate() directly: the validated
+-- damage path, the storm's ledger, the client's own death report and the
+-- server-observed health check. Now it can mean two things, and the difference
+-- is not a property of the path -- being shot, burned or caught by the wall all
+-- knock a squad player down and all kill a solo. So every one of those callers
+-- goes through BR.Combat.defeat instead, which is the only place the question
+-- is asked. Building it any other way is how a player ends up downable by a
+-- rifle and instantly killable by a fall.
 
 BR = BR or {}
 BR.Combat = {}
+
+local M = BR.Config.Match
 
 --- Can this player be eliminated? Dying in the lobby is not a thing.
 ---
@@ -162,6 +169,413 @@ function BR.Combat.attributedKiller(entry)
     return entry.lastHitBy
 end
 
+-- --------------------------------------------------------------------------
+-- DBNO: down, bleed, revive
+-- --------------------------------------------------------------------------
+--
+-- THE BLEED TIMER IS THE DOWNED PLAYER'S HEALTH (owner's call, 2026-08-09).
+-- There is no second health bar and no knocked-HP pool: enemy fire takes
+-- SECONDS off the clock, the storm takes seconds off the clock, and the clock
+-- reaching zero is the death. That choice is what makes the state readable from
+-- the outside -- a body still crawling has time left on it, a body that has
+-- stopped does not -- and it is why the downed player's own overlay is a
+-- countdown rather than a bar.
+--
+-- Everything below is the server's. The client is told what its state is and
+-- shows it; a client that ignores DBNO_SET entirely still bleeds out at exactly
+-- the same moment, because the ledger is here.
+
+--- How long this knock lasts, in ms.
+---
+--- Each knock in the same match is shorter (dbnoBleedStep is negative), floored
+--- at dbnoBleedMin -- so a squad cannot farm revives out of one long fight. The
+--- counter is per MATCH and is wiped with everything else at CLEANUP.
+--- @param entry table
+--- @return integer
+local function bleedMsFor(entry)
+    local n = entry.dbnoCount or 1
+    local secs = M.dbnoBleedBase + M.dbnoBleedStep * (n - 1)
+    if secs < M.dbnoBleedMin then secs = M.dbnoBleedMin end
+    return math.floor(secs * 1000)
+end
+
+--- Is there anybody who could actually come and pick this player up?
+---
+--- ALIVE, or still on canopy -- a mate mid-glide can land and revive, so they
+--- count. A DBNO mate does NOT: a squad that is entirely down has nobody left
+--- who can crawl over and hold a key, so the last knock of a wipe is a death
+--- rather than four bodies waiting out four timers with nothing to wait for.
+--- @param entry table
+--- @return boolean
+local function hasStandingMate(entry)
+    if not entry.squadId then return false end
+
+    local found = false
+    BR.Roster.each(
+        function(e)
+            return e.squadId == entry.squadId
+               and e.src ~= entry.src
+               and e.matchId == entry.matchId
+               and (e.state == BR.PlayerState.ALIVE
+                 or e.state == BR.PlayerState.FREEFALL
+                 or e.state == BR.PlayerState.GLIDE)
+        end,
+        function() found = true end)
+    return found
+end
+
+--- Would running out of health knock this player down rather than kill them?
+---
+--- Public because BR.Damage.applyHit has to ask BEFORE it writes any health:
+--- the answer changes how much damage the victim is instructed to apply to
+--- their own ped, and a knock has to leave that ped alive.
+--- @param entry table
+--- @return boolean
+function BR.Combat.canBeDowned(entry)
+    if not entry or entry.state ~= BR.PlayerState.ALIVE then return false end
+
+    local m = entry.matchId and BR.Server.matches[entry.matchId]
+    if not m then return false end
+
+    -- SQUADS ONLY, AND THE GATE IS THE MODE'S OWN FLAG (owner, 2026-08-09).
+    --
+    -- Solo has nobody who could revive you, so a knock today would only be a
+    -- slower death and a worse one. Solo DBNO is wanted LATER and is
+    -- deliberately not this milestone: it only becomes a real state once there
+    -- is something that can pick a lone player up, and that is M8d's hearse
+    -- rescue. When it arrives the switch here is `BR.Mode.SOLO.dbno = true`
+    -- plus a second answer to the question below -- which is why the two
+    -- conditions are separate rather than one "is this a squad match".
+    if not BR.ResolveMode(m.mode).dbno then return false end
+
+    return hasStandingMate(entry)
+end
+
+--- 0..1 through the revive currently being held on this player.
+--- @param entry table
+--- @return number
+local function revivePctOf(entry)
+    if not entry.reviveFrom then return 0.0 end
+    local total = (M.dbnoReviveTime or 8.0) * 1000.0
+    if total <= 0 then return 1.0 end
+    return BR.Clamp((GetGameTimer() - entry.reviveFrom) / total, 0.0, 1.0)
+end
+
+--- Tell a player what their own downed state is.
+---
+--- THE WHOLE PAYLOAD, EVERY TIME. Five fields that change on events a human
+--- causes; a merge protocol for that would be more code than the feature.
+--- @param src integer
+function BR.Combat.pushDbno(src)
+    local e = BR.Roster.get(src)
+    if not e then return end
+
+    if e.state ~= BR.PlayerState.DBNO then
+        TriggerClientEvent(BR.Net.DBNO_SET, src, { downed = false })
+        return
+    end
+
+    local by = e.downedBy and BR.Roster.get(e.downedBy) or nil
+    local r  = e.reviverSrc and BR.Roster.get(e.reviverSrc) or nil
+
+    TriggerClientEvent(BR.Net.DBNO_SET, src, {
+        downed      = true,
+        bleedEndsAt = e.dbnoUntil or 0,
+        byName      = by and by.name or nil,
+        reviverName = r and r.name or nil,
+        revivePct   = revivePctOf(e) * 100.0,
+    })
+end
+
+--- Put a player down.
+--- @param src integer
+--- @param killerSrc integer|nil
+function BR.Combat.knock(src, killerSrc)
+    local entry = BR.Roster.get(src)
+    if not entry then return end
+
+    entry.dbnoCount  = (entry.dbnoCount or 0) + 1
+    entry.dbnoUntil  = GetGameTimer() + bleedMsFor(entry)
+    entry.reviverSrc, entry.reviveFrom = nil, nil
+
+    -- WHO OWNS THE FINISH IF NOBODY EVER TOUCHES THEM AGAIN, and this is the
+    -- trap the whole field exists for. BR.Combat.attributedKiller expires at
+    -- assistWindowMs (10s) and a bleed runs 15-45s, so a player who is knocked
+    -- and simply left alone would be credited to nobody -- the same shape as
+    -- the "0 eliminations" summary M6 had to fix. downedBy does not expire: it
+    -- is cleared by a revive or by the match ending, and by nothing else.
+    if killerSrc and killerSrc ~= src then
+        entry.downedBy = killerSrc
+        local killer = BR.Roster.get(killerSrc)
+        if killer then
+            -- A KNOCK IS ITS OWN STATISTIC. It is not a kill -- the revive may
+            -- undo it -- and the summary has carried a `downs` column since M1
+            -- with nothing ever writing to it.
+            killer.downs = (killer.downs or 0) + 1
+        end
+    end
+
+    -- The ledger holds them just above zero. See dbnoHp in config/match.lua for
+    -- the two separate things that break when it is zero.
+    BR.Roster.update(src, { hp = (M.dbnoHp or 5) + 0.0, armour = 0.0 })
+    BR.Roster.setState(src, BR.PlayerState.DBNO)
+
+    BR.Combat.pushDbno(src)
+
+    -- THE SQUAD IS TOLD IN WORDS, not only in pixels. The panel stripe and the
+    -- [DOWN] gamer tag both already say this, and both require the mate to be
+    -- looking at the right thing -- which in a firefight is exactly what they
+    -- are not doing.
+    if entry.squadId then
+        BR.Roster.each(
+            function(e) return e.squadId == entry.squadId and e.src ~= src end,
+            function(mate)
+                BR.Server.notify(mate, ('%s is down.'):format(entry.name),
+                    'warn', { key = 'dbno.' .. src, ms = 6000 })
+            end)
+    end
+
+    print(('[br_core] %s (%d) is DOWN -- %.0fs to bleed out%s')
+        :format(entry.name, src, bleedMsFor(entry) / 1000.0,
+                killerSrc and (' (by %d)'):format(killerSrc) or ''))
+end
+
+--- This player has run out of health. THE one verb for it.
+---
+--- Every caller that used to reach eliminate() directly comes here instead, so
+--- "down or dead" is answered once rather than four times in four files.
+--- @param src integer
+--- @param cause string
+--- @param killerSrc integer|nil
+function BR.Combat.defeat(src, cause, killerSrc)
+    local entry = BR.Roster.get(src)
+    if not entry or not canDie(entry) then return end
+
+    if BR.Combat.canBeDowned(entry) then
+        BR.Combat.knock(src, killerSrc)
+        return
+    end
+
+    BR.Combat.eliminate(src, cause, killerSrc)
+end
+
+--- Take time off a downed player's clock.
+---
+--- The conversion is the whole model: `amount` is DISPLAY damage, exactly what
+--- would have come off a standing player's health, and dbnoBleedPerDamage turns
+--- it into seconds. Storm damage comes through here too, with no shooter -- a
+--- player knocked inside the wall bleeds out fast, which is the honest outcome
+--- and saves inventing a second rule for it.
+--- @param src integer
+--- @param amount number      display-unit damage
+--- @param shooterSrc integer|nil
+--- @param meta table|nil     { weapon }
+function BR.Combat.bleed(src, amount, shooterSrc, meta)
+    local e = BR.Roster.get(src)
+    if not e or e.state ~= BR.PlayerState.DBNO then return end
+    if not amount or amount <= 0.0 then return end
+
+    local now = GetGameTimer()
+    e.dbnoUntil = (e.dbnoUntil or now)
+                - math.floor(amount * (M.dbnoBleedPerDamage or 0.35) * 1000)
+
+    if shooterSrc and shooterSrc ~= src then
+        e.lastHitBy     = shooterSrc
+        e.lastHitAt     = now
+        e.lastHitWeapon = (meta and meta.weapon) or e.lastHitWeapon
+        -- The last person to shoot them owns the finish, whether the clock runs
+        -- out under their fire or a few seconds after they walked away.
+        e.downedBy = shooterSrc
+    end
+
+    if e.dbnoUntil <= now then
+        BR.Combat.eliminate(src, 'finished', e.downedBy)
+        return
+    end
+
+    BR.Combat.pushDbno(src)
+end
+
+-- ----------------------------------------------------------------- revive ---
+
+--- Everything that has to be true for a revive to still be running.
+---
+--- Re-checked EVERY tick rather than only when the hold starts, which is what
+--- makes the cancellation rules free: walking away, being knocked yourself,
+--- the target dying and the match ending are all just this returning false.
+--- @param reviver table|nil
+--- @param target table|nil
+--- @return boolean
+local function reviveAllowed(reviver, target)
+    if not reviver or not target then return false end
+    if reviver.state ~= BR.PlayerState.ALIVE then return false end
+    if target.state ~= BR.PlayerState.DBNO then return false end
+    if not reviver.matchId or reviver.matchId ~= target.matchId then return false end
+    if not reviver.squadId or reviver.squadId ~= target.squadId then return false end
+
+    -- MEASURED FROM THE SERVER'S OWN POSITION SAMPLES, never from anything a
+    -- client said -- the rule the loot claim already follows, with the same
+    -- slack for the same 250ms sampling skew.
+    local a, b = reviver.pos, target.pos
+    if not a or not b then return false end
+
+    local reach = (M.dbnoReviveDist or 1.5) + (M.dbnoReviveSlack or 1.0)
+    return BR.Dist3(a.x, a.y, a.z, b.x, b.y, b.z) <= reach
+end
+
+--- Stop whatever revive is running on this player. Harmless if none is.
+--- @param src integer
+--- @param entry table
+--- @param reason string|nil
+local function stopRevive(src, entry, reason)
+    local reviverSrc = entry.reviverSrc
+    if not reviverSrc then return end
+
+    entry.reviverSrc, entry.reviveFrom = nil, nil
+
+    TriggerClientEvent(BR.Net.REVIVE_PROGRESS, reviverSrc,
+        { pct = 0.0, target = src, cancelled = true, reason = reason })
+    BR.Combat.pushDbno(src)
+end
+
+--- The hold landed -- or an admin said it did.
+---
+--- Public so `/brrevive` runs the SAME path a player's eight seconds run,
+--- rather than a shortcut that could keep working while the feature does not.
+--- @param src integer
+--- @param reviverSrc integer|nil  credited with the revive; nil for an admin
+function BR.Combat.revive(src, reviverSrc)
+    local entry = BR.Roster.get(src)
+    if not entry or entry.state ~= BR.PlayerState.DBNO then return end
+
+    reviverSrc = reviverSrc or entry.reviverSrc
+    local reviver = reviverSrc and BR.Roster.get(reviverSrc) or nil
+
+    entry.reviverSrc, entry.reviveFrom = nil, nil
+    -- The knock is UNDONE, not merely paused: whoever put them down no longer
+    -- owns a finish that is not going to happen.
+    entry.dbnoUntil, entry.downedBy = nil, nil
+
+    BR.Roster.update(src, { hp = (M.dbnoReviveHp or 30) + 0.0, armour = 0.0 })
+    BR.Roster.setState(src, BR.PlayerState.ALIVE)
+
+    if reviver then
+        reviver.revives = (reviver.revives or 0) + 1
+    end
+
+    -- The server cannot write a ped, so it says what the number IS and the
+    -- client applies it -- the same contract the storm and the validated shot
+    -- already use, in absolute form rather than as a delta.
+    TriggerClientEvent(BR.Net.HEALTH_SYNC, src,
+        { hp = M.dbnoReviveHp or 30, armour = 0 })
+    BR.Combat.pushDbno(src)
+
+    if reviverSrc then
+        TriggerClientEvent(BR.Net.REVIVE_PROGRESS, reviverSrc,
+            { pct = 100.0, target = src, done = true })
+        BR.Server.notify(reviverSrc, ('You picked %s up.'):format(entry.name),
+            'success', { ms = 4000 })
+    end
+    BR.Server.notify(src,
+        reviver and ('%s picked you up.'):format(reviver.name)
+                 or 'You were revived.',
+        'success', { ms = 4000 })
+
+    print(('[br_core] %s (%d) was revived%s')
+        :format(entry.name, src, reviver and (' by ' .. reviver.name) or ''))
+end
+
+--- One downed player's share of the 250ms job.
+--- @param src integer
+--- @param entry table
+--- @param now number
+local function stepDowned(src, entry, now)
+    local reviverSrc = entry.reviverSrc
+    if reviverSrc then
+        -- THE REVIVE IS STEPPED FIRST, and the ordering is deliberate: a hold
+        -- that completes on the same tick the clock expires should save them.
+        -- They earned it, and the alternative is a player dying underneath a
+        -- full progress ring.
+        local reviver = BR.Roster.get(reviverSrc)
+
+        if not reviveAllowed(reviver, entry) then
+            stopRevive(src, entry, 'interrupted')
+
+        elseif math.max(reviver.lastHitAt or 0, reviver.lastStormAt or 0)
+               > (entry.reviveFrom or 0) then
+            -- CANCELLED BY THE REVIVER'S DAMAGE, not the downed player's.
+            -- Picking somebody up is the thing you cannot do while being shot,
+            -- which is the entire reason it takes eight seconds in the open.
+            stopRevive(src, entry, 'hurt')
+
+        else
+            local pct = revivePctOf(entry)
+            if pct >= 1.0 then
+                BR.Combat.revive(src, reviverSrc)
+                return
+            end
+            local payload = { pct = pct * 100.0, target = src,
+                              reviverName = reviver.name }
+            TriggerClientEvent(BR.Net.REVIVE_PROGRESS, reviverSrc, payload)
+            TriggerClientEvent(BR.Net.REVIVE_PROGRESS, src, payload)
+        end
+    end
+
+    if now >= (entry.dbnoUntil or 0) then
+        BR.Combat.eliminate(src, 'bledout', entry.downedBy)
+    end
+end
+
+BR.Sched.every(250, 'combat.dbno', function()
+    local now = GetGameTimer()
+    BR.Roster.each(
+        function(e) return e.state == BR.PlayerState.DBNO end,
+        function(src, entry) stepDowned(src, entry, now) end)
+end)
+
+RegisterNetEvent(BR.Net.REVIVE_START)
+AddEventHandler(BR.Net.REVIVE_START, function(data)
+    local src = source
+    local targetSrc = math.tointeger(tonumber(data and data.target))
+    if not targetSrc then return end
+
+    local reviver = BR.Roster.get(src)
+    local target  = BR.Roster.get(targetSrc)
+    if not reviveAllowed(reviver, target) then return end
+
+    -- FIRST HAND ON WINS. Two mates holding the same body is not twice as fast
+    -- and it must not restart the clock for whoever pressed second.
+    if target.reviverSrc then return end
+
+    target.reviverSrc = src
+    target.reviveFrom = GetGameTimer()
+    BR.Combat.pushDbno(targetSrc)
+end)
+
+RegisterNetEvent(BR.Net.REVIVE_STOP)
+AddEventHandler(BR.Net.REVIVE_STOP, function()
+    local src = source
+    BR.Roster.each(
+        function(e) return e.reviverSrc == src end,
+        function(tsrc, entry) stopRevive(tsrc, entry, 'released') end)
+end)
+
+--- Forget a player's DBNO bookkeeping. Called on disconnect and at match
+--- teardown: server ids are recycled, and inheriting somebody else's knock
+--- count would hand the next holder of that slot a 15-second first bleed.
+--- @param src integer
+function BR.Combat.forget(src)
+    local entry = BR.Roster.get(src)
+    if entry then
+        entry.dbnoUntil, entry.dbnoCount = nil, nil
+        entry.downedBy, entry.reviverSrc, entry.reviveFrom = nil, nil, nil
+    end
+    -- ...and anything they were in the middle of picking up.
+    BR.Roster.each(
+        function(e) return e.reviverSrc == src end,
+        function(tsrc, e) stopRevive(tsrc, e, 'gone') end)
+end
+
 --- Client-reported death. A hint, not an instruction.
 RegisterNetEvent(BR.Net.PLAYER_DIED)
 AddEventHandler(BR.Net.PLAYER_DIED, function(data)
@@ -186,7 +600,7 @@ AddEventHandler(BR.Net.PLAYER_DIED, function(data)
         cause = 'storm'
     end
 
-    BR.Combat.eliminate(src, cause, BR.Combat.attributedKiller(entry))
+    BR.Combat.defeat(src, cause, BR.Combat.attributedKiller(entry))
 end)
 
 --- Independent confirmation from server-side health.
@@ -222,7 +636,7 @@ BR.Sched.every(1000, 'combat.deathcheck', function()
             -- Attributed the same way as a client-reported death: the server's
             -- own record of who has been shooting them. A player who bleeds
             -- out from a rifle wound still credits the rifle.
-            BR.Combat.eliminate(src, cause, BR.Combat.attributedKiller(entry))
+            BR.Combat.defeat(src, cause, BR.Combat.attributedKiller(entry))
         end
     end)
 end)
@@ -238,4 +652,80 @@ RegisterCommand('brkill', function(_, args)
         return
     end
     BR.Combat.eliminate(src, 'admin', tonumber(args[2]))
+end, true)
+
+--- Knock a player down without shooting them.
+---
+--- `brdown <id>` refuses when the rules say it should -- solo, no standing
+--- squadmate, already down -- and SAYS WHICH, because "nothing happened" is
+--- indistinguishable from a bug and this is the command that will be used to
+--- decide whether DBNO is working at all.
+RegisterCommand('brdown', function(_, args)
+    local src = tonumber(args[1])
+    if not src then
+        print('  usage: brdown <serverId> [killerId]   -- knock a player down')
+        return
+    end
+
+    local entry = BR.Roster.get(src)
+    if not entry then
+        print(('  no such player: %d'):format(src))
+        return
+    end
+    if entry.state == BR.PlayerState.DBNO then
+        print(('  %s (%d) is already down'):format(entry.name, src))
+        return
+    end
+    if not BR.Combat.canBeDowned(entry) then
+        local m = entry.matchId and BR.Server.matches[entry.matchId]
+        print(('  %s (%d) cannot be downed: state %s, mode %s, standing mate %s')
+            :format(entry.name, src, entry.state,
+                    m and m.mode or 'no match',
+                    tostring(entry.squadId ~= nil)))
+        print('  (squads only, and only while a squadmate is still standing)')
+        return
+    end
+
+    BR.Combat.knock(src, tonumber(args[2]))
+end, true)
+
+--- Finish a revive on a downed player instantly, from nobody in particular.
+RegisterCommand('brrevive', function(_, args)
+    local src = tonumber(args[1])
+    local entry = src and BR.Roster.get(src)
+    if not entry then
+        print('  usage: brrevive <serverId>   -- pick a downed player back up')
+        return
+    end
+    if entry.state ~= BR.PlayerState.DBNO then
+        print(('  %s (%d) is not down (state %s)'):format(entry.name, src, entry.state))
+        return
+    end
+
+    BR.Combat.revive(src, tonumber(args[2]))
+end, true)
+
+--- Every downed player: how long they have, who put them there, who is on them.
+RegisterCommand('brdbno', function()
+    local now = GetGameTimer()
+    local n = 0
+    print('=== downed ===')
+    BR.Roster.each(
+        function(e) return e.state == BR.PlayerState.DBNO end,
+        function(src, e)
+            n = n + 1
+            local r = e.reviverSrc and BR.Roster.get(e.reviverSrc) or nil
+            print(('  %-4d %-18s match %-3s knock #%d  %.1fs left  by %s  reviver %s %s')
+                :format(src, e.name, tostring(e.matchId), e.dbnoCount or 0,
+                        ((e.dbnoUntil or now) - now) / 1000.0,
+                        tostring(e.downedBy), r and r.name or '-',
+                        e.reviveFrom and ('%.0f%%'):format(
+                            BR.Clamp((now - e.reviveFrom)
+                                     / ((M.dbnoReviveTime or 8.0) * 1000.0),
+                                     0.0, 1.0) * 100.0) or ''))
+        end)
+    if n == 0 then print('  nobody is down') end
+    print(('  bleed %ds/%d/%ds, %.2fs per damage point, revive %.1fs within %.1fm')
+        :format(M.dbnoBleedBase, M.dbnoBleedStep, M.dbnoBleedMin,
+                M.dbnoBleedPerDamage, M.dbnoReviveTime, M.dbnoReviveDist))
 end, true)

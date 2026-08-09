@@ -30,6 +30,10 @@ import type { SummaryPayload } from '../bridge/types'
 function slamText(summary: SummaryPayload): string {
   if (summary.byPlayer) return 'ELIMINATED'
   switch (summary.cause) {
+    // Nobody finished them; the clock did. Distinct from ELIMINATED on
+    // purpose -- being left on the floor and being shot are different stories,
+    // and only one of them has somebody to blame.
+    case 'bledout':   return 'BLED OUT'
     case 'storm':     return 'COOKED BY THE STORM'
     case 'fall':      return 'GRAVITY WINS'
     case 'drowned':   return 'SLEPT WITH THE FISHES'

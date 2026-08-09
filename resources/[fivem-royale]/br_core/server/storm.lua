@@ -268,6 +268,20 @@ BR.Sched.every(1000, 'storm.damage', function(dt)
                     return
                 end
 
+                -- A DOWNED PLAYER OUT HERE BLEEDS, and that is the whole of
+                -- it. The bleed timer is their health (see the DBNO section
+                -- of server/combat.lua), so the storm subtracts seconds from
+                -- it exactly as a bullet does -- one rule rather than a
+                -- second, parallel notion of storm health for downed
+                -- players. No STORM_DAMAGE is sent: their ped is held at the
+                -- ledger floor and the accelerating countdown on their own
+                -- screen is the feedback.
+                if e.state == BR.PlayerState.DBNO then
+                    e.lastStormAt = now
+                    BR.Combat.bleed(src, dps * dtSec, nil, nil)
+                    return
+                end
+
                 -- THE LEDGER. Seeded from the sampled display hp, then
                 -- decremented server-side every tick they spend outside.
                 -- min() with the sample keeps it honest when the player is
@@ -299,7 +313,10 @@ BR.Sched.every(1000, 'storm.damage', function(dt)
                 if display <= 0 then
                     print(('[br_core] storm: ledger kill on %s (%d)')
                         :format(e.name, src))
-                    BR.Combat.eliminate(src, 'storm', nil)
+                    -- defeat(), not eliminate(): the wall knocks a squad
+                    -- player down like anything else does. It is a bad place
+                    -- to be picked up, which is the point.
+                    BR.Combat.defeat(src, 'storm', nil)
                 end
             end)
     end)
