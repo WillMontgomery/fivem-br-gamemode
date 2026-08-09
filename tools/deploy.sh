@@ -92,23 +92,47 @@ say() { echo "${DIM}==${RST} $*"; }
 # commit against the real path, where a failure is a red build rather than a
 # server that will not deploy.
 
+# The resources without which the server does not function. Deliberately SHORT,
+# and deliberately not "every resource we currently ship".
+#
+# It used to list every resource, and that broke the first deploy after a new
+# one was added: deploy.sh runs from whatever checkout is on the box while
+# deploying whatever is on the target branch, so the script's idea of the
+# resource list and the payload's actual contents are two different versions
+# that drift the moment either changes. A required-file list is a version
+# coupling pretending to be a safety check.
+#
+# So this names only what has been required since M0 and would be a genuine
+# emergency to lose. Everything else is validated STRUCTURALLY below, which
+# needs no list and cannot drift.
+CORE_RESOURCES="br_lib br_core br_ui"
+
 check_payload() {
     local group="$1"
 
     [ -d "$group" ] || die "expected $group -- wrong branch, or the layout moved"
 
-    local f
-    for f in \
-        "$group/br_lib/fxmanifest.lua" \
-        "$group/br_core/fxmanifest.lua" \
-        "$group/br_ui/fxmanifest.lua" \
-        "$group/br_ui/ui/index.html" \
-        "$group/br_ringmaster/fxmanifest.lua"
-    do
-        [ -f "$f" ] || die "missing from the payload: $f
-  If it is the ui/ bundle, someone committed UI source without rebuilding.
-  On a dev machine:  cd ui-src && npm run build && git add ../resources && git commit"
+    local r
+    for r in $CORE_RESOURCES; do
+        [ -f "$group/$r/fxmanifest.lua" ] \
+            || die "core resource missing from the payload: $r/fxmanifest.lua
+  The server cannot run without it. Wrong branch, or a half-finished sync."
     done
+
+    [ -f "$group/br_ui/ui/index.html" ] || die "missing from the payload: br_ui/ui/index.html
+  Someone committed UI source without rebuilding.
+  On a dev machine:  cd ui-src && npm run build && git add ../resources && git commit"
+
+    # Structural, and this is the check that actually scales: anything sitting
+    # in the resource group has to BE a resource. Catches a half-synced tree, a
+    # directory left behind by a rename, and a new resource whose manifest was
+    # never committed -- without anybody maintaining a list.
+    local d
+    while IFS= read -r d; do
+        [ -f "$d/fxmanifest.lua" ] \
+            || die "$(basename "$d") is in the resource group but has no fxmanifest.lua
+  FiveM will not load it, and its presence suggests a half-finished sync."
+    done < <(find "$group" -mindepth 1 -maxdepth 1 -type d)
 
     # The UI bundle is the file most likely to be stale or absent, and its
     # absence produces a server that starts cleanly and shows a blank screen.
