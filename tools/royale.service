@@ -24,10 +24,11 @@ Documentation=https://github.com/WillMontgomery/fivem-br-gamemode
 After=network-online.target
 Wants=network-online.target
 
-# MariaDB is optional -- br_stats disables itself cleanly without it -- so this
-# is Wants, not Requires. A database that fails to start must not stop the game.
-Wants=mariadb.service
-After=mariadb.service
+# NO DATABASE DEPENDENCY, deliberately. There is no MariaDB ordering here even
+# though br_stats can use one: nothing in the game reads it today, and M7b is
+# moving persistence to DynamoDB entirely. `Wants=mariadb.service` would not
+# merely order against it -- it would START it -- which is how a dependency
+# nobody needs quietly becomes one nobody can remove.
 
 [Service]
 Type=simple

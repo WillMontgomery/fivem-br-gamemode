@@ -37,8 +37,8 @@ Description=FiveM Royale (FXServer, under tmux)
 Documentation=https://github.com/WillMontgomery/fivem-br-gamemode
 After=network-online.target
 Wants=network-online.target
-Wants=mariadb.service
-After=mariadb.service
+
+# No database dependency -- see the note in royale.service.
 
 [Service]
 Type=forking

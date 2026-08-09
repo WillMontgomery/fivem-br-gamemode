@@ -8,11 +8,16 @@ Target: **Legacy FiveM** (standard FXServer Linux artifacts) on Ubuntu.
 
 ```bash
 sudo apt update
-sudo apt install -y curl xz-utils rsync mariadb-server
+sudo apt install -y curl xz-utils rsync
 ```
 
-`tmux` is deliberately not in that list any more — the server runs under
-systemd (see below), and tmux is only needed for the fallback unit.
+Two things that used to be in that list and are not any more:
+
+- **`tmux`** — the server runs under systemd now (see below). tmux is needed
+  only for the fallback unit.
+- **`mariadb-server`** — **do not install it on a new host.** Nothing in the
+  game reads a database today, and M7b moves persistence to DynamoDB outright.
+  Section 2 below is kept for the existing host and is on its way out.
 
 ### FXServer artifacts
 
@@ -83,7 +88,13 @@ silently pull new code. Sync with `tools/deploy.sh`, then restart:
 
 ---
 
-## 2. Database — optional, and skippable on first boot
+## 2. Database — legacy, and on its way out
+
+> **Skip this section on a new host.** Nothing in the game reads a database
+> today, and **M7b replaces this entire section with DynamoDB.** It is kept
+> only for the existing server, which still has MariaDB installed from an
+> earlier setup. Do not build anything new against it, and do not install
+> MariaDB anywhere it is not already running.
 
 **You do not need this to run a match.** `br_stats` checks at runtime whether
 oxmysql is available and disables itself cleanly if not, printing why. Gameplay
