@@ -184,6 +184,10 @@ BR.Nui = {
     -- change when a human drags a slider, and a merge protocol for that would
     -- be more code than the feature.
     SETTINGS  = 'settings',
+    -- The character roster and which one is on. Pushed on ready and after
+    -- every successful swap -- the page never assumes an apply worked, since
+    -- a model that fails to stream leaves you wearing the old one.
+    LOCKER    = 'locker',
 }
 
 --- NUI -> Lua callback names, namespaced. Every one of these MUST resolve on
@@ -222,6 +226,11 @@ BR.NuiCb = {
     -- RegisterKeyMapping bindings and they are rebound THERE -- a rebinder in
     -- CEF would be a second, disagreeing source of truth.
     KEYBINDS     = 'br/settings/keybinds',
+    -- The locker. PICK swaps the model; SPIN turns the ped in place while the
+    -- camera holds still. Both forwarded to br_core, which owns the ped.
+    LOCKER_PICK  = 'br/locker/pick',
+    LOCKER_SPIN  = 'br/locker/spin',
+    LOCKER_FOCUS = 'br/locker/focus',
 }
 
 BR.NUI_ENVELOPE_VERSION = 1

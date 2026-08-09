@@ -14,7 +14,7 @@ import type {
   ChatMessage, DbnoPayload, FeedEntry, FocusPayload, HudPayload,
   InvPayload, InvitePayload, LobbyPayload, MatchPayload, ScreenPayload,
   SpectatePayload, SquadPayload, StormPayload, SummaryPayload,
-  SettingsPayload, ToastPayload, WireInvPayload,
+  LockerPayload, SettingsPayload, ToastPayload, WireInvPayload,
 } from '../bridge/types'
 import { applySettings, DEFAULT_SETTINGS } from '../settings/apply'
 
@@ -58,6 +58,11 @@ export interface UiState {
    *  value the game clamped visibly snaps rather than sitting here as a
    *  number that was never stored. */
   settings: SettingsPayload
+
+  /** The character roster, from Lua. Empty until it pushes -- the locker
+   *  button is hidden rather than showing an empty list, because a screen
+   *  that opens onto nothing reads as broken. */
+  locker: LockerPayload
 
   /** Real screen metrics from the game -- including the minimap rectangle the
    *  bars, chat and notices anchor to. Null in the browser dev harness until
@@ -124,6 +129,7 @@ export interface UiState {
   pushChat: (c: ChatMessage) => void
   pushNotice: (t: ToastPayload) => void
   setSettings: (s: SettingsPayload) => void
+  setLocker: (l: LockerPayload) => void
   openChat: (channel: ChatMessage['channel']) => void
   closeChat: () => void
   hydrate: (s: {
@@ -312,6 +318,7 @@ export const useUi = create<UiState>((set, get) => {
   pendingNotices: [],
   focus: 'none',
   settings: DEFAULT_SETTINGS,
+  locker: { peds: [], chosen: '' },
   lobby: null,
   screen: null,
   scoped: false,
@@ -453,6 +460,8 @@ export const useUi = create<UiState>((set, get) => {
     applySettings(settings)
     set({ settings })
   },
+  setLocker: (locker) => set({ locker }),
+
   openChat:  (chatChannel) => set({ chatOpen: true, chatChannel }),
   closeChat: () => set({ chatOpen: false }),
 

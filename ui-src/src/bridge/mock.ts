@@ -21,6 +21,18 @@ export function emit<E extends Envelope>(env: E): void {
   dispatch({ t: 'br', v: 1, s: ++seq, ...env } as WireEnvelope)
 }
 
+/** Mirrors br_lib/config/peds.lua closely enough to lay the screen out. */
+const MOCK_PEDS = [
+  { id: 'streetguy', name: 'Street' }, { id: 'streetgirl', name: 'Downtown' },
+  { id: 'hiker', name: 'Hiker' },      { id: 'runner', name: 'Runner' },
+  { id: 'biker', name: 'Biker' },      { id: 'mechanic', name: 'Mechanic' },
+  { id: 'pilot', name: 'Pilot' },      { id: 'diver', name: 'Diver' },
+  { id: 'trooper', name: 'Trooper' },  { id: 'agent', name: 'Agent' },
+  { id: 'chef', name: 'Chef' },        { id: 'clown', name: 'Clown' },
+  { id: 'juggalo', name: 'Juggalo' },  { id: 'surfer', name: 'Surfer' },
+  { id: 'exec', name: 'Executive' },   { id: 'yeti', name: 'Yeti' },
+]
+
 /** Stand-in for Lua callbacks while running in a browser. */
 export async function mockFetch<Res>(name: CallbackName, data?: unknown): Promise<Res> {
   // eslint-disable-next-line no-console
@@ -45,9 +57,20 @@ export async function mockFetch<Res>(name: CallbackName, data?: unknown): Promis
   // this the browser's Settings button would open nothing at all -- and the
   // difference between "the button is broken" and "the mock does not answer"
   // is not visible from the screen.
-  if (name === 'br/settings/focus') {
+  if (name === 'br/settings/focus' || name === 'br/locker/focus') {
     const open = (data as { open?: boolean } | undefined)?.open === true
-    emit({ k: 'focus', d: { screen: open ? 'settings' : 'lobby' } })
+    const screen = name === 'br/locker/focus' ? 'locker' : 'settings'
+    emit({ k: 'focus', d: { screen: open ? screen : 'lobby' } })
+    return { ok: true } as Res
+  }
+
+  // Picking a character has no ped to swap in a browser, so the harness does
+  // the one part it CAN: echo the new roster. Without it the selection never
+  // moves and the list looks like it is ignoring clicks -- which is exactly
+  // the bug this screen would have if the Lua push were forgotten.
+  if (name === 'br/locker/pick') {
+    const id = String((data as { id?: string } | undefined)?.id ?? '')
+    emit({ k: 'locker', d: { peds: MOCK_PEDS, chosen: id } })
     return { ok: true } as Res
   }
 
@@ -85,6 +108,11 @@ const NAMES = ['Kestrel', 'Vandal', 'Nyx', 'Rook', 'Ember', 'Halcyon', 'Wraith']
 /** Seed a plausible mid-match state and keep it moving. */
 export function startMockDriver(): void {
   const now = Date.now()
+
+  // Lua pushes this on br:ui:ready, and the lobby hides its Character button
+  // until it arrives -- so a harness that never sends it is a harness where
+  // the locker cannot be opened at all.
+  emit({ k: 'locker', d: { peds: MOCK_PEDS, chosen: 'streetguy' } })
 
   emit({
     k: 'snapshot',

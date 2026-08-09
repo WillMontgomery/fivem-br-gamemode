@@ -218,6 +218,18 @@ callback(BR.NuiCb.SFX, function(data)
     return { ok = true }
 end)
 
+-- The locker is a lobby screen and the lobby already holds the cursor -- but
+-- it goes on the focus stack anyway, so the same one rule ("the screen is up
+-- because Lua says it owns the cursor") governs every menu in the project.
+callback(BR.NuiCb.LOCKER_FOCUS, function(data)
+    if data.open then
+        pushFocus('locker')
+    else
+        popFocus('locker')
+    end
+    return { ok = true }
+end)
+
 callback(BR.NuiCb.PAUSE, function()
     popFocus('lobby')
     TriggerEvent('br:ui:pauseRequest')
@@ -236,6 +248,9 @@ for _, name in ipairs({
     BR.NuiCb.SQUAD_JOINREQ, BR.NuiCb.SQUAD_JOINRESP,
     BR.NuiCb.SQUAD_KICK, BR.NuiCb.SQUAD_LEAVE,
     BR.NuiCb.INV_SWAP, BR.NuiCb.INV_DROP, BR.NuiCb.INV_USE, BR.NuiCb.INV_SELECT,
+    -- The locker changes the PED, which is br_core's to own -- br_ui owns the
+    -- page and the callbacks, br_core owns what they mean.
+    BR.NuiCb.LOCKER_PICK, BR.NuiCb.LOCKER_SPIN,
 }) do
     callback(name, function(data)
         TriggerEvent('br:ui:action', name, data)

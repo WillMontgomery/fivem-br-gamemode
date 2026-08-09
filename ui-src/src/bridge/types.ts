@@ -393,9 +393,24 @@ export interface SettingsPayload {
   gamertag: string
 }
 
+/**
+ * The character roster.
+ *
+ * NAMES ONLY, NO ARTWORK. This project is vanilla-assets-only, so there is no
+ * thumbnail set to ship and nothing to draw a grid of portraits from -- which
+ * is exactly why the locker shows the REAL ped in the world instead of a
+ * preview pane. The list is the index; the character standing in front of the
+ * camera is the picture.
+ */
+export interface LockerPayload {
+  peds: { id: string; name: string }[]
+  chosen: string
+}
+
 /** Which screen currently owns NUI focus. Lua is the authority. */
 export interface FocusPayload {
-  screen: 'none' | 'lobby' | 'squad' | 'inventory' | 'summary' | 'chat' | 'settings'
+  screen: 'none' | 'lobby' | 'squad' | 'inventory' | 'summary' | 'chat'
+        | 'settings' | 'locker'
   /** Which channel a chat focus should open in. Rides along here rather than
    *  needing its own envelope kind. */
   channel?: ChatChannel
@@ -434,6 +449,7 @@ export type Envelope =
   | { k: 'invite';   d: InvitePayload }
   | { k: 'leaving';  d: { show: boolean } }
   | { k: 'settings'; d: SettingsPayload }
+  | { k: 'locker';   d: LockerPayload }
 
 export type EnvelopeKind = Envelope['k']
 
@@ -463,6 +479,9 @@ export const CB = {
   SETTINGS_SAVE:  'br/settings/save',
   SETTINGS_FOCUS: 'br/settings/focus',
   KEYBINDS:       'br/settings/keybinds',
+  LOCKER_PICK:    'br/locker/pick',
+  LOCKER_SPIN:    'br/locker/spin',
+  LOCKER_FOCUS:   'br/locker/focus',
   ERROR:        'br/err',
   ENV:          'br/ui/env',
 } as const

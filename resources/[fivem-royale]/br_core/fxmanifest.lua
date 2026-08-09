@@ -27,6 +27,7 @@ shared_scripts {
     '@br_lib/config/weapons.lua',
     '@br_lib/config/loot.lua',
     '@br_lib/config/audio.lua',
+    '@br_lib/config/peds.lua',      -- the locker roster; reads BR.Config
     '@br_lib/shared/storm_solve.lua',
     '@br_lib/shared/combat_solve.lua',
     '@br_lib/shared/loot_gen.lua',  -- reads the loot/weapon/map config at call time
@@ -41,6 +42,7 @@ client_scripts {
     'client/screen.lua',
     'client/spawn.lua',
     'client/lobbycam.lua',  -- reads BR.Spawn.traveling; must follow spawn.lua
+    'client/locker.lua',    -- the ped in that shot; needs BR.Native (natives.lua)
     'client/gamerules.lua',
     'client/state.lua',
     'client/stamina.lua',   -- needs BR.State (state.lua) and the loops

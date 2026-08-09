@@ -11,6 +11,7 @@ import LeaveScreen from './screens/LeaveScreen'
 import InventoryPanel from './screens/InventoryPanel'
 import Notices from './hud/Notices'
 import Settings from './screens/Settings'
+import Locker from './screens/Locker'
 
 /**
  * Root.
@@ -61,6 +62,7 @@ export default function App() {
   // mid-match hands CEF a fresh page at default scale, and without a re-push
   // the player's interface would silently revert for the rest of the session.
   useNuiEvent('settings', (d) => s.setSettings(d))
+  useNuiEvent('locker',   (d) => s.setLocker(d))
 
   // Lua owns focus. When it hands focus to chat, the input opens; when it takes
   // focus away, the input closes. The UI never decides this on its own.
@@ -184,6 +186,10 @@ export default function App() {
           player ends up with a menu they cannot click or a cursor over no
           menu. Both routes in ask Lua; neither opens it locally. */}
       {s.focus === 'settings' && <Settings />}
+      {/* The locker is the lobby wearing a different panel: the camera and
+          the ped are already there, so this screen is a list and a scrim.
+          Same focus rule as everything else. */}
+      {s.focus === 'locker' && <Locker />}
       {/* The safe-area outline is a SETTING, not a screen: it belongs over
           everything the player is trying to judge against it, including the
           settings screen that turned it on. */}

@@ -33,6 +33,7 @@ export default function Lobby({ visible }: { visible: boolean }) {
   // When Lua flips it, two 700ms fades run together: the menu fades IN
   // while the opaque backdrop fades OUT to the world.
   const worldReady = useUi((s) => s.worldReady)
+  const locker = useUi((s) => s.locker)
   const [queued, setQueued] = useState(false)
   const [mode, setMode] = useState<'solo' | 'squad'>('solo')
 
@@ -299,6 +300,19 @@ export default function Lobby({ visible }: { visible: boolean }) {
             where a button belongs -- and there was nowhere at all to reach
             interface scale, colourblind modes or volume. */}
         <div className="mt-6 flex gap-2">
+          {/* HIDDEN UNTIL LUA HAS SENT A ROSTER, rather than opening onto an
+              empty list -- a screen with nothing in it reads as broken, and
+              the push arrives within a frame of the interface being alive. */}
+          {locker.peds.length > 0 && (
+            <Btn
+              variant="ghost"
+              size="sm"
+              cue="ui.select"
+              onPress={() => { void fetchNui(CB.LOCKER_FOCUS, { open: true }) }}
+            >
+              Character
+            </Btn>
+          )}
           <Btn
             variant="ghost"
             size="sm"
