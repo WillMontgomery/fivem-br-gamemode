@@ -219,8 +219,26 @@ BR.Keys.actions = {
 
 local KVP = 'br:keys'
 
---- command -> virtual-key code. Nothing in here means "use the default".
+--- command -> virtual-key code, or FALSE for "deliberately on no key".
+---
+--- `false` and `nil` are different answers and the difference is load-bearing.
+--- nil means nobody has said anything, so the default applies; false means the
+--- player cleared it, or it lost a conflict to another action -- and that has
+--- to SURVIVE A RESTART. It did not: the table was rebuilt from the KVP and
+--- then every missing entry was filled in from DEFAULT_VK, so a command that
+--- had been unbound came back on its default key the next session -- straight
+--- back onto the key that took it from it. Rebind interact to R once and both
+--- interact and USE end up on R after a reload, quietly, with the settings
+--- screen showing exactly that and no way to read it as a bug.
 local vk = nil
+
+--- Commands the player has an OPINION about -- rebound or cleared.
+---
+--- Separate from `vk` because "we own this binding" is a different question
+--- from "what key is it": the world prompts need to know whether to trust our
+--- answer or the engine's, and a command sitting on its default is one we have
+--- no more claim to than the engine does.
+local chosen = {}
 
 --- The virtual-key codes for the DEFAULT keys above, so the raw layer can
 --- reproduce them for a player who has never rebound anything.
@@ -245,8 +263,17 @@ local function load()
         local ok, res = pcall(json.decode, raw)
         if ok and type(res) == 'table' then
             for _, b in ipairs(BR.Keys.bindings) do
-                local v = tonumber(res[b.command])
-                if v then vk[b.command] = v end
+                local stored = res[b.command]
+                -- 0 and false both mean "cleared". 0 is what the settings
+                -- screen sends for the × button and what older saves hold;
+                -- false is what this writes now. Both have to read back as an
+                -- explicit choice, not as silence.
+                if stored == false or stored == 0 then
+                    vk[b.command], chosen[b.command] = false, true
+                else
+                    local v = tonumber(stored)
+                    if v then vk[b.command], chosen[b.command] = v, true end
+                end
             end
         end
     end
@@ -260,7 +287,10 @@ end
 function BR.Keys.push()
     local out = {}
     for _, b in ipairs(BR.Keys.bindings) do
-        local code = load()[b.command]
+        -- `or nil` folds the "deliberately unbound" false into absent: the
+        -- screen draws both as "Unbound", and the wire should not carry a
+        -- boolean in a field typed as a number.
+        local code = load()[b.command] or nil
         out[#out + 1] = {
             group   = b.group,
             command = b.command,
@@ -305,11 +335,28 @@ end
 --- the world went on saying E (user, 2026-08-09).
 --- @param command string
 --- @return string|nil
+--- @return string|nil label
+--- @return boolean owned  true when this answer is ours and there is no
+---                        sensible fallback -- an unbound action has NO key,
+---                        and naming the engine's stale default for it is a
+---                        prompt that lies.
 function BR.Keys.labelFor(command)
-    if not BR.Keys.rawActive then return nil end
+    -- OURS WHENEVER WE HAVE AN OPINION, not only while the raw layer runs.
+    --
+    -- The gate used to be `rawActive` alone, which left a gap with teeth: if
+    -- the raw layer is off, every rebind still lands in the KVP and is still
+    -- what the settings screen draws -- so the screen said one key and the
+    -- world prompts said whatever the engine remembered, and the two openly
+    -- disagreed (user, 2026-08-09: "the loot and crates still show R"). One
+    -- table answers both, or they drift apart again.
+    --
+    -- The engine keeps the last word for a command nobody has touched, which
+    -- is the case where it genuinely knows more than we do: a player who
+    -- rebinds in GTA's own list has changed something we never see.
+    if not (BR.Keys.rawActive or chosen[command]) then return nil end
     local code = load()[command]
-    if not code then return nil end
-    return BR.Keys.vkName(code) or ('#' .. code)
+    if not code then return nil, chosen[command] == true end
+    return BR.Keys.vkName(code) or ('#' .. code), true
 end
 
 --- Bind one command to one virtual-key code, or to nothing.
@@ -331,10 +378,17 @@ function BR.Keys.set(command, code)
     -- one lost it. Refusing instead would send the player hunting.
     if code then
         for c, v in pairs(vk) do
-            if c ~= command and v == code then vk[c] = nil end
+            -- FALSE, NOT NIL. Nil is "no opinion", and no opinion means the
+            -- default comes back on the next restart -- onto the very key
+            -- that just took this one, so the two collide again and the
+            -- player has no way to see why.
+            if c ~= command and v == code then
+                vk[c], chosen[c] = false, true
+            end
         end
     end
-    vk[command] = code
+    vk[command] = code or false
+    chosen[command] = true
 
     local store = {}
     for c, v in pairs(vk) do store[c] = v end
@@ -424,7 +478,7 @@ end)
 
 RegisterCommand('brkeys', function(_, args)
     if args[1] == 'reset' then
-        vk = nil
+        vk, chosen = nil, {}
         DeleteResourceKvp(KVP)
         load()
         BR.Keys.push()

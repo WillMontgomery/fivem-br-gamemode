@@ -65,16 +65,32 @@ RegisterNUICallback(BR.NuiCb.PAUSE_ACTION, function(data, cb)
         -- argued about: `brmapmode frontend <pageId>` to try it, `brmapmode
         -- bigmap` to come back. The page ids are the list you linked; nothing
         -- here guesses one.
-        if BR.Pause.mapMode == 'frontend' then
+        if BR.Pause.mapMode == 'frontend' or BR.Pause.mapMode == 'fullscreen' then
+            -- PAUSE_TOGGLE_FULLSCREEN_MAP (0x2DE6C5E2E996F178, "toggles pause
+            -- menu map rendering") is the closest thing anyone has to the
+            -- native you were actually asking for, and it is worth trying two
+            -- ways rather than one: `fullscreen` calls it ALONE, on the chance
+            -- it draws the map with no frontend at all, and `frontend` calls
+            -- it alongside ActivateFrontendMenu, where it is documented to
+            -- belong. pcall because a native this obscure is exactly the kind
+            -- that is missing from a build, and a missing one must not take
+            -- the pause menu down with it.
             BR.Pause.close()
+            local frontend = BR.Pause.mapMode == 'frontend'
             Citizen.SetTimeout(200, function()
-                ActivateFrontendMenu(GetHashKey('FE_MENU_VERSION_SP_PAUSE'), false, -1)
-                if BR.Pause.mapPage then
-                    Citizen.SetTimeout(150, function()
-                        PauseMenuceptionGoDeeper(BR.Pause.mapPage)
-                    end)
+                local ok, err = pcall(PauseToggleFullscreenMap, true)
+                print(('[br_ui] map: PauseToggleFullscreenMap(true) %s')
+                    :format(ok and 'ok' or ('FAILED ' .. tostring(err))))
+                if frontend then
+                    ActivateFrontendMenu(GetHashKey('FE_MENU_VERSION_SP_PAUSE'), false, -1)
+                    if BR.Pause.mapPage then
+                        Citizen.SetTimeout(150, function()
+                            PauseMenuceptionGoDeeper(BR.Pause.mapPage)
+                        end)
+                    end
                 end
             end)
+            BR.Pause.fullscreenMap = true
             cb({ ok = true })
             return
         end
@@ -92,9 +108,16 @@ RegisterNUICallback(BR.NuiCb.PAUSE_ACTION, function(data, cb)
         -- gameplay, with no frontend, no tabs and no pause. It is what every
         -- resource that wants "just the map" actually uses, and it is better
         -- than what was asked for -- the world keeps running underneath.
+        --
+        -- IT EXPANDS THE MINIMAP, which is the catch: br_core turns the radar
+        -- off in the lobby, so calling this from here worked exactly as
+        -- documented on a minimap that was not being drawn, and the button
+        -- looked dead (user, 2026-08-09). br_core owns the radar, so br_core
+        -- owns this -- one place decides whether the map is on screen.
         BR.Pause.close()
-        SetBigmapActive(true, true)
+        TriggerEvent('br:map:big', true)
         BR.Pause.bigmap = true
+        print('[br_ui] map: big map on')
         cb({ ok = true })
         return
     end
@@ -129,8 +152,16 @@ AddEventHandler('br:ui:pauseToggle', function()
     -- live gameplay with no cursor and no menu, so without this the only way
     -- back would be a key the player has not been told about.
     if BR.Pause.bigmap then
-        SetBigmapActive(false, false)
+        TriggerEvent('br:map:big', false)
         BR.Pause.bigmap = false
+        return
+    end
+    -- Same rule for the frontend routes: whatever the map key turned on, the
+    -- map key turns off. A player should never have to know WHICH native drew
+    -- the thing in front of them to get rid of it.
+    if BR.Pause.fullscreenMap then
+        pcall(PauseToggleFullscreenMap, false)
+        BR.Pause.fullscreenMap = false
         return
     end
     if open then BR.Pause.close() else BR.Pause.open() end
@@ -152,7 +183,7 @@ BR.Pause.mapPage = nil
 
 RegisterCommand('brmapmode', function(_, args)
     local mode = tostring(args[1] or '')
-    if mode == 'frontend' or mode == 'bigmap' then
+    if mode == 'frontend' or mode == 'bigmap' or mode == 'fullscreen' then
         BR.Pause.mapMode = mode
         BR.Pause.mapPage = tonumber(args[2])
         print(('[br_ui] map mode: %s%s'):format(mode,
@@ -162,9 +193,10 @@ RegisterCommand('brmapmode', function(_, args)
     print('=== map mode ===')
     print(('  mode: %s'):format(tostring(BR.Pause.mapMode)))
     print(('  page: %s'):format(tostring(BR.Pause.mapPage)))
-    print('  bigmap   -- SetBigmapActive: full map over live gameplay, no frontend')
-    print('  frontend -- ActivateFrontendMenu, optionally + PauseMenuceptionGoDeeper')
-    print('  usage: brmapmode bigmap | brmapmode frontend [pageId]')
+    print('  bigmap     -- SetBigmapActive: full map over live gameplay, no frontend')
+    print('  frontend   -- PauseToggleFullscreenMap + ActivateFrontendMenu [+ GoDeeper]')
+    print('  fullscreen -- PauseToggleFullscreenMap alone, no frontend at all')
+    print('  usage: brmapmode bigmap | fullscreen | frontend [pageId]')
 end, false)
 
 -- The page can be closed from under us: a match ending, a br_core restart,
@@ -180,7 +212,7 @@ AddEventHandler('onResourceStop', function(res)
     -- A big map left active would survive this resource and there would be
     -- nothing left listening for the key that closes it.
     if BR.Pause.bigmap then
-        SetBigmapActive(false, false)
+        TriggerEvent('br:map:big', false)
         BR.Pause.bigmap = false
     end
 end)

@@ -170,8 +170,14 @@ function BR.Native.keyLabelForCommand(command, fallbackControl)
     -- 2026-08-09). BR.Keys is the authority whenever it is running, and
     -- returns nil when it is not, so the engine lookup stays the answer for
     -- exactly the builds that still rely on it.
-    local mine = BR.Keys and BR.Keys.labelFor and BR.Keys.labelFor(command)
+    local mine, owned
+    if BR.Keys and BR.Keys.labelFor then mine, owned = BR.Keys.labelFor(command) end
     if mine then return mine, 'raw' end
+    -- OWNED AND EMPTY IS AN ANSWER. If the player has deliberately cleared
+    -- this action, it is on no key -- and falling through to the engine would
+    -- print the default they just removed, which is the exact failure this
+    -- lookup exists to avoid, only quieter.
+    if owned then return nil, 'unbound' end
 
     for _, name in ipairs({ '+' .. command, command }) do
         local id = (GetHashKey(name) | 0x80000000) & 0xFFFFFFFF
@@ -190,6 +196,44 @@ function BR.Native.keyLabelForCommand(command, fallbackControl)
     local fb = fallbackControl and BR.Native.keyLabel(fallbackControl) or nil
     return fb, fb and 'vanilla' or nil
 end
+
+--- THE BIG MAP, and it lives here because the RADAR lives here.
+---
+--- SET_BIGMAP_ACTIVE is not a menu -- it expands the minimap into the
+--- full-screen map GTA Online uses, drawn over live gameplay with no frontend
+--- and no pause. Which means it is subject to DisplayRadar, and the per-frame
+--- rule above turns the radar OFF in the lobby: the map button was calling a
+--- native that worked perfectly on a minimap that was not being drawn (user,
+--- 2026-08-09: "the map button still does nothing at all"). Owning both in one
+--- place is what stops that happening again.
+---
+--- br_ui asks via `br:map:big`; it owns the page and the key, this owns what
+--- the screen actually does.
+--- @param on boolean
+function BR.Native.setBigmap(on)
+    on = on == true
+    if BR.Native.bigmap == on then return end
+    BR.Native.bigmap = on
+
+    -- The radar has to be up BEFORE the expansion, or there is nothing to
+    -- expand -- so grant it here rather than waiting for the frame loop.
+    if on then DisplayRadar(true) end
+    SetBigmapActive(on, on)
+
+    if on then
+        -- A full-screen map with no cursor and no menu needs to say how to
+        -- leave, and it has to name the player's OWN key -- the whole point
+        -- of the rebinder is that F1 is a default, not a fact.
+        local key = (BR.Keys and BR.Keys.labelFor and BR.Keys.labelFor('brpausemenu'))
+        BR.Notify(key and ('Press %s to close the map'):format(key)
+                       or 'Press the pause key to close the map',
+                  'info', { key = 'map.big', sticky = true })
+    else
+        BR.NotifyClear('map.big')
+    end
+end
+
+AddEventHandler('br:map:big', function(on) BR.Native.setBigmap(on == true) end)
 
 -- BR.Native.worldToScreen was deleted with the NUI loot prompt.
 --
@@ -503,9 +547,15 @@ function BR.Native.applyGameRules()
     -- so keying the radar on state alone popped the minimap up at the top of
     -- the fade and left it sitting on a black screen for the whole teleport
     -- (user, 2026-08-09). The trip owns the screen until it says otherwise.
-    DisplayRadar(st ~= BR.PlayerState.LOBBY and st ~= BR.PlayerState.BUS
+    -- ...and the BIG MAP OVERRIDES ALL OF IT, because SetBigmapActive expands
+    -- the MINIMAP -- it is the radar, made full-screen. With DisplayRadar
+    -- false, which is exactly the lobby, the map button opened nothing at all
+    -- and looked broken (user, 2026-08-09). The radar is decided here, once a
+    -- frame, so this is the only place that can grant it.
+    DisplayRadar(BR.Native.bigmap
+        or (st ~= BR.PlayerState.LOBBY and st ~= BR.PlayerState.BUS
         and not (BR.Spawn and BR.Spawn.traveling)
-        and not (BR.Screen and BR.Screen.scoped))
+        and not (BR.Screen and BR.Screen.scoped)))
 
     -- GTA's own feed ("X joined", "Y died", weapon unlocks, whatever any other
     -- resource posts). The gamemode owns its presentation -- eliminations go
