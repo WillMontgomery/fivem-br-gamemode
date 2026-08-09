@@ -1,4 +1,5 @@
 import Ring from '../hud/Ring'
+import Progress from './Progress'
 import { useEffect, useState } from 'react'
 import type { SummaryPayload } from '../bridge/types'
 
@@ -94,6 +95,20 @@ export default function EndScreen({ summary }: { summary: SummaryPayload }) {
               {summary.kills} elimination{summary.kills === 1 ? '' : 's'}
             </p>
           </div>
+        </div>
+
+        {/* THE AWARD, WHERE THE MATCH ACTUALLY ENDS.
+            This is the moment a progression system exists for: you have just
+            finished, the verdict is on screen, and the bar fills while you
+            are still looking at it. Putting it only on the lobby card meant
+            the reward arrived after a fade, a teleport and a menu -- three
+            screens away from the thing that earned it (user, 2026-08-09).
+
+            `end-late`, so it flies in with the supporting lines rather than
+            competing with the slam. It fills over the teardown, which is
+            dead time the player is already waiting through. */}
+        <div className="end-late" style={{ width: '26rem', maxWidth: '80vw' }}>
+          <Progress />
         </div>
 
         <div className="end-late flex items-center gap-3">

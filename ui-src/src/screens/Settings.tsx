@@ -185,12 +185,64 @@ function Toggle({
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="mb-8">
+    <section>
       <h3 className="font-display text-[0.95rem] uppercase tracking-[0.2em] text-white/40 mb-3">
         {title}
       </h3>
       <div className="flex flex-col gap-4">{children}</div>
     </section>
+  )
+}
+
+/**
+ * THE TABS.
+ *
+ * Settings was one long column of five sections, which at a small resolution
+ * fully zoomed in overflowed and put a scroll bar on the whole page -- taking
+ * the title, the tabs and the Save button with it (user, 2026-08-09).
+ *
+ * Splitting it is not only a scrolling fix. Five labelled destinations tell a
+ * player what this screen CONTAINS before they have read any of it, which one
+ * long column cannot do at any resolution. Controls in particular is a list of
+ * eighteen rows that has no business sharing a viewport with three sliders.
+ *
+ * The order is the user's, and it is a good one: the things most people change
+ * first (size, volume) before the things most people never change.
+ */
+const TABS = [
+  { id: 'interface',     label: 'Interface' },
+  { id: 'audio',         label: 'Audio' },
+  { id: 'controls',      label: 'Controls' },
+  { id: 'identity',      label: 'Identity' },
+  { id: 'accessibility', label: 'Accessibility' },
+] as const
+
+type Tab = typeof TABS[number]['id']
+
+function Tabs({ tab, onTab }: { tab: Tab; onTab: (t: Tab) => void }) {
+  return (
+    <div className="flex gap-2 mb-6 flex-wrap">
+      {TABS.map((t) => (
+        <button
+          key={t.id}
+          type="button"
+          className={`btn plate px-4 py-2 font-display uppercase tracking-[0.12em]
+                      text-[0.8rem]${tab === t.id ? ' is-active' : ''}`}
+          style={{
+            ['--edgec' as string]: tab === t.id
+              ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.16)',
+            ['--plate-fill' as string]: tab === t.id
+              ? 'rgba(12,58,72,0.94)' : 'rgba(24,28,40,0.92)',
+            ['--cut-max' as string]: '0.45rem',
+            color: tab === t.id ? 'var(--color-royale-accent)' : '#ffffff',
+          }}
+          onPointerEnter={() => play('ui.hover')}
+          onClick={() => { play('ui.select'); onTab(t.id) }}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
   )
 }
 
@@ -232,6 +284,7 @@ export default function Settings({
   // interface is not already showing.
   const [draft, setDraft] = useState<Draft>(stored)
   const [saving, setSaving] = useState(false)
+  const [tab, setTab] = useState<Tab>('interface')
 
   // WHAT CANCEL GOES BACK TO. Captured once, when the screen opens -- and the
   // screen is conditionally rendered, so mounting IS opening.
@@ -313,9 +366,16 @@ export default function Settings({
         </div>
       )}
 
-        <div className="grid grid-cols-2 gap-x-10">
-          <div>
-            <Section title="Interface">
+      <Tabs tab={tab} onTab={setTab} />
+
+      {/* THE SCROLL LIVES IN THE PANE, NOT ON THE PAGE. At a small resolution
+          fully zoomed in, the old single-column-of-everything overflowed and
+          the whole screen scrolled -- so the title, the tabs and the Save
+          button all slid away with it (user, 2026-08-09). Only the pane moves
+          now; everything that orients you stays put. */}
+      <div className="pane thin-scroll">
+        {tab === 'interface' && (
+          <Section title="Interface">
               <Slider
                 label="Interface size" value={draft.uiScale} dflt={DEFAULT_SETTINGS.uiScale}
                 min={0.8} max={1.3} step={0.01}
@@ -337,9 +397,11 @@ export default function Settings({
                 on={draft.safeArea}
                 onChange={(v) => set('safeArea', v)}
               />
-            </Section>
+          </Section>
+        )}
 
-            <Section title="Audio">
+        {tab === 'audio' && (
+          <Section title="Audio">
               <Slider
                 label="Interface sounds" value={draft.volUi} dflt={DEFAULT_SETTINGS.volUi}
                 min={0} max={1} step={0.01}
@@ -361,11 +423,11 @@ export default function Settings({
               <p className="micro-label">
                 Music is not in the game yet — this is stored for when it is.
               </p>
-            </Section>
-          </div>
+          </Section>
+        )}
 
-          <div>
-            <Section title="Accessibility">
+        {tab === 'accessibility' && (
+          <Section title="Accessibility">
               <div className="grid grid-cols-2 gap-2">
                 {CB_MODES.map((m) => (
                   <button
@@ -418,9 +480,11 @@ export default function Settings({
                   ))}
                 </div>
               </div>
-            </Section>
+          </Section>
+        )}
 
-            <Section title="Identity">
+        {tab === 'identity' && (
+          <Section title="Identity">
               {/* LOCKED IN A MATCH, AND IT SAYS SO IN THREE WAYS: the field is
                   disabled, it wears a lock, and the line underneath explains
                   WHY rather than just that. The server already refuses a
@@ -478,13 +542,15 @@ export default function Settings({
                     + ' feed everyone else is reading. It unlocks in the lobby.'
                   : '3–20 characters. Leave it empty to use your platform name.'}
               </p>
-            </Section>
+          </Section>
+        )}
 
-            <Section title="Controls">
-              <Keybinds />
-            </Section>
-          </div>
-        </div>
+        {tab === 'controls' && (
+          <Section title="Controls">
+            <Keybinds />
+          </Section>
+        )}
+      </div>
 
         <div className="flex gap-3 mt-4">
           <Btn variant="primary" size="lg" cue="ui.ready" onPress={save}>

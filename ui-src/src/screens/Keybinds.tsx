@@ -14,50 +14,34 @@ import { play } from '../audio/cues'
  * interface hints that it exists (user, 2026-08-09: "which are very obscure
  * for these settings btw - they're buried").
  *
- * PRESS-A-KEY CAPTURE, not a dropdown of key names. A dropdown asks the player
- * to know what their keyboard calls a key; capture asks them to press it.
- * The row goes into a listening state, the next keydown wins, and Escape
- * cancels -- which is why Escape can never itself be bound.
+ * WHAT TRAVELS IS A VIRTUAL-KEY CODE, not a key name. The first version sent
+ * FiveM key names for its `bind` console command and nothing applied; Lua now
+ * reads the key itself with IS_RAW_KEY_JUST_PRESSED, which takes a Windows VK
+ * code. `event.keyCode` IS that code in Chrome, which is the one thing the
+ * deprecated property is still good for and exactly why it is used here.
  *
- * LUA IS THE AUTHORITY, as everywhere else: this sends a command and a key and
- * renders whatever comes back. So a conflict resolving in favour of the new
- * binding (the loser is left unbound, which is what every game does) shows up
- * as the other row emptying, without this component having to model it.
+ * PRESS-A-KEY CAPTURE, not a dropdown of key names. A dropdown asks the player
+ * to know what their keyboard calls a key; capture asks them to press it. The
+ * row goes into a listening state, the next keydown wins, and Escape cancels
+ * -- which is why Escape can never itself be bound.
+ *
+ * LUA IS THE AUTHORITY: this sends a command and a code and renders whatever
+ * comes back. So a conflict resolving in favour of the new binding (the loser
+ * is left unbound, which is what every game does) shows up as the other row
+ * emptying, without this component modelling it.
  */
 
-const CANNOT_BIND = new Set([
-  // Escape cancels the capture, so binding it would make the capture
-  // unexitable. It is also GTA's own pause key.
-  'Escape',
-  // The chat input and the settings screen both need these to be typing keys.
-  'Enter', 'Tab',
-])
-
-/** Browser key name -> what FiveM's `bind` command expects. */
-function toFiveMKey(e: KeyboardEvent): string | null {
-  const k = e.key
-  if (CANNOT_BIND.has(k)) return null
-
-  // Letters and digits are themselves, uppercased.
-  if (/^[a-zA-Z0-9]$/.test(k)) return k.toUpperCase()
-  // F1..F12 come through as-is.
-  if (/^F([1-9]|1[0-2])$/.test(k)) return k.toUpperCase()
-
-  const NAMED: Record<string, string> = {
-    ' ': 'SPACE',
-    ArrowUp: 'UP', ArrowDown: 'DOWN', ArrowLeft: 'LEFT', ArrowRight: 'RIGHT',
-    Control: 'LCONTROL', Shift: 'LSHIFT', Alt: 'LMENU',
-    Backspace: 'BACK', Delete: 'DELETE', Insert: 'INSERT',
-    Home: 'HOME', End: 'END', PageUp: 'PRIOR', PageDown: 'NEXT',
-    '-': 'MINUS', '=': 'EQUALS', '[': 'LBRACKET', ']': 'RBRACKET',
-    ';': 'SEMICOLON', "'": 'APOSTROPHE', ',': 'COMMA', '.': 'PERIOD',
-    '/': 'SLASH', '\\': 'BACKSLASH', '`': 'GRAVE',
-  }
-  return NAMED[k] ?? null
+/** Codes this screen refuses to hand over, and why. */
+const RESERVED: Record<number, string> = {
+  0x1B: 'Escape',   // cancels the capture, and opens GTA's own menu
+  0x0D: 'Enter',    // the chat input needs it
+  0x74: 'F7',       // FiveM's own console toggle on some builds
+  0x78: 'F8',       // the console. Taking it would be unrecoverable.
 }
 
 export default function Keybinds() {
   const actions = useUi((s) => s.keybinds)
+  const rawActive = useUi((s) => s.keybindsRaw)
   const [listening, setListening] = useState<string | null>(null)
   const [rejected, setRejected] = useState<string | null>(null)
 
@@ -66,23 +50,23 @@ export default function Keybinds() {
 
     const onKey = (e: KeyboardEvent) => {
       // Capture phase and stopped hard: while a row is listening, the key
-      // belongs to the row. Without this, pressing Escape to cancel would
-      // also reach the settings screen's own Escape handler and close it.
+      // belongs to the row. Without this, Escape would also reach the
+      // settings screen's own handler and close it.
       e.preventDefault()
       e.stopPropagation()
 
-      if (e.key === 'Escape') { play('ui.back'); setListening(null); return }
+      const code = e.keyCode
+      if (code === 0x1B) { play('ui.back'); setListening(null); return }
 
-      const key = toFiveMKey(e)
-      if (!key) {
+      if (RESERVED[code]) {
         play('ui.error')
-        setRejected(e.key)
-        window.setTimeout(() => setRejected(null), 1600)
+        setRejected(RESERVED[code]!)
+        window.setTimeout(() => setRejected(null), 1800)
         return
       }
 
       play('ui.ready')
-      void fetchNui(CB.KEYBIND_SET, { command: listening, key })
+      void fetchNui(CB.KEYBIND_SET, { command: listening, vk: code })
       setListening(null)
     }
 
@@ -94,12 +78,31 @@ export default function Keybinds() {
     return <p className="micro-label">Loading controls…</p>
   }
 
-  // Grouped, because thirteen undifferentiated rows is a list nobody reads.
+  // Grouped, because eighteen undifferentiated rows is a list nobody reads.
   const groups: string[] = []
   for (const a of actions) if (!groups.includes(a.group)) groups.push(a.group)
 
   return (
     <div className="flex flex-col gap-4">
+      {/* THE HONEST CAVEAT, and only when it applies. If Lua's raw-key layer
+          could not start, rebinding here would do nothing at all -- so the
+          screen says so and points at the list that still works, rather than
+          offering controls that silently fail. */}
+      {!rawActive && (
+        <div
+          className="plate px-3 py-2 text-[0.8rem] tscale"
+          style={{
+            ['--edgec' as string]: 'var(--color-danger-edge)',
+            ['--plate-fill' as string]: 'rgba(52,20,24,0.92)',
+            ['--cut-max' as string]: '0.45rem',
+          }}
+        >
+          Rebinding is unavailable on this client — the keys below are what the
+          game is using. They can still be changed in GTA&apos;s own key
+          bindings.
+        </div>
+      )}
+
       {groups.map((g) => (
         <div key={g}>
           <div className="micro-label mb-1.5">{g}</div>
@@ -108,6 +111,7 @@ export default function Keybinds() {
               <Row
                 key={a.command}
                 action={a}
+                enabled={rawActive}
                 listening={listening === a.command}
                 onListen={() => { play('ui.select'); setListening(a.command) }}
               />
@@ -123,30 +127,16 @@ export default function Keybinds() {
             ? `${rejected} is reserved and cannot be bound.`
             : 'Click a key to rebind it. Taking a key clears whatever held it.'}
       </p>
-
-      {/* THE ESCAPE HATCH, kept deliberately. Rebinding here goes through
-          FiveM's `bind` console command, which is a real documented API but
-          one this project has not yet proven on a live client -- and if it
-          ever fails, a player with no working keys needs somewhere to go that
-          does not depend on the thing that broke. GTA's own list always
-          works. Small and last, because it is insurance, not the feature. */}
-      <button
-        type="button"
-        data-plain
-        className="micro-label text-left underline decoration-white/20 underline-offset-2"
-        onClick={() => { play('ui.select'); void fetchNui(CB.KEYBINDS, {}) }}
-      >
-        Open GTA&apos;s own key bindings
-      </button>
     </div>
   )
 }
 
 function Row({
-  action, listening, onListen,
+  action, listening, enabled, onListen,
 }: {
   action: KeybindAction
   listening: boolean
+  enabled: boolean
   onListen: () => void
 }) {
   const unbound = !action.key
@@ -158,8 +148,10 @@ function Row({
 
       <button
         type="button"
+        disabled={!enabled}
         className={`btn plate px-3 py-1 font-display text-[0.78rem] tracking-[0.1em]
-                    text-center${listening ? ' is-active' : ''}`}
+                    text-center${listening ? ' is-active' : ''}${
+                      enabled ? '' : ' btn--off'}`}
         style={{
           minWidth: '6rem',
           ['--edgec' as string]: listening
@@ -172,7 +164,7 @@ function Row({
             ? 'var(--color-royale-accent)'
             : unbound ? 'rgba(255,255,255,0.3)' : '#ffffff',
         }}
-        onPointerEnter={() => { if (!listening) play('ui.hover') }}
+        onPointerEnter={() => { if (!listening && enabled) play('ui.hover') }}
         onClick={onListen}
       >
         {/* The listening state has to be UNMISTAKABLE -- a row waiting for a
@@ -188,12 +180,12 @@ function Row({
         type="button"
         data-plain
         className="text-[0.7rem] px-1"
-        style={{ color: unbound ? 'transparent' : 'rgba(255,255,255,0.3)' }}
-        disabled={unbound}
+        style={{ color: unbound || !enabled ? 'transparent' : 'rgba(255,255,255,0.3)' }}
+        disabled={unbound || !enabled}
         title="Clear this binding"
         onClick={() => {
           play('ui.back')
-          void fetchNui(CB.KEYBIND_SET, { command: action.command, key: '' })
+          void fetchNui(CB.KEYBIND_SET, { command: action.command, vk: 0 })
         }}
       >
         &times;

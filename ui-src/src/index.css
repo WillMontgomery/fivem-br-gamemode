@@ -526,6 +526,20 @@ html, body, #root {
    able to cover a menu mid-transition. */
 .page { position: fixed; inset: 0; z-index: 50; }
 
+/* THE SCROLLING PART OF A SETTINGS SCREEN, and only that part.
+   A menu whose whole page scrolls takes its title, its tabs and its Save
+   button away with it -- so at a small resolution fully zoomed in, the
+   controls you were trying to reach and the button that commits them are
+   never on screen together (user, 2026-08-09). Bounded by viewport height
+   rather than by a fixed rem, so it shrinks with the window instead of
+   forcing the page to grow. */
+.pane {
+  max-height: calc(100vh - 18rem);
+  min-height: 18rem;
+  overflow-y: auto;
+  padding-right: 0.6rem;
+}
+
 @keyframes pageIn {
   from { opacity: 0; transform: translate3d(-1.4rem, 0.5rem, 0); }
   to   { opacity: 1; transform: translate3d(0, 0, 0); }
@@ -548,6 +562,48 @@ html, body, #root {
   opacity: 0;
   transform: translate3d(-1.4rem, 0, 0) scale(0.985);
   pointer-events: none;
+}
+
+/* ---------------------------------------------------------------------------
+   XP: THE FILLING EDGE THROWS SPARKS.
+
+   A bar that slides from one number to another is a progress indicator. A bar
+   whose leading edge is doing something is a REWARD, and this is the one
+   moment in the whole interface whose entire job is to feel good -- so it gets
+   the only particle effect in the project.
+
+   The emitter is positioned every frame from Progress.tsx, off the fill's real
+   measured width, because the fill is moving under a CSS transition and its
+   edge is not a number CSS can hand to another element. Transform only, so
+   nothing here touches layout.
+
+   Signature cyan, and no other colour: this is the brand doing the one job
+   brand colour is for.
+--------------------------------------------------------------------------- */
+@keyframes sparkFly {
+  0%   { opacity: 0.95; transform: translate3d(0, 0, 0) scale(1); }
+  100% { opacity: 0;    transform: translate3d(var(--sx), var(--sy), 0) scale(0.3); }
+}
+@keyframes sparkHead {
+  0%, 100% { opacity: 0.75; transform: scale(1); }
+  50%      { opacity: 1;    transform: scale(1.35); }
+}
+.xp-emitter { position: absolute; top: 50%; left: 0; width: 0; height: 0;
+              pointer-events: none; }
+.xp-head {
+  position: absolute; left: -0.35rem; top: -0.35rem;
+  width: 0.7rem; height: 0.7rem; border-radius: 50%;
+  background: radial-gradient(circle,
+    rgba(103, 232, 249, 0.95) 0%, rgba(34, 211, 238, 0.55) 45%,
+    rgba(34, 211, 238, 0) 72%);
+  animation: sparkHead 520ms ease-in-out infinite;
+}
+.xp-spark {
+  position: absolute; left: -0.09rem; top: -0.09rem;
+  width: 0.18rem; height: 0.18rem; border-radius: 50%;
+  background: var(--color-royale-accent);
+  box-shadow: 0 0 0.3rem rgba(34, 211, 238, 0.9);
+  animation: sparkFly 640ms ease-out infinite;
 }
 
 /* ---------------------------------------------------------------------------

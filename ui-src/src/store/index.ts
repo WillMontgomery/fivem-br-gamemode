@@ -78,6 +78,9 @@ export interface UiState {
 
   /** Every rebindable action and its current key. Lua owns both. */
   keybinds: KeybindAction[]
+  /** Whether Lua's raw-key layer started. False means the rows are
+   *  read-only -- rebinding here would do nothing. */
+  keybindsRaw: boolean
 
   /** Real screen metrics from the game -- including the minimap rectangle the
    *  bars, chat and notices anchor to. Null in the browser dev harness until
@@ -151,7 +154,7 @@ export interface UiState {
   awardXp: (a: XpAward) => void
   clearXpAward: () => void
   setMarket: (m: MarketPayload) => void
-  setKeybinds: (k: KeybindAction[]) => void
+  setKeybinds: (k: KeybindAction[], raw: boolean) => void
   openChat: (channel: ChatMessage['channel']) => void
   closeChat: () => void
   hydrate: (s: {
@@ -345,6 +348,7 @@ export const useUi = create<UiState>((set, get) => {
   xpAward: null,
   market: { balance: 0, items: [] },
   keybinds: [],
+  keybindsRaw: false,
   lobby: null,
   screen: null,
   scoped: false,
@@ -492,7 +496,7 @@ export const useUi = create<UiState>((set, get) => {
   awardXp: (xpAward) => set({ xpAward }),
   clearXpAward: () => set({ xpAward: null }),
   setMarket: (market) => set({ market }),
-  setKeybinds: (keybinds) => set({ keybinds }),
+  setKeybinds: (keybinds, keybindsRaw) => set({ keybinds, keybindsRaw }),
 
   openChat:  (chatChannel) => set({ chatOpen: true, chatChannel }),
   closeChat: () => set({ chatOpen: false }),

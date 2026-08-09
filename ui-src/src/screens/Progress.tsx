@@ -58,7 +58,7 @@ function useCountUp(target: number, ms: number, enabled: boolean) {
       // Ease-out: the number should decelerate into its final value rather
       // than stopping dead, which reads as the counter being cut off.
       const eased = 1 - Math.pow(1 - k, 3)
-      node.textContent = `+${Math.round(target * eased)}`
+      node.textContent = `+${Math.round(target * eased).toLocaleString()} XP`
       if (k < 1) raf = requestAnimationFrame(tick)
     }
     raf = requestAnimationFrame(tick)
@@ -74,6 +74,27 @@ function useCountUp(target: number, ms: number, enabled: boolean) {
  * from the PREVIOUS value, which is why the component takes the award rather
  * than the caller pre-adding it.
  */
+/**
+ * The spark field, authored once at module scope.
+ *
+ * FIXED, NOT RANDOM. Randomising per mount would make the effect different
+ * every match for no gain, and `Math.random()` in a render is a re-render
+ * hazard. Twelve directions weighted forward and slightly up -- sparks thrown
+ * off a moving edge go the way the edge is going -- with varied durations and
+ * delays so they never pulse in unison.
+ */
+const SPARKS = Array.from({ length: 12 }, (_, i) => {
+  // Fan from roughly -55deg to +40deg, biased forward (positive x).
+  const a = (-55 + (i * 95) / 11) * (Math.PI / 180)
+  const reach = 0.55 + (i % 4) * 0.18
+  return {
+    x: `${(Math.cos(a) * reach).toFixed(2)}rem`,
+    y: `${(Math.sin(a) * reach * 0.8).toFixed(2)}rem`,
+    delay: `${(i * 53) % 620}ms`,
+    dur: `${560 + (i % 5) * 70}ms`,
+  }
+})
+
 export default function Progress({
   compact = false,
 }: { compact?: boolean }) {
@@ -88,6 +109,32 @@ export default function Progress({
   const shown = useRef(p.level)
 
   const counter = useCountUp(award?.xp ?? 0, 1400, award != null)
+
+  const fillRef = useRef<HTMLDivElement>(null)
+  const emitterRef = useRef<HTMLDivElement>(null)
+
+  // THE EMITTER FOLLOWS THE REAL EDGE, measured every frame.
+  //
+  // The fill moves under a CSS transition, so its leading edge is a value only
+  // the compositor knows -- there is no way to hand it to a sibling in CSS,
+  // and computing it from the target percentage would put the sparks where
+  // the bar is GOING rather than where it is. getBoundingClientRect on the
+  // fill is the actual answer, and it costs one read per frame for the ~1.4s
+  // an award lasts.
+  useEffect(() => {
+    if (!award) return
+    let raf = 0
+    const tick = () => {
+      const fill = fillRef.current
+      const em = emitterRef.current
+      if (fill && em) {
+        em.style.transform = `translate3d(${fill.getBoundingClientRect().width}px, 0, 0)`
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [award])
 
   useEffect(() => {
     if (!award) {
@@ -168,16 +215,24 @@ export default function Progress({
                   className="font-display text-[0.95rem]"
                   style={{ color: 'var(--color-royale-accent)' }}
                 >
-                  +0
+                  +0 XP
                 </span>
               ) : (
-                `${p.xp} / ${p.needed}`
+                // "3280 / 4000" is a ratio of nothing. The unit is the thing
+                // that makes it a sentence (user, 2026-08-09), and the
+                // thousands separator is what makes it readable at a glance
+                // once the numbers get long.
+                `${p.xp.toLocaleString()} / ${p.needed.toLocaleString()} XP`
               )}
             </span>
           </div>
 
-          <div className="h-[0.5rem] rounded-full bg-black/55 overflow-hidden">
+          {/* NOT `overflow-hidden` any more: the sparks are supposed to leave
+              the bar, and a clip would eat the entire effect. The fill is a
+              scaleX on a full-width child, so it never overflows on its own. */}
+          <div className="relative h-[0.5rem] rounded-full bg-black/55">
             <div
+              ref={fillRef}
               className="h-full rounded-full origin-left"
               style={{
                 width: '100%',
@@ -192,6 +247,28 @@ export default function Progress({
                           + ' background 300ms ease',
               }}
             />
+
+            {/* THE SPARKS, only while an award is actually filling. The
+                emitter is moved every frame from the fill's MEASURED width --
+                the fill is under a CSS transition and its leading edge is not
+                a number any stylesheet can hand to a sibling. */}
+            {award && (
+              <div ref={emitterRef} className="xp-emitter">
+                <span className="xp-head" />
+                {SPARKS.map((s, i) => (
+                  <span
+                    key={i}
+                    className="xp-spark"
+                    style={{
+                      ['--sx' as string]: s.x,
+                      ['--sy' as string]: s.y,
+                      animationDelay: s.delay,
+                      animationDuration: s.dur,
+                    }}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>

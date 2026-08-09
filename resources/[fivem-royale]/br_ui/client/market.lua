@@ -81,6 +81,76 @@ RegisterNUICallback(BR.NuiCb.MARKET_BUY, function(data, cb)
     cb({ ok = false, reason = 'no economy' })
 end)
 
+--- Award XP, push the new profile and the award that animates to it.
+--- @param amount integer
+function BR.Market.award(amount)
+    amount = math.max(0, math.floor(tonumber(amount) or 0))
+    if amount <= 0 then return end
+
+    local fromLevel, fromXp, fromNeeded = PROFILE.level, PROFILE.xp, PROFILE.needed
+    PROFILE.xp = PROFILE.xp + amount
+    while PROFILE.xp >= PROFILE.needed do
+        PROFILE.xp = PROFILE.xp - PROFILE.needed
+        PROFILE.level = PROFILE.level + 1
+        -- 15% steeper per level. Invented, like everything else here, but
+        -- invented in ONE place so the curve is a number to argue about
+        -- rather than a shape buried in an animation.
+        PROFILE.needed = math.floor(PROFILE.needed * 1.15)
+    end
+
+    -- The new profile FIRST, then the award: the bar animates FROM where the
+    -- award says it was, TO where the profile says it is now. Reversed, it
+    -- would animate to a value it already held.
+    TriggerEvent('br:ui:sendLocal', BR.Nui.PROGRESS, PROFILE)
+    TriggerEvent('br:ui:sendLocal', BR.Nui.XP, {
+        xp = amount, fromLevel = fromLevel, fromXp = fromXp, fromNeeded = fromNeeded,
+    })
+end
+
+-- EVERY MATCH PAYS, AND IT PAYS ON THE VERDICT SCREEN.
+--
+-- The award has to land where the match ended -- while the player is still
+-- looking at won-or-lost, over the teardown they are already waiting through
+-- (user, 2026-08-09). On the lobby card it would arrive after a fade, a
+-- teleport and a menu: three screens away from the thing that earned it.
+--
+-- The FORMULA IS SYNTHETIC, and it is the shape of the real one rather than a
+-- placeholder number: a flat completion payment so a bad match still pays
+-- something, a placement bonus that is steep at the top, and per-elimination
+-- on top. Swapping in a server-issued `xpEarned` is a one-line change -- the
+-- field is already on this payload and has always been zero.
+--
+-- br_ui registers the summary event itself rather than routing through
+-- br_core: several resources may handle one net event, and progression is
+-- presentation until there is a ledger behind it.
+RegisterNetEvent(BR.Net.SUMMARY)
+AddEventHandler(BR.Net.SUMMARY, function(s)
+    if not s then return end
+
+    local placement = tonumber(s.placement) or 0
+    local total     = tonumber(s.total) or 1
+    local kills     = tonumber(s.kills) or 0
+
+    local earned = 120                                   -- you turned up
+    if s.won then
+        earned = earned + 500                            -- and you won
+    elseif placement > 0 and total > 1 then
+        -- Linear in how far up you finished, which is enough shape to feel
+        -- like placement matters without pretending to be tuned.
+        earned = earned + math.floor(380 * (1.0 - (placement - 1) / (total - 1)))
+    end
+    earned = earned + kills * 60
+
+    -- A beat after the verdict lands, so the slam owns the first moment and
+    -- the bar is not already moving when the player looks at it. .end-late
+    -- flies the supporting lines in at 3.6s; this arrives just behind them.
+    Citizen.SetTimeout(4200, function()
+        BR.Market.award(earned)
+        print(('[br_ui] match XP: +%d (placement %d/%d, %d kills)')
+            :format(earned, placement, total, kills))
+    end)
+end)
+
 AddEventHandler('br:ui:ready', function()
     BR.Market.push()
     BR.Market.pushProgress()
@@ -90,6 +160,12 @@ RegisterCommand('brxp', function(_, args)
     -- Drives the award animation with a made-up number, so the post-match
     -- moment can be watched without playing a match. `brxp 900` fills the
     -- bar; a number big enough to cross `needed` runs the level-up.
+    --
+    -- IT NARRATES, because it reported doing nothing once and the interface
+    -- half was provably fine (user, 2026-08-09). The two lines below split
+    -- the failure cleanly: no output at all means this file never loaded and
+    -- there is no level chip either; output with no movement means the
+    -- envelope is arriving somewhere the interface is not listening.
     local amount = tonumber(args[1]) or 650
     local fromLevel, fromXp, fromNeeded = PROFILE.level, PROFILE.xp, PROFILE.needed
 
@@ -100,13 +176,19 @@ RegisterCommand('brxp', function(_, args)
         PROFILE.needed = math.floor(PROFILE.needed * 1.15)
     end
 
-    BR.Market.pushProgress()
+    -- The new profile FIRST, then the award: the bar animates from where the
+    -- award says it was, to where the profile says it is now. Reversed, it
+    -- would animate to a value it already held.
     TriggerEvent('br:ui:sendLocal', BR.Nui.PROGRESS, PROFILE)
     TriggerEvent('br:ui:sendLocal', BR.Nui.XP, {
         xp = amount, fromLevel = fromLevel, fromXp = fromXp, fromNeeded = fromNeeded,
     })
-    print(('[br_ui] xp +%d -> level %d, %d/%d')
-        :format(amount, PROFILE.level, PROFILE.xp, PROFILE.needed))
+
+    print(('[br_ui] brxp: sent "%s" %d/%d lvl %d, and "%s" +%d from lvl %d %d/%d')
+        :format(tostring(BR.Nui.PROGRESS), PROFILE.xp, PROFILE.needed, PROFILE.level,
+                tostring(BR.Nui.XP), amount, fromLevel, fromXp, fromNeeded))
+    print('[br_ui] brxp: the bar only exists on the LOBBY screen -- if you are'
+        .. ' in a match there is nothing on screen to move.')
 end, false)
 
 AddEventHandler('onClientResourceStart', function(res)

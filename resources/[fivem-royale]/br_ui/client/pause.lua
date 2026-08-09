@@ -87,14 +87,24 @@ end)
 
 -- ---------------------------------------------------------------- keybind ---
 
--- Registered with NO default here: br_ui/client/keybinds.lua owns every
--- mapping in this project and applies them from kvp at boot, so that there is
--- exactly one source of truth about which key does what. F1 is this command's
--- default IN THAT TABLE, not in the engine's.
-RegisterCommand('brpausemenu', function()
+-- THE KEY LIVES IN br_core, with every other key in the project.
+--
+-- It was registered here with an empty default and in no binding table at all,
+-- which meant the pause menu had no key AND no row in the settings screen to
+-- give it one -- there was literally no way to open it (user, 2026-08-09).
+-- br_core/client/keybinds.lua registers it (F1) and fires this; TriggerEvent
+-- crosses resources, which is the same hop br_core already uses to reach the
+-- interface.
+AddEventHandler('br:ui:pauseToggle', function()
     if open then BR.Pause.close() else BR.Pause.open() end
+end)
+
+-- And a console door, so it can be opened without a keyboard binding at all --
+-- which is exactly what you need when the question is "does the key work".
+RegisterCommand('brpause', function()
+    if open then BR.Pause.close() else BR.Pause.open() end
+    print(('[br_ui] pause menu %s'):format(open and 'open' or 'closed'))
 end, false)
-RegisterKeyMapping('brpausemenu', 'Royale: Pause menu', 'keyboard', '')
 
 -- The page can be closed from under us: a match ending, a br_core restart,
 -- the focus watchdog. Watching the focus envelope keeps `open` honest instead

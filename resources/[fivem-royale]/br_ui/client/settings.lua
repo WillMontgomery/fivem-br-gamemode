@@ -205,10 +205,12 @@ end)
 -- The screen follows FOCUS, exactly as the inventory panel does, so there is
 -- one source of truth about whether it is open and it is the same one that
 -- owns the cursor.
-RegisterCommand('brsettings_open', function()
+-- The KEY is br_core's, like every other key in the project -- registered
+-- there as `brsettingsmenu` and rebindable in this very screen. This end only
+-- has to answer it.
+AddEventHandler('br:ui:settingsToggle', function()
     TriggerEvent('br:ui:pushFocus', 'settings')
-end, false)
-RegisterKeyMapping('brsettings_open', 'Royale: Settings', 'keyboard', '')
+end)
 
 -- ---------------------------------------------------------------- console ---
 

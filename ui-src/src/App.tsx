@@ -71,7 +71,7 @@ export default function App() {
   useNuiEvent('locker',   (d) => s.setLocker(d))
   useNuiEvent('progress', (d) => s.setProgress(d))
   useNuiEvent('market',   (d) => s.setMarket(d))
-  useNuiEvent('keybinds', (d) => s.setKeybinds(d.actions))
+  useNuiEvent('keybinds', (d) => s.setKeybinds(d.actions, d.raw === true))
   // Separate from 'progress' on purpose: a reconnect restores the bar, it
   // does not replay a celebration.
   useNuiEvent('xp',       (d) => s.awardXp(d))

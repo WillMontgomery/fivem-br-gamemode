@@ -275,6 +275,9 @@ for _, name in ipairs({
     -- The locker changes the PED, which is br_core's to own -- br_ui owns the
     -- page and the callbacks, br_core owns what they mean.
     BR.NuiCb.LOCKER_PICK, BR.NuiCb.LOCKER_SPIN,
+    -- Rebinding is br_core's: it owns the binding table and the raw-key
+    -- reader, and the settings screen is only the page that shows them.
+    BR.NuiCb.KEYBIND_SET,
 }) do
     callback(name, function(data)
         TriggerEvent('br:ui:action', name, data)

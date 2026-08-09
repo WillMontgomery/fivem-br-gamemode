@@ -5,6 +5,7 @@ import { CB } from '../bridge/types'
 import Btn from '../ui/Btn'
 import Settings from './Settings'
 import { play } from '../audio/cues'
+import Progress from './Progress'
 
 /**
  * The pause menu.
@@ -113,6 +114,11 @@ export default function PauseMenu() {
               {tab === 'main' ? 'Match' : 'Settings'}
             </h2>
           </div>
+          {/* LEVEL AND XP, VISIBLE MID-MATCH. The lobby is not the only
+              place a player wonders where they are -- and the pause menu is
+              the one screen they can reach without dying. */}
+          <div className="flex items-end gap-6">
+            <div style={{ width: '20rem' }}><Progress /></div>
           <div className="flex gap-2">
             {(['main', 'settings'] as Tab[]).map((t) => (
               <button
@@ -133,6 +139,7 @@ export default function PauseMenu() {
                 {t === 'main' ? 'Match' : 'Settings'}
               </button>
             ))}
+          </div>
           </div>
         </div>
 

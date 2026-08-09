@@ -461,10 +461,13 @@ export interface MarketPayload {
 /** One rebindable action, from br_ui/client/keybinds.lua. */
 export interface KeybindAction {
   group: string
-  /** The RegisterCommand name -- what FiveM's `bind` console command targets. */
+  /** The RegisterCommand name, which is what Lua keys its binding table on. */
   command: string
   label: string
-  /** Currently bound key, or '' for unbound. */
+  /** Windows virtual-key code, or absent when unbound. This is what travels:
+   *  Lua reads the key with IS_RAW_KEY_JUST_PRESSED, which takes a VK code. */
+  vk?: number
+  /** Readable name for that code, resolved by Lua. '' when unbound. */
   key: string
   default: string
 }
@@ -517,7 +520,7 @@ export type Envelope =
   | { k: 'locker';   d: LockerPayload }
   | { k: 'progress'; d: ProgressPayload }
   | { k: 'market';   d: MarketPayload }
-  | { k: 'keybinds'; d: { actions: KeybindAction[] } }
+  | { k: 'keybinds'; d: { actions: KeybindAction[]; raw?: boolean } }
   | { k: 'xp';       d: XpAward }
 
 export type EnvelopeKind = Envelope['k']
