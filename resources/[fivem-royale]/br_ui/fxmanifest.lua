@@ -18,6 +18,11 @@ shared_scripts {
 
 client_scripts {
     'client/nui.lua',
+    -- Preferences live HERE rather than in br_core: they are about this
+    -- machine's screen and speakers, they are stored in this resource's kvp,
+    -- and every one of them is consumed by the page. br_core owns the game;
+    -- br_ui owns how it is presented.
+    'client/settings.lua',
 }
 
 files {

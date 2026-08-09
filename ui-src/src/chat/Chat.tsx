@@ -50,7 +50,10 @@ const RESTING_OPACITY = 0.94
 function Line({ msg }: { msg: ChatMessage }) {
   const style = CHANNEL_STYLE[msg.channel]
   return (
-    <div className="text-[0.875rem] leading-snug py-[1px] break-words">
+    // `tscale`: chat is the single most text-size-sensitive thing on screen
+    // and the log grows downward into empty space, so enlarging it costs
+    // nothing but the room it takes.
+    <div className="tscale text-[0.875rem] leading-snug py-[1px] break-words">
       <span
         className="text-[0.625rem] font-bold uppercase tracking-wider mr-1.5 align-middle"
         style={{ color: style.colour }}

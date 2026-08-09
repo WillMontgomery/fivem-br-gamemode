@@ -133,6 +133,12 @@ BR.Net = {
 
     -- Client -> server position report (2 Hz), used for validation and spectate
     POS_REPORT      = 'br:pos',              -- C->S  { x, y, z }
+
+    -- C->S { name }. A display name the player chose, stored in THEIR kvp and
+    -- proposed here. Settings are otherwise entirely client-side -- this is
+    -- the one preference other people can see, so it is the one the server
+    -- gets a say in. Accepted in the lobby only.
+    SETTINGS_NAME   = 'br:settings:name',
 }
 
 --- Chat channels. `squad` is routed server-side to squad members only -- the
@@ -173,6 +179,11 @@ BR.Nui = {
     LOBBY     = 'lobby',     -- queue progress, so waiting has a visible reason
     INVITE    = 'invite',    -- an incoming party invite
     LEAVING   = 'leaving',   -- the voluntary-leave interstitial (black + text)
+    -- The player's own preferences, read back out of KVP on boot. Sent as a
+    -- whole object rather than as deltas: there are a dozen of them, they
+    -- change when a human drags a slider, and a merge protocol for that would
+    -- be more code than the feature.
+    SETTINGS  = 'settings',
 }
 
 --- NUI -> Lua callback names, namespaced. Every one of these MUST resolve on
@@ -201,6 +212,16 @@ BR.NuiCb = {
     SFX          = 'br/sfx',
     ERROR        = 'br/err',  -- CEF exception sink; without this a crash is a blank screen
     ENV          = 'br/ui/env',  -- CEF capability report, printed at startup
+    -- Settings. SAVE carries the whole object; Lua writes it to KVP and echoes
+    -- it back, so the page never has to believe its own optimistic copy.
+    -- FOCUS is separate because the settings screen can be opened from a
+    -- keybind mid-match, where nothing else is holding the cursor.
+    SETTINGS_SAVE  = 'br/settings/save',
+    SETTINGS_FOCUS = 'br/settings/focus',
+    -- Open GTA's own pause menu on the key bindings page. FiveM keybinds are
+    -- RegisterKeyMapping bindings and they are rebound THERE -- a rebinder in
+    -- CEF would be a second, disagreeing source of truth.
+    KEYBINDS     = 'br/settings/keybinds',
 }
 
 BR.NUI_ENVELOPE_VERSION = 1

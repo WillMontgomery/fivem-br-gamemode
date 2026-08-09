@@ -64,7 +64,10 @@ export default function KillFeed({ entries }: { entries: FeedEntry[] }) {
         return (
           <div
             key={e.id}
-            className="panel px-3 py-1.5 text-[0.8125rem] flex items-center gap-1.5 max-w-full"
+            // `tscale`: names are the thing players squint at, and the feed
+            // grows into the top-right corner rather than pushing anything.
+            className="panel tscale px-3 py-1.5 text-[0.8125rem]
+                       flex items-center gap-1.5 max-w-full"
             style={{
               // .panel has no border any more, so a row that concerns you is
               // marked with a blade on the leading edge rather than a border

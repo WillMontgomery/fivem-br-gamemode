@@ -39,6 +39,33 @@ export async function mockFetch<Res>(name: CallbackName, data?: unknown): Promis
       },
     })
   }
+
+  // SETTINGS ECHO. Lua clamps and returns what it actually stored, and the
+  // screen renders the echo rather than its own draft -- so a mock that
+  // returns nothing would make the browser harness behave differently from
+  // the game in exactly the place the design is subtle. The clamps here
+  // mirror br_ui/client/settings.lua.
+  if (name === 'br/settings/save') {
+    const d = (data ?? {}) as Record<string, unknown>
+    const num = (k: string, lo: number, hi: number, dflt: number) => {
+      const v = Number(d[k])
+      return Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : dflt
+    }
+    return {
+      ok: true,
+      settings: {
+        uiScale: num('uiScale', 0.8, 1.3, 1),
+        textScale: num('textScale', 0.9, 1.15, 1),
+        colourblind: ['off', 'deuter', 'protan', 'tritan']
+          .includes(String(d.colourblind)) ? d.colourblind : 'off',
+        volUi: num('volUi', 0, 1, 0.7),
+        volMusic: num('volMusic', 0, 1, 0.5),
+        safeArea: d.safeArea === true,
+        gamertag: String(d.gamertag ?? '').trim().slice(0, 20),
+      },
+    } as Res
+  }
+
   return {} as Res
 }
 

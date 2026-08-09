@@ -97,6 +97,16 @@ function Slot({
             className="absolute bottom-0 left-0 right-0 h-[0.2rem]"
             style={{ backgroundColor: hex }}
           />
+          {/* THE BAND IS COLOUR, AND COLOUR ALONE IS NOT ENOUGH. With a
+              colourblind mode on, the same rarity is also a COUNT sitting
+              above the band -- top-right, so it never collides with the slot
+              number in the opposite corner. CSS hides it entirely otherwise. */}
+          <span
+            className="rarity-pips absolute bottom-[0.35rem] right-[0.25rem]"
+            style={{ color: hex }}
+          >
+            {Array.from({ length: slot.rarity }, (_, i) => <i key={i} />)}
+          </span>
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-0.5 px-1">
             {/* NO SECOND PANEL BEHIND THE ART. The weapon renders are dark and
                 used to need lifting off a near-black slot -- that is now

@@ -26,8 +26,25 @@
      in rem, so the whole interface scales linearly from one number. Height
      rather than width is what GTA itself does: on a 32:9 ultrawide the extra
      width is peripheral vision, not a reason to enlarge the interface.
-     1.481vh resolves to 16px at 1080p. */
-  font-size: clamp(11px, 1.481vh, 28px);
+     1.481vh resolves to 16px at 1080p.
+
+     THE PLAYER'S MULTIPLIER GOES INSIDE THE CLAMP, and that placement is the
+     whole safety argument. Outside it -- clamp(...) * var(--ui-scale) -- the
+     11px floor and 28px ceiling stop meaning anything, and a setting a player
+     can drag becomes a setting that can produce an interface too small to
+     read or too large to fit, including the settings screen they would need
+     to undo it with. Inside, the extremes are still bounded by the same two
+     numbers that have always bounded them. */
+  --ui-scale: 1;
+  font-size: clamp(11px, calc(1.481vh * var(--ui-scale)), 28px);
+
+  /* TEXT SIZE IS SEPARATE FROM INTERFACE SIZE, and opt-in.
+     Scaling everything makes panels grow; scaling only the prose makes it
+     readable inside panels that stay where the player learned they are. Only
+     .tscale carries it, and only on elements that can grow without pushing
+     something else off screen -- never on a fixed-size plate, where the extra
+     line height simply clips. */
+  --text-scale: 1;
 
   /* Safe-zone insets, overwritten at runtime from GetSafeZoneSize. These are
      the fallback for the browser dev harness and the first frame in game. */
@@ -115,6 +132,85 @@
 
   --ease-out:  cubic-bezier(0.22, 1, 0.36, 1);
   --ease-snap: cubic-bezier(0.16, 1.1, 0.3, 1);
+}
+
+/* ---------------------------------------------------------------------------
+   COLOURBLIND MODES
+
+   A palette swap is HALF an accessibility feature. Recolouring green to blue
+   helps a deuteranope tell health from danger, and does nothing at all for the
+   player who cannot tell them apart because they are the same LIGHTNESS -- so
+   every mode here also turns on rarity PIPS (see .rarity-pips), which are a
+   COUNT. One pip is common, five is legendary, and that is true for everyone
+   in the room including the person reading over your shoulder.
+
+   The hues are chosen for separation under simulation, not for looking nice:
+   each mode moves the colours that collapse together in that deficiency and
+   leaves the ones that do not, because gratuitously repainting a palette
+   someone has already learned is its own accessibility cost.
+
+   Set as an attribute on :root by settings/apply.ts. Attribute selectors are
+   Chrome 103-safe; :has() is not, which is why the pips are toggled by a
+   class the components ask for rather than by a parent selector.
+--------------------------------------------------------------------------- */
+
+/* Deuteranopia and protanopia are both red/green; the collapse is green vs
+   red vs orange. Green moves to a cyan-leaning teal, legendary orange moves
+   to a warm yellow well clear of red, and danger keeps red but darkens so it
+   separates from Epic purple by lightness as well as hue. */
+:root[data-cb="deuter"], :root[data-cb="protan"] {
+  --color-hp:     #2dd4bf;
+  --color-shield: #60a5fa;
+  --color-danger: #f43f5e;
+  --rarity-1: #9ca3af;
+  --rarity-2: #2dd4bf;
+  --rarity-3: #3b82f6;
+  --rarity-4: #c084fc;
+  --rarity-5: #fde047;
+  --color-danger-edge: rgba(244, 63, 94, 0.55);
+}
+
+/* Tritanopia is blue/yellow: shield-blue and legendary-yellow are the pair at
+   risk, and green is safe. Shield moves toward violet, legendary toward a red
+   that tritan vision reads clearly. */
+:root[data-cb="tritan"] {
+  --color-shield: #a78bfa;
+  --rarity-3: #38bdf8;
+  --rarity-5: #fb7185;
+  --color-storm: #d946ef;
+  --color-storm-fade: rgba(217, 70, 239, 0.55);
+}
+
+/* THE PIPS. A rarity you can COUNT, for when a rarity you can see is not
+   enough. Rendered by ItemIcon's caller; hidden entirely when the mode is off,
+   because five dots on every slot is clutter for the players who do not need
+   them. */
+.rarity-pips { display: none; gap: 0.14rem; }
+:root[data-cb="deuter"] .rarity-pips,
+:root[data-cb="protan"] .rarity-pips,
+:root[data-cb="tritan"] .rarity-pips { display: flex; }
+.rarity-pips i {
+  width: 0.2rem; height: 0.2rem; border-radius: 50%;
+  background: currentColor; display: block;
+}
+
+/* TEXT SIZE. Applied by asking, never by inheritance from :root -- putting it
+   on the root would scale the HUD plates too, and those are sized to their
+   contents. em, so it multiplies whatever the element already asked for
+   rather than replacing it. */
+.tscale { font-size: calc(1em * var(--text-scale)); }
+
+/* THE SAFE AREA, DRAWN. The HUD lays out inside a box derived from the game's
+   own safe-zone slider, and "is my HUD cut off, or is that where it goes?" is
+   otherwise unanswerable from inside the game. Diagnostic, off by default,
+   and deliberately ugly -- nobody should leave it on by accident. */
+.safe-outline {
+  position: fixed;
+  left: var(--safe-x); right: var(--safe-x);
+  top: var(--safe-y); bottom: var(--safe-y);
+  border: 1px dashed rgba(34, 211, 238, 0.55);
+  pointer-events: none;
+  z-index: 60;
 }
 
 /* The HUD lays out inside this box rather than the raw viewport, so safe zone

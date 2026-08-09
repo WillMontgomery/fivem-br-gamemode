@@ -14,8 +14,9 @@ import type {
   ChatMessage, DbnoPayload, FeedEntry, FocusPayload, HudPayload,
   InvPayload, InvitePayload, LobbyPayload, MatchPayload, ScreenPayload,
   SpectatePayload, SquadPayload, StormPayload, SummaryPayload,
-  ToastPayload, WireInvPayload,
+  SettingsPayload, ToastPayload, WireInvPayload,
 } from '../bridge/types'
+import { applySettings, DEFAULT_SETTINGS } from '../settings/apply'
 
 /** Kill feed and chat are capped so a long match cannot grow the DOM forever. */
 const FEED_MAX = 8
@@ -51,6 +52,15 @@ export interface UiState {
    *  case the moment has passed and they are dropped silently. */
   pendingNotices: (ToastPayload & { queuedAt: number })[]
   focus: FocusPayload['screen']
+
+  /** The player's preferences, as Lua last confirmed them. Never written
+   *  optimistically: a save round-trips and this is set from the ECHO, so a
+   *  value the game clamped visibly snaps rather than sitting here as a
+   *  number that was never stored. */
+  settings: SettingsPayload
+  /** Whether the settings screen is up. Local to the page -- Lua is told, so
+   *  it can grant the cursor, but the screen is not Lua's to own. */
+  settingsOpen: boolean
 
   /** Real screen metrics from the game -- including the minimap rectangle the
    *  bars, chat and notices anchor to. Null in the browser dev harness until
@@ -116,6 +126,8 @@ export interface UiState {
   pushFeed: (f: FeedEntry) => void
   pushChat: (c: ChatMessage) => void
   pushNotice: (t: ToastPayload) => void
+  setSettings: (s: SettingsPayload) => void
+  setSettingsOpen: (open: boolean) => void
   openChat: (channel: ChatMessage['channel']) => void
   closeChat: () => void
   hydrate: (s: {
@@ -303,6 +315,8 @@ export const useUi = create<UiState>((set, get) => {
   notices: [],
   pendingNotices: [],
   focus: 'none',
+  settings: DEFAULT_SETTINGS,
+  settingsOpen: false,
   lobby: null,
   screen: null,
   scoped: false,
@@ -435,6 +449,17 @@ export const useUi = create<UiState>((set, get) => {
     showNotice(t)
   },
 
+  // APPLIED HERE, not in a component effect. A component that applies
+  // settings only applies them while it is mounted -- and the settings screen
+  // is the one component guaranteed NOT to be mounted for most of the
+  // session. Lua pushes on every br:ui:ready, which is also what re-applies
+  // the player's scale after br_ui restarts mid-match.
+  setSettings: (settings) => {
+    applySettings(settings)
+    set({ settings })
+  },
+  setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
+
   openChat:  (chatChannel) => set({ chatOpen: true, chatChannel }),
   closeChat: () => set({ chatOpen: false }),
 
@@ -464,3 +489,4 @@ export const selChatOpen = (s: UiState) => s.chatOpen
 export const selLobby    = (s: UiState) => s.lobby
 export const selNotices  = (s: UiState) => s.notices
 export const selScreen   = (s: UiState) => s.screen
+export const selSettings = (s: UiState) => s.settings

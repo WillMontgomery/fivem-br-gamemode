@@ -33,6 +33,7 @@ export default function Lobby({ visible }: { visible: boolean }) {
   // When Lua flips it, two 700ms fades run together: the menu fades IN
   // while the opaque backdrop fades OUT to the world.
   const worldReady = useUi((s) => s.worldReady)
+  const openSettings = useUi((s) => s.setSettingsOpen)
   const [queued, setQueued] = useState(false)
   const [mode, setMode] = useState<'solo' | 'squad'>('solo')
 
@@ -294,9 +295,27 @@ export default function Lobby({ visible }: { visible: boolean }) {
           )}
         </div>
 
-        <p className="text-[0.72rem] text-white/25 mt-6">
-          Rebind controls in Pause &rarr; Settings &rarr; Key Bindings
-        </p>
+        {/* THE WAY IN TO SETTINGS. It used to be a line of text telling the
+            player to go and find GTA's pause menu, which is instructions
+            where a button belongs -- and there was nowhere at all to reach
+            interface scale, colourblind modes or volume. */}
+        <div className="mt-6 flex gap-2">
+          <Btn
+            variant="ghost"
+            size="sm"
+            cue="ui.select"
+            onPress={() => {
+              openSettings(true)
+              // The lobby already holds the cursor, so this is belt and
+              // braces -- but the same screen opens from a keybind mid-match
+              // where nothing else does, and one opener that always asks is
+              // better than two that each assume.
+              void fetchNui(CB.SETTINGS_FOCUS, { open: true })
+            }}
+          >
+            Settings
+          </Btn>
+        </div>
       </div>
     </div>
   )

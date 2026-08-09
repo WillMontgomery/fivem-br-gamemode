@@ -10,6 +10,7 @@ import EndScreen from './screens/EndScreen'
 import LeaveScreen from './screens/LeaveScreen'
 import InventoryPanel from './screens/InventoryPanel'
 import Notices from './hud/Notices'
+import Settings from './screens/Settings'
 
 /**
  * Root.
@@ -56,6 +57,10 @@ export default function App() {
   // their anchor by whether the radar is on screen.
   useNuiEvent('screen',   (d) => s.setScreen(d))
   useNuiEvent('leaving',  (d) => s.setLeaving(d.show))
+  // Pushed on every br:ui:ready, not only the first: br_ui restarting
+  // mid-match hands CEF a fresh page at default scale, and without a re-push
+  // the player's interface would silently revert for the rest of the session.
+  useNuiEvent('settings', (d) => s.setSettings(d))
 
   // Lua owns focus. When it hands focus to chat, the input opens; when it takes
   // focus away, the input closes. The UI never decides this on its own.
@@ -169,6 +174,16 @@ export default function App() {
           while it is open, new notices queue in the store and flush on
           unpause (dropped after 30s of waiting). */}
       {!showLobby && !s.hud.paused && <Notices barsVisible={hudUp} />}
+      {/* LAST, SO IT IS ON TOP OF EVERYTHING. Settings is opaque and full
+          screen, and it can be opened from a keybind mid-match as well as
+          from the lobby -- so it has to cover the HUD, not sit under it.
+          Focus for the mid-match case is asked for by the opener; the lobby
+          already holds the cursor. */}
+      {s.settingsOpen && <Settings />}
+      {/* The safe-area outline is a SETTING, not a screen: it belongs over
+          everything the player is trying to judge against it, including the
+          settings screen that turned it on. */}
+      {s.settings.safeArea && <div className="safe-outline" />}
     </>
   )
 }

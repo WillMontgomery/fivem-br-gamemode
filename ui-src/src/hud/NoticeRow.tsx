@@ -110,7 +110,11 @@ export default function NoticeRow({
     >
       <div
         ref={bodyRef}
-        className="panel px-3.5 py-1.5 text-[0.8125rem] text-white/85 flex items-center gap-2"
+        // `tscale`: a notice is a line of prose in a box that grows with it,
+        // which is exactly the shape that can honour a text-size preference
+        // without clipping. The HUD plates cannot, and deliberately do not.
+        className="panel tscale px-3.5 py-1.5 text-[0.8125rem] text-white/85
+                   flex items-center gap-2"
         style={{
           // .panel has no border any more, so the tone rides a blade on the
           // leading edge and the radius squares off on that side.

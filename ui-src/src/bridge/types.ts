@@ -366,6 +366,33 @@ export interface ToastPayload {
   clear?: boolean
 }
 
+/**
+ * The player's own preferences.
+ *
+ * LUA IS THE AUTHORITY, not this page. The page sends the whole object and
+ * renders whatever comes back -- so a value outside the accepted range visibly
+ * snaps to what was actually stored, instead of the slider keeping a number
+ * the game never agreed to.
+ *
+ * Ranges live in br_ui/client/settings.lua and are enforced there. The ones
+ * quoted here are documentation, not validation.
+ */
+export interface SettingsPayload {
+  /** 0.80 .. 1.30. Multiplies the root font size INSIDE its clamp. */
+  uiScale: number
+  /** 0.90 .. 1.15. Opt-in, via the .tscale class. */
+  textScale: number
+  colourblind: 'off' | 'deuter' | 'protan' | 'tritan'
+  /** 0 .. 1. Reaches the browser cue palette, which is the only audio tier a
+   *  slider CAN reach -- PlaySoundFrontend has no per-cue volume. */
+  volUi: number
+  volMusic: number
+  /** Draw the box the HUD lays out inside. */
+  safeArea: boolean
+  /** Proposed to the server; empty means "use my platform name". */
+  gamertag: string
+}
+
 /** Which screen currently owns NUI focus. Lua is the authority. */
 export interface FocusPayload {
   screen: 'none' | 'lobby' | 'squad' | 'inventory' | 'summary' | 'chat'
@@ -406,6 +433,7 @@ export type Envelope =
   | { k: 'lobby';    d: LobbyPayload }
   | { k: 'invite';   d: InvitePayload }
   | { k: 'leaving';  d: { show: boolean } }
+  | { k: 'settings'; d: SettingsPayload }
 
 export type EnvelopeKind = Envelope['k']
 
@@ -432,6 +460,9 @@ export const CB = {
   PAUSE:        'br/pause',
   /** Menu audio. The UI names a CUE; Lua owns the table and the throttle. */
   SFX:          'br/sfx',
+  SETTINGS_SAVE:  'br/settings/save',
+  SETTINGS_FOCUS: 'br/settings/focus',
+  KEYBINDS:       'br/settings/keybinds',
   ERROR:        'br/err',
   ENV:          'br/ui/env',
 } as const

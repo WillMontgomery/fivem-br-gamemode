@@ -136,10 +136,55 @@ function BR.Roster.setMatch(src, matchId)
     applyBucket(src, entry)
 end
 
+--- A player's chosen display name, or nothing.
+---
+--- Proposed by the client (stored in ITS kvp) and accepted HERE, because a
+--- name is the one preference other people can see -- so it is the one
+--- preference the server has to have an opinion about.
+---
+--- LOBBY ONLY. Renaming yourself mid-match rewrites the kill feed everyone
+--- else is reading, and there is no legitimate reason to want that.
+--- @param src integer
+--- @param proposed string|nil  empty or nil restores the platform name
+--- @return boolean
+function BR.Roster.setName(src, proposed)
+    local entry = roster[src]
+    if not entry then return false end
+    if entry.state ~= BR.PlayerState.LOBBY then return false end
+
+    local clean = tostring(proposed or '')
+        :gsub('^%s+', ''):gsub('%s+$', '')
+        -- Control characters and the brackets our own feed wording uses: a
+        -- name is drawn beside phrases like "[DEAD]" and next to the kill
+        -- feed's own punctuation, and one that can forge those is a name that
+        -- can lie about the game state.
+        :gsub('[%c<>~^]', '')
+        :sub(1, 20)
+
+    if #clean > 0 and #clean < 3 then return false end
+
+    entry.gamertag = (#clean > 0) and clean or nil
+    local name = entry.gamertag or GetPlayerName(src) or entry.name
+    if name == entry.name then return true end
+
+    entry.name = name
+    BR.Broadcast.delta({ op = 'update', src = src, e = { name = name } })
+    return true
+end
+
+RegisterNetEvent(BR.Net.SETTINGS_NAME)
+AddEventHandler(BR.Net.SETTINGS_NAME, function(data)
+    BR.Roster.setName(source, data and data.name)
+end)
+
 function BR.Roster.add(src)
     local existing = roster[src]
     if existing then
-        existing.name = GetPlayerName(src) or existing.name
+        -- The CHOSEN name wins over the platform one. reconcile() calls this
+        -- for every connected player on a cadence, so without the gamertag
+        -- here a rename would survive for a few seconds and then silently
+        -- revert to the Steam name.
+        existing.name = existing.gamertag or GetPlayerName(src) or existing.name
         return existing
     end
 

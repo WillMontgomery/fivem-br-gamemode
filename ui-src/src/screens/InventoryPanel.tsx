@@ -79,9 +79,16 @@ function SlotCard({
         </span>
         {slot && (
           <span
-            className="text-[0.75rem] uppercase tracking-[0.14em]"
+            className="text-[0.75rem] uppercase tracking-[0.14em] flex items-center gap-1.5"
             style={{ color: hex }}
           >
+            {/* PIPS ARE A COUNT, and a count works for a player who cannot
+                tell two of these colours apart. Hidden by CSS unless a
+                colourblind mode is on -- five dots on every slot is clutter
+                for everyone who does not need them. */}
+            <span className="rarity-pips">
+              {Array.from({ length: slot.rarity }, (_, i) => <i key={i} />)}
+            </span>
             {RARITY[slot.rarity].label}
           </span>
         )}
