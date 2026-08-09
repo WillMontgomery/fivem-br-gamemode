@@ -53,6 +53,27 @@ export interface UiState {
    *  unpause -- unless they sat here longer than PAUSE_QUEUE_MS, in which
    *  case the moment has passed and they are dropped silently. */
   pendingNotices: (ToastPayload & { queuedAt: number })[]
+  /** EVERY notice that has been shown this session, newest FIRST.
+   *
+   *  A notice is on screen for four seconds and then it is gone forever, which
+   *  is right for the screen and wrong for the player who was aiming at
+   *  someone while it happened (user, 2026-08-09). This is the record they can
+   *  go back to -- the same events, the same tones, with the time they landed.
+   *
+   *  It mirrors the stack's own semantics rather than logging raw pushes: a
+   *  keyed notice UPDATES its entry (one event changing state is one line, not
+   *  thirty), and a coalesced repeat bumps its count. Otherwise a countdown
+   *  would fill the entire history by itself. */
+  noticeLog: {
+    id: number
+    text: string
+    tone: ToastPayload['tone']
+    key?: string
+    /** Client clock, for "4m ago". Notices are read relatively, never as a
+     *  wall-clock time nobody has a reference for. */
+    at: number
+    count: number
+  }[]
   focus: FocusPayload['screen']
 
   /** The player's preferences, as Lua last confirmed them. Never written
@@ -148,6 +169,7 @@ export interface UiState {
   pushFeed: (f: FeedEntry) => void
   pushChat: (c: ChatMessage) => void
   pushNotice: (t: ToastPayload) => void
+  clearNoticeLog: () => void
   setSettings: (s: SettingsPayload) => void
   setLocker: (l: LockerPayload) => void
   setProgress: (p: ProgressPayload) => void
@@ -188,6 +210,11 @@ const emptyDbno: DbnoPayload = {
 }
 
 let noticeId = 0
+let logId = 0
+
+/** How many notices the history keeps. Long enough to cover a whole match's
+ *  worth of events, short enough that scrolling it is never a chore. */
+const LOG_MAX = 60
 
 /** How long a notice stays up when the sender does not specify. */
 const TOAST_MS = 4000
@@ -228,6 +255,59 @@ export const useUi = create<UiState>((set, get) => {
    * game are fire-and-forget and giving every one of them a key would be
    * ceremony for nothing. Four ammo pickups is still one line reading x4.
    */
+  /**
+   * Write a notice into the history.
+   *
+   * IT MIRRORS THE STACK RATHER THAN LOGGING PUSHES. A keyed notice updates
+   * its own line and a repeat bumps a count, exactly as on screen -- otherwise
+   * one countdown, which is a single event ticking, would be the entire
+   * history. An updated line returns to the top, because it is news again.
+   */
+  const logNotice = (t: ToastPayload) => {
+    // A withdrawal is not an event. Clearing a sticky notice means the state
+    // it described has ended, which is not news and has no line of its own.
+    if (t.clear || !t.text) return
+
+    set((s) => {
+      const log = s.noticeLog
+      // The mode is derived from the LOG, not from the live stack, so it holds
+      // for a notice that arrived while the pause menu was up and never
+      // touched the stack at all.
+      const i = t.key != null
+        ? log.findIndex((e) => e.key === t.key)
+        : log.findIndex((e) => e.key == null && e.text === t.text)
+      const prev = i >= 0 ? log[i] : undefined
+
+      if (prev) {
+        const next = [...log]
+        next.splice(i, 1)
+        return {
+          noticeLog: [{
+            ...prev,
+            text:  t.text ?? prev.text,
+            tone:  t.tone ?? prev.tone,
+            at:    Date.now(),
+            // A keyed notice is ONE event changing state, so it does not
+            // count up; an unkeyed repeat is the same thing happening again,
+            // so it does.
+            count: t.key != null ? prev.count : prev.count + 1,
+          }, ...next],
+        }
+      }
+
+      return {
+        noticeLog: [{
+          id: ++logId,
+          text: t.text,
+          tone: t.tone,
+          key: t.key,
+          at: Date.now(),
+          count: 1,
+        }, ...log].slice(0, LOG_MAX),
+      }
+    })
+  }
+
   const showNotice = (t: ToastPayload) => {
     // 1. Withdrawal.
     //
@@ -341,6 +421,7 @@ export const useUi = create<UiState>((set, get) => {
   chat: [],
   notices: [],
   pendingNotices: [],
+  noticeLog: [],
   focus: 'none',
   settings: DEFAULT_SETTINGS,
   locker: { peds: [], chosen: '' },
@@ -458,6 +539,11 @@ export const useUi = create<UiState>((set, get) => {
   // was up. Keyed entries REPLACE their predecessor in the queue, and a clear
   // takes both the queued copy and any live row with it.
   pushNotice: (t) => {
+    // THE HISTORY RECORDS ARRIVAL, not display. A notice that queues behind
+    // the pause menu has still happened -- and the pause menu is exactly where
+    // somebody is standing when they go looking for what they missed.
+    logNotice(t)
+
     if (get().hud.paused) {
       if (t.key) {
         set((s) => {
@@ -481,6 +567,8 @@ export const useUi = create<UiState>((set, get) => {
     }
     showNotice(t)
   },
+
+  clearNoticeLog: () => set({ noticeLog: [] }),
 
   // APPLIED HERE, not in a component effect. A component that applies
   // settings only applies them while it is mounted -- and the settings screen

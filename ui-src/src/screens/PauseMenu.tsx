@@ -6,6 +6,7 @@ import Btn from '../ui/Btn'
 import Settings from './Settings'
 import { play } from '../audio/cues'
 import Progress from './Progress'
+import NoticeLog from './NoticeLog'
 
 /**
  * The pause menu.
@@ -32,7 +33,13 @@ import Progress from './Progress'
  * one embeds the real thing, so a control added there appears here for free.
  */
 
-type Tab = 'main' | 'settings'
+type Tab = 'main' | 'notices' | 'settings'
+
+const TAB_LABEL: Record<Tab, string> = {
+  main: 'Match',
+  notices: 'Notifications',
+  settings: 'Settings',
+}
 
 /** Actions that end something. `confirm` gates the ones you cannot undo. */
 const EXITS: {
@@ -72,6 +79,7 @@ export default function PauseMenu() {
   const [confirming, setConfirming] = useState<string | null>(null)
   const squad = useUi(selSquad)
   const inSquad = squad.members.length > 1
+  const logCount = useUi((s) => s.noticeLog.length)
 
   const close = () => { void fetchNui(CB.PAUSE_FOCUS, { open: false }) }
 
@@ -111,7 +119,7 @@ export default function PauseMenu() {
           <div>
             <div className="micro-label">Paused</div>
             <h2 className="font-display text-[3rem] uppercase tracking-[0.1em] leading-none mt-1">
-              {tab === 'main' ? 'Match' : 'Settings'}
+              {TAB_LABEL[tab]}
             </h2>
           </div>
           {/* LEVEL AND XP, VISIBLE MID-MATCH. The lobby is not the only
@@ -119,8 +127,13 @@ export default function PauseMenu() {
               the one screen they can reach without dying. */}
           <div className="flex items-end gap-6">
             <div style={{ width: '20rem' }}><Progress /></div>
+          {/* THE MAP IS NOT UP HERE ANY MORE. It was a small plate wedged
+              among the tabs, which is where a secondary destination goes --
+              and the map is the single most likely reason anybody opens this
+              menu at all (user, 2026-08-09). It is the hero of the Match tab
+              now; these are just the tabs. */}
           <div className="flex gap-2">
-            {(['main', 'settings'] as Tab[]).map((t) => (
+            {(['main', 'notices', 'settings'] as Tab[]).map((t) => (
               <button
                 key={t}
                 type="button"
@@ -136,37 +149,57 @@ export default function PauseMenu() {
                 onPointerEnter={() => play('ui.hover')}
                 onClick={() => { play('ui.select'); setTab(t) }}
               >
-                {t === 'main' ? 'Match' : 'Settings'}
+                {TAB_LABEL[t]}
+                {/* An unread count would be a lie: there is no read state and
+                    inventing one means a badge that never clears. The total is
+                    honest and still tells you whether it is worth a look. */}
+                {t === 'notices' && logCount > 0 && (
+                  <span className="ml-2 opacity-60 font-display tabular-nums">
+                    {logCount}
+                  </span>
+                )}
               </button>
             ))}
-            {/* THE MAP IS A DESTINATION, so it sits with the other two --
-                and it is not a tab, because it hands the screen to the game
-                rather than swapping a pane. SetBigmapActive draws GTA's full
-                map over live gameplay with no frontend and no pause; the
-                same key that opened this menu closes it again. */}
-            <button
-              type="button"
-              className="btn plate px-4 py-2 font-display uppercase tracking-[0.12em]
-                         text-[0.8rem]"
-              style={{
-                ['--edgec' as string]: 'rgba(255,255,255,0.16)',
-                ['--plate-fill' as string]: 'rgba(24,28,40,0.92)',
-                ['--cut-max' as string]: '0.45rem',
-              }}
-              onPointerEnter={() => play('ui.hover')}
-              onClick={() => {
-                play('ui.select')
-                void fetchNui(CB.PAUSE_ACTION, { action: 'map' })
-              }}
-            >
-              Map
-            </button>
           </div>
           </div>
         </div>
 
         {tab === 'main' ? (
           <>
+            {/* THE MAP, FRONT AND CENTRE.
+                Full width, above the exits, and the only primary on the
+                screen. Everything else on this tab ends something; this is the
+                one thing a player opens the menu to LOOK at, and it should not
+                have to be found. */}
+            <div
+              className="plate p-5 mb-4 flex items-center gap-6"
+              style={{
+                ['--edgec' as string]: 'var(--color-royale-accent)',
+                ['--plate-fill' as string]: 'rgba(12,40,50,0.94)',
+                ['--cut-max' as string]: '0.8rem',
+              }}
+            >
+              <div className="flex-1 min-w-0">
+                <div className="font-display text-[1.6rem] uppercase tracking-[0.08em] leading-none">
+                  Map
+                </div>
+                <div className="micro-label mt-1.5" style={{ textTransform: 'none' }}>
+                  The full-screen map. The same key that opened this menu closes it again.
+                </div>
+              </div>
+              <Btn
+                variant="primary"
+                size="lg"
+                cue="ui.select"
+                onPress={() => {
+                  play('ui.select')
+                  void fetchNui(CB.PAUSE_ACTION, { action: 'map' })
+                }}
+              >
+                Open map
+              </Btn>
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               {EXITS.filter((e) => !e.squadOnly || inSquad).map((e) => (
                 <div
@@ -224,17 +257,19 @@ export default function PauseMenu() {
               ))}
             </div>
 
-            {/* RESUME IS THE ONLY PRIMARY, AND IT IS ALONE.
-                It sat next to Map wearing the brand colour, which made two
-                unrelated things look like a pair of equals -- one closes this
-                menu, the other opens a different view (user, 2026-08-09).
-                Map has moved up beside the tabs, where destinations live. */}
-            <div className="mt-6">
-              <Btn variant="primary" size="lg" cue="ui.back" onPress={close}>
+            {/* RESUME IS NO LONGER THE PRIMARY, because Map is -- and there is
+                never more than one loud object on a screen. It loses nothing:
+                resuming is the one action here that already has a key, and
+                saying so is worth more than a colour. */}
+            <div className="mt-6 flex items-center gap-3">
+              <Btn variant="default" size="lg" cue="ui.back" onPress={close}>
                 Resume
               </Btn>
+              <span className="micro-label">Esc</span>
             </div>
           </>
+        ) : tab === 'notices' ? (
+          <NoticeLog />
         ) : (
           // THE LOBBY'S SETTINGS SCREEN, EMBEDDED. `inline` drops its own
           // full-screen backdrop and its Cancel/Save footer closes the tab

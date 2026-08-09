@@ -1724,6 +1724,51 @@ RegisterCommand('brloot', function()
         :format(L.crateMass or 0.0, L.shineOpenLimit or 0, BR.Loot.openedCount or 0))
 end, false)
 
+--- Tune the CRATE SHINE without a deploy -- the same ruler as /brlabel, for
+--- the orange glow.
+---
+---   /brshine                  show the current numbers
+---   /brshine <name> <value>   set one of them, live
+---
+--- It exists for the same reason /brlabel does. The glow has been called "too
+--- bright" once and "not what it was" once (user, 2026-08-06 and 2026-08-09),
+--- and both times the conversation was about a number nobody could see. Stand
+--- next to a crate, move it until it looks right, and paste the printed line
+--- into br_lib/config/loot.lua. Client-local and not persisted.
+local SHINE_TUNABLE = {
+    alpha    = 'shineAlpha',       -- outline alpha at the crate, 0-255
+    range    = 'shineLightRange',  -- metres of cast light
+    power    = 'shineLightPower',  -- light intensity at the crate
+    distance = 'shineDistance',    -- metres at which a crate starts to glow
+    limit    = 'shineOpenLimit',   -- crates you may open before it stops
+}
+
+RegisterCommand('brshine', function(_, args)
+    local name = tostring(args[1] or '')
+    local value = tonumber(args[2])
+    local field = SHINE_TUNABLE[name]
+
+    if field and value then
+        L[field] = value
+        print(('[br_core] %s = %s'):format(field, tostring(value)))
+    elseif name ~= '' and not field then
+        print(('[br_core] no such shine value: %s'):format(name))
+    end
+
+    print('=== crate shine ===')
+    print(('  colour   %d %d %d  (%s)'):format(
+        (L.shineColour or {})[1] or 255, (L.shineColour or {})[2] or 150,
+        (L.shineColour or {})[3] or 30, tostring(L.shineHex)))
+    for k, f in pairs(SHINE_TUNABLE) do
+        print(('  %-8s %s'):format(k, tostring(L[f])))
+    end
+    print('  paste into br_lib/config/loot.lua:')
+    print(('    shineAlpha      = %s,'):format(tostring(L.shineAlpha)))
+    print(('    shineLightRange = %s,'):format(tostring(L.shineLightRange)))
+    print(('    shineLightPower = %s,'):format(tostring(L.shineLightPower)))
+    print('  usage: brshine alpha|range|power|distance|limit <value>')
+end, false)
+
 --- Tune the crate label WITHOUT a deploy.
 ---
 ---   /brlabel                  show the current numbers

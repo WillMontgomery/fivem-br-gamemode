@@ -246,10 +246,14 @@ end, false)
 -- own. Switchable so the three can be compared in game rather than argued
 -- about from documentation.
 --
--- bigmap is the default because the world keeps running underneath it, which
--- in a battle royale is not a small thing: the frontend routes are a PAUSE
--- MENU, and pressing them mid-match means standing still in front of one.
-BR.Pause.mapMode = 'bigmap'
+-- FRONTEND IS THE DEFAULT, on the owner's call after seeing all three in game
+-- (2026-08-09): "frontend is exactly what I want". And the thing I had wrong
+-- about it is worth writing down rather than leaving in three commit messages
+-- -- GoDeeper + TheKick lands on the map's OWN FULLSCREEN VIEW, the one a
+-- player would otherwise have to select for themselves, so the tabs are not
+-- sitting above it after all. It is not navigation-with-chrome; it is the
+-- view. bigmap and fullscreen stay for comparison.
+BR.Pause.mapMode = 'frontend'
 BR.Pause.mapPage = nil
 
 RegisterCommand('brmapmode', function(_, args)

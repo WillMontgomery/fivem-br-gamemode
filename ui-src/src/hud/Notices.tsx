@@ -24,7 +24,9 @@ import NoticeRow from './NoticeRow'
  * steal a click from the game or the lobby beneath them.
  */
 
-const TONE_COLOUR: Record<NonNullable<ToastPayload['tone']>, string> = {
+/** Exported because the pause menu's history draws the same rows: one tone
+ *  table, so a line cannot mean one thing live and another in the log. */
+export const TONE_COLOUR: Record<NonNullable<ToastPayload['tone']>, string> = {
   info:    'rgba(255, 255, 255, 0.45)',
   success: 'var(--color-hp)',
   warn:    '#FFB020',
