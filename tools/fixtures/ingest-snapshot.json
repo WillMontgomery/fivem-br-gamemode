@@ -1,0 +1,119 @@
+{
+  "v": 1,
+  "kind": "snapshot",
+  "server": {
+    "bootEpoch": "1754784000-4281003-55f0a1b2c3d4",
+    "resource": "br_ringmaster",
+    "wallMs": 1754784000000,
+    "gameMs": 4281003
+  },
+  "snapshot": {
+    "takenGameMs": 4281003,
+    "counts": {
+      "connected": 4,
+      "inMatch": 3
+    },
+    "truncated": false,
+    "matches": [
+      {
+        "id": 41,
+        "state": "STORM",
+        "mode": "squads",
+        "bucket": 141,
+        "endsAt": 4400000,
+        "alive": 2,
+        "squadsAlive": 1
+      }
+    ],
+    "players": [
+      {
+        "src": 3,
+        "name": "Tester",
+        "license": "license:110000112345678",
+        "matchId": 41,
+        "squadId": 7,
+        "state": "ALIVE",
+        "hp": 87,
+        "armour": 0,
+        "kills": 2,
+        "downs": 0,
+        "revives": 0,
+        "damage": 314,
+        "placement": null,
+        "pos": {
+          "x": 1234.5,
+          "y": -567.8,
+          "z": 78.9
+        },
+        "posAt": 4280500,
+        "bucket": 141
+      },
+      {
+        "src": 4,
+        "name": "Squadmate",
+        "license": "license:220000198765432",
+        "matchId": 41,
+        "squadId": 7,
+        "state": "DEAD",
+        "hp": 0,
+        "armour": 0,
+        "kills": 0,
+        "downs": 1,
+        "revives": 0,
+        "damage": 40,
+        "placement": 6,
+        "pos": {
+          "x": 1200.1,
+          "y": -540.2,
+          "z": 77.0
+        },
+        "posAt": 4279000,
+        "bucket": 141
+      },
+      {
+        "src": 5,
+        "name": "Enemy",
+        "license": "license:330000155555555",
+        "matchId": 41,
+        "squadId": 2,
+        "state": "ALIVE",
+        "hp": 100,
+        "armour": 50,
+        "kills": 4,
+        "downs": 0,
+        "revives": 0,
+        "damage": 610,
+        "placement": null,
+        "pos": {
+          "x": 900.0,
+          "y": -300.0,
+          "z": 70.5
+        },
+        "posAt": 4280500,
+        "bucket": 141
+      },
+      {
+        "src": 9,
+        "name": "InLobby",
+        "license": "license:440000177777777",
+        "matchId": null,
+        "squadId": null,
+        "state": "LOBBY",
+        "hp": 100,
+        "armour": 0,
+        "kills": 0,
+        "downs": 0,
+        "revives": 0,
+        "damage": 0,
+        "placement": null,
+        "pos": {
+          "x": 0.0,
+          "y": 0.0,
+          "z": 0.0
+        },
+        "posAt": 0,
+        "bucket": 0
+      }
+    ]
+  }
+}
