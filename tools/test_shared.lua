@@ -14,6 +14,7 @@ for _, f in ipairs({
     'shared/rng.lua',
     'shared/geo.lua',
     'shared/clock.lua',
+    'shared/outbox.lua',
     'config/match.lua',
     'config/storm.lua',
     'config/map.lua',
@@ -2097,6 +2098,121 @@ do
     -- screen ever closes.
     ok(R({ 'lobby', 'settings' }).screen ~= R({ 'lobby' }).screen,
         'popping back to the lobby is a change the page can see')
+end
+
+-- ----------------------------------------------------------------- outbox ---
+--
+-- The outbox is what stands between "something outside the game is down" and
+-- "the match is down". Every assertion here is one of those two words.
+
+describe('outbox')
+do
+    -- A batch is only in flight once. A driver polling on a timer must not be
+    -- able to send the same events twice by calling take() again.
+    local ob = BR.Outbox.new()
+    ob:emit('a', { n = 1 }, 0)
+    ob:emit('b', { n = 2 }, 0)
+
+    local first = ob:take(0)
+    ok(first and #first == 2, 'take returns everything queued')
+    ok(ob:take(0) == nil, 'take returns nil while a batch is in flight')
+
+    ob:ack(0)
+    ok(ob:stats().sent == 2, 'ack counts what was delivered')
+    ok(ob:take(0) == nil, 'take returns nil when the queue is empty')
+end
+
+do
+    -- Ordering across a retry. A failed batch goes back in FRONT of whatever
+    -- was queued while it was in flight, or an audit log reads out of order.
+    local ob = BR.Outbox.new()
+    ob:emit('a', {}, 0)
+    ob:emit('b', {}, 0)
+    ob:take(0)
+    ob:emit('c', {}, 0)
+
+    ok(ob:nack(0) == true, 'the first failure retries')
+
+    local again = ob:take(99999)
+    ok(again and #again == 3, 'the retry picks up the events queued behind it')
+    ok(again and again[1].kind == 'a' and again[3].kind == 'c',
+        'and oldest-first order survives the retry')
+end
+
+do
+    -- Giving up. retryMax failures must drop the batch rather than wedge
+    -- everything behind it forever -- "queue and drop, do not retry into a
+    -- stall".
+    local ob = BR.Outbox.new({ retryMax = 2 })
+    ob:emit('a', {}, 0)
+
+    local t = 0
+    ob:take(t)
+    ok(ob:nack(t) == true,  'failure 1 of 2 retries')
+    t = 999999; ob:take(t)
+    ok(ob:nack(t) == true,  'failure 2 of 2 retries')
+    t = 999999 * 2; ob:take(t)
+    ok(ob:nack(t) == false, 'failure 3 gives up')
+
+    ok(ob:depth() == 0, 'and the batch is gone rather than queued forever')
+    ok(ob:stats().droppedRetry == 1, 'the give-up is counted, not silent')
+end
+
+do
+    -- Backoff. take() must refuse to hand out work during the backoff window,
+    -- or "retry with backoff" is just "retry in a tight loop".
+    local ob = BR.Outbox.new({ backoffMs = 1000 })
+    ob:emit('a', {}, 0)
+    ob:take(0)
+    ob:nack(0)
+
+    ok(ob:take(500)  == nil, 'take is silent inside the backoff window')
+    ok(ob:take(1000) ~= nil, 'and hands out work once it has passed')
+end
+
+do
+    -- Backoff grows, and stops growing. An uncapped exponential reaches
+    -- "retry next century" after surprisingly few failures.
+    local ob = BR.Outbox.new({ backoffMs = 1000, backoffMaxMs = 4000, retryMax = 99 })
+    ob:emit('a', {}, 0)
+
+    ob:take(0);     ob:nack(0)
+    local first = ob.nextAttempt
+    ob:take(first); ob:nack(first)
+    local second = ob.nextAttempt - first
+
+    ok(first == 1000, 'first backoff is the base delay')
+    ok(second == 2000, 'the second doubles')
+
+    for _ = 1, 6 do
+        local t = ob.nextAttempt
+        ob:take(t); ob:nack(t)
+    end
+    local t = ob.nextAttempt
+    ob:take(t); ob:nack(t)
+    ok(ob.nextAttempt - t == 4000, 'and it caps rather than reaching next century')
+end
+
+do
+    -- Overflow drops the OLDEST. A full queue means the endpoint is behind,
+    -- and the freshest events are the ones still worth having.
+    local ob = BR.Outbox.new({ capacity = 3 })
+    for i = 1, 5 do ob:emit('e', { n = i }, 0) end
+
+    local batch = ob:take(0)
+    ok(#batch == 3, 'the queue never exceeds its capacity')
+    ok(batch[1].data.n == 3 and batch[3].data.n == 5,
+        'and what survives is the newest, not the oldest')
+    ok(ob:stats().droppedFull == 2, 'the overflow is counted')
+end
+
+do
+    -- No endpoint configured: emit still costs nothing and still counts, so
+    -- callers never branch on whether persistence exists.
+    local ob = BR.Outbox.new({ enabled = false })
+    ok(ob:emit('a', {}, 0) == false, 'a disabled outbox refuses the event')
+    ok(ob:depth() == 0, 'and queues nothing')
+    ok(ob:stats().droppedOff == 1, 'but still counts what would have been sent')
 end
 
 -- ----------------------------------------------------------------- result ---
