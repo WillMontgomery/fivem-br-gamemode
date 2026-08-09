@@ -1,0 +1,33 @@
+fx_version 'cerulean'
+game 'gta5'
+lua54 'yes'
+
+name 'br_ringmaster'
+author 'FiveM Royale'
+description 'The game-side half of Ringmaster: pushes state out, and (from Slice 2) executes admin verbs.'
+version '0.1.0'
+
+-- SERVER ONLY. There is deliberately no client half. Everything an admin does
+-- happens through the web console; nothing here should ever put a pixel on a
+-- player's screen or ask a client for anything.
+--
+-- THERE IS ALSO NO `dependency 'br_core'`, and that is deliberate rather than
+-- an oversight. Declaring it would make moderation refuse to start when the
+-- gamemode is not running, and -- worse -- `restart br_core`, which
+-- tools/deploy.sh tells you to run after every single deploy, would take the
+-- moderation channel down with it. Same reasoning as br_stats' refusal to
+-- declare oxmysql. This resource degrades to "no live state" rather than to
+-- "not running": it listens for br_core's snapshot event, and if nothing is
+-- broadcasting, it has nothing to say and says so.
+server_scripts {
+    '@br_lib/shared/enums.lua',     -- BR.PlayerState etc, for reading roster rows
+    '@br_lib/shared/sched.lua',     -- our OWN job registry, separate from br_core's
+    '@br_lib/shared/identity.lua',  -- the allowlisted identifier scan
+    '@br_lib/shared/outbox.lua',    -- the retrying queue for EVENTS (not snapshots)
+
+    'server/config.lua',    -- must load first; everything else reads BR.Ring.Config
+    'server/main.lua',      -- boot banner, boot epoch, starts the scheduler
+    'server/debug.lua',     -- brring: the read-only health dump
+}
+
+dependency 'br_lib'

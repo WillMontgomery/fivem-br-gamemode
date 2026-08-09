@@ -15,6 +15,7 @@ for _, f in ipairs({
     'shared/rng.lua',
     'shared/geo.lua',
     'shared/clock.lua',
+    'shared/sched.lua',
     'shared/outbox.lua',
     'shared/identity.lua',
     'config/match.lua',
@@ -2360,6 +2361,31 @@ do
     local byKind, ordered, dropped = BR.Identity.parse(nil)
     ok(next(byKind) == nil and #ordered == 0 and dropped == 0,
         'nor is a nil list')
+end
+
+do
+    -- qualified() exists for exactly one reason, and this is it: br_stats keys
+    -- `br_players` on the FULL 'license:abc...' string, and every row already
+    -- stored uses it. When profiles.lua became a consumer of this module in M9,
+    -- returning parse()'s bare value instead would have silently re-keyed the
+    -- entire table -- a migration wearing a refactor's clothes, with no error
+    -- anywhere and every returning player looking brand new.
+    --
+    -- So the round trip is the contract, and it is asserted rather than assumed.
+    local raw = 'license:110000112345678'
+    local byKind = BR.Identity.parse({ raw })
+    ok(BR.Identity.qualified('license', byKind.license) == raw,
+        'qualified(parse(x)) reproduces the identifier FiveM reported')
+
+    ok(BR.Identity.qualified('discord', '123') == 'discord:123',
+        'and it works for every kind, not just license')
+
+    -- Nil in, nil out, so `qualified(k, licenseOf(src))` needs no guard at the
+    -- call site -- a player with no license must stay nil rather than becoming
+    -- the string "license:nil", which would be a real key colliding every
+    -- licence-less player into one profile.
+    ok(BR.Identity.qualified('license', nil) == nil,
+        'a missing identifier stays missing rather than becoming "license:nil"')
 end
 
 -- ----------------------------------------------------------------- result ---
