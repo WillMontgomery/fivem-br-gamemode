@@ -52,15 +52,37 @@ export default function WarmupTimer() {
 
   if (!showing) return null
 
+  // THE SAME OBJECT AS THE STORM BAR (owner's call, 2026-08-09). Both are the
+  // top-centre clock -- one before the match, one during it -- and they were
+  // two different widgets: a flat `.panel` reading label-number-caption on one
+  // line, and a `.panel-hot` placard with a coloured cap over a big numeral.
+  // Sharing the placard means a player learns to read the top of the screen
+  // once, and the handover from warmup to storm is the same card changing what
+  // it counts rather than one widget being replaced by another.
+  //
+  // Its cap is neutral: nothing about warmup is urgent, and the cap colour is
+  // what the storm bar uses to say that something is.
   return (
-    <div className="panel px-4 py-2 flex items-baseline gap-3">
-      <span className="text-[0.625rem] uppercase tracking-[0.18em] text-white/45">
-        Warmup
-      </span>
-      <span ref={timeRef} className="font-display text-lg tabular-nums leading-none">
-        --
-      </span>
-      <span className="text-[0.6875rem] text-white/40">until drop</span>
+    <div
+      className="panel-hot"
+      style={{
+        minWidth: '13rem',
+        ['--hot' as string]: 'rgba(120,132,160,0.85)',
+      }}
+    >
+      <div className="cap">Dropping in</div>
+      <div className="hotbody">
+        <span
+          ref={timeRef}
+          className="font-display block leading-none tabular-nums"
+          style={{ fontSize: '1.4rem', textShadow: 'var(--shadow-text)' }}
+        >
+          --
+        </span>
+        <span className="text-[0.55rem] font-semibold uppercase tracking-[0.18em] text-white/50">
+          warmup
+        </span>
+      </div>
     </div>
   )
 }

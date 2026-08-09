@@ -524,6 +524,15 @@ end
 -- fires true, release fires false, and `interact` keeps working as a hold.
 local rawDown = {}
 
+--- Which native answers "is this key held right now".
+---
+--- Resolved once at start rather than per frame, and it is deliberately a
+--- FUNCTION rather than a flag: IsRawKeyDown is the correct one and
+--- IsRawKeyPressed is the fallback for a build that predates it -- on which
+--- hold actions degrade to taps, which is a known and survivable loss, unlike
+--- having no keys at all.
+local rawDownFn = nil
+
 BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
     if not BR.Keys.rawActive then return end
 
@@ -543,7 +552,20 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
             --
             -- One native and a remembered bit gives both edges, which is all
             -- the missing one would have done anyway.
-            local down = IsRawKeyPressed(code)
+            -- IS_RAW_KEY_DOWN, NOT IS_RAW_KEY_PRESSED, and the names are a
+            -- trap. In FiveM's implementation (InputNatives.cpp, over GTA's
+            -- own ioKeyboard arrays):
+            --
+            --   KeyDown(k)    = keys[active][k]                -- HELD
+            --   KeyPressed(k) = keys[active][k] & changed(k)   -- JUST pressed
+            --
+            -- So IsRawKeyPressed is an EDGE, true for a single frame. Reading
+            -- it as a held state meant every hold action released itself on
+            -- the very next frame: opening a crate stopped needing a hold and
+            -- became a tap (user, 2026-08-09: "why do I no longer have to
+            -- HOLD the pickup button"). The edges below are derived from the
+            -- state, so the state is what this has to ask for.
+            local down = rawDownFn(code)
             local was = rawDown[b.command] == true
             if down ~= was then
                 rawDown[b.command] = down or nil
@@ -587,9 +609,21 @@ AddEventHandler('onClientResourceStart', function(res)
     -- "just pressed" and "just released" variants that would have been
     -- convenient do not exist, which is what the first version probed for and
     -- correctly failed to find.
-    local ok = pcall(function() return IsRawKeyPressed(0x77) end)
+    -- IS_RAW_KEY_DOWN FIRST. It is the one that reports a HELD key; the
+    -- similarly named IsRawKeyPressed is a single-frame edge, and reading it
+    -- as a state is what turned every hold action into a tap.
+    local ok = pcall(function() return IsRawKeyDown(0x77) end)
+    if ok then
+        rawDownFn = IsRawKeyDown
+    else
+        ok = pcall(function() return IsRawKeyPressed(0x77) end)
+        if ok then rawDownFn = IsRawKeyPressed end
+    end
     BR.Keys.rawActive = ok
-    print(('[br_core] raw key layer %s'):format(ok and 'active' or 'UNAVAILABLE'))
+    print(('[br_core] raw key layer %s%s'):format(
+        ok and 'active' or 'UNAVAILABLE',
+        (ok and rawDownFn == IsRawKeyPressed)
+            and ' (no IsRawKeyDown: holds degrade to taps)' or ''))
     load()
     BR.Keys.push()
 end)

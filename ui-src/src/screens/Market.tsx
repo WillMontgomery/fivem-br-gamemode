@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useUi } from '../store'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
@@ -57,6 +57,21 @@ export default function Market() {
 
   const close = () => { void fetchNui(CB.MARKET_FOCUS, { open: false }) }
   const items = market.items.filter((i) => i.kind === tab)
+
+  // Escape closes, the same as the locker and the settings screen. This page
+  // shipped without it and was the only lobby screen you could not back out
+  // of with the key everybody tries first (user, 2026-08-09).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopPropagation()
+      play('ui.back')
+      close()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  })
 
   return (
     <div

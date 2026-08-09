@@ -206,7 +206,10 @@ export default function PauseMenu() {
                 <div className="font-display text-[1.6rem] uppercase tracking-[0.08em] leading-none">
                   Map
                 </div>
-                <div className="micro-label mt-1.5" style={{ textTransform: 'none' }}>
+                <div
+                  className="micro-label ts mt-1.5"
+                  style={{ ['--fs' as string]: '0.62rem', textTransform: 'none' }}
+                >
                   The full-screen map. The same key that opened this menu closes it again.
                 </div>
               </div>
@@ -223,55 +226,75 @@ export default function PauseMenu() {
               </Btn>
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              {EXITS.filter((e) => !e.squadOnly || inSquad).map((e) => (
+            {/* ONE CARD, THREE ROWS, FULL WIDTH (owner's call, 2026-08-09).
+                Three separate plates gave three ways of leaving the same
+                visual weight as the map and ate half the screen -- which is
+                backwards, because leaving is the thing a player does once and
+                the map is the thing they do constantly. As rows they read as
+                one list of exits, in increasing order of what they cost you,
+                and the whole block is shorter than any two of the old cards. */}
+            <div
+              className="plate px-5 py-2"
+              style={{
+                ['--edgec' as string]: 'rgba(255,255,255,0.16)',
+                ['--plate-fill' as string]: 'rgba(20,24,34,0.94)',
+                ['--cut-max' as string]: '0.6rem',
+              }}
+            >
+              {EXITS.filter((e) => !e.squadOnly || inSquad).map((e, i) => (
                 <div
                   key={e.id}
-                  className="plate p-4 flex flex-col gap-2"
+                  className="flex items-center gap-6 py-3"
                   style={{
-                    ['--edgec' as string]: e.variant === 'danger'
-                      ? 'var(--color-danger-edge)' : 'rgba(255,255,255,0.16)',
-                    ['--plate-fill' as string]: 'rgba(20,24,34,0.94)',
-                    ['--cut-max' as string]: '0.6rem',
+                    borderTop: i === 0 ? undefined : '1px solid rgba(255,255,255,0.07)',
                   }}
                 >
-                  {/* tscale, like every other line of prose in the interface.
-                      These cards were plain rem, so the text-size preference
-                      moved the HUD and the settings screen and left the pause
-                      menu exactly as it was (user, 2026-08-09). A card grows
-                      with its content, which is precisely the shape that can
-                      honour it. */}
-                  <div className="font-display text-[1.15rem] uppercase tracking-[0.08em] tscale">
-                    {e.label}
-                  </div>
-                  <div className="micro-label tscale" style={{ textTransform: 'none' }}>
-                    {e.sub}
+                  <div className="flex-1 min-w-0">
+                    {/* `.ts` AND AN EXPLICIT --fs, not `tscale`. tscale
+                        multiplies 1em, which is the PARENT's size -- so on
+                        text that declares its own it either loses (a later
+                        rule wins, which is what happened to every
+                        micro-label) or silently discards the declared size.
+                        Twice now the text-size preference moved the HUD and
+                        the settings screen and left these cards alone (user,
+                        2026-08-09). See the note on .ts in index.css. */}
+                    <div
+                      className="font-display uppercase tracking-[0.08em] ts"
+                      style={{ ['--fs' as string]: '1.05rem' }}
+                    >
+                      {e.label}
+                    </div>
+                    {/* The confirm REPLACES the description rather than
+                        appearing under it: the row keeps its height, so
+                        answering a confirm never shoves the rows below it. */}
+                    <div
+                      className="micro-label ts mt-0.5"
+                      style={{
+                        ['--fs' as string]: '0.62rem',
+                        textTransform: 'none',
+                        color: confirming === e.id ? 'var(--color-danger)' : undefined,
+                      }}
+                    >
+                      {confirming === e.id ? e.confirm : e.sub}
+                    </div>
                   </div>
 
                   {confirming === e.id ? (
-                    <div className="mt-1">
-                      <div
-                        className="text-[0.8rem] mb-2 tscale"
-                        style={{ color: 'var(--color-danger)' }}
-                      >
-                        {e.confirm}
-                      </div>
-                      <div className="flex gap-2">
-                        <Btn variant="danger" size="sm" cue="ui.select"
-                             onPress={() => act(e.id)}>
-                          {e.yes ?? e.label}
-                        </Btn>
-                        <Btn variant="default" size="sm" cue="ui.back"
-                             onPress={() => setConfirming(null)}>
-                          {e.no ?? 'Cancel'}
-                        </Btn>
-                      </div>
+                    <div className="flex gap-2 shrink-0">
+                      <Btn variant="danger" size="sm" cue="ui.select"
+                           onPress={() => act(e.id)}>
+                        {e.yes ?? e.label}
+                      </Btn>
+                      <Btn variant="default" size="sm" cue="ui.back"
+                           onPress={() => setConfirming(null)}>
+                        {e.no ?? 'Cancel'}
+                      </Btn>
                     </div>
                   ) : (
-                    <div className="mt-1">
+                    <div className="shrink-0">
                       <Btn
                         variant={e.variant}
-                        size="md"
+                        size="sm"
                         cue={e.variant === 'danger' ? 'ui.back' : 'ui.select'}
                         onPress={() => {
                           if (e.confirm) { play('ui.back'); setConfirming(e.id); return }
@@ -301,7 +324,10 @@ export default function PauseMenu() {
         ) : tab === 'notices' ? (
           <NoticeLog />
         ) : tab === 'help' ? (
-          <Help />
+          // INLINE, so it is a tab and not a second full-screen page stacked
+          // inside this one. The standalone frame -- with its own Back button
+          // -- is what /help and the lobby button raise.
+          <Help inline onDone={() => setTab('main')} />
         ) : (
           // THE LOBBY'S SETTINGS SCREEN, EMBEDDED. `inline` drops its own
           // full-screen backdrop and its Cancel/Save footer closes the tab

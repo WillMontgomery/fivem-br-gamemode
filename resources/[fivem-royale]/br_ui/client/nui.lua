@@ -27,8 +27,13 @@ local chatChannel = BR.ChatChannel.GLOBAL  -- which channel a chat focus opens i
 --- Which tab a pause focus should land on, or nil for "wherever it was".
 ---
 --- Rides the focus envelope like the chat channel above, and for the same
---- reason: `/help` has to say BOTH "open the pause menu" and "on Help", and
---- two envelopes would be a race for which arrives first.
+--- reason: opening a menu and choosing a page inside it are one intention,
+--- and two envelopes would be a race for which arrives first.
+---
+--- BR.Pause.open(tab) is the only sender, and nothing passes a tab today --
+--- `/help` raises the manual as its own page instead. Kept because it is the
+--- mechanism any "take me to X" needs, and because removing a working path to
+--- add it back later is the more expensive mistake.
 local pauseTab = nil
 
 -- ---------------------------------------------------------------- sending ---
@@ -247,7 +252,12 @@ callback(BR.NuiCb.CHAT_SEND, function(data)
     -- message, and eating it silently is worse than sending it.
     local cmd = text:match('^/(%a+)')
     if cmd and cmd:lower() == 'help' then
-        BR.Pause.open('help')
+        -- THE PAGE, NOT THE PAUSE MENU. It used to raise the pause menu on
+        -- its Help tab, so pressing Back left you looking at a pause menu you
+        -- never asked for -- friction on the way out of a screen somebody
+        -- opened to answer one question (user, 2026-08-09). Straight to the
+        -- manual, and Back goes straight back to the game.
+        pushFocus('help')
         return { ok = true }
     end
 

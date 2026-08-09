@@ -964,3 +964,23 @@ html, body, #root {
   background: rgba(255, 255, 255, 0.16);
   border-radius: 3px;
 }
+
+/* TEXT THAT HONOURS THE SIZE PREFERENCE, INCLUDING ITS OWN DECLARED SIZE.
+ *
+ * `.tscale` multiplies 1em, which is the PARENT's size -- so it only works on
+ * text that inherits its size, and silently does the wrong thing on anything
+ * that declares one. Two ways that bit:
+ *
+ *   * `.micro-label` sets font-size and is declared later in this file, so a
+ *     `micro-label tscale` element ignored the preference entirely;
+ *   * `text-[1.15rem] tscale` DID apply, but against the inherited size --
+ *     the element quietly lost its 1.15rem and got the parent's instead.
+ *
+ * So the size comes in as a variable and the multiply happens where it is
+ * declared. `--fs` is the size the element would have had:
+ *
+ *     <div className="micro-label ts" style={{ ['--fs']: '0.62rem' }}>
+ *
+ * Declared at the END of this file on purpose: it has to beat both Tailwind's
+ * utilities (injected at the top) and every component rule above. */
+.ts { font-size: calc(var(--fs, 1em) * var(--text-scale)); }

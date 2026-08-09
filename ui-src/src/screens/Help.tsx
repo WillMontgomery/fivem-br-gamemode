@@ -42,6 +42,34 @@ export default function Help({ inline = false, onDone }:
     return () => window.clearTimeout(t)
   }, [loaded])
 
+  // ONE CLOSE, AND BOTH DOORS USE IT. The Back button used to call
+  // HELP_FOCUS directly, which is right for the standalone page and does
+  // nothing at all when this is a tab inside the pause menu -- focus is
+  // 'pause' there, so popping 'help' pops something that was never pushed
+  // (user, 2026-08-09: "the back button doesn't work"). Inline hands the
+  // close back to its parent; standalone releases its own focus.
+  const close = () => {
+    play('ui.back')
+    if (inline) { onDone?.(); return }
+    void fetchNui(CB.HELP_FOCUS, { open: false })
+    onDone?.()
+  }
+
+  // Escape closes, the same key every other page here answers to. Not when
+  // embedded: the pause menu owns Escape there, and two handlers capturing
+  // the same key means one of them wins by accident.
+  useEffect(() => {
+    if (inline) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.preventDefault()
+      e.stopPropagation()
+      close()
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  })
+
   // THE LINK GOES TO THE CLIPBOARD, because nothing can launch a browser.
   // The game client has no native for opening a URL and CEF's window.open
   // goes nowhere useful from a nui:// page -- so the honest version of "open
@@ -70,10 +98,10 @@ export default function Help({ inline = false, onDone }:
   const body = (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-4">
-        {/* 1.15rem and tscale, up from a micro-label. This is the heading of
+        {/* 1.15rem via .ts, up from a micro-label. This is the heading of
             a page, not a caption for one -- at label size it read as a stray
             line above a white rectangle (user, 2026-08-09). */}
-        <div className="font-display text-[1.15rem] uppercase tracking-[0.08em] tscale">
+        <div className="font-display uppercase tracking-[0.08em] ts" style={{ ['--fs' as string]: '1.15rem' }}>
           {loaded ? 'Player guide' : slow ? 'Could not load the guide' : 'Loading the guide…'}
         </div>
         <Btn variant="ghost" size="sm" cue="ui.select" onPress={copy}>
@@ -83,8 +111,9 @@ export default function Help({ inline = false, onDone }:
 
       {slow && !loaded && (
         <div
-          className="plate px-4 py-3 text-[0.85rem] tscale"
+          className="plate px-4 py-3 ts"
           style={{
+            ['--fs' as string]: '0.85rem',
             ['--edgec' as string]: 'rgba(255,255,255,0.16)',
             ['--plate-fill' as string]: 'rgba(20,24,34,0.94)',
             ['--cut-max' as string]: '0.5rem',
@@ -127,6 +156,18 @@ export default function Help({ inline = false, onDone }:
           }}
         />
       </div>
+
+      {/* THE WAY OUT SITS UNDER THE THING IT LEAVES, bottom left, rather than
+          up in a header (owner's call, 2026-08-09) -- it is where the eye
+          lands after reading down the page. Blue because on this screen it is
+          the ONLY action: there is nothing here to compete with it. */}
+      {!inline && (
+        <div>
+          <Btn variant="primary" size="md" cue="ui.back" onPress={close}>
+            Back
+          </Btn>
+        </div>
+      )}
     </div>
   )
 
@@ -138,20 +179,11 @@ export default function Help({ inline = false, onDone }:
       style={{ backgroundColor: 'rgba(6, 8, 14, 0.965)' }}
     >
       <div className="mx-auto py-8" style={{ width: '68rem', maxWidth: '92vw' }}>
-        <div className="flex items-end justify-between mb-5">
-          <div>
-            <div className="micro-label">FiveM Royale</div>
-            <h2 className="font-display text-[3rem] uppercase tracking-[0.1em] leading-none mt-1">
-              Help
-            </h2>
-          </div>
-          <Btn variant="default" size="md" cue="ui.back"
-               onPress={() => {
-                 void fetchNui(CB.HELP_FOCUS, { open: false })
-                 onDone?.()
-               }}>
-            Back
-          </Btn>
+        <div className="mb-5">
+          <div className="micro-label">FiveM Royale</div>
+          <h2 className="font-display text-[3rem] uppercase tracking-[0.1em] leading-none mt-1">
+            Help
+          </h2>
         </div>
         {body}
       </div>
