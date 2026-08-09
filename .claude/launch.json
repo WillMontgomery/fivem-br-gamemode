@@ -7,6 +7,13 @@
       "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
       "runtimeArgs": ["node_modules/vite/bin/vite.js", "--port", "3000"],
       "port": 3000
+    },
+    {
+      "name": "br_site",
+      "cwd": "site",
+      "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
+      "runtimeArgs": ["-e", "const h=require('http'),f=require('fs'),p=require('path');h.createServer((q,s)=>{let u=q.url.split('?')[0];if(u==='/')u='/index.html';const fp=p.join(process.cwd(),u);f.readFile(fp,(e,d)=>{if(e){s.writeHead(404);return s.end('not found')}const t={'.html':'text/html','.css':'text/css','.png':'image/png','.jpg':'image/jpeg','.svg':'image/svg+xml'}[p.extname(fp)]||'application/octet-stream';s.writeHead(200,{'content-type':t});s.end(d)})}).listen(3100,()=>console.log('site on 3100'))"],
+      "port": 3100
     }
   ]
 }

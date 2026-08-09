@@ -1,0 +1,285 @@
+/* FiveM Royale — player manual.
+ *
+ * Deliberately one hand-written stylesheet with no build step and no external
+ * requests: GitHub Pages serves this folder as-is, and a manual that needs a
+ * toolchain to edit is a manual that stops being edited.
+ *
+ * Screenshots go in `shots/` and replace the .placeholder divs. */
+
+:root {
+  --bg:      #0d1014;
+  --panel:   #151a21;
+  --panel-2: #1b222b;
+  --line:    #2a333f;
+  --text:    #dbe3ec;
+  --muted:   #8b98a8;
+  --accent:  #ff961e;   /* the crate orange, so the site matches the game */
+  --accent-2:#3b9bff;
+  --radius:  10px;
+  --wrap:    52rem;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; scroll-padding-top: 4.5rem; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.65 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { width: 100%; max-width: var(--wrap); margin: 0 auto; padding: 0 1.25rem; }
+
+a { color: var(--accent-2); }
+a:hover { color: #7cbcff; }
+
+/* ───────────────────────────────────────────────────────────────── hero */
+
+.hero {
+  padding: 4.5rem 0 3rem;
+  background:
+    radial-gradient(90rem 28rem at 50% -8rem, rgba(255,150,30,.16), transparent 70%),
+    linear-gradient(180deg, #11161c, var(--bg));
+  border-bottom: 1px solid var(--line);
+}
+
+.kicker {
+  margin: 0 0 .5rem;
+  text-transform: uppercase;
+  letter-spacing: .18em;
+  font-size: .72rem;
+  font-weight: 700;
+  color: var(--accent);
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: clamp(2.6rem, 9vw, 4.5rem);
+  line-height: 1;
+  letter-spacing: -.03em;
+  font-weight: 800;
+}
+
+.lede {
+  margin: 1.1rem 0 0;
+  font-size: clamp(1.05rem, 2.6vw, 1.25rem);
+  color: var(--muted);
+  max-width: 34rem;
+}
+
+/* ────────────────────────────────────────────────────────────────── nav */
+
+.toc {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: rgba(13,16,20,.92);
+  border-bottom: 1px solid var(--line);
+  backdrop-filter: blur(8px);
+}
+
+.toc .wrap {
+  display: flex;
+  gap: .35rem;
+  overflow-x: auto;
+  padding-top: .55rem;
+  padding-bottom: .55rem;
+  scrollbar-width: none;
+}
+.toc .wrap::-webkit-scrollbar { display: none; }
+
+.toc a {
+  flex: 0 0 auto;
+  padding: .3rem .7rem;
+  border-radius: 999px;
+  font-size: .85rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.toc a:hover { background: var(--panel-2); color: var(--text); }
+
+/* ────────────────────────────────────────────────────────────── sections */
+
+main { padding: 1rem 1.25rem 4rem; }
+
+section { padding: 2.75rem 0; border-bottom: 1px solid var(--line); }
+section:last-child { border-bottom: 0; }
+
+h2 {
+  margin: 0 0 1.1rem;
+  font-size: clamp(1.65rem, 4.5vw, 2.1rem);
+  letter-spacing: -.02em;
+  line-height: 1.15;
+}
+h2::after {
+  content: "";
+  display: block;
+  width: 2.5rem;
+  height: 3px;
+  margin-top: .6rem;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+h3 {
+  margin: 2rem 0 .5rem;
+  font-size: 1.05rem;
+  letter-spacing: .01em;
+  color: #fff;
+}
+
+p { margin: 0 0 1rem; }
+ul, ol { margin: 0 0 1rem; padding-left: 1.3rem; }
+li { margin-bottom: .4rem; }
+
+strong { color: #fff; }
+
+/* ───────────────────────────────────────────────────────────── components */
+
+.note, .callout {
+  margin: 1.25rem 0;
+  padding: .9rem 1.1rem;
+  background: var(--panel);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  color: var(--muted);
+}
+.note strong, .callout strong { color: var(--text); }
+.callout { border-left-color: var(--accent-2); }
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: .9rem;
+  margin: 1.25rem 0;
+}
+.card {
+  padding: 1.1rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.card h3 { margin: 0 0 .35rem; }
+.card p { margin: 0; color: var(--muted); }
+
+.steps { counter-reset: s; list-style: none; padding-left: 0; }
+.steps li {
+  counter-increment: s;
+  position: relative;
+  padding: .1rem 0 .1rem 2.6rem;
+  margin-bottom: .8rem;
+}
+.steps li::before {
+  content: counter(s);
+  position: absolute;
+  left: 0; top: .1rem;
+  width: 1.8rem; height: 1.8rem;
+  display: grid; place-items: center;
+  border-radius: 50%;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  color: var(--accent);
+  font-size: .8rem;
+  font-weight: 700;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0 1.25rem;
+  font-size: .93rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+th, td { padding: .6rem .8rem; text-align: left; border-bottom: 1px solid var(--line); }
+th { background: var(--panel-2); font-size: .78rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+tbody tr:last-child td { border-bottom: 0; }
+
+/* Wide tables must scroll inside themselves, never the page. */
+table { display: block; overflow-x: auto; white-space: nowrap; }
+@media (min-width: 34rem) { table { display: table; white-space: normal; } }
+
+.pip {
+  display: inline-block;
+  width: .6rem; height: .6rem;
+  margin-right: .5rem;
+  border-radius: 50%;
+  background: var(--c, #888);
+  box-shadow: 0 0 8px var(--c, #888);
+  vertical-align: baseline;
+}
+
+.pools { display: flex; flex-wrap: wrap; gap: .45rem; }
+.pools span {
+  padding: .25rem .6rem;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: .85rem;
+  color: var(--muted);
+}
+
+kbd {
+  display: inline-block;
+  min-width: 1.7rem;
+  padding: .1rem .45rem;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  font: 600 .82rem/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  text-align: center;
+  color: #fff;
+}
+
+.keys { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 0 2rem; }
+.keys dl { margin: 0 0 .5rem; }
+.keys dt { margin-top: .5rem; }
+.keys dd {
+  margin: -1.4rem 0 0 7.5rem;
+  color: var(--muted);
+  font-size: .93rem;
+}
+.hold {
+  margin-left: .3rem;
+  font-size: .68rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--accent);
+}
+
+/* ────────────────────────────────────────────────────────── screenshots */
+
+.shot { margin: 1.75rem 0 .5rem; }
+.shot img { width: 100%; max-width: 100%; display: block; border-radius: var(--radius); border: 1px solid var(--line); }
+.placeholder {
+  display: grid;
+  place-items: center;
+  min-height: 11rem;
+  background:
+    repeating-linear-gradient(45deg, transparent, transparent 12px, rgba(255,255,255,.02) 12px, rgba(255,255,255,.02) 24px),
+    var(--panel);
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  color: var(--muted);
+  font-size: .85rem;
+}
+
+/* ─────────────────────────────────────────────────────────────── footer */
+
+footer {
+  padding: 2.25rem 0 3rem;
+  border-top: 1px solid var(--line);
+  background: #0a0d10;
+  color: var(--muted);
+  font-size: .9rem;
+}
+footer p { margin: 0 0 .35rem; }
+.small { font-size: .8rem; opacity: .65; }

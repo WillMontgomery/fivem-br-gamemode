@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FiveM Royale — Player Manual</title>
+<meta name="description" content="How to play FiveM Royale: the drop, looting, the storm, and how to win.">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="hero">
+  <div class="wrap">
+    <p class="kicker">Player manual</p>
+    <h1>FiveM&nbsp;Royale</h1>
+    <p class="lede">Forty-eight players. One island. One winner.<br>
+       Here is everything you need to not die in the first ninety seconds.</p>
+  </div>
+</header>
+
+<nav class="toc">
+  <div class="wrap">
+    <a href="#start">Getting in</a>
+    <a href="#drop">The drop</a>
+    <a href="#loot">Looting</a>
+    <a href="#fight">Fighting</a>
+    <a href="#storm">The storm</a>
+    <a href="#controls">Controls</a>
+    <a href="#fairplay">Fair play</a>
+  </div>
+</nav>
+
+<main class="wrap">
+
+<!-- ─────────────────────────────────────────────────────────── getting in -->
+<section id="start">
+  <h2>Getting in</h2>
+
+  <p>You start in the lobby, looking at your character. Pick a mode, hit ready,
+     and wait for a match to form.</p>
+
+  <div class="cards">
+    <div class="card">
+      <h3>Solo</h3>
+      <p>Everyone for themselves. Last player standing wins.</p>
+    </div>
+    <div class="card">
+      <h3>Squads</h3>
+      <p>Teams of up to four. Last squad standing wins. You cannot damage your
+         own squad — try, and nothing happens.</p>
+    </div>
+  </div>
+
+  <h3>Playing with friends</h3>
+  <p>Invite them to a <strong>party</strong> from the lobby. A party sticks
+     around between matches — you do not have to re-form it every round. When a
+     match starts, your party becomes a <strong>squad</strong>, topped up with
+     solo players if you are short.</p>
+
+  <p class="note"><strong>Late?</strong> If a match is still in warmup you will
+     be dropped straight into it. If it has already taken off, you go on the
+     next flight — you will be told which.</p>
+
+  <figure class="shot" data-shot="lobby">
+    <div class="placeholder">Screenshot: the lobby</div>
+  </figure>
+</section>
+
+<!-- ───────────────────────────────────────────────────────────── the drop -->
+<section id="drop">
+  <h2>The drop</h2>
+
+  <p>Everyone waits on the airstrip during <strong>warmup</strong>. This is a
+     practice area — you can punch each other and nothing happens. Nobody takes
+     damage on the pad.</p>
+
+  <p>The flight path is drawn on your map <em>during warmup</em>, before the
+     plane leaves. Open the map and pick where you are going before you board;
+     it is much harder to decide at 300 metres a second.</p>
+
+  <ol class="steps">
+    <li><strong>Jump</strong> — <kbd>Space</kbd> when you want off the plane.
+        Doors also open automatically near the ports and the airport.</li>
+    <li><strong>Freefall</strong> — steer with the movement keys. Look straight
+        down to fall faster and land first.</li>
+    <li><strong>Glide</strong> — <kbd>Space</kbd> again to open the glider.
+        It opens on its own if you leave it too late.</li>
+    <li><strong>Land</strong> — your gear and HUD appear the moment you touch
+        down. Start looting immediately.</li>
+  </ol>
+
+  <p class="note"><strong>Landing first matters more than landing well.</strong>
+     Two players in the same building is a fistfight, and the one holding a gun
+     wins it.</p>
+
+  <figure class="shot" data-shot="drop">
+    <div class="placeholder">Screenshot: the glider on approach</div>
+  </figure>
+</section>
+
+<!-- ────────────────────────────────────────────────────────────── looting -->
+<section id="loot">
+  <h2>Looting</h2>
+
+  <p>You land with nothing but your fists. Everything else is on the floor or
+     in a crate.</p>
+
+  <h3>Picking things up</h3>
+  <p>Walk up to an item and <strong>face it</strong> — it will rise off the
+     ground and turn, and a prompt appears naming your pickup key. Tap it.</p>
+  <p><strong>Crates</strong> need a <em>hold</em> instead of a tap. Holding
+     still for a second in the open is the price of what is inside, so check
+     your corners first.</p>
+
+  <h3>Rarity</h3>
+  <p>Everything is colour-coded, and the colour is the whole story: a rarer
+     weapon of the same type simply hits harder.</p>
+
+  <table class="rarity">
+    <thead><tr><th>Rarity</th><th>Damage</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pip" style="--c:#B0B0B0"></span>Common</td><td>baseline</td></tr>
+      <tr><td><span class="pip" style="--c:#4CD964"></span>Uncommon</td><td>+6%</td></tr>
+      <tr><td><span class="pip" style="--c:#3B9BFF"></span>Rare</td><td>+12%</td></tr>
+      <tr><td><span class="pip" style="--c:#B15BFF"></span>Epic</td><td>+20%</td></tr>
+      <tr><td><span class="pip" style="--c:#FFB020"></span>Legendary</td><td>+28%</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Your inventory</h3>
+  <p><strong>Five slots</strong>, plus your fists, which you always have.
+     Number keys <kbd>1</kbd>–<kbd>5</kbd> switch slots. <kbd>Tab</kbd> opens
+     the full panel where you can drag to reorder, drop, and use things.</p>
+  <p>Pick up a sixth weapon with no room and whatever is in your hands drops at
+     your feet — so it is a swap, not a refusal.</p>
+
+  <h3>Ammo</h3>
+  <p>Ammo is <strong>not</strong> in your five slots. It sits in five separate
+     pools, shared by every gun that uses it:</p>
+  <p class="pools">
+    <span>Light — pistols</span>
+    <span>SMG</span>
+    <span>Medium — rifles</span>
+    <span>Shells — shotguns</span>
+    <span>Heavy — snipers &amp; LMGs</span>
+  </p>
+  <p>Reloading is automatic when a magazine runs dry and you still have rounds
+     in the pool.</p>
+
+  <h3>Healing and shields</h3>
+  <p>Health goes to 100. Shield goes to 100 <em>on top</em> of it, and shield is
+     always eaten first — so a full player with full shield takes twice the
+     punishment.</p>
+
+  <table class="items">
+    <thead><tr><th>Item</th><th>Gives</th><th>Up to</th><th>Time</th><th>Where</th></tr></thead>
+    <tbody>
+      <tr><td><span class="pip" style="--c:#B0B0B0"></span>Small Shield</td><td>+25 shield</td><td>50</td><td>3s</td><td>anywhere</td></tr>
+      <tr><td><span class="pip" style="--c:#3B9BFF"></span>Shield</td><td>+50 shield</td><td>100</td><td>5s</td><td>anywhere</td></tr>
+      <tr><td><span class="pip" style="--c:#B0B0B0"></span>Bandage</td><td>+15 health</td><td>75</td><td>4s</td><td><strong>crates only</strong></td></tr>
+      <tr><td><span class="pip" style="--c:#B15BFF"></span>Med Kit</td><td>full health</td><td>100</td><td>8s</td><td><strong>crates only</strong></td></tr>
+    </tbody>
+  </table>
+
+  <p class="note"><strong>Bandages cannot finish the job.</strong> They stop at
+     75. To get back to full you need a Med Kit — and healing only ever comes
+     out of crates, never off the street. If you are hurt, you have to go
+     somewhere exposed to fix it.</p>
+
+  <p>Taking damage <strong>cancels</strong> whatever you are drinking or
+     applying, and you keep the item. Heal behind cover.</p>
+
+  <figure class="shot" data-shot="loot">
+    <div class="placeholder">Screenshot: an open crate and the inventory bar</div>
+  </figure>
+</section>
+
+<!-- ───────────────────────────────────────────────────────────── fighting -->
+<section id="fight">
+  <h2>Fighting</h2>
+
+  <h3>Where you hit matters</h3>
+  <p>Headshots hurt — a lot — but <strong>the bonus fades with range</strong>.
+     A headshot across the map is worth much less than the same shot from
+     across a room. Limbs are worth less than the torso.</p>
+
+  <h3>Range</h3>
+  <p>Every weapon has a range, and damage falls off over the back half of it,
+     down to a floor. A pistol duel at 200 metres is a waste of ammunition —
+     close the distance or leave.</p>
+
+  <h3>Fists</h3>
+  <p>You always have them and they are a real weapon, but a poor one: about
+     four swings to drop someone with no shield. Fine for the first ten seconds
+     of a hot drop, not a plan.</p>
+
+  <h3>Throwables</h3>
+  <p>Grenades, sticky bombs, molotovs and smoke. <strong>Three of each,
+     maximum</strong> — a fourth stays on the ground.</p>
+  <ul>
+    <li><strong>Grenade / Sticky</strong> — big damage in a radius. They also
+        hurt <em>you</em>, so mind your feet.</li>
+    <li><strong>Molotov</strong> — the fire lingers. Anyone who runs through it
+        keeps burning, and the kill still counts as yours.</li>
+    <li><strong>Smoke</strong> — no damage at all. It is the only reliable way
+        to cross open ground or pick a teammate up under fire.</li>
+  </ul>
+
+  <h3>Vehicles</h3>
+  <p>Drive them, hide behind them, do not fall in love with them — they are
+     loud, and a car parked outside a building tells everyone you are in it.
+     You cannot loot from the driver's seat.</p>
+
+  <figure class="shot" data-shot="fight">
+    <div class="placeholder">Screenshot: a firefight, HUD visible</div>
+  </figure>
+</section>
+
+<!-- ──────────────────────────────────────────────────────────── the storm -->
+<section id="storm">
+  <h2>The storm</h2>
+
+  <p>A circle on your map marks the safe zone. Outside it you take damage every
+     second, and it gets worse every phase. The circle shrinks in
+     <strong>eight phases</strong>: each one <em>holds</em> at its current size
+     for a while, then <em>sweeps</em> inward to the next.</p>
+
+  <p>The white line on your map is the next circle. Watch it, not the current
+     one — by the time the wall is on you it is too late to plan.</p>
+
+  <table class="storm">
+    <thead><tr><th>Phase</th><th>Damage/sec</th><th>Time to kill you from full</th></tr></thead>
+    <tbody>
+      <tr><td>1</td><td>0.5</td><td>free — this one is a nudge, not a threat</td></tr>
+      <tr><td>2</td><td>1.25</td><td>80s</td></tr>
+      <tr><td>3</td><td>1.7</td><td>60s</td></tr>
+      <tr><td>4</td><td>2.2</td><td>45s</td></tr>
+      <tr><td>5</td><td>2.9</td><td>35s</td></tr>
+      <tr><td>6</td><td>4.0</td><td>25s</td></tr>
+      <tr><td>7</td><td>5.0</td><td>20s</td></tr>
+      <tr><td>8</td><td>6.7</td><td>15s</td></tr>
+    </tbody>
+  </table>
+
+  <p class="note"><strong>The first circle will not kill you</strong>, so use it.
+     Phase 1 is your loot time — half a point a second is a rounding error, and
+     the far side of the map is often emptier and richer than the middle.
+     By phase 5 the storm is deciding fights, and by phase 8 standing still
+     outside it is fifteen seconds of life.</p>
+
+  <p>The wall is generous at its edge: if you can see the curtain and you are
+     inside it, you are safe. You will not be chipped by a circle you are
+     standing in.</p>
+
+  <figure class="shot" data-shot="storm">
+    <div class="placeholder">Screenshot: the storm wall closing</div>
+  </figure>
+</section>
+
+<!-- ───────────────────────────────────────────────────────────── controls -->
+<section id="controls">
+  <h2>Controls</h2>
+
+  <p class="callout"><strong>Every single one of these is rebindable.</strong>
+     Pause &rarr; <em>Settings</em> &rarr; <em>Key Bindings</em> &rarr;
+     <em>FiveM</em>. Everything below is just the default, and the prompts
+     in-game always show <em>your</em> key, not ours.</p>
+
+  <div class="keys">
+    <div>
+      <h3>Movement</h3>
+      <dl>
+        <dt><kbd>Space</kbd></dt><dd>Jump from the plane / open glider</dd>
+      </dl>
+
+      <h3>Combat &amp; items</h3>
+      <dl>
+        <dt><kbd>Tab</kbd></dt><dd>Inventory panel</dd>
+        <dt><kbd>E</kbd> <span class="hold">hold</span></dt><dd>Interact / pick up / revive</dd>
+        <dt><kbd>G</kbd></dt><dd>Drop selected item</dd>
+        <dt><kbd>R</kbd></dt><dd>Use selected item</dd>
+        <dt><kbd>1</kbd>–<kbd>5</kbd></dt><dd>Select slot</dd>
+      </dl>
+    </div>
+    <div>
+      <h3>Comms</h3>
+      <dl>
+        <dt><kbd>T</kbd></dt><dd>Chat — everyone in your match</dd>
+        <dt><kbd>Y</kbd></dt><dd>Chat — squad only</dd>
+        <dt><kbd>Z</kbd></dt><dd>Place a marker for your squad</dd>
+      </dl>
+
+      <h3>Map &amp; interface</h3>
+      <dl>
+        <dt><kbd>M</kbd></dt><dd>Map</dd>
+        <dt><kbd>Backspace</kbd></dt><dd>Clear your map waypoint</dd>
+        <dt><kbd>&larr;</kbd> <kbd>&rarr;</kbd></dt><dd>Spectate previous / next</dd>
+        <dt><kbd>Esc</kbd></dt><dd>Pause menu</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- ──────────────────────────────────────────────────────────── fair play -->
+<section id="fairplay">
+  <h2>Fair play</h2>
+
+  <p>The short version: <strong>the server decides everything that matters.</strong>
+     Your game does not get a vote on how much damage you did, what is in your
+     inventory, or where the loot is.</p>
+
+  <p>What that means for you, an honest player:</p>
+  <ul>
+    <li><strong>Nothing you do by playing normally will flag you.</strong>
+        Shooting a teammate, punching someone in warmup, dying to your own
+        grenade — all of that is expected, and none of it is counted against
+        you.</li>
+    <li><strong>Modded weapons and damage multipliers do not work.</strong>
+        Not "are detected later" — they do not land. The server recalculates
+        every hit from its own tables and ignores the number your game sent.</li>
+    <li><strong>You cannot spawn items or ammo.</strong> There is no code path
+        that adds anything to an inventory from a client message. Things enter
+        your inventory by being picked up off the ground.</li>
+    <li><strong>You cannot see where the loot is.</strong> The map layout never
+        leaves the server. You are only ever sent the items near you.</li>
+  </ul>
+
+  <p>If someone is repeatedly trying something the server did not issue them
+     the means to do, we hear about it. Their shots were not landing anyway.</p>
+
+  <p class="note">Found a bug, or someone behaving badly? The in-game player
+     list has a report button next to every name.</p>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>FiveM Royale is an open-source GTA V game mode.
+       <a href="https://github.com/WillMontgomery/fivem-br-gamemode">Source on GitHub</a>.</p>
+    <p class="small">Not affiliated with Rockstar Games or Take-Two Interactive.</p>
+  </div>
+</footer>
+
+</body>
+</html>
