@@ -1,6 +1,7 @@
 import Ring from '../hud/Ring'
 import Progress from './Progress'
-import { useEffect, useState } from 'react'
+import { useUi } from '../store'
+import { useEffect, useRef, useState } from 'react'
 import type { SummaryPayload } from '../bridge/types'
 
 /**
@@ -110,6 +111,7 @@ export default function EndScreen({ summary }: { summary: SummaryPayload }) {
         <div className="end-late" style={{ width: '26rem', maxWidth: '80vw' }}>
           <Progress />
         </div>
+        <StagedAward />
 
         <div className="end-late flex items-center gap-3">
           <Ring size={1.3} stroke={0.15} label="Cleaning up" />
@@ -118,4 +120,75 @@ export default function EndScreen({ summary }: { summary: SummaryPayload }) {
       </div>
     </div>
   )
+}
+
+/**
+ * The post-match XP award, staged here.
+ *
+ * WHY IT IS IN THE COMPONENT AND NOT IN LUA. It was: br_ui's market.lua heard
+ * the SUMMARY net event and pushed an award a couple of seconds later. It was
+ * reported as never animating, twice, and the reason it is hard to see is that
+ * every part of it is timing against a screen it cannot observe -- the verdict
+ * exists only while the match tears down, and a delay tuned against that
+ * window is a delay that misses it whenever teardown is quick.
+ *
+ * THIS COMPONENT ONLY EXISTS WHILE THE VERDICT IS ON SCREEN. Firing the award
+ * from its own mount removes the guess entirely: there is no window to miss,
+ * because the thing that starts the clock is the thing that would have to be
+ * there to see it.
+ *
+ * IT IS SYNTHETIC AND IT IS STAGED. It poses the profile two thirds along the
+ * level and awards exactly enough to reach a third of the next one, so the
+ * interesting animation -- fill, hold, flip, refill -- happens every match
+ * rather than one in four. DELETE THIS WHOLE COMPONENT when a server issues
+ * real XP: the award then arrives on the wire and Progress renders it with no
+ * staging at all.
+ */
+function StagedAward() {
+  const progress = useUi((s) => s.progress)
+  const awardXp = useUi((s) => s.awardXp)
+  const setProgress = useUi((s) => s.setProgress)
+  const fired = useRef(false)
+
+  useEffect(() => {
+    // THE GUARD GOES INSIDE THE TIMER, NOT AROUND THE EFFECT.
+    //
+    // Guarding the effect body with a ref looks like the obvious way to fire
+    // once -- and it fires NEVER under StrictMode, which mounts, cleans up,
+    // and mounts again: the first pass sets the ref and its cleanup cancels
+    // the timer, and the second pass returns early, so nothing is left
+    // running. Caught by testing it rather than by reading it.
+    //
+    // Setting the timer every time and claiming the award inside it is
+    // correct under both: cancelled passes simply never reach the ref.
+    const t = window.setTimeout(() => {
+      if (fired.current) return
+      fired.current = true
+
+      const needed = Math.max(1, progress.needed)
+      const fromXp = Math.floor(needed * 2 / 3)
+      const nextNeeded = Math.floor(needed * 1.15)
+      const gained = (needed - fromXp) + Math.floor(nextNeeded / 3)
+
+      // The new profile FIRST, then the award: the bar animates FROM where
+      // the award says it was, TO where the profile says it is now.
+      setProgress({
+        level: progress.level + 1,
+        xp: Math.floor(nextNeeded / 3),
+        needed: nextNeeded,
+      })
+      awardXp({
+        xp: gained,
+        fromLevel: progress.level,
+        fromXp,
+        fromNeeded: needed,
+      })
+    }, 1600)
+
+    return () => window.clearTimeout(t)
+    // Mount only. Re-running this on a progress change would re-award.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  return null
 }

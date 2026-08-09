@@ -74,10 +74,15 @@ end
 --- scaleform. This lands on the map with the tabs above it, which is what
 --- GTA Online itself looks like.
 --- Pause menu page ids, from the list the owner linked (pastebin qxuhwjPT).
---- Only the two we actually navigate to; nothing here is guessed.
+---
+--- ONLY THE MAP. Deep-linking a SETTINGS page was tried and does not work:
+--- GoDeeper does not reach 1139 (voice) from the multiplayer pause menu -- the
+--- menu simply stays on its own default, which is the map, so the button
+--- appeared to open the map instead (user, 2026-08-09). 1148 (key bindings) is
+--- the same list by the same mechanism and is assumed to fail the same way, so
+--- neither is offered. The screens that wanted them say where to find them.
 BR.Pause.PAGE = {
-    MAP    = 0,     -- the map's own fullscreen view, via GoDeeper + TheKick
-    KEYMAP = 1148,  -- Settings > Key Bindings, where a mouse button CAN be set
+    MAP = 0,   -- the map's own fullscreen view, via GoDeeper + TheKick
 }
 
 --- @param page integer|nil
@@ -111,7 +116,11 @@ function BR.Pause.openFrontendMap(page)
             return
         end
 
+        -- Consumed, not remembered. A page left set here would be reused by
+        -- the NEXT open, which is how a one-off navigation becomes a
+        -- permanent one.
         local page = BR.Pause.pendingPage or BR.Pause.mapPage or BR.Pause.PAGE.MAP
+        BR.Pause.pendingPage = nil
         local ok, err = pcall(function()
             PauseMenuceptionGoDeeper(page)
             PauseMenuceptionTheKick()
@@ -217,22 +226,6 @@ end)
 RegisterNUICallback(BR.NuiCb.PAUSE_ACTION, function(data, cb)
     local action = tostring(data and data.action or '')
 
-    if action == 'keymap' then
-        -- STRAIGHT TO GTA'S KEY BINDINGS PAGE (1148), not to the top of a
-        -- pause menu with directions. It is the one thing our own controls
-        -- screen genuinely cannot do -- a mouse button is invisible to the
-        -- raw-key layer -- so the handover should cost one click, not five.
-        --
-        -- Both of our screens have to come down first: the frontend is a
-        -- scaleform, so nothing we draw can sit over it, and a menu left open
-        -- underneath would keep the cursor.
-        BR.Pause.close()
-        TriggerEvent('br:ui:closeSettings')
-        BR.Pause.openFrontendMap(BR.Pause.PAGE.KEYMAP)
-        cb({ ok = true })
-        return
-    end
-
     if action == 'map' then
         -- THREE ROUTES, SWITCHABLE, BECAUSE THIS IS A QUESTION THE GAME
         -- ANSWERS AND NOT ONE THE DOCUMENTATION DOES.
@@ -318,16 +311,6 @@ end)
 -- interface.
 --- When the menu last changed state, so one press cannot count twice.
 local lastToggle = 0
-
--- ANY FRONTEND PAGE, from anywhere. The map uses it; so does the settings
--- screen's "open voice settings" button, which is the same handover for the
--- same reason -- push-to-talk is a client setting no script can write, and a
--- door is better than a control that lies.
-AddEventHandler('br:map:frontend:page', function(page)
-    BR.Pause.close()
-    TriggerEvent('br:ui:closeSettings')
-    BR.Pause.openFrontendMap(tonumber(page))
-end)
 
 AddEventHandler('br:ui:pauseToggle', function()
     -- TWO PATHS CAN SEE ONE ESCAPE. The interface has its own keydown handler

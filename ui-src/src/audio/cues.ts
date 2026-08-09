@@ -55,7 +55,7 @@ function ac(): AudioContext | null {
   if (!C) return null
   ctx = new C()
   master = ctx.createGain()
-  master.gain.value = volume
+  master.gain.value = gainFor(volume)
   master.connect(ctx.destination)
   return ctx
 }
@@ -85,9 +85,55 @@ if (typeof window !== 'undefined') {
   window.addEventListener('keydown', unlock)
 }
 
+/**
+ * HEADROOM, AND A CURVE.
+ *
+ * The slider used to be the gain directly, which gave the top of the range a
+ * ceiling of 1.0 and no way past it -- so a client that is quiet for any
+ * reason outside this file (a multi-channel output that mixes CEF into one
+ * speaker, a different device, the engine's own mix) could not be turned up
+ * (user, 2026-08-09: "really quiet on one client... changing the volume does
+ * nothing").
+ *
+ * Two changes. The slider is now SQUARED, which is much closer to how loudness
+ * is actually perceived -- a linear gain slider spends most of its travel in a
+ * range that all sounds the same. And full is 2.0, not 1.0, so the top of the
+ * slider has somewhere to go. Nothing clips: every cue peaks well under 0.3
+ * and they are short.
+ */
+const MAX_GAIN = 2.0
+
+function gainFor(v: number): number {
+  const x = Math.max(0, Math.min(1, v))
+  return x * x * MAX_GAIN
+}
+
 export function setUiVolume(v: number) {
   volume = Math.max(0, Math.min(1, v))
-  if (master) master.gain.value = volume
+  if (!master || !ctx) return
+  // setTargetAtTime rather than an assignment: a jumped gain on a graph that
+  // is mid-cue is an audible click, and a slider makes a lot of small jumps.
+  master.gain.setTargetAtTime(gainFor(volume), ctx.currentTime, 0.01)
+}
+
+/**
+ * What the audio graph actually is, for a client that sounds wrong.
+ *
+ * Printed to the console rather than shown, because the person who needs it is
+ * looking at F8 and comparing two machines. Sample rate and channel count are
+ * the two things that differ between clients and neither is visible any other
+ * way.
+ */
+export function soundReport(): Record<string, unknown> {
+  const a = ac()
+  return {
+    context: a ? a.state : 'unavailable',
+    sampleRate: a?.sampleRate ?? null,
+    channels: a?.destination.channelCount ?? null,
+    maxChannels: a?.destination.maxChannelCount ?? null,
+    slider: volume,
+    gain: master ? master.gain.value : null,
+  }
 }
 
 interface VoiceOpts {

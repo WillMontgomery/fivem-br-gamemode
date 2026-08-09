@@ -152,10 +152,44 @@ end)
 --- Which id is mid-swap, so the screen can say so. Nil when nothing is.
 local loadingId = nil
 
+--- The roster, minus anything this game build does not actually have.
+---
+--- EVERY MODEL NAME IN THE CONFIG IS HAND-TYPED and some of them are wrong --
+--- two already were ("never streamed", user 2026-08-09). The old failure mode
+--- was a character in the list that could be picked and then silently did
+--- nothing for five seconds while the request timed out.
+---
+--- IS_MODEL_IN_CDIMAGE answers "does this exist" locally and instantly, with
+--- no streaming and no wait, so the list can simply not contain the ones that
+--- do not. Computed ONCE and cached: the answer cannot change while the game
+--- is running.
+local verified = nil
+local function roster()
+    if verified then return verified end
+    verified = {}
+    local dropped = {}
+    for _, p in ipairs(BR.Config.Peds) do
+        local hash = GetHashKey(p.model)
+        if IsModelInCdimage(hash) and IsModelValid(hash) then
+            verified[#verified + 1] = p
+        else
+            dropped[#dropped + 1] = ('%s (%s)'):format(p.id, p.model)
+        end
+    end
+    if #dropped > 0 then
+        print(('[br_core] locker: %d model(s) not on this build, dropped: %s')
+            :format(#dropped, table.concat(dropped, ', ')))
+    end
+    -- A roster of nothing would leave the locker empty and the default
+    -- unresolvable, which is worse than one bad entry.
+    if #verified == 0 then verified = BR.Config.Peds end
+    return verified
+end
+
 --- Send the roster and the current choice to the interface.
 function BR.Locker.push()
     local list = {}
-    for _, p in ipairs(BR.Config.Peds) do
+    for _, p in ipairs(roster()) do
         list[#list + 1] = { id = p.id, name = p.name }
     end
     TriggerEvent('br:ui:sendLocal', BR.Nui.LOCKER,

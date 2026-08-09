@@ -92,22 +92,25 @@ export default function App() {
     }
   })
 
-  // ESC IN THE LOBBY -> GTA'S PAUSE MENU. The engine never sees the key
-  // while NUI holds focus, so the page captures it: fade the menu out
-  // immediately (pauseHiding), then ask Lua to drop focus and raise the
-  // pause screen. The fallback timer covers a failed round-trip -- a menu
-  // that faded out and never came back would be a soft lock.
+  // ESC IN THE LOBBY OPENS OUR SETTINGS.
+  //
+  // It used to raise GTA'S pause menu, which was the right answer when we did
+  // not have one of our own -- and is now the wrong one twice over: the
+  // engine's menu opened and immediately closed again (br_core suppresses the
+  // frontend now that Escape is ours), so the key appeared to flicker and do
+  // nothing (user, 2026-08-09).
+  //
+  // In the lobby there is no match to pause, so the useful destination is the
+  // settings screen -- which is what a player pressing Escape at a menu is
+  // reaching for anyway. In a MATCH, Escape is the pause menu and br_core
+  // routes it; this handler deliberately only fires on the lobby.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       const st = useUi.getState()
-      if (st.focus !== 'lobby' || st.pauseHiding || !st.worldReady) return
-      st.setPauseHiding(true)
-      void fetchNui(CB.PAUSE, {})
-      window.setTimeout(() => {
-        const cur = useUi.getState()
-        if (cur.pauseHiding && !cur.hud.paused) cur.setPauseHiding(false)
-      }, 1500)
+      if (st.focus !== 'lobby' || !st.worldReady) return
+      e.preventDefault()
+      void fetchNui(CB.SETTINGS_FOCUS, { open: true })
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)

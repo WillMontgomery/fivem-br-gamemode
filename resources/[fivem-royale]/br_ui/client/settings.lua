@@ -270,10 +270,3 @@ AddEventHandler('onClientResourceStart', function(res)
     if res ~= RES then return end
     BR.Settings.get()   -- warm the cache, so a corrupt value is reported at boot
 end)
-
--- PUSH-TO-TALK IS A CLIENT SETTING, so this is a door rather than a control.
--- br_core owns the natives and knows the page id; this only forwards.
-RegisterNUICallback(BR.NuiCb.VOICE_SETTINGS, function(_, cb)
-    TriggerEvent('br:voice:openSettings')
-    cb({ ok = true })
-end)

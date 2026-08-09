@@ -62,12 +62,22 @@ document.documentElement.classList.add('dark')
 //     brcues()            play every cue, 700ms apart
 //     brcues('ui.back')   play one
 void import('./audio/cues').then((a) => {
-  ;(window as unknown as { brcues: (c?: string) => void }).brcues = (c) => {
+  const w = window as unknown as {
+    brcues: (c?: string) => void
+    brsound: () => void
+  }
+  w.brcues = (c) => {
     if (c) { a.play(c as never); return }
     a.CUE_NAMES.forEach((name, i) => {
       setTimeout(() => { console.log('cue:', name); a.play(name) }, i * 700)
     })
   }
+  // WHAT THE AUDIO GRAPH ACTUALLY IS. Interface sound being quiet on one
+  // machine and right on another (user, 2026-08-09) is not something this
+  // code can see -- sample rate, channel count and the context's own state
+  // differ per client and are invisible any other way. `brsound()` on both
+  // machines turns "it is quiet" into two lines that can be compared.
+  w.brsound = () => console.log('[br_ui] sound', a.soundReport())
 })
 
 createRoot(root).render(

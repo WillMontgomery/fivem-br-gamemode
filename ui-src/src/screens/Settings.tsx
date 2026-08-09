@@ -389,15 +389,11 @@ export default function Settings({
                   play('ui.hover')
                 }}
               />
-              <Slider
-                label="Music" value={draft.volMusic} dflt={DEFAULT_SETTINGS.volMusic}
-                min={0} max={1} step={0.01}
-                format={(v) => (v === 0 ? 'Muted' : `${Math.round(v * 100)}%`)}
-                onChange={(v) => set('volMusic', v)}
-              />
-              <p className="micro-label">
-                Music is not in the game yet — this is stored for when it is.
-              </p>
+              {/* THE MUSIC SLIDER IS GONE until there is music (owner,
+                  2026-08-09). A control for a system that does not exist is a
+                  control that can only ever do nothing, and its own caption
+                  said so. The stored value stays in the schema, so turning it
+                  back on is one component rather than a migration. */}
           </Section>
 
           <Section title="Voice">
@@ -460,31 +456,21 @@ export default function Settings({
                 level.
               </p>
 
-              {/* THE DOOR, NOT A FAKE CONTROL. Push-to-talk versus voice
-                  activation, the input device and the master output level are
+              {/* NO BUTTON, BECAUSE THE BUTTON WENT TO THE WRONG PLACE.
+                  Push-to-talk, the input device and the output level are
                   CLIENT settings -- the same class as key bindings, and
-                  unreachable from script for the same reason. A toggle here
-                  would be a toggle that does nothing. */}
-              <button
-                type="button"
-                className="btn plate px-4 py-2 self-start font-display uppercase
-                           tracking-[0.12em] text-[0.78rem]"
-                style={{
-                  ['--edgec' as string]: 'rgba(255,255,255,0.22)',
-                  ['--plate-fill' as string]: 'rgba(30,34,48,0.94)',
-                  ['--cut-max' as string]: '0.4rem',
-                }}
-                onPointerEnter={() => play('ui.hover')}
-                onClick={() => {
-                  play('ui.select')
-                  void fetchNui(CB.VOICE_SETTINGS, {})
-                }}
-              >
-                Push-to-talk &amp; microphone
-              </button>
+                  unreachable from script for the same reason.
+
+                  The attempt to at least deep-link them opened the pause menu
+                  on page 1139 (SETTINGS_VOICE_CHAT) and landed on the MAP
+                  instead: PauseMenuceptionGoDeeper does not reach that page
+                  from the multiplayer pause menu, and there is no other way in
+                  (user, 2026-08-09). A button that opens the wrong screen is
+                  worse than a sentence that names the right one. */}
               <p className="micro-label" style={{ textTransform: 'none' }}>
-                Push-to-talk, your microphone and the output level live in the
-                game&apos;s own voice settings. This opens them.
+                Push-to-talk, your microphone and the output level are FiveM
+                settings rather than ours — press Escape twice to reach the
+                game&apos;s own menu, under Settings › Voice Chat.
               </p>
           </Section>
           <Section title="Identity">

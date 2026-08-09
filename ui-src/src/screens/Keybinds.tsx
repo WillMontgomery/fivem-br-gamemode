@@ -161,27 +161,18 @@ export default function Keybinds() {
             : 'Click a key to rebind it. Taking a key clears whatever held it.'}
       </p>
 
-      {/* THE DOOR TO GTA'S LIST, and it opens ON the key bindings page rather
-          than at the top of a pause menu with directions. It appears once
-          somebody has tried a mouse button, because until then it is an
-          invitation to the screen this one exists to replace. */}
+      {/* NO BUTTON HERE EITHER, and for the same reason as the voice one.
+          Deep-linking a pause-menu page turned out not to work:
+          PauseMenuceptionGoDeeper does not reach Settings pages from the
+          multiplayer pause menu -- the voice attempt landed on the map (user,
+          2026-08-09) -- and the key bindings page is in the same list by the
+          same mechanism. Rather than ship a second button with the same
+          likely failure, the line says where the screen is. */}
       {mouseTried && (
-        <button
-          type="button"
-          className="btn plate px-4 py-2 font-display uppercase tracking-[0.12em] text-[0.78rem] self-start"
-          style={{
-            ['--edgec' as string]: 'rgba(255,255,255,0.22)',
-            ['--plate-fill' as string]: 'rgba(30,34,48,0.94)',
-            ['--cut-max' as string]: '0.4rem',
-          }}
-          onPointerEnter={() => play('ui.hover')}
-          onClick={() => {
-            play('ui.select')
-            void fetchNui(CB.PAUSE_ACTION, { action: 'keymap' })
-          }}
-        >
-          Open GTA key bindings
-        </button>
+        <p className="micro-label" style={{ textTransform: 'none' }}>
+          Mouse buttons can be bound in the game&apos;s own key bindings —
+          press Escape twice to reach it, under Settings › Key Bindings.
+        </p>
       )}
     </div>
   )

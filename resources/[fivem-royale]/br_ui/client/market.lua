@@ -144,40 +144,18 @@ AddEventHandler(BR.Net.SUMMARY, function(s)
     -- A beat after the verdict lands, so the slam owns the first moment and
     -- the bar is not already moving when the player looks at it. .end-late
     -- flies the supporting lines in at 3.6s; this arrives just behind them.
-    -- 2.0s, DOWN FROM 4.2s. The verdict screen only exists while the match is
-    -- tearing down, and the award has to land AND animate inside that window
-    -- -- the fill alone is 1.4s and the level-up sequence adds two more. At
-    -- 4.2s it was arriving with barely a second of screen left, or after the
-    -- screen had gone, which is why it had never actually been seen (user,
-    -- 2026-08-09, twice).
+    -- THE AWARD IS THE INTERFACE'S NOW, and this is deliberately not doing
+    -- it any more. It used to push one a couple of seconds after the summary
+    -- arrived, timed against a verdict screen it cannot observe -- and the
+    -- animation was reported as never appearing, twice, because a delay tuned
+    -- against the teardown window misses it whenever teardown is quick.
     --
-    -- The slam still gets the first moment: it lands at ~1.2s and .end-late
-    -- flies the supporting lines in behind it.
-    Citizen.SetTimeout(2000, function()
-        -- THE VERDICT SCREEN ALWAYS SHOWS THE LEVEL-UP, while the data is
-        -- synthetic (owner, 2026-08-09: "display the normal animation for
-        -- when players get from 2/3 XP, level up, then get to 1/3 XP on the
-        -- next level").
-        --
-        -- The animation for crossing a level is the interesting one and the
-        -- one worth looking at, and a random award lands on it perhaps one
-        -- match in four. So the profile is POSED first: two thirds along the
-        -- current level, and the award is whatever reaches one third of the
-        -- next. The bar then runs to full, holds, flips the number and
-        -- refills -- the real sequence, on a guaranteed case.
-        --
-        -- DELETE THIS BLOCK when a server issues real XP. It is staging, not
-        -- economy: `earned` above is already the shape of the real formula
-        -- and is what the print reports.
-        PROFILE.xp = math.floor(PROFILE.needed * 2 / 3)
-        local nextNeeded = math.floor(PROFILE.needed * 1.15)
-        local staged = (PROFILE.needed - PROFILE.xp) + math.floor(nextNeeded / 3)
-        TriggerEvent('br:ui:sendLocal', BR.Nui.PROGRESS, PROFILE)
-
-        BR.Market.award(staged)
-        print(('[br_ui] match XP: +%d (placement %d/%d, %d kills)')
-            :format(earned, placement, total, kills))
-    end)
+    -- screens/EndScreen.tsx fires the staged award from its own mount, which
+    -- cannot miss a screen that has to exist for the timer to run at all.
+    -- This handler keeps the FORMULA -- the shape of the real one -- so that
+    -- swapping in a server-issued xpEarned is still a one-line change.
+    print(('[br_ui] match XP would be +%d (placement %d/%d, %d kills)')
+        :format(earned, placement, total, kills))
 end)
 
 AddEventHandler('br:ui:ready', function()

@@ -213,16 +213,6 @@ AddEventHandler('br:ui:ready', function()
     TriggerEvent('br:ui:sendLocal', BR.Nui.VOICE, { talking = BR.Voice.talking })
 end)
 
--- PUSH-TO-TALK IS NOT OURS TO SET. Whether the microphone is push-to-talk or
--- voice-activated, which device it uses, and the master output level are
--- CLIENT settings -- the same class as key bindings, and unreachable from
--- script for the same reason. So the settings screen offers the door rather
--- than a control that cannot work: FiveM's own voice page, 1139
--- (SETTINGS_VOICE_CHAT) in the pause-menu page list.
-AddEventHandler('br:voice:openSettings', function()
-    TriggerEvent('br:map:frontend:page', 1139)
-end)
-
 RegisterCommand('brvoice', function()
     local s = BR.Voice.state
     print('=== voice (client) ===')
