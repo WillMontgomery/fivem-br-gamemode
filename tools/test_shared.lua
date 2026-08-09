@@ -14,6 +14,8 @@ for _, f in ipairs({
     'shared/rng.lua',
     'shared/geo.lua',
     'shared/clock.lua',
+    'shared/outbox.lua',
+    'shared/identity.lua',
     'config/match.lua',
     'config/storm.lua',
     'config/map.lua',
@@ -2097,6 +2099,196 @@ do
     -- screen ever closes.
     ok(R({ 'lobby', 'settings' }).screen ~= R({ 'lobby' }).screen,
         'popping back to the lobby is a change the page can see')
+end
+
+-- ----------------------------------------------------------------- outbox ---
+--
+-- The outbox is what stands between "something outside the game is down" and
+-- "the match is down". Every assertion here is one of those two words.
+
+describe('outbox')
+do
+    -- A batch is only in flight once. A driver polling on a timer must not be
+    -- able to send the same events twice by calling take() again.
+    local ob = BR.Outbox.new()
+    ob:emit('a', { n = 1 }, 0)
+    ob:emit('b', { n = 2 }, 0)
+
+    local first = ob:take(0)
+    ok(first and #first == 2, 'take returns everything queued')
+    ok(ob:take(0) == nil, 'take returns nil while a batch is in flight')
+
+    ob:ack(0)
+    ok(ob:stats().sent == 2, 'ack counts what was delivered')
+    ok(ob:take(0) == nil, 'take returns nil when the queue is empty')
+end
+
+do
+    -- Ordering across a retry. A failed batch goes back in FRONT of whatever
+    -- was queued while it was in flight, or an audit log reads out of order.
+    local ob = BR.Outbox.new()
+    ob:emit('a', {}, 0)
+    ob:emit('b', {}, 0)
+    ob:take(0)
+    ob:emit('c', {}, 0)
+
+    ok(ob:nack(0) == true, 'the first failure retries')
+
+    local again = ob:take(99999)
+    ok(again and #again == 3, 'the retry picks up the events queued behind it')
+    ok(again and again[1].kind == 'a' and again[3].kind == 'c',
+        'and oldest-first order survives the retry')
+end
+
+do
+    -- Giving up. retryMax failures must drop the batch rather than wedge
+    -- everything behind it forever -- "queue and drop, do not retry into a
+    -- stall".
+    local ob = BR.Outbox.new({ retryMax = 2 })
+    ob:emit('a', {}, 0)
+
+    local t = 0
+    ob:take(t)
+    ok(ob:nack(t) == true,  'failure 1 of 2 retries')
+    t = 999999; ob:take(t)
+    ok(ob:nack(t) == true,  'failure 2 of 2 retries')
+    t = 999999 * 2; ob:take(t)
+    ok(ob:nack(t) == false, 'failure 3 gives up')
+
+    ok(ob:depth() == 0, 'and the batch is gone rather than queued forever')
+    ok(ob:stats().droppedRetry == 1, 'the give-up is counted, not silent')
+end
+
+do
+    -- Backoff. take() must refuse to hand out work during the backoff window,
+    -- or "retry with backoff" is just "retry in a tight loop".
+    local ob = BR.Outbox.new({ backoffMs = 1000 })
+    ob:emit('a', {}, 0)
+    ob:take(0)
+    ob:nack(0)
+
+    ok(ob:take(500)  == nil, 'take is silent inside the backoff window')
+    ok(ob:take(1000) ~= nil, 'and hands out work once it has passed')
+end
+
+do
+    -- Backoff grows, and stops growing. An uncapped exponential reaches
+    -- "retry next century" after surprisingly few failures.
+    local ob = BR.Outbox.new({ backoffMs = 1000, backoffMaxMs = 4000, retryMax = 99 })
+    ob:emit('a', {}, 0)
+
+    ob:take(0);     ob:nack(0)
+    local first = ob.nextAttempt
+    ob:take(first); ob:nack(first)
+    local second = ob.nextAttempt - first
+
+    ok(first == 1000, 'first backoff is the base delay')
+    ok(second == 2000, 'the second doubles')
+
+    for _ = 1, 6 do
+        local t = ob.nextAttempt
+        ob:take(t); ob:nack(t)
+    end
+    local t = ob.nextAttempt
+    ob:take(t); ob:nack(t)
+    ok(ob.nextAttempt - t == 4000, 'and it caps rather than reaching next century')
+end
+
+do
+    -- Overflow drops the OLDEST. A full queue means the endpoint is behind,
+    -- and the freshest events are the ones still worth having.
+    local ob = BR.Outbox.new({ capacity = 3 })
+    for i = 1, 5 do ob:emit('e', { n = i }, 0) end
+
+    local batch = ob:take(0)
+    ok(#batch == 3, 'the queue never exceeds its capacity')
+    ok(batch[1].data.n == 3 and batch[3].data.n == 5,
+        'and what survives is the newest, not the oldest')
+    ok(ob:stats().droppedFull == 2, 'the overflow is counted')
+end
+
+do
+    -- No endpoint configured: emit still costs nothing and still counts, so
+    -- callers never branch on whether persistence exists.
+    local ob = BR.Outbox.new({ enabled = false })
+    ok(ob:emit('a', {}, 0) == false, 'a disabled outbox refuses the event')
+    ok(ob:depth() == 0, 'and queues nothing')
+    ok(ob:stats().droppedOff == 1, 'but still counts what would have been sent')
+end
+
+-- --------------------------------------------------------------- identity ---
+--
+-- These decide who a person IS for bans and admin grants. A wrong answer here
+-- files a ban against the wrong human.
+
+describe('identity')
+do
+    local P = BR.Identity.parse
+
+    -- The prefix trap. `license2` is a DIFFERENT FiveM identifier from
+    -- `license`, not a variant, so a `raw:sub(1, 7) == 'license'` style test
+    -- would file two people's identifiers under one key.
+    local byKind = P({ 'license2:bbb' })
+    ok(byKind.license == nil,     'license2 does not satisfy license')
+    ok(byKind.license2 == 'bbb',  'and is kept under its own key')
+
+    local both = P({ 'license:aaa', 'license2:bbb' })
+    ok(both.license == 'aaa' and both.license2 == 'bbb',
+        'the two coexist without colliding')
+end
+
+do
+    -- IP is refused. This is a deliberate product decision, not an oversight,
+    -- so it gets a test that fails loudly if someone "fixes" the allowlist.
+    local byKind, ordered, dropped = BR.Identity.parse({
+        'license:aaa', 'ip:203.0.113.7', 'discord:123',
+    })
+    ok(byKind.ip == nil,  'ip is never collected')
+    ok(dropped == 1,      'and the refusal is counted')
+    ok(#ordered == 2,     'the rest survive')
+end
+
+do
+    -- An allowlist means anything unanticipated is excluded by construction --
+    -- including identifier types FiveM has not invented yet.
+    local byKind, _, dropped = BR.Identity.parse({ 'quantumid:xyz', 'license:aaa' })
+    ok(byKind.quantumid == nil, 'an unknown identifier type is refused')
+    ok(dropped == 1,            'and counted')
+end
+
+do
+    -- Deterministic order. "Never iterate a hash" applies here as much as it
+    -- does to the loot tables: `ordered` follows ALLOWED, not input order.
+    local _, ordered = BR.Identity.parse({ 'live:c', 'discord:b', 'license:a' })
+    ok(ordered[1].kind == 'license', 'ordered starts at license')
+    ok(ordered[2].kind == 'discord', 'then discord')
+    ok(ordered[3].kind == 'live',    'then live -- input order is irrelevant')
+end
+
+do
+    -- Junk in the list must not become junk in the record.
+    local byKind, ordered, dropped = BR.Identity.parse({
+        'nocolonhere', 'license:', ':aaa', '', 'steam:110000100000000',
+    })
+    ok(byKind.steam == '110000100000000', 'a good identifier survives the junk')
+    ok(#ordered == 1,  'and nothing else does')
+    ok(dropped == 4,   'every malformed entry is counted')
+end
+
+do
+    -- Duplicates: first wins. A second value for the same kind has no better
+    -- claim than the first, and picking the later one would let a spoofed
+    -- trailing entry override a real leading one.
+    local byKind, _, dropped = BR.Identity.parse({ 'discord:first', 'discord:second' })
+    ok(byKind.discord == 'first', 'the first value for a kind wins')
+    ok(dropped == 1,              'the duplicate is counted')
+end
+
+do
+    ok(select('#', BR.Identity.parse({})) == 3, 'an empty list is not an error')
+    local byKind, ordered, dropped = BR.Identity.parse(nil)
+    ok(next(byKind) == nil and #ordered == 0 and dropped == 0,
+        'nor is a nil list')
 end
 
 -- ----------------------------------------------------------------- result ---
