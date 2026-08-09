@@ -200,8 +200,18 @@ BR.Server = {
     -- are global and unaffected by entity scoping.
     roster = {},
 
-    -- squads[squadId] = { id, members = { src, ... }, colour, alive, placement }
-    squads = {},
+    -- THERE IS NO SQUAD REGISTRY, and there deliberately is not one.
+    --
+    -- There used to be a `squads` table here. Parties took squad formation over
+    -- and BR.Party.formSquads stamps `squadId` straight onto each roster entry,
+    -- so nothing ever wrote to it again -- while /brsquads went on reading it
+    -- and reporting "(no squads)" through every squad match that has ever been
+    -- played (owner, in game, 2026-08-09). A cache nobody fills is worse than
+    -- no cache, because the thing reading it answers confidently.
+    --
+    -- The roster is the source of truth for squad membership exactly as it is
+    -- for everything else. BR.Server.squadsAlive and /brsquads both derive from
+    -- it, and there is no second place for the two to disagree.
 }
 
 --- Count players in the roster matching an optional predicate.

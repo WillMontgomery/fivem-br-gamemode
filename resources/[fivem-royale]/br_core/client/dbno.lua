@@ -52,52 +52,66 @@ local function pushMine()
     })
 end
 
--- The crawl animation, resolved once at first use.
+-- THE DOWNED POSE.
 --
--- PROBED, NOT ASSUMED. `SetPedMovementClipset` with a crawl clipset is the
--- clean answer if the clipset exists on this build, and the fallback is the
--- injured-ground animation played as a loop. Neither is documented anywhere
--- authoritative for a networked FiveM client, and a wrong dictionary name is
--- invisible to luac and to the unit tests -- it throws at runtime, and five
--- throws suspend the whole frame callback. So the dictionary is requested and
--- CHECKED, and a build that has neither degrades to lying still rather than to
--- a dead subsystem.
-local CRAWL = {
-    clipset = 'move_crawl',
-    dict    = 'move_injured_ground',
-    anim    = 'front_loop',
-    picked  = nil,   -- 'clipset' | 'anim' | 'none'
+-- WHAT WENT WRONG THE FIRST TIME, because it is the whole reason this is now
+-- written the careful way. The first cut called
+-- `SetPedMovementClipset(ped, 'move_crawl')`. `move_crawl` is an ANIMATION
+-- DICTIONARY, not a locomotion clipset -- and handing a movement clipset
+-- something that is not one does not fail, it puts the ped in BIND POSE. A
+-- downed player stood there in a perfect T-pose (owner, in game). The clipset
+-- request even reported success, which is how it got past the guard that was
+-- supposed to catch exactly this.
+--
+-- So: no movement clipset unless somebody has watched one work. These are
+-- animation dictionaries played as a loop, tried in order, and a build with
+-- none of them lies still rather than T-posing. `/brcrawl` is the probe that
+-- turns this list from a guess into a fact -- run it in game and the answer
+-- decides what ships.
+local CRAWL_CANDIDATES = {
+    { dict = 'move_crawl',                anim = 'onfront_fwd' },
+    { dict = 'combat@damage@writhe',      anim = 'writhe_loop' },
+    { dict = 'move_injured_ground',       anim = 'front_loop'  },
+    { dict = 'random@dealgonewrong',      anim = 'idle_a'      },
 }
 
---- Work out which crawl this build can actually do. Returns the choice.
---- @return string
+-- The one that loaded, or false once every candidate has been tried and failed.
+local crawl = nil
+
+--- Request a dictionary and wait a beat for it. Returns whether it landed.
+--- @param dict string
+--- @return boolean
+local function loadDict(dict)
+    if HasAnimDictLoaded(dict) then return true end
+    -- DoesAnimDictExist first: requesting a name the game has never heard of
+    -- is a streaming request that can never complete, so without this the
+    -- 400ms wait below would be paid for every bad guess in the list.
+    if DoesAnimDictExist and not DoesAnimDictExist(dict) then return false end
+
+    RequestAnimDict(dict)
+    local deadline = GetGameTimer() + 400
+    while not HasAnimDictLoaded(dict) and GetGameTimer() < deadline do
+        Citizen.Wait(0)
+    end
+    return HasAnimDictLoaded(dict)
+end
+
+--- The first candidate this build can actually play, or nil.
+--- @return table|nil
 local function resolveCrawl()
-    if CRAWL.picked then return CRAWL.picked end
+    if crawl ~= nil then return crawl or nil end
 
-    -- The clipset route first: it keeps GTA's own locomotion, so the player
-    -- steers with the stick and the engine handles turning and slopes.
-    RequestClipSet(CRAWL.clipset)
-    local deadline = GetGameTimer() + 500
-    while not HasClipSetLoaded(CRAWL.clipset) and GetGameTimer() < deadline do
-        Citizen.Wait(0)
-    end
-    if HasClipSetLoaded(CRAWL.clipset) then
-        CRAWL.picked = 'clipset'
-        return CRAWL.picked
+    for _, c in ipairs(CRAWL_CANDIDATES) do
+        if loadDict(c.dict) then
+            crawl = c
+            print(('[br_core] dbno: downed pose is %s / %s'):format(c.dict, c.anim))
+            return crawl
+        end
     end
 
-    RequestAnimDict(CRAWL.dict)
-    deadline = GetGameTimer() + 500
-    while not HasAnimDictLoaded(CRAWL.dict) and GetGameTimer() < deadline do
-        Citizen.Wait(0)
-    end
-    CRAWL.picked = HasAnimDictLoaded(CRAWL.dict) and 'anim' or 'none'
-
-    if CRAWL.picked == 'none' then
-        print(('[br_core] dbno: no crawl available (clipset "%s" and dict "%s" both absent) -- downed players will lie still')
-            :format(CRAWL.clipset, CRAWL.dict))
-    end
-    return CRAWL.picked
+    crawl = false
+    print('[br_core] dbno: no downed animation on this build -- downed players will lie still. Run /brcrawl.')
+    return nil
 end
 
 --- Put the player on the floor and start whatever crawl this build supports.
@@ -121,13 +135,12 @@ local function enterDowned()
         Citizen.Wait(1200)
         if not mine.downed then return end
 
-        local choice = resolveCrawl()
-        local p = PlayerPedId()
-        if choice == 'clipset' then
-            SetPedMovementClipset(p, CRAWL.clipset, 1.0)
-            SetPedMoveRateOverride(p, M.dbnoCrawlSpeed or 0.55)
-        elseif choice == 'anim' then
-            TaskPlayAnim(p, CRAWL.dict, CRAWL.anim, 8.0, -8.0, -1,
+        local c = resolveCrawl()
+        if c then
+            -- Flag 1 is the looping one. It plays IN PLACE: this is a pose,
+            -- not locomotion, and it is deliberately not pretending otherwise
+            -- until the probe says which asset can carry movement.
+            TaskPlayAnim(PlayerPedId(), c.dict, c.anim, 8.0, -8.0, -1,
                          1, 0.0, false, false, false)
         end
     end)
@@ -136,12 +149,59 @@ end
 --- Stand back up: undo everything enterDowned did.
 local function leaveDowned()
     local ped = PlayerPedId()
+    -- Reset the movement clipset even though nothing sets one any more. It is
+    -- two native calls, and the alternative -- a player who was downed by an
+    -- OLDER client build walking into the lobby at crawling pace -- is the
+    -- undeleted-object bug in a different costume.
     ResetPedMovementClipset(ped, 0.0)
     SetPedMoveRateOverride(ped, 1.0)
     ClearPedTasks(ped)
     -- The inventory re-arms itself on the next pass, now that canArm() is true
     -- again; asking it here would race the state delta that made it true.
 end
+
+--- The server says the bleed ran out. Our ped has not noticed.
+---
+--- A downed ped is alive and invincible, so nothing about being eliminated
+--- reaches it on its own -- the server sends HEALTH_SYNC 0 alongside this and
+--- that is what should land the kill. This is the belt to that pair of braces:
+--- invincibility is re-decided every frame from the mirror's state, so there is
+--- a window of a frame or two where a health write can be ignored, and a player
+--- left alive after the match has finished with them is the worst possible
+--- outcome to leave to a race.
+local function dieNow()
+    Citizen.CreateThread(function()
+        for _ = 1, 12 do
+            local ped = PlayerPedId()
+            if IsEntityDead(ped) or IsPedFatallyInjured(ped) then return end
+            SetEntityHealth(ped, 0)
+            Citizen.Wait(100)
+        end
+        print('[br_core] dbno: the ped would not die after a bleed-out -- tell somebody')
+    end)
+end
+
+-- A DOWNED PLAYER DOES NOT RUN, DRIVE OR SWING.
+--
+-- The pose is stationary in this build -- see CRAWL_CANDIDATES for why the
+-- moving version is waiting on a probe rather than on a guess -- so movement
+-- is taken away outright instead of being left to slide the ped around
+-- underneath an in-place animation. Weapons are already gone (canArm drops
+-- DBNO and enterDowned strips the ped), but ATTACK still has to go or a downed
+-- player throws punches from the floor.
+local DOWNED_BLOCKED = {
+    21, 22, 23, 24, 25,          -- sprint, jump, enter, attack, aim
+    30, 31, 32, 33, 34, 35,      -- movement axes and WASD
+    44, 75,                      -- cover, exit vehicle
+    140, 141, 142, 143,          -- melee attacks and block
+}
+
+BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
+    if not mine.downed then return end
+    for i = 1, #DOWNED_BLOCKED do
+        DisableControlAction(0, DOWNED_BLOCKED[i], true)
+    end
+end)
 
 RegisterNetEvent(BR.Net.DBNO_SET)
 AddEventHandler(BR.Net.DBNO_SET, function(d)
@@ -158,6 +218,9 @@ AddEventHandler(BR.Net.DBNO_SET, function(d)
         BR.Sfx.play('hit.crit')
     elseif was and not mine.downed then
         leaveDowned()
+        -- Picked up, or finished. The two look identical from here except for
+        -- this flag, and only one of them ends with a body.
+        if d.died then dieNow() end
     end
 
     pushMine()
@@ -375,6 +438,61 @@ end)
 -- Debug
 -- --------------------------------------------------------------------------
 
+--- WHICH DOWNED POSE THIS BUILD ACTUALLY HAS.
+---
+---   brcrawl        what exists, and what loads
+---   brcrawl <n>    play candidate n on your own ped for six seconds
+---
+--- This command exists because the first version of the downed state guessed
+--- an asset name, guessed the wrong KIND of asset, and put every downed player
+--- in a T-pose. `move_crawl` is an animation dictionary; it was handed to
+--- SetPedMovementClipset, which does not fail on a bad clipset -- it renders
+--- bind pose. Read the `clipset?` column with that in mind: it reported TRUE
+--- for the asset that caused the bug, so it is a hint and not an answer.
+--- Watching `brcrawl <n>` is the answer.
+RegisterCommand('brcrawl', function(_, args)
+    local n = tonumber(args[1])
+
+    if n and CRAWL_CANDIDATES[n] then
+        local c = CRAWL_CANDIDATES[n]
+        if not loadDict(c.dict) then
+            print(('  %s did not load -- nothing to show'):format(c.dict))
+            return
+        end
+        print(('[br_core] playing %s / %s for 6s'):format(c.dict, c.anim))
+        Citizen.CreateThread(function()
+            local ped = PlayerPedId()
+            TaskPlayAnim(ped, c.dict, c.anim, 8.0, -8.0, -1, 1, 0.0,
+                         false, false, false)
+            Citizen.Wait(6000)
+            ClearPedTasks(PlayerPedId())
+            print('[br_core] done')
+        end)
+        return
+    end
+
+    print('=== downed pose candidates ===')
+    print('  #  dict / anim                              exists  loads  clipset?')
+    for i, c in ipairs(CRAWL_CANDIDATES) do
+        local exists = (not DoesAnimDictExist) or DoesAnimDictExist(c.dict)
+        local loads  = exists and loadDict(c.dict) or false
+        -- REPORTED, NEVER APPLIED. Applying an unverified movement clipset is
+        -- precisely what T-posed a downed player, and a probe that reproduces
+        -- the bug it is investigating is not a probe.
+        RequestClipSet(c.dict)
+        local asClip = HasClipSetLoaded(c.dict)
+        print(('  %d  %-40s %-7s %-6s %s'):format(
+            i, c.dict .. ' / ' .. c.anim,
+            tostring(exists), tostring(loads), tostring(asClip)))
+    end
+    print(('  in use: %s'):format(
+        crawl and (crawl.dict .. ' / ' .. crawl.anim)
+              or (crawl == false and 'none -- lying still' or 'not resolved yet')))
+    print('  "brcrawl <n>" plays one on your own ped for six seconds.')
+    print('  clipset? TRUE is NOT proof -- it read true for the asset that')
+    print('  T-posed everybody. Watch it before believing it.')
+end, false)
+
 RegisterCommand('brdbno', function()
     print('=== dbno (client) ===')
     print(('  me         : %s'):format(tostring(BR.State.me.state)))
@@ -383,7 +501,9 @@ RegisterCommand('brdbno', function()
                 (mine.bleedEndsAt - BR.Clock.now()) / 1000.0))
     print(('  reviver    : %s  %.0f%%')
         :format(tostring(mine.reviverName), mine.revivePct or 0.0))
-    print(('  crawl      : %s'):format(tostring(CRAWL.picked or 'not resolved yet')))
+    print(('  pose       : %s   (brcrawl for the candidate list)'):format(
+        crawl and (crawl.dict .. ' / ' .. crawl.anim)
+              or (crawl == false and 'none -- lying still' or 'not resolved yet')))
     local target, dist = nearestDowned()
     print(('  in reach   : %s%s'):format(tostring(target),
         dist and (' at %.2fm'):format(dist) or ''))

@@ -64,9 +64,33 @@ function BR.Combat.eliminate(src, cause, killerSrc)
         BR.Loot.deathBox(m, src)
     end
 
+    -- A BLEED-OUT IS A DEATH THE PED HAS NOT HEARD ABOUT.
+    --
+    -- Every other route into this function arrives because something already
+    -- died: the client watched its own ped go down, or the server read a dead
+    -- body. A downed player is the opposite -- their ped is alive, invincible
+    -- by design (see the DBNO note in client/natives.lua), and the only thing
+    -- that has changed is a number in this file. So flipping the roster to DEAD
+    -- and stopping there left the placard on screen, the crawl running and the
+    -- player conscious with the match already over for them (owner, in game).
+    --
+    -- Two instructions, because the client half is two separate facts: stop
+    -- being downed, and die. HEALTH_SYNC is the existing verb for the second --
+    -- the server saying what a number IS rather than how much to move it.
+    local wasDowned = entry.state == BR.PlayerState.DBNO
+    entry.dbnoUntil, entry.downedBy = nil, nil
+    entry.reviverSrc, entry.reviveFrom = nil, nil
+    -- dbnoCount deliberately survives: it is per MATCH and resets at CLEANUP,
+    -- so being finished does not hand the next knock a fresh 45 seconds.
+
     BR.Roster.setState(src, BR.PlayerState.DEAD)
     entry.placement = placement
     BR.Broadcast.delta({ op = 'update', src = src, e = { placement = placement } })
+
+    if wasDowned then
+        TriggerClientEvent(BR.Net.DBNO_SET, src, { downed = false, died = true })
+        TriggerClientEvent(BR.Net.HEALTH_SYNC, src, { hp = 0, armour = 0 })
+    end
 
     local killer = killerSrc and BR.Roster.get(killerSrc)
     if killer and killerSrc ~= src then

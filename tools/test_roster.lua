@@ -5006,6 +5006,36 @@ do
     ok(last and last.cause == 'bledout', 'and says how it ended',
         tostring(last and last.cause))
 
+    -- AND THE PED IS TOLD, which is the half that reached a playtest.
+    --
+    -- Every other route into eliminate() arrives because something already
+    -- died. A downed player's ped is alive and invincible by design, so the
+    -- roster flipping to DEAD reaches nothing on its own: the placard stayed on
+    -- screen, the pose kept playing and the player stayed conscious with the
+    -- match over for them (owner, in game). Two instructions have to go out --
+    -- stop being downed, and die -- and neither is visible from the server
+    -- tables, which is exactly why this asserts on the wire.
+    local sawClear, sawKill = false, false
+    for _, s in ipairs(sent) do
+        if s.event == BR.Net.DBNO_SET and s.target == 1
+           and s.args[1] and s.args[1].downed == false
+           and s.args[1].died == true then
+            sawClear = true
+        end
+        if s.event == BR.Net.HEALTH_SYNC and s.target == 1
+           and s.args[1] and s.args[1].hp == 0 then
+            sawKill = true
+        end
+    end
+    ok(sawClear, 'the downed player is told the downed state is over, and that they died')
+    ok(sawKill, 'and told to put their own ped on the floor for good')
+
+    ok(BR.Roster.get(1).dbnoUntil == nil and BR.Roster.get(1).downedBy == nil,
+        'and the bleed bookkeeping is cleared with them')
+    ok(BR.Roster.get(1).dbnoCount == 1,
+        'but the knock COUNT survives -- it is per match, not per life',
+        BR.Roster.get(1).dbnoCount)
+
     -- THE STORM BLEEDS THEM TOO, through the same conversion rather than a
     -- second rule. A knock inside the wall is a short one.
     squadMatch(3)
