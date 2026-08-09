@@ -341,6 +341,56 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R9  A transformed wrapper must be sized, or it eats `position: fixed`.
+//
+// CAUGHT BY A PLAYER, AND IT BROKE EVERY MENU IN THE GAME: `Page` wraps each
+// full-screen screen in a div carrying an animated transform, and a
+// transformed element becomes the CONTAINING BLOCK for every `position: fixed`
+// descendant. The screens inside are all `fixed inset-0`, so instead of the
+// viewport they resolved against a zero-height block at the top of the
+// document -- collapsing to 0x0 and drawing off the top of the screen (user,
+// 2026-08-09: "way above our vertical draw space", "opens a blank page").
+//
+// The rule is narrow and mechanical: if a class is animated by a keyframe that
+// sets `transform`, and that class is applied alongside a wrapper class, the
+// wrapper must establish a real box. Expressed here for the one wrapper that
+// exists, because a general version would need a layout engine -- and a
+// specific rule that fires is worth more than a general one that cannot.
+// ---------------------------------------------------------------------------
+{
+  const cssPath = join(SRC, 'index.css')
+  if (existsSync(cssPath)) {
+    const css = read(cssPath)
+    const transformsInPage = keyframeBlocks(css)
+      .filter((b) => /@keyframes\s+page(In|Out)\b/.test(b))
+      .some((b) => /transform\s*:/.test(b))
+
+    if (transformsInPage) {
+      // The .page rule itself, if it exists at all.
+      //
+      // No `(^|\})` anchor: the rule is preceded by a comment block, so the
+      // character before it is `/` and an anchored pattern never matches --
+      // which made the first cut of this fail on a perfectly good stylesheet.
+      // `\s*\{` is enough to keep `.page-in {` and `.page-under {` out, since
+      // the next character there is `-`.
+      const rule = (css.match(/\.page\s*\{([^}]*)\}/) ?? [])[1] ?? null
+      if (rule == null) {
+        fail('R9 fixed-trap', 'src/index.css',
+          '@keyframes pageIn/pageOut animate transform, but there is no `.page`'
+          + ' rule. The wrapper carrying that transform becomes the containing'
+          + ' block for every `fixed` child inside it -- they will collapse to'
+          + ' 0x0. It must be position:fixed and inset:0.')
+      } else if (!/position\s*:\s*fixed/.test(rule) || !/inset\s*:\s*0/.test(rule)) {
+        fail('R9 fixed-trap', 'src/index.css',
+          '.page carries an animated transform but is not `position: fixed;'
+          + ' inset: 0`. Every `fixed inset-0` screen inside it will resolve'
+          + ' against this box instead of the viewport and render off-screen.')
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

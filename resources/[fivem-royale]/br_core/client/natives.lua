@@ -447,33 +447,20 @@ function BR.Native.applyGameRules()
     -- The shot is a character portrait now (BR.LobbyCam) and the ped IS the
     -- subject -- hiding it would leave the camera pointed at scenery.
     --
-    -- INVISIBLE TO EVERYONE ELSE, AND THE OWNER IS THE ONE WHO SAYS SO.
+    -- YOUR OWN PED IS SIMPLY VISIBLE, and that is the whole rule here.
     --
-    -- The first attempt at this had each client hide the OTHER lobby peds for
-    -- itself (client/squadmates.lua) while every owner forced its own ped
-    -- visible here, every frame. Visibility set by an entity's owner
-    -- replicates, so the owner's per-frame "visible" beat the remote hide and
-    -- players saw each other standing in one spot (user, 2026-08-09).
+    -- Hiding other players from you is NOT done from this side. It was tried
+    -- twice -- the owner hiding itself over the network, then the owner
+    -- calling _NETWORK_SET_ENTITY_INVISIBLE_TO_NETWORK on itself -- and both
+    -- failed, the second because that native is widely reported not to work
+    -- under OneSync. It now happens entirely on the OBSERVER's side, every
+    -- frame, with SET_ENTITY_LOCALLY_INVISIBLE; see the long note in
+    -- client/squadmates.lua for why that is the only one that cannot lose.
     --
-    -- The right primitive is the one that says exactly this:
-    -- _NETWORK_SET_ENTITY_INVISIBLE_TO_NETWORK -- invisible to other players
-    -- over the network, still drawn locally. Paired with
-    -- SetLocalPlayerVisibleLocally so this client keeps seeing its own
-    -- character, which is the entire point of the lobby shot.
-    --
-    -- Called by HASH rather than by name: it is an underscore-prefixed native,
-    -- so the Lua binding name is not something to guess at, and InvokeNative
-    -- is exact. Lua 5.4 wraps an over-large hex literal to the right 64-bit
-    -- pattern, so this parses and passes luac.
-    --
-    -- The remote-side hide in squadmates.lua STAYS as a second line: it costs
-    -- ten native calls a second and it covers the window before a joining
-    -- player's own client has applied this to itself.
-    local lobbyShot = st == BR.PlayerState.LOBBY
+    -- Nothing about visibility is negotiated between clients any more, which
+    -- is the point: there is no property for two machines to disagree about.
     SetEntityVisible(ped, st ~= BR.PlayerState.BUS, false)
-    Citizen.InvokeNative(0xF1CA12B18AEF5298, ped, lobbyShot)
-    if lobbyShot then
-        SetLocalPlayerVisibleLocally(true)
+    if st == BR.PlayerState.LOBBY then
         -- The lobby freeze: the ped must not walk, fall or ragdoll out of a
         -- locked shot. It deliberately never RELEASES here -- spawn placement
         -- holds its own temporary freezes while collision loads, and stomping
@@ -637,15 +624,15 @@ function BR.Native.check()
     -- not fail loudly, it would leave a player in the lobby looking through
     -- the gameplay camera at nothing.
     -- THE ONE THAT KEEPS PLAYERS OUT OF EACH OTHER'S LOBBY SHOT.
-    -- _NETWORK_SET_ENTITY_INVISIBLE_TO_NETWORK, called by hash because it is
-    -- underscore-prefixed and its Lua binding name is not worth guessing at.
-    -- A nil binding here would be silent: everyone would simply see everyone,
-    -- which is a design failure rather than an error.
-    probe('_NetworkSetEntityInvisibleToNetwork', function()
-        Citizen.InvokeNative(0xF1CA12B18AEF5298, ped, false)
-    end)
-    probe('SetLocalPlayerVisibleLocally', function()
-        SetLocalPlayerVisibleLocally(true)
+    --
+    -- Purely local and single-frame ("not visible for yourself for the current
+    -- frame"), which is exactly why it works where two networked approaches
+    -- did not -- see client/squadmates.lua. A nil binding here would be
+    -- silent: everyone would simply see everyone, which is a design failure
+    -- rather than an error, and it took three attempts to find the native
+    -- that holds.
+    probe('SetEntityLocallyInvisible', function()
+        SetEntityLocallyInvisible(ped)
     end)
     probe('DoesCamExist',            function()
         local c = CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA',
