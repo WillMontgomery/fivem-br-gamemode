@@ -402,6 +402,7 @@ The gates, in the order they run:
 | forward locals | a `local function` is called above its own declaration (invisible to `luac -p`, nil at runtime) |
 | manifest coverage | a `.lua` exists under a resource but is declared in no fxmanifest — so it silently never loads |
 | shared coverage | a `br_lib/shared/*.lua` appears in no consuming resource's `shared_scripts` — the gap that let two finished modules sit dead |
+| deploy payload | `deploy.sh`'s own preflight, run against this checkout, so a deploy script that only breaks in production breaks here first |
 | secrets | anything credential-shaped is about to be committed, anywhere in the repo |
 | slice-1 boundary | `tools/dispatch.sh` grows a verb beyond `status`/`telemetry`, or `br_ringmaster` gains a write path (see PLAN.md, M9 Slice 1) |
 

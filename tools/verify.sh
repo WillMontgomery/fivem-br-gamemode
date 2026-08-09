@@ -248,6 +248,27 @@ else
     rc=1
 fi
 
+# --- 4c. deploy payload --------------------------------------------------------
+#
+# Runs deploy.sh's own preflight against this checkout. Not a re-implementation
+# of it -- literally the same function, called with --check-payload, so the two
+# cannot drift.
+#
+# This gate exists because deploy.sh's payload check shipped broken and nobody
+# found out until it ran on the server for the first time and refused to deploy.
+# It reported "no JS bundle in br_ui/ui/assets" about a bundle that was sitting
+# right there: the check used `compgen -G` on a path containing
+# [fivem-royale], which `compgen` reads as a glob character class rather than a
+# directory name.
+#
+# Deploy scripts are the classic place for this. They are only exercised in
+# production, so a bug in one is found by production. Running the payload half
+# here -- where it needs no server, no clone and no network -- moves that
+# discovery to a red build.
+
+echo "${DIM}== deploy payload ==${RST}"
+bash tools/deploy.sh --check-payload "resources/[fivem-royale]" || rc=1
+
 # --- 5. secrets ---------------------------------------------------------------
 #
 # The only gate here that scans the WHOLE repo rather than resources/. A
