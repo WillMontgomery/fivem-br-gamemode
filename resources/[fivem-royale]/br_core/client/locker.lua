@@ -125,6 +125,30 @@ function BR.Locker.spinBy(delta)
         ((BR.Config.Match.lobbyPos.heading + spin) % 360.0))
 end
 
+-- THE SPIN DOES NOT SURVIVE A MATCH.
+--
+-- `spin` is an offset from the lobby heading, and it is the only reason the
+-- ped is ever not facing the camera. Left alone it persists for the session --
+-- so a player who turned their character to look at the back of a jacket,
+-- played a match, and came home found themselves facing away with no idea why
+-- (user, 2026-08-09). Coming back to the lobby is a fresh presentation of the
+-- character, so the presentation resets.
+--
+-- Watching MY OWN state rather than the match's: a player who leaves a match
+-- early gets the same reset as one who plays it out, and neither needs a
+-- transition to exist for them.
+local wasLobby = true
+BR.Loop.register(BR.Loop.TICK, 'locker.spinreset', function()
+    local inLobby = BR.State.me.state == BR.PlayerState.LOBBY
+    if inLobby and not wasLobby then
+        spin = 0.0
+        -- The heading itself is set by the respawn that brought us here; this
+        -- only re-asserts it in case the spin was applied after.
+        SetEntityHeading(PlayerPedId(), BR.Config.Match.lobbyPos.heading + 0.0)
+    end
+    wasLobby = inLobby
+end)
+
 --- Which id is mid-swap, so the screen can say so. Nil when nothing is.
 local loadingId = nil
 

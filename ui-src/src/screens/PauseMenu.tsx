@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { useUi, selSquad, selMatch } from '../store'
+import { useUi, selMatch } from '../store'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 import Btn from '../ui/Btn'
@@ -70,14 +70,12 @@ const EXITS: {
     confirm: 'Leave the match? You will be eliminated.',
     yes: 'Leave match', no: 'Keep playing',
   },
-  {
-    id: 'squad', label: 'Leave squad', variant: 'default', squadOnly: true,
-    action: 'Leave squad',
-    // Deliberately NOT immediate: pulling someone out of a squad mid-match
-    // would strip their teammates' health bars and blips in the middle of a
-    // fight, which punishes three people for one person's decision.
-    sub: 'You stay with them for this match, then split at the end.',
-  },
+  // LEAVE SQUAD IS GONE (owner, 2026-08-09: "same as leave party"). It was --
+  // it fired SQUAD_LEAVE, the same event the party card's button fires, so
+  // the front page offered one action twice under two names. The party card
+  // is the honest home for it: the squad is this round's team and cannot be
+  // left mid-match, the party is what you keep, and that is what the button
+  // was ever really doing.
   {
     id: 'server', label: 'Leave server', variant: 'danger',
     action: 'Disconnect',
@@ -110,9 +108,7 @@ export default function PauseMenu() {
     }
   }, [asked])
   const [confirming, setConfirming] = useState<string | null>(null)
-  const squad = useUi(selSquad)
   const match = useUi(selMatch)
-  const inSquad = squad.members.length > 1
   // The PARTY, not the squad: "leave squad" is the wrong words for a group
   // you keep, and leaving the match takes it with you.
   const party = useUi((s) => s.party)
@@ -141,9 +137,8 @@ export default function PauseMenu() {
     play('ui.select')
     void fetchNui(CB.PAUSE_ACTION, { action: id })
     setConfirming(null)
-    // Leaving the squad keeps you in the match, so the menu shuts and play
-    // resumes. Everything else is about to take the screen away anyway.
-    if (id === 'squad') close()
+    // Everything left here takes the screen away by itself, so nothing needs
+    // to close the menu on the way out.
   }
 
   return (
@@ -252,7 +247,7 @@ export default function PauseMenu() {
                 ['--cut-max' as string]: '0.6rem',
               }}
             >
-              {EXITS.filter((e) => !e.squadOnly || (inSquad && !inParty)).map((e, i) => (
+              {EXITS.map((e, i) => (
                 <div
                   key={e.id}
                   className="flex items-center gap-6 py-3"

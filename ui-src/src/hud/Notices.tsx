@@ -56,7 +56,20 @@ export default function Notices({ barsVisible = true }: { barsVisible?: boolean 
   return (
     <div
       className="fixed flex flex-col-reverse items-start gap-1.5"
-      style={{ ...pos, pointerEvents: 'none', zIndex: 40 }}
+      style={{
+        ...pos,
+        pointerEvents: 'none',
+        zIndex: 40,
+        // A CEILING, SO THE TEXT CAN WRAP. The stack had no width at all, so
+        // every notice was one line however long it was -- a long one ran off
+        // toward the middle of the screen and, anchored right of the radar,
+        // straight out of it (user, 2026-08-09).
+        //
+        // 22rem is about forty characters at this size: wide enough that
+        // ordinary notices stay on one line, narrow enough that the stack
+        // never becomes a column of prose over the game.
+        maxWidth: '22rem',
+      }}
     >
       {[...notices].reverse().map((n) => (
         <NoticeRow
@@ -70,7 +83,9 @@ export default function Notices({ barsVisible = true }: { barsVisible?: boolean 
           endsAt={n.endsAt}
           sticky={n.sticky}
         >
-          <span>{n.text}</span>
+          {/* min-w-0 so the flex child may actually shrink, break-words so a
+              long unbroken token cannot force the row wider than the stack. */}
+          <span className="min-w-0 break-words">{n.text}</span>
           {/* COALESCED REPEATS. Four ammo pickups is one line reading x4, not
               four lines shoving each other off the stack. */}
           {n.count > 1 && (

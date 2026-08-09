@@ -113,7 +113,10 @@ export default function NoticeRow({
         // `tscale`: a notice is a line of prose in a box that grows with it,
         // which is exactly the shape that can honour a text-size preference
         // without clipping. The HUD plates cannot, and deliberately do not.
-        className="plate ts px-3.5 py-1.5 text-white/90 flex items-center gap-2"
+        // items-START, not items-center: once the text can wrap, a two-line
+        // notice with a centred countdown puts the number halfway down the
+        // row instead of level with the first line.
+        className="plate ts px-3.5 py-1.5 text-white/90 flex items-start gap-2"
         style={{
           // A PLATE, NOT A PANEL, and that is the design system's own rule
           // rather than a preference: `.panel` is the surface that RECEDES --

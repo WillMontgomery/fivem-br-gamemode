@@ -96,6 +96,14 @@ function BR.Match.destroy(m)
             -- with nothing on screen explaining why (live report,
             -- 2026-08-04: "can't see each other in the menu" until a solo
             -- queue dissolved the party).
+            -- AND ANY INVITE THEY SENT DIES WITH THE MATCH (owner's call,
+            -- 2026-08-09). An invite raised mid-match is answered from the
+            -- pause menu, and the moment the match ends both players are
+            -- somewhere else with a lobby in front of them -- a card still
+            -- offering to join a party from two screens ago is answering a
+            -- question nobody is still asking. The TTL sweep would get there
+            -- eventually; the match ending is the honest moment.
+            BR.Party.withdrawInvitesFrom(src, 'the match ended')
             BR.Party.resync(src)
         end)
     BR.Server.matches[m.id] = nil
