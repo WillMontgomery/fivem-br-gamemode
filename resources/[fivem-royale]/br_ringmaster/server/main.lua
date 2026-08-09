@@ -149,11 +149,12 @@ end)
 AddEventHandler('onResourceStart', function(res)
     if res ~= GetCurrentResourceName() then return end
 
-    -- No scheduler yet, deliberately: BR.Sched still lives inside br_core,
-    -- and its extraction into br_lib is the next PR -- the only change in this
-    -- batch that touches gameplay code, kept alone so it has its own revert
-    -- line. Nothing in this scaffold needs a timer; the push job arrives with
-    -- the extraction.
+    -- Our own scheduler instance, not br_core's. FiveM gives each resource
+    -- its own Lua state, so this registry, its /brperf accounting and its
+    -- error-suspension are all separate -- a wedged moderation job is
+    -- invisible to the gamemode's numbers, and a br_core fault does not stop
+    -- this clock. The push job registers into it in the next PR.
+    BR.Sched.start()
 
     local lines, healthy = BR.Ring.Config.report()
 

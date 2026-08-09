@@ -93,6 +93,7 @@ local ROOT = 'resources/[fivem-royale]/'
 for _, f in ipairs({
     'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
     'br_lib/shared/rng.lua', 'br_lib/shared/geo.lua', 'br_lib/shared/clock.lua',
+    'br_lib/shared/sched.lua',   -- BR.Sched; br_core/server/* registers into it
     'br_lib/config/match.lua', 'br_lib/config/storm.lua', 'br_lib/config/map.lua',
     'br_lib/config/weapons.lua', 'br_lib/config/loot.lua',
     'br_lib/shared/storm_solve.lua',
