@@ -236,6 +236,12 @@ function BR.Match.onEnter(m, state, from)
         m.startedAt = GetGameTimer()
         m.landCheck = nil   -- fresh stuck-lander bookkeeping per match
 
+        -- The flight is over, so nobody is waiting for it. The "waiting for
+        -- the last players to land" notice is STICKY, and a sticky notice is
+        -- only as good as the code that withdraws it -- landingNotices runs
+        -- during BUS only, so it cannot be the caller for the moment BUS ends.
+        BR.Bus.clearLandingNotices(m)
+
         -- Normally counted at BUS entry (before anyone can be dead); this
         -- fallback covers `brforce playing` straight from warmup, where the
         -- bus never ran. Never overwrite a count the bus already took.

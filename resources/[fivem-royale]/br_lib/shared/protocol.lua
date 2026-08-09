@@ -33,7 +33,14 @@ BR.Net = {
     SQUAD_INVITED   = 'br:squad:invited',    -- S->C  { partyId, from, name, size, max }
     LOBBY_STATUS    = 'br:lobby:status',     -- S->C  { queued, needed, connected, mode, ids, players, wait }
     SQUAD_RESULT    = 'br:squad:result',     -- S->C  { ok, reason } -- feedback for an invite/kick
-    NOTIFY          = 'br:notify',           -- S->C  { text, tone } -- one notice for the on-screen stack
+    -- S->C one notice for the on-screen stack.
+    --   { text, tone, key?, ms?, endsAt?, sticky?, clear? }
+    -- `key` makes a notice ADDRESSABLE: a second one with the same key
+    -- replaces the first in place rather than stacking or counting. `endsAt`
+    -- renders a live countdown inside the row -- one notice with a moving
+    -- number, never a message per second. `sticky` outlives its own event and
+    -- is removed only by `clear`. See BR.Server.notify.
+    NOTIFY          = 'br:notify',
     SQUAD_POS       = 'br:squad:pos',        -- S->C  squadmate positions, SQUAD MEMBERS ONLY (1Hz)
     MATCH_LEAVE     = 'br:match:leave',      -- C->S  abandon the current match, back to the lobby
     TO_LOBBY        = 'br:lobby:return',     -- S->C  respawn at the lobby pad NOW (leave-match flow)

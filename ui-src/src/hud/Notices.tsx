@@ -57,7 +57,17 @@ export default function Notices({ barsVisible = true }: { barsVisible?: boolean 
       style={{ ...pos, pointerEvents: 'none', zIndex: 40 }}
     >
       {[...notices].reverse().map((n) => (
-        <NoticeRow key={n.id} tone={TONE_COLOUR[n.tone ?? 'info']} lifeMs={n.ms}>
+        <NoticeRow
+          // n.id, NOT n.key. A keyed notice updating in place must keep the
+          // SAME React element or the row unmounts and flies in again -- which
+          // is exactly the stutter a countdown must not have. The store already
+          // guarantees one id per key.
+          key={n.id}
+          tone={TONE_COLOUR[n.tone ?? 'info']}
+          lifeMs={n.ms}
+          endsAt={n.endsAt}
+          sticky={n.sticky}
+        >
           <span>{n.text}</span>
           {/* COALESCED REPEATS. Four ammo pickups is one line reading x4, not
               four lines shoving each other off the stack. */}

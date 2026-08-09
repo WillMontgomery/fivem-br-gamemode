@@ -1529,11 +1529,19 @@ do
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
 
-    local told = false
+    -- Matched on the KEY, not on the wording. The notice is addressable now
+    -- (it has to be, or it could never be withdrawn), and a test that pins
+    -- the English is a test that fails every time the copy is edited while
+    -- proving nothing about the behaviour.
+    local told, sticky = false, false
     for _, n in ipairs(noticesTo(1)) do
-        if n.text and n.text:find('landed') then told = true end
+        if n.key == 'bus.landing' and not n.clear then
+            told = true
+            sticky = n.sticky == true
+        end
     end
     ok(told, 'the first player down is told the match is waiting on the others')
+    ok(sticky, 'and it is STICKY -- a four-second toast is gone before it matters')
 
     -- ONCE. The tick runs four times a second; a notice per tick would be a
     -- wall of toasts for the whole descent.
@@ -1542,7 +1550,7 @@ do
     BR.Sched.step(fakeTime)
     local repeated = 0
     for _, n in ipairs(noticesTo(1)) do
-        if n.text and n.text:find('landed') then repeated = repeated + 1 end
+        if n.key == 'bus.landing' and not n.clear then repeated = repeated + 1 end
     end
     ok(repeated == 0, 'and only once, however many ticks pass',
         ('%d repeats'):format(repeated))
@@ -1554,9 +1562,19 @@ do
     BR.Sched.step(fakeTime)
     local toldAgain = false
     for _, n in ipairs(noticesTo(2)) do
-        if n.text and n.text:find('landed') then toldAgain = true end
+        if n.key == 'bus.landing' and not n.clear then toldAgain = true end
     end
     ok(not toldAgain, 'the last player down is told nothing -- nobody is left')
+
+    -- THE ALL-CLEAR, which is the half this never had. A sticky notice with
+    -- nobody to withdraw it is a line parked on the player's screen for the
+    -- rest of the match, so the withdrawal is the load-bearing part of making
+    -- it sticky at all.
+    local cleared = false
+    for _, n in ipairs(noticesTo(1)) do
+        if n.key == 'bus.landing' and n.clear then cleared = true end
+    end
+    ok(cleared, 'and the first player down is told the wait is over')
 
     -- And a match already live says nothing either: a late lander (the
     -- stuck-lander promotion, a glider still coming down after PLAYING)

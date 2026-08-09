@@ -52,11 +52,53 @@ end
 --- with the conversation and were the only feedback channel until now, which is
 --- how "the invite was declined" became information nobody received.
 ---
+--- A NOTICE CAN BE ADDRESSED, NOT ONLY ADDED.
+---
+--- `opts.key` gives the notice an identity. Sending the same key again
+--- REPLACES the row that is already on screen -- new text, new tone, new
+--- deadline -- instead of stacking a second one or counting it as a repeat.
+--- Everything else here is only useful because of that:
+---
+---   opts.endsAt  a deadline in SERVER time. The row grows a live countdown
+---                and removes itself when it lands. This is the whole reason
+---                the field exists: "your sticky bomb is inert for 30s" is
+---                one notice with a moving number, not thirty notices.
+---   opts.sticky  outlives its own event; only a clear removes it. For STATE
+---                ("you are outside the storm"), never for events.
+---   opts.ms      lifetime override, ignored when endsAt or sticky is set.
+---
+--- BR.Server.notifyClear(target, key) is the withdrawal.
+---
 --- @param target integer|integer[]  a server id, or a list of them
 --- @param text string
 --- @param tone string|nil  'info' | 'success' | 'warn' | 'danger'
-function BR.Server.notify(target, text, tone)
-    local payload = { text = text, tone = tone or 'info' }
+--- @param opts table|nil   { key, ms, endsAt, sticky }
+function BR.Server.notify(target, text, tone, opts)
+    opts = opts or {}
+    local payload = {
+        text   = text,
+        tone   = tone or 'info',
+        key    = opts.key,
+        ms     = opts.ms,
+        endsAt = opts.endsAt,
+        sticky = opts.sticky or nil,
+    }
+    if type(target) == 'table' then
+        for _, src in ipairs(target) do
+            TriggerClientEvent(BR.Net.NOTIFY, src, payload)
+        end
+    else
+        TriggerClientEvent(BR.Net.NOTIFY, target, payload)
+    end
+end
+
+--- Withdraw a keyed notice. Harmless if it is not on screen -- which matters,
+--- because the sender generally cannot know: the player may have paused, the
+--- notice may have aged out, br_ui may have restarted.
+--- @param target integer|integer[]
+--- @param key string
+function BR.Server.notifyClear(target, key)
+    local payload = { key = key, clear = true, text = '' }
     if type(target) == 'table' then
         for _, src in ipairs(target) do
             TriggerClientEvent(BR.Net.NOTIFY, src, payload)
@@ -69,8 +111,17 @@ end
 --- A match-wide alert. Same stack, every client.
 --- @param text string
 --- @param tone string|nil
-function BR.Server.notifyAll(text, tone)
-    TriggerClientEvent(BR.Net.NOTIFY, -1, { text = text, tone = tone or 'info' })
+--- @param opts table|nil
+function BR.Server.notifyAll(text, tone, opts)
+    opts = opts or {}
+    TriggerClientEvent(BR.Net.NOTIFY, -1, {
+        text   = text,
+        tone   = tone or 'info',
+        key    = opts.key,
+        ms     = opts.ms,
+        endsAt = opts.endsAt,
+        sticky = opts.sticky or nil,
+    })
 end
 
 --- Send one event to every member of a match's audience.

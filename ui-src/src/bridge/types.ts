@@ -165,10 +165,18 @@ export interface FeedEntry {
   id: number
   killer: string
   victim: string
+  /** The ITEM ID when a player did it (`carbinerifle`), so the row can draw
+   *  the weapon. The CAUSE when the world did it (`storm`, `fall`) -- the two
+   *  never collide, because the cause wording only renders when there is no
+   *  killer. */
   weapon: string
   headshot: boolean
-  /** True when the local player was involved, for highlighting. */
+  /** I got this kill. */
   mine: boolean
+  /** I am the one who died. The opposite piece of news from `mine`, and it
+   *  used to share the flag with it -- so the line where you were eliminated
+   *  was drawn in the same colour as the line where you eliminated someone. */
+  died?: boolean
 }
 
 /**
@@ -316,10 +324,46 @@ export interface LobbyPayload {
   readyIds?: number[]
 }
 
+/**
+ * One notice.
+ *
+ * A NOTICE IS ADDRESSABLE. Everything below `tone` exists so a sender can talk
+ * about a notice that is already on screen instead of only ever adding another
+ * one -- which is the difference between a notification system and a list of
+ * things that happened.
+ *
+ * The failing case that drove this: a sticky bomb goes inert for thirty
+ * seconds. Without identity, saying so costs either one line that lies for
+ * twenty-nine seconds, or thirty lines that shove everything else off the
+ * stack. With it, it is ONE line that counts itself down and then leaves.
+ */
 export interface ToastPayload {
   text: string
   tone?: 'info' | 'warn' | 'danger' | 'success'
+  /** Lifetime in ms. Ignored when `endsAt` or `sticky` is set. */
   ms?: number
+  /**
+   * IDENTITY. A second notice with the same key REPLACES the first in place --
+   * new text, new tone, new deadline, same row, no fly-in. It does not
+   * coalesce into a x2, because an update is one event changing rather than
+   * the same event happening twice.
+   *
+   * Keyless notices keep the old behaviour: matched on their text and counted.
+   */
+  key?: string
+  /**
+   * A SERVER deadline, in the same clock `endsAt` uses everywhere else. The
+   * row renders a live countdown beside the text -- one notice with a moving
+   * number, driven from rAF, never a message per second -- and removes itself
+   * when it lands. Requires `key` to be updatable; useful without one.
+   */
+  endsAt?: number
+  /** Never expires on its own. Only an explicit `clear` takes it away, so this
+   *  is for STATE ("you are outside the storm"), not for events. Requires a
+   *  key, or nothing could ever remove it. */
+  sticky?: boolean
+  /** Remove the notice with this key, now. A verb: no other field is read. */
+  clear?: boolean
 }
 
 /** Which screen currently owns NUI focus. Lua is the authority. */

@@ -77,6 +77,14 @@ function BR.Combat.eliminate(src, cause, killerSrc)
         victimSrc = src,
         cause     = cause,
         placement = placement,
+        -- WHAT KILLED THEM, not just that they died. The server has already
+        -- established this on the validated damage path; the feed simply
+        -- never carried it, so every line in the corner read the same and the
+        -- one question a kill feed exists to answer -- what am I up against
+        -- -- had no answer on screen. Only meaningful WITH a killer: a fall
+        -- has no weapon and inventing one would be a lie with an icon.
+        weapon    = killer and entry.lastHitWeapon or nil,
+        headshot  = (cause == 'headshot') or nil,
     }
     if m then
         BR.Broadcast.toMatch(m, BR.Net.KILL_FEED, feed)

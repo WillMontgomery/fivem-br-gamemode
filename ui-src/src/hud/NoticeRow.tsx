@@ -1,7 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useUi } from '../store'
 
 /**
- * One notice, and the reason it is its own component: THE EXIT.
+ * One notice, and the two reasons it is its own component.
+ *
+ * 1. THE EXIT.
  *
  * A notice that fades out leaves its space behind for the length of the fade,
  * and then the space vanishes in a single frame -- so everything below it
@@ -16,34 +19,85 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
  *
  * The height is MEASURED rather than assumed: notices wrap to two lines when
  * the text is long, and a fixed height would clip them.
+ *
+ * 2. THE COUNTDOWN.
+ *
+ * `endsAt` turns the row into a live one. The number is written straight to a
+ * DOM node from one requestAnimationFrame loop -- the same discipline the
+ * storm bar and the warmup timer follow -- so a counting notice costs no
+ * re-renders at all, and the alternative (a notice per second) never has to
+ * exist. THIRTY LINES SAYING THE SAME THING WITH A DIFFERENT NUMBER IS NOT A
+ * NOTIFICATION SYSTEM.
+ *
+ * `endsAt` is a SERVER timestamp. clockOffset is what makes it comparable to
+ * Date.now(); without it every countdown in the game is wrong by whatever the
+ * two clocks happen to disagree by, which is not a small number.
  */
 export default function NoticeRow({
   children,
   tone,
   lifeMs,
+  endsAt,
+  sticky,
 }: {
   children: React.ReactNode
   tone: string
   /** When the store will drop this notice. The collapse starts just before. */
   lifeMs: number
+  /** Server deadline for the in-line countdown, if this notice has one. */
+  endsAt?: number
+  /** Persistent: no self-collapse, because nothing is coming to remove it
+   *  except an explicit clear -- and that unmounts the row outright. */
+  sticky?: boolean
 }) {
   const bodyRef = useRef<HTMLDivElement>(null)
+  const timeRef = useRef<HTMLSpanElement>(null)
+  const offset = useUi((s) => s.clockOffset)
   const [h, setH] = useState<number | null>(null)
   const [leaving, setLeaving] = useState(false)
 
   // Measure before paint, so the row never renders at its natural height for
-  // a frame and then jump to the animated one.
+  // a frame and then jumps to the animated one.
   useLayoutEffect(() => {
     if (bodyRef.current) setH(bodyRef.current.offsetHeight)
   }, [children])
 
   useEffect(() => {
+    // A sticky notice has no scheduled end, so scheduling its collapse would
+    // fade out a line that is still true and leave it on screen at zero
+    // opacity -- present in layout, invisible, unremovable.
+    if (sticky) { setLeaving(false); return }
+
     // Start collapsing slightly BEFORE the store removes it, so the gap is
     // already closed when the element disappears. Removal is then invisible
     // rather than being the thing that moves the stack.
+    //
+    // Re-armed when lifeMs changes: an updated notice has a new deadline, and
+    // a collapse already queued against the OLD one would close the row while
+    // its replacement was still counting.
+    setLeaving(false)
     const t = window.setTimeout(() => setLeaving(true), Math.max(0, lifeMs - 280))
     return () => window.clearTimeout(t)
-  }, [lifeMs])
+  }, [lifeMs, sticky])
+
+  useEffect(() => {
+    if (endsAt == null) return
+    let raf = 0
+    const tick = () => {
+      const node = timeRef.current
+      if (node) {
+        const left = Math.max(0, endsAt - (Date.now() + offset))
+        const secs = Math.ceil(left / 1000)
+        const next = secs >= 60
+          ? `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}`
+          : `${secs}s`
+        if (node.textContent !== next) node.textContent = next
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [endsAt, offset])
 
   return (
     <div
@@ -65,6 +119,18 @@ export default function NoticeRow({
         }}
       >
         {children}
+        {endsAt != null && (
+          // Anton and tabular: this is a number the player reads while doing
+          // something else, and it must not reflow the row as it shrinks
+          // through 10.
+          <span
+            ref={timeRef}
+            className="font-display text-[0.85rem] tabular-nums leading-none ml-auto pl-1"
+            style={{ color: tone }}
+          >
+            --
+          </span>
+        )}
       </div>
     </div>
   )

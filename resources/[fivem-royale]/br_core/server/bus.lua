@@ -388,7 +388,13 @@ AddEventHandler(BR.Net.BUS_JUMP, function()
         return
     end
     if GetGameTimer() < m.route.jumpFrom then
-        BR.Server.notify(src, 'Doors are still closed.', 'warn')
+        -- KEYED, WITH THE ACTUAL DEADLINE. Someone who wants out early hits
+        -- the key repeatedly, and without identity that is one refusal line
+        -- per press stacking up the screen -- while still not answering the
+        -- only question they have, which is "how long". One row, counting
+        -- itself down, replaced rather than repeated.
+        BR.Server.notify(src, 'Doors open in', 'warn',
+            { key = 'bus.doors', endsAt = m.route.jumpFrom })
         print(('[br_core] bus: jump from %d refused -- doors open in %.1fs')
             :format(src, (m.route.jumpFrom - GetGameTimer()) / 1000))
         return
@@ -452,6 +458,23 @@ end)
 ---
 --- Once per player per flight; the latch is cleared at BUS entry.
 --- @param m table
+--- Withdraw the "waiting for the last players to land" notice.
+---
+--- A STICKY NOTICE NEEDS A SECOND CALLER, and forgetting it is the whole risk
+--- of the sticky flag. landingNotices only runs during BUS, so it cannot be
+--- the thing that clears a notice at the moment the flight ENDS -- which is
+--- precisely the moment the wait is over. PLAYING calls this too. The store's
+--- STICKY_MAX_MS is the last resort behind both, not the plan.
+--- @param m table
+function BR.Bus.clearLandingNotices(m)
+    BR.Roster.each(
+        function(e) return e.matchId == m.id and e.landNotice end,
+        function(src, e)
+            e.landNotice = nil
+            BR.Server.notifyClear(src, 'bus.landing')
+        end)
+end
+
 function BR.Bus.landingNotices(m)
     if m.state ~= BR.MatchState.BUS then return end
 
@@ -460,7 +483,17 @@ function BR.Bus.landingNotices(m)
             or e.state == BR.PlayerState.GLIDE
             or e.state == BR.PlayerState.BUS
     end)
-    if airborne <= 0 then return end
+
+    -- THE ALL-CLEAR IS AS IMPORTANT AS THE WARNING, and it is the half this
+    -- never had. "The match will start once all players have landed" used to
+    -- be a four-second toast: by the time it mattered it was gone, and there
+    -- was no moment at which the player was told the wait was over. It is a
+    -- STICKY notice now -- state, not an event -- and it is withdrawn the
+    -- instant the sky is empty.
+    if airborne <= 0 then
+        BR.Bus.clearLandingNotices(m)
+        return
+    end
 
     BR.Roster.each(
         function(e) return e.matchId == m.id
@@ -468,7 +501,8 @@ function BR.Bus.landingNotices(m)
         function(src, e)
             e.landNotice = true
             BR.Server.notify(src,
-                'The match will start once all players have landed.', 'info')
+                'Waiting for the last players to land', 'info',
+                { key = 'bus.landing', sticky = true })
             print(('[br_core] landing notice -> %s (%d): %d still airborne')
                 :format(e.name, src, airborne))
         end)

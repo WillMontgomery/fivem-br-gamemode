@@ -160,56 +160,130 @@ const NOTICES_MAX = 5
 /** How long a notice may wait out a pause before it stops being news. */
 const PAUSE_QUEUE_MS = 30_000
 
-export const useUi = create<UiState>((set, get) => {
-  /** The actual display push: id, self-removal timer, stack cap. Both the
-   *  live path and the unpause flush land here, so queued notices get the
-   *  same lifetime and animation as ones that never waited. */
-  const showNotice = (t: ToastPayload) => {
-    const ms = t.ms ?? TOAST_MS
+/** The longest a notice may live. A sender that forgets to clear a sticky
+ *  notice must not be able to park a line on the player's screen for the rest
+ *  of the match -- so `sticky` means "outlives its own event", not "forever". */
+const STICKY_MAX_MS = 10 * 60_000
 
-    // COALESCE REPEATS.
+/** Grace after an endsAt countdown lands, so the row is not yanked away on the
+ *  same frame the number reaches zero. */
+const COUNTDOWN_TAIL_MS = 900
+
+export const useUi = create<UiState>((set, get) => {
+  /**
+   * The actual display push. Both the live path and the unpause flush land
+   * here, so a queued notice gets the same lifetime and animation as one that
+   * never waited.
+   *
+   * FOUR PATHS, IN THIS ORDER, AND THE ORDER MATTERS:
+   *
+   *   1. `clear` -- a verb. Remove the keyed notice and stop.
+   *   2. keyed and already on screen -- UPDATE IN PLACE. Same row, same id,
+   *      new text/tone/deadline, no fly-in and no x2. An update is one event
+   *      changing state, not the same event twice, and animating it as an
+   *      arrival makes a countdown look like a stutter.
+   *   3. keyless and the same TEXT is on screen -- coalesce and count.
+   *   4. otherwise -- a new row.
+   *
+   * Path 3 is the old behaviour and it stays, because most notices in this
+   * game are fire-and-forget and giving every one of them a key would be
+   * ceremony for nothing. Four ammo pickups is still one line reading x4.
+   */
+  const showNotice = (t: ToastPayload) => {
+    // 1. Withdrawal.
     //
-    // Three ammo pickups in two seconds is ONE notice reading x3, not three
-    // lines racing each other off the top of the stack. Without this, a burst
-    // of loot evicts everything else in the stack -- including a storm warning,
-    // which is a gameplay bug wearing a UI costume.
-    //
-    // Matched on the TEXT, because the wire has no identity field: a notice
-    // cannot currently be addressed by its sender. Adding a `key` is the right
-    // fix and it is a protocol change, so it is filed rather than smuggled in
-    // here (#23).
-    const existing = get().notices.find((n) => n.text === t.text)
-    if (existing) {
-      window.clearTimeout(existing.timer)
-      const timer = window.setTimeout(() => {
-        set((s) => ({ notices: s.notices.filter((n) => n.id !== existing.id) }))
-      }, ms)
-      set((s) => ({
-        notices: s.notices.map((n) => (n.id === existing.id
-          ? { ...n, count: (n.count ?? 1) + 1, ms, timer }
-          : n)),
-      }))
+    // With no key this is THE BROOM: every persistent notice, and only those.
+    // Lua fires it when the player lands back in the lobby, because a sticky
+    // notice describes a state that is still true and none of them are once
+    // the match is behind you -- and a player who leaves mid-flight walks out
+    // from under whichever sender was going to withdraw its own. It cannot
+    // swallow an unread event, because an event always has an expiry and this
+    // only touches the ones that do not.
+    if (t.clear) {
+      const doomed = t.key
+        ? get().notices.filter((n) => n.key === t.key)
+        : get().notices.filter((n) => n.sticky)
+      if (doomed.length === 0) return
+      doomed.forEach((n) => window.clearTimeout(n.timer))
+      set((s) => ({ notices: s.notices.filter((n) => !doomed.includes(n)) }))
       return
     }
 
-    const id = ++noticeId
-    const timer = window.setTimeout(() => {
+    // A COUNTDOWN'S DEADLINE IS ITS LIFETIME. Sending both `endsAt` and a
+    // shorter `ms` would leave the row showing a number that never reaches
+    // zero, which reads as a frozen interface rather than as a notice that
+    // left early. The deadline wins.
+    //
+    // `endsAt` is a SERVER timestamp; clockOffset is what makes it comparable
+    // to Date.now(). Getting this wrong does not look like a clock bug, it
+    // looks like every countdown being wildly wrong or already expired.
+    const untilDeadline = t.endsAt != null
+      ? Math.max(0, t.endsAt - (Date.now() + get().clockOffset)) + COUNTDOWN_TAIL_MS
+      : null
+    const ms = t.sticky
+      ? STICKY_MAX_MS
+      : untilDeadline ?? t.ms ?? TOAST_MS
+
+    const arm = (id: number) => window.setTimeout(() => {
       set((s) => (s.notices.some((n) => n.id === id)
         ? { notices: s.notices.filter((n) => n.id !== id) }
         : {}))
     }, ms)
 
+    // 2. Update in place.
+    if (t.key) {
+      const live = get().notices.find((n) => n.key === t.key)
+      if (live) {
+        window.clearTimeout(live.timer)
+        const timer = arm(live.id)
+        set((s) => ({
+          notices: s.notices.map((n) => (n.id === live.id
+            ? { ...n, ...t, id: live.id, ms, timer, count: n.count }
+            : n)),
+        }))
+        return
+      }
+    }
+
+    // 3. Coalesce repeats.
+    //
+    // Three ammo pickups in two seconds is ONE notice reading x3, not three
+    // lines racing each other off the top of the stack. Without this, a burst
+    // of loot evicts everything else -- including a storm warning, which is a
+    // gameplay bug wearing a UI costume.
+    if (!t.key) {
+      const existing = get().notices.find((n) => !n.key && n.text === t.text)
+      if (existing) {
+        window.clearTimeout(existing.timer)
+        const timer = arm(existing.id)
+        set((s) => ({
+          notices: s.notices.map((n) => (n.id === existing.id
+            ? { ...n, count: (n.count ?? 1) + 1, ms, timer }
+            : n)),
+        }))
+        return
+      }
+    }
+
+    // 4. A new row.
+    const id = ++noticeId
+    const timer = arm(id)
+
     set((s) => {
       const next = [...s.notices, { ...t, id, ms, count: 1, timer }]
       if (next.length <= NOTICES_MAX) return { notices: next }
       // PRIORITY PUSHES, IT DOES NOT QUEUE. When the stack is full the oldest
-      // COSMETIC notice is evicted, never a warning -- losing "the storm is
-      // closing" behind three loot pickups is exactly the failure the cap was
-      // meant to prevent.
+      // COSMETIC notice is evicted, never a warning and never a persistent
+      // one -- losing "the storm is closing" behind three loot pickups is
+      // exactly the failure the cap was meant to prevent, and a sticky notice
+      // is describing a state that is still true, so it cannot be "old news".
+      //
       // next.length > NOTICES_MAX here, so next[0] always exists -- but the
       // compiler cannot know that from `find`, and asserting is cheaper than
       // pretending the array might be empty.
-      const victim = next.find((n) => n.tone !== 'warn' && n.tone !== 'danger') ?? next[0]!
+      const evictable = (n: typeof next[number]) =>
+        !n.sticky && n.endsAt == null && n.tone !== 'warn' && n.tone !== 'danger'
+      const victim = next.find(evictable) ?? next[0]!
       window.clearTimeout(victim.timer)
       return { notices: next.filter((n) => n !== victim) }
     })
@@ -256,8 +330,12 @@ export const useUi = create<UiState>((set, get) => {
     const wasPaused = get().hud.paused
     if (wasPaused && !hud.paused) {
       const now = Date.now()
+      // A STICKY NOTICE CANNOT GO STALE, because it is not describing
+      // something that happened -- it is describing something that is still
+      // true. "You are outside the storm" is not less relevant for having
+      // been raised while the map was up. Events age out; state does not.
       const held = get().pendingNotices
-        .filter((p) => now - p.queuedAt <= PAUSE_QUEUE_MS)
+        .filter((p) => p.sticky || now - p.queuedAt <= PAUSE_QUEUE_MS)
       set({ hud, pendingNotices: [] })
       held.forEach(({ queuedAt: _dropped, ...t }) => showNotice(t))
       return
@@ -326,8 +404,28 @@ export const useUi = create<UiState>((set, get) => {
   // fullscreen map is not a place for toasts. The queue is bounded like the
   // live stack; the unpause flush in setHud decides what is still worth
   // saying.
+  // IDENTITY APPLIES TO THE QUEUE TOO. A keyed notice that updates itself
+  // twice a second -- a countdown, a revive progress line -- would otherwise
+  // fill the pause queue with thirty copies of itself and flush every one of
+  // them on unpause, evicting everything that actually happened while the map
+  // was up. Keyed entries REPLACE their predecessor in the queue, and a clear
+  // takes both the queued copy and any live row with it.
   pushNotice: (t) => {
     if (get().hud.paused) {
+      if (t.key) {
+        set((s) => {
+          const rest = s.pendingNotices.filter((p) => p.key !== t.key)
+          return {
+            pendingNotices: t.clear
+              ? rest
+              : [...rest, { ...t, queuedAt: Date.now() }].slice(-NOTICES_MAX),
+          }
+        })
+        // A clear still has to reach the live stack: a sticky notice raised
+        // before the pause is on screen underneath it.
+        if (t.clear) showNotice(t)
+        return
+      }
       set((s) => ({
         pendingNotices: [...s.pendingNotices, { ...t, queuedAt: Date.now() }]
           .slice(-NOTICES_MAX),

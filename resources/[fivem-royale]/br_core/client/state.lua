@@ -200,6 +200,17 @@ local function noteMyState()
         if OUR_SCREEN[st] and IsPauseMenuActive() then
             SetFrontendActive(false)
         end
+
+        -- STICKY NOTICES ARE ABOUT THE MATCH, AND THE MATCH IS OVER FOR ME.
+        --
+        -- A sticky notice describes a state that is still true; landing in
+        -- the lobby means none of them are. Every sender is supposed to
+        -- withdraw its own, and each of them will -- but a player who
+        -- brleaves mid-flight, or dies, walks out from under whatever code
+        -- was going to do it. This is the broom, on the one edge that covers
+        -- all of those at once, and it is why the sticky flag is safe to
+        -- hand out.
+        if st == BR.PlayerState.LOBBY then BR.NotifyClear() end
     end
     if st == BR.PlayerState.WARMUP or st == BR.PlayerState.BUS
        or st == BR.PlayerState.FREEFALL or st == BR.PlayerState.GLIDE
@@ -518,11 +529,51 @@ end)
 -- local action results, so a player has ONE place to glance at.
 RegisterNetEvent(BR.Net.NOTIFY)
 AddEventHandler(BR.Net.NOTIFY, function(n)
+    if not n then return end
+    -- Forwarded field by field rather than passed through whole: this is a
+    -- net event, so its payload is whatever reached the client, and the UI
+    -- should not be the thing that discovers a sender invented a field.
     TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
-        text = n and n.text or '',
-        tone = n and n.tone or 'info',
+        text   = n.text or '',
+        tone   = n.tone or 'info',
+        key    = n.key,
+        ms     = n.ms,
+        endsAt = n.endsAt,
+        sticky = n.sticky,
+        clear  = n.clear,
     })
 end)
+
+--- Raise a notice from CLIENT code, with the same identity rules the server
+--- has. Client-side notices are the ones that describe something only this
+--- machine can see -- a prompt refused, a countdown on a local effect -- and
+--- until now they had to build the envelope by hand, which is how three of
+--- them ended up with slightly different shapes.
+--- @param text string
+--- @param tone string|nil
+--- @param opts table|nil  { key, ms, endsAt, sticky }
+function BR.Notify(text, tone, opts)
+    opts = opts or {}
+    TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
+        text   = text,
+        tone   = tone or 'info',
+        key    = opts.key,
+        ms     = opts.ms,
+        endsAt = opts.endsAt,
+        sticky = opts.sticky,
+    })
+end
+
+--- Withdraw a keyed notice -- or, with no key, EVERY persistent notice.
+---
+--- The keyless form is the broom, not a convenience: it only touches sticky
+--- notices (the ones with no expiry of their own), so it can never swallow an
+--- event the player has not read yet.
+--- @param key string|nil
+function BR.NotifyClear(key)
+    TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST,
+        { key = key, clear = true, text = '' })
+end
 
 -- Eliminations, broadcast to everyone. Forwarded to the UI's kill feed --
 -- and if the victim is ME, the cause is remembered for the verdict slam.
@@ -535,16 +586,24 @@ AddEventHandler(BR.Net.KILL_FEED, function(d)
         myDeathByPlayer = d.killerSrc ~= nil
     end
 
-    -- Shaped to the UI's FeedEntry contract. weapon carries the cause until
-    -- M6 brings real weapon attribution.
-    local mine = d.victimSrc == S.me.src or d.killerSrc == S.me.src
+    -- Shaped to the UI's FeedEntry contract.
+    --
+    -- KILLING SOMEONE AND BEING KILLED ARE NOT THE SAME EVENT, and `mine`
+    -- used to be true for both -- so the line where you died wore the same
+    -- accent as the line where you got a kill. They are opposite pieces of
+    -- news and the feed said them in the same voice.
+    --
+    -- `weapon` is the ITEM ID when a player did it (the server knows, from
+    -- the validated damage path) and the CAUSE when the world did. The two
+    -- never collide because the cause branch only renders without a killer.
     TriggerEvent('br:ui:sendLocal', BR.Nui.FEED, {
         id       = BR.Clock.now(),
         killer   = d.killer or '',
         victim   = d.victim or '',
-        weapon   = d.cause or '',
-        headshot = false,
-        mine     = mine,
+        weapon   = d.weapon or d.cause or '',
+        headshot = d.headshot or false,
+        mine     = d.killerSrc == S.me.src,
+        died     = d.victimSrc == S.me.src,
     })
 
     -- YOUR kill gets a moment; everyone else's is a line in the feed.
