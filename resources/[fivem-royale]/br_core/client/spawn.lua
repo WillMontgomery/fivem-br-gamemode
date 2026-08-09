@@ -254,10 +254,30 @@ function BR.Spawn.toLobby(holdBlack)
             BR.Spawn.holdBlack = true
             -- NOTHING in the world moves until the result sequence has fully
             -- played: slam (~1.2s), black (~3.4s), secondary lines at rest
-            -- (~4.9s), plus a two-second hold on the finished card. Only
-            -- then does the teleport-and-swap begin, invisibly, under the
-            -- interface's own solid black.
-            Citizen.Wait(6900)
+            -- (~4.9s), plus a hold on the finished card. Only then does the
+            -- teleport-and-swap begin, invisibly, under the interface's own
+            -- solid black.
+            --
+            -- 8.4s, UP FROM 6.9s (owner's call, 2026-08-09).
+            Citizen.Wait(8400)
+
+            -- AND THEN IT WAITS FOR THE INTERFACE, if the interface is still
+            -- doing something.
+            --
+            -- The XP award lands on this screen, and when it crosses a level
+            -- it runs a burst that is the whole point of the system. Timing
+            -- the teardown against an animation in another process is a guess,
+            -- and the guess kept cutting off the last beat -- so the page says
+            -- when it is busy (BR.Nui XP_BUSY) and this holds while it is.
+            --
+            -- THE CAP IS NOT OPTIONAL. A page that never says "done" -- a
+            -- reload mid-award, an error in a handler -- would otherwise leave
+            -- a player on a black screen forever, which is a far worse failure
+            -- than a clipped animation.
+            local until_ = GetGameTimer() + 6000
+            while BR.Spawn.xpBusy and GetGameTimer() < until_ do
+                Citizen.Wait(100)
+            end
         end
 
         DoScreenFadeOut(400)
@@ -667,3 +687,11 @@ RegisterCommand('brunstuck', function()
 
     print('[br_core] unstuck: screen restored, ped unfrozen, cams cleared')
 end, false)
+
+-- THE INTERFACE ASKING FOR MORE TIME. Raised by the post-match XP award while
+-- it animates and cleared when it finishes; the result hold above waits on it,
+-- capped. br_ui owns the page and forwards the flag -- br_core owns the trip
+-- home and decides what to do about it.
+AddEventHandler('br:xp:busy', function(busy)
+    BR.Spawn.xpBusy = busy == true
+end)

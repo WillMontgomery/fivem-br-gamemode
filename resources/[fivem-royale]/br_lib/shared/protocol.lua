@@ -290,6 +290,9 @@ BR.NuiCb = {
     -- Opens GTA's own pause menu so the player can reach the settings no
     -- script can write: microphone, push-to-talk, output device.
     VOICE_SETTINGS = 'br/voice/settings',
+    -- The interface saying "an animation is playing, do not take the screen
+    -- away yet". The post-match XP award is the only thing that raises it.
+    XP_BUSY      = 'br/xp/busy',
     PAUSE_ACTION = 'br/pause/action',
     -- Rebind one command. { command, key } -- an empty key unbinds it.
     KEYBIND_SET  = 'br/settings/keybind',

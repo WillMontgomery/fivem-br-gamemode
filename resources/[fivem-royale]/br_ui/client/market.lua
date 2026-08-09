@@ -203,3 +203,18 @@ AddEventHandler('onClientResourceStart', function(res)
     BR.Market.push()
     BR.Market.pushProgress()
 end)
+
+-- THE TEARDOWN WAITS FOR THE AWARD.
+--
+-- The result sequence holds a black screen for a fixed time and then
+-- teleports home, and that duration was a guess against an animation in
+-- another process. Guesses lose: the level-up flip -- the one beat the whole
+-- system is building to -- kept being cut off (owner, 2026-08-09).
+--
+-- The interface says when it is busy instead. br_core holds while this is
+-- true, with its own hard cap so a page that never says "done" cannot strand
+-- a player on a black screen.
+RegisterNUICallback(BR.NuiCb.XP_BUSY, function(data, cb)
+    TriggerEvent('br:xp:busy', data and data.busy == true)
+    cb({ ok = true })
+end)

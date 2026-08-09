@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { useUi } from '../store'
 import { play } from '../audio/cues'
+import { fetchNui } from '../bridge/nui'
+import { CB } from '../bridge/types'
+
+/** How long the level-up burst runs. Must match .lvlup-word in index.css. */
+const LEVEL_BURST_MS = 1500
+
+/** The whole award: fill (1.4s), hold (1.5s), burst, refill. Lua holds the
+ *  teardown for this, so it is a number both sides can point at. */
+const AWARD_TOTAL_MS = 5200
+
 
 /**
  * LEVEL AND XP.
@@ -162,23 +172,57 @@ export default function Progress({
             play('ui.ready')
             shown.current = p.level
             setFilled(0)
-            window.setTimeout(() => {
-              setFilled(p.xp / Math.max(1, p.needed))
-              setLevelling(false)
-            }, 420)
+            // The bar refills 420ms in, under the burst -- so by the time the
+            // gold clears, the new level's progress is already sitting there
+            // rather than starting from nothing afterwards.
+            window.setTimeout(() => setFilled(p.xp / Math.max(1, p.needed)), 420)
+            // ...and `levelling` runs the full length of the burst. It used to
+            // clear at 420ms, which cut the animation off at the exact moment
+            // it became interesting.
+            window.setTimeout(() => setLevelling(false), LEVEL_BURST_MS)
           }, 1500)
         }
       })
     })
 
-    const done = window.setTimeout(() => clearAward(), 5200)
+    // THE WORLD WAITS FOR THIS, so the world has to be told.
+    //
+    // The teardown holds a black screen for a fixed time and then teleports
+    // home. That was a guess against this animation's length, and a guess is
+    // how the last beat -- the level flip -- kept getting cut off. Lua now
+    // waits for `busy` to clear instead, with its own cap so a stuck
+    // interface cannot strand anybody (br_core/client/spawn.lua).
+    void fetchNui(CB.XP_BUSY, { busy: true })
+    const done = window.setTimeout(() => {
+      clearAward()
+      void fetchNui(CB.XP_BUSY, { busy: false })
+    }, AWARD_TOTAL_MS)
     return () => { cancelAnimationFrame(raf); window.clearTimeout(done) }
   }, [award, p.level, p.xp, p.needed, clearAward])
 
   const pct = Math.max(0, Math.min(1, filled))
 
   return (
-    <div className={compact ? '' : 'w-full'}>
+    <div className={`relative ${compact ? '' : 'w-full'}`}>
+      {/* THE MOMENT. Rendered over the card, keyed on the level so it plays
+          exactly once per level gained, and `pointer-events: none` so it
+          cannot eat a click on the way past. See .lvlup in index.css for what
+          the four layers are doing and why they are gold. */}
+      {levelling && (
+        <div className="lvlup" key={`lvl-${shown.current}`} aria-hidden>
+          <div className="lvlup-flash" />
+          <div className="lvlup-ring" />
+          <div className="lvlup-ring two" />
+          {/* Eight spokes at 45 degrees. Written out rather than generated:
+              the array would be the same length as the markup and one more
+              thing to read. */}
+          {[0, 45, 90, 135, 180, 225, 270, 315].map((a) => (
+            <div key={a} className="lvlup-ray" style={{ ['--a' as string]: `${a}deg` }} />
+          ))}
+          <div className="lvlup-word">Level {shown.current}</div>
+        </div>
+      )}
+
       <div className="flex items-end gap-3">
         {/* THE LEVEL CHIP. A plate, like everything else that is an object
             rather than a surface -- and it takes the victory gold only while

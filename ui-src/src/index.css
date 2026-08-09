@@ -994,3 +994,103 @@ html, body, #root {
   50%      { opacity: 1;    transform: scale(1.15); }
 }
 .mate-talk { animation: talkPulse 900ms ease-in-out infinite; }
+
+/* ===========================================================================
+   LEVEL UP.
+   
+   The bar filling and a chip turning gold is a STATUS CHANGE, not a moment --
+   and levelling up is the one thing in a progression system that is supposed
+   to feel like something (owner, 2026-08-09: "no wow factor... it should be
+   visually LOUD"). This is the loud version.
+   
+   Four layers, all transform/opacity, all over in 1.5s:
+   
+     flash      a gold wash that blows out and clears, which is what sells the
+                impact frame -- the eye reads brightness before it reads shape
+     ring       a shockwave leaving the bar, so the burst has a direction and
+                an origin rather than being a sticker on the screen
+     word       LEVEL UP, slammed in oversized and settling back
+     rays       eight spokes, because a burst with structure reads as designed
+                and a burst without it reads as a glitch
+   
+   GOLD, WHICH IS BORROWED ON PURPOSE. Victory is the only other thing allowed
+   this colour, and that is the association: this is the small cousin of a
+   Victory Royale, not a notification.
+   =========================================================================== */
+
+.lvlup {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  /* Above the card's own content, below anything the screen puts over it. */
+  z-index: 3;
+  overflow: visible;
+}
+
+@keyframes lvlFlash {
+  0%   { opacity: 0;    transform: scale(0.6); }
+  18%  { opacity: 0.95; transform: scale(1.05); }
+  100% { opacity: 0;    transform: scale(1.9); }
+}
+.lvlup-flash {
+  position: absolute;
+  width: 120%;
+  height: 340%;
+  border-radius: 50%;
+  background: radial-gradient(circle,
+    rgba(250, 204, 21, 0.55) 0%,
+    rgba(250, 204, 21, 0.20) 42%,
+    rgba(250, 204, 21, 0) 70%);
+  animation: lvlFlash 1200ms var(--ease-out) both;
+}
+
+@keyframes lvlRing {
+  0%   { opacity: 0.9; transform: scale(0.25); }
+  100% { opacity: 0;   transform: scale(2.6); }
+}
+.lvlup-ring {
+  position: absolute;
+  width: 60%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  border: 0.18rem solid rgba(250, 204, 21, 0.85);
+  animation: lvlRing 900ms var(--ease-out) both;
+}
+.lvlup-ring.two { animation-delay: 160ms; animation-duration: 1000ms; }
+
+@keyframes lvlWord {
+  0%   { opacity: 0; transform: scale(2.4) translateY(0.2em); letter-spacing: 0.4em; }
+  22%  { opacity: 1; transform: scale(1);   letter-spacing: 0.12em; }
+  70%  { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1.06) translateY(-0.35em); }
+}
+.lvlup-word {
+  position: relative;
+  font-family: 'Anton', 'Segoe UI', sans-serif;
+  font-size: 2.1rem;
+  line-height: 1;
+  text-transform: uppercase;
+  color: var(--color-royale-accent2);
+  text-shadow:
+    0 0 1.4rem rgba(250, 204, 21, 0.75),
+    0 0.12rem 0.5rem rgba(0, 0, 0, 0.95);
+  animation: lvlWord 1500ms var(--ease-snap) both;
+  white-space: nowrap;
+}
+
+@keyframes lvlRay {
+  0%   { opacity: 0;   transform: rotate(var(--a)) scaleY(0.2); }
+  25%  { opacity: 0.9; transform: rotate(var(--a)) scaleY(1); }
+  100% { opacity: 0;   transform: rotate(var(--a)) scaleY(1.7); }
+}
+.lvlup-ray {
+  position: absolute;
+  width: 0.18rem;
+  height: 7rem;
+  transform-origin: 50% 0;
+  background: linear-gradient(180deg,
+    rgba(250, 204, 21, 0.85), rgba(250, 204, 21, 0));
+  animation: lvlRay 950ms var(--ease-out) both;
+}

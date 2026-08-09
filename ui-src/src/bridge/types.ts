@@ -585,6 +585,7 @@ export const CB = {
   PAUSE_FOCUS:    'br/pause/focus',
   HELP_FOCUS:     'br/help/focus',
   VOICE_SETTINGS: 'br/voice/settings',
+  XP_BUSY:        'br/xp/busy',
   PAUSE_ACTION:   'br/pause/action',
   KEYBIND_SET:    'br/settings/keybind',
   ERROR:        'br/err',
