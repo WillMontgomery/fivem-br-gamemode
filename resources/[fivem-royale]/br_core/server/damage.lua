@@ -427,10 +427,49 @@ function BR.Damage.applyHit(shooter, victim, amount, meta)
 
     -- The shooter gets a hitmarker. This is the one piece of feedback that
     -- cancelling the engine's damage would otherwise take away.
+    -- ...AND THE SHOOTER'S COPY OF THEM IS CORRECTED WITH IT.
+    --
+    -- THE BUG THIS FIXES: a player shot down to 7hp died on the SHOOTER'S
+    -- screen and stayed a corpse there forever, while walking around alive on
+    -- their own (user, 2026-08-09).
+    --
+    -- CancelEvent stops the damage REPLICATING; it does not undo the copy GTA
+    -- already applied locally on the shooter's machine before the server ever
+    -- saw the event. So every validated shot leaves the shooter's local ped
+    -- carrying GTA's damage number while the ledger carries OURS -- and ours
+    -- is a different number, because it is recomputed from our own tables with
+    -- rarity and falloff and body part. The two drift apart by the difference,
+    -- every single shot, and eventually the local copy reaches zero while the
+    -- real player is on 7.
+    --
+    -- The refusal path has corrected this since 2026-08-08 (BR.Damage.resync).
+    -- The SUCCESS path never did, which is the whole bug: refused shots looked
+    -- right and landed shots did not.
+    --
+    -- Carried on DAMAGE_FEED rather than as a second event because this
+    -- already goes to exactly the right player at exactly the right rate --
+    -- one per hit, to the one machine whose copy is wrong.
+    --
+    -- Only while they are ALIVE. Once the ledger says dead, the corpse on the
+    -- shooter's screen is correct and resurrecting it would be the bug.
+    local netId, engineHp = nil, nil
+    if e.hp > 0.0 then
+        local vped = GetPlayerPed(victim)
+        if vped and vped ~= 0 then
+            local nid = NetworkGetNetworkIdFromEntity(vped)
+            if nid and nid ~= 0 then
+                netId    = nid
+                engineHp = math.floor(BR.ToEngineHp(e.hp) + 0.5)
+            end
+        end
+    end
+
     TriggerClientEvent(BR.Net.DAMAGE_FEED, shooter, {
         amount   = math.floor(amount + 0.5),
         headshot = meta and meta.headshot or false,
         killed   = e.hp <= 0.0,
+        netId    = netId,
+        hp       = engineHp,
     })
 
     -- Attribution, for the kill feed and for anything that finishes them

@@ -3881,6 +3881,82 @@ do
         tostring(BR.Inv.of(1).slots[1].clip))
 end
 
+describe('combat.resync')
+do
+    -- THE PERMANENT CORPSE, and it was on the path that WORKED.
+    --
+    -- A player shot down to 7hp died on the SHOOTER'S screen and stayed a
+    -- corpse there forever, while walking around alive on their own (user,
+    -- 2026-08-09). CancelEvent stops the damage REPLICATING; it does not undo
+    -- the copy GTA already applied locally on the shooter's machine before the
+    -- server saw the shot. So the shooter's local ped carries GTA's number and
+    -- the ledger carries ours -- recomputed from our tables, so a DIFFERENT
+    -- number -- and they drift apart by the difference every single shot.
+    --
+    -- The refusal path had corrected this since 2026-08-08. The success path
+    -- never did, which is the whole bug: refused shots looked right and landed
+    -- shots did not.
+    reset()
+    queueUp(1, 'A', BR.Mode.SOLO.key)
+    queueUp(2, 'B', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+
+    local pistol = BR.Config.WeaponById['pistol']
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = pistol.clip })
+    BR.Inv.of(1).ammo[BR.AmmoType.LIGHT] = 40
+    BR.Inv.of(1).active = 1
+    for s = 1, 2 do BR.Roster.get(s).pos = { x = s * 2.0, y = 0.0, z = 30.0 } end
+
+    sent = {}
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = pistol.hash, hitComponent = 0,
+        weaponDamage = 26, hitGlobalIds = { 1002 },
+    })
+
+    local feed = nil
+    for _, s in ipairs(eventsOf(BR.Net.DAMAGE_FEED)) do
+        if s.target == 1 then feed = s.args[1] end
+    end
+    ok(feed ~= nil, 'a landed shot feeds the shooter')
+    ok(feed and feed.netId ~= nil,
+        'and tells them WHICH ped their copy has wrong',
+        feed and tostring(feed.netId) or 'nil')
+    ok(feed and feed.hp ~= nil and feed.hp > 0,
+        'and what its health really is, in engine units',
+        feed and tostring(feed.hp) or 'nil')
+
+    -- The number has to be the LEDGER's, not the client's, or correcting
+    -- against it just re-applies the drift.
+    local want = math.floor(BR.ToEngineHp(BR.Roster.get(2).hp) + 0.5)
+    ok(feed and feed.hp == want,
+        'and it is the ledger\'s number, not the shooter\'s',
+        ('%s vs %s'):format(feed and tostring(feed.hp), tostring(want)))
+
+    -- A KILL SENDS NO CORRECTION. Once the ledger says dead the corpse on the
+    -- shooter's screen is right, and resurrecting it would be the bug.
+    BR.Roster.get(2).hp = 1.0
+    sent = {}
+    fakeTime = fakeTime + 5000
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = pistol.hash, hitComponent = 0,
+        weaponDamage = 26, hitGlobalIds = { 1002 },
+    })
+    local killFeed = nil
+    for _, s in ipairs(eventsOf(BR.Net.DAMAGE_FEED)) do
+        if s.target == 1 then killFeed = s.args[1] end
+    end
+    ok(killFeed and killFeed.killed == true, 'a killing blow reads as a kill')
+    ok(killFeed and killFeed.netId == nil,
+        'and carries no correction -- that corpse is real',
+        killFeed and tostring(killFeed.netId) or 'nil')
+end
+
 describe('voice.channels')
 do
     -- THE PROPERTY THAT MATTERS IS SEPARATION, and it is the one thing the

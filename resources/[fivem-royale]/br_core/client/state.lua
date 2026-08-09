@@ -730,6 +730,59 @@ end)
 --
 -- The cue is throttled in BR.Sfx (60ms), not here: an unthrottled full-auto
 -- burst is thirty overlapping sounds, and that has no visual symptom.
+--- Drag our local copy of somebody else's ped back to the server's number.
+---
+--- ONE PASS, OR SEVERAL. A ped that is merely WRONG needs one write. A ped
+--- that has entered the DEATH STATE needs resurrecting, and needs it more than
+--- once: the correction arrives a round trip after the engine applied the
+--- damage locally, so the ped can still be mid-death when the first attempt
+--- lands and the death completes over the top of it.
+---
+--- Spawning a thread per correction would be wasteful on the common path --
+--- one arrives per bullet -- so the retry loop is only entered when there is
+--- actually a corpse to argue with.
+--- @param netId integer
+--- @param hp integer   ENGINE units
+local function correctPed(netId, hp)
+    if not netId or hp <= 0 then return end
+    if not NetworkDoesNetworkIdExist(netId) then return end
+
+    local ped = NetworkGetEntityFromNetworkId(netId)
+    if not ped or ped == 0 or not DoesEntityExist(ped) then return end
+
+    if not IsEntityDead(ped) then
+        -- Only ever UPWARD. Writing it down would be us arguing with the
+        -- owner's own sync about a ped we do not own, for no gain.
+        if GetEntityHealth(ped) < hp then SetEntityHealth(ped, hp) end
+        return
+    end
+
+    -- A CORPSE THAT SHOULD NOT BE ONE. ResurrectPed alone leaves the death
+    -- TASK running, so the ped stands up and immediately plays dying again;
+    -- clearing tasks is what actually ends it. Before this, the body lay
+    -- there for the better part of ten seconds until OneSync re-created it
+    -- (user, 2026-08-08).
+    Citizen.CreateThread(function()
+        for _ = 1, 6 do
+            if not NetworkDoesNetworkIdExist(netId) then return end
+            local p = NetworkGetEntityFromNetworkId(netId)
+            if not p or p == 0 or not DoesEntityExist(p) then return end
+
+            if IsEntityDead(p) then
+                ResurrectPed(p)
+                ClearPedTasksImmediately(p)
+                SetEntityHealth(p, hp)
+            elseif GetEntityHealth(p) < hp then
+                SetEntityHealth(p, hp)
+                return
+            else
+                return   -- already correct; the owner's sync got there first
+            end
+            Citizen.Wait(150)
+        end
+    end)
+end
+
 RegisterNetEvent(BR.Net.DAMAGE_FEED)
 AddEventHandler(BR.Net.DAMAGE_FEED, function(d)
     if not d then return end
@@ -743,6 +796,23 @@ AddEventHandler(BR.Net.DAMAGE_FEED, function(d)
         headshot = d.headshot or false,
         killed   = d.killed or false,
     })
+
+    -- AND PUT THE VICTIM BACK WHERE THE SERVER SAYS THEY ARE.
+    --
+    -- We are the shooter, and our own copy of the person we just shot is
+    -- wrong -- guaranteed, every time. GTA applied its own damage number to
+    -- them locally before the server saw the shot; the server cancelled the
+    -- replication and applied OURS, which is a different number. The gap
+    -- compounds shot after shot until our copy hits zero and dies while they
+    -- walk around alive on 7hp -- a permanent corpse that nothing ever
+    -- cleared (user, 2026-08-09).
+    --
+    -- Cheap: one health read, and a write only when it disagrees. The netId
+    -- is absent when the ledger says they are dead, because then the corpse
+    -- is right and reviving it would be the bug.
+    if d.netId then
+        correctPed(d.netId, math.floor(tonumber(d.hp) or 0))
+    end
 end)
 
 -- --------------------------------------------------------------------------
@@ -791,46 +861,8 @@ end)
 -- window.
 RegisterNetEvent(BR.Net.HIT_RESYNC)
 AddEventHandler(BR.Net.HIT_RESYNC, function(d)
-    if type(d) ~= 'table' or not d.netId then return end
-
-    local hp = math.floor(tonumber(d.hp) or 0)
-    if hp <= 0 then return end
-
-    -- RESURRECTING, NOT JUST RE-HEALING, AND NOT JUST ONCE.
-    --
-    -- The first version only called SetEntityHealth, which sets a number on a
-    -- corpse: once a ped has ENTERED the death state, health alone does not
-    -- bring it back. The result was a body that lay there for the better part
-    -- of ten seconds before OneSync eventually re-created it at the right
-    -- position (user, 2026-08-08).
-    --
-    -- Retried, because of an ordering problem that cannot be avoided: the
-    -- refusal arrives a round trip AFTER the engine applied the damage
-    -- locally, so the ped may still be mid-death when the first attempt lands
-    -- and the death completes over the top of it. A few attempts across a
-    -- second costs nothing and covers that window.
-    Citizen.CreateThread(function()
-        for _ = 1, 6 do
-            if not NetworkDoesNetworkIdExist(d.netId) then return end
-            local ped = NetworkGetEntityFromNetworkId(d.netId)
-            if not ped or ped == 0 or not DoesEntityExist(ped) then return end
-
-            if IsEntityDead(ped) then
-                -- ResurrectPed leaves the death TASK running, so the ped can
-                -- stand up and immediately play dying again. Clearing tasks is
-                -- what actually ends it.
-                ResurrectPed(ped)
-                ClearPedTasksImmediately(ped)
-                SetEntityHealth(ped, hp)
-            elseif GetEntityHealth(ped) < hp then
-                SetEntityHealth(ped, hp)
-                return
-            else
-                return   -- already correct; the owner's sync got there first
-            end
-            Citizen.Wait(150)
-        end
-    end)
+    if type(d) ~= 'table' then return end
+    correctPed(d.netId, math.floor(tonumber(d.hp) or 0))
 end)
 
 RegisterNetEvent(BR.Net.HIT_DAMAGE)
