@@ -270,6 +270,8 @@ BR.NuiCb = {
     -- The pause menu. FOCUS opens and closes it; ACTION carries the one verb
     -- the player picked ('lobby' | 'squad' | 'server' | 'quit').
     PAUSE_FOCUS  = 'br/pause/focus',
+    -- The manual, which is a page on the lobby AND a tab in the pause menu.
+    HELP_FOCUS   = 'br/help/focus',
     PAUSE_ACTION = 'br/pause/action',
     -- Rebind one command. { command, key } -- an empty key unbinds it.
     KEYBIND_SET  = 'br/settings/keybind',

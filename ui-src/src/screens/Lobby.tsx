@@ -361,6 +361,18 @@ export default function Lobby({
               Market
             </Btn>
           </div>
+          {/* HELP BELONGS HERE TOO, not only in the pause menu. The lobby is
+              where a new player stands before they have anything to pause,
+              and it is the one moment they have time to read (user,
+              2026-08-09). Same component, standalone frame. */}
+          <div className="flex-1">
+            <Btn
+              variant="default" size="md" full cue="ui.select"
+              onPress={() => { void fetchNui(CB.HELP_FOCUS, { open: true }) }}
+            >
+              Help
+            </Btn>
+          </div>
           <div className="flex-1">
             <Btn
               variant="default" size="md" full cue="ui.select"

@@ -75,6 +75,10 @@ export interface UiState {
     count: number
   }[]
   focus: FocusPayload['screen']
+  /** Which tab the focus asked for, when it named one. Read once by the
+   *  screen that opens; not authoritative after that -- the player is free to
+   *  move around inside it. */
+  focusTab?: string
 
   /** The player's preferences, as Lua last confirmed them. Never written
    *  optimistically: a save round-trips and this is set from the ECHO, so a
@@ -159,7 +163,7 @@ export interface UiState {
   setDbno: (d: DbnoPayload) => void
   setSpectate: (s: SpectatePayload | null) => void
   setSummary: (s: SummaryPayload | null) => void
-  setFocus: (f: FocusPayload['screen']) => void
+  setFocus: (f: FocusPayload['screen'], tab?: string) => void
   setPauseHiding: (v: boolean) => void
   setLeaving: (v: boolean, kind?: CurtainKind) => void
   setLobby: (l: LobbyPayload) => void
@@ -487,7 +491,7 @@ export const useUi = create<UiState>((set, get) => {
   setDbno:     (dbno) => set({ dbno }),
   setSpectate: (spectate) => set({ spectate }),
   setSummary:  (summary) => set({ summary }),
-  setFocus:    (focus) => set({ focus }),
+  setFocus:    (focus, focusTab) => set({ focus, focusTab }),
   setPauseHiding: (pauseHiding) => set({ pauseHiding }),
   setLeaving: (leaving, curtain) => set(curtain ? { leaving, curtain } : { leaving }),
   setLobby:    (lobby) => set({ lobby }),

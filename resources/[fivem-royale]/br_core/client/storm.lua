@@ -174,6 +174,33 @@ local lastBlipAt = 0
 local lastBlipR = -1.0
 local lastPush = 0
 
+--- The last circle solved on the 10Hz band, so the frame job can reuse it.
+---
+--- The frame job does NOT re-solve. A storm circle moves and shrinks slowly
+--- enough that a 100ms-old radius is wrong by centimetres; the thing that
+--- moves fast is the PLAYER, and that is the only term worth recomputing.
+local solved = nil
+
+--- The last whole metre we told the interface, so a push only happens when
+--- the number a player can actually read has changed.
+local lastEdgeShown = nil
+
+--- Send the storm envelope. One builder, both bands.
+local function pushStorm(edge)
+    if not solved then return end
+    lastEdgeShown = math.floor(edge + 0.5)
+    TriggerEvent('br:ui:sendLocal', BR.Nui.STORM, {
+        phase        = solved.phase,
+        phaseState   = solved.st,
+        endsAt       = solved.endsAt,
+        radius       = solved.r,
+        edgeDistance = edge,
+        -- Toward the CENTRE when outside -- the way to run.
+        bearing      = BR.Bearing(solved.px, solved.py, solved.cx, solved.cy),
+        dps          = solved.dps,
+    })
+end
+
 local function clearBlips()
     if curBlip then RemoveBlip(curBlip) curBlip = nil end
     if nextBlip then RemoveBlip(nextBlip) nextBlip = nil end
@@ -302,6 +329,9 @@ end
 -- state transition, so it needs no extra message to know.
 local function teardown()
     clearBlips()
+    -- The frame job reads `solved` and nothing else. Leaving it set would
+    -- keep it computing distances to a circle that no longer exists.
+    solved, lastEdgeShown = nil, nil
     -- Between matches the grade SNAPS off -- there is nothing to fade
     -- against once the world resets around a teleport home.
     fxTarget, fxLevel = 0.0, 0.0
@@ -461,34 +491,62 @@ BR.Loop.register(BR.Loop.TICK, 'storm.state', function()
     -- timestamp and the UI derives the digits locally, same as the warmup
     -- timer -- so 4Hz is plenty for everything except one field.
     --
-    -- EXCEPT WHEN YOU ARE OUTSIDE. Then the readout is a DISTANCE, and a
-    -- distance that updates four times a second while you sprint at 7 m/s
-    -- jumps almost two metres a frame and reads as broken (user, 2026-08-08).
-    -- Outside the circle this runs at the full tick rate; the loop is 10Hz, so
-    -- that is the ceiling without moving this to the frame band, and the
-    -- envelope is small.
-    --
-    -- Inside, nothing here changes fast enough to be worth the traffic.
-    local pushEvery = (edge > 0) and 100 or 250
-    if gt - lastPush >= pushEvery then
-        lastPush = gt
-        local endsAt = 0
-        if st == BR.StormPhase.PRE or st == BR.StormPhase.HOLDING then
-            endsAt = rec.tStart + rec.tWait
-        elseif st == BR.StormPhase.SHRINKING then
-            endsAt = rec.tStart + rec.tWait + rec.tShrink
-        end
-        TriggerEvent('br:ui:sendLocal', BR.Nui.STORM, {
-            phase        = rec.phase,
-            phaseState   = st,
-            endsAt       = endsAt,
-            radius       = r,
-            edgeDistance = edge,
-            -- Toward the CENTRE when outside -- the way to run.
-            bearing      = BR.Bearing(p.x, p.y, cx, cy),
-            dps          = dps,
-        })
+    -- THE ONE FIELD IS THE DISTANCE, and it is now pushed from the FRAME band
+    -- instead (storm.edge, below). Ten times a second still stepped in
+    -- ~70cm jumps at a sprint and read as laggy (user, 2026-08-09).
+    local endsAt = 0
+    if st == BR.StormPhase.PRE or st == BR.StormPhase.HOLDING then
+        endsAt = rec.tStart + rec.tWait
+    elseif st == BR.StormPhase.SHRINKING then
+        endsAt = rec.tStart + rec.tWait + rec.tShrink
     end
+    solved = {
+        phase = rec.phase, st = st, endsAt = endsAt,
+        cx = cx, cy = cy, r = r, dps = dps,
+        px = p.x, py = p.y,
+        -- Whether the frame job has anything to do at all. Inside the circle
+        -- it costs one boolean test per frame and nothing else.
+        outside = edge > 0,
+    }
+
+    -- Inside, nothing here changes fast enough to be worth the traffic.
+    if gt - lastPush >= 250 then
+        lastPush = gt
+        pushStorm(edge)
+    end
+end)
+
+-- THE DISTANCE, AT FRAME RATE, AND ONLY WHEN IT CHANGES.
+--
+-- "How far outside am I" is the one number in this interface that a player
+-- reads WHILE MOVING, and every fixed cadence is wrong for it: at 4Hz it
+-- stepped ~1.8m at a sprint, at 10Hz ~0.7m, and both read as the interface
+-- lagging behind the world (user, 2026-08-08 and again 2026-08-09).
+--
+-- Cost is bounded by what is actually spent, not by the tick rate:
+--
+--   * inside the circle -- which is nearly everyone, nearly always -- this
+--     is one boolean test per frame and returns;
+--   * outside, it is one GetEntityCoords, one distance, and a compare. The
+--     circle itself is NOT re-solved; it comes from the 10Hz band, and a
+--     100ms-old radius is wrong by centimetres.
+--   * and it only SENDS when the whole metre on screen changes, so sprinting
+--     straight at the wall at 7 m/s costs about seven envelopes a second --
+--     fewer than the fixed 10Hz it replaces -- and standing still costs
+--     none at all.
+--
+-- Which makes this both smoother and cheaper than what it replaces.
+BR.Loop.register(BR.Loop.FRAME, 'storm.edge', function()
+    if not solved or not solved.outside then return end
+
+    local p = GetEntityCoords(PlayerPedId())
+    local edge = BR.Dist(p.x, p.y, solved.cx, solved.cy) - solved.r
+    if math.floor(edge + 0.5) == lastEdgeShown then return end
+
+    -- The bearing home is read from the same position, so the arrow and the
+    -- number can never describe different moments.
+    solved.px, solved.py = p.x, p.y
+    pushStorm(edge)
 end)
 
 -- A new record means the "next circle" moved: force the blips to rebuild so

@@ -14,10 +14,11 @@ import Settings from './screens/Settings'
 import Locker from './screens/Locker'
 import Market from './screens/Market'
 import PauseMenu from './screens/PauseMenu'
+import Help from './screens/Help'
 import Page from './ui/Page'
 
 /** The lobby's sub-screens. The base menu recedes under any of them. */
-const LOBBY_SUBSCREENS = new Set(['settings', 'locker', 'market'])
+const LOBBY_SUBSCREENS = new Set(['settings', 'locker', 'market', 'help'])
 
 /**
  * Root.
@@ -79,7 +80,7 @@ export default function App() {
   // Lua owns focus. When it hands focus to chat, the input opens; when it takes
   // focus away, the input closes. The UI never decides this on its own.
   useNuiEvent('focus', (d) => {
-    s.setFocus(d.screen)
+    s.setFocus(d.screen, d.tab)
     // Focus returning to the lobby is the pause round-trip completing.
     if (d.screen === 'lobby') s.setPauseHiding(false)
     if (d.screen === 'chat') {
@@ -213,6 +214,9 @@ export default function App() {
       {/* The market is the third face of the same screen. It has no ped to
           show, so it takes the whole width. */}
       <Page show={s.focus === 'market'}><Market /></Page>
+      {/* The manual, from the lobby. The same component the pause menu
+          embeds, in its own frame. */}
+      <Page show={s.focus === 'help'}><Help /></Page>
       {/* The pause menu REPLACES GTA's, so it sits above everything our own
           screens draw and below only the curtain. */}
       <Page show={s.focus === 'pause'}><PauseMenu /></Page>

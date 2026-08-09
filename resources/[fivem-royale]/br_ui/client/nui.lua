@@ -24,6 +24,13 @@ local focusHeld = false
 local lastTop = 'none'
 local chatChannel = BR.ChatChannel.GLOBAL  -- which channel a chat focus opens in
 
+--- Which tab a pause focus should land on, or nil for "wherever it was".
+---
+--- Rides the focus envelope like the chat channel above, and for the same
+--- reason: `/help` has to say BOTH "open the pause menu" and "on Help", and
+--- two envelopes would be a race for which arrives first.
+local pauseTab = nil
+
 -- ---------------------------------------------------------------- sending ---
 
 --- Send one envelope to the UI.
@@ -88,7 +95,12 @@ local function applyFocus()
     if want.screen == lastTop then return end
     lastTop = want.screen
 
-    send(BR.Nui.FOCUS, { screen = want.screen, channel = chatChannel })
+    send(BR.Nui.FOCUS, { screen = want.screen, channel = chatChannel, tab = pauseTab })
+    -- ONE SHOT. The tab is a request made at the moment of opening, not a
+    -- state -- leaving it set would mean the next focus change also carried
+    -- it, and the screen could not tell a fresh `/help` from an echo of the
+    -- last one.
+    pauseTab = nil
     -- Same fact, for Lua listeners. A screen that tracks its own open/closed
     -- flag has to learn when something ELSE took the stack -- a match ending,
     -- the watchdog, a resource restart -- or its flag drifts and its keybind
@@ -177,6 +189,10 @@ AddEventHandler('br:ui:clearFocus', clearFocus)
 -- Chat is opened by a keybind in br_core, but focus belongs to this resource,
 -- so br_core asks rather than calling SetNuiFocus itself. The channel rides
 -- along on the focus envelope instead of needing its own message kind.
+AddEventHandler('br:ui:pauseTab', function(tab)
+    pauseTab = tab
+end)
+
 AddEventHandler('br:ui:openChat', function(channel)
     chatChannel = channel or BR.ChatChannel.GLOBAL
     pushFocus('chat')
@@ -221,13 +237,26 @@ end)
 
 callback(BR.NuiCb.CHAT_SEND, function(data)
     local text = tostring(data.text or ''):sub(1, BR.ChatLimits.maxLength)
+    popFocus('chat')
+
+    -- SLASH COMMANDS ARE HANDLED HERE AND NOT SENT. The chat box is the one
+    -- place a player already types when they want something, and `/help` is
+    -- what they will type before they think to look for a menu (user,
+    -- 2026-08-09). Anything unrecognised falls through to chat rather than
+    -- being swallowed -- a message starting with a slash is usually still a
+    -- message, and eating it silently is worse than sending it.
+    local cmd = text:match('^/(%a+)')
+    if cmd and cmd:lower() == 'help' then
+        BR.Pause.open('help')
+        return { ok = true }
+    end
+
     if #text > 0 then
         TriggerServerEvent(BR.Net.CHAT_SEND, {
             channel = data.channel or BR.ChatChannel.GLOBAL,
             text    = text,
         })
     end
-    popFocus('chat')
     return { ok = true }
 end)
 

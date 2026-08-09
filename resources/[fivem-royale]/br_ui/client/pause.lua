@@ -32,14 +32,26 @@ local open = false
 --- else asks the map to close.
 local frontendMap = false
 
-function BR.Pause.open()
+--- @param tab string|nil  which tab to land on ('help', 'notices', ...)
+function BR.Pause.open(tab)
     if open then return end
     open = true
+    -- The tab rides the focus envelope, the same way the chat channel does --
+    -- one message, and the screen knows both that it is opening and what it
+    -- is opening ON. A second envelope would race the first.
+    TriggerEvent('br:ui:pauseTab', tab)
     TriggerEvent('br:ui:pushFocus', 'pause')
 end
 
 function BR.Pause.close()
-    if not open then return end
+    -- POP UNCONDITIONALLY, and never behind an `if open`. `open` is a display
+    -- flag; the focus STACK is the thing that must not leak, and popFocus is
+    -- already safe to call for a screen that does not hold focus.
+    --
+    -- The guard that used to be here is how a match left through this menu
+    -- came back to haunt the lobby (user, 2026-08-09: readied up and "was
+    -- brought back to the pause menu where I could not close the UI"). See
+    -- the focusChanged handler at the bottom for the full sequence.
     open = false
     TriggerEvent('br:ui:popFocus', 'pause')
 end
@@ -127,7 +139,19 @@ function BR.Pause.openFrontendMap(page)
 end
 
 RegisterNUICallback(BR.NuiCb.PAUSE_FOCUS, function(data, cb)
-    if data and data.open then BR.Pause.open() else BR.Pause.close() end
+    if data and data.open then BR.Pause.open(data.tab) else BR.Pause.close() end
+    cb({ ok = true })
+end)
+
+-- THE MANUAL IS A PAGE OF ITS OWN IN THE LOBBY, and a tab inside the pause
+-- menu once a match is running. Same component either way; only the frame
+-- around it differs.
+RegisterNUICallback(BR.NuiCb.HELP_FOCUS, function(data, cb)
+    if data and data.open then
+        TriggerEvent('br:ui:pushFocus', 'help')
+    else
+        TriggerEvent('br:ui:popFocus', 'help')
+    end
     cb({ ok = true })
 end)
 
@@ -322,8 +346,19 @@ end, false)
 -- The page can be closed from under us: a match ending, a br_core restart,
 -- the focus watchdog. Watching the focus envelope keeps `open` honest instead
 -- of letting it drift into a state where the keybind toggles the wrong way.
+-- THE PAGE CAN BE COVERED FROM UNDER US -- a match ending, the summary
+-- screen, a br_core restart, the watchdog -- and this used to answer by
+-- flipping `open` to false and leaving the STACK ENTRY in place.
+--
+-- That is the bug. `pause` sits under whatever covered it, is never popped,
+-- and resurfaces the moment that thing pops: the player leaves a match
+-- through this menu, readies up, and the pause menu comes back with the
+-- cursor captured and a close key that now toggles the wrong way, because
+-- `open` says closed while the screen says otherwise (user, 2026-08-09).
+--
+-- Losing the top of the stack means we are not up any more, so let go of it.
 AddEventHandler('br:ui:focusChanged', function(screen)
-    if screen ~= 'pause' then open = false end
+    if screen ~= 'pause' and open then BR.Pause.close() end
 end)
 
 AddEventHandler('onResourceStop', function(res)

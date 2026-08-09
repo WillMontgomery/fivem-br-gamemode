@@ -584,6 +584,20 @@ function BR.Native.applyGameRules()
     if BR.Keys and BR.Keys.ownsEscape and BR.Keys.ownsEscape()
        and not BR.Native.frontendMap then
         DisableFrontendThisFrame()
+
+        -- AND IF IT GETS THROUGH ANYWAY, take it back. The disable is the
+        -- documented route and it is not the only path into the frontend --
+        -- a controller, another resource, a frame we lost -- and "Escape
+        -- still opens GTA's menu" was the report that mattered (user,
+        -- 2026-08-09). Closing it and raising ours turns a leak into the
+        -- thing the player asked for, one frame late.
+        --
+        -- The raw layer cannot see Escape while CEF holds the cursor, so this
+        -- doubles as the path that works with a menu already open.
+        if IsPauseMenuActive() then
+            SetFrontendActive(false)
+            TriggerEvent('br:ui:pauseToggle')
+        end
     end
 
     -- GTA's own feed ("X joined", "Y died", weapon unlocks, whatever any other

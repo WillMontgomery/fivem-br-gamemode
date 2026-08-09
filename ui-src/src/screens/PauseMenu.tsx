@@ -49,16 +49,29 @@ const EXITS: {
   label: string
   sub: string
   variant: 'default' | 'danger'
+  /** What the button says. Falls back to the card's own title. */
+  action?: string
   confirm?: string
+  /** The two answers to `confirm`, both naming what they do. */
+  yes?: string
+  no?: string
   squadOnly?: boolean
 }[] = [
+  // THE BUTTON SAYS WHAT IT DOES, at every step. Both of the confirmed rows
+  // used to open with a button reading "Continue", which is a word that
+  // commits you to something without naming it (user, 2026-08-09). The first
+  // press states the action, the confirm restates it, and the way out is
+  // never "Cancel" -- it is what staying actually means.
   {
     id: 'lobby', label: 'Back to lobby', variant: 'default',
+    action: 'Leave match',
     sub: 'Forfeits this match. Your squad plays on.',
     confirm: 'Leave the match? You will be eliminated.',
+    yes: 'Leave match', no: 'Keep playing',
   },
   {
     id: 'squad', label: 'Leave squad', variant: 'default', squadOnly: true,
+    action: 'Leave squad',
     // Deliberately NOT immediate: pulling someone out of a squad mid-match
     // would strip their teammates' health bars and blips in the middle of a
     // fight, which punishes three people for one person's decision.
@@ -66,8 +79,10 @@ const EXITS: {
   },
   {
     id: 'server', label: 'Leave server', variant: 'danger',
+    action: 'Disconnect',
     sub: 'Disconnects you from FiveM Royale.',
     confirm: 'Disconnect from the server?',
+    yes: 'Disconnect', no: 'Stay connected',
   },
   // QUIT FIVEM IS NOT HERE, and cannot be. The client's own `quit` console
   // command is restricted -- "Access denied" -- and there is no server-side
@@ -77,7 +92,22 @@ const EXITS: {
 ]
 
 export default function PauseMenu() {
+  // WHERE IT OPENS CAN BE ASKED FOR. `/help` in the chat box raises this menu
+  // ON the Help tab, which is the whole point of the command -- a player who
+  // types /help wants the manual, not a menu with a Help button on it.
+  const asked = useUi((s) => s.focusTab)
   const [tab, setTab] = useState<Tab>('main')
+
+  // The menu is kept MOUNTED between openings (Page holds it through the exit
+  // animation), so the initial state is not enough: a second /help would find
+  // the component already alive and sitting on whatever tab was last used.
+  // Lua clears the request after sending it, so this reads as a real change
+  // each time rather than as an echo.
+  useEffect(() => {
+    if (asked === 'help' || asked === 'notices' || asked === 'settings') {
+      setTab(asked)
+    }
+  }, [asked])
   const [confirming, setConfirming] = useState<string | null>(null)
   const squad = useUi(selSquad)
   const inSquad = squad.members.length > 1
@@ -205,10 +235,16 @@ export default function PauseMenu() {
                     ['--cut-max' as string]: '0.6rem',
                   }}
                 >
-                  <div className="font-display text-[1.15rem] uppercase tracking-[0.08em]">
+                  {/* tscale, like every other line of prose in the interface.
+                      These cards were plain rem, so the text-size preference
+                      moved the HUD and the settings screen and left the pause
+                      menu exactly as it was (user, 2026-08-09). A card grows
+                      with its content, which is precisely the shape that can
+                      honour it. */}
+                  <div className="font-display text-[1.15rem] uppercase tracking-[0.08em] tscale">
                     {e.label}
                   </div>
-                  <div className="micro-label" style={{ textTransform: 'none' }}>
+                  <div className="micro-label tscale" style={{ textTransform: 'none' }}>
                     {e.sub}
                   </div>
 
@@ -223,11 +259,11 @@ export default function PauseMenu() {
                       <div className="flex gap-2">
                         <Btn variant="danger" size="sm" cue="ui.select"
                              onPress={() => act(e.id)}>
-                          Yes
+                          {e.yes ?? e.label}
                         </Btn>
                         <Btn variant="default" size="sm" cue="ui.back"
                              onPress={() => setConfirming(null)}>
-                          Cancel
+                          {e.no ?? 'Cancel'}
                         </Btn>
                       </div>
                     </div>
@@ -242,7 +278,7 @@ export default function PauseMenu() {
                           act(e.id)
                         }}
                       >
-                        {e.confirm ? 'Continue' : e.label}
+                        {e.action ?? e.label}
                       </Btn>
                     </div>
                   )}
@@ -250,15 +286,16 @@ export default function PauseMenu() {
               ))}
             </div>
 
-            {/* RESUME IS NO LONGER THE PRIMARY, because Map is -- and there is
-                never more than one loud object on a screen. It loses nothing:
-                resuming is the one action here that already has a key, and
-                saying so is worth more than a colour. */}
-            <div className="mt-6 flex items-center gap-3">
-              <Btn variant="default" size="lg" cue="ui.back" onPress={close}>
+            {/* RESUME IS BLUE (owner's call, 2026-08-09). It and Map are the
+                two things on this screen that do not end anything, and they
+                read as a pair -- which is the argument for both being loud
+                rather than for neither being. The Esc hint is gone: the key
+                is the same one that opened the menu, and a player who got
+                here knows it. */}
+            <div className="mt-6">
+              <Btn variant="primary" size="lg" cue="ui.back" onPress={close}>
                 Resume
               </Btn>
-              <span className="micro-label">Esc</span>
             </div>
           </>
         ) : tab === 'notices' ? (

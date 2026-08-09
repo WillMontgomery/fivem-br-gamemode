@@ -480,10 +480,14 @@ export type CurtainKind = 'leaving' | 'dropping'
 /** Which screen currently owns NUI focus. Lua is the authority. */
 export interface FocusPayload {
   screen: 'none' | 'lobby' | 'squad' | 'inventory' | 'summary' | 'chat'
-        | 'settings' | 'locker' | 'market' | 'pause'
+        | 'settings' | 'locker' | 'market' | 'pause' | 'help'
   /** Which channel a chat focus should open in. Rides along here rather than
    *  needing its own envelope kind. */
   channel?: ChatChannel
+  /** Which tab a pause focus should land on. Same trick as `channel` above:
+   *  /help has to say both "open the pause menu" and "on Help", and two
+   *  envelopes would be a race for which arrives first. */
+  tab?: string
 }
 
 export interface SnapshotPayload {
@@ -560,6 +564,7 @@ export const CB = {
   MARKET_FOCUS:   'br/market/focus',
   MARKET_BUY:     'br/market/buy',
   PAUSE_FOCUS:    'br/pause/focus',
+  HELP_FOCUS:     'br/help/focus',
   PAUSE_ACTION:   'br/pause/action',
   KEYBIND_SET:    'br/settings/keybind',
   ERROR:        'br/err',
