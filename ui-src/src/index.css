@@ -468,7 +468,22 @@ html, body, #root {
   background: var(--hot);
   color: #140508;
   font-family: 'Anton', 'Segoe UI', sans-serif;
-  font-size: 0.7rem;
+  /* THE TEXT SLIDER REACHES THE CAP, and it has to be applied HERE rather than
+     by adding `tscale` at the call site. Two reasons, and the second is the one
+     that actually bit:
+
+     `.tscale` multiplies 1em -- the PARENT's size -- so on text that declares
+     its own it silently discards the declared size. That is the trap `.ts` and
+     an explicit --fs exist for (see PauseMenu, and the note beside .ts).
+
+     But even `.ts` loses here: it is (0,1,0) and this selector is (0,2,0), so
+     the declaration below would win whatever the call site asked for. Every
+     cap in the project was therefore fixed at 0.7rem no matter where the
+     player put the slider -- the DBNO placard AND the storm placard, whose cap
+     is the line telling somebody to run. Putting the multiplier in the rule
+     that owns the size is the only version of this that cannot be overridden
+     by accident, and it fixes both at once. */
+  font-size: calc(0.7rem * var(--text-scale));
   /* UPPERCASE, and it was the missing half of the type spec. Anton is a
      display face at 0.24em tracking: mixed case at that spacing puts the
      gaps between letters on a par with the gaps between words, so

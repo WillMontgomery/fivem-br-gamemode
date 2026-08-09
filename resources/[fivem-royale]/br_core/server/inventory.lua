@@ -40,9 +40,16 @@ local MELEE_SLOT = L.meleeSlot or 0
 -- "it's impossible to select a weapon while in warmup"). The CLIENT had
 -- always allowed it -- canArm() lists WARMUP -- so the two ends disagreed and
 -- the visible symptom was a keypress that did nothing at all.
+--
+-- DBNO DOES NOT COUNT, and it used to. A downed player keeps their inventory
+-- -- it is what the death box is built from, and a revive has to hand it back
+-- intact -- but they cannot reach into it: no swapping, no dropping, and above
+-- all no bandaging themselves back up off the floor, which would make the
+-- bleed timer a suggestion. The client's canArm() lists the same states for
+-- the same reason; the two have to agree or a keypress does nothing in silence
+-- (that exact disagreement is what the WARMUP note above is about).
 local LIVE = {
     [BR.PlayerState.ALIVE]  = true,
-    [BR.PlayerState.DBNO]   = true,
     [BR.PlayerState.WARMUP] = true,
 }
 

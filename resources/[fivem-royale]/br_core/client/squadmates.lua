@@ -20,10 +20,33 @@ BR = BR or {}
 -- their destination marker were different colours (and included purple, which
 -- belongs to the storm).
 
+BR.Squadmates = BR.Squadmates or {}
+
 local blips    = {}   -- [src] = blip handle
 local tags     = {}   -- [src] = { tag = gamerTagId, ped = pedHandle }
 local mates    = {}   -- [src] = latest server record for that squadmate
+local peds     = {}   -- [src] = local ped handle, or absent when out of scope
 local lastPush = 0
+
+--- A squadmate's LOCAL ped handle, or 0 when they are not streamed in.
+---
+--- ONE RESOLVER FOR THE WHOLE CLIENT, and that is the point of it existing at
+--- all. Resolving a player ped needs the two scope-limited natives the verify
+--- gate bans, so every file that wanted one would need its own marked
+--- exception -- and a marked exception per feature is how an allowlist rots
+--- into a permission. The single marked use is the tick below; everybody else
+--- asks here.
+---
+--- A zero is never "not in the squad". It means "further away than the engine
+--- streams peds", which for the one caller that matters -- reviving somebody
+--- at arm's length -- is simply an answer of no.
+--- @param src integer
+--- @return integer
+function BR.Squadmates.pedOf(src)
+    local ped = peds[src]
+    if not ped or ped == 0 or not DoesEntityExist(ped) then return 0 end
+    return ped
+end
 
 local PLAYER_GROUP = GetHashKey('PLAYER')
 
@@ -59,6 +82,7 @@ local function dropMate(src)
     end
     dropTag(src)
     mates[src] = nil
+    peds[src]  = nil
 end
 
 local function clearAll()
@@ -133,6 +157,11 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
         -- is. Out of scope, the coord blip above still shows where they are.
         local player = GetPlayerFromServerId(src) -- scope-ok: overhead name + local relationship group need the local ped; absence just means neither applies yet
         local ped = (player ~= -1) and GetPlayerPed(player) or 0 -- scope-ok: same presentation-only use
+
+        -- Published for BR.Squadmates.pedOf. Written every tick rather than on
+        -- the edge, because a handle changes whenever a mate respawns or
+        -- re-enters scope and a cached stale one is worse than none.
+        peds[src] = (ped ~= 0) and ped or nil
 
         -- SQUAD-LEVEL PEACE IS NOT PRESENTATION -- and it is re-asserted
         -- EVERY tick, for every streamed-in mate, in every state. The old

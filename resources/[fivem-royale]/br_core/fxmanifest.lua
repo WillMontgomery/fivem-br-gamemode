@@ -57,6 +57,7 @@ client_scripts {
     'client/dui.lua',       -- browser pages as game textures; loot.lua uses it
     'client/inventory.lua', -- the inventory mirror; owns every weapon grant
     'client/loot.lua',      -- world props + pickup; needs BR.Inv (inventory.lua)
+    'client/dbno.lua',      -- downed + revive; yields the interact key from loot.lua
     'client/chat.lua',
     'client/voice.lua',   -- Mumble channels; server/voice.lua decides them
     'client/probe.lua',    -- /brprobe: what the natives ACTUALLY do on this build

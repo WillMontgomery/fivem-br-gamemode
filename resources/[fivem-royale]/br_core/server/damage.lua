@@ -407,12 +407,43 @@ function BR.Damage.applyHit(shooter, victim, amount, meta)
     local e = BR.Roster.get(victim)
     if not e then return end
 
+    -- A HIT ON SOMEBODY ALREADY DOWN BUYS TIME, NOT HEALTH.
+    --
+    -- The bleed timer IS a downed player's health (see the DBNO section of
+    -- server/combat.lua), so this whole function's armour-then-health
+    -- arithmetic has nothing to work on. The shooter still gets their
+    -- hitmarker -- they connected, and telling them otherwise would read as
+    -- the shot not landing.
+    if e.state == BR.PlayerState.DBNO then
+        BR.Combat.bleed(victim, amount, shooter, meta)
+        -- Read AFTER the bleed: `e` is the live entry, so a hit that ran the
+        -- clock out has already flipped it to DEAD by this line and the
+        -- marker gets to punctuate.
+        TriggerClientEvent(BR.Net.DAMAGE_FEED, shooter, {
+            amount   = math.floor(amount + 0.5),
+            headshot = meta and meta.headshot or false,
+            killed   = e.state ~= BR.PlayerState.DBNO,
+        })
+        return
+    end
+
     local armour = e.armour or 0.0
     local hp     = e.hp or 100.0
 
     -- Armour soaks first, and only what it has.
     local toArmour = math.min(armour, amount)
     local toHealth = amount - toArmour
+
+    -- A KNOCK IS DECIDED BEFORE THE HEALTH IS WRITTEN, because it changes how
+    -- much damage the victim is told to apply to their own ped: the ped has to
+    -- survive a knock, and instructing the full amount would kill it on the
+    -- victim's own machine a beat before the server said anything about being
+    -- downed. So the instruction is clamped to the ledger's downed floor and
+    -- the overflow is simply dropped -- there is nothing left for it to hurt.
+    local downing = (hp - toHealth <= 0.0) and BR.Combat.canBeDowned(e)
+    if downing then
+        toHealth = math.max(0.0, hp - (BR.Config.Match.dbnoHp or 5))
+    end
 
     e.armour = armour - toArmour
     e.hp     = math.max(0.0, hp - toHealth)
@@ -479,14 +510,17 @@ function BR.Damage.applyHit(shooter, victim, amount, meta)
     e.lastHitAt = GetGameTimer()
     e.lastHitWeapon = meta and meta.weapon or nil
 
-    if e.hp <= 0.0 then
+    if downing or e.hp <= 0.0 then
         local how = 'gunshot'
         if meta and meta.explosive then
             how = 'explosion'
         elseif meta and meta.headshot then
             how = 'headshot'
         end
-        BR.Combat.eliminate(victim, how, shooter)
+        -- NOT eliminate() any more. defeat() is the one place that decides
+        -- whether running out of health means down or out, so a knock is
+        -- possible from every damage path or from none of them.
+        BR.Combat.defeat(victim, how, shooter)
     end
 end
 

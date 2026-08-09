@@ -91,10 +91,15 @@ local WHEEL_UP = 15
 --- there -- a bar showing five slots you cannot open was the worst of both
 --- (user, 2026-08-05).
 --- @return boolean
+--- DBNO IS ABSENT, and it used to be here. A downed player keeps their
+--- inventory -- it is what the death box is built from, and a revive has to
+--- hand it back untouched -- but nothing goes in their hands. The server's own
+--- LIVE table (server/inventory.lua) drops DBNO for the same reason, and the
+--- two have to agree: when they disagreed over WARMUP the symptom was a
+--- keypress that did nothing at all, in silence.
 local function canArm()
     local st = BR.State.me.state
     return st == BR.PlayerState.ALIVE
-        or st == BR.PlayerState.DBNO
         or st == BR.PlayerState.WARMUP
 end
 
@@ -940,7 +945,7 @@ function BR.Inv.reportState()
     local heldOk, held = GetCurrentPedWeapon(ped, true)
 
     local why = nil
-    if not canArm() then                    why = 'state is not ALIVE/DBNO/WARMUP'
+    if not canArm() then                    why = 'state is not ALIVE/WARMUP'
     elseif BR.Inv.suspendAmmo then          why = 'suspended by /brprobe raw'
     elseif not slot then                    why = 'active slot is empty'
     elseif not hash then                    why = 'slot holds nothing weapon-shaped'

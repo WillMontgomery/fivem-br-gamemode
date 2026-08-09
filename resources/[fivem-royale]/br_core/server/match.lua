@@ -342,6 +342,12 @@ function BR.Match.resetPlayers(m)
             e.stormHp, e.lastStormAt = nil, nil
             e.hp, e.armour = 100.0, 0.0
 
+            -- THE KNOCK COUNT IS PER MATCH, which is the only thing that makes
+            -- the shortening bleed fair: a player who was picked up three times
+            -- last round starts the next one on a full 45 seconds.
+            e.dbnoUntil, e.dbnoCount = nil, 0
+            e.downedBy, e.reviverSrc, e.reviveFrom = nil, nil, nil
+
             -- Explicitly cleared, so clients drop them too. squadId is
             -- per-match; partyId deliberately survives.
             BR.Roster.clearFields(src, { 'placement', 'squadId', 'colour' })
