@@ -210,6 +210,51 @@ function BR.Party.invite(src, targetSrc)
     return true
 end
 
+--- Withdraw every invite a player has sent, and tell the recipients why.
+---
+--- READYING UP IS AN ANSWER TO YOUR OWN INVITE. The sender is on their way
+--- into a match; an acceptance arriving afterwards would drop the accepter
+--- into a party whose leader is already gone -- and, worse, would look like it
+--- had worked. The recipient's card has to be TAKEN OFF THEIR SCREEN, not just
+--- quietly refused when they finally click it (user, 2026-08-08).
+---
+--- The withdrawal is silent for the sender: they chose this, and a notice
+--- telling them about a consequence of their own click is noise. The pending
+--- chips vanishing is the feedback. The RECIPIENT is told, because from their
+--- side a card disappearing on its own is otherwise indistinguishable from a
+--- bug.
+--- @param src integer
+--- @param reason string  woven into the recipient's notice
+function BR.Party.withdrawInvitesFrom(src, reason)
+    local sender = BR.Roster.get(src)
+    local name = sender and sender.name or 'A player'
+
+    -- Collect first, mutate after: clearing entries while iterating the table
+    -- being iterated is exactly the sort of thing that works until the day it
+    -- does not.
+    local dropped, touched = {}, {}
+    for targetSrc, inv in pairs(invites) do
+        if inv.from == src then
+            dropped[#dropped + 1] = targetSrc
+            if inv.partyId then touched[inv.partyId] = true end
+        end
+    end
+    if #dropped == 0 then return end
+
+    for _, targetSrc in ipairs(dropped) do
+        invites[targetSrc] = nil
+        BR.Server.notify(targetSrc,
+            ('%s\'s invite expired -- %s.'):format(name, reason), 'warn')
+        -- The CARD, not only the notice. A prompt offering to join a party
+        -- that no longer takes joiners is a button that lies.
+        TriggerClientEvent(BR.Net.SQUAD_INVITED, targetSrc, { cancel = true })
+    end
+
+    -- The sender's own pending chips are rebuilt from `invites`, so one sync
+    -- per affected party clears all of them at once.
+    for partyId in pairs(touched) do sync(partyId) end
+end
+
 --- Accept or decline a pending invite.
 --- @param src integer
 --- @param accept boolean

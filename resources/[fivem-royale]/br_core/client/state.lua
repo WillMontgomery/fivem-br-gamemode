@@ -491,9 +491,14 @@ AddEventHandler(BR.Net.SQUAD_RESULT, function(res)
     })
 end)
 
+-- An invite ARRIVES on this channel, and it is WITHDRAWN on it too. The
+-- server sends { cancel = true } when the sender readied up (or otherwise
+-- stopped being somewhere an acceptance could land) -- see
+-- BR.Party.withdrawInvitesFrom. A card offering to join a party that no
+-- longer takes joiners is a button that lies, so it comes off the screen.
 RegisterNetEvent(BR.Net.SQUAD_INVITED)
 AddEventHandler(BR.Net.SQUAD_INVITED, function(inv)
-    TriggerEvent('br:ui:sendLocal', BR.Nui.INVITE, inv)
+    TriggerEvent('br:ui:sendLocal', BR.Nui.INVITE, inv or { cancel = true })
 end)
 
 -- A join REQUEST rides the same interface slot as an invite -- one card,
@@ -829,11 +834,28 @@ function pushSquadOrParty()
             members[#members + 1] = {
                 src = src, name = e.name, state = e.state,
                 hp = e.hp or 0, armour = e.armour or 0,
-                colour = e.colour or '#6EE7F9',
             }
         end
     end
     table.sort(members, function(a, b) return a.src < b.src end)
+
+    -- THE PANEL'S COLOUR IS THE PLAYER'S BLIP COLOUR, NOT THE SQUAD'S.
+    --
+    -- This used to send `e.colour`, which is the colour of the SQUAD -- shared
+    -- by all four of them. So the panel drew four identical stripes while the
+    -- same four people had four different dots on the minimap and four
+    -- different destination beams, and the one place you look to work out
+    -- WHICH teammate is in trouble was the one place that would not tell you
+    -- (user, 2026-08-08). markers.lua and squadmates.lua both learned this
+    -- lesson already; this is the third consumer.
+    --
+    -- The index is derived exactly as the server derives it in
+    -- BR.Party.memberIndex -- squad members sorted by server id -- so it
+    -- agrees with the beacons without needing a round trip. The sort above IS
+    -- that ordering; do not reorder this list without moving this loop.
+    for i, m in ipairs(members) do
+        m.colour = BR.SquadColour(i).hex
+    end
 
     TriggerEvent('br:ui:sendLocal', BR.Nui.SQUAD,
         { id = me.squadId, members = members, you = me.src })

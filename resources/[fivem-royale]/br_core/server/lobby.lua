@@ -94,6 +94,17 @@ function BR.Lobby.join(src, mode)
     -- than being stored and later used to index a config table.
     local resolved = BR.ResolveMode(mode)
 
+    -- READYING UP CLOSES YOUR OWN INVITES.
+    --
+    -- Before this, an invite sent and then abandoned by readying up stayed
+    -- live for its full 60s TTL: the recipient could accept into a party
+    -- whose leader was already in warmup, or on the far side of a bus ride
+    -- (user, 2026-08-08). It has to happen HERE rather than after the
+    -- queue/lateJoin branch below, because the late-join path returns early
+    -- -- and joining a forming match is exactly the case where the invite is
+    -- most stale.
+    BR.Party.withdrawInvitesFrom(src, 'they readied up')
+
     -- Queueing SOLO while in a party is a contradiction, and the resolution is
     -- the one the player asked for most recently: solo wins, the party is left.
     -- There is deliberately no "in a party but playing alone" state -- it made

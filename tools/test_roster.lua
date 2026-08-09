@@ -769,6 +769,48 @@ do
     ok(not BR.Party.invite(2, 3), 'non-leaders cannot invite')
 end
 
+describe('party.invite.withdrawnOnReady')
+do
+    -- READYING UP ANSWERS YOUR OWN INVITES. Before this, an invite sent and
+    -- then abandoned by readying up stayed live for its full 60s TTL, so the
+    -- recipient could accept into a party whose leader was already in warmup
+    -- (user, 2026-08-08).
+    --
+    -- Asserted on the WIRE as well as on the outcome: the recipient's CARD has
+    -- to be taken off their screen, and a server-side-only check would pass
+    -- happily while the prompt sat there waiting to be clicked.
+    reset()
+    BR.Server.devMode = true
+    join(1, 'Alice'); join(2, 'Bob'); join(3, 'Cara')
+
+    BR.Party.invite(1, 2)
+    BR.Party.invite(1, 3)
+    ok(#eventsOf(BR.Net.SQUAD_INVITED) == 2, 'two invites went out')
+
+    BR.Lobby.join(1, BR.Mode.SQUAD.key)
+
+    -- The withdrawal rides the same channel the invite arrived on, carrying
+    -- `cancel`, so the client has one handler rather than two.
+    local cancels = 0
+    for _, e in ipairs(eventsOf(BR.Net.SQUAD_INVITED)) do
+        if e.args[1] and e.args[1].cancel then cancels = cancels + 1 end
+    end
+    ok(cancels == 2, 'readying up withdraws both cards')
+
+    ok(not BR.Party.respond(2, true), 'and the invite can no longer be accepted')
+    ok(BR.Party.of(2) == nil, 'so the accepter does not end up in an absent party')
+
+    -- The recipient is TOLD. A card vanishing on its own is otherwise
+    -- indistinguishable from a bug.
+    local told = false
+    for _, e in ipairs(eventsOf(BR.Net.NOTIFY)) do
+        if e.target == 3 and e.args[1] and e.args[1].text:find('readied up') then
+            told = true
+        end
+    end
+    ok(told, 'and hears why it went away')
+end
+
 describe('party.leave')
 do
     reset()

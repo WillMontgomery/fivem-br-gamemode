@@ -74,6 +74,12 @@ function Row({ m }: { m: SquadMember }) {
   // colour on its edge, rather than a stripe inside one shared box -- so a
   // four-stack reads as four people at a glance instead of as a list, and the
   // colour is on the thing rather than beside it.
+  //
+  // `m.colour` IS THAT PLAYER'S BLIP COLOUR, and both the edge and the tab
+  // wear it. It used to be the squad's shared colour, which made all four
+  // rows identical -- see the note in br_core/client/state.lua. The tab and
+  // the outline being the same colour as the dot on the minimap is the whole
+  // point: one teammate, one colour, everywhere they appear.
   return (
     <div
       className="plate relative flex items-center gap-2 px-2 py-1.5"
@@ -89,7 +95,8 @@ function Row({ m }: { m: SquadMember }) {
       {flash > 0 && <div key={flash} className="mate-flash" />}
 
       <span
-        className={`w-1 self-stretch rounded-sm shrink-0${downed ? ' mate-pulse' : ''}`}
+        className={`w-[0.3rem] self-stretch rounded-sm shrink-0${
+          downed ? ' mate-pulse' : ''}`}
         style={{ background: m.colour }}
       />
 
@@ -109,10 +116,15 @@ function Row({ m }: { m: SquadMember }) {
 
         {!dead && (
           <>
-            {/* Taller than the old 1px hairlines: a squadmate's health is a
-                thing you check mid-fight, and a line you have to look twice
-                at is a line you stop looking at. */}
-            <div className="h-[0.2rem] mt-1 rounded-full bg-black/55 overflow-hidden">
+            {/* 0.4rem, and it has been raised twice. These began as 1px
+                hairlines, went to 0.2rem, and were STILL too thin to read at
+                a glance (user, 2026-08-08 -- "this was true before we
+                started"). A squadmate's health is something you check in the
+                middle of a fight, with your eyes mostly elsewhere; a line you
+                have to look at twice is a line you stop looking at. At 0.4rem
+                the fill has enough body to carry its colour, which is what
+                actually does the reading -- green, red, or nearly gone. */}
+            <div className="h-[0.4rem] mt-1 rounded-full bg-black/55 overflow-hidden">
               <div
                 className={`bar-fill h-full rounded-full${dying ? ' mate-drain' : ''}`}
                 style={{
@@ -122,7 +134,7 @@ function Row({ m }: { m: SquadMember }) {
                 }}
               />
             </div>
-            <div className="h-[0.2rem] mt-[0.15rem] rounded-full bg-black/55 overflow-hidden">
+            <div className="h-[0.4rem] mt-[0.2rem] rounded-full bg-black/55 overflow-hidden">
               <div
                 className={`bar-fill h-full rounded-full${dying ? ' mate-drain' : ''}`}
                 style={{

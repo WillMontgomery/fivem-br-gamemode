@@ -648,37 +648,55 @@ html, body, #root {
    transform, so a loader running for four minutes costs nothing) while the
    arc's dash grows and shrinks. That second animation is what stops it reading
    as a dead ring being spun around.
+
+   THE CLASS IS `.ldring` AND IT MUST NOT BE `.ring`.
+
+   `ring` is a TAILWIND CORE UTILITY. Naming our own component class `ring`
+   made Tailwind's JIT see the word in the source and emit its own
+   `.ring { box-shadow: 0 0 0 3px var(--tw-ring-color) }`, default blue-500 --
+   and since our rule sets no box-shadow, BOTH applied. Every loader in the
+   game wore a blue SQUARE outline (user, 2026-08-08). Two rules with the same
+   selector, only one of them ours, is invisible in the source and obvious in
+   the built sheet, which is where check-ui now looks (R8).
+
+   THE DASH NUMBERS ARE MATERIAL'S, NOT INVENTED.
+
+   The previous cycle ended with the arc's head at 0.40c and restarted it at
+   0, so every 1.5s the arc jumped backwards -- which is what "the circular
+   animation isn't really working" was. Material's ratios (dasharray 0.008c ->
+   0.795c, offset 0 -> -0.995c against a 1.59c gap) land the end of one cycle
+   exactly where the next begins, so the loop is seamless. The rotation period
+   is deliberately NOT a multiple of the dash period: the two beating against
+   each other is what makes the arc wander rather than pulse in place.
 --------------------------------------------------------------------------- */
+/* PLAIN LENGTHS, NOT calc(). Ring.tsx resolves every one of these to px
+   before they reach the stylesheet, because it is the only thing that knows
+   the radius. Interpolating a calc() chain between keyframes is a thing
+   Chrome 103 may or may not do well, and the pane this is developed against
+   has a frozen animation clock -- so the safe version is the one with nothing
+   left to resolve. */
 @keyframes ringRotate { 100% { transform: rotate(360deg); } }
 @keyframes ringDash {
-  0%   { stroke-dasharray: 1 var(--circ);   stroke-dashoffset: 0; }
-  50%  { stroke-dasharray: calc(var(--circ) * 0.62) var(--circ);
-         stroke-dashoffset: calc(var(--circ) * -0.16); }
-  100% { stroke-dasharray: calc(var(--circ) * 0.62) var(--circ);
-         stroke-dashoffset: calc(var(--circ) * -0.78); }
+  0%   { stroke-dasharray: var(--dash-min) var(--dash-gap);
+         stroke-dashoffset: 0; }
+  50%  { stroke-dasharray: var(--dash-max) var(--dash-gap);
+         stroke-dashoffset: var(--dash-o1); }
+  100% { stroke-dasharray: var(--dash-max) var(--dash-gap);
+         stroke-dashoffset: var(--dash-o2); }
 }
-.ring { position: relative; display: inline-flex; align-items: center;
-        justify-content: center; flex: none; }
-.ring svg { display: block; }
-.ring .ring-track { fill: none; stroke: rgba(255, 255, 255, 0.11); }
-.ring .ring-arc   { fill: none; stroke: var(--color-royale-accent);
-                    stroke-linecap: round;
-                    transition: stroke-dashoffset 280ms var(--ease-out); }
-.ring.is-indeterminate svg      { animation: ringRotate 1.9s linear infinite; }
-.ring.is-indeterminate .ring-arc { animation: ringDash 1.5s ease-in-out infinite;
-                                   transition: none; }
+.ldring { position: relative; display: inline-flex; align-items: center;
+          justify-content: center; flex: none; }
+.ldring svg { display: block; }
+.ldring .ring-track { fill: none; stroke: rgba(255, 255, 255, 0.11); }
+.ldring .ring-arc   { fill: none; stroke: var(--color-royale-accent);
+                      stroke-linecap: round;
+                      transition: stroke-dashoffset 280ms var(--ease-out); }
+.ldring.is-indeterminate svg { animation: ringRotate 1.57s linear infinite; }
+.ldring.is-indeterminate .ring-arc {
+  animation: ringDash 1.33s ease-in-out infinite;
+  transition: none;
+}
 
-/* Kept as an alias so LeaveScreen does not have to change shape in this
-   batch: same ring language, drawn with a border instead of an svg. */
-@keyframes leaveSpin { to { transform: rotate(360deg); } }
-.leave-spinner {
-  width: 1.4rem;
-  height: 1.4rem;
-  border-radius: 50%;
-  border: 0.22rem solid rgba(34, 211, 238, 0.22);
-  border-top-color: var(--color-royale-accent);
-  animation: leaveSpin 900ms linear infinite;
-}
 /* The same fly-up the verdict screen's late lines use, but starting almost
    immediately -- .end-late's 3.6s delay belongs to the slam choreography,
    not here. */

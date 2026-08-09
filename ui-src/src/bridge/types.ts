@@ -113,6 +113,11 @@ export interface InvitePayload {
   name: string
   size: number
   max: number
+  /** WITHDRAWN. The sender readied up (or otherwise stopped being somewhere an
+   *  acceptance could land), so the card comes off the screen rather than
+   *  waiting to be clicked and then refused. The other fields are absent on a
+   *  cancel -- it is a verb, not a state. */
+  cancel?: boolean
 }
 
 export interface InvSlot {

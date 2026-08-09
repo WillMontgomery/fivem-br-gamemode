@@ -293,6 +293,54 @@ for (const f of cssFiles) {
 }
 
 // ---------------------------------------------------------------------------
+// R8  Our class names must not collide with a Tailwind utility.
+//
+// CAUGHT LATE, AND IT SHIPPED TO A PLAYER: the loading ring's component class
+// was `ring`, which is a Tailwind CORE UTILITY. The JIT scans source TEXT, saw
+// the word, and emitted its own `.ring { box-shadow: 0 0 0 3px
+// var(--tw-ring-color) }` -- default blue-500. Ours set no box-shadow, so both
+// rules applied and every loader in the game wore a blue SQUARE outline
+// (user, 2026-08-08).
+//
+// Unfindable in the source, trivial in the OUTPUT: the same class selector
+// appears twice, once in a block full of --tw- properties. That is what this
+// reads. It needs a build to have happened, so it is a no-op on a clean tree
+// rather than a false pass -- `npm run build` runs vite first.
+// ---------------------------------------------------------------------------
+const builtCss = existsSync(join(OUT, 'assets'))
+  ? readdirSync(join(OUT, 'assets')).filter((a) => a.endsWith('.css'))
+  : []
+for (const name of builtCss) {
+  const css = readFileSync(join(OUT, 'assets', name), 'utf8')
+
+  // Blocks whose selector is a single bare class, which is the only shape that
+  // can collide. `.a .b`, `.a:hover` and friends cannot be a bare utility.
+  //
+  // LOOKBEHIND, not a capture group, for the delimiter. Matching `(^|\})`
+  // CONSUMES the preceding brace, so the closing brace of rule N is no longer
+  // available as the opening delimiter of rule N+1 -- the scan silently reads
+  // every OTHER rule, which is why the first cut of this passed a build that
+  // had the collision in it.
+  const owners = new Map()   // class -> ['tailwind' | 'ours', ...]
+  for (const m of css.matchAll(/(?<=^|[{}])\s*\.([a-zA-Z][\w-]*)\s*\{([^}]*)\}/g)) {
+    const cls = m[1]
+    const who = m[2].includes('--tw-') ? 'tailwind' : 'ours'
+    const seen = owners.get(cls) ?? []
+    seen.push(who)
+    owners.set(cls, seen)
+  }
+
+  for (const [cls, who] of owners) {
+    if (who.length < 2) continue
+    if (!who.includes('tailwind') || !who.includes('ours')) continue
+    fail('R8 collision', `br_ui/ui/assets/${name}`,
+      `.${cls} is defined by BOTH Tailwind and index.css. Tailwind's rule is`
+      + ` still live and applies whatever ours does not override -- rename the`
+      + ` component class (this is how .ring got a blue square outline).`)
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

@@ -47,7 +47,10 @@ export default function Ring({
 
   return (
     <span
-      className={`ring${determinate ? '' : ' is-indeterminate'}`}
+      // `ldring`, NOT `ring`: `ring` is a Tailwind core utility, so naming a
+      // component class after one gets you Tailwind's rule AND ours, both
+      // live. See the note above .ldring in index.css.
+      className={`ldring${determinate ? '' : ' is-indeterminate'}`}
       role="progressbar"
       aria-label={label ?? 'Loading'}
       aria-valuenow={determinate ? Math.round(pct * 100) : undefined}
@@ -57,9 +60,21 @@ export default function Ring({
         width={`${size}rem`}
         height={`${size}rem`}
         viewBox={`0 0 ${box} ${box}`}
-        // --circ is read by the ringDash keyframes. Set here rather than in
-        // CSS because only this component knows the radius.
-        style={{ ['--circ' as string]: circ.toFixed(2) }}
+        // The dash geometry the ringDash keyframes interpolate, resolved to
+        // plain lengths HERE because only this component knows the radius --
+        // and because a keyframe interpolating a calc() chain is one more
+        // thing that has to be right on a browser we cannot watch animate.
+        //
+        // The ratios are Material's, and they are chosen so the end of one
+        // cycle lands exactly where the next begins. Ours did not, and the
+        // arc jumped backwards once a second.
+        style={{
+          ['--dash-min' as string]: `${(circ * 0.008).toFixed(2)}px`,
+          ['--dash-max' as string]: `${(circ * 0.795).toFixed(2)}px`,
+          ['--dash-gap' as string]: `${(circ * 1.59).toFixed(2)}px`,
+          ['--dash-o1' as string]: `${(circ * -0.119).toFixed(2)}px`,
+          ['--dash-o2' as string]: `${(circ * -0.995).toFixed(2)}px`,
+        }}
       >
         <circle
           className="ring-track"
