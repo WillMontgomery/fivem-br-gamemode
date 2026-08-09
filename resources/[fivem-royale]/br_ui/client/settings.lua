@@ -52,9 +52,6 @@ local DEFAULTS = {
     -- route to, so the client falls back to nearby -- see br_core voice.lua,
     -- which owns everything the natives do with these.
     voiceMode   = 'nearby',
-    -- 0..1, applied per player with MumbleSetVolumeOverrideByServerId. There
-    -- is no master-output native, so "volume" is every voice at once.
-    volVoice    = 0.80,
     -- Proposed to the server on join. Empty means "use my platform name".
     gamertag    = '',
 }
@@ -64,7 +61,6 @@ local RANGE = {
     textScale = { 0.90, 1.15 },
     volUi     = { 0.00, 1.00 },
     volMusic  = { 0.00, 1.00 },
-    volVoice  = { 0.00, 1.00 },
 }
 
 local COLOURBLIND = {

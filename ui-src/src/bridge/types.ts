@@ -393,8 +393,6 @@ export interface SettingsPayload {
    *  declines it and stays on proximity, 'off' stops transmitting. It can only
    *  ever DECLINE a room -- the server decides which exist. */
   voiceMode: 'squad' | 'nearby' | 'off'
-  /** 0..1, applied per player -- there is no master output native. */
-  volVoice: number
   /** Proposed to the server; empty means "use my platform name". */
   gamertag: string
 }

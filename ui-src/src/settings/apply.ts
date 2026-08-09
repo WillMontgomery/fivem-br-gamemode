@@ -25,7 +25,6 @@ export const DEFAULT_SETTINGS: SettingsPayload = {
   colourblind: 'off',
   volUi: 0.7,
   voiceMode: 'squad',
-  volVoice: 0.8,
   volMusic: 0.5,
   gamertag: '',
 }

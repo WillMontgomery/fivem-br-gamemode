@@ -21,7 +21,7 @@ BR.Voice.state = { prox = nil, squad = nil, proximity = nil, applied = false }
 
 --- The player's own preference, from the settings screen. NOT authority --
 --- see apply(): it can only decline rooms the server already granted.
-BR.Voice.pref = { mode = 'squad', volume = 0.80 }
+BR.Voice.pref = { mode = 'squad' }
 
 --- Server ids heard speaking on the last tick. The squad panel's marker.
 BR.Voice.talking = {}
@@ -146,31 +146,31 @@ end)
 
 -- ------------------------------------------------------- preference + UI ---
 
---- Push the per-player volume to everyone we know about.
----
---- THERE IS NO MASTER OUTPUT NATIVE. MumbleSetVolumeOverrideByServerId sets
---- ONE player's level, so "voice volume" is every player at once, re-applied
---- as the roster changes -- an override only exists for somebody who was
---- present when it was set.
-local function applyVolume()
-    if not MumbleSetVolumeOverrideByServerId then return end
-    for src in pairs(BR.State.roster) do
-        pcall(MumbleSetVolumeOverrideByServerId, src, BR.Voice.pref.volume)
-    end
-end
+-- THERE IS NO VOICE VOLUME SLIDER, AND THERE MUST NOT BE ONE LIKE THIS.
+--
+-- There is no master output native. The only way to build a volume control is
+-- MUMBLE_SET_VOLUME_OVERRIDE_BY_SERVER_ID across every player -- and that
+-- native's own documentation says it "will also bypass 3D audio and distance
+-- calculations".
+--
+-- So a blanket override does not adjust the volume of proximity voice; it
+-- REPLACES it. Every speaker lands at one flat level whatever the distance,
+-- 'nearby' stops meaning anything, and the routing this file exists to apply
+-- is quietly cancelled by a slider in the settings screen. It was built,
+-- caught before it shipped, and removed (2026-08-09).
+--
+-- The per-player form is still the right tool for a per-player job -- muting
+-- or boosting ONE person, which is a feature worth having later. The output
+-- level belongs to the game's own voice settings, which the settings screen
+-- now sends players to.
 
 AddEventHandler('br:settings:changed', function(s)
     if type(s) ~= 'table' then return end
     local mode = tostring(s.voiceMode or 'squad')
     if mode ~= 'squad' and mode ~= 'nearby' and mode ~= 'off' then mode = 'squad' end
-    local vol = tonumber(s.volVoice) or 0.80
-
-    local changedMode = mode ~= BR.Voice.pref.mode
-    local changedVol  = vol ~= BR.Voice.pref.volume
-    BR.Voice.pref.mode, BR.Voice.pref.volume = mode, vol
-
-    if changedMode then apply() end
-    if changedVol then applyVolume() end
+    if mode == BR.Voice.pref.mode then return end
+    BR.Voice.pref.mode = mode
+    apply()
 end)
 
 -- WHO IS TALKING.
@@ -205,10 +205,6 @@ BR.Loop.register(BR.Loop.TICK, 'voice.talking', function()
     TriggerEvent('br:ui:sendLocal', BR.Nui.VOICE, { talking = talking })
 end)
 
--- The roster changes constantly and an override only exists for a player who
--- was there when it was set, so the volume is re-asserted on the slow band.
-BR.Loop.register(BR.Loop.SLOW, 'voice.volume', applyVolume)
-
 AddEventHandler('br:ui:ready', function()
     TriggerEvent('br:ui:sendLocal', BR.Nui.VOICE, { talking = BR.Voice.talking })
 end)
@@ -216,8 +212,7 @@ end)
 RegisterCommand('brvoice', function()
     local s = BR.Voice.state
     print('=== voice (client) ===')
-    print(('  mode         %s   volume %.2f'):format(
-        BR.Voice.pref.mode, BR.Voice.pref.volume))
+    print(('  mode         %s'):format(BR.Voice.pref.mode))
     print(('  talking      %s'):format(table.concat(BR.Voice.talking, ', ')))
     print(('  natives      %s'):format(available() and 'present' or 'MISSING'))
     print(('  connected    %s'):format(

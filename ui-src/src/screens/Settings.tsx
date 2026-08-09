@@ -449,16 +449,19 @@ export default function Settings({
                 </div>
               </div>
 
-              <Slider
-                label="Voice volume" value={draft.volVoice} dflt={DEFAULT_SETTINGS.volVoice}
-                min={0} max={1} step={0.01}
-                format={(v) => (v === 0 ? 'Muted' : `${Math.round(v * 100)}%`)}
-                onChange={(v) => set('volVoice', v)}
-              />
-              <p className="micro-label" style={{ textTransform: 'none' }}>
-                Applied to every voice at once — the game has no separate master
-                level.
-              </p>
+              {/* NO VOICE VOLUME SLIDER, and the reason is stronger than "it
+                  might not work".
+
+                  There is no master output native, so the only way to build
+                  one is MUMBLE_SET_VOLUME_OVERRIDE_BY_SERVER_ID across every
+                  player -- and that native's own documentation says it "will
+                  also bypass 3D audio and distance calculations". A blanket
+                  override would therefore flatten every voice to one level
+                  regardless of distance, which destroys proximity voice: the
+                  thing the whole routing design is built on.
+
+                  The output level lives in the game's own voice settings,
+                  which the button below opens. */}
 
               {/* THE HANDOVER, WITH ITS CARDS ON THE TABLE.
                   These are CLIENT settings -- the same class as key bindings
