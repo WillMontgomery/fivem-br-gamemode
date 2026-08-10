@@ -1,9 +1,4 @@
--- Unit tests for the server scheduler (br_lib/shared/sched.lua).
---
--- It lived in br_core/server/main.lua until M9 moved it into br_lib so a second
--- server resource could have one. This suite still loads br_core's server
--- bootstrap afterwards, because the interesting assertions are about the
--- scheduler as br_core actually uses it.
+-- Unit tests for the br_core server scheduler.
 --
 -- The client loop registry had tests from the start and the server scheduler did
 -- not, which is how a shadowed local -- BR.Sched.step's `nowMs` parameter hiding
@@ -37,7 +32,6 @@ for _, f in ipairs({
     'br_lib/shared/rng.lua',
     'br_lib/shared/geo.lua',
     'br_lib/shared/clock.lua',
-    'br_lib/shared/sched.lua',
     'br_lib/config/match.lua',
     'br_lib/config/storm.lua',
     'br_lib/config/map.lua',

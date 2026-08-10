@@ -8,16 +8,8 @@ Target: **Legacy FiveM** (standard FXServer Linux artifacts) on Ubuntu.
 
 ```bash
 sudo apt update
-sudo apt install -y curl xz-utils rsync
+sudo apt install -y curl xz-utils tmux mariadb-server
 ```
-
-Two things that used to be in that list and are not any more:
-
-- **`tmux`** — the server runs under systemd now (see below). tmux is needed
-  only for the fallback unit.
-- **`mariadb-server`** — **do not install it on a new host.** Nothing in the
-  game reads a database today, and M7b moves persistence to DynamoDB outright.
-  Section 2 below is kept for the existing host and is on its way out.
 
 ### FXServer artifacts
 
@@ -37,115 +29,19 @@ tar xf fx.tar.xz && rm fx.tar.xz
 > artifact is broken. **Test this before writing any gameplay code** — it is a
 > cheap check that becomes expensive to discover later.
 
-### Running the server
-
-**Run it under systemd, using the unit in `tools/`.** Not from an interactive
-SSH session: a server started by hand in a terminal dies when that terminal
-does, and does not come back after a reboot. That was how this server actually
-ran until 2026-08-09, and it is the reason the unit exists.
+> **Run under tmux, not directly under systemd.** Recent Linux artifacts have a
+> known segfault when launched directly by systemd. Either use `tmux`, or write a
+> unit that launches through a shell wrapper.
 
 ```bash
-sudo cp tools/royale.service /etc/systemd/system/royale.service
-sudo nano /etc/systemd/system/royale.service   # set User= and the paths
-sudo systemctl daemon-reload
-sudo systemctl enable --now royale
+tmux new -s royale
+cd ~/fxserver && ./run.sh +exec server.cfg
+# detach with ctrl-b then d
 ```
-
-Then:
-
-```bash
-systemctl status royale        # is it up
-journalctl -u royale -f        # the console output, live
-sudo systemctl restart royale  # bounce it
-```
-
-> **Why the unit holds stdin open, and why FXServer boot-loops without it.**
-> Measured on this server, 2026-08-09. A naive unit produces:
->
-> ```
-> [ citizen-server-main] -> Quitting: Ctrl-C pressed in server console.
-> royale.service: Main process exited, code=exited, status=1/FAILURE
-> ```
->
-> Nobody pressed Ctrl-C. FXServer reads its console from stdin, and systemd
-> hands a service a stdin that is immediately at end-of-file; FXServer reads
-> that EOF and treats it as an interactive quit. It shuts down about two
-> seconds into boot, `Restart=always` brings it back, and it does it again.
->
-> The usual advice for this calls it "a segfault under systemd". On this host
-> there is no segfault — the server exits cleanly and says exactly why. Same
-> fix regardless: `< <(sleep infinity)` in `ExecStart` gives FXServer the read
-> end of a pipe nothing ever writes to and nothing ever closes, so the read
-> blocks forever and no EOF arrives.
->
-> **The cost: the console becomes write-only.** `journalctl` reads it; nothing
-> can type into it. That is fine today, and it is the gap M9's supervisor
-> closes in Slice 2 by holding that pipe itself.
->
-> If it still will not stay up, swap in `tools/royale-tmux.service`
-> (`sudo apt install -y tmux` first), which keeps stdin open via a pty instead.
-> It supervises less well and puts nothing in the journal, so it is the
-> fallback rather than the default.
-
-### Deploying
-
-Install the deploy unit once:
-
-```bash
-sudo cp tools/royale-deploy.service /etc/systemd/system/ && sudo systemctl daemon-reload
-```
-
-Then deploying is one command, any time:
-
-```bash
-sudo systemctl start royale-deploy
-```
-
-It syncs from `origin/main` and restarts the game — and only restarts if the
-sync succeeded, so a failed pull leaves the server running the last known-good
-code instead of bouncing it into a broken tree. Watch it with
-`journalctl -u royale-deploy -n 50`.
-
-> **Why deploying is a separate unit rather than something `royale.service`
-> does on every start.** The obvious version — have the server pull whenever it
-> starts — is one line and it quietly breaks what systemd is for.
-> `royale.service` carries `Restart=always`, so a crash at 3am respawns
-> automatically. If starting also pulled, a crash would silently deploy
-> whatever happened to be on `main` at that moment: the server that comes back
-> is not the one that went down, the crash is no longer reproducible, and a bad
-> commit picked up by a crash-loop gets re-pulled on every restart. It would
-> also mean there is no such thing as a safe restart, which M9's scheduled
-> maintenance depends on — restarting the process at a controlled moment
-> *without* changing the code.
->
-> Split, you keep both: `royale-deploy` is the deploy, `restart royale` is the
-> restart, and a crash is just a restart. Still one command either way.
-
-**Two clones live on the box, with different jobs.**
-`/opt/misc/fivem-br-gamemode` is the checkout you `git pull` by hand — it is
-where the deploy *script* comes from. `deploy.sh` manages a second clone under
-`/opt/fivem-server-classic/.gamemode-src`, which it `reset --hard`s and
-`clean -fd`s every run, because what gets served has to be a deployment
-artifact rather than somebody's workspace.
-
-> **If you are still using a hand-written `pull-and-start.sh`**, `tools/deploy.sh`
-> replaces it and fixes three things. `sudo git pull` has no `set -e` and no
-> non-interactive handling, so a diverged clone hangs or half-completes and the
-> copy afterwards runs anyway. `cp -r` never deletes a file that was removed
-> upstream, unlike `rsync --delete`. And an unquoted `[fivem-royale]` is a bash
-> **glob** — a character class matching one character from `f,i,v,e,m-r,y,a,l`
-> — which works today only because `resources/` happens to contain no
-> single-character entry for it to match.
 
 ---
 
-## 2. Database — legacy, and on its way out
-
-> **Skip this section on a new host.** Nothing in the game reads a database
-> today, and **M7b replaces this entire section with DynamoDB.** It is kept
-> only for the existing server, which still has MariaDB installed from an
-> earlier setup. Do not build anything new against it, and do not install
-> MariaDB anywhere it is not already running.
+## 2. Database — optional, and skippable on first boot
 
 **You do not need this to run a match.** `br_stats` checks at runtime whether
 oxmysql is available and disables itself cleanly if not, printing why. Gameplay
@@ -390,21 +286,10 @@ From the repo root:
 ./tools/verify.sh
 ```
 
-The gates, in the order they run:
-
-| Gate | Fails when |
-|---|---|
-| syntax | `luac -p` rejects any `.lua` under `resources/` |
-| tests | any unit suite fails (pure logic: geometry, storm solver, seeded RNG, loop registry, scheduler, roster, XP curve) |
-| scope | a scope-limited native appears in `br_core/client/` without an explicit `-- scope-ok:` marker |
-| weapon table | `tools/check_weapons.lua` finds an inconsistency |
-| POI siting | `tools/check_pois.lua` finds a badly-placed POI |
-| forward locals | a `local function` is called above its own declaration (invisible to `luac -p`, nil at runtime) |
-| manifest coverage | a `.lua` exists under a resource but is declared in no fxmanifest — so it silently never loads |
-| shared coverage | a `br_lib/shared/*.lua` appears in no consuming resource's `shared_scripts` — the gap that let two finished modules sit dead |
-| deploy payload | `deploy.sh`'s own preflight, run against this checkout, so a deploy script that only breaks in production breaks here first |
-| secrets | anything credential-shaped is about to be committed, anywhere in the repo |
-| slice-1 boundary | `tools/dispatch.sh` grows a verb beyond `status`/`telemetry`, or `br_ringmaster` gains a write path (see PLAN.md, M9 Slice 1) |
+Three gates: Lua 5.4 syntax on every file, unit tests for the pure logic
+(geometry, storm solver, seeded RNG, loop registry, XP curve), and a scope gate
+that fails the build if a scope-limited native appears in client code without an
+explicit `-- scope-ok:` marker.
 
 Requires Lua 5.4 (`winget install --id DEVCOM.Lua -e`, or your distro's package).
 The script finds `luac` on its own.

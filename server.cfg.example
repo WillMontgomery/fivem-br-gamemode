@@ -118,27 +118,6 @@ ensure br_environment    # world state: IPLs + the Cayo Perico lobby island
 ensure br_ui
 ensure br_loadscreen     # branded loading screen; br_core releases it
 ensure br_stats          # optional -- needs oxmysql; safe to comment out
-ensure br_ringmaster     # optional -- the admin console's game-side half
-
-# ---------------------------------------------------------------------------
-# Ringmaster (M9). ALL OPTIONAL. With none of these set, br_ringmaster boots,
-# says it is off in one line, and does nothing for the rest of the run.
-#
-# The endpoint is a PRIVATE address reached over the VPC peering link. It must
-# never be a public hostname and never go through Cloudflare -- if you find
-# yourself typing a domain here, something is wrong with the network setup.
-#
-# The secret is a real credential. server.cfg is gitignored precisely so lines
-# like this one can exist; do not move it into server.cfg.example.
-# ---------------------------------------------------------------------------
-# set br_ringmaster_ingest_url    "http://10.0.0.10:3000/api/ingest"
-# set br_ringmaster_ingest_secret "<generate with: openssl rand -hex 24>"
-# set br_ringmaster_push_ms       2000
-#
-# (The angle brackets above are not decoration -- tools/check_secrets.sh treats
-#  them as a placeholder marker. Without them this line reads as a committed
-#  credential and fails the build, which is exactly what it should do to a real
-#  one. It caught this very line when it was first written.)
 
 # Our loading screen draws its own progress; the engine's busy spinner over
 # it is just a second, contradicting voice.
