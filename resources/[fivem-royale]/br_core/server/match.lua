@@ -347,6 +347,7 @@ function BR.Match.resetPlayers(m)
             -- last round starts the next one on a full 45 seconds.
             e.dbnoUntil, e.dbnoCount = nil, 0
             e.downedBy, e.reviverSrc, e.reviveFrom = nil, nil, nil
+            e.reviveBeat, e.reviveTickAt = nil, nil
 
             -- Explicitly cleared, so clients drop them too. squadId is
             -- per-match; partyId deliberately survives.

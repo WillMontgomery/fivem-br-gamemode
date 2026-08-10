@@ -115,35 +115,38 @@ export default function DbnoOverlay({ dbno }: { dbno: DbnoPayload }) {
             {reviving ? 'hold on' : 'until you bleed out'}
           </span>
 
-          {/* SQUARE, like every other bar inside a placard -- the pill shape
-              belonged to the panel this used to be.
+          {/* ONE BAR, EVER.
 
-              AND SIZED IN rem, NOT PIXELS. The root font size is
-              `clamp(11px, 1.481vh * var(--ui-scale), 28px)`, so rem is the
-              only unit the interface-size slider can reach: a bar in px stays
-              a 3px hairline at every setting, on every resolution, while the
-              placard around it doubles. This was the one px size in the whole
-              HUD and it was in this file. */}
+              This drew both at once -- a draining red one and a filling green
+              one, stacked (owner, in game). Two bars moving in opposite
+              directions is a question rather than a readout: which one is the
+              one that ends this?
+
+              There is only ever one answer, because the server stops the bleed
+              clock while somebody is holding you. So the bar IS whichever
+              process is live: the bleed when nobody is on you, the revive when
+              somebody is. The countdown above it still shows the time you have
+              banked, which is exactly what a paused clock should look like.
+
+              SQUARE, like every other bar inside a placard -- the pill shape
+              belonged to the panel this used to be -- and sized in rem, because
+              the root font size is `clamp(11px, 1.481vh * var(--ui-scale),
+              28px)` and rem is the only unit the interface-size slider reaches. */}
           <div className="mt-2 h-[0.2rem] w-full bg-black/60 overflow-hidden">
-            <div
-              ref={barRef}
-              className="bar-fill h-full"
-              style={{ width: '100%', background: 'var(--color-danger)' }}
-            />
-          </div>
-
-          {/* The revive's own progress keeps its own track rather than
-              recolouring the bleed bar: they run in opposite directions and
-              one bar cannot say both. */}
-          {reviving && (
-            <div className="mt-1 h-[0.2rem] w-full bg-black/60 overflow-hidden">
+            {reviving ? (
               <div
                 ref={reviveRef}
                 className="bar-fill h-full"
                 style={{ width: '100%', background: 'var(--color-hp)' }}
               />
-            </div>
-          )}
+            ) : (
+              <div
+                ref={barRef}
+                className="bar-fill h-full"
+                style={{ width: '100%', background: 'var(--color-danger)' }}
+              />
+            )}
+          </div>
         </div>
       </div>
     </div>

@@ -4800,6 +4800,23 @@ local function tick(ms)
     BR.Sched.step(fakeTime)
 end
 
+--- Advance time the way a client actually HOLDING a revive does.
+---
+--- The server expires a revive it has not heard about for dbnoReviveBeatMs, so
+--- a plain tick() is now "the holder let go" rather than "time passed" -- which
+--- is the whole point of the heartbeat and is why every progress assertion
+--- below has to go through here.
+local function holdTick(reviverSrc, targetSrc, ms)
+    local left = ms
+    while left > 0 do
+        local step = math.min(250, left)
+        fakeTime = fakeTime + step
+        fire(BR.Net.REVIVE_START, reviverSrc, { target = targetSrc })
+        BR.Sched.step(fakeTime)
+        left = left - step
+    end
+end
+
 --- The last DBNO_SET a player was sent, or nil.
 local function lastDbno(src)
     local found = nil
@@ -5073,7 +5090,7 @@ do
     -- Progress reaches BOTH parties: the reviver needs their ring, and the
     -- player on the floor needs to know whether to hang on.
     sent = {}
-    tick(1000)
+    holdTick(2, 1, 1000)
     local prog = eventsOf(BR.Net.REVIVE_PROGRESS)
     local toReviver, toDowned = false, false
     for _, s in ipairs(prog) do
@@ -5084,11 +5101,31 @@ do
     ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
         'and one second is not eight')
 
-    tick(BR.Config.Match.dbnoReviveTime * 1000)
+    -- THE BLEED CLOCK STOPS WHILE THEY ARE BEING PICKED UP. A revive begun
+    -- with three seconds left used to end in a death anyway, which reads as
+    -- the game ignoring what you did rather than as a race you lost (owner,
+    -- in game). The deadline moves forward with the hold.
+    local deadlineBefore = BR.Roster.get(1).dbnoUntil
+    holdTick(2, 1, 1000)
+    ok(BR.Roster.get(1).dbnoUntil > deadlineBefore,
+        'the bleed deadline is pushed along while the hold runs',
+        ('moved %dms'):format(BR.Roster.get(1).dbnoUntil - deadlineBefore))
+
+    holdTick(2, 1, BR.Config.Match.dbnoReviveTime * 1000)
     ok(BR.Roster.get(1).state == BR.PlayerState.ALIVE,
         'the full hold picks them up', BR.Roster.get(1).state)
-    ok(BR.Roster.get(1).hp == BR.Config.Match.dbnoReviveHp,
-        'at the configured health, not full', BR.Roster.get(1).hp)
+
+    -- ON THE WIRE, not on the entry. Once they are ALIVE again the position
+    -- sampler resumes and drags entry.hp to whatever their ped reads -- which
+    -- in game is the value this instruction just put there, and in a test is
+    -- whatever the stub says. What the server SENT is the fact under test.
+    local sync = nil
+    for _, s in ipairs(sent) do
+        if s.event == BR.Net.HEALTH_SYNC and s.target == 1 then sync = s.args[1] end
+    end
+    ok(sync and sync.hp == BR.Config.Match.dbnoReviveHp,
+        'and they are told to come back at the configured health, not full',
+        tostring(sync and sync.hp))
     ok(BR.Roster.get(1).dbnoUntil == nil and BR.Roster.get(1).downedBy == nil,
         'and the knock is undone rather than paused')
     ok(BR.Roster.get(2).revives == 1, 'the reviver is credited')
@@ -5099,17 +5136,29 @@ do
     BR.Combat.defeat(1, 'gunshot', nil)
     fire(BR.Net.REVIVE_START, 2, { target = 1 })
     ok(BR.Roster.get(1).reviverSrc == 2, 'the hold starts')
-    tick(1000)
+    holdTick(2, 1, 1000)
+    local wasFrom = BR.Roster.get(1).reviveFrom
+
     BR.Roster.get(2).lastHitAt = fakeTime
-    tick(300)
-    ok(BR.Roster.get(1).reviverSrc == nil,
-        'and is dropped the moment the reviver takes a hit')
+    holdTick(2, 1, 300)
+
+    -- IT RESETS RATHER THAN LOCKING OUT, and that is the honest assertion.
+    -- The hold is dropped -- but a reviver still leaning on the key is still
+    -- sending heartbeats, so the very next one starts a fresh hold from zero.
+    -- Being shot costs you the eight seconds you had banked, which is the
+    -- punishment that matters; being unable to try again while your teammate
+    -- bleeds out would be a second, harsher rule nobody asked for.
+    ok(BR.Roster.get(1).reviveFrom ~= wasFrom,
+        'a hit on the reviver throws away the progress')
     ok(BR.Roster.get(1).state == BR.PlayerState.DBNO, 'leaving them down')
 
-    -- Walking away drops it too, through the same per-tick re-check.
+    -- Walking away drops it, through the same per-tick re-check. No heartbeat
+    -- here: out of range is refused wherever the hold came from.
+    fire(BR.Net.REVIVE_STOP, 2)
     fire(BR.Net.REVIVE_START, 3, { target = 1 })
     ok(BR.Roster.get(1).reviverSrc == 3, 'somebody else picks up the job')
     setPos(3, 40.0, 0.0, 30.0)
+    BR.Roster.get(3).pos = { x = 40.0, y = 0.0, z = 30.0 }
     tick(300)
     ok(BR.Roster.get(1).reviverSrc == nil, 'walking away drops the hold')
 
@@ -5118,7 +5167,9 @@ do
     BR.Combat.defeat(1, 'gunshot', nil)
     fire(BR.Net.REVIVE_START, 2, { target = 1 })
     local startedAt = BR.Roster.get(1).reviveFrom
-    tick(1000)
+    holdTick(2, 1, 1000)
+    ok(BR.Roster.get(1).reviveFrom == startedAt,
+        'a heartbeat from the SAME holder does not restart the clock')
     fire(BR.Net.REVIVE_START, 3, { target = 1 })
     ok(BR.Roster.get(1).reviverSrc == 2, 'the second mate does not take over')
     ok(BR.Roster.get(1).reviveFrom == startedAt,
@@ -5130,6 +5181,28 @@ do
     fire(BR.Net.REVIVE_START, 2, { target = 1 })
     ok(BR.Roster.get(1).reviveFrom == fakeTime,
         'and starting again starts from zero')
+
+    -- A HOLD THAT GOES QUIET IS A HOLD THAT ENDED.
+    --
+    -- THE BUG THIS EXISTS FOR: a brief tap completed a whole eight-second
+    -- revive in playtest (owner, 2026-08-09). The key layer derives both edges
+    -- correctly, so the REVIVE_STOP was raised and did not land -- and the
+    -- design was one dropped message away from giving the interaction away for
+    -- free. Progress now needs continuous evidence, so silence stops it and a
+    -- lost STOP costs a fraction of a second instead of the whole hold.
+    squadMatch(2)
+    BR.Combat.defeat(1, 'gunshot', nil)
+    fire(BR.Net.REVIVE_START, 2, { target = 1 })
+    ok(BR.Roster.get(1).reviverSrc == 2, 'the hold starts')
+
+    -- No heartbeat, and long enough to pass the whole revive time: under the
+    -- old design this is exactly the tap that completed one.
+    tick(BR.Config.Match.dbnoReviveTime * 1000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+        'a tap does NOT complete a revive on its own',
+        BR.Roster.get(1).state)
+    ok(BR.Roster.get(1).reviverSrc == nil,
+        'the silent hold was dropped rather than left running')
 
     -- A revive can never come from outside the squad, whatever the client says.
     squadMatch(2)
