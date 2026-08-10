@@ -29,15 +29,57 @@ tar xf fx.tar.xz && rm fx.tar.xz
 > artifact is broken. **Test this before writing any gameplay code** — it is a
 > cheap check that becomes expensive to discover later.
 
-> **Run under tmux, not directly under systemd.** Recent Linux artifacts have a
-> known segfault when launched directly by systemd. Either use `tmux`, or write a
-> unit that launches through a shell wrapper.
+### Running the server
+
+**Under systemd, using `tools/royale.service`.** Not from an interactive SSH
+session — a server started by hand in a terminal dies when that terminal does,
+and does not come back after a reboot.
 
 ```bash
-tmux new -s royale
-cd ~/fxserver && ./run.sh +exec server.cfg
-# detach with ctrl-b then d
+sudo cp tools/royale.service /etc/systemd/system/royale.service
+sudo nano /etc/systemd/system/royale.service   # set User= and the paths
+sudo systemctl daemon-reload
+sudo systemctl enable --now royale
 ```
+
+```bash
+systemctl status royale        # is it up
+journalctl -u royale -f        # the console output, live
+sudo systemctl restart royale  # bounce it
+```
+
+> **Why the unit holds stdin open, and why FXServer boot-loops without it.**
+> Measured on this server, 2026-08-09. A naive unit produces:
+>
+> ```
+> [ citizen-server-main] -> Quitting: Ctrl-C pressed in server console.
+> royale.service: Main process exited, code=exited, status=1/FAILURE
+> ```
+>
+> Nobody pressed Ctrl-C. FXServer reads its console from stdin, and systemd
+> hands a service a stdin already at end-of-file; FXServer reads that EOF and
+> treats it as an interactive quit. It shuts down about two seconds into boot,
+> `Restart=always` brings it back, and it does it again.
+>
+> The usual advice for this calls it "a segfault under systemd". On this host
+> there is no segfault — the server exits cleanly and says exactly why. Either
+> way the fix is `< <(sleep infinity)` in `ExecStart`, which gives FXServer the
+> read end of a pipe nothing ever writes to and nothing ever closes.
+>
+> **The cost: the console becomes write-only.** `journalctl` reads it; nothing
+> can type into it.
+>
+> If it still will not stay up, `tools/royale-tmux.service` keeps stdin open
+> via a pty instead (`sudo apt install -y tmux` first). It supervises less well
+> and puts nothing in the journal, so it is the fallback rather than the
+> default.
+
+**Deploying stays a separate step**, exactly as it is today. A `systemctl
+restart` relaunches what is already on disk; it does not pull. That is
+deliberate — `Restart=always` means a crash respawns automatically, and if
+starting also pulled, a crash at 3am would silently deploy whatever happened to
+be on `main` at that moment, so the server that comes back would not be the one
+that went down.
 
 ---
 
