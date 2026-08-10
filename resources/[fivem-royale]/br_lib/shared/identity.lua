@@ -140,23 +140,6 @@ function BR.Identity.ofPlayer(src)
     return BR.Identity.parse(BR.Identity.rawOf(src))
 end
 
---- Put the type prefix back on a value from parse().
----
---- parse() strips it, because a map keyed `byKind.license` should not repeat
---- the word in the value. But FiveM's own wire format, and anything already
---- persisted against it, is the qualified `license:abc...` string -- br_stats'
---- primary key is exactly that. So the prefix has to be reattachable rather
---- than merely discarded, or adopting this module means rewriting every stored
---- row. Nil in, nil out, so callers can pass a lookup through without a guard.
----
---- @param kind string
---- @param value string|nil
---- @return string|nil
-function BR.Identity.qualified(kind, value)
-    if value == nil then return nil end
-    return kind .. ':' .. value
-end
-
 --- The one identifier everything else keys on.
 ---
 --- Returns nil when FiveM did not report a license, which does happen -- callers

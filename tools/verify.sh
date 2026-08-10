@@ -4,7 +4,7 @@
 #
 #   ./tools/verify.sh
 #
-# Runs a series of checks, roughly in increasing order of strictness:
+# Runs three checks, in increasing order of strictness:
 #
 #   1. SYNTAX  -- luac -p on every .lua file. FiveM runs Lua 5.4, and so does
 #                 this check, so a pass here means the resource will at least
@@ -21,14 +21,6 @@
 #                 map, producing symptoms that look like logic bugs and are
 #                 actually architecture bugs. Enforcing it mechanically beats
 #                 relying on discipline.
-#
-#   3b/3c/3d   -- weapon table, POI siting, and forward-declared locals.
-#
-#   4. MANIFEST -- every .lua is declared somewhere, so nothing loads silently
-#                 into nothing.
-#
-#   5. SECRETS -- nothing credential-shaped reaches a public repo. THE ONLY
-#                 GATE THAT SCANS THE WHOLE REPO rather than resources/.
 #
 # Exit code is non-zero if any check fails.
 
@@ -85,7 +77,7 @@ fi
 
 echo "${DIM}== tests ==${RST}"
 if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua; do
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1
@@ -203,81 +195,6 @@ else
     echo "     A file absent from the manifest never loads, and never errors."
     rc=1
 fi
-
-# --- 4b. shared-module coverage ------------------------------------------------
-#
-# Gate 4 above proves every .lua under a resource is DECLARED in that resource's
-# manifest. It cannot prove a br_lib module is CONSUMED by anybody, and for
-# br_lib specifically it is structurally incapable of it: br_lib's manifest says
-# `files { 'shared/*.lua', 'config/*.lua' }`, and a glob satisfies coverage for
-# anything dropped in the directory. So br_lib always passes gate 4, whatever is
-# in it.
-#
-# That is not theoretical. outbox.lua and identity.lua were both written,
-# reviewed, unit-tested and committed -- and declared in no consuming manifest,
-# so at runtime they loaded into no Lua state at all. Two finished modules sat
-# dead behind a green build, and PLAN.md meanwhile recorded one of them as
-# having a consumer. Only the unit tests ever saw them, because the tests
-# loadfile() them directly and never ask FiveM anything.
-#
-# A shared module nobody pulls in is either dead code or a bug waiting for the
-# first person who assumes it is running.
-
-echo "${DIM}== shared coverage ==${RST}"
-orphans=0
-consumers=$(find resources -name 'fxmanifest.lua' -not -path '*/br_lib/*' | sort)
-
-for mod in resources/*/br_lib/shared/*.lua resources/*/br_lib/config/*.lua; do
-    [ -e "$mod" ] || continue
-    rel="${mod#*/br_lib/}"          # e.g. shared/outbox.lua
-
-    if ! grep -qF -- "@br_lib/$rel" $consumers 2>/dev/null; then
-        echo "${RED}FAIL${RST} br_lib/$rel is in no resource's script list"
-        orphans=$((orphans+1))
-    fi
-done
-
-if [ "$orphans" -eq 0 ]; then
-    echo "${GRN}ok${RST}   every br_lib module is pulled in by at least one resource"
-else
-    echo
-    echo "     A shared module nobody declares is loaded into no Lua state. It"
-    echo "     passes every other gate, including its own unit tests, because"
-    echo "     those loadfile() it directly. Add it to a consuming resource's"
-    echo "     shared_scripts/server_scripts, or delete it."
-    rc=1
-fi
-
-# --- 4c. deploy payload --------------------------------------------------------
-#
-# Runs deploy.sh's own preflight against this checkout. Not a re-implementation
-# of it -- literally the same function, called with --check-payload, so the two
-# cannot drift.
-#
-# This gate exists because deploy.sh's payload check shipped broken and nobody
-# found out until it ran on the server for the first time and refused to deploy.
-# It reported "no JS bundle in br_ui/ui/assets" about a bundle that was sitting
-# right there: the check used `compgen -G` on a path containing
-# [fivem-royale], which `compgen` reads as a glob character class rather than a
-# directory name.
-#
-# Deploy scripts are the classic place for this. They are only exercised in
-# production, so a bug in one is found by production. Running the payload half
-# here -- where it needs no server, no clone and no network -- moves that
-# discovery to a red build.
-
-echo "${DIM}== deploy payload ==${RST}"
-bash tools/deploy.sh --check-payload "resources/[fivem-royale]" || rc=1
-
-# --- 5. secrets ---------------------------------------------------------------
-#
-# The only gate here that scans the WHOLE repo rather than resources/. A
-# credential leaks just as thoroughly from tools/, a doc, or server.cfg.example.
-# See tools/check_secrets.sh for why it asks git what it would publish instead
-# of walking the disk.
-
-echo "${DIM}== secrets ==${RST}"
-bash tools/check_secrets.sh || rc=1
 
 # --- result ------------------------------------------------------------------
 

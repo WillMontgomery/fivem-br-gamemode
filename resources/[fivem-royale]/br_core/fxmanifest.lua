@@ -34,8 +34,8 @@ shared_scripts {
     '@br_lib/shared/loot_gen.lua',  -- reads the loot/weapon/map config at call time
 }
 
--- main.lua must load first on both sides: it defines the loop registry (client)
--- and BR.Server (server) that every other file reaches into.
+-- main.lua must load first on both sides: it defines the loop registry and the
+-- scheduler that every other file registers into.
 client_scripts {
     'client/main.lua',      -- defines the loop registry; must be first
     'client/natives.lua',
@@ -64,12 +64,8 @@ client_scripts {
     'client/debug.lua',
 }
 
--- sched.lua is server-only rather than shared, because the client has its own
--- loop registry in client/main.lua and would only be carrying a second,
--- never-started scheduler around.
 server_scripts {
-    '@br_lib/shared/sched.lua',  -- BR.Sched; every file below registers into it
-    'server/main.lua',      -- defines BR.Server and starts the scheduler
+    'server/main.lua',      -- defines the scheduler and BR.Server; must be first
     'server/clock.lua',
     'server/broadcast.lua', -- BR.Broadcast, used by roster
     'server/roster.lua',
