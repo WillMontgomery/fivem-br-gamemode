@@ -14,6 +14,7 @@ shared_scripts {
 }
 
 server_scripts {
+    '@br_lib/shared/identity.lua',  -- BR.Identity; profiles.lua keys on it
     'server/db.lua',        -- must load first; everything else uses BR.Db
     'server/xp.lua',
     'server/profiles.lua',

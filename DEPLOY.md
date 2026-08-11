@@ -74,12 +74,37 @@ sudo systemctl restart royale  # bounce it
 > and puts nothing in the journal, so it is the fallback rather than the
 > default.
 
-**Deploying stays a separate step**, exactly as it is today. A `systemctl
-restart` relaunches what is already on disk; it does not pull. That is
-deliberate — `Restart=always` means a crash respawns automatically, and if
-starting also pulled, a crash at 3am would silently deploy whatever happened to
-be on `main` at that moment, so the server that comes back would not be the one
-that went down.
+### Deploying
+
+Install the deploy unit once:
+
+```bash
+sudo cp tools/royale-deploy.service /etc/systemd/system/ && sudo systemctl daemon-reload
+```
+
+Then deploying is one command, any time:
+
+```bash
+sudo systemctl start royale-deploy
+```
+
+It syncs from `origin/main` with `tools/deploy.sh` and restarts the game — and
+only restarts if the sync succeeded, so a failed pull leaves the server on the
+last known-good code instead of bouncing it into a broken tree. Watch it with
+`journalctl -u royale-deploy -n 50`.
+
+**Deploying stays separate from running**, deliberately. A `systemctl restart`
+relaunches what is already on disk; it does not pull. `Restart=always` means a
+crash respawns automatically, and if starting also pulled, a crash at 3am would
+silently deploy whatever happened to be on `main` at that moment, so the server
+that came back would not be the one that went down.
+
+**Two clones live on the box, with different jobs.**
+`/opt/misc/fivem-br-gamemode` is the checkout you `git pull` by hand — it is
+where the deploy *script* comes from. `deploy.sh` manages a second clone under
+`/opt/fivem-server-classic/.gamemode-src`, which it `reset --hard`s and
+`clean -fd`s every run, because what gets served has to be a deployment
+artifact rather than somebody's workspace.
 
 ---
 
@@ -328,10 +353,19 @@ From the repo root:
 ./tools/verify.sh
 ```
 
-Three gates: Lua 5.4 syntax on every file, unit tests for the pure logic
-(geometry, storm solver, seeded RNG, loop registry, XP curve), and a scope gate
-that fails the build if a scope-limited native appears in client code without an
-explicit `-- scope-ok:` marker.
+The gates, in the order they run:
+
+| Gate | Fails when |
+|---|---|
+| syntax | `luac -p` rejects any `.lua` under `resources/` |
+| tests | any unit suite fails (pure logic: geometry, storm solver, seeded RNG, loop registry, scheduler, roster, XP curve) |
+| scope | a scope-limited native appears in `br_core/client/` without an explicit `-- scope-ok:` marker |
+| weapon table | `tools/check_weapons.lua` finds an inconsistency |
+| POI siting | `tools/check_pois.lua` finds a badly-placed POI |
+| forward locals | a `local function` is called above its own declaration (invisible to `luac -p`, nil at runtime) |
+| manifest coverage | a `.lua` exists under a resource but is declared in no fxmanifest — so it silently never loads |
+| deploy payload | `deploy.sh`'s own preflight, run against this checkout, so a deploy script that only breaks in production breaks here first |
+| secrets | anything credential-shaped is about to be committed, anywhere in the repo |
 
 Requires Lua 5.4 (`winget install --id DEVCOM.Lua -e`, or your distro's package).
 The script finds `luac` on its own.
