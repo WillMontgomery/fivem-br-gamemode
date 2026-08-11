@@ -57,32 +57,34 @@ sudo systemctl restart royale                    # bounce it
 **Detach from tmux with `ctrl-b` then `d`. Never `ctrl-c`** — that is the
 console, and Ctrl-C shuts the server down.
 
-> **Why tmux is load-bearing, not a preference.** Learned across three failures
-> on this exact host, 2026-08-09 → 08-11:
+> **The crash history, with the corrected diagnosis** — three failure modes
+> chased across 2026-08-09 → 08-11, misattributed twice, recorded here so
+> nobody relearns any of them:
 >
 > 1. A plain unit hands FXServer a stdin already at EOF; it reads that as
->    Ctrl-C and quits cleanly two seconds into every boot.
-> 2. Holding stdin open with a pipe (`< <(sleep infinity)`) survives boot,
->    authenticates with Nucleus — then **SIGABRTs seconds later, every time**.
->    A pipe is not a PTY. This loop also masqueraded as "clients can't connect"
->    for a whole evening: the server was dead for most of every ten-second
->    restart cycle, and `ss` happened to catch it mid-boot, so "it is
->    listening" and "connection refused" were both true at once.
-> 3. The same content launched from a real terminal runs indefinitely.
+>    Ctrl-C and quits cleanly two seconds into every boot. Real; any unit must
+>    give it input that never ends (tmux does).
+> 2. **SIGABRT shortly after boot** — `Assertion failed: status.ok() ...
+>    DatabaseHolder` — is FXServer failing to **open its KVP store**, the `db/`
+>    directory next to `server.cfg`. Root cause: `db/` had gone root-owned from
+>    running the server with `sudo`, so every server running as the service
+>    user aborted at its first KVP access (vMenu's ban store), while hand-run
+>    root servers worked. That asymmetry masqueraded first as "clients can't
+>    connect" (the server was dead for most of every ten-second restart cycle;
+>    `ss` caught it mid-boot) and then as a PTY requirement. It was file
+>    ownership the whole time.
 >
-> The old folklore here ("segfaults when launched directly by systemd, use
-> tmux") was pointing at this all along — this artifact aborts rather than
-> segfaults, same family. If a future artifact fixes it, the pipe approach can
-> be reconsidered; until someone *proves* that on this host, tmux stays.
+> **The invariant that prevents the whole class:** everything under
+> `/opt/fivem-server-classic` is owned by the unit's `User=`. The server is
+> never run with `sudo`, and if it ever aborts at boot again, check ownership
+> *first*: `ls -la /opt/fivem-server-classic/db`.
 >
-> **The costs, and how each is paid:** systemd cannot see a crash inside the
-> session, so `royale-watchdog.timer` checks every 30s and restarts the unit if
-> the session is gone — a crash costs under a minute, unattended. And the
-> journal gets nothing, so the unit mirrors the console to `console.log` via
-> `pipe-pane` (no rotation yet; that is M9 9e's job).
->
-> **The bonus:** `tmux send-keys -t royale "<cmd>" Enter` is a working command
-> channel into the console — the cheap stepping stone M9 Slice 2 wanted.
+> tmux stays on its own merits, not because the PTY theory survived: the
+> attach-able console, and `send-keys` as Slice 2's cheap command channel.
+> **The costs, each paid:** systemd cannot see a crash inside the session, so
+> `royale-watchdog.timer` checks every 30s — a crash costs under a minute,
+> unattended. The journal gets nothing, so `pipe-pane` mirrors the console to
+> `console.log` (rotation is M9 9e's job).
 
 ### Deploying
 
