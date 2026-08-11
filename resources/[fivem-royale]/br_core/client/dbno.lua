@@ -68,10 +68,14 @@ end
 -- none of them lies still rather than T-posing. `/brcrawl` is the probe that
 -- turns this list from a guess into a fact -- run it in game and the answer
 -- decides what ships.
+-- CHOSEN IN GAME, 2026-08-09: move_injured_ground / front_loop is the one that
+-- looks like a downed player (owner, watching all four through /brcrawl). It is
+-- first because first is what ships; the rest stay as the fallback chain and as
+-- the record of what was actually compared.
 local CRAWL_CANDIDATES = {
+    { dict = 'move_injured_ground',       anim = 'front_loop'  },
     { dict = 'move_crawl',                anim = 'onfront_fwd' },
     { dict = 'combat@damage@writhe',      anim = 'writhe_loop' },
-    { dict = 'move_injured_ground',       anim = 'front_loop'  },
     { dict = 'random@dealgonewrong',      anim = 'idle_a'      },
 }
 
@@ -114,6 +118,19 @@ local function resolveCrawl()
     return nil
 end
 
+--- Start (or restart) the downed loop on our own ped.
+--- @param force boolean|nil  play even if something is already running
+local function playCrawl(force)
+    local c = resolveCrawl()
+    if not c then return end
+
+    local ped = PlayerPedId()
+    if not force and IsEntityPlayingAnim(ped, c.dict, c.anim, 3) then return end
+    -- Flag 1 is the looping one, and the clip plays IN PLACE -- the movement
+    -- below is ours, because none of these assets is a locomotion clipset.
+    TaskPlayAnim(ped, c.dict, c.anim, 8.0, -8.0, -1, 1, 0.0, false, false, false)
+end
+
 --- Put the player on the floor and start whatever crawl this build supports.
 local function enterDowned()
     local ped = PlayerPedId()
@@ -135,14 +152,17 @@ local function enterDowned()
         Citizen.Wait(1200)
         if not mine.downed then return end
 
-        local c = resolveCrawl()
-        if c then
-            -- Flag 1 is the looping one. It plays IN PLACE: this is a pose,
-            -- not locomotion, and it is deliberately not pretending otherwise
-            -- until the probe says which asset can carry movement.
-            TaskPlayAnim(PlayerPedId(), c.dict, c.anim, 8.0, -8.0, -1,
-                         1, 0.0, false, false, false)
-        end
+        if not mine.downed then return end
+        playCrawl(true)
+
+        -- AND NOTHING KNOCKS THEM OUT OF IT AGAIN. The knockdown above is the
+        -- only ragdoll a downed player gets; leaving it enabled meant a passing
+        -- car stood them back up mid-bleed, because the collision ragdolls them
+        -- and the getup task that follows outranks a looping animation (owner,
+        -- in game). The watchdog below covers everything else that can cancel a
+        -- clip -- but not being ragdolled in the first place is the cheaper
+        -- half, and it is the half that stops them standing.
+        SetPedCanRagdoll(PlayerPedId(), false)
     end)
 end
 
@@ -156,6 +176,9 @@ local function leaveDowned()
     ResetPedMovementClipset(ped, 0.0)
     SetPedMoveRateOverride(ped, 1.0)
     ClearPedTasks(ped)
+    -- Handed back, or a revived player is permanently immune to being knocked
+    -- over by anything for the rest of the match.
+    SetPedCanRagdoll(ped, true)
     -- The inventory re-arms itself on the next pass, now that canArm() is true
     -- again; asking it here would race the state delta that made it true.
 end
@@ -181,26 +204,75 @@ local function dieNow()
     end)
 end
 
--- A DOWNED PLAYER DOES NOT RUN, DRIVE OR SWING.
+-- A DOWNED PLAYER STEERS AND NOTHING ELSE (owner, 2026-08-09).
 --
--- The pose is stationary in this build -- see CRAWL_CANDIDATES for why the
--- moving version is waiting on a probe rather than on a guess -- so movement
--- is taken away outright instead of being left to slide the ped around
--- underneath an in-place animation. Weapons are already gone (canArm drops
--- DBNO and enterDowned strips the ped), but ATTACK still has to go or a downed
--- player throws punches from the floor.
+-- They keep control of whether they are moving and in which direction; they
+-- lose the weapon, the inventory, the vehicle and every other verb. Crawling
+-- away from a firefight is the one decision the state is supposed to leave you,
+-- and taking it away as well would make being downed a loading screen.
+--
+-- THE MOVEMENT IS OURS. None of the assets that survived the probe is a
+-- locomotion clipset -- they are animation dictionaries that play in place --
+-- so the engine's own walk is disabled and the ped is driven by hand at
+-- dbnoCrawlSpeed. Disabled-then-read is the standard shape for that: the
+-- control still reports its value through GetDisabledControlNormal, so the
+-- input is ours without the ped also trying to walk on it.
 local DOWNED_BLOCKED = {
-    21, 22, 23, 24, 25,          -- sprint, jump, enter, attack, aim
-    30, 31, 32, 33, 34, 35,      -- movement axes and WASD
+    21, 22, 23, 24, 25,          -- sprint, jump, enter vehicle, attack, aim
+    30, 31, 32, 33, 34, 35,      -- movement axes and WASD (read back below)
     44, 75,                      -- cover, exit vehicle
     140, 141, 142, 143,          -- melee attacks and block
 }
 
 BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
     if not mine.downed then return end
+
     for i = 1, #DOWNED_BLOCKED do
         DisableControlAction(0, DOWNED_BLOCKED[i], true)
     end
+
+    -- The loop is the pose; if anything cancelled it -- a car, a blast, a
+    -- scripted task -- put it straight back. Cheap: one IsEntityPlayingAnim
+    -- when nothing is wrong.
+    playCrawl(false)
+
+    local ped = PlayerPedId()
+    if IsPedRagdoll(ped) or IsEntityInAir(ped) then return end
+
+    -- Turn on the horizontal axis, inch forward on the vertical one. Both are
+    -- read from the DISABLED control, which is the whole point of disabling it.
+    local lr = GetDisabledControlNormal(0, 30)
+    local ud = GetDisabledControlNormal(0, 31)
+
+    if math.abs(lr) > 0.1 then
+        SetEntityHeading(ped,
+            (GetEntityHeading(ped) - lr * (M.dbnoTurnRate or 90.0)
+             * GetFrameTime()) % 360.0)
+    end
+
+    -- Forward only. A crawl has no reverse gear, and -ud would let a downed
+    -- player back out of a doorway faster than they went in.
+    if ud >= -0.1 then return end
+
+    local step = (M.dbnoCrawlSpeed or 0.55) * GetFrameTime()
+    local h    = math.rad(GetEntityHeading(ped))
+    local dx, dy = -math.sin(h) * step, math.cos(h) * step
+    local c = GetEntityCoords(ped)
+
+    -- A RAY BEFORE EVERY STEP, because moving a ped by hand does not resolve
+    -- collision -- SetEntityCoords would happily post them through a wall, and
+    -- "crawl into the geometry" is a better exploit than most. Cast from chest
+    -- height a little further than the step is long; anything solid means stay
+    -- put. One ray per frame, and only while actually crawling.
+    local reach = step + 0.45
+    local ray = StartShapeTestRay(c.x, c.y, c.z + 0.25,
+                                  c.x + dx * (reach / step),
+                                  c.y + dy * (reach / step),
+                                  c.z + 0.25, 1 | 16, ped, 4)
+    local _, hit = GetShapeTestResult(ray)
+    if hit == 1 then return end
+
+    SetEntityCoordsNoOffset(ped, c.x + dx, c.y + dy, c.z, false, false, false)
 end)
 
 RegisterNetEvent(BR.Net.DBNO_SET)
@@ -361,6 +433,23 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
             setPrompt(target, nil)
         else
             setPrompt(holding.target, math.floor((M.dbnoReviveTime or 8.0) * 1000))
+
+            -- THE HOLD IS RE-ASSERTED, NOT ANNOUNCED ONCE.
+            --
+            -- A brief tap completed a whole revive in playtest (owner,
+            -- 2026-08-09). The key layer is not the problem -- it derives both
+            -- edges correctly -- so the STOP was raised and did not land, and
+            -- the design was one message away from an eight-second hold
+            -- happening for free. Progress now requires CONTINUOUS evidence:
+            -- the server expires a revive it has not heard about recently, so
+            -- silence stops it and a lost STOP costs a fraction of a second
+            -- instead of the whole interaction. Same reasoning as the bus's
+            -- landing notices being polled rather than hooked.
+            local now = GetGameTimer()
+            if now - (holding.beat or 0) >= 250 then
+                holding.beat = now
+                TriggerServerEvent(BR.Net.REVIVE_START, { target = holding.target })
+            end
         end
     else
         setPrompt(target, nil)
@@ -372,8 +461,13 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
     -- welded to the body however fast the camera moves.
     local ped = BR.Squadmates.pedOf(holding and holding.target or target)
     if ped ~= 0 then
+        -- Low over the body. The loot prompt's lift is written for something
+        -- standing on the ground; this one is written for something lying on
+        -- it, and at the standing height it floated clear of the player it was
+        -- pointing at (owner, in game).
         local c = GetEntityCoords(ped)
-        BR.Dui.drawWorld(promptPage(), c.x, c.y, c.z + 0.9,
+        BR.Dui.drawWorld(promptPage(), c.x, c.y,
+                         c.z + (M.dbnoPromptLift or 0.35),
                          BR.Config.Loot.promptScale or 2.0)
     end
 end)

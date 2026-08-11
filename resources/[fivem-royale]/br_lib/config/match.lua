@@ -219,8 +219,24 @@ BR.Config.Match = {
     -- check allows for, for the same reason.
     dbnoReviveSlack = 1.0,
 
-    -- How fast a downed player crawls, as a fraction of walking pace.
+    -- How long the server keeps a revive alive without hearing from the client
+    -- holding it. The client re-asserts every 250ms; three misses drops it.
+    -- This exists because a single lost REVIVE_STOP once handed out a completed
+    -- eight-second hold for a brief tap -- progress has to require continuous
+    -- evidence rather than trusting one message to arrive.
+    dbnoReviveBeatMs = 750,
+
+    -- The crawl. Metres per second and degrees per second: none of the downed
+    -- animations this build has is a locomotion clipset, so client/dbno.lua
+    -- drives the ped by hand and these are real units rather than a multiplier
+    -- on a walk that is not happening.
     dbnoCrawlSpeed  = 0.55,
+    dbnoTurnRate    = 90.0,
+
+    -- How high above the body the revive prompt floats. Low, because the body
+    -- is lying down -- at the standing 0.9 it hovered well clear of the player
+    -- it belonged to (owner, in game).
+    dbnoPromptLift  = 0.35,
 
     -- Server-side sampling and broadcast rates. These are the knobs to turn if
     -- the server tick starts running long at full player count.

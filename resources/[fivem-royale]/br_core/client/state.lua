@@ -969,6 +969,18 @@ function BR.PushHud(force)
     local me = S.me
     local hp     = math.floor(me.hp or 0)
     local armour = math.floor(me.armour or 0)
+
+    -- A DOWNED PLAYER READS ZERO, whatever their ped says.
+    --
+    -- The ledger parks them a few points above zero so the shooter's copy of
+    -- them stays correctable (see dbnoHp in config/match.lua), and the local
+    -- vitals loop reads that off the ped -- so the bar sat at a sliver of green
+    -- while the bleed countdown was the real number (owner, in game). Their
+    -- health IS the countdown now; the bar is empty because that is true, and
+    -- showing 5% would be claiming they can take a hit.
+    if me.state == BR.PlayerState.DBNO then
+        hp, armour = 0, 0
+    end
     local kills  = (S.roster[me.src] and S.roster[me.src].kills) or 0
     -- The HUD gets out of the way of the pause menu (the map fills the
     -- screen and our chrome floats over it otherwise).

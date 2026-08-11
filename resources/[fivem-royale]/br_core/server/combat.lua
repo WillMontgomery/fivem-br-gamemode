@@ -80,6 +80,7 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     local wasDowned = entry.state == BR.PlayerState.DBNO
     entry.dbnoUntil, entry.downedBy = nil, nil
     entry.reviverSrc, entry.reviveFrom = nil, nil
+    entry.reviveBeat, entry.reviveTickAt = nil, nil
     -- dbnoCount deliberately survives: it is per MATCH and resets at CLEANUP,
     -- so being finished does not hand the next knock a fresh 45 seconds.
 
@@ -321,6 +322,7 @@ function BR.Combat.knock(src, killerSrc)
     entry.dbnoCount  = (entry.dbnoCount or 0) + 1
     entry.dbnoUntil  = GetGameTimer() + bleedMsFor(entry)
     entry.reviverSrc, entry.reviveFrom = nil, nil
+    entry.reviveBeat, entry.reviveTickAt = nil, nil
 
     -- WHO OWNS THE FINISH IF NOBODY EVER TOUCHES THEM AGAIN, and this is the
     -- trap the whole field exists for. BR.Combat.attributedKiller expires at
@@ -456,6 +458,7 @@ local function stopRevive(src, entry, reason)
     if not reviverSrc then return end
 
     entry.reviverSrc, entry.reviveFrom = nil, nil
+    entry.reviveBeat, entry.reviveTickAt = nil, nil
 
     TriggerClientEvent(BR.Net.REVIVE_PROGRESS, reviverSrc,
         { pct = 0.0, target = src, cancelled = true, reason = reason })
@@ -476,6 +479,7 @@ function BR.Combat.revive(src, reviverSrc)
     local reviver = reviverSrc and BR.Roster.get(reviverSrc) or nil
 
     entry.reviverSrc, entry.reviveFrom = nil, nil
+    entry.reviveBeat, entry.reviveTickAt = nil, nil
     -- The knock is UNDONE, not merely paused: whoever put them down no longer
     -- owns a finish that is not going to happen.
     entry.dbnoUntil, entry.downedBy = nil, nil
@@ -525,6 +529,14 @@ local function stepDowned(src, entry, now)
         if not reviveAllowed(reviver, entry) then
             stopRevive(src, entry, 'interrupted')
 
+        elseif now - (entry.reviveBeat or 0) > (M.dbnoReviveBeatMs or 750) then
+            -- THE HOLDER WENT QUIET. A revive is only alive while the client
+            -- keeps saying so; a lost REVIVE_STOP used to hand out a completed
+            -- eight-second hold for a tap (owner, in game). Requiring evidence
+            -- rather than trusting one message makes the failure cost a
+            -- fraction of a second instead of the whole interaction.
+            stopRevive(src, entry, 'released')
+
         elseif math.max(reviver.lastHitAt or 0, reviver.lastStormAt or 0)
                > (entry.reviveFrom or 0) then
             -- CANCELLED BY THE REVIVER'S DAMAGE, not the downed player's.
@@ -538,11 +550,28 @@ local function stepDowned(src, entry, now)
                 BR.Combat.revive(src, reviverSrc)
                 return
             end
+            -- THE CLOCK STOPS WHILE SOMEBODY IS ON THEM (owner, 2026-08-09).
+            --
+            -- A revive begun with three seconds left still ended in a death,
+            -- which reads as the game ignoring the thing you did rather than
+            -- as a race you lost -- and the eight-second hold is already the
+            -- risk. So the deadline is pushed along with the tick while the
+            -- hold is genuinely progressing, which pauses the bleed without
+            -- needing a second notion of "paused" that everything else would
+            -- have to know about.
+            --
+            -- It is the ONLY thing that moves the deadline forward. Damage
+            -- moves it back, and stopping the hold simply stops this.
+            entry.dbnoUntil = (entry.dbnoUntil or now) + (now - (entry.reviveTickAt or now))
+            entry.reviveTickAt = now
+
             local payload = { pct = pct * 100.0, target = src,
                               reviverName = reviver.name }
             TriggerClientEvent(BR.Net.REVIVE_PROGRESS, reviverSrc, payload)
             TriggerClientEvent(BR.Net.REVIVE_PROGRESS, src, payload)
         end
+    else
+        entry.reviveTickAt = nil
     end
 
     if now >= (entry.dbnoUntil or 0) then
@@ -567,12 +596,21 @@ AddEventHandler(BR.Net.REVIVE_START, function(data)
     local target  = BR.Roster.get(targetSrc)
     if not reviveAllowed(reviver, target) then return end
 
+    -- ALREADY OURS: this is the heartbeat, not a new hold. The client
+    -- re-asserts every 250ms and the clock below is what expires a revive
+    -- whose holder went quiet, so this path must NOT restart the progress.
+    if target.reviverSrc == src then
+        target.reviveBeat = GetGameTimer()
+        return
+    end
+
     -- FIRST HAND ON WINS. Two mates holding the same body is not twice as fast
     -- and it must not restart the clock for whoever pressed second.
     if target.reviverSrc then return end
 
     target.reviverSrc = src
     target.reviveFrom = GetGameTimer()
+    target.reviveBeat = target.reviveFrom
     BR.Combat.pushDbno(targetSrc)
 end)
 
@@ -593,6 +631,7 @@ function BR.Combat.forget(src)
     if entry then
         entry.dbnoUntil, entry.dbnoCount = nil, nil
         entry.downedBy, entry.reviverSrc, entry.reviveFrom = nil, nil, nil
+        entry.reviveBeat, entry.reviveTickAt = nil, nil
     end
     -- ...and anything they were in the middle of picking up.
     BR.Roster.each(
@@ -727,6 +766,59 @@ RegisterCommand('brrevive', function(_, args)
     end
 
     BR.Combat.revive(src, tonumber(args[2]))
+end, true)
+
+--- Shoot a downed player without a second squad to shoot them with.
+---
+--- THIS EXISTS BECAUSE THE TEST WAS IMPOSSIBLE. Damage-to-seconds needs an
+--- ENEMY hitting a downed player: friendly fire is refused by design, and a
+--- two-squad match needs more clients than a two-machine playtest has (owner,
+--- 2026-08-09). Rather than leave the headline mechanic of this milestone
+--- unmeasurable until there are six people in a room, the damage can be
+--- injected here -- through BR.Combat.bleed, the same function a real bullet
+--- reaches, so what is measured is the real path and not a rehearsal of it.
+---
+---   brbleed <id> [damage] [byId]
+RegisterCommand('brbleed', function(_, args)
+    local src = tonumber(args[1])
+    local entry = src and BR.Roster.get(src)
+    if not entry then
+        print('  usage: brbleed <serverId> [damage=30] [byId]')
+        print('  takes damage off a downed player\'s clock, as an enemy shot would')
+        return
+    end
+    if entry.state ~= BR.PlayerState.DBNO then
+        print(('  %s (%d) is not down (state %s)'):format(entry.name, src, entry.state))
+        return
+    end
+
+    local amount = tonumber(args[2]) or 30.0
+    local before = entry.dbnoUntil or 0
+    BR.Combat.bleed(src, amount, tonumber(args[3]), nil)
+
+    print(('[br_core] %s (%d): %.0f damage -> %.1fs off the clock (%.1fs left)')
+        :format(entry.name, src, amount, (before - (entry.dbnoUntil or 0)) / 1000.0,
+                ((entry.dbnoUntil or GetGameTimer()) - GetGameTimer()) / 1000.0))
+end, true)
+
+--- Hurt a REVIVER, so the cancel-on-damage rule can be tested at all.
+---
+--- Same problem as brbleed and the same answer: the rule reads lastHitAt, so
+--- this writes lastHitAt. It applies no actual damage -- the point is the
+--- interruption, and a command that also killed the reviver would be testing
+--- two things at once.
+---
+---   brhurt <id>
+RegisterCommand('brhurt', function(_, args)
+    local src = tonumber(args[1])
+    local entry = src and BR.Roster.get(src)
+    if not entry then
+        print('  usage: brhurt <serverId>')
+        print('  marks a player as just-hit, which is what cancels a revive')
+        return
+    end
+    entry.lastHitAt = GetGameTimer()
+    print(('[br_core] %s (%d) marked as hit just now'):format(entry.name, src))
 end, true)
 
 --- Every downed player: how long they have, who put them there, who is on them.
