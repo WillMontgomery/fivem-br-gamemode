@@ -31,48 +31,58 @@ tar xf fx.tar.xz && rm fx.tar.xz
 
 ### Running the server
 
-**Under systemd, using `tools/royale.service`.** Not from an interactive SSH
-session — a server started by hand in a terminal dies when that terminal does,
-and does not come back after a reboot.
+**Under systemd, inside tmux, using the three units in `tools/`.** systemd owns
+the lifecycle (boot, reboot, crash recovery); tmux owns the terminal, because
+**this artifact does not run without one** — see the note below, which exists so
+nobody relearns it.
 
 ```bash
-sudo cp tools/royale.service /etc/systemd/system/royale.service
-sudo nano /etc/systemd/system/royale.service   # set User= and the paths
+sudo apt install -y tmux
+sudo cp tools/royale.service tools/royale-watchdog.service tools/royale-watchdog.timer /etc/systemd/system/
+sudo nano /etc/systemd/system/royale.service           # set User= and the paths
+sudo nano /etc/systemd/system/royale-watchdog.service  # same user in runuser -u
 sudo systemctl daemon-reload
-sudo systemctl enable --now royale
+sudo systemctl enable --now royale royale-watchdog.timer
 ```
+
+Day to day:
 
 ```bash
-systemctl status royale        # is it up
-journalctl -u royale -f        # the console output, live
-sudo systemctl restart royale  # bounce it
+systemctl status royale                          # is it up
+tmux attach -t royale                            # the REAL console: brstate, brprofile, brperf all work
+tail -f /opt/fivem-server-classic/console.log    # console output without attaching
+sudo systemctl restart royale                    # bounce it
 ```
 
-> **Why the unit holds stdin open, and why FXServer boot-loops without it.**
-> Measured on this server, 2026-08-09. A naive unit produces:
+**Detach from tmux with `ctrl-b` then `d`. Never `ctrl-c`** — that is the
+console, and Ctrl-C shuts the server down.
+
+> **Why tmux is load-bearing, not a preference.** Learned across three failures
+> on this exact host, 2026-08-09 → 08-11:
 >
-> ```
-> [ citizen-server-main] -> Quitting: Ctrl-C pressed in server console.
-> royale.service: Main process exited, code=exited, status=1/FAILURE
-> ```
+> 1. A plain unit hands FXServer a stdin already at EOF; it reads that as
+>    Ctrl-C and quits cleanly two seconds into every boot.
+> 2. Holding stdin open with a pipe (`< <(sleep infinity)`) survives boot,
+>    authenticates with Nucleus — then **SIGABRTs seconds later, every time**.
+>    A pipe is not a PTY. This loop also masqueraded as "clients can't connect"
+>    for a whole evening: the server was dead for most of every ten-second
+>    restart cycle, and `ss` happened to catch it mid-boot, so "it is
+>    listening" and "connection refused" were both true at once.
+> 3. The same content launched from a real terminal runs indefinitely.
 >
-> Nobody pressed Ctrl-C. FXServer reads its console from stdin, and systemd
-> hands a service a stdin already at end-of-file; FXServer reads that EOF and
-> treats it as an interactive quit. It shuts down about two seconds into boot,
-> `Restart=always` brings it back, and it does it again.
+> The old folklore here ("segfaults when launched directly by systemd, use
+> tmux") was pointing at this all along — this artifact aborts rather than
+> segfaults, same family. If a future artifact fixes it, the pipe approach can
+> be reconsidered; until someone *proves* that on this host, tmux stays.
 >
-> The usual advice for this calls it "a segfault under systemd". On this host
-> there is no segfault — the server exits cleanly and says exactly why. Either
-> way the fix is `< <(sleep infinity)` in `ExecStart`, which gives FXServer the
-> read end of a pipe nothing ever writes to and nothing ever closes.
+> **The costs, and how each is paid:** systemd cannot see a crash inside the
+> session, so `royale-watchdog.timer` checks every 30s and restarts the unit if
+> the session is gone — a crash costs under a minute, unattended. And the
+> journal gets nothing, so the unit mirrors the console to `console.log` via
+> `pipe-pane` (no rotation yet; that is M9 9e's job).
 >
-> **The cost: the console becomes write-only.** `journalctl` reads it; nothing
-> can type into it.
->
-> If it still will not stay up, `tools/royale-tmux.service` keeps stdin open
-> via a pty instead (`sudo apt install -y tmux` first). It supervises less well
-> and puts nothing in the journal, so it is the fallback rather than the
-> default.
+> **The bonus:** `tmux send-keys -t royale "<cmd>" Enter` is a working command
+> channel into the console — the cheap stepping stone M9 Slice 2 wanted.
 
 ### Deploying
 

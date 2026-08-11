@@ -1,96 +1,94 @@
-# FiveM Royale -- systemd unit.
+# FiveM Royale -- systemd unit. FXServer runs inside a tmux session.
 #
+#   sudo apt install -y tmux
 #   sudo cp tools/royale.service /etc/systemd/system/royale.service
+#   sudo cp tools/royale-watchdog.service tools/royale-watchdog.timer /etc/systemd/system/
 #   sudo nano /etc/systemd/system/royale.service     # set User= and the paths
 #   sudo systemctl daemon-reload
-#   sudo systemctl enable --now royale
+#   sudo systemctl enable --now royale royale-watchdog.timer
 #
-# WHAT THIS FIXES. Until now the server was started by running a script in an
-# interactive SSH session, which means it dies when that terminal dies and does
-# not come back after a reboot. Under systemd it survives both, restarts itself
-# if it crashes, and its output goes somewhere durable instead of scrollback.
+# WHY TMUX IS LOAD-BEARING AND NOT A PREFERENCE. This artifact does not run
+# without a real terminal, and we know because we tried everything short of one:
 #
-# WHY STDIN IS HELD OPEN, AND WHY THAT IS THE WHOLE TRICK.
+#   1. Plain unit: systemd hands the process a stdin already at EOF; FXServer
+#      reads it as Ctrl-C and quits cleanly, two seconds into every boot.
+#   2. Piped stdin (`< <(sleep infinity)`): survives boot, authenticates with
+#      Nucleus -- then SIGABRTs seconds later, every time. A pipe is not a PTY.
+#      This loop also masqueraded as "clients can't connect" for a whole
+#      evening: the server was dead for most of every ten-second restart cycle,
+#      and `ss` happened to catch it mid-boot, so "it is listening" and
+#      "connection refused" were both true.
 #
-# Observed on this host 2026-08-09, and it is worth writing down because the
-# symptom names a cause that is not the cause:
+# The same content launched from a real terminal runs indefinitely. DEPLOY.md's
+# old folklore ("segfaults when launched directly by systemd, run under tmux")
+# was pointing at this all along -- ours aborts rather than segfaults, same
+# family. So: systemd owns the lifecycle, tmux owns the terminal.
 #
-#     [ citizen-server-main] -> Quitting: Ctrl-C pressed in server console.
-#     royale.service: Main process exited, code=exited, status=1/FAILURE
+# WHAT THIS BUYS BEYOND SURVIVAL, and it is not nothing:
+#   - `tmux attach -t royale` is a real interactive console again -- brprofile,
+#     brstate, brperf all work without stopping the server. (Detach with
+#     ctrl-b then d. NEVER ctrl-c, which kills the server.)
+#   - `tmux send-keys` becomes a usable command channel, which is the cheap
+#     stepping stone M9 Slice 2 wanted and thought it had lost.
 #
-# Nobody pressed Ctrl-C. FXServer reads its console from stdin, and systemd
-# hands a service a stdin that is immediately at end-of-file. FXServer reads
-# that EOF and treats it as an interactive quit -- so it shuts down cleanly
-# about two seconds into boot, every time, and Restart=always turns that into a
-# tidy little boot loop.
-#
-# The community folklore for this is "recent artifacts segfault under systemd".
-# On this host they do not segfault at all; they exit 0-ish and politely say
-# why. Same fix either way: give the process a stdin that never reaches EOF.
-# `< <(sleep infinity)` is that -- process substitution hands FXServer the read
-# end of a pipe whose write end is held open by a sleeping child that never
-# writes anything. The read blocks forever, no EOF ever arrives, and the server
-# stays up.
-#
-# The cost: FXServer's console is now write-only. You can read it with
-# journalctl and you cannot type into it. That is fine today (nothing needs to)
-# and is exactly the gap M9's supervisor closes in Slice 2, by holding that
-# pipe itself and being able to write down it.
-#
-# If this still will not stay up, tools/royale-tmux.service is the fallback --
-# a pty keeps stdin open by a different route.
+# WHAT IT COSTS, and how each cost is paid:
+#   - systemd cannot see a crash inside the session (tmux itself survives), so
+#     Restart=always only covers tmux dying. royale-watchdog.timer covers the
+#     rest: every 30s it checks the session exists and restarts this unit if
+#     not.
+#   - The journal gets nothing. pipe-pane below mirrors the console to
+#     console.log next to the server. No rotation yet -- that is M9 9e's job;
+#     until then it grows, which is a known cost and not a surprise.
 
 [Unit]
-Description=FiveM Royale (FXServer)
+Description=FiveM Royale (FXServer, in a tmux session)
 Documentation=https://github.com/WillMontgomery/fivem-br-gamemode
 After=network-online.target
 Wants=network-online.target
 
-# NO DATABASE DEPENDENCY, deliberately. There is no MariaDB ordering here even
-# though br_stats can use one: nothing in the game reads it today, and M7b is
-# moving persistence to DynamoDB entirely. `Wants=mariadb.service` would not
-# merely order against it -- it would START it -- which is how a dependency
-# nobody needs quietly becomes one nobody can remove.
-
 [Service]
-Type=simple
+# -d detaches immediately, which is what makes Type=forking correct here.
+Type=forking
 
 # CHANGE THIS to whoever owns /opt/fivem-server-classic. Check with `whoami`.
-# Running the game server as root is a needless risk: it is the process most
-# exposed to the public internet on this box.
+# The tmux session belongs to this user, so `tmux attach -t royale` works from
+# their shell with no sudo.
 User=ubuntu
 Group=ubuntu
 
 WorkingDirectory=/opt/fivem-server-classic
 
-# `exec` so bash replaces itself with FXServer rather than lingering as a
-# parent systemd would have to signal through -- that way systemd's stop and
-# restart reach the real process.
-#
-# `< <(sleep infinity)` is the stdin-never-EOFs trick described above. Without
-# it this boot-loops. It needs bash rather than sh -- process substitution is
-# not POSIX -- which is the other reason ExecStart goes through a shell.
-ExecStart=/bin/bash -c 'exec ./run.sh +exec server.cfg < <(sleep infinity)'
+# The session name `royale` is load-bearing: attach, the watchdog, the deploy
+# advice and any future send-keys all address it. Do not rename it casually.
+ExecStart=/usr/bin/tmux new-session -d -s royale './run.sh +exec server.cfg'
+
+# Fail the unit if the session is not actually there a moment later, rather
+# than reporting success for a server that died on startup.
+ExecStartPost=/bin/sh -c 'sleep 5; /usr/bin/tmux has-session -t royale'
+
+# Mirror the console into a file, since the journal cannot see inside tmux.
+# `-` prefix: logging is not worth failing a boot over.
+ExecStartPost=-/usr/bin/tmux pipe-pane -t royale -o 'cat >> /opt/fivem-server-classic/console.log'
+
+# `-` prefix: when the watchdog restarts a unit whose session already died,
+# kill-session on a missing session must not abort the restart.
+ExecStop=-/usr/bin/tmux kill-session -t royale
 
 Restart=always
 RestartSec=10
-
-# Do not give up. The default is 5 restarts in 10s before systemd marks the
-# unit failed and stops trying, which is exactly the wrong behaviour for a game
-# server that crash-loops at 3am -- it would stay down until someone noticed.
+# systemd's default gives up after five restarts in ten seconds, which is the
+# wrong behaviour for a game server crash-looping at 3am.
 StartLimitIntervalSec=0
 
 # FXServer holds a socket per player plus its own file handles. The default
 # 1024 is comfortable at 48 players and not at the 2048 this is heading for.
 LimitNOFILE=65536
 
-# Stopping: FXServer handles SIGTERM and needs a moment to close out cleanly.
-KillSignal=SIGTERM
+# tmux owns the game server process, not this unit's cgroup bookkeeping.
+# Killing the cgroup would take the session down without the clean shutdown
+# ExecStop exists to give.
+KillMode=none
 TimeoutStopSec=30
-
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=royale
 
 [Install]
 WantedBy=multi-user.target
