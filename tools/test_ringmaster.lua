@@ -23,6 +23,7 @@ end
 local identifiers = {}      -- [src] = { 'license:aaa', ... }
 function GetNumPlayerIdentifiers(src) return #(identifiers[src] or {}) end
 function GetPlayerIdentifier(src, i)  return (identifiers[src] or {})[i + 1] end
+function GetPlayers()               return {} end
 function GetPlayerName(src)           return 'Player' .. tostring(src) end
 function GetCurrentResourceName()     return 'br_ringmaster' end
 
@@ -267,11 +268,16 @@ do
     for n in pairs(commands) do names[#names + 1] = n end
     table.sort(names)
 
-    ok(#names == 1 and names[1] == 'brring',
-        'brring is the ONLY command this resource registers in Slice 1',
+    -- The whole read-only command surface, by name. Growing this list is fine;
+    -- growing it without updating this test is how a write verb sneaks into a
+    -- read-only slice.
+    ok(#names == 2 and names[1] == 'bridents' and names[2] == 'brring',
+        'bridents and brring are the ONLY commands this resource registers in Slice 1',
         table.concat(names, ', '))
-    ok(commands['brring'].restricted == true,
-        'and it is restricted, like every other br* console command')
+    for _, n in ipairs(names) do
+        ok(commands[n].restricted == true,
+            n .. ' is restricted, like every other br* console command')
+    end
 end
 
 -- ----------------------------------------------------------------- result ---
