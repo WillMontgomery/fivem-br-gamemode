@@ -1,0 +1,18 @@
+# Fires royale-watchdog.service every 30 seconds.
+#
+#   sudo systemctl enable --now royale-watchdog.timer
+#
+# 30s is deliberate: fast enough that a crash costs under a minute unattended,
+# slow enough that the check itself (a tmux socket poke) is never a load. The
+# two-minute boot delay keeps it quiet while the box is still coming up.
+
+[Unit]
+Description=Periodic check that the royale tmux session is alive
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30s
+Unit=royale-watchdog.service
+
+[Install]
+WantedBy=timers.target
