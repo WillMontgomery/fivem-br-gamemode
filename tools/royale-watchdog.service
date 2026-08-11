@@ -1,0 +1,28 @@
+# The other half of royale.service's supervision.
+#
+# systemd sees the tmux session, not the game server inside it: if FXServer
+# crashes, tmux ends the session and royale.service sits "active" over nothing.
+# Restart=always never fires because nothing systemd tracks has exited.
+#
+# This closes that gap: royale-watchdog.timer runs this check every 30 seconds,
+# and a missing session restarts the unit. Worst case after a crash is ~40
+# seconds of downtime (one timer interval plus boot), unattended.
+#
+# `runuser -u` because the timer runs as root and tmux sessions are per-user --
+# root asking "has-session" would look at root's (empty) tmux server and
+# restart a healthy game every 30 seconds, which is the one bug this file must
+# not have. The session owner here must match User= in royale.service.
+#
+# Known benign race: during a deploy's restart the session is briefly absent,
+# and a tick landing in that window issues a second restart. systemd serialises
+# restarts of the same unit, so the effect is a log line, not a double bounce.
+
+[Unit]
+Description=Restart royale if its tmux session has died
+# Only meaningful while the main unit is supposed to be up.
+Requisite=royale.service
+After=royale.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c '/usr/sbin/runuser -u ubuntu -- /usr/bin/tmux has-session -t royale 2>/dev/null || /usr/bin/systemctl restart royale'
