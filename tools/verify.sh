@@ -4,7 +4,7 @@
 #
 #   ./tools/verify.sh
 #
-# Runs three checks, in increasing order of strictness:
+# Runs a series of checks, roughly in increasing order of strictness:
 #
 #   1. SYNTAX  -- luac -p on every .lua file. FiveM runs Lua 5.4, and so does
 #                 this check, so a pass here means the resource will at least
@@ -21,6 +21,14 @@
 #                 map, producing symptoms that look like logic bugs and are
 #                 actually architecture bugs. Enforcing it mechanically beats
 #                 relying on discipline.
+#
+#   3b/3c/3d   -- weapon table, POI siting, and forward-declared locals.
+#
+#   4. MANIFEST -- every .lua is declared somewhere, so nothing loads silently
+#                 into nothing.
+#
+#   5. SECRETS -- nothing credential-shaped reaches a public repo. THE ONLY
+#                 GATE THAT SCANS THE WHOLE REPO rather than resources/.
 #
 # Exit code is non-zero if any check fails.
 
@@ -195,6 +203,37 @@ else
     echo "     A file absent from the manifest never loads, and never errors."
     rc=1
 fi
+
+# --- 4c. deploy payload --------------------------------------------------------
+#
+# Runs deploy.sh's own preflight against this checkout. Not a re-implementation
+# of it -- literally the same function, called with --check-payload, so the two
+# cannot drift.
+#
+# This gate exists because deploy.sh's payload check shipped broken and nobody
+# found out until it ran on the server for the first time and refused to deploy.
+# It reported "no JS bundle in br_ui/ui/assets" about a bundle that was sitting
+# right there: the check used `compgen -G` on a path containing
+# [fivem-royale], which `compgen` reads as a glob character class rather than a
+# directory name.
+#
+# Deploy scripts are the classic place for this. They are only exercised in
+# production, so a bug in one is found by production. Running the payload half
+# here -- where it needs no server, no clone and no network -- moves that
+# discovery to a red build.
+
+echo "${DIM}== deploy payload ==${RST}"
+bash tools/deploy.sh --check-payload "resources/[fivem-royale]" || rc=1
+
+# --- 5. secrets ---------------------------------------------------------------
+#
+# The only gate here that scans the WHOLE repo rather than resources/. A
+# credential leaks just as thoroughly from tools/, a doc, or server.cfg.example.
+# See tools/check_secrets.sh for why it asks git what it would publish instead
+# of walking the disk.
+
+echo "${DIM}== secrets ==${RST}"
+bash tools/check_secrets.sh || rc=1
 
 # --- result ------------------------------------------------------------------
 
