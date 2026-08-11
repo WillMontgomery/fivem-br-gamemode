@@ -27,6 +27,7 @@ server_scripts {
 
     'server/config.lua',    -- must load first; everything else reads BR.Ring.Config
     'server/main.lua',      -- boot banner, boot epoch, identity capture
+    'server/push.lua',      -- the wire: snapshots latest-wins, events via outbox
     'server/debug.lua',     -- brring: the read-only health dump
 }
 

@@ -69,6 +69,7 @@ client_scripts {
 -- never-started scheduler around.
 server_scripts {
     '@br_lib/shared/sched.lua',  -- BR.Sched; every file below registers into it
+    '@br_lib/shared/identity.lua',  -- BR.Identity; the ringmaster projection resolves licenses
     'server/main.lua',      -- defines BR.Server and starts the scheduler
     'server/clock.lua',
     'server/broadcast.lua', -- BR.Broadcast, used by roster
@@ -86,6 +87,7 @@ server_scripts {
     'server/chat.lua',
     'server/voice.lua',    -- voice channel authority: one room per match, one per squad
     'server/debug.lua',
+    'server/ringmaster.lua', -- the admin-console snapshot feed; emits, never listens
 }
 
 dependency 'br_lib'

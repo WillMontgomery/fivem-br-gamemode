@@ -130,6 +130,13 @@ function BR.Ring.capture(src)
             firstSeen = wallMs,
             lastSeen  = wallMs,
         }
+        -- First sighting this process: announce it to the push layer, which
+        -- turns it into a player_seen event -- the one that teaches the
+        -- console which Discord id belongs to which license. Reconnects
+        -- update the record without re-announcing.
+        if BR.Ring.emitSeen then
+            BR.Ring.emitSeen(license, BR.Ring.seen[license])
+        end
     end
 
     return license

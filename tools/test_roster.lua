@@ -11,6 +11,11 @@ function GetCurrentResourceName() return 'br_core' end
 
 local playerNames = {}
 function GetPlayerName(src) return playerNames[src] or ('Player' .. tostring(src)) end
+-- Identifier natives, for BR.Roster.ringmaster's lazy license resolution. A
+-- test player's license is synthesised from its src so it is stable and
+-- distinct; the ringmaster projection block is the only thing that reads them.
+function GetNumPlayerIdentifiers(src) return 1 end
+function GetPlayerIdentifier(src, i)  return 'license:test' .. tostring(src) end
 
 -- Server-side player enumeration and entity reads. Not scope-limited on the
 -- server, which is the whole reason the roster is built here.
@@ -68,6 +73,7 @@ function SetRoutingBucketPopulationEnabled() end
 
 -- Capture outbound traffic so tests can assert on what clients would receive.
 local sent = {}
+function TriggerEvent() end
 function TriggerClientEvent(event, target, ...)
     sent[#sent + 1] = { event = event, target = target, args = { ... } }
 end
@@ -94,6 +100,7 @@ for _, f in ipairs({
     'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
     'br_lib/shared/rng.lua', 'br_lib/shared/geo.lua', 'br_lib/shared/clock.lua',
     'br_lib/shared/sched.lua',   -- BR.Sched; br_core/server/* registers into it
+    'br_lib/shared/identity.lua',-- BR.Identity; BR.Roster.ringmaster resolves licenses
     'br_lib/config/match.lua', 'br_lib/config/storm.lua', 'br_lib/config/map.lua',
     'br_lib/config/weapons.lua', 'br_lib/config/loot.lua',
     'br_lib/shared/storm_solve.lua',
@@ -5424,6 +5431,51 @@ do
 
     BR.Match.destroy(m)
     ok(BR.Server.matches[m.id] == nil, 'and the instance goes with it')
+end
+
+-- ------------------------------------------------- the ringmaster projection ---
+--
+-- The second allowlist. Its whole safety argument is that it lives beside
+-- newEntry so nobody widens PUBLIC_FIELDS to reach a field the console needs.
+-- These tests hold both lists against the ACTUAL entry shape, so a new roster
+-- field that lands in neither -- or, worse, drifts into the wrong one -- fails
+-- the build rather than leaking in production.
+
+describe('roster.ringmaster')
+do
+    reset()
+    join(1, 'Xeon')
+    local e = BR.Roster.get(1)
+    e.matchId = 42
+    e.pos = { x = 1.0, y = 2.0, z = 3.0 }
+
+    local proj = BR.Roster.ringmaster(e)
+
+    -- The three the client is deliberately NOT told, present here on purpose:
+    -- this projection is server-to-server, so it may carry them.
+    ok(proj.matchId == 42, 'matchId reaches the console -- it never reaches a client')
+    ok(proj.pos ~= nil, 'position reaches the console -- a wallhack if it reached a client')
+
+    -- connectedAt is joinedAt under its wire name -- a game-clock reading, not
+    -- a duration, so the console counts it up against the envelope clock pair.
+    ok(proj.connectedAt == e.joinedAt, 'connectedAt is joinedAt')
+
+    -- STRICT SUPERSET of the public projection: anything a client may see, an
+    -- admin may too. (colour excepted -- it is client-render only, and the
+    -- console derives its own squad colour until the roster sends the real one.)
+    for _, k in ipairs({ 'name', 'squadId', 'state', 'hp', 'armour', 'kills', 'placement' }) do
+        ok(proj[k] ~= nil or e[k] == nil,
+            ('the console sees the public field %q'):format(k))
+    end
+
+    -- No projected key may be a typo: every one must name a real entry field,
+    -- or it silently sends nil forever. connectedAt is the one renamed field.
+    local newEntryKeys = BR.Roster.get(1)
+    for k in pairs(proj) do
+        ok(k == 'connectedAt' or newEntryKeys[k] ~= nil or k == 'license'
+           or k == 'matchId' or k == 'pos' or k == 'placement',
+           ('projected key %q names a real entry field'):format(k))
+    end
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

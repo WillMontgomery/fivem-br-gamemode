@@ -37,6 +37,26 @@ local PUBLIC_FIELDS = {
     hp = true, armour = true, kills = true, placement = true, colour = true,
 }
 
+--- Fields pushed to the Ringmaster admin console. A SECOND allowlist, wider
+--- than PUBLIC_FIELDS on purpose and NEVER a replacement for it: this
+--- projection travels server-to-server over the VPC peering link, to a box
+--- that already holds the ban list -- so it may carry exactly the things
+--- PUBLIC_FIELDS exists to withhold from clients (license, position, matchId).
+---
+--- It lives HERE, directly under PUBLIC_FIELDS and beside newEntry, so that
+--- adding a roster field forces a decision about BOTH audiences while the
+--- shape is on screen. A projection defined off in br_ringmaster would drift
+--- silently, and its failure mode is a privacy leak rather than a crash.
+--- test_roster.lua asserts both lists against newEntry's actual keys.
+local RINGMASTER_FIELDS = {
+    src = true, name = true, license = true,
+    matchId = true, squadId = true, state = true,
+    hp = true, armour = true,
+    kills = true, downs = true, revives = true, damage = true,
+    placement = true,
+    pos = true, posAt = true, bucket = true,
+}
+
 --- Fields carried per player. Written here so the shape is documented in one
 --- place rather than accreting keys across a dozen files.
 --- @param src integer
@@ -361,6 +381,45 @@ function BR.Roster.public(entry)
     local out = {}
     for k in pairs(PUBLIC_FIELDS) do
         out[k] = entry[k]
+    end
+    return out
+end
+
+--- One player, projected for the admin console. See RINGMASTER_FIELDS.
+---
+--- Also the place the entry's `license` placeholder finally gets filled: it
+--- was declared in newEntry as "filled by br_stats if it is running" and
+--- nothing ever wrote it. Resolved lazily here (once per player, cached on
+--- the entry) via BR.Identity, so a roster full of players costs one
+--- identifier scan each, not one per push.
+---
+--- `connectedAt` is the wire name for `joinedAt` -- a GetGameTimer() reading,
+--- deliberately not a duration, so the console can count it up continuously
+--- against the envelope's clock pair instead of receiving a number that is
+--- stale on arrival.
+--- @param entry table
+--- @return table
+function BR.Roster.ringmaster(entry)
+    if entry.license == nil and BR.Identity then
+        entry.license = BR.Identity.qualified('license', BR.Identity.licenseOf(entry.src))
+        -- A licenseless connection stays nil, and nil is what the wire sends.
+        -- Inventing a key here would be a ban against the wrong human later.
+    end
+
+    local out = {}
+    for k in pairs(RINGMASTER_FIELDS) do
+        out[k] = entry[k]
+    end
+    out.connectedAt = entry.joinedAt
+    return out
+end
+
+--- Every player, projected for the admin console.
+--- @return table array
+function BR.Roster.ringmasterAll()
+    local out = {}
+    for _, e in pairs(roster) do
+        out[#out + 1] = BR.Roster.ringmaster(e)
     end
     return out
 end
