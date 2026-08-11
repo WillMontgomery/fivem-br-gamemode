@@ -85,7 +85,7 @@ fi
 
 echo "${DIM}== tests ==${RST}"
 if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua; do
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1
@@ -201,6 +201,46 @@ if [ "$missing_total" -eq 0 ]; then
     echo "${GRN}ok${RST}   every .lua is declared in its manifest"
 else
     echo "     A file absent from the manifest never loads, and never errors."
+    rc=1
+fi
+
+# --- 4b. shared-module coverage ------------------------------------------------
+#
+# Gate 4 above proves every .lua under a resource is DECLARED in that resource's
+# manifest. It cannot prove a br_lib module is CONSUMED by anybody, and for
+# br_lib specifically it is structurally incapable of it: br_lib's manifest says
+# `files { 'shared/*.lua', 'config/*.lua' }`, and a glob satisfies coverage for
+# anything dropped in the directory. So br_lib always passes gate 4, whatever is
+# in it.
+#
+# That is not theoretical. outbox.lua and identity.lua were both written,
+# reviewed, unit-tested and committed -- and declared in no consuming manifest,
+# so at runtime they loaded into no Lua state at all. Two finished modules sat
+# dead behind a green build. Only the unit tests ever saw them, because the
+# tests loadfile() them directly and never ask FiveM anything.
+
+echo "${DIM}== shared coverage ==${RST}"
+orphans=0
+consumers=$(find resources -name 'fxmanifest.lua' -not -path '*/br_lib/*' | sort)
+
+for mod in resources/*/br_lib/shared/*.lua resources/*/br_lib/config/*.lua; do
+    [ -e "$mod" ] || continue
+    rel="${mod#*/br_lib/}"
+
+    if ! grep -qF -- "@br_lib/$rel" $consumers 2>/dev/null; then
+        echo "${RED}FAIL${RST} br_lib/$rel is in no resource's script list"
+        orphans=$((orphans+1))
+    fi
+done
+
+if [ "$orphans" -eq 0 ]; then
+    echo "${GRN}ok${RST}   every br_lib module is pulled in by at least one resource"
+else
+    echo
+    echo "     A shared module nobody declares is loaded into no Lua state. It"
+    echo "     passes every other gate, including its own unit tests, because"
+    echo "     those loadfile() it directly. Add it to a consuming resource's"
+    echo "     shared_scripts/server_scripts, or delete it."
     rc=1
 fi
 
