@@ -29,6 +29,29 @@ function GetCurrentResourceName()     return 'br_ringmaster' end
 
 local handlers = {}
 function AddEventHandler(name, fn) handlers[name] = fn end
+-- Same-state dispatch, which is exactly what FiveM does for server-side
+-- TriggerEvent between loaded handlers.
+function TriggerEvent(name, ...)
+    if handlers[name] then handlers[name](...) end
+end
+
+-- json.encode stub: stash the table, return a marker. The tests assert on the
+-- TABLE, because asserting on a hand-rolled JSON string would test the stub.
+local encoded = {}
+json = { encode = function(tbl) encoded[#encoded + 1] = tbl; return 'JSON#' .. #encoded end }
+
+-- PerformHttpRequest capture. Each call is recorded; the test decides when and
+-- how the callback answers, which is what lets ack/nack paths be driven.
+local http = {}
+function PerformHttpRequest(url, cb, method, body, headers)
+    http[#http + 1] = { url = url, cb = cb, method = method, body = body, headers = headers }
+end
+local function lastRequest() return http[#http] end
+local function requestCount() return #http end
+local function bodyOf(req)
+    local n = tonumber(tostring(req.body):match('JSON#(%d+)'))
+    return n and encoded[n] or nil
+end
 
 local commands = {}
 function RegisterCommand(name, fn, restricted)
@@ -55,6 +78,7 @@ end
 
 loadAll({
     'br_lib/shared/enums.lua',
+    'br_lib/shared/sched.lua',
     'br_lib/shared/identity.lua',
     'br_lib/shared/outbox.lua',
     'br_ringmaster/server/config.lua',
@@ -278,6 +302,118 @@ do
         ok(commands[n].restricted == true,
             n .. ' is restricted, like every other br* console command')
     end
+end
+
+-- ------------------------------------------------------------- the wire ---
+
+describe('push')
+do
+    -- A configured resource, loaded fresh so push.lua registers its jobs.
+    convars['br_ringmaster_ingest_url'] = 'http://10.0.133.69:3000/api/ingest'
+    convars['br_ringmaster_ingest_secret'] = 'sssssssssssssssssssssss1'
+    loadAll({
+        'br_ringmaster/server/config.lua',
+        'br_ringmaster/server/main.lua',
+        'br_ringmaster/server/push.lua',
+    })
+
+    -- push.lua says hello on load; br_core is absent here, so nothing answers,
+    -- which must be fine -- the resources are deliberately decoupled.
+
+    -- A snapshot arrives from "br_core"...
+    TriggerEvent('br:ringmaster:snapshot', {
+        takenGameMs = 1000,
+        counts = { connected = 1, inMatch = 0 },
+        truncated = false,
+        matches = {},
+        players = { { src = 1, name = 'Xeon', state = 'LOBBY' } },
+    })
+
+    -- ...and the timer fires. BR.Sched drives both jobs; step twice past the
+    -- interval so ring.snapshot runs.
+    fakeTime = 10000
+    BR.Sched.step(fakeTime)
+
+    local req = lastRequest()
+    ok(req ~= nil, 'a snapshot push goes out')
+    ok(req and req.method == 'POST', 'as a POST')
+    ok(req and req.headers['X-Ringmaster-Secret'] == 'sssssssssssssssssssssss1',
+        'carrying the shared secret header')
+
+    local body = req and bodyOf(req)
+    ok(body and body.v == 1 and body.kind == 'snapshot', 'v1 snapshot envelope')
+    ok(body and body.server.bootEpoch == BR.Ring.bootEpoch,
+        'stamped with THIS boot epoch')
+    ok(body and body.snapshot.players[1].name == 'Xeon',
+        'wrapping the snapshot br_core provided')
+    ok(body and type(body.server.wallMs) == 'number' and body.server.gameMs == fakeTime,
+        'and the clock pair, sampled at send time')
+
+    -- Latest wins: two snapshots between ticks, only the second survives.
+    TriggerEvent('br:ringmaster:snapshot', { takenGameMs = 2000, counts = { connected = 1, inMatch = 0 }, truncated = false, matches = {}, players = {} })
+    TriggerEvent('br:ringmaster:snapshot', { takenGameMs = 3000, counts = { connected = 2, inMatch = 1 }, truncated = false, matches = {}, players = {} })
+    req.cb(202)   -- answer the first push so nothing is artificially in flight
+    fakeTime = 12500
+    BR.Sched.step(fakeTime)
+    local second = bodyOf(lastRequest())
+    ok(second and second.snapshot.takenGameMs == 3000,
+        'LATEST WINS: the older of two queued snapshots is never sent')
+
+    -- A failed snapshot is dropped, not retried: the next tick with no new
+    -- snapshot sends nothing.
+    lastRequest().cb(500)
+    local before = requestCount()
+    fakeTime = 15000
+    BR.Sched.step(fakeTime)
+    ok(requestCount() == before,
+        'a failed snapshot is DROPPED -- no retry, the next real one is better')
+end
+
+describe('push.events')
+do
+    -- Evidence goes through the outbox: refusals and player_seen, ordered,
+    -- acked on 2xx, returned to the queue on failure.
+    TriggerEvent('br:ringmaster:refusal', { src = 3, name = 'Cheater', reason = 'TOO_FAR', count = 8 })
+
+    identifiers[9] = { 'license:evtest', 'discord:42' }
+    BR.Ring.seen = {}
+    BR.Ring.capture(9)
+
+    fakeTime = 20000
+    BR.Sched.step(fakeTime)
+
+    local req = lastRequest()
+    local body = bodyOf(req)
+    ok(body and body.kind == 'events', 'an events envelope goes out')
+    ok(body and #body.events == 2, 'carrying both queued events', body and #body.events)
+    ok(body and body.events[1].kind == 'refusal' and body.events[1].seq == 1,
+        'ordered, refusal first, seq from 1')
+    ok(body and body.events[2].kind == 'player_seen', 'player_seen second')
+    ok(body and body.events[2].data.identifiers.discord == '42',
+        'player_seen carries the non-license identifiers')
+    ok(body and body.events[2].data.identifiers.license == nil,
+        'and not the license twice -- it is the envelope key already')
+
+    -- nack: the batch goes back, and the SAME events retry later in order.
+    req.cb(500)
+    fakeTime = 25000
+    BR.Sched.step(fakeTime)
+    local retry = bodyOf(lastRequest())
+    ok(retry and retry.kind == 'events' and retry.events[1].seq == 1,
+        'a failed batch is retried, order preserved')
+    lastRequest().cb(202)
+
+    -- ack drains: nothing further to send.
+    local before = requestCount()
+    fakeTime = 30000
+    BR.Sched.step(fakeTime)
+    -- (a snapshot may also fire on this step; count only event envelopes)
+    local extraEvents = 0
+    for i = before + 1, requestCount() do
+        local b = bodyOf(http[i]) or {}
+        if b.kind == 'events' then extraEvents = extraEvents + 1 end
+    end
+    ok(extraEvents == 0, 'an acked batch is gone -- the queue drains to silence')
 end
 
 -- ----------------------------------------------------------------- result ---

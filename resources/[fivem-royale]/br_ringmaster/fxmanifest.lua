@@ -21,11 +21,13 @@ version '0.1.0'
 -- broadcasting, it has nothing to say and says so.
 server_scripts {
     '@br_lib/shared/enums.lua',     -- BR.PlayerState etc, for reading roster rows
+    '@br_lib/shared/sched.lua',     -- our OWN job registry, separate from br_core's
     '@br_lib/shared/identity.lua',  -- the allowlisted identifier scan
     '@br_lib/shared/outbox.lua',    -- the retrying queue for EVENTS (not snapshots)
 
     'server/config.lua',    -- must load first; everything else reads BR.Ring.Config
     'server/main.lua',      -- boot banner, boot epoch, identity capture
+    'server/push.lua',      -- the wire: snapshots latest-wins, events via outbox
     'server/debug.lua',     -- brring: the read-only health dump
 }
 

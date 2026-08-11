@@ -301,6 +301,21 @@ function BR.Damage.noteRefusal(src, why)
     print(('[br_core] ANTICHEAT: %s (%d) had %d shots refused in %ds -- last: %s')
         :format(name, src, r.count, window / 1000, tostring(why)))
 
+    -- Mirror the firing to the Ringmaster feed. Fire-and-forget on purpose:
+    -- if br_ringmaster is absent nothing listens and nothing is owed. This
+    -- line OBSERVES refusalAction; it must never grow behaviour of its own.
+    TriggerEvent('br:ringmaster:refusal', {
+        src      = src,
+        name     = name,
+        license  = e and e.license or nil,   -- filled lazily by the snapshot path
+        matchId  = e and e.matchId or nil,
+        count    = r.count,
+        windowMs = window,
+        reason   = tostring(why),
+        action   = cfg.refusalAction or 'log',
+        at       = now,
+    })
+
     local action = cfg.refusalAction or 'log'
     if action == 'notify' or action == 'kick' then
         BR.Server.notify(src,
