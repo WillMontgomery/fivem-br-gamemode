@@ -14,6 +14,52 @@ local function line()
     return ('-'):rep(52)
 end
 
+-- bridents [serverId] -- print a connected player's identifiers, or everyone's.
+--
+-- Exists because the absence of exactly this turned "read my own license off
+-- my own server" into a multi-step ordeal by way of profile caches and match
+-- lifecycles. The identifiers are RIGHT THERE on the connection; a console
+-- command should simply print them.
+--
+-- Allowlisted via BR.Identity, not raw: the ip: entry is never collected, and
+-- that policy holds doubly here because the console is mirrored to
+-- console.log -- printing an IP would be writing network-location data to a
+-- file this project has promised not to keep. The dropped count says how many
+-- entries the allowlist refused, so nothing vanishes silently.
+RegisterCommand('bridents', function(_, args)
+    local function show(src)
+        local name = GetPlayerName(src)
+        if not name then
+            print(('  no player with id %s'):format(tostring(src)))
+            return
+        end
+
+        local _, ordered, dropped = BR.Identity.ofPlayer(src)
+        print(('=== %s (%s) ==='):format(name, tostring(src)))
+        for _, id in ipairs(ordered) do
+            print(('  %-10s %s'):format(id.kind, BR.Identity.qualified(id.kind, id.value)))
+        end
+        if dropped > 0 then
+            print(('  (%d identifier(s) not on the allowlist, not shown)'):format(dropped))
+        end
+    end
+
+    local target = tonumber(args and args[1])
+    if target then
+        show(target)
+        return
+    end
+
+    local players = GetPlayers()
+    if #players == 0 then
+        print('  nobody connected')
+        return
+    end
+    for _, src in ipairs(players) do
+        show(src)
+    end
+end, RESTRICTED)
+
 RegisterCommand('brring', function()
     local c  = BR.Ring.Config
     local ok = c.configured()

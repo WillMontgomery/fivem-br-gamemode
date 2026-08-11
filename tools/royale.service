@@ -7,24 +7,27 @@
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now royale royale-watchdog.timer
 #
-# WHY TMUX IS LOAD-BEARING AND NOT A PREFERENCE. This artifact does not run
-# without a real terminal, and we know because we tried everything short of one:
+# THE CRASH HISTORY, WITH THE CORRECTED DIAGNOSIS (2026-08-11). Three failure
+# modes were chased across two days, and the writeups blamed the wrong things
+# twice, so here is the record straight:
 #
-#   1. Plain unit: systemd hands the process a stdin already at EOF; FXServer
-#      reads it as Ctrl-C and quits cleanly, two seconds into every boot.
-#   2. Piped stdin (`< <(sleep infinity)`): survives boot, authenticates with
-#      Nucleus -- then SIGABRTs seconds later, every time. A pipe is not a PTY.
-#      This loop also masqueraded as "clients can't connect" for a whole
-#      evening: the server was dead for most of every ten-second restart cycle,
-#      and `ss` happened to catch it mid-boot, so "it is listening" and
-#      "connection refused" were both true.
+#   1. Plain unit: stdin at EOF, FXServer reads it as Ctrl-C, clean quit two
+#      seconds into boot. Real, and fixed by giving it input that never ends.
+#   2. SIGABRT shortly after boot, under BOTH the piped-stdin unit and this
+#      tmux one: "Assertion failed: status.ok() ... DatabaseHolder" -- FXServer
+#      failing to OPEN ITS KVP STORE (the db/ directory next to server.cfg).
+#      Root cause: db/ had gone root-owned from running the server with sudo;
+#      every server running as User=ubuntu aborted at its first KVP access
+#      (vMenu's ban store), while hand-run root servers worked -- which
+#      masqueraded first as "clients can't connect" and then as a PTY
+#      requirement. It was file ownership the whole time.
+#      THE INVARIANT: everything under /opt/fivem-server-classic must be owned
+#      by the User= below. If this unit ever aborts at boot again, check that
+#      FIRST:  ls -la /opt/fivem-server-classic/db
 #
-# The same content launched from a real terminal runs indefinitely. DEPLOY.md's
-# old folklore ("segfaults when launched directly by systemd, run under tmux")
-# was pointing at this all along -- ours aborts rather than segfaults, same
-# family. So: systemd owns the lifecycle, tmux owns the terminal.
+# tmux stays not because the PTY theory survived (it did not) but for what the
+# session provides on its own merits:
 #
-# WHAT THIS BUYS BEYOND SURVIVAL, and it is not nothing:
 #   - `tmux attach -t royale` is a real interactive console again -- brprofile,
 #     brstate, brperf all work without stopping the server. (Detach with
 #     ctrl-b then d. NEVER ctrl-c, which kills the server.)
@@ -60,6 +63,11 @@ WorkingDirectory=/opt/fivem-server-classic
 
 # The session name `royale` is load-bearing: attach, the watchdog, the deploy
 # advice and any future send-keys all address it. Do not rename it casually.
+#
+# Sweep any stale session first. A failed previous run can leave the session
+# alive (observed: "duplicate session: royale" blocking every restart), and a
+# start must never lose to its own predecessor's corpse.
+ExecStartPre=-/usr/bin/tmux kill-session -t royale
 ExecStart=/usr/bin/tmux new-session -d -s royale './run.sh +exec server.cfg'
 
 # Fail the unit if the session is not actually there a moment later, rather
@@ -84,10 +92,11 @@ StartLimitIntervalSec=0
 # 1024 is comfortable at 48 players and not at the 2048 this is heading for.
 LimitNOFILE=65536
 
-# tmux owns the game server process, not this unit's cgroup bookkeeping.
-# Killing the cgroup would take the session down without the clean shutdown
-# ExecStop exists to give.
-KillMode=none
+# Default KillMode (control-group) on purpose, reversing an earlier
+# KillMode=none. ExecStop's kill-session is still the polite first word, but
+# systemd's cgroup sweep is the last one -- "none" left orphaned tmux servers
+# behind failed starts, which then blocked every subsequent start. FXServer
+# treats SIGTERM as a clean quit, so the sweep is safe.
 TimeoutStopSec=30
 
 [Install]
