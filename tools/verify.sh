@@ -265,6 +265,54 @@ fi
 echo "${DIM}== deploy payload ==${RST}"
 bash tools/deploy.sh --check-payload "resources/[fivem-royale]" || rc=1
 
+# --- 4d. slice-1 read-only boundary -------------------------------------------
+#
+# M9 Slice 1 is "see the server", and its exit gate is a promise: NO code path
+# by which the admin console can change a running match. A promise in a plan
+# file is not a gate, so this makes it mechanical. When Slice 2 deliberately
+# opens the write path, this gate is what gets consciously updated to allow it,
+# which is the point: the boundary moves on purpose, never by accident.
+
+echo "${DIM}== slice-1 boundary ==${RST}"
+boundary=0
+
+# dispatch.sh: the SSH verb surface. Exactly `status` and `telemetry` reach a
+# handler; a stop/restart/deploy verb would be Slice 4 process control.
+if [ -f tools/dispatch.sh ]; then
+    verbs=$(grep -oE '^\s+(status|telemetry|stop|restart|deploy|reload|config|kick|ban)\)' tools/dispatch.sh \
+            | tr -d ' )' | sort -u | tr '\n' ' ')
+    if [ "$verbs" != "status telemetry " ]; then
+        echo "${RED}FAIL${RST} dispatch.sh verb set is '${verbs}', expected 'status telemetry '"
+        echo "     A new verb is a new capability from the console to the host. If"
+        echo "     it is a Slice 2+ write verb, update THIS gate on purpose."
+        boundary=1
+    fi
+fi
+
+# br_ringmaster: must not act on the game. No DropPlayer, and no RegisterCommand
+# beyond its own read-only debug dump.
+rmdir_="resources/*/br_ringmaster"
+if compgen -G "$rmdir_" >/dev/null 2>&1; then
+    # `DropPlayer(` is a CALL; skip Lua comment lines so the header's own "no
+    # DropPlayer" note does not trip its own gate.
+    if grep -rnE 'DropPlayer\(' $rmdir_ 2>/dev/null | grep -qvE '^[^:]+:[0-9]+:[[:space:]]*--'; then
+        echo "${RED}FAIL${RST} br_ringmaster calls DropPlayer -- a kick, which is Slice 2"
+        boundary=1
+    fi
+    cmds=$(grep -rhoE "RegisterCommand\('[a-z]+'" $rmdir_ 2>/dev/null \
+           | grep -oE "'[a-z]+'" | tr -d "'" | sort -u | tr '\n' ' ')
+    if [ -n "$cmds" ] && [ "$cmds" != "bridents brring " ]; then
+        echo "${RED}FAIL${RST} br_ringmaster registers commands beyond its debug dump: ${cmds}"
+        boundary=1
+    fi
+fi
+
+if [ "$boundary" -eq 0 ]; then
+    echo "${GRN}ok${RST}   the admin console has no write path into a running match"
+else
+    rc=1
+fi
+
 # --- 5. secrets ---------------------------------------------------------------
 #
 # The only gate here that scans the WHOLE repo rather than resources/. A
