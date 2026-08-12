@@ -99,6 +99,28 @@ function BR.Ring.emitSeen(license, rec)
     }, GetGameTimer())
 end
 
+--- Report the result of a command the console dispatched.
+---
+--- THE SECOND HALF OF THE TWO-PHASE AUDIT. The console wrote an intent row
+--- before sending the command and is waiting to stamp an outcome onto it,
+--- joined by `commandId` -- which it minted, so the join cannot be forged from
+--- this side by guessing.
+---
+--- ON THE EVENT CHANNEL, NOT THE SNAPSHOT ONE, and that is the whole reason the
+--- two channels exist. A snapshot is latest-wins and may be dropped; this is
+--- evidence, and an outcome lost to a full queue leaves an audit row stuck at
+--- "unacknowledged" forever with no way to learn what happened.
+--- @param commandId string
+--- @param ok boolean
+--- @param detail table|nil
+function BR.Ring.emitOutcome(commandId, ok, detail)
+    outbox:emit('outcome', {
+        commandId = commandId,
+        ok        = ok and true or false,
+        detail    = detail or {},
+    }, GetGameTimer())
+end
+
 -- ---------------------------------------------------------------------------
 -- Outbound jobs
 -- ---------------------------------------------------------------------------

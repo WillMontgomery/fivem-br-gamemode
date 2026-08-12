@@ -52,41 +52,6 @@ local nextReq = 0
 --- answer or the timeout arrives first; the loser finds nothing and returns.
 local pending = {}
 
-AddEventHandler('br:ddb:banResult', function(req, banned, info)
-    local resolve = pending[req]
-    if not resolve then return end
-    pending[req] = nil
-    resolve(banned and true or false, info or {})
-end)
-
---- Ask br_ddb whether a license is banned, guaranteeing exactly one answer.
----
---- The timeout is armed BEFORE the question is asked. Arming it afterwards
---- looks equivalent and is not: if the event handler throws synchronously, the
---- timer never gets set and the caller waits forever.
---- @param license string
---- @param cb fun(banned: boolean, info: table)
-local function askBanned(license, cb)
-    nextReq = nextReq + 1
-    local req = nextReq
-
-    local answered = false
-    local function once(banned, info)
-        if answered then return end
-        answered = true
-        pending[req] = nil
-        cb(banned, info)
-    end
-
-    pending[req] = once
-
-    SetTimeout(ANSWER_TIMEOUT_MS, function()
-        once(false, { error = ('no answer within %dms'):format(ANSWER_TIMEOUT_MS) })
-    end)
-
-    TriggerEvent('br:ddb:banCheck', req, license)
-end
-
 --- The player-facing rejection message.
 ---
 --- WRITTEN FOR THE PERSON BEING REFUSED, not for the admin. It answers the
@@ -117,6 +82,76 @@ local function rejection(info)
 
     return ('You are banned from this server.\n\nReason: %s\n%s'):format(reason, when)
 end
+
+--- req -> license, for requests that timed out and were admitted anyway.
+---
+--- CLOSING THE FAIL-OPEN WINDOW. Failing open is right -- an unreachable ban
+--- list must not become a server nobody can join -- but it leaves a real hole:
+--- a banned player who connects during an outage is in, and stays in until they
+--- happen to reconnect. So a late answer is not discarded. If it says "banned"
+--- after we already let them through, they are removed immediately with the
+--- same message they would have seen at the door.
+---
+--- Entries are dropped once used or when the answer says clean, so this never
+--- grows: at most one entry per connection that outran the timeout.
+local lateWatch = {}
+
+AddEventHandler('br:ddb:banResult', function(req, banned, info)
+    local resolve = pending[req]
+    if resolve then
+        pending[req] = nil
+        resolve(banned and true or false, info or {})
+        return
+    end
+
+    -- No pending resolver: this answer lost the race with our timeout, and the
+    -- player was admitted. Only a "banned" verdict is actionable now.
+    local license = lateWatch[req]
+    if not license then return end
+    lateWatch[req] = nil
+
+    if not banned or (info or {}).error then return end
+
+    local reason = rejection(info or {})
+    local kicked = BR.Ring.dropByLicense and BR.Ring.dropByLicense(license, reason)
+    if kicked then
+        print(('^1[br_ringmaster] late ban answer for %s -- removed after admitting^7')
+            :format(license))
+    end
+end)
+
+--- Ask br_ddb whether a license is banned, guaranteeing exactly one answer.
+---
+--- The timeout is armed BEFORE the question is asked. Arming it afterwards
+--- looks equivalent and is not: if the event handler throws synchronously, the
+--- timer never gets set and the caller waits forever.
+--- @param license string
+--- @param cb fun(banned: boolean, info: table)
+local function askBanned(license, cb)
+    nextReq = nextReq + 1
+    local req = nextReq
+
+    local answered = false
+    local function once(banned, info)
+        if answered then return end
+        answered = true
+        pending[req] = nil
+        cb(banned, info)
+    end
+
+    pending[req] = once
+
+    SetTimeout(ANSWER_TIMEOUT_MS, function()
+        -- Admitting on timeout does not end our interest in the answer. Record
+        -- the license so a late "banned" verdict can still remove them --
+        -- see lateWatch above.
+        if not answered then lateWatch[req] = license end
+        once(false, { error = ('no answer within %dms'):format(ANSWER_TIMEOUT_MS) })
+    end)
+
+    TriggerEvent('br:ddb:banCheck', req, license)
+end
+
 
 AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
     local src = source

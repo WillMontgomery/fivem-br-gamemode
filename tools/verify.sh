@@ -273,49 +273,63 @@ bash tools/deploy.sh --check-payload "resources/[fivem-royale]" || rc=1
 # opens the write path, this gate is what gets consciously updated to allow it,
 # which is the point: the boundary moves on purpose, never by accident.
 
-echo "${DIM}== slice-1 boundary ==${RST}"
+echo "${DIM}== console capability boundary ==${RST}"
 boundary=0
 
-# dispatch.sh: the SSH verb surface. Exactly `status` and `telemetry` reach a
-# handler; a stop/restart/deploy verb would be Slice 4 process control.
+# THIS GATE MOVED IN SLICE 2, ON PURPOSE. It used to assert the console could
+# not touch the game at all -- exactly two read verbs, no DropPlayer, no
+# commands. The kick shipped, so that assertion is gone; what replaces it is the
+# NEXT line, and the gate is only worth having if moving it stays deliberate.
+#
+# What is still forbidden, and what it would mean:
+#
+#   stop / restart / deploy   process control. An admin panel that can restart
+#                             the server is a panel that can end 100 matches by
+#                             misclick, and it belongs behind the scheduled
+#                             maintenance flow (M6), not behind a button.
+#   reload / config           live config editing. M6.
+#
+# The kick and the ban gate are as far as the console reaches into the game.
+
+# dispatch.sh: the SSH verb surface.
 if [ -f tools/dispatch.sh ]; then
     verbs=$(grep -oE '^\s+(status|telemetry|stop|restart|deploy|reload|config|kick|ban)\)' tools/dispatch.sh \
             | tr -d ' )' | sort -u | tr '\n' ' ')
-    if [ "$verbs" != "status telemetry " ]; then
-        echo "${RED}FAIL${RST} dispatch.sh verb set is '${verbs}', expected 'status telemetry '"
-        echo "     A new verb is a new capability from the console to the host. If"
-        echo "     it is a Slice 2+ write verb, update THIS gate on purpose."
+    if [ "$verbs" != "kick status telemetry " ]; then
+        echo "${RED}FAIL${RST} dispatch.sh verb set is '${verbs}', expected 'kick status telemetry '"
+        echo "     A new verb is a new capability from the console to the host."
+        echo "     Process control (stop/restart/deploy) is M6's maintenance flow,"
+        echo "     not a verb. If you are adding one on purpose, update THIS gate."
         boundary=1
     fi
 fi
 
-# br_ringmaster: must not act on the game. No DropPlayer, and no RegisterCommand
-# beyond its own read-only debug dump.
+# br_ringmaster: the commands it registers ARE its surface, so the list is
+# pinned. brkick is the kick; the other two are read-only dumps.
 rmdir_="resources/*/br_ringmaster"
 if compgen -G "$rmdir_" >/dev/null 2>&1; then
-    # `DropPlayer(` is a CALL; skip Lua comment lines so the header's own "no
-    # DropPlayer" note does not trip its own gate.
-    if grep -rnE 'DropPlayer\(' $rmdir_ 2>/dev/null | grep -qvE '^[^:]+:[0-9]+:[[:space:]]*--'; then
-        echo "${RED}FAIL${RST} br_ringmaster calls DropPlayer -- a kick, which is Slice 2"
-        boundary=1
-    fi
     cmds=$(grep -rhoE "RegisterCommand\('[a-z]+'" $rmdir_ 2>/dev/null \
            | grep -oE "'[a-z]+'" | tr -d "'" | sort -u | tr '\n' ' ')
-    if [ -n "$cmds" ] && [ "$cmds" != "bridents brring " ]; then
-        echo "${RED}FAIL${RST} br_ringmaster registers commands beyond its debug dump: ${cmds}"
+    if [ -n "$cmds" ] && [ "$cmds" != "bridents brkick brring " ]; then
+        echo "${RED}FAIL${RST} br_ringmaster registers '${cmds}', expected 'bridents brkick brring '"
+        boundary=1
+    fi
+
+    # DropPlayer is now permitted -- but ONLY in the file that owns the kick.
+    # Scoping it this way keeps the blast radius one reviewable file instead of
+    # letting "the console can kick" quietly become "any file here can drop
+    # anyone for any reason".
+    stray=$(grep -rlE 'DropPlayer\(' $rmdir_ 2>/dev/null \
+            | grep -v 'server/kick\.lua' || true)
+    if [ -n "$stray" ]; then
+        echo "${RED}FAIL${RST} DropPlayer outside br_ringmaster/server/kick.lua:"
+        echo "$stray" | sed 's/^/     /'
         boundary=1
     fi
 fi
 
 if [ "$boundary" -eq 0 ]; then
-    # NOTE the narrowed claim. Before the ban gate this said "no write path into
-    # a running match", which stopped being true the moment a ban written in the
-    # console could refuse a connection. What the three checks above still prove
-    # is the part that matters and is still worth defending: nothing can remove
-    # or affect a player who is ALREADY IN, because br_ringmaster calls no
-    # DropPlayer and dispatch.sh carries no verb that reaches the console. Phase
-    # D opens exactly that, on purpose.
-    echo "${GRN}ok${RST}   nothing can touch a player already in the server (no DropPlayer, read-only verbs)"
+    echo "${GRN}ok${RST}   the console can kick and ban, and nothing more (no process control)"
 else
     rc=1
 fi
