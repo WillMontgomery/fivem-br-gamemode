@@ -30,7 +30,15 @@ BR.Ring = BR.Ring or {}
 --- here is per-player: a twenty-second lag on "the server is draining" costs at
 --- most one player joining who then gets told, while a tighter poll would spend
 --- a DynamoDB read every few seconds forever.
-local POLL_MS = 20000
+local POLL_IDLE_MS = 20000
+
+--- While a window is LIVE, poll far more often.
+---
+--- A cancel has to reopen the door quickly: an admin who calls off maintenance
+--- and watches players still bounce for another twenty seconds reasonably
+--- concludes the cancel did not work. Nothing else here is urgent, so the fast
+--- rate applies only while there is something to be urgent about.
+local POLL_LIVE_MS = 4000
 
 --- Latest known window, or nil. Read by the gate.
 local window = nil
@@ -70,12 +78,18 @@ function BR.Ring.drainMessage()
         .. 'finish up. This usually takes a few minutes -- try again shortly.'
 end
 
---- Send a chat line to one player, or to everyone with -1.
-local function tell(target, colour, text)
-    TriggerClientEvent('chat:addMessage', target, {
-        color = colour,
-        multiline = true,
-        args = { 'Server', text },
+--- Notify one player, or everyone with -1.
+---
+--- THROUGH THE GAMEMODE'S OWN NOTIFY CHANNEL, not chat:addMessage. This server
+--- does not ensure FiveM's  resource at all -- it has its own NUI -- so
+--- every maintenance announcement was being sent into a void. The symptom was
+--- perfect silence in game while the console showed the window advancing
+--- correctly, which is indistinguishable from the poller not running.
+local function tell(target, tone, text)
+    TriggerClientEvent(BR.Net.NOTIFY, target, {
+        text = text,
+        tone = tone,
+        ms   = 12000,
     })
 end
 
@@ -93,7 +107,7 @@ local function tellAdmins(text)
             nextReq = req
             pending[req] = function(scopes)
                 if type(scopes) == 'table' and #scopes > 0 then
-                    tell(tonumber(src), { 255, 180, 60 }, text)
+                    tell(tonumber(src), 'warn', text)
                 end
             end
             SetTimeout(5000, function() pending[req] = nil end)
@@ -141,7 +155,7 @@ local function poll()
         if not live then
             if announced.scheduled or announced.draining then
                 announced = {}
-                tell(-1, { 120, 220, 140 },
+                tell(-1, 'success',
                     'The server update is finished. Thanks for waiting -- back to normal.')
             end
             -- An update waiting with nobody scheduling it: nudge the admins who
@@ -160,7 +174,7 @@ local function poll()
 
         if not announced.scheduled then
             announced.scheduled = true
-            tell(-1, { 120, 190, 255 },
+            tell(-1, 'info',
                 ('A server update has been scheduled by %s.'):format(w.createdByName)
                 .. ' Nothing changes for you right now -- finish your match. '
                 .. 'The update runs once everyone has left, so no game gets cut short.')
@@ -169,7 +183,7 @@ local function poll()
         local nowDraining = BR.Ring.draining()
         if nowDraining and not announced.draining then
             announced.draining = true
-            tell(-1, { 255, 200, 80 },
+            tell(-1, 'warn',
                 'The server has stopped accepting new players while the update waits. '
                 .. 'Carry on -- your match is unaffected, and the update starts once the server empties.')
         end
@@ -210,7 +224,7 @@ end)
 
 Citizen.CreateThread(function()
     while true do
-        Citizen.Wait(POLL_MS)
+        Citizen.Wait(window and POLL_LIVE_MS or POLL_IDLE_MS)
         poll()
     end
 end)
