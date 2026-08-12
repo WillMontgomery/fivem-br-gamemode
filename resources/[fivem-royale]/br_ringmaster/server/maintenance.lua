@@ -172,20 +172,34 @@ local function poll()
 
         announced.update = nil
 
-        if not announced.scheduled then
+        local nowDraining = BR.Ring.draining()
+
+        --[[
+            ONE MESSAGE PER PLAYER, NOT TWO.
+
+            The default window starts draining immediately, so the first poll
+            that sees it satisfies both conditions at once and fired both
+            announcements in the same tick -- two notifications, stacked,
+            thirty-one seconds apart from nothing.
+
+            They also said the same thing twice: "finish your match, the update
+            runs once everyone leaves" and "carry on, your match is unaffected".
+            So the two cases collapse into one line each, and only the one that
+            is actually true right now is sent.
+        ]]
+        if nowDraining then
+            if not announced.draining then
+                announced.draining = true
+                announced.scheduled = true   -- the earlier notice is moot now
+                tell(-1, 'warn',
+                    'Server update pending -- no new players until this match finishes. '
+                    .. 'Yours is unaffected.')
+            end
+        elseif not announced.scheduled then
             announced.scheduled = true
             tell(-1, 'info',
-                ('A server update has been scheduled by %s.'):format(w.createdByName)
-                .. ' Nothing changes for you right now -- finish your match. '
-                .. 'The update runs once everyone has left, so no game gets cut short.')
-        end
-
-        local nowDraining = BR.Ring.draining()
-        if nowDraining and not announced.draining then
-            announced.draining = true
-            tell(-1, 'warn',
-                'The server has stopped accepting new players while the update waits. '
-                .. 'Carry on -- your match is unaffected, and the update starts once the server empties.')
+                ('Server update scheduled by %s. It runs once everyone has left, '):format(w.createdByName)
+                .. 'so no match gets cut short.')
         end
 
         -- Starting a match during a drain guarantees interrupting it, which is
