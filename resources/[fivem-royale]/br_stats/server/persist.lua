@@ -136,6 +136,35 @@ AddEventHandler('br:match:results', function(res)
                 end
             end
 
+            -- TELL THE PLAYER WHAT THEY EARNED, from the same numbers being
+            -- written. The verdict screen used to invent an XP figure client
+            -- side with a formula that was never the real one -- so the bar
+            -- animated to a number nothing had persisted, and Volts were not
+            -- mentioned at all.
+            --
+            -- Sent before the write rather than after: the player is looking at
+            -- the verdict screen now, and a DynamoDB round trip is exactly the
+            -- window in which they stop looking. A failed write is reported in
+            -- the server log; the far worse outcome is a correct write nobody
+            -- saw the reward for.
+            if p.src then
+                TriggerClientEvent(BR.Net.MATCH_EARNED, p.src, {
+                    xp      = xpEarned,
+                    volts   = deltas.balance,
+                    level   = deltas.level,
+                    levelUp = deltas.level > levelBefore,
+                })
+            end
+
+            -- KEEP br_core's INVENTORY CACHE HONEST. It read the row once on
+            -- connect and holds it for the session; without this the lobby
+            -- would show the balance and level the player had when they joined
+            -- until they reconnected -- so a match would appear to pay nothing.
+            --
+            -- An event rather than a call: br_stats does not depend on br_core
+            -- and must keep working on a server with no gamemode loaded.
+            TriggerEvent('br:market:credited', license, xpEarned, deltas.balance)
+
             nextReq = nextReq + 1
             local req = nextReq
             pending[req] = function(ok, info)

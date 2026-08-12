@@ -164,6 +164,12 @@ BR.Net = {
     -- the page believes, and it always carries the full picture -- balance,
     -- owned ids, equipped ids -- so a dropped message costs a render, not a
     -- divergence.
+    -- What one match actually paid, sent to that player alone once the write
+    -- has been computed. SEPARATE FROM SUMMARY because summary is br_core's and
+    -- fires at the end of the match, while this comes from br_stats after the
+    -- result has been turned into deltas -- and it is the only place the real
+    -- numbers exist. The verdict screen used to invent both.
+    MATCH_EARNED    = 'br:match:earned',     -- S->C  { xp, volts, level, levelUp }
     MARKET_STATE    = 'br:market:state',     -- S->C  { balance, owned, equipped }
     MARKET_BUY      = 'br:market:buy',       -- C->S  { id }
     MARKET_EQUIP    = 'br:market:equip',     -- C->S  { id }
@@ -264,6 +270,10 @@ BR.Nui = {
     -- restore the bar, not replay a celebration.
     XP        = 'xp',
     MARKET    = 'market',
+    -- What the match just paid. Separate from XP because it carries Volts too,
+    -- and because the verdict screen owns WHEN it is shown -- Lua cannot see
+    -- that screen and timing an award against it from here has failed twice.
+    EARNED    = 'earned',
     -- Every RegisterKeyMapping command we own, with the key currently bound
     -- to it, so the settings screen can list and rebind them without sending
     -- the player into GTA's own menus to find them.

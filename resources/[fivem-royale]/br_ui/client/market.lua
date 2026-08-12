@@ -1,33 +1,30 @@
 -- The market and the progression readout.
 --
--- NEITHER SYSTEM EXISTS YET, AND THIS FILE SAYS SO RATHER THAN PRETENDING.
+-- BOTH SYSTEMS ARE REAL NOW. Balance, ownership, equipped slots and the XP
+-- curve all come from the server, which reads them from DynamoDB. This file
+-- renders what it is sent and forwards what the player pressed; it decides
+-- nothing.
 --
--- There is no persistence in this project (M7b is the milestone that decides
--- where it lives), so there is nowhere to keep a balance, an inventory of
--- owned cosmetics, or an XP total that survives a reconnect. Building the
--- ledger before that decision is made would mean building it twice.
+-- IT SENDS AN ID AND NOTHING ELSE. No price, no ownership claim, no balance --
+-- every one of those is resolved server-side against BR.Config and the row, so
+-- a modified client can ask for anything and receive exactly what it is owed.
+-- Editing anything in this file achieves nothing except lying to yourself.
 --
--- What DOES exist is the interface, and the interface is the part worth
--- arguing about first: what is for sale, what it costs relative to what a
--- match pays, whether the XP bar reads as a reward. So this serves a synthetic
--- profile and catalogue from a table, the screens render it exactly as they
--- will render the real one, and the day there is a server the only change is
--- where these two functions get their numbers.
---
--- IT IS ALL LOCAL. The values below never reach the server and nothing here
--- can be spent, so a player editing them achieves nothing except lying to
--- themselves about a mock.
+-- WHAT IS STILL SYNTHETIC is named as such below: the character, banner and
+-- verdict kinds have no definitions yet, and they are kept only so the
+-- storefront's shape stays honest while the defined kinds fill in.
 
 local RES = GetCurrentResourceName()
 
 BR = BR or {}
 BR.Market = {}
 
--- SYNTHETIC. Delete this table and read a real profile: that is the whole
--- migration. The numbers are chosen to make the screens honest -- a level
--- mid-way through its bar, a balance that affords some things and not others,
--- and a couple of items already owned so both card states are visible.
-local PROFILE = { level = 14, xp = 2380, needed = 4000 }
+-- REAL NOW, and seeded at level 1 rather than at the flattering synthetic
+-- level 14 it used to hold. The server sends the true progression with the
+-- market state; this is only what the bar shows in the moments before the
+-- first one arrives, and a fake level 14 in that window is a number the player
+-- would watch drop.
+local PROFILE = { level = 1, xp = 0, needed = 1 }
 
 --- The catalogue, from the shared season config.
 ---
@@ -118,6 +115,18 @@ AddEventHandler(BR.Net.MARKET_STATE, function(state)
     STATE.equipped = {}
     for kind, id in pairs(state.equipped or {}) do STATE.equipped[kind] = id end
 
+    -- THE SERVER OWNS THE CURVE. It evaluates BR.Xp and sends the result, so
+    -- this side never derives a level -- a client that computed its own would
+    -- eventually disagree with the server about what level somebody is, and
+    -- the player would believe the one in front of them.
+    local pr = state.progress
+    if type(pr) == 'table' then
+        PROFILE.level  = tonumber(pr.level) or PROFILE.level
+        PROFILE.xp     = tonumber(pr.xp) or PROFILE.xp
+        PROFILE.needed = math.max(1, tonumber(pr.needed) or PROFILE.needed)
+        BR.Market.pushProgress()
+    end
+
     BR.Market.push()
 end)
 
@@ -195,6 +204,22 @@ end
 -- br_ui registers the summary event itself rather than routing through
 -- br_core: several resources may handle one net event, and progression is
 -- presentation until there is a ledger behind it.
+-- WHAT THE MATCH ACTUALLY PAID, straight through to the page.
+--
+-- The verdict screen owns the TIMING (it is the only thing that can see itself
+-- on screen -- a delay timed from Lua has missed that window twice), so this
+-- only delivers the numbers and lets EndScreen stage them.
+RegisterNetEvent(BR.Net.MATCH_EARNED)
+AddEventHandler(BR.Net.MATCH_EARNED, function(e)
+    if type(e) ~= 'table' then return end
+    TriggerEvent('br:ui:sendLocal', BR.Nui.EARNED, {
+        xp      = tonumber(e.xp) or 0,
+        volts   = tonumber(e.volts) or 0,
+        level   = tonumber(e.level) or PROFILE.level,
+        levelUp = e.levelUp == true,
+    })
+end)
+
 RegisterNetEvent(BR.Net.SUMMARY)
 AddEventHandler(BR.Net.SUMMARY, function(s)
     if not s then return end

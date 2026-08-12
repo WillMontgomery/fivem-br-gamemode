@@ -10,7 +10,7 @@ function GetGameTimer() return 0 end
 local ROOT = 'resources/[fivem-royale]/'
 for _, f in ipairs({
     'br_lib/shared/enums.lua',
-    'br_stats/server/xp.lua',
+    'br_lib/shared/xp.lua',
 }) do
     local chunk, err = loadfile(ROOT .. f)
     if not chunk then

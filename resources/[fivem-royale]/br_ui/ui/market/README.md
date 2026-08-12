@@ -51,9 +51,3 @@ the canopy, so frame the trail rather than the player. Weapon finishes want the
 weapon wheel or a third-person shot with the weapon drawn — `brchute` does not
 help there, but any match does.
 
-## Trails and finishes
-
-Trails photograph best from below during a drop; the colour is in the smoke, not
-the canopy, so frame the trail rather than the player. Weapon finishes want the
-weapon wheel or a third-person shot with the weapon drawn — `brchute` does not
-help here, but any match does.

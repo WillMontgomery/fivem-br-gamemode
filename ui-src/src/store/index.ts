@@ -16,7 +16,7 @@ import type {
   SpectatePayload, SquadPayload, StormPayload, SummaryPayload,
   CurtainKind, KeybindAction, LockerPayload, MarketPayload, ProgressPayload,
   SettingsPayload,
-  ToastPayload, WireInvPayload, XpAward,
+  ToastPayload, WireInvPayload, XpAward, EarnedPayload,
 } from '../bridge/types'
 import { applySettings, DEFAULT_SETTINGS } from '../settings/apply'
 
@@ -102,6 +102,8 @@ export interface UiState {
   /** A post-match award, which is what animates the bar. Cleared by the
    *  component once the animation has played out. */
   xpAward: XpAward | null
+  /** The real match payout, held until the verdict screen stages it. */
+  earned: EarnedPayload | null
 
   /** The store catalogue and the player's balance. Also synthetic. */
   market: MarketPayload
@@ -185,6 +187,7 @@ export interface UiState {
   setLocker: (l: LockerPayload) => void
   setProgress: (p: ProgressPayload) => void
   awardXp: (a: XpAward) => void
+  setEarned: (e: EarnedPayload | null) => void
   clearXpAward: () => void
   setMarket: (m: MarketPayload) => void
   setKeybinds: (k: KeybindAction[], raw: boolean) => void
@@ -440,6 +443,7 @@ export const useUi = create<UiState>((set, get) => {
   locker: { peds: [], chosen: '' },
   progress: { level: 1, xp: 0, needed: 1000 },
   xpAward: null,
+  earned: null,
   market: { balance: 0, items: [] },
   keybinds: [],
   keybindsRaw: false,
@@ -605,6 +609,7 @@ export const useUi = create<UiState>((set, get) => {
   setLocker: (locker) => set({ locker }),
   setProgress: (progress) => set({ progress }),
   awardXp: (xpAward) => set({ xpAward }),
+  setEarned: (earned) => set({ earned }),
   clearXpAward: () => set({ xpAward: null }),
   setMarket: (market) => set({ market }),
   setKeybinds: (keybinds, keybindsRaw) => set({ keybinds, keybindsRaw }),

@@ -105,10 +105,29 @@ function BR.Market.push(src)
     for id in pairs(entry.owned) do owned[#owned + 1] = id end
     table.sort(owned)   -- never send a hash's iteration order over the wire
 
+    -- PROGRESSION RIDES WITH THE MARKET STATE, because it came out of the same
+    -- read. Splitting it into its own event would mean a second round trip for
+    -- data already in memory, and two moments where the lobby could be showing
+    -- a level and a balance that disagree about which read they came from.
+    --
+    -- The curve is evaluated HERE rather than on the client. It moved into
+    -- br_lib precisely so this side and br_stats can share one implementation:
+    -- a client that computed its own would eventually disagree with the server
+    -- about what level somebody is, and the player would believe the client.
+    local level, into, needed = 1, 0, 1
+    if BR.Xp then
+        level = BR.Xp.levelFor(entry.xp)
+        -- progress() already returns the span, so it is not recomputed from
+        -- two threshold calls that could drift from it.
+        local _, i, span = BR.Xp.progress(entry.xp)
+        into, needed = i, math.max(1, span)
+    end
+
     TriggerClientEvent(BR.Net.MARKET_STATE, src, {
         balance  = entry.balance,
         owned    = owned,
         equipped = entry.equipped,
+        progress = { level = level, xp = into, needed = needed, total = entry.xp },
     })
 end
 
@@ -132,10 +151,14 @@ function BR.Market.load(src)
     inv[lic] = withDefaults({ balance = 0, owned = {}, equipped = {}, loaded = false })
 
     ask('br:ddb:inventoryFetch', function(i, extra)
-        local entry = { balance = 0, owned = {}, equipped = {}, loaded = true }
+        local entry = { balance = 0, xp = 0, owned = {}, equipped = {}, loaded = true }
 
         if i then
             entry.balance = tonumber(i.balance) or 0
+            -- LIFETIME XP, not progress into a level. The curve derives both
+            -- from this one number, so storing the derived form would mean
+            -- storing something that can disagree with its own source.
+            entry.xp = tonumber(i.xp) or 0
             for _, id in ipairs(i.owned or {}) do
                 -- Ignore ids with no definition. A season pulled from config
                 -- leaves owners holding an id nothing can render, and dropping
@@ -283,6 +306,26 @@ RegisterNetEvent(BR.Net.MARKET_EQUIP)
 AddEventHandler(BR.Net.MARKET_EQUIP, function(data)
     local src = source
     BR.Market.equip(src, type(data) == 'table' and data.id or data)
+end)
+
+--- A match paid out: mirror it into the cache the lobby reads.
+---
+--- THE WRITE ALREADY HAPPENED ELSEWHERE. br_stats owns the atomic ADD; this
+--- only keeps the in-memory copy from going stale, so the numbers do not have
+--- to be re-read to be seen. If this event is ever lost the cache is merely old
+--- until the next reconnect -- it can never be wrong in a way that lets
+--- somebody spend money they do not have, because the purchase condition is
+--- evaluated by DynamoDB against the real row and not against this.
+AddEventHandler('br:market:credited', function(license, xpEarned, volts)
+    local entry = inv[license]
+    if not entry then return end
+
+    entry.xp = (entry.xp or 0) + (tonumber(xpEarned) or 0)
+    entry.balance = (entry.balance or 0) + (tonumber(volts) or 0)
+
+    for src, lic in pairs(licenseOf) do
+        if lic == license then BR.Market.push(src) end
+    end
 end)
 
 AddEventHandler('playerDropped', function()

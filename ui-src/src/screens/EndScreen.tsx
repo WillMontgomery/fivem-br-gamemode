@@ -99,6 +99,12 @@ export default function EndScreen({ summary }: { summary: SummaryPayload }) {
             <p className="text-sm text-white/45 mt-3">
               {summary.kills} elimination{summary.kills === 1 ? '' : 's'}
             </p>
+            {/* WHAT THE MATCH PAID, on the screen that earned it.
+                Volts were previously invisible until the player wandered into
+                the market and noticed a bigger number — which is a reward
+                nobody experiences as one. Only rendered when the server
+                actually said so: no payload, no claim. */}
+            <VoltsEarned />
           </div>
         </div>
 
@@ -148,6 +154,27 @@ export default function EndScreen({ summary }: { summary: SummaryPayload }) {
  * real XP: the award then arrives on the wire and Progress renders it with no
  * staging at all.
  */
+/**
+ * The Volts line under the verdict.
+ *
+ * Reads the same `earned` envelope the award does, and renders nothing at all
+ * when it is absent — a match whose stats failed to record should not claim to
+ * have paid anything.
+ */
+function VoltsEarned() {
+  const earned = useUi((s) => s.earned)
+  if (!earned || earned.volts <= 0) return null
+
+  return (
+    <p className="text-sm mt-1" style={{ color: 'var(--color-royale-accent2)' }}>
+      +{earned.volts.toLocaleString()} Volts
+      {earned.levelUp && (
+        <span className="text-white/45"> · level {earned.level}</span>
+      )}
+    </p>
+  )
+}
+
 function StagedAward() {
   const progress = useUi((s) => s.progress)
   const awardXp = useUi((s) => s.awardXp)
@@ -167,26 +194,38 @@ function StagedAward() {
     // correct under both: cancelled passes simply never reach the ref.
     const t = window.setTimeout(() => {
       if (fired.current) return
+
+      // NO REAL AWARD, NO ANIMATION. This used to fabricate one every match --
+      // it invented a level-up unconditionally, so the bar celebrated a
+      // milestone that had not happened and animated to a number nothing had
+      // persisted. A player who reconnected saw the real level and would
+      // reasonably conclude they had been robbed.
+      //
+      // The numbers now arrive on the `earned` envelope from br_stats, which
+      // computes them from the same values it writes to the database. If none
+      // arrived -- br_ddb down, stats not recorded -- the correct behaviour is
+      // silence.
+      const e = useUi.getState().earned
+      if (!e) return
       fired.current = true
 
-      const needed = Math.max(1, progress.needed)
-      const fromXp = Math.floor(needed * 2 / 3)
-      const nextNeeded = Math.floor(needed * 1.15)
-      const gained = (needed - fromXp) + Math.floor(nextNeeded / 3)
+      const fromLevel = progress.level
+      const fromXp = progress.xp
+      const fromNeeded = Math.max(1, progress.needed)
 
       // The new profile FIRST, then the award: the bar animates FROM where
       // the award says it was, TO where the profile says it is now.
+      //
+      // The server sends the level it landed on; everything else is derived
+      // from where the bar already was, so the fill starts where the player
+      // was actually looking.
+      const carried = fromXp + e.xp
       setProgress({
-        level: progress.level + 1,
-        xp: Math.floor(nextNeeded / 3),
-        needed: nextNeeded,
+        level: e.level,
+        xp: e.levelUp ? Math.max(0, carried - fromNeeded) : carried,
+        needed: fromNeeded,
       })
-      awardXp({
-        xp: gained,
-        fromLevel: progress.level,
-        fromXp,
-        fromNeeded: needed,
-      })
+      awardXp({ xp: e.xp, fromLevel, fromXp, fromNeeded })
     }, 1600)
 
     return () => window.clearTimeout(t)

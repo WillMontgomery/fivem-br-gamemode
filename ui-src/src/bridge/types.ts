@@ -435,6 +435,16 @@ export interface ProgressPayload {
 
 /** The post-match award, which is what animates the bar. Carries where the
  *  player WAS, because the fill has to start from there. */
+/** What one match actually paid. Server-computed, from the same numbers
+ *  written to the database -- not a client-side guess. */
+export interface EarnedPayload {
+  xp: number
+  volts: number
+  /** Level AFTER the match. */
+  level: number
+  levelUp: boolean
+}
+
 export interface XpAward {
   xp: number
   fromLevel: number
@@ -555,6 +565,7 @@ export type Envelope =
   | { k: 'market';   d: MarketPayload }
   | { k: 'keybinds'; d: { actions: KeybindAction[]; raw?: boolean } }
   | { k: 'xp';       d: XpAward }
+  | { k: 'earned';   d: EarnedPayload }
 
 export type EnvelopeKind = Envelope['k']
 

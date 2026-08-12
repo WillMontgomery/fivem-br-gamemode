@@ -78,6 +78,7 @@ export default function App() {
   // Separate from 'progress' on purpose: a reconnect restores the bar, it
   // does not replay a celebration.
   useNuiEvent('xp',       (d) => s.awardXp(d))
+  useNuiEvent('earned',   (d) => s.setEarned(d))
 
   // Lua owns focus. When it hands focus to chat, the input opens; when it takes
   // focus away, the input closes. The UI never decides this on its own.
