@@ -127,6 +127,26 @@ function BR.Ring.capture(src)
         rec.byKind   = byKind
         rec.ordered  = ordered
         rec.lastSeen = wallMs
+        --[[
+            RECONNECTS ANNOUNCE THEMSELVES TOO, and this is a bug fix rather
+            than a widening.
+
+            `BR.Ring.seen` is per PROCESS, so the second time somebody joins
+            without a server restart this branch ran and emitted nothing. The
+            console opens a session on player_seen and closes it on
+            player_left -- so a reconnect closed a session that had never been
+            opened, `sessionStartedAt` was nil, the computed length was 0, and
+            the session count incremented by zero. Every player after their
+            first join of a process accrued no playtime at all, forever, and
+            the profile page rendered that as a measurement.
+
+            The identity payload is small and connects are rare. Sending it
+            every time is cheaper than a second event kind that exists only to
+            say "the same person again".
+        ]]
+        if BR.Ring.emitSeen then
+            BR.Ring.emitSeen(license, rec)
+        end
     else
         BR.Ring.seen[license] = {
             name      = GetPlayerName(src) or 'Unknown',
