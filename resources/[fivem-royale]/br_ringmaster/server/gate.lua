@@ -168,7 +168,13 @@ AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
     -- EVERY player five seconds on the connect screen to do it. A server that
     -- has not installed br_ddb would be slower for everyone and never say why.
     -- Checking the resource state is instant and turns that into a no-op.
-    if GetResourceState('br_ddb') ~= 'started' then
+    local ddbState = GetResourceState('br_ddb')
+    if ddbState ~= 'started' then
+        -- Said out loud rather than skipped quietly. A server whose ban gate is
+        -- silently inert looks identical to one whose bans do not work, and
+        -- this is the single most likely reason for the latter.
+        print(('^3[br_ringmaster] gate: br_ddb is "%s", not "started" -- NO BAN CHECK^7')
+            :format(tostring(ddbState)))
         return
     end
 
@@ -202,6 +208,13 @@ AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
         end
 
         if not banned then
+            -- ONE LINE PER CONNECT, and worth the noise. Without it the gate is
+            -- invisible exactly when it matters: "I banned them and they got in
+            -- anyway" has four possible causes, and a silent admit cannot tell
+            -- you whether the gate ran at all, found no row, or was never asked.
+            -- At 48 slots this is a handful of lines a minute, and every server
+            -- logs connects anyway.
+            print(('^2[br_ringmaster] gate: %s not banned -- admitted^7'):format(license))
             deferrals.done()
             return
         end
