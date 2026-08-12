@@ -22,6 +22,20 @@ set -uo pipefail
 REPO="${BR_REPO_DIR:-/opt/misc/fivem-br-gamemode}"
 SESSION="${BR_TMUX_SESSION:-royale}"
 
+# THE CLONE THE SERVER ACTUALLY RUNS, which is not $REPO. There are two clones
+# on this box and reporting the wrong one is a lie with a straight face:
+# $REPO is the ops checkout you `git pull` by hand (it is where deploy.sh and
+# this script live), while deploy.sh maintains its own clone under
+# $SERVER_ROOT/.gamemode-src, hard-resets it to origin/main, and rsyncs THAT
+# into the running resources. Pulling $REPO by hand -- which is exactly how
+# dispatch.sh gets updated -- would otherwise make the console report a commit
+# the game has never run.
+SERVER_ROOT="${BR_SERVER_ROOT:-/opt/fivem-server-classic}"
+SRC_DIR="${BR_SRC_DIR:-$SERVER_ROOT/.gamemode-src}"
+# Fall back to the ops clone if the served one is missing (a box that has never
+# deployed), so status degrades to "roughly right" instead of "unknown".
+[ -d "$SRC_DIR/.git" ] || SRC_DIR="$REPO"
+
 # First word only. Arguments are ignored entirely in Slice 1 (neither verb
 # takes one), and the value is only ever MATCHED against the case below, never
 # executed -- so a payload in $SSH_ORIGINAL_COMMAND cannot become a command.
@@ -49,13 +63,41 @@ do_status() {
     fi
 
     local commit
-    commit="$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    commit="$(git -C "$SRC_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
 
-    # Whether the served clone lags origin/main. Cheap and offline: compare the
-    # served checkout's HEAD to its own last-fetched origin/main. deploy.sh
-    # fetches on every run, so this is as fresh as the last deploy attempt.
+    # How far the SERVED clone lags origin/main.
+    #
+    # THE REMOTE REF HAS TO BE REFRESHED OR THIS IS ALWAYS ZERO, which is the
+    # bug this replaced: it compared HEAD to a cached origin/main, and the only
+    # thing that ever refreshed that cache was a deploy. So the moment a deploy
+    # finished, HEAD == origin/main forever after and the console cheerfully
+    # reported "up to date" while main ran away from it. A staleness check whose
+    # own input is stale is worse than none -- it is confidently wrong.
+    #
+    # THE FETCH RUNS DETACHED, NEVER IN THE REQUEST PATH. The console gives this
+    # whole SSH round trip six seconds; a fetch against GitHub over a cold link
+    # can eat all of it, and a status call that times out reports the server as
+    # unreachable -- turning a cosmetic staleness question into a false alarm
+    # about the game being down. So: kick off a background fetch when the cached
+    # ref is older than the throttle, answer immediately from whatever is on
+    # disk, and let the NEXT poll (15s later) see the fresher number. Converges
+    # in one interval and cannot ever block.
+    local fetch_head="$SRC_DIR/.git/FETCH_HEAD"
+    local now_s stale=1
+    now_s="$(date +%s)"
+    if [ -r "$fetch_head" ]; then
+        local fetched_s
+        fetched_s="$(stat -c %Y "$fetch_head" 2>/dev/null || echo 0)"
+        [ "$((now_s - fetched_s))" -lt "${BR_FETCH_THROTTLE_SEC:-60}" ] && stale=0
+    fi
+    if [ "$stale" -eq 1 ]; then
+        # setsid+& so it survives this script exiting; output discarded because
+        # anything on stdout would corrupt the JSON line the console parses.
+        setsid git -C "$SRC_DIR" fetch --quiet origin main >/dev/null 2>&1 &
+    fi
+
     local behind=0
-    behind="$(git -C "$REPO" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)"
+    behind="$(git -C "$SRC_DIR" rev-list --count HEAD..origin/main 2>/dev/null || echo 0)"
 
     local host_uptime=0
     if [ -r /proc/uptime ]; then
