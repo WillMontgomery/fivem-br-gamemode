@@ -37,24 +37,36 @@ BR.Config.ItemKind = {
 }
 
 --[[
-    PARACHUTES USE CANOPY TEXTURE VARIANTS, NOT A COLOUR TINT.
+    PARACHUTE CANOPIES ARE AN ENUMERATED SET OF PRESET DESIGNS.
 
-    GTA V's parachute canopy is not tinted arbitrarily -- it selects one of a
-    fixed set of preset designs, each its own texture: the plain colours, the
-    Rockstar/LS liveries, the flag ones. The native is
-    SET_PLAYER_PARACHUTE_TINT_INDEX, whose NAME says tint and whose behaviour is
-    "pick variant N", which is exactly the sort of misleading native this
-    codebase writes down rather than rediscovers.
+    SET_PLAYER_PARACHUTE_TINT_INDEX has a name that says "tint" and a behaviour
+    that says "pick design N". It is not a colour multiplier and there is no way
+    to ask for an arbitrary RGB: the canopy textures ship with the model, and the
+    index chooses one. Several of them are plain single colours, which is what
+    makes the name plausible enough to mislead -- but 2, 3, 4 and 7 are multi
+    colour striped liveries that no tint value could produce.
 
-    THE INDICES BELOW ARE NOT YET VERIFIED IN GAME. They come from the
-    documented ranges, and the mapping from index to appearance wants confirming
-    with a client in the air before anybody pays for one -- `brchute <n>` exists
-    for exactly that. If an index turns out to be wrong the fix is this table,
-    not code.
+    0-7 WORK ON THE STANDARD MP CANOPY. 8-13 are the San Andreas Flight School
+    designs and are documented as requiring a parachute model override to appear
+    at all. THIS GAMEMODE ALREADY OVERRIDES THE MODEL -- client/skydive.lua sets
+    p_parachute1_mp_s before tasking the chute -- so whether 8-13 resolve here is
+    an open question rather than a known no. They are deliberately not sold until
+    somebody has seen one. 0-7 are the season.
+
+    THE INDEX-TO-APPEARANCE MAPPING BELOW COMES FROM DOCUMENTATION, NOT FROM
+    THIS BUILD. `brchute` in the F8 console exists to confirm it: `brchute test`
+    lifts you to canopy height and cycles, `brchute <n>` sets one. Anything sold
+    should be looked at once before a player can spend on it, because the failure
+    mode is somebody paying 6000 for a canopy that renders as something else.
+
+    ORDER MATTERS WHEN APPLYING. The tint has to be set before the canopy opens
+    -- after SetPlayerParachuteModelOverride and before TaskParachute, which is
+    the window skydive.lua already has open for the smoke trail.
 
     The reserve chute takes its own index (SET_PLAYER_RESERVE_PARACHUTE_TINT_
-    INDEX). We do not issue reserves -- see client/natives.lua on why -- so
-    only the primary matters here.
+    INDEX), and on the reserve those same numbers select SMOKE TRAIL colours
+    rather than canopies. We do not issue reserves -- see client/skydive.lua on
+    why chute ammo above one is a bug -- so only the primary matters here.
 ]]
 
 BR.Config.Market = {
@@ -67,7 +79,14 @@ BR.Config.Market = {
             active = true,
             items = {
                 {
-                    id = 'chute_default', name = 'Standard', sub = 'Canopy',
+                    -- INDEX 0 IS THE RAINBOW CANOPY, and it is what every player
+                    -- already gets today because nothing sets a tint at all. So
+                    -- the free default is not a neutral "standard" -- it is the
+                    -- loud one, and calling it Standard in the storefront would
+                    -- be describing something the player can plainly see is not
+                    -- standard. Naming it honestly also gives the paid canopies
+                    -- something to be an upgrade FROM.
+                    id = 'chute_rainbow', name = 'Rainbow', sub = 'Canopy',
                     kind = BR.Config.ItemKind.CHUTE,
                     price = 0, rarity = BR.Config.Rarity.COMMON,
                     -- Owned by everyone, always, and not purchasable. Every
@@ -79,19 +98,43 @@ BR.Config.Market = {
                     id = 'chute_crimson', name = 'Crimson', sub = 'Canopy',
                     kind = BR.Config.ItemKind.CHUTE,
                     price = 1200, rarity = BR.Config.Rarity.UNCOMMON,
-                    apply = { chuteTint = 1 },
+                    apply = { chuteTint = 1 },        -- solid red
                 },
                 {
-                    id = 'chute_ls', name = 'Los Santos', sub = 'Canopy',
+                    id = 'chute_seaside', name = 'Seaside', sub = 'Canopy',
+                    kind = BR.Config.ItemKind.CHUTE,
+                    price = 1500, rarity = BR.Config.Rarity.UNCOMMON,
+                    apply = { chuteTint = 2 },        -- white/blue/yellow stripes
+                },
+                {
+                    id = 'chute_azure', name = 'Azure', sub = 'Canopy',
+                    kind = BR.Config.ItemKind.CHUTE,
+                    price = 2200, rarity = BR.Config.Rarity.RARE,
+                    apply = { chuteTint = 5 },        -- solid blue
+                },
+                {
+                    id = 'chute_widowmaker', name = 'Widowmaker', sub = 'Canopy',
                     kind = BR.Config.ItemKind.CHUTE,
                     price = 2500, rarity = BR.Config.Rarity.RARE,
-                    apply = { chuteTint = 4 },
+                    apply = { chuteTint = 3 },        -- brown/red/white stripes
                 },
                 {
-                    id = 'chute_storm', name = 'Stormchaser', sub = 'Canopy',
+                    id = 'chute_patriot', name = 'Patriot', sub = 'Canopy',
+                    kind = BR.Config.ItemKind.CHUTE,
+                    price = 2500, rarity = BR.Config.Rarity.RARE,
+                    apply = { chuteTint = 4 },        -- red/white/blue stripes
+                },
+                {
+                    id = 'chute_midnight', name = 'Midnight', sub = 'Canopy',
+                    kind = BR.Config.ItemKind.CHUTE,
+                    price = 4000, rarity = BR.Config.Rarity.EPIC,
+                    apply = { chuteTint = 6 },        -- solid black
+                },
+                {
+                    id = 'chute_hornet', name = 'Hornet', sub = 'Canopy',
                     kind = BR.Config.ItemKind.CHUTE,
                     price = 6000, rarity = BR.Config.Rarity.LEGENDARY,
-                    apply = { chuteTint = 6 },
+                    apply = { chuteTint = 7 },        -- black/yellow stripes
                 },
             },
         },

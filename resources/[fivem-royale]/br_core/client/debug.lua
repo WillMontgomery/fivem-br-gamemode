@@ -427,3 +427,135 @@ RegisterCommand('brkeys', function()
         print(('  %-14s held=%s'):format(a, tostring(BR.Keys.isHeld(a))))
     end
 end, false)
+
+-- ------------------------------------------------------------ canopy audit ---
+--
+-- WHAT A CANOPY INDEX ACTUALLY LOOKS LIKE, ANSWERED BY LOOKING AT IT.
+--
+-- br_lib/config/market.lua sells canopies by index, and every one of those
+-- index-to-appearance claims came out of documentation rather than out of this
+-- build. That is a bad thing to be wrong about quietly: the failure mode is a
+-- player spending 6000 on a canopy that renders as something else, and nobody
+-- finding out until they are already in the air and already charged.
+--
+-- So the mapping gets audited the same way this project audits every other
+-- native assumption -- in game, out loud, before anything depends on it. The
+-- table below is the CLAIM. `brchute test` is the check.
+local CHUTE_TINTS = {
+    [0] = 'Rainbow          (default -- what everyone has today)',
+    [1] = 'Red              solid',
+    [2] = 'Seaside Stripes  white/blue/yellow',
+    [3] = 'Widowmaker       brown/red/white',
+    [4] = 'Patriot          red/white/blue',
+    [5] = 'Blue             solid',
+    [6] = 'Black            solid',
+    [7] = 'Hornet           black/yellow',
+    -- 8-13 are the flight-school designs, documented as needing a model
+    -- override. This gamemode already overrides the model, so they may or may
+    -- not resolve -- which is exactly why they are testable here and not sold.
+    [8]  = 'Air Force       (flight school -- may not render)',
+    [9]  = 'Desert          (flight school -- may not render)',
+    [10] = 'Shadow          (flight school -- may not render)',
+    [11] = 'High Altitude   (flight school -- may not render)',
+    [12] = 'Airborne        (flight school -- may not render)',
+    [13] = 'Sunrise         (flight school -- may not render)',
+}
+
+--- Set the canopy tint, both halves of it.
+---
+--- THE PACK IS TINTED SEPARATELY from the canopy, and they are two natives. A
+--- player wearing a black pack under a red canopy is the sort of mismatch that
+--- reads as a bug rather than as a cosmetic, so both move together and this is
+--- the one place that knows they are a pair.
+local function setCanopy(index)
+    local pid = PlayerId()
+    SetPlayerParachuteTintIndex(pid, index)
+    SetPlayerParachutePackTintIndex(pid, index)
+end
+
+RegisterCommand('brchute', function(_, args)
+    local sub = args[1]
+
+    if not sub or sub == 'list' then
+        print('  usage: brchute <0-13>   set the canopy tint now')
+        print('         brchute test     lift to canopy height and deploy, to look at it')
+        print('         brchute cycle    test, then step through 0-7 every 4s')
+        print('  --- documented canopy indices (UNVERIFIED IN THIS BUILD) ---')
+        for i = 0, 13 do
+            print(('   %2d  %s'):format(i, CHUTE_TINTS[i]))
+        end
+        return
+    end
+
+    if sub == 'test' or sub == 'cycle' then
+        local ped = PlayerPedId()
+        local x, y, z = table.unpack(GetEntityCoords(ped))
+        local start = tonumber(args[2]) or 0
+
+        -- HIGH ENOUGH TO ACTUALLY WATCH ONE. A canopy seen for two seconds
+        -- before the ground arrives is not a canopy anybody can judge.
+        SetEntityCoordsNoOffset(ped, x, y, z + 600.0, false, false, false)
+
+        local CHUTE = GetHashKey('GADGET_PARACHUTE')
+        if not HasPedGotWeapon(ped, CHUTE, false) then
+            GiveWeaponToPed(ped, CHUTE, 1, false, false)
+        end
+        -- EXACTLY ONE, ALWAYS -- chute ammo above one is what the engine reads
+        -- as a reserve parachute, and this gamemode issues no reserves. The
+        -- same rule skydive.lua enforces, for the same reason.
+        SetPedAmmo(ped, CHUTE, 1)
+
+        -- The model override FIRST, then the tint, then the task. This is the
+        -- order the real drop path uses, and the order matters: a tint set
+        -- after the canopy is already open does not repaint it.
+        SetPlayerParachuteModelOverride(PlayerId(),
+            GetHashKey(BR.Config.Drop.parachuteModel))
+        setCanopy(start)
+
+        Citizen.CreateThread(function()
+            Citizen.Wait(300)
+            for attempt = 1, 8 do
+                TaskParachute(ped, true, false)
+                Citizen.Wait(150)
+                if GetPedParachuteState(ped) ~= BR.Native.ChuteState.NONE then break end
+                if attempt == 8 then
+                    print('[br_core] brchute: TaskParachute never took -- nothing to look at')
+                    return
+                end
+            end
+            print(('[br_core] brchute: canopy %d -- %s'):format(start, CHUTE_TINTS[start] or '?'))
+
+            if sub ~= 'cycle' then return end
+
+            -- CYCLING RE-DEPLOYS, because it has to. The tint is read when the
+            -- canopy opens, so stepping the index under an already-open canopy
+            -- changes nothing on screen -- which would look exactly like the
+            -- indices all being identical, and would be the wrong conclusion.
+            for i = start + 1, 7 do
+                Citizen.Wait(4000)
+                if GetPedParachuteState(PlayerPedId()) == BR.Native.ChuteState.NONE then
+                    print('[br_core] brchute: landed -- cycle stopped')
+                    return
+                end
+                local p = PlayerPedId()
+                local cx, cy, cz = table.unpack(GetEntityCoords(p))
+                SetEntityCoordsNoOffset(p, cx, cy, cz + 400.0, false, false, false)
+                setCanopy(i)
+                Citizen.Wait(200)
+                TaskParachute(p, true, false)
+                print(('[br_core] brchute: canopy %d -- %s'):format(i, CHUTE_TINTS[i] or '?'))
+            end
+        end)
+        return
+    end
+
+    local index = tonumber(sub)
+    if not index or index < 0 or index > 13 then
+        print('[br_core] brchute: index must be 0-13, or "test" / "cycle" / "list"')
+        return
+    end
+
+    setCanopy(index)
+    print(('[br_core] brchute: canopy set to %d -- %s'):format(index, CHUTE_TINTS[index] or '?'))
+    print('[br_core] brchute: takes effect on the NEXT deploy, not the current canopy.')
+end, false)
