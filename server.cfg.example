@@ -118,6 +118,7 @@ ensure br_environment    # world state: IPLs + the Cayo Perico lobby island
 ensure br_ui
 ensure br_loadscreen     # branded loading screen; br_core releases it
 ensure br_stats          # optional -- needs oxmysql; safe to comment out
+ensure br_ddb            # optional -- read-only DynamoDB (ban checks, grants)
 ensure br_ringmaster     # optional -- the admin console's game-side half
 
 # ---------------------------------------------------------------------------
@@ -139,6 +140,17 @@ ensure br_ringmaster     # optional -- the admin console's game-side half
 #  them as a placeholder marker. Without them this line reads as a committed
 #  credential and fails the build, which is exactly what it should do to a real
 #  one. It caught this very line when it was first written.)
+
+# ---------------------------------------------------------------------------
+# br_ddb (M9 Slice 2). ALSO OPTIONAL, and NOT A CREDENTIAL in sight -- the SDK
+# finds the EC2 instance role through instance metadata on its own. If you ever
+# feel the need to put an access key here, the role is wrong.
+#
+# Both have working defaults; set them only if your tables live elsewhere.
+# `brddb` in the server console proves the box can actually reach DynamoDB.
+# ---------------------------------------------------------------------------
+# set br_ddb_region       "us-east-2"
+# set br_ddb_table_prefix "ringmaster-"
 
 # Our loading screen draws its own progress; the engine's busy spinner over
 # it is just a second, contradicting voice.

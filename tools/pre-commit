@@ -39,6 +39,28 @@ if staged | grep -q '^ui-src/src/'; then
     fi
 fi
 
+# --- 1b. br_ddb source changed without a rebuild ------------------------------
+#
+# Same hazard as the UI bundle, same guard. The resource ships one pre-bundled
+# file because FXServer installs nothing; committing source without rebuilding
+# leaves the server running the old bundle while the source says otherwise.
+
+if staged | grep -q '^js-src/br_ddb/src/'; then
+    if ! staged | grep -q '^resources/\[fivem-royale\]/br_ddb/dist/'; then
+        echo "${RED}pre-commit: br_ddb source changed but the built bundle did not.${RST}"
+        echo
+        echo "  The server runs the committed bundle and never builds."
+        echo
+        echo "  Fix:"
+        echo "    cd js-src/br_ddb && npm run build"
+        echo "    git add resources/\[fivem-royale\]/br_ddb/dist"
+        echo
+        echo "  Override (only if you know the bundle is unaffected):"
+        echo "    git commit --no-verify"
+        exit 1
+    fi
+fi
+
 # --- 2. never commit a real server.cfg ---------------------------------------
 
 if staged | grep -qE '^server\.cfg$'; then
