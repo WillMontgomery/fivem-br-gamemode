@@ -44,6 +44,60 @@ AddEventHandler('br:ddb:selftestResult', function(req, ok, info)
     handler(ok, info or {})
 end)
 
+AddEventHandler('br:ddb:banResult', function(req, banned, info)
+    local handler = pending[req]
+    if not handler then return end
+    pending[req] = nil
+    handler(banned, info or {})
+end)
+
+--- Ask the ban question directly, for one license.
+---
+--- THIS EXISTS BECAUSE "THE BAN DID NOT WORK" HAS FOUR CAUSES and they are
+--- indistinguishable from the outside: the row was never written, it was
+--- written under a different license string, the game cannot read the table, or
+--- the connect gate is not running. This command isolates the middle two --
+--- it performs the exact lookup the gate performs, with the license spelled out
+--- by hand, and prints the raw answer.
+---
+--- Usage:  brban license:b6f5a1273092df7eb6a8c2a981418f275f2ae3fb
+RegisterCommand('brban', function(_source, args)
+    local license = args[1]
+    if type(license) ~= 'string' or license == '' then
+        print('^3usage: brban <license>   e.g. brban license:abc123...^7')
+        print('  Your own license prints from `bridents` while connected.')
+        return
+    end
+
+    print(('^5[br_ddb]^7 asking about %s'):format(license))
+
+    local req = newReq(function(banned, info)
+        if info.error then
+            print(('^1  lookup FAILED: %s^7'):format(tostring(info.error)))
+            print('  The gate would FAIL OPEN here and let this player in.')
+            return
+        end
+
+        if banned then
+            print('^1  BANNED^7')
+            print(('    reason  %s'):format(tostring(info.reason)))
+            print(('    expires %s'):format(
+                info.expiresAt and os.date('%Y-%m-%d %H:%M', math.floor(info.expiresAt / 1000))
+                or 'never'))
+            print('  The gate would refuse this connection.')
+        else
+            print('^2  not banned^7')
+            print('  Either no row exists for this EXACT license string, or the')
+            print('  ban is lifted/expired. Compare it character for character')
+            print('  with what the console shows -- a mismatched license reads')
+            print('  as "not banned" and is the most common cause of a ban that')
+            print('  appears to do nothing.')
+        end
+    end)
+
+    TriggerEvent('br:ddb:banCheck', req, license)
+end, RESTRICTED)
+
 RegisterCommand('brddb', function()
     print('^5[br_ddb]^7 probing DynamoDB...')
 
