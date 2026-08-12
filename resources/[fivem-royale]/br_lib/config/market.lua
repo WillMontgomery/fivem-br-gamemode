@@ -377,6 +377,33 @@ BR.Config.Market.payout = {
     perRevive    = 15,    -- paid because it is the least selfish thing you can do
 }
 
+--- What the currency is called, in ONE place.
+---
+--- "Credits" is what every game calls this and it says nothing. Volts belongs
+--- to Blitz Royale specifically, which is the whole job of a currency name.
+--- Changing it is this line plus the matching constant in Ringmaster, which
+--- cannot read Lua -- the only duplication, and it is deliberate rather than
+--- an oversight.
+BR.Config.Market.currency = 'Volts'
+
+--- What crossing into a level is worth.
+---
+--- LEVELS PAY, AND LATER LEVELS PAY MORE, because the XP between them grows.
+--- A flat bonus would mean the twentieth level-up felt worse than the second
+--- despite taking four times as long, which is the exact shape of a
+--- progression system people quit.
+---
+--- Deliberately modest against the match payout: this is a punctuation mark on
+--- top of earning, not the earning itself. A player who levels every few
+--- matches should notice it; a player grinding for a legendary should still be
+--- getting there mostly by playing.
+--- @param level integer  the level just reached
+--- @return integer
+function BR.Config.levelBonus(level)
+    local n = math.max(1, math.floor(tonumber(level) or 1))
+    return 100 + (n - 1) * 25
+end
+
 --- What one match earned, in currency.
 --- @param r table  the same result shape the XP curve reads
 --- @return integer

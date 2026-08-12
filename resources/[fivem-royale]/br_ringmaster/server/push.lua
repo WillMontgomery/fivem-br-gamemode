@@ -99,6 +99,24 @@ function BR.Ring.emitSeen(license, rec)
     }, GetGameTimer())
 end
 
+--- The other end of a session.
+---
+--- WITHOUT THIS, PLAYTIME IS ALWAYS ZERO. The console accumulates connected
+--- time on disconnect rather than deriving it from first-seen to last-seen --
+--- correctly, because somebody who played an hour a year ago and an hour today
+--- has two hours of playtime, not a year. But that only works if something
+--- tells it the session ended, and nothing did: the console's own
+--- recordDisconnect had zero callers and the game emitted no such event, so
+--- every player's session count sat at 0 forever.
+---
+--- ON THE EVENT CHANNEL, like every other piece of evidence. A session close
+--- dropped because the queue filled is an hour of playtime nobody can recover:
+--- the next connect overwrites sessionStartedAt and the gap is gone.
+--- @param license string
+function BR.Ring.emitLeft(license)
+    outbox:emit('player_left', { license = license }, GetGameTimer())
+end
+
 --- Report the result of a command the console dispatched.
 ---
 --- THE SECOND HALF OF THE TWO-PHASE AUDIT. The console wrote an intent row

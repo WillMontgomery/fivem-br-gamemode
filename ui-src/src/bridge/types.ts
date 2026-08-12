@@ -471,6 +471,8 @@ export interface MarketItem {
 export interface MarketPayload {
   /** Earned, never bought. */
   balance: number
+  /** What the currency is called. Sent by Lua so the name lives in one place. */
+  currency?: string
   items: MarketItem[]
 }
 

@@ -119,7 +119,7 @@ export default function Market() {
             >
               {market.balance.toLocaleString()}
             </span>
-            <span className="micro-label">credits</span>
+            <span className="micro-label">{market.currency ?? 'volts'}</span>
           </div>
         </div>
 

@@ -87,6 +87,7 @@ end
 -- ---------------------------------------------------------------------------
 
 BR.Ring.seen = {}   -- [license] = { name, byKind, ordered, firstSeen, lastSeen }
+BR.Ring.licenseBySrc = {}   -- [src] = license, so a drop can be attributed
 
 --- How many distinct licenses this process has observed. For the health dump.
 function BR.Ring.seenCount()
@@ -113,6 +114,10 @@ function BR.Ring.capture(src)
         -- is a ban against the wrong human waiting to happen.
         return nil
     end
+
+    -- Remembered per SOURCE as well as per license, because playerDropped can
+    -- no longer read identifiers off a connection that is already closing.
+    BR.Ring.licenseBySrc[tonumber(src) or src] = license
 
     local wallMs = BR.Ring.clockPair()
     local rec = BR.Ring.seen[license]
@@ -147,6 +152,27 @@ AddEventHandler('playerConnecting', function()
     -- synchronous and cheap, and a connect handler that blocks is a connect
     -- handler that eventually strands somebody.
     BR.Ring.capture(source)
+end)
+
+AddEventHandler('playerDropped', function()
+    local src = source
+
+    -- THE LICENSE IS READ FROM THE MAP, NOT FROM THE PLAYER. By the time this
+    -- fires the connection is already going away, and GetPlayerIdentifiers can
+    -- return an empty list -- which would silently close nobody's session and
+    -- look exactly like the event never firing. capture() recorded it while
+    -- the player was still there, which is the only moment it is reliable.
+    local license = BR.Ring.licenseBySrc[src]
+    BR.Ring.licenseBySrc[src] = nil
+    if not license then return end
+
+    -- Only if nobody else is holding the same license: a reconnect that races
+    -- a drop would otherwise close the session the new connection just opened.
+    for _, other in pairs(BR.Ring.licenseBySrc) do
+        if other == license then return end
+    end
+
+    if BR.Ring.emitLeft then BR.Ring.emitLeft(license) end
 end)
 
 -- ---------------------------------------------------------------------------

@@ -116,9 +116,25 @@ AddEventHandler('br:match:results', function(res)
             -- can disagree.
             local before = BR.Stats.cachedXp and BR.Stats.cachedXp[license] or 0
             local after = before + xpEarned
+            local levelBefore = BR.Xp and BR.Xp.levelFor(before) or 1
             deltas.level = BR.Xp and BR.Xp.levelFor(after) or 1
             deltas.name = p.name
             deltas.at = os.time() * 1000
+
+            -- LEVELLING UP PAYS, and it pays per level crossed rather than per
+            -- level-up event: a single enormous match that crosses two levels
+            -- should pay for both, and paying once would quietly punish the
+            -- best match somebody ever had.
+            --
+            -- It rides in the same ADD as the match payout because it is the
+            -- same write. A separate one could credit the match and not the
+            -- level, and a player who saw "LEVEL 12" and no matching balance
+            -- change has no way to tell that from the bonus not existing.
+            if deltas.level > levelBefore and BR.Config.levelBonus then
+                for lvl = levelBefore + 1, deltas.level do
+                    deltas.balance = deltas.balance + BR.Config.levelBonus(lvl)
+                end
+            end
 
             nextReq = nextReq + 1
             local req = nextReq

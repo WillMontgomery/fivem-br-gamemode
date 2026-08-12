@@ -96,8 +96,13 @@ local function catalogue()
 end
 
 function BR.Market.push()
-    TriggerEvent('br:ui:sendLocal', BR.Nui.MARKET,
-        { balance = STATE.balance, items = catalogue() })
+    TriggerEvent('br:ui:sendLocal', BR.Nui.MARKET, {
+        balance  = STATE.balance,
+        -- Sent rather than hardcoded in the page, so renaming the currency is
+        -- one line in the config instead of a search across two languages.
+        currency = BR.Config.Market.currency,
+        items    = catalogue(),
+    })
 end
 
 --- The server's answer, and the only thing that changes what the page believes.
