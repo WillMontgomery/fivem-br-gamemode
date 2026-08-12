@@ -153,13 +153,28 @@ local function askBanned(license, cb)
 end
 
 
+-- Printed once when the file loads. If this line is absent from the console at
+-- boot, the gate is not installed at all -- which is invisible from the game
+-- side and looks exactly like a ban that does not work.
+print('^5[br_ringmaster]^7 ban gate armed')
+
 AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
     local src = source
+
+    -- ENTRY LOG BEFORE ANY BRANCH, because both early returns below used to be
+    -- silent -- so a connect that skipped the gate produced no output at all
+    -- and was indistinguishable from the handler never running. That cost a
+    -- real debugging session: `brban` proved the license was banned and
+    -- readable while the player still walked in, with nothing in the console
+    -- either way.
+    print(('^5[br_ringmaster] gate: connect from %s (deferrals=%s)^7')
+        :format(tostring(src), type(deferrals)))
 
     -- A connect event without deferrals is not something to guess at. Bail
     -- before touching the API rather than erroring inside a handler that owes
     -- somebody a resolution.
     if type(deferrals) ~= 'table' or type(deferrals.defer) ~= 'function' then
+        print('^3[br_ringmaster] gate: no deferrals object -- CANNOT REFUSE this connect^7')
         return
     end
 
@@ -193,6 +208,7 @@ AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
     -- there is no question to ask -- let them in rather than inventing an
     -- identifier to refuse them by.
     if not license then
+        print('^3[br_ringmaster] gate: connecting player has no license -- admitted^7')
         deferrals.done()
         return
     end
