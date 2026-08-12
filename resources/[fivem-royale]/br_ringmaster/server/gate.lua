@@ -52,6 +52,29 @@ local nextReq = 0
 --- answer or the timeout arrives first; the loser finds nothing and returns.
 local pending = {}
 
+--- Can this value be called?
+---
+--- NOT `type(v) == 'function'`, AND THIS COST AN ENTIRE DEBUGGING SESSION.
+--- FiveM passes functions across the runtime boundary as function REFERENCES:
+--- tables carrying a `__call` metamethod. So the deferrals object's members
+--- arrive as
+---
+---     done = table   defer = table   update = table   presentCard = table
+---
+--- every one of them perfectly callable, and every one of them failing a naive
+--- `type(x) == 'function'` test. The gate refused to act on every connect
+--- because of that single wrong predicate -- silently, until it was made to
+--- say so.
+---
+--- Lua's own idiom is to ask whether a thing can be called rather than what it
+--- is, which is what this does and what the original should have done.
+local function callable(v)
+    if type(v) == 'function' then return true end
+    if type(v) ~= 'table' then return false end
+    local mt = getmetatable(v)
+    return mt ~= nil and mt.__call ~= nil
+end
+
 --- The player-facing rejection message.
 ---
 --- WRITTEN FOR THE PERSON BEING REFUSED, not for the admin. It answers the
@@ -186,13 +209,15 @@ AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
         return
     end
 
-    if type(deferrals.defer) ~= 'function' then
-        print('^3[br_ringmaster] gate: deferrals.defer is not a function. Keys present:^7')
+    if not (callable(deferrals.defer) and callable(deferrals.done)) then
+        -- Kept loud, and kept dumping the shape. If FiveM ever changes this
+        -- object again, the next person gets the answer in one connect instead
+        -- of an evening -- which is exactly what this cost the first time.
+        print('^3[br_ringmaster] gate: deferrals members are not callable. Keys present:^7')
         for k, v in pairs(deferrals) do
-            print(('^3    %s = %s^7'):format(tostring(k), type(v)))
+            print(('^3    %s = %s (callable: %s)^7')
+                :format(tostring(k), type(v), tostring(callable(v))))
         end
-        local mt = getmetatable(deferrals)
-        print(('^3    (metatable: %s)^7'):format(mt and 'yes' or 'no'))
         return
     end
 
