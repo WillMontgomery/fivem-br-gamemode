@@ -1,4 +1,8 @@
-import { DynamoDBClient, GetItemCommand } from '@aws-sdk/client-dynamodb'
+import {
+  DynamoDBClient,
+  GetItemCommand,
+  UpdateItemCommand,
+} from '@aws-sdk/client-dynamodb'
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb'
 
 import { isActive } from './ban.js'
@@ -33,6 +37,17 @@ import { isActive } from './ban.js'
 
 const REGION = GetConvar('br_ddb_region', 'us-east-2')
 const TABLE_PREFIX = GetConvar('br_ddb_table_prefix', 'ringmaster-')
+
+/**
+ * The GAME's own tables, separate from Ringmaster's.
+ *
+ * The prefixes differ because the ownership does: `ringmaster-*` is the
+ * console's data, which this resource only reads; `br-*` is the server's own,
+ * which it reads and writes. Keeping them apart lets an IAM policy say exactly
+ * that, rather than granting write on a wildcard that also covers the ban list
+ * and the audit log.
+ */
+const TABLE_PREFIX_GAME = GetConvar('br_ddb_game_prefix', 'br-')
 
 /**
  * How long a single lookup may take before we give up on it.
@@ -76,11 +91,14 @@ function withTimeout(promise, ms) {
  * game box grants GetItem alone. If this ever needs a Query, that is a
  * conversation about the policy, not a change to this function.
  */
-async function getByKey(table, key) {
+async function getByKey(table, key, prefix) {
   const out = await withTimeout(
     ddb().send(
       new GetItemCommand({
-        TableName: `${TABLE_PREFIX}${table}`,
+        // The prefix is passed explicitly because the two table families have
+        // different owners. Defaulting it silently made the first version of
+        // profileFetch read the CONSOLE's table instead of the game's.
+        TableName: `${prefix || TABLE_PREFIX}${table}`,
         Key: marshall(key),
         ConsistentRead: false,
       }),
@@ -204,6 +222,123 @@ on('br:ddb:maintenance', (req) => {
     .catch((e) => {
       console.log('[br_ddb] maintenance read failed: ' + e.message)
       answer(null, { error: e.message })
+    })
+})
+
+/**
+ * A player's stats profile.
+ *
+ * THE GAME OWNS THIS TABLE, unlike everything else br_ddb touches. `br-players`
+ * is gameplay data the server both produces and depends on, so it reads and
+ * writes directly and never asks Ringmaster — the console is a companion to the
+ * server, not something the server can be made to need.
+ *
+ * PURCHASES ARE A SEPARATE ITEM under the same key. They are irreplaceable
+ * (somebody paid), they are read on the connect path where latency strands
+ * people on a loading screen, and they must not share a write path with
+ * counters that update at the end of every match. `pk = license` /
+ * `sk = 'profile' | 'purchases'` keeps them in one table without one write ever
+ * touching the other.
+ */
+on('br:ddb:profileFetch', (req, license) => {
+  const answer = (profile, extra) => {
+    emit('br:ddb:profileResult', req, profile, extra ?? {})
+  }
+
+  if (typeof license !== 'string' || license === '') {
+    answer(null, { error: 'no license' })
+    return
+  }
+
+  getByKey('players', { pk: license, sk: 'profile' }, TABLE_PREFIX_GAME)
+    .then((row) => answer(row ?? null, {}))
+    .catch((e) => {
+      console.log('[br_ddb] profile read failed: ' + e.message)
+      answer(null, { error: e.message })
+    })
+})
+
+/**
+ * Apply a match result: add the deltas, stamp the new totals.
+ *
+ * AN ATOMIC ADD RATHER THAN READ-MODIFY-WRITE. Several matches end close
+ * together on a busy server, and a read-then-write would have two of them load
+ * the same totals and write back over each other — losing one match's worth of
+ * everything, silently, in a way that only shows up as a player insisting they
+ * had more kills than the profile says. DynamoDB's ADD does the arithmetic
+ * server-side, so concurrent updates compose instead of racing.
+ *
+ * XP AND LEVEL ARE NOT COMPUTED HERE. The curve lives in Lua, where the summary
+ * screen also needs it; this adds the earned XP and stores the level the caller
+ * derived. One implementation of the curve rather than two that can disagree.
+ *
+ * A STATS FAILURE MUST NEVER STOP A MATCH — the rule br_stats has always run on,
+ * carried over intact. Every failure path answers and logs; nothing throws into
+ * the caller.
+ */
+on('br:ddb:statsApply', (req, license, deltas) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:statsResult', req, ok, extra ?? {})
+  }
+
+  if (typeof license !== 'string' || license === '') {
+    answer(false, { error: 'no license' })
+    return
+  }
+
+  const d = deltas || {}
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0)
+
+  /**
+   * An ALLOWLIST, not a loop over the payload. This runs on data that crossed
+   * a runtime boundary, and a typo'd key should be dropped rather than quietly
+   * creating an attribute nobody reads and nobody knows is there.
+   */
+  const adds = {
+    xp: num(d.xp),
+    matches: num(d.matches),
+    wins: num(d.wins),
+    top10s: num(d.top10s),
+    kills: num(d.kills),
+    deaths: num(d.deaths),
+    downs: num(d.downs),
+    revives: num(d.revives),
+    damageDealt: num(d.damageDealt),
+    playtimeSec: num(d.playtimeSec),
+    soloMatches: num(d.soloMatches),
+    squadMatches: num(d.squadMatches),
+  }
+
+  const names = { '#lvl': 'level', '#nm': 'name', '#ls': 'lastMatchAt' }
+  const values = {
+    ':lvl': num(d.level),
+    ':nm': String(d.name || ''),
+    ':ls': num(d.at),
+  }
+  const addParts = []
+  for (const [k, v] of Object.entries(adds)) {
+    names[`#${k}`] = k
+    values[`:${k}`] = v
+    addParts.push(`#${k} :${k}`)
+  }
+
+  withTimeout(
+    ddb().send(
+      new UpdateItemCommand({
+        TableName: `${TABLE_PREFIX_GAME}players`,
+        Key: marshall({ pk: license, sk: 'profile' }),
+        // SET for values that replace, ADD for values that accumulate.
+        UpdateExpression: `SET #lvl = :lvl, #nm = :nm, #ls = :ls ADD ${addParts.join(', ')}`,
+        ExpressionAttributeNames: names,
+        ExpressionAttributeValues: marshall(values),
+      }),
+    ),
+    TIMEOUT_MS,
+  )
+    .then(() => answer(true, {}))
+    .catch((e) => {
+      console.log('[br_ddb] stats write failed for ' + license + ': ' + e.message)
+      answer(false, { error: e.message })
     })
 })
 
