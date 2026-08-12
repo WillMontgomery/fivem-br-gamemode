@@ -28,6 +28,7 @@ server_scripts {
     'server/config.lua',    -- must load first; everything else reads BR.Ring.Config
     'server/main.lua',      -- boot banner, boot epoch, identity capture
     'server/push.lua',      -- the wire: snapshots latest-wins, events via outbox
+    'server/kick.lua',      -- brkick: the ONLY DropPlayer in the project
     'server/gate.lua',      -- the connect-time ban gate (fails open, own timeout)
     'server/debug.lua',     -- brring: the read-only health dump
 }
