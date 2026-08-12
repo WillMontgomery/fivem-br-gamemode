@@ -3,8 +3,24 @@
 # The SSH forced-command dispatcher -- the ONE channel from Ringmaster to the
 # game host. authorized_keys pins the Ringmaster key to:
 #
-#   command="/opt/misc/fivem-br-gamemode/tools/dispatch.sh",no-port-forwarding,\
-#   no-X11-forwarding,no-agent-forwarding,no-pty ssh-ed25519 AAAA... ringmaster
+#   command="/opt/fivem-server-classic/.gamemode-src/tools/dispatch.sh",\
+#   no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-pty \
+#   ssh-ed25519 AAAA... ringmaster
+#
+# PIN IT TO THE SERVED CLONE, NOT THE OPS CLONE. There are two checkouts on the
+# box. `/opt/misc/fivem-br-gamemode` is the one a human `git pull`s by hand;
+# `$SERVER_ROOT/.gamemode-src` is the one deploy.sh maintains, hard-resets to
+# origin/main on every run, and syncs the game from.
+#
+# This file was originally pinned to the ops clone, which meant every change to
+# it needed a SECOND manual pull that nothing prompted you to do -- and the
+# symptom was the console reporting `unknown verb 'kick'` long after the kick
+# had shipped and deployed. Pinning to the served clone means dispatch.sh
+# updates with the game code, on the same `systemctl start royale-deploy` that
+# updates everything else, and there is nothing extra to remember.
+#
+# It works because tools/ is part of the repo (so the clone has it) and this
+# file is committed mode 100755 (so it stays executable through the reset).
 #
 # so even a stolen key runs ONLY this script and never a shell. This reads the
 # requested verb from $SSH_ORIGINAL_COMMAND, switches on a FIXED set, and NEVER
