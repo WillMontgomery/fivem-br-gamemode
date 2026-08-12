@@ -286,14 +286,26 @@ do_kick() {
 # Scoped to that single unit and that single verb on purpose: `systemctl` with
 # no argument restriction would be a general-purpose root shell wearing a hat.
 do_deploy() {
-    if ! sudo -n /usr/bin/systemctl start royale-deploy >/dev/null 2>&1; then
-        echo '{"ok":false,"error":"could not start royale-deploy -- check the sudoers line"}'
-        exit 6
-    fi
+    # DETACHED, AND THIS IS A BUG FIX RATHER THAN A STYLE CHOICE.
+    #
+    # royale-deploy is Type=oneshot, and `systemctl start` on a oneshot unit
+    # BLOCKS until the unit finishes -- fetch, rsync, restart FXServer, the lot.
+    # The console gives this whole SSH round trip six seconds, so it killed the
+    # connection partway through, recorded the deploy as FAILED, and told the
+    # admin so... while the unit carried on and completed perfectly. A false
+    # failure on the one action that restarts the server is about the worst
+    # place to have one: the natural response is to run it again.
+    #
+    # setsid + & returns immediately and lets the unit outlive this script.
+    #
+    # THE SUDOERS LINE IS UNCHANGED ON PURPOSE. `--no-block` would be the
+    # tidier fix, but sudo matches the command line EXACTLY -- adding a flag
+    # would silently start failing against the rule already deployed on the box.
+    setsid sudo -n /usr/bin/systemctl start royale-deploy >/dev/null 2>&1 &
 
-    # STARTED, NOT FINISHED. The unit is oneshot and takes a few seconds; this
-    # says the deploy was accepted, and the console learns the result the same
-    # way a human would -- by watching the commit reported by `status` change.
+    # STARTED, NOT FINISHED, and now genuinely so. The console learns the
+    # result the same way a human would: by watching the commit reported by
+    # `status` change.
     echo '{"ok":true,"started":true}'
 }
 
