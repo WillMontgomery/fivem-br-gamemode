@@ -76,12 +76,12 @@ function withTimeout(promise, ms) {
  * game box grants GetItem alone. If this ever needs a Query, that is a
  * conversation about the policy, not a change to this function.
  */
-async function getByLicense(table, license) {
+async function getByKey(table, key) {
   const out = await withTimeout(
     ddb().send(
       new GetItemCommand({
         TableName: `${TABLE_PREFIX}${table}`,
-        Key: marshall({ license }),
+        Key: marshall(key),
         ConsistentRead: false,
       }),
     ),
@@ -89,6 +89,11 @@ async function getByLicense(table, license) {
   )
 
   return out.Item ? unmarshall(out.Item) : null
+}
+
+/** The common case: bans and grants are both keyed on license. */
+function getByLicense(table, license) {
+  return getByKey(table, { license })
 }
 
 /**
@@ -155,6 +160,50 @@ on('br:ddb:grantsFetch', (req, license) => {
     .catch((e) => {
       console.log(`[br_ddb] grants fetch failed for ${license}: ${e.message}`)
       answer([], { error: e.message })
+    })
+})
+
+/**
+ * The maintenance window, for the drain gate.
+ *
+ * POLLED, NOT PUSHED, and that is the whole reason this is a table read rather
+ * than a command on the SSH channel. A pushed "start draining" flag lives in
+ * memory and is forgotten the moment FXServer restarts — and a server that
+ * restarted mid-window would quietly start accepting players again with nothing
+ * anywhere to notice. Reading the row means the game re-derives the truth on
+ * every poll and heals itself after any restart, on either side.
+ *
+ * Same table family, same read-only GetItem, same fail-open rule as the ban
+ * check: an unreadable maintenance row means no drain, not a locked server.
+ */
+on('br:ddb:maintenance', (req) => {
+  const answer = (w, extra) => {
+    emit('br:ddb:maintenanceResult', req, w, extra ?? {})
+  }
+
+  getByKey('maintenance', { id: 'current' })
+    .then((row) => {
+      if (!row) {
+        answer(null, {})
+        return
+      }
+      // Projected to exactly what the game needs. The row carries more —
+      // who cancelled it, when it was forced, the deploy mode — and none of
+      // that changes what the server does at the door.
+      answer(
+        {
+          state: String(row.state || ''),
+          note: String(row.note || ''),
+          drainStartsAt: Number(row.drainStartsAt || 0),
+          createdByName: String(row.createdByName || 'an admin'),
+          updateAvailable: Number(row.updateAvailable || 0),
+        },
+        {},
+      )
+    })
+    .catch((e) => {
+      console.log('[br_ddb] maintenance read failed: ' + e.message)
+      answer(null, { error: e.message })
     })
 })
 

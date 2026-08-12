@@ -244,6 +244,18 @@ AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
     -- written around.
     Wait(0)
 
+    -- MAINTENANCE FIRST, BEFORE THE BAN LOOKUP. Draining refuses everybody, so
+    -- there is nothing to learn from a DynamoDB round trip -- and the drain
+    -- answer is already in memory from the poller, so this refusal is instant
+    -- where the ban path costs a network call. Turning somebody away quickly
+    -- with a real explanation beats making them wait to be turned away.
+    if BR.Ring.draining and BR.Ring.draining() then
+        print(('^3[br_ringmaster] gate: refused %s -- maintenance draining^7')
+            :format(tostring(src)))
+        deferrals.done(BR.Ring.drainMessage())
+        return
+    end
+
     local byKind = BR.Identity and BR.Identity.ofPlayer(src)
     local license = byKind and BR.Identity.qualified('license', byKind.license)
 
