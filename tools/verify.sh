@@ -283,20 +283,26 @@ boundary=0
 #
 # What is still forbidden, and what it would mean:
 #
-#   stop / restart / deploy   process control. An admin panel that can restart
-#                             the server is a panel that can end 100 matches by
-#                             misclick, and it belongs behind the scheduled
-#                             maintenance flow (M6), not behind a button.
+#   stop / restart            killing or bouncing the process directly. There is
+#                             no reason to reach for these: `deploy` restarts
+#                             FXServer through the unit that also syncs the
+#                             code, which is the only restart anybody actually
+#                             wants, and it is reached through a drained
+#                             maintenance window rather than a button.
 #   reload / config           live config editing. M6.
 #
-# The kick and the ban gate are as far as the console reaches into the game.
+# `deploy` ARRIVED IN M6 AND IS THE HEAVIEST VERB HERE, because the restart ends
+# every match in progress. It is fenced by the maintenance flow: scheduled,
+# drained until the server is empty, then fired automatically. The single path
+# that runs it with players online is an explicit force with its own
+# confirmation and an audit row naming who chose it.
 
 # dispatch.sh: the SSH verb surface.
 if [ -f tools/dispatch.sh ]; then
     verbs=$(grep -oE '^\s+(status|telemetry|stop|restart|deploy|reload|config|kick|ban)\)' tools/dispatch.sh \
             | tr -d ' )' | sort -u | tr '\n' ' ')
-    if [ "$verbs" != "kick status telemetry " ]; then
-        echo "${RED}FAIL${RST} dispatch.sh verb set is '${verbs}', expected 'kick status telemetry '"
+    if [ "$verbs" != "deploy kick status telemetry " ]; then
+        echo "${RED}FAIL${RST} dispatch.sh verb set is '${verbs}', expected 'deploy kick status telemetry '"
         echo "     A new verb is a new capability from the console to the host."
         echo "     Process control (stop/restart/deploy) is M6's maintenance flow,"
         echo "     not a verb. If you are adding one on purpose, update THIS gate."
@@ -329,7 +335,7 @@ if compgen -G "$rmdir_" >/dev/null 2>&1; then
 fi
 
 if [ "$boundary" -eq 0 ]; then
-    echo "${GRN}ok${RST}   the console can kick and ban, and nothing more (no process control)"
+    echo "${GRN}ok${RST}   the console can kick, ban and deploy -- no raw stop/restart/config"
 else
     rc=1
 fi
