@@ -267,10 +267,41 @@ do_kick() {
     printf '{"ok":true,"accepted":true,"commandId":"%s"}\n' "$cmdid"
 }
 
+# --- deploy -------------------------------------------------------------------
+#
+# Runs the SAME `systemctl start royale-deploy` an operator would type: pull
+# main, sync resources, restart FXServer. Nothing reboots and the box stays up.
+#
+# IT IS STILL THE MOST DANGEROUS VERB HERE, because the restart ends every match
+# in progress. That is why the console only reaches it through a maintenance
+# window -- scheduled, drained, and deployed when the server is empty -- and why
+# the one path that fires it with players online is an explicit "force" with its
+# own confirmation and its own audit row naming who did it.
+#
+# NEEDS ONE SUDOERS LINE, because the unit must start as root while this script
+# runs as the server user:
+#
+#   ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl start royale-deploy
+#
+# Scoped to that single unit and that single verb on purpose: `systemctl` with
+# no argument restriction would be a general-purpose root shell wearing a hat.
+do_deploy() {
+    if ! sudo -n /usr/bin/systemctl start royale-deploy >/dev/null 2>&1; then
+        echo '{"ok":false,"error":"could not start royale-deploy -- check the sudoers line"}'
+        exit 6
+    fi
+
+    # STARTED, NOT FINISHED. The unit is oneshot and takes a few seconds; this
+    # says the deploy was accepted, and the console learns the result the same
+    # way a human would -- by watching the commit reported by `status` change.
+    echo '{"ok":true,"started":true}'
+}
+
 case "$verb" in
     status)    do_status ;;
     telemetry) do_telemetry ;;
     kick)      do_kick ;;
+    deploy)    do_deploy ;;
     *)
         echo "dispatch: unknown verb '${verb:-<empty>}'" >&2
         exit 2
