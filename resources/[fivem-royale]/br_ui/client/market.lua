@@ -29,27 +29,65 @@ BR.Market = {}
 -- and a couple of items already owned so both card states are visible.
 local PROFILE = { level = 14, xp = 2380, needed = 4000 }
 
-local CATALOGUE = {
+--- The catalogue, from the shared season config.
+---
+--- MOVED OUT OF THIS FILE, because the list is the part that changes every
+--- season and the code around it is not. `br_lib/config/market.lua` holds the
+--- definitions organised by season, so adding a set is appending a block and
+--- ending one is flipping `active` -- rather than editing the middle of a
+--- table inline in the file that renders it.
+---
+--- The synthetic items below are the ones that have no definition yet: they
+--- keep the screen honest about what the finished storefront looks like while
+--- only the parachutes are real. They go the moment their kinds are defined.
+local SYNTHETIC = {
     { id = 'ped_juggalo', name = 'Juggalo',   sub = 'Character',  kind = 'character', price = 1500, rarity = 2 },
     { id = 'ped_clown',   name = 'Clown',     sub = 'Character',  kind = 'character', price = 2500, rarity = 3 },
     { id = 'ped_trooper', name = 'Trooper',   sub = 'Character',  kind = 'character', price = 4000, rarity = 4, owned = true },
     { id = 'ped_yeti',    name = 'Yeti',      sub = 'Character',  kind = 'character', price = 9000, rarity = 5 },
-    { id = 'ped_diver',   name = 'Diver',     sub = 'Character',  kind = 'character', price = 1500, rarity = 2 },
-    { id = 'ped_agent',   name = 'Agent',     sub = 'Character',  kind = 'character', price = 3000, rarity = 3 },
     { id = 'trail_ember', name = 'Ember',     sub = 'Chute trail', kind = 'trail',    price = 800,  rarity = 2 },
     { id = 'trail_void',  name = 'Void',      sub = 'Chute trail', kind = 'trail',    price = 2000, rarity = 4 },
-    { id = 'trail_gold',  name = 'Bullion',   sub = 'Chute trail', kind = 'trail',    price = 6000, rarity = 5 },
     { id = 'ban_storm',   name = 'Stormchaser', sub = 'Banner',   kind = 'banner',    price = 1200, rarity = 3 },
     { id = 'ban_first',   name = 'Day One',   sub = 'Banner',     kind = 'banner',    price = 0,    rarity = 5, owned = true },
     { id = 'vd_royale',   name = 'Victory Royale', sub = 'Verdict', kind = 'verdict', price = 0,    rarity = 1, owned = true },
-    { id = 'vd_lastone',  name = 'Last One Standing', sub = 'Verdict', kind = 'verdict', price = 3500, rarity = 4 },
 }
+
+--- Flatten the seasons into the list the NUI renders.
+---
+--- Defaults are marked owned rather than hidden: "Standard" is the thing you
+--- go back to, so it has to be visible and selectable in the same grid as the
+--- ones you paid for.
+local function catalogue()
+    local out = {}
+
+    for _, season in ipairs(BR.Config.Market.seasons) do
+        for _, item in ipairs(season.items) do
+            out[#out + 1] = {
+                id      = item.id,
+                name    = item.name,
+                sub     = item.sub,
+                kind    = item.kind,
+                price   = item.price,
+                rarity  = item.rarity,
+                season  = item.seasonName,
+                owned   = item.default or false,
+                -- Inactive seasons render for the people who own their items
+                -- but cannot be bought from.
+                locked  = not item.purchasable and not item.default,
+            }
+        end
+    end
+
+    for _, item in ipairs(SYNTHETIC) do out[#out + 1] = item end
+
+    return out
+end
 
 local BALANCE = 7450
 
 function BR.Market.push()
     TriggerEvent('br:ui:sendLocal', BR.Nui.MARKET,
-        { balance = BALANCE, items = CATALOGUE })
+        { balance = BALANCE, items = catalogue() })
 end
 
 function BR.Market.pushProgress()

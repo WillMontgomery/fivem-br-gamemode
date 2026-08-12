@@ -18,6 +18,10 @@ shared_scripts {
 }
 
 client_scripts {
+    -- The catalogue, organised by season. Shared so the definitions have one
+    -- home rather than living inline in the file that renders them.
+    '@br_lib/config/market.lua',
+
     'client/nui.lua',
     -- Preferences live HERE rather than in br_core: they are about this
     -- machine's screen and speakers, they are stored in this resource's kvp,
