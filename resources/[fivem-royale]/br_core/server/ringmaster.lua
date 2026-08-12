@@ -48,6 +48,35 @@ local function matchRows()
     return out
 end
 
+--- The anticheat's live settings, for the console's Anticheat page.
+---
+--- SENT RATHER THAN DOCUMENTED. A console page that hardcodes "eight refusals
+--- in ten seconds, then a kick" lies the day somebody edits config/match.lua --
+--- and the specific lie it tells is the dangerous one: claiming the anticheat
+--- enforces while `refusalAction` is `log` and it is removing nobody.
+---
+--- IT LIVES HERE RATHER THAN IN br_ringmaster because BR.Config is br_core's.
+--- FiveM gives each resource its own Lua state, so br_ringmaster -- which
+--- deliberately does not depend on br_core -- cannot see it at all, and the
+--- first version of this read nil forever from over there.
+---
+--- Rides the snapshot rather than taking a channel of its own: five numbers
+--- next to a player array, on a broadcast that already runs.
+local function anticheatBlock()
+    local cfg = BR.Config and BR.Config.Combat
+    if not cfg then return nil end
+
+    return {
+        -- "log" | "notify" | "kick" -- the difference between a system that
+        -- watches and one that acts, which is the first thing an admin needs.
+        action     = cfg.refusalAction or 'log',
+        limit      = cfg.refusalLimit or 0,
+        windowMs   = cfg.refusalWindowMs or 0,
+        selfLimit  = cfg.selfLimit or 0,
+        selfWindow = cfg.selfWindowMs or 0,
+    }
+end
+
 local function snapshot()
     local players = BR.Roster.ringmasterAll()
 
@@ -70,6 +99,7 @@ local function snapshot()
         truncated   = truncated,
         matches     = matchRows(),
         players     = players,
+        anticheat   = anticheatBlock(),
     }
 end
 
