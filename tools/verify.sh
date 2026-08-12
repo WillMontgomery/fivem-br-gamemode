@@ -308,7 +308,14 @@ if compgen -G "$rmdir_" >/dev/null 2>&1; then
 fi
 
 if [ "$boundary" -eq 0 ]; then
-    echo "${GRN}ok${RST}   the admin console has no write path into a running match"
+    # NOTE the narrowed claim. Before the ban gate this said "no write path into
+    # a running match", which stopped being true the moment a ban written in the
+    # console could refuse a connection. What the three checks above still prove
+    # is the part that matters and is still worth defending: nothing can remove
+    # or affect a player who is ALREADY IN, because br_ringmaster calls no
+    # DropPlayer and dispatch.sh carries no verb that reaches the console. Phase
+    # D opens exactly that, on purpose.
+    echo "${GRN}ok${RST}   nothing can touch a player already in the server (no DropPlayer, read-only verbs)"
 else
     rc=1
 fi
