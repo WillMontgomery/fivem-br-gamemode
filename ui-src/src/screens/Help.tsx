@@ -27,6 +27,28 @@ import { play } from '../audio/cues'
 
 const SITE = 'https://willmontgomery.github.io/fivem-br-gamemode/'
 
+/**
+ * The same URL, with a cache-buster, for the FRAME only.
+ *
+ * BEING CORRECTABLE WITHOUT A CLIENT BUILD IS THE WHOLE POINT of pointing this
+ * at the real site -- and it quietly stopped being true. CEF caches the page,
+ * the iframe does not re-fetch unless its `src` changes, and a client that had
+ * the manual open once went on showing that copy. The site was rewritten and
+ * every player in game kept reading the old one, with nothing anywhere to
+ * indicate a stale document. GitHub Pages sends `max-age=600`, so this was
+ * never going to resolve itself within a session either.
+ *
+ * COMPUTED ONCE PER MOUNT, held in state. Putting `Date.now()` straight in the
+ * JSX would change the `src` on every render, and an iframe whose src changes
+ * reloads -- so the manual would flicker and re-download forever.
+ *
+ * SITE ITSELF STAYS CLEAN. It is what the copy-link button puts on the
+ * clipboard, and nobody wants to paste a URL with a timestamp in it.
+ */
+function frameSrc(): string {
+  return `${SITE}?t=${Date.now()}`
+}
+
 /** How long to wait for `onload` before assuming it is not coming. */
 const TIMEOUT_MS = 8000
 
@@ -35,6 +57,10 @@ export default function Help({ inline = false, onDone }:
   const [loaded, setLoaded] = useState(false)
   const [slow, setSlow] = useState(false)
   const [copied, setCopied] = useState(false)
+  // Lazy initialiser: evaluated once, on mount, and never again for this
+  // instance -- so the frame re-fetches each time the manual is opened and
+  // never mid-render.
+  const [src] = useState(frameSrc)
 
   useEffect(() => {
     if (loaded) return
@@ -141,8 +167,8 @@ export default function Help({ inline = false, onDone }:
         }}
       >
         <iframe
-          src={SITE}
-          title="FiveM Royale guide"
+          src={src}
+          title="Blitz Royale player manual"
           onLoad={() => setLoaded(true)}
           // Read-only documentation: nothing in it should be able to navigate
           // the menu out from under the player.
