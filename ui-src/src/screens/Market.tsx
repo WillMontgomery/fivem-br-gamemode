@@ -64,7 +64,10 @@ const TABS: { id: MarketItem['kind']; label: string }[] = [
   { id: 'weapon',    label: 'Finishes' },
   { id: 'character', label: 'Characters' },
   { id: 'banner',    label: 'Banners' },
-  { id: 'verdict',   label: 'Verdicts' },
+  // VERDICTS ARE NOT FOR SALE (owner, 2026-08-12). The words that slam on a
+  // Victory Royale are the reward for winning, and selling them makes the
+  // trophy purchasable — which is the one thing this catalogue's rule about
+  // not selling advantage was written to protect against in spirit.
 ]
 
 export default function Market() {
@@ -91,10 +94,18 @@ export default function Market() {
 
   return (
     <div
-      className="interactive fixed inset-0 z-50 overflow-y-auto thin-scroll"
+      // A COLUMN THAT FILLS THE VIEWPORT, not a page that scrolls as a whole.
+      // The grid is the only thing that scrolls; the title, the balance, the
+      // tabs and Done all stay put. Scrolling the whole page pushed Done below
+      // the fold the moment a season had more than a dozen items -- so the way
+      // out of the screen moved depending on how much was for sale.
+      className="interactive fixed inset-0 z-50 flex flex-col"
       style={{ backgroundColor: 'rgba(8, 9, 14, 0.985)' }}
     >
-      <div className="mx-auto py-10" style={{ width: '68rem', maxWidth: '92vw' }}>
+      <div
+        className="mx-auto flex min-h-0 flex-1 flex-col pt-10"
+        style={{ width: '68rem', maxWidth: '92vw' }}
+      >
         <div className="flex items-end justify-between mb-8">
           <div>
             <div className="micro-label">Market</div>
@@ -145,17 +156,22 @@ export default function Market() {
           ))}
         </div>
 
-        {items.length === 0 ? (
-          <p className="micro-label">Nothing here yet.</p>
-        ) : (
-          <div className="grid grid-cols-4 gap-3">
-            {items.map((it) => (
-              <Card key={it.id} item={it} balance={market.balance} />
-            ))}
-          </div>
-        )}
+        {/* THE ONLY SCROLLING REGION. min-h-0 is load-bearing: a flex child
+            defaults to min-height:auto and refuses to shrink below its content,
+            so without it this grows past the viewport and takes Done with it. */}
+        <div className="min-h-0 flex-1 overflow-y-auto thin-scroll pr-1">
+          {items.length === 0 ? (
+            <p className="micro-label">Nothing here yet.</p>
+          ) : (
+            <div className="grid grid-cols-4 gap-3 pb-2">
+              {items.map((it) => (
+                <Card key={it.id} item={it} balance={market.balance} />
+              ))}
+            </div>
+          )}
+        </div>
 
-        <div className="mt-8">
+        <div className="shrink-0 py-6">
           <Btn variant="primary" size="lg" cue="ui.back" onPress={close}>
             Done
           </Btn>

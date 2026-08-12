@@ -77,9 +77,49 @@ end
 
 --- @param src integer
 --- @param mode string
+--[[
+    MAINTENANCE BLOCKS THE QUEUE, AND UNTIL NOW IT BLOCKED NOTHING.
+
+    br_ringmaster has always fired `br:ringmaster:blockMatches` when a drain
+    begins. NOTHING LISTENED FOR IT. So a drain announced itself in chat, held
+    the connect gate against new players, and then let everybody already on the
+    server ready up and start a fresh match -- which is the exact outcome
+    draining exists to prevent, since that match is the one the restart
+    interrupts.
+
+    The flag lives here rather than in match.lua because both consumers need it
+    and lobby.lua loads first: readying up is refused outright, and the start
+    tick treats it as a blocker so a queue that formed a moment earlier does not
+    slip through.
+]]
+local maintenanceBlock = false
+
+AddEventHandler('br:ringmaster:blockMatches', function(on)
+    maintenanceBlock = on == true
+end)
+
+--- Are new matches currently held for maintenance?
+--- @return boolean
+function BR.Lobby.blocked()
+    return maintenanceBlock
+end
+
 function BR.Lobby.join(src, mode)
     local entry = BR.Roster.get(src)
     if not entry then return end
+
+    -- REFUSED AUDIBLY. A ready button that silently does nothing reads as a
+    -- broken button, and the player presses it repeatedly rather than learning
+    -- why. They are told, once, what is actually happening.
+    if maintenanceBlock then
+        TriggerClientEvent(BR.Net.NOTIFY, src, {
+            text = 'A server update is pending -- no new matches can be started.',
+            tone = 'warn',
+            key  = 'maintenance.queue',
+            ms   = 6000,
+        })
+        return
+    end
 
     -- The gate is the PLAYER's state, not the match's. Someone who left the
     -- match (or never joined it) is in the lobby while a match runs, and they

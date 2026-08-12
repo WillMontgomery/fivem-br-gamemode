@@ -191,9 +191,14 @@ local function poll()
             if not announced.draining then
                 announced.draining = true
                 announced.scheduled = true   -- the earlier notice is moot now
+                -- AN ESTIMATE, BECAUSE "SOON" IS NOT AN ANSWER. The thing a
+                -- player actually wants to know is whether to wait or go and do
+                -- something else, and that question needs a number. The deploy
+                -- is a git pull and a resource restart -- comfortably under five
+                -- minutes -- so the figure is honest rather than optimistic.
                 tell(-1, 'warn',
-                    'Server update pending -- no new players until this match finishes. '
-                    .. 'Yours is unaffected.')
+                    'A server update is pending. No new matches can be started. '
+                    .. 'Estimated downtime: under 5 minutes.')
             end
         elseif not announced.scheduled then
             announced.scheduled = true

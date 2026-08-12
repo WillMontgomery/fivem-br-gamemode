@@ -48,7 +48,7 @@ local SYNTHETIC = {
     -- which could be bought and one of which could not.
     { id = 'ban_storm',   name = 'Stormchaser', sub = 'Banner',   kind = 'banner',    price = 1200, rarity = 3 },
     { id = 'ban_first',   name = 'Day One',   sub = 'Banner',     kind = 'banner',    price = 0,    rarity = 5, owned = true },
-    { id = 'vd_royale',   name = 'Victory Royale', sub = 'Verdict', kind = 'verdict', price = 0,    rarity = 1, owned = true },
+    -- No verdict entry: verdicts are not for sale. Winning is how you get one.
 }
 
 --- What the server says we own. Replaced wholesale on every MARKET_STATE.

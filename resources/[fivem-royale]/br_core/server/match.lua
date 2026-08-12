@@ -461,6 +461,14 @@ end
 ---        the dominant mode (the lobby status display's approximation)
 --- @return table|nil  { reason = 'players'|'squads'|'party', have, need }
 function BR.Match.startBlocker(mode)
+    -- MAINTENANCE OUTRANKS EVERY OTHER REASON, because it is the only one that
+    -- is not about the queue being too small -- and because a match started
+    -- during a drain is guaranteed to be interrupted by the restart the drain
+    -- exists to make painless. Checked first so a full queue cannot start one.
+    if BR.Lobby.blocked and BR.Lobby.blocked() then
+        return { reason = 'maintenance', have = #BR.Lobby.ids(mode or BR.Lobby.dominantMode()), need = 0 }
+    end
+
     mode = mode or BR.Lobby.dominantMode()
     local queued = #BR.Lobby.ids(mode)
     local need   = BR.Lobby.needed()
@@ -540,7 +548,9 @@ function BR.Match.announceBlocker(blocker)
 
     -- Console only; the lobby screen already tells the waiting players what
     -- the queue is short of, phrased from this same blocker.
-    if blocker.reason == 'squads' then
+    if blocker.reason == 'maintenance' then
+        print('[br_core] holding: a server update is pending -- no new matches')
+    elseif blocker.reason == 'squads' then
         print(('[br_core] holding: %d squad(s), need %d -- waiting for another team')
             :format(blocker.have, blocker.need))
     elseif blocker.reason == 'party' then

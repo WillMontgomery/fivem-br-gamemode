@@ -33,6 +33,10 @@ shared_scripts {
     -- you own, and the client has to resolve an equipped id into the natives
     -- that actually put it on you. Both sides need the same definitions.
     '@br_lib/config/market.lua',
+    -- BR.Xp. server/market.lua evaluates the curve to send the lobby a real
+    -- level -- and without this it is nil, so every player was told they were
+    -- level 1 with 0/1 XP regardless of what they had actually earned.
+    '@br_lib/shared/xp.lua',
     '@br_lib/shared/storm_solve.lua',
     '@br_lib/shared/combat_solve.lua',
     '@br_lib/shared/loot_gen.lua',  -- reads the loot/weapon/map config at call time
