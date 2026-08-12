@@ -1,0 +1,55 @@
+# Publish the player manual to GitHub Pages.
+#
+# WHY THIS EXISTS RATHER THAN THE BUILT-IN SETTING. Pages' legacy mode can only
+# serve the repository root or /docs — and the manual lives in /site, because
+# the root is a game mode and /docs is developer documentation. Serving the root
+# meant the published site was the README: a page about resource manifests and
+# verify.sh, aimed at somebody who wants to know how to not die in the first
+# ninety seconds.
+#
+# This publishes /site as the whole site, so the manual is the landing page.
+#
+# ONE-TIME SETTING: Settings -> Pages -> Source must be "GitHub Actions".
+# Until that is flipped this workflow runs and deploys nothing anybody can see.
+name: pages
+
+on:
+  push:
+    branches: [main]
+    # Only when the manual actually changes. A game-code commit rebuilding a
+    # static site is pure noise in the Actions tab.
+    paths:
+      - 'site/**'
+      - '.github/workflows/pages.yml'
+  # So it can be published without waiting for a content change.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# A queued deploy should replace a running one rather than fight it, but never
+# cancel a deploy already in flight — a half-published site is worse than a
+# slightly stale one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
