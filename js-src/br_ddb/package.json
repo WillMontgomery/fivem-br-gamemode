@@ -1,0 +1,19 @@
+{
+  "name": "br_ddb-src",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Source for the br_ddb FXServer resource. The BUNDLE is committed under resources/[fivem-royale]/br_ddb/dist -- this directory is never shipped.",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "node scripts/build.mjs --check",
+    "test": "node scripts/test.mjs"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.700.0",
+    "@aws-sdk/util-dynamodb": "^3.700.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
+}

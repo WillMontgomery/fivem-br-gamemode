@@ -323,6 +323,42 @@ fi
 echo "${DIM}== secrets ==${RST}"
 bash tools/check_secrets.sh || rc=1
 
+# --- 6. br_ddb bundle ---------------------------------------------------------
+#
+# The AWS SDK is flattened into one committed file because FXServer installs
+# nothing and builds nothing. That buys a resource with no dependencies and
+# costs exactly one hazard: source and bundle drifting apart, which presents as
+# "my change did nothing" with nothing wrong in any log. Same failure the NUI
+# bundle guard exists to prevent, so it gets the same treatment.
+#
+# SKIPPED RATHER THAN FAILED WITHOUT NODE. verify.sh is required to run on a
+# box with no Node install (that is why check_secrets.sh is bash), and the ban
+# rule's own tests run in the same breath when Node is present.
+
+echo "${DIM}== br_ddb bundle ==${RST}"
+if [ ! -d js-src/br_ddb ]; then
+    echo "     no br_ddb source, skipping"
+elif ! command -v node >/dev/null 2>&1; then
+    echo "${YEL}skip${RST} node not installed -- cannot verify the bundle matches its source"
+elif [ ! -d js-src/br_ddb/node_modules ]; then
+    echo "${YEL}skip${RST} js-src/br_ddb/node_modules absent (run: cd js-src/br_ddb && npm install)"
+else
+    if node js-src/br_ddb/scripts/build.mjs --check >/dev/null 2>&1; then
+        echo "${GRN}ok${RST}   br_ddb bundle matches its source"
+    else
+        echo "${RED}FAIL${RST} br_ddb bundle does not match js-src/br_ddb"
+        echo "     Fix:  cd js-src/br_ddb && npm run build"
+        rc=1
+    fi
+
+    if node js-src/br_ddb/scripts/test.mjs >/dev/null 2>&1; then
+        echo "${GRN}ok${RST}   br_ddb ban rule passes its cases"
+    else
+        echo "${RED}FAIL${RST} br_ddb ban rule failed -- run: cd js-src/br_ddb && npm test"
+        rc=1
+    fi
+fi
+
 # --- result ------------------------------------------------------------------
 
 echo
