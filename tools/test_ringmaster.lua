@@ -27,13 +27,39 @@ function GetPlayers()               return {} end
 function GetPlayerName(src)           return 'Player' .. tostring(src) end
 function GetCurrentResourceName()     return 'br_ringmaster' end
 
+-- A LIST PER EVENT, not one handler per name. FiveM runs every registered
+-- handler for an event, and both main.lua and gate.lua register
+-- `playerConnecting` -- so a last-one-wins stub would silently test only half
+-- the connect path and hide any interaction between them.
 local handlers = {}
-function AddEventHandler(name, fn) handlers[name] = fn end
+function AddEventHandler(name, fn)
+    handlers[name] = handlers[name] or {}
+    table.insert(handlers[name], fn)
+end
 -- Same-state dispatch, which is exactly what FiveM does for server-side
 -- TriggerEvent between loaded handlers.
 function TriggerEvent(name, ...)
-    if handlers[name] then handlers[name](...) end
+    for _, fn in ipairs(handlers[name] or {}) do fn(...) end
 end
+
+-- Timers, controllable. Nothing fires on its own: a test calls fireTimers() at
+-- the moment it wants the timeout to land, which is the only way to test "the
+-- answer never came" without actually waiting.
+local timers = {}
+function SetTimeout(ms, fn) timers[#timers + 1] = { ms = ms, fn = fn } end
+local function fireTimers()
+    local due = timers
+    timers = {}
+    for _, t in ipairs(due) do t.fn() end
+end
+
+-- gate.lua yields once between defer() and update(), as FiveM requires.
+function Wait(_) end
+
+-- Which resources are running. The gate skips itself entirely when br_ddb is
+-- absent, so this drives that branch.
+local resourceState = { br_ddb = 'started' }
+function GetResourceState(name) return resourceState[name] or 'missing' end
 
 -- json.encode stub: stash the table, return a marker. The tests assert on the
 -- TABLE, because asserting on a hand-rolled JSON string would test the stub.
@@ -83,6 +109,7 @@ loadAll({
     'br_lib/shared/outbox.lua',
     'br_ringmaster/server/config.lua',
     'br_ringmaster/server/main.lua',
+    'br_ringmaster/server/gate.lua',
     'br_ringmaster/server/debug.lua',
 })
 
@@ -414,6 +441,128 @@ do
         if b.kind == 'events' then extraEvents = extraEvents + 1 end
     end
     ok(extraEvents == 0, 'an acked batch is gone -- the queue drains to silence')
+end
+
+-- ------------------------------------------------------------- ban gate ---
+--
+-- THE PROPERTY UNDER TEST IS "ALWAYS RESOLVES". A deferral that never calls
+-- done() strands a human on a connecting screen with no error anywhere, and it
+-- is the only bug in this codebase that can waste somebody's evening in
+-- complete silence. Every case below asserts a resolution, and several assert
+-- that it happened exactly once.
+
+describe('ban gate')
+
+-- Stand in for br_ddb's JS half: record the question instead of answering it,
+-- so each test decides what comes back and when.
+local banChecks = {}
+AddEventHandler('br:ddb:banCheck', function(req, license)
+    banChecks[#banChecks + 1] = { req = req, license = license }
+end)
+local function lastBanCheckReq()
+    return banChecks[#banChecks] and banChecks[#banChecks].req
+end
+local function lastBanCheckLicense()
+    return banChecks[#banChecks] and banChecks[#banChecks].license
+end
+
+do
+    -- A stand-in for FiveM's deferrals object that records what was done to it.
+    local function newDeferrals()
+        local d = { deferred = false, updates = {}, doneCount = 0, doneArg = nil }
+        d.defer = function() d.deferred = true end
+        d.update = function(msg) d.updates[#d.updates + 1] = msg end
+        d.done = function(reason)
+            d.doneCount = d.doneCount + 1
+            d.doneArg = reason
+        end
+        return d
+    end
+
+    local BANNED = 'license:1111111111111111111111111111111111111111'
+    identifiers[70] = { BANNED, 'discord:900' }
+
+    local function connect(src)
+        local d = newDeferrals()
+        source = src
+        TriggerEvent('playerConnecting', 'Someone', function() end, d)
+        return d
+    end
+
+    -- The most important case: br_ddb answers nothing at all, ever.
+    resourceState.br_ddb = 'started'
+    local d = connect(70)
+    ok(d.deferred, 'defers while it asks')
+    ok(d.doneCount == 0, 'does not resolve before an answer arrives')
+    fireTimers()
+    ok(d.doneCount == 1, 'a silent br_ddb still resolves -- the timeout fires')
+    ok(d.doneArg == nil, 'and it FAILS OPEN: no reason means admitted')
+
+    -- A clean "not banned".
+    d = connect(70)
+    local req = lastBanCheckReq()
+    TriggerEvent('br:ddb:banResult', req, false, {})
+    ok(d.doneCount == 1 and d.doneArg == nil, 'an unbanned player is admitted')
+
+    -- An error from br_ddb: credentials, route, throttle -- all fail open.
+    d = connect(70)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), false, { error = 'no credentials' })
+    ok(d.doneCount == 1 and d.doneArg == nil, 'a br_ddb error fails open')
+
+    -- An actual ban.
+    d = connect(70)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), true, {
+        reason = 'Aimbot in match 3', expiresAt = nil,
+    })
+    ok(d.doneCount == 1, 'a banned player is resolved')
+    ok(type(d.doneArg) == 'string' and d.doneArg:find('banned'),
+        'refused with a message', d.doneArg)
+    ok(d.doneArg:find('Aimbot in match 3', 1, true),
+        'the message carries the admin-written reason')
+    ok(d.doneArg:find('does not expire', 1, true),
+        'a permanent ban says so')
+
+    -- A temporary ban reports remaining time rather than a raw timestamp.
+    d = connect(70)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), true, {
+        reason = 'Cooling off', expiresAt = (os.time() + 2 * 86400) * 1000,
+    })
+    ok(d.doneArg and d.doneArg:find('Expires in 2 days', 1, true),
+        'a temporary ban says when it ends', d.doneArg)
+
+    -- A ban with no reason recorded still produces a sentence.
+    d = connect(70)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), true, {})
+    ok(d.doneArg and d.doneArg:find('No reason recorded', 1, true),
+        'a reasonless ban still explains itself')
+
+    -- Double-resolution: the answer arrives AND the timer fires.
+    d = connect(70)
+    local dupReq = lastBanCheckReq()
+    TriggerEvent('br:ddb:banResult', dupReq, false, {})
+    fireTimers()
+    ok(d.doneCount == 1, 'answer then timeout resolves exactly once')
+
+    -- ...and a late duplicate answer for a request already settled.
+    d = connect(70)
+    local lateReq = lastBanCheckReq()
+    TriggerEvent('br:ddb:banResult', lateReq, false, {})
+    TriggerEvent('br:ddb:banResult', lateReq, true, { reason = 'too late' })
+    ok(d.doneCount == 1 and d.doneArg == nil,
+        'a late second answer cannot un-admit somebody')
+
+    -- No br_ddb at all: the gate must not charge every player its timeout.
+    resourceState.br_ddb = 'missing'
+    d = connect(70)
+    ok(not d.deferred and d.doneCount == 0,
+        'without br_ddb the gate is a no-op, not a five-second tax')
+    resourceState.br_ddb = 'started'
+
+    -- A player with no license cannot be matched against a ban list keyed on
+    -- license. Admitted rather than refused on a guess.
+    identifiers[71] = { 'discord:901' }
+    d = connect(71)
+    ok(d.doneCount == 1 and d.doneArg == nil, 'no license means admitted, not refused')
 end
 
 -- ----------------------------------------------------------------- result ---
