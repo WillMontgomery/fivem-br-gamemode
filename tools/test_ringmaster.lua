@@ -467,15 +467,33 @@ local function lastBanCheckLicense()
 end
 
 do
+    --- Wrap a function the way FIVEM ACTUALLY DOES.
+    ---
+    --- THIS IS THE WHOLE POINT OF THIS BLOCK. FiveM passes functions across the
+    --- runtime boundary as function REFERENCES -- tables with a `__call`
+    --- metamethod -- so every member of the real deferrals object reports
+    --- `type() == 'table'`, not 'function'.
+    ---
+    --- The original stub used plain Lua functions, which meant the tests
+    --- validated the gate against the SAME wrong assumption the gate was built
+    --- on: that `type(deferrals.defer) == 'function'`. Every case passed while
+    --- the gate refused to act on every real connect. A stub that is more
+    --- convenient than the thing it stands in for tests nothing.
+    local function fnRef(fn)
+        -- __call receives the table as its first argument; drop it so the
+        -- wrapped function sees the same arguments the caller passed.
+        return setmetatable({}, { __call = function(_, ...) return fn(...) end })
+    end
+
     -- A stand-in for FiveM's deferrals object that records what was done to it.
     local function newDeferrals()
         local d = { deferred = false, updates = {}, doneCount = 0, doneArg = nil }
-        d.defer = function() d.deferred = true end
-        d.update = function(msg) d.updates[#d.updates + 1] = msg end
-        d.done = function(reason)
+        d.defer = fnRef(function() d.deferred = true end)
+        d.update = fnRef(function(msg) d.updates[#d.updates + 1] = msg end)
+        d.done = fnRef(function(reason)
             d.doneCount = d.doneCount + 1
             d.doneArg = reason
-        end
+        end)
         return d
     end
 
