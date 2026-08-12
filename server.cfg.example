@@ -56,15 +56,6 @@ sets tags "battle royale, br, pvp, gamemode"
 sv_licenseKey "CHANGEME"
 
 # ---------------------------------------------------------------------------
-# Database
-#
-# Must be set BEFORE oxmysql is ensured. If this is wrong or MariaDB is down,
-# br_stats disables itself and prints why -- gameplay is unaffected, you just do
-# not get persistent stats. Check with `brdb` on the console.
-# ---------------------------------------------------------------------------
-set mysql_connection_string "mysql://royale:CHANGE_ME_STRONG_PASSWORD@localhost/fivem_royale?charset=utf8mb4"
-
-# ---------------------------------------------------------------------------
 # Admin permissions
 #
 # Most br_* commands are registered restricted, so they need this ACE from a live
@@ -94,15 +85,6 @@ ensure hardcap           # enforces sv_maxclients
 #   mapmanager      -- nothing to load; we use the vanilla map as-is
 
 # ---------------------------------------------------------------------------
-# Dependencies
-#
-# OPTIONAL. Comment out this line and `ensure br_stats` below if you have not
-# installed oxmysql yet -- the gamemode runs fine without a database, you just
-# get no persistent stats. See DEPLOY.md section 2.
-# ---------------------------------------------------------------------------
-ensure oxmysql
-
-# ---------------------------------------------------------------------------
 # Gamemode
 #
 # ORDER MATTERS.
@@ -117,8 +99,8 @@ ensure br_core
 ensure br_environment    # world state: IPLs + the Cayo Perico lobby island
 ensure br_ui
 ensure br_loadscreen     # branded loading screen; br_core releases it
-ensure br_stats          # optional -- needs oxmysql; safe to comment out
-ensure br_ddb            # optional -- read-only DynamoDB (ban checks, grants)
+ensure br_ddb            # DynamoDB: ban checks, grants, and stats persistence
+ensure br_stats          # match results + XP, written through br_ddb
 ensure br_ringmaster     # optional -- the admin console's game-side half
 
 # ---------------------------------------------------------------------------

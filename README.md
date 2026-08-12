@@ -64,7 +64,7 @@ Four resources under `resources/[fivem-royale]/`:
 | `br_core` | Yes | All gameplay, client and server. One Lua state, one loop registry. |
 | `br_environment` | Yes | World state: IPL loading and the Cayo Perico lobby island (home of the pre-match lobby; released back to the streamer once a match is live). Will grow into the streamed-asset container. |
 | `br_ui` | Yes | The NUI page and the only file that touches `SetNuiFocus`. |
-| `br_stats` | Yes | oxmysql persistence, XP, leaderboards. Optional — degrades to "no stats" rather than taking the match down. |
+| `br_stats` | Yes | Match results and XP, persisted to DynamoDB through `br_ddb`. Degrades to "no stats" rather than taking the match down. |
 
 The UI build project lives in `ui-src/`, **outside** `resources/`, because
 FXServer auto-builds any resource containing a `package.json` using bundled Node

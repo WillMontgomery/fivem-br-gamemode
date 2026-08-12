@@ -120,98 +120,56 @@ artifact rather than somebody's workspace.
 
 ---
 
-## 2. Database — optional, and skippable on first boot
+## 2. Persistence — DynamoDB, no database to install
 
-**You do not need this to run a match.** `br_stats` checks at runtime whether
-oxmysql is available and disables itself cleanly if not, printing why. Gameplay
-is unaffected; you simply get no persistent stats, XP or leaderboards.
+**There is nothing to install and nothing to run.** Match results, XP and player
+identity live in DynamoDB, reached through the `br_ddb` resource, which uses the
+box's EC2 instance role — no credentials, no connection string, no local
+service.
 
-If you are booting for the first time and want a clean log, comment these two
-lines out of `server.cfg` and come back to this section later:
+This replaced MariaDB and oxmysql entirely. If you are looking at an older
+checkout that mentions `mysql_connection_string`, that whole section is gone:
+`br_stats` no longer has a database layer of its own, and the tables it wrote to
+never contained anything (see below).
 
-```cfg
-# ensure oxmysql
-# ensure br_stats
-```
+### What you need
 
-`ensure` on a resource that is not installed logs a "could not find resource"
-error. It is harmless, but it is noise in exactly the log you want to be reading
-carefully on a first boot.
+Two tables in **us-east-2**, and the IAM policy in the Ringmaster repo's
+`docs/aws-setup.md`:
 
-### 2a. Install oxmysql
+| Table | Partition key | Sort key | Holds |
+|---|---|---|---|
+| `br-players` | `pk` (String) | `sk` (String) | `sk = profile` — matches, wins, kills, XP, level.<br>`sk = purchases` — market items, granted back on join. |
 
-oxmysql is a third-party resource, not something npm or apt provides. Download
-the latest release and drop it in `resources/[standalone]/`:
+Purchases are a separate item under the same key deliberately: they are
+irreplaceable, they are read on the connect path where latency strands people on
+a loading screen, and they must never share a write path with counters that
+update at the end of every match.
 
-```bash
-mkdir -p ~/fxserver/resources/\[standalone\] && cd ~/fxserver/resources/\[standalone\]
-curl -sSLo oxmysql.zip \
-  https://github.com/CommunityOx/oxmysql/releases/latest/download/oxmysql.zip
-unzip -q oxmysql.zip && rm oxmysql.zip
-```
+The game box needs `GetItem`, `PutItem`, `UpdateItem` and `Query` on `br-*`. It
+keeps **read-only** access to `ringmaster-*`, which is the console's data.
 
-You should end up with `resources/[standalone]/oxmysql/fxmanifest.lua`. If the
-folder is nested one level deeper after extraction, move it up — FXServer will
-not find it otherwise.
+### If DynamoDB is unreachable
 
-### 2b. MariaDB
+`br_stats` says so once per match and carries on. **A stats failure must never
+stop a match** — the rule the old oxmysql layer earned with a circuit breaker,
+carried over intact. Check the connection with `brddb` on the console.
 
-```bash
-sudo systemctl enable --now mariadb
-sudo mariadb-secure-installation
-```
+### Why there was nothing to migrate
 
-Create the database and a dedicated user:
-
-```bash
-sudo mariadb -u root -p <<'SQL'
-CREATE DATABASE fivem_royale CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER 'royale'@'localhost' IDENTIFIED BY 'CHANGE_ME_STRONG_PASSWORD';
-GRANT ALL PRIVILEGES ON fivem_royale.* TO 'royale'@'localhost';
-FLUSH PRIVILEGES;
-SQL
-```
-
-Apply the schema (safe to re-run):
-
-```bash
-sudo mariadb -u root -p fivem_royale \
-  < resources/[fivem-royale]/br_stats/sql/schema.sql
-```
-
-Then set `mysql_connection_string` in `server.cfg` to match the password you chose,
-and uncomment `ensure oxmysql` and `ensure br_stats`.
-
-Order matters: `set mysql_connection_string` must appear **before** `ensure oxmysql`,
-and `ensure oxmysql` before `ensure br_stats`. The supplied `server.cfg.example`
-already has them in the right order.
-
-Verify with `brdb` on the server console:
-
-```
-oxmysql       started
-ready         true
-healthy       true
-```
-
-`ready true / healthy false` means oxmysql connected but the schema is missing —
-run the `schema.sql` step above. That distinction is deliberate: "no database"
-and "database with no tables" have different fixes, and guessing between them
-wastes time.
-
-**Security:** MariaDB binds to `localhost` by default. Leave it that way and do
-**not** open port 3306 in the EC2 security group — the game server and the
-database are on the same host and never need to talk over the network.
-
-**If the database is unavailable**, `br_stats` disables itself and says why.
-Matches still run; only persistence is lost. Check with `brdb` on the console.
+`br_stats` shipped with `applyMatch`, `beginMatch`, `endMatch` and a leaderboard,
+and **not one of them was ever called**: `br_core` emitted no match-end event, so
+nothing hung off them. The MariaDB schema was created and stayed empty, which is
+indistinguishable from a new server — which is why it went unnoticed. The intent
+was real; the wiring was never finished. Both ends exist now:
+`br_core` publishes `br:match:results`, and `br_stats/server/persist.lua`
+consumes it.
 
 ---
 
 ## 3. Resources
 
-Copy `resources/[fivem-royale]/` into the server's `resources/` directory, and
-install `oxmysql` into `resources/[standalone]/`.
+Copy `resources/[fivem-royale]/` into the server's `resources/` directory.
 
 The NUI build output (`br_ui/ui/`) is committed, so **no build step is required
 on the server**, and no Node is needed on it either.
@@ -295,7 +253,6 @@ Edit `server.cfg`:
 | Setting | Notes |
 |---|---|
 | `sv_licenseKey` | From <https://keymaster.fivem.net>. The server will not start without it. |
-| `mysql_connection_string` | Must match the password set above. |
 | `add_principal` | Uncomment and insert your own license identifier to get admin. |
 | `sv_devMode` / `br_devMode` | **Set both to `false` for production.** They lower the minimum players to start and enable client dev tools. |
 | `sv_maxclients` | 48 is the free OneSync ceiling — see the note in `server.cfg` before raising it. |
@@ -353,7 +310,8 @@ Either:
   sustained clock speed than from extra cores.
 
 Set a CloudWatch alarm on `CPUCreditBalance` either way. 8 GiB of RAM is
-comfortable for 48 slots plus MariaDB.
+comfortable for 48 slots. There is no database process on this box any more --
+persistence is DynamoDB, so the RAM goes to the game.
 
 ---
 
