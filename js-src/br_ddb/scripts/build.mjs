@@ -43,7 +43,25 @@ const result = await esbuild.build({
   // parse.
   target: 'node18',
   platform: 'node',
-  format: 'cjs',
+  /**
+   * IIFE, NOT CJS, AND THIS IS NOT A STYLE CHOICE.
+   *
+   * FXServer evaluates server scripts into a SHARED global scope rather than
+   * per-module scopes. A CJS bundle puts its declarations at top level, and
+   * minified top-level names are short — so the first load produced
+   *
+   *   SyntaxError: Identifier '_v' has already been declared
+   *
+   * on a real server, with the Lua half of the resource loading fine and the
+   * JS half silently absent. Wrapping everything in an IIFE puts every
+   * declaration inside a function, so the bundle contributes exactly nothing
+   * to global scope and cannot collide with another resource, a future second
+   * bundle, or the runtime itself.
+   *
+   * Nothing needs to be exported: the script's whole job is registering event
+   * handlers as a side effect.
+   */
+  format: 'iife',
   minify: true,
   // FiveM's globals (on, emit, GetConvar) are injected by the runtime and must
   // NOT be resolved or shimmed.
@@ -57,6 +75,27 @@ const result = await esbuild.build({
 
 const built = result.outputFiles[0].text
 const sha = (s) => createHash('sha256').update(s).digest('hex').slice(0, 12)
+
+/**
+ * The bundle must contribute nothing to global scope.
+ *
+ * ASSERTED RATHER THAN TRUSTED, because getting this wrong is silent on a
+ * developer machine and fatal on the server. Built as CJS this bundle put 1909
+ * minified names into the shared scope FXServer evaluates server scripts in,
+ * and the server refused it with
+ *
+ *   SyntaxError: Identifier '_v' has already been declared
+ *
+ * while the resource's Lua half loaded perfectly — so the resource appeared to
+ * start and simply never answered. A one-line structural check is cheap
+ * insurance against a format regression reintroducing that.
+ */
+const firstCode = built.split('\n').find((l) => l && !l.startsWith('/*')) ?? ''
+if (!/^\(\s*(\(\)\s*=>|function)/.test(firstCode.trim())) {
+  console.error('br_ddb: bundle is not IIFE-wrapped — it would leak into')
+  console.error("        FXServer's shared global scope. Check `format` in this file.")
+  process.exit(1)
+}
 
 if (check) {
   if (!existsSync(outFile)) {
