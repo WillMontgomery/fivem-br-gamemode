@@ -170,11 +170,29 @@ AddEventHandler('playerConnecting', function(_name, _setKickReason, deferrals)
     print(('^5[br_ringmaster] gate: connect from %s (deferrals=%s)^7')
         :format(tostring(src), type(deferrals)))
 
-    -- A connect event without deferrals is not something to guess at. Bail
-    -- before touching the API rather than erroring inside a handler that owes
-    -- somebody a resolution.
-    if type(deferrals) ~= 'table' or type(deferrals.defer) ~= 'function' then
-        print('^3[br_ringmaster] gate: no deferrals object -- CANNOT REFUSE this connect^7')
+    -- A connect event without a usable deferrals object is not something to
+    -- guess at. Bail before touching the API rather than erroring inside a
+    -- handler that owes somebody a resolution.
+    --
+    -- THE SHAPE IS CHECKED, THEN DUMPED WHEN IT DISAGREES. The first version
+    -- asserted `type(deferrals.defer) == 'function'` and returned silently when
+    -- that failed -- which is exactly what happened on the live server: the
+    -- table arrived, `defer` was not a plain function, and the gate declined to
+    -- act while saying nothing. An assumption about a third-party API's shape
+    -- deserves to print what it actually found rather than just disagreeing.
+    if type(deferrals) ~= 'table' then
+        print(('^3[br_ringmaster] gate: deferrals is %s, not a table -- CANNOT REFUSE^7')
+            :format(type(deferrals)))
+        return
+    end
+
+    if type(deferrals.defer) ~= 'function' then
+        print('^3[br_ringmaster] gate: deferrals.defer is not a function. Keys present:^7')
+        for k, v in pairs(deferrals) do
+            print(('^3    %s = %s^7'):format(tostring(k), type(v)))
+        end
+        local mt = getmetatable(deferrals)
+        print(('^3    (metatable: %s)^7'):format(mt and 'yes' or 'no'))
         return
     end
 
