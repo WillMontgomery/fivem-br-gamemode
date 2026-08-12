@@ -269,6 +269,7 @@ function BR.Match.onEnter(m, state, from)
 
     elseif state == BR.MatchState.ENDED then
         BR.Match.awardPlacements(m)
+        BR.Match.publishResults(m)
 
         -- Everyone goes HOME at ENDED, not at cleanup. Placements are
         -- already awarded (the line above; the CLEANUP wipe keeps them until
@@ -326,6 +327,61 @@ function BR.Match.awardPlacements(m)
     else
         print(('[br_core] match %d ended with no survivors'):format(m.id))
     end
+end
+
+--- Announce what everyone did this match, once, at ENDED.
+---
+--- THIS DID NOT EXIST, AND THAT IS WHY NO STATS WERE EVER RECORDED.
+--- br_stats has carried an `applyMatch` since it was written and nothing has
+--- ever called it: br_core emitted no match-end event at all, so the profile
+--- table has been empty this whole time and nobody noticed, because an empty
+--- stats table looks exactly like a new server.
+---
+--- EVERY PARTICIPANT, NOT JUST THE SURVIVORS. awardPlacements walks the living,
+--- because placement is the only thing the dead do not need. Statistics are the
+--- opposite: the player who dropped hot and died first has kills and damage
+--- worth recording, and a match that ends with NO survivors -- the storm taking
+--- the last squad -- would otherwise record nothing at all for anybody.
+--- (That was open bug #55.)
+---
+--- FIRE AND FORGET. This is a TriggerEvent, not a call: br_core does not know
+--- whether anything is listening and must not care. A stats consumer that is
+--- absent, broken or slow cannot affect the match ending.
+--- @param m table
+function BR.Match.publishResults(m)
+    local rows = {}
+
+    BR.Roster.each(
+        function(e) return e.matchId == m.id end,
+        function(src, e)
+            rows[#rows + 1] = {
+                src       = src,
+                name      = e.name,
+                -- Filled by whoever consumes this; br_core does not resolve
+                -- identifiers, and the roster's license is populated only when
+                -- something else put it there.
+                license   = e.license,
+                kills     = e.kills or 0,
+                downs     = e.downs or 0,
+                revives   = e.revives or 0,
+                damage    = e.damage or 0.0,
+                placement = e.placement,
+                squadId   = e.squadId,
+            }
+        end)
+
+    if #rows == 0 then return end
+
+    TriggerEvent('br:match:results', {
+        matchId   = m.id,
+        mode      = m.mode,
+        startedAt = m.startedAt,
+        endedAt   = GetGameTimer(),
+        -- How many were in it, for placement-relative scoring: finishing 3rd of
+        -- 8 and 3rd of 96 are not the same achievement.
+        total     = #rows,
+        players   = rows,
+    })
 end
 
 --- Clear per-player match state for one instance's players, at CLEANUP.
