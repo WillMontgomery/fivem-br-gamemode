@@ -26,6 +26,9 @@ version '0.2.0'
 -- checks the resource state and says so once per match instead.
 server_scripts {
     '@br_lib/shared/identity.lua',  -- BR.Identity; persist.lua keys on license
+    -- The payout table. Currency is earned here and nowhere else, and what a
+    -- match pays lives beside what things cost so the two stay calibrated.
+    '@br_lib/config/market.lua',
     'server/xp.lua',                -- the curve; must load before persist
     'server/persist.lua',           -- br:match:results -> DynamoDB
 }

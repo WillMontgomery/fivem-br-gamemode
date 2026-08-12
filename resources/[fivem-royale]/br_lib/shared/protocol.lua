@@ -155,6 +155,19 @@ BR.Net = {
     -- Death. The client reports; the server decides. See server/combat.lua.
     PLAYER_DIED     = 'br:player:died',      -- C->S  { cause, killer? }
 
+    -- The market.
+    --
+    -- THE CLIENT ASKS; THE SERVER DECIDES; THE SERVER ANSWERS WITH THE WHOLE
+    -- STATE. There is no optimistic update anywhere in this path, because the
+    -- one thing a storefront must never do is show an item as owned when the
+    -- database disagreed. MARKET_STATE is the only thing that ever changes what
+    -- the page believes, and it always carries the full picture -- balance,
+    -- owned ids, equipped ids -- so a dropped message costs a render, not a
+    -- divergence.
+    MARKET_STATE    = 'br:market:state',     -- S->C  { balance, owned, equipped }
+    MARKET_BUY      = 'br:market:buy',       -- C->S  { id }
+    MARKET_EQUIP    = 'br:market:equip',     -- C->S  { id }
+
     -- Chat
     CHAT_SEND       = 'br:chat:send',        -- C->S  { channel, text }
     CHAT_MSG        = 'br:chat:msg',         -- S->C  { channel, from, name, text, at }
@@ -301,6 +314,11 @@ BR.NuiCb = {
     LOCKER_FOCUS = 'br/locker/focus',
     MARKET_FOCUS = 'br/market/focus',
     MARKET_BUY   = 'br/market/buy',
+    -- EQUIP IS A SEPARATE VERB FROM BUY, and not a flag on it. Buying is a
+    -- debit and can be refused for reasons equipping never has; equipping is
+    -- free, idempotent, and happens far more often. Folding them into one
+    -- callback would mean every equip carried a price the server has to ignore.
+    MARKET_EQUIP = 'br/market/equip',
     -- The pause menu. FOCUS opens and closes it; ACTION carries the one verb
     -- the player picked ('lobby' | 'squad' | 'server' | 'quit').
     PAUSE_FOCUS  = 'br/pause/focus',

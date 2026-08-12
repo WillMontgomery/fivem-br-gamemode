@@ -180,13 +180,25 @@ AddEventHandler('br:drop:begin', function(d)
         SetPlayerParachuteModelOverride(PlayerId(),
             GetHashKey(BR.Config.Drop.parachuteModel))
 
-        -- Squad identity in the air, exactly as cheap as it looks.
+        -- THE EQUIPPED CANOPY, AND IT HAS TO BE HERE. The tint is read when the
+        -- canopy opens, so this must sit after the model override and before
+        -- TaskParachute below -- the same window the smoke trail already used.
+        -- Set it later and the previous design stays up, which looks exactly
+        -- like the item the player bought not working.
+        BR.Cosmetics.applyChute()
+
+        -- Squad identity in the air, exactly as cheap as it looks -- and it
+        -- still outranks a bought trail, because finding your squadmate's
+        -- smoke is a gameplay read and the purchase is decoration.
         if BR.Config.Drop.smokeTrail then
             local me = BR.State.roster[BR.State.me.src]
-            if me and me.colour then
-                SetPlayerCanLeaveParachuteSmokeTrail(PlayerId(), true)
-                SetPlayerParachuteSmokeTrailColor(PlayerId(), hexToRgb(me.colour))
-            end
+            -- SQUADDED, not merely coloured. Every roster entry carries a
+            -- colour whether or not the player is in a squad, so testing
+            -- `me.colour` would hand the squad colour to solo players too and
+            -- no bought trail would ever appear. `squadId` is the question
+            -- actually being asked, and roster.lua is careful to clear it.
+            local squadColour = (me and me.squadId) and me.colour or nil
+            BR.Cosmetics.applyTrail(squadColour, hexToRgb)
         end
 
         -- TASKED, VERIFIED, RETRIED. TaskParachute issued in the same frame

@@ -45,16 +45,26 @@ local SYNTHETIC = {
     { id = 'ped_clown',   name = 'Clown',     sub = 'Character',  kind = 'character', price = 2500, rarity = 3 },
     { id = 'ped_trooper', name = 'Trooper',   sub = 'Character',  kind = 'character', price = 4000, rarity = 4, owned = true },
     { id = 'ped_yeti',    name = 'Yeti',      sub = 'Character',  kind = 'character', price = 9000, rarity = 5 },
-    { id = 'trail_ember', name = 'Ember',     sub = 'Chute trail', kind = 'trail',    price = 800,  rarity = 2 },
-    { id = 'trail_void',  name = 'Void',      sub = 'Chute trail', kind = 'trail',    price = 2000, rarity = 4 },
+    -- The trails that used to be here are real now, defined in the season
+    -- config alongside the canopies and the weapon finishes. Leaving the
+    -- synthetic pair behind would have put two "Ember"s in one grid, one of
+    -- which could be bought and one of which could not.
     { id = 'ban_storm',   name = 'Stormchaser', sub = 'Banner',   kind = 'banner',    price = 1200, rarity = 3 },
     { id = 'ban_first',   name = 'Day One',   sub = 'Banner',     kind = 'banner',    price = 0,    rarity = 5, owned = true },
     { id = 'vd_royale',   name = 'Victory Royale', sub = 'Verdict', kind = 'verdict', price = 0,    rarity = 1, owned = true },
 }
 
+--- What the server says we own. Replaced wholesale on every MARKET_STATE.
+---
+--- NEVER WRITTEN OPTIMISTICALLY. A purchase does not mark itself owned here and
+--- hope; it asks the server, the server writes conditionally, and the answer
+--- comes back as a new state. The page can lag by one round trip -- it cannot
+--- claim you own something the database refused.
+local STATE = { balance = 0, owned = {}, equipped = {} }
+
 --- Flatten the seasons into the list the NUI renders.
 ---
---- Defaults are marked owned rather than hidden: "Standard" is the thing you
+--- Defaults are marked owned rather than hidden: the free item is the thing you
 --- go back to, so it has to be visible and selectable in the same grid as the
 --- ones you paid for.
 local function catalogue()
@@ -62,18 +72,20 @@ local function catalogue()
 
     for _, season in ipairs(BR.Config.Market.seasons) do
         for _, item in ipairs(season.items) do
+            local owned = item.default == true or STATE.owned[item.id] == true
             out[#out + 1] = {
-                id      = item.id,
-                name    = item.name,
-                sub     = item.sub,
-                kind    = item.kind,
-                price   = item.price,
-                rarity  = item.rarity,
-                season  = item.seasonName,
-                owned   = item.default or false,
+                id       = item.id,
+                name     = item.name,
+                sub      = item.sub,
+                kind     = item.kind,
+                price    = item.price,
+                rarity   = item.rarity,
+                season   = item.seasonName,
+                owned    = owned,
+                equipped = STATE.equipped[item.kind] == item.id,
                 -- Inactive seasons render for the people who own their items
                 -- but cannot be bought from.
-                locked  = not item.purchasable and not item.default,
+                locked   = not item.purchasable and not item.default,
             }
         end
     end
@@ -83,12 +95,26 @@ local function catalogue()
     return out
 end
 
-local BALANCE = 7450
-
 function BR.Market.push()
     TriggerEvent('br:ui:sendLocal', BR.Nui.MARKET,
-        { balance = BALANCE, items = catalogue() })
+        { balance = STATE.balance, items = catalogue() })
 end
+
+--- The server's answer, and the only thing that changes what the page believes.
+RegisterNetEvent(BR.Net.MARKET_STATE)
+AddEventHandler(BR.Net.MARKET_STATE, function(state)
+    if type(state) ~= 'table' then return end
+
+    STATE.balance = tonumber(state.balance) or 0
+
+    STATE.owned = {}
+    for _, id in ipairs(state.owned or {}) do STATE.owned[id] = true end
+
+    STATE.equipped = {}
+    for kind, id in pairs(state.equipped or {}) do STATE.equipped[kind] = id end
+
+    BR.Market.push()
+end)
 
 function BR.Market.pushProgress()
     TriggerEvent('br:ui:sendLocal', BR.Nui.PROGRESS, PROFILE)
@@ -103,20 +129,23 @@ RegisterNUICallback(BR.NuiCb.MARKET_FOCUS, function(data, cb)
     cb({ ok = true })
 end)
 
+-- BOTH VERBS JUST FORWARD, AND THAT IS THE POINT. This side sends an id and
+-- nothing else -- no price, no ownership claim. Everything that could be lied
+-- about is resolved server-side against BR.Config and the database, so a
+-- modified client can ask for anything and get exactly what it is owed.
+--
+-- The callback resolves immediately rather than waiting for the outcome: CEF
+-- promises must always resolve, and the real answer arrives as its own
+-- MARKET_STATE. A page that awaited the round trip would hang on any dropped
+-- message, which is the one failure this protocol is shaped to survive.
 RegisterNUICallback(BR.NuiCb.MARKET_BUY, function(data, cb)
-    -- REFUSED, AUDIBLY, rather than silently pretending. There is no economy
-    -- to debit and no store to record ownership in; a purchase that appeared
-    -- to work and then vanished on reconnect would be worse than one that
-    -- says it is not ready. "Refusals are audible" is a standing rule in this
-    -- project for exactly this reason.
-    local id = tostring(data and data.id or '?')
-    print(('[br_ui] market: purchase of %s refused -- no economy yet'):format(id))
-    -- The envelope directly rather than BR.Notify: that helper lives in
-    -- br_core's Lua state and this is br_ui's. Same wire, one hop shorter.
-    TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
-        text = 'The store is not open yet.', tone = 'warn', key = 'market.closed',
-    })
-    cb({ ok = false, reason = 'no economy' })
+    TriggerServerEvent(BR.Net.MARKET_BUY, { id = tostring(data and data.id or '') })
+    cb({ ok = true })
+end)
+
+RegisterNUICallback(BR.NuiCb.MARKET_EQUIP, function(data, cb)
+    TriggerServerEvent(BR.Net.MARKET_EQUIP, { id = tostring(data and data.id or '') })
+    cb({ ok = true })
 end)
 
 --- Award XP, push the new profile and the award that animates to it.
@@ -197,6 +226,11 @@ AddEventHandler(BR.Net.SUMMARY, function(s)
 end)
 
 AddEventHandler('br:ui:ready', function()
+    -- ASK, THEN RENDER WHAT WE HAVE. The request goes to the server and the
+    -- answer arrives as MARKET_STATE; pushing the current (possibly empty)
+    -- state first means the page has a grid to draw rather than a blank screen
+    -- for the length of a round trip.
+    TriggerServerEvent(BR.Net.MARKET_STATE)
     BR.Market.push()
     BR.Market.pushProgress()
 end)

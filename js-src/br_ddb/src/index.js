@@ -17,12 +17,19 @@ import { isActive } from './ban.js'
  * awake -- so the game asks the database directly, and Ringmaster being down
  * costs you the admin panel rather than the server.
  *
- * IT EXPOSES EXACTLY TWO VERBS, BOTH READS, and that is a security boundary
+ * IT EXPOSES A SHORT, NAMED LIST OF VERBS, and that is a security boundary
  * rather than a convenience. There is deliberately no generic "run this query"
  * primitive: a general-purpose DynamoDB bridge sitting inside the game server
  * is one careless commit away from a write path into the tables that decide who
  * is banned and who is an admin. Adding a verb here should feel like a
  * decision, because it is one.
+ *
+ * THE SPLIT THAT MATTERS IS NOT READ-VERSUS-WRITE, IT IS WHOSE TABLE.
+ * Everything touching `ringmaster-*` -- bans, grants, the maintenance window --
+ * is read-only here, because the console owns that data and the game server
+ * only ever needs to ask it questions. Everything touching `br-*` is the game's
+ * own, and it reads and writes freely: the server must never be unable to run
+ * a match because a web console in another region is down.
  *
  * NO CREDENTIALS ANYWHERE. The SDK's default provider chain finds the EC2
  * instance role through IMDS on its own. Same rule as the Ringmaster box: if
@@ -296,6 +303,11 @@ on('br:ddb:statsApply', (req, license, deltas) => {
    */
   const adds = {
     xp: num(d.xp),
+    // CURRENCY IS EARNED HERE AND NOWHERE ELSE, which is what keeps the market
+    // honest: there is no path that adds balance except finishing a match. The
+    // moment a second writer exists, "the currency is earned, never bought" is
+    // a claim rather than a property.
+    balance: num(d.balance),
     matches: num(d.matches),
     wins: num(d.wins),
     top10s: num(d.top10s),
@@ -343,6 +355,220 @@ on('br:ddb:statsApply', (req, license, deltas) => {
 })
 
 /**
+ * ONE ROW HOLDS THE WHOLE PLAYER, AND THAT IS A COST DECISION AS MUCH AS A
+ * CORRECTNESS ONE.
+ *
+ * Balance, owned items, equipped choices and career stats all live on
+ * `{pk: license, sk: 'profile'}` rather than being split across a `purchases`
+ * row and a `profile` row. Two consequences, both wanted:
+ *
+ *   * CONNECT COSTS ONE READ. Everything the client needs to open the lobby
+ *     arrives in a single GetItem. Split across two rows it would be two reads
+ *     per join forever, on a project that is personally funded.
+ *   * A PURCHASE IS ONE CONDITIONAL WRITE. Debiting the balance and granting
+ *     the item are the same UpdateItem, so they cannot half-apply. Across two
+ *     rows this would need a transaction to avoid charging somebody for an item
+ *     they did not receive -- which is the worst outcome this path has.
+ *
+ * OWNERSHIP IS A STRING SET, so granting is idempotent at the storage layer:
+ * ADDing an id that is already present is a no-op rather than a duplicate. The
+ * condition below still refuses the second purchase, because being charged
+ * twice for a no-op is exactly the bug this guards.
+ */
+const EQUIP_KINDS = ['character', 'chute', 'trail', 'weapon', 'banner', 'verdict']
+
+/**
+ * Everything about one player, in one read.
+ *
+ * FAILS TO AN EMPTY INVENTORY rather than to an error the caller has to think
+ * about. A player whose row cannot be read gets the defaults -- which every
+ * player owns implicitly anyway -- and plays a normal match. The alternative,
+ * refusing to let somebody drop because DynamoDB was slow, is not a trade this
+ * project makes anywhere else and will not start making here.
+ */
+on('br:ddb:inventoryFetch', (req, license) => {
+  const answer = (inv, extra) => {
+    emit('br:ddb:inventoryResult', req, inv, extra ?? {})
+  }
+
+  const empty = { balance: 0, owned: [], equipped: {}, level: 1, xp: 0 }
+
+  if (typeof license !== 'string' || license === '') {
+    answer(empty, { error: 'no license' })
+    return
+  }
+
+  getByKey('players', { pk: license, sk: 'profile' }, TABLE_PREFIX_GAME)
+    .then((row) => {
+      if (!row) {
+        answer(empty, {})
+        return
+      }
+
+      // unmarshall turns a DynamoDB string set into a JS Set, which does not
+      // survive the trip across the runtime boundary into Lua. Flatten it.
+      const owned = row.owned instanceof Set ? Array.from(row.owned) : []
+
+      const equipped = {}
+      for (const kind of EQUIP_KINDS) {
+        const v = row[`equip_${kind}`]
+        if (typeof v === 'string' && v !== '') equipped[kind] = v
+      }
+
+      answer({
+        balance: Number(row.balance ?? 0),
+        owned,
+        equipped,
+        level: Number(row.level ?? 1),
+        xp: Number(row.xp ?? 0),
+      }, {})
+    })
+    .catch((e) => {
+      console.log('[br_ddb] inventory read failed for ' + license + ': ' + e.message)
+      answer(empty, { error: e.message })
+    })
+})
+
+/**
+ * Buy one item: debit and grant, atomically, or do neither.
+ *
+ * THE PRICE COMES FROM THE CALLER, AND THE CALLER IS THE SERVER. This file has
+ * no access to BR.Config -- the catalogue is Lua -- so it cannot look a price
+ * up. That is fine precisely because the only caller is server-side Lua, which
+ * resolves the item through BR.Config.buyable() before it gets here. If a
+ * client-supplied price ever reaches this function, the bug is upstream and it
+ * is a serious one.
+ *
+ * THE CONDITION IS THE WHOLE FEATURE. Without it, two purchases racing would
+ * both read an affordable balance and both succeed; with it, DynamoDB evaluates
+ * affordability and non-ownership at write time and rejects the loser.
+ */
+on('br:ddb:purchase', (req, license, itemId, price) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:purchaseResult', req, ok, extra ?? {})
+  }
+
+  const id = String(itemId ?? '')
+  const cost = Number(price)
+
+  if (typeof license !== 'string' || license === '') {
+    answer(false, { error: 'no license' })
+    return
+  }
+  if (id === '' || !Number.isFinite(cost) || cost <= 0) {
+    answer(false, { error: 'bad item or price' })
+    return
+  }
+
+  withTimeout(
+    ddb().send(
+      new UpdateItemCommand({
+        TableName: `${TABLE_PREFIX_GAME}players`,
+        Key: marshall({ pk: license, sk: 'profile' }),
+        UpdateExpression: 'ADD #bal :neg, #own :idset',
+        // A missing `balance` attribute makes the comparison false rather than
+        // treating it as zero, so a brand-new row cannot buy anything. Correct:
+        // currency is earned by playing, and the first match seeds it.
+        ConditionExpression:
+          '#bal >= :cost AND (attribute_not_exists(#own) OR NOT contains(#own, :id))',
+        ExpressionAttributeNames: { '#bal': 'balance', '#own': 'owned' },
+        ExpressionAttributeValues: {
+          ':neg': { N: String(-cost) },
+          ':cost': { N: String(cost) },
+          ':idset': { SS: [id] },
+          ':id': { S: id },
+        },
+        ReturnValues: 'UPDATED_NEW',
+      }),
+    ),
+    TIMEOUT_MS,
+  )
+    .then((out) => {
+      const after = out.Attributes ? unmarshall(out.Attributes) : {}
+      answer(true, { balance: Number(after.balance ?? 0) })
+    })
+    .catch((e) => {
+      // A REFUSAL IS NOT A FAILURE, and the two must not read alike to the
+      // player. The condition rejecting means "you cannot afford this" or "you
+      // already own it"; anything else means the database is unhappy. One
+      // extra read on the refusal path buys a message that is actually true.
+      if (e.name === 'ConditionalCheckFailedException') {
+        getByKey('players', { pk: license, sk: 'profile' }, TABLE_PREFIX_GAME)
+          .then((row) => {
+            const owned = row?.owned instanceof Set ? row.owned : new Set()
+            if (owned.has(id)) {
+              answer(false, { refused: 'already owned' })
+            } else {
+              answer(false, {
+                refused: 'not enough currency',
+                balance: Number(row?.balance ?? 0),
+              })
+            }
+          })
+          .catch(() => answer(false, { refused: 'cannot afford or already owned' }))
+        return
+      }
+      console.log('[br_ddb] purchase failed for ' + license + ': ' + e.message)
+      answer(false, { error: e.message })
+    })
+})
+
+/**
+ * Equip an owned item into its slot.
+ *
+ * SLOTS ARE FLAT ATTRIBUTES (`equip_chute`, `equip_trail`, ...) rather than a
+ * nested map, because DynamoDB cannot SET a path inside a map that does not
+ * exist yet -- so a nested `equipped.chute` would need the parent seeded first,
+ * which is a second write and a race waiting to happen on a brand-new player.
+ *
+ * OWNERSHIP IS CHECKED AT WRITE TIME, not by the caller. `allowUnowned` exists
+ * only for defaults, which every player owns implicitly and which therefore
+ * appear in nobody's `owned` set. The caller establishes that from BR.Config;
+ * the client never gets a say.
+ */
+on('br:ddb:equip', (req, license, kind, itemId, allowUnowned) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:equipResult', req, ok, extra ?? {})
+  }
+
+  const k = String(kind ?? '')
+  const id = String(itemId ?? '')
+
+  if (typeof license !== 'string' || license === '') {
+    answer(false, { error: 'no license' })
+    return
+  }
+  if (!EQUIP_KINDS.includes(k) || id === '') {
+    answer(false, { error: 'bad slot or item' })
+    return
+  }
+
+  const params = {
+    TableName: `${TABLE_PREFIX_GAME}players`,
+    Key: marshall({ pk: license, sk: 'profile' }),
+    UpdateExpression: 'SET #eq = :id',
+    ExpressionAttributeNames: { '#eq': `equip_${k}` },
+    ExpressionAttributeValues: { ':id': { S: id } },
+  }
+
+  if (!allowUnowned) {
+    params.ConditionExpression = 'contains(#own, :id)'
+    params.ExpressionAttributeNames['#own'] = 'owned'
+  }
+
+  withTimeout(ddb().send(new UpdateItemCommand(params)), TIMEOUT_MS)
+    .then(() => answer(true, {}))
+    .catch((e) => {
+      if (e.name === 'ConditionalCheckFailedException') {
+        answer(false, { refused: 'not owned' })
+        return
+      }
+      console.log('[br_ddb] equip failed for ' + license + ': ' + e.message)
+      answer(false, { error: e.message })
+    })
+})
+
+/**
  * A self-test, so "can this box reach DynamoDB at all" is one command rather
  * than a guess. Reads a license that will never exist -- a successful lookup
  * returning nothing proves credentials, network and permissions all work,
@@ -369,5 +595,6 @@ on('br:ddb:selftest', (req) => {
 })
 
 console.log(
-  `[br_ddb] ready -- region ${REGION}, tables ${TABLE_PREFIX}*, read-only (bans, grants)`,
+  `[br_ddb] ready -- region ${REGION}, ${TABLE_PREFIX}* read-only (bans, grants, maintenance),`
+    + ` ${TABLE_PREFIX_GAME}* read/write (profile, inventory, stats)`,
 )

@@ -72,6 +72,11 @@ local function deltasFor(p, ctx)
 
     return {
         xp           = xpEarned,
+        -- CURRENCY RIDES ALONG WITH THE STATS, in the same atomic ADD. It has
+        -- to: a separate write could credit XP and not the balance, and a
+        -- player who levelled up without being paid has no way to tell that
+        -- from being paid nothing.
+        balance      = BR.Config.marketPayout and BR.Config.marketPayout(r) or 0,
         matches      = 1,
         wins         = won and 1 or 0,
         top10s       = (placement > 0 and placement <= 10) and 1 or 0,

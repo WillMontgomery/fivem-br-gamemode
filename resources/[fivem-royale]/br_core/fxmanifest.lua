@@ -29,6 +29,10 @@ shared_scripts {
     '@br_lib/config/loot.lua',
     '@br_lib/config/audio.lua',
     '@br_lib/config/peds.lua',      -- the locker roster; reads BR.Config
+    -- The catalogue. SHARED rather than server-only: the server decides what
+    -- you own, and the client has to resolve an equipped id into the natives
+    -- that actually put it on you. Both sides need the same definitions.
+    '@br_lib/config/market.lua',
     '@br_lib/shared/storm_solve.lua',
     '@br_lib/shared/combat_solve.lua',
     '@br_lib/shared/loot_gen.lua',  -- reads the loot/weapon/map config at call time
@@ -51,6 +55,10 @@ client_scripts {
     'client/sfx.lua',      -- one cue table; everything else asks it for a sound
     'client/keybinds.lua',
     'client/bus.lua',       -- needs BR.Keys (keybinds) and BR.State (main)
+    -- Must precede skydive.lua, which calls into it inside the one window
+    -- where a canopy tint can still be set. Needs BR.Native (natives.lua) for
+    -- the chute-state enum.
+    'client/cosmetics.lua',
     'client/skydive.lua',
     'client/storm.lua',     -- rendering only; damage lands in state.lua
     'client/markers.lua',   -- pause-map pings: blips + world beams
@@ -87,6 +95,7 @@ server_scripts {
     'server/chat.lua',
     'server/voice.lua',    -- voice channel authority: one room per match, one per squad
     'server/debug.lua',
+    'server/market.lua',    -- inventory, purchases and equipped slots
     'server/ringmaster.lua', -- the admin-console snapshot feed; emits, never listens
 }
 
