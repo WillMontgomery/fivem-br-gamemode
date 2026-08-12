@@ -23,37 +23,53 @@ import { play } from '../audio/cues'
  *                is not a smaller target -- but a model that is visually
  *                harder to see in foliage WOULD be an advantage, which is why
  *                the roster is curated rather than "every ped in GTA".
+ *   CANOPIES     the parachute design. Seen for ninety seconds at the start of
+ *                a match, by everybody, which is exactly why they sell.
  *   TRAILS       the parachute smoke colour, which the squad system already
  *                draws. Announces your position, if anything.
+ *   FINISHES     the weapon tint.
  *   BANNERS      the card shown beside your name in the kill feed and on the
  *                verdict screen. Seen by other people, never by you mid-fight.
  *   VERDICTS     the words that slam on a Victory Royale. A trophy.
  *   SPRAYS       an emote/tag. Costs the player a second of standing still,
  *                which is a mild DISADVANTAGE, which is the correct direction.
  *
- * AND WHAT IS DELIBERATELY NOT: weapon skins that change a silhouette in a
- * scope, tracer colours, anything that alters a hitbox, and anything at all
- * that could be read as pay-to-win by somebody who just lost a fight.
+ * AND WHAT IS DELIBERATELY NOT: tracer colours, anything that alters a hitbox,
+ * and anything at all that could be read as pay-to-win by somebody who just
+ * lost a fight.
+ *
+ * WEAPON FINISHES USED TO BE ON THAT LIST, and this comment is the record of
+ * the reversal rather than a quiet edit. The exclusion said "weapon skins that
+ * change a silhouette in a scope" -- and that reasoning is sound, which is why
+ * it still bars anything that changes a silhouette. A tint does not: it is a
+ * texture swap on untouched geometry, so two players with different finishes
+ * present the same target from every angle. The one directional worry, that
+ * gold and platinum are brighter and therefore easier to see, points at a
+ * self-disadvantage -- the correct direction for anything sold.
  *
  * THE CURRENCY IS EARNED, NEVER BOUGHT. It has to be, or the paragraph above
- * is decoration. See the notes on the issue.
+ * is decoration -- and it is now a property rather than a promise: exactly one
+ * writer can increase a balance, and it is the end-of-match stats write.
  *
- * SYNTHETIC UNTIL THERE IS A SERVER. Like Progress, this is the interface for
- * a system nobody has written yet: it renders whatever Lua sends and the
- * browser harness seeds a plausible catalogue. Purchases go through a callback
- * that currently does nothing.
+ * NO LONGER SYNTHETIC. Balance, ownership and equipped state all come from the
+ * server, and nothing on this page is written optimistically: a purchase asks,
+ * the server writes conditionally, and the answer arrives as a whole new state.
+ * The page can lag by one round trip. It cannot claim you own something the
+ * database refused.
  */
 
 const TABS: { id: MarketItem['kind']; label: string }[] = [
-  { id: 'character', label: 'Characters' },
+  { id: 'chute',     label: 'Canopies' },
   { id: 'trail',     label: 'Trails' },
+  { id: 'weapon',    label: 'Finishes' },
+  { id: 'character', label: 'Characters' },
   { id: 'banner',    label: 'Banners' },
   { id: 'verdict',   label: 'Verdicts' },
 ]
 
 export default function Market() {
   const market = useUi((s) => s.market)
-  const [tab, setTab] = useState<MarketItem['kind']>('character')
+  const [tab, setTab] = useState<MarketItem['kind']>('chute')
 
   const close = () => { void fetchNui(CB.MARKET_FOCUS, { open: false }) }
   const items = market.items.filter((i) => i.kind === tab)
@@ -151,34 +167,53 @@ export default function Market() {
 
 function Card({ item, balance }: { item: MarketItem; balance: number }) {
   const owned = item.owned === true
+  const equipped = item.equipped === true
   const afford = balance >= item.price
+
+  // ARTWORK IS OPTIONAL AND ITS ABSENCE IS NOT A BROKEN IMAGE. Same convention
+  // as public/items: a PNG named after the item id, copied verbatim by Vite.
+  // A missing file falls back to the monogram below rather than to the little
+  // torn-page icon, so the set can be filled in a few at a time.
+  const [art, setArt] = useState(true)
+
+  // The edge colour says the most important true thing about the card, and
+  // there is only one edge: equipped outranks owned, which outranks rarity.
+  const edge = equipped
+    ? 'var(--color-royale-accent)'
+    : owned
+      ? 'var(--color-hp)'
+      : `var(--rarity-${item.rarity ?? 1})`
 
   return (
     <div
       className="plate p-3 flex flex-col gap-2"
       style={{
-        ['--edgec' as string]: owned
-          ? 'var(--color-hp)' : `var(--rarity-${item.rarity ?? 1})`,
+        ['--edgec' as string]: edge,
         ['--plate-fill' as string]: 'rgba(24,28,40,0.94)',
         ['--cut-max' as string]: '0.6rem',
         minHeight: '10rem',
       }}
     >
-      {/* NO ARTWORK, AND THAT IS AN HONEST GAP rather than a placeholder: this
-          project is vanilla-assets-only, so there is no image set to draw a
-          storefront from. A character is previewed by BUYING it and looking at
-          it in the locker, which is the same argument that screen makes. When
-          there is art, it goes here. */}
       <div
-        className="flex-1 flex items-center justify-center rounded-sm"
+        className="flex-1 flex items-center justify-center rounded-sm overflow-hidden"
         style={{ background: 'rgba(0,0,0,0.35)' }}
       >
-        <span
-          className="font-display text-[1.6rem] opacity-40"
-          style={{ color: `var(--rarity-${item.rarity ?? 1})` }}
-        >
-          {item.name.slice(0, 2).toUpperCase()}
-        </span>
+        {art ? (
+          <img
+            src={`market/${item.id}.png`}
+            alt=""
+            className="w-full h-full"
+            style={{ objectFit: 'contain' }}
+            onError={() => setArt(false)}
+          />
+        ) : (
+          <span
+            className="font-display text-[1.6rem] opacity-40"
+            style={{ color: `var(--rarity-${item.rarity ?? 1})` }}
+          >
+            {item.name.slice(0, 2).toUpperCase()}
+          </span>
+        )}
       </div>
 
       <div>
@@ -186,12 +221,41 @@ function Card({ item, balance }: { item: MarketItem; balance: number }) {
         {item.sub && <div className="micro-label mt-0.5">{item.sub}</div>}
       </div>
 
-      {owned ? (
+      {/* THREE STATES, AND EQUIPPED IS NOT A BUTTON. A control that does
+          nothing when pressed is worse than no control: the player presses it,
+          nothing changes, and the reasonable conclusion is that the page is
+          broken rather than that they had already done the thing. */}
+      {equipped ? (
         <div
           className="text-[0.72rem] font-display uppercase tracking-[0.14em] text-center py-1"
-          style={{ color: 'var(--color-hp)' }}
+          style={{ color: 'var(--color-royale-accent)' }}
         >
-          Owned
+          Equipped
+        </div>
+      ) : owned ? (
+        <button
+          type="button"
+          className="btn plate w-full py-1.5 font-display uppercase tracking-[0.12em] text-[0.75rem]"
+          style={{
+            ['--edgec' as string]: 'var(--color-hp)',
+            ['--plate-fill' as string]: 'rgba(30,34,48,0.94)',
+            ['--cut-max' as string]: '0.35rem',
+            color: 'var(--color-hp)',
+          }}
+          onPointerEnter={() => play('ui.hover')}
+          onClick={() => {
+            play('ui.select')
+            void fetchNui(CB.MARKET_EQUIP, { id: item.id })
+          }}
+        >
+          Equip
+        </button>
+      ) : item.locked === true ? (
+        // A closed season. Its owners still see it equipped and equippable;
+        // everybody else sees why they cannot have it, which is more use than
+        // hiding it and letting people wonder where it went.
+        <div className="micro-label text-center py-1" style={{ opacity: 0.55 }}>
+          {item.season ? `${item.season} — closed` : 'Not for sale'}
         </div>
       ) : (
         <button

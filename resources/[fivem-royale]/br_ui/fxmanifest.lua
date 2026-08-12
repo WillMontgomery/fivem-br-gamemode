@@ -53,6 +53,10 @@ files {
     -- its drawn icon -- which looks like the artwork "not working" rather
     -- than like a missing manifest entry.
     'ui/items/*.png',
+    -- Market artwork, same story, same failure mode. Separate directory
+    -- because the ids come from a different config and the two sets are
+    -- filled in independently.
+    'ui/market/*.png',
     -- The DUI page. Deliberately NOT under ui/ -- that directory is Vite's
     -- output and gets emptied on every build. This one is hand-written and
     -- loaded by URL (nui://br_ui/dui/prompt.html) rather than as the ui_page,

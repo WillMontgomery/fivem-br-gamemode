@@ -454,10 +454,18 @@ export interface MarketItem {
   id: string
   name: string
   sub?: string
-  kind: 'character' | 'trail' | 'banner' | 'verdict'
+  kind: 'character' | 'chute' | 'trail' | 'weapon' | 'banner' | 'verdict'
   price: number
   rarity?: Rarity
   owned?: boolean
+  /** Exactly one item per `kind` carries this. The server decides it; the page
+   *  never infers it, because "what am I wearing" has to survive a reconnect
+   *  and only one side of this connection can promise that. */
+  equipped?: boolean
+  /** From a season that has ended. Renders for its owners, cannot be bought. */
+  locked?: boolean
+  /** Which season it came from, for the card's provenance line. */
+  season?: string
 }
 
 export interface MarketPayload {
@@ -580,6 +588,7 @@ export const CB = {
   LOCKER_FOCUS:   'br/locker/focus',
   MARKET_FOCUS:   'br/market/focus',
   MARKET_BUY:     'br/market/buy',
+  MARKET_EQUIP:   'br/market/equip',
   PAUSE_FOCUS:    'br/pause/focus',
   HELP_FOCUS:     'br/help/focus',
   VOICE_SETTINGS: 'br/voice/settings',
