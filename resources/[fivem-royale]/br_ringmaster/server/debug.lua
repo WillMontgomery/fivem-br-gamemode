@@ -114,6 +114,14 @@ RegisterCommand('brring', function()
     if BR.Ring.incidentStats then
         local i = BR.Ring.incidentStats()
         print(('incidents     filed %d, in flight %d'):format(i.filed, i.inflight))
+        -- NOT A SECOND KIND OF FILING. One persistent cheater is one case plus a
+        -- handful of these, so counting them together would make the number
+        -- describe the opposite of what happened. A high ratio here is the healthy
+        -- shape: it means repeat offenders are landing on one case each.
+        if (i.corroborated or 0) > 0 then
+            print(('              %d corroborations appended to existing cases')
+                :format(i.corroborated))
+        end
         if i.duplicate > 0 then
             -- Not a fault. A retry after a lost ANSWER finds its own row already
             -- there, which is the idempotency token working as intended.

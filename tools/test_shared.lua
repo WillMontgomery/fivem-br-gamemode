@@ -2698,9 +2698,13 @@ do
         'no severity is defined for a refusal that never counts (orphans: '
             .. (table.concat(orphans, ', ')) .. ')')
 
+    local BAR = BR.Config.Combat.refusalBar
+    local function barOf(reason) return (BR.ShotBarFor(reason, BAR)) end
+    local function crosses(tally) return (BR.ShotTallyVerdict(tally, BAR)) end
+
     -- THE TIERS THEMSELVES. Means the server never issued are the loud ones;
     -- numbers the weapon does not have are the ones with an innocent story
-    -- (2Hz position sampling), and repeated self-harm hurts nobody else.
+    -- (position sampling plus a bad tick), and repeated self-harm hurts nobody.
     ok(S[R.NO_WEAPON] == 'high', 'a weapon the server never issued is high')
     ok(S[R.NOT_HELD] == 'high', 'a weapon not in their hands is high')
     ok(S[R.NO_AMMO] == 'high', 'a shot from an empty magazine is high')
@@ -2708,16 +2712,23 @@ do
     ok(S[R.TOO_FAR] == 'normal', 'out of range is normal -- positions are stale')
     ok(S[R.TOO_FAST] == 'normal', 'too fast is normal for the same reason')
 
-    -- SELF COUNTS TOWARD THE THRESHOLD AND FILES NOTHING ON ITS OWN. The
-    -- arithmetic is the argument: selfLimit = 2 over selfWindowMs = 5000, so the
-    -- third self-damage tick in five seconds already reads as repetition -- and
-    -- one grenade at your own feet lands several ticks well inside that. A
-    -- pure-self cluster of eight is two grenades, not somebody exercising
-    -- something.
+    -- SELF IS RECORDED AND NO LONGER COUNTED (owner call, 2026-08-14).
+    --
+    -- It stays in BR.ShotSuspicious, so it is still refused, still printed, and
+    -- still appears in the tally an admin reads. It has no tier, so it contributes
+    -- to no bar. While the bar was eight it HAD to count -- otherwise somebody
+    -- mixing self-harm with real refusals stayed under it and never tripped. At a
+    -- bar of one or two the same reasoning inverts: one self-hit beside one
+    -- marginal out-of-range shot would open a case, and a player could manufacture
+    -- one against themselves by standing in their own grenades.
+    --
+    -- The arithmetic behind that: selfLimit = 2 over selfWindowMs = 5000, so the
+    -- third self-damage tick in five seconds already reads as repetition, and one
+    -- grenade at your own feet lands several ticks well inside it.
     ok(BR.ShotSuspicious[R.SELF] == true,
-        'repeated self-harm still counts toward the threshold')
-    ok(S[R.SELF] == nil,
-        'but earns no severity, so a window of only self-harm files nothing')
+        'repeated self-harm is still refused and still recorded')
+    ok(S[R.SELF] == nil, 'but has no tier, so it counts toward no bar')
+    ok(barOf(R.SELF) == nil, 'and asking for its bar says there is not one')
 
     -- RULES ARE ABSENT ENTIRELY, which is the same guarantee the exclusion test
     -- makes upstream, asserted again here because this table is what a reviewer
@@ -2727,27 +2738,69 @@ do
     ok(S[R.NOT_LIVE] == nil, 'a shot that raced a match boundary has no severity')
     ok(S[R.OTHER_MATCH] == nil, 'a cross-match shot has no severity')
 
-    -- THE WORST REASON IN THE WINDOW WINS, which is the whole reason damage.lua
-    -- now sends a tally. Before it did, a window of seven conjured-weapon shots
-    -- followed by one self-hit was filed as `low` and sorted to the bottom of the
-    -- queue -- the exact opposite of what it deserved.
-    ok(BR.IncidentBuild.severityOf({ [R.SELF] = 7, [R.NO_WEAPON] = 1 }) == 'high',
-        'one conjured-weapon shot among seven self-hits still files as high')
+    -- THE BARS. One for high, two for normal -- and NO_WEAPON held at two despite
+    -- being high, which is the one entry that looks inconsistent. It is the
+    -- catch-all: it means the hash is in neither our weapon table nor the world's,
+    -- so its false-positive rate tracks how complete two lookup tables are rather
+    -- than how dishonest the shooter is. Nobody running a conjured weapon fires
+    -- exactly once.
+    ok(barOf(R.NOT_HELD) == 1, 'a weapon not in their hands files on the first one')
+    ok(barOf(R.NO_AMMO) == 1, 'so does a shot from an empty magazine')
+    ok(barOf(R.NOT_THROWN) == 1, 'and an explosive they never threw')
+    ok(barOf(R.NO_WEAPON) == 2, 'a weapon we do not know at all wants two')
+    ok(barOf(R.TOO_FAR) == 2, 'out of range wants two')
+    ok(barOf(R.TOO_FAST) == 2, 'and so does too fast')
+
+    -- A MISSING CONFIG MUST NOT MEAN "FILE ON SIGHT". If BR.Config.Combat failed to
+    -- load, the safe default is the strictest thing that is still a rule, not zero.
+    ok((BR.ShotBarFor(R.TOO_FAR, nil)) == 1,
+        'with no config at all the bar defaults to one, never to zero')
+
+    -- CROSSING, which is the question damage.lua actually asks.
+    ok(crosses({ [R.NOT_HELD] = 1 }), 'a single not-held crosses immediately')
+    ok(not crosses({ [R.NO_WEAPON] = 1 }), 'a single unknown weapon does not')
+    ok(crosses({ [R.NO_WEAPON] = 2 }), 'but two of them do')
+    ok(not crosses({ [R.TOO_FAR] = 1 }), 'one out-of-range shot is a bad tick')
+    ok(crosses({ [R.TOO_FAR] = 2 }), 'two of them is a pattern')
+    ok(not crosses({ [R.SELF] = 40 }),
+        'no quantity of self-harm crosses anything at all')
+    ok(not crosses({ [R.SAME_SQUAD] = 40 }), 'nor does any amount of friendly fire')
+    ok(not crosses({}), 'an empty tally crosses nothing')
+    ok(not crosses(nil), 'and neither does a missing one')
+
+    -- EACH REASON IS TESTED AGAINST ITS OWN BAR, NOT AGAINST A TOTAL. Two
+    -- different reasons that are each one short file nothing -- which is exactly
+    -- the case the old count-everything threshold would have filed, and the reason
+    -- the bar is per reason rather than a sum.
+    ok(not crosses({ [R.TOO_FAR] = 1, [R.NO_WEAPON] = 1 }),
+        'two different reasons, each below its own bar, file nothing')
+
+    -- THE WORST REASON WINS, which is the whole reason damage.lua sends a tally.
+    -- Before it did, seven conjured-weapon shots followed by one milder refusal
+    -- were filed as the milder thing and sorted to the bottom of the queue -- the
+    -- exact opposite of what they deserved.
+    ok(BR.IncidentBuild.severityOf({ [R.SELF] = 7, [R.NO_WEAPON] = 2 }) == 'high',
+        'two conjured-weapon shots among seven self-hits file as high')
     ok(BR.IncidentBuild.severityOf({ [R.TOO_FAR] = 4, [R.NO_AMMO] = 1 }) == 'high',
         'high beats normal')
     ok(BR.IncidentBuild.severityOf({ [R.TOO_FAR] = 4, [R.SELF] = 4 }) == 'normal',
         'and self-hits do not drag a real signal down')
     ok(BR.IncidentBuild.severityOf({ [R.SELF] = 8 }) == nil,
-        'a pure self-harm window files nothing -- it is probably two grenades')
+        'a pure self-harm match files nothing -- it is probably two grenades')
 
-    -- A tally entry of zero is a reason that rolled out of the window, not a
-    -- reason present in it.
+    -- BELOW THE BAR THERE IS NO SEVERITY, because there is no case to grade. This
+    -- is the property that keeps the filing decision and the severity written on
+    -- the row from being two separate traversals that can disagree.
+    ok(BR.IncidentBuild.severityOf({ [R.NO_WEAPON] = 1 }) == nil,
+        'a reason one short of its bar grades as nothing, not as high')
+
+    -- A tally entry of zero is a reason that never happened.
     ok(BR.IncidentBuild.severityOf({ [R.NO_WEAPON] = 0, [R.TOO_FAR] = 3 }) == 'normal',
         'a zero count does not raise the severity')
 
     -- Rules in the tally cannot smuggle an incident in either.
     ok(BR.IncidentBuild.severityOf({ [R.SAME_SQUAD] = 20 }) == nil,
-        'a window of nothing but friendly fire classifies as nothing')
+        'a match of nothing but friendly fire classifies as nothing')
 
     -- FALLS BACK TO THE LAST REASON, so an event from a build that predates the
     -- tally still classifies. Same instinct as the console keeping the older
@@ -2813,12 +2866,20 @@ do
     ok(selfOnly == nil and selfWhy == 'not a countable refusal',
         'a window of nothing but self-harm files no incident')
 
-    -- ...and the moment one real means joins it, the case is filed at the real
-    -- means' severity rather than being softened by the self-hits around it.
+    -- ...and the moment real means cross their own bar, the case is filed at that
+    -- severity rather than being softened by the self-hits around it.
     local mixed = BR.IncidentBuild.fromRefusal(
-        ev({ reason = R.SELF, reasons = { [R.SELF] = 7, [R.NO_WEAPON] = 1 } }), {})
+        ev({ reason = R.SELF, reasons = { [R.SELF] = 7, [R.NO_WEAPON] = 2 } }), {})
     ok(mixed ~= nil and mixed.severity == 'high',
-        'one conjured-weapon shot among seven self-hits files as high')
+        'two conjured-weapon shots among seven self-hits file as high')
+
+    -- ONE SHORT OF THE BAR IS STILL NOTHING, even with self-harm piled around it.
+    -- Self-hits used to count toward the threshold, so this tally would have filed;
+    -- they no longer do, and NO_WEAPON alone wants two.
+    local nearly, nearlyWhy = BR.IncidentBuild.fromRefusal(
+        ev({ reason = R.NO_WEAPON, reasons = { [R.SELF] = 7, [R.NO_WEAPON] = 1 } }), {})
+    ok(nearly == nil and nearlyWhy == 'not a countable refusal',
+        'seven self-hits cannot carry a single unknown weapon over its bar')
 
     -- The ordinary case.
     local rec = {

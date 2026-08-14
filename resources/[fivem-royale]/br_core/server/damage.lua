@@ -296,30 +296,63 @@ function BR.Damage.noteRefusal(src, why)
     if not BR.ShotSuspicious[why] then return end
 
     local now = GetGameTimer()
-    local window = cfg.refusalWindowMs or 30000
+    local e = BR.Roster.get(src)
+    local matchId = e and e.matchId or nil
 
+    -- PER MATCH, NOT PER TEN SECONDS (owner call, 2026-08-14).
+    --
+    -- The record used to lapse after `refusalWindowMs`, so a player producing one
+    -- impossible hit every eleven seconds -- all match, every match -- never
+    -- reached the threshold and left no trace anywhere. The count now runs for the
+    -- match and resets when the match does. `forgetRefusals(src)` still clears it
+    -- on disconnect, so a recycled server id cannot inherit one.
     local r = refusalOf[src]
-    if not r or now - r.since > window then
-        r = { since = now, count = 0, byReason = {} }
+    if not r or r.matchId ~= matchId then
+        r = { since = now, matchId = matchId, count = 0, filedAt = 0, byReason = {} }
         refusalOf[src] = r
     end
-    r.count = r.count + 1
 
-    -- A TALLY, NOT JUST A TOTAL. A window is usually a mix, and this function
-    -- reports once -- so without this the incident is classified by whichever
-    -- refusal happened to land last. Seven conjured-weapon shots followed by one
-    -- self-hit would be filed as the mildest thing in the window and sorted to
-    -- the bottom of somebody's queue. Bounded by construction: the key space is
-    -- the seven values in BR.ShotSuspicious.
+    -- A TALLY, NOT JUST A TOTAL. A match is a mix, and this function reports a
+    -- handful of times at most -- so without this the case is classified by
+    -- whichever refusal happened to land last. Seven conjured-weapon shots
+    -- followed by one out-of-range would be filed as the mildest thing present and
+    -- sorted to the bottom of somebody's queue. Bounded by construction: the key
+    -- space is the seven values in BR.ShotSuspicious.
     r.byReason[why] = (r.byReason[why] or 0) + 1
 
-    local limit = cfg.refusalLimit or 12
-    if r.count ~= limit then return end   -- fire once per window, not per shot
+    -- SELF IS RECORDED AND NOT COUNTED. It is in BR.ShotSuspicious, so it reaches
+    -- here and shows up in the tally an admin reads; it is absent from
+    -- BR.ShotTier, so it contributes to nothing. While the bar was eight it had to
+    -- count, or mixing self-harm with real refusals kept somebody under it. At a
+    -- bar of one or two the same reasoning says the opposite.
+    if BR.ShotTier[why] then r.count = r.count + 1 end
 
-    local e = BR.Roster.get(src)
+    local crossed, severity, worst = BR.ShotTallyVerdict(r.byReason, cfg.refusalBar)
+    if not crossed then return end
+
+    -- ONE REPORT PER DOUBLING, WHICH IS WHAT KEEPS THIS OFF THE QUEUE'S THROAT.
+    --
+    -- The old rule was `r.count ~= limit`: exactly one report ever, because the
+    -- count could equal the limit only once. Now that a bar can be one, "what
+    -- about the next fifty" needs an answer, and reporting each of them would put
+    -- ~20 events a second onto a 512-deep drop-oldest queue during active abuse --
+    -- destroying the player_seen stream behind it in order to say the same thing
+    -- twenty times.
+    --
+    -- So: report at the crossing, then only when the count DOUBLES. About ten
+    -- reports for a thousand refusals, no timer needed, and each one means
+    -- something an admin would want to know: it doubled. Turning the second and
+    -- later reports into corroboration on the existing case rather than a new case
+    -- is server/incident.lua's job -- it is the file that already knows what has
+    -- been filed for this match.
+    if r.count < (r.filedAt == 0 and 1 or r.filedAt * 2) then return end
+    r.filedAt = r.count
+    r.reports = (r.reports or 0) + 1
+
     local name = e and e.name or ('src ' .. src)
-    print(('[br_core] ANTICHEAT: %s (%d) had %d shots refused in %ds -- last: %s')
-        :format(name, src, r.count, window / 1000, tostring(why)))
+    local window = cfg.refusalWindowMs or 10000
+    print(('[br_core] ANTICHEAT: %s (%d) -- %d refused this match, worst %s (%s), last: %s')
+        :format(name, src, r.count, tostring(severity), tostring(worst), tostring(why)))
 
     -- Hand the firing to br_ringmaster, which files the incident and attaches
     -- the evidence. Fire-and-forget on purpose: if br_ringmaster is absent
@@ -344,15 +377,24 @@ function BR.Damage.noteRefusal(src, why)
         src      = src,
         name     = name,
         license  = license,   -- nil only for a genuinely licenseless connection
-        matchId  = e and e.matchId or nil,
+        matchId  = matchId,
         count    = r.count,
         windowMs = window,
         reason   = tostring(why),
-        -- Every reason in the window and how many of each. An ADDED field, so
+        -- Every reason this match and how many of each. An ADDED field, so
         -- nothing downstream has to change to keep working -- but it is what
-        -- lets the incident be classified by the worst thing that happened
-        -- rather than the last.
+        -- lets the case be classified by the worst thing that happened rather
+        -- than the last.
         reasons  = r.byReason,
+        -- THE SAME VERDICT THE BAR WAS TESTED WITH, carried rather than recomputed
+        -- downstream. Two traversals of the same tally in two files is two chances
+        -- to disagree about which reason graded the case.
+        severity = severity,
+        -- WHICH REPORT THIS IS FOR THIS PLAYER, THIS MATCH: 1 is the crossing and
+        -- opens the case, 2+ are doublings and corroborate it. It rides the wire so
+        -- a receiver can tell a lost corroboration (1, 2, 4 with 3 missing) from a
+        -- quiet one -- the event channel drops silently and never says so.
+        seq      = r.reports,
         action   = 'incident',
         at       = now,
     })

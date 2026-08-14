@@ -87,6 +87,47 @@ end
 AddEventHandler('br:ringmaster:refusal', function(ev)
     if type(ev) ~= 'table' then return end
 
+    -- ONE CASE PER PLAYER PER MATCH; EVERYTHING AFTER IT CORROBORATES (owner call,
+    -- 2026-08-14: this should carry "the same impact and value as … multiple
+    -- players report[ing] the same offender").
+    --
+    -- damage.lua reports at the bar and then on every doubling, so from the second
+    -- report onward there is already a case about this player in this match. Filing
+    -- another would hand an admin the same conclusion twice and let one persistent
+    -- cheater bury a queue that is meant to be a shrinking worklist. Appending to
+    -- the case they already have says something a second row cannot: it is still
+    -- happening, and nobody has acted.
+    --
+    -- WHY THE CONSOLE DOES THE WRITE AND NOT US. Corroboration is an UpdateItem on
+    -- a row that already exists, and the game's DynamoDB grant is deliberately
+    -- append-only -- PutItem conditional on the id being absent, so a compromised
+    -- game box can file noise but cannot overwrite a case or erase a verdict and
+    -- the admin who made it. Widening that to reach inside existing rows would cost
+    -- more than corroboration is worth. Ringmaster already holds the write on its
+    -- own table (`incidents.note()` is the same list_append), so the game sends a
+    -- fact and the console records it.
+    --
+    -- AND WHY IT MAY RIDE THE LOSSY CHANNEL when the case itself may not: a
+    -- corroboration is by definition redundant. Losing one costs a number; losing
+    -- the case loses the record. `seq` travels with it so the console can tell 1,
+    -- 2, 4 with a gap from a genuinely quiet match.
+    local prior = BR.Incident.priorFor(ev.matchId, ev.license)
+    if #prior > 0 then
+        TriggerEvent('br:ringmaster:corroborate', {
+            incidentId = prior[#prior],
+            matchId    = ev.matchId,
+            license    = ev.license,
+            name       = ev.name,
+            seq        = ev.seq,
+            count      = ev.count,
+            reason     = ev.reason,
+            reasons    = ev.reasons,
+            severity   = ev.severity,
+            at         = ev.at,
+        })
+        return
+    end
+
     -- EVIDENCE IS ATTACHED AT FILING TIME, NOT LATER. The buffer is discarded
     -- when the match ends, so "we will fetch it when an admin opens the case" is
     -- a promise this system cannot keep. What goes in the record now is all
@@ -104,9 +145,11 @@ AddEventHandler('br:ringmaster:refusal', function(ev)
         return
     end
 
-    -- Anything already filed against them this match, so the console can merge
-    -- rather than opening a second case a human has to correlate by eye.
-    payload.priorIncidentIds = BR.Incident.priorFor(ev.matchId, ev.license)
+    -- Empty by construction now -- a non-empty `prior` corroborated and returned
+    -- above. The field stays on the payload because the console reads it and
+    -- because the next kind to file here (a player report) will reach this line
+    -- with cases from a DIFFERENT kind already present.
+    payload.priorIncidentIds = prior
 
     TriggerEvent('br:ringmaster:incident', payload)
 end)

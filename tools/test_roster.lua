@@ -4765,41 +4765,66 @@ do
     -- not issue them the means to do.
     lootMatch()
     local cfg = BR.Config.Combat
+    local R = BR.ShotRefusal
     BR.Damage.forgetRefusals(1)
 
-    -- Under the limit: counted, nothing said.
-    for _ = 1, cfg.refusalLimit - 1 do
-        BR.Damage.noteRefusal(1, BR.ShotRefusal.NOT_HELD)
-    end
-    ok(true, 'refusals under the limit are counted quietly')
+    -- THE BAR IS PER REASON AND PER MATCH (owner call, 2026-08-14). There is no
+    -- `refusalLimit` and no rolling window any more: the old rule wanted eight
+    -- countable refusals inside ten seconds, which described somebody spraying
+    -- with a trainer and missed anybody patient. One impossible hit every eleven
+    -- seconds, all match, every match, filed nothing and left no trace.
+    ok(cfg.refusalLimit == nil,
+        'there is no single refusalLimit left to tune',
+        tostring(cfg.refusalLimit))
+    ok(type(cfg.refusalBar) == 'table' and cfg.refusalBar.high == 1
+        and cfg.refusalBar.normal == 2,
+        'the bar is one for high and two for normal')
 
-    -- ONE INCIDENT PER WINDOW, not one per refused shot. A cheater holding the
-    -- trigger must not open a hundred cases for somebody to read.
+    -- ONE HIGH REFUSAL IS ENOUGH. There is no honest path to a weapon the server
+    -- did not put in your hands, so there was never a reason to demand eight.
     fired = {}
     sent = {}
-    BR.Damage.noteRefusal(1, BR.ShotRefusal.NOT_HELD)
-    local firstBurst = #firedOf('br:ringmaster:refusal')
-    ok(firstBurst == 1, 'crossing the threshold files exactly one incident',
-        tostring(firstBurst))
-    for _ = 1, 20 do
-        BR.Damage.noteRefusal(1, BR.ShotRefusal.NOT_HELD)
-    end
-    ok(#firedOf('br:ringmaster:refusal') == firstBurst,
-        'and holding the trigger down files no more',
-        ('%d then %d'):format(firstBurst, #firedOf('br:ringmaster:refusal')))
+    BR.Damage.noteRefusal(1, R.NOT_HELD)
+    ok(#firedOf('br:ringmaster:refusal') == 1,
+        'a single high-tier refusal files exactly one case',
+        tostring(#firedOf('br:ringmaster:refusal')))
 
     -- NOTHING REACHES THE PLAYER. Not a notice, not a hint. The offender used
     -- to be told their shots were not landing, which is free tuning feedback
     -- for whoever is testing a trainer (owner call, 2026-08-14).
     ok(#sent == 0, 'and the offender is told nothing at all', tostring(#sent))
 
-    -- A fresh window starts clean, so an honest player who tripped it once
-    -- during a bad race is not carrying it for the rest of the match.
-    BR.Damage.forgetRefusals(1)
-    for _ = 1, cfg.refusalLimit - 1 do
-        BR.Damage.noteRefusal(1, BR.ShotRefusal.NOT_HELD)
+    -- REPORTS DOUBLE, THEY DO NOT STREAM. Holding the trigger down must not put
+    -- one event per refused shot onto a 512-deep drop-oldest queue -- that
+    -- destroys the player_seen stream behind it to say the same thing fifty
+    -- times. After the crossing at 1, the next reports are at 2, 4, 8, 16 and 32.
+    fired = {}
+    for _ = 1, 49 do BR.Damage.noteRefusal(1, R.NOT_HELD) end
+    local ladder = #firedOf('br:ringmaster:refusal')
+    ok(ladder == 5,
+        'fifty refusals report five more times, not fifty -- 2,4,8,16,32',
+        tostring(ladder))
+
+    -- The sequence number is what lets a receiver notice a lost corroboration:
+    -- the event channel drops batches silently and says so nowhere.
+    local seqs = {}
+    for _, evt in ipairs(firedOf('br:ringmaster:refusal')) do
+        seqs[#seqs + 1] = evt.seq
     end
-    ok(true, 'and the count resets with the window')
+    ok(seqs[1] == 2 and seqs[#seqs] == 6,
+        'each report carries its own sequence number for this match',
+        table.concat(seqs, ','))
+
+    -- THE COUNT NO LONGER LAPSES. Under the old rule this was where a fresh
+    -- window started clean; now only leaving the match or disconnecting resets it.
+    BR.Damage.forgetRefusals(1)
+    fired = {}
+    BR.Damage.noteRefusal(1, R.TOO_FAR)
+    ok(#firedOf('br:ringmaster:refusal') == 0,
+        'one out-of-range shot is a bad tick and files nothing')
+    BR.Damage.noteRefusal(1, R.TOO_FAR)
+    ok(#firedOf('br:ringmaster:refusal') == 1,
+        'the second one, whenever it comes, is a pattern')
 
     -- THE SERVER DECIDES NOTHING ABOUT THE PLAYER. `refusalAction` is gone: a
     -- convar naming an enforcement action would describe a decision this side
@@ -4810,18 +4835,19 @@ do
 
     BR.Damage.forgetRefusals(1)
     fired = {}
-    for _ = 1, cfg.refusalLimit do
-        BR.Damage.noteRefusal(1, BR.ShotRefusal.NO_AMMO)
-    end
+    BR.Damage.noteRefusal(1, R.NO_AMMO)
     local ev = firedOf('br:ringmaster:refusal')[1]
     ok(ev ~= nil, 'the firing reaches the Ringmaster feed')
     if ev then
         ok(ev.action == 'incident', 'and says it filed an incident',
             tostring(ev.action))
-        ok(ev.reason == BR.ShotRefusal.NO_AMMO, 'carrying the reason',
-            tostring(ev.reason))
-        ok(ev.count == cfg.refusalLimit, 'and the count that tripped it',
-            tostring(ev.count))
+        ok(ev.reason == R.NO_AMMO, 'carrying the reason', tostring(ev.reason))
+        ok(ev.count == 1, 'and the count that tripped it', tostring(ev.count))
+        -- CARRIED, NOT RECOMPUTED. Two traversals of the same tally in two files
+        -- is two chances to disagree about which reason graded the case.
+        ok(ev.severity == 'high', 'with the severity the bar was tested against',
+            tostring(ev.severity))
+        ok(ev.seq == 1, 'and the first report of this match', tostring(ev.seq))
         -- Identity must be on the event. Server ids recycle within the minute,
         -- so a case keyed on `src` is a case about whoever holds that slot next.
         ok(ev.license ~= nil, 'and a license rather than only a server id',
@@ -4834,44 +4860,54 @@ do
     -- threshold fires on ordinary play.
     BR.Damage.forgetRefusals(1)
     fired = {}
-    for _ = 1, cfg.refusalLimit * 3 do
-        BR.Damage.noteRefusal(1, BR.ShotRefusal.NOT_LIVE)
-        BR.Damage.noteRefusal(1, BR.ShotRefusal.SAME_SQUAD)
+    for _ = 1, 30 do
+        BR.Damage.noteRefusal(1, R.NOT_LIVE)
+        BR.Damage.noteRefusal(1, R.SAME_SQUAD)
     end
     ok(#firedOf('br:ringmaster:refusal') == 0,
         'punching in warmup and hitting a squadmate never file an incident',
         tostring(#firedOf('br:ringmaster:refusal')))
 
-    -- SELF COUNTS BUT DOES NOT FILE (owner call, 2026-08-14). Repeated
-    -- self-damage stays a threshold input -- somebody mixing it with real means
-    -- still trips -- but a cluster that is only self-harm is the one means-class
-    -- signal with an innocent explanation: selfLimit = 2 over 5s, and a single
-    -- grenade at your own feet lands several damage ticks well inside that.
+    -- SELF IS RECORDED AND NO LONGER COUNTED (owner call, 2026-08-14).
     --
-    -- WHERE IT IS DECLINED is BR.IncidentBuild.SEVERITY_OF, which has no entry
-    -- for SELF, so a pure-self window classifies as nothing and files nothing.
-    -- NOT here: the counter must not learn to forgive a reason, or somebody
-    -- mixing self-hits with real means would fall below the threshold and never
-    -- trip at all. From this layer SELF is indistinguishable from any other
-    -- countable refusal, and that is the design rather than an oversight.
+    -- It used to count toward the eight without earning severity, because mixing
+    -- self-harm with real refusals must not keep somebody under the bar. At a bar
+    -- of one or two that reasoning inverts: one self-hit beside one marginal
+    -- out-of-range shot would open a case, and a player could manufacture one
+    -- against themselves by standing in their own grenades. So it now files
+    -- nothing at any quantity, and the decline is in BR.ShotTier, which has no
+    -- entry for it.
     BR.Damage.forgetRefusals(1)
     fired = {}
-    for _ = 1, cfg.refusalLimit do
-        BR.Damage.noteRefusal(1, BR.ShotRefusal.SELF)
-    end
-    local selfEv = firedOf('br:ringmaster:refusal')[1]
-    ok(selfEv ~= nil and selfEv.reason == BR.ShotRefusal.SELF,
-        'repeated self-damage still counts and still reports')
-
-    -- ...and the ones that mean something still do, from the same clean slate.
-    BR.Damage.forgetRefusals(1)
-    fired = {}
-    for _ = 1, cfg.refusalLimit do
-        BR.Damage.noteRefusal(1, BR.ShotRefusal.NO_WEAPON)
-    end
-    ok(#firedOf('br:ringmaster:refusal') > 0,
-        'while a weapon the server never issued still does',
+    for _ = 1, 40 do BR.Damage.noteRefusal(1, R.SELF) end
+    ok(#firedOf('br:ringmaster:refusal') == 0,
+        'forty self-inflicted hits file nothing at all',
         tostring(#firedOf('br:ringmaster:refusal')))
+
+    -- ...and self-harm cannot carry a real reason over its own bar either, which
+    -- is the case the old count-everything threshold would have filed.
+    BR.Damage.forgetRefusals(1)
+    fired = {}
+    for _ = 1, 20 do BR.Damage.noteRefusal(1, R.SELF) end
+    BR.Damage.noteRefusal(1, R.NO_WEAPON)
+    ok(#firedOf('br:ringmaster:refusal') == 0,
+        'twenty self-hits plus one unknown weapon is still under the bar')
+    BR.Damage.noteRefusal(1, R.NO_WEAPON)
+    ok(#firedOf('br:ringmaster:refusal') == 1,
+        'the second unknown weapon is what files it')
+
+    -- THE TALLY REACHES THE CASE, including the reasons that count for nothing --
+    -- an admin reading it wants to see the self-harm, it just must not grade it.
+    local mixEv = firedOf('br:ringmaster:refusal')[1]
+    ok(mixEv and mixEv.reasons[R.SELF] == 20,
+        'the self-hits are still on the record',
+        mixEv and tostring(mixEv.reasons[R.SELF]) or 'no event')
+    ok(mixEv and mixEv.count == 2,
+        'while the counted total is only the two that graded it',
+        mixEv and tostring(mixEv.count) or 'no event')
+    ok(mixEv and mixEv.severity == 'high', 'and it is filed as high',
+        mixEv and tostring(mixEv.severity) or 'no event')
+
     BR.Damage.forgetRefusals(1)
 end
 
@@ -4970,10 +5006,10 @@ do
     BR.Evidence.noteChat(1, { text = 'nothing to see here', channel = 0, at = 5 })
 
     fired = {}
-    local cfg = BR.Config.Combat
-    for _ = 1, cfg.refusalLimit do
-        BR.Damage.noteRefusal(1, BR.ShotRefusal.NO_WEAPON)
-    end
+    -- Two, because NO_WEAPON is the catch-all bucket and carries a bar of 2 --
+    -- see BR.ShotBarOverride. The other high reasons file on the first one.
+    BR.Damage.noteRefusal(1, BR.ShotRefusal.NO_WEAPON)
+    BR.Damage.noteRefusal(1, BR.ShotRefusal.NO_WEAPON)
 
     -- The harness records TriggerEvent rather than dispatching it, so the two
     -- halves are driven separately -- the same split the evidence teardown test
@@ -4982,7 +5018,7 @@ do
     ok(refusal ~= nil, 'the threshold announces a refusal')
     ok(refusal and refusal.reasons ~= nil,
         'carrying the per-reason tally the classifier needs')
-    ok(refusal and refusal.reasons[BR.ShotRefusal.NO_WEAPON] == cfg.refusalLimit,
+    ok(refusal and refusal.reasons[BR.ShotRefusal.NO_WEAPON] == 2,
         'with every countable shot in it',
         refusal and tostring(refusal.reasons[BR.ShotRefusal.NO_WEAPON]) or 'nil')
 
@@ -5019,9 +5055,13 @@ do
         ok(#sent == 0, 'and the offender is told nothing at all', tostring(#sent))
     end
 
-    -- CORROBORATION. A second thing happening to the same player in the same
-    -- match should point at the first case rather than opening an unrelated one a
-    -- human has to correlate by eye.
+    -- CORROBORATION, AND IT APPENDS RATHER THAN FILING (owner call, 2026-08-14).
+    --
+    -- A second thing happening to the same player in the same match must not open
+    -- a second case. It hands an admin the same conclusion twice, and it lets one
+    -- persistent cheater bury a queue that is meant to be a shrinking worklist.
+    -- Appending to the case they already have says the thing a second row cannot:
+    -- it is still happening and nobody has acted.
     ok(#BR.Incident.priorFor(m.id, licA) == 0, 'nothing is remembered before a write lands')
 
     fire('br:incident:filed', nil,
@@ -5033,15 +5073,31 @@ do
 
     fired = {}
     BR.Damage.forgetRefusals(1)
-    for _ = 1, cfg.refusalLimit do
-        BR.Damage.noteRefusal(1, BR.ShotRefusal.NO_AMMO)
-    end
+    BR.Damage.noteRefusal(1, BR.ShotRefusal.NO_AMMO)
     local second = firedOf('br:ringmaster:refusal')[1]
     fired = {}
     fire('br:ringmaster:refusal', nil, second)
-    local inc2 = firedOf('br:ringmaster:incident')[1]
-    ok(inc2 and inc2.priorIncidentIds and inc2.priorIncidentIds[1] == 'inc-1',
-        'and the next incident carries the earlier one as a cross-reference')
+
+    ok(#firedOf('br:ringmaster:incident') == 0,
+        'a second firing files no second case',
+        tostring(#firedOf('br:ringmaster:incident')))
+
+    local corr = firedOf('br:ringmaster:corroborate')[1]
+    ok(corr ~= nil, 'it corroborates instead')
+    if corr then
+        ok(corr.incidentId == 'inc-1', 'naming the case it belongs to',
+            tostring(corr.incidentId))
+        ok(corr.license == licA, 'and the player it is about', tostring(corr.license))
+        -- The tally travels so the appended note can say what has happened SINCE,
+        -- not merely that something did.
+        ok(corr.reasons ~= nil and corr.count ~= nil,
+            'carrying the running count and tally')
+        -- A sequence number is the only way a receiver can notice a LOST
+        -- corroboration: this channel drops batches after four attempts and
+        -- neither envelope says so.
+        ok(corr.seq ~= nil, 'and a sequence number, so a gap is detectable',
+            tostring(corr.seq))
+    end
 
     -- A REFUSAL WITH NO LICENSE FILES NOTHING. Server ids recycle within the
     -- minute, so a case keyed on one is a case about whoever holds that slot

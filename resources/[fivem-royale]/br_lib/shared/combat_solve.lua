@@ -63,6 +63,104 @@ BR.ShotSuspicious = {
     [BR.ShotRefusal.SELF]       = true,
 }
 
+--- HOW BAD A COUNTABLE REFUSAL IS, which is a different question from whether it
+--- is worth recording.
+---
+--- TWO TABLES RATHER THAN ONE, AND THE DISTINCTION IS LOAD-BEARING.
+--- `BR.ShotSuspicious` above means "worth writing down": it gates the per-shot
+--- console line and it is pinned by an exhaustive test and by a gate in
+--- tools/verify.sh. This one means "worth opening a case about, and how loudly".
+---
+---   high    The server never issued the means -- a weapon this gamemode does not
+---           have, a magazine it never filled, a weapon that is not in the
+---           shooter's hands, an explosion from something they never threw. There
+---           is no honest path to any of these.
+---   normal  A number the weapon does not have: out of range, or cycling faster
+---           than its action. Real signals, but the ones with a plausible innocent
+---           story -- position sampling plus a bad tick can manufacture either,
+---           which is why the validator already carries slack.
+---
+--- SELF IS DELIBERATELY ABSENT, and it used to be present in the equivalent table.
+--- While the bar was eight, SELF had to count toward it: otherwise somebody mixing
+--- self-harm with real refusals would stay under and never trip. At a bar of one or
+--- two that reasoning inverts -- one self-hit beside one marginal out-of-range shot
+--- would open a case, and a player could manufacture one against themselves by
+--- standing in their own grenades. It is refused and logged either way; it no
+--- longer contributes to anything.
+---
+--- NOTHING ELSE IS EXCLUDED HERE. The rules -- friendly fire, warmup scraps, a
+--- shot that raced a match boundary -- are excluded upstream in
+--- `BR.ShotSuspicious`. A second filter for them would be a second place for the
+--- rule to live and a second place for it to rot.
+BR.ShotTier = {
+    [BR.ShotRefusal.NO_WEAPON]  = 'high',
+    [BR.ShotRefusal.NOT_HELD]   = 'high',
+    [BR.ShotRefusal.NO_AMMO]    = 'high',
+    [BR.ShotRefusal.NOT_THROWN] = 'high',
+    [BR.ShotRefusal.TOO_FAR]    = 'normal',
+    [BR.ShotRefusal.TOO_FAST]   = 'normal',
+}
+
+--- Per-reason exceptions to the tier's bar.
+---
+--- `NO_WEAPON` IS HIGH SEVERITY AND STILL WANTS TWO, which looks inconsistent and
+--- is not. The other three high reasons are checked against state the server
+--- definitely owns: its own inventory, its own ammunition counter, a throw it
+--- watched happen. `NO_WEAPON` is the catch-all -- it means the weapon hash is in
+--- neither our table nor the world's -- so its false-positive rate is a function
+--- of how complete those two tables are, and a hash added by a future game build
+--- or carried by an ambient NPC lands here. Nobody running a conjured weapon fires
+--- exactly once, so asking for two costs nothing real and stops one gap in a
+--- lookup table becoming one case per occurrence.
+BR.ShotBarOverride = {
+    [BR.ShotRefusal.NO_WEAPON] = 2,
+}
+
+--- How many of this reason, in one match, before a case is opened.
+--- @param reason string|nil  a BR.ShotRefusal value
+--- @param bar table|nil      BR.Config.Combat.refusalBar
+--- @return integer|nil count nil when the reason files nothing at all
+--- @return string|nil tier
+function BR.ShotBarFor(reason, bar)
+    local tier = BR.ShotTier[reason]
+    if not tier then return nil, nil end
+    -- Defaults to 1 rather than 0 so a missing config cannot mean "file on sight".
+    return BR.ShotBarOverride[reason] or (bar and bar[tier]) or 1, tier
+end
+
+--- Does this match's tally cross any reason's bar, and how bad is the worst thing
+--- in it?
+---
+--- WORST WINS, WHICH THE FIRST VERSION OF THE OLD THRESHOLD GOT WRONG. A match is
+--- a mix, and grading it by the reason that happened to arrive last filed seven
+--- conjured-weapon refusals as whatever the eighth was.
+--- @param tally table|nil  { [reason] = count } accumulated over the match
+--- @param bar table|nil    BR.Config.Combat.refusalBar
+--- @return boolean crossed
+--- @return string|nil severity  the worst tier present, nil if none
+--- @return string|nil reason    the reason that earned that severity
+function BR.ShotTallyVerdict(tally, bar)
+    if type(tally) ~= 'table' then return false, nil, nil end
+
+    local RANK = { normal = 1, high = 2 }
+    local crossed = false
+    local worst, worstRank, worstReason = nil, 0, nil
+
+    for reason, n in pairs(tally) do
+        local need, tier = BR.ShotBarFor(reason, bar)
+        -- A tally entry of zero is a reason that was counted and rolled away, not
+        -- a reason present.
+        if need and (tonumber(n) or 0) >= need then
+            crossed = true
+            if RANK[tier] > worstRank then
+                worst, worstRank, worstReason = tier, RANK[tier], reason
+            end
+        end
+    end
+
+    return crossed, worst, worstReason
+end
+
 --- Is this shot physically possible, given what the SERVER believes?
 ---
 --- Everything here is checked against the server's own model -- the roster's

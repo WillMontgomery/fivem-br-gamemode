@@ -448,9 +448,38 @@ BR.Config.Combat = {
     -- and a human. A convar that still named an enforcement action would be
     -- describing a decision this file no longer makes.
     --
-    -- These two still configure something real: they set where the threshold
-    -- sits, which is what decides whether a case is opened at all.
-    refusalLimit    = 8,
+    -- PER MATCH, NOT PER WINDOW, AND GRADED (owner call, 2026-08-14).
+    --
+    -- `refusalLimit = 8` inside a rolling ten seconds is gone. The owner's verdict
+    -- on it was blunt and correct: "we don't want a system that virtually never
+    -- creates incidents". Eight of anything inside ten seconds describes somebody
+    -- spraying with a trainer and misses somebody careful, and since the countable
+    -- stream has no honest explanation at all there was never a reason to demand
+    -- eight of it.
+    --
+    -- So the count is per MATCH -- it no longer lapses after ten seconds -- and the
+    -- bar depends on how bad the reason is:
+    --
+    --   high    1   the server never issued the means. One is enough.
+    --   normal  2   a number the weapon does not have. Real, but position
+    --               sampling and a bad tick can manufacture one, so not one.
+    --
+    -- Which reason sits in which tier lives in BR.ShotTier (combat_solve.lua),
+    -- beside the refusal enum it keys on, because keying it here would mean
+    -- reading BR.ShotRefusal before combat_solve.lua has defined it -- this file
+    -- loads first. `NO_WEAPON` carries a per-reason override there and the
+    -- reasoning is with it.
+    --
+    -- SELF IS NO LONGER COUNTED AT ALL. It used to count toward the eight without
+    -- earning severity, so that mixing self-harm with real refusals could not keep
+    -- somebody under the bar. At a bar of one or two that argument inverts: one
+    -- self-hit plus one marginal out-of-range shot would open a case, and a player
+    -- could manufacture one against themselves. It is still refused and still
+    -- logged; it simply no longer contributes.
+    refusalBar = { high = 1, normal = 2 },
+
+    -- KEPT, BUT NO LONGER A THRESHOLD INPUT. The summary line on an incident reads
+    -- "N shots refused in Ms", and this is the M. Nothing decides anything on it.
     refusalWindowMs = 10000,
 
     -- HURTING YOURSELF IS ALLOWED; DOING IT REPEATEDLY IS NOT.

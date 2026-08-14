@@ -73,13 +73,28 @@ local function anticheatBlock()
     local cfg = BR.Config and BR.Config.Combat
     if not cfg then return nil end
 
+    local bar = cfg.refusalBar or {}
+
     return {
         -- Constant, and kept on the wire anyway: the console records what the
         -- server did rather than deducing it. The day this becomes configurable
         -- again, nothing on the receiving side has to change to notice.
         action     = 'incident',
-        limit      = cfg.refusalLimit or 0,
+
+        -- THE BAR, PER TIER. Replaces a single `limit` in a rolling window, and the
+        -- console's Anticheat page reads it from here rather than describing it
+        -- from memory -- which is the whole reason this block exists.
+        barHigh    = bar.high or 0,
+        barNormal  = bar.normal or 0,
+
+        -- `limit` AND `windowMs` STAY ON THE WIRE, ZEROED. Removing a field is the
+        -- one change that needs an envelope version bump (docs/ingest-envelope.md),
+        -- and a console one deploy behind would render "0 in 0s" -- wrong, but
+        -- visibly wrong, rather than crashing its schema on a missing key. They go
+        -- for real once no console can still be reading them.
+        limit      = 0,
         windowMs   = cfg.refusalWindowMs or 0,
+
         selfLimit  = cfg.selfLimit or 0,
         selfWindow = cfg.selfWindowMs or 0,
     }

@@ -57,53 +57,56 @@ BR.IncidentBuild = {}
 --- `BR.ShotSuspicious`, which is pinned by an exhaustive test and by a gate in
 --- tools/verify.sh. A second filter for those would be a second place for the
 --- rule to live and a second place for it to rot.
-BR.IncidentBuild.SEVERITY_OF = {
-    [BR.ShotRefusal.NO_WEAPON]  = 'high',
-    [BR.ShotRefusal.NOT_HELD]   = 'high',
-    [BR.ShotRefusal.NO_AMMO]    = 'high',
-    [BR.ShotRefusal.NOT_THROWN] = 'high',
-    [BR.ShotRefusal.TOO_FAR]    = 'normal',
-    [BR.ShotRefusal.TOO_FAST]   = 'normal',
-}
-
---- Worst wins, and the order is explicit rather than alphabetical luck.
+--- THE SAME TABLE, NOT A SECOND COPY OF IT.
 ---
---- `low` has no producer yet and is kept because the console renders three tiers
---- and a player report will use it. Nothing in this file returns it.
-local RANK = { low = 1, normal = 2, high = 3 }
-
---- The severity a whole window deserves.
+--- This used to be its own literal here, which meant the grading existed twice:
+--- once where the incident is built and once nowhere at all, because the threshold
+--- did not consult it. Now that the bar itself is graded (`BR.ShotBarFor`), the
+--- decision to file and the severity written on the case have to agree by
+--- construction rather than by two people editing two tables.
 ---
---- A WINDOW IS A MIX, WHICH THE FIRST VERSION OF THIS GOT WRONG. The refusal
---- counter fires once per window and reports only the LAST reason -- so seven
---- conjured-weapon refusals followed by one self-hit would have been filed as
---- `low` and sorted to the bottom of somebody's queue. Taking the worst reason
---- in the window fixes that, and needs the per-reason tally the event now
---- carries.
+--- It also fixes the footgun the header of this file used to warn about: the table
+--- is keyed on `BR.ShotRefusal` VALUES, which are prose sentences, so building it
+--- here required combat_solve.lua to have loaded first. It now lives beside the
+--- enum it keys on.
+BR.IncidentBuild.SEVERITY_OF = BR.ShotTier
+
+--- The severity a match's tally deserves.
+---
+--- WORST WINS. A match is a mix, and grading it by whichever reason arrived last
+--- filed seven conjured-weapon refusals as whatever the eighth happened to be.
+---
+--- DELEGATES TO `BR.ShotTallyVerdict`, which is also what decides whether to file
+--- at all. Those two answers have to agree: a case opened because `NOT_HELD`
+--- crossed its bar must not then be written down as `normal` because a `TOO_FAR`
+--- was also in the tally. One function, one traversal, one answer.
+---
+--- `low` is still a tier the console renders and nothing here returns it; a player
+--- report will be its first producer.
 ---
 --- @param reasons table|nil  { [reason] = count }, as sent by damage.lua
 --- @param last string|nil    the final reason, for an older event with no tally
---- @return string|nil        nil when nothing in the window is classifiable
+--- @return string|nil        nil when nothing in the tally files anything
 function BR.IncidentBuild.severityOf(reasons, last)
-    local best, bestRank = nil, 0
+    local bar = (BR.Config and BR.Config.Combat or {}).refusalBar
 
-    if type(reasons) == 'table' then
-        for reason, n in pairs(reasons) do
-            local sev = BR.IncidentBuild.SEVERITY_OF[reason]
-            -- `n` is checked because a tally entry of zero is a reason that was
-            -- counted and then rolled out of the window, not a reason present.
-            if sev and (tonumber(n) or 0) > 0 and RANK[sev] > bestRank then
-                best, bestRank = sev, RANK[sev]
-            end
-        end
+    -- FALLS BACK TO THE LAST REASON ONLY WHEN THERE IS NO TALLY AT ALL, so an
+    -- event from a build that predates the tally still classifies. Same instinct
+    -- as the console keeping the older `action` values: one side being a deploy
+    -- behind must not lose the record. Such an event was emitted at ITS OWN
+    -- threshold, so its existence is the evidence that a bar was crossed, and
+    -- re-testing one reason against a count of one would discard the case.
+    --
+    -- IT MUST NOT FIRE WHEN A TALLY IS PRESENT AND SIMPLY DID NOT CROSS. The first
+    -- version of this checked the tally and then fell through on nil, which let
+    -- `{ SELF = 7, NO_WEAPON = 1 }` file as high on the strength of `last` alone --
+    -- reinstating, by accident, exactly the two behaviours this change removed.
+    if type(reasons) ~= 'table' then
+        return last and BR.ShotTier[last] or nil
     end
 
-    -- FALLS BACK TO THE LAST REASON, so an event from a build that predates the
-    -- tally still classifies. Same instinct as the console keeping the old
-    -- `action` values: one side being a deploy behind must not lose the record.
-    if not best and last then best = BR.IncidentBuild.SEVERITY_OF[last] end
-
-    return best
+    local _, severity = BR.ShotTallyVerdict(reasons, bar)
+    return severity
 end
 
 --- The one line shown in the queue.

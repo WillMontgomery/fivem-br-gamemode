@@ -53,12 +53,19 @@ local pending = {}
 
 --- Outstanding writes, for the health dump. A number rather than a list: the
 --- payloads are already accounted for by the closures holding them.
-local stat = { filed = 0, failed = 0, duplicate = 0, inflight = 0 }
+local stat = {
+    filed = 0, failed = 0, duplicate = 0, inflight = 0,
+    -- Counted separately from `filed` because they are not cases. A single
+    -- persistent cheater produces one case and a handful of these, so reading them
+    -- as filings would make the numbers describe the opposite of what happened.
+    corroborated = 0,
+}
 
 function BR.Ring.incidentStats()
     return {
         filed = stat.filed, failed = stat.failed,
         duplicate = stat.duplicate, inflight = stat.inflight,
+        corroborated = stat.corroborated,
     }
 end
 
@@ -183,6 +190,19 @@ local function attemptWrite(payload, token, attempt)
             return
         end
 
+        -- A MALFORMED PAYLOAD WILL NOT BECOME WELL-FORMED ON THE FOURTH TRY.
+        -- br_ddb already distinguishes the two failures and this file ignored the
+        -- distinction, spending five attempts and five log lines re-sending a
+        -- payload its own validator had already rejected. Retry is for a throttle
+        -- or a brief unreachability; a refused shape is a bug on this side.
+        if extra.retryable == false then
+            stat.failed = stat.failed + 1
+            print(('^1[br_ringmaster] INCIDENT REFUSED, not retried -- %s (%s about %s)^7')
+                :format(tostring(extra.error), tostring(payload.kind),
+                        tostring(payload.subjectLicense)))
+            return
+        end
+
         if attempt >= RETRY_MAX then
             stat.failed = stat.failed + 1
             -- LOUD, AND THE LOUDEST LINE IN THIS RESOURCE. There is no queue
@@ -229,4 +249,37 @@ AddEventHandler('br:ringmaster:incident', function(payload)
     local token = ('%s:%d'):format(tostring(BR.Ring.bootEpoch), nextToken)
 
     attemptWrite(realise(payload), token, 1)
+end)
+
+-- CORROBORATION GOES OVER THE EVENT CHANNEL, NOT THROUGH br_ddb, and the asymmetry
+-- with the case itself is deliberate.
+--
+-- Appending to a case that already exists is an UpdateItem on an existing row. The
+-- game's grant on `ringmaster-incidents` is append-only on purpose -- PutItem
+-- conditional on the id being absent -- so that a compromised game box can file
+-- noise but can never overwrite a case or erase a verdict and the admin who made
+-- it. Corroboration is not worth widening that. Ringmaster already holds the write
+-- on its own table, so what crosses is a fact and the console records it.
+--
+-- Which means this one CAN be lost, unlike a case. That is affordable precisely
+-- because a corroboration is redundant: it says "still happening", and the case it
+-- attaches to is already durable. `seq` rides along so the console can tell 1, 2, 4
+-- with a gap in it from a match where nothing more happened -- the outbox drops
+-- batches after four attempts and says so nowhere on the wire.
+AddEventHandler('br:ringmaster:corroborate', function(ev)
+    if type(ev) ~= 'table' then return end
+    if type(ev.incidentId) ~= 'string' or ev.incidentId == '' then return end
+    if not BR.Ring.outbox then return end
+
+    stat.corroborated = stat.corroborated + 1
+
+    BR.Ring.outbox:emit('incident_corroborated', {
+        incidentId     = ev.incidentId,
+        subjectLicense = ev.license,
+        -- Monotonic per player per match, starting at 2 -- report 1 is the case.
+        seq            = ev.seq,
+        count          = ev.count,
+        reason         = ev.reason,
+        severity       = ev.severity,
+    }, GetGameTimer())
 end)
