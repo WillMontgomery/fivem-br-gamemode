@@ -449,6 +449,25 @@ AddEventHandler(BR.Net.LOOT_CELL, function(d)
         zoneOf[src] = m.id
     end
 
+    -- YOU MAY SUBSCRIBE TO THE CELL YOU ARE STANDING IN, AND ITS NEIGHBOURS.
+    --
+    -- The rule and the reasoning live in BR.LootCellReachable, because the
+    -- arithmetic is worth testing and this handler is not. In short: without it a
+    -- client could name any cell in the plane and be streamed it, which hands out
+    -- the whole layout and makes withholding the seed pointless.
+    --
+    -- REFUSED SILENTLY, and after the zone-crossing block above rather than
+    -- before it. The crossing is a correction to state that has already happened
+    -- -- the player really is somewhere else -- so it must run even when the cell
+    -- they asked for is wrong. Dropping the request here leaves them with no
+    -- subscription in the new zone until their next call, which their own client
+    -- makes on the next move, and the 5s loot.sweep cleans up regardless.
+    --
+    -- No notify: an honest client cannot produce this, and a dishonest one is
+    -- being told which of its requests were noticed.
+    if not e.pos then return end
+    if not BR.LootCellReachable(cx, cy, e.pos.x, e.pos.y) then return end
+
     local centre = BR.LootCellKey(cx, cy)
     if m.loot.at[src] == centre then return end   -- nothing moved
     m.loot.at[src] = centre
@@ -491,7 +510,7 @@ end)
 
 --- Is this player close enough to that entry to have taken it?
 ---
---- The position being compared is the roster's own 2Hz sample, so it can be
+--- The position being compared is the roster's own 4Hz sample, so it can be
 --- half a second stale -- a sprinting player covers ~3.5m in that time, which
 --- is the entire pickup radius. Without a slack term the honest claims of
 --- anyone moving get refused, which is the same class of skew the storm's edge
@@ -592,6 +611,29 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
     -- arbitration: the entry is gone from the table before anything else
     -- happens, so a second claim in the same tick finds nothing.
     local item = m.loot.items[id]
+
+    -- AN ENTRY YOU WERE NEVER STREAMED ANSWERS EXACTLY LIKE ONE THAT IS GONE,
+    -- and the identical answer is the whole point of this block.
+    --
+    -- LOOT_FIX has always checked the subscription before trusting a repair. This
+    -- handler never did, and the cost was not that unseen entries could be taken
+    -- -- inReach's 7.5m already stopped that -- but that the three replies below
+    -- were DISTINGUISHABLE. A dead id said "someone beat you to it", a live one
+    -- out of reach said "too far away", and a looted crate said nothing at all.
+    -- Over a dense sequential id space at four claims a second, that is a working
+    -- existence-and-kind oracle over the layout: probe the range, learn how much
+    -- loot is left and which crates have been opened, without going near any of
+    -- it.
+    --
+    -- Folding "not yours to see" into "already gone" collapses the oracle, and it
+    -- is also the honest answer: from any legitimate client's point of view an
+    -- entry outside its view and an entry that no longer exists are the same
+    -- thing. Cells are 256m and the subscription is the 3x3 block around the
+    -- player, so anything within pickup range is certainly inside it -- this
+    -- cannot refuse a claim an honest client would make.
+    local subs = m.loot.subs[src]
+    if item and not (subs and subs[item.cell]) then item = nil end
+
     if not item then
         BR.Server.notify(src, 'Someone beat you to it.', 'warn')
         return
@@ -765,7 +807,7 @@ AddEventHandler(BR.Net.NPC_DROP, function(d)
     if not w or not w.ammo then return end
 
     -- Range: the same slack the pickup check uses, because roster positions
-    -- are sampled at 2Hz and a sprinting player's honest report is stale.
+    -- are sampled at 4Hz and a sprinting player's honest report is stale.
     local range = cfg.range or 60.0
     if BR.Dist(e.pos.x, e.pos.y, x, y) > range then return end
 

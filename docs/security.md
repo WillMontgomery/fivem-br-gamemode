@@ -41,14 +41,27 @@ this", "claim entry 412" — and renders whatever comes back. Consequences:
 | Attack | Why it fails |
 |---|---|
 | Spawn an item into your inventory | There is no code path that adds a stack from a client message. Items enter only by claiming a world entry the server generated. |
-| Claim loot across the map | Claims are range-checked against the roster's own sampled position, rate-limited, and arbitrated first-come — a second claimant gets a refusal. |
+| Claim loot across the map | Claims are range-checked against the roster's own sampled position, rate-limited, arbitrated first-come, and refused for any entry the server never streamed to that player. |
 | Duplicate an item | Entries are single-use ids on the server; the second claim finds nothing. |
 | Give yourself ammo | Ammo reports are **decrease-only**: a report that raises a number is refused outright. The worst a liar can do is disarm themselves. |
-| Read where all the loot is | The layout seed never leaves the server. Clients are streamed only the cell they are standing in and its neighbours. |
+| Read where all the loot is | The layout seed never leaves the server, and a player may only subscribe to the cell they are standing in and its neighbours — checked against their own sampled position. |
+| Probe which loot is left | A claim for an entry outside your view answers **identically** to a claim for one that no longer exists. Ids are sequential, so distinguishable refusals would have been an existence oracle over the whole layout. |
 | Carry an item the mode does not issue | Weapons are matched against an allowlist keyed by hash; anything else is not a weapon this gamemode knows about. |
 
 The general shape: **a client can ask for things, and every answer is computed
 from state it does not hold.**
+
+**Two rows in that table were aspirational until 2026-08-14, and it is worth
+recording rather than quietly fixing.** `LOOT_CELL` validated the payload's shape,
+the player's state and their zone — and then subscribed them to whatever cell they
+named, anywhere in the integer plane, unlimited. So the seed staying server-side
+constrained only honest clients: a loop over the grid was streamed the entire
+layout. `LOOT_CLAIM` separately never checked whether an entry had been streamed to
+the claimant, which left three distinguishable refusals over a dense sequential id
+space. Both are now closed, and the rule lives in `BR.LootCellReachable`
+(`br_lib/shared/loot_gen.lua`) with its arithmetic pinned in `tools/test_shared.lua`
+and the handler behaviour in `test_roster.lua`'s `loot.enumeration` block. A
+security claim in a document is worth exactly the test behind it.
 
 **3. Damage is validated at the source (M6).** FiveM raises
 `weaponDamageEvent` on the *server* before damage is applied network-wide, and
@@ -65,7 +78,7 @@ None of that reads anything the shooter sent. The damage figure is then
 recomputed from our own tables — weapon, rarity, distance falloff and the body
 part that was hit — so a modified `weaponDamage` is *evidence*, never input.
 
-Slack is deliberate and documented: roster positions sample at 2 Hz, so both
+Slack is deliberate and documented: roster positions sample at 4 Hz, so both
 players can be ~4.5 m stale at a sprint. Refusing an honest shot is a broken
 game; accepting a marginal one is a rounding error no aimbot can exploit. The
 validator ran in log-only mode for a full playtest first, on the rule that
@@ -149,7 +162,7 @@ grades a window by its *worst* reason, using the tally the firing now carries:
 | Tier | Reasons | Why |
 |---|---|---|
 | `high` | `NO_WEAPON`, `NOT_HELD`, `NO_AMMO`, `NOT_THROWN` | The server never issued the means. There is no honest path to a weapon the gamemode does not have or a magazine it did not fill. |
-| `normal` | `TOO_FAR`, `TOO_FAST` | A number the weapon does not have — real, but manufacturable by 2Hz position sampling and a bad tick, which is why the validator already carries slack. |
+| `normal` | `TOO_FAR`, `TOO_FAST` | A number the weapon does not have — real, but manufacturable by position sampling and a bad tick, which is why the validator already carries slack. |
 | — | `SELF` | **Counts toward the threshold, files nothing on its own.** |
 
 `SELF` is the one worth explaining. It has to keep counting, or somebody mixing

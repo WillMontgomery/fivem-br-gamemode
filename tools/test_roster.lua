@@ -3374,6 +3374,22 @@ local function standOn(src, e)
     BR.Roster.get(src).pos = { x = e.x, y = e.y, z = e.z }
 end
 
+--- Stand a player in the middle of a cell.
+---
+--- WHY THESE TESTS NOW HAVE TO POSITION BEFORE SUBSCRIBING. LOOT_CELL used to
+--- accept any cell a client named, so a test could subscribe from anywhere and
+--- several did. It now refuses a cell more than BR.LOOT_CELL_DRIFT from the
+--- player's own sampled position, because accepting any cell let a client
+--- enumerate the whole layout. Putting the player there first is not test
+--- bookkeeping -- it is what a real client does, and the old ordering only worked
+--- because the hole was there.
+local function standInCell(src, cx, cy)
+    local size = BR.Config.Loot.cellSize
+    BR.Roster.get(src).pos = {
+        x = (cx + 0.5) * size, y = (cy + 0.5) * size, z = 30.0,
+    }
+end
+
 describe('loot.stream')
 do
     local m = lootMatch()
@@ -3386,6 +3402,7 @@ do
 
     local cx, cy = BR.LootCellOf(first.x, first.y)
 
+    standOn(1, first)
     sent = {}
     fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
     local adds = eventsOf(BR.Net.LOOT_ADD)
@@ -3408,7 +3425,10 @@ do
     fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
     ok(#eventsOf(BR.Net.LOOT_ADD) == 0, 'a repeat subscription sends nothing')
 
-    -- Walking three cells away drops everything that was in scope.
+    -- Walking three cells away drops everything that was in scope. The player
+    -- has to actually walk: a subscription three cells from where they are
+    -- standing is refused outright now.
+    standInCell(1, cx + 3, cy + 3)
     sent = {}
     fire(BR.Net.LOOT_CELL, 1, { cx = cx + 3, cy = cy + 3 })
     local goneIds = {}
@@ -3419,10 +3439,77 @@ do
 
     -- A WARMUP player is not in the world yet. The pad is shared between
     -- matches, so streaming there would hand one match's items to another's.
+    -- Stood in the cell on purpose, so the drift rule is satisfied and the ZONE
+    -- rule is the only thing left that can refuse them. Otherwise this would
+    -- pass for the wrong reason.
     BR.Roster.setState(2, BR.PlayerState.WARMUP)
+    standOn(2, first)
     sent = {}
     fire(BR.Net.LOOT_CELL, 2, { cx = cx, cy = cy })
     ok(#eventsOf(BR.Net.LOOT_ADD) == 0, 'a warmup player is refused a subscription')
+end
+
+-- WHAT THIS BLOCK DEFENDS IS THE REASON THE LAYOUT SEED NEVER LEAVES THE BOX.
+--
+-- Two checks were missing and both were reachable from a modded client with no
+-- timing, no luck and no other exploit: LOOT_CELL would subscribe you to any cell
+-- you named, and LOOT_CLAIM never asked whether you had been streamed the entry
+-- you were claiming. Together they turned "the client is only told about the cell
+-- it stands in" into a statement about the honest client only.
+describe('loot.enumeration')
+do
+    local m = lootMatch()
+    local first = m.loot.items[1]
+    local cx, cy = BR.LootCellOf(first.x, first.y)
+
+    standOn(1, first)
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+    ok(m.loot.subs[1] ~= nil, 'a legitimate subscription is granted')
+    local held = m.loot.at[1]
+
+    -- The attack, in one call: name a cell on the other side of the map.
+    sent = {}
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx + 40, cy = cy + 40 })
+    ok(#eventsOf(BR.Net.LOOT_ADD) == 0,
+        'a subscription to a distant cell streams nothing')
+    ok(m.loot.at[1] == held,
+        'and does not disturb the subscription they legitimately had')
+
+    -- Nil position must fail closed. It is nil for a whole tick after joining,
+    -- and "unknown" must not read as "anywhere".
+    BR.Roster.get(2).pos = nil
+    sent = {}
+    fire(BR.Net.LOOT_CELL, 2, { cx = cx, cy = cy })
+    ok(#eventsOf(BR.Net.LOOT_ADD) == 0,
+        'a player with no position sample is refused, not trusted')
+
+    -- THE ORACLE, which is the subtler half. If an entry outside the subscription
+    -- refuses differently from an entry that never existed, the refusal text is an
+    -- existence probe over a dense sequential id space -- four a second is enough
+    -- to map what loot is left without going near any of it.
+    local far
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and not m.loot.subs[1][e.cell] then far = e break end
+    end
+    ok(far ~= nil, 'the layout has an entry this player was never streamed')
+
+    local function claimText(id)
+        sent = {}
+        fire(BR.Net.LOOT_CLAIM, 1, { id = id })
+        for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do
+            if s.target == 1 then return s.args[1].text end
+        end
+        return nil
+    end
+
+    local unseen = claimText(far.id)
+    local absent = claimText(m.loot.nextId + 9999)
+    ok(unseen ~= nil and unseen == absent,
+        'an unstreamed entry answers exactly like one that does not exist',
+        tostring(unseen))
+    ok(m.loot.items[far.id] ~= nil,
+        'and refusing the claim did not consume the entry')
 end
 
 describe('loot.claim')
@@ -3439,10 +3526,10 @@ do
     ok(target ~= nil, 'the layout contains a weapon to claim')
 
     local cx, cy = BR.LootCellOf(target.x, target.y)
-    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
-    fire(BR.Net.LOOT_CELL, 2, { cx = cx, cy = cy })
     standOn(1, target)
     standOn(2, target)
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+    fire(BR.Net.LOOT_CELL, 2, { cx = cx, cy = cy })
 
     -- BOTH REACH FOR IT IN THE SAME TICK. This is the normal case at a hot
     -- drop, and exactly one of them may end up holding it.
@@ -3483,12 +3570,24 @@ do
     ok(goneTo[1] and goneTo[2], 'every subscriber is told it is gone')
 
     -- Distance is re-validated server-side; the client prompt is cosmetic.
+    --
+    -- SUBSCRIBED BUT OUT OF REACH, which is the case this is actually about and
+    -- which the old version of it reached by accident. Cells are 256m and the
+    -- pickup radius is 7.5m, so "I can see it and cannot touch it" is the
+    -- ordinary state of nearly everything in view. It is now a DIFFERENT refusal
+    -- from a claim against an entry outside the subscription, which answers
+    -- identically to an entry that is gone -- deliberately, so the two cannot be
+    -- told apart by a client probing the id space.
     local far
     for id = 1, m.loot.nextId do
         local e = m.loot.items[id]
         if e and e.kind == BR.ItemKind.WEAPON then far = e break end
     end
-    BR.Roster.get(1).pos = { x = far.x + 400.0, y = far.y, z = far.z }
+    local fcx, fcy = BR.LootCellOf(far.x, far.y)
+    standOn(1, far)
+    fire(BR.Net.LOOT_CELL, 1, { cx = fcx, cy = fcy })
+    -- Step 100m off it, staying well inside the 3x3 block just subscribed to.
+    BR.Roster.get(1).pos = { x = far.x + 100.0, y = far.y, z = far.z }
     sent = {}
     fire(BR.Net.LOOT_CLAIM, 1, { id = far.id })
     ok(m.loot.items[far.id] ~= nil, 'a claim from 400m away is refused')
@@ -5548,9 +5647,13 @@ do
         ('%.1fm'):format(furthest))
     ok(BR.Inv.of(1).slots[1] == false, 'and the corpse carries nothing')
 
-    -- Anyone can simply walk over it -- no hold, no container.
+    -- Anyone can simply walk over it -- no hold, no container. Walking over it
+    -- includes being streamed it, which is what the subscribe below is: a claim
+    -- against an entry the server never sent you is refused now.
     BR.Roster.setState(2, BR.PlayerState.ALIVE)
     standOn(2, spawned[1])
+    local scx, scy = BR.LootCellOf(spawned[1].x, spawned[1].y)
+    fire(BR.Net.LOOT_CELL, 2, { cx = scx, cy = scy })
     sent = {}
     fire(BR.Net.LOOT_CLAIM, 2, { id = spawned[1].id })
     ok(m.loot.items[spawned[1].id] == nil, 'and picked up in one press')
@@ -5569,8 +5672,8 @@ do
     ok(crate.prop == BR.Config.Loot.chestProp, 'sealed, as the wooden crate')
 
     local cx, cy = BR.LootCellOf(crate.x, crate.y)
-    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
     standOn(1, crate)
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
 
     local n = #crate.contents
     local crateX = crate.x
@@ -5630,6 +5733,10 @@ do
 
     local pad = BR.Config.Match.warmupPos
     local cx, cy = BR.LootCellOf(pad.x, pad.y)
+
+    -- Both players are ON the pad, which is where a warmup player actually is.
+    BR.Roster.get(1).pos = { x = pad.x, y = pad.y, z = pad.z or 30.0 }
+    BR.Roster.get(2).pos = { x = pad.x, y = pad.y, z = pad.z or 30.0 }
 
     sent = {}
     fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
@@ -5704,6 +5811,7 @@ do
     end
 
     local cx, cy = BR.LootCellOf(target.x, target.y)
+    standOn(1, target)
     fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
 
     local ox, oy = target.x, target.y
@@ -5750,6 +5858,7 @@ do
     local m = lootMatch()
     local first = m.loot.items[1]
     local cx, cy = BR.LootCellOf(first.x, first.y)
+    standOn(1, first)
     fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
     BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
                      count = 1, clip = 12 })

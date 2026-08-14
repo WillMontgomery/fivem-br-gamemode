@@ -36,6 +36,48 @@ function BR.LootCellOf(x, y)
     return floor(x / size), floor(y / size)
 end
 
+--- How many cells of slack a subscription request gets. See below.
+BR.LOOT_CELL_DRIFT = 1
+
+--- May a player standing at (x, y) subscribe to the cell (cx, cy)?
+---
+--- THE CHECK THAT WAS MISSING, AND WITHOUT IT THIS MODULE WAS DECORATIVE. The
+--- seed never leaves the server for exactly one reason: so that nobody can
+--- derive the layout. But the LOOT_CELL handler validated the payload's shape,
+--- the player's state and their zone, and then subscribed them to whatever cell
+--- they named -- any cell, anywhere in the integer plane, with no rate limit. A
+--- client could walk the grid and be streamed the ENTIRE map's loot, one 768m
+--- block per call. That is precisely the wallhack the seed-withholding exists to
+--- prevent, reachable by a for loop.
+---
+--- The bound is the player's own sampled position, which is the rule LOOT_FIX has
+--- always applied to repairs -- the claim and subscribe paths simply never got it.
+---
+--- CHEBYSHEV, NOT EUCLIDEAN, because a subscription is a square block: the
+--- diagonal neighbour is exactly as adjacent as the orthogonal one, and a radial
+--- test would refuse the corners of the block the server itself sends.
+---
+--- ONE CELL OF SLACK RATHER THAN ZERO. Cells are 256m (BR.Config.Loot.cellSize)
+--- and positions sample every 250ms, so the honest worst case is a player
+--- straddling a boundary while the sample sits on the far side -- one cell, never
+--- two. A sprinter covers about 1.4% of a cell between samples, so this is
+--- generous by more than an order of magnitude and still refuses enumeration:
+--- the reachable set is 9 cells, not 4 billion.
+--- @param cx integer
+--- @param cy integer
+--- @param x number
+--- @param y number
+--- @param tolerance integer|nil cells of slack; defaults to BR.LOOT_CELL_DRIFT
+--- @return boolean
+function BR.LootCellReachable(cx, cy, x, y, tolerance)
+    if type(cx) ~= 'number' or type(cy) ~= 'number' then return false end
+    if type(x) ~= 'number' or type(y) ~= 'number' then return false end
+
+    local t = tolerance or BR.LOOT_CELL_DRIFT
+    local wx, wy = BR.LootCellOf(x, y)
+    return math.abs(cx - wx) <= t and math.abs(cy - wy) <= t
+end
+
 --- The table key for a cell. Cells are held in a string-keyed map rather than a
 --- 2D array because the map's AABB is not the only place loot can be -- a death
 --- box lands wherever the player did.

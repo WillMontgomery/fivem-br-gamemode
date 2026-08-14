@@ -1837,6 +1837,76 @@ do
     ok(#BR.LootCellsAround(0, 0, 2) == 25, 'radius 2 is a 5x5 block')
 end
 
+-- ------------------------------------------------------------- loot.reach ---
+
+-- WHAT THIS PINS IS A SECURITY BOUNDARY, not a convenience.
+--
+-- The LOOT_CELL handler used to subscribe a player to whatever cell they named.
+-- Since the whole reason the layout seed stays server-side is that nobody should
+-- be able to derive the map's loot, that made the seed pointless: a client could
+-- walk the integer plane and be streamed everything, 9 cells at a time. These
+-- cases are the arithmetic of the fix, and the handler around them is glue.
+describe('loot.reach')
+do
+    local size = BR.Config.Loot.cellSize
+
+    -- Stand in the middle of cell 0,0 so nothing here is a boundary artefact.
+    local mx, my = size * 0.5, size * 0.5
+
+    ok(BR.LootCellReachable(0, 0, mx, my), 'the cell you are standing in')
+
+    -- All eight neighbours, because the subscription the server itself sends is
+    -- the 3x3 block -- refusing a corner would refuse cells we volunteered.
+    local corners = 0
+    for dx = -1, 1 do
+        for dy = -1, 1 do
+            if BR.LootCellReachable(dx, dy, mx, my) then corners = corners + 1 end
+        end
+    end
+    ok(corners == 9, 'every cell of the 3x3 block around you is reachable')
+
+    ok(not BR.LootCellReachable(2, 0, mx, my), 'two cells out is refused')
+    ok(not BR.LootCellReachable(0, 2, mx, my), 'two cells out on the other axis')
+    ok(not BR.LootCellReachable(2, 2, mx, my), 'two cells out diagonally')
+
+    -- The enumeration attack, in one line.
+    ok(not BR.LootCellReachable(400, -400, mx, my),
+        'a cell across the map is refused -- this is the whole point')
+
+    -- CHEBYSHEV, NOT EUCLIDEAN. A radial test with radius 1 would put the
+    -- diagonal at sqrt(2) and refuse it, which would refuse four of the nine
+    -- cells the server streams.
+    ok(BR.LootCellReachable(1, 1, mx, my),
+        'the diagonal neighbour is as adjacent as the orthogonal one')
+
+    -- Negative coordinates are over half the map (the AABB runs to -3600), and
+    -- floor-vs-truncate bugs hide here.
+    ok(BR.LootCellReachable(-1, -1, -size * 0.5, -size * 0.5),
+        'the rule holds on the negative side of the origin')
+    ok(not BR.LootCellReachable(1, 1, -size * 0.5, -size * 0.5),
+        'and it still refuses two cells away there')
+
+    -- A boundary straddle is the honest worst case the slack exists for: the
+    -- sample sits just inside one cell while the player is a metre into the next.
+    ok(BR.LootCellReachable(1, 0, size - 0.5, my),
+        'standing on a boundary, the cell you are stepping into is reachable')
+
+    -- Junk arguments must be refused rather than erroring or passing. `e.pos` is
+    -- nil until the first sample, and the handler checks that itself -- but a nil
+    -- reaching here must not be an allow.
+    ok(not BR.LootCellReachable(nil, 0, mx, my), 'a nil cell is refused')
+    ok(not BR.LootCellReachable(0, 0, nil, nil), 'a nil position is refused')
+
+    -- The tolerance is a parameter so the bound can be tightened without
+    -- touching call sites; zero means exactly your own cell.
+    ok(BR.LootCellReachable(0, 0, mx, my, 0), 'tolerance 0 allows your own cell')
+    ok(not BR.LootCellReachable(1, 0, mx, my, 0),
+        'tolerance 0 refuses the neighbour')
+
+    ok(BR.LOOT_CELL_DRIFT == 1,
+        'the shipped tolerance is one cell -- 9 reachable, not 4 billion')
+end
+
 -- ---------------------------------------------------------------- loot.gen ---
 
 describe('loot.gen')

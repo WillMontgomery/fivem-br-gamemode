@@ -34,7 +34,7 @@ BR.IncidentBuild = {}
 ---           somebody running something.
 ---   normal  A number the weapon does not have -- out of range, or cycling
 ---           faster than its action. Real signals, but the ones with a
----           plausible innocent story: 2Hz position sampling and a bad tick can
+---           plausible innocent story: position sampling and a bad tick can
 ---           manufacture both, which is why the validator already carries slack
 ---           and why these do not read as loudly.
 ---
