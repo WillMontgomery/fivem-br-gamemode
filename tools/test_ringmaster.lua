@@ -218,21 +218,49 @@ do
     -- BR.Outbox restarts seq at 0 on every resource start and deploy.sh
     -- restarts resources after every deploy. Two starts inside the same second
     -- are entirely normal when a script is doing them, so a second-resolution
-    -- timestamp alone is not enough -- which is what the nonce is for.
+    -- timestamp alone is not enough -- which is what the other two sources are
+    -- for: `os.time()`, `GetGameTimer()`, and a fresh table's address.
+    --
+    -- WHAT THIS ASSERTS, AND WHAT IT DELIBERATELY DOES NOT (issue #96, closed as
+    -- accepted risk by the owner). It asserts distinctness across restarts where
+    -- the GAME CLOCK has advanced, which is every restart on a real box: a
+    -- resource restart takes far longer than a millisecond, so GetGameTimer()
+    -- always differs even when os.time() does not.
+    --
+    -- It does NOT assert distinctness when all three sources coincide, because
+    -- the harness can force that and a real server cannot realistically reach it:
+    -- `loadAll` runs in one process with GetGameTimer() stubbed to a constant, so
+    -- 200 iterations share a second AND a game-clock reading, leaving only a heap
+    -- address that Lua reuses. Asserting on that measured the stub, not the code,
+    -- and failed ~9% of the time forever.
+    --
+    -- The residual risk, priced rather than waved away: two restarts in the same
+    -- wall-clock second, at the same game-clock millisecond, with a reused table
+    -- address, would make the console discard the events after the restart as
+    -- duplicates -- silently. If that ever needs closing, the fix is a monotonic
+    -- per-process counter in the string rather than more entropy.
     local seen = {}
     local collisions = 0
-    for _ = 1, 200 do
+    local base = fakeTime
+    for i = 1, 200 do
+        fakeTime = base + i          -- a restart takes longer than a millisecond
         loadAll({ 'br_ringmaster/server/main.lua' })
         local e = BR.Ring.bootEpoch
         if seen[e] then collisions = collisions + 1 end
         seen[e] = true
     end
+    fakeTime = base
     ok(collisions == 0,
-        '200 restarts inside the same second produce 200 distinct epochs',
+        '200 restarts produce 200 distinct epochs once the game clock has moved',
         collisions .. ' collisions')
 
-    ok(BR.Ring.bootEpoch:find('-', 1, true) ~= nil,
-        'the epoch carries a nonce, not just a wall-clock second')
+    -- THREE PARTS, not two. A wall-clock second alone repeats across a scripted
+    -- restart; the game-clock reading is what actually separates them.
+    local parts = 0
+    for _ in BR.Ring.bootEpoch:gmatch('[^-]+') do parts = parts + 1 end
+    ok(parts == 3,
+        'the epoch carries a wall second, a game-clock reading and a nonce',
+        tostring(parts) .. ' parts')
 end
 
 describe('clockPair')

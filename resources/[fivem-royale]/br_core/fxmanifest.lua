@@ -82,6 +82,15 @@ client_scripts {
 server_scripts {
     '@br_lib/shared/sched.lua',  -- BR.Sched; every file below registers into it
     '@br_lib/shared/identity.lua',  -- BR.Identity; the ringmaster projection resolves licenses
+    -- SERVER-ONLY, though both live in shared/. Evidence and severity are
+    -- moderation concerns; a client has no use for either and should not be
+    -- shipped a table describing what the anticheat considers suspicious.
+    --
+    -- evidence_buf BEFORE server/evidence.lua, which calls BR.EvidenceBuf.new()
+    -- at load time -- and incident_build after combat_solve (in shared_scripts
+    -- above), whose enum values it keys its severity table on.
+    '@br_lib/shared/evidence_buf.lua',
+    '@br_lib/shared/incident_build.lua',
     'server/main.lua',      -- defines BR.Server and starts the scheduler
     'server/clock.lua',
     'server/broadcast.lua', -- BR.Broadcast, used by roster
@@ -102,6 +111,7 @@ server_scripts {
     'server/debug.lua',
     'server/market.lua',    -- inventory, purchases and equipped slots
     'server/ringmaster.lua', -- the admin-console snapshot feed; emits, never listens
+    'server/incident.lua',  -- builds incident payloads from evidence; emits, never enforces
 }
 
 dependency 'br_lib'

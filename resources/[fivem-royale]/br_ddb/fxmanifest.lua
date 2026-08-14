@@ -4,7 +4,11 @@ lua54 'yes'
 
 name 'br_ddb'
 author 'Blitz Royale'
-description 'Read-only DynamoDB access for the game server: ban checks and grants.'
+-- Read-only on the console's tables, with ONE deliberate exception: incidents
+-- are append-only from here. The game files a case and cannot read one back --
+-- see the header of js-src/br_ddb/src/index.js for why the write lives on this
+-- side rather than on the console's.
+description 'DynamoDB access for the game server: ban checks, grants, profiles, and filing incidents.'
 version '0.1.0'
 
 -- NODE 22, NOT THE DEFAULT. FXServer ships an old Node for server scripts; the

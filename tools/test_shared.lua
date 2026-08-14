@@ -27,6 +27,11 @@ for _, f in ipairs({
     'shared/loot_gen.lua',
     'shared/combat_solve.lua',
     'shared/evidence_buf.lua',
+    -- AFTER combat_solve, not before: it builds its severity table from
+    -- BR.ShotRefusal's values at load time, so loading it first would leave every
+    -- key nil and classify nothing -- silently, since a missing severity reads as
+    -- "not a countable refusal".
+    'shared/incident_build.lua',
 }) do
     local chunk, err = loadfile(ROOT .. f)
     if not chunk then
@@ -2579,6 +2584,248 @@ do
     -- licence-less player into one profile.
     ok(BR.Identity.qualified('license', nil) == nil,
         'a missing identifier stays missing rather than becoming "license:nil"')
+end
+
+-- ------------------------------------------------------- incident building ---
+
+describe('incident.severity')
+do
+    local S = BR.IncidentBuild.SEVERITY_OF
+    local R = BR.ShotRefusal
+
+    -- EVERY SUSPICIOUS REFUSAL HAS A SEVERITY -- WITH ONE NAMED EXCEPTION --
+    -- checked exhaustively rather than by listing the ones I remembered. The
+    -- failure this prevents is the quiet one: a refusal with no entry classifies
+    -- as "not countable", so adding a new MEANS to BR.ShotSuspicious without
+    -- touching the severity table would silently stop filing incidents for it,
+    -- and nothing anywhere would log that it had.
+    --
+    -- The exception is written as an allowlist so that adding a second one is a
+    -- decision somebody has to make here, in the open, rather than a nil that
+    -- passes.
+    local NO_SEVERITY_BY_DESIGN = { [R.SELF] = true }
+
+    local missing = {}
+    for reason in pairs(BR.ShotSuspicious) do
+        if S[reason] == nil and not NO_SEVERITY_BY_DESIGN[reason] then
+            missing[#missing + 1] = tostring(reason)
+        end
+    end
+    ok(#missing == 0,
+        'every BR.ShotSuspicious reason has a severity (missing: '
+            .. (table.concat(missing, ', ')) .. ')')
+
+    -- And the reverse: nothing here that the anticheat cannot actually produce.
+    -- An orphan entry is a rule about a case that never happens, which reads as
+    -- coverage and is not.
+    local orphans = {}
+    for reason in pairs(S) do
+        if not BR.ShotSuspicious[reason] then
+            orphans[#orphans + 1] = tostring(reason)
+        end
+    end
+    ok(#orphans == 0,
+        'no severity is defined for a refusal that never counts (orphans: '
+            .. (table.concat(orphans, ', ')) .. ')')
+
+    -- THE TIERS THEMSELVES. Means the server never issued are the loud ones;
+    -- numbers the weapon does not have are the ones with an innocent story
+    -- (2Hz position sampling), and repeated self-harm hurts nobody else.
+    ok(S[R.NO_WEAPON] == 'high', 'a weapon the server never issued is high')
+    ok(S[R.NOT_HELD] == 'high', 'a weapon not in their hands is high')
+    ok(S[R.NO_AMMO] == 'high', 'a shot from an empty magazine is high')
+    ok(S[R.NOT_THROWN] == 'high', 'an explosive they never threw is high')
+    ok(S[R.TOO_FAR] == 'normal', 'out of range is normal -- positions are stale')
+    ok(S[R.TOO_FAST] == 'normal', 'too fast is normal for the same reason')
+
+    -- SELF COUNTS TOWARD THE THRESHOLD AND FILES NOTHING ON ITS OWN. The
+    -- arithmetic is the argument: selfLimit = 2 over selfWindowMs = 5000, so the
+    -- third self-damage tick in five seconds already reads as repetition -- and
+    -- one grenade at your own feet lands several ticks well inside that. A
+    -- pure-self cluster of eight is two grenades, not somebody exercising
+    -- something.
+    ok(BR.ShotSuspicious[R.SELF] == true,
+        'repeated self-harm still counts toward the threshold')
+    ok(S[R.SELF] == nil,
+        'but earns no severity, so a window of only self-harm files nothing')
+
+    -- RULES ARE ABSENT ENTIRELY, which is the same guarantee the exclusion test
+    -- makes upstream, asserted again here because this table is what a reviewer
+    -- would edit.
+    ok(S[R.SAME_SQUAD] == nil, 'friendly fire has no severity, because it is not an incident')
+    ok(S[R.WARMUP] == nil, 'a warmup scrap has no severity')
+    ok(S[R.NOT_LIVE] == nil, 'a shot that raced a match boundary has no severity')
+    ok(S[R.OTHER_MATCH] == nil, 'a cross-match shot has no severity')
+
+    -- THE WORST REASON IN THE WINDOW WINS, which is the whole reason damage.lua
+    -- now sends a tally. Before it did, a window of seven conjured-weapon shots
+    -- followed by one self-hit was filed as `low` and sorted to the bottom of the
+    -- queue -- the exact opposite of what it deserved.
+    ok(BR.IncidentBuild.severityOf({ [R.SELF] = 7, [R.NO_WEAPON] = 1 }) == 'high',
+        'one conjured-weapon shot among seven self-hits still files as high')
+    ok(BR.IncidentBuild.severityOf({ [R.TOO_FAR] = 4, [R.NO_AMMO] = 1 }) == 'high',
+        'high beats normal')
+    ok(BR.IncidentBuild.severityOf({ [R.TOO_FAR] = 4, [R.SELF] = 4 }) == 'normal',
+        'and self-hits do not drag a real signal down')
+    ok(BR.IncidentBuild.severityOf({ [R.SELF] = 8 }) == nil,
+        'a pure self-harm window files nothing -- it is probably two grenades')
+
+    -- A tally entry of zero is a reason that rolled out of the window, not a
+    -- reason present in it.
+    ok(BR.IncidentBuild.severityOf({ [R.NO_WEAPON] = 0, [R.TOO_FAR] = 3 }) == 'normal',
+        'a zero count does not raise the severity')
+
+    -- Rules in the tally cannot smuggle an incident in either.
+    ok(BR.IncidentBuild.severityOf({ [R.SAME_SQUAD] = 20 }) == nil,
+        'a window of nothing but friendly fire classifies as nothing')
+
+    -- FALLS BACK TO THE LAST REASON, so an event from a build that predates the
+    -- tally still classifies. Same instinct as the console keeping the older
+    -- `action` values: one side being a deploy behind must not lose the record.
+    ok(BR.IncidentBuild.severityOf(nil, R.NO_AMMO) == 'high',
+        'an event with no tally classifies from its last reason')
+    ok(BR.IncidentBuild.severityOf(nil, nil) == nil,
+        'an event with neither classifies as nothing')
+    ok(BR.IncidentBuild.severityOf(nil, R.SELF) == nil,
+        'and the SELF exclusion survives the fallback path too')
+end
+
+describe('incident.payload')
+do
+    local R = BR.ShotRefusal
+    local LIC = 'license:abc'
+
+    -- A SENTINEL, because `over = { license = nil }` sets no key at all -- pairs()
+    -- never sees it and the override silently does nothing. That is the trap this
+    -- whole module exists around (a Lua nil is absence, not a value), so the test
+    -- helper had better not fall into it: the first version of this block passed
+    -- vacuously against the default license.
+    local CLEAR = {}
+    local function ev(over)
+        local e = {
+            src = 3, name = 'Someone', license = LIC, matchId = 7,
+            count = 8, windowMs = 10000,
+            reason = R.NO_WEAPON, reasons = { [R.NO_WEAPON] = 8 },
+            action = 'incident', at = 90000,
+        }
+        for k, v in pairs(over or {}) do
+            e[k] = (v ~= CLEAR) and v or nil
+        end
+        return e
+    end
+
+    -- NO LICENSE, NO INCIDENT. The strongest refusal in the file: a case keyed to
+    -- a server id is a case about whoever holds that slot next, and it cannot be
+    -- withdrawn once a human has read it.
+    local p, why = BR.IncidentBuild.fromRefusal(ev({ license = CLEAR }), {})
+    ok(p == nil and why == 'no license',
+        'a refusal with no license files nothing, and says why')
+
+    ok(select(1, BR.IncidentBuild.fromRefusal(ev({ license = '' }), {})) == nil,
+        'an empty license is treated as no license')
+
+    ok(select(1, BR.IncidentBuild.fromRefusal(nil, {})) == nil,
+        'no event files nothing rather than throwing')
+
+    -- A window of rules should never have reached here (damage.lua gates it), so
+    -- this is the belt to that braces: even if one did, nothing is filed.
+    local rulesOnly, ruleWhy = BR.IncidentBuild.fromRefusal(
+        ev({ reason = R.SAME_SQUAD, reasons = { [R.SAME_SQUAD] = 9 } }), {})
+    ok(rulesOnly == nil and ruleWhy == 'not a countable refusal',
+        'friendly fire cannot produce a payload even if it reaches the builder')
+
+    -- A PURE SELF-HARM CLUSTER DOES REACH HERE -- damage.lua counts it, by design
+    -- -- and is declined at this layer rather than at the counter. The counter
+    -- must not learn to forgive a reason, or somebody mixing self-hits with real
+    -- means would fall below the threshold and never trip at all.
+    local selfOnly, selfWhy = BR.IncidentBuild.fromRefusal(
+        ev({ reason = R.SELF, reasons = { [R.SELF] = 8 } }), {})
+    ok(selfOnly == nil and selfWhy == 'not a countable refusal',
+        'a window of nothing but self-harm files no incident')
+
+    -- ...and the moment one real means joins it, the case is filed at the real
+    -- means' severity rather than being softened by the self-hits around it.
+    local mixed = BR.IncidentBuild.fromRefusal(
+        ev({ reason = R.SELF, reasons = { [R.SELF] = 7, [R.NO_WEAPON] = 1 } }), {})
+    ok(mixed ~= nil and mixed.severity == 'high',
+        'one conjured-weapon shot among seven self-hits files as high')
+
+    -- The ordinary case.
+    local rec = {
+        key = 3, license = LIC, name = 'Someone', matchId = 7, squadId = 2,
+        openedAt = 30000, leftAt = nil,
+        chat = { { text = 'hi', channel = 'all', at = 40000 } },
+        kills = { { killer = 'Someone', victim = 'Else', cause = 'shot', at = 50000 } },
+    }
+    local out = BR.IncidentBuild.fromRefusal(ev(), { rec })
+
+    ok(out ~= nil, 'a countable refusal with a license produces a payload')
+    ok(out.kind == 'anticheat', 'it is filed as an anticheat incident')
+    ok(out.category == 'system', 'the category is system, not a player category')
+    ok(out.state == 'pending_review', 'it opens for review rather than resolved')
+    ok(out.severity == 'high', 'severity comes from the tally')
+    ok(out.subjectLicense == LIC, 'the subject is the shooter')
+    ok(out.subjectName == 'Someone', 'and their name travels with it')
+    ok(out.matchId == 7, 'the match is recorded')
+    ok(out.atGameMs == 90000,
+        'the timestamp leaves as a GAME clock reading -- br_ringmaster realises it')
+    ok(out.openedAt == nil,
+        'and openedAt is NOT set here: br_core has no clock worth putting in a record')
+
+    -- SQUAD AT INCIDENT TIME. The question the console has to answer about a
+    -- report is "were these two on the same team", and squads change between the
+    -- incident and anybody reading it.
+    ok(out.subjects and #out.subjects == 1, 'there is one subject')
+    ok(out.subjects[1].license == LIC, 'subjects[1] mirrors subjectLicense')
+    ok(out.subjects[1].squadId == 2, 'the squad at incident time is captured')
+    ok(out.subjects[1].left == false, 'and whether they had already gone')
+
+    ok(out.refusal.count == 8, 'the refusal count is on the record')
+    ok(out.refusal.reasons[R.NO_WEAPON] == 8, 'so is the per-reason tally')
+    ok(out.refusal.action == 'incident', 'and what the server actually did')
+
+    ok(#out.evidence == 1, 'the evidence record is attached')
+    ok(out.evidence[1].chat[1].text == 'hi', 'with its chat')
+    ok(out.evidence[1].kills[1].victim == 'Else', 'and its kills')
+    ok(out.evidence[1].license == LIC, 'keyed to a license')
+
+    -- THE SERVER ID DOES NOT TRAVEL. Sending it would invite exactly the mistake
+    -- sealing exists to prevent: treating a recycled slot number as a person.
+    ok(out.evidence[1].key == nil, 'the server id is NOT on the wire')
+
+    -- A REPORTER IS ABSENT, NOT NULL, because a Lua key set to nil is not sent.
+    -- br_ddb writes the null; this asserts br_core does not pretend to.
+    ok(out.reporterLicense == nil, 'the system filed this, so there is no reporter')
+
+    ok(out.summary:find('8 shots refused in 10s', 1, true) ~= nil,
+        'the summary reads as a sentence an admin can scan')
+    ok(out.summary:find(R.NO_WEAPON, 1, true) ~= nil,
+        'and names the reason')
+
+    -- A DEPARTED PLAYER IS STILL FILEABLE, which is the case the seal exists for.
+    local sealed = {
+        key = 3, license = LIC, name = 'Someone', matchId = 7, squadId = 2,
+        openedAt = 30000, leftAt = 88000, chat = {}, kills = {},
+    }
+    local gone = BR.IncidentBuild.fromRefusal(ev(), { sealed })
+    ok(gone ~= nil, 'somebody who already left can still have a case filed')
+    ok(gone.evidence[1].left == true, 'and the record says they left')
+    ok(gone.subjects[1].left == true, 'as does the subject row')
+
+    -- A RECONNECT IS TWO SESSIONS, and both belong on the case: the evidence does
+    -- not stop counting because somebody bounced their client.
+    local two = BR.IncidentBuild.fromRefusal(ev(), { sealed, rec })
+    ok(#two.evidence == 2, 'two sessions produce two evidence records')
+    ok(two.subjects[1].left == false,
+        'the subject row reflects the NEWEST session, which is the live one')
+
+    -- No evidence at all is survivable, not a refusal. The buffer may have been
+    -- cleared by a restart, and a case with a refusal cluster and no chat is
+    -- still worth filing.
+    local bare = BR.IncidentBuild.fromRefusal(ev(), nil)
+    ok(bare ~= nil, 'an incident with no evidence is still filed')
+    ok(#bare.evidence == 0, 'with an empty evidence list')
+    ok(bare.subjects[1].squadId == nil, 'and no squad claim it cannot support')
 end
 
 -- ----------------------------------------------------------------- result ---

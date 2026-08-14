@@ -137,6 +137,9 @@ for _, f in ipairs({
     'br_core/server/markers.lua',
     'br_core/server/voice.lua',
     'br_core/server/damage.lua',
+    -- AFTER combat_solve, whose enum values it keys its severity table on.
+    'br_lib/shared/incident_build.lua',
+    'br_core/server/incident.lua',     -- BR.Incident; listens to the refusal event
 }) do
     local chunk, err = loadfile(ROOT .. f)
     if not chunk then
@@ -4743,10 +4746,15 @@ do
     -- SELF COUNTS BUT DOES NOT FILE (owner call, 2026-08-14). Repeated
     -- self-damage stays a threshold input -- somebody mixing it with real means
     -- still trips -- but a cluster that is only self-harm is the one means-class
-    -- signal with an innocent explanation, since a single grenade can land
-    -- several damage ticks. Ringmaster is what declines to open the case; from
-    -- here it is indistinguishable from any other countable refusal, and that
-    -- is deliberate: the counter must not learn to forgive a reason.
+    -- signal with an innocent explanation: selfLimit = 2 over 5s, and a single
+    -- grenade at your own feet lands several damage ticks well inside that.
+    --
+    -- WHERE IT IS DECLINED is BR.IncidentBuild.SEVERITY_OF, which has no entry
+    -- for SELF, so a pure-self window classifies as nothing and files nothing.
+    -- NOT here: the counter must not learn to forgive a reason, or somebody
+    -- mixing self-hits with real means would fall below the threshold and never
+    -- trip at all. From this layer SELF is indistinguishable from any other
+    -- countable refusal, and that is the design rather than an oversight.
     BR.Damage.forgetRefusals(1)
     fired = {}
     for _ = 1, cfg.refusalLimit do
@@ -4844,6 +4852,118 @@ do
     ok(after.live == 0 and after.sealed == 0 and after.chatRows == 0,
         'and the announcement discards everything that match held',
         ('live %d sealed %d chat %d'):format(after.live, after.sealed, after.chatRows))
+end
+
+describe('incident.wiring')
+do
+    -- THE CLASSIFIER AND THE PAYLOAD SHAPE ARE COVERED IN test_shared. What is
+    -- covered here is the part that only exists inside the game: that the refusal
+    -- event actually reaches the writer, that the writer reads the real evidence
+    -- buffer, and that what leaves br_core is a payload br_ringmaster can send.
+    local m = lootMatch()
+    BR.Evidence.buf:clearMatch(nil)
+    BR.Damage.forgetRefusals(1)
+
+    local licA = BR.Identity.qualified('license', BR.Identity.licenseOf(1))
+
+    -- Something for the case to carry, so "the evidence is attached" is a real
+    -- assertion rather than an empty list matching an empty list.
+    BR.Evidence.noteChat(1, { text = 'nothing to see here', channel = 0, at = 5 })
+
+    fired = {}
+    local cfg = BR.Config.Combat
+    for _ = 1, cfg.refusalLimit do
+        BR.Damage.noteRefusal(1, BR.ShotRefusal.NO_WEAPON)
+    end
+
+    -- The harness records TriggerEvent rather than dispatching it, so the two
+    -- halves are driven separately -- the same split the evidence teardown test
+    -- uses. First: damage.lua announced the firing.
+    local refusal = firedOf('br:ringmaster:refusal')[1]
+    ok(refusal ~= nil, 'the threshold announces a refusal')
+    ok(refusal and refusal.reasons ~= nil,
+        'carrying the per-reason tally the classifier needs')
+    ok(refusal and refusal.reasons[BR.ShotRefusal.NO_WEAPON] == cfg.refusalLimit,
+        'with every countable shot in it',
+        refusal and tostring(refusal.reasons[BR.ShotRefusal.NO_WEAPON]) or 'nil')
+
+    -- Second: the writer acts on the announcement. `sent` is cleared too, because
+    -- it accumulates across the whole suite -- asserting on it without this
+    -- measures every earlier block's client traffic instead of this one's.
+    fired = {}
+    sent = {}
+    fire('br:ringmaster:refusal', nil, refusal)
+    local inc = firedOf('br:ringmaster:incident')[1]
+
+    ok(inc ~= nil, 'and the writer turns it into an incident payload')
+    if inc then
+        ok(inc.kind == 'anticheat', 'filed as an anticheat case', tostring(inc.kind))
+        ok(inc.severity == 'high',
+            'at the severity the reason earns', tostring(inc.severity))
+        ok(inc.subjectLicense == licA,
+            'about the license, not the server id', tostring(inc.subjectLicense))
+        ok(inc.matchId == m.id, 'in the match it happened in', tostring(inc.matchId))
+        ok(inc.state == 'pending_review',
+            'open for review -- br_core never resolves anything')
+
+        -- THE EVIDENCE IS ATTACHED AT FILING TIME, not fetched later. The buffer
+        -- is discarded at match end, so "we will look it up when an admin opens
+        -- the case" is a promise this system cannot keep.
+        ok(#inc.evidence == 1, 'with the evidence buffer attached',
+            tostring(#inc.evidence))
+        ok(inc.evidence[1] and inc.evidence[1].chat[1]
+            and inc.evidence[1].chat[1].text == 'nothing to see here',
+            'including what they actually said')
+
+        -- NOTHING WAS SENT TO THE PLAYER. The whole point of the inversion: an
+        -- offender learns nothing, ever, at any stage.
+        ok(#sent == 0, 'and the offender is told nothing at all', tostring(#sent))
+    end
+
+    -- CORROBORATION. A second thing happening to the same player in the same
+    -- match should point at the first case rather than opening an unrelated one a
+    -- human has to correlate by eye.
+    ok(#BR.Incident.priorFor(m.id, licA) == 0, 'nothing is remembered before a write lands')
+
+    fire('br:incident:filed', nil,
+        { incidentId = 'inc-1', matchId = m.id, subjectLicense = licA })
+    local prior = BR.Incident.priorFor(m.id, licA)
+    ok(#prior == 1 and prior[1] == 'inc-1',
+        'a confirmed write is remembered for the rest of the match',
+        tostring(#prior))
+
+    fired = {}
+    BR.Damage.forgetRefusals(1)
+    for _ = 1, cfg.refusalLimit do
+        BR.Damage.noteRefusal(1, BR.ShotRefusal.NO_AMMO)
+    end
+    local second = firedOf('br:ringmaster:refusal')[1]
+    fired = {}
+    fire('br:ringmaster:refusal', nil, second)
+    local inc2 = firedOf('br:ringmaster:incident')[1]
+    ok(inc2 and inc2.priorIncidentIds and inc2.priorIncidentIds[1] == 'inc-1',
+        'and the next incident carries the earlier one as a cross-reference')
+
+    -- A REFUSAL WITH NO LICENSE FILES NOTHING. Server ids recycle within the
+    -- minute, so a case keyed on one is a case about whoever holds that slot
+    -- next -- and it cannot be withdrawn once a human has read it.
+    fired = {}
+    fire('br:ringmaster:refusal', nil, {
+        src = 99, name = 'Ghost', matchId = m.id, count = 8, windowMs = 10000,
+        reason = BR.ShotRefusal.NO_WEAPON,
+        reasons = { [BR.ShotRefusal.NO_WEAPON] = 8 },
+        action = 'incident', at = 1000,
+    })
+    ok(#firedOf('br:ringmaster:incident') == 0,
+        'a refusal with no license files nothing rather than naming a stranger')
+
+    -- TEARDOWN DROPS THE MAP, on the same hook the evidence buffer uses -- so it
+    -- stays the size of the running matches rather than of the server's uptime.
+    fire('br:match:destroyed', nil, { matchId = m.id })
+    ok(#BR.Incident.priorFor(m.id, licA) == 0,
+        'and the cross-reference map is dropped when the match is')
+
+    BR.Damage.forgetRefusals(1)
 end
 
 describe('combat.attribution')

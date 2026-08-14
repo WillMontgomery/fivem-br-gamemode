@@ -143,6 +143,37 @@ the side with the ban list, the audit log and a human. This side has a counter.
 no player reads. Nothing else in the game escalates on repetition — no strike
 count survives a window, a match, or a session.
 
+**Severity is a triage hint, not a verdict.** `BR.IncidentBuild.SEVERITY_OF`
+grades a window by its *worst* reason, using the tally the firing now carries:
+
+| Tier | Reasons | Why |
+|---|---|---|
+| `high` | `NO_WEAPON`, `NOT_HELD`, `NO_AMMO`, `NOT_THROWN` | The server never issued the means. There is no honest path to a weapon the gamemode does not have or a magazine it did not fill. |
+| `normal` | `TOO_FAR`, `TOO_FAST` | A number the weapon does not have — real, but manufacturable by 2Hz position sampling and a bad tick, which is why the validator already carries slack. |
+| — | `SELF` | **Counts toward the threshold, files nothing on its own.** |
+
+`SELF` is the one worth explaining. It has to keep counting, or somebody mixing
+self-hits with real means would fall below eight and never trip at all. But
+`selfLimit` is 2 over 5 seconds, so the third self-damage tick already reads as
+repetition — and one grenade at your own feet lands several ticks well inside
+that. A pure-self cluster of eight is two grenades, not somebody exercising
+something. Mixed with one real refusal, the case files at the real refusal's
+severity; the self-hits do not soften it.
+
+**The game files the row itself, and that is a deliberate widening of `br_ddb`.**
+`ringmaster-incidents` is the one console-owned table the game may write, and it
+is **append-only**: file a case, never read one back, no access at all to grants,
+bans or audit. The write is conditional on the id being absent, so a repeat can
+only be refused — it cannot overwrite a case, or erase a verdict and the admin who
+made it.
+
+The alternative was posting the case over the event channel and letting the
+console write it. That is worse: the channel drops batches silently after four
+attempts and nothing on either envelope says so, and an incident lost that way is
+unrecoverable because the evidence buffer behind it is discarded at match end. So
+the row is written by the game and the event carries only an id. What a
+compromised game box gains from this grant is the ability to file noise.
+
 **One event, three answers, and `weaponType` gives all of them.**
 `weaponDamageEvent` fires for everything that hurts a player — gunfire, melee,
 explosions, but also falls, fire, drowning and being run over. `damageType`

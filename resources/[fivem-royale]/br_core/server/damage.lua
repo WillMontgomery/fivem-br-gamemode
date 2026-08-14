@@ -300,10 +300,18 @@ function BR.Damage.noteRefusal(src, why)
 
     local r = refusalOf[src]
     if not r or now - r.since > window then
-        r = { since = now, count = 0 }
+        r = { since = now, count = 0, byReason = {} }
         refusalOf[src] = r
     end
     r.count = r.count + 1
+
+    -- A TALLY, NOT JUST A TOTAL. A window is usually a mix, and this function
+    -- reports once -- so without this the incident is classified by whichever
+    -- refusal happened to land last. Seven conjured-weapon shots followed by one
+    -- self-hit would be filed as the mildest thing in the window and sorted to
+    -- the bottom of somebody's queue. Bounded by construction: the key space is
+    -- the seven values in BR.ShotSuspicious.
+    r.byReason[why] = (r.byReason[why] or 0) + 1
 
     local limit = cfg.refusalLimit or 12
     if r.count ~= limit then return end   -- fire once per window, not per shot
@@ -340,6 +348,11 @@ function BR.Damage.noteRefusal(src, why)
         count    = r.count,
         windowMs = window,
         reason   = tostring(why),
+        -- Every reason in the window and how many of each. An ADDED field, so
+        -- nothing downstream has to change to keep working -- but it is what
+        -- lets the incident be classified by the worst thing that happened
+        -- rather than the last.
+        reasons  = r.byReason,
         action   = 'incident',
         at       = now,
     })

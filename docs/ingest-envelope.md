@@ -289,6 +289,56 @@ happens to be holding that slot later. `license` is resolved by
 path to fill, because a case that cannot be keyed to a player cannot be
 reviewed — it is `null` only for a genuinely licenseless connection.
 
+**`refusal` also now carries `reasons`** — a `{ [reason]: count }` tally of every
+countable refusal in the window, not just the last one. An added optional field,
+so no `v` bump. It exists because the firing reports once and a window is usually
+a mix: without the tally, seven conjured-weapon shots followed by one self-hit
+were classified by the self-hit and sorted to the bottom of the queue.
+
+### `incident_filed` — the doorbell
+
+Emitted by `br_ringmaster` **after** the incident row is durably in DynamoDB.
+
+```json
+{
+  "seq": 43,
+  "kind": "incident_filed",
+  "at": 4281120,
+  "data": {
+    "incidentId": "0f9c…",
+    "kind": "anticheat",
+    "severity": "high",
+    "subjectLicense": "license:abc…",
+    "state": "pending_review"
+  }
+}
+```
+
+**THE WRITE IS THE SOURCE OF TRUTH; THIS EVENT IS ONLY A DOORBELL.** That is the
+load-bearing property of the whole incident pipeline and the reason the game
+writes to DynamoDB itself rather than posting the case here.
+
+This channel drops silently. `outbox.lua` gives a batch four attempts and then
+discards it, the drop counters reach only the local `brring` command, and neither
+envelope carries them — so the console genuinely cannot tell "thirty-two
+refusals were dropped because the link was down" from "no refusals happened". An
+incident lost that way would be unrecoverable, because the evidence buffer behind
+it is discarded at match end.
+
+So the payload here is deliberately minimal: an id, and enough to decide whether
+to look now. **A receiver must never treat the absence of this event as the
+absence of an incident.** The console's reconciliation sweep — a bounded query for
+untriaged incidents, run on boot and on evidence of loss, never on a timer — is
+what makes a lost doorbell cost a delay rather than a case.
+
+`severity` is a triage hint (`low` / `normal` / `high`), not an instruction. The
+game forms no opinion about what should happen to the player.
+
+**Unknown kinds are safe.** `gameEvent.kind` is a bounded string and `data` is a
+loose record, so a console that predates this event parses the envelope, applies
+what it understands, and buffers the rest. Deploy order does not matter for this
+one — unlike `refusal`'s `action`, which is an enum the schema validates.
+
 ---
 
 ## Versioning
