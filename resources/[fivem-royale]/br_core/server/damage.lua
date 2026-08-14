@@ -330,12 +330,7 @@ function BR.Damage.noteRefusal(src, why)
     -- survivable while this was a log line. It is not survivable now that the
     -- event opens an incident: server ids recycle within the minute, so a case
     -- with no license is a case about whoever holds that slot next.
-    local license = e and e.license or nil
-    if license == nil and BR.Identity then
-        license = BR.Identity.qualified('license', BR.Identity.licenseOf(src))
-        -- Cache it back so the projection and every later firing agree.
-        if e and license then e.license = license end
-    end
+    local license = BR.Roster.licenseOf(src)
 
     TriggerEvent('br:ringmaster:refusal', {
         src      = src,

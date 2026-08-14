@@ -86,6 +86,7 @@ server_scripts {
     'server/clock.lua',
     'server/broadcast.lua', -- BR.Broadcast, used by roster
     'server/roster.lua',
+    'server/evidence.lua', -- BR.Evidence: what a match remembers, for incidents
     'server/lobby.lua',     -- BR.Lobby, read by the match tick
     'server/party.lua',     -- BR.Party, read by the match tick
     'server/match.lua',

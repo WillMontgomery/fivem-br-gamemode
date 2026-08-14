@@ -121,9 +121,11 @@ for _, f in ipairs({
     'br_lib/shared/storm_solve.lua',
     'br_lib/shared/loot_gen.lua',
     'br_lib/shared/combat_solve.lua',
+    'br_lib/shared/evidence_buf.lua', -- BR.EvidenceBuf; server/evidence.lua wraps it
     'br_core/server/main.lua',
     'br_core/server/broadcast.lua',
     'br_core/server/roster.lua',
+    'br_core/server/evidence.lua',    -- BR.Evidence; combat.lua notes kills into it
     'br_core/server/lobby.lua',
     'br_core/server/party.lua',
     'br_core/server/match.lua',
@@ -4764,6 +4766,84 @@ do
         'while a weapon the server never issued still does',
         tostring(#firedOf('br:ringmaster:refusal')))
     BR.Damage.forgetRefusals(1)
+end
+
+describe('evidence.wiring')
+do
+    -- THE PURE BOOKKEEPING IS COVERED IN test_shared. What is covered here is
+    -- the part that only exists inside the game: whether the events actually
+    -- reach the buffer, and whether the lifecycle hooks fire on paths that
+    -- really run.
+    local m = lootMatch()
+    BR.Evidence.buf:clearMatch(nil)
+
+    ok(BR.Evidence ~= nil, 'BR.Evidence loads')
+    ok(BR.Evidence.stats().live == 0, 'and starts with nothing held')
+
+    -- A kill reaches BOTH participants' records. Recorded off the same feed
+    -- table the clients get, so the record cannot drift from what was shown.
+    BR.Damage.lastHit = nil
+    -- (src, cause, killerSrc) -- 2 is killed by 1.
+    BR.Combat.eliminate(2, 'headshot', 1)
+
+    local licA = BR.Identity.qualified('license', BR.Identity.licenseOf(1))
+    local licB = BR.Identity.qualified('license', BR.Identity.licenseOf(2))
+    local killer = BR.Evidence.forLicense(licA)
+    local victim = BR.Evidence.forLicense(licB)
+    ok(#killer == 1 and #killer[1].kills == 1,
+        'the killer gets the elimination on their record',
+        tostring(#killer))
+    ok(#victim == 1 and #victim[1].kills == 1,
+        'and so does the victim -- their own deaths are evidence too',
+        tostring(#victim))
+    ok(killer[1].matchId == m.id, 'tagged with the match it happened in',
+        tostring(killer[1].matchId))
+
+    -- LOBBY ACTIVITY IS NOT EVIDENCE. A player with no matchId is not in a
+    -- match, and holding the whole server's between-match small talk would be
+    -- memory spent on something no reviewer will ever open.
+    BR.Evidence.buf:clearMatch(nil)
+    BR.Roster.setMatch(1, nil)
+    BR.Evidence.noteChat(1, { text = 'in the lobby', channel = 0, at = 1 })
+    ok(BR.Evidence.stats().chatRows == 0, 'nothing is held outside a match',
+        tostring(BR.Evidence.stats().chatRows))
+
+    -- DISCONNECT SEALS RATHER THAN FREES, which is what makes "caused hell then
+    -- left" reportable at all.
+    local m2 = lootMatch()
+    BR.Evidence.buf:clearMatch(nil)
+    BR.Evidence.noteChat(1, { text = 'gg ez', channel = 0, at = 10 })
+    ok(BR.Evidence.stats().chatRows == 1, 'a message in a match is held')
+
+    fire('playerDropped', 1)
+    ok(BR.Evidence.stats().live == 0, 'their live record is gone')
+    ok(BR.Evidence.stats().sealed == 1, 'but it was sealed, not freed')
+    local gone = BR.Evidence.forLicense(licA)
+    ok(#gone == 1 and gone[1].chat[1].text == 'gg ez',
+        'so their chat survives them leaving')
+    ok(#BR.Evidence.departed(m2.id) == 1,
+        'and they are still listed as a departed player of that match')
+
+    -- MATCH TEARDOWN IS THE DISCARD, and it must be on the path that always
+    -- runs. br:match:results returns early when nobody scored, so a match that
+    -- ended empty would leak; destroy is the only way out of the registry.
+    --
+    -- Both halves are asserted separately because this harness's TriggerEvent
+    -- records rather than dispatches: that destroy ANNOUNCES the teardown, and
+    -- that the handler ACTS on the announcement. Testing only one would leave
+    -- either a signal nobody hears or a listener nothing calls.
+    fired = {}
+    BR.Match.destroy(m2)
+    local announced = firedOf('br:match:destroyed')[1]
+    ok(announced ~= nil and announced.matchId == m2.id,
+        'destroying a match announces it, with the id',
+        announced and tostring(announced.matchId) or 'nothing announced')
+
+    fire('br:match:destroyed', nil, { matchId = m2.id })
+    local after = BR.Evidence.stats()
+    ok(after.live == 0 and after.sealed == 0 and after.chatRows == 0,
+        'and the announcement discards everything that match held',
+        ('live %d sealed %d chat %d'):format(after.live, after.sealed, after.chatRows))
 end
 
 describe('combat.attribution')

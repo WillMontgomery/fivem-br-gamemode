@@ -26,6 +26,7 @@ for _, f in ipairs({
     'shared/storm_solve.lua',
     'shared/loot_gen.lua',
     'shared/combat_solve.lua',
+    'shared/evidence_buf.lua',
 }) do
     local chunk, err = loadfile(ROOT .. f)
     if not chunk then
@@ -882,6 +883,112 @@ do
         'shooting a squadmate is refused as friendly fire', tostring(whyMate))
     ok(not BR.ShotSuspicious[whyMate],
         'and a squad wipe by accident can never open an incident')
+end
+
+describe('evidence.buffer')
+do
+    -- WHAT A MATCH KNOWS, HELD UNTIL SOMEBODY NEEDS IT. The bugs worth catching
+    -- here are the quiet ones: a buffer that stops appending, a departed player
+    -- whose record is freed before anybody can report them, or evidence that
+    -- ends up filed against whoever inherited a recycled server id.
+
+    local buf = BR.EvidenceBuf.new({ chatMax = 3, killMax = 2 })
+
+    ok(buf ~= nil, 'a buffer can be built')
+    local s0 = buf:stats()
+    ok(s0.live == 0 and s0.sealed == 0, 'and starts empty')
+
+    -- BOUNDED, DROPPING OLDEST. Unbounded is a memory leak with a nice name.
+    for i = 1, 6 do
+        buf:noteChat(7, { text = 'line' .. i, at = i },
+            { license = 'license:aaa', name = 'Dave', matchId = 41 })
+    end
+    local r = buf:get(7)
+    ok(r ~= nil, 'a note starts tracking the player')
+    ok(#r.chat == 3, 'chat is capped', tostring(r and #r.chat))
+    ok(r.chat[1].text == 'line4' and r.chat[3].text == 'line6',
+        'and keeps the most recent lines, not the first ones',
+        r and (r.chat[1].text .. '..' .. r.chat[3].text))
+
+    for i = 1, 4 do
+        buf:noteKill(7, { victim = 'V' .. i, at = i })
+    end
+    ok(#buf:get(7).kills == 2, 'kills are capped independently',
+        tostring(#buf:get(7).kills))
+
+    -- METADATA ACCRETES AND NEVER FLICKERS BACK TO UNKNOWN. `license` is filled
+    -- lazily by the roster, so a buffer that started before it was known must
+    -- still end up with one -- and a later note that happens not to carry it
+    -- must not erase it.
+    local buf2 = BR.EvidenceBuf.new()
+    buf2:noteChat(9, { text = 'hi', at = 1 }, { name = 'Early', matchId = 41 })
+    ok(buf2:get(9).license == nil, 'a license we do not have yet is nil')
+    buf2:noteChat(9, { text = 'ho', at = 2 }, { license = 'license:bbb' })
+    ok(buf2:get(9).license == 'license:bbb', 'and is filled in when it arrives')
+    ok(buf2:get(9).name == 'Early', 'without losing what was already known')
+    buf2:noteChat(9, { text = 'hum', at = 3 }, { name = nil })
+    ok(buf2:get(9).license == 'license:bbb',
+        'and a later note carrying nothing does not erase it')
+
+    -- SEALED, NOT DELETED -- the case the owner asked about by name: somebody
+    -- causes trouble and leaves immediately.
+    local sealed = buf:seal(7, 5000)
+    ok(sealed ~= nil, 'a disconnect seals the record')
+    ok(buf:get(7) == nil, 'so it is no longer under the server id')
+    ok(sealed.leftAt == 5000, 'and remembers when they left',
+        tostring(sealed.leftAt))
+    ok(#buf:forLicense('license:aaa') == 1,
+        'but it is still reachable by license')
+    ok(#buf:departed(41) == 1, 'and still reportable as a departed player')
+    ok(#buf:forLicense('license:aaa')[1].chat == 3,
+        'with their chat intact')
+
+    -- THE WHOLE REASON SEALING IS KEYED ON LICENSE. Server ids are recycled
+    -- within the minute, so a record left under `src` would start collecting the
+    -- next player's chat -- and an incident built from it would be a record
+    -- about the wrong person.
+    buf:noteChat(7, { text = 'innocent', at = 6000 },
+        { license = 'license:ccc', name = 'Newcomer', matchId = 41 })
+    ok(#buf:forLicense('license:aaa')[1].chat == 3,
+        'so the departed player gains nothing from the new occupant')
+    ok(#buf:forLicense('license:ccc') == 1
+       and buf:forLicense('license:ccc')[1].chat[1].text == 'innocent',
+        'and the newcomer starts clean')
+
+    -- A reconnect inside one match is TWO sessions, not one merged record.
+    ok(#buf:departed(41) == 1, 'sealing is per session')
+    buf:seal(7, 7000)
+    buf:noteChat(7, { text = 'again', at = 8000 },
+        { license = 'license:ccc', name = 'Newcomer', matchId = 41 })
+    ok(#buf:forLicense('license:ccc') == 2,
+        'so a reconnect produces two records rather than merging them',
+        tostring(#buf:forLicense('license:ccc')))
+
+    -- Nothing at all for a license we have never seen. Not an error, not a
+    -- fabricated empty record: an absent answer.
+    ok(#buf:forLicense('license:nope') == 0, 'an unknown license has no records')
+    ok(#buf:forLicense(nil) == 0, 'and neither does a nil one')
+
+    -- THE DISCARD IS THE COST CONTROL. A match with no incident wrote nothing to
+    -- DynamoDB and must now cost nothing in memory either.
+    local before = buf:stats()
+    ok(before.chatRows > 0, 'there is something to discard')
+    local dropped = buf:clearMatch(41)
+    ok(dropped > 0, 'match end drops the records', tostring(dropped))
+    local after = buf:stats()
+    ok(after.live == 0 and after.sealed == 0 and after.chatRows == 0,
+        'and leaves nothing behind')
+
+    -- Only the match that ended. Concurrent matches are the normal case on this
+    -- server, and clearing all of them would destroy a live match's evidence.
+    local buf3 = BR.EvidenceBuf.new()
+    buf3:noteChat(1, { text = 'a' }, { license = 'l:1', matchId = 41 })
+    buf3:noteChat(2, { text = 'b' }, { license = 'l:2', matchId = 42 })
+    buf3:clearMatch(41)
+    ok(buf3:get(1) == nil, 'the ended match is forgotten')
+    ok(buf3:get(2) ~= nil, 'and a concurrent one is untouched')
+
+    ok(buf3:seal(999, 1) == nil, 'sealing an unknown key is a no-op, not a crash')
 end
 
 describe('bus.doors')

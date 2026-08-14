@@ -386,6 +386,22 @@ end
 ---
 --- Guessing the field names and shipping enforcement on top of them is exactly
 --- the pattern that cost this project six rounds on the ammo counter.
+--- WHAT A MATCH REMEMBERS ABOUT A PLAYER, so an incident can carry evidence
+--- rather than only an accusation.
+---
+--- Held in memory and discarded when the match leaves the registry. Nothing is
+--- written to a database unless an incident is filed (owner call, 2026-08-14),
+--- so a clean match -- nearly all of them -- costs one table and no DynamoDB
+--- traffic.
+---
+--- Bounded because 100 players times an unbounded chat log is a memory leak with
+--- a nice name. The caps are the last N, not the first N: the recent lines are
+--- the ones that explain an incident, the early ones are the bus ride.
+BR.Config.Evidence = {
+    chatMax = 50,
+    killMax = 30,
+}
+
 BR.Config.Combat = {
     -- Both ON as of 2026-08-07: a full playtest produced no "shot refused"
     -- lines, which is the false-positive gate this was waiting for.

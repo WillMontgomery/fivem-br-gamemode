@@ -385,13 +385,35 @@ function BR.Roster.public(entry)
     return out
 end
 
---- One player, projected for the admin console. See RINGMASTER_FIELDS.
+--- A player's qualified license, resolving and caching it on first ask.
 ---
---- Also the place the entry's `license` placeholder finally gets filled: it
---- was declared in newEntry as "filled by br_stats if it is running" and
---- nothing ever wrote it. Resolved lazily here (once per player, cached on
---- the entry) via BR.Identity, so a roster full of players costs one
---- identifier scan each, not one per push.
+--- `newEntry` declares `license = nil` as "filled by br_stats if it is running",
+--- and for a long time nothing wrote it -- so whether a player had a license
+--- attached depended on whether the ringmaster projection had run for them yet.
+--- That was survivable while the only reader was a snapshot. It stopped being
+--- survivable when moderation records started being keyed on it: an incident
+--- with no license is a case about nobody, and server ids are recycled within
+--- the minute.
+---
+--- SO IT LIVES HERE, once, rather than being re-derived at each call site. It
+--- was already being done in two places by the time this was extracted.
+--- Cached on the entry, so a roster full of players costs one identifier scan
+--- each rather than one per read.
+---
+--- A licenseless connection stays nil, and nil is what every caller passes on.
+--- Inventing a key here would be a ban against the wrong human later.
+--- @param src integer
+--- @return string|nil
+function BR.Roster.licenseOf(src)
+    local entry = roster[src]
+    if not entry then return nil end
+    if entry.license == nil and BR.Identity then
+        entry.license = BR.Identity.qualified('license', BR.Identity.licenseOf(src))
+    end
+    return entry.license
+end
+
+--- One player, projected for the admin console. See RINGMASTER_FIELDS.
 ---
 --- `connectedAt` is the wire name for `joinedAt` -- a GetGameTimer() reading,
 --- deliberately not a duration, so the console can count it up continuously
@@ -400,11 +422,7 @@ end
 --- @param entry table
 --- @return table
 function BR.Roster.ringmaster(entry)
-    if entry.license == nil and BR.Identity then
-        entry.license = BR.Identity.qualified('license', BR.Identity.licenseOf(entry.src))
-        -- A licenseless connection stays nil, and nil is what the wire sends.
-        -- Inventing a key here would be a ban against the wrong human later.
-    end
+    BR.Roster.licenseOf(entry.src)
 
     local out = {}
     for k in pairs(RINGMASTER_FIELDS) do
