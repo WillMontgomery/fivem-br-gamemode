@@ -798,6 +798,92 @@ do
         table.concat(surprises, ', '))
 end
 
+describe('combat.refusal.classes')
+do
+    -- WHAT CAN BECOME AN INCIDENT, PINNED.
+    --
+    -- BR.Damage.noteRefusal opens with `if not BR.ShotSuspicious[why] then
+    -- return end`, so this table alone decides which refusals can ever reach
+    -- the Ringmaster feed -- and now, which can ever open an incident somebody
+    -- has to review. A reason quietly added to it does not fail anything: it
+    -- just starts filing cases. The first warmup scrap of every match would do
+    -- it, because since fists became a real weapon EVERY player has the means
+    -- to generate rule refusals constantly.
+    --
+    -- So the classification is asserted from both ends and checked for
+    -- exhaustiveness. Adding a reason to BR.ShotRefusal without filing it under
+    -- one of these two lists fails here, which is the point: the decision is
+    -- forced while the shape is on screen rather than discovered from a queue
+    -- full of friendly fire.
+
+    -- RULES. Things an HONEST client does constantly; the game simply declines
+    -- them. None of these may ever count, and none may ever file an incident.
+    local RULES = {
+        'WARMUP', 'SAME_SQUAD', 'NOT_LIVE', 'OTHER_MATCH',
+    }
+    -- MEANS. A weapon the server never issued, a magazine it never filled, a
+    -- range or cadence the weapon does not have. No honest way to produce one.
+    local MEANS = {
+        'NO_WEAPON', 'NOT_HELD', 'NO_AMMO', 'TOO_FAR', 'TOO_FAST',
+        'NOT_THROWN', 'SELF',
+    }
+
+    for _, name in ipairs(RULES) do
+        local why = BR.ShotRefusal[name]
+        ok(why ~= nil, ('%s is a real refusal reason'):format(name))
+        ok(not BR.ShotSuspicious[why],
+            ('%s is a rule, so it never counts toward the threshold'):format(name))
+    end
+
+    for _, name in ipairs(MEANS) do
+        local why = BR.ShotRefusal[name]
+        ok(why ~= nil, ('%s is a real refusal reason'):format(name))
+        ok(BR.ShotSuspicious[why] == true,
+            ('%s is a means, so it counts'):format(name))
+    end
+
+    -- EXHAUSTIVE, so a new reason cannot arrive unclassified. OK is nil by
+    -- construction and therefore never appears in pairs().
+    local filed = {}
+    for _, name in ipairs(RULES) do filed[name] = true end
+    for _, name in ipairs(MEANS) do filed[name] = true end
+    local unfiled = {}
+    for name in pairs(BR.ShotRefusal) do
+        if not filed[name] then unfiled[#unfiled + 1] = name end
+    end
+    table.sort(unfiled)
+    ok(#unfiled == 0,
+        'every refusal reason is filed as either a rule or a means',
+        table.concat(unfiled, ', '))
+
+    -- And nothing may be suspicious that is not a refusal reason at all -- a
+    -- stale string left behind by a rename would count forever against nobody.
+    local known = {}
+    for _, why in pairs(BR.ShotRefusal) do known[why] = true end
+    local orphans = 0
+    for why in pairs(BR.ShotSuspicious) do
+        if not known[why] then orphans = orphans + 1 end
+    end
+    ok(orphans == 0, 'nothing counts that is not a live refusal reason')
+
+    -- FRIENDLY FIRE, END TO END. The one the owner asked about by name: a shot
+    -- at a squadmate is refused, it is refused AS SAME_SQUAD rather than as
+    -- something that reads like cheating, and that reason cannot be counted.
+    local cfg = BR.Config.Combat
+    local rifle = BR.Config.WeaponById['carbinerifle']
+    local _, whyMate = BR.ValidateShot(
+        { weapon = rifle.hash, dist = 20.0, sinceLastMs = 500 },
+        {
+            sameSrc = false, sameMatch = true, warmup = false,
+            shooterLive = true, victimLive = true, sameSquad = true,
+            heldItem = 'carbinerifle', clip = 30,
+        }, cfg)
+    ok(whyMate == BR.ShotRefusal.SAME_SQUAD,
+        'shooting a squadmate is refused as friendly fire', tostring(whyMate))
+    ok(not BR.ShotSuspicious[whyMate],
+        'and a squad wipe by accident can never open an incident')
+end
+
 describe('bus.doors')
 do
     -- THE DOOR WINDOW IS THE UNION, never a replacement. A tour that crosses
