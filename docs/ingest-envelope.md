@@ -270,12 +270,24 @@ on players.
 
 **`refusal`** — the anticheat firing, mirrored from `BR.Damage.noteRefusal`.
 Fires once per window at `refusalLimit` (8) countable refusals inside
-`refusalWindowMs` (10000). `action` is what the server actually did, which is
-`log` today — this channel is read-only and does not change it.
+`refusalWindowMs` (10000). `action` still means what it always meant — what the
+server actually did — and what it does now is file an incident, so the value is
+the constant `incident`.
+
+It stays on the wire while constant because the receiver's job is to record what
+happened rather than infer it from a build number. **This is an added enum value,
+not a removed field or a changed meaning, so it needs no `v` bump** — but the
+receiver rejects values it does not know, so the console must be updated before
+a game server that sends it. Deploy order is console first, game second; the
+console keeps accepting `log` / `notify` / `kick` so an older game build still
+reports cleanly.
 
 Identity is on the **event**, not inferred from `src`. Server ids are recycled
 within the minute; a moderation record keyed on one is a record about whoever
-happens to be holding that slot later.
+happens to be holding that slot later. `license` is resolved by
+`BR.Damage.noteRefusal` at the moment it fires rather than left for the snapshot
+path to fill, because a case that cannot be keyed to a player cannot be
+reviewed — it is `null` only for a genuinely licenseless connection.
 
 ---
 

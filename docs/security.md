@@ -114,28 +114,34 @@ isolation, which is a much louder failure with its own detection.
 **The exact trigger.** There is one escalating rule and these are its numbers:
 
 > **8** countable refusals from the same player inside a **10-second** rolling
-> window fires `refusalAction` **once**, and once only, for that window. The
-> window restarts empty on the next refusal after it lapses; there is no
-> permanent record and no second escalation tier *yet* — one is planned in M9.
+> window **files one incident**, once only, for that window. The window restarts
+> empty on the next refusal after it lapses. Configured at
+> `BR.Config.Combat.refusalLimit` and `refusalWindowMs`.
 
 These numbers were tightened from 12-in-30s once rules refusals were separated
 out: what is left in the countable stream has no honest explanation, so eight
-of them inside ten seconds is a decision rather than a bad minute. It does
-demand precision from the detection, which is exactly why the action still
-defaults to `log` and why it wants pressure testing with more than three
-clients before it is trusted to kick.
+of them inside ten seconds is a decision rather than a bad minute.
 
-`refusalAction` is one of `log` (default — a console line naming the player,
-the count and the last reason), `notify` (that, plus an in-game warning to the
-player that their shots are not landing) or `kick`. Configured at
-`BR.Config.Combat.refusalAction`, with `refusalLimit` and `refusalWindowMs`
-next to it. Nothing else in the game escalates on repetition — no strike
+**The game no longer decides what happens to the player** (owner call,
+2026-08-14). `refusalAction` — which read `log` | `notify` | `kick` — is gone,
+along with the in-game warning and the `DropPlayer` that sat behind it. Two
+things were wrong with deciding here:
+
+- **The player was told.** A notice reading "your shots are not landing" is
+  free tuning feedback for whoever is testing a trainer. Nothing is now shown
+  to an offender at any point, and the eventual kick reason is deliberately
+  generic.
+- **The evidence was gathered after the fact, if at all.** Dropping the player
+  first ended the session the evidence had to come from.
+
+So the order is inverted. Crossing the threshold collects what the match knows
+about that player and files an **incident**; Ringmaster reads the case, decides,
+and sends any enforcement back over the command channel it already owns. It is
+the side with the ban list, the audit log and a human. This side has a counter.
+
+`BR.Damage.noteRefusal` still prints one line to the **server console**, which
+no player reads. Nothing else in the game escalates on repetition — no strike
 count survives a window, a match, or a session.
-
-The default is `log` on purpose. A validator that has never wrongly refused an
-honest player *today* is still a bet on tomorrow, and banning your own players
-is a worse failure than tolerating a cheater who is already unable to hurt
-anyone.
 
 **One event, three answers, and `weaponType` gives all of them.**
 `weaponDamageEvent` fires for everything that hurts a player — gunfire, melee,

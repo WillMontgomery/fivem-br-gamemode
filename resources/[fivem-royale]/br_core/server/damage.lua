@@ -268,11 +268,23 @@ local refusalOf = {}
 --- of them is not noise, it is somebody doing something the server did not
 --- issue them the means to do.
 ---
---- The action still defaults to logging rather than kicking. A validator that
---- has never wrongly refused an honest player TODAY may still do so the first
---- time a pickup races a shot, and banning your own players is a worse failure
---- than tolerating a cheater who is already unable to hurt anyone. Turn it up
---- deliberately: `BR.Config.Combat.refusalAction`.
+--- THIS FUNCTION NO LONGER TOUCHES THE PLAYER, and that is the point.
+---
+--- It used to notify them and, at `refusalAction = kick`, drop them -- deciding
+--- and enforcing in the same breath, before anybody had recorded why. Two things
+--- were wrong with that. The player learned exactly which of their tools had
+--- been noticed, which is free tuning feedback for whoever is testing a trainer.
+--- And the evidence was gathered, if at all, from a session that had already
+--- ended.
+---
+--- So the order is inverted (owner call, 2026-08-14): file an incident with the
+--- evidence attached, and let Ringmaster decide. It holds the ban list, the
+--- audit log and an admin; this function holds a counter. Enforcement comes back
+--- over the command channel that already exists for it.
+---
+--- NOTHING IS EVER SHOWN TO THE OFFENDER. Not a notice, not a hint, and the
+--- eventual kick reason is deliberately generic. The one line printed below goes
+--- to the server console, which no player reads.
 --- @param src integer
 --- @param why string|nil
 function BR.Damage.noteRefusal(src, why)
@@ -301,30 +313,41 @@ function BR.Damage.noteRefusal(src, why)
     print(('[br_core] ANTICHEAT: %s (%d) had %d shots refused in %ds -- last: %s')
         :format(name, src, r.count, window / 1000, tostring(why)))
 
-    -- Mirror the firing to the Ringmaster feed. Fire-and-forget on purpose:
-    -- if br_ringmaster is absent nothing listens and nothing is owed. This
-    -- line OBSERVES refusalAction; it must never grow behaviour of its own.
+    -- Hand the firing to br_ringmaster, which files the incident and attaches
+    -- the evidence. Fire-and-forget on purpose: if br_ringmaster is absent
+    -- nothing listens and nothing is owed -- the shots were already refused,
+    -- which is the part that protects the match.
+    --
+    -- `action` still means what it has always meant: what the server actually
+    -- did. What it did is file a case, so that is what it says. The value is
+    -- constant now rather than configurable, and it stays on the wire because
+    -- the receiver's job is to record what happened, not to infer it.
+    -- IDENTITY IS RESOLVED HERE, NOT LEFT TO THE SNAPSHOT.
+    --
+    -- This used to send `e.license`, which is nil until the ringmaster
+    -- projection happens to fill it -- so whether a case could be keyed to a
+    -- player depended on whether a snapshot had run for them yet. That was
+    -- survivable while this was a log line. It is not survivable now that the
+    -- event opens an incident: server ids recycle within the minute, so a case
+    -- with no license is a case about whoever holds that slot next.
+    local license = e and e.license or nil
+    if license == nil and BR.Identity then
+        license = BR.Identity.qualified('license', BR.Identity.licenseOf(src))
+        -- Cache it back so the projection and every later firing agree.
+        if e and license then e.license = license end
+    end
+
     TriggerEvent('br:ringmaster:refusal', {
         src      = src,
         name     = name,
-        license  = e and e.license or nil,   -- filled lazily by the snapshot path
+        license  = license,   -- nil only for a genuinely licenseless connection
         matchId  = e and e.matchId or nil,
         count    = r.count,
         windowMs = window,
         reason   = tostring(why),
-        action   = cfg.refusalAction or 'log',
+        action   = 'incident',
         at       = now,
     })
-
-    local action = cfg.refusalAction or 'log'
-    if action == 'notify' or action == 'kick' then
-        BR.Server.notify(src,
-            'Your weapon is not one this match issued you. Shots are not landing.',
-            'warn')
-    end
-    if action == 'kick' then
-        DropPlayer(src, 'Weapon validation failed repeatedly.')
-    end
 end
 
 --- Forget a player's refusal history. Called on disconnect.

@@ -73,9 +73,24 @@ function SetRoutingBucketPopulationEnabled() end
 
 -- Capture outbound traffic so tests can assert on what clients would receive.
 local sent = {}
-function TriggerEvent() end
+-- SERVER-SIDE events are captured too, and the anticheat is why. Its whole
+-- output is now one TriggerEvent -- it no longer notifies or drops anybody, so
+-- there is nothing in `sent` to assert on and a test watching only client
+-- traffic would pass while filing no incident at all.
+local fired = {}
+function TriggerEvent(event, ...)
+    fired[#fired + 1] = { event = event, args = { ... } }
+end
 function TriggerClientEvent(event, target, ...)
     sent[#sent + 1] = { event = event, target = target, args = { ... } }
+end
+--- Server-side events of one name, in order.
+local function firedOf(name)
+    local out = {}
+    for _, f in ipairs(fired) do
+        if f.event == name then out[#out + 1] = f.args[1] end
+    end
+    return out
 end
 function RegisterNetEvent() end
 function RegisterCommand() end
@@ -4654,18 +4669,25 @@ do
     end
     ok(true, 'refusals under the limit are counted quietly')
 
-    -- The action fires ONCE at the limit, not once per shot after it -- a
-    -- cheater holding the trigger must not produce a hundred log lines or a
-    -- hundred notices.
+    -- ONE INCIDENT PER WINDOW, not one per refused shot. A cheater holding the
+    -- trigger must not open a hundred cases for somebody to read.
+    fired = {}
     sent = {}
     BR.Damage.noteRefusal(1, BR.ShotRefusal.NOT_HELD)
-    local firstBurst = #sent
+    local firstBurst = #firedOf('br:ringmaster:refusal')
+    ok(firstBurst == 1, 'crossing the threshold files exactly one incident',
+        tostring(firstBurst))
     for _ = 1, 20 do
         BR.Damage.noteRefusal(1, BR.ShotRefusal.NOT_HELD)
     end
-    ok(#sent == firstBurst,
-        'the response fires once per window, not once per refused shot',
-        ('%d then %d'):format(firstBurst, #sent))
+    ok(#firedOf('br:ringmaster:refusal') == firstBurst,
+        'and holding the trigger down files no more',
+        ('%d then %d'):format(firstBurst, #firedOf('br:ringmaster:refusal')))
+
+    -- NOTHING REACHES THE PLAYER. Not a notice, not a hint. The offender used
+    -- to be told their shots were not landing, which is free tuning feedback
+    -- for whoever is testing a trainer (owner call, 2026-08-14).
+    ok(#sent == 0, 'and the offender is told nothing at all', tostring(#sent))
 
     -- A fresh window starts clean, so an honest player who tripped it once
     -- during a bad race is not carrying it for the rest of the match.
@@ -4675,37 +4697,72 @@ do
     end
     ok(true, 'and the count resets with the window')
 
-    -- DEFAULT IS LOG, DELIBERATELY. Kicking on a validator that has never
-    -- wrongly refused an honest player TODAY is still a bet on tomorrow.
-    ok(cfg.refusalAction == 'log',
-        'and the default response is to log rather than to kick',
+    -- THE SERVER DECIDES NOTHING ABOUT THE PLAYER. `refusalAction` is gone: a
+    -- convar naming an enforcement action would describe a decision this side
+    -- no longer makes. The firing reports what it actually did -- filed a case.
+    ok(cfg.refusalAction == nil,
+        'there is no configurable enforcement action left in br_core',
         tostring(cfg.refusalAction))
+
+    BR.Damage.forgetRefusals(1)
+    fired = {}
+    for _ = 1, cfg.refusalLimit do
+        BR.Damage.noteRefusal(1, BR.ShotRefusal.NO_AMMO)
+    end
+    local ev = firedOf('br:ringmaster:refusal')[1]
+    ok(ev ~= nil, 'the firing reaches the Ringmaster feed')
+    if ev then
+        ok(ev.action == 'incident', 'and says it filed an incident',
+            tostring(ev.action))
+        ok(ev.reason == BR.ShotRefusal.NO_AMMO, 'carrying the reason',
+            tostring(ev.reason))
+        ok(ev.count == cfg.refusalLimit, 'and the count that tripped it',
+            tostring(ev.count))
+        -- Identity must be on the event. Server ids recycle within the minute,
+        -- so a case keyed on `src` is a case about whoever holds that slot next.
+        ok(ev.license ~= nil, 'and a license rather than only a server id',
+            tostring(ev.license))
+    end
 
     -- RULES ARE NOT CHEATING, and fists are what made this matter: every
     -- player has them at all times, so a warmup scrap or a squadmate caught in
     -- a spray produces refusals by the dozen. Counting those means the
     -- threshold fires on ordinary play.
     BR.Damage.forgetRefusals(1)
-    sent = {}
+    fired = {}
     for _ = 1, cfg.refusalLimit * 3 do
         BR.Damage.noteRefusal(1, BR.ShotRefusal.NOT_LIVE)
         BR.Damage.noteRefusal(1, BR.ShotRefusal.SAME_SQUAD)
+    end
+    ok(#firedOf('br:ringmaster:refusal') == 0,
+        'punching in warmup and hitting a squadmate never file an incident',
+        tostring(#firedOf('br:ringmaster:refusal')))
+
+    -- SELF COUNTS BUT DOES NOT FILE (owner call, 2026-08-14). Repeated
+    -- self-damage stays a threshold input -- somebody mixing it with real means
+    -- still trips -- but a cluster that is only self-harm is the one means-class
+    -- signal with an innocent explanation, since a single grenade can land
+    -- several damage ticks. Ringmaster is what declines to open the case; from
+    -- here it is indistinguishable from any other countable refusal, and that
+    -- is deliberate: the counter must not learn to forgive a reason.
+    BR.Damage.forgetRefusals(1)
+    fired = {}
+    for _ = 1, cfg.refusalLimit do
         BR.Damage.noteRefusal(1, BR.ShotRefusal.SELF)
     end
-    ok(#sent == 0,
-        'punching in warmup and hitting a squadmate never trip the threshold',
-        tostring(#sent))
+    local selfEv = firedOf('br:ringmaster:refusal')[1]
+    ok(selfEv ~= nil and selfEv.reason == BR.ShotRefusal.SELF,
+        'repeated self-damage still counts and still reports')
 
     -- ...and the ones that mean something still do, from the same clean slate.
     BR.Damage.forgetRefusals(1)
-    cfg.refusalAction = 'notify'
-    sent = {}
+    fired = {}
     for _ = 1, cfg.refusalLimit do
         BR.Damage.noteRefusal(1, BR.ShotRefusal.NO_WEAPON)
     end
-    ok(#sent > 0, 'while a weapon the server never issued still does',
-        tostring(#sent))
-    cfg.refusalAction = 'log'
+    ok(#firedOf('br:ringmaster:refusal') > 0,
+        'while a weapon the server never issued still does',
+        tostring(#firedOf('br:ringmaster:refusal')))
     BR.Damage.forgetRefusals(1)
 end
 

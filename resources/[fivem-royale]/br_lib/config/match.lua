@@ -415,11 +415,6 @@ BR.Config.Combat = {
     -- somebody generating a dozen in half a minute is doing something the
     -- server did not issue them the means to do.
     --
-    -- Still defaults to LOG. A validator that has never wrongly refused an
-    -- honest player today may still do so the first time a pickup races a
-    -- shot, and banning your own players is a worse failure than tolerating a
-    -- cheater who is already unable to hurt anyone. "notify" tells them their
-    -- shots are not landing; "kick" drops them.
     -- TIGHTENED TO 8 IN 10s (user call, 2026-08-08), from 12 in 30s.
     --
     -- The looser window was chosen when nothing had been measured. Since then
@@ -429,11 +424,16 @@ BR.Config.Combat = {
     -- explanation, and eight of those inside ten seconds is a decision rather
     -- than a bad minute.
     --
-    -- It does demand precision from the detection, which is why the action
-    -- still defaults to `log` and why this wants pressure testing with more
-    -- than three clients before it is trusted to kick. M9 adds the second
-    -- escalation tier on top of this.
-    refusalAction   = "log",      -- "log" | "notify" | "kick"
+    -- THERE IS NO `refusalAction` ANY MORE (owner call, 2026-08-14). It read
+    -- "log" | "notify" | "kick" and decided what the SERVER would do to the
+    -- player on its own. Crossing the threshold now files an incident with the
+    -- match's evidence attached and stops there; Ringmaster reads the case and
+    -- decides, because it is the side that holds the ban list, the audit log
+    -- and a human. A convar that still named an enforcement action would be
+    -- describing a decision this file no longer makes.
+    --
+    -- These two still configure something real: they set where the threshold
+    -- sits, which is what decides whether a case is opened at all.
     refusalLimit    = 8,
     refusalWindowMs = 10000,
 
