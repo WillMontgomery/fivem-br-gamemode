@@ -350,35 +350,69 @@ end
 --- @param m table
 function BR.Match.publishResults(m)
     local rows = {}
+    local endedAt = GetGameTimer()
+    local startedAt = m.startedAt or endedAt
+
+    --- One participant's row.
+    ---
+    --- THE TWO DURATIONS ARE DIFFERENT NUMBERS AND BOTH ARE NEEDED. `survivedMs`
+    --- stops when they died; `presentMs` stops when they disconnected. A player
+    --- who is killed at four minutes and spectates to the twenty-minute finish
+    --- survived four and was present for twenty, and paying XP on the second is
+    --- what made an early death worth the same as a win (#99).
+    ---
+    --- Both are clamped at zero: a player eliminated during WARMUP or the bus
+    --- has a timestamp older than startedAt, which is set at PLAYING.
+    --- @param src integer
+    --- @param e table
+    --- @param left boolean  sealed on disconnect rather than read live
+    local function row(src, e, left)
+        local diedAt = e.diedAt or e.leftAt or endedAt
+        local goneAt = e.leftAt or endedAt
+        return {
+            src       = src,
+            name      = e.name,
+            -- Normally filled by whoever consumes this -- br_core does not
+            -- resolve identifiers. A SEALED entry is the exception and carries
+            -- its own, captured at disconnect while the source was still
+            -- resolvable; by now it is not.
+            license   = e.license,
+            kills     = e.kills or 0,
+            downs     = e.downs or 0,
+            revives   = e.revives or 0,
+            damage    = e.damage or 0.0,
+            placement = e.placement,
+            squadId   = e.squadId,
+            survivedMs = math.max(0, diedAt - startedAt),
+            presentMs  = math.max(0, goneAt - startedAt),
+            -- There is nobody to show a verdict screen to.
+            left      = left,
+        }
+    end
 
     BR.Roster.each(
         function(e) return e.matchId == m.id end,
-        function(src, e)
-            rows[#rows + 1] = {
-                src       = src,
-                name      = e.name,
-                -- Filled by whoever consumes this; br_core does not resolve
-                -- identifiers, and the roster's license is populated only when
-                -- something else put it there.
-                license   = e.license,
-                kills     = e.kills or 0,
-                downs     = e.downs or 0,
-                revives   = e.revives or 0,
-                damage    = e.damage or 0.0,
-                placement = e.placement,
-                squadId   = e.squadId,
-            }
-        end)
+        function(src, e) rows[#rows + 1] = row(src, e, false) end)
+
+    -- THE PLAYERS WHO LEFT COUNT TOO. They are out of the roster -- correctly,
+    -- nothing should treat them as present -- but they played this match, and
+    -- walking only the roster is what silently voided the record of everyone
+    -- who closed the game after being eliminated (#100).
+    for _, e in ipairs(BR.Roster.departedIn(m.id)) do
+        rows[#rows + 1] = row(e.src, e, true)
+    end
 
     if #rows == 0 then return end
 
     TriggerEvent('br:match:results', {
         matchId   = m.id,
         mode      = m.mode,
-        startedAt = m.startedAt,
-        endedAt   = GetGameTimer(),
+        startedAt = startedAt,
+        endedAt   = endedAt,
         -- How many were in it, for placement-relative scoring: finishing 3rd of
-        -- 8 and 3rd of 96 are not the same achievement.
+        -- 8 and 3rd of 96 are not the same achievement. Counts the departed --
+        -- they were in the match, and a field of 48 that ends with 40 still
+        -- connected was never a field of 40.
         total     = #rows,
         players   = rows,
     })
@@ -398,6 +432,11 @@ function BR.Match.resetPlayers(m)
             e.stormHp, e.lastStormAt = nil, nil
             e.hp, e.armour = 100.0, 0.0
 
+            -- Per-match, like the counters above. A stale diedAt would date a
+            -- player's next match to their last one's clock and pay them
+            -- survival XP for a match they had not started.
+            e.diedAt, e.leftAt = nil, nil
+
             -- THE KNOCK COUNT IS PER MATCH, which is the only thing that makes
             -- the shortening bleed fair: a player who was picked up three times
             -- last round starts the next one on a full 45 seconds.
@@ -413,6 +452,12 @@ function BR.Match.resetPlayers(m)
                 BR.Roster.setState(src, BR.PlayerState.LOBBY)
             end
         end)
+
+    -- The other half of the same wipe: the sealed entries of everyone who left
+    -- this match. Their results published at ENDED, so nothing needs them now,
+    -- and holding them would leak an entry per disconnect for the server's
+    -- uptime.
+    BR.Roster.clearDeparted(m.id)
 end
 
 --- Cut a match's warmup short once it is full.

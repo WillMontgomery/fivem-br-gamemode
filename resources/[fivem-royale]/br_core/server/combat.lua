@@ -86,6 +86,13 @@ function BR.Combat.eliminate(src, cause, killerSrc)
 
     BR.Roster.setState(src, BR.PlayerState.DEAD)
     entry.placement = placement
+    -- WHEN THEIR MATCH STOPPED, for the survival term in the XP curve. Written
+    -- here because this is the only place a player stops surviving, and read
+    -- against m.startedAt -- the same GetGameTimer() clock, deliberately, so
+    -- the subtraction means something. Survival XP used to be computed from the
+    -- MATCH's duration, which paid the player who died first exactly what it
+    -- paid the winner (#99).
+    entry.diedAt = GetGameTimer()
     BR.Broadcast.delta({ op = 'update', src = src, e = { placement = placement } })
 
     if wasDowned then

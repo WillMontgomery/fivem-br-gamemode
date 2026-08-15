@@ -46,6 +46,19 @@ local function licenseOf(src)
     return BR.Identity.qualified('license', byKind and byKind.license)
 end
 
+--- The key to write this row under.
+---
+--- A ROW THAT CARRIES ITS OWN LICENSE HAS ALREADY ANSWERED THIS. That is the
+--- sealed-on-disconnect case: `licenseOf` resolves through the live player
+--- list, so for somebody who left ten minutes ago it returns nothing and the
+--- row would be dropped as unkeyable -- which is the bug it is here to fix
+--- (#100). br_core captures the license at disconnect for exactly this.
+--- @param p table  one row from br:match:results
+--- @return string|nil
+local function keyFor(p)
+    return p.license or licenseOf(p.src)
+end
+
 --- Turn one player's match into the deltas the store adds up.
 ---
 --- PLACEMENT DRIVES THE COUNTERS, and the two special cases are the ones worth
@@ -57,6 +70,12 @@ local function deltasFor(p, ctx)
     local won = placement == 1
     local squad = (p.squadId ~= nil)
 
+    -- SURVIVAL IS PER PLAYER, AND IT USED NOT TO BE. This read
+    -- `(ctx.endedAt - ctx.startedAt)` -- the MATCH's duration, off the envelope
+    -- rather than the row -- so all 48 players were credited the same survival
+    -- time and the one eliminated ninety seconds in was paid what the winner
+    -- was (#99). br_core now stamps the moment each player stopped surviving
+    -- and sends the difference.
     local r = {
         kills      = p.kills or 0,
         downs      = p.downs or 0,
@@ -65,7 +84,7 @@ local function deltasFor(p, ctx)
         placement  = placement,
         total      = ctx.total or 0,
         squadId    = p.squadId,
-        survivedMs = math.max(0, (ctx.endedAt or 0) - (ctx.startedAt or 0)),
+        survivedMs = p.survivedMs or 0,
     }
 
     local xpEarned = BR.Xp and BR.Xp.forMatch(r) or 0
@@ -85,7 +104,12 @@ local function deltasFor(p, ctx)
         downs        = r.downs,
         revives      = r.revives,
         damageDealt  = math.floor(r.damage),
-        playtimeSec  = math.floor(r.survivedMs / 1000),
+        -- PRESENCE, NOT SURVIVAL. Playtime is how long they were in the match,
+        -- which for anyone who stayed to spectate is longer than they lived --
+        -- and for anyone who quit is shorter than the match ran. The two look
+        -- interchangeable and are not, which is how survival XP came to be
+        -- measured with the wrong one.
+        playtimeSec  = math.floor((p.presentMs or r.survivedMs) / 1000),
         soloMatches  = squad and 0 or 1,
         squadMatches = squad and 1 or 0,
     }, xpEarned
@@ -100,10 +124,10 @@ AddEventHandler('br:match:results', function(res)
         return
     end
 
-    local written, skipped = 0, 0
+    local written, skipped, left = 0, 0, 0
 
     for _, p in ipairs(res.players or {}) do
-        local license = licenseOf(p.src)
+        local license = keyFor(p)
         if not license then
             skipped = skipped + 1
         else
@@ -147,7 +171,12 @@ AddEventHandler('br:match:results', function(res)
             -- window in which they stop looking. A failed write is reported in
             -- the server log; the far worse outcome is a correct write nobody
             -- saw the reward for.
-            if p.src then
+            --
+            -- NOT SENT TO SOMEBODY WHO LEFT. Their src is gone and, worse, may
+            -- already belong to whoever connected into that slot -- who would
+            -- get a verdict screen for a match they were not in. The write
+            -- still happens; only the telling is skipped.
+            if p.src and not p.left then
                 TriggerClientEvent(BR.Net.MATCH_EARNED, p.src, {
                     xp      = xpEarned,
                     volts   = deltas.balance,
@@ -177,9 +206,13 @@ AddEventHandler('br:match:results', function(res)
 
             TriggerEvent('br:ddb:statsApply', req, license, deltas)
             written = written + 1
+            if p.left then left = left + 1 end
         end
     end
 
-    print(('[br_stats] match %s: %d recorded, %d skipped (no license)')
-        :format(tostring(res.matchId), written, skipped))
+    -- The departed count is called out rather than folded in: it is the number
+    -- that used to be silently zero, so it is the one worth being able to read
+    -- off the console when checking this works.
+    print(('[br_stats] match %s: %d recorded (%d had left), %d skipped (no license)')
+        :format(tostring(res.matchId), written, left, skipped))
 end)

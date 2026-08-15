@@ -100,10 +100,36 @@ local function newEntry(src)
         reviverSrc = nil,
         reviveFrom = nil,
 
+        -- WHEN THIS MATCH ENDED FOR THEM, on the same GetGameTimer() clock as
+        -- m.startedAt. Both are nil for a player who is still in it.
+        --   diedAt  set by BR.Combat.eliminate; survival time stops here
+        --   leftAt  set by BR.Roster.remove; presence stops here
+        -- A player who dies and stays to spectate has diedAt and no leftAt,
+        -- which is exactly the difference the two numbers exist to carry.
+        --
+        -- DELIBERATELY IN NEITHER ALLOWLIST. These are published once, in the
+        -- match results, and read by nothing live -- so a client has no use for
+        -- them and the console would only be showing a number it cannot act on.
+        -- Cleared at CLEANUP with the rest of the per-match state.
+        diedAt     = nil,
+        leftAt     = nil,
+
         joinedAt   = GetGameTimer(),
         bucket     = 0,
     }
 end
+
+--- Players who disconnected mid-match, kept until that match publishes.
+---
+--- NOT KEYED BY src, AND THAT IS THE WHOLE POINT. Server ids are recycled
+--- within the minute, so a sealed entry left in `roster[src]` would be
+--- overwritten by -- or worse, silently merged with -- whoever connects into
+--- that slot next, which inside one match is a routine occurrence rather than
+--- an edge case. An array has no key to collide on.
+---
+--- This is the evidence buffer's move (#94), for the same reason: a disconnect
+--- SEALS a player's record rather than freeing it.
+local departed = {}
 
 --- Add a player, or return the existing entry if they are already known.
 --- @param src integer
@@ -252,6 +278,13 @@ end
 --- but their squad may still be alive and their placement still matters. So the
 --- entry is marked LEFT and removed, and the caller (match.lua) decides what that
 --- means for the win condition.
+---
+--- AND IT IS NOT THE SAME AS NEVER HAVING PLAYED. Removing the entry outright
+--- is what made a quit forfeit the entire match record -- publishResults walks
+--- the roster, so a departed player produced no row, so br_stats wrote nothing:
+--- no XP, no Volts, no match, not even the kills they got before they left
+--- (#100). In a battle royale the most common thing a player does after being
+--- eliminated is close the game, so that was most of them.
 --- @param src integer
 --- @return table|nil the removed entry
 function BR.Roster.remove(src)
@@ -259,6 +292,28 @@ function BR.Roster.remove(src)
     if not entry then return nil end
 
     entry.state = BR.PlayerState.LEFT
+
+    -- SEAL, don't discard, if they were in a match. The entry leaves the roster
+    -- either way -- nothing downstream should count a disconnected player as
+    -- present, and the alive count, the squad panel and the win condition all
+    -- read the roster -- but it survives in `departed` until the match it
+    -- belongs to publishes its results.
+    if entry.matchId then
+        entry.leftAt = GetGameTimer()
+
+        -- THE LICENSE HAS TO BE RESOLVED NOW. br_stats resolves it at match end
+        -- through BR.Identity.ofPlayer(src), and that answers for CONNECTED
+        -- players -- by the time the results publish, this source is gone and
+        -- the lookup returns nothing. A row written under a guessed key is
+        -- worse than one not written, so the key is captured while it is still
+        -- knowable and travels with the sealed entry.
+        if entry.license == nil and BR.Identity then
+            entry.license = BR.Identity.qualified('license', BR.Identity.licenseOf(src))
+        end
+
+        departed[#departed + 1] = entry
+    end
+
     roster[src] = nil
 
     -- Per-player combat bookkeeping goes with them. Server ids are recycled,
@@ -442,6 +497,33 @@ function BR.Roster.each(pred, fn)
     for src, entry in pairs(roster) do
         if not pred or pred(entry) then fn(src, entry) end
     end
+end
+
+--- Sealed entries for one match: the players who disconnected before it ended.
+---
+--- ONLY THE RESULTS PUBLISHER SHOULD CALL THIS. Everything else -- the alive
+--- count, the squad panel, the win condition, the console snapshot -- must go
+--- on seeing a departed player as gone, because they are.
+--- @param matchId integer
+--- @return table array of entries
+function BR.Roster.departedIn(matchId)
+    local out = {}
+    for _, entry in ipairs(departed) do
+        if entry.matchId == matchId then out[#out + 1] = entry end
+    end
+    return out
+end
+
+--- Drop one match's sealed entries. Called at CLEANUP, beside the wipe that
+--- resets the same per-match counters on everybody still connected -- so the
+--- two halves of "this match is over" stay in one place.
+--- @param matchId integer
+function BR.Roster.clearDeparted(matchId)
+    local kept = {}
+    for _, entry in ipairs(departed) do
+        if entry.matchId ~= matchId then kept[#kept + 1] = entry end
+    end
+    departed = kept
 end
 
 --- Server-side position sampling.

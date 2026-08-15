@@ -264,13 +264,47 @@
 <section id="progress">
   <h2>Levels &amp; Volts</h2>
 
-  <p>Two things go up as you play. <strong>Levels</strong> say how long you have
-     been around. <strong>Volts</strong> are what you spend in the market.</p>
+  <p>Two things go up as you play. <strong>XP</strong> raises your level, which
+     is the number beside your name. <strong>Volts</strong> are what you spend in
+     the market.</p>
 
-  <p>Both are paid at the end of a match, together, and you will see them on the
+  <p>They are paid at the end of a match, together, and you will see them on the
      verdict screen before you are back in the lobby.</p>
 
-  <h3>What a match pays</h3>
+  <p><strong>They are not the same table.</strong> XP rewards what you did in the
+     fight; Volts reward the result. So a match where you did a great deal of
+     damage and still went out early can move your level a long way and your
+     balance very little — which is the intended shape, not a bug.</p>
+
+  <h3>What a match pays in XP</h3>
+
+  <table class="items">
+    <thead><tr><th>For</th><th>XP</th></tr></thead>
+    <tbody>
+      <tr><td>Each elimination</td><td>60</td></tr>
+      <tr><td>Each knockdown</td><td>25 — squads only, before someone finishes them</td></tr>
+      <tr><td>Each revive</td><td>40</td></tr>
+      <tr><td>Damage dealt</td><td>0.35 per point — about 35 for a full-health kill</td></tr>
+      <tr><td>Time survived</td><td>12 per minute you stayed alive</td></tr>
+      <tr><td>Placement</td><td>up to 500, scaled smoothly by where you finished</td></tr>
+      <tr><td>Winning</td><td>+400</td></tr>
+      <tr><td>Finishing 2nd to 10th</td><td>+120</td></tr>
+    </tbody>
+  </table>
+
+  <p><strong>Damage counts even when the kill does not.</strong> If you take
+     someone to their last sliver of health and a third player steals it, you are
+     still paid for every point you did. Only damage that actually lands counts —
+     shooting a body that is already going down earns nothing extra.</p>
+
+  <p><strong>Time survived is your own.</strong> It stops at the moment you die,
+     not when the match ends, so outlasting people is worth something and
+     watching the rest of it from spectate is not.</p>
+
+  <p>Levels get further apart as you climb — level 2 is 800 XP, level 10 is about
+     24,000, level 50 about 333,000, and it runs to 100.</p>
+
+  <h3>What a match pays in Volts</h3>
 
   <table class="items">
     <thead><tr><th>For</th><th>Volts</th></tr></thead>
@@ -290,11 +324,13 @@
      the first fight, finish last — you still get paid for turning up. Reviving
      a teammate pays too, because it is the least selfish thing you can do.</p>
 
-  <h3>What does not pay</h3>
+  <h3>If you leave early</h3>
 
-  <p>Damage dealt earns nothing, and neither does time survived. Both would pay
-     you to shoot at people from a distance and then hide, and that is not a
-     game anyone wants to be in.</p>
+  <p>You keep what you earned. Quit after you are eliminated, close the game,
+     lose your connection — the match is still recorded, and your XP, your Volts,
+     your eliminations and your placement are all paid as normal. You will not see
+     the verdict screen, because you are not there to see it, but nothing is
+     withheld.</p>
 
   <p class="note"><strong>Volts cannot be bought.</strong> There is no store, no
      top-up, no bundle. The only thing in this game that gives you Volts is

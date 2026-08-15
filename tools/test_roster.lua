@@ -5551,6 +5551,123 @@ do
     end
 end
 
+-- ------------------------------------------- match results and the economy ---
+--
+-- Three bugs, one block, because they share a payload. All three were invisible
+-- from the code: every read path was present and plausible, and the numbers
+-- they produced were wrong rather than missing.
+--   #98   damage dealt was never credited to anybody, so the XP term that
+--         multiplies it paid zero for every player who ever played
+--   #99   survival was the MATCH's duration off the envelope, so the player
+--         eliminated first was paid exactly what the winner was
+--   #100  a disconnect deleted the roster entry, so a player who left produced
+--         no row and forfeited the whole match
+
+describe('damage.credit')
+do
+    reset()
+    BR.Server.devMode = true
+    join(1, 'Shooter'); join(2, 'Target')
+    forceState(BR.MatchState.PLAYING)
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
+
+    ok(BR.Roster.get(1).damage == 0.0, 'nobody has dealt damage yet')
+
+    BR.Damage.applyHit(1, 2, 40.0, { weapon = 0, headshot = false })
+    ok(BR.Roster.get(1).damage == 40.0, 'a landed hit credits the shooter (#98)',
+        ('got %s'):format(tostring(BR.Roster.get(1).damage)))
+    ok(BR.Roster.get(2).damage == 0.0, 'and not the victim')
+
+    BR.Damage.applyHit(1, 2, 15.0, { weapon = 0, headshot = false })
+    ok(BR.Roster.get(1).damage == 55.0, 'damage accumulates across hits')
+
+    -- Armour is damage dealt too -- it came off the victim, and it took the
+    -- same bullet to do it.
+    BR.Roster.get(2).armour = 20.0
+    BR.Damage.applyHit(1, 2, 10.0, { weapon = 0, headshot = false })
+    ok(BR.Roster.get(1).damage == 65.0, 'damage soaked by armour still counts')
+
+    -- The same rule the kill credit already has, for the same reason.
+    BR.Damage.applyHit(2, 2, 10.0, { weapon = 0, headshot = false })
+    ok(BR.Roster.get(2).damage == 0.0, 'a player cannot farm damage off themselves')
+end
+
+describe('match.results')
+do
+    reset()
+    BR.Server.devMode = true
+
+    -- The harness swallows TriggerEvent, so the results payload has to be
+    -- caught here. Restored at the end of the block: leaving a capture in
+    -- place would quietly rewrite every later block's event handling.
+    local captured
+    local realTrigger = TriggerEvent
+    TriggerEvent = function(name, payload, ...)
+        if name == 'br:match:results' then captured = payload end
+        return realTrigger(name, payload, ...)
+    end
+
+    join(1, 'Survivor'); join(2, 'Quitter')
+    forceState(BR.MatchState.PLAYING)
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
+    local m = theMatch()
+    local startedAt = m.startedAt
+
+    -- Two minutes in, the quitter is eliminated...
+    fakeTime = fakeTime + 120000
+    BR.Combat.eliminate(2, 'weapon', 1)
+    ok(BR.Roster.get(2).diedAt == fakeTime, 'elimination stamps diedAt (#99)')
+
+    -- ...spectates for thirty seconds, then closes the game.
+    fakeTime = fakeTime + 30000
+    local leftAt = fakeTime
+    connected[2] = nil
+    fire('playerDropped', 2, 'Exiting')
+
+    ok(BR.Roster.get(2) == nil, 'they leave the roster -- nothing counts them as present')
+    ok(#BR.Roster.departedIn(m.id) == 1, 'but the entry is sealed, not discarded (#100)')
+
+    -- The match runs another eight minutes without them.
+    fakeTime = fakeTime + 480000
+    BR.Match.transition(m, BR.MatchState.ENDED)
+
+    ok(captured ~= nil, 'the results event fires')
+    local byName = {}
+    for _, r in ipairs(captured and captured.players or {}) do byName[r.name] = r end
+
+    ok(byName.Survivor ~= nil, 'the survivor gets a row')
+    ok(byName.Quitter ~= nil, 'and so does the player who disconnected (#100)')
+    ok(captured.total == 2, 'the departed player counts toward the field size',
+        ('got %s'):format(tostring(captured and captured.total)))
+
+    -- THE LICENSE IS THE PART THAT CANNOT BE DEFERRED. By now source 2 is gone
+    -- and may belong to somebody else; br_stats resolves through the live
+    -- player list and would get nothing, so the row would be dropped as
+    -- unkeyable and the fix above would achieve exactly nothing.
+    ok(byName.Quitter.license ~= nil, 'the sealed row carries the license it was captured with')
+    ok(byName.Quitter.left == true, 'and is marked as departed, so nobody sends it a verdict screen')
+    ok(byName.Survivor.left == false, 'the survivor is not')
+
+    -- The two durations, which are the whole point of #99.
+    ok(byName.Quitter.survivedMs == 120000, 'survival stops when they died',
+        ('got %s'):format(tostring(byName.Quitter.survivedMs)))
+    ok(byName.Quitter.presentMs == 150000, 'presence stops when they disconnected',
+        ('got %s'):format(tostring(byName.Quitter.presentMs)))
+    ok(byName.Survivor.survivedMs == 630000, 'the survivor is credited the whole match',
+        ('got %s'):format(tostring(byName.Survivor.survivedMs)))
+    ok(byName.Survivor.survivedMs > byName.Quitter.survivedMs,
+        'and strictly more than the player who died first -- which is the bug')
+
+    ok(leftAt - startedAt == byName.Quitter.presentMs, 'presence is measured from the match start')
+
+    -- CLEANUP owns the other half of the wipe. Without it the sealed entries
+    -- accumulate one per disconnect for the server's uptime.
+    BR.Match.transition(m, BR.MatchState.CLEANUP)
+    ok(#BR.Roster.departedIn(m.id) == 0, 'CLEANUP drops the sealed entries')
+
+    TriggerEvent = realTrigger
+end
+
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then
     realPrint(('\27[31m%d failed\27[0m'):format(fail))
