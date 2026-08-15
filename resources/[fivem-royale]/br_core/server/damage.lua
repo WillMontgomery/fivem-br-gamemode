@@ -485,6 +485,35 @@ function BR.Damage.spendRound(src, weapon)
     BR.Inv.push(src)
 end
 
+--- Credit a shooter with damage that actually landed.
+---
+--- THE PRODUCER THAT NEVER EXISTED. `entry.damage` has been initialised on the
+--- roster, reset at CLEANUP, projected to the console, forwarded in the match
+--- results and multiplied by the XP curve's `perDamage` since all of that was
+--- written -- and nothing anywhere added to it, so `damageDealt` in DynamoDB
+--- was 0 for every player who ever played (#98). Every read path was present
+--- and plausible, which is exactly why it survived review.
+---
+--- WHAT LANDED, NOT WHAT WAS SWUNG. The caller's `amount` is the ledger's
+--- number before armour and before the downed-floor clamp; crediting that would
+--- pay for overkill, so a player emptying a magazine into a corpse-to-be would
+--- out-earn one who stopped when the job was done.
+---
+--- Storm and fire damage are credited to nobody, and cannot be: the storm has
+--- no dealer, and burning damage is applied on the victim's own machine through
+--- a path the server never sees (see the fire ledger below). Their KILLS are
+--- attributed; their damage is not, and there is no server-side number to fix
+--- that with.
+--- @param shooter integer|nil
+--- @param victim integer
+--- @param landed number  display units that actually came off armour or health
+local function creditDamage(shooter, victim, landed)
+    if not shooter or shooter == victim or landed <= 0.0 then return end
+    local dealer = BR.Roster.get(shooter)
+    if not dealer then return end
+    dealer.damage = (dealer.damage or 0.0) + landed
+end
+
 --- @param shooter integer
 --- @param victim integer
 --- @param amount number   display units, already multiplied by body part
@@ -504,6 +533,10 @@ function BR.Damage.applyHit(shooter, victim, amount, meta)
     -- the shot not landing.
     if e.state == BR.PlayerState.DBNO then
         BR.Combat.bleed(victim, amount, shooter, meta)
+        -- Credited in full: against a downed player the bleed clock IS their
+        -- health, so the whole amount did work. There is no armour to soak it
+        -- and no floor to clamp it to.
+        creditDamage(shooter, victim, amount)
         -- Read AFTER the bleed: `e` is the live entry, so a hit that ran the
         -- clock out has already flipped it to DEAD by this line and the
         -- marker gets to punctuate.
@@ -535,6 +568,10 @@ function BR.Damage.applyHit(shooter, victim, amount, meta)
 
     e.armour = armour - toArmour
     e.hp     = math.max(0.0, hp - toHealth)
+
+    -- Read AFTER the clamp, so a knocking shot credits the damage that reached
+    -- the downed floor rather than the overflow that was dropped.
+    creditDamage(shooter, victim, toArmour + toHealth)
 
     -- ...and the victim is told to look like it. Engine units on the wire, to
     -- match STORM_DAMAGE's contract.
