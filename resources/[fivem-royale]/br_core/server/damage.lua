@@ -268,11 +268,23 @@ local refusalOf = {}
 --- of them is not noise, it is somebody doing something the server did not
 --- issue them the means to do.
 ---
---- The action still defaults to logging rather than kicking. A validator that
---- has never wrongly refused an honest player TODAY may still do so the first
---- time a pickup races a shot, and banning your own players is a worse failure
---- than tolerating a cheater who is already unable to hurt anyone. Turn it up
---- deliberately: `BR.Config.Combat.refusalAction`.
+--- THIS FUNCTION NO LONGER TOUCHES THE PLAYER, and that is the point.
+---
+--- It used to notify them and, at `refusalAction = kick`, drop them -- deciding
+--- and enforcing in the same breath, before anybody had recorded why. Two things
+--- were wrong with that. The player learned exactly which of their tools had
+--- been noticed, which is free tuning feedback for whoever is testing a trainer.
+--- And the evidence was gathered, if at all, from a session that had already
+--- ended.
+---
+--- So the order is inverted (owner call, 2026-08-14): file an incident with the
+--- evidence attached, and let Ringmaster decide. It holds the ban list, the
+--- audit log and an admin; this function holds a counter. Enforcement comes back
+--- over the command channel that already exists for it.
+---
+--- NOTHING IS EVER SHOWN TO THE OFFENDER. Not a notice, not a hint, and the
+--- eventual kick reason is deliberately generic. The one line printed below goes
+--- to the server console, which no player reads.
 --- @param src integer
 --- @param why string|nil
 function BR.Damage.noteRefusal(src, why)
@@ -284,47 +296,108 @@ function BR.Damage.noteRefusal(src, why)
     if not BR.ShotSuspicious[why] then return end
 
     local now = GetGameTimer()
-    local window = cfg.refusalWindowMs or 30000
+    local e = BR.Roster.get(src)
+    local matchId = e and e.matchId or nil
 
+    -- PER MATCH, NOT PER TEN SECONDS (owner call, 2026-08-14).
+    --
+    -- The record used to lapse after `refusalWindowMs`, so a player producing one
+    -- impossible hit every eleven seconds -- all match, every match -- never
+    -- reached the threshold and left no trace anywhere. The count now runs for the
+    -- match and resets when the match does. `forgetRefusals(src)` still clears it
+    -- on disconnect, so a recycled server id cannot inherit one.
     local r = refusalOf[src]
-    if not r or now - r.since > window then
-        r = { since = now, count = 0 }
+    if not r or r.matchId ~= matchId then
+        r = { since = now, matchId = matchId, count = 0, filedAt = 0, byReason = {} }
         refusalOf[src] = r
     end
-    r.count = r.count + 1
 
-    local limit = cfg.refusalLimit or 12
-    if r.count ~= limit then return end   -- fire once per window, not per shot
+    -- A TALLY, NOT JUST A TOTAL. A match is a mix, and this function reports a
+    -- handful of times at most -- so without this the case is classified by
+    -- whichever refusal happened to land last. Seven conjured-weapon shots
+    -- followed by one out-of-range would be filed as the mildest thing present and
+    -- sorted to the bottom of somebody's queue. Bounded by construction: the key
+    -- space is the seven values in BR.ShotSuspicious.
+    r.byReason[why] = (r.byReason[why] or 0) + 1
 
-    local e = BR.Roster.get(src)
+    -- SELF IS RECORDED AND NOT COUNTED. It is in BR.ShotSuspicious, so it reaches
+    -- here and shows up in the tally an admin reads; it is absent from
+    -- BR.ShotTier, so it contributes to nothing. While the bar was eight it had to
+    -- count, or mixing self-harm with real refusals kept somebody under it. At a
+    -- bar of one or two the same reasoning says the opposite.
+    if BR.ShotTier[why] then r.count = r.count + 1 end
+
+    local crossed, severity, worst = BR.ShotTallyVerdict(r.byReason, cfg.refusalBar)
+    if not crossed then return end
+
+    -- ONE REPORT PER DOUBLING, WHICH IS WHAT KEEPS THIS OFF THE QUEUE'S THROAT.
+    --
+    -- The old rule was `r.count ~= limit`: exactly one report ever, because the
+    -- count could equal the limit only once. Now that a bar can be one, "what
+    -- about the next fifty" needs an answer, and reporting each of them would put
+    -- ~20 events a second onto a 512-deep drop-oldest queue during active abuse --
+    -- destroying the player_seen stream behind it in order to say the same thing
+    -- twenty times.
+    --
+    -- So: report at the crossing, then only when the count DOUBLES. About ten
+    -- reports for a thousand refusals, no timer needed, and each one means
+    -- something an admin would want to know: it doubled. Turning the second and
+    -- later reports into corroboration on the existing case rather than a new case
+    -- is server/incident.lua's job -- it is the file that already knows what has
+    -- been filed for this match.
+    if r.count < (r.filedAt == 0 and 1 or r.filedAt * 2) then return end
+    r.filedAt = r.count
+    r.reports = (r.reports or 0) + 1
+
     local name = e and e.name or ('src ' .. src)
-    print(('[br_core] ANTICHEAT: %s (%d) had %d shots refused in %ds -- last: %s')
-        :format(name, src, r.count, window / 1000, tostring(why)))
+    local window = cfg.refusalWindowMs or 10000
+    print(('[br_core] ANTICHEAT: %s (%d) -- %d refused this match, worst %s (%s), last: %s')
+        :format(name, src, r.count, tostring(severity), tostring(worst), tostring(why)))
 
-    -- Mirror the firing to the Ringmaster feed. Fire-and-forget on purpose:
-    -- if br_ringmaster is absent nothing listens and nothing is owed. This
-    -- line OBSERVES refusalAction; it must never grow behaviour of its own.
+    -- Hand the firing to br_ringmaster, which files the incident and attaches
+    -- the evidence. Fire-and-forget on purpose: if br_ringmaster is absent
+    -- nothing listens and nothing is owed -- the shots were already refused,
+    -- which is the part that protects the match.
+    --
+    -- `action` still means what it has always meant: what the server actually
+    -- did. What it did is file a case, so that is what it says. The value is
+    -- constant now rather than configurable, and it stays on the wire because
+    -- the receiver's job is to record what happened, not to infer it.
+    -- IDENTITY IS RESOLVED HERE, NOT LEFT TO THE SNAPSHOT.
+    --
+    -- This used to send `e.license`, which is nil until the ringmaster
+    -- projection happens to fill it -- so whether a case could be keyed to a
+    -- player depended on whether a snapshot had run for them yet. That was
+    -- survivable while this was a log line. It is not survivable now that the
+    -- event opens an incident: server ids recycle within the minute, so a case
+    -- with no license is a case about whoever holds that slot next.
+    local license = BR.Roster.licenseOf(src)
+
     TriggerEvent('br:ringmaster:refusal', {
         src      = src,
         name     = name,
-        license  = e and e.license or nil,   -- filled lazily by the snapshot path
-        matchId  = e and e.matchId or nil,
+        license  = license,   -- nil only for a genuinely licenseless connection
+        matchId  = matchId,
         count    = r.count,
         windowMs = window,
         reason   = tostring(why),
-        action   = cfg.refusalAction or 'log',
+        -- Every reason this match and how many of each. An ADDED field, so
+        -- nothing downstream has to change to keep working -- but it is what
+        -- lets the case be classified by the worst thing that happened rather
+        -- than the last.
+        reasons  = r.byReason,
+        -- THE SAME VERDICT THE BAR WAS TESTED WITH, carried rather than recomputed
+        -- downstream. Two traversals of the same tally in two files is two chances
+        -- to disagree about which reason graded the case.
+        severity = severity,
+        -- WHICH REPORT THIS IS FOR THIS PLAYER, THIS MATCH: 1 is the crossing and
+        -- opens the case, 2+ are doublings and corroborate it. It rides the wire so
+        -- a receiver can tell a lost corroboration (1, 2, 4 with 3 missing) from a
+        -- quiet one -- the event channel drops silently and never says so.
+        seq      = r.reports,
+        action   = 'incident',
         at       = now,
     })
-
-    local action = cfg.refusalAction or 'log'
-    if action == 'notify' or action == 'kick' then
-        BR.Server.notify(src,
-            'Your weapon is not one this match issued you. Shots are not landing.',
-            'warn')
-    end
-    if action == 'kick' then
-        DropPlayer(src, 'Weapon validation failed repeatedly.')
-    end
 end
 
 --- Forget a player's refusal history. Called on disconnect.

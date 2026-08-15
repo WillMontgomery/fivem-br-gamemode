@@ -421,7 +421,7 @@ Convert only at the boundary, with `BR.ToEngineHp` / `BR.ToDisplayHp`.
 | Squad size | 4 | `minSquads` 2, so a match needs somebody to fight |
 | Warmup | 45 s | 15 s once the lobby is full |
 | Sprint | 7.8 s | Drain 12.82/s, regen 25/s after a 900 ms pause |
-| Position sampling | 2 Hz | Which is why every range check carries slack |
+| Position sampling | 4 Hz | Which is why every range check carries slack |
 | Roster delta flush | 4 Hz | |
 | Digest | 2 Hz | The self-healing heartbeat |
 | Client loops | 60 / 10 / 1 Hz | frame, tick, slow |

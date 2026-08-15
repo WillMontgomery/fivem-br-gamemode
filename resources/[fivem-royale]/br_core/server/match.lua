@@ -109,6 +109,13 @@ function BR.Match.destroy(m)
     BR.Server.matches[m.id] = nil
     print(('[br_core] match %d destroyed'):format(m.id))
 
+    -- THE ONE RELIABLE END-OF-MATCH SIGNAL, for anything holding match-scoped
+    -- state. `br:match:results` is not it: that fires from the summary path and
+    -- returns early on `#rows == 0`, so a match that ends empty announces
+    -- nothing and would leak whatever was keyed to it. This line runs on the
+    -- only path out of the registry, which is what makes it safe to free on.
+    TriggerEvent('br:match:destroyed', { matchId = m.id })
+
     -- Re-seed everyone (the old CLEANUP->WAITING snapshot, kept): the
     -- destroyed match's players just changed view, and any client that
     -- missed a delta converges here rather than at its next digest.

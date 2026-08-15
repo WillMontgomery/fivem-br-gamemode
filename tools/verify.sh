@@ -340,6 +340,41 @@ else
     rc=1
 fi
 
+# --- 4b. what can become an incident -----------------------------------------
+#
+# BR.ShotSuspicious is the whole distance between "the game declined a shot" and
+# "a human has to review a case": BR.Damage.noteRefusal returns early for
+# anything not in it, so nothing outside this table can reach the Ringmaster
+# feed or open an incident.
+#
+# tools/test_shared.lua asserts the classification properly -- both directions
+# plus exhaustiveness, so a new reason cannot arrive unfiled. THIS pin exists
+# because the test suite is SKIPPED when no Lua interpreter is present, and a
+# widened table would then reach a live server unchallenged. Friendly fire is
+# the case that matters: every player carries fists at all times, so counting
+# rule refusals would file an incident for the first warmup scrap of a match.
+
+echo "${DIM}== incident surface ==${RST}"
+cs_="resources/[fivem-royale]/br_lib/shared/combat_solve.lua"
+SUSPICIOUS_EXPECTED='NOT_HELD NOT_THROWN NO_AMMO NO_WEAPON SELF TOO_FAR TOO_FAST '
+if [ -f "$cs_" ]; then
+    counted=$(LC_ALL=C sed -n '/^BR.ShotSuspicious = {/,/^}/p' "$cs_" \
+              | grep -oE 'BR\.ShotRefusal\.[A-Z_]+' | sed 's/.*\.//' \
+              | LC_ALL=C sort -u | tr '\n' ' ')
+    if [ "$counted" != "$SUSPICIOUS_EXPECTED" ]; then
+        echo "${RED}FAIL${RST} BR.ShotSuspicious is '${counted}'"
+        echo "     expected '${SUSPICIOUS_EXPECTED}'"
+        echo "     Every reason here files an incident somebody must review."
+        echo "     WARMUP, SAME_SQUAD, NOT_LIVE and OTHER_MATCH are things an"
+        echo "     honest client does constantly and must never appear."
+        echo "     If you are changing this on purpose, update THIS gate and the"
+        echo "     RULES/MEANS lists in tools/test_shared.lua together."
+        rc=1
+    else
+        echo "${GRN}ok${RST}   only means-class refusals can open an incident"
+    fi
+fi
+
 # --- 5. secrets ---------------------------------------------------------------
 #
 # The only gate here that scans the WHOLE repo rather than resources/. A

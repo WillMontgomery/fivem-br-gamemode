@@ -103,5 +103,38 @@ RegisterCommand('brring', function()
         print('events        not wired yet')
     end
 
+    -- INCIDENTS ARE REPORTED SEPARATELY FROM THE OUTBOX because they do not go
+    -- through it. The row is written straight to DynamoDB and only a doorbell
+    -- rides the queue -- so an outbox showing zero drops says nothing at all
+    -- about whether a case was filed.
+    --
+    -- `lost` is the number that matters and the reason this block exists: there
+    -- is no queue behind a failed incident write, so a non-zero count is evidence
+    -- that a moderation record no longer exists anywhere.
+    if BR.Ring.incidentStats then
+        local i = BR.Ring.incidentStats()
+        print(('incidents     filed %d, in flight %d'):format(i.filed, i.inflight))
+        -- NOT A SECOND KIND OF FILING. One persistent cheater is one case plus a
+        -- handful of these, so counting them together would make the number
+        -- describe the opposite of what happened. A high ratio here is the healthy
+        -- shape: it means repeat offenders are landing on one case each.
+        if (i.corroborated or 0) > 0 then
+            print(('              %d corroborations appended to existing cases')
+                :format(i.corroborated))
+        end
+        if i.duplicate > 0 then
+            -- Not a fault. A retry after a lost ANSWER finds its own row already
+            -- there, which is the idempotency token working as intended.
+            print(('              %d were already present (retry after a lost reply)')
+                :format(i.duplicate))
+        end
+        if i.failed > 0 then
+            print(('^1              %d LOST -- no queue, no retry left, no record^7')
+                :format(i.failed))
+        end
+    else
+        print('incidents     not wired yet')
+    end
+
     print(line())
 end, RESTRICTED)

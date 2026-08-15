@@ -45,7 +45,7 @@
         "count": 8,
         "windowMs": 10000,
         "reason": "TOO_FAR",
-        "action": "log"
+        "action": "incident"
       }
     }
   ]

@@ -1,11 +1,15 @@
+import { randomUUID } from 'node:crypto'
+
 import {
   DynamoDBClient,
   GetItemCommand,
+  PutItemCommand,
   UpdateItemCommand,
 } from '@aws-sdk/client-dynamodb'
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb'
 
 import { isActive } from './ban.js'
+import { buildIncidentItem } from './incident.js'
 
 /**
  * br_ddb -- the game server's read-only window onto DynamoDB.
@@ -30,6 +34,23 @@ import { isActive } from './ban.js'
  * only ever needs to ask it questions. Everything touching `br-*` is the game's
  * own, and it reads and writes freely: the server must never be unable to run
  * a match because a web console in another region is down.
+ *
+ * WITH ONE DELIBERATE EXCEPTION, ADDED 2026-08-14: `ringmaster-incidents` is
+ * APPEND-ONLY from here. The game may file a case and cannot read one back, and
+ * still has no access at all to grants, bans or the audit log.
+ *
+ * That is the narrowest grant that makes the pipeline work, and the narrowness is
+ * the point. The alternative was sending incidents to the console over the event
+ * channel and letting it write -- but that channel drops batches silently after
+ * four attempts, and an incident lost that way is unrecoverable because the
+ * evidence buffer behind it is discarded at match end. So the game writes the row
+ * and the event carries only an id.
+ *
+ * WHAT A COMPROMISED GAME BOX CAN DO WITH THIS: file noise. What it still cannot
+ * do: enumerate open cases, read who is an admin, discover who is banned, alter a
+ * verdict, or overwrite an existing incident -- the write is conditional on the
+ * id being absent. Append without read is a much smaller blast radius than it
+ * first sounds.
  *
  * NO CREDENTIALS ANYWHERE. The SDK's default provider chain finds the EC2
  * instance role through IMDS on its own. Same rule as the Ringmaster box: if
@@ -94,9 +115,11 @@ function withTimeout(promise, ms) {
  * One point lookup, keyed on license.
  *
  * GetItem rather than Query or Scan, deliberately: the only question this
- * resource ever asks is about one specific license, and the IAM policy on the
- * game box grants GetItem alone. If this ever needs a Query, that is a
- * conversation about the policy, not a change to this function.
+ * resource ever asks is about one specific license. On the `ringmaster-*` family
+ * the game box's IAM policy grants GetItem and -- since 2026-08-14 -- PutItem on
+ * `ringmaster-incidents` alone; there is no Query anywhere and no read of any
+ * kind on incidents. If this ever needs a Query, that is a conversation about the
+ * policy, not a change to this function.
  */
 async function getByKey(table, key, prefix) {
   const out = await withTimeout(
@@ -569,6 +592,97 @@ on('br:ddb:equip', (req, license, kind, itemId, allowUnowned) => {
 })
 
 /**
+ * THE ONE WRITE INTO A `ringmaster-*` TABLE, and the reasoning for every part of
+ * it is in the header. Files an incident and answers with the id it was given.
+ *
+ * THE ID IS MINTED HERE AND NEVER ACCEPTED FROM THE CALLER, the same rule the
+ * console's own `open()` states: a caller-supplied id is a way to overwrite
+ * somebody else's case. Lua has no UUID source and could not be given one --
+ * BR.Rng is xoshiro128** seeded deterministically on purpose, so that client and
+ * server derive the same loot layout, which makes it precisely the wrong thing to
+ * name a record with.
+ *
+ * THE TOKEN IS WHAT MAKES THE CALLER'S RETRY SAFE, and it is the subtle part.
+ * br_ringmaster retries a failed write for ~30s, and the failure it is most
+ * likely riding out is a LOST ANSWER rather than a lost write: the row landed and
+ * the reply did not. A fresh UUID per attempt would file the same case five times
+ * under five ids, and a reviewer would have no way to tell that from the player
+ * doing it five times. So the caller passes a token that is stable across its own
+ * retries, this memoises one UUID per token, and the write is conditional on that
+ * id being absent -- so the second attempt is refused by DynamoDB and reported as
+ * success, because the row it wanted is there.
+ */
+const idForToken = new Map()
+const MAX_TOKENS = 256
+
+function mintId(token) {
+  const key = typeof token === 'string' && token !== '' ? token : null
+  // No token means no idempotency -- correct rather than convenient: a caller
+  // that did not identify its attempt cannot be given a guarantee about it.
+  if (key === null) return randomUUID()
+
+  const known = idForToken.get(key)
+  if (known) return known
+
+  const id = randomUUID()
+  idForToken.set(key, id)
+
+  // Bounded, oldest first. Map preserves insertion order, so this drops the
+  // tokens whose retry windows are long closed. 256 is far more than the handful
+  // of writes that can be in flight across a 30-second retry budget.
+  if (idForToken.size > MAX_TOKENS) {
+    idForToken.delete(idForToken.keys().next().value)
+  }
+  return id
+}
+
+on('br:ddb:putIncident', (req, token, payload) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:incidentResult', req, ok, extra ?? {})
+  }
+
+  const incidentId = mintId(token)
+  const built = buildIncidentItem(incidentId, payload, Date.now())
+
+  if (built.error) {
+    // A MALFORMED PAYLOAD IS NOT WORTH RETRYING and the caller must be able to
+    // tell. `retryable: false` stops br_ringmaster spending 30 seconds on a bug
+    // that five more attempts cannot fix -- and the case is genuinely lost, which
+    // is why the caller logs this one loudly.
+    console.log(`[br_ddb] incident refused: ${built.error}`)
+    answer(false, { error: built.error, retryable: false })
+    return
+  }
+
+  withTimeout(
+    ddb().send(
+      new PutItemCommand({
+        TableName: `${TABLE_PREFIX}incidents`,
+        Item: marshall(built.item, { removeUndefinedValues: true }),
+        // APPEND, NEVER OVERWRITE. Without this the verb could replace an
+        // existing case -- including a resolved one, erasing a verdict and the
+        // admin who made it. With it, the worst a repeat can do is be refused.
+        ConditionExpression: 'attribute_not_exists(incidentId)',
+      }),
+    ),
+    TIMEOUT_MS,
+  )
+    .then(() => answer(true, { incidentId }))
+    .catch((e) => {
+      if (e.name === 'ConditionalCheckFailedException') {
+        // THE ROW IS ALREADY THERE, WHICH IS THE OUTCOME WE WANTED. Only
+        // reachable via a memoised token, i.e. a retry after a lost answer.
+        // Reporting this as failure would make the caller retry a write that has
+        // already succeeded, forever.
+        answer(true, { incidentId, duplicate: true })
+        return
+      }
+      console.log(`[br_ddb] incident write failed for ${incidentId}: ${e.message}`)
+      answer(false, { error: e.message, retryable: true })
+    })
+})
+
+/**
  * A self-test, so "can this box reach DynamoDB at all" is one command rather
  * than a guess. Reads a license that will never exist -- a successful lookup
  * returning nothing proves credentials, network and permissions all work,
@@ -595,6 +709,6 @@ on('br:ddb:selftest', (req) => {
 })
 
 console.log(
-  `[br_ddb] ready -- region ${REGION}, ${TABLE_PREFIX}* read-only (bans, grants, maintenance),`
-    + ` ${TABLE_PREFIX_GAME}* read/write (profile, inventory, stats)`,
+  `[br_ddb] ready -- region ${REGION}, ${TABLE_PREFIX}* read-only (bans, grants, maintenance)`
+    + ` + append-only (incidents), ${TABLE_PREFIX_GAME}* read/write (profile, inventory, stats)`,
 )

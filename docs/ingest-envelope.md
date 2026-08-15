@@ -269,13 +269,136 @@ survives still catches the common case, and we never hold network-location data
 on players.
 
 **`refusal`** — the anticheat firing, mirrored from `BR.Damage.noteRefusal`.
-Fires once per window at `refusalLimit` (8) countable refusals inside
-`refusalWindowMs` (10000). `action` is what the server actually did, which is
-`log` today — this channel is read-only and does not change it.
+
+**The trigger changed on 2026-08-14 and the event's cadence changed with it.** It
+used to fire once per rolling 10s window at `refusalLimit` (8). It now fires when a
+single reason crosses its own per-match bar — **1** for high-severity reasons, **2**
+for normal ones and for `NO_WEAPON` — and then again only when the count *doubles*.
+So a receiver should expect one event at the crossing and roughly `log2(n)` after it,
+not one per refused shot: `count` climbing 1, 2, 4, 8, 16 across a match is the
+normal shape for a persistent offender.
+
+`action` still means what it always meant — what the server actually did — and what
+it does now is file an incident, so the value is the constant `incident`.
+
+Two added fields, so **no `v` bump**:
+
+- **`severity`** — `low` / `normal` / `high`, the grade the game applied. Carried
+  rather than left to be recomputed: two traversals of the same tally in two repos
+  is two chances to disagree about which reason graded the case.
+- **`seq`** — which report this is for this player in this match, from 1. `seq` 1
+  opened a case; everything after it corroborates that case rather than filing
+  another.
+
+It stays on the wire while constant because the receiver's job is to record what
+happened rather than infer it from a build number. **This is an added enum value,
+not a removed field or a changed meaning, so it needs no `v` bump** — but the
+receiver rejects values it does not know, so the console must be updated before
+a game server that sends it. Deploy order is console first, game second; the
+console keeps accepting `log` / `notify` / `kick` so an older game build still
+reports cleanly.
 
 Identity is on the **event**, not inferred from `src`. Server ids are recycled
 within the minute; a moderation record keyed on one is a record about whoever
-happens to be holding that slot later.
+happens to be holding that slot later. `license` is resolved by
+`BR.Damage.noteRefusal` at the moment it fires rather than left for the snapshot
+path to fill, because a case that cannot be keyed to a player cannot be
+reviewed — it is `null` only for a genuinely licenseless connection.
+
+**`refusal` also now carries `reasons`** — a `{ [reason]: count }` tally of every
+countable refusal in the window, not just the last one. An added optional field,
+so no `v` bump. It exists because the firing reports once and a window is usually
+a mix: without the tally, seven conjured-weapon shots followed by one self-hit
+were classified by the self-hit and sorted to the bottom of the queue.
+
+### `incident_filed` — the doorbell
+
+Emitted by `br_ringmaster` **after** the incident row is durably in DynamoDB.
+
+```json
+{
+  "seq": 43,
+  "kind": "incident_filed",
+  "at": 4281120,
+  "data": {
+    "incidentId": "0f9c…",
+    "kind": "anticheat",
+    "severity": "high",
+    "subjectLicense": "license:abc…",
+    "state": "pending_review"
+  }
+}
+```
+
+**THE WRITE IS THE SOURCE OF TRUTH; THIS EVENT IS ONLY A DOORBELL.** That is the
+load-bearing property of the whole incident pipeline and the reason the game
+writes to DynamoDB itself rather than posting the case here.
+
+This channel drops silently. `outbox.lua` gives a batch four attempts and then
+discards it, the drop counters reach only the local `brring` command, and neither
+envelope carries them — so the console genuinely cannot tell "thirty-two
+refusals were dropped because the link was down" from "no refusals happened". An
+incident lost that way would be unrecoverable, because the evidence buffer behind
+it is discarded at match end.
+
+So the payload here is deliberately minimal: an id, and enough to decide whether
+to look now. **A receiver must never treat the absence of this event as the
+absence of an incident.** The console's reconciliation sweep — a bounded query for
+untriaged incidents, run on boot and on evidence of loss, never on a timer — is
+what makes a lost doorbell cost a delay rather than a case.
+
+`severity` is a triage hint (`low` / `normal` / `high`), not an instruction. The
+game forms no opinion about what should happen to the player.
+
+**Unknown kinds are safe.** `gameEvent.kind` is a bounded string and `data` is a
+loose record, so a console that predates this event parses the envelope, applies
+what it understands, and buffers the rest. Deploy order does not matter for this
+one — unlike `refusal`'s `action`, which is an enum the schema validates.
+
+### `incident_corroborated` — it is still happening
+
+Emitted when a player who **already has a case this match** trips a bar again.
+
+```json
+{
+  "seq": 44,
+  "kind": "incident_corroborated",
+  "at": 4283400,
+  "data": {
+    "incidentId": "0f9c…",
+    "subjectLicense": "license:abc…",
+    "seq": 2,
+    "count": 4,
+    "reason": "shooter does not hold that weapon",
+    "severity": "high"
+  }
+}
+```
+
+**One case per player per match; everything after it lands here.** A second row
+hands an admin the same conclusion twice and lets one persistent offender bury a
+queue that is meant to be a strictly shrinking worklist. Appending to the case they
+already have says the thing a second row cannot: it is still happening, and nobody
+has acted.
+
+**The receiver does the write, and that is the point.** Appending is an `UpdateItem`
+on an existing row; the game's grant on `ringmaster-incidents` is deliberately
+append-only (`PutItem` conditional on the id being absent) so that a compromised game
+box can file noise but can never overwrite a case or erase a verdict and the admin
+who made it. `src/lib/incidents.ts`'s `note()` is already exactly this write.
+
+**Unlike a case, this event is allowed to be lost.** That asymmetry is deliberate: a
+corroboration is redundant by definition, and the case it attaches to is already
+durable in DynamoDB. Losing one costs a number.
+
+**`data.seq` is per player per match, and it is not the envelope's `seq`.** It starts
+at 2, because report 1 opened the case. Its only job is to let a receiver tell 1, 2,
+4 *with 3 missing* from a match where nothing more happened — this channel discards a
+batch after four attempts and neither envelope says so. Treat a gap as "at least this
+many", never as an exact count.
+
+`count` is the running per-match total of counted refusals at the moment of the
+report, so it roughly doubles between consecutive corroborations.
 
 ---
 

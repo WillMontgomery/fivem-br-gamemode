@@ -29,6 +29,8 @@ server_scripts {
     'server/config.lua',    -- must load first; everything else reads BR.Ring.Config
     'server/main.lua',      -- boot banner, boot epoch, identity capture
     'server/push.lua',      -- the wire: snapshots latest-wins, events via outbox
+    'server/incident.lua',  -- files incidents in DynamoDB, then rings the doorbell
+                            -- (after push.lua: reads BR.Ring.outbox)
     'server/maintenance.lua', -- polls the window; drives the drain + notices
     'server/kick.lua',      -- brkick: the ONLY DropPlayer in the project
     'server/gate.lua',      -- the connect-time ban gate (fails open, own timeout)

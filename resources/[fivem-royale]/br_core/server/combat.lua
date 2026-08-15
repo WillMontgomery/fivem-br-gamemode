@@ -118,6 +118,13 @@ function BR.Combat.eliminate(src, cause, killerSrc)
         weapon    = killer and entry.lastHitWeapon or nil,
         headshot  = (cause == 'headshot') or nil,
     }
+    -- Keep it, in case an incident needs it later. The kill feed is a client
+    -- broadcast that nothing persists, so this is the only record that a
+    -- particular player killed a particular other one -- which is most of what
+    -- a teaming or griefing report turns on. Recorded against BOTH sides; see
+    -- BR.Evidence.noteKill for why a player's own deaths are evidence too.
+    if BR.Evidence then BR.Evidence.noteKill(feed) end
+
     if m then
         BR.Broadcast.toMatch(m, BR.Net.KILL_FEED, feed)
     else

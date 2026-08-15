@@ -73,9 +73,24 @@ function SetRoutingBucketPopulationEnabled() end
 
 -- Capture outbound traffic so tests can assert on what clients would receive.
 local sent = {}
-function TriggerEvent() end
+-- SERVER-SIDE events are captured too, and the anticheat is why. Its whole
+-- output is now one TriggerEvent -- it no longer notifies or drops anybody, so
+-- there is nothing in `sent` to assert on and a test watching only client
+-- traffic would pass while filing no incident at all.
+local fired = {}
+function TriggerEvent(event, ...)
+    fired[#fired + 1] = { event = event, args = { ... } }
+end
 function TriggerClientEvent(event, target, ...)
     sent[#sent + 1] = { event = event, target = target, args = { ... } }
+end
+--- Server-side events of one name, in order.
+local function firedOf(name)
+    local out = {}
+    for _, f in ipairs(fired) do
+        if f.event == name then out[#out + 1] = f.args[1] end
+    end
+    return out
 end
 function RegisterNetEvent() end
 function RegisterCommand() end
@@ -106,9 +121,11 @@ for _, f in ipairs({
     'br_lib/shared/storm_solve.lua',
     'br_lib/shared/loot_gen.lua',
     'br_lib/shared/combat_solve.lua',
+    'br_lib/shared/evidence_buf.lua', -- BR.EvidenceBuf; server/evidence.lua wraps it
     'br_core/server/main.lua',
     'br_core/server/broadcast.lua',
     'br_core/server/roster.lua',
+    'br_core/server/evidence.lua',    -- BR.Evidence; combat.lua notes kills into it
     'br_core/server/lobby.lua',
     'br_core/server/party.lua',
     'br_core/server/match.lua',
@@ -120,6 +137,9 @@ for _, f in ipairs({
     'br_core/server/markers.lua',
     'br_core/server/voice.lua',
     'br_core/server/damage.lua',
+    -- AFTER combat_solve, whose enum values it keys its severity table on.
+    'br_lib/shared/incident_build.lua',
+    'br_core/server/incident.lua',     -- BR.Incident; listens to the refusal event
 }) do
     local chunk, err = loadfile(ROOT .. f)
     if not chunk then
@@ -3354,6 +3374,22 @@ local function standOn(src, e)
     BR.Roster.get(src).pos = { x = e.x, y = e.y, z = e.z }
 end
 
+--- Stand a player in the middle of a cell.
+---
+--- WHY THESE TESTS NOW HAVE TO POSITION BEFORE SUBSCRIBING. LOOT_CELL used to
+--- accept any cell a client named, so a test could subscribe from anywhere and
+--- several did. It now refuses a cell more than BR.LOOT_CELL_DRIFT from the
+--- player's own sampled position, because accepting any cell let a client
+--- enumerate the whole layout. Putting the player there first is not test
+--- bookkeeping -- it is what a real client does, and the old ordering only worked
+--- because the hole was there.
+local function standInCell(src, cx, cy)
+    local size = BR.Config.Loot.cellSize
+    BR.Roster.get(src).pos = {
+        x = (cx + 0.5) * size, y = (cy + 0.5) * size, z = 30.0,
+    }
+end
+
 describe('loot.stream')
 do
     local m = lootMatch()
@@ -3366,6 +3402,7 @@ do
 
     local cx, cy = BR.LootCellOf(first.x, first.y)
 
+    standOn(1, first)
     sent = {}
     fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
     local adds = eventsOf(BR.Net.LOOT_ADD)
@@ -3388,7 +3425,10 @@ do
     fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
     ok(#eventsOf(BR.Net.LOOT_ADD) == 0, 'a repeat subscription sends nothing')
 
-    -- Walking three cells away drops everything that was in scope.
+    -- Walking three cells away drops everything that was in scope. The player
+    -- has to actually walk: a subscription three cells from where they are
+    -- standing is refused outright now.
+    standInCell(1, cx + 3, cy + 3)
     sent = {}
     fire(BR.Net.LOOT_CELL, 1, { cx = cx + 3, cy = cy + 3 })
     local goneIds = {}
@@ -3399,10 +3439,77 @@ do
 
     -- A WARMUP player is not in the world yet. The pad is shared between
     -- matches, so streaming there would hand one match's items to another's.
+    -- Stood in the cell on purpose, so the drift rule is satisfied and the ZONE
+    -- rule is the only thing left that can refuse them. Otherwise this would
+    -- pass for the wrong reason.
     BR.Roster.setState(2, BR.PlayerState.WARMUP)
+    standOn(2, first)
     sent = {}
     fire(BR.Net.LOOT_CELL, 2, { cx = cx, cy = cy })
     ok(#eventsOf(BR.Net.LOOT_ADD) == 0, 'a warmup player is refused a subscription')
+end
+
+-- WHAT THIS BLOCK DEFENDS IS THE REASON THE LAYOUT SEED NEVER LEAVES THE BOX.
+--
+-- Two checks were missing and both were reachable from a modded client with no
+-- timing, no luck and no other exploit: LOOT_CELL would subscribe you to any cell
+-- you named, and LOOT_CLAIM never asked whether you had been streamed the entry
+-- you were claiming. Together they turned "the client is only told about the cell
+-- it stands in" into a statement about the honest client only.
+describe('loot.enumeration')
+do
+    local m = lootMatch()
+    local first = m.loot.items[1]
+    local cx, cy = BR.LootCellOf(first.x, first.y)
+
+    standOn(1, first)
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+    ok(m.loot.subs[1] ~= nil, 'a legitimate subscription is granted')
+    local held = m.loot.at[1]
+
+    -- The attack, in one call: name a cell on the other side of the map.
+    sent = {}
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx + 40, cy = cy + 40 })
+    ok(#eventsOf(BR.Net.LOOT_ADD) == 0,
+        'a subscription to a distant cell streams nothing')
+    ok(m.loot.at[1] == held,
+        'and does not disturb the subscription they legitimately had')
+
+    -- Nil position must fail closed. It is nil for a whole tick after joining,
+    -- and "unknown" must not read as "anywhere".
+    BR.Roster.get(2).pos = nil
+    sent = {}
+    fire(BR.Net.LOOT_CELL, 2, { cx = cx, cy = cy })
+    ok(#eventsOf(BR.Net.LOOT_ADD) == 0,
+        'a player with no position sample is refused, not trusted')
+
+    -- THE ORACLE, which is the subtler half. If an entry outside the subscription
+    -- refuses differently from an entry that never existed, the refusal text is an
+    -- existence probe over a dense sequential id space -- four a second is enough
+    -- to map what loot is left without going near any of it.
+    local far
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and not m.loot.subs[1][e.cell] then far = e break end
+    end
+    ok(far ~= nil, 'the layout has an entry this player was never streamed')
+
+    local function claimText(id)
+        sent = {}
+        fire(BR.Net.LOOT_CLAIM, 1, { id = id })
+        for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do
+            if s.target == 1 then return s.args[1].text end
+        end
+        return nil
+    end
+
+    local unseen = claimText(far.id)
+    local absent = claimText(m.loot.nextId + 9999)
+    ok(unseen ~= nil and unseen == absent,
+        'an unstreamed entry answers exactly like one that does not exist',
+        tostring(unseen))
+    ok(m.loot.items[far.id] ~= nil,
+        'and refusing the claim did not consume the entry')
 end
 
 describe('loot.claim')
@@ -3419,10 +3526,10 @@ do
     ok(target ~= nil, 'the layout contains a weapon to claim')
 
     local cx, cy = BR.LootCellOf(target.x, target.y)
-    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
-    fire(BR.Net.LOOT_CELL, 2, { cx = cx, cy = cy })
     standOn(1, target)
     standOn(2, target)
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+    fire(BR.Net.LOOT_CELL, 2, { cx = cx, cy = cy })
 
     -- BOTH REACH FOR IT IN THE SAME TICK. This is the normal case at a hot
     -- drop, and exactly one of them may end up holding it.
@@ -3463,12 +3570,24 @@ do
     ok(goneTo[1] and goneTo[2], 'every subscriber is told it is gone')
 
     -- Distance is re-validated server-side; the client prompt is cosmetic.
+    --
+    -- SUBSCRIBED BUT OUT OF REACH, which is the case this is actually about and
+    -- which the old version of it reached by accident. Cells are 256m and the
+    -- pickup radius is 7.5m, so "I can see it and cannot touch it" is the
+    -- ordinary state of nearly everything in view. It is now a DIFFERENT refusal
+    -- from a claim against an entry outside the subscription, which answers
+    -- identically to an entry that is gone -- deliberately, so the two cannot be
+    -- told apart by a client probing the id space.
     local far
     for id = 1, m.loot.nextId do
         local e = m.loot.items[id]
         if e and e.kind == BR.ItemKind.WEAPON then far = e break end
     end
-    BR.Roster.get(1).pos = { x = far.x + 400.0, y = far.y, z = far.z }
+    local fcx, fcy = BR.LootCellOf(far.x, far.y)
+    standOn(1, far)
+    fire(BR.Net.LOOT_CELL, 1, { cx = fcx, cy = fcy })
+    -- Step 100m off it, staying well inside the 3x3 block just subscribed to.
+    BR.Roster.get(1).pos = { x = far.x + 100.0, y = far.y, z = far.z }
     sent = {}
     fire(BR.Net.LOOT_CLAIM, 1, { id = far.id })
     ok(m.loot.items[far.id] ~= nil, 'a claim from 400m away is refused')
@@ -4646,66 +4765,359 @@ do
     -- not issue them the means to do.
     lootMatch()
     local cfg = BR.Config.Combat
+    local R = BR.ShotRefusal
     BR.Damage.forgetRefusals(1)
 
-    -- Under the limit: counted, nothing said.
-    for _ = 1, cfg.refusalLimit - 1 do
-        BR.Damage.noteRefusal(1, BR.ShotRefusal.NOT_HELD)
-    end
-    ok(true, 'refusals under the limit are counted quietly')
+    -- THE BAR IS PER REASON AND PER MATCH (owner call, 2026-08-14). There is no
+    -- `refusalLimit` and no rolling window any more: the old rule wanted eight
+    -- countable refusals inside ten seconds, which described somebody spraying
+    -- with a trainer and missed anybody patient. One impossible hit every eleven
+    -- seconds, all match, every match, filed nothing and left no trace.
+    ok(cfg.refusalLimit == nil,
+        'there is no single refusalLimit left to tune',
+        tostring(cfg.refusalLimit))
+    ok(type(cfg.refusalBar) == 'table' and cfg.refusalBar.high == 1
+        and cfg.refusalBar.normal == 2,
+        'the bar is one for high and two for normal')
 
-    -- The action fires ONCE at the limit, not once per shot after it -- a
-    -- cheater holding the trigger must not produce a hundred log lines or a
-    -- hundred notices.
+    -- ONE HIGH REFUSAL IS ENOUGH. There is no honest path to a weapon the server
+    -- did not put in your hands, so there was never a reason to demand eight.
+    fired = {}
     sent = {}
-    BR.Damage.noteRefusal(1, BR.ShotRefusal.NOT_HELD)
-    local firstBurst = #sent
-    for _ = 1, 20 do
-        BR.Damage.noteRefusal(1, BR.ShotRefusal.NOT_HELD)
-    end
-    ok(#sent == firstBurst,
-        'the response fires once per window, not once per refused shot',
-        ('%d then %d'):format(firstBurst, #sent))
+    BR.Damage.noteRefusal(1, R.NOT_HELD)
+    ok(#firedOf('br:ringmaster:refusal') == 1,
+        'a single high-tier refusal files exactly one case',
+        tostring(#firedOf('br:ringmaster:refusal')))
 
-    -- A fresh window starts clean, so an honest player who tripped it once
-    -- during a bad race is not carrying it for the rest of the match.
+    -- NOTHING REACHES THE PLAYER. Not a notice, not a hint. The offender used
+    -- to be told their shots were not landing, which is free tuning feedback
+    -- for whoever is testing a trainer (owner call, 2026-08-14).
+    ok(#sent == 0, 'and the offender is told nothing at all', tostring(#sent))
+
+    -- REPORTS DOUBLE, THEY DO NOT STREAM. Holding the trigger down must not put
+    -- one event per refused shot onto a 512-deep drop-oldest queue -- that
+    -- destroys the player_seen stream behind it to say the same thing fifty
+    -- times. After the crossing at 1, the next reports are at 2, 4, 8, 16 and 32.
+    fired = {}
+    for _ = 1, 49 do BR.Damage.noteRefusal(1, R.NOT_HELD) end
+    local ladder = #firedOf('br:ringmaster:refusal')
+    ok(ladder == 5,
+        'fifty refusals report five more times, not fifty -- 2,4,8,16,32',
+        tostring(ladder))
+
+    -- The sequence number is what lets a receiver notice a lost corroboration:
+    -- the event channel drops batches silently and says so nowhere.
+    local seqs = {}
+    for _, evt in ipairs(firedOf('br:ringmaster:refusal')) do
+        seqs[#seqs + 1] = evt.seq
+    end
+    ok(seqs[1] == 2 and seqs[#seqs] == 6,
+        'each report carries its own sequence number for this match',
+        table.concat(seqs, ','))
+
+    -- THE COUNT NO LONGER LAPSES. Under the old rule this was where a fresh
+    -- window started clean; now only leaving the match or disconnecting resets it.
     BR.Damage.forgetRefusals(1)
-    for _ = 1, cfg.refusalLimit - 1 do
-        BR.Damage.noteRefusal(1, BR.ShotRefusal.NOT_HELD)
-    end
-    ok(true, 'and the count resets with the window')
+    fired = {}
+    BR.Damage.noteRefusal(1, R.TOO_FAR)
+    ok(#firedOf('br:ringmaster:refusal') == 0,
+        'one out-of-range shot is a bad tick and files nothing')
+    BR.Damage.noteRefusal(1, R.TOO_FAR)
+    ok(#firedOf('br:ringmaster:refusal') == 1,
+        'the second one, whenever it comes, is a pattern')
 
-    -- DEFAULT IS LOG, DELIBERATELY. Kicking on a validator that has never
-    -- wrongly refused an honest player TODAY is still a bet on tomorrow.
-    ok(cfg.refusalAction == 'log',
-        'and the default response is to log rather than to kick',
+    -- THE SERVER DECIDES NOTHING ABOUT THE PLAYER. `refusalAction` is gone: a
+    -- convar naming an enforcement action would describe a decision this side
+    -- no longer makes. The firing reports what it actually did -- filed a case.
+    ok(cfg.refusalAction == nil,
+        'there is no configurable enforcement action left in br_core',
         tostring(cfg.refusalAction))
+
+    BR.Damage.forgetRefusals(1)
+    fired = {}
+    BR.Damage.noteRefusal(1, R.NO_AMMO)
+    local ev = firedOf('br:ringmaster:refusal')[1]
+    ok(ev ~= nil, 'the firing reaches the Ringmaster feed')
+    if ev then
+        ok(ev.action == 'incident', 'and says it filed an incident',
+            tostring(ev.action))
+        ok(ev.reason == R.NO_AMMO, 'carrying the reason', tostring(ev.reason))
+        ok(ev.count == 1, 'and the count that tripped it', tostring(ev.count))
+        -- CARRIED, NOT RECOMPUTED. Two traversals of the same tally in two files
+        -- is two chances to disagree about which reason graded the case.
+        ok(ev.severity == 'high', 'with the severity the bar was tested against',
+            tostring(ev.severity))
+        ok(ev.seq == 1, 'and the first report of this match', tostring(ev.seq))
+        -- Identity must be on the event. Server ids recycle within the minute,
+        -- so a case keyed on `src` is a case about whoever holds that slot next.
+        ok(ev.license ~= nil, 'and a license rather than only a server id',
+            tostring(ev.license))
+    end
 
     -- RULES ARE NOT CHEATING, and fists are what made this matter: every
     -- player has them at all times, so a warmup scrap or a squadmate caught in
     -- a spray produces refusals by the dozen. Counting those means the
     -- threshold fires on ordinary play.
     BR.Damage.forgetRefusals(1)
-    sent = {}
-    for _ = 1, cfg.refusalLimit * 3 do
-        BR.Damage.noteRefusal(1, BR.ShotRefusal.NOT_LIVE)
-        BR.Damage.noteRefusal(1, BR.ShotRefusal.SAME_SQUAD)
-        BR.Damage.noteRefusal(1, BR.ShotRefusal.SELF)
+    fired = {}
+    for _ = 1, 30 do
+        BR.Damage.noteRefusal(1, R.NOT_LIVE)
+        BR.Damage.noteRefusal(1, R.SAME_SQUAD)
     end
-    ok(#sent == 0,
-        'punching in warmup and hitting a squadmate never trip the threshold',
-        tostring(#sent))
+    ok(#firedOf('br:ringmaster:refusal') == 0,
+        'punching in warmup and hitting a squadmate never file an incident',
+        tostring(#firedOf('br:ringmaster:refusal')))
 
-    -- ...and the ones that mean something still do, from the same clean slate.
+    -- SELF IS RECORDED AND NO LONGER COUNTED (owner call, 2026-08-14).
+    --
+    -- It used to count toward the eight without earning severity, because mixing
+    -- self-harm with real refusals must not keep somebody under the bar. At a bar
+    -- of one or two that reasoning inverts: one self-hit beside one marginal
+    -- out-of-range shot would open a case, and a player could manufacture one
+    -- against themselves by standing in their own grenades. So it now files
+    -- nothing at any quantity, and the decline is in BR.ShotTier, which has no
+    -- entry for it.
     BR.Damage.forgetRefusals(1)
-    cfg.refusalAction = 'notify'
+    fired = {}
+    for _ = 1, 40 do BR.Damage.noteRefusal(1, R.SELF) end
+    ok(#firedOf('br:ringmaster:refusal') == 0,
+        'forty self-inflicted hits file nothing at all',
+        tostring(#firedOf('br:ringmaster:refusal')))
+
+    -- ...and self-harm cannot carry a real reason over its own bar either, which
+    -- is the case the old count-everything threshold would have filed.
+    BR.Damage.forgetRefusals(1)
+    fired = {}
+    for _ = 1, 20 do BR.Damage.noteRefusal(1, R.SELF) end
+    BR.Damage.noteRefusal(1, R.NO_WEAPON)
+    ok(#firedOf('br:ringmaster:refusal') == 0,
+        'twenty self-hits plus one unknown weapon is still under the bar')
+    BR.Damage.noteRefusal(1, R.NO_WEAPON)
+    ok(#firedOf('br:ringmaster:refusal') == 1,
+        'the second unknown weapon is what files it')
+
+    -- THE TALLY REACHES THE CASE, including the reasons that count for nothing --
+    -- an admin reading it wants to see the self-harm, it just must not grade it.
+    local mixEv = firedOf('br:ringmaster:refusal')[1]
+    ok(mixEv and mixEv.reasons[R.SELF] == 20,
+        'the self-hits are still on the record',
+        mixEv and tostring(mixEv.reasons[R.SELF]) or 'no event')
+    ok(mixEv and mixEv.count == 2,
+        'while the counted total is only the two that graded it',
+        mixEv and tostring(mixEv.count) or 'no event')
+    ok(mixEv and mixEv.severity == 'high', 'and it is filed as high',
+        mixEv and tostring(mixEv.severity) or 'no event')
+
+    BR.Damage.forgetRefusals(1)
+end
+
+describe('evidence.wiring')
+do
+    -- THE PURE BOOKKEEPING IS COVERED IN test_shared. What is covered here is
+    -- the part that only exists inside the game: whether the events actually
+    -- reach the buffer, and whether the lifecycle hooks fire on paths that
+    -- really run.
+    local m = lootMatch()
+    BR.Evidence.buf:clearMatch(nil)
+
+    ok(BR.Evidence ~= nil, 'BR.Evidence loads')
+    ok(BR.Evidence.stats().live == 0, 'and starts with nothing held')
+
+    -- A kill reaches BOTH participants' records. Recorded off the same feed
+    -- table the clients get, so the record cannot drift from what was shown.
+    BR.Damage.lastHit = nil
+    -- (src, cause, killerSrc) -- 2 is killed by 1.
+    BR.Combat.eliminate(2, 'headshot', 1)
+
+    local licA = BR.Identity.qualified('license', BR.Identity.licenseOf(1))
+    local licB = BR.Identity.qualified('license', BR.Identity.licenseOf(2))
+    local killer = BR.Evidence.forLicense(licA)
+    local victim = BR.Evidence.forLicense(licB)
+    ok(#killer == 1 and #killer[1].kills == 1,
+        'the killer gets the elimination on their record',
+        tostring(#killer))
+    ok(#victim == 1 and #victim[1].kills == 1,
+        'and so does the victim -- their own deaths are evidence too',
+        tostring(#victim))
+    ok(killer[1].matchId == m.id, 'tagged with the match it happened in',
+        tostring(killer[1].matchId))
+
+    -- LOBBY ACTIVITY IS NOT EVIDENCE. A player with no matchId is not in a
+    -- match, and holding the whole server's between-match small talk would be
+    -- memory spent on something no reviewer will ever open.
+    BR.Evidence.buf:clearMatch(nil)
+    BR.Roster.setMatch(1, nil)
+    BR.Evidence.noteChat(1, { text = 'in the lobby', channel = 0, at = 1 })
+    ok(BR.Evidence.stats().chatRows == 0, 'nothing is held outside a match',
+        tostring(BR.Evidence.stats().chatRows))
+
+    -- DISCONNECT SEALS RATHER THAN FREES, which is what makes "caused hell then
+    -- left" reportable at all.
+    local m2 = lootMatch()
+    BR.Evidence.buf:clearMatch(nil)
+    BR.Evidence.noteChat(1, { text = 'gg ez', channel = 0, at = 10 })
+    ok(BR.Evidence.stats().chatRows == 1, 'a message in a match is held')
+
+    fire('playerDropped', 1)
+    ok(BR.Evidence.stats().live == 0, 'their live record is gone')
+    ok(BR.Evidence.stats().sealed == 1, 'but it was sealed, not freed')
+    local gone = BR.Evidence.forLicense(licA)
+    ok(#gone == 1 and gone[1].chat[1].text == 'gg ez',
+        'so their chat survives them leaving')
+    ok(#BR.Evidence.departed(m2.id) == 1,
+        'and they are still listed as a departed player of that match')
+
+    -- MATCH TEARDOWN IS THE DISCARD, and it must be on the path that always
+    -- runs. br:match:results returns early when nobody scored, so a match that
+    -- ended empty would leak; destroy is the only way out of the registry.
+    --
+    -- Both halves are asserted separately because this harness's TriggerEvent
+    -- records rather than dispatches: that destroy ANNOUNCES the teardown, and
+    -- that the handler ACTS on the announcement. Testing only one would leave
+    -- either a signal nobody hears or a listener nothing calls.
+    fired = {}
+    BR.Match.destroy(m2)
+    local announced = firedOf('br:match:destroyed')[1]
+    ok(announced ~= nil and announced.matchId == m2.id,
+        'destroying a match announces it, with the id',
+        announced and tostring(announced.matchId) or 'nothing announced')
+
+    fire('br:match:destroyed', nil, { matchId = m2.id })
+    local after = BR.Evidence.stats()
+    ok(after.live == 0 and after.sealed == 0 and after.chatRows == 0,
+        'and the announcement discards everything that match held',
+        ('live %d sealed %d chat %d'):format(after.live, after.sealed, after.chatRows))
+end
+
+describe('incident.wiring')
+do
+    -- THE CLASSIFIER AND THE PAYLOAD SHAPE ARE COVERED IN test_shared. What is
+    -- covered here is the part that only exists inside the game: that the refusal
+    -- event actually reaches the writer, that the writer reads the real evidence
+    -- buffer, and that what leaves br_core is a payload br_ringmaster can send.
+    local m = lootMatch()
+    BR.Evidence.buf:clearMatch(nil)
+    BR.Damage.forgetRefusals(1)
+
+    local licA = BR.Identity.qualified('license', BR.Identity.licenseOf(1))
+
+    -- Something for the case to carry, so "the evidence is attached" is a real
+    -- assertion rather than an empty list matching an empty list.
+    BR.Evidence.noteChat(1, { text = 'nothing to see here', channel = 0, at = 5 })
+
+    fired = {}
+    -- Two, because NO_WEAPON is the catch-all bucket and carries a bar of 2 --
+    -- see BR.ShotBarOverride. The other high reasons file on the first one.
+    BR.Damage.noteRefusal(1, BR.ShotRefusal.NO_WEAPON)
+    BR.Damage.noteRefusal(1, BR.ShotRefusal.NO_WEAPON)
+
+    -- The harness records TriggerEvent rather than dispatching it, so the two
+    -- halves are driven separately -- the same split the evidence teardown test
+    -- uses. First: damage.lua announced the firing.
+    local refusal = firedOf('br:ringmaster:refusal')[1]
+    ok(refusal ~= nil, 'the threshold announces a refusal')
+    ok(refusal and refusal.reasons ~= nil,
+        'carrying the per-reason tally the classifier needs')
+    ok(refusal and refusal.reasons[BR.ShotRefusal.NO_WEAPON] == 2,
+        'with every countable shot in it',
+        refusal and tostring(refusal.reasons[BR.ShotRefusal.NO_WEAPON]) or 'nil')
+
+    -- Second: the writer acts on the announcement. `sent` is cleared too, because
+    -- it accumulates across the whole suite -- asserting on it without this
+    -- measures every earlier block's client traffic instead of this one's.
+    fired = {}
     sent = {}
-    for _ = 1, cfg.refusalLimit do
-        BR.Damage.noteRefusal(1, BR.ShotRefusal.NO_WEAPON)
+    fire('br:ringmaster:refusal', nil, refusal)
+    local inc = firedOf('br:ringmaster:incident')[1]
+
+    ok(inc ~= nil, 'and the writer turns it into an incident payload')
+    if inc then
+        ok(inc.kind == 'anticheat', 'filed as an anticheat case', tostring(inc.kind))
+        ok(inc.severity == 'high',
+            'at the severity the reason earns', tostring(inc.severity))
+        ok(inc.subjectLicense == licA,
+            'about the license, not the server id', tostring(inc.subjectLicense))
+        ok(inc.matchId == m.id, 'in the match it happened in', tostring(inc.matchId))
+        ok(inc.state == 'pending_review',
+            'open for review -- br_core never resolves anything')
+
+        -- THE EVIDENCE IS ATTACHED AT FILING TIME, not fetched later. The buffer
+        -- is discarded at match end, so "we will look it up when an admin opens
+        -- the case" is a promise this system cannot keep.
+        ok(#inc.evidence == 1, 'with the evidence buffer attached',
+            tostring(#inc.evidence))
+        ok(inc.evidence[1] and inc.evidence[1].chat[1]
+            and inc.evidence[1].chat[1].text == 'nothing to see here',
+            'including what they actually said')
+
+        -- NOTHING WAS SENT TO THE PLAYER. The whole point of the inversion: an
+        -- offender learns nothing, ever, at any stage.
+        ok(#sent == 0, 'and the offender is told nothing at all', tostring(#sent))
     end
-    ok(#sent > 0, 'while a weapon the server never issued still does',
-        tostring(#sent))
-    cfg.refusalAction = 'log'
+
+    -- CORROBORATION, AND IT APPENDS RATHER THAN FILING (owner call, 2026-08-14).
+    --
+    -- A second thing happening to the same player in the same match must not open
+    -- a second case. It hands an admin the same conclusion twice, and it lets one
+    -- persistent cheater bury a queue that is meant to be a shrinking worklist.
+    -- Appending to the case they already have says the thing a second row cannot:
+    -- it is still happening and nobody has acted.
+    ok(#BR.Incident.priorFor(m.id, licA) == 0, 'nothing is remembered before a write lands')
+
+    fire('br:incident:filed', nil,
+        { incidentId = 'inc-1', matchId = m.id, subjectLicense = licA })
+    local prior = BR.Incident.priorFor(m.id, licA)
+    ok(#prior == 1 and prior[1] == 'inc-1',
+        'a confirmed write is remembered for the rest of the match',
+        tostring(#prior))
+
+    fired = {}
+    BR.Damage.forgetRefusals(1)
+    BR.Damage.noteRefusal(1, BR.ShotRefusal.NO_AMMO)
+    local second = firedOf('br:ringmaster:refusal')[1]
+    fired = {}
+    fire('br:ringmaster:refusal', nil, second)
+
+    ok(#firedOf('br:ringmaster:incident') == 0,
+        'a second firing files no second case',
+        tostring(#firedOf('br:ringmaster:incident')))
+
+    local corr = firedOf('br:ringmaster:corroborate')[1]
+    ok(corr ~= nil, 'it corroborates instead')
+    if corr then
+        ok(corr.incidentId == 'inc-1', 'naming the case it belongs to',
+            tostring(corr.incidentId))
+        ok(corr.license == licA, 'and the player it is about', tostring(corr.license))
+        -- The tally travels so the appended note can say what has happened SINCE,
+        -- not merely that something did.
+        ok(corr.reasons ~= nil and corr.count ~= nil,
+            'carrying the running count and tally')
+        -- A sequence number is the only way a receiver can notice a LOST
+        -- corroboration: this channel drops batches after four attempts and
+        -- neither envelope says so.
+        ok(corr.seq ~= nil, 'and a sequence number, so a gap is detectable',
+            tostring(corr.seq))
+    end
+
+    -- A REFUSAL WITH NO LICENSE FILES NOTHING. Server ids recycle within the
+    -- minute, so a case keyed on one is a case about whoever holds that slot
+    -- next -- and it cannot be withdrawn once a human has read it.
+    fired = {}
+    fire('br:ringmaster:refusal', nil, {
+        src = 99, name = 'Ghost', matchId = m.id, count = 8, windowMs = 10000,
+        reason = BR.ShotRefusal.NO_WEAPON,
+        reasons = { [BR.ShotRefusal.NO_WEAPON] = 8 },
+        action = 'incident', at = 1000,
+    })
+    ok(#firedOf('br:ringmaster:incident') == 0,
+        'a refusal with no license files nothing rather than naming a stranger')
+
+    -- TEARDOWN DROPS THE MAP, on the same hook the evidence buffer uses -- so it
+    -- stays the size of the running matches rather than of the server's uptime.
+    fire('br:match:destroyed', nil, { matchId = m.id })
+    ok(#BR.Incident.priorFor(m.id, licA) == 0,
+        'and the cross-reference map is dropped when the match is')
+
     BR.Damage.forgetRefusals(1)
 end
 
@@ -5291,9 +5703,13 @@ do
         ('%.1fm'):format(furthest))
     ok(BR.Inv.of(1).slots[1] == false, 'and the corpse carries nothing')
 
-    -- Anyone can simply walk over it -- no hold, no container.
+    -- Anyone can simply walk over it -- no hold, no container. Walking over it
+    -- includes being streamed it, which is what the subscribe below is: a claim
+    -- against an entry the server never sent you is refused now.
     BR.Roster.setState(2, BR.PlayerState.ALIVE)
     standOn(2, spawned[1])
+    local scx, scy = BR.LootCellOf(spawned[1].x, spawned[1].y)
+    fire(BR.Net.LOOT_CELL, 2, { cx = scx, cy = scy })
     sent = {}
     fire(BR.Net.LOOT_CLAIM, 2, { id = spawned[1].id })
     ok(m.loot.items[spawned[1].id] == nil, 'and picked up in one press')
@@ -5312,8 +5728,8 @@ do
     ok(crate.prop == BR.Config.Loot.chestProp, 'sealed, as the wooden crate')
 
     local cx, cy = BR.LootCellOf(crate.x, crate.y)
-    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
     standOn(1, crate)
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
 
     local n = #crate.contents
     local crateX = crate.x
@@ -5373,6 +5789,10 @@ do
 
     local pad = BR.Config.Match.warmupPos
     local cx, cy = BR.LootCellOf(pad.x, pad.y)
+
+    -- Both players are ON the pad, which is where a warmup player actually is.
+    BR.Roster.get(1).pos = { x = pad.x, y = pad.y, z = pad.z or 30.0 }
+    BR.Roster.get(2).pos = { x = pad.x, y = pad.y, z = pad.z or 30.0 }
 
     sent = {}
     fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
@@ -5447,6 +5867,7 @@ do
     end
 
     local cx, cy = BR.LootCellOf(target.x, target.y)
+    standOn(1, target)
     fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
 
     local ox, oy = target.x, target.y
@@ -5493,6 +5914,7 @@ do
     local m = lootMatch()
     local first = m.loot.items[1]
     local cx, cy = BR.LootCellOf(first.x, first.y)
+    standOn(1, first)
     fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
     BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
                      count = 1, clip = 12 })

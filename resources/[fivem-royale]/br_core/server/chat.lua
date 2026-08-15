@@ -164,6 +164,15 @@ AddEventHandler(BR.Net.CHAT_SEND, function(data)
         -- every match on the server. See globalTargets.
         deliver(globalTargets(src), msg)
     end
+
+    -- Keep it, in case an incident needs it later.
+    --
+    -- AFTER delivery and with the DELIVERED message, not the typed one. What a
+    -- reviewer has to judge is what other players actually saw -- a record of
+    -- the raw input would include control characters this refused to broadcast,
+    -- and would prove something different from what happened. BR.Evidence
+    -- ignores this outside a live match, so lobby small talk is never held.
+    if BR.Evidence then BR.Evidence.noteChat(src, msg) end
 end)
 
 --- Server-generated announcements. Used by the storm, match state and

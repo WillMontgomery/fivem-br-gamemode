@@ -41,14 +41,27 @@ this", "claim entry 412" — and renders whatever comes back. Consequences:
 | Attack | Why it fails |
 |---|---|
 | Spawn an item into your inventory | There is no code path that adds a stack from a client message. Items enter only by claiming a world entry the server generated. |
-| Claim loot across the map | Claims are range-checked against the roster's own sampled position, rate-limited, and arbitrated first-come — a second claimant gets a refusal. |
+| Claim loot across the map | Claims are range-checked against the roster's own sampled position, rate-limited, arbitrated first-come, and refused for any entry the server never streamed to that player. |
 | Duplicate an item | Entries are single-use ids on the server; the second claim finds nothing. |
 | Give yourself ammo | Ammo reports are **decrease-only**: a report that raises a number is refused outright. The worst a liar can do is disarm themselves. |
-| Read where all the loot is | The layout seed never leaves the server. Clients are streamed only the cell they are standing in and its neighbours. |
+| Read where all the loot is | The layout seed never leaves the server, and a player may only subscribe to the cell they are standing in and its neighbours — checked against their own sampled position. |
+| Probe which loot is left | A claim for an entry outside your view answers **identically** to a claim for one that no longer exists. Ids are sequential, so distinguishable refusals would have been an existence oracle over the whole layout. |
 | Carry an item the mode does not issue | Weapons are matched against an allowlist keyed by hash; anything else is not a weapon this gamemode knows about. |
 
 The general shape: **a client can ask for things, and every answer is computed
 from state it does not hold.**
+
+**Two rows in that table were aspirational until 2026-08-14, and it is worth
+recording rather than quietly fixing.** `LOOT_CELL` validated the payload's shape,
+the player's state and their zone — and then subscribed them to whatever cell they
+named, anywhere in the integer plane, unlimited. So the seed staying server-side
+constrained only honest clients: a loop over the grid was streamed the entire
+layout. `LOOT_CLAIM` separately never checked whether an entry had been streamed to
+the claimant, which left three distinguishable refusals over a dense sequential id
+space. Both are now closed, and the rule lives in `BR.LootCellReachable`
+(`br_lib/shared/loot_gen.lua`) with its arithmetic pinned in `tools/test_shared.lua`
+and the handler behaviour in `test_roster.lua`'s `loot.enumeration` block. A
+security claim in a document is worth exactly the test behind it.
 
 **3. Damage is validated at the source (M6).** FiveM raises
 `weaponDamageEvent` on the *server* before damage is applied network-wide, and
@@ -65,7 +78,7 @@ None of that reads anything the shooter sent. The damage figure is then
 recomputed from our own tables — weapon, rarity, distance falloff and the body
 part that was hit — so a modified `weaponDamage` is *evidence*, never input.
 
-Slack is deliberate and documented: roster positions sample at 2 Hz, so both
+Slack is deliberate and documented: roster positions sample at 4 Hz, so both
 players can be ~4.5 m stale at a sprint. Refusing an honest shot is a broken
 game; accepting a marginal one is a rounding error no aimbot can exploit. The
 validator ran in log-only mode for a full playtest first, on the rule that
@@ -111,31 +124,108 @@ refusals from a single honest trigger pull, which would fire the response on
 its own. Producing it deliberately would first require defeating bucket
 isolation, which is a much louder failure with its own detection.
 
-**The exact trigger.** There is one escalating rule and these are its numbers:
+**The exact trigger.** The bar is per reason and per match:
 
-> **8** countable refusals from the same player inside a **10-second** rolling
-> window fires `refusalAction` **once**, and once only, for that window. The
-> window restarts empty on the next refusal after it lapses; there is no
-> permanent record and no second escalation tier *yet* — one is planned in M9.
+> **1** high-severity refusal, or **2** normal ones, from the same player **in one
+> match** files one incident. `NO_WEAPON` is the exception and wants 2. The count
+> does not lapse; it resets when the match does. Configured at
+> `BR.Config.Combat.refusalBar`, with the tiers in `BR.ShotTier` and the per-reason
+> exception in `BR.ShotBarOverride`.
 
-These numbers were tightened from 12-in-30s once rules refusals were separated
-out: what is left in the countable stream has no honest explanation, so eight
-of them inside ten seconds is a decision rather than a bad minute. It does
-demand precision from the detection, which is exactly why the action still
-defaults to `log` and why it wants pressure testing with more than three
-clients before it is trusted to kick.
+**This replaced 8-inside-a-rolling-10-seconds (owner call, 2026-08-14), and the
+reason is worth stating: the old rule described one kind of cheater.** Eight of
+anything inside ten seconds is somebody spraying with a trainer. Somebody patient —
+one impossible hit every eleven seconds, all match, every match — never reached it,
+filed nothing, and left no trace anywhere. Since the countable stream has no honest
+explanation at all, there was never a reason to demand eight of it.
 
-`refusalAction` is one of `log` (default — a console line naming the player,
-the count and the last reason), `notify` (that, plus an in-game warning to the
-player that their shots are not landing) or `kick`. Configured at
-`BR.Config.Combat.refusalAction`, with `refusalLimit` and `refusalWindowMs`
-next to it. Nothing else in the game escalates on repetition — no strike
-count survives a window, a match, or a session.
+`NO_WEAPON` sits at 2 despite being `high`, and it is the only entry that looks
+inconsistent. The other three high reasons are checked against state the server
+definitely owns: its own inventory, its own ammunition count, a throw it watched.
+`NO_WEAPON` is the catch-all — the hash is in neither our weapon table nor the
+world's — so its false-positive rate tracks how complete two lookup tables are, and
+a hash added by a future game build or carried by an ambient NPC lands there.
+Nobody running a conjured weapon fires exactly once.
 
-The default is `log` on purpose. A validator that has never wrongly refused an
-honest player *today* is still a bet on tomorrow, and banning your own players
-is a worse failure than tolerating a cheater who is already unable to hurt
-anyone.
+**Repeat signals corroborate; they do not file again.** `damage.lua` reports at the
+bar and then only when the count *doubles* — about ten reports for a thousand
+refusals, which keeps a cheater holding the trigger from putting twenty events a
+second onto a queue that drops its oldest entries. The first report opens the case;
+every later one appends to it, carrying a `seq` so a receiver can tell 1, 2, 4 with
+a gap in it from a match where nothing more happened. One case per player per match,
+so DynamoDB write volume is flat and no single player can bury a queue that is meant
+to be a shrinking worklist.
+
+The console does that append, not the game. Corroboration is an `UpdateItem` on an
+existing row, and the game's grant is deliberately append-only so that a compromised
+game box can file noise but can never overwrite a case or erase a verdict and the
+admin who made it. Widening it for a redundant note would be a bad trade — so
+corroboration rides the event channel and is allowed to be lost, precisely because
+the case it attaches to is already durable.
+
+**The game no longer decides what happens to the player** (owner call,
+2026-08-14). `refusalAction` — which read `log` | `notify` | `kick` — is gone,
+along with the in-game warning and the `DropPlayer` that sat behind it. Two
+things were wrong with deciding here:
+
+- **The player was told.** A notice reading "your shots are not landing" is
+  free tuning feedback for whoever is testing a trainer. Nothing is now shown
+  to an offender at any point, and the eventual kick reason is deliberately
+  generic.
+- **The evidence was gathered after the fact, if at all.** Dropping the player
+  first ended the session the evidence had to come from.
+
+So the order is inverted. Crossing the threshold collects what the match knows
+about that player and files an **incident**; Ringmaster reads the case, decides,
+and sends any enforcement back over the command channel it already owns. It is
+the side with the ban list, the audit log and a human. This side has a counter.
+
+`BR.Damage.noteRefusal` still prints one line to the **server console**, which
+no player reads. Nothing else in the game escalates on repetition — and no strike
+count survives a match, which is a real limit rather than an oversight: a player
+who stays under the bar every match forever files nothing, and the console's own
+Blind spots tab says so.
+
+**Severity is a triage hint, not a verdict.** `BR.ShotTier` grades a match by its
+*worst* reason, using the tally the firing carries. It is the same table the bar is
+read from, so the decision to file and the severity written on the row cannot
+disagree — they were two tables until 2026-08-14, and two tables is two chances to
+edit one of them:
+
+| Tier | Bar | Reasons | Why |
+|---|---|---|---|
+| `high` | **1** | `NOT_HELD`, `NO_AMMO`, `NOT_THROWN` | The server never issued the means, and it is certain of that — its own inventory, its own ammunition count, a throw it watched happen. |
+| `high` | **2** | `NO_WEAPON` | Same severity, higher bar: this is the catch-all bucket, so it is as much a gap in a lookup table as a dishonest shooter. |
+| `normal` | **2** | `TOO_FAR`, `TOO_FAST` | A number the weapon does not have — real, but manufacturable by position sampling and a bad tick, which is why the validator already carries slack. |
+| — | — | `SELF` | **Recorded, and counted toward nothing.** |
+
+`SELF` is the one worth explaining, and it changed on 2026-08-14. It used to count
+toward the threshold without earning severity, because otherwise somebody mixing
+self-hits with real means would fall below eight and never trip. **At a bar of one
+or two that argument inverts**: one self-hit beside one marginal out-of-range shot
+would open a case, and a player could manufacture one against themselves by standing
+in their own grenades. So it now contributes to nothing.
+
+It is still refused, still printed, and still appears in the tally on the case,
+because an admin reading it wants to see the self-harm — it simply must not grade
+anything. The arithmetic that made it ambiguous in the first place: `selfLimit` is 2
+over 5 seconds, so the third self-damage tick already reads as repetition, and one
+grenade at your own feet lands several ticks well inside that. A pure-self cluster
+of eight is two grenades, not somebody exercising something.
+
+**The game files the row itself, and that is a deliberate widening of `br_ddb`.**
+`ringmaster-incidents` is the one console-owned table the game may write, and it
+is **append-only**: file a case, never read one back, no access at all to grants,
+bans or audit. The write is conditional on the id being absent, so a repeat can
+only be refused — it cannot overwrite a case, or erase a verdict and the admin who
+made it.
+
+The alternative was posting the case over the event channel and letting the
+console write it. That is worse: the channel drops batches silently after four
+attempts and nothing on either envelope says so, and an incident lost that way is
+unrecoverable because the evidence buffer behind it is discarded at match end. So
+the row is written by the game and the event carries only an id. What a
+compromised game box gains from this grant is the ability to file noise.
 
 **One event, three answers, and `weaponType` gives all of them.**
 `weaponDamageEvent` fires for everything that hurts a player — gunfire, melee,

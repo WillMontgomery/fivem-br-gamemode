@@ -386,6 +386,22 @@ end
 ---
 --- Guessing the field names and shipping enforcement on top of them is exactly
 --- the pattern that cost this project six rounds on the ammo counter.
+--- WHAT A MATCH REMEMBERS ABOUT A PLAYER, so an incident can carry evidence
+--- rather than only an accusation.
+---
+--- Held in memory and discarded when the match leaves the registry. Nothing is
+--- written to a database unless an incident is filed (owner call, 2026-08-14),
+--- so a clean match -- nearly all of them -- costs one table and no DynamoDB
+--- traffic.
+---
+--- Bounded because 100 players times an unbounded chat log is a memory leak with
+--- a nice name. The caps are the last N, not the first N: the recent lines are
+--- the ones that explain an incident, the early ones are the bus ride.
+BR.Config.Evidence = {
+    chatMax = 50,
+    killMax = 30,
+}
+
 BR.Config.Combat = {
     -- Both ON as of 2026-08-07: a full playtest produced no "shot refused"
     -- lines, which is the false-positive gate this was waiting for.
@@ -415,11 +431,6 @@ BR.Config.Combat = {
     -- somebody generating a dozen in half a minute is doing something the
     -- server did not issue them the means to do.
     --
-    -- Still defaults to LOG. A validator that has never wrongly refused an
-    -- honest player today may still do so the first time a pickup races a
-    -- shot, and banning your own players is a worse failure than tolerating a
-    -- cheater who is already unable to hurt anyone. "notify" tells them their
-    -- shots are not landing; "kick" drops them.
     -- TIGHTENED TO 8 IN 10s (user call, 2026-08-08), from 12 in 30s.
     --
     -- The looser window was chosen when nothing had been measured. Since then
@@ -429,12 +440,46 @@ BR.Config.Combat = {
     -- explanation, and eight of those inside ten seconds is a decision rather
     -- than a bad minute.
     --
-    -- It does demand precision from the detection, which is why the action
-    -- still defaults to `log` and why this wants pressure testing with more
-    -- than three clients before it is trusted to kick. M9 adds the second
-    -- escalation tier on top of this.
-    refusalAction   = "log",      -- "log" | "notify" | "kick"
-    refusalLimit    = 8,
+    -- THERE IS NO `refusalAction` ANY MORE (owner call, 2026-08-14). It read
+    -- "log" | "notify" | "kick" and decided what the SERVER would do to the
+    -- player on its own. Crossing the threshold now files an incident with the
+    -- match's evidence attached and stops there; Ringmaster reads the case and
+    -- decides, because it is the side that holds the ban list, the audit log
+    -- and a human. A convar that still named an enforcement action would be
+    -- describing a decision this file no longer makes.
+    --
+    -- PER MATCH, NOT PER WINDOW, AND GRADED (owner call, 2026-08-14).
+    --
+    -- `refusalLimit = 8` inside a rolling ten seconds is gone. The owner's verdict
+    -- on it was blunt and correct: "we don't want a system that virtually never
+    -- creates incidents". Eight of anything inside ten seconds describes somebody
+    -- spraying with a trainer and misses somebody careful, and since the countable
+    -- stream has no honest explanation at all there was never a reason to demand
+    -- eight of it.
+    --
+    -- So the count is per MATCH -- it no longer lapses after ten seconds -- and the
+    -- bar depends on how bad the reason is:
+    --
+    --   high    1   the server never issued the means. One is enough.
+    --   normal  2   a number the weapon does not have. Real, but position
+    --               sampling and a bad tick can manufacture one, so not one.
+    --
+    -- Which reason sits in which tier lives in BR.ShotTier (combat_solve.lua),
+    -- beside the refusal enum it keys on, because keying it here would mean
+    -- reading BR.ShotRefusal before combat_solve.lua has defined it -- this file
+    -- loads first. `NO_WEAPON` carries a per-reason override there and the
+    -- reasoning is with it.
+    --
+    -- SELF IS NO LONGER COUNTED AT ALL. It used to count toward the eight without
+    -- earning severity, so that mixing self-harm with real refusals could not keep
+    -- somebody under the bar. At a bar of one or two that argument inverts: one
+    -- self-hit plus one marginal out-of-range shot would open a case, and a player
+    -- could manufacture one against themselves. It is still refused and still
+    -- logged; it simply no longer contributes.
+    refusalBar = { high = 1, normal = 2 },
+
+    -- KEPT, BUT NO LONGER A THRESHOLD INPUT. The summary line on an incident reads
+    -- "N shots refused in Ms", and this is the M. Nothing decides anything on it.
     refusalWindowMs = 10000,
 
     -- HURTING YOURSELF IS ALLOWED; DOING IT REPEATEDLY IS NOT.

@@ -26,6 +26,12 @@ for _, f in ipairs({
     'shared/storm_solve.lua',
     'shared/loot_gen.lua',
     'shared/combat_solve.lua',
+    'shared/evidence_buf.lua',
+    -- AFTER combat_solve, not before: it builds its severity table from
+    -- BR.ShotRefusal's values at load time, so loading it first would leave every
+    -- key nil and classify nothing -- silently, since a missing severity reads as
+    -- "not a countable refusal".
+    'shared/incident_build.lua',
 }) do
     local chunk, err = loadfile(ROOT .. f)
     if not chunk then
@@ -796,6 +802,198 @@ do
     ok(#surprises == 0,
         'and the only one-shot headshots come from weapons that hit for 60+',
         table.concat(surprises, ', '))
+end
+
+describe('combat.refusal.classes')
+do
+    -- WHAT CAN BECOME AN INCIDENT, PINNED.
+    --
+    -- BR.Damage.noteRefusal opens with `if not BR.ShotSuspicious[why] then
+    -- return end`, so this table alone decides which refusals can ever reach
+    -- the Ringmaster feed -- and now, which can ever open an incident somebody
+    -- has to review. A reason quietly added to it does not fail anything: it
+    -- just starts filing cases. The first warmup scrap of every match would do
+    -- it, because since fists became a real weapon EVERY player has the means
+    -- to generate rule refusals constantly.
+    --
+    -- So the classification is asserted from both ends and checked for
+    -- exhaustiveness. Adding a reason to BR.ShotRefusal without filing it under
+    -- one of these two lists fails here, which is the point: the decision is
+    -- forced while the shape is on screen rather than discovered from a queue
+    -- full of friendly fire.
+
+    -- RULES. Things an HONEST client does constantly; the game simply declines
+    -- them. None of these may ever count, and none may ever file an incident.
+    local RULES = {
+        'WARMUP', 'SAME_SQUAD', 'NOT_LIVE', 'OTHER_MATCH',
+    }
+    -- MEANS. A weapon the server never issued, a magazine it never filled, a
+    -- range or cadence the weapon does not have. No honest way to produce one.
+    local MEANS = {
+        'NO_WEAPON', 'NOT_HELD', 'NO_AMMO', 'TOO_FAR', 'TOO_FAST',
+        'NOT_THROWN', 'SELF',
+    }
+
+    for _, name in ipairs(RULES) do
+        local why = BR.ShotRefusal[name]
+        ok(why ~= nil, ('%s is a real refusal reason'):format(name))
+        ok(not BR.ShotSuspicious[why],
+            ('%s is a rule, so it never counts toward the threshold'):format(name))
+    end
+
+    for _, name in ipairs(MEANS) do
+        local why = BR.ShotRefusal[name]
+        ok(why ~= nil, ('%s is a real refusal reason'):format(name))
+        ok(BR.ShotSuspicious[why] == true,
+            ('%s is a means, so it counts'):format(name))
+    end
+
+    -- EXHAUSTIVE, so a new reason cannot arrive unclassified. OK is nil by
+    -- construction and therefore never appears in pairs().
+    local filed = {}
+    for _, name in ipairs(RULES) do filed[name] = true end
+    for _, name in ipairs(MEANS) do filed[name] = true end
+    local unfiled = {}
+    for name in pairs(BR.ShotRefusal) do
+        if not filed[name] then unfiled[#unfiled + 1] = name end
+    end
+    table.sort(unfiled)
+    ok(#unfiled == 0,
+        'every refusal reason is filed as either a rule or a means',
+        table.concat(unfiled, ', '))
+
+    -- And nothing may be suspicious that is not a refusal reason at all -- a
+    -- stale string left behind by a rename would count forever against nobody.
+    local known = {}
+    for _, why in pairs(BR.ShotRefusal) do known[why] = true end
+    local orphans = 0
+    for why in pairs(BR.ShotSuspicious) do
+        if not known[why] then orphans = orphans + 1 end
+    end
+    ok(orphans == 0, 'nothing counts that is not a live refusal reason')
+
+    -- FRIENDLY FIRE, END TO END. The one the owner asked about by name: a shot
+    -- at a squadmate is refused, it is refused AS SAME_SQUAD rather than as
+    -- something that reads like cheating, and that reason cannot be counted.
+    local cfg = BR.Config.Combat
+    local rifle = BR.Config.WeaponById['carbinerifle']
+    local _, whyMate = BR.ValidateShot(
+        { weapon = rifle.hash, dist = 20.0, sinceLastMs = 500 },
+        {
+            sameSrc = false, sameMatch = true, warmup = false,
+            shooterLive = true, victimLive = true, sameSquad = true,
+            heldItem = 'carbinerifle', clip = 30,
+        }, cfg)
+    ok(whyMate == BR.ShotRefusal.SAME_SQUAD,
+        'shooting a squadmate is refused as friendly fire', tostring(whyMate))
+    ok(not BR.ShotSuspicious[whyMate],
+        'and a squad wipe by accident can never open an incident')
+end
+
+describe('evidence.buffer')
+do
+    -- WHAT A MATCH KNOWS, HELD UNTIL SOMEBODY NEEDS IT. The bugs worth catching
+    -- here are the quiet ones: a buffer that stops appending, a departed player
+    -- whose record is freed before anybody can report them, or evidence that
+    -- ends up filed against whoever inherited a recycled server id.
+
+    local buf = BR.EvidenceBuf.new({ chatMax = 3, killMax = 2 })
+
+    ok(buf ~= nil, 'a buffer can be built')
+    local s0 = buf:stats()
+    ok(s0.live == 0 and s0.sealed == 0, 'and starts empty')
+
+    -- BOUNDED, DROPPING OLDEST. Unbounded is a memory leak with a nice name.
+    for i = 1, 6 do
+        buf:noteChat(7, { text = 'line' .. i, at = i },
+            { license = 'license:aaa', name = 'Dave', matchId = 41 })
+    end
+    local r = buf:get(7)
+    ok(r ~= nil, 'a note starts tracking the player')
+    ok(#r.chat == 3, 'chat is capped', tostring(r and #r.chat))
+    ok(r.chat[1].text == 'line4' and r.chat[3].text == 'line6',
+        'and keeps the most recent lines, not the first ones',
+        r and (r.chat[1].text .. '..' .. r.chat[3].text))
+
+    for i = 1, 4 do
+        buf:noteKill(7, { victim = 'V' .. i, at = i })
+    end
+    ok(#buf:get(7).kills == 2, 'kills are capped independently',
+        tostring(#buf:get(7).kills))
+
+    -- METADATA ACCRETES AND NEVER FLICKERS BACK TO UNKNOWN. `license` is filled
+    -- lazily by the roster, so a buffer that started before it was known must
+    -- still end up with one -- and a later note that happens not to carry it
+    -- must not erase it.
+    local buf2 = BR.EvidenceBuf.new()
+    buf2:noteChat(9, { text = 'hi', at = 1 }, { name = 'Early', matchId = 41 })
+    ok(buf2:get(9).license == nil, 'a license we do not have yet is nil')
+    buf2:noteChat(9, { text = 'ho', at = 2 }, { license = 'license:bbb' })
+    ok(buf2:get(9).license == 'license:bbb', 'and is filled in when it arrives')
+    ok(buf2:get(9).name == 'Early', 'without losing what was already known')
+    buf2:noteChat(9, { text = 'hum', at = 3 }, { name = nil })
+    ok(buf2:get(9).license == 'license:bbb',
+        'and a later note carrying nothing does not erase it')
+
+    -- SEALED, NOT DELETED -- the case the owner asked about by name: somebody
+    -- causes trouble and leaves immediately.
+    local sealed = buf:seal(7, 5000)
+    ok(sealed ~= nil, 'a disconnect seals the record')
+    ok(buf:get(7) == nil, 'so it is no longer under the server id')
+    ok(sealed.leftAt == 5000, 'and remembers when they left',
+        tostring(sealed.leftAt))
+    ok(#buf:forLicense('license:aaa') == 1,
+        'but it is still reachable by license')
+    ok(#buf:departed(41) == 1, 'and still reportable as a departed player')
+    ok(#buf:forLicense('license:aaa')[1].chat == 3,
+        'with their chat intact')
+
+    -- THE WHOLE REASON SEALING IS KEYED ON LICENSE. Server ids are recycled
+    -- within the minute, so a record left under `src` would start collecting the
+    -- next player's chat -- and an incident built from it would be a record
+    -- about the wrong person.
+    buf:noteChat(7, { text = 'innocent', at = 6000 },
+        { license = 'license:ccc', name = 'Newcomer', matchId = 41 })
+    ok(#buf:forLicense('license:aaa')[1].chat == 3,
+        'so the departed player gains nothing from the new occupant')
+    ok(#buf:forLicense('license:ccc') == 1
+       and buf:forLicense('license:ccc')[1].chat[1].text == 'innocent',
+        'and the newcomer starts clean')
+
+    -- A reconnect inside one match is TWO sessions, not one merged record.
+    ok(#buf:departed(41) == 1, 'sealing is per session')
+    buf:seal(7, 7000)
+    buf:noteChat(7, { text = 'again', at = 8000 },
+        { license = 'license:ccc', name = 'Newcomer', matchId = 41 })
+    ok(#buf:forLicense('license:ccc') == 2,
+        'so a reconnect produces two records rather than merging them',
+        tostring(#buf:forLicense('license:ccc')))
+
+    -- Nothing at all for a license we have never seen. Not an error, not a
+    -- fabricated empty record: an absent answer.
+    ok(#buf:forLicense('license:nope') == 0, 'an unknown license has no records')
+    ok(#buf:forLicense(nil) == 0, 'and neither does a nil one')
+
+    -- THE DISCARD IS THE COST CONTROL. A match with no incident wrote nothing to
+    -- DynamoDB and must now cost nothing in memory either.
+    local before = buf:stats()
+    ok(before.chatRows > 0, 'there is something to discard')
+    local dropped = buf:clearMatch(41)
+    ok(dropped > 0, 'match end drops the records', tostring(dropped))
+    local after = buf:stats()
+    ok(after.live == 0 and after.sealed == 0 and after.chatRows == 0,
+        'and leaves nothing behind')
+
+    -- Only the match that ended. Concurrent matches are the normal case on this
+    -- server, and clearing all of them would destroy a live match's evidence.
+    local buf3 = BR.EvidenceBuf.new()
+    buf3:noteChat(1, { text = 'a' }, { license = 'l:1', matchId = 41 })
+    buf3:noteChat(2, { text = 'b' }, { license = 'l:2', matchId = 42 })
+    buf3:clearMatch(41)
+    ok(buf3:get(1) == nil, 'the ended match is forgotten')
+    ok(buf3:get(2) ~= nil, 'and a concurrent one is untouched')
+
+    ok(buf3:seal(999, 1) == nil, 'sealing an unknown key is a no-op, not a crash')
 end
 
 describe('bus.doors')
@@ -1639,6 +1837,76 @@ do
     ok(#BR.LootCellsAround(0, 0, 2) == 25, 'radius 2 is a 5x5 block')
 end
 
+-- ------------------------------------------------------------- loot.reach ---
+
+-- WHAT THIS PINS IS A SECURITY BOUNDARY, not a convenience.
+--
+-- The LOOT_CELL handler used to subscribe a player to whatever cell they named.
+-- Since the whole reason the layout seed stays server-side is that nobody should
+-- be able to derive the map's loot, that made the seed pointless: a client could
+-- walk the integer plane and be streamed everything, 9 cells at a time. These
+-- cases are the arithmetic of the fix, and the handler around them is glue.
+describe('loot.reach')
+do
+    local size = BR.Config.Loot.cellSize
+
+    -- Stand in the middle of cell 0,0 so nothing here is a boundary artefact.
+    local mx, my = size * 0.5, size * 0.5
+
+    ok(BR.LootCellReachable(0, 0, mx, my), 'the cell you are standing in')
+
+    -- All eight neighbours, because the subscription the server itself sends is
+    -- the 3x3 block -- refusing a corner would refuse cells we volunteered.
+    local corners = 0
+    for dx = -1, 1 do
+        for dy = -1, 1 do
+            if BR.LootCellReachable(dx, dy, mx, my) then corners = corners + 1 end
+        end
+    end
+    ok(corners == 9, 'every cell of the 3x3 block around you is reachable')
+
+    ok(not BR.LootCellReachable(2, 0, mx, my), 'two cells out is refused')
+    ok(not BR.LootCellReachable(0, 2, mx, my), 'two cells out on the other axis')
+    ok(not BR.LootCellReachable(2, 2, mx, my), 'two cells out diagonally')
+
+    -- The enumeration attack, in one line.
+    ok(not BR.LootCellReachable(400, -400, mx, my),
+        'a cell across the map is refused -- this is the whole point')
+
+    -- CHEBYSHEV, NOT EUCLIDEAN. A radial test with radius 1 would put the
+    -- diagonal at sqrt(2) and refuse it, which would refuse four of the nine
+    -- cells the server streams.
+    ok(BR.LootCellReachable(1, 1, mx, my),
+        'the diagonal neighbour is as adjacent as the orthogonal one')
+
+    -- Negative coordinates are over half the map (the AABB runs to -3600), and
+    -- floor-vs-truncate bugs hide here.
+    ok(BR.LootCellReachable(-1, -1, -size * 0.5, -size * 0.5),
+        'the rule holds on the negative side of the origin')
+    ok(not BR.LootCellReachable(1, 1, -size * 0.5, -size * 0.5),
+        'and it still refuses two cells away there')
+
+    -- A boundary straddle is the honest worst case the slack exists for: the
+    -- sample sits just inside one cell while the player is a metre into the next.
+    ok(BR.LootCellReachable(1, 0, size - 0.5, my),
+        'standing on a boundary, the cell you are stepping into is reachable')
+
+    -- Junk arguments must be refused rather than erroring or passing. `e.pos` is
+    -- nil until the first sample, and the handler checks that itself -- but a nil
+    -- reaching here must not be an allow.
+    ok(not BR.LootCellReachable(nil, 0, mx, my), 'a nil cell is refused')
+    ok(not BR.LootCellReachable(0, 0, nil, nil), 'a nil position is refused')
+
+    -- The tolerance is a parameter so the bound can be tightened without
+    -- touching call sites; zero means exactly your own cell.
+    ok(BR.LootCellReachable(0, 0, mx, my, 0), 'tolerance 0 allows your own cell')
+    ok(not BR.LootCellReachable(1, 0, mx, my, 0),
+        'tolerance 0 refuses the neighbour')
+
+    ok(BR.LOOT_CELL_DRIFT == 1,
+        'the shipped tolerance is one cell -- 9 reachable, not 4 billion')
+end
+
 -- ---------------------------------------------------------------- loot.gen ---
 
 describe('loot.gen')
@@ -2386,6 +2654,309 @@ do
     -- licence-less player into one profile.
     ok(BR.Identity.qualified('license', nil) == nil,
         'a missing identifier stays missing rather than becoming "license:nil"')
+end
+
+-- ------------------------------------------------------- incident building ---
+
+describe('incident.severity')
+do
+    local S = BR.IncidentBuild.SEVERITY_OF
+    local R = BR.ShotRefusal
+
+    -- EVERY SUSPICIOUS REFUSAL HAS A SEVERITY -- WITH ONE NAMED EXCEPTION --
+    -- checked exhaustively rather than by listing the ones I remembered. The
+    -- failure this prevents is the quiet one: a refusal with no entry classifies
+    -- as "not countable", so adding a new MEANS to BR.ShotSuspicious without
+    -- touching the severity table would silently stop filing incidents for it,
+    -- and nothing anywhere would log that it had.
+    --
+    -- The exception is written as an allowlist so that adding a second one is a
+    -- decision somebody has to make here, in the open, rather than a nil that
+    -- passes.
+    local NO_SEVERITY_BY_DESIGN = { [R.SELF] = true }
+
+    local missing = {}
+    for reason in pairs(BR.ShotSuspicious) do
+        if S[reason] == nil and not NO_SEVERITY_BY_DESIGN[reason] then
+            missing[#missing + 1] = tostring(reason)
+        end
+    end
+    ok(#missing == 0,
+        'every BR.ShotSuspicious reason has a severity (missing: '
+            .. (table.concat(missing, ', ')) .. ')')
+
+    -- And the reverse: nothing here that the anticheat cannot actually produce.
+    -- An orphan entry is a rule about a case that never happens, which reads as
+    -- coverage and is not.
+    local orphans = {}
+    for reason in pairs(S) do
+        if not BR.ShotSuspicious[reason] then
+            orphans[#orphans + 1] = tostring(reason)
+        end
+    end
+    ok(#orphans == 0,
+        'no severity is defined for a refusal that never counts (orphans: '
+            .. (table.concat(orphans, ', ')) .. ')')
+
+    local BAR = BR.Config.Combat.refusalBar
+    local function barOf(reason) return (BR.ShotBarFor(reason, BAR)) end
+    local function crosses(tally) return (BR.ShotTallyVerdict(tally, BAR)) end
+
+    -- THE TIERS THEMSELVES. Means the server never issued are the loud ones;
+    -- numbers the weapon does not have are the ones with an innocent story
+    -- (position sampling plus a bad tick), and repeated self-harm hurts nobody.
+    ok(S[R.NO_WEAPON] == 'high', 'a weapon the server never issued is high')
+    ok(S[R.NOT_HELD] == 'high', 'a weapon not in their hands is high')
+    ok(S[R.NO_AMMO] == 'high', 'a shot from an empty magazine is high')
+    ok(S[R.NOT_THROWN] == 'high', 'an explosive they never threw is high')
+    ok(S[R.TOO_FAR] == 'normal', 'out of range is normal -- positions are stale')
+    ok(S[R.TOO_FAST] == 'normal', 'too fast is normal for the same reason')
+
+    -- SELF IS RECORDED AND NO LONGER COUNTED (owner call, 2026-08-14).
+    --
+    -- It stays in BR.ShotSuspicious, so it is still refused, still printed, and
+    -- still appears in the tally an admin reads. It has no tier, so it contributes
+    -- to no bar. While the bar was eight it HAD to count -- otherwise somebody
+    -- mixing self-harm with real refusals stayed under it and never tripped. At a
+    -- bar of one or two the same reasoning inverts: one self-hit beside one
+    -- marginal out-of-range shot would open a case, and a player could manufacture
+    -- one against themselves by standing in their own grenades.
+    --
+    -- The arithmetic behind that: selfLimit = 2 over selfWindowMs = 5000, so the
+    -- third self-damage tick in five seconds already reads as repetition, and one
+    -- grenade at your own feet lands several ticks well inside it.
+    ok(BR.ShotSuspicious[R.SELF] == true,
+        'repeated self-harm is still refused and still recorded')
+    ok(S[R.SELF] == nil, 'but has no tier, so it counts toward no bar')
+    ok(barOf(R.SELF) == nil, 'and asking for its bar says there is not one')
+
+    -- RULES ARE ABSENT ENTIRELY, which is the same guarantee the exclusion test
+    -- makes upstream, asserted again here because this table is what a reviewer
+    -- would edit.
+    ok(S[R.SAME_SQUAD] == nil, 'friendly fire has no severity, because it is not an incident')
+    ok(S[R.WARMUP] == nil, 'a warmup scrap has no severity')
+    ok(S[R.NOT_LIVE] == nil, 'a shot that raced a match boundary has no severity')
+    ok(S[R.OTHER_MATCH] == nil, 'a cross-match shot has no severity')
+
+    -- THE BARS. One for high, two for normal -- and NO_WEAPON held at two despite
+    -- being high, which is the one entry that looks inconsistent. It is the
+    -- catch-all: it means the hash is in neither our weapon table nor the world's,
+    -- so its false-positive rate tracks how complete two lookup tables are rather
+    -- than how dishonest the shooter is. Nobody running a conjured weapon fires
+    -- exactly once.
+    ok(barOf(R.NOT_HELD) == 1, 'a weapon not in their hands files on the first one')
+    ok(barOf(R.NO_AMMO) == 1, 'so does a shot from an empty magazine')
+    ok(barOf(R.NOT_THROWN) == 1, 'and an explosive they never threw')
+    ok(barOf(R.NO_WEAPON) == 2, 'a weapon we do not know at all wants two')
+    ok(barOf(R.TOO_FAR) == 2, 'out of range wants two')
+    ok(barOf(R.TOO_FAST) == 2, 'and so does too fast')
+
+    -- A MISSING CONFIG MUST NOT MEAN "FILE ON SIGHT". If BR.Config.Combat failed to
+    -- load, the safe default is the strictest thing that is still a rule, not zero.
+    ok((BR.ShotBarFor(R.TOO_FAR, nil)) == 1,
+        'with no config at all the bar defaults to one, never to zero')
+
+    -- CROSSING, which is the question damage.lua actually asks.
+    ok(crosses({ [R.NOT_HELD] = 1 }), 'a single not-held crosses immediately')
+    ok(not crosses({ [R.NO_WEAPON] = 1 }), 'a single unknown weapon does not')
+    ok(crosses({ [R.NO_WEAPON] = 2 }), 'but two of them do')
+    ok(not crosses({ [R.TOO_FAR] = 1 }), 'one out-of-range shot is a bad tick')
+    ok(crosses({ [R.TOO_FAR] = 2 }), 'two of them is a pattern')
+    ok(not crosses({ [R.SELF] = 40 }),
+        'no quantity of self-harm crosses anything at all')
+    ok(not crosses({ [R.SAME_SQUAD] = 40 }), 'nor does any amount of friendly fire')
+    ok(not crosses({}), 'an empty tally crosses nothing')
+    ok(not crosses(nil), 'and neither does a missing one')
+
+    -- EACH REASON IS TESTED AGAINST ITS OWN BAR, NOT AGAINST A TOTAL. Two
+    -- different reasons that are each one short file nothing -- which is exactly
+    -- the case the old count-everything threshold would have filed, and the reason
+    -- the bar is per reason rather than a sum.
+    ok(not crosses({ [R.TOO_FAR] = 1, [R.NO_WEAPON] = 1 }),
+        'two different reasons, each below its own bar, file nothing')
+
+    -- THE WORST REASON WINS, which is the whole reason damage.lua sends a tally.
+    -- Before it did, seven conjured-weapon shots followed by one milder refusal
+    -- were filed as the milder thing and sorted to the bottom of the queue -- the
+    -- exact opposite of what they deserved.
+    ok(BR.IncidentBuild.severityOf({ [R.SELF] = 7, [R.NO_WEAPON] = 2 }) == 'high',
+        'two conjured-weapon shots among seven self-hits file as high')
+    ok(BR.IncidentBuild.severityOf({ [R.TOO_FAR] = 4, [R.NO_AMMO] = 1 }) == 'high',
+        'high beats normal')
+    ok(BR.IncidentBuild.severityOf({ [R.TOO_FAR] = 4, [R.SELF] = 4 }) == 'normal',
+        'and self-hits do not drag a real signal down')
+    ok(BR.IncidentBuild.severityOf({ [R.SELF] = 8 }) == nil,
+        'a pure self-harm match files nothing -- it is probably two grenades')
+
+    -- BELOW THE BAR THERE IS NO SEVERITY, because there is no case to grade. This
+    -- is the property that keeps the filing decision and the severity written on
+    -- the row from being two separate traversals that can disagree.
+    ok(BR.IncidentBuild.severityOf({ [R.NO_WEAPON] = 1 }) == nil,
+        'a reason one short of its bar grades as nothing, not as high')
+
+    -- A tally entry of zero is a reason that never happened.
+    ok(BR.IncidentBuild.severityOf({ [R.NO_WEAPON] = 0, [R.TOO_FAR] = 3 }) == 'normal',
+        'a zero count does not raise the severity')
+
+    -- Rules in the tally cannot smuggle an incident in either.
+    ok(BR.IncidentBuild.severityOf({ [R.SAME_SQUAD] = 20 }) == nil,
+        'a match of nothing but friendly fire classifies as nothing')
+
+    -- FALLS BACK TO THE LAST REASON, so an event from a build that predates the
+    -- tally still classifies. Same instinct as the console keeping the older
+    -- `action` values: one side being a deploy behind must not lose the record.
+    ok(BR.IncidentBuild.severityOf(nil, R.NO_AMMO) == 'high',
+        'an event with no tally classifies from its last reason')
+    ok(BR.IncidentBuild.severityOf(nil, nil) == nil,
+        'an event with neither classifies as nothing')
+    ok(BR.IncidentBuild.severityOf(nil, R.SELF) == nil,
+        'and the SELF exclusion survives the fallback path too')
+end
+
+describe('incident.payload')
+do
+    local R = BR.ShotRefusal
+    local LIC = 'license:abc'
+
+    -- A SENTINEL, because `over = { license = nil }` sets no key at all -- pairs()
+    -- never sees it and the override silently does nothing. That is the trap this
+    -- whole module exists around (a Lua nil is absence, not a value), so the test
+    -- helper had better not fall into it: the first version of this block passed
+    -- vacuously against the default license.
+    local CLEAR = {}
+    local function ev(over)
+        local e = {
+            src = 3, name = 'Someone', license = LIC, matchId = 7,
+            count = 8, windowMs = 10000,
+            reason = R.NO_WEAPON, reasons = { [R.NO_WEAPON] = 8 },
+            action = 'incident', at = 90000,
+        }
+        for k, v in pairs(over or {}) do
+            e[k] = (v ~= CLEAR) and v or nil
+        end
+        return e
+    end
+
+    -- NO LICENSE, NO INCIDENT. The strongest refusal in the file: a case keyed to
+    -- a server id is a case about whoever holds that slot next, and it cannot be
+    -- withdrawn once a human has read it.
+    local p, why = BR.IncidentBuild.fromRefusal(ev({ license = CLEAR }), {})
+    ok(p == nil and why == 'no license',
+        'a refusal with no license files nothing, and says why')
+
+    ok(select(1, BR.IncidentBuild.fromRefusal(ev({ license = '' }), {})) == nil,
+        'an empty license is treated as no license')
+
+    ok(select(1, BR.IncidentBuild.fromRefusal(nil, {})) == nil,
+        'no event files nothing rather than throwing')
+
+    -- A window of rules should never have reached here (damage.lua gates it), so
+    -- this is the belt to that braces: even if one did, nothing is filed.
+    local rulesOnly, ruleWhy = BR.IncidentBuild.fromRefusal(
+        ev({ reason = R.SAME_SQUAD, reasons = { [R.SAME_SQUAD] = 9 } }), {})
+    ok(rulesOnly == nil and ruleWhy == 'not a countable refusal',
+        'friendly fire cannot produce a payload even if it reaches the builder')
+
+    -- A PURE SELF-HARM CLUSTER DOES REACH HERE -- damage.lua counts it, by design
+    -- -- and is declined at this layer rather than at the counter. The counter
+    -- must not learn to forgive a reason, or somebody mixing self-hits with real
+    -- means would fall below the threshold and never trip at all.
+    local selfOnly, selfWhy = BR.IncidentBuild.fromRefusal(
+        ev({ reason = R.SELF, reasons = { [R.SELF] = 8 } }), {})
+    ok(selfOnly == nil and selfWhy == 'not a countable refusal',
+        'a window of nothing but self-harm files no incident')
+
+    -- ...and the moment real means cross their own bar, the case is filed at that
+    -- severity rather than being softened by the self-hits around it.
+    local mixed = BR.IncidentBuild.fromRefusal(
+        ev({ reason = R.SELF, reasons = { [R.SELF] = 7, [R.NO_WEAPON] = 2 } }), {})
+    ok(mixed ~= nil and mixed.severity == 'high',
+        'two conjured-weapon shots among seven self-hits file as high')
+
+    -- ONE SHORT OF THE BAR IS STILL NOTHING, even with self-harm piled around it.
+    -- Self-hits used to count toward the threshold, so this tally would have filed;
+    -- they no longer do, and NO_WEAPON alone wants two.
+    local nearly, nearlyWhy = BR.IncidentBuild.fromRefusal(
+        ev({ reason = R.NO_WEAPON, reasons = { [R.SELF] = 7, [R.NO_WEAPON] = 1 } }), {})
+    ok(nearly == nil and nearlyWhy == 'not a countable refusal',
+        'seven self-hits cannot carry a single unknown weapon over its bar')
+
+    -- The ordinary case.
+    local rec = {
+        key = 3, license = LIC, name = 'Someone', matchId = 7, squadId = 2,
+        openedAt = 30000, leftAt = nil,
+        chat = { { text = 'hi', channel = 'all', at = 40000 } },
+        kills = { { killer = 'Someone', victim = 'Else', cause = 'shot', at = 50000 } },
+    }
+    local out = BR.IncidentBuild.fromRefusal(ev(), { rec })
+
+    ok(out ~= nil, 'a countable refusal with a license produces a payload')
+    ok(out.kind == 'anticheat', 'it is filed as an anticheat incident')
+    ok(out.category == 'system', 'the category is system, not a player category')
+    ok(out.state == 'pending_review', 'it opens for review rather than resolved')
+    ok(out.severity == 'high', 'severity comes from the tally')
+    ok(out.subjectLicense == LIC, 'the subject is the shooter')
+    ok(out.subjectName == 'Someone', 'and their name travels with it')
+    ok(out.matchId == 7, 'the match is recorded')
+    ok(out.atGameMs == 90000,
+        'the timestamp leaves as a GAME clock reading -- br_ringmaster realises it')
+    ok(out.openedAt == nil,
+        'and openedAt is NOT set here: br_core has no clock worth putting in a record')
+
+    -- SQUAD AT INCIDENT TIME. The question the console has to answer about a
+    -- report is "were these two on the same team", and squads change between the
+    -- incident and anybody reading it.
+    ok(out.subjects and #out.subjects == 1, 'there is one subject')
+    ok(out.subjects[1].license == LIC, 'subjects[1] mirrors subjectLicense')
+    ok(out.subjects[1].squadId == 2, 'the squad at incident time is captured')
+    ok(out.subjects[1].left == false, 'and whether they had already gone')
+
+    ok(out.refusal.count == 8, 'the refusal count is on the record')
+    ok(out.refusal.reasons[R.NO_WEAPON] == 8, 'so is the per-reason tally')
+    ok(out.refusal.action == 'incident', 'and what the server actually did')
+
+    ok(#out.evidence == 1, 'the evidence record is attached')
+    ok(out.evidence[1].chat[1].text == 'hi', 'with its chat')
+    ok(out.evidence[1].kills[1].victim == 'Else', 'and its kills')
+    ok(out.evidence[1].license == LIC, 'keyed to a license')
+
+    -- THE SERVER ID DOES NOT TRAVEL. Sending it would invite exactly the mistake
+    -- sealing exists to prevent: treating a recycled slot number as a person.
+    ok(out.evidence[1].key == nil, 'the server id is NOT on the wire')
+
+    -- A REPORTER IS ABSENT, NOT NULL, because a Lua key set to nil is not sent.
+    -- br_ddb writes the null; this asserts br_core does not pretend to.
+    ok(out.reporterLicense == nil, 'the system filed this, so there is no reporter')
+
+    ok(out.summary:find('8 shots refused in 10s', 1, true) ~= nil,
+        'the summary reads as a sentence an admin can scan')
+    ok(out.summary:find(R.NO_WEAPON, 1, true) ~= nil,
+        'and names the reason')
+
+    -- A DEPARTED PLAYER IS STILL FILEABLE, which is the case the seal exists for.
+    local sealed = {
+        key = 3, license = LIC, name = 'Someone', matchId = 7, squadId = 2,
+        openedAt = 30000, leftAt = 88000, chat = {}, kills = {},
+    }
+    local gone = BR.IncidentBuild.fromRefusal(ev(), { sealed })
+    ok(gone ~= nil, 'somebody who already left can still have a case filed')
+    ok(gone.evidence[1].left == true, 'and the record says they left')
+    ok(gone.subjects[1].left == true, 'as does the subject row')
+
+    -- A RECONNECT IS TWO SESSIONS, and both belong on the case: the evidence does
+    -- not stop counting because somebody bounced their client.
+    local two = BR.IncidentBuild.fromRefusal(ev(), { sealed, rec })
+    ok(#two.evidence == 2, 'two sessions produce two evidence records')
+    ok(two.subjects[1].left == false,
+        'the subject row reflects the NEWEST session, which is the live one')
+
+    -- No evidence at all is survivable, not a refusal. The buffer may have been
+    -- cleared by a restart, and a case with a refusal cluster and no chat is
+    -- still worth filing.
+    local bare = BR.IncidentBuild.fromRefusal(ev(), nil)
+    ok(bare ~= nil, 'an incident with no evidence is still filed')
+    ok(#bare.evidence == 0, 'with an empty evidence list')
+    ok(bare.subjects[1].squadId == nil, 'and no squad claim it cannot support')
 end
 
 -- ----------------------------------------------------------------- result ---

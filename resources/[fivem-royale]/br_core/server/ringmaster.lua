@@ -51,9 +51,16 @@ end
 --- The anticheat's live settings, for the console's Anticheat page.
 ---
 --- SENT RATHER THAN DOCUMENTED. A console page that hardcodes "eight refusals
---- in ten seconds, then a kick" lies the day somebody edits config/match.lua --
---- and the specific lie it tells is the dangerous one: claiming the anticheat
---- enforces while `refusalAction` is `log` and it is removing nobody.
+--- in ten seconds" lies the day somebody edits config/match.lua, and a page
+--- that describes the threshold wrongly is worse than one that says it does not
+--- know.
+---
+--- WHAT IT DOES ABOUT A FIRING IS NO LONGER A SETTING. `refusalAction` is gone:
+--- crossing the threshold files an incident, always, and Ringmaster decides what
+--- follows. `action` is reported as the constant `incident` so the console reads
+--- what happened from the wire rather than inferring it from a build number --
+--- and so an older console, whose schema only knows log/notify/kick, is the one
+--- thing that must be updated first.
 ---
 --- IT LIVES HERE RATHER THAN IN br_ringmaster because BR.Config is br_core's.
 --- FiveM gives each resource its own Lua state, so br_ringmaster -- which
@@ -66,12 +73,28 @@ local function anticheatBlock()
     local cfg = BR.Config and BR.Config.Combat
     if not cfg then return nil end
 
+    local bar = cfg.refusalBar or {}
+
     return {
-        -- "log" | "notify" | "kick" -- the difference between a system that
-        -- watches and one that acts, which is the first thing an admin needs.
-        action     = cfg.refusalAction or 'log',
-        limit      = cfg.refusalLimit or 0,
+        -- Constant, and kept on the wire anyway: the console records what the
+        -- server did rather than deducing it. The day this becomes configurable
+        -- again, nothing on the receiving side has to change to notice.
+        action     = 'incident',
+
+        -- THE BAR, PER TIER. Replaces a single `limit` in a rolling window, and the
+        -- console's Anticheat page reads it from here rather than describing it
+        -- from memory -- which is the whole reason this block exists.
+        barHigh    = bar.high or 0,
+        barNormal  = bar.normal or 0,
+
+        -- `limit` AND `windowMs` STAY ON THE WIRE, ZEROED. Removing a field is the
+        -- one change that needs an envelope version bump (docs/ingest-envelope.md),
+        -- and a console one deploy behind would render "0 in 0s" -- wrong, but
+        -- visibly wrong, rather than crashing its schema on a missing key. They go
+        -- for real once no console can still be reading them.
+        limit      = 0,
         windowMs   = cfg.refusalWindowMs or 0,
+
         selfLimit  = cfg.selfLimit or 0,
         selfWindow = cfg.selfWindowMs or 0,
     }
