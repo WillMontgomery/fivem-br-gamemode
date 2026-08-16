@@ -5,14 +5,15 @@
 -- us, so the two can never be on screen together. The key is therefore
 -- captured before the engine sees it, and OUR menu comes up.
 --
--- ESC IS NOT THE KEY, AND CANNOT BE. FiveM cannot rebind the engine's pause
--- control away from Escape, and DisableControlAction on it for the whole match
--- would mean a player whose NUI has broken cannot reach the game's own menu at
--- all -- a soft lock with no escape hatch, which is exactly the class of bug
--- br_ui's focus watchdog exists to prevent. So the pause menu is bound to a
--- key of the player's choosing (F1 by default, rebindable in Settings ->
--- Controls) and Escape still opens GTA's, which stays as the way out of
--- anything we get wrong.
+-- ESC IS THE KEY, AND THIS HEADER USED TO SAY THE OPPOSITE. It said Escape
+-- could not be ours, because FiveM cannot rebind the engine's pause CONTROL --
+-- which is true and turned out not to matter: DISABLE_FRONTEND_THIS_FRAME
+-- stops the frontend being toggled at all, from the keyboard and from a pad
+-- alike (br_core/client/natives.lua). The owner asked for Escape on 2026-08-09
+-- and it moved there, with a KVP migration so it moved for existing players
+-- too. F1 survives only as the ENGINE-side default, for a client with no raw
+-- key layer -- see the long note by the keybind at the bottom of this file,
+-- which is the whole of why the lobby could not open this menu.
 --
 -- The MAP is deliberately handed back to the engine. GTA's map is a scaleform
 -- we cannot reproduce, and re-rendering Los Santos in CEF would cost real
@@ -26,6 +27,25 @@ BR.Pause = {}
 --- Whether our menu is up. Tracked so the keybind toggles rather than
 --- re-pushing focus onto a screen that is already showing.
 local open = false
+
+--- When the menu last changed state, so ONE PRESS CANNOT COUNT TWICE.
+---
+--- TWO PATHS CAN SEE ONE ESCAPE, and which of them arrives is not something
+--- this code gets to know. The page has its own keydown listener (App.tsx, and
+--- PauseMenu's own back-out handler) and br_core's raw key layer is reading the
+--- same physical key straight off the keyboard. Either can be first.
+---
+--- IT LIVES UP HERE, BESIDE `open`, RATHER THAN NEXT TO THE KEYBIND, and that
+--- move is the whole of the lobby half of #83. The stamp used to be written
+--- only inside `br:ui:pauseToggle` -- the raw-key path -- so the guard covered
+--- that path against itself and not against the page at all. Opening the menu
+--- from the lobby, which HAS to come from the page (see the keybind section at
+--- the bottom for why the game never sees the key there), therefore left the
+--- window unstamped: a raw Escape landing a frame later read `open == true`
+--- and toggled the menu straight back off, and the player saw a flicker and no
+--- menu. Stamping in open() and close() means every route through this file
+--- shares one window, whichever of them got there first.
+local lastToggle = 0
 
 --- Whether GTA's own frontend is up because WE put it there, showing the map.
 --- Its watcher thread reads this every frame, so clearing it is how anything
@@ -65,6 +85,7 @@ end
 function BR.Pause.open(tab)
     if open then return end
     open = true
+    lastToggle = GetGameTimer()
     -- The tab rides the focus envelope, the same way the chat channel does --
     -- one message, and the screen knows both that it is opening and what it
     -- is opening ON. A second envelope would race the first.
@@ -81,6 +102,12 @@ function BR.Pause.close()
     -- came back to haunt the lobby (user, 2026-08-09: readied up and "was
     -- brought back to the pause menu where I could not close the UI"). See
     -- the focusChanged handler at the bottom for the full sequence.
+    --
+    -- The stamp is written on the way DOWN as well as on the way up, and only
+    -- when the menu was actually up: the closing press and the opening press
+    -- are the same key, so a raw Escape trailing the page's close by a frame
+    -- would otherwise re-open the menu the player just dismissed.
+    if open then lastToggle = GetGameTimer() end
     open = false
     TriggerEvent('br:ui:popFocus', 'pause')
 end
@@ -555,17 +582,40 @@ end)
 -- It was registered here with an empty default and in no binding table at all,
 -- which meant the pause menu had no key AND no row in the settings screen to
 -- give it one -- there was literally no way to open it (user, 2026-08-09).
--- br_core/client/keybinds.lua registers it (F1) and fires this; TriggerEvent
+-- br_core/client/keybinds.lua registers it and fires this; TriggerEvent
 -- crosses resources, which is the same hop br_core already uses to reach the
 -- interface.
---- When the menu last changed state, so one press cannot count twice.
-local lastToggle = 0
-
+--
+-- AND IT IS NOT THE ONLY ROUTE IN, WHICH IS #83.
+--
+-- "There is no way to leave the server from within the lobby pause menu"
+-- (owner, 2026-08-16). The row was there; the MENU was not, because in the
+-- lobby neither of the two key routes this file can be reached by exists:
+--
+--   * the engine's own binding (F1, RegisterKeyMapping) needs the game to
+--     receive the key, and in the lobby NUI holds the cursor with keep-input
+--     off, so the game receives nothing at all. On top of that br_core's raw
+--     layer gates every RegisterKeyMapping handler off while it is running, so
+--     F1 is inert on any client that HAS the raw layer;
+--   * and the raw layer itself is registered on Escape for this command -- but
+--     br_core's own frontend suppressor says out loud that "the raw layer
+--     cannot see Escape while CEF holds the cursor" (client/natives.lua), and
+--     the lobby is precisely the screen that holds it.
+--
+-- So the only thing that reliably receives a keypress in the lobby is the PAGE,
+-- which has DOM focus by definition -- and the page already had an Escape
+-- handler there. It used to open our Settings screen; it asks for this menu
+-- now, through the PAUSE_FOCUS callback above, and Settings stays reachable as
+-- the lobby's own button and as a tab inside this menu.
+--
+-- Nothing here needed a new focus owner or a second SetNuiFocus caller to make
+-- that work, which is deliberate: the lesson of #122 and #124 is that the lobby
+-- is drawn from MATCH STATE and not from focus, so anything phrased as "release
+-- focus and our screens go away" is false there. This is a key routing change
+-- and nothing more.
 AddEventHandler('br:ui:pauseToggle', function()
-    -- TWO PATHS CAN SEE ONE ESCAPE. The interface has its own keydown handler
-    -- -- Escape backs out of a confirm, then a tab, then closes -- and the raw
-    -- key layer is watching the same key from Lua. Whether the game sees a key
-    -- while CEF holds focus is not something to rely on either way, so a press
+    -- See `lastToggle` at the top of this file: the page and the raw key layer
+    -- can both see the same physical Escape, in either order, and a press
     -- inside this window is treated as the one press it was.
     local now = GetGameTimer()
     if now - lastToggle < 220 then return end

@@ -107,6 +107,30 @@
   --color-storm:   #c026d3;
   --color-danger:  #ef4444;
 
+  /* SECONDARY TEXT. Every line in the interface that explains, labels or
+     qualifies something -- and is not the thing itself -- is this one colour.
+     Headings and values stay plain white; this is the layer underneath them.
+
+     IT IS A TOKEN BECAUSE IT WAS NOT ONE, and that is #136 (owner, 2026-08-16:
+     "the dark font in the pause menus is too dark. Please change it to some
+     lighter shade"). The shade was a literal rgba buried in `.micro-label`
+     further down this file, which meant the one place with the authority to
+     answer that complaint was not findable by looking at the palette.
+
+     0.58 RATHER THAN THE 0.38 IT WAS, and the number is measured rather than
+     eyeballed. The pause menu's plates sit at rgba(20,24,34,0.94) over a near
+     black backdrop: white at 0.38 composites to roughly #6C6F74 on #131721,
+     which is 3.6:1 -- under the 4.5:1 that small text needs, and this text is
+     0.62rem. At 0.58 the same pair is about 6.5:1, comfortably readable, while
+     plain white on that plate stays near 18:1 so the hierarchy this shade
+     exists to create survives intact.
+
+     THE SCATTERED `text-white/40` AND `text-white/45` LITERALS ARE THE DRIFT
+     THIS EXISTS TO STOP. They are the same intent typed by hand and they do not
+     move when this does; the verdict screen's were converted with #136 because
+     the issue named it, and anything new should reach for this name. */
+  --color-text-dim: rgba(255, 255, 255, 0.58);
+
   /* RARITY IS CANONICAL. Players arrive knowing these from every other battle
      royale; redesigning them costs recognition and buys nothing. Mirrored in
      bridge/types.ts RARITY, which is what components actually read -- these
@@ -292,13 +316,21 @@ html, body, #root {
 }
 
 /* The small all-caps label above a group. Barlow 600 at .2em is the project's
-   existing convention and it was being retyped in every screen. */
+   existing convention and it was being retyped in every screen.
+
+   IT IS ALSO THE PROJECT'S BODY TEXT, WHICH IS WHY #136 LANDED HERE. Screens
+   reach for it with `textTransform: 'none'` whenever they want a sentence
+   rather than a label -- the pause menu's exit descriptions, its confirms and
+   its Graphics & display blurb are all this class -- so the shade set here is
+   not decorating a caption, it is carrying prose at 0.62rem. It was
+   rgba(255,255,255,0.38); see --color-text-dim for why that failed and what
+   replaced it. */
 .micro-label {
   font-size: 0.62rem;
   font-weight: 600;
   letter-spacing: 0.2em;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.38);
+  color: var(--color-text-dim);
 }
 
 .interactive {

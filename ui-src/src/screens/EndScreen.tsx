@@ -118,7 +118,14 @@ export default function EndScreen({ summary }: { summary: SummaryPayload }) {
             {!summary.won && summary.placement > 0 && (
               <p className="text-xl text-white/55 mt-2">#{summary.placement}</p>
             )}
-            <p className="text-sm text-white/45 mt-3">
+            {/* THE ONE NUMBER THE PLAYER CAME FOR, AND IT WAS THE DIMMEST
+                THING ON THE SCREEN. #136 was raised about the pause menu, and
+                the shade it complained about is the same one that was hand
+                typed here as `text-white/45` -- so the fix had to reach this
+                screen too or the verdict would have been left as the last
+                place in the interface still too dark to read. It reads the
+                token now, and moves when the token moves. */}
+            <p className="text-sm mt-3" style={{ color: 'var(--color-text-dim)' }}>
               {summary.kills} elimination{summary.kills === 1 ? '' : 's'}
             </p>
             {/* WHAT THE MATCH PAID, on the screen that earned it.
@@ -168,8 +175,9 @@ function VoltsEarned() {
   return (
     <p className="text-sm mt-1" style={{ color: 'var(--color-royale-accent2)' }}>
       +{earned.volts.toLocaleString()} Volts
+      {/* Same shade, same token, same reason as the elimination line above. */}
       {earned.levelUp && (
-        <span className="text-white/45"> · level {earned.level}</span>
+        <span style={{ color: 'var(--color-text-dim)' }}> · level {earned.level}</span>
       )}
     </p>
   )
