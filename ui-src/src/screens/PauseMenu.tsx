@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useUi, selMatch } from '../store'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
@@ -33,6 +33,13 @@ import Help from './Help'
  * SETTINGS IS THE SAME COMPONENT AS THE LOBBY'S, not a second copy. A pause
  * menu with its own settings screen is two settings screens that drift; this
  * one embeds the real thing, so a control added there appears here for free.
+ *
+ * IT OPENS FROM THE LOBBY TOO, SINCE #83, and half of this file's conditions
+ * are about that. The owner asked for the way off the server to live here
+ * rather than on the lobby's front page -- so this menu has to make sense on a
+ * screen where there is no match to pause, no map worth opening and nothing to
+ * leave except the server itself. Each of those is handled at the point it
+ * matters rather than by a second lobby-flavoured copy of the menu.
  */
 
 type Tab = 'main' | 'notices' | 'help' | 'settings'
@@ -114,11 +121,57 @@ export default function PauseMenu() {
   const party = useUi((s) => s.party)
   const inParty = party.members.length > 1
 
+  // AM I LOOKING AT THIS FROM THE LOBBY? (#83)
+  //
+  // Deliberately the SAME TEST App.tsx uses to decide whether to draw the lobby
+  // at all, rather than a second reading of the same fact: what this menu
+  // offers and what is behind it have to agree, and two expressions for "in the
+  // lobby" would eventually disagree on some frame and offer "Leave match" to
+  // somebody with no match to leave. `hud.state` is the server's word on OUR
+  // state, so it stays a mirror -- the second half of the test is what covers a
+  // player sitting in the lobby while other people's match runs.
+  const hudState = useUi((s) => s.hud.state)
+  const inLobby = match.state === 'waiting' || hudState === 'lobby'
+
   const close = () => { void fetchNui(CB.PAUSE_FOCUS, { open: false }) }
 
+  // THE MATCH CAN START WHILE THIS MENU IS UP, and it must not come with us.
+  //
+  // Queue, then open this menu to read the notifications, and the match forms
+  // underneath -- you would arrive in it looking at a pause menu, holding the
+  // cursor, unable to move. br_core pops `settings`, `locker` and `lobby` off
+  // the focus stack on that transition and not `pause`, which is the same shape
+  // as the bug that used to bring the menu back after readying up ("was brought
+  // back to the pause menu where I could not close the UI", 2026-08-09).
+  //
+  // Asked of Lua rather than hidden locally, like every other open and close in
+  // this file: the focus stack is what decides the screen is gone.
+  //
+  // ONE DIRECTION ONLY. Going the other way -- a match ENDING under the menu,
+  // or "Back to lobby" -- is already sequenced behind the curtain by br_core,
+  // which closes this through br:ui:pauseClose once the screen is black. Firing
+  // here as well would take the menu away in front of the player, which is the
+  // exact cut #124 exists to prevent.
+  const wasInLobby = useRef(inLobby)
+  useEffect(() => {
+    if (wasInLobby.current && !inLobby) close()
+    wasInLobby.current = inLobby
+  }, [inLobby])
+
+  /**
+   * The Match tab is not a match tab in the lobby, and calling it one reads as
+   * a menu that was written for somewhere else and left lying around.
+   */
+  const tabLabel = (t: Tab) => (t === 'main' && inLobby ? 'Menu' : TAB_LABEL[t])
+
+  // F1 CLOSES IT TOO, because the lobby's handler opens it on F1 and the map
+  // card two hundred lines down promises "the same key that opened this menu
+  // closes it again". A menu that answers a key on the way in and ignores it on
+  // the way out is the kind of small lie players stop trusting the rest of the
+  // screen over.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
+      if (e.key !== 'Escape' && e.key !== 'F1') return
       e.preventDefault()
       e.stopPropagation()
       play('ui.back')
@@ -149,9 +202,13 @@ export default function PauseMenu() {
       <div className="mx-auto py-10" style={{ width: '68rem', maxWidth: '92vw' }}>
         <div className="flex items-end justify-between mb-8">
           <div>
-            <div className="micro-label">Paused</div>
+            {/* NOTHING IS PAUSED IN THE LOBBY. The word is accurate mid-match
+                and simply wrong on a screen where no round is running, and a
+                menu that opens claiming to have stopped something that was
+                never going is a menu people distrust. */}
+            <div className="micro-label">{inLobby ? 'Lobby' : 'Paused'}</div>
             <h2 className="font-display text-[3rem] uppercase tracking-[0.1em] leading-none mt-1">
-              {TAB_LABEL[tab]}
+              {tabLabel(tab)}
             </h2>
           </div>
           {/* LEVEL AND XP, VISIBLE MID-MATCH. The lobby is not the only
@@ -181,7 +238,7 @@ export default function PauseMenu() {
                 onPointerEnter={() => play('ui.hover')}
                 onClick={() => { play('ui.select'); setTab(t) }}
               >
-                {TAB_LABEL[t]}
+                {tabLabel(t)}
               </button>
             ))}
           </div>
@@ -194,7 +251,19 @@ export default function PauseMenu() {
                 Full width, above the exits, and the only primary on the
                 screen. Everything else on this tab ends something; this is the
                 one thing a player opens the menu to LOOK at, and it should not
-                have to be found. */}
+                have to be found.
+
+                NOT IN THE LOBBY, AND THE REASON IS #122 RATHER THAN TASTE. The
+                map route raises GTA's own frontend (BR.Pause.openFrontendMap),
+                and unlike the settings handover it does NOT announce the
+                frontend to this page -- it never needed to, because until #83
+                it could only be reached from a match, where every screen of
+                ours follows focus and goes quiet by itself. The lobby does not:
+                it is drawn from match state, so it would have carried on
+                painting straight over the scaleform, which is the precise
+                report #122 was filed for. There is also nothing on the map
+                worth opening from a lobby you have not dropped into yet. */}
+            {!inLobby && (
             <div
               className="plate p-5 mb-4 flex items-center gap-6"
               style={{
@@ -226,6 +295,7 @@ export default function PauseMenu() {
                 Open map
               </Btn>
             </div>
+            )}
 
             {/* GTA'S OWN SETTINGS, ON THE FRONT PAGE (#122).
                 A player who wants to drop their texture quality mid-match
@@ -278,8 +348,14 @@ export default function PauseMenu() {
 
             {/* THE PARTY, SQUADS ONLY. In solo there is no squad to recruit
                 from and no party that would outlive the match, so the card is
-                absent rather than empty. */}
-            {match.mode === 'squad' && <PartyCard />}
+                absent rather than empty.
+
+                AND NOT IN THE LOBBY, where the lobby's own party panel is
+                already on screen behind this menu and is the fuller of the two.
+                Two party controls one keypress apart, disagreeing the moment a
+                roster update reaches one before the other, is how "doesn't seem
+                like anything is working other than leave party" starts. */}
+            {match.mode === 'squad' && !inLobby && <PartyCard />}
 
             {/* ONE CARD, THREE ROWS, FULL WIDTH (owner's call, 2026-08-09).
                 Three separate plates gave three ways of leaving the same
@@ -296,7 +372,18 @@ export default function PauseMenu() {
                 ['--cut-max' as string]: '0.6rem',
               }}
             >
-              {EXITS.map((e, i) => (
+              {/* "BACK TO LOBBY" IS NOT ON OFFER IN THE LOBBY (#83).
+                  It forfeits a match, and from here there is no match to
+                  forfeit -- br_core would refuse it, so the row would be a
+                  button that confirms something destructive and then does
+                  nothing, which is worse than the button being absent. What
+                  remains is Leave server, which is the row this issue is
+                  about and the only exit that means anything from here.
+
+                  The list is filtered rather than the row being hidden inside
+                  the map, so `i === 0` still picks out the genuinely first row
+                  and the card does not open with a divider above nothing. */}
+              {EXITS.filter((e) => !(inLobby && e.id === 'lobby')).map((e, i) => (
                 <div
                   key={e.id}
                   className="flex items-center gap-6 py-3"
@@ -374,9 +461,14 @@ export default function PauseMenu() {
                 rather than for neither being. The Esc hint is gone: the key
                 is the same one that opened the menu, and a player who got
                 here knows it. */}
+            {/* AND IT SAYS "BACK TO LOBBY" IN THE LOBBY, because there is
+                nothing to resume there -- the same reason the eyebrow above
+                does not say "Paused". There is no collision with the match
+                exit of that name: that row is filtered out on this screen, so
+                the words are free and they are the truest ones available. */}
             <div className="mt-6">
               <Btn variant="primary" size="lg" cue="ui.back" onPress={close}>
-                Resume
+                {inLobby ? 'Back to lobby' : 'Resume'}
               </Btn>
             </div>
           </>
