@@ -171,6 +171,9 @@ export function startMockDriver(): void {
     k: 'keybinds',
     d: {
       actions: [
+        // The market's Trails tab names this row to say when a trail starts,
+        // so a harness without it renders that help text one sentence short.
+        { group: 'Movement', command: 'brdeploy', label: 'Jump / deploy glider', key: 'Space', default: 'SPACE' },
         { group: 'Combat', command: 'brinventory', label: 'Inventory', key: 'TAB', default: 'TAB' },
         { group: 'Combat', command: 'brslot1', label: 'Slot 1', key: '1', default: '1' },
         { group: 'Combat', command: 'brslot2', label: 'Slot 2', key: '2', default: '2' },
