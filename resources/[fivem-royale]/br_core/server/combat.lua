@@ -39,6 +39,142 @@ local function canDie(entry)
         or s == BR.PlayerState.GLIDE
 end
 
+--- Has this player's match not actually started yet? (#144)
+---
+--- WARMUP and BUS only. WAITING has no players in it, and by ENDED or CLEANUP
+--- the results are published or about to be -- holding a death open there would
+--- be holding it open past the moment it is written down.
+---
+--- The window is real and it is not small: a player becomes ALIVE the instant
+--- they LAND (DROP_LANDED), while the match stays in BUS until the LAST player
+--- is down, which server/match.lua extends in ten-second steps for anyone still
+--- under canopy. So the first person to touch the ground is mortal, on foot, in
+--- a POI, for as long as the slowest glider takes -- "what may be a minute or
+--- more", in the issue's words. They are also the only players who can die here:
+--- WARMUP, BUS, FREEFALL and GLIDE are all invincible client-side
+--- (client/natives.lua), which is why this is the landed-early case and not a
+--- theoretical one.
+--- @param m table|nil
+--- @return boolean
+local function beforeTheMatch(m)
+    if not m then return false end
+    return m.state == BR.MatchState.WARMUP
+        or m.state == BR.MatchState.BUS
+end
+
+--- A death that is going to be undone, recorded NOWHERE (#144).
+---
+--- The owner: "If a player dies before game state changes to playing, we should
+--- notify them they will be revived automatically when the match starts, and
+--- then do so."
+---
+--- THE DANGEROUS HALF IS THE BOOKKEEPING, NOT THE REVIVE, AND THIS PROJECT HAS
+--- THE SCARS TO PROVE IT. A placement-1 death was banked as a WIN because the
+--- stats path and the client disagreed about what a death meant, and a second
+--- results publish invented a full set of rows -- both landed in DynamoDB as an
+--- atomic ADD, which has no compensating write. There is no undo. So a death
+--- that will be reversed must never be WRITTEN, rather than written and then
+--- carefully unwritten: every field the results row is built from is simply
+--- never touched here.
+---
+--- What eliminate() does that this deliberately does not:
+---   * `entry.placement` -- a placement is a finishing position, and this player
+---     has not finished. Left nil, so awardPlacements and the results row see
+---     someone who was never eliminated.
+---   * `entry.diedAt` -- the single field `died` is derived from, which decides
+---     `wins`, `deaths`, the win XP bonus and the top-10 bonus, AND doubles as
+---     the survival clock's end stamp. Writing it would pay this player for
+---     surviving until the moment they were revived.
+---   * the killer's `kills` -- an undone death is not a kill. The shooter is
+---     told nothing, which is the honest outcome: there is no such kill to tell
+---     them about.
+---   * `BR.Loot.deathBox` -- their inventory stays on their person rather than
+---     being scattered for someone else to take. Undoing THAT is impossible
+---     once another player has walked over it.
+---   * `BR.Evidence.noteKill` and the kill feed -- the feed is how the whole
+---     match learns somebody is out, and this player is not out.
+---
+--- The roster DOES go to DEAD, and that is not a contradiction. Their ped is
+--- genuinely dead on their own machine; a roster that disagreed would leave the
+--- server-observed health check firing `defeat` at them once a second forever.
+--- DEAD is what the client draws off and what stops them shooting; it is the
+--- three fields above, not the state string, that a results row is made of.
+--- @param src integer
+--- @param entry table
+--- @param m table
+local function holdForStart(src, entry, m)
+    -- The knock, if there was one, is over -- same clearing eliminate does, and
+    -- for the same reason: a downed player whose bleed clock keeps running would
+    -- be eliminated for real thirty seconds into the hold.
+    local wasDowned = entry.state == BR.PlayerState.DBNO
+    entry.dbnoUntil, entry.downedBy = nil, nil
+    entry.reviverSrc, entry.reviveFrom = nil, nil
+    entry.reviveBeat, entry.reviveTickAt = nil, nil
+
+    entry.revivePending = true
+    BR.Roster.setState(src, BR.PlayerState.DEAD)
+
+    if wasDowned then
+        TriggerClientEvent(BR.Net.DBNO_SET, src, { downed = false, died = true })
+        TriggerClientEvent(BR.Net.HEALTH_SYNC, src, { hp = 0, armour = 0 })
+    end
+
+    -- STICKY, BECAUSE THE WAIT IS THE PROBLEM. The reason the issue asks for a
+    -- notice at all is that a dead screen with nothing on it reads as "you are
+    -- out" -- and this player may be looking at it for the rest of the flight.
+    -- A notice that fades after four seconds would leave them in exactly the
+    -- silence it was written to break. Keyed and sticky, withdrawn by name when
+    -- the revive lands.
+    BR.Server.notify(src,
+        'You are down, but not out. The match has not started yet -- '
+        .. 'you will be revived automatically when it does.',
+        'info', { key = 'revive.pending', sticky = true })
+
+    print(('[br_core] %s (%d) died before match %d started -- held for revive, '
+        .. 'nothing recorded'):format(entry.name, src, m.id))
+end
+
+--- Get a held player back up, on the transition into PLAYING (#144).
+---
+--- Called from match.lua's onEnter(PLAYING). Public because that is the only
+--- caller and it lives in another file -- and because `/brrevive` should never
+--- become the second way to do this.
+---
+--- ORDER IS LOAD-BEARING IN BOTH DIRECTIONS. The client is told to resurrect
+--- BEFORE the roster says ALIVE, because the server-observed death check reads
+--- `engineHp` from the position sampler and would see a corpse in a state that
+--- can die -- and eliminate them again, for real this time, one second into the
+--- match they were just given back. `engineHp` is cleared here as well: the
+--- sample is up to a second old and clearing it is the difference between "no
+--- opinion until the next sample" and "an opinion from before the revive".
+--- @param src integer
+--- @param entry table
+function BR.Combat.reviveHeld(src, entry)
+    entry.revivePending = nil
+
+    -- NEITHER OF THESE SHOULD BE SET AND BOTH ARE CLEARED ANYWAY. holdForStart
+    -- never writes them, so this is not undoing its work -- it is refusing to
+    -- trust that no other path reached this entry while it was held. The cost is
+    -- two assignments; the cost of being wrong is a fabricated placement and a
+    -- death in DynamoDB that nothing can take back (the fingerprint of both
+    -- earlier stats bugs).
+    entry.placement, entry.diedAt = nil, nil
+    entry.engineHp = nil
+
+    TriggerClientEvent(BR.Net.REVIVED, src)
+
+    BR.Roster.update(src, { hp = 100.0, armour = 0.0 })
+    BR.Roster.setState(src, BR.PlayerState.ALIVE)
+    TriggerClientEvent(BR.Net.HEALTH_SYNC, src, { hp = 100, armour = 0 })
+
+    BR.Server.notifyClear(src, 'revive.pending')
+    BR.Server.notify(src, 'The match has started. You are back in.',
+        'success', { ms = 5000 })
+
+    print(('[br_core] revived %s (%d) -- died before the match started')
+        :format(entry.name, src))
+end
+
 --- Eliminate a player.
 ---
 --- Placement is assigned as the number of teams still standing INCLUDING this
@@ -54,6 +190,27 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     -- Placement counts THIS match's teams; the kill feed goes to THIS
     -- match's audience. A death in one match is silence in every other.
     local m = BR.Server.matchOf(src)
+
+    -- BEFORE ANYTHING IS WRITTEN DOWN (#144). This has to be the first branch in
+    -- the function -- ahead of the placement read, ahead of the death box --
+    -- because everything below it is a consequence that cannot be taken back.
+    --
+    -- 'left' IS EXCLUDED AND THAT IS NOT AN OVERSIGHT. Leaving mid-match is
+    -- routed through here on purpose ("leaving while alive IS an elimination",
+    -- match.lua) so that quitting cannot be a cheaper exit than dying. A player
+    -- who has disconnected or walked out cannot be revived into a match they are
+    -- no longer in, and holding their exit open would mean a leaver during the
+    -- bus finishes with no placement and no results row at all -- a way out with
+    -- no cost, which is the exact thing that funnel exists to prevent.
+    --
+    -- Everything else IS held, `brkill` included: an admin killing somebody
+    -- during the flight is testing this path, and a test tool that took a
+    -- different route would be testing itself.
+    if cause ~= 'left' and beforeTheMatch(m) then
+        holdForStart(src, entry, m)
+        return
+    end
+
     local placement = BR.Server.squadsAlive(m)
 
     -- THE BOX IS BUILT BEFORE THE STATE CHANGES. What they were carrying and

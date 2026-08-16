@@ -75,30 +75,49 @@ end
 --- THE TRAIL'S STATE FOR THIS DROP, because a toggle needs something to toggle.
 ---
 --- Read by skydive.lua to decide whether to draw the descent prompt at all and
---- what the key does when it is pressed. Three separate facts, and collapsing
---- any two of them loses a case:
+--- what the key does when it is pressed:
 ---
----   armed  a trail is actually flying -- there is something to turn off.
----   squad  and it is the SQUAD's colour rather than the purchase, which is a
----          different thing to a different audience (see the override note
----          below). The prompt is suppressed on this, not on `armed`.
----   on     whether it is currently visible, so the toggle knows which way to
----          go and a fresh drop starts from a known state rather than from
----          whatever the last one left behind.
+---   armed   a trail is actually flying -- there is something to turn off.
+---   on      whether it is currently visible, so the toggle knows which way to
+---           go and a fresh drop starts from a known state rather than from
+---           whatever the last one left behind.
+---   source  'purchase' or 'squad', for /brdrop only. It decides NOTHING; see
+---           the note on it below.
 ---
 --- ARMED IS SET BY THE BRANCH THAT PAINTS, NEVER BY THE EQUIPPED SLOT, and that
 --- distinction is the whole of #131's fourth requirement. `worn['trail']` is
 --- always present: the catalogue's default item is 'Squad Colour', whose apply
 --- table is literally `{ trailRgb = nil }`, so it resolves to a
 --- present-but-EMPTY table and a slot test would answer "yes" for a player who
---- owns nothing. They would then be offered a key for a trail that does not
---- exist -- "a prompt for a thing they do not have", which is the failure the
---- issue names. Only the two branches that actually call
+--- owns nothing and is dropping alone. They would then be offered a key for a
+--- trail that does not exist -- "a prompt for a thing they do not have", which
+--- is the failure the issue names. Only the branches that actually call
 --- SetPlayerParachuteSmokeTrailColor set this, so it cannot drift from what is
 --- in the sky.
+---
+--- THERE USED TO BE A `trailSquad` FLAG HERE AND IT IS GONE (#131, 2026-08-16).
+--- It existed to say "the colour up there is the squad's, not the purchase", and
+--- everything that read it was a consequence of the squad OVERRIDE: the descent
+--- prompt was suppressed on it and the key refused with an explanation. The
+--- owner reversed the override -- "Squad colors should not override the bought
+--- trail - the player earned that trail" -- so the flag now has nothing to
+--- distinguish. A squad colour only flies for a player who has EQUIPPED Squad
+--- Colour, which is a choice, not a thing done to them; suppressing their prompt
+--- would be hiding a key for a trail they picked. The flag went with the branch
+--- rather than being left true-but-ignored.
 BR.Cosmetics.trailArmed = false
-BR.Cosmetics.trailSquad = false
 BR.Cosmetics.trailOn = false
+
+--- Which of the two paints won, for the debug print and nothing else.
+---
+--- NOT A DECISION, A RECEIPT. Nothing branches on it -- the whole point of this
+--- change is that nothing branches on it any more -- but "my bought trail did
+--- not fly in a squad" is the exact report this issue is on its third life for,
+--- and `/brdrop` printing `source purchase` while the player is in a squad is a
+--- one-line answer to it. `armed`/`on` cannot tell those apart, which is how the
+--- override went unnoticed for two rounds of playtesting.
+--- @type string|nil  'purchase' | 'squad' | nil
+BR.Cosmetics.trailSource = nil
 
 --- The colour currently painted, so turning the trail back ON can re-assert it.
 ---
@@ -115,12 +134,30 @@ BR.Cosmetics.trailOn = false
 --- every 350ms regardless, so there is nothing here worth remembering.
 local liveRgb = nil
 
---- Squad colour wins over a bought trail, and that is a gameplay decision.
+--- Paint the trail this drop will fly. The purchase wins; the squad is the
+--- fallback for a player who has not bought one.
 ---
---- The trail is how you find your team in the air. A player who bought Void
---- and then could not tell which smoke was their squadmate's would have paid
---- to make the game harder to read -- so the purchase applies when you are
---- dropping alone, and the squad colour overrides it when you are not.
+--- THIS ORDER IS THE REVERSAL OF A DELIBERATE DECISION (#131, owner 2026-08-16).
+---
+--- It used to be the other way round, and the reasoning was written down at
+--- length in br_lib/config/market.lua: trail colour is how you find your team in
+--- the air, that is a gameplay read, decoration should lose to it. The owner
+--- disagreed with the conclusion rather than the reasoning -- "Squad colors
+--- should not override the bought trail - the player earned that trail" -- and
+--- the practical case is hard to argue with: a squad player who buys Void sees
+--- their squad colour, concludes the item does not work, and files the issue this
+--- file is on its third pass through.
+---
+--- WHAT KEEPS THE TEAM READ IS THE ITEM CALLED SQUAD COLOUR. It is the free
+--- catalogue default (`trail_squad`, `apply = { trailRgb = nil }`), so it is what
+--- every player has equipped until they spend Volts, and the squad branch below
+--- is exactly what it means. Nobody loses the position marker by accident: they
+--- lose it by buying something else and putting it on, which is the whole
+--- transaction. That is the paragraph to argue with if this ever feels wrong --
+--- and the one in market.lua, which now says the same thing.
+---
+--- `squadColour` is still passed and still used; it is simply the LAST answer
+--- now instead of the first.
 --- @param squadColour string|nil  the squad's hex colour, if in a squad
 --- @param hexToRgb function
 function BR.Cosmetics.applyTrail(squadColour, hexToRgb)
@@ -128,25 +165,15 @@ function BR.Cosmetics.applyTrail(squadColour, hexToRgb)
     local apply = BR.Cosmetics.get('trail')
 
     BR.Cosmetics.trailArmed = false
-    BR.Cosmetics.trailSquad = false
     BR.Cosmetics.trailOn = false
+    BR.Cosmetics.trailSource = nil
     liveRgb = nil
-
-    if squadColour then
-        SetPlayerCanLeaveParachuteSmokeTrail(pid, true)
-        local r, g, b = hexToRgb(squadColour)
-        SetPlayerParachuteSmokeTrailColor(pid, r, g, b)
-        liveRgb = { r, g, b }
-        BR.Cosmetics.trailArmed = true
-        BR.Cosmetics.trailSquad = true
-        BR.Cosmetics.trailOn = true
-        return
-    end
 
     if apply.trailCycle then
         SetPlayerCanLeaveParachuteSmokeTrail(pid, true)
         BR.Cosmetics.trailArmed = true
         BR.Cosmetics.trailOn = true
+        BR.Cosmetics.trailSource = 'purchase'
         local gen = trailGen
         local colours = apply.trailCycle
         local ms = math.max(100, tonumber(apply.trailCycleMs) or 350)
@@ -175,6 +202,22 @@ function BR.Cosmetics.applyTrail(squadColour, hexToRgb)
         liveRgb = apply.trailRgb
         BR.Cosmetics.trailArmed = true
         BR.Cosmetics.trailOn = true
+        BR.Cosmetics.trailSource = 'purchase'
+        return
+    end
+
+    -- NOTHING BOUGHT, SO THE TEAM GETS THE SKY. This is what the free default
+    -- item, 'Squad Colour', means -- and reaching it means the player is still
+    -- wearing it, because every paid trail returns above. Solo, there is no
+    -- colour to use and the trail stays off.
+    if squadColour then
+        SetPlayerCanLeaveParachuteSmokeTrail(pid, true)
+        local r, g, b = hexToRgb(squadColour)
+        SetPlayerParachuteSmokeTrailColor(pid, r, g, b)
+        liveRgb = { r, g, b }
+        BR.Cosmetics.trailArmed = true
+        BR.Cosmetics.trailOn = true
+        BR.Cosmetics.trailSource = 'squad'
         return
     end
 
@@ -214,8 +257,8 @@ end
 function BR.Cosmetics.clearTrail()
     SetPlayerCanLeaveParachuteSmokeTrail(PlayerId(), false)
     BR.Cosmetics.trailArmed = false
-    BR.Cosmetics.trailSquad = false
     BR.Cosmetics.trailOn = false
+    BR.Cosmetics.trailSource = nil
     liveRgb = nil
 end
 

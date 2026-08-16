@@ -251,6 +251,21 @@ function BR.Match.onEnter(m, state, from)
                 and e.state == BR.PlayerState.WARMUP end,
             function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
 
+        -- AND THE PEOPLE WHO DIED WAITING FOR THIS MOMENT GET UP (#144).
+        --
+        -- "If a player dies before game state changes to playing, we should
+        -- notify them they will be revived automatically when the match starts,
+        -- and then do so." This is the "then do so" half; the notice went out
+        -- when they died. Their death was never written down -- no placement, no
+        -- diedAt, no kill credited, no results row -- so there is nothing here to
+        -- undo, which is the whole design (server/combat.lua's holdForStart).
+        --
+        -- SCOPED TO THIS MATCH by matchId, like every other sweep in this file.
+        -- A held flag belongs to one instance, and matches advance independently.
+        BR.Roster.each(
+            function(e) return e.matchId == m.id and e.revivePending end,
+            function(src, e) BR.Combat.reviveHeld(src, e) end)
+
         -- Nothing can win in the first moments of a match. Without this, any
         -- path that reaches PLAYING with states still settling ends instantly,
         -- and the log reads as though a match was played and won in one tick.
@@ -407,7 +422,20 @@ function BR.Match.awardPlacements(m)
             -- isInMatch, not just ALIVE/DBNO: since landing became what makes
             -- a player alive, a winner can be mid-glide when the last enemy
             -- dies -- still falling is still standing.
-            return e.matchId == m.id and BR.Server.isInMatch(e.state)
+            --
+            -- AND A HELD DEATH IS STILL STANDING TOO (#144). `revivePending` is
+            -- a player whose ped is down and whose match has not started: they
+            -- have no diedAt, no placement and no results row saying otherwise,
+            -- and the only way this function ever sees one is an admin ending a
+            -- match during warmup or the flight -- there is no gameplay path,
+            -- because the pre-match tick refuses to end a match that is holding
+            -- somebody. Left out, they would be the one participant of a
+            -- force-ended match to finish with no placement at all, which
+            -- br_stats reads as a non-winning finish and banks as a death: the
+            -- exact outcome this whole change exists to prevent, arriving
+            -- through the one door nobody was watching.
+            return e.matchId == m.id
+                and (BR.Server.isInMatch(e.state) or e.revivePending == true)
         end,
         function(src, e) living[#living + 1] = { src = src, e = e } end)
 
@@ -565,6 +593,16 @@ function BR.Match.resetPlayers(m)
             e.dbnoUntil, e.dbnoCount = nil, 0
             e.downedBy, e.reviverSrc, e.reviveFrom = nil, nil, nil
             e.reviveBeat, e.reviveTickAt = nil, nil
+
+            -- A HELD DEATH BELONGS TO THE MATCH IT HAPPENED IN (#144). Normally
+            -- the flag is cleared by the revive at PLAYING, but a match that
+            -- never reaches PLAYING -- brforce ended, everyone else leaving --
+            -- leaves it set. Carried into the next round it would make its owner
+            -- count toward heldForStart in a match where nothing is holding
+            -- them, which is how the pre-match tick decides whether to go live
+            -- or dissolve. Same reasoning as diedAt above: per match, cleared
+            -- per match.
+            e.revivePending = nil
 
             -- Explicitly cleared, so clients drop them too. squadId is
             -- per-match; partyId deliberately survives.
@@ -765,6 +803,31 @@ local function winConditionMet(m)
     return BR.Server.squadsAlive(m) <= 1
 end
 
+--- How many of this match's players died before it started and are waiting to
+--- be picked back up (#144).
+---
+--- THEY ARE NOT ALIVE AND THEY ARE NOT FINISHED, AND EVERY HEADCOUNT BELOW
+--- ASSUMED THOSE WERE THE ONLY TWO OPTIONS. `BR.Server.aliveCount` counts states
+--- that are in the fight, and DEAD is not one -- correctly, since these players
+--- are lying on the ground. But the two decisions the pre-match tick makes off
+--- that count both come out backwards for them:
+---
+---   * "everyone is down -- ending" would end the match this player is about to
+---     be revived INTO, and end it before PLAYING, so the revive never runs and
+---     the death they were promised would be undone gets published instead.
+---   * "last player down -- going live" would refuse to go live, because it
+---     insists somebody is alive first -- so a solo player who dies during the
+---     flight would hold their own match in BUS forever, waiting for a state
+---     that is the only thing that can revive them.
+---
+--- One count, asked in both places, rather than teaching aliveCount a fourth
+--- meaning: aliveCount answers "can fight", and these players cannot.
+--- @param m table
+--- @return integer
+local function heldForStart(m)
+    return BR.Server.countIn(m, function(p) return p.revivePending == true end)
+end
+
 --- One instance's share of the tick.
 --- @param m table
 local function matchTick(m, now)
@@ -813,7 +876,8 @@ local function matchTick(m, now)
     -- the REAL exit: ENDED runs placements, the verdict, the roster sweep
     -- and the trip home.
     if (m.state == BR.MatchState.WARMUP or m.state == BR.MatchState.BUS)
-       and BR.Server.aliveCount(m) == 0 then
+       and BR.Server.aliveCount(m) == 0
+       and heldForStart(m) == 0 then
         local anyDead = BR.Server.countIn(m, function(p)
             return p.state == BR.PlayerState.DEAD
         end) > 0
@@ -839,7 +903,13 @@ local function matchTick(m, now)
                 or p.state == BR.PlayerState.FREEFALL
                 or p.state == BR.PlayerState.GLIDE
         end)
-        if airborne == 0 and BR.Server.aliveCount(m) > 0 then
+        -- A HELD PLAYER COUNTS AS A REASON TO GO LIVE (#144). They are on the
+        -- ground, they are not airborne, and PLAYING is the only event that
+        -- gives them their match back -- see heldForStart above. Without this
+        -- the last surviving condition for a solo drop that ended badly is a
+        -- state transition that will not happen.
+        if airborne == 0
+           and (BR.Server.aliveCount(m) > 0 or heldForStart(m) > 0) then
             print(('[br_core] match %d: last player down -- going live'):format(m.id))
             BR.Match.transition(m, BR.MatchState.PLAYING)
             return
@@ -1076,6 +1146,15 @@ function BR.Match.leaveMatch(src)
     end
     -- DEAD and SPECTATING players fall through: already out of the fight, they
     -- only need the trip back to the lobby.
+
+    -- ...AND A HELD DEATH IS CANCELLED BY WALKING OUT (#144). Someone who died
+    -- before the match started and then decided not to wait for the revive is
+    -- leaving; the flag must not follow them to the lobby, where it would hold
+    -- their old match open in the pre-match tick and, if that match were still
+    -- forming, revive a player who is no longer in it. Leaving is the one exit
+    -- the hold does not survive -- which is also why 'left' is excluded from the
+    -- hold in the first place (server/combat.lua).
+    entry.revivePending = nil
 
     BR.Roster.setState(src, BR.PlayerState.LOBBY)
     -- Leaving really leaves: unlike the ENDED sweep (which keeps matchId for

@@ -311,6 +311,49 @@ function BR.Spawn.respawn(x, y, z, heading, exact, cb)
     BR.Spawn.placeAt(x, y, z, heading, cb)
 end
 
+-- BACK ON YOUR FEET WHERE YOU FELL (#144).
+--
+-- The server holds a death that happens before its match reaches PLAYING: no
+-- placement, no diedAt, no kill credited, no results row -- see holdForStart in
+-- server/combat.lua for why none of that may be written and then unwritten. What
+-- the server cannot do from there is the only part that is not bookkeeping. A
+-- ped is dead on the machine that owns it, and NetworkResurrectLocalPlayer runs
+-- on that machine or nowhere; without spawnmanager nothing else performs it (see
+-- BR.Spawn.respawn's own note, directly above).
+--
+-- WHERE THEY FELL, AND NOT THROUGH BR.Spawn.respawn. The body's own coordinates
+-- are the most correct answer available and the only one this client can read
+-- exactly -- the server's copy is a position sample up to 250ms old. respawn()
+-- is the right verb for arriving somewhere NEW and carries the luggage that goes
+-- with it: it strips every weapon (a fresh spawn holds nothing; this player is
+-- standing in their own match with an inventory), and its non-exact path freezes
+-- the ped to probe for ground. Neither is wanted for a body that is already
+-- lying on the ground it fell to, and the ground probe is actively wrong indoors
+-- -- it searches downward from fifty metres up, which for a death inside a
+-- building finds the roof and puts the player on it.
+--
+-- So this is the resurrection and nothing else, sharing initHealthModel with
+-- respawn so the two cannot drift on what a living player's health means.
+--
+-- NO FLAG, NO GUARD, NO STATE OF ITS OWN. The server sends this exactly once per
+-- held death, immediately before it flips the roster to ALIVE, and a second copy
+-- would resurrect an already-living ped at its own feet -- a no-op, not a bug.
+-- A latch here would be a second opinion about whether a player is alive, and
+-- this client has one authority for that and it is the server.
+RegisterNetEvent(BR.Net.REVIVED)
+AddEventHandler(BR.Net.REVIVED, function()
+    local ped = PlayerPedId()
+    local p = GetEntityCoords(ped)
+
+    NetworkResurrectLocalPlayer(p.x, p.y, p.z, GetEntityHeading(ped), true, false)
+    -- The dying animation outlives the resurrection otherwise: the ped stands up
+    -- and then finishes collapsing.
+    ClearPedTasksImmediately(PlayerPedId())
+    BR.Native.initHealthModel()
+
+    print('[br_core] revived where we fell -- the match had not started yet')
+end)
+
 --- Bring the player into the world for the first time: straight onto the
 --- lobby mark, where BR.LobbyCam frames them. Visibility is owned by the game
 --- rules (client/natives.lua) and OTHER players' lobby peds are hidden by

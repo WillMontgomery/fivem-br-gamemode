@@ -761,8 +761,12 @@ function BR.Party.lateJoin(src, m)
     BR.Roster.setMatch(src, m.id)
     BR.Roster.setState(src, BR.PlayerState.WARMUP)
 
+    -- NO "JOINED THE MATCH" TOAST, ON EITHER PATH (#145). The owner: "The
+    -- 'joined the match - dropping soon' toast when joining a match can be
+    -- removed." It said nothing the screen was not already saying -- the lobby
+    -- has just been replaced by the warmup pad and the flight preview arrives on
+    -- the line below -- at the one moment there is most to look at.
     if m.mode ~= BR.Mode.SQUAD.key then
-        BR.Server.notify(src, 'Joined the match -- dropping soon.', 'success')
         if BR.Bus and BR.Bus.sendPreview then BR.Bus.sendPreview(m, src) end
         return
     end
@@ -836,7 +840,10 @@ function BR.Party.lateJoin(src, m)
         entry = BR.Roster.get(src) or entry
     end
 
-    BR.Server.notify(src, 'Joined the match -- dropping soon.', 'success')
+    -- The squad IS told, and that is a different message doing a different job:
+    -- who is on your team is not visible from the pad, and it is the one thing
+    -- a late arrival changes for everybody else. Only the arrival's own "joined
+    -- the match" toast went (#145).
     for other, e in pairs(BR.Server.roster) do
         if other ~= src and e.squadId == target then
             BR.Server.notify(other, ('%s joined your squad.'):format(entry.name), 'success')

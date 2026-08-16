@@ -210,14 +210,16 @@ export default function Market() {
  * every world prompt still saying E long after interact moved to R, and it is
  * the one thing #131 has asked to be able to check in both of its lives.
  *
- * THE SQUAD LINE IS NOT A FOOTNOTE. A bought trail loses to the squad colour by
- * design, because finding your squadmate's smoke is a gameplay read and the
- * purchase is decoration (br_lib/config/market.lua argues this at length). The
- * consequence is that a player who buys Void and drops with a squad sees the
- * squad colour and concludes the item is broken -- the same "it does not work"
- * this issue is about, arriving one step later. It now has a second job too:
- * the descent prompt and the key are both suppressed in a squad, so this is
- * where a player finds out why the button they learned solo went quiet.
+ * THE SQUAD LINE USED TO BE A WARNING AND IS NOW A DESCRIPTION (#131). It read
+ * "in a squad your squad's colour replaces it, and the key does nothing" --
+ * true, deliberate, and the reason a player who bought Void and dropped with
+ * their team concluded the item was broken. The owner removed the override:
+ * "Squad colors should not override the bought trail - the player earned that
+ * trail." So the warning has nothing left to warn about, and deleting it
+ * outright would leave the panel silent about the free item sitting at the top
+ * of the same list. What it says instead is what Squad Colour now IS -- the
+ * default, and the only way to fly your team's colour -- which is the same
+ * question ("what happens in a squad?") with the answer it has today.
  */
 function TrailHelp() {
   // The trail key, from the table Lua pushes on br:ui:ready. Two absences are
@@ -267,10 +269,10 @@ function TrailHelp() {
         className="ts"
         style={{ ['--fs' as string]: '0.85rem', lineHeight: 1.5, opacity: 0.75 }}
       >
-        In a squad your squad&apos;s colour replaces it, so your team can find each
-        other in the air — and the key does nothing, because that colour is how
-        three other people are finding you. Your own trail shows when you drop
-        solo.
+        What you buy is what flies, solo or in a squad. Equip{' '}
+        <span className="font-semibold">Squad Colour</span> — the free one, and
+        what you start with — to fly your team&apos;s colour instead, so you can
+        find each other in the air.
       </p>
     </div>
   )

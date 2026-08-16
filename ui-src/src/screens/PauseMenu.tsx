@@ -297,54 +297,20 @@ export default function PauseMenu() {
             </div>
             )}
 
-            {/* GTA'S OWN SETTINGS, ON THE FRONT PAGE (#122).
-                A player who wants to drop their texture quality mid-match
-                should not have to know that the route to it is inside OUR
-                Settings tab, under a heading about the interface. It is a
-                handover, not a destination, so it is a quiet row rather than a
-                second hero -- but it is on the first screen, which is the only
-                thing "hard to find" was ever asking for.
+            {/* THERE WAS A "GRAPHICS & DISPLAY" ROW HERE AND IT IS GONE (#145).
+                #122 put it on this page because GTA's own settings were hard to
+                find, and it worked -- the owner's follow-up is not that the
+                handover was wrong but that this is the wrong page for it:
+                "Graphics and display do not need to be a front-page option in
+                the pause menu on the Match tab."
 
-                The button does not say "Settings": there is a Settings TAB
-                three inches above it, and two things called Settings that go
-                to different places is worse than no button at all. */}
-            <div
-              className="plate px-5 py-3 mb-4 flex items-center gap-6"
-              style={{
-                ['--edgec' as string]: 'rgba(255,255,255,0.16)',
-                ['--plate-fill' as string]: 'rgba(20,24,34,0.94)',
-                ['--cut-max' as string]: '0.6rem',
-              }}
-            >
-              <div className="flex-1 min-w-0">
-                <div
-                  className="font-display uppercase tracking-[0.08em] ts"
-                  style={{ ['--fs' as string]: '1.05rem' }}
-                >
-                  Graphics &amp; display
-                </div>
-                <div
-                  className="micro-label ts mt-0.5"
-                  style={{ ['--fs' as string]: '0.62rem', textTransform: 'none' }}
-                >
-                  Resolution, quality and field of view, in GTA&apos;s own menu.
-                  Close it to come back here.
-                </div>
-              </div>
-              <div className="shrink-0">
-                <Btn
-                  variant="default"
-                  size="sm"
-                  cue="ui.select"
-                  onPress={() => {
-                    play('ui.select')
-                    void fetchNui(CB.GAME_SETTINGS, {})
-                  }}
-                >
-                  Open
-                </Btn>
-              </div>
-            </div>
+                THE ROUTE IS NOT REMOVED, ONLY THIS SHORTCUT TO IT. The same
+                handover still lives in Settings, under a heading that says
+                Graphics, which is where somebody who has stopped playing to
+                change their texture quality is already looking. What this page
+                is for is the things you do WITHOUT stopping -- the map, your
+                party, the exits -- and every row that is not one of those makes
+                the ones that are harder to find. */}
 
             {/* THE PARTY, SQUADS ONLY. In solo there is no squad to recruit
                 from and no party that would outlive the match, so the card is

@@ -501,5 +501,22 @@ BR.Config.Drop = {
     autoDeployAGL   = 120.0,  -- metres above ground where the glider force-opens
     landedGraceMs   = 500,    -- invincibility after touchdown, absorbs landing edge cases
     parachuteModel  = 'p_parachute1_mp_s',
-    smokeTrail      = true,   -- squad-coloured, cheap and very readable
+    -- The equipped trail flies, whoever you are dropping with. This switch is
+    -- the whole feature, not the squad half of it -- see cosmetics.applyTrail.
+    smokeTrail      = true,
+
+    -- WHERE THE DESCENT PROMPT SITS, in screen fractions (#131).
+    --
+    -- It is our own DUI page rather than GTA's help box, because the owner asked
+    -- for a real button glyph on a key the ENGINE has never heard of -- so the
+    -- box is one we draw, and a box we draw needs somewhere to be put. Low and
+    -- centred: the descent is spent looking at the ground you are aiming for and
+    -- the top-left corner is the one place a falling player is not looking, which
+    -- is where the help box was.
+    --
+    -- Clear of the bottom edge by more than it looks: the page is 512x256 and
+    -- drawn from its CENTRE, so half its height is below `promptY`.
+    promptX         = 0.5,
+    promptY         = 0.78,
+    promptScale     = 0.17,
 }

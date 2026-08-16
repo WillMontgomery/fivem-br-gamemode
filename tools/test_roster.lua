@@ -2296,21 +2296,48 @@ do
     fire(BR.Net.DROP_LANDED, 2)
     ok(BR.Roster.get(2).state == BR.PlayerState.ALIVE, 'p2 hit the ground')
     fire(BR.Net.PLAYER_DIED, 2, { cause = 'fall' })
+    -- THE OBSERVATION IS UNCHANGED; WHAT IT MEANS IS NOT (#144). The line below
+    -- used to read "a death during BUS is a real death" and it was the point of
+    -- this block. It is now the opposite: the server still sees them go down --
+    -- which is the original regression, and still covered -- but a death before
+    -- the match reaches PLAYING is held rather than banked.
     ok(BR.Roster.get(2).state == BR.PlayerState.DEAD,
-        'a death during BUS is a real death')
+        'the server still observes a death during BUS')
+    ok(BR.Roster.get(2).revivePending == true,
+        'but it is HELD for the start rather than banked (#144)')
+    ok(BR.Roster.get(2).diedAt == nil and BR.Roster.get(2).placement == nil,
+        'and nothing a results row is built from was written',
+        ('diedAt %s placement %s'):format(
+            tostring(BR.Roster.get(2).diedAt),
+            tostring(BR.Roster.get(2).placement)))
 
-    -- The route runs out; player 1 is force-ejected, lands, stands alone.
+    -- The route runs out; player 1 is force-ejected and lands.
     fakeTime = r.tEnd + 600
     BR.Sched.step(fakeTime)
     fakeTime = mendsAt() + 1
     BR.Sched.step(fakeTime)
     ok(mstate() == BR.MatchState.PLAYING, 'the match goes live')
+    ok(BR.Roster.get(2).state == BR.PlayerState.ALIVE,
+        'and the hold is paid out: they are revived on the way in')
+    ok(BR.Roster.get(2).revivePending == nil, 'with the flag cleared')
+    ok(BR.Server.squadsAlive(theMatch()) == 2,
+        'so both squads are standing and nothing has been won',
+        tostring(BR.Server.squadsAlive(theMatch())))
     fire(BR.Net.DROP_LANDED, 1)
+
+    -- And a death AFTER the start is exactly what it always was: banked in
+    -- full, and the win condition sees it.
+    fire(BR.Net.PLAYER_DIED, 2, { cause = 'fall' })
+    ok(BR.Roster.get(2).diedAt ~= nil and BR.Roster.get(2).placement == 2,
+        'a death once PLAYING is banked in full',
+        ('diedAt %s placement %s'):format(
+            tostring(BR.Roster.get(2).diedAt),
+            tostring(BR.Roster.get(2).placement)))
 
     fakeTime = fakeTime + 4000   -- past WIN_GRACE_MS
     BR.Sched.step(fakeTime)
     ok(mstate() == BR.MatchState.ENDED,
-        'and ends: the early death counted',
+        'and ends: the REAL death counted',
         ('state %s, squadsAlive %d'):format(mstate(), BR.Server.squadsAlive()))
 
     -- Variant: dies MID-AIR during BUS (never landed).
@@ -2327,17 +2354,22 @@ do
     fakeTime = r2.jumpFrom + 1000
     fire(BR.Net.BUS_JUMP, 2)
     fire(BR.Net.PLAYER_DIED, 2, { cause = 'fall' })
-    ok(BR.Roster.get(2).state == BR.PlayerState.DEAD, 'a freefall death counts too')
+    ok(BR.Roster.get(2).state == BR.PlayerState.DEAD, 'a freefall death drops them too')
+    ok(BR.Roster.get(2).revivePending == true, 'and is held just the same')
 
     fakeTime = r2.tEnd + 600
     BR.Sched.step(fakeTime)
     fakeTime = mendsAt() + 1
     BR.Sched.step(fakeTime)
     fire(BR.Net.DROP_LANDED, 1)
+    ok(BR.Roster.get(2).state == BR.PlayerState.ALIVE,
+        'the freefall death was undone as well')
+
+    fire(BR.Net.PLAYER_DIED, 2, { cause = 'fall' })
     fakeTime = fakeTime + 4000
     BR.Sched.step(fakeTime)
     ok(mstate() == BR.MatchState.ENDED,
-        'the match still ends',
+        'and the match still ends -- on the death that actually happened',
         ('state %s, squadsAlive %d'):format(mstate(), BR.Server.squadsAlive()))
 end
 
@@ -2929,17 +2961,39 @@ do
         'and the flight goes on for everyone else')
     pedHealth[1002] = nil
 
-    -- The mid-flight death already counted: the survivor lands, the match
-    -- goes live, and the win condition sees one squad standing.
+    -- THE MID-FLIGHT DEATH IS UNDONE, NOT COUNTED (#144). This used to end the
+    -- match: the survivor landed, the state went live, and the win condition
+    -- saw one squad standing off a death that happened before the match had
+    -- started. Now the same landing revives the player it was going to finish.
     fire(BR.Net.DROP_LANDED, 1)
     fakeTime = fakeTime + 300
     BR.Sched.step(fakeTime)
     ok(mstate() == BR.MatchState.PLAYING,
         'the survivor landing takes it live')
+    ok(BR.Roster.get(2).state == BR.PlayerState.ALIVE,
+        'and the pre-match death is undone on the way in')
+    fakeTime = fakeTime + 3100
+    BR.Sched.step(fakeTime)
+    ok(mstate() == BR.MatchState.PLAYING,
+        'so nobody has won anything yet')
+
+    -- Kill them again with the match live, and the win condition works exactly
+    -- as it did -- which is what proves the revive restored a whole player and
+    -- not a state string.
+    pedHealth[1002] = 0
+    for _ = 1, 6 do
+        setPos(1, 150.0, 150.0, 25.0)
+        setPos(2, 300.0, 300.0, 25.0)
+        fakeTime = fakeTime + 250
+        BR.Sched.step(fakeTime)
+    end
+    ok(BR.Roster.get(2).state == BR.PlayerState.DEAD,
+        'a death once PLAYING is observed and kept')
+    pedHealth[1002] = nil
     fakeTime = fakeTime + 3100
     BR.Sched.step(fakeTime)
     ok(mstate() == BR.MatchState.ENDED,
-        'and last squad standing wins off the mid-flight death')
+        'and last squad standing wins off THAT one')
 end
 
 describe('match.parallel')
@@ -3410,6 +3464,17 @@ local function lootMatch()
     BR.Sched.step(fakeTime)
     BR.Roster.setState(1, BR.PlayerState.ALIVE)
     BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    -- AND THE MATCH IS LIVE, BECAUSE ITS PLAYERS ARE (#144).
+    --
+    -- This left the instance in WARMUP while forcing its players to ALIVE, which
+    -- is a shape the real state machine cannot produce -- and it stopped being
+    -- harmless when a death before PLAYING became a HELD death rather than a
+    -- recorded one: every block that eliminates somebody through this fixture
+    -- (attribution, the death box, evidence) was suddenly testing the revive
+    -- path instead of the one it names. Written directly rather than through
+    -- transition(): onEnter(PLAYING) starts the storm and ejects the bus, and
+    -- none of these blocks asked for either.
+    theMatch().state = BR.MatchState.PLAYING
     return theMatch()
 end
 
@@ -6381,6 +6446,148 @@ do
     ok(captured == nil, 'and publishResults refuses a direct second call')
 
     TriggerEvent = realTrigger
+end
+
+-- LAST IN THE FILE, AND DELIBERATELY.
+--
+-- Every block that runs a match consumes route generation, and the blocks
+-- further down this file assume the routes they get. Inserting three more
+-- matches in the middle moved somebody else's jump window past their route
+-- ceiling and failed match.busDescent -- a real coupling in this suite, and not
+-- one worth discovering again from a change that has nothing to do with buses.
+-- New match-running blocks go here.
+describe('match.reviveBeforePlaying')
+do
+    -- #144: "If a player dies before game state changes to playing, we should
+    -- notify them they will be revived automatically when the match starts, and
+    -- then do so."
+    --
+    -- WHAT THIS BLOCK IS REALLY GUARDING IS THE BOOKKEEPING. Two earlier stats
+    -- bugs -- a placement-1 death banked as a win, and a second results publish
+    -- that fabricated a whole set of rows -- both reached DynamoDB as an atomic
+    -- ADD, which has no compensating write. A death that is going to be undone
+    -- must therefore never be WRITTEN, and every assertion below about a field
+    -- being nil is an assertion about exactly that.
+
+    -- (1) A LONE PLAYER, which is the case that has to work before any other:
+    --     nobody else is alive, so every headcount the pre-match tick makes is
+    --     looking at a match with no living members in it.
+    reset()
+    BR.Config.Match.minToStart = 1
+    BR.Server.devMode = true
+    join(1, 'A')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    fakeTime = mendsAt() + 1
+    BR.Sched.step(fakeTime)
+    ok(mstate() == BR.MatchState.BUS, 'aboard, alone', tostring(mstate()))
+
+    local r = BR.Bus.active(theMatch())
+    fakeTime = r.jumpFrom + 1000
+    fire(BR.Net.BUS_JUMP, 1)
+    fire(BR.Net.DROP_LANDED, 1)
+    ok(BR.Roster.get(1).state == BR.PlayerState.ALIVE,
+        'landed early -- and mortal, while the match is still BUS')
+
+    sent = {}
+    fire(BR.Net.PLAYER_DIED, 1, { cause = 'fall' })
+
+    local e1 = BR.Roster.get(1)
+    ok(e1.state == BR.PlayerState.DEAD, 'the death is observed')
+    ok(e1.revivePending == true, 'and held for the start')
+    ok(e1.diedAt == nil, 'no diedAt -- `died` and the survival clock both hang '
+        .. 'off this one field')
+    ok(e1.placement == nil, 'no placement -- they have not finished')
+    ok(#eventsOf(BR.Net.KILL_FEED) == 0,
+        'nothing reaches the kill feed: they are not out',
+        tostring(#eventsOf(BR.Net.KILL_FEED)))
+
+    -- The notice, and it has to outlive its own event: the wait it exists to
+    -- explain can be the rest of the flight.
+    local held = nil
+    for _, n in ipairs(eventsOf(BR.Net.NOTIFY)) do
+        if n.args[1] and n.args[1].key == 'revive.pending' then held = n end
+    end
+    ok(held ~= nil and held.target == 1, 'the player is told, by name')
+    ok(held ~= nil and held.args[1].sticky == true,
+        'and the notice is sticky, because the wait is the whole problem')
+
+    -- ONE TICK. Nobody is airborne and nobody is alive, so the two branches
+    -- that fire are the two this change had to teach: the abandoned-match rule
+    -- must NOT end or dissolve a match that is holding somebody, and the
+    -- go-live rule must count them as a reason to start.
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(mstate() == BR.MatchState.PLAYING,
+        'the match goes live for the held player rather than ending under them',
+        tostring(mstate()))
+
+    ok(e1.state == BR.PlayerState.ALIVE, 'who is revived')
+    ok(e1.revivePending == nil, 'with the hold cleared')
+    ok(e1.hp == 100.0, 'and their health put back', tostring(e1.hp))
+    ok(e1.diedAt == nil and e1.placement == nil,
+        'and still nothing written down')
+    ok(#eventsOf(BR.Net.REVIVED) == 1,
+        'the client is told to resurrect its own ped -- the half the server '
+        .. 'cannot do',
+        tostring(#eventsOf(BR.Net.REVIVED)))
+    local cleared = false
+    for _, n in ipairs(eventsOf(BR.Net.NOTIFY)) do
+        if n.args[1] and n.args[1].key == 'revive.pending'
+           and n.args[1].clear then cleared = true end
+    end
+    ok(cleared, 'and the sticky notice is withdrawn rather than left up')
+
+    -- (2) NOBODY IS CREDITED WITH A KILL THAT IS ABOUT TO BE UNDONE.
+    reset()
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    fakeTime = mendsAt() + 1
+    BR.Sched.step(fakeTime)
+    local r2 = BR.Bus.active(theMatch())
+    fakeTime = r2.jumpFrom + 1000
+    fire(BR.Net.BUS_JUMP, 1); fire(BR.Net.BUS_JUMP, 2)
+    fire(BR.Net.DROP_LANDED, 1); fire(BR.Net.DROP_LANDED, 2)
+
+    BR.Roster.get(1).kills = 0
+    BR.Combat.eliminate(2, 'shot', 1)
+    ok(BR.Roster.get(2).revivePending == true, 'a shooting before the start is held too')
+    ok(BR.Roster.get(1).kills == 0,
+        'and the shooter is credited with nothing -- there is no such kill',
+        tostring(BR.Roster.get(1).kills))
+
+    -- (3) LEAVING CANCELS THE HOLD. Otherwise the flag walks back to the lobby
+    --     with them and holds their old match open in the pre-match tick.
+    BR.Match.leaveMatch(2)
+    ok(BR.Roster.get(2).revivePending == nil,
+        'walking out cancels the hold rather than carrying it home')
+
+    -- (4) AND 'left' IS NEVER HELD. Leaving while alive is deliberately routed
+    --     through eliminate so that quitting cannot be a cheaper exit than
+    --     dying; holding it would make a bus-phase quit cost nothing at all.
+    reset()
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    fakeTime = mendsAt() + 1
+    BR.Sched.step(fakeTime)
+    local r3 = BR.Bus.active(theMatch())
+    fakeTime = r3.jumpFrom + 1000
+    fire(BR.Net.BUS_JUMP, 2)
+    fire(BR.Net.DROP_LANDED, 2)
+    BR.Match.leaveMatch(2)
+    local e2 = BR.Roster.get(2)
+    ok(e2.revivePending == nil and e2.diedAt ~= nil and e2.placement ~= nil,
+        'quitting during the flight is still a real elimination',
+        ('pending %s diedAt %s placement %s'):format(
+            tostring(e2.revivePending), tostring(e2.diedAt),
+            tostring(e2.placement)))
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

@@ -577,6 +577,26 @@ end)
 -- player and the screen slammed VICTORY ROYALE over their corpse. Placement
 -- says where you finished; the flag says how it ended.
 
+-- ...AND A DEATH THAT WAS UNDONE DID NOT HAPPEN (#144).
+--
+-- This latch is written by the roster delta and cleared only by a new match, so
+-- a player who dies before their match reaches PLAYING -- landed early, fell off
+-- something while the rest of the room was still gliding -- carried it for the
+-- whole round they were then revived into. Win that round and the client would
+-- have refused their own victory screen while the server banked the win: the
+-- placement-1 disagreement from the other end, and the same shape as the bug
+-- where the stats path and the client disagreed about what a death meant.
+--
+-- The revive is the authority on this. It is sent once, by the server, at the
+-- moment the death is unwritten -- so this clears the local record of it in the
+-- same beat, alongside the death cause, which would otherwise pick the verdict
+-- slam for a death nobody had.
+RegisterNetEvent(BR.Net.REVIVED)
+AddEventHandler(BR.Net.REVIVED, function()
+    diedThisMatch = false
+    myDeathCause, myDeathByPlayer = nil, false
+end)
+
 RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)
     S.match.state  = d.state

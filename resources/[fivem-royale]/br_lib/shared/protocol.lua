@@ -162,6 +162,21 @@ BR.Net = {
     -- needs to know somebody is actually coming for them -- which is the one
     -- piece of information that decides whether they hang on or give up.
     REVIVE_PROGRESS = 'br:revive:progress',
+    -- S->C (no payload) "get up, the match is starting" (#144).
+    --
+    -- A DEAD PED IS THE ONE THING THE SERVER CANNOT PUT RIGHT ON ITS OWN. Every
+    -- other correction in this block is a NUMBER -- health, armour, a bleed
+    -- clock -- and the roster is where numbers live. Resurrection is not: it is
+    -- NetworkResurrectLocalPlayer on the machine that owns the ped, and without
+    -- spawnmanager nothing else performs it (client/spawn.lua's own note). So
+    -- the roster flip to ALIVE and this event are two halves of one revive, and
+    -- the event goes FIRST -- a client left holding a corpse while the server
+    -- calls it alive is the state the server-observed death check exists to
+    -- eliminate, and it would eliminate them.
+    --
+    -- No payload: the client already knows where its own body is, and the
+    -- server's position sample is a quarter of a second stale.
+    REVIVED         = 'br:revive:atstart',
 
     -- Spectate / end
     SPECTATE_SET    = 'br:spectate:set',     -- S->C  { targetSrc, x, y, z }
