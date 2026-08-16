@@ -370,10 +370,102 @@ end
 -- The command
 -- --------------------------------------------------------------------------
 
+--- Does IsRawKeyDown report a HELD key, or an edge?
+---
+--- THE ASSUMPTION THREE ROUNDS OF #129 WERE BUILT ON, never measured.
+---
+--- keybinds.lua decides the raw layer can drive hold actions like this:
+---
+---     local ok = pcall(function() return IsRawKeyDown(0x77) end)
+---     if ok then rawDownFn, rawLevel = IsRawKeyDown, true end
+---
+--- That asks whether the CALL throws. It does not ask what the ANSWER means,
+--- and `rawLevel` -- the flag every hold in the game depends on -- is asserted
+--- on the strength of a comment quoting somebody's reading of FiveM's source.
+--- tools/test_client.lua then implements the same assumption in its stub, so
+--- 77 assertions can pass while no crate opens: the suite proves the code
+--- agrees with the guess, which is not the same as testing the guess.
+---
+--- This counts. Hold the key for the whole window and read the ratio:
+---
+---   down ~= frames   IsRawKeyDown is a LEVEL. Holds should work; #129 is
+---                    somewhere else and the key layer is exonerated.
+---   down ~= 1        It is an EDGE, whatever its name says. Every hold in
+---                    the game is impossible on this build, and the fix
+---                    belongs in keybinds.lua, not in the loot code.
+---   down == 0        The native answers but never reports this key at all.
+---
+--- The same count for IsRawKeyPressed is printed beside it, because "they
+--- both behave the same" would itself be the finding.
+--- @param vk integer
+--- @param seconds number
+local function rawKeyWatch(vk, seconds)
+    local ms = math.floor((seconds or 4) * 1000)
+    local name = (BR.Keys and BR.Keys.vkName and BR.Keys.vkName(vk))
+        or ('0x%02X'):format(vk)
+
+    local hasDown    = pcall(function() return IsRawKeyDown(vk) end)
+    local hasPressed = pcall(function() return IsRawKeyPressed(vk) end)
+    val('IsRawKeyDown exists', hasDown)
+    val('IsRawKeyPressed exists', hasPressed)
+    if not hasDown and not hasPressed then
+        print('  Neither native resolves. The raw layer cannot run on this build.')
+        return
+    end
+
+    print(('  HOLD %s DOWN NOW, for %.0f seconds. Do not tap it.'):format(name, seconds or 4))
+    Citizen.Wait(700)
+
+    local frames, down, pressed = 0, 0, 0
+    local deadline = GetGameTimer() + ms
+    while GetGameTimer() < deadline do
+        frames = frames + 1
+        -- Guarded per frame rather than once: a native that resolves and then
+        -- throws on a later call is a shape this file exists to catch.
+        if hasDown then
+            local ok, v = pcall(IsRawKeyDown, vk)
+            if ok and v then down = down + 1 end
+        end
+        if hasPressed then
+            local ok, v = pcall(IsRawKeyPressed, vk)
+            if ok and v then pressed = pressed + 1 end
+        end
+        Citizen.Wait(0)
+    end
+
+    line()
+    val('frames sampled', frames)
+    val('IsRawKeyDown true on', ('%d frame(s)'):format(down))
+    val('IsRawKeyPressed true on', ('%d frame(s)'):format(pressed))
+    line()
+    if frames == 0 then
+        print('  No frames sampled -- the loop never ran. Nothing measured.')
+    elseif down >= frames * 0.8 then
+        print('  IsRawKeyDown is a LEVEL. Holds are drivable by the raw layer,')
+        print('  so a hold that does not complete is NOT the key layer\'s fault.')
+    elseif down <= 2 then
+        print('  IsRawKeyDown behaves as an EDGE, not a level -- true for about')
+        print('  one frame out of ' .. frames .. '. keybinds.lua believes the')
+        print('  opposite, so EVERY hold action in the game is impossible here.')
+        print('  Fix belongs in keybinds.lua (rawLevel must be measured, not')
+        print('  assumed), not in whatever interaction reported the bug.')
+    else
+        print('  Neither shape. It reported true on some frames but not most,')
+        print('  which is a third thing nobody has designed for -- paste this.')
+    end
+end
+
 RegisterCommand('brprobe', function(_, args)
     local what = (args[1] or 'all'):lower()
 
-    if what == 'ammo' then
+    if what == 'rawkey' then
+        head('probe: is IsRawKeyDown a level or an edge?')
+        -- Defaults to E, which is `interact` and therefore the key #129 is
+        -- about. Any VK works: brprobe rawkey 0x20 8
+        rawKeyWatch(tonumber(args[2]) or tonumber(args[2], 16) or 0x45,
+                    tonumber(args[3]) or 4)
+        return
+    elseif what == 'ammo' then
         head('probe: ammo (br_core still managing)')
         ammoWatch(tonumber(args[2]) or 15, false)
         return
@@ -410,6 +502,8 @@ RegisterCommand('brprobe', function(_, args)
     print('  ammo');   ammoDump();   line()
     print('')
     print('  Interactive modes:')
+    print('    /brprobe rawkey [vk] [s]  is IsRawKeyDown a level or an edge?')
+    print('                              defaults to E, the interact key (#129)')
     print('    /brprobe raw [seconds]    ammo with br_core NOT touching it')
     print('    /brprobe ammo [seconds]   ammo as the game normally runs')
     print('    /brprobe vehicle          what a vehicle seat does to the readings')
