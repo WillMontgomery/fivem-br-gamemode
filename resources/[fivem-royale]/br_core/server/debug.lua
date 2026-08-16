@@ -788,7 +788,27 @@ RegisterCommand('brrefuse', function(src, args)
         return
     end
 
-    print(('[br_core] brrefuse: %d x %s against %s'):format(n, why, target))
+    -- SAY WHERE THIS IS BEING FIRED FROM, because it changes the result and
+    -- the difference is otherwise invisible.
+    --
+    -- Outside a live match there is no evidence buffer to attach and no match
+    -- to group by, so the incident arrives with an empty `evidence` list -- and
+    -- that looks exactly like the evidence pipeline being broken. It is not; it
+    -- is a refusal recorded somewhere nothing was being recorded.
+    local e = BR.Roster.get(target)
+    local matchId = e and e.matchId or nil
+
+    print(('[br_core] brrefuse: %d x %s against %s%s'):format(
+        n, why, target,
+        matchId and (' in match ' .. tostring(matchId)) or ' OUTSIDE A MATCH'))
+
+    if not matchId then
+        print('  No match, so: no evidence will attach to the incident, and it')
+        print('  cannot corroborate against a case filed in a real match.')
+        print('  Fine for proving the write path. Use a live match to test the')
+        print('  evidence bundle or corroboration.')
+    end
+
     for _ = 1, n do
         BR.Damage.noteRefusal(target, BR.ShotRefusal[why])
     end
