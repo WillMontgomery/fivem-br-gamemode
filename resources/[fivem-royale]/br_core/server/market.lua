@@ -182,8 +182,33 @@ function BR.Market.load(src)
         end
 
         inv[lic] = withDefaults(entry)
+        BR.Market.publishXp(lic)
         BR.Market.push(src)
     end, lic)
+end
+
+--- Tell br_stats what this player's lifetime XP actually is.
+---
+--- BECAUSE br_stats CANNOT KNOW IT, AND WAS GUESSING ZERO. It reads
+--- `BR.Stats.cachedXp[license]` to work out what level a match ends on, and
+--- nothing anywhere populated that table -- so `before` was always 0 and the
+--- level was derived from ONE match's XP rather than a career of it. A player
+--- with 3558 lifetime XP was stored as level 2, told they were level 2 on the
+--- verdict screen, and shown level 2 in the lobby until the next MARKET_STATE
+--- corrected it. Same wrong number, three places, one missing writer.
+---
+--- THIS SIDE IS THE ONE THAT KNOWS. br_core reads the profile row on connect
+--- and holds the total for the session, applying every credit as it lands, so
+--- `inv[lic].xp` is the authoritative figure. br_stats owns the curve and the
+--- payout; it just never had the input.
+---
+--- An event rather than a call, in the direction br_stats already accepts one:
+--- these two resources deliberately do not depend on each other.
+--- @param lic string
+function BR.Market.publishXp(lic)
+    local entry = inv[lic]
+    if not entry then return end
+    TriggerEvent('br:stats:knownXp', lic, entry.xp or 0)
 end
 
 --- What is equipped, resolved to the apply tables the client needs.
@@ -329,6 +354,10 @@ AddEventHandler('br:market:credited', function(license, xpEarned, volts)
 
     entry.xp = (entry.xp or 0) + (tonumber(xpEarned) or 0)
     entry.balance = (entry.balance or 0) + (tonumber(volts) or 0)
+
+    -- Republished so the NEXT match starts from the right total rather than
+    -- from the one read on connect.
+    BR.Market.publishXp(license)
 
     for src, lic in pairs(licenseOf) do
         if lic == license then BR.Market.push(src) end

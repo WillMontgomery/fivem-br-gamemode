@@ -825,8 +825,20 @@ local function printProfile(name, src, row, err)
 
     local n = function(k) return tonumber(row[k]) or 0 end
 
-    print(('  %-18s %-4s  lvl %-3d xp %-8d volts %-7d'):format(
-        name, src, n('level'), n('xp'), n('balance')))
+    -- DERIVED, NOT READ. The row's `level` is written at match end and can lag
+    -- the xp beside it; `xp` accumulates atomically and cannot. Printing the
+    -- stored one made this command the last place still disagreeing with the
+    -- lobby after everything else was fixed to derive.
+    local xp = n('xp')
+    local lvl, into, span = 1, 0, 0
+    if BR.Xp then
+        lvl = BR.Xp.levelFor(xp)
+        local _, i, s = BR.Xp.progress(xp)
+        into, span = i, s
+    end
+
+    print(('  %-18s %-4s  lvl %-3d xp %d (%d/%d) volts %-7d'):format(
+        name, src, lvl, xp, into, span, n('balance')))
     print(('  %-18s %-4s  matches %-4d wins %-3d kills %-4d deaths %-4d'):format(
         '', '', n('matches'), n('wins'), n('kills'), n('deaths')))
     print(('  %-18s %-4s  damage %-8d playtime %-7ds downs %-3d revives %-3d'):format(
