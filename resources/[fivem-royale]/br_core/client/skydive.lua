@@ -224,11 +224,53 @@ AddEventHandler('br:drop:begin', function(d)
     end)
 end)
 
+--- The smoke-trail key's readable name, cached for the length of a binding.
+---
+--- CACHED BECAUSE THE PROMPT IS PER-FRAME, and invalidated because a rebind has
+--- to move it. Both halves are copied from the crate prompt, which learned them
+--- the expensive way: it rebuilt its payload only when the target changed, so
+--- rebinding interact in front of a crate "kept saying the old key until they
+--- walked away and back" (user, 2026-08-09). A prompt drawn sixty times a
+--- second must not do the lookup sixty times a second, and must not remember
+--- the answer past the moment it stops being true.
+---
+--- `checked` is separate from the label because nil is a real answer: a player
+--- who has deliberately cleared this binding has NO key, and re-asking every
+--- frame for an answer that will not change is what the cache is avoiding.
+local trailKey, trailKeyChecked = nil, false
+
+AddEventHandler('br:keys:changed', function()
+    trailKey, trailKeyChecked = nil, false
+end)
+
+--- @return string|nil  nil when the action is on no key at all
+local function trailKeyName()
+    if not trailKeyChecked then
+        trailKeyChecked = true
+        -- NO VANILLA FALLBACK CONTROL, on purpose. The obvious second argument
+        -- is GTA's own parachute-smoke input, and naming it here would quietly
+        -- reintroduce the thing the owner ruled out (2026-08-16): "I'd rather
+        -- not re-use that since it means leaving our own keybinds authority yet
+        -- again." If our binding cannot be named, the honest move is to draw no
+        -- prompt rather than to point at a key we do not route.
+        trailKey = BR.Native.keyLabelForCommand('brtrail')
+    end
+    return trailKey
+end
+
 -- The glider prompt PERSISTS until the chute is genuinely pulled -- redrawn
 -- per frame while falling with the canopy stowed, gone the frame it opens.
 -- ~INPUT_PARACHUTE_DEPLOY~ renders the player's real base-game bind (the
 -- engine's own deploy input works during the fall, since the ped is in a
 -- genuine parachute task; our keybind works alongside).
+--
+-- AND THE CANOPY HANDS THE BOX OVER RATHER THAN EMPTYING IT (#131). The owner
+-- asked for "a pointer text akin to the current 'press [key] to pull
+-- parachute'" and then, "after pulling the chute it should say 'press [key] to
+-- toggle smoke trails'" -- one help box, two jobs, in sequence. So this is an
+-- if/elseif and not two independent prompts: the descent never wants both at
+-- once, and two callers of helpThisFrame in one frame is a box that flickers
+-- between two sentences rather than a box that changed its mind.
 BR.Loop.register(BR.Loop.FRAME, 'skydive.prompt', function()
     if not dropping then return end
     local ped = PlayerPedId()
@@ -252,7 +294,96 @@ BR.Loop.register(BR.Loop.FRAME, 'skydive.prompt', function()
        and (cs == BR.Native.ChuteState.ON_BACK
             or cs == BR.Native.ChuteState.FREEFALL) then
         BR.Native.helpThisFrame('Press ~INPUT_PARACHUTE_DEPLOY~ to open the glider.')
+
+    elseif cs == BR.Native.ChuteState.OPENING
+        or cs == BR.Native.ChuteState.OPEN then
+        -- THREE THINGS HAVE TO BE TRUE, and each one is a prompt somebody would
+        -- otherwise be shown for nothing.
+        --
+        -- ARMED: there is a trail flying. Every player has a trail EQUIPPED --
+        -- the catalogue default is 'Squad Colour', which paints nothing of its
+        -- own -- so the slot is not the question, and only the branches that
+        -- actually paint set this flag (cosmetics.lua argues it beside
+        -- trailArmed). #131 is explicit that "somebody with nothing equipped
+        -- should see no prompt at all rather than a prompt for a thing they do
+        -- not have".
+        --
+        -- NOT THE SQUAD'S: in a squad the colour in the sky is the team's
+        -- position marker, not the purchase, and it is deliberately allowed to
+        -- override a bought trail (br_lib/config/market.lua and cosmetics.lua
+        -- both argue it). Offering to switch that off would be offering to
+        -- delete a gameplay read on behalf of three other people who were not
+        -- asked -- so the prompt is suppressed and the key declines, with the
+        -- explanation moved to the press itself where it answers a question
+        -- somebody actually had.
+        --
+        -- NOT ON FOOT: a canopy still attached after touchdown holds the ped
+        -- off "on foot" (the landing branch's own scar), so this alone is not a
+        -- complete grounded test -- but it is the cheap half, it is exact for
+        -- the ordinary landing where the canopy sheds, and the TICK machine
+        -- clears `dropping` within 100ms for the case it misses. A tenth of a
+        -- second of a prompt is not worth GetEntityHeightAboveGround on the
+        -- frame path, which is the one native this file keeps off it by name.
+        if BR.Cosmetics.trailArmed
+           and not BR.Cosmetics.trailSquad
+           and not IsPedOnFoot(ped) then
+            local key = trailKeyName()
+            -- A LITERAL LETTER, NOT A GLYPH, AND IT CANNOT BE OTHERWISE. The
+            -- line above renders a real button image because
+            -- ~INPUT_PARACHUTE_DEPLOY~ is one of the engine's own controls;
+            -- "custom keymapping hashes refused to render a glyph in help text"
+            -- (bus.lua, verified in game). So the key is resolved to a string
+            -- and printed. Same box, same wording, same position -- the letter
+            -- is plain where the other is drawn.
+            if key then
+                BR.Native.helpThisFrame(
+                    ('Press %s to toggle smoke trails.'):format(key))
+            end
+        end
     end
+end)
+
+-- THE TOGGLE ITSELF (#131).
+--
+-- The owner playtested the previous answer to this issue -- which correctly
+-- established that trails were automatic and added help text saying so -- and
+-- reported "I can't tell anything was even changed". The requirement moved:
+-- there is to be a key, it is to be ours, and the descent is to say so. This is
+-- that key.
+--
+-- IT ONLY EVER FLIPS A SWITCH THE DROP ALREADY THREW. showTrail does not
+-- re-decide the colour, and this does not call applyTrail -- the whole
+-- squad-versus-purchase decision is made once at br:drop:begin, in the window
+-- between the parachute model override and TaskParachute where the engine
+-- actually reads it. Re-running that decision from a key press would move it
+-- outside its window, and a trail set outside its window "looks exactly like
+-- the item the player bought not working" -- which is the report this issue
+-- opened with.
+BR.Keys.on('trail', function(pressed)
+    if not pressed or not dropping then return end
+
+    -- SQUADDED IS A REFUSAL WITH AN ANSWER ATTACHED, not a dead key.
+    --
+    -- The prompt is suppressed in a squad, so nothing invited this press --
+    -- but a player who learned the key on a solo drop WILL press it in a
+    -- squad, and this project has already written down what a key that does
+    -- nothing costs ("a dead key during a fatal fall is the worst possible
+    -- failure mode, twice observed", forty lines up). One-shot help rather
+    -- than the per-frame box: it is a reply to a press, so it should fade like
+    -- one, and BR.Native.help is the variant that does.
+    if BR.Cosmetics.trailSquad then
+        BR.Native.help('Your squad\'s colour is flying instead, so your team '
+            .. 'can find you. It stays on.')
+        return
+    end
+
+    -- Nothing equipped, or the trail system switched off in config: no prompt
+    -- was drawn and there is nothing to flip. Silent, because this is a market
+    -- question and not a descent one -- a message here would be an
+    -- advertisement fired by a key press mid-fall.
+    if not BR.Cosmetics.trailArmed then return end
+
+    BR.Cosmetics.showTrail(not BR.Cosmetics.trailOn)
 end)
 
 -- Manual deploy on OUR keymapped binding too (the base game's own deploy
@@ -314,7 +445,7 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
         if dropping then
             dropping = false
             disarmChute(ped)
-            SetPlayerCanLeaveParachuteSmokeTrail(PlayerId(), false)
+            BR.Cosmetics.clearTrail()
             reportLanded()
             print('[br_core] drop: finished from a vehicle seat -- the machine was still armed')
         end
@@ -437,7 +568,7 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
             end
         end)
 
-        SetPlayerCanLeaveParachuteSmokeTrail(PlayerId(), false)
+        BR.Cosmetics.clearTrail()
 
         -- A short grace absorbs the landing-stumble edge cases (gamerules
         -- reads this alongside its warmup/bus invincibility rule).
@@ -525,6 +656,16 @@ RegisterCommand('brdrop', function()
     print(('  AGL %.0fm   onFoot %s   inWater %s   falling %s'):format(
         GetEntityHeightAboveGround(ped), tostring(IsPedOnFoot(ped)),
         tostring(IsEntityInWater(ped)), tostring(IsPedFalling(ped))))
+    -- THE THREE ANSWERS THE TRAIL PROMPT IS MADE OF, in the order it asks
+    -- them, so "why is there no prompt" is one command rather than a guess.
+    -- `armed false` means nothing equipped paints; `squad true` means the
+    -- override took it and that is correct; `key (none)` means the binding was
+    -- cleared. Each is a different fix and they are indistinguishable in the
+    -- air, which is exactly how #131 came back a second time.
+    print(('  trail: armed %s   squad %s   on %s   key %s'):format(
+        tostring(BR.Cosmetics.trailArmed), tostring(BR.Cosmetics.trailSquad),
+        tostring(BR.Cosmetics.trailOn),
+        tostring(BR.Native.keyLabelForCommand('brtrail') or '(none)')))
 end, false)
 
 -- A match ending mid-air (brforce, mass leave) must not leave the latch set.
@@ -534,6 +675,15 @@ AddEventHandler(BR.Net.STATE, function(d)
        or d.state == BR.MatchState.ENDED
        or d.state == BR.MatchState.CLEANUP then
         dropping = false
+        -- THE THIRD ENDING, and it is the one that leaves state behind. A
+        -- match killed mid-air (brforce, a mass leave) never reaches the
+        -- landing branch, so nothing clears the trail flags -- and the drop
+        -- machine can arm itself from the SERVER's opinion alone if the
+        -- br:drop:begin handoff is ever missed, which is a path where
+        -- applyTrail does not run and therefore does not reset them either.
+        -- The two together are a descent prompting for a trail left over from
+        -- a match that is already over.
+        BR.Cosmetics.clearTrail()
     end
 
     -- THE LANDED LATCH BELONGS TO ONE DROP, and a new round is a new drop.

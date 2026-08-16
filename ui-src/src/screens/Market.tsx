@@ -187,46 +187,44 @@ export default function Market() {
 /**
  * What a trail actually does, said where trails are bought.
  *
- * THERE IS NO KEY, AND THAT IS THE WHOLE ANSWER (#131). The report was "it is
- * unclear how to use them -- show me the keybind", and the honest reply is that
- * there is no keybind to show: a trail is not an ability. skydive.lua sets the
- * colour once per drop, in the window between the parachute model override and
- * TaskParachute, and clears it again on landing. Nothing anywhere in that path
- * reads an input. Help text naming a key would have been a lie that takes a
- * whole match to catch, and this project has shipped enough of those.
+ * THIS PANEL USED TO SAY "NO KEY NEEDED", AND THAT IS THE HISTORY WORTH KEEPING
+ * (#131). It was true when it was written: a trail was a colour applied once
+ * per drop and cleared on landing, and nothing in that path read an input. The
+ * owner playtested it and said "I can't tell anything was even changed", then
+ * changed the requirement rather than the reading -- there was to BE a key,
+ * ours rather than the engine's, with the descent saying so. So the panel is
+ * reworded rather than deleted: the question it answers ("how do I use this?")
+ * did not go away, only the answer did.
  *
- * SO THE COPY LEADS WITH THE ABSENCE. "No key needed" is the sentence that
- * stops the player hunting for a button; everything after it is detail. The
- * alternative -- inventing a deploy-the-trail bind to satisfy the request --
- * would have added an input to a cosmetic purely so the help text had something
- * to name.
+ * IT LEADS WITH THE AUTOMATIC PART ANYWAY, and that ordering is deliberate. The
+ * trail still lights itself; the key only takes it away and gives it back.
+ * Leading with the key would tell a player they have to do something to get
+ * what they paid for, which is the same wrong idea as before pointing the other
+ * way -- and would have them hunting for a button during the one part of a
+ * match where looking away from the ground costs them.
  *
- * THE ONE KEY NAMED IS A CLOCK, NOT A TRIGGER. "Which key" is really "when does
- * this happen", and the answer is "from the jump", so the jump key is named --
- * carefully, as the start of the drop rather than as something that emits
- * smoke. It also gives the rebinding advice something true to point at, which
- * is what the issue actually asks to be able to check.
- *
- * AND IT COMES FROM THE LIVE BINDING, never a hard-coded 'SPACE'. Keys are
+ * THE KEY COMES FROM THE LIVE BINDING, never a hard-coded 'B'. Keys are
  * rebindable from Settings > Controls, and the raw layer can hold a different
  * default from the engine's -- so a literal letter here would be wrong for
  * exactly the player who cared enough to change it. That is the bug that had
- * every world prompt still saying E long after interact moved to R.
+ * every world prompt still saying E long after interact moved to R, and it is
+ * the one thing #131 has asked to be able to check in both of its lives.
  *
  * THE SQUAD LINE IS NOT A FOOTNOTE. A bought trail loses to the squad colour by
  * design, because finding your squadmate's smoke is a gameplay read and the
  * purchase is decoration (br_lib/config/market.lua argues this at length). The
  * consequence is that a player who buys Void and drops with a squad sees the
  * squad colour and concludes the item is broken -- the same "it does not work"
- * this issue is about, arriving one step later. Saying it here is cheaper than
- * answering it again.
+ * this issue is about, arriving one step later. It now has a second job too:
+ * the descent prompt and the key are both suppressed in a squad, so this is
+ * where a player finds out why the button they learned solo went quiet.
  */
 function TrailHelp() {
-  // The drop key, from the table Lua pushes on br:ui:ready. Two absences are
+  // The trail key, from the table Lua pushes on br:ui:ready. Two absences are
   // possible and they are different: the envelope has not arrived yet (no row
   // at all), or the player has deliberately cleared the binding (a row with an
   // empty key). Neither may render as a gap in the middle of a sentence.
-  const deploy = useUi((s) => s.keybinds.find((k) => k.command === 'brdeploy'))
+  const trail = useUi((s) => s.keybinds.find((k) => k.command === 'brtrail'))
 
   return (
     <div
@@ -237,18 +235,32 @@ function TrailHelp() {
         ['--cut-max' as string]: '0.5rem',
       }}
     >
-      <div className="micro-label">No key needed</div>
+      <div className="micro-label">Automatic, and yours to switch off</div>
       <p className="ts" style={{ ['--fs' as string]: '0.85rem', lineHeight: 1.5 }}>
-        Your trail is automatic. It starts when you jump from the bus and burns
-        until you land — there is nothing to press in the air.
+        Your trail lights itself when you jump from the bus and burns until you
+        land. You do not have to press anything to get it.
       </p>
-      {deploy && (
+      {trail && (
         <p className="ts" style={{ ['--fs' as string]: '0.85rem', lineHeight: 1.5 }}>
-          The jump itself is your{' '}
-          <span className="font-semibold">{deploy.label}</span> key, currently{' '}
-          <span className="font-semibold">{deploy.key || 'not bound'}</span>. Change
-          it in the pause menu under{' '}
-          <span className="font-semibold">Settings › Controls</span>.
+          {/* AN UNBOUND ROW IS ITS OWN SENTENCE, not a blank in the middle of
+              this one. '' is what Lua sends for an action the player has
+              deliberately cleared, and dropping it into "turn it off with ___"
+              reads as a missing word rather than as a choice they made. */}
+          {trail.key ? (
+            <>
+              Once your glider is open you can turn it off and on again with{' '}
+              <span className="font-semibold">{trail.key}</span> — the game
+              reminds you of the key on the way down.
+            </>
+          ) : (
+            <>
+              You have left the toggle unbound, so there is nothing to press in
+              the air and no reminder on the way down.
+            </>
+          )}{' '}
+          Change it in the pause menu under{' '}
+          <span className="font-semibold">Settings › Controls</span>, on the{' '}
+          <span className="font-semibold">{trail.label}</span> row.
         </p>
       )}
       <p
@@ -256,7 +268,9 @@ function TrailHelp() {
         style={{ ['--fs' as string]: '0.85rem', lineHeight: 1.5, opacity: 0.75 }}
       >
         In a squad your squad&apos;s colour replaces it, so your team can find each
-        other in the air. Your own trail shows when you drop solo.
+        other in the air — and the key does nothing, because that colour is how
+        three other people are finding you. Your own trail shows when you drop
+        solo.
       </p>
     </div>
   )
