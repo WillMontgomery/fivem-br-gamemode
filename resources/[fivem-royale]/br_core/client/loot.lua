@@ -75,7 +75,76 @@ local poses = {}
 --- no interval left for a tap to sit out. Same reasoning dbno.lua reached for
 --- the revive after a brief tap completed a whole eight-second one in playtest
 --- (owner, 2026-08-09): progress needs continuous evidence, not an announcement.
-local hold = { id = nil, heldMs = 0.0 }
+---
+--- `upAt` is when the key was first seen UP with a hold running -- see
+--- HOLD_RELEASE_MS below. It is the second round of #129: the accumulator was
+--- right and it was hanging off a single per-frame boolean with no tolerance
+--- for that boolean being momentarily wrong, which this project has already
+--- documented that it is (keybinds.lua, rawUpAt).
+local hold = { id = nil, heldMs = 0.0, upAt = nil }
+
+--- Forget the hold in progress -- all three fields, in one call.
+---
+--- TEN places abandon a hold: an entry dying, every entry going away, the
+--- downed-mate suppression rising, leaving the take states, walking out of
+--- reach, the key going up, completing, starting a fresh one, retuning the
+--- duration with /brcratehold, and the unconditional frame check. They wrote
+--- the fields out by hand and had already drifted once over whether `heldMs`
+--- travelled with `id` -- and a hold whose clock outlives its own cancellation
+--- is precisely the shape of bug #129 is about. Adding `upAt` would have been a
+--- third field for all ten of them to forget. One call instead.
+local function clearHold()
+    hold.id, hold.heldMs, hold.upAt = nil, 0.0, nil
+end
+
+--- HOW LONG THE KEY MUST READ UP BEFORE A HOLD IN PROGRESS IS ABANDONED.
+---
+--- A HOLD MUST NOT BE KILLED BY A KEY STATE THAT WAS NEVER RELEASED, which is
+--- the mirror image of the tap guard in keybinds.lua (`rawUpAt` /
+--- TAP_REARM_MS) and rests on the same measured fact: taking or releasing NUI
+--- focus disturbs the key state the raw natives read -- citizenfx/fivem#3064
+--- names IS_RAW_KEY_DOWN specifically -- so a key that is still physically held
+--- reads UP for a frame or two around every focus change. A dropped frame used
+--- to cost nothing here, because completion was `now - from >= chestHoldMs` and
+--- did not care what the key had been doing. Since the clock became an
+--- accumulator that is cancelled outright on the first frame the key reads up,
+--- one bad frame throws the whole hold away and the player sees a ring that
+--- refuses to fill.
+---
+--- THE INVARIANT THAT MAKES THIS SAFE, AND IT IS THE ONE TO CHECK BEFORE
+--- CHANGING THE NUMBER: this grace extends only the LIFETIME of a hold, never
+--- its PROGRESS. Milliseconds are still added exclusively on frames the key
+--- reads down. A tap therefore banks one frame -- about 16ms of the 1000 it
+--- needs -- and is then discarded when the grace expires, so it is still
+--- structurally impossible for a press to open a crate. That distinction is
+--- what dbno.lua's scar is about: a brief tap completed an entire eight-second
+--- revive in playtest (owner, 2026-08-09) because progress was granted by an
+--- announcement rather than by evidence.
+---
+--- 120ms because the gaps this has to swallow are one or two frames -- 100ms
+--- even on a client running at 20fps -- and because the cost of being wrong is
+--- a ring that lingers for a tenth of a second after a real release, which is
+--- below what reads as lag. It is deliberately SHORTER than TAP_REARM_MS: a tap
+--- re-arming late costs nothing, a ring outstaying its key is visible.
+local HOLD_RELEASE_MS = 120
+
+--- Is a hold in progress still being held, and should this frame count?
+---
+--- ONE ANSWER, ASKED BY BOTH FRAME CHECKS. loot.render advances the clock and
+--- loot.interact is the unconditional net under it; when they asked the key
+--- separately, the net cancelled on the same bad frame the grace above exists
+--- to absorb, and the grace would have been decorative.
+--- @param now number
+--- @return boolean alive     the hold survives this frame
+--- @return boolean counting  ...and this frame earns credit
+local function holdKeyAlive(now)
+    if BR.Keys.isHeld('interact') then
+        hold.upAt = nil
+        return true, true
+    end
+    if not hold.upAt then hold.upAt = now end
+    return (now - hold.upAt) < HOLD_RELEASE_MS, false
+end
 
 --- THE ONE ENTRY THE PLAYER IS BEING OFFERED THIS FRAME, decided once in
 --- loot.render and read by everything else.
@@ -136,9 +205,30 @@ local retiring = {}
 local retireSeq = 0
 
 --- Until when the spawn worker may build props faster than its steady rate.
---- Set on the first cell subscription of a life -- i.e. on landing. See
---- drain() for why the trickle is wrong at exactly that moment.
+---
+--- RE-AIMED AT THE TOUCHDOWN ITSELF (#126). It used to be armed on the FIRST
+--- CELL SUBSCRIPTION of a life, on the stated grounds that the first
+--- subscription is the landing. It is not, and has never been: a player is
+--- allowed to see loot from the warmup pad, from the bus and all the way down
+--- (BR.Config.LootVisibleStates), so the first subscription happens on the pad,
+--- minutes before anybody drops. Its four-second budget therefore expired
+--- during warmup and the drop -- the one moment it was written for -- got the
+--- ordinary two-per-pass trickle. It was spending its stutter risk on the pad
+--- and delivering nothing at the POI.
+---
+--- Kept rather than deleted, because the thing it was written for is real and
+--- still unfixed: two props per pass across 50-150 streamed entries is several
+--- seconds of a POI that looks empty to a player who has just landed and has
+--- nothing else to do but look at it (user, 2026-08-08). Now it is armed off
+--- the same touchdown latch everything else in #126 hangs on, which is the
+--- moment the trickle is actually wrong.
 local burstUntil = 0
+
+--- Whether the touchdown burst has already been spent this life. Edge-detected
+--- rather than level-tested: BR.State.landed stays true for the whole match, and
+--- re-arming a four-second budget on every 10Hz tick would make the burst rate
+--- the permanent rate.
+local burstArmed = false
 
 --- The entry whose prop currently has SetEntityDrawOutline switched on.
 ---
@@ -227,7 +317,7 @@ function BR.Loot.suppress(on)
     -- mate mid-crate must not leave a timer running behind the revive prompt --
     -- nor a remembered target that the next keypress would claim instead of
     -- starting the revive.
-    if on then hold.id, hold.heldMs, target = nil, 0.0, nil end
+    if on then clearHold(); target = nil end
 end
 
 --- ...AND A LANDED PLAYER MAY REACH FOR THINGS, before the server has caught up.
@@ -467,7 +557,7 @@ local function forget(id)
     entries[id] = nil
     queued[id] = nil
     poses[id] = nil
-    if hold.id == id then hold.id, hold.heldMs = nil, 0.0 end
+    if hold.id == id then clearHold() end
     -- An entry that no longer exists cannot be the thing the player is being
     -- offered. Left set, it is a claim waiting to be sent for an id the server
     -- has already retired.
@@ -480,9 +570,10 @@ local function forgetAll()
     clearRetiring()
     for id in pairs(entries) do forget(id) end
     entries, queue, queued, byObject, reported = {}, {}, {}, {}, {}
-    myCell, hold.id, hold.heldMs, target = nil, nil, 0.0, nil
+    myCell, target = nil, nil
+    clearHold()
     shineId, outlinedId = nil, nil
-    burstUntil = 0
+    burstUntil, burstArmed = 0, false
     -- Inline rather than through setPrompt(): that lives below this, and a
     -- local referenced before its declaration silently resolves as a global.
     lastPrompt.id, lastPrompt.hold = nil, nil
@@ -809,24 +900,39 @@ end)
 
 -- Cell subscription.
 --
--- MOVED FROM 1Hz TO 10Hz, AND THE REASON IS THE LANDING, not the walking.
+-- MOVED FROM 1Hz TO 10Hz, AND THE REASON GIVEN FOR IT WAS WRONG.
 --
 -- A 256m cell takes 25 seconds to cross on foot, so 1Hz was ample for the
--- steady state and the band's comment has said "loot cells" since M0. But the
--- moment that matters is not crossing a boundary, it is the FIRST
--- subscription: a player is only allowed to see loot once they are ALIVE, and
--- that arrives up to 250ms after touchdown (the delta flush). Add up to a
--- second waiting for the next SLOW tick, then the round trip, then models
--- streaming in two at a time, and a player stands in an empty POI for several
--- seconds wondering what to do (user, 2026-08-08).
+-- steady state and the band's comment has said "loot cells" since M0. The
+-- reasoning written here was that the moment that matters is the FIRST
+-- subscription, "because a player is only allowed to see loot once they are
+-- ALIVE". That is not the rule and never was: BR.Config.LootVisibleStates
+-- admits WARMUP, BUS, FREEFALL and GLIDE, so a player sees loot from the pad,
+-- from the plane and the whole way down, and the first subscription of a round
+-- happens on the warmup pad. The landing crosses no boundary at all if the
+-- player drops inside the cell they are already subscribed to.
 --
--- This is the cheapest of the three loot loops -- a state check, a coordinate
--- read and a string compare, with an early-out on every tick after the first.
--- loot.props, which is a full walk of every streamed entry, stays on SLOW.
+-- The rate is kept anyway, on its honest merit rather than the old one: this is
+-- the cheapest of the three loot loops -- a state check, a coordinate read and
+-- a string compare, with an early-out on every tick that has not moved cell --
+-- and at 10Hz a boundary crossed mid-sprint is answered before the props are
+-- wanted. loot.props, which is a full walk of every streamed entry, stays SLOW.
 BR.Loop.register(BR.Loop.TICK, 'loot.cells', function()
     if not canSee() then
         if myCell then forgetAll() end
         return
+    end
+
+    -- THE BURST IS ARMED BY THE TOUCHDOWN, NOT BY THE FIRST SUBSCRIPTION
+    -- (#126). Above the cell early-out on purpose: landing inside the cell you
+    -- were already subscribed to is the common case at a POI you glided
+    -- straight into, and that case must still get the budget. See burstUntil.
+    local landed = BR.State.landed == true
+    if landed and not burstArmed then
+        burstArmed = true
+        burstUntil = GetGameTimer() + (L.landingBurstMs or 4000)
+    elseif not landed then
+        burstArmed = false
     end
 
     local p = GetEntityCoords(PlayerPedId())
@@ -834,12 +940,7 @@ BR.Loop.register(BR.Loop.TICK, 'loot.cells', function()
     local key = BR.LootCellKey(cx, cy)
     if key == myCell then return end
 
-    -- THE FIRST SUBSCRIPTION OF A LIFE GETS A BURST BUDGET. Walking into a
-    -- new cell can afford to trickle; landing cannot, because the player is
-    -- standing in a POI that looks empty. See drain().
-    local first = (myCell == nil)
     myCell = key
-    if first then burstUntil = GetGameTimer() + (L.landingBurstMs or 4000) end
     TriggerServerEvent(BR.Net.LOOT_CELL, { cx = cx, cy = cy })
 end)
 
@@ -1311,7 +1412,8 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
         -- hold begun on the last crate in scope stayed armed with its clock
         -- notionally running, and the target stayed claimable. Neither can
         -- survive the entries going away.
-        hold.id, hold.heldMs, target = nil, 0.0, nil
+        clearHold()
+        target = nil
         return
     end
 
@@ -1495,7 +1597,8 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
         -- through a spell of canTake() being false -- in a car, suppressed by
         -- a downed mate, mid-respawn -- leaves a claim armed for an item the
         -- player can no longer legitimately reach.
-        hold.id, hold.heldMs, target = nil, 0.0, nil
+        clearHold()
+        target = nil
         setPrompt(nil)
         return
     end
@@ -1517,10 +1620,19 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
         -- ordering under which the clock runs and the key is not checked --
         -- which is exactly what the old split between this pass and
         -- loot.interact allowed.
+        --
+        -- ...BUT LETTING GO IS A KEY THAT HAS BEEN UP FOR A REAL INTERVAL,
+        -- NOT A KEY THAT READ UP ONCE, and that distinction is the whole of the
+        -- second round of #129: "even after holding I cannot successfully open
+        -- any crates" (owner, 2026-08-16). See HOLD_RELEASE_MS -- the grace
+        -- extends how long the hold LIVES and adds nothing to what it has
+        -- EARNED, because `counting` and not `alive` is what gates the
+        -- accumulator two lines down.
+        local alive, counting = holdKeyAlive(frameNow)
         if not e
            or BR.Dist2(p.x, p.y, e.x, e.y) > reach * reach
-           or not BR.Keys.isHeld('interact') then
-            hold.id, hold.heldMs = nil, 0.0
+           or not alive then
+            clearHold()
         else
             shown = e
             setPrompt(e, L.chestHoldMs or 1000)
@@ -1528,11 +1640,11 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
             -- Only frames on which the key was down get counted, and `dt` is
             -- already clamped to 100ms above so a stalled frame cannot hand
             -- the player a tenth of a second of credit it did not earn.
-            hold.heldMs = hold.heldMs + dt
+            if counting then hold.heldMs = hold.heldMs + dt end
 
             if hold.heldMs >= (L.chestHoldMs or 1000) then
                 local id = hold.id
-                hold.id, hold.heldMs = nil, 0.0
+                clearHold()
                 -- THE GLOW HAS DONE ITS JOB. Counted on the hold completing
                 -- rather than on the server's reply: the player has
                 -- demonstrably learned the interaction by this point, and a
@@ -1628,7 +1740,13 @@ local function interactPressed()
     if isContainer(e) then
         -- The clock starts at zero and is advanced by loot.render, on frames
         -- where the key is still down. Nothing here is a deadline.
-        hold.id, hold.heldMs = e.id, 0.0
+        --
+        -- clearHold() first so a fresh press cannot inherit the release grace
+        -- of the one before it: a hold begun 20ms after the last one was let go
+        -- would otherwise start life already counting down towards its own
+        -- cancellation.
+        clearHold()
+        hold.id = e.id
         return
     end
 
@@ -1642,11 +1760,27 @@ end
 
 BR.Keys.on('interact', function(pressed)
     if not pressed then
-        -- LETTING GO CANCELS, ON THE EDGE. loot.render checks the key state
-        -- every frame as well and is the check that cannot be skipped -- this
-        -- one just means the ring dies on the same frame the key came up
-        -- rather than on the next render pass.
-        hold.id, hold.heldMs = nil, 0.0
+        -- LETTING GO STARTS THE CLOCK ON THE RELEASE; IT NO LONGER KILLS THE
+        -- HOLD OUTRIGHT ON THE EDGE.
+        --
+        -- This handler used to clear the hold here and now, on the grounds that
+        -- the ring should die on the same frame the key came up rather than on
+        -- the next render pass. The problem is that this edge is not proof of a
+        -- release: it is fired by the same raw key state that reads UP for a
+        -- frame or two around every NUI focus change (citizenfx/fivem#3064 --
+        -- see keybinds.lua, where the tap side of this already has a guard).
+        -- So the most eager cancel in the file was also the one most easily
+        -- fooled, and with the clock now being ACCUMULATED rather than
+        -- subtracted, being fooled once costs the whole hold rather than
+        -- nothing (#129, owner 2026-08-16: "even after holding I cannot
+        -- successfully open any crates").
+        --
+        -- Stamping instead hands the decision to holdKeyAlive, which the two
+        -- frame checks already share, so all three agree by construction. The
+        -- cost is that a genuine release takes up to HOLD_RELEASE_MS to put the
+        -- ring out instead of one frame -- a tenth of a second, and no progress
+        -- accrues in it.
+        if hold.id and not hold.upAt then hold.upAt = GetGameTimer() end
         return
     end
     interactPressed()
@@ -1683,9 +1817,17 @@ end)
 -- the conditions that also stopped loot.render running -- get into a car
 -- mid-hold, or have dbno raise the suppression, and NEITHER check ran while
 -- the state persisted. Cancelling a hold is never the wrong thing to do.
+--
+-- IT ASKS THROUGH holdKeyAlive RATHER THAN READING THE KEY ITSELF, which is
+-- what makes it a net rather than a competitor. Asked separately, this pass
+-- cancelled on the very frame of dropped key state that loot.render's release
+-- grace exists to absorb -- so the grace would have been decorative and the
+-- hold would still have been unreachable (#129, second round). One answer,
+-- three callers, and it can no longer be true in one place and false in
+-- another.
 BR.Loop.register(BR.Loop.FRAME, 'loot.interact', function()
-    if hold.id and not BR.Keys.isHeld('interact') then
-        hold.id, hold.heldMs = nil, 0.0
+    if hold.id and not holdKeyAlive(GetGameTimer()) then
+        clearHold()
     end
 end)
 
@@ -1990,6 +2132,30 @@ RegisterCommand('brloot', function()
         :format(hold.id and ('#' .. hold.id) or '-',
                 hold.heldMs or 0.0, L.chestHoldMs or 1000,
                 tostring(BR.Keys.isHeld('interact'))))
+
+    -- ...AND WHICH MECHANISM IS ANSWERING "key down", WHICH IS THE LINE THAT
+    -- WOULD HAVE SETTLED THE SECOND ROUND OF #129 IN ONE PASTE.
+    --
+    -- There are three, they behave differently, and the readout above cannot
+    -- tell them apart: the raw layer's per-frame LEVEL sample (the good one),
+    -- the raw layer's single-frame EDGE fallback on a build without
+    -- IS_RAW_KEY_DOWN (on which the accumulator can never reach its threshold,
+    -- because the key reads down on one frame in sixty), and the engine's own
+    -- +brinteract / -brinteract pair. The first report said only "I cannot open
+    -- crates", which is the same sentence for all three -- so this prints the
+    -- source, and the key it is actually watching, next to the counter.
+    local via
+    if not BR.Keys.rawActive then
+        via = 'engine +/- binding (raw layer off)'
+    elseif BR.Keys.rawHolds then
+        via = 'raw layer, level sample (IsRawKeyDown)'
+    else
+        via = 'engine +/- binding (raw layer has no IsRawKeyDown)'
+    end
+    local label = BR.Keys.labelFor('brinteract')
+    print(('  hold key:  %s   via %s'):format(label or '(engine default)', via))
+    print(('  release grace %dms -- the hold survives a dropped frame of key '
+        .. 'state, and earns nothing during it'):format(HOLD_RELEASE_MS))
 end, false)
 
 --- Change the crate hold duration live, the same way /brlabel and /brshine
@@ -2009,7 +2175,7 @@ RegisterCommand('brcratehold', function(_, args)
         -- that can reintroduce it is asking for it back.
         L.chestHoldMs = math.max(100, math.floor(ms))
         -- Any hold in flight was measured against the old number.
-        hold.id, hold.heldMs = nil, 0.0
+        clearHold()
         lastPrompt.id, lastPrompt.hold = nil, nil
     end
     print(('[br_core] crate hold = %dms   (usage: brcratehold <ms>)')

@@ -110,6 +110,18 @@ local WHEEL_UP = 15
 --- this gate exists for is RemoveAllPedWeapons taking the PARACHUTE with it
 --- mid-drop, and the same branch in client/skydive.lua that sets this latch has
 --- already shed the canopy. There is no chute left to delete.
+---
+--- THE SERVER HAS NO EQUIVALENT AND DELIBERATELY KEEPS NONE. server/inventory
+--- gates every mutation on its own LIVE table (ALIVE, WARMUP) and that is the
+--- authority boundary -- a client must not be able to talk itself into a slot
+--- switch. The consequence, stated rather than discovered later: inside the
+--- window between our own touchdown and the server agreeing, this file will
+--- draw the bar and answer the slot keys, and INV_SELECT will be dropped at the
+--- far end in silence. That window is short by design and got shorter with
+--- #126 -- the landing report's retry loop was dead and now runs -- but it is
+--- not zero, and "a keypress that does nothing at all, in silence" is a symptom
+--- this project has already paid for once (see the WARMUP note above). If it is
+--- ever reported, the fix is the report, not this gate.
 local function canArm()
     local st = BR.State.me.state
     return st == BR.PlayerState.ALIVE

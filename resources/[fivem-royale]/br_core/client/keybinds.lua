@@ -99,13 +99,43 @@ local function tap(action, command, description, key, raw)
 end
 
 --- Register a hold action: fires true on press, false on release.
+---
+--- THE GATE HERE IS `rawHolds`, NOT `rawActive`, AND THE DIFFERENCE IS THE
+--- WHOLE OF #129's SECOND ROUND.
+---
+--- `rawActive` means "the raw layer is reading the keyboard". `rawHolds` means
+--- "and the native it resolved can answer the question a HOLD asks" -- is this
+--- key down RIGHT NOW, on this frame. Only IsRawKeyDown answers that;
+--- IsRawKeyPressed, the fallback for a build that predates it, is a
+--- single-frame EDGE (see the long note at the reader below). On a client that
+--- fell back, the raw layer can see a press and can never see a hold.
+---
+--- That used to be survivable and is not any more. The old crate open was a
+--- start stamp and a subtraction -- it never needed the key to be down for any
+--- of the interval -- so a client on the fallback opened crates anyway, and the
+--- startup line calling it "holds degrade to taps" was an accurate description
+--- of a cosmetic loss. Since the hold became an ACCUMULATOR that only advances
+--- on frames the key reads down (#129, loot.lua), the same client accumulates
+--- exactly one frame per press and the threshold is unreachable: the crate
+--- cannot be opened at all, which is a core interaction gone rather than a
+--- degraded one.
+---
+--- So the split is per-question rather than all-or-nothing. If the raw layer
+--- cannot answer a hold, it does not claim one, and these two commands -- the
+--- engine's own +/- pair, which has given both edges reliably since M0 -- drive
+--- it instead. Taps are untouched either way.
+---
+--- THE COST, STATED: on such a client, rebinding a HOLD action from our
+--- settings screen does not take effect, because the engine owns the key. It is
+--- one action (interact) on a build where IS_RAW_KEY_DOWN is missing, against
+--- an interaction that otherwise does not work at all.
 local function hold(action, command, description, key)
     RegisterCommand('+' .. command, function()
-        if BR.Keys.rawActive then return end
+        if BR.Keys.rawHolds then return end
         fire(action, true)
     end, false)
     RegisterCommand('-' .. command, function()
-        if BR.Keys.rawActive then return end
+        if BR.Keys.rawHolds then return end
         fire(action, false)
     end, false)
     RegisterKeyMapping('+' .. command, description, 'keyboard', key)
@@ -599,7 +629,13 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
     local map = load()
     for _, b in ipairs(BR.Keys.bindings) do
         local code = map[b.command]
-        if code then
+        -- A HOLD BINDING IS ONLY OURS IF WE CAN ANSWER WHAT A HOLD ASKS.
+        -- Without IsRawKeyDown this loop can see the press and never the
+        -- release, so it would fire a press and then a bogus release on the
+        -- very next frame -- and it would ALSO be shadowing the engine's +/-
+        -- pair, which can do the job properly. See the note on rawHolds at the
+        -- hold() registrar; skipping the binding here is what hands it back.
+        if code and (BR.Keys.rawHolds or not b.hold) then
             -- EDGES ARE DERIVED, NOT ASKED FOR.
             --
             -- The first cut called IS_RAW_KEY_JUST_PRESSED, which DOES NOT
@@ -652,6 +688,12 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
             -- frame of key state now cancels a hold in progress rather than
             -- being ridden out. For a hold that is the safe side to be wrong on
             -- -- you press again -- and it is the side the owner asked for.
+            --
+            -- AND IT IS ONLY REACHABLE WHEN THE SAMPLE IS A LEVEL. The branch
+            -- above admits a hold binding only under rawHolds, so `down` here
+            -- is always IsRawKeyDown's answer -- never the edge fallback's,
+            -- which would write "not held" on fifty-nine frames in every sixty
+            -- and make a hold arithmetically impossible (#129, second round).
             if b.hold then BR.Keys.held[b.action] = down end
 
             if down ~= was then
@@ -721,10 +763,21 @@ AddEventHandler('onClientResourceStart', function(res)
         if ok then rawDownFn = IsRawKeyPressed end
     end
     BR.Keys.rawActive = ok
+    -- TWO FLAGS, BECAUSE THERE ARE TWO QUESTIONS. See the note on the hold()
+    -- registrar: `rawActive` is "this layer is reading the keyboard",
+    -- `rawHolds` is "and it can tell a held key from a pressed one". Only the
+    -- level native can, and the whole of #129's second round is a hold that was
+    -- being driven by a layer answering the wrong one.
+    --
+    -- The `~= nil` matters: with NEITHER native present rawDownFn is nil and so
+    -- is IsRawKeyDown, and nil == nil would have declared the fallback
+    -- perfectly capable of holds on the one build that has no raw layer at all.
+    BR.Keys.rawHolds = ok and rawDownFn ~= nil and rawDownFn == IsRawKeyDown
     print(('[br_core] raw key layer %s%s'):format(
         ok and 'active' or 'UNAVAILABLE',
-        (ok and rawDownFn == IsRawKeyPressed)
-            and ' (no IsRawKeyDown: holds degrade to taps)' or ''))
+        (ok and not BR.Keys.rawHolds)
+            and ' (no IsRawKeyDown: hold actions stay on the engine binding)'
+            or ''))
     load()
     BR.Keys.push()
 end)
@@ -739,8 +792,13 @@ RegisterCommand('brkeys', function(_, args)
         return
     end
     print('=== keybinds ===')
-    print(('  raw layer: %s   escape is ours: %s'):format(
-        tostring(BR.Keys.rawActive), tostring(BR.Keys.ownsEscape())))
+    -- `holds` IS THE LINE TO READ WHEN A HOLD DOES NOT COMPLETE (#129). false
+    -- with the layer active means IsRawKeyDown is missing on this build and the
+    -- hold actions are being driven by the engine's +/- pair instead, which is
+    -- correct but means our own rebinder does not own them.
+    print(('  raw layer: %s   holds: %s   escape is ours: %s'):format(
+        tostring(BR.Keys.rawActive), tostring(BR.Keys.rawHolds),
+        tostring(BR.Keys.ownsEscape())))
     for _, b in ipairs(BR.Keys.bindings) do
         local code = load()[b.command]
         print(('  %-9s %-28s %s'):format(b.group, b.label,
