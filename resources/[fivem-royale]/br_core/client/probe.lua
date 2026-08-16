@@ -462,8 +462,17 @@ RegisterCommand('brprobe', function(_, args)
         head('probe: is IsRawKeyDown a level or an edge?')
         -- Defaults to E, which is `interact` and therefore the key #129 is
         -- about. Any VK works: brprobe rawkey 0x20 8
-        rawKeyWatch(tonumber(args[2]) or tonumber(args[2], 16) or 0x45,
-                    tonumber(args[3]) or 4)
+        --
+        -- GUARDED ON args[2] BEING PRESENT AT ALL. `tonumber(nil)` is nil and
+        -- harmless, but `tonumber(nil, 16)` THROWS -- with a base argument Lua
+        -- demands a string -- so the bare `brprobe rawkey` that everybody types
+        -- first errored out before printing a word (owner, 2026-08-16). A
+        -- diagnostic that cannot be run with no arguments is not a diagnostic.
+        local vk = 0x45
+        if args[2] then
+            vk = tonumber(args[2]) or tonumber(args[2], 16) or 0x45
+        end
+        rawKeyWatch(vk, tonumber(args[3] or '') or 4)
         return
     elseif what == 'ammo' then
         head('probe: ammo (br_core still managing)')
