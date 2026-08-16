@@ -125,6 +125,45 @@ function BR.Dui.drawWorld(page, x, y, z, scale, dist)
     ClearDrawOrigin()
 end
 
+--- Draw a page FLAT ON THE SCREEN, at a fixed spot, like a HUD element.
+---
+--- THE OTHER TWO DRAWS PIN A PAGE TO THE WORLD; THIS ONE DELIBERATELY DOES NOT,
+--- and the reason it exists is #131. The owner asked for a real button GLYPH on
+--- the smoke-trail prompt, and a glyph is the one thing GTA's help box cannot
+--- give us for one of OUR keys: the engine draws `~INPUT_*~` glyphs from its own
+--- control table, our rebinds live in the raw-key layer in keybinds.lua that the
+--- engine never hears about, and `~INPUT_<hash>~` for a RegisterKeyMapping
+--- command "renders a hole" -- measured on this build, not assumed (probe.lua,
+--- and bus.lua's own note beside INPUT_PARACHUTE_DEPLOY). So the prompt has to
+--- be drawn by something that can draw whatever we like, and we already own one:
+--- this page, with its key-cap badge, is what every crate on the ground uses.
+---
+--- There is nothing in the world to attach a descent prompt to -- the player is
+--- the subject -- so the position is screen space and constant, which is also
+--- the cheapest thing this file can do: no projection, no distance, no matrix.
+---
+--- @param page table
+--- @param x number      screen fraction, 0..1 (0.5 is centre)
+--- @param y number      screen fraction, 0..1
+--- @param scale number  width as a fraction of the screen
+function BR.Dui.drawScreen(page, x, y, scale)
+    if not BR.Dui.ready(page) then return end
+
+    local w = scale or 0.16
+    -- The same aspect correction drawWorld needs, and for the same reason: a
+    -- sprite's width is a fraction of the screen's WIDTH and its height a
+    -- fraction of the screen's HEIGHT, which are different units. Leaving this
+    -- out is what squashed the crate prompt to half its height on 16:9.
+    local aspect = GetAspectRatio(false)
+    if not aspect or aspect <= 0.1 then
+        local sw, sh = GetActiveScreenResolution()
+        aspect = (sh and sh > 0) and (sw / sh) or 1.7778
+    end
+    local h = w * (page.h / page.w) * aspect
+
+    DrawSprite(page.txd, page.tex, x, y, w, h, 0.0, 255, 255, 255, 255)
+end
+
 --- Draw a page as a label STUCK TO AN ENTITY'S TOP FACE.
 ---
 --- Not "flat in the world at some coordinates" -- the first version of this

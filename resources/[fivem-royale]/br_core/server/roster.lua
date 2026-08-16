@@ -114,6 +114,19 @@ local function newEntry(src)
         diedAt     = nil,
         leftAt     = nil,
 
+        -- THEIR PED IS DEAD AND THEIR MATCH IS NOT OVER (#144). Set when a
+        -- player is killed before their match reaches PLAYING, cleared by the
+        -- revive on that transition. It is the reason `state == DEAD` and
+        -- `diedAt == nil` can be true at the same time, which every other part
+        -- of this codebase would otherwise read as a contradiction: DEAD is what
+        -- their own client draws, diedAt is what the results row is built from,
+        -- and for the length of the hold only the first of those has happened.
+        --
+        -- ALSO IN NEITHER ALLOWLIST, and for a stronger reason than diedAt: this
+        -- is a promise the server has made to one player, not a fact about them
+        -- that anyone else can act on.
+        revivePending = nil,
+
         joinedAt   = GetGameTimer(),
         bucket     = 0,
     }

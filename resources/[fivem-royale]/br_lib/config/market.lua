@@ -99,10 +99,26 @@ BR.Config.ItemKind = {
         more work to look at, and it is the only thing in the catalogue that
         animates.
 
-    THE SQUAD COLOUR WINS IN A SQUAD. Trail colour is how you find your team in
-    the air, and that is a gameplay read, not decoration. A bought trail applies
-    when you are dropping alone; in a squad the squad colour overrides it. If
-    that ever feels wrong, this is the paragraph to argue with.
+    THE BOUGHT TRAIL WINS, IN A SQUAD OR OUT OF ONE (#131, owner 2026-08-16).
+
+    THIS PARAGRAPH USED TO SAY THE OPPOSITE, and the argument it made was not a
+    bad one: trail colour is how you find your team in the air, that is a
+    gameplay read, and decoration should lose to a gameplay read. It was invited
+    to be argued with. It was: "Squad colors should not override the bought
+    trail - the player earned that trail."
+
+    What decided it is what the override cost in practice. A player buys Void,
+    drops with their squad, sees the squad colour, and concludes the item does
+    not work -- which is not a misunderstanding to be explained away in help
+    text, it is the item genuinely not appearing at the only moment it exists to
+    appear. The team read survives anyway, because the free catalogue default IS
+    the squad colour: `trail_squad` below is what every player wears until they
+    spend Volts, so nobody loses their squadmates' smoke by accident. They lose
+    it by buying something else and equipping it, which is a choice, made once,
+    by the person it affects.
+
+    cosmetics.applyTrail is where the order lives now: purchase first, squad
+    colour as the fallback for anyone who has not bought one.
 
     ========================== WEAPON TINTS ==========================
 
@@ -222,6 +238,13 @@ BR.Config.Market = {
                     -- The default trail is the squad colour, which is what
                     -- happens today and costs nothing. `trailRgb = nil` means
                     -- "leave the squad system alone".
+                    --
+                    -- AND SINCE THE OVERRIDE WENT, THIS ITEM IS THE WHOLE SQUAD
+                    -- RULE (#131). It used to be a placeholder for a slot that
+                    -- was going to be overruled in a squad anyway; now equipping
+                    -- it is the only way a squad colour reaches the sky. It is
+                    -- also still the default, so the behaviour every player who
+                    -- has never opened the market sees is unchanged.
                     id = 'trail_squad', name = 'Squad Colour', sub = 'Smoke trail',
                     kind = BR.Config.ItemKind.TRAIL,
                     price = 0, rarity = BR.Config.Rarity.COMMON,
