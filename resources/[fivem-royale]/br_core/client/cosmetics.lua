@@ -72,6 +72,49 @@ end
 
 -- ------------------------------------------------------------------ trail ---
 
+--- THE TRAIL'S STATE FOR THIS DROP, because a toggle needs something to toggle.
+---
+--- Read by skydive.lua to decide whether to draw the descent prompt at all and
+--- what the key does when it is pressed. Three separate facts, and collapsing
+--- any two of them loses a case:
+---
+---   armed  a trail is actually flying -- there is something to turn off.
+---   squad  and it is the SQUAD's colour rather than the purchase, which is a
+---          different thing to a different audience (see the override note
+---          below). The prompt is suppressed on this, not on `armed`.
+---   on     whether it is currently visible, so the toggle knows which way to
+---          go and a fresh drop starts from a known state rather than from
+---          whatever the last one left behind.
+---
+--- ARMED IS SET BY THE BRANCH THAT PAINTS, NEVER BY THE EQUIPPED SLOT, and that
+--- distinction is the whole of #131's fourth requirement. `worn['trail']` is
+--- always present: the catalogue's default item is 'Squad Colour', whose apply
+--- table is literally `{ trailRgb = nil }`, so it resolves to a
+--- present-but-EMPTY table and a slot test would answer "yes" for a player who
+--- owns nothing. They would then be offered a key for a trail that does not
+--- exist -- "a prompt for a thing they do not have", which is the failure the
+--- issue names. Only the two branches that actually call
+--- SetPlayerParachuteSmokeTrailColor set this, so it cannot drift from what is
+--- in the sky.
+BR.Cosmetics.trailArmed = false
+BR.Cosmetics.trailSquad = false
+BR.Cosmetics.trailOn = false
+
+--- The colour currently painted, so turning the trail back ON can re-assert it.
+---
+--- SET_PLAYER_CAN_LEAVE_PARACHUTE_SMOKE_TRAIL is a permission and
+--- SET_PLAYER_PARACHUTE_SMOKE_TRAIL_COLOR is a colour, and the pair has already
+--- bitten this project once at the other end: the canopy tint is read when the
+--- canopy opens, so setting it a moment late "looks exactly like the item the
+--- player bought not working" (skydive.lua's own note, verbatim). A toggle that
+--- only flipped the permission would be trusting the engine to have kept a
+--- colour across a period where it was told nobody could see it. Re-asserting
+--- costs one native call per press and removes the entire question.
+---
+--- nil for the cycling item, and deliberately: its thread rewrites the colour
+--- every 350ms regardless, so there is nothing here worth remembering.
+local liveRgb = nil
+
 --- Squad colour wins over a bought trail, and that is a gameplay decision.
 ---
 --- The trail is how you find your team in the air. A player who bought Void
@@ -84,14 +127,26 @@ function BR.Cosmetics.applyTrail(squadColour, hexToRgb)
     local pid = PlayerId()
     local apply = BR.Cosmetics.get('trail')
 
+    BR.Cosmetics.trailArmed = false
+    BR.Cosmetics.trailSquad = false
+    BR.Cosmetics.trailOn = false
+    liveRgb = nil
+
     if squadColour then
         SetPlayerCanLeaveParachuteSmokeTrail(pid, true)
-        SetPlayerParachuteSmokeTrailColor(pid, hexToRgb(squadColour))
+        local r, g, b = hexToRgb(squadColour)
+        SetPlayerParachuteSmokeTrailColor(pid, r, g, b)
+        liveRgb = { r, g, b }
+        BR.Cosmetics.trailArmed = true
+        BR.Cosmetics.trailSquad = true
+        BR.Cosmetics.trailOn = true
         return
     end
 
     if apply.trailCycle then
         SetPlayerCanLeaveParachuteSmokeTrail(pid, true)
+        BR.Cosmetics.trailArmed = true
+        BR.Cosmetics.trailOn = true
         local gen = trailGen
         local colours = apply.trailCycle
         local ms = math.max(100, tonumber(apply.trailCycleMs) or 350)
@@ -117,11 +172,51 @@ function BR.Cosmetics.applyTrail(squadColour, hexToRgb)
         SetPlayerCanLeaveParachuteSmokeTrail(pid, true)
         SetPlayerParachuteSmokeTrailColor(pid,
             apply.trailRgb[1], apply.trailRgb[2], apply.trailRgb[3])
+        liveRgb = apply.trailRgb
+        BR.Cosmetics.trailArmed = true
+        BR.Cosmetics.trailOn = true
         return
     end
 
     -- No squad, no bought trail: leave it off rather than picking something.
     SetPlayerCanLeaveParachuteSmokeTrail(pid, false)
+end
+
+--- Turn the trail this drop already chose off, or back on. Never re-decides it.
+---
+--- The colour is re-asserted on the way ON rather than trusted, for the reason
+--- given beside liveRgb. On the way OFF the colour is left alone: it is
+--- invisible either way, and writing it would only be there to look symmetric.
+--- @param on boolean
+--- @return boolean acted  false when there is no trail flying to act on
+function BR.Cosmetics.showTrail(on)
+    if not BR.Cosmetics.trailArmed then return false end
+    on = on == true
+
+    local pid = PlayerId()
+    if on and liveRgb then
+        SetPlayerParachuteSmokeTrailColor(pid, liveRgb[1], liveRgb[2], liveRgb[3])
+    end
+    SetPlayerCanLeaveParachuteSmokeTrail(pid, on)
+    BR.Cosmetics.trailOn = on
+    return true
+end
+
+--- The drop is over: no trail, and no state left claiming otherwise.
+---
+--- ONE PLACE TURNS IT OFF, and that is the point of the function existing for
+--- what used to be a single native call. skydive.lua stands the trail down from
+--- two different endings -- a landing and a vehicle seat -- and a third that
+--- forgot to clear the flags would leave `trailArmed` true into the next drop,
+--- where a player with nothing equipped would be offered a prompt for the trail
+--- the PREVIOUS round happened to fly. That is the exact class of bug #131 is
+--- about: an interface confidently naming a thing the player does not have.
+function BR.Cosmetics.clearTrail()
+    SetPlayerCanLeaveParachuteSmokeTrail(PlayerId(), false)
+    BR.Cosmetics.trailArmed = false
+    BR.Cosmetics.trailSquad = false
+    BR.Cosmetics.trailOn = false
+    liveRgb = nil
 end
 
 -- ----------------------------------------------------------- weapon finish ---

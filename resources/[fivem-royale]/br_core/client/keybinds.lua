@@ -123,6 +123,23 @@ group = 'Movement'
 -- it deploys the glider. Two bindings for consecutive actions on the same
 -- second of gameplay was one binding too many.
 tap ('deploy',      'brdeploy',    'Royale: Jump / deploy glider',       'SPACE')
+-- THE SMOKE TRAIL IS OURS TO ROUTE, NOT THE ENGINE'S (#131).
+--
+-- GTA already has a parachute-smoke input, and binding that would have been
+-- the shorter road. It was refused on the owner's explicit call (2026-08-16):
+-- "I'd rather not re-use that since it means leaving our own keybinds
+-- authority yet again." Everything a player can rebind in this game is rebound
+-- from one screen, reading one table, and an action routed by the engine
+-- instead would sit in that list as a row we cannot move -- the same split
+-- authority that had every world prompt saying E long after interact moved to
+-- R. One table or none.
+--
+-- B, and the reason is the canopy. Steering a parachute occupies WASD, Space
+-- and the shift/ctrl pair, so a toggle anywhere near them is a toggle that
+-- gets hit while flying; B is outside that cluster, is bound to nothing on
+-- foot in base GTA, is bound to nothing else here, and is not on the settings
+-- screen's reserved list, so anyone who dislikes it can move it.
+tap ('trail',       'brtrail',     'Royale: Toggle smoke trail',         'B')
 
 group = 'Combat'
 -- Inventory and interaction
@@ -219,7 +236,7 @@ end)
 
 --- Names of every registered action, for the debug overlay.
 BR.Keys.actions = {
-    'deploy', 'inventory', 'interact', 'drop', 'use',
+    'deploy', 'trail', 'inventory', 'interact', 'drop', 'use',
     'slot1', 'slot2', 'slot3', 'slot4', 'slot5',
     'chatGlobal', 'chatSquad', 'ping', 'map', 'specNext', 'specPrev',
     'clearWaypoint',
@@ -291,8 +308,14 @@ local chosen = {}
 --- key name to a VK code -- and deliberately kept to exactly the keys this
 --- project actually uses as defaults, rather than a general table that would
 --- be mostly untested.
+---
+--- A DEFAULT MISSING FROM HERE IS A KEY THAT NEVER FIRES. The raw layer reads
+--- this table and nothing else, so a tap() registered with a key name that is
+--- absent gets `vk[command] = nil`, is skipped by the frame loop entirely, and
+--- shows as "Unbound" on a settings screen the player never touched. Add the
+--- entry in the same commit as the binding.
 local DEFAULT_VK = {
-    SPACE = 0x20, TAB = 0x09, E = 0x45, G = 0x47, R = 0x52,
+    SPACE = 0x20, TAB = 0x09, E = 0x45, G = 0x47, R = 0x52, B = 0x42,
     ['1'] = 0x31, ['2'] = 0x32, ['3'] = 0x33, ['4'] = 0x34, ['5'] = 0x35,
     T = 0x54, Y = 0x59, Z = 0x5A, M = 0x4D, BACK = 0x08,
     LEFT = 0x25, RIGHT = 0x27, UP = 0x26, DOWN = 0x28,

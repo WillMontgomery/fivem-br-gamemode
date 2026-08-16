@@ -171,14 +171,22 @@ export function startMockDriver(): void {
     k: 'keybinds',
     d: {
       actions: [
-        // The market's Trails tab names this row to say when a trail starts,
-        // so a harness without it renders that help text one sentence short.
         { group: 'Movement', command: 'brdeploy', label: 'Jump / deploy glider', key: 'Space', default: 'SPACE' },
+        // The market's Trails tab names this row -- it is the key the descent
+        // prompt offers once the glider is open -- so a harness without it
+        // renders that help text one sentence short.
+        { group: 'Movement', command: 'brtrail', label: 'Toggle smoke trail', key: 'B', default: 'B' },
         { group: 'Combat', command: 'brinventory', label: 'Inventory', key: 'TAB', default: 'TAB' },
         { group: 'Combat', command: 'brslot1', label: 'Slot 1', key: '1', default: '1' },
         { group: 'Combat', command: 'brslot2', label: 'Slot 2', key: '2', default: '2' },
         { group: 'World', command: 'brinteract', label: 'Interact / loot', key: 'E', default: 'E', custom: true },
-        { group: 'World', command: 'brmarker', label: 'Place map marker', key: 'B', default: 'B' },
+        // `brping` on Z, NOT `brmarker` on B. The wrong name was hand-typed
+        // here from the same bad list that had bindings written against
+        // commands nobody registered (keybinds.lua tells that story in full),
+        // and it stayed harmless only until something real wanted B: the
+        // harness then drew two rows on one key and looked like a conflict
+        // this project does not have.
+        { group: 'World', command: 'brping', label: 'Place a marker', key: 'Z', default: 'Z' },
         { group: 'Social', command: 'brchat', label: 'Chat', key: 'T', default: 'T' },
         { group: 'Interface', command: 'brpausemenu', label: 'Pause menu', key: 'Escape', default: 'F1' },
         { group: 'Interface', command: 'brleave', label: 'Leave the match', key: '', default: '' },
