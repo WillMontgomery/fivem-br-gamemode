@@ -47,6 +47,26 @@ export default function Lobby({
   // have got one yet -- and this is where the button lives, so the reason
   // travels up rather than the button moving down.
   const [readyBlock, setReadyBlock] = useState<string | null>(null)
+
+  /**
+   * MAINTENANCE OUTRANKS THE PARTY PANEL'S REASON, and it has to.
+   *
+   * The server already refuses the queue during a drain -- that landed with the
+   * blocker -- but the button stayed lit, so pressing it did nothing and said
+   * nothing. A control that looks available and silently declines reads as a
+   * broken menu, and the player presses it repeatedly rather than learning why.
+   *
+   * WORDED LIKE THE IN-MATCH NOTICE, deliberately: somebody in the lobby and
+   * somebody mid-match are being told about the same event, and two different
+   * sentences for one fact is how people conclude there are two problems. The
+   * appended line is the part only a lobby player needs -- that waiting is the
+   * whole job, and nobody has to do anything.
+   */
+  const maintenanceBlock =
+    lobby?.wait?.reason === 'maintenance'
+      ? 'A server update is pending, so no new matches can be started. '
+        + 'It runs automatically once everyone has left — nothing to do but wait.'
+      : null
   const [mode, setMode] = useState<'solo' | 'squad'>('solo')
 
   const inParty = squad.members.length > 1
@@ -128,7 +148,9 @@ export default function Lobby({
     ? 'Cleaning up the last round…'
     : waitingOnMatch
       ? 'Waiting for the current match to end…'
-      : !wait
+      : wait?.reason === 'maintenance'
+        ? 'Server update pending'
+        : !wait
         ? 'Starting…'
         : wait.reason === 'party'
           ? 'Waiting for your party to ready up'
@@ -367,17 +389,17 @@ export default function Lobby({
                   would queue you alone into the very squad you were in the
                   middle of building (owner, 2026-08-09). The button goes dead
                   and the line above it names what is missing. */}
-              {readyBlock && (
+              {(maintenanceBlock ?? readyBlock) && (
                 <p
                   className="text-[0.82rem] mb-2.5 tscale"
                   style={{ color: 'rgba(255,255,255,0.5)' }}
                 >
-                  {readyBlock}
+                  {maintenanceBlock ?? readyBlock}
                 </p>
               )}
               <Btn
                 variant="primary" size="xl" full cue="ui.ready"
-                disabled={readyBlock != null}
+                disabled={(maintenanceBlock ?? readyBlock) != null}
                 onPress={queue}
               >
                 Ready up
