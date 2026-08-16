@@ -95,6 +95,19 @@ end
 function RegisterNetEvent() end
 function RegisterCommand() end
 
+-- br_stats asks whether br_ddb is running before it records anything, and
+-- answers 'not started' by doing nothing at all. Saying 'started' here is what
+-- lets the match-history block below drive the real write path; every other
+-- block is untouched, because the harness's TriggerEvent records events rather
+-- than dispatching them, so br_stats' handler only ever runs when a test calls
+-- fire() on it deliberately.
+function GetResourceState() return 'started' end
+
+-- Bare SetTimeout, as opposed to Citizen.SetTimeout above. br_stats uses it to
+-- expire the callback it is holding for a pending DynamoDB answer; running the
+-- timer would only delete bookkeeping the test wants to read.
+function SetTimeout() end
+
 local realPrint = print
 function print() end
 
@@ -146,6 +159,22 @@ for _, f in ipairs({
     -- report handler had no coverage at all, which is how "one report per
     -- target" could be wrong in a way only a playtest would find.
     'br_core/server/players.lua',      -- BR.Players; the list and the reports
+
+    -- br_stats, LOADED INTO THE ROSTER SUITE ON PURPOSE (#153).
+    --
+    -- The match-history rows are derived from the same `br:match:results`
+    -- payload the block above already asserts on, and testing them anywhere
+    -- else would mean hand-building that payload -- which is precisely the
+    -- fixture that stops catching anything the moment br_core changes the real
+    -- one. Driving the consumer with the producer's actual output is the only
+    -- version of this test worth having.
+    --
+    -- xp.lua and market.lua first: persist.lua reads BR.Xp for the curve and
+    -- BR.Config.marketPayout for the Volts, and both are nil-guarded, so
+    -- omitting either would produce a suite that passes while asserting zeroes.
+    'br_lib/shared/xp.lua',
+    'br_lib/config/market.lua',
+    'br_stats/server/persist.lua',
 }) do
     local chunk, err = loadfile(ROOT .. f)
     if not chunk then
@@ -6524,10 +6553,153 @@ do
 
     ok(leftAt - startedAt == byName.Quitter.presentMs, 'presence is measured from the match start')
 
+    -- ------------------------------------------------------------------
+    -- MATCH HISTORY (#153), from the very same event.
+    --
+    -- Nothing wrote a per-match row until this shipped: every write went to one
+    -- aggregate item per player, so the console's match-history panel had
+    -- nothing to read and correctly rendered absence. What is asserted below is
+    -- the shape of the row, the key it is filed under, and -- the part no
+    -- amount of reading catches -- that the row AGREES with the aggregate
+    -- written from the same payload.
+    --
+    -- DRIVEN THROUGH THE REAL CONSUMER, not a hand-built payload. The harness
+    -- records events rather than dispatching them, so br_stats' handler is
+    -- invoked by hand here; that is also what keeps it out of every other block
+    -- in this file.
+    -- ------------------------------------------------------------------
+    local mark = #fired
+    fire('br:match:results', nil, captured)
+
+    --- Everything br_stats emitted for this match, split by verb.
+    local function since(n)
+        local rows, deltasBy, batches = nil, {}, 0
+        for i = n + 1, #fired do
+            local f = fired[i]
+            if f.event == 'br:ddb:historyPut' then
+                batches = batches + 1
+                rows = f.args[2]
+            elseif f.event == 'br:ddb:statsApply' then
+                deltasBy[f.args[2]] = f.args[3]
+            end
+        end
+        return rows, deltasBy, batches
+    end
+
+    local rows, deltasBy, batches = since(mark)
+
+    ok(batches == 1, 'the whole match is ONE history event, not one per player',
+        ('got %s'):format(tostring(batches)))
+    ok(rows ~= nil and #rows == 2, 'with a row for every participant',
+        ('got %s'):format(tostring(rows and #rows)))
+
+    local byLicense = {}
+    for _, r in ipairs(rows or {}) do byLicense[r.license] = r end
+
+    local winner = byLicense['license:test1']
+    local quitter = byLicense['license:test2']
+
+    ok(winner ~= nil, 'the survivor is recorded')
+    -- The same fix as #100, carried into the new write rather than re-earned:
+    -- somebody who closed the game after dying still played the match.
+    ok(quitter ~= nil, 'and so is the player who disconnected (#100)')
+
+    -- THE KEY IS THE READ MODEL. `match#<endedAt>#<matchId>` under the profile's
+    -- own partition key is what makes "recent matches, newest first" a Query
+    -- with ScanIndexForward = false rather than a scan or a second index.
+    ok(winner and winner.sk == ('match#%013d#%s'):format(winner.endedAt, tostring(m.id)),
+        'the sort key is match#<zero-padded endedAt>#<matchId>',
+        ('got %s'):format(tostring(winner and winner.sk)))
+    ok(winner and quitter and winner.sk == quitter.sk,
+        'and every row in one match carries the same key suffix, so the match groups')
+    ok(winner and #winner.sk == #('match#%013d#%s'):format(0, tostring(m.id)),
+        'zero-padded to a fixed width -- the sort is lexicographic, not numeric')
+
+    -- THE TIMESTAMP IS A WALL CLOCK, AND THE ENVELOPE'S IS NOT.
+    -- res.endedAt is GetGameTimer(): milliseconds since THIS server process
+    -- started, which returns to zero on every restart. Sorting on it would file
+    -- every match played after a deploy underneath every match played before
+    -- one, so "newest first" would return the oldest match the player ever had.
+    ok(winner and winner.endedAt ~= captured.endedAt,
+        'endedAt is NOT the envelope timer, which restarts with the process')
+    ok(winner and winner.endedAt > 1600000000000,
+        'it is epoch milliseconds', ('got %s'):format(tostring(winner and winner.endedAt)))
+    ok(winner and quitter and winner.endedAt == quitter.endedAt,
+        'one timestamp for the whole match, not one per player')
+    -- The aggregate's `lastMatchAt` and the newest history row must be the same
+    -- instant, or the profile page says "last match 3 minutes ago" above a list
+    -- whose top entry is stamped a second apart.
+    ok(winner and deltasBy['license:test1'].at == winner.endedAt,
+        'and it is the same stamp the aggregate records as lastMatchAt')
+
+    -- WHAT THE MATCH ACTUALLY WAS.
+    ok(winner and winner.placement == 1, 'the survivor placed first')
+    ok(winner and winner.won == true, 'and won it')
+    ok(winner and winner.kills == 1, 'their kill is on the row',
+        ('got %s'):format(tostring(winner and winner.kills)))
+    ok(winner and winner.survivedMs == 630000, 'with their own survival time (#99)',
+        ('got %s'):format(tostring(winner and winner.survivedMs)))
+    ok(quitter and quitter.survivedMs == 120000, 'and the quitter with theirs')
+    ok(winner and winner.total == 2, 'the field size is on every row -- 3rd of 8 is not 3rd of 96')
+    ok(winner and winner.mode == m.mode, 'as is the mode',
+        ('got %s'):format(tostring(winner and winner.mode)))
+    ok(quitter and quitter.won == false, 'the player who died did not win')
+
+    -- THE ROW AND THE AGGREGATE ARE WRITTEN SEPARATELY AND MUST STILL AGREE.
+    -- They are two DynamoDB operations built from one payload; if they ever
+    -- disagree, the profile page shows a career total that no listed match adds
+    -- up to, and there is no way to tell which half is lying.
+    ok(winner and winner.xpEarned == deltasBy['license:test1'].xp and winner.xpEarned > 0,
+        'the XP on the record is the XP that was banked',
+        ('row %s vs delta %s'):format(tostring(winner and winner.xpEarned),
+            tostring(deltasBy['license:test1'].xp)))
+    ok(winner and winner.voltsEarned == deltasBy['license:test1'].balance,
+        'and so are the Volts -- including the level-up bonus the player was shown')
+    ok(winner and winner.damage == deltasBy['license:test1'].damageDealt,
+        'and the damage, floored the same way')
+
+    -- A WIN IS NOT PLACEMENT 1 (#133). The last squad standing can be taken by
+    -- the storm: eliminate() records placement 1 because nobody outlasted them,
+    -- and they are still dead. The aggregate learned this rule; the record has
+    -- to have learned it too, or a moderator reading the history sees a win
+    -- beside a career total that never counted one.
+    --
+    -- The same envelope with the one flag flipped, which is exactly the shape
+    -- br_core sends for a storm finish.
+    local stormed = { matchId = captured.matchId, mode = captured.mode,
+                      startedAt = captured.startedAt, endedAt = captured.endedAt,
+                      total = captured.total, players = {} }
+    for _, r in ipairs(captured.players) do
+        local copy = {}
+        for k, v in pairs(r) do copy[k] = v end
+        if copy.placement == 1 then copy.died = true end
+        stormed.players[#stormed.players + 1] = copy
+    end
+
+    mark = #fired
+    fire('br:match:results', nil, stormed)
+    local srows, sdeltas = since(mark)
+
+    local sw
+    for _, r in ipairs(srows or {}) do
+        if r.license == 'license:test1' then sw = r end
+    end
+    ok(sw and sw.placement == 1, 'a storm finish still places first')
+    ok(sw and sw.won == false, 'and is NOT recorded as a win (#133)')
+    ok(sw and sdeltas['license:test1'].wins == 0,
+        'which is the same answer the aggregate gives -- one rule, one place')
+
     -- CLEANUP owns the other half of the wipe. Without it the sealed entries
     -- accumulate one per disconnect for the server's uptime.
+    mark = #fired
     BR.Match.transition(m, BR.MatchState.CLEANUP)
     ok(#BR.Roster.departedIn(m.id) == 0, 'CLEANUP drops the sealed entries')
+
+    -- WHY THE HISTORY ROW IS WRITTEN AT ENDED AND NOT AT CLEANUP, demonstrated
+    -- rather than asserted. By this point the numbers a match record is made of
+    -- are gone.
+    ok(BR.Roster.get(1).kills == 0, 'CLEANUP has zeroed the per-match counters')
+    ok(BR.Roster.get(1).placement == nil, 'and cleared placement')
 
     -- RESULTS ARE PUBLISHED ONCE PER MATCH, and the second publish was not a
     -- duplicate -- it was a fabrication.
@@ -6549,6 +6721,17 @@ do
     -- not have to know the rule.
     BR.Match.publishResults(m)
     ok(captured == nil, 'and publishResults refuses a direct second call')
+
+    -- SO THERE IS NO SECOND HISTORY WRITE EITHER, and that is the point of
+    -- hanging this off br:match:results rather than off a later hook. A row
+    -- built from the state above would record placement nil, kills 0, damage 0
+    -- and the whole match as survival time, for every participant -- #132's
+    -- fingerprint, filed as a permanent record instead of an ADD. One guard,
+    -- m.publishedAt, already covers both writes; a second one here would just
+    -- be another thing to get wrong.
+    local _, _, afterCleanup = since(mark)
+    ok(afterCleanup == 0, 'nothing is published after CLEANUP, so nothing is recorded',
+        ('got %s batches'):format(tostring(afterCleanup)))
 
     TriggerEvent = realTrigger
 end

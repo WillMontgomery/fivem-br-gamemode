@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import {
+  BatchWriteItemCommand,
   DynamoDBClient,
   GetItemCommand,
   PutItemCommand,
@@ -100,6 +101,16 @@ function ddb() {
   }
   return client
 }
+
+/**
+ * A number, or zero. Used everywhere data crosses the Lua boundary.
+ *
+ * Lua numbers arrive as JS numbers, but a nil arrives as undefined and a
+ * malformed field arrives as whatever it was -- and DynamoDB refuses NaN with a
+ * serialisation error that takes the whole write with it. Coercing at the edge
+ * means one bad field costs that field rather than the item.
+ */
+const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0)
 
 /** Reject rather than hang. */
 function withTimeout(promise, ms) {
@@ -317,7 +328,6 @@ on('br:ddb:statsApply', (req, license, deltas) => {
   }
 
   const d = deltas || {}
-  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0)
 
   /**
    * An ALLOWLIST, not a loop over the payload. This runs on data that crossed
@@ -374,6 +384,202 @@ on('br:ddb:statsApply', (req, license, deltas) => {
     .catch((e) => {
       console.log('[br_ddb] stats write failed for ' + license + ': ' + e.message)
       answer(false, { error: e.message })
+    })
+})
+
+/**
+ * MATCH HISTORY: one item per participant per match, written as one batch.
+ *
+ * WHY IT CANNOT RIDE IN THE ADD ABOVE. `statsApply` targets ONE item -- the
+ * player's `sk = 'profile'` aggregate -- and DynamoDB has no way to update that
+ * item and create a different one in the same operation. So this is a second
+ * write, and the two can diverge: the aggregate can land while this fails.
+ *
+ * THAT DIVERGENCE IS ACCEPTED ON PURPOSE, and the direction of the dependency
+ * is the whole design. The aggregate stays the source of truth for the profile
+ * numbers a player sees; the history row is a RECORD, and a missing record is a
+ * gap in a moderation aid rather than a player losing progression. Nothing here
+ * can fail a match, fail the aggregate, or make the caller wait -- same rule
+ * br_stats has always run on.
+ *
+ * KEYED `{pk: license, sk: 'match#<endedAt>#<matchId>'}`, under the same
+ * partition as the profile. That makes "this player's recent matches, newest
+ * first" a plain Query with `ScanIndexForward: false` and a `Limit` -- no
+ * secondary index to provision, no scan, and one partition per player so the
+ * read is as cheap as the profile lookup beside it.
+ *
+ * BATCHED, BECAUSE THE DATA ALREADY ARRIVES AS AN ARRAY. `BR.Match.publishResults`
+ * builds every participant's row and fires them together, so the caller has the
+ * whole match in hand and there is nothing to cache or accumulate. A 48-player
+ * match costs TWO calls here (25 + 23) instead of 48.
+ *
+ * RETRYING UNPROCESSED ITEMS IS SAFE HERE AND WOULD NOT BE ABOVE. #132 exists
+ * because an atomic ADD has no compensating write, so a retry that lands twice
+ * doubles somebody's XP. These are PutItems under a key derived entirely from
+ * the match -- writing the same row twice produces the same row. Idempotent by
+ * construction, so DynamoDB's own "I was too busy, here are the ones I did not
+ * take" answer can simply be handed back to it.
+ */
+const HISTORY_TABLE = `${TABLE_PREFIX_GAME}players`
+
+/** DynamoDB's hard limit on one BatchWriteItem. Not a tuning knob. */
+const HISTORY_BATCH = 25
+
+/**
+ * An ALLOWLIST, like the deltas above and for the same reason: this data
+ * crossed a runtime boundary, and a typo'd key should be dropped rather than
+ * quietly creating an attribute nobody reads and nobody knows is there.
+ */
+const HISTORY_NUMBERS = [
+  'matchId',
+  'endedAt',
+  'placement',
+  'total',
+  'kills',
+  'downs',
+  'revives',
+  'damage',
+  'survivedMs',
+  'xpEarned',
+  'voltsEarned',
+]
+
+/**
+ * One row -> one item, or null if it is not keyable.
+ *
+ * A ROW WITH NO LICENSE IS DROPPED RATHER THAN GUESSED AT. The same rule
+ * br_stats applies before it gets here: a record filed under a key somebody
+ * invented is worse than no record.
+ */
+function historyItem(r) {
+  const license = typeof r?.license === 'string' ? r.license : ''
+  const sk = typeof r?.sk === 'string' ? r.sk : ''
+
+  // The prefix is asserted rather than built here, because the CALLER owns the
+  // sort-key format -- it is the thing the console's Query does begins_with on.
+  // Building it in two places is how the two come to disagree.
+  if (license === '' || !sk.startsWith('match#')) return null
+
+  const item = {
+    pk: license,
+    sk,
+    mode: String(r.mode ?? ''),
+    // NOT `placement === 1`. The last squad standing can be taken by the storm:
+    // they place first and they died, and a match with no survivors has no
+    // winner (#133). The caller decides this from the `died` flag it already
+    // carries, so there is one implementation of the rule rather than three.
+    won: r.won === true,
+  }
+  for (const k of HISTORY_NUMBERS) item[k] = num(r[k])
+
+  return item
+}
+
+/**
+ * One batch, with a single retry of whatever DynamoDB declined to take.
+ *
+ * `UnprocessedItems` is the NORMAL answer under throttling, not an error -- the
+ * call succeeds and hands back the leftovers. Ignoring it would lose rows
+ * silently on exactly the busy evening when the most matches are ending.
+ *
+ * @returns {Promise<number>} how many items are still unwritten
+ */
+async function writeHistoryBatch(items) {
+  let pending = items
+
+  for (let attempt = 0; attempt < 2 && pending.length > 0; attempt++) {
+    const out = await withTimeout(
+      ddb().send(
+        new BatchWriteItemCommand({
+          RequestItems: {
+            [HISTORY_TABLE]: pending.map((Item) => ({ PutRequest: { Item } })),
+          },
+        }),
+      ),
+      TIMEOUT_MS,
+    )
+
+    const left = out.UnprocessedItems?.[HISTORY_TABLE] ?? []
+    pending = left.map((w) => w.PutRequest.Item)
+  }
+
+  return pending.length
+}
+
+on('br:ddb:historyPut', (req, rows) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:historyResult', req, ok, extra ?? {})
+  }
+
+  if (!Array.isArray(rows) || rows.length === 0) {
+    answer(true, { written: 0, dropped: 0 })
+    return
+  }
+
+  // DUPLICATE KEYS FAIL THE WHOLE BATCH, not just the duplicate: DynamoDB
+  // rejects a BatchWriteItem containing two writes to one key with a
+  // ValidationException. One repeated license would therefore cost 25 rows, so
+  // it is worth one Set to make that impossible.
+  const seen = new Set()
+  const items = []
+  let dropped = 0
+
+  for (const r of rows) {
+    const item = historyItem(r)
+    if (!item) {
+      dropped++
+      continue
+    }
+    const key = `${item.pk} ${item.sk}`
+    if (seen.has(key)) {
+      dropped++
+      continue
+    }
+    seen.add(key)
+    items.push(marshall(item, { removeUndefinedValues: true }))
+  }
+
+  if (items.length === 0) {
+    answer(true, { written: 0, dropped })
+    return
+  }
+
+  const batches = []
+  for (let i = 0; i < items.length; i += HISTORY_BATCH) {
+    batches.push(items.slice(i, i + HISTORY_BATCH))
+  }
+
+  // allSettled, NOT all. The batches are independent writes and a rejection in
+  // the first must not throw away what the second reports -- "23 of 48 landed"
+  // is a fact worth having in the log, and Promise.all would discard it.
+  Promise.allSettled(batches.map((b) => writeHistoryBatch(b)))
+    .then((results) => {
+      let unwritten = 0
+      let error = null
+
+      results.forEach((res, i) => {
+        if (res.status === 'fulfilled') {
+          unwritten += res.value
+        } else {
+          unwritten += batches[i].length
+          error = error ?? res.reason?.message ?? 'unknown'
+        }
+      })
+
+      const written = items.length - unwritten
+      if (unwritten > 0) {
+        console.log(
+          `[br_ddb] match history: ${written}/${items.length} rows written`
+            + `, ${unwritten} lost${error ? ` -- ${error}` : ''}`,
+        )
+      }
+      answer(unwritten === 0, { written, unwritten, dropped, error })
+    })
+    .catch((e) => {
+      // Not reachable through allSettled, and here anyway: the one thing this
+      // verb must never do is throw into a match-end handler.
+      console.log('[br_ddb] match history write failed: ' + e.message)
+      answer(false, { written: 0, unwritten: items.length, dropped, error: e.message })
     })
 })
 
@@ -710,5 +916,5 @@ on('br:ddb:selftest', (req) => {
 
 console.log(
   `[br_ddb] ready -- region ${REGION}, ${TABLE_PREFIX}* read-only (bans, grants, maintenance)`
-    + ` + append-only (incidents), ${TABLE_PREFIX_GAME}* read/write (profile, inventory, stats)`,
+    + ` + append-only (incidents), ${TABLE_PREFIX_GAME}* read/write (profile, inventory, stats, history)`,
 )

@@ -139,15 +139,29 @@ Two tables in **us-east-2**, and the IAM policy in the Ringmaster repo's
 
 | Table | Partition key | Sort key | Holds |
 |---|---|---|---|
-| `br-players` | `pk` (String) | `sk` (String) | `sk = profile` — matches, wins, kills, XP, level.<br>`sk = purchases` — market items, granted back on join. |
+| `br-players` | `pk` (String) | `sk` (String) | `sk = profile` — matches, wins, kills, XP, level.<br>`sk = purchases` — market items, granted back on join.<br>`sk = match#<endedAt>#<matchId>` — one row per match played. |
 
 Purchases are a separate item under the same key deliberately: they are
 irreplaceable, they are read on the connect path where latency strands people on
 a loading screen, and they must never share a write path with counters that
 update at the end of every match.
 
-The game box needs `GetItem`, `PutItem`, `UpdateItem` and `Query` on `br-*`. It
-keeps **read-only** access to `ringmaster-*`, which is the console's data.
+**Match history is one item per player per match**, filed under the same
+partition key as their profile so "this player's recent matches, newest first"
+is a `Query` with `ScanIndexForward: false` and a `Limit` — no secondary index
+and no scan. They are written in batches of 25, so a 48-player match costs two
+calls. **There is no TTL**, by decision: the rows accumulate. Adding one later is
+possible but only affects items written *after* it is enabled — existing rows
+would need a backfill pass to be given the attribute.
+
+The game box needs `GetItem`, `PutItem`, `UpdateItem`, `BatchWriteItem` and
+`Query` on `br-*`. It keeps **read-only** access to `ringmaster-*`, which is the
+console's data.
+
+> `BatchWriteItem` is a *separate* IAM action from `PutItem` — a policy granting
+> only the latter denies the batch. If match history is the one thing not
+> appearing, that is the first place to look; the server log says
+> `match history: 0/N rows written` with the AccessDenied message attached.
 
 ### If DynamoDB is unreachable
 

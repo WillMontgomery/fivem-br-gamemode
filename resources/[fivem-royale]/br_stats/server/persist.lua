@@ -13,6 +13,26 @@
     that rule with a circuit breaker; DynamoDB through br_ddb gets it for free,
     because br_ddb already answers rather than throws.
 
+    TWO WRITES PER MATCH, AND THEY ARE NOT EQUALS (#153, added 2026-08-16):
+
+      the AGGREGATE   one atomic ADD per player onto {pk=license, sk='profile'}.
+                      The source of truth for every number a player sees.
+      the HISTORY     one item per player at {pk=license, sk='match#...'},
+                      all of them in one batch. A RECORD, and best-effort.
+
+    They cannot be one operation -- DynamoDB cannot update one item and create
+    another in the same call -- so they can diverge. The direction of that
+    dependency is fixed and deliberate: the aggregate never waits on the
+    history, never checks whether it landed, and never retries because of it. A
+    missing history row is a gap in a moderation aid; a missing aggregate is a
+    player losing progression, and the two are not worth trading against each
+    other.
+
+    BOTH HAPPEN AT ENDED, WHICH IS WHEN br:match:results FIRES. Not at CLEANUP:
+    BR.Match.resetPlayers has by then zeroed the per-match counters and cleared
+    placement, so anything written at CLEANUP records a match in which nobody
+    did anything -- which is exactly the shape of #132.
+
     WHY THE GAME WRITES THIS DIRECTLY rather than sending it to Ringmaster:
     the console is a companion to the server, never something the server can be
     made to need. Ringmaster being down should cost you the admin panel and
@@ -50,6 +70,13 @@ AddEventHandler('br:ddb:statsResult', function(req, ok, info)
     cb(ok, info or {})
 end)
 
+AddEventHandler('br:ddb:historyResult', function(req, ok, info)
+    local cb = pending[req]
+    if not cb then return end
+    pending[req] = nil
+    cb(ok, info or {})
+end)
+
 --- Resolve a player's license at the moment the match ends.
 ---
 --- READ HERE RATHER THAN TRUSTED FROM THE ROSTER. The roster's `license` field
@@ -77,6 +104,26 @@ local function keyFor(p)
     return p.license or licenseOf(p.src)
 end
 
+--- Did this player WIN, as opposed to place first?
+---
+--- A WIN IS PLACEMENT 1 THAT THEY WERE ALIVE FOR. The last squad standing can
+--- still be taken by the storm: eliminate() records placement 1, because nobody
+--- outlasted them, and this used to be read as a win -- banking wins +1, deaths
+--- 0, the win payout and the win XP bonus for a death. The client has always
+--- applied the extra condition (client/state.lua: `placement == 1 and not
+--- diedThisMatch`) and showed them a death, so the two halves of the same
+--- question disagreed (#133). `died` is carried on the row rather than inferred.
+---
+--- ONE FUNCTION BECAUSE THERE ARE NOW THREE CONSUMERS -- the aggregate's `wins`
+--- counter, the Volts payout, and the match-history row's `won` flag. Three
+--- copies of a rule that has already been wrong once is three chances to get it
+--- wrong again.
+--- @param p table  one row from br:match:results
+--- @return boolean
+local function wonMatch(p)
+    return (p.placement or 0) == 1 and not p.died
+end
+
 --- Turn one player's match into the deltas the store adds up.
 ---
 --- PLACEMENT DRIVES THE COUNTERS, and the two special cases are the ones worth
@@ -85,15 +132,7 @@ end
 --- which is what "deaths" has always meant for a battle royale profile.
 local function deltasFor(p, ctx)
     local placement = p.placement or 0
-    -- A WIN IS PLACEMENT 1 THAT THEY WERE ALIVE FOR. The last squad standing
-    -- can still be taken by the storm: eliminate() records placement 1,
-    -- because nobody outlasted them, and this used to read that as a win --
-    -- banking wins +1, deaths 0, the win payout and the win XP bonus for a
-    -- death. The client has always applied the extra condition
-    -- (client/state.lua: `placement == 1 and not diedThisMatch`) and showed
-    -- them a death, so the two halves of the same question disagreed.
-    -- `died` is now carried on the row rather than inferred here.
-    local won = placement == 1 and not p.died
+    local won = wonMatch(p)
     local squad = (p.squadId ~= nil)
 
     -- SURVIVAL IS PER PLAYER, AND IT USED NOT TO BE. This read
@@ -144,6 +183,75 @@ local function deltasFor(p, ctx)
     }, xpEarned
 end
 
+--- The permanent record of one player's match (#153).
+---
+--- A SECOND ITEM, NOT A SECOND FIELD, and it cannot be otherwise. The deltas
+--- above are applied with an atomic ADD to `{pk = license, sk = 'profile'}`;
+--- this is a NEW item under the same partition key, and DynamoDB has no
+--- operation that updates one item and creates another. So they are two writes
+--- and they can diverge -- the aggregate stays the source of truth for the
+--- profile numbers, and this is best-effort. See the br:ddb:historyPut handler
+--- in js-src/br_ddb/src/index.js.
+---
+--- THE SORT KEY IS THE ENTIRE READ MODEL. `match#<endedAt>#<matchId>` under
+--- `pk = license` turns "this player's recent matches, newest first" into a
+--- Query with `ScanIndexForward = false` and a `Limit` -- no secondary index,
+--- no scan, one partition per player.
+---
+--- endedAt IS A WALL CLOCK, DELIBERATELY NOT `ctx.endedAt`. br_core stamps the
+--- results envelope with GetGameTimer(), which counts milliseconds since THIS
+--- SERVER PROCESS started -- it returns to zero on every restart. As a sort key
+--- that would file every match played after a deploy underneath every match
+--- played before one, and "newest first" would hand back the oldest. The same
+--- wall clock stamps `lastMatchAt` on the aggregate below, so the newest history
+--- row and the profile's last-match time agree by construction rather than by
+--- luck.
+---
+--- ZERO-PADDED BECAUSE THE SORT IS LEXICOGRAPHIC, not numeric. Epoch
+--- milliseconds are thirteen digits until the year 2286 and would order
+--- correctly unpadded -- but a box whose clock has not been set yet produces a
+--- short number that would sort ABOVE every real match, permanently. The padding
+--- costs nothing and deletes the case.
+---
+--- @param p table     one row from br:match:results
+--- @param ctx table   the results envelope
+--- @param license string
+--- @param endedAt integer  wall-clock ms, one value for the whole match
+--- @param deltas table     the deltas already built for this player
+--- @param xpEarned integer
+--- @return table
+local function historyRowFor(p, ctx, license, endedAt, deltas, xpEarned)
+    return {
+        -- br_ddb keys on these two and stores neither twice.
+        license     = license,
+        sk          = ('match#%013d#%s'):format(endedAt, tostring(ctx.matchId or 0)),
+
+        matchId     = ctx.matchId or 0,
+        endedAt     = endedAt,
+        mode        = tostring(ctx.mode or ''),
+        placement   = p.placement or 0,
+        -- How many were in it. Third of eight and third of ninety-six are not
+        -- the same achievement, and the placement alone cannot tell them apart.
+        total       = ctx.total or 0,
+        kills       = p.kills or 0,
+        downs       = p.downs or 0,
+        revives     = p.revives or 0,
+        -- Floored to match `damageDealt` on the aggregate. A history row that
+        -- says 412.7 while the career total moved by 412 is a discrepancy
+        -- somebody would eventually report as a bug.
+        damage      = math.floor(p.damage or 0.0),
+        survivedMs  = p.survivedMs or 0,
+        xpEarned    = xpEarned,
+        -- INCLUDES THE LEVEL-UP BONUS, because `deltas.balance` does by the time
+        -- this is called -- and because that is the figure the player was shown
+        -- on the verdict screen. A record that disagrees with what somebody
+        -- watched happen is worse than no record.
+        voltsEarned = deltas.balance,
+        -- NOT `placement == 1`. See wonMatch, and #133.
+        won         = wonMatch(p),
+    }
+end
+
 AddEventHandler('br:match:results', function(res)
     if GetResourceState('br_ddb') ~= 'started' then
         -- Said once per match rather than silently skipped: a server whose
@@ -154,6 +262,23 @@ AddEventHandler('br:match:results', function(res)
     end
 
     local written, skipped, left = 0, 0, 0
+
+    -- ONE TIMESTAMP FOR THE WHOLE MATCH, read once rather than per player.
+    --
+    -- It was already effectively that -- os.time() inside the loop returns the
+    -- same second for all 48 -- except across a second boundary, where half the
+    -- field would be stamped a second later than the other half. Harmless for
+    -- `lastMatchAt`; not harmless for a SORT KEY, where it would split one match
+    -- across two timestamps and file some of it above matches that came later.
+    local endedAt = os.time() * 1000
+
+    -- The per-match rows, accumulated and sent as ONE batch after the loop.
+    --
+    -- NO CACHE IS NEEDED AND NONE EXISTS. The whole match arrives in `res` in a
+    -- single handler call, so "batch the writes" is just "build a table and send
+    -- it at the end" -- nothing is held between events and nothing survives a
+    -- restart to be lost.
+    local history = {}
 
     for _, p in ipairs(res.players or {}) do
         local license = keyFor(p)
@@ -179,7 +304,7 @@ AddEventHandler('br:match:results', function(res)
             local levelBefore = BR.Xp and BR.Xp.levelFor(before) or 1
             deltas.level = BR.Xp and BR.Xp.levelFor(after) or 1
             deltas.name = p.name
-            deltas.at = os.time() * 1000
+            deltas.at = endedAt
 
             -- LEVELLING UP PAYS, and it pays per level crossed rather than per
             -- level-up event: a single enormous match that crosses two levels
@@ -287,14 +412,58 @@ AddEventHandler('br:match:results', function(res)
             SetTimeout(8000, function() pending[req] = nil end)
 
             TriggerEvent('br:ddb:statsApply', req, license, deltas)
+
+            -- BUILT AFTER THE LEVEL BONUS, ON PURPOSE. `deltas.balance` grows by
+            -- the level-up payout a few lines above, and that same figure is
+            -- what the verdict screen just told the player they earned. Building
+            -- the row before it would file a record that contradicts what they
+            -- watched.
+            history[#history + 1] =
+                historyRowFor(p, res, license, endedAt, deltas, xpEarned)
+
             written = written + 1
             if p.left then left = left + 1 end
         end
     end
 
+    -- ONE CALL PER 25 PLAYERS, NOT ONE PER PLAYER. br_ddb splits this into
+    -- BatchWriteItem calls; a 48-player match costs two, against the 48 separate
+    -- UpdateItems the aggregates above still need (those cannot be batched --
+    -- BatchWriteItem has no update form, and an atomic ADD is the entire reason
+    -- the aggregate is safe under concurrent match ends).
+    --
+    -- FIRE AND FORGET, LIKE EVERYTHING ELSE HERE. The failure is a log line. The
+    -- aggregate has already been sent and does not depend on this landing, and
+    -- nothing retries the match: `m.publishedAt` in br_core guarantees
+    -- publishResults runs at most once per match, which is the guard that
+    -- matters, and a second one here would only be another thing to get wrong.
+    --
+    -- WRITTEN AT ENDED, NEVER AT CLEANUP. By CLEANUP, BR.Match.resetPlayers has
+    -- zeroed kills, downs, revives and damage, cleared placement and nil'd
+    -- diedAt -- so a history row built then would record a match in which
+    -- nobody did anything. That is #132's fingerprint exactly, and the reason
+    -- this hangs off br:match:results rather than off a later hook.
+    if #history > 0 then
+        nextReq = nextReq + 1
+        local hreq = nextReq
+        pending[hreq] = function(ok, info)
+            if not ok then
+                -- NOT AN ERROR FOR THE MATCH, and the wording says so. The
+                -- career totals landed; what is missing is the per-match record
+                -- for those rows, which shows up on Ringmaster as a gap.
+                print(('^3[br_stats] match history incomplete: %s of %d rows written (%s)^7')
+                    :format(tostring(info.written), #history, tostring(info.error)))
+            end
+        end
+        SetTimeout(8000, function() pending[hreq] = nil end)
+
+        TriggerEvent('br:ddb:historyPut', hreq, history)
+    end
+
     -- The departed count is called out rather than folded in: it is the number
     -- that used to be silently zero, so it is the one worth being able to read
     -- off the console when checking this works.
-    print(('[br_stats] match %s: %d recorded (%d had left), %d skipped (no license)')
-        :format(tostring(res.matchId), written, left, skipped))
+    print(('[br_stats] match %s: %d recorded (%d had left), %d skipped (no license), %d history rows in %d batch(es)')
+        :format(tostring(res.matchId), written, left, skipped,
+                #history, math.ceil(#history / 25)))
 end)
