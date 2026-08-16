@@ -3,6 +3,14 @@ import Progress from './Progress'
 import { useUi } from '../store'
 import { useEffect, useState } from 'react'
 import type { SummaryPayload } from '../bridge/types'
+import { useCoverReport } from '../bridge/cover'
+
+/**
+ * When the backdrop below reaches solid black, in ms from this screen mounting.
+ * MUST match `.end-backdrop` in index.css (2000ms fade, 1400ms delay) -- it is
+ * the fallback deadline for the cover report, not a second copy of the timing.
+ */
+const BACKDROP_MS = 1400 + 2000
 
 /**
  * The between-rounds interstitial: won or lost, then "cleaning up".
@@ -58,13 +66,27 @@ export default function EndScreen({ summary }: { summary: SummaryPayload }) {
     return () => window.clearTimeout(t)
   }, [])
 
+  // THE BACKDROP IS THE COVER FOR THE END OF A MATCH, so it reports when it
+  // has reached solid black -- and the world is only dismantled after that.
+  //
+  // This is #124's second half. The server used to sweep everyone home the
+  // instant the match was decided, which froze the player, took away the car
+  // they were driving and switched the storm off while this slam was still
+  // playing over a live world. It now waits for this report. Nothing about the
+  // screen's own choreography changes; it simply says when it is finished.
+  const onCovered = useCoverReport('verdict', true, BACKDROP_MS + 200)
+
   return (
     <div className="fixed inset-0">
       {/* The backdrop is its own layer so the slam happens over nothing --
           and it is SOLID BLACK, not a tint: the screen goes fully dark
           behind the verdict and stays dark until the lobby fades in at
           WAITING (the game-side fade holds underneath to match). */}
-      <div className="end-backdrop absolute inset-0" style={{ background: '#000' }} />
+      <div
+        className="end-backdrop absolute inset-0"
+        style={{ background: '#000' }}
+        onAnimationEnd={onCovered}
+      />
 
       <div className="absolute inset-0 flex flex-col items-center justify-center gap-8">
         <div className="text-center">

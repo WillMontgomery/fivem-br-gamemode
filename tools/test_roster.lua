@@ -3118,24 +3118,62 @@ do
     BR.Sched.step(fakeTime)
     ok(m.state == BR.MatchState.ENDED, 'the match ends')
     BR.Broadcast.flushNow()   -- the sweep's deltas ride the next flush; force it
-    local endedIdx, lobbyDeltaIdx = nil, nil
+
+    local endedIdx = nil
     for i, s in ipairs(sent) do
         if s.event == BR.Net.STATE
            and s.args[1].state == BR.MatchState.ENDED and not endedIdx then
             endedIdx = i
         end
-        if s.event == BR.Net.ROSTER_DELTA and not lobbyDeltaIdx then
-            for _, d in ipairs(s.args[1].deltas or {}) do
-                if d.e and d.e.state == BR.PlayerState.LOBBY then
-                    lobbyDeltaIdx = i
+    end
+    ok(endedIdx ~= nil, 'STATE ended is on the wire')
+
+    --- Where a player's trip-home delta appeared, or nil if it has not.
+    local function lobbyDeltaFor(src)
+        for i, s in ipairs(sent) do
+            if s.event == BR.Net.ROSTER_DELTA then
+                for _, d in ipairs(s.args[1].deltas or {}) do
+                    if d.src == src and d.e
+                       and d.e.state == BR.PlayerState.LOBBY then
+                        return i
+                    end
                 end
             end
         end
+        return nil
     end
-    ok(endedIdx ~= nil and lobbyDeltaIdx ~= nil and endedIdx < lobbyDeltaIdx,
-        'STATE ended is on the wire before the trip-home roster deltas',
+
+    -- THE WORLD IS NOT TAKEN AWAY ON THE TRANSITION (#124).
+    --
+    -- The LOBBY flip is a teardown, not bookkeeping: it freezes the ped, moves
+    -- the player out of the match's routing bucket -- so the car they were
+    -- driving stops existing for them -- and stops the storm rendering. Doing
+    -- it here did all three while the verdict slam was still playing over a
+    -- live world, which is exactly what the owner reported: "the player should
+    -- still be able to move during that point (but can't), any vehicle they
+    -- were driving despawns for some reason... THEN it fades to black."
+    ok(lobbyDeltaFor(1) == nil and lobbyDeltaFor(2) == nil,
+        'nobody is swept home on the ENDED transition itself')
+
+    -- ...it happens when the player's own screen says it has gone black.
+    fire(BR.Net.MATCH_COVERED, 1)
+    BR.Broadcast.flushNow()
+    local covIdx = lobbyDeltaFor(1)
+    ok(covIdx ~= nil and endedIdx < covIdx,
+        'a covered client goes home, and still after the ENDED state event',
         ('ended at %s, lobby delta at %s'):format(
-            tostring(endedIdx), tostring(lobbyDeltaIdx)))
+            tostring(endedIdx), tostring(covIdx)))
+    ok(lobbyDeltaFor(2) == nil,
+        'and only that client -- 48 screens go black at 48 different moments')
+
+    -- AND THE ONE THAT NEVER ANSWERS STILL GOES HOME. A crashed client, a dead
+    -- CEF, a dropped report: the deadline is the net, and it is why the
+    -- handshake cannot strand anybody in a finished match.
+    fakeTime = fakeTime + (BR.Config.Match.coverSweepMs or 8000) + 500
+    BR.Sched.step(fakeTime)
+    BR.Broadcast.flushNow()
+    ok(lobbyDeltaFor(2) ~= nil,
+        'a client that never reports is swept home on the deadline')
 end
 
 describe('match.memberless')

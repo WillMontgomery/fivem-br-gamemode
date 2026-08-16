@@ -236,6 +236,43 @@ BR.Loop.register(BR.Loop.TICK, 'state.pausewatch', function()
     end
 end)
 
+-- THE CURTAIN GOES UP BEFORE THE SCREEN CHANGES, NOT AFTER IT.
+--
+-- This flag is the whole of #124's first half. The owner's report, verbatim:
+-- "I press ready up, get accepted into a match, then the lobby UI goes away and
+-- cuts immediately to the in-game HUD/minimap/teleports my player, and THEN the
+-- fade to black happens."
+--
+-- The mechanics were exactly that, and the order was not a timing accident --
+-- it was structural. Being accepted into a match arrives as a roster delta;
+-- this file forwarded it to the page the instant it landed, so the lobby went
+-- and the HUD came in on that very frame. The curtain was raised afterwards, by
+-- client/spawn.lua's gather loop, up to a tick later, and then slept on for a
+-- fixed 450ms in the hope it had finished fading. Nothing anywhere WAITED for
+-- it. Adjusting the sleep cannot fix that and has been tried three times.
+--
+-- So the state is held HERE, at the only door it can reach the page through,
+-- until br_ui reports the curtain genuinely opaque. The player never sees the
+-- change because it happens behind solid black -- which is what the curtain was
+-- added for. Bounded, of course: BR.Spawn.awaitCover gives up and lets the
+-- state through, because a stale lobby menu that never updates is worse than a
+-- visible cut.
+--
+-- ONLY the two paint channels are held. Focus is not: it decides who owns the
+-- CURSOR, not what is drawn, and re-asserting it after the hold is idempotent.
+local uiHold = false
+
+-- What "I am being taken into a match" looks like from MY OWN state. WARMUP is
+-- the ordinary door; the rest are here because brforce can reach them directly
+-- and a forced state change is a cut like any other.
+local MATCH_ENTRY = {
+    [BR.PlayerState.WARMUP]   = true,
+    [BR.PlayerState.BUS]      = true,
+    [BR.PlayerState.FREEFALL] = true,
+    [BR.PlayerState.GLIDE]    = true,
+    [BR.PlayerState.ALIVE]    = true,
+}
+
 --- Tell the UI what state the match is in.
 ---
 --- Called from EVERY path that learns the state, not only transitions.
@@ -249,7 +286,12 @@ end)
 ---
 --- The digest path makes it self-healing: if the UI's idea of the state is ever
 --- wrong, it is wrong for at most half a second.
+---
+--- ...UNLESS THE CURTAIN IS STILL GOING UP. See uiHold directly below: the one
+--- moment self-healing is wrong is the moment we are deliberately holding the
+--- old picture on screen because the new one is a cut.
 local function pushMatchState()
+    if uiHold then return end
     TriggerEvent('br:ui:sendLocal', BR.Nui.STATE, {
         state     = S.match.state,
         mode      = S.match.mode,
@@ -260,6 +302,53 @@ local function pushMatchState()
         -- menu.
         participant = roundParticipant,
     })
+end
+
+--- Raise the curtain, and hold the interface still until it is opaque.
+---
+--- The sequence this exists to make real: cover the screen, THEN change what is
+--- on it, THEN uncover. See the long note on `uiHold` above for what it was
+--- doing instead and why no amount of sleeping fixed it.
+---
+--- The trip to the warmup pad (client/spawn.lua) raises the same curtain a tick
+--- later and lowers it once the pad is genuinely under the player's feet -- so
+--- the cover this puts up is HANDED OVER rather than duplicated, and the
+--- curtain watchdog there is the net under a trip that never starts.
+local function enterMatchBehindCurtain()
+    if uiHold then return end
+    uiHold = true
+
+    local wait = BR.Config.Match.coverWaitMs or 2500
+
+    --- Let the held state through, and never twice.
+    local function release()
+        if not uiHold then return end
+        -- The screen is black (or the page never answered and we are past the
+        -- deadline). Everything the hold suppressed now goes out at once, and
+        -- FORCED: BR.PushHud dedupes against what it last sent, and what it
+        -- last sent is the lobby it was refusing to update.
+        uiHold = false
+        pushMatchState()
+        BR.PushHud(true)
+        applyFocusForState(S.match.state)
+    end
+
+    -- THE HOLD MUST NOT BE ABLE TO OUTLIVE THE THREAD THAT OWNS IT.
+    --
+    -- Everything below runs in a bare Citizen thread, and a bare thread that
+    -- throws simply stops -- no error handler, no loop registry to suspend the
+    -- callback and say so. If that happened here the interface would be frozen
+    -- on the lobby menu for the rest of the session with a live match running
+    -- underneath it: strictly worse than the cut this exists to hide, and the
+    -- kind of failure this file has been bitten by before. So the release is
+    -- ALSO scheduled independently, on a clock nothing in the thread can break.
+    Citizen.SetTimeout(wait * 2, release)
+
+    Citizen.CreateThread(function()
+        BR.Spawn.curtain(true, 'dropping')
+        BR.Spawn.awaitCover('curtain', wait)
+        release()
+    end)
 end
 
 --- Keep the participant flag current from MY state. Called wherever my
@@ -288,9 +377,23 @@ local function noteMyState()
     -- on the TRANSITION, so a player who opens the pause menu in the lobby on
     -- purpose keeps it.
     if st ~= lastNoted then
+        local was = lastNoted
         lastNoted = st
         if OUR_SCREEN[st] and IsPauseMenuActive() then
             SetFrontendActive(false)
+        end
+
+        -- READY UP -> ACCEPTED INTO A MATCH is the cut the owner reported, and
+        -- this is the edge it happens on: the server names me a participant and
+        -- the whole screen changes underneath the player in one frame. Cover it
+        -- first (#124).
+        --
+        -- Only from the LOBBY, and only on a real transition. A snapshot that
+        -- re-seeds a client already standing in a match -- a reconnect, a
+        -- br_ui restart -- has nothing to hide and must not drop a black
+        -- rectangle over a live fight; `was` is nil in exactly that case.
+        if was == BR.PlayerState.LOBBY and MATCH_ENTRY[st] then
+            enterMatchBehindCurtain()
         end
 
         -- STICKY NOTICES ARE ABOUT THE MATCH, AND THE MATCH IS OVER FOR ME.
@@ -962,7 +1065,7 @@ end)
 -- --------------------------------------------------------------------------
 
 local lastPush = { hp = -1, armour = -1, alive = -1, squads = -1, kills = -1,
-                   state = '', paused = nil }
+                   state = '', paused = nil, landed = nil }
 
 --- Send the HUD envelope, but only when something actually changed.
 ---
@@ -971,6 +1074,11 @@ local lastPush = { hp = -1, armour = -1, alive = -1, squads = -1, kills = -1,
 --- messages a minute while a player stands still.
 --- @param force boolean|nil
 function BR.PushHud(force)
+    -- HELD WHILE THE CURTAIN IS GOING UP. This is the channel the lobby-to-HUD
+    -- cut actually travelled down: `state` here is what App.tsx reads to decide
+    -- the lobby is over. See uiHold at the top of this file.
+    if uiHold then return end
+
     local me = S.me
     local hp     = math.floor(me.hp or 0)
     local armour = math.floor(me.armour or 0)
@@ -994,11 +1102,35 @@ function BR.PushHud(force)
     -- would defeat the dedupe below.
     local stamina = math.floor((S.stamina or 100.0) + 0.5)
 
+    -- MY FEET ARE ON THE GROUND, WHATEVER THE SERVER STILL THINKS.
+    --
+    -- The interface hides the squad panel and the inventory bar for a player
+    -- who is FREEFALL or GLIDE, which is right in the air and wrong the moment
+    -- they touch down -- because the state that says so is the SERVER's, and it
+    -- arrives when the landing report gets there. That report is the single
+    -- most historically unreliable message in this project (see the long note
+    -- above reportLanded in client/skydive.lua), and everything a landed player
+    -- has hangs off it. When it is late the player stands in a POI with no
+    -- inventory and half a HUD until something else -- in the worst case the
+    -- match reaching PLAYING -- eventually promotes them (#126).
+    --
+    -- It was diagnosed as slowness and answered with speed: retries, a loot
+    -- burst budget, a faster cell loop. They are not slow, they are OFF.
+    --
+    -- So this reports the second fact alongside the first: the server's state,
+    -- AND my own ped's report that it has landed. The mirror is not corrupted
+    -- to say it -- `state` still carries exactly what the server said, and
+    -- nothing that MATTERS (damage, claims, placement) reads this. It is
+    -- observation of our own ped, which is the one thing a client may always
+    -- do, used for the one thing it is allowed to decide: what to draw.
+    local landed = BR.State.landed == true
+
     if not force
        and hp == lastPush.hp and armour == lastPush.armour
        and S.alive == lastPush.alive and S.squadsAlive == lastPush.squads
        and kills == lastPush.kills and me.state == lastPush.state
-       and paused == lastPush.paused and stamina == lastPush.stamina then
+       and paused == lastPush.paused and stamina == lastPush.stamina
+       and landed == lastPush.landed then
         return
     end
 
@@ -1007,6 +1139,7 @@ function BR.PushHud(force)
     lastPush.kills, lastPush.state = kills, me.state
     lastPush.paused = paused
     lastPush.stamina = stamina
+    lastPush.landed = landed
 
     TriggerEvent('br:ui:sendLocal', BR.Nui.HUD, {
         hp          = hp,
@@ -1017,6 +1150,7 @@ function BR.PushHud(force)
         state       = me.state,
         paused      = paused,
         stamina     = stamina,
+        landed      = landed,
     })
 end
 

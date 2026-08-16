@@ -24,6 +24,98 @@ BR.Spawn = {}
 local spawned = false
 local placing = false
 
+-- --------------------------------------------------------------------------
+-- The cover handshake
+-- --------------------------------------------------------------------------
+--
+-- COVER THE SCREEN, CHANGE THE WORLD, UNCOVER. In that order, and the order is
+-- the entire feature.
+--
+-- It was not happening. Every transition in this file used to raise a cover and
+-- then WAIT A FIXED NUMBER OF MILLISECONDS for it, which is not the same thing
+-- as waiting for it: the curtain is a CSS opacity transition inside CEF, on its
+-- own frame budget, in another process. On the owner's machine the world change
+-- consistently won the race -- "the lobby UI goes away and cuts immediately to
+-- the in-game HUD/minimap/teleports my player, and THEN the fade to black
+-- happens" (owner, 2026-08-16, #124) -- and three rounds of adjusting the
+-- number did not fix it, because no number can.
+--
+-- The page now says when it is genuinely black (BR.NuiCb.COVERED, via
+-- br_ui/client/nui.lua) and these two functions are how the rest of this file
+-- waits for it. The waits are BOUNDED: a CEF that has crashed, a POST that was
+-- dropped, a transition the browser optimised away -- any of them must cost a
+-- visible cut, never a player parked on black with nothing left to release
+-- them. That trade is the whole governing rule at the top of this file.
+
+-- What the PAGE says, mirrored off br_ui's report. Never written by a timer.
+local coveredNow = {}
+
+-- Whether WE have asked for the curtain. Distinct from coveredNow: "I asked"
+-- and "it is up" are different facts, and the whole bug was treating them as
+-- one. Also what the watchdog at the bottom of this file reads.
+BR.Spawn.curtainWanted = false
+
+AddEventHandler('br:ui:covered', function(kind, on)
+    coveredNow[kind] = on == true
+end)
+
+-- A NEW PAGE HAS PAINTED NOTHING YET, so nothing is covered.
+--
+-- br_ui restarting hands CEF a brand new document, and this table does not
+-- restart with it -- br_core keeps running. A stale `true` left here is the
+-- worst thing in this whole mechanism: the next teardown would find the screen
+-- "already black", skip its wait entirely and dismantle the world in front of a
+-- perfectly transparent page. That is the original bug, reintroduced, and
+-- wearing the fix's own clothes.
+--
+-- br:ui:ready is fired from the bundle's own module load (see the ENV callback
+-- in br_ui/client/nui.lua), so it genuinely means the page exists again.
+AddEventHandler('br:ui:ready', function()
+    for kind in pairs(coveredNow) do coveredNow[kind] = false end
+end)
+
+--- Ask the page for the curtain, or to take it away.
+---
+--- The STATE we want, every time -- never a toggle. A dropped message then
+--- costs one stale frame instead of leaving the two sides inverted with no way
+--- back (the rule br_ui/client/players.lua documents).
+--- @param show boolean
+--- @param kind string|nil  'leaving' | 'dropping' -- the WORDS on the curtain
+function BR.Spawn.curtain(show, kind)
+    show = show == true
+    BR.Spawn.curtainWanted = show
+    if show then
+        BR.Spawn.curtainAt = GetGameTimer()
+        TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING, { show = true, kind = kind })
+    else
+        TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING, { show = false })
+    end
+end
+
+--- Hold this thread until the page says a cover is fully opaque.
+---
+--- MUST be called from inside a Citizen thread -- it yields.
+--- @param kind string      'curtain' | 'verdict'
+--- @param timeoutMs number
+--- @return boolean covered  false means the page never answered and we are
+---         proceeding anyway, which is deliberate and is logged
+function BR.Spawn.awaitCover(kind, timeoutMs)
+    if coveredNow[kind] then return true end
+
+    local deadline = GetGameTimer() + (timeoutMs or 2500)
+    while GetGameTimer() < deadline do
+        Citizen.Wait(16)   -- one frame: this is the thing being waited ON
+        if coveredNow[kind] then return true end
+    end
+
+    -- SAID OUT LOUD, because "it still cuts" and "the acknowledgement never
+    -- arrived so everything fell back to a timeout" look identical in game and
+    -- have completely different causes. /brcover reads the same state.
+    print(('[br_core] cover "%s" never acknowledged in %dms -- proceeding')
+        :format(tostring(kind), timeoutMs or 2500))
+    return false
+end
+
 --- Place the local player, waiting for the world to stream in.
 ---
 --- The wait matters: teleporting to coordinates whose collision has not loaded
@@ -250,16 +342,55 @@ function BR.Spawn.toLobby(holdBlack)
     if BR.Spawn.traveling then return end
     BR.Spawn.traveling = true
     Citizen.CreateThread(function()
+        local began = GetGameTimer()
         if holdBlack then
             BR.Spawn.holdBlack = true
-            -- NOTHING in the world moves until the result sequence has fully
-            -- played: slam (~1.2s), black (~3.4s), secondary lines at rest
-            -- (~4.9s), plus a hold on the finished card. Only then does the
-            -- teleport-and-swap begin, invisibly, under the interface's own
-            -- solid black.
+
+            -- THE WORLD IS STILL THE WORLD WHILE THE VERDICT SLAMS.
             --
-            -- 8.4s, UP FROM 6.9s (owner's call, 2026-08-09).
-            Citizen.Wait(8400)
+            -- The owner's report, verbatim (2026-08-16, #124): "when the
+            -- verdict slam text is shown: the player should still be able to
+            -- move during that point (but can't), any vehicle they were
+            -- driving despawns for some reason, and if they were in the storm,
+            -- the storm effects stop rendering, THEN it fades to black."
+            --
+            -- All three were the same event -- the SERVER's roster sweep to
+            -- LOBBY, which fired the instant the match was decided. LOBBY is
+            -- what freezes the ped (client/natives.lua), what moves the player
+            -- into the lobby routing bucket (so the car they were sitting in
+            -- stops existing for them), and what stops the storm drawing
+            -- (client/storm.lua). The match was over but the world had not
+            -- gone anywhere yet, and we dismantled it in plain sight.
+            --
+            -- So the sweep waits for THIS: the page reporting that the verdict
+            -- backdrop has reached solid black. Then the world is taken away
+            -- under cover, which is what the cover was for.
+            local ok = BR.Spawn.awaitCover('verdict',
+                BR.Config.Match.verdictWaitMs or 6000)
+
+            -- AND THE SERVER IS TOLD BY US, because it cannot see a screen.
+            -- Sent even when the page never answered: the deadline above has
+            -- already expired, the server has its own longer one behind this
+            -- (coverSweepMs), and a player whose page died must still be swept
+            -- home rather than left standing in a finished match.
+            TriggerServerEvent(BR.Net.MATCH_COVERED)
+            if not ok then
+                print('[br_core] verdict cover never confirmed -- swept on the timeout')
+            end
+
+            -- The REST of the result sequence plays out under that black:
+            -- secondary lines at rest (~4.9s) plus a hold on the finished
+            -- card. Only then does the teleport-and-swap begin.
+            --
+            -- 8.4s from the transition, UP FROM 6.9s (owner's call,
+            -- 2026-08-09) -- and measured from the transition rather than
+            -- slept for outright, because the cover wait above has already
+            -- spent part of it. This is a CONTENT duration (how long the
+            -- verdict is on screen), not a fade being timed against: the
+            -- ordering is owned by the handshake above, and shortening this
+            -- would clip the animation, not un-hide a cut.
+            local left = 8400 - (GetGameTimer() - began)
+            if left > 0 then Citizen.Wait(left) end
 
             -- AND THEN IT WAITS FOR THE INTERFACE, if the interface is still
             -- doing something.
@@ -278,6 +409,17 @@ function BR.Spawn.toLobby(holdBlack)
             while BR.Spawn.xpBusy and GetGameTimer() < until_ do
                 Citizen.Wait(100)
             end
+        end
+
+        -- THE CURTAIN GOES FIRST ON THIS ROAD TOO. /brleave and the server's
+        -- TO_LOBBY both raise it before calling in here, and this used to fade
+        -- the WORLD out immediately afterwards -- a game fade racing a CSS
+        -- transition that had not landed, so the teleport could happen with the
+        -- curtain still see-through. Only waited on when somebody actually
+        -- asked for a curtain: the lobby watchdog comes through here with no
+        -- cover at all and must not sit out a timeout for one it never wanted.
+        if BR.Spawn.curtainWanted then
+            BR.Spawn.awaitCover('curtain', BR.Config.Match.coverWaitMs or 2500)
         end
 
         DoScreenFadeOut(400)
@@ -364,9 +506,21 @@ function BR.Spawn.toWarmupPad()
         -- rectangle for the whole trip, and the lobby menu vanished in one
         -- frame underneath (user, 2026-08-09). An opaque NUI curtain covers
         -- every layer at once and fades in rather than cutting.
-        TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING,
-            { show = true, kind = 'dropping' })
-        Citizen.Wait(450)   -- the curtain's own 600ms fade, mostly landed
+        --
+        -- ...AND IT IS WAITED FOR, NOT SLEPT THROUGH. This was
+        -- `Citizen.Wait(450)` with the comment "the curtain's own 600ms fade,
+        -- mostly landed" -- a guess at another process's frame budget, and
+        -- "mostly" is what the owner saw: the teleport and the HUD arriving
+        -- through a curtain that was still see-through (#124). The page says
+        -- when it is black; this waits for that, bounded, and says so if it
+        -- never comes.
+        --
+        -- Usually already true by the time we get here -- client/state.lua
+        -- raises the same curtain the moment the server names us a
+        -- participant, before it lets the new state reach the page at all --
+        -- in which case this returns immediately.
+        BR.Spawn.curtain(true, 'dropping')
+        BR.Spawn.awaitCover('curtain', BR.Config.Match.coverWaitMs or 2500)
 
         -- 2. Then the world goes dark too, so nothing renders a teleport
         --    underneath the curtain if it is ever less than fully opaque.
@@ -407,7 +561,7 @@ function BR.Spawn.toWarmupPad()
             -- One breath after the world fade so the two do not both move at
             -- once; the curtain then takes its own 600ms to clear.
             Citizen.SetTimeout(250, function()
-                TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING, { show = false })
+                BR.Spawn.curtain(false)
             end)
         end
 
@@ -489,7 +643,7 @@ AddEventHandler(BR.Net.TO_LOBBY, function()
     -- IMMEDIATELY; the teleport and the island swap happen under it; it
     -- lifts only once the vista genuinely exists (collision loaded, with a
     -- hard timeout -- nobody gets parked on a black screen).
-    TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING, { show = true })
+    BR.Spawn.curtain(true, 'leaving')
 
     BR.Spawn.toLobby()
 
@@ -524,7 +678,7 @@ AddEventHandler(BR.Net.TO_LOBBY, function()
             Citizen.Wait(200)
         end
         Citizen.Wait(2000)
-        TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING, { show = false })
+        BR.Spawn.curtain(false)
     end)
 end)
 
@@ -544,12 +698,12 @@ RegisterCommand('brleave', function()
     -- roster delta can beat TO_LOBBY across the wire, and the menu flashed
     -- in the gap (live report, 2026-08-04). TO_LOBBY owns the hide; the
     -- fallback below only covers a refused or lost leave.
-    TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING, { show = true })
+    BR.Spawn.curtain(true, 'leaving')
     TriggerServerEvent(BR.Net.MATCH_LEAVE)
     Citizen.SetTimeout(3000, function()
         if BR.State.me.state ~= BR.PlayerState.LOBBY
            and not BR.Spawn.traveling then
-            TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING, { show = false })
+            BR.Spawn.curtain(false)
         end
     end)
 end, false)
@@ -632,6 +786,34 @@ BR.Loop.register(BR.Loop.SLOW, 'spawn.antiblack', function()
         print(('[br_core]   %-13s %s'):format(k, tostring(v)))
     end
     BR.Spawn.reveal()
+end)
+
+-- The curtain's own watchdog.
+--
+-- Every OTHER black screen in this file has one, and the curtain -- an opaque
+-- NUI layer over the whole interface -- is the one the engine's own diagnostics
+-- cannot see at all: /brblack reads a perfectly healthy, faded-IN screen while
+-- the page paints over it. That is the exact failure the CEF environment report
+-- in br_ui warns about, arrived at from the other direction.
+--
+-- The curtain now goes up in more places than it used to (client/state.lua
+-- raises it before a match's state is allowed to reach the page), so the number
+-- of ways a trip can be abandoned between "raise" and "lower" went up with it:
+-- a refused placement, a state that bounces back to lobby, a server that never
+-- sends the next transition. Every one of those leaves a black rectangle over a
+-- working game with nothing left to remove it.
+--
+-- Fifteen seconds is longer than the longest legitimate trip (the leave path
+-- waits on collision plus two seconds, with a 15s ceiling of its own), so this
+-- can only fire on something that has genuinely been abandoned.
+local CURTAIN_MAX_MS = 15000
+BR.Loop.register(BR.Loop.SLOW, 'spawn.curtainwatch', function()
+    if not BR.Spawn.curtainWanted then return end
+    if BR.Spawn.traveling or BR.Spawn.holdBlack then return end
+    if GetGameTimer() - (BR.Spawn.curtainAt or 0) < CURTAIN_MAX_MS then return end
+
+    print('[br_core] the curtain outlived its trip -- lifting (watchdog)')
+    BR.Spawn.curtain(false)
 end)
 
 RegisterCommand('brblack', function()

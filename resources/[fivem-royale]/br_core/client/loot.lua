@@ -230,9 +230,27 @@ function BR.Loot.suppress(on)
     if on then hold.id, hold.heldMs, target = nil, 0.0, nil end
 end
 
+--- ...AND A LANDED PLAYER MAY REACH FOR THINGS, before the server has caught up.
+---
+--- The take gate is shared with the server (BR.Config.LootTakeStates) and the
+--- server's copy is still the security boundary -- nothing here can claim
+--- anything it refuses. What this adds is the few tens of milliseconds between
+--- our own ped touching down and the landing report completing its round trip,
+--- during which the prompt used to be absent entirely: a player standing in
+--- front of a crate with no way to know it could be opened (#126).
+---
+--- The honest cost, stated rather than hidden: a claim made inside that window
+--- can be refused, and the player is TOLD so ("You cannot pick that up right
+--- now", server/loot.lua). One clear message beats a prompt that never appears
+--- -- and it beats it by a distance in the failure case, where the report goes
+--- missing entirely and the old behaviour was several silent seconds of a world
+--- that looked empty.
 local function canTake()
     if suppressed then return false end
-    if BR.Config.LootTakeStates[BR.State.me.state] ~= true then return false end
+    if BR.Config.LootTakeStates[BR.State.me.state] ~= true
+       and BR.State.landed ~= true then
+        return false
+    end
     -- NOT FROM A CAR (user call, 2026-08-05). Driving through a POI hoovering
     -- up crates at 40mph is not looting, and the ray comes off the ped's
     -- forward vector, which in a vehicle is the vehicle's.

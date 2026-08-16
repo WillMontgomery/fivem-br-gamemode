@@ -52,6 +52,22 @@ BR.Net = {
     SQUAD_POS       = 'br:squad:pos',        -- S->C  squadmate positions, SQUAD MEMBERS ONLY (1Hz)
     MATCH_LEAVE     = 'br:match:leave',      -- C->S  abandon the current match, back to the lobby
     TO_LOBBY        = 'br:lobby:return',     -- S->C  respawn at the lobby pad NOW (leave-match flow)
+    -- C->S "my screen is genuinely black, you may take my world away now".
+    --
+    -- THE ONE THING THE SERVER CANNOT SEE. At ENDED the roster sweep to LOBBY
+    -- is what freezes the ped, moves the routing bucket (so the car they were
+    -- driving stops existing) and stops the storm drawing -- and it used to
+    -- fire the instant the match was decided, which is while the verdict slam
+    -- is still playing over a live world. The player watched the world be
+    -- dismantled and THEN watched it fade out (#124).
+    --
+    -- The order the sweep needs is: screen black first, teardown second, and
+    -- only the CLIENT knows when its own page has finished going black. So it
+    -- says so, and the server sweeps that player then. A client that never
+    -- says it is swept on a deadline anyway -- see BR.Config.Match.coverWaitMs
+    -- -- because a player stuck in a match that will not let go is far worse
+    -- than a visible cut.
+    MATCH_COVERED   = 'br:match:covered',    -- C->S  (no payload)
 
     -- Bus / drop
     BUS_ROUTE       = 'br:bus:route',        -- S->C  { sx, sy, ex, ey, alt, tStart, tEnd }
@@ -385,6 +401,28 @@ BR.NuiCb = {
     -- The interface saying "an animation is playing, do not take the screen
     -- away yet". The post-match XP award is the only thing that raises it.
     XP_BUSY      = 'br/xp/busy',
+    -- THE OTHER HALF OF EVERY TRANSITION: the page saying "I am now fully
+    -- black" (or "I am not any more").
+    --
+    -- Lua raises a cover -- the curtain for a trip, the verdict backdrop at
+    -- the end of a match -- and then has to change the world underneath it.
+    -- Until now it fired the message and moved on, so the change and the
+    -- cover were two independent timers and the change routinely won: the
+    -- lobby vanished and the HUD cut in BEFORE the fade that exists to hide
+    -- exactly that (#124). Tuning the timers has been tried and does not
+    -- hold, because they are measuring different clocks -- one is a Lua
+    -- Wait(), the other is a CSS transition in another process on another
+    -- frame budget.
+    --
+    -- So the page reports it. { kind = 'curtain'|'verdict', covered = bool },
+    -- and per this project's rule (see client/players.lua and pause.lua) it
+    -- reports the STATE it is in rather than a toggle -- a dropped message
+    -- then costs one stale reading instead of permanent disagreement.
+    --
+    -- FAIL SAFE, ALWAYS. Every Lua waiter is bounded: a crashed CEF, a
+    -- dropped POST or a transition the browser optimised away must cost a
+    -- visible cut, never a player parked behind a black screen forever.
+    COVERED      = 'br/cover',
     PAUSE_ACTION = 'br/pause/action',
     -- Rebind one command. { command, key } -- an empty key unbinds it.
     KEYBIND_SET  = 'br/settings/keybind',
