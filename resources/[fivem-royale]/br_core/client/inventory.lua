@@ -97,10 +97,24 @@ local WHEEL_UP = 15
 --- LIVE table (server/inventory.lua) drops DBNO for the same reason, and the
 --- two have to agree: when they disagreed over WARMUP the symptom was a
 --- keypress that did nothing at all, in silence.
+--- ...AND SO DOES "I HAVE LANDED", which is not the same fact as ALIVE.
+---
+--- ALIVE is the SERVER's word, and it arrives by way of the landing report --
+--- the message with a retry loop and a server-side rescue net, because it goes
+--- missing. Every one of those milliseconds is a player standing on the ground
+--- with empty hands and no bar, and in the bad case it lasted until the match
+--- reached PLAYING (#126). The previous round of work read that as slowness and
+--- made things render sooner; they were not rendering late, they were disabled.
+---
+--- Arming on our own touchdown is safe in the one way that matters: the danger
+--- this gate exists for is RemoveAllPedWeapons taking the PARACHUTE with it
+--- mid-drop, and the same branch in client/skydive.lua that sets this latch has
+--- already shed the canopy. There is no chute left to delete.
 local function canArm()
     local st = BR.State.me.state
     return st == BR.PlayerState.ALIVE
         or st == BR.PlayerState.WARMUP
+        or BR.State.landed == true
 end
 
 --- The weapon hash a slot represents, or nil for anything not held.

@@ -533,6 +533,17 @@ function BR.Native.applyGameRules()
     -- The honest cost, stated rather than hidden: a downed player cannot burn
     -- to death. They can be finished with a gun, which is the interaction that
     -- matters, and the storm still runs their clock out.
+    --
+    -- ...AND ONCE THE MATCH IS DECIDED, WHICH IS NEW AND IS NOT COSMETIC.
+    --
+    -- The roster sweep to LOBBY used to fire the instant a match ended, and
+    -- LOBBY is on this list -- so the winner became invincible as a side effect
+    -- of being frozen. That sweep now waits for the player's screen to go black
+    -- (#124), which is the right order for everything else and leaves a live,
+    -- mortal ped standing in a finished match for a few seconds. A winner who
+    -- burns to death under their own VICTORY ROYALE would be a spectacular way
+    -- to reintroduce the bug from the other end. Nothing may kill you after the
+    -- result is in; the placement is already awarded and published.
     local st = BR.State.me.state
     SetPlayerInvincible(pid,
         st == BR.PlayerState.WARMUP
@@ -541,6 +552,8 @@ function BR.Native.applyGameRules()
         or st == BR.PlayerState.FREEFALL
         or st == BR.PlayerState.GLIDE
         or st == BR.PlayerState.DBNO
+        or BR.State.match.state == BR.MatchState.ENDED
+        or BR.State.match.state == BR.MatchState.CLEANUP
         or GetGameTimer() < (BR.State.dropGraceUntil or 0))
 
     -- YOUR PED IS THE LOBBY NOW, so it is no longer hidden there.
@@ -598,9 +611,17 @@ function BR.Native.applyGameRules()
     -- false, which is exactly the lobby, the map button opened nothing at all
     -- and looked broken (user, 2026-08-09). The radar is decided here, once a
     -- frame, so this is the only place that can grant it.
+    -- ...and never WHILE THE CURTAIN IS GOING UP, which is a slightly earlier
+    -- moment than "during a trip" and is the gap the owner actually saw. The
+    -- curtain is raised the instant the server names us a participant, and the
+    -- trip that sets `traveling` starts up to a tick later -- so the minimap
+    -- popped up into those milliseconds and was visible through a curtain that
+    -- was still fading in (#124). Asked-for is the right test here, not
+    -- arrived: a radar hidden slightly early costs nothing.
     DisplayRadar(BR.Native.bigmap
         or (st ~= BR.PlayerState.LOBBY and st ~= BR.PlayerState.BUS
         and not (BR.Spawn and BR.Spawn.traveling)
+        and not (BR.Spawn and BR.Spawn.curtainWanted)
         and not (BR.Screen and BR.Screen.scoped)))
 
     -- GTA'S PAUSE MENU IS OURS NOW.

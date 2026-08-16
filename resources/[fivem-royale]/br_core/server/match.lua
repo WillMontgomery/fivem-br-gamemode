@@ -284,10 +284,33 @@ function BR.Match.onEnter(m, state, from)
         -- trip client-side: the fade, the teleport to the vista, the
         -- invisibility, the shared lobby bucket. They KEEP their matchId --
         -- the summary screen still needs this match's ENDED/CLEANUP traffic.
-        BR.Roster.each(
-            function(e) return e.matchId == m.id
-                and e.state ~= BR.PlayerState.LEFT end,
-            function(src) BR.Roster.setState(src, BR.PlayerState.LOBBY) end)
+        --
+        -- ...BUT NOT ON THIS FRAME, AND THAT IS #124's SECOND HALF.
+        --
+        -- The flip is not a bookkeeping change, it is a TEARDOWN: LOBBY is
+        -- what freezes the ped (client/natives.lua), what moves the player
+        -- into the shared lobby routing bucket -- so the car they were driving
+        -- stops existing for them -- and what stops the storm drawing
+        -- (client/storm.lua). Doing it here meant doing all three while the
+        -- verdict slam was still playing over a live world. The owner, on
+        -- 2026-08-16: "the player should still be able to move during that
+        -- point (but can't), any vehicle they were driving despawns for some
+        -- reason, and if they were in the storm, the storm effects stop
+        -- rendering, THEN it fades to black."
+        --
+        -- The match is over; the world has not gone anywhere yet. So the sweep
+        -- waits until each player's own screen is genuinely black and they say
+        -- so (BR.Net.MATCH_COVERED), and the world is dismantled underneath
+        -- that -- which is the entire purpose of a cover.
+        --
+        -- PER PLAYER, not per match: 48 clients go black at 48 slightly
+        -- different moments and there is no reason to make the quick ones wait
+        -- for the slow ones.
+        --
+        -- AND ON A DEADLINE. A client that has crashed, or whose page never
+        -- reports, must still go home -- see sweepHome in the tick. That is
+        -- the second of three nets; CLEANUP's resetPlayers is the third.
+        m.sweepAt = GetGameTimer() + (M.coverSweepMs or 8000)
 
     elseif state == BR.MatchState.CLEANUP then
         BR.Bus.clear(m)
@@ -300,6 +323,49 @@ function BR.Match.onEnter(m, state, from)
         BR.Match.resetPlayers(m)
     end
 end
+
+--- Send a finished match's players home to the lobby.
+---
+--- The teardown half of ENDED, split out of onEnter so it can happen at the
+--- right moment rather than the earliest one. Setting LOBBY freezes the ped,
+--- moves the routing bucket and stops the storm drawing on that client -- all
+--- of which must happen behind a black screen, never in front of the verdict
+--- slam (#124, and the note at the ENDED branch of onEnter).
+---
+--- Two callers, and they are the two halves of one fail-safe:
+---   * the player's own client, saying its screen is covered
+---   * the tick, when the deadline passes and nobody said anything
+---
+--- Idempotent, because both can fire for the same player: setState returns
+--- immediately when the state already matches.
+---
+--- @param m table
+--- @param only integer|nil  one player, or every remaining participant
+function BR.Match.sweepHome(m, only)
+    BR.Roster.each(
+        function(e) return e.matchId == m.id
+            and e.state ~= BR.PlayerState.LOBBY
+            and e.state ~= BR.PlayerState.LEFT end,
+        function(src)
+            if only and src ~= only then return end
+            BR.Roster.setState(src, BR.PlayerState.LOBBY)
+        end)
+end
+
+--- A client reporting that its own screen has finished going black.
+---
+--- THE SERVER CANNOT SEE A SCREEN, and this is the only channel that can tell
+--- it. Accepted only from a player whose own match is actually ENDED: outside
+--- that window there is no teardown pending and the message means nothing, so
+--- it is dropped rather than trusted -- a client cannot use this to send itself
+--- home early, mid-fight.
+RegisterNetEvent(BR.Net.MATCH_COVERED)
+AddEventHandler(BR.Net.MATCH_COVERED, function()
+    local src = source
+    local m = BR.Server.matchOf(src)
+    if not m or m.state ~= BR.MatchState.ENDED then return end
+    BR.Match.sweepHome(m, src)
+end)
 
 --- Assign final placements.
 ---
@@ -668,6 +734,20 @@ local function matchTick(m, now)
 
     if m.state == BR.MatchState.WARMUP then
         BR.Match.shortenWarmupIfFull(m)
+    end
+
+    -- NOBODY IS LEFT BEHIND IN A FINISHED MATCH.
+    --
+    -- ENDED now waits for each client to report that its screen has gone black
+    -- before taking that player's world away (#124). This is the net under
+    -- that: a client that crashed, whose CEF died, or whose report was simply
+    -- lost has no way to ask, and must go home anyway. The deadline is set at
+    -- the transition and is comfortably shorter than endedSeconds, so a player
+    -- swept by this still gets the rest of the summary window -- CLEANUP's
+    -- resetPlayers is the backstop behind THIS, not the plan.
+    if m.state == BR.MatchState.ENDED and m.sweepAt and now >= m.sweepAt then
+        m.sweepAt = nil
+        BR.Match.sweepHome(m)
     end
 
     -- Whoever is already on the ground learns the match is waiting on the

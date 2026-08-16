@@ -54,6 +54,23 @@ export default function Hud({ visible }: { visible: boolean }) {
   // an emergency.
   const outside = (storm?.edgeDistance ?? -1) > 0 && (storm?.dps ?? 0) > 0
 
+  // STILL IN THE AIR -- and "in the air" is now two facts, not one.
+  //
+  // The squad panel and the inventory bar hide during the descent, because the
+  // game's own help boxes own those corners until touchdown. The test was the
+  // server's state alone, and the server only says 'alive' once the landing
+  // report has completed its round trip -- a message with its own retry loop
+  // and its own server-side rescue net, because it goes missing. Every
+  // millisecond it is late is a player standing in a POI with no inventory bar
+  // and no squad panel; in the bad case it lasted until the match itself
+  // reached 'playing' (#126).
+  //
+  // `hud.landed` is this player's own ped reporting that it is on the ground.
+  // It cannot be observed for anyone else and is not used for anything but
+  // deciding what to draw -- see the note on HudPayload.landed.
+  const descending =
+    (hud.state === 'freefall' || hud.state === 'glide') && !hud.landed
+
   return (
     <div
       className="hud-layer fixed inset-0 transition-opacity duration-200"
@@ -114,7 +131,7 @@ export default function Hud({ visible }: { visible: boolean }) {
             ("Press SPACE to open the glider.") draw in exactly this corner,
             and the squad panel sat on top of them (user report, 2026-08-04).
             The bus ride already hides the whole HUD; this covers the descent. */}
-        {hud.state !== 'freefall' && hud.state !== 'glide' && (
+        {!descending && (
           <div
             className="absolute w-[13rem]"
             style={{ top: 'var(--hud-top)', left: 'var(--safe-x)' }}
@@ -152,7 +169,7 @@ export default function Hud({ visible }: { visible: boolean }) {
             above it. Hidden during the descent for the same reason the squad
             panel is: the game's own help boxes own the screen until touchdown,
             and there is nothing in the bar to look at before you land. */}
-        {hud.state !== 'freefall' && hud.state !== 'glide' && (
+        {!descending && (
           <div
             className="absolute"
             style={{ bottom: 'var(--safe-y)', right: 'var(--safe-x)' }}

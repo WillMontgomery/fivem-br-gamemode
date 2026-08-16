@@ -62,6 +62,23 @@ export interface HudPayload {
   paused?: boolean
   /** Sprint stamina 0..100, client-computed. The bar hides at full. */
   stamina?: number
+  /**
+   * MY OWN PED SAYS IT HAS TOUCHED DOWN, which is not the same claim as
+   * `state`.
+   *
+   * `state` is the SERVER's word, and it becomes 'alive' only once the landing
+   * report has made its round trip -- a message with a documented history of
+   * going missing, which is why it has a retry loop and a server-side rescue
+   * net behind it. Until it lands, the panels below hide themselves and the
+   * player stands on the ground with no inventory bar and no squad panel,
+   * occasionally until the match itself reaches 'playing' (#126).
+   *
+   * That was read as slowness once and answered with speed. It is not
+   * slowness: the systems are off, and this is the second fact that turns them
+   * on. Only presentation reads it -- nothing here decides anything the server
+   * owns.
+   */
+  landed?: boolean
 }
 
 export interface StormPayload {
@@ -655,6 +672,17 @@ export const CB = {
   XP_BUSY:        'br/xp/busy',
   PAUSE_ACTION:   'br/pause/action',
   KEYBIND_SET:    'br/settings/keybind',
+  /**
+   * "I am now fully black."
+   *
+   * The other half of every transition. Lua covers the screen and then changes
+   * the world underneath -- and until this existed it could only GUESS when the
+   * cover had finished going up, because the cover is a CSS transition in CEF
+   * and the change is a Citizen.Wait in another process. It guessed wrong
+   * consistently, and the player saw the cut the cover was added to hide
+   * (#124). See `bridge/cover.ts`.
+   */
+  COVERED:        'br/cover',
   ERROR:        'br/err',
   ENV:          'br/ui/env',
 } as const

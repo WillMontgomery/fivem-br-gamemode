@@ -438,6 +438,24 @@ BR.State = {
     storm    = nil,  -- the published storm record; solved locally via BR.StormAt
     alive    = 0,
     squadsAlive = 0,
+    -- MY OWN FEET, ON MY OWN SCREEN. Set by client/skydive.lua the frame the
+    -- drop machine sees touchdown; cleared out of the plane door and at the
+    -- start of every round.
+    --
+    -- The ONE piece of match state this client is allowed to answer for
+    -- itself, and it is not an exception to the mirror rule -- it is the rule:
+    -- a client may observe its own ped, and may not observe anything else. It
+    -- decides only what this machine DRAWS and what it will let this player
+    -- reach for (client/inventory.lua, client/loot.lua, the HUD envelope). No
+    -- authoritative question reads it: whether a pickup succeeded, whether a
+    -- bullet counted and where the player placed all remain the server's,
+    -- keyed on the state the server holds.
+    --
+    -- It exists because the server's ALIVE arrives by way of the landing
+    -- report, which goes missing often enough to have a retry loop AND a
+    -- server-side rescue net -- and until it lands, everything the player has
+    -- is switched off (#126).
+    landed   = false,
 }
 
 --- True when the local player is in a live match (not lobby or warmup).

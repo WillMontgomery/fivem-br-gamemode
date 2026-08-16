@@ -27,9 +27,17 @@
  */
 
 import Ring from '../hud/Ring'
+import { useCoverReport } from '../bridge/cover'
 
 /** What the curtain is covering. Lua names it; the wording lives here. */
 export type CurtainKind = 'leaving' | 'dropping'
+
+/**
+ * The opacity transition's own duration, in ms, and it MUST match the class
+ * below. It is the fallback deadline for the cover report -- see
+ * bridge/cover.ts -- not a second place the fade is timed.
+ */
+const FADE_MS = 600
 
 const COPY: Record<CurtainKind, { title: string; sub: string }> = {
   leaving:  { title: 'Leaving the match', sub: 'Cleaning up the world…' },
@@ -40,12 +48,37 @@ export default function LeaveScreen({
   show, kind = 'leaving',
 }: { show: boolean; kind?: CurtainKind }) {
   const copy = COPY[kind] ?? COPY.leaving
+
+  // AND IT TELLS LUA WHEN IT IS ACTUALLY BLACK.
+  //
+  // This is the acknowledgement the whole transition ordering hangs off (#124).
+  // Lua raises the curtain and then waits HERE before changing anything: the
+  // teleport, the island swap, the lobby menu being replaced by the HUD. It
+  // used to sleep 450ms and assume, which is how the player ended up watching
+  // the cut this component exists to cover.
+  //
+  // transitionend on the opacity above is the honest signal -- the browser
+  // saying it has finished painting -- and the duration is only the fallback
+  // for the case where it optimises the transition away entirely.
+  const onCovered = useCoverReport('curtain', show, FADE_MS + 100)
+
   return (
     <div
       className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-6
                  bg-black transition-opacity duration-[600ms]"
       style={{ opacity: show ? 1 : 0, pointerEvents: 'none' }}
       aria-hidden={!show}
+      // THIS ELEMENT'S OWN OPACITY, AND NOTHING ELSE'S. transitionend bubbles,
+      // so any child of this curtain that ever grows a transition would
+      // otherwise report "the screen is black" the moment IT finished -- at
+      // whatever opacity the curtain happened to be passing through. That is
+      // precisely the class of mistake this handshake replaces, and it would be
+      // invisible until someone restyled a child.
+      onTransitionEnd={(e) => {
+        if (e.target === e.currentTarget && e.propertyName === 'opacity') {
+          onCovered()
+        }
+      }}
     >
       {/* Remount the fly-up per showing so it replays each time. Keyed by
           kind as well, or switching words mid-curtain would keep the old

@@ -140,6 +140,9 @@ AddEventHandler('br:drop:begin', function(d)
     dropping = true
     airborneSeen = false
     chuteSpent = false
+    -- Out of the door is the one moment that unambiguously un-lands you. See
+    -- the note where this is SET, at the bottom of the drop machine.
+    BR.State.landed = false
 
     Citizen.CreateThread(function()
         local ped = PlayerPedId()
@@ -440,6 +443,27 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
         -- reads this alongside its warmup/bus invincibility rule).
         BR.State.dropGraceUntil = GetGameTimer() + BR.Config.Drop.landedGraceMs
 
+        -- LANDED, SAID BY THE ONLY MACHINE THAT CAN SEE IT.
+        --
+        -- Everything a landed player has -- the inventory bar, the squad panel,
+        -- a weapon in the hand, a crate they can open -- has until now waited
+        -- for the SERVER to agree, which it does when reportLanded() below
+        -- finally gets through. That message goes missing often enough to have
+        -- its own retry loop and its own server-side rescue net, and while it
+        -- is in flight the player stands in a POI with nothing, sometimes until
+        -- the match reaches PLAYING and something else promotes them (#126).
+        -- It was read as slowness and answered with speed; it is not slowness,
+        -- the systems are simply off.
+        --
+        -- This is the local half of the answer, and it is narrow on purpose: it
+        -- decides only what this client DRAWS and what it will let this player
+        -- reach for. Every authoritative question -- did the claim succeed, did
+        -- the bullet count, what placement was this -- is still the server's
+        -- and still keyed on the state it holds. Reading our own ped is the one
+        -- observation a client is always entitled to make.
+        BR.State.landed = true
+        BR.PushHud(true)
+
         reportLanded()
         TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
             text = 'Loot up before the storm comes!', tone = 'info', ms = 6000,
@@ -510,5 +534,15 @@ AddEventHandler(BR.Net.STATE, function(d)
        or d.state == BR.MatchState.ENDED
        or d.state == BR.MatchState.CLEANUP then
         dropping = false
+    end
+
+    -- THE LANDED LATCH BELONGS TO ONE DROP, and a new round is a new drop.
+    -- Carrying it across would tell the next match's interface that a player
+    -- still sitting in the plane had already touched down -- the mirror image
+    -- of the bug it exists to fix, and the more embarrassing direction to be
+    -- wrong in. WARMUP is where it is armed; leaving it set through the lobby
+    -- costs nothing, since nothing reads it there.
+    if d.state == BR.MatchState.WARMUP or d.state == BR.MatchState.BUS then
+        BR.State.landed = false
     end
 end)

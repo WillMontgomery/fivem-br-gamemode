@@ -299,6 +299,76 @@ callback(BR.NuiCb.PAUSE, function()
     return { ok = true }
 end)
 
+-- ------------------------------------------------------------- the cover ---
+
+--- Which covers the page currently says are fully opaque.
+---
+--- THIS IS THE ACKNOWLEDGEMENT PATH THAT DID NOT EXIST, and its absence is the
+--- whole of #124. Lua raised a curtain and moved on, so "cover the screen" and
+--- "change the world underneath it" were two timers started at the same moment
+--- on two different clocks -- a Citizen.Wait here, a CSS transition over there
+--- in another process. The world change won, every time, and the player got
+--- exactly the cut the cover was added to hide: "the lobby UI goes away and
+--- cuts immediately to the in-game HUD/minimap/teleports my player, and THEN
+--- the fade to black happens" (owner, 2026-08-16).
+---
+--- Three previous attempts moved the Wait() around. They could not work: no
+--- number is correct on a machine whose frame budget you do not control.
+---
+--- STATE, NOT A TOGGLE -- the same rule players.lua and pause.lua follow. The
+--- page sends the state it is in, so a message lost on a busy frame costs one
+--- stale reading that the next one corrects, rather than leaving the two sides
+--- permanently inverted.
+local covered = {}
+
+--- Is a named cover fully opaque right now?
+--- @param kind string  'curtain' | 'verdict'
+--- @return boolean
+local function isCovered(kind)
+    return covered[kind] == true
+end
+exports('isCovered', isCovered)
+
+callback(BR.NuiCb.COVERED, function(data)
+    local kind = tostring(data.kind or 'curtain')
+    local now  = data.covered == true
+    if covered[kind] == now then return { ok = true } end
+    covered[kind] = now
+
+    -- br_core owns what a covered screen MEANS -- the teleport, the roster
+    -- sweep, the island swap. br_ui only owns the page that said so.
+    TriggerEvent('br:ui:covered', kind, now)
+    return { ok = true }
+end)
+
+-- A COVER CANNOT SURVIVE THE PAGE THAT DRAWS IT, and the resource that has to
+-- act on that is br_core, not this one.
+--
+-- br_ui restarting takes this table with it, so there is nothing to clear
+-- here -- but br_core's mirror of it does NOT restart, and a stale "the screen
+-- is black" there would let a teardown run in front of a fresh, transparent
+-- page. It clears its copy on br:ui:ready, which is the event that means "a new
+-- document has loaded and has painted nothing yet". See client/spawn.lua.
+
+--- Cover diagnostics.
+---
+--- "The transition still cuts" and "the page never acknowledged" look identical
+--- from a chair. This says which: a `covered` that never turns true means the
+--- report is not arriving and every sequence ran on its timeout instead, which
+--- is the fallback behaving correctly and NOT the fix working.
+RegisterCommand('brcover', function()
+    print('=== br_ui cover ===')
+    local any = false
+    for kind, on in pairs(covered) do
+        any = true
+        print(('  %-8s %s'):format(kind, on and 'COVERED (page says black)' or 'clear'))
+    end
+    if not any then
+        print('  (nothing has ever reported -- either no transition has happened')
+        print('   yet this session, or the page is not sending br/cover at all)')
+    end
+end, false)
+
 -- Gameplay callbacks are forwarded to br_core, which owns the decisions.
 for _, name in ipairs({
     BR.NuiCb.QUEUE, BR.NuiCb.QUEUE_LEAVE,

@@ -25,6 +25,30 @@ BR.Config.Match = {
     endedSeconds    = 20,     -- summary screen duration before returning to lobby
     cleanupSeconds  = 5,
 
+    -- THE COVER HANDSHAKE'S DEADLINES, and every one of them exists to be
+    -- WRONG SAFELY rather than to be right (#124).
+    --
+    -- A screen transition is: cover the screen, change the world, uncover.
+    -- The cover lives in CEF and the change lives in Lua, so the only honest
+    -- way to order them is for the page to say "I am black now"
+    -- (BR.NuiCb.COVERED). These are the caps on waiting for it -- a page that
+    -- never answers has crashed, and a player left staring at black because
+    -- of it is a far worse bug than the visible cut the cover was hiding.
+    --
+    -- coverWaitMs   the curtain's own fade is 600ms; four times that is
+    --               "something is wrong", not "the machine is slow".
+    -- verdictWaitMs the verdict backdrop starts 1.4s after the summary lands
+    --               and takes 2s to reach solid black -- so ~3.9s from the
+    --               ENDED transition. Six seconds is that plus room.
+    -- coverSweepMs  the SERVER's own deadline for sweeping a player home
+    --               without ever hearing from them. Longer than the client's
+    --               own wait (which is what normally triggers the report) and
+    --               comfortably inside endedSeconds, so CLEANUP is never the
+    --               thing that has to rescue it.
+    coverWaitMs     = 2500,
+    verdictWaitMs   = 6000,
+    coverSweepMs    = 8000,
+
     -- Default mode when a player queues without choosing.
     defaultMode     = 'solo',
 
