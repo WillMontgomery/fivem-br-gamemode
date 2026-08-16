@@ -107,9 +107,12 @@
   --color-storm:   #c026d3;
   --color-danger:  #ef4444;
 
-  /* SECONDARY TEXT. Every line in the interface that explains, labels or
-     qualifies something -- and is not the thing itself -- is this one colour.
-     Headings and values stay plain white; this is the layer underneath them.
+  /* SECONDARY TEXT, THE CAPTION LAYER. Short labels that name the thing next
+     to them -- and are not the thing itself. Headings and values stay plain
+     white; this is the layer underneath them.
+
+     IT IS NOT THE COLOUR FOR SENTENCES. It was, until #148, and that is the
+     other half of what went wrong: see --color-text-body directly below.
 
      IT IS A TOKEN BECAUSE IT WAS NOT ONE, and that is #136 (owner, 2026-08-16:
      "the dark font in the pause menus is too dark. Please change it to some
@@ -130,6 +133,31 @@
      move when this does; the verdict screen's were converted with #136 because
      the issue named it, and anything new should reach for this name. */
   --color-text-dim: rgba(255, 255, 255, 0.58);
+
+  /* BODY TEXT. Every SENTENCE the interface says to the player: help text,
+     descriptions, empty states, confirmation bodies, the bulleted lists in
+     Settings. Paired with `.body-text` further down, which is the only place
+     that should reach for it.
+
+     IT IS A SEPARATE TOKEN FROM --color-text-dim BECAUSE PROSE IS NOT A
+     CAPTION, and that is #148 (owner, 2026-08-16: "the font spacing makes it
+     hard to read for text like this... I'd prefer a different typeface for
+     this, such as the font used in 'Display name' and our keybind rows like
+     'Use selected item' -- the color there works better too").
+
+     0.70 IS THAT COLOUR, READ OFF THE ROWS HE NAMED. Both are `text-white/70`:
+     Settings' Display name field label and Keybinds' action labels. He was not
+     picking a shade in the abstract, he was pointing at two rows on screen and
+     saying those are right, so this is measured off them rather than chosen.
+
+     AND PROSE EARNS THE EXTRA CONTRAST. On the same pause-menu plate that
+     --color-text-dim is measured against -- rgba(20,24,34,0.94) compositing to
+     about #131721 -- white at 0.58 is 6.6:1 and white at 0.70 is about 9.1:1.
+     A caption is two words the eye lands on once; a paragraph is read across,
+     and a run of sentences at a caption's contrast is what the complaint above
+     actually feels like. Plain white stays near 18:1, so headings still sit
+     clearly above this and the hierarchy survives the lift. */
+  --color-text-body: rgba(255, 255, 255, 0.70);
 
   /* RARITY IS CANONICAL. Players arrive knowing these from every other battle
      royale; redesigning them costs recognition and buys nothing. Mirrored in
@@ -315,22 +343,83 @@ html, body, #root {
   color: white;
 }
 
-/* The small all-caps label above a group. Barlow 600 at .2em is the project's
-   existing convention and it was being retyped in every screen.
+/* ===========================================================================
+   TWO CLASSES, BECAUSE THERE WERE ALWAYS TWO JOBS (#148).
 
-   IT IS ALSO THE PROJECT'S BODY TEXT, WHICH IS WHY #136 LANDED HERE. Screens
-   reach for it with `textTransform: 'none'` whenever they want a sentence
-   rather than a label -- the pause menu's exit descriptions, its confirms and
-   its Graphics & display blurb are all this class -- so the shade set here is
-   not decorating a caption, it is carrying prose at 0.62rem. It was
-   rgba(255,255,255,0.38); see --color-text-dim for why that failed and what
-   replaced it. */
+   `.micro-label` is a CAPTION: a short noun phrase naming the thing beside or
+   below it. `.body-text` is PROSE: a sentence the interface is saying to the
+   player. Until #148 the caption style was doing both, and the way you could
+   tell is that half its callers were passing `textTransform: 'none'` to escape
+   the uppercase -- eleven of them across seven screens. A class that half its
+   users override is two classes.
+
+   WHICH ONE TO REACH FOR. Not by length, by role:
+
+     caption   names what follows and is read once      Mode / Who hears you
+     prose     is the content, and is read across       "You cannot change
+                                                        this while in a match."
+
+   A list heading is a caption even when it runs long ("Invite from your squad
+   -- they stay with you after this match"), because it is still the label on
+   the group under it and it still has to sit visibly above that group. An
+   empty state is prose even when it runs short ("Nothing here yet."), because
+   it is the thing being said rather than a name for something else.
+   =========================================================================== */
+
+/* THE CAPTION. The small all-caps label above a group. Barlow 600 at .2em is
+   the project's existing convention and it was being retyped in every screen.
+
+   0.2em OF TRACKING AT 0.62rem IS WHAT IT IS FOR AND WHAT IT IS BAD AT. Across
+   two words it is the effect; across a paragraph it is the complaint in #148.
+   The fix for that was NOT to loosen this -- that would break every genuine
+   caption to spare the sentences -- it was `.body-text` below.
+
+   The shade is --color-text-dim; it was a literal rgba(255,255,255,0.38) until
+   #136, see that token for why it failed. */
 .micro-label {
   font-size: 0.62rem;
   font-weight: 600;
   letter-spacing: 0.2em;
   text-transform: uppercase;
   color: var(--color-text-dim);
+}
+
+/* THE PROSE. Every sentence the interface says: help text, descriptions,
+   empty states, confirmation bodies, the bulleted lists in Settings.
+   Owner, 2026-08-16 (#148), naming the two rows he wanted this to look like:
+   "I'd prefer a different typeface for this, such as the font used in 'Display
+   name' and our keybind rows like 'Use selected item' -- the color there works
+   better too."
+
+   SO IT IS COPIED OFF THOSE TWO ROWS RATHER THAN INVENTED. Both are, to the
+   character, `text-[0.82rem] text-white/70` in Barlow at its inherited 400:
+   Settings' Display name field label (Settings.tsx) and Keybinds' action
+   labels (Keybinds.tsx). 0.82rem, weight 400, no tracking, no transform, and
+   --color-text-body for the 0.70.
+
+   IT CARRIES THE TEXT-SIZE PREFERENCE ITSELF, which is the one thing it does
+   that neither named row does. `.tscale` multiplies 1em -- the PARENT's size --
+   so `text-[0.82rem] tscale` quietly loses its 0.82rem and renders at the
+   parent's; that trap is documented at `.ts` at the end of this file and it
+   has now bitten three separate times. Baking the multiply in here means a
+   prose line cannot be written wrong: there is no second class to remember and
+   no --fs to keep in sync.
+
+   --fs IS STILL HONOURED for the sites that need a smaller prose than the
+   default -- a timestamp in the notice log is a sentence fragment in a row
+   sized 0.85rem, and 0.82 there would shout. Set --fs and the scaling still
+   works; that is the same name `.ts` uses, deliberately.
+
+   DO NOT ALSO ADD `ts`. It is declared later in this file and would win with
+   `var(--fs, 1em)`, so a site with `ts` and no --fs silently gets the parent's
+   size back. This class already does what `ts` was there for. */
+.body-text {
+  font-size: calc(var(--fs, 0.82rem) * var(--text-scale));
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  line-height: 1.5;
+  color: var(--color-text-body);
 }
 
 .interactive {

@@ -87,10 +87,7 @@ export default function PartyCard() {
           >
             {inParty ? 'Your party' : 'Party'}
           </div>
-          <div
-            className="micro-label ts mt-0.5"
-            style={{ ['--fs' as string]: '0.62rem', textTransform: 'none' }}
-          >
+          <div className="body-text mt-0.5">
             {inParty
               ? 'Stays together after this match ends.'
               : 'Start one to keep playing with this squad after the match.'}

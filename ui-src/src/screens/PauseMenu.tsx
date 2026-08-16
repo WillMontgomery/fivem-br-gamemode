@@ -276,10 +276,7 @@ export default function PauseMenu() {
                 <div className="font-display text-[1.6rem] uppercase tracking-[0.08em] leading-none">
                   Map
                 </div>
-                <div
-                  className="micro-label ts mt-1.5"
-                  style={{ ['--fs' as string]: '0.62rem', textTransform: 'none' }}
-                >
+                <div className="body-text mt-1.5">
                   The full-screen map. The same key that opened this menu closes it again.
                 </div>
               </div>
@@ -376,10 +373,8 @@ export default function PauseMenu() {
                         appearing under it: the row keeps its height, so
                         answering a confirm never shoves the rows below it. */}
                     <div
-                      className="micro-label ts mt-0.5"
+                      className="body-text mt-0.5"
                       style={{
-                        ['--fs' as string]: '0.62rem',
-                        textTransform: 'none',
                         color: confirming === e.id ? 'var(--color-danger)' : undefined,
                       }}
                     >

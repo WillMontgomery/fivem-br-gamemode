@@ -164,7 +164,7 @@ export default function Market() {
               pinning it above would cost every other tab the vertical space. */}
           {tab === 'trail' && <TrailHelp />}
           {items.length === 0 ? (
-            <p className="micro-label">Nothing here yet.</p>
+            <p className="body-text">Nothing here yet.</p>
           ) : (
             <div className="grid grid-cols-4 gap-3 pb-2">
               {items.map((it) => (

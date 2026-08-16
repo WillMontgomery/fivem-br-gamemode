@@ -400,11 +400,14 @@ export default function Settings({
           <Section title="Display">
               <div className="flex flex-col gap-1.5">
                 <div className="micro-label">In the game&apos;s own menu</div>
+                {/* THE LIST IN THE #148 SCREENSHOT. It was `micro-label` with
+                    the uppercase locally cancelled -- four bulleted sentences
+                    at 0.2em tracking, which is the exact text the owner held
+                    up as hard to read. `.body-text` is the prose style; the
+                    heading above it stays a caption. */}
                 <ul
-                  className="micro-label ts"
+                  className="body-text"
                   style={{
-                    ['--fs' as string]: '0.62rem',
-                    textTransform: 'none',
                     listStyle: 'disc',
                     paddingLeft: '1.1rem',
                     lineHeight: 1.7,
@@ -534,9 +537,11 @@ export default function Settings({
                       >
                         {m.label}
                       </span>
+                      {/* A description, not a caption: --fs holds it under the
+                          0.9rem label above it inside a narrow button. */}
                       <span
-                        className="micro-label ts"
-                        style={{ ['--fs' as string]: '0.62rem', textTransform: 'none' }}
+                        className="body-text block"
+                        style={{ ['--fs' as string]: '0.72rem' }}
                       >
                         {m.sub}
                       </span>
@@ -574,10 +579,8 @@ export default function Settings({
               <div className="flex flex-col gap-1.5">
                 <div className="micro-label">In the game&apos;s own menu</div>
                 <ul
-                  className="micro-label ts"
+                  className="body-text"
                   style={{
-                    ['--fs' as string]: '0.62rem',
-                    textTransform: 'none',
                     listStyle: 'disc',
                     paddingLeft: '1.1rem',
                     lineHeight: 1.7,
@@ -704,8 +707,13 @@ export default function Settings({
                   )}
                 </div>
               </label>
+              {/* THE LINE THE OWNER NAMED IN #148: this was `micro-label`
+                  with nothing cancelling it, so two sentences of help text
+                  under the name field rendered in tracked-out capitals. It is
+                  prose in both branches now -- the error only recolours it,
+                  rather than being the one branch that got a readable size. */}
               <p
-                className={nameError ? 'text-[0.78rem] tscale' : 'micro-label'}
+                className="body-text"
                 style={nameError ? { color: 'var(--color-danger)' } : undefined}
               >
                 {/* SHORT, BOTH WAYS. The locked line explained the reasoning
@@ -742,7 +750,12 @@ export default function Settings({
                     onClick={() => { play('ui.select'); set('colourblind', m.id) }}
                   >
                     <span className="block text-[0.85rem] tscale">{m.label}</span>
-                    <span className="block micro-label mt-0.5">{m.sub}</span>
+                    <span
+                      className="block body-text mt-0.5"
+                      style={{ ['--fs' as string]: '0.72rem' }}
+                    >
+                      {m.sub}
+                    </span>
                   </button>
                 ))}
               </div>

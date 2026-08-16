@@ -297,7 +297,7 @@ export default function PlayerList() {
 
             <div className="min-h-0 flex-1 overflow-y-auto thin-scroll px-2">
               {rows.length === 0 ? (
-                <p className="micro-label px-2 pb-3">Nobody else is here.</p>
+                <p className="body-text px-2 pb-3">Nobody else is here.</p>
               ) : (
                 <div className="flex flex-col gap-px pb-2">
                   {rows.map((p) => {

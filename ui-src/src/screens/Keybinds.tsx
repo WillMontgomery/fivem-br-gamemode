@@ -102,7 +102,7 @@ export default function Keybinds() {
   }, [listening])
 
   if (actions.length === 0) {
-    return <p className="micro-label">Loading controls…</p>
+    return <p className="body-text">Loading controls…</p>
   }
 
   // Grouped, because eighteen undifferentiated rows is a list nobody reads.
@@ -153,7 +153,7 @@ export default function Keybinds() {
         </div>
       ))}
 
-      <p className="micro-label" style={{ textTransform: 'none' }}>
+      <p className="body-text">
         {listening
           ? 'Press a key — Escape cancels.'
           : rejected
@@ -169,7 +169,7 @@ export default function Keybinds() {
           same mechanism. Rather than ship a second button with the same
           likely failure, the line says where the screen is. */}
       {mouseTried && (
-        <p className="micro-label" style={{ textTransform: 'none' }}>
+        <p className="body-text">
           Mouse buttons can be bound in the game&apos;s own key bindings —
           press Escape twice to reach it, under Settings › Key Bindings.
         </p>

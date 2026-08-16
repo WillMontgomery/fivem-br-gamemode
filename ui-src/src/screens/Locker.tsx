@@ -108,7 +108,7 @@ export default function Locker() {
           <h2 className="font-display text-[3rem] uppercase tracking-[0.1em] leading-none mt-1">
             Character
           </h2>
-          <p className="micro-label mt-2">
+          <p className="body-text mt-2">
             Drag anywhere to turn them &middot; changes apply instantly
           </p>
 
