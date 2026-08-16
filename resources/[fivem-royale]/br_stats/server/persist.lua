@@ -22,6 +22,24 @@
 BR = BR or {}
 BR.Stats = BR.Stats or {}
 
+--- license -> lifetime XP, as last published by br_core.
+---
+--- THE TABLE THAT WAS READ AND NEVER WRITTEN. `deltasFor` has consulted this
+--- since the stats writer landed, and nothing populated it -- so every level
+--- this file computed was derived from a single match's XP rather than the
+--- player's total. It stored the wrong level, told the verdict screen the wrong
+--- level, and paid the level-up bonus against the wrong boundary.
+---
+--- br_core owns the real number: it reads the profile row on connect and
+--- applies every credit as it lands. It publishes on load and after each
+--- credit, so this is right on the first match of a session and stays right.
+BR.Stats.cachedXp = BR.Stats.cachedXp or {}
+
+AddEventHandler('br:stats:knownXp', function(license, xp)
+    if type(license) ~= 'string' or license == '' then return end
+    BR.Stats.cachedXp[license] = tonumber(xp) or 0
+end)
+
 local nextReq = 0
 local pending = {}
 
@@ -138,7 +156,14 @@ AddEventHandler('br:match:results', function(res)
             -- br_ddb stores what we compute rather than computing its own, so
             -- there is one implementation of the curve rather than two that
             -- can disagree.
-            local before = BR.Stats.cachedXp and BR.Stats.cachedXp[license] or 0
+            -- POPULATED AT LAST. This read `BR.Stats.cachedXp` since the day it
+            -- was written and nothing ever wrote to that table, so `before` was
+            -- always 0 -- and every level below was derived from ONE match's XP
+            -- instead of a career of it. br_core publishes the real total now
+            -- (see `br:stats:knownXp` below); the fallback stays because a
+            -- server running br_stats without br_core has nobody to tell it,
+            -- and a wrong level is better than a crash.
+            local before = BR.Stats.cachedXp[license] or 0
             local after = before + xpEarned
             local levelBefore = BR.Xp and BR.Xp.levelFor(before) or 1
             deltas.level = BR.Xp and BR.Xp.levelFor(after) or 1
