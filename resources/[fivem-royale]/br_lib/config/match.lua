@@ -589,6 +589,73 @@ BR.Config.Combat = {
     logSamples    = 15,
 }
 
+--[[
+    PLAYER REPORTS.
+
+    The second source of incidents, after the anticheat. The anticheat sees what
+    it can measure; a player sees teaming, griefing and abuse, none of which
+    leave a trace in a damage ledger.
+
+    THE CATEGORIES ARE DELIBERATELY SHORT, and "name" is not one of them (owner,
+    2026-08-12): we do not control names, so a category we cannot act on would
+    only teach players that reporting does nothing. Every option here is
+    something an admin can actually do something about.
+
+    A DEFAULT IS PRE-SELECTED, because a report filed with no category is still
+    worth having and a required field is how you get "asdf". `cheating` is the
+    default because it is both the most common and the one most worth a human
+    looking at.
+
+    RATE LIMITS ARE NOT OPTIONAL. This feature is, by construction, a way for
+    any player to make the server write to DynamoDB on demand. The limits are
+    per match and enforced server-side; the client is told what remains so the
+    panel can say so rather than discovering it on submit.
+
+    REPORT SPAM IS ITSELF A SIGNAL and is kept rather than discarded -- the
+    console's "reports they filed against others" section exists precisely so
+    somebody who reports everybody is visible. A refused-for-rate report is
+    still counted, because the attempt is the signal.
+]]
+BR.Config.Report = {
+    categories = {
+        { id = 'cheating',     label = 'Cheating',     default = true },
+        { id = 'teaming',      label = 'Teaming' },
+        { id = 'griefing',     label = 'Griefing' },
+        { id = 'abusive_chat', label = 'Abusive chat' },
+        { id = 'exploiting',   label = 'Exploiting' },
+        { id = 'other',        label = 'Something else' },
+    },
+
+    --- Players nameable in one submission.
+    maxTargets = 5,
+
+    --- Submissions per player per match.
+    maxPerMatch = 3,
+
+    --- Free text length. Optional, and capped because it reaches a database.
+    maxNote = 300,
+}
+
+--- The category to pre-select, resolved from the table above rather than
+--- repeated as a string that could drift out of the list.
+--- @return string
+function BR.Config.defaultReportCategory()
+    for _, c in ipairs(BR.Config.Report.categories) do
+        if c.default then return c.id end
+    end
+    return BR.Config.Report.categories[1].id
+end
+
+--- Is this a category the server will accept?
+--- @param id string
+--- @return boolean
+function BR.Config.isReportCategory(id)
+    for _, c in ipairs(BR.Config.Report.categories) do
+        if c.id == id then return true end
+    end
+    return false
+end
+
 --- weaponDamageEvent's `hitComponent`, decoded.
 ---
 --- CONFIRMED IN GAME, 2026-08-07. The community mapping was suspect until a

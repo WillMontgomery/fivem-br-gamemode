@@ -354,6 +354,12 @@ fi
 # the case that matters: every player carries fists at all times, so counting
 # rule refusals would file an incident for the first warmup scrap of a match.
 
+# THIS GATE IS ABOUT THE ANTICHEAT'S SURFACE ONLY, and the distinction started
+# mattering the day player reports shipped. Reports are a SECOND source of
+# incidents and are deliberately not constrained here: a player naming somebody
+# for teaming is not a refusal reason and never passes through BR.ShotSuspicious.
+# What this pins is that the ANTICHEAT cannot file for something an honest
+# client does constantly.
 echo "${DIM}== incident surface ==${RST}"
 cs_="resources/[fivem-royale]/br_lib/shared/combat_solve.lua"
 SUSPICIOUS_EXPECTED='NOT_HELD NOT_THROWN NO_AMMO NO_WEAPON SELF TOO_FAR TOO_FAST '
@@ -371,7 +377,7 @@ if [ -f "$cs_" ]; then
         echo "     RULES/MEANS lists in tools/test_shared.lua together."
         rc=1
     else
-        echo "${GRN}ok${RST}   only means-class refusals can open an incident"
+        echo "${GRN}ok${RST}   only means-class refusals open an ANTICHEAT incident"
     fi
 fi
 

@@ -13,6 +13,7 @@ import Notices from './hud/Notices'
 import Settings from './screens/Settings'
 import Locker from './screens/Locker'
 import Market from './screens/Market'
+import PlayerList from './screens/PlayerList'
 import PauseMenu from './screens/PauseMenu'
 import Help from './screens/Help'
 import Page from './ui/Page'
@@ -74,6 +75,8 @@ export default function App() {
   useNuiEvent('locker',   (d) => s.setLocker(d))
   useNuiEvent('progress', (d) => s.setProgress(d))
   useNuiEvent('market',   (d) => s.setMarket(d))
+  useNuiEvent('players',  (d) => s.setPlayers(d))
+  useNuiEvent('report',   (d) => s.setReportResult(d))
   useNuiEvent('keybinds', (d) => s.setKeybinds(d.actions, d.raw === true))
   // Separate from 'progress' on purpose: a reconnect restores the bar, it
   // does not replay a celebration.
@@ -220,6 +223,7 @@ export default function App() {
       {/* The market is the third face of the same screen. It has no ped to
           show, so it takes the whole width. */}
       <Page show={s.focus === 'market'}><Market /></Page>
+      <Page show={s.focus === 'players'}><PlayerList /></Page>
       {/* The manual, from the lobby. The same component the pause menu
           embeds, in its own frame. */}
       <Page show={s.focus === 'help'}><Help /></Page>

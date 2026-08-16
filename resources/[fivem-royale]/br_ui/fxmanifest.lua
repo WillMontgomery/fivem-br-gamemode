@@ -29,7 +29,8 @@ client_scripts {
     -- br_ui owns how it is presented.
     'client/settings.lua',
     'client/pause.lua',     -- our pause menu, in place of GTA's
-    'client/market.lua',    -- the storefront; synthetic until a server exists
+    'client/market.lua',    -- the storefront
+    'client/players.lua',   -- the in-game player list and report panel
 }
 
 files {
