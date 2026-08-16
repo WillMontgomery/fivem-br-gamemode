@@ -1,0 +1,62 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# This repo is public and holds no secrets, which is the point. Nothing here
+# needs credentials, and the workflow is given none — read-only on contents so
+# a compromised action in the dependency tree cannot push.
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The secret scan asks git what it would publish, so it needs more
+          # than the default shallow tip to be asking about anything real.
+          fetch-depth: 0
+
+      # THE VERSION IS NOT INCIDENTAL. FXServer runs Lua 5.4 and gate 1 is
+      # `luac -p` on every file — so a 5.3 compiler here would pass syntax the
+      # game rejects and, worse, reject syntax the game accepts. Ubuntu ships
+      # the binaries suffixed; verify.sh looks for bare `luac` and `lua` on
+      # PATH, so they are linked rather than the script being taught about
+      # every distro's naming.
+      - name: Install Lua 5.4
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.4
+          sudo ln -sf /usr/bin/luac5.4 /usr/local/bin/luac
+          sudo ln -sf /usr/bin/lua5.4 /usr/local/bin/lua
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # WITHOUT THIS THE BUNDLE GATE SKIPS ITSELF. verify.sh degrades to a
+      # `skip` when node_modules is absent, and a skipped gate reads as a
+      # passing one in a wall of green — so CI installs the one dependency that
+      # gate needs. It is the gate that catches `dist/server.js` drifting from
+      # its source, which is a failure that only ever shows up at runtime, on
+      # the live server, as a verb that silently never answers.
+      - name: Install br_ddb build deps
+        working-directory: js-src/br_ddb
+        run: npm ci
+
+      # ONE ENTRY POINT, ON PURPOSE. Everything — syntax, the six test suites,
+      # the scope gate, manifest coverage, the secret scan, the bundle check —
+      # runs from this script, which is the same command run locally and the
+      # same one tools/pre-commit runs.
+      #
+      # THAT IS WHAT MAKES THIS CHEAP TO MAINTAIN. Adding a test means adding it
+      # to verify.sh (or to a suite it already runs); this file does not change.
+      # A workflow that listed the checks individually would be a second list to
+      # keep in sync, and the failure mode of forgetting is a test that quietly
+      # stops running in CI while still passing locally.
+      - run: bash tools/verify.sh
