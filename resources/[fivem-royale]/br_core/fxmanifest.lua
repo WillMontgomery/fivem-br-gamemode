@@ -110,6 +110,7 @@ server_scripts {
     'server/voice.lua',    -- voice channel authority: one room per match, one per squad
     'server/debug.lua',
     'server/market.lua',    -- inventory, purchases and equipped slots
+    'server/players.lua',   -- the in-game player list and player reports
     'server/ringmaster.lua', -- the admin-console snapshot feed; emits, never listens
     'server/incident.lua',  -- builds incident payloads from evidence; emits, never enforces
 }

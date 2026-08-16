@@ -16,7 +16,7 @@ import type {
   SpectatePayload, SquadPayload, StormPayload, SummaryPayload,
   CurtainKind, KeybindAction, LockerPayload, MarketPayload, ProgressPayload,
   SettingsPayload,
-  ToastPayload, WireInvPayload, XpAward, EarnedPayload,
+  ToastPayload, WireInvPayload, XpAward, EarnedPayload, PlayersPayload, ReportResult,
 } from '../bridge/types'
 import { applySettings, DEFAULT_SETTINGS } from '../settings/apply'
 
@@ -107,6 +107,10 @@ export interface UiState {
 
   /** The store catalogue and the player's balance. Also synthetic. */
   market: MarketPayload
+  /** The in-game player list, and the report rules that came with it. */
+  players: PlayersPayload
+  /** The answer to the last submitted report, or null. */
+  reportResult: ReportResult | null
 
   /** Every rebindable action and its current key. Lua owns both. */
   keybinds: KeybindAction[]
@@ -189,6 +193,8 @@ export interface UiState {
   awardXp: (a: XpAward) => void
   setEarned: (e: EarnedPayload | null) => void
   clearXpAward: () => void
+  setPlayers: (p: PlayersPayload) => void
+  setReportResult: (r: ReportResult | null) => void
   setMarket: (m: MarketPayload) => void
   setKeybinds: (k: KeybindAction[], raw: boolean) => void
   openChat: (channel: ChatMessage['channel']) => void
@@ -445,6 +451,8 @@ export const useUi = create<UiState>((set, get) => {
   xpAward: null,
   earned: null,
   market: { balance: 0, items: [] },
+  players: { players: [], categories: [], defaultCategory: 'cheating', maxTargets: 5, remaining: 0 },
+  reportResult: null,
   keybinds: [],
   keybindsRaw: false,
   lobby: null,
@@ -612,6 +620,8 @@ export const useUi = create<UiState>((set, get) => {
   setEarned: (earned) => set({ earned }),
   clearXpAward: () => set({ xpAward: null }),
   setMarket: (market) => set({ market }),
+  setPlayers: (players) => set({ players }),
+  setReportResult: (reportResult) => set({ reportResult }),
   setKeybinds: (keybinds, keybindsRaw) => set({ keybinds, keybindsRaw }),
 
   openChat:  (chatChannel) => set({ chatOpen: true, chatChannel }),

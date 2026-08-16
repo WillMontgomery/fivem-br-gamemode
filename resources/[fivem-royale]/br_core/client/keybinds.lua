@@ -189,11 +189,30 @@ group = 'Interface'
 tap ('pause',       'brpausemenu', 'Royale: Pause menu',                 'F1', 0x1B)
 tap ('settingsMenu', 'brsettingsmenu', 'Royale: Settings',               '')
 
+-- THE PLAYER LIST IS TAP-TO-LATCH, AND THAT IS LOAD-BEARING RATHER THAN A UX
+-- PREFERENCE (#95). `tap()` takes the 5th `raw` argument carrying the VK code
+-- the raw layer actually wants; `hold()` does not. A hold-to-show panel on
+-- tilde would have registered in the pause menu and then silently never fired,
+-- because 0xC0 is not in DEFAULT_VK and hold() has no way to be told about it.
+--
+-- 0xC0 (VK_OEM_3, tilde) is already in the VK display-name table, so the
+-- Settings row renders correctly with no change, and it is absent from the
+-- UI's RESERVED map so a player can rebind it off tilde today.
+--
+-- F2 is the ENGINE-side fallback purely because it is unused and already in
+-- DEFAULT_VK. It only matters on a client where IsRawKeyDown is unavailable --
+-- the same client the Settings screen already tells that rebinding is off.
+tap ('players',     'brplayers',   'Royale: Player list / report',       'F2', 0xC0)
+
 -- br_ui owns the pages; this owns the keys. TriggerEvent crosses resources,
 -- which is the same hop br_core already uses to reach the interface.
 BR.Keys.on('pause', function(pressed)
     if pressed then TriggerEvent('br:ui:pauseToggle') end
 end)
+BR.Keys.on('players', function(pressed)
+    if pressed then TriggerEvent('br:ui:playersToggle') end
+end)
+
 BR.Keys.on('settingsMenu', function(pressed)
     if pressed then TriggerEvent('br:ui:settingsToggle') end
 end)

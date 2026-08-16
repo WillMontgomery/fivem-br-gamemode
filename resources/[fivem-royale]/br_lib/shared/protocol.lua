@@ -170,6 +170,24 @@ BR.Net = {
     -- result has been turned into deltas -- and it is the only place the real
     -- numbers exist. The verdict screen used to invent both.
     MATCH_EARNED    = 'br:match:earned',     -- S->C  { xp, volts, level, levelUp }
+    -- The in-game player list and reporting.
+    --
+    -- THE SERVER FILTERS THE BUCKET; THE CLIENT NEVER LEARNS WHICH ONE. `matchId`
+    -- is marked NEVER PUBLIC in roster.lua's PUBLIC_FIELDS, so the list is
+    -- resolved server-side and the answer sent -- rather than sending an id and
+    -- asking the client to filter on it, which would leak the very field the
+    -- projection exists to withhold.
+    PLAYERS_ASK     = 'br:players:ask',      -- C->S  (no payload; the server knows who asked)
+    PLAYERS_LIST    = 'br:players:list',     -- S->C  { players = { { src, name, state, squadId, left } } }
+    -- C->S { targets = { { src, category } }, note? }. NEVER a license: the
+    -- client names a server id and the server resolves it, the same rule the
+    -- market follows for item ids.
+    REPORT_SUBMIT   = 'br:report:submit',
+    -- S->C { ok, filed, refused? }. Sent when the incident has actually LANDED,
+    -- not when the request was received -- the promise to the player is that an
+    -- admin will see it, and that promise is only true once a row exists.
+    REPORT_RESULT   = 'br:report:result',
+
     MARKET_STATE    = 'br:market:state',     -- S->C  { balance, owned, equipped }
     MARKET_BUY      = 'br:market:buy',       -- C->S  { id }
     MARKET_EQUIP    = 'br:market:equip',     -- C->S  { id }
@@ -270,6 +288,13 @@ BR.Nui = {
     -- restore the bar, not replay a celebration.
     XP        = 'xp',
     MARKET    = 'market',
+    -- The player list. Carries the roster projection AND the report state --
+    -- how many reports are left this match, and the categories -- because the
+    -- panel cannot render its own rules and must not invent them.
+    PLAYERS   = 'players',
+    -- The answer to a submitted report, so the panel can say what happened
+    -- rather than closing hopefully.
+    REPORT    = 'report',
     -- What the match just paid. Separate from XP because it carries Volts too,
     -- and because the verdict screen owns WHEN it is shown -- Lua cannot see
     -- that screen and timing an award against it from here has failed twice.
@@ -329,6 +354,10 @@ BR.NuiCb = {
     -- free, idempotent, and happens far more often. Folding them into one
     -- callback would mean every equip carried a price the server has to ignore.
     MARKET_EQUIP = 'br/market/equip',
+    -- The player list. FOCUS follows the same push/pop discipline every other
+    -- overlay uses; SUBMIT carries the selected targets and their categories.
+    PLAYERS_FOCUS = 'br/players/focus',
+    REPORT_SUBMIT = 'br/report/submit',
     -- The pause menu. FOCUS opens and closes it; ACTION carries the one verb
     -- the player picked ('lobby' | 'squad' | 'server' | 'quit').
     PAUSE_FOCUS  = 'br/pause/focus',

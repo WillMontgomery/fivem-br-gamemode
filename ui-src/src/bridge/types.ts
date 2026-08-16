@@ -439,6 +439,44 @@ export interface ProgressPayload {
  *  player WAS, because the fill has to start from there. */
 /** What one match actually paid. Server-computed, from the same numbers
  *  written to the database -- not a client-side guess. */
+/** One row of the in-game player list. Everything here is already in
+ *  PUBLIC_FIELDS - no position, no health, no matchId. */
+export interface ListedPlayer {
+  src: number
+  name: string
+  state: PlayerState
+  squadId: string | null
+  /** They disconnected mid-match. Still listed, and still reportable - somebody
+   *  who ragequits after cheating is exactly who you want to report. */
+  left: boolean
+  /** This is you. No checkbox is rendered. */
+  you?: boolean
+}
+
+export interface ReportCategory {
+  id: string
+  label: string
+  default?: boolean
+}
+
+export interface PlayersPayload {
+  players: ListedPlayer[]
+  /** THE RULES ARRIVE WITH THE DATA. The panel does not own the category list
+   *  or the limit, and must not hardcode one that drifts from the server. */
+  categories: ReportCategory[]
+  defaultCategory: string
+  maxTargets: number
+  /** Reports left this match. Zero disables submission. */
+  remaining: number
+}
+
+/** The answer to a submitted report. */
+export interface ReportResult {
+  ok: boolean
+  filed: number
+  refused?: string
+}
+
 export interface EarnedPayload {
   xp: number
   volts: number
@@ -512,7 +550,7 @@ export type CurtainKind = 'leaving' | 'dropping'
 /** Which screen currently owns NUI focus. Lua is the authority. */
 export interface FocusPayload {
   screen: 'none' | 'lobby' | 'squad' | 'inventory' | 'summary' | 'chat'
-        | 'settings' | 'locker' | 'market' | 'pause' | 'help'
+        | 'settings' | 'locker' | 'market' | 'pause' | 'help' | 'players'
   /** Which channel a chat focus should open in. Rides along here rather than
    *  needing its own envelope kind. */
   channel?: ChatChannel
@@ -568,6 +606,8 @@ export type Envelope =
   | { k: 'keybinds'; d: { actions: KeybindAction[]; raw?: boolean } }
   | { k: 'xp';       d: XpAward }
   | { k: 'earned';   d: EarnedPayload }
+  | { k: 'players';  d: PlayersPayload }
+  | { k: 'report';   d: ReportResult }
 
 export type EnvelopeKind = Envelope['k']
 
@@ -604,6 +644,8 @@ export const CB = {
   MARKET_FOCUS:   'br/market/focus',
   MARKET_BUY:     'br/market/buy',
   MARKET_EQUIP:   'br/market/equip',
+  PLAYERS_FOCUS:  'br/players/focus',
+  REPORT_SUBMIT:  'br/report/submit',
   PAUSE_FOCUS:    'br/pause/focus',
   HELP_FOCUS:     'br/help/focus',
   VOICE_SETTINGS: 'br/voice/settings',

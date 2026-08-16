@@ -221,3 +221,87 @@ function BR.IncidentBuild.fromRefusal(ev, records)
         atGameMs = ev.at,
     }
 end
+
+--- Build an incident from a player's report.
+---
+--- THE SECOND SOURCE, and the shape is deliberately the same as the anticheat's
+--- so the console has one record type rather than two that drift. What differs
+--- is what can be trusted: an anticheat incident carries a measurement, a report
+--- carries an accusation. Nothing here decides which is true -- that is the
+--- whole point of an incident.
+---
+--- SEVERITY IS NOT SET. `severityOf` grades refusal reasons, and a human's
+--- category is not a measurement of anything: "cheating" from a player who just
+--- lost a fight and "cheating" from a spectator watching someone track through a
+--- wall are the same string. Grading them here would invent confidence that does
+--- not exist. The console sorts reports by age, like the queue does.
+---
+--- NO LICENSE, NO INCIDENT -- for either party. The subject's license keys the
+--- record; the reporter's is what makes "somebody who reports everybody"
+--- visible, which is a signal the console explicitly renders. A report missing
+--- either is dropped rather than filed against a server id.
+---
+--- @param ev table  { license, name, reporterLicense, reporterName, category, note, matchId, at }
+--- @param records table|nil  evidence rows for the SUBJECT
+--- @return table|nil payload, string|nil why
+function BR.IncidentBuild.fromReport(ev, records)
+    if type(ev) ~= 'table' then return nil, 'no event' end
+
+    if type(ev.license) ~= 'string' or ev.license == '' then
+        return nil, 'no subject license'
+    end
+    if type(ev.reporterLicense) ~= 'string' or ev.reporterLicense == '' then
+        return nil, 'no reporter license'
+    end
+
+    -- SELF-REPORTS ARE REFUSED HERE AS WELL AS AT THE DOOR. The server already
+    -- rejects them, and this is the layer that builds the record -- a rule
+    -- enforced in exactly one place is a rule one refactor away from being gone.
+    if ev.license == ev.reporterLicense then
+        return nil, 'cannot report yourself'
+    end
+
+    local evidence = {}
+    for _, r in ipairs(records or {}) do
+        evidence[#evidence + 1] = evidenceRow(r)
+    end
+
+    local newest = evidence[#evidence]
+
+    return {
+        kind     = 'report',
+        category = ev.category,
+        state    = 'pending_review',
+
+        subjectLicense = ev.license,
+        subjectName    = ev.name,
+        subjects = { {
+            license = ev.license,
+            name    = ev.name,
+            squadId = newest and newest.squadId or nil,
+            left    = newest and newest.left or false,
+        } },
+
+        -- PRESENT, unlike the anticheat's payload where these are deliberately
+        -- absent. br_ddb writes absent keys as explicit nulls, and the console
+        -- tests `reporterLicense === null` to mean "the system filed this" --
+        -- so a report MUST carry them or it reads as system-generated.
+        reporterLicense = ev.reporterLicense,
+        reporterName    = ev.reporterName,
+
+        matchId = ev.matchId,
+
+        -- The summary is the queue row. It names the category rather than
+        -- quoting the note, because the note is free text from a player and the
+        -- queue is read at a glance by somebody deciding what to open.
+        summary = ('Reported for %s by %s'):format(
+            tostring(ev.category), tostring(ev.reporterName or 'a player')),
+
+        -- NEVER INTERPOLATED ANYWHERE. It reaches the console as data and is
+        -- rendered as text; the length cap is applied by the caller.
+        note = ev.note,
+
+        evidence = evidence,
+        atGameMs = ev.at,
+    }
+end
