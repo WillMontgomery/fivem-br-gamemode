@@ -85,6 +85,29 @@ function BR.Pause.close()
     TriggerEvent('br:ui:popFocus', 'pause')
 end
 
+-- CLOSING THE MENU FROM BEHIND THE CURTAIN (#124).
+--
+-- The one verb on this screen that takes the whole screen away -- "Back to
+-- lobby" -- deliberately does NOT close the menu when it is pressed any more.
+-- br_core raises the curtain, waits for the page to report it solid black, and
+-- only then fires this: the menu comes down, the party is left, the server is
+-- told, and the player sees none of it.
+--
+-- The owner's own FAIL criterion for the path this one was modelled on says why
+-- it cannot close itself first: "you see the lobby menu vanish ... at any point
+-- BEFORE or DURING the fade" is a fail. A pause menu that pops away on the click
+-- and drops the player back into a live match for the length of the fade is the
+-- same fault wearing the same clothes.
+--
+-- br_core owns WHEN because br_core is the only side that knows whether there is
+-- a match to leave at all, and it fires this on every outcome -- the leave
+-- proceeding, the leave being refused because the player is already in the
+-- lobby, and its own fail-safe timer. Three more nets sit under that: the F1
+-- keybind, Escape, and the focusChanged handler at the bottom of this file.
+AddEventHandler('br:ui:pauseClose', function()
+    BR.Pause.close()
+end)
+
 --- GTA's own pause menu, driven straight to its map page.
 ---
 --- THIS IS THE COMMUNITY RECIPE (cfx forum, "one button main map"), and the
@@ -466,11 +489,60 @@ RegisterNUICallback(BR.NuiCb.PAUSE_ACTION, function(data, cb)
         TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING,
                      { show = true, kind = 'disconnecting' })
         TriggerServerEvent(BR.Net.LEAVE_SERVER)
+
+        -- AND A WAY BACK, WHICH THIS RAISE HAS NEVER HAD.
+        --
+        -- Every other curtain in the game is raised through br_core's
+        -- BR.Spawn.curtain, which records that one is wanted and runs a watchdog
+        -- that lifts an abandoned one after 15 seconds. This one is raised
+        -- straight at the page, from the other resource, so none of that applies
+        -- to it: if the drop never arrives -- br_core stopped, the event lost,
+        -- an error in the server handler -- the player is left on black with
+        -- nothing anywhere that will ever take it away.
+        --
+        -- That was survivable while the curtain passed clicks through and they
+        -- could at least blind-click their way back to the lobby. It stopped
+        -- being survivable today: the curtain swallows clicks now, so a stuck
+        -- one takes the whole interface with it. Ten seconds is far longer than
+        -- any drop takes and this thread simply dies with the client on the
+        -- normal path, so the only way it can ever fire is the failure it is for.
+        Citizen.SetTimeout(10000, function()
+            print('[br_ui] disconnect never landed -- lifting the curtain')
+            TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING, { show = false })
+        end)
+
         cb({ ok = true })
         return
     end
 
-    -- 'lobby' and 'squad' are gameplay: br_core decides what they mean.
+    if action == 'lobby' then
+        -- THE MENU STAYS UP, AND THAT IS THE FIX (#124).
+        --
+        -- Everything else on this screen closes the menu on the press, because
+        -- everything else leaves the player where they are. Leaving a match does
+        -- not: it is a covered transition, and closing here would uncover it.
+        --
+        -- What that looked like, and what the owner still had after the rest of
+        -- #124 landed (2026-08-16): "leaving mid-match via the pause menu still
+        -- has the old jarring affect." Press the button, the menu snaps away,
+        -- the HUD and the world you just quit come back for the length of the
+        -- curtain's fade, and your character freezes and your car vanishes in
+        -- front of you while it darkens.
+        --
+        -- So the press does one thing only: ask. br_core raises the curtain,
+        -- waits for this page to report itself black, and closes this menu
+        -- through br:ui:pauseClose once nothing can be seen. The menu the player
+        -- clicked is the last thing on screen and it fades out under the
+        -- curtain, which is exactly what the lobby menu does on the ready-up
+        -- path the owner has already passed.
+        TriggerEvent('br:ui:pauseAction', action)
+        cb({ ok = true })
+        return
+    end
+
+    -- 'squad' is gameplay: br_core decides what it means. It changes nothing
+    -- about the round in progress, so there is nothing to cover and the menu
+    -- closes on the press like the rest of them.
     BR.Pause.close()
     TriggerEvent('br:ui:pauseAction', action)
     cb({ ok = true })

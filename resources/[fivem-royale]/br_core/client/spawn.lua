@@ -682,30 +682,160 @@ AddEventHandler(BR.Net.TO_LOBBY, function()
     end)
 end)
 
+--- Whether a voluntary leave is already under way.
+---
+--- NOT DEFENSIVE PROGRAMMING -- a window this flag guards did not exist until
+--- today. Leaving now YIELDS for as long as it takes the curtain to go black
+--- before it tells the server anything, so for the first time the button can be
+--- pressed twice inside one leave. Two threads would each send MATCH_LEAVE and,
+--- worse, each arm their own curtain fallback -- and the second one would come
+--- due in the middle of the first one's trip home and lower the curtain over a
+--- half-streamed island, which is the exact thing the interstitial exists to
+--- hide.
+local leaving = false
+
 --- Leave the current match and return to the lobby.
 ---
+--- ONE IMPLEMENTATION FOR BOTH DOORS. The pause menu's "Back to lobby" used to
+--- reach this by running ExecuteCommand('brleave'), which shared the code by
+--- accident rather than on purpose -- and fire-and-forget is exactly what a
+--- command is, so the menu could not sequence anything against it. It has to
+--- now: the menu itself has to come down behind the curtain, and so does the
+--- party leave that rides along with it.
+---
+--- THE ORDER IS THE FEATURE, AND THIS PATH IS THE LAST PIECE OF #124.
+---
+--- Ready-up and the end-of-match verdict were fixed by making Lua wait for the
+--- page to say "I am black" instead of counting milliseconds at it. Leaving a
+--- match early was never converted, and the owner found it the moment he
+--- playtested the rest (2026-08-16): "I tried the verdict and lobby, but leaving
+--- mid-match via the pause menu still has the old jarring affect."
+---
+--- What it was doing: raise the curtain (a 600ms CSS opacity transition, inside
+--- CEF, in another process) and then IMMEDIATELY tell the server. The server
+--- flips the roster to LOBBY on receipt, and that one flip is a teardown --
+--- client/natives.lua freezes the ped, the routing bucket change makes the car
+--- the player is driving stop existing for them, client/storm.lua stops drawing
+--- the storm, and the HUD is replaced by the lobby menu. A local server answers
+--- in a handful of milliseconds. All of it therefore landed while the curtain
+--- was perhaps five percent opaque, in plain sight, and THEN the screen went
+--- black -- which is word for word the report that opened this issue, arriving
+--- from the one door nobody had rewired.
+---
+--- So nothing is sent until the page says the screen is genuinely covered. The
+--- server never even learns the player wants out until there is nothing to see.
+--- That is the same shape as the verdict path, which gates the server's roster
+--- sweep on BR.Net.MATCH_COVERED -- the difference being only that a voluntary
+--- leave is the CLIENT's decision, so the client can simply not ask yet.
+---
+--- BOUNDED, AND BIASED TOWARDS A VISIBLE CUT. BR.Spawn.awaitCover gives up after
+--- coverWaitMs, says so in the console, and we leave anyway. A page that has
+--- crashed must cost the player one ugly transition, never a leave button that
+--- silently does nothing and a match they cannot get out of.
+---
+--- @param leaveParty boolean|nil  also leave the PARTY on the way out (the
+---        pause menu's verb does; the console command deliberately does not)
+--- @return boolean started
+function BR.Spawn.leaveMatch(leaveParty)
+    if BR.State.me.state == BR.PlayerState.LOBBY then
+        print('[br_core] not in a match')
+        -- AND THE MENU IS HANDED BACK. br_ui no longer closes the pause menu on
+        -- this verb -- it waits for us to close it from behind the curtain -- so
+        -- a refusal that returned quietly here would leave the player looking at
+        -- a menu that ate their click with nothing to show for it.
+        TriggerEvent('br:ui:pauseClose')
+        return false
+    end
+    if leaving then return false end
+    leaving = true
+
+    -- THE CURTAIN FIRST AND NOTHING ELSE UNTIL IT LANDS. It also has to rise
+    -- before the server round trip for the older reason this line already had:
+    -- the LOBBY roster delta can beat TO_LOBBY across the wire, and the lobby
+    -- menu flashed in the gap (live report, 2026-08-04).
+    BR.Spawn.curtain(true, 'leaving')
+
+    local wait = BR.Config.Match.coverWaitMs or 2500
+
+    -- NOTHING HERE MAY OUTLIVE THE THREAD THAT OWNS IT. Everything below runs
+    -- in a bare Citizen thread, and a bare thread that throws simply stops -- no
+    -- handler, no loop registry to say so. Two things would be left behind if
+    -- that happened: `leaving`, which would make the leave button dead for the
+    -- rest of the session with nothing in any log; and the pause menu, which no
+    -- longer closes itself on the press and would sit there over a match the
+    -- player asked to leave. Both are released on a clock nothing in the thread
+    -- can break. Generous, because it only has to outlast the wait plus the
+    -- round trip.
+    --
+    -- `settled` is what keeps the menu half of that from firing on a leave that
+    -- WORKED. By the time this comes due the player is normally standing in the
+    -- lobby, free to have opened the pause menu again on purpose -- and closing
+    -- a menu somebody just opened, six seconds after an unrelated click, is its
+    -- own small bug. So the net only catches a thread that never arrived.
+    local settled = false
+    Citizen.SetTimeout(wait + 4000, function()
+        leaving = false
+        if settled then return end
+        print('[br_core] leave: the covered thread never reported -- releasing the menu')
+        TriggerEvent('br:ui:pauseClose')
+    end)
+
+    Citizen.CreateThread(function()
+        BR.Spawn.awaitCover('curtain', wait)
+        settled = true
+
+        -- THE WORLD CAN MOVE UNDER A WAIT, and it is a new hazard: this thread
+        -- can now be parked for the better part of a second, and a match that
+        -- ends in that window sweeps us home by itself. Sending MATCH_LEAVE then
+        -- is harmless (the server sees a LOBBY player and only detaches them)
+        -- but the curtain would be OURS, sitting on top of a verdict screen the
+        -- player is supposed to be reading. Drop it and get out of the way.
+        if BR.State.me.state == BR.PlayerState.LOBBY then
+            print('[br_core] leave: already home before the curtain landed')
+            TriggerEvent('br:ui:pauseClose')
+            BR.Spawn.curtain(false)
+            return
+        end
+
+        -- EVERYTHING FROM HERE HAPPENS BEHIND SOLID BLACK, which is the whole
+        -- point of the wait above.
+        --
+        -- The pause menu goes first and it is not cosmetic: its own party card
+        -- is drawn from the party we are about to leave, so leaving the party in
+        -- front of it would visibly rewrite the menu the player is still looking
+        -- at. Same argument as the rest of #124, one layer up.
+        TriggerEvent('br:ui:pauseClose')
+        if leaveParty then TriggerServerEvent(BR.Net.SQUAD_LEAVE) end
+        TriggerServerEvent(BR.Net.MATCH_LEAVE)
+
+        -- ARMED FROM THE SEND, NEVER FROM THE PRESS. This fallback covers a
+        -- leave the server refused or lost, and it used to start counting at the
+        -- moment the button was pressed -- which was fine when the send happened
+        -- on that same frame. Now that up to coverWaitMs can pass first, a
+        -- deadline measured from the press could come due half a second after
+        -- the request went out and pull the curtain off a leave that is working.
+        Citizen.SetTimeout(3000, function()
+            if BR.State.me.state ~= BR.PlayerState.LOBBY
+               and not BR.Spawn.traveling then
+                BR.Spawn.curtain(false)
+            end
+        end)
+    end)
+
+    return true
+end
+
 --- A COMMAND rather than a button, by design: mid-match the HUD never holds
 --- NUI focus (that rule is what keeps players able to move and shoot), so
 --- there is nothing on screen to click. A console/chat command plus a
 --- bindable key in Pause > Settings > Key Bindings costs no focus at all.
 --- Unbound by default -- a mispressed key must not be able to forfeit a match.
+---
+--- The party survives this door. Typing /brleave says nothing about the people
+--- you are queued with; the pause menu's button says so on its own confirm
+--- ("You will also leave your party") and passes true.
 RegisterCommand('brleave', function()
-    if BR.State.me.state == BR.PlayerState.LOBBY then
-        print('[br_core] not in a match')
-        return
-    end
-    -- The interstitial rises HERE, before the server round-trip: the LOBBY
-    -- roster delta can beat TO_LOBBY across the wire, and the menu flashed
-    -- in the gap (live report, 2026-08-04). TO_LOBBY owns the hide; the
-    -- fallback below only covers a refused or lost leave.
-    BR.Spawn.curtain(true, 'leaving')
-    TriggerServerEvent(BR.Net.MATCH_LEAVE)
-    Citizen.SetTimeout(3000, function()
-        if BR.State.me.state ~= BR.PlayerState.LOBBY
-           and not BR.Spawn.traveling then
-            BR.Spawn.curtain(false)
-        end
-    end)
+    BR.Spawn.leaveMatch(false)
 end, false)
 RegisterKeyMapping('brleave', 'Royale: Leave the current match', 'keyboard', '')
 
@@ -867,7 +997,16 @@ RegisterCommand('brunstuck', function()
     ShutdownLoadingScreenNui()
     DoScreenFadeIn(300)
 
-    print('[br_core] unstuck: screen restored, ped unfrozen, cams cleared')
+    -- AND THE CURTAIN, which every other line here would leave exactly where it
+    -- was: it is a NUI layer, so DoScreenFadeIn restores a screen the page is
+    -- still painting black over -- the failure /brblack's own footer warns
+    -- about. This was survivable while the curtain passed clicks through; it
+    -- stopped being survivable when it started swallowing them (see
+    -- ui-src/src/screens/LeaveScreen.tsx), because a stuck curtain now takes the
+    -- interface with it and this command is the way back.
+    BR.Spawn.curtain(false)
+
+    print('[br_core] unstuck: screen restored, curtain down, ped unfrozen, cams cleared')
 end, false)
 
 -- THE INTERFACE ASKING FOR MORE TIME. Raised by the post-match XP award while
