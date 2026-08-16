@@ -174,6 +174,35 @@ AddEventHandler('playerConnecting', function()
     BR.Ring.capture(source)
 end)
 
+--[[
+    RE-KEY ONTO THE REAL SERVER ID, WHICH IS THE WHOLE BUG.
+
+    `playerConnecting` runs while the connection is still being negotiated, and
+    its `source` is a TEMPORARY id -- not the server id the player ends up
+    holding. So capture() filed the license under a number that never appears
+    again, and `playerDropped` looked it up under the real one and found
+    nothing. Every session close was skipped, silently, because a missing
+    license is indistinguishable from a player who never had one.
+
+    That is why sessions and playtime stayed at 0 through three separate fixes
+    to this path: the emitter, the event kind, the console handler and the key
+    type were all correct. The key VALUE was wrong.
+
+    `playerJoining` exists for exactly this handoff -- it fires once the player
+    has a real id, with the temporary one passed in. It is the only moment both
+    numbers are in the same place.
+]]
+AddEventHandler('playerJoining', function(oldId)
+    local newSrc = tonumber(source) or source
+    local temp = tonumber(oldId) or oldId
+
+    local license = BR.Ring.licenseBySrc[temp]
+    if not license then return end
+
+    BR.Ring.licenseBySrc[temp] = nil
+    BR.Ring.licenseBySrc[newSrc] = license
+end)
+
 AddEventHandler('playerDropped', function()
     --[[
         NORMALISED, BECAUSE THE WRITE WAS AND THE READ WAS NOT.
