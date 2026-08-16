@@ -793,3 +793,110 @@ RegisterCommand('brrefuse', function(src, args)
         BR.Damage.noteRefusal(target, BR.ShotRefusal[why])
     end
 end, false)
+
+--- Print the stored profile row for connected players.
+---
+--- THE TOOL THAT WAS MISSING FOR EVERY STATS PLAYTEST. Verifying that a match
+--- credited damage, or paid the right Volts, or recorded a quitter, all reduce
+--- to "read this row before and after" -- and the only way to do that was the
+--- AWS console. That is a bad place to be mid-playtest with two clients open,
+--- and it made the one step those tests actually turn on the step most likely
+--- to be skipped.
+---
+--- `br:ddb:profileFetch` has existed since the stats writer landed and nothing
+--- has ever called it. This is that caller.
+---
+---   brprofile          every connected player, which is the "before" snapshot
+---   brprofile 3        one server id
+---
+--- Server console only -- it prints a table, and a client has nowhere to put
+--- one. Not dev-gated: it reads a row that the player's own profile page shows
+--- them anyway, and gating a read-only diagnostic behind dev mode is how you
+--- end up unable to diagnose the live server.
+local function printProfile(name, src, row, err)
+    if err then
+        print(('  %-18s %-4s  READ FAILED: %s'):format(name, src, err))
+        return
+    end
+    if not row then
+        print(('  %-18s %-4s  no row yet -- has never finished a match'):format(name, src))
+        return
+    end
+
+    local n = function(k) return tonumber(row[k]) or 0 end
+
+    print(('  %-18s %-4s  lvl %-3d xp %-8d volts %-7d'):format(
+        name, src, n('level'), n('xp'), n('balance')))
+    print(('  %-18s %-4s  matches %-4d wins %-3d kills %-4d deaths %-4d'):format(
+        '', '', n('matches'), n('wins'), n('kills'), n('deaths')))
+    print(('  %-18s %-4s  damage %-8d playtime %-7ds downs %-3d revives %-3d'):format(
+        '', '', n('damageDealt'), n('playtimeSec'), n('downs'), n('revives')))
+end
+
+RegisterCommand('brprofile', function(src, args)
+    if tonumber(src) ~= 0 then
+        print('  brprofile is server-console only -- it prints a table.')
+        return
+    end
+
+    if GetResourceState('br_ddb') ~= 'started' then
+        print('  brprofile: br_ddb is not started, so there is nothing to read.')
+        return
+    end
+
+    local wanted = tonumber(args[1])
+    local list = {}
+
+    for _, id in ipairs(GetPlayers()) do
+        local pid = tonumber(id)
+        if not wanted or wanted == pid then
+            local byKind = BR.Identity.ofPlayer(pid)
+            local license = byKind and BR.Identity.qualified('license', byKind.license)
+            if license then
+                list[#list + 1] = { src = pid, name = GetPlayerName(pid) or '?', license = license }
+            end
+        end
+    end
+
+    if #list == 0 then
+        print(wanted and ('  brprofile: %d is not connected, or has no license.'):format(wanted)
+            or '  brprofile: nobody connected.')
+        return
+    end
+
+    print(('=== stored profiles (%s) ==='):format(os.date('%Y-%m-%d %H:%M:%S')))
+
+    -- One request per player, each answering independently. Printed as they
+    -- arrive rather than gathered, because a single slow row should not hold
+    -- back the rest -- and during a playtest a partial answer beats a wait.
+    for _, p in ipairs(list) do
+        local req = BR.Server.nextDbgReq or 1
+        BR.Server.nextDbgReq = req + 1
+
+        -- `RemoveEventHandler` takes the HANDLE that AddEventHandler returns,
+        -- not the function -- passing the function silently removes nothing and
+        -- leaves a handler per player per invocation for the life of the
+        -- resource. Captured in a forward-declared local so the closure can
+        -- reach its own registration.
+        local ref
+        local answered = false
+
+        ref = AddEventHandler('br:ddb:profileResult', function(gotReq, row, extra)
+            if gotReq ~= req or answered then return end
+            answered = true
+            if ref then RemoveEventHandler(ref) end
+            printProfile(p.name, p.src, row, extra and extra.error)
+        end)
+
+        -- The guard matters: without it this prints "timed out" six seconds
+        -- after every successful read, which reads as the command being broken.
+        SetTimeout(6000, function()
+            if answered then return end
+            answered = true
+            if ref then RemoveEventHandler(ref) end
+            printProfile(p.name, p.src, nil, 'timed out')
+        end)
+
+        TriggerEvent('br:ddb:profileFetch', req, p.license)
+    end
+end, true)
