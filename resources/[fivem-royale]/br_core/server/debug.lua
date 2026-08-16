@@ -747,3 +747,49 @@ RegisterCommand('brwhy', function(_, args)
         print(('  nearest POI    %s'):format(poi.name))
     end
 end, RESTRICTED)
+
+--- Trip the anticheat on purpose, without a trainer.
+---
+--- WHY THIS IS COMMITTED RATHER THAN PASTED IN. The playtest issues for the
+--- incident pipeline all begin "add a temporary debug command (do not commit
+--- it)" -- which means every run of those tests starts by editing a server file
+--- on a live box, and ends with somebody hoping they removed it again. That is
+--- a worse risk than the command existing behind the dev gate that already
+--- guards brgive and brforce.
+---
+--- IT DRIVES THE REAL PATH. It calls BR.Damage.noteRefusal exactly as the
+--- validator does, so the tier logic, the doubling guard, the evidence
+--- attachment and the incident write are all genuinely exercised. A command
+--- that faked an incident row would prove nothing about the thing being tested.
+---
+---   brrefuse            2 NO_WEAPON against yourself -- crosses the high bar
+---   brrefuse 8          8 of them, to watch the doubling reports at 2, 4 and 8
+---   brrefuse 2 TOO_FAR  a normal-tier reason instead
+---   brrefuse 1 SELF     the one that must count toward NOTHING
+---
+--- Console-only would be useless here: source 0 is not a player and has no
+--- match, so this is a client command and the caller is the subject.
+RegisterCommand('brrefuse', function(src, args)
+    if not devOnly('brrefuse') then return end
+
+    local n = math.max(1, math.min(64, math.floor(tonumber(args[1]) or 2)))
+    local why = tostring(args[2] or 'NO_WEAPON'):upper()
+
+    if not BR.ShotRefusal[why] then
+        print(('  brrefuse: unknown reason "%s". Try one of:'):format(why))
+        for k in pairs(BR.ShotRefusal) do print('    ' .. k) end
+        return
+    end
+
+    local target = tonumber(src)
+    if not target or target <= 0 then
+        print('  brrefuse: run this from a CLIENT (F8), not the server console --'
+            .. ' the caller is the subject and source 0 is in no match.')
+        return
+    end
+
+    print(('[br_core] brrefuse: %d x %s against %s'):format(n, why, target))
+    for _ = 1, n do
+        BR.Damage.noteRefusal(target, BR.ShotRefusal[why])
+    end
+end, false)
