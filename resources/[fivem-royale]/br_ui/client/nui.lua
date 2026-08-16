@@ -293,11 +293,17 @@ callback(BR.NuiCb.LOCKER_FOCUS, function(data)
     return { ok = true }
 end)
 
-callback(BR.NuiCb.PAUSE, function()
-    popFocus('lobby')
-    TriggerEvent('br:ui:pauseRequest')
-    return { ok = true }
-end)
+-- `BR.NuiCb.PAUSE` IS GONE, AND IT WAS A FOURTH DOOR NOBODY WALKED THROUGH
+-- (#138). It popped the lobby focus and fired `br:ui:pauseRequest`, which
+-- raises GTA's frontend from br_core and announces nothing to the page -- so
+-- it carried #122's bug in full. The page never called it: `PAUSE` was
+-- declared in bridge/types.ts and referenced from no component, verified by
+-- grep across ui-src.
+--
+-- Deleted rather than fixed. A route with no caller cannot be tested and
+-- cannot be trusted, and leaving a broken one wired up is how it becomes live
+-- the first time somebody adds a button. Every real route into the frontend
+-- now goes through BR.Pause.handOverToFrontend.
 
 -- ------------------------------------------------------------- the cover ---
 

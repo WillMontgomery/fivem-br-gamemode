@@ -128,13 +128,6 @@ local function applyFocusForState(state)
     end
 end
 
--- ESC IN THE LOBBY RAISES GTA'S PAUSE MENU. With NUI focused the engine
--- never sees the key, so the page captures it, fades itself out, drops
--- focus (nui.lua), and hands over here. The beat before ActivateFrontendMenu
--- lets the fade land; the watcher below gives the lobby its focus back the
--- moment the menu closes -- if the player is still a lobby player.
-local pausePhase, pauseAt = nil, 0
-
 -- THE PAUSE MENU'S GAMEPLAY VERBS. br_ui owns the page and forwards the verb;
 -- what it MEANS is br_core's, the same split the locker and inventory use.
 AddEventHandler('br:ui:pauseAction', function(action)
@@ -214,33 +207,22 @@ AddEventHandler('br:ui:frontendClosed', function()
     end
 end)
 
-AddEventHandler('br:ui:pauseRequest', function()
-    Citizen.SetTimeout(250, function()
-        ActivateFrontendMenu(GetHashKey('FE_MENU_VERSION_SP_PAUSE'), false, -1)
-        pausePhase, pauseAt = 'raising', GetGameTimer()
-    end)
-end)
-
-BR.Loop.register(BR.Loop.TICK, 'state.pausewatch', function()
-    if not pausePhase then return end
-    local active = IsPauseMenuActive()
-    if pausePhase == 'raising' then
-        if active then
-            pausePhase = 'open'
-        elseif GetGameTimer() - pauseAt > 2000 then
-            -- The menu never came up; do not strand the player focusless.
-            pausePhase = nil
-            if S.me.state == BR.PlayerState.LOBBY then
-                TriggerEvent('br:ui:pushFocus', 'lobby')
-            end
-        end
-    elseif pausePhase == 'open' and not active then
-        pausePhase = nil
-        if S.me.state == BR.PlayerState.LOBBY then
-            TriggerEvent('br:ui:pushFocus', 'lobby')
-        end
-    end
-end)
+-- `br:ui:pauseRequest` AND ITS WATCHER ARE GONE (#138).
+--
+-- They were a SECOND way to raise the engine's frontend, living here in
+-- br_core, alongside br_ui's. This one raised the menu after a 250ms timeout
+-- and restored focus from a `pausePhase` tick watcher; br_ui's announces the
+-- frontend to the page first (which is what actually stops the lobby drawing
+-- over the scaleform -- see #122) and restores via `br:ui:frontendClosed`
+-- above.
+--
+-- Two mechanisms meant two answers to "is the frontend up", and only one of
+-- them told the page. Its two callers -- settings.lua's key-bindings button
+-- and an orphaned `BR.NuiCb.PAUSE` in nui.lua that the page never invoked --
+-- now go through BR.Pause.handOverToFrontend, leaving this with no emitter at
+-- all. Deleted rather than kept "in case": a handler nothing fires is the
+-- thirteenth instance of that pattern in this project, and had it been left,
+-- restoring one caller would have run BOTH restore paths at once.
 
 -- THE CURTAIN GOES UP BEFORE THE SCREEN CHANGES, NOT AFTER IT.
 --

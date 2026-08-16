@@ -212,12 +212,20 @@ RegisterNUICallback(BR.NuiCb.KEYBINDS, function(_, cb)
     -- one the game actually reads -- so the button opens the real thing
     -- instead of pretending.
     --
-    -- Reuses the ESC-in-the-lobby path rather than raising the frontend here:
-    -- the pause menu cannot open while NUI holds the cursor, and that path
-    -- already drops focus, waits for the fade, and -- the part worth having
-    -- -- hands focus BACK when the menu closes (br_core/client/state.lua).
-    TriggerEvent('br:ui:clearFocus')
-    TriggerEvent('br:ui:pauseRequest')
+    -- THE SAME DOOR AS THE VOICE AND GRAPHICS BUTTONS, and it was not (#138).
+    --
+    -- This used to do `clearFocus` then `br:ui:pauseRequest`, which raised the
+    -- frontend from br_core and told the PAGE nothing. Clearing the focus stack
+    -- is about the cursor; the lobby is drawn from match state rather than from
+    -- focus, so it kept painting over the scaleform -- #122's report, on the one
+    -- route that was never converted, reachable from the lobby which is the only
+    -- place it shows.
+    --
+    -- handOverToFrontend announces the frontend to the page before raising it
+    -- and clears the announcement once it is genuinely down, by whatever route
+    -- the player left it. It also restores focus itself, so this must NOT also
+    -- fire pauseRequest -- two restore mechanisms racing was the trap here.
+    BR.Pause.handOverToFrontend()
     cb({ ok = true })
 end)
 

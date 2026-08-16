@@ -173,6 +173,13 @@ function BR.Pause.openFrontendMap(page)
     -- This is the one time we WANT it, so it has to know to stand down --
     -- otherwise the map opens into a menu that is being closed underneath it.
     TriggerEvent('br:map:frontend', true)
+    -- AND THE PAGE STOPS DRAWING (#138). Latent rather than live until now only
+    -- because PauseMenu.tsx hides the Map card in the lobby, and the lobby is
+    -- the one screen that keeps painting through a cleared focus stack -- so
+    -- this was #122 waiting for somebody to unhide a card. Announced here, and
+    -- cleared at both exits below, for the same reason openFrontendPlain does:
+    -- the scaleform can be up on the very next frame.
+    announceFrontend(true)
 
     Citizen.CreateThread(function()
         -- FE_MENU_VERSION_MP_PAUSE, not SP: the multiplayer pause menu is the
@@ -192,6 +199,9 @@ function BR.Pause.openFrontendMap(page)
             print('[br_ui] map: pause menu never became active; giving up')
             frontendMap = false
             TriggerEvent('br:map:frontend', false)
+            -- Hidden for a frontend that never arrived. Without this the player
+            -- is left looking at the world with no interface and no way back.
+            announceFrontend(false)
             return
         end
 
@@ -276,6 +286,9 @@ function BR.Pause.openFrontendMap(page)
         -- Suppression resumes only once the frontend is genuinely down, so
         -- there is no frame in which both are trying to own it.
         TriggerEvent('br:map:frontend', false)
+        -- And the page draws again. Reached no matter which way the player
+        -- left the map, because the loop above only ends when it is gone.
+        announceFrontend(false)
     end)
 end
 
@@ -398,12 +411,22 @@ end)
 --- this function. The announcement therefore goes LAST, after the stack has
 --- finished collapsing, or the page would be told to draw again immediately
 --- after being told not to.
-local function handOverToFrontend()
+--- PUBLIC BECAUSE THERE WAS A FOURTH DOOR (#138). This was local, so
+--- settings.lua's "GTA key bindings" button could not reach it and grew its own
+--- handover -- `clearFocus` then `br:ui:pauseRequest`, which raises the frontend
+--- from br_core and announces nothing. That is #122 reproduced exactly, on the
+--- one route that was never converted, and reachable from the lobby where it is
+--- the only place the fault shows.
+---
+--- Every route into the engine's frontend goes through this function now, so
+--- there is one place that knows the order and one place to be wrong.
+function BR.Pause.handOverToFrontend()
     BR.Pause.close()
     TriggerEvent('br:ui:closeSettings')
     TriggerEvent('br:ui:clearFocus')
     BR.Pause.openFrontendPlain()
 end
+local handOverToFrontend = BR.Pause.handOverToFrontend
 
 RegisterNUICallback(BR.NuiCb.VOICE_SETTINGS, function(_, cb)
     handOverToFrontend()

@@ -686,7 +686,8 @@ export const CB = {
   CLOSE:        'br/close',
   CHAT_SEND:    'br/chat/send',
   CHAT_FOCUS:   'br/chat/focus',
-  PAUSE:        'br/pause',
+  /* `PAUSE` was removed with its Lua callback (#138): it raised GTA's frontend
+     without announcing it to this page, and no component ever called it. */
   /** Menu audio. The UI names a CUE; Lua owns the table and the throttle. */
   SFX:          'br/sfx',
   SETTINGS_SAVE:  'br/settings/save',
