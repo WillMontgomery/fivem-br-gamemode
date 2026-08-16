@@ -16,6 +16,42 @@ local CHUTE = GetHashKey('GADGET_PARACHUTE')   -- 0xFBAB5776, verified
 
 local dropping = false
 
+--- Has this drop already ended on the ground?
+---
+--- Separate from `dropping`, and the separation is #126. `dropping` means "the
+--- drop machine is armed", and it is re-armed BY THE SERVER'S OPINION -- see
+--- the top of skydive.state, which turns it back on whenever the roster still
+--- calls us a faller. That is right as a net for a missed handoff and wrong as
+--- a record of what our own feet have done: while the landing report is
+--- outstanding the machine re-armed itself ten times a second, ran the landing
+--- branch again each time, and re-fired every one-shot in it -- a fresh disarm
+--- thread, a fresh report thread, a fresh "Loot up before the storm comes!"
+--- toast. The stack of duplicate toasts is a symptom this file has already
+--- shipped once (see the airborneSeen note below); it came back the moment the
+--- server was slow to agree.
+---
+--- This is the fact "my feet touched down during THIS drop", which the server
+--- disagreeing cannot undo. Cleared out of the plane door and at the start of a
+--- round, exactly like BR.State.landed, and by nothing else.
+local landedThisDrop = false
+
+--- Is this ped genuinely off the ground RIGHT NOW?
+---
+--- THE PED'S OWN EVIDENCE, ASKED FRESH, because the two places that need this
+--- are both places where a LATCH gives the wrong answer. It is the same test
+--- skydive.disarm already trusts, lifted out so the two cannot drift.
+---
+--- WATER IS GROUND, and that is not a detail: GetEntityHeightAboveGround
+--- measures to the SEABED, so a player swimming in 30m of water reads as 30m up
+--- (user, 2026-08-05). A sea landing is a bad drop, not a continuing one.
+--- @param ped integer
+--- @return boolean
+local function airborneNow(ped)
+    if IsPedFalling(ped) then return true end
+    if IsEntityInWater(ped) then return false end
+    return GetEntityHeightAboveGround(ped) > 5.0
+end
+
 --- Tell the server we are down, and KEEP TELLING IT UNTIL IT AGREES.
 ---
 --- THE REPORT USED TO BE FIRE-AND-FORGET, and it is the single most
@@ -58,7 +94,25 @@ local function reportLanded()
 
             -- Airborne again is not a lost packet. A player who was promoted
             -- and then walked off a cliff must not be re-reporting a landing.
-            if dropping then return end
+            --
+            -- THIS USED TO READ `if dropping then return end` AND IT KILLED THE
+            -- RETRY IN THE ONLY CASE THE RETRY EXISTS FOR (#126).
+            --
+            -- `dropping` is not "I am in the air". It is re-armed at the top of
+            -- skydive.state whenever the ROSTER still calls us FREEFALL or
+            -- GLIDE -- which is precisely the condition this loop is here to
+            -- correct. So a hundred milliseconds after touchdown the latch was
+            -- true again, and on its first wake-up four hundred milliseconds
+            -- later this loop looked at it and went home. Every attempt after
+            -- the first was unreachable: a retry loop, written correctly,
+            -- wired to nothing, and cited in the issue thread as the reason
+            -- the landing report is survivable.
+            --
+            -- The ped is asked instead. It is the same evidence
+            -- skydive.disarm uses to decide whether someone is genuinely
+            -- falling, and unlike the latch it cannot be turned back on by the
+            -- server's own out-of-date opinion.
+            if airborneNow(PlayerPedId()) then return end
 
             TriggerServerEvent(BR.Net.DROP_LANDED)
         end
@@ -143,6 +197,7 @@ AddEventHandler('br:drop:begin', function(d)
     -- Out of the door is the one moment that unambiguously un-lands you. See
     -- the note where this is SET, at the bottom of the drop machine.
     BR.State.landed = false
+    landedThisDrop = false
 
     Citizen.CreateThread(function()
         local ped = PlayerPedId()
@@ -425,11 +480,28 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
     -- player who needed it.
     if not dropping then
         local st = BR.State.me.state
-        if st == BR.PlayerState.FREEFALL or st == BR.PlayerState.GLIDE then
-            dropping = true
-        else
+        if st ~= BR.PlayerState.FREEFALL and st ~= BR.PlayerState.GLIDE then
             return
         end
+        -- THE SERVER CALLING US A FALLER IS A CLAIM, NOT A MEASUREMENT, AND
+        -- AFTER TOUCHDOWN IT IS AN OUT-OF-DATE ONE (#126).
+        --
+        -- This re-arm is a net under a missed drop handoff and it must stay.
+        -- What it must NOT do is re-run the whole machine -- landing branch,
+        -- disarm sweep, report, toast -- for a player standing on the ground
+        -- whose landing report simply has not been answered yet. That is the
+        -- normal case for the first few hundred milliseconds of every drop and
+        -- the indefinite case whenever the report goes missing, which is the
+        -- whole subject of #126. Re-arming there meant a landing that fired
+        -- ten times a second for as long as the server disagreed.
+        --
+        -- So the ped gets the casting vote: genuinely in the air (walked off a
+        -- cliff, force-ejected again) re-arms and clears the latch; standing on
+        -- the ground does not. Nothing is lost -- the report is being re-sent
+        -- by reportLanded's retry, which now actually retries.
+        if landedThisDrop and not airborneNow(PlayerPedId()) then return end
+        landedThisDrop = false
+        dropping = true
     end
 
     local ped = PlayerPedId()
@@ -444,8 +516,25 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
     if IsPedInAnyVehicle(ped, true) then
         if dropping then
             dropping = false
+            landedThisDrop = true
             disarmChute(ped)
+            -- clearTrail() rather than the bare native: #131 routed every
+            -- trail stand-down through one helper so a match killed mid-air
+            -- cannot leave the state armed into the next round.
             BR.Cosmetics.clearTrail()
+            -- THE SECOND WAY A DROP ENDS ON THE GROUND, AND IT WAS TELLING THE
+            -- SERVER AND NOT THE INTERFACE (#126).
+            --
+            -- This branch already reasoned that a seat is proof of a landing --
+            -- it reports one. What it did not do is set the latch the whole of
+            -- #126 hangs off, so a player who ended their drop by getting into
+            -- a vehicle had the server told and their own client left thinking
+            -- it was still in the air: no HUD, no inventory bar, no crate
+            -- prompt, until the report completed its round trip. The fix for a
+            -- report that goes missing is worth nothing on the one path that
+            -- never armed it. Same two lines as the ordinary landing below.
+            BR.State.landed = true
+            BR.PushHud(true)
             reportLanded()
             print('[br_core] drop: finished from a vehicle seat -- the machine was still armed')
         end
@@ -544,6 +633,12 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.state', function()
        and not IsPedFalling(ped)
        and grounded then
         dropping = false
+        -- ONCE PER DROP. Everything below this line is a one-shot -- a disarm
+        -- sweep, a report, a toast -- and the re-arm at the top of this
+        -- callback used to bring the machine straight back for as long as the
+        -- server had not answered the report, so all of them fired again on
+        -- the next tick, and the next (#126). See landedThisDrop.
+        landedThisDrop = true
 
         if cs == BR.Native.ChuteState.OPEN then
             -- Shed the still-attached canopy along with its vanilla prompt.
@@ -656,6 +751,14 @@ RegisterCommand('brdrop', function()
     print(('  AGL %.0fm   onFoot %s   inWater %s   falling %s'):format(
         GetEntityHeightAboveGround(ped), tostring(IsPedOnFoot(ped)),
         tostring(IsEntityInWater(ped)), tostring(IsPedFalling(ped))))
+    -- THE THREE FACTS #126 IS ABOUT, SIDE BY SIDE. `landed` is what this
+    -- client draws off, `me.state` is what the server will actually let the
+    -- player do, and `landedThisDrop` says whether the drop machine believes it
+    -- has finished. Two of them disagreeing is the bug; which two says which
+    -- half of it.
+    print(('  landed %s   landedThisDrop %s   server says %s   match %s'):format(
+        tostring(BR.State.landed), tostring(landedThisDrop),
+        tostring(BR.State.me.state), tostring(BR.State.match.state)))
     -- THE THREE ANSWERS THE TRAIL PROMPT IS MADE OF, in the order it asks
     -- them, so "why is there no prompt" is one command rather than a guess.
     -- `armed false` means nothing equipped paints; `squad true` means the
@@ -667,6 +770,9 @@ RegisterCommand('brdrop', function()
         tostring(BR.Cosmetics.trailOn),
         tostring(BR.Native.keyLabelForCommand('brtrail') or '(none)')))
 end, false)
+
+--- The last match state this handler acted on. See the edge note below.
+local lastMatchState = nil
 
 -- A match ending mid-air (brforce, mass leave) must not leave the latch set.
 RegisterNetEvent(BR.Net.STATE)
@@ -692,7 +798,27 @@ AddEventHandler(BR.Net.STATE, function(d)
     -- of the bug it exists to fix, and the more embarrassing direction to be
     -- wrong in. WARMUP is where it is armed; leaving it set through the lobby
     -- costs nothing, since nothing reads it there.
-    if d.state == BR.MatchState.WARMUP or d.state == BR.MatchState.BUS then
+    --
+    -- ON THE EDGE, NOT ON EVERY MENTION, AND THAT IS THE SECOND HALF OF #126.
+    --
+    -- This read "the state IS bus", and the match is in BUS for the entire
+    -- descent AND for the whole wait afterwards -- it does not reach PLAYING
+    -- until the sky is empty. The state is also RE-BROADCAST while that wait
+    -- runs: server/match.lua extends the flight in ten-second steps for anyone
+    -- still under canopy and re-announces BUS each time. So every ten seconds,
+    -- for as long as somebody else was still coming down, a player already
+    -- standing in a POI had their own touchdown forgotten -- their HUD, their
+    -- inventory bar and their crate prompts switched off again, inside the
+    -- exact window this latch exists to cover. It is also the exact scenario
+    -- the validation steps ask for: one player jumps immediately, the other
+    -- rides to the end of the route.
+    --
+    -- ENTERING warmup or the bus un-lands you. Hearing again that you are on a
+    -- bus you have already jumped out of does not.
+    if (d.state == BR.MatchState.WARMUP or d.state == BR.MatchState.BUS)
+       and d.state ~= lastMatchState then
         BR.State.landed = false
+        landedThisDrop = false
     end
+    lastMatchState = d.state
 end)

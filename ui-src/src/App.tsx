@@ -213,7 +213,25 @@ export default function App() {
 
   // The bus ride is a cutscene: no vitals, no counters, no kill feed.
   // Notices still render -- "doors open" IS one.
-  const ridingBus = s.hud.state === 'bus'
+  //
+  // ...UNLESS THIS PLAYER'S OWN PED SAYS IT IS STANDING ON THE GROUND, AND
+  // THIS IS THE GATE THE FIRST ATTEMPT AT #126 MISSED.
+  //
+  // That attempt taught the three "what to draw" tests in Hud.tsx about
+  // `hud.landed` and stopped here, one level too low. This line feeds `hudUp`,
+  // which is the master switch for the ENTIRE HUD -- vitals, counters, kill
+  // feed, squad panel, inventory bar, chat and the TAB panel all hang off it --
+  // and it had no way to hear about a touchdown at all. So a player whose own
+  // state still reads `bus` (the jump registered on the server but the roster
+  // delta carrying FREEFALL never arrived, or the report went missing on the
+  // way back) stood in a POI with a completely blank screen, and the thing that
+  // eventually rescued them was the match reaching `playing`. That is the
+  // owner's sentence almost word for word: "the inventory/loot/HUD still do not
+  // appear upon landing until game state changes to playing".
+  //
+  // A ped on the ground is not riding a bus. The cutscene rule is about the
+  // flight, and the flight is over.
+  const ridingBus = s.hud.state === 'bus' && !s.hud.landed
 
   // Whether the vitals strip is on screen -- chat and notices fall back to
   // its position when the radar is hidden, so they need to know.
