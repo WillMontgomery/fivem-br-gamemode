@@ -241,7 +241,23 @@ end
 --- visible, which is a signal the console explicitly renders. A report missing
 --- either is dropped rather than filed against a server id.
 ---
---- @param ev table  { license, name, reporterLicense, reporterName, category, note, matchId, at }
+--- THERE IS NO `note`, AND THERE NEVER REALLY WAS. The panel had a free-text
+--- field, the callback forwarded it, the server capped it at BR.Config.Report
+--- .maxNote and this function copied it onto the payload -- and br_ddb has
+--- written `note: null` unconditionally since 2026-08-14, on an owner call
+--- whose comment is still sitting in js-src/br_ddb/src/incident.js: "NO
+--- FREE-TEXT NOTE, EVER, FROM THE GAME ... there is no player-supplied prose
+--- anywhere in this row. That removes the injection surface rather than
+--- guarding it."
+---
+--- So five layers of plumbing carried a string to a hard-coded null. The field
+--- is deleted here rather than left accepting a value it discards, because the
+--- next reader of this file has no way to discover that from Lua -- they would
+--- have to go and read the bundle to find out that the note they are carefully
+--- passing through goes nowhere. Removed with #142, which took the field off
+--- the panel for an unrelated reason and made the whole chain visible.
+---
+--- @param ev table  { license, name, reporterLicense, reporterName, category, matchId, at }
 --- @param records table|nil  evidence rows for the SUBJECT
 --- @return table|nil payload, string|nil why
 function BR.IncidentBuild.fromReport(ev, records)
@@ -291,15 +307,13 @@ function BR.IncidentBuild.fromReport(ev, records)
 
         matchId = ev.matchId,
 
-        -- The summary is the queue row. It names the category rather than
-        -- quoting the note, because the note is free text from a player and the
-        -- queue is read at a glance by somebody deciding what to open.
+        -- The summary is the queue row, and it is built only from a category
+        -- out of a fixed list plus a name. It carried that shape when there was
+        -- also a free-text note to quote and NOT quoting it was the decision;
+        -- with the note gone the shape is the same and the reason is now
+        -- structural, which is stronger.
         summary = ('Reported for %s by %s'):format(
             tostring(ev.category), tostring(ev.reporterName or 'a player')),
-
-        -- NEVER INTERPOLATED ANYWHERE. It reaches the console as data and is
-        -- rendered as text; the length cap is applied by the caller.
-        note = ev.note,
 
         evidence = evidence,
         atGameMs = ev.at,

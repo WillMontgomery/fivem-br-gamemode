@@ -30,48 +30,37 @@ import { play } from '../audio/cues'
  * is written down instead of assumed.
  *
  * TWO MODES ON ONE CARD. By default it is a list: who is here, who is still
- * alive, who has gone. Pressing "Report" turns the same rows into a form --
- * checkboxes appear, a category dropdown appears beside each row you tick, and
- * a Submit appears once at least one is ticked.
+ * alive, who has gone. Pressing "Report player" turns the same rows into a form
+ * -- each row becomes a tick target, a category picker appears under the ones
+ * you tick, and a Send appears once at least one is ticked.
  *
  * That is one surface rather than two because the list IS the form's subject.
  * A separate report dialog would mean picking a name twice: once to find them,
  * once to accuse them.
  *
- * THE PANEL OWNS THE CURSOR, AND YOU STAND STILL WHILE IT DOES (#135).
+ * STRIPPED BACK IN #142, and every removal is the owner's, so they are recorded
+ * here rather than argued for:
  *
- * For one day it did not. View mode was granted focus WITH keep-input so the
- * roster could be read on the move, and the owner described the result exactly
- * (2026-08-16): "the pointer is available for use while the menu is open, but
- * doesn't prevent game control. So moving the mouse still moves the camera, and
- * I'm able to walk as well while it's open. That should be changed."
- *
- * That is the whole mechanism. The clicks were arriving all along -- keep-input
- * does not take them away -- but the mouse was also the camera and the mouse
- * buttons were also the trigger, so reaching for a checkbox turned the view away
- * from it and pressing one fired the gun. A cursor you cannot aim is not a
- * cursor, which is why the first report of this reads as "doesn't capture mouse
- * input".
- *
- * The inventory keeps game input and is clickable anyway, but only because
- * br_core/client/inventory.lua disables LOOK_LR, LOOK_UD, ATTACK and AIM every
- * frame while its panel is up. That suppressor is what an entry in
- * BR.FocusKeepsInput actually costs, and this panel never had one. It could have
- * been given one -- and if standing still turns out to be the worse half of the
- * trade, that is the change to make -- but it asks for far more pointing than
- * five slot cards do, and it is a latching panel opened deliberately rather than
- * glanced at mid-burst. So it takes plain focus and accepts the cost.
- *
- * WHICH IS WHY THIS FILE NO LONGER TELLS LUA ITS MODE. It had to for a day:
- * report mode pushed a second focus screen, `playersReport`, purely to give up
- * game input for the note field. Both modes now hold the same focus, so
- * `reporting` below is local state and nothing more, and the second screen has
- * been deleted rather than left inert.
+ *   the ALIVE COUNT      "that's already in the top right corner of the
+ *                        screen." It was, and a second copy of a number that
+ *                        moves is a second number to disbelieve.
+ *   the REPORT ALLOWANCE "We don't need to tell a player how many people they
+ *                        can report, or how many reports are left." The limits
+ *                        are untouched and still enforced server-side; they
+ *                        stopped being advertised, which also took `remaining`
+ *                        off the wire entirely -- see br_core/server/players.lua.
+ *   the CLOSE BUTTON     "Having a 'close' button is not necessary." It was
+ *                        only ever there because the key that opened this could
+ *                        not close it; that is fixed below, so the workaround
+ *                        goes with the problem.
+ *   the NOTE FIELD       "We don't need a custom text field for reports. Just
+ *                        the dropdown." It had never reached anywhere either:
+ *                        br_ddb writes `note: null` unconditionally.
  *
  * NOTHING HERE IS AUTHORITATIVE. The bucket was resolved server-side, the
- * categories and the remaining allowance arrived with the list, and every rule
- * this screen appears to enforce is enforced again on submit. A modified client
- * can tick anything it likes and gets the same answer an honest one does.
+ * categories arrived with the list, and every rule this screen appears to
+ * enforce is enforced again on submit. A modified client can tick anything it
+ * likes and gets the same answer an honest one does.
  *
  * WHAT IS DELIBERATELY NOT SHOWN: positions, health, inventory, and the match
  * id. The roster projection already withholds them; this does not ask.
@@ -80,10 +69,11 @@ export default function PlayerList() {
   const list = useUi((s) => s.players)
   const result = useUi((s) => s.reportResult)
   const setResult = useUi((s) => s.setReportResult)
+  const keybinds = useUi((s) => s.keybinds)
+  const rawKeys = useUi((s) => s.keybindsRaw)
 
   const [reporting, setReporting] = useState(false)
   const [picked, setPicked] = useState<Record<number, string>>({})
-  const [note, setNote] = useState('')
 
   /**
    * The only thing this panel asks Lua for. STATE, NOT A TOGGLE -- `open:
@@ -103,20 +93,85 @@ export default function PlayerList() {
   const leaveReport = () => {
     setReporting(false)
     setPicked({})
-    setNote('')
   }
+
+  /**
+   * WHICH KEYPRESS MEANS "SHUT THIS", BY VIRTUAL-KEY CODE.
+   *
+   * THE OPEN KEY HAS TO CLOSE IT AND ONLY THE PAGE CAN HEAR IT (#142, owner:
+   * "Tilde must dismiss the panel while it is open. It currently does not").
+   *
+   * This was named as a risk when the panel stopped keeping game input in #135
+   * and it turned out to be exactly right. Two Lua-side routes exist for a
+   * keypress and NUI focus closes both:
+   *
+   *   * the engine's RegisterKeyMapping binding needs the GAME to receive the
+   *     key, and with the cursor ours and keep-input off it receives nothing;
+   *   * br_core's raw key layer reads the keyboard directly and is what
+   *     normally survives that -- but its own frontend suppressor already
+   *     records that "the raw layer cannot see Escape while CEF holds the
+   *     cursor" (br_core/client/natives.lua), and this panel holds it.
+   *
+   * So the key that opened the panel is invisible to everything that could act
+   * on it, which is why Escape and a Close button were the workarounds. The
+   * page, though, has DOM focus by definition while the cursor is ours, so a
+   * keydown listener here is the one thing certain to see the press. It then
+   * asks Lua to close, exactly as #83 raises the pause menu from the lobby --
+   * the callback it uses is the same one the (now deleted) Close button used,
+   * so nothing on the Lua side had to learn a new message.
+   *
+   * BY CODE, NOT BY `e.key`, BECAUSE THE KEY IS REBINDABLE. br_core's binding
+   * table is the authority and it travels on the keybinds envelope, which is
+   * pushed on every `br:ui:ready` -- so `brplayers`.vk is present without the
+   * player ever opening Settings. Comparing `e.keyCode` against it is the same
+   * comparison Keybinds.tsx makes when CAPTURING a rebind, so a key bound
+   * through that screen is a key recognised by this one, whatever it is.
+   *
+   * 0xC0 IS THE FALLBACK AND IS ONLY REACHED IN A GAP. It is the raw layer's
+   * own default for this action (tilde), used for the frames between the page
+   * mounting and the first keybinds envelope landing.
+   *
+   * F2 ONLY WHEN THE RAW LAYER IS OFF, because that is the only situation in
+   * which F2 opens this panel: it is the ENGINE-side default, inert on every
+   * client where the raw reader is running. Accepting it unconditionally would
+   * mean F2 closing a panel it could not have opened.
+   */
+  const closeCodes = useMemo(() => {
+    const codes = new Set<number>()
+    const row = keybinds.find((k) => k.command === 'brplayers')
+    codes.add(row?.vk ?? 0xc0)
+    if (!rawKeys) codes.add(0x71)
+    return codes
+  }, [keybinds, rawKeys])
 
   // Escape backs out one step -- report mode first, then the panel. Two steps
   // because losing a five-name selection to a mis-hit Escape is the kind of
   // small cruelty that stops people reporting at all.
+  //
+  // THE OPEN KEY DOES NOT DO THAT, and the asymmetry is deliberate. Tilde is a
+  // latch: it means "this panel, on or off", and a latch that only half
+  // released on the second press would be the same complaint this issue is
+  // about wearing a different shape. Escape is the careful way out; the key you
+  // opened with is the blunt one.
+  //
+  // No dependency array on purpose -- the handler closes over `reporting`, and
+  // a stale closure here would make Escape back out of a mode the player has
+  // already left.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        play('ui.back')
+        if (reporting) leaveReport()
+        else close()
+        return
+      }
+      if (!closeCodes.has(e.keyCode)) return
       e.preventDefault()
       e.stopPropagation()
       play('ui.back')
-      if (reporting) leaveReport()
-      else close()
+      close()
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
@@ -124,13 +179,15 @@ export default function PlayerList() {
 
   // A refused report leaves the form up so the selection is not lost -- the
   // reason is in a toast, and retyping five names because the server said no
-  // is a punishment for the wrong party. A successful one is cleared, because
-  // Lua closes the panel behind it.
+  // is a punishment for the wrong party. That matters more since #143: the
+  // commonest refusal is now "you have already reported X in this match", and
+  // the fix for it is to untick one row and send the rest.
+  //
+  // A successful one is cleared, because Lua closes the panel behind it.
   useEffect(() => {
     if (!result) return
     if (result.ok) {
       setPicked({})
-      setNote('')
       setReporting(false)
     }
     setResult(null)
@@ -142,34 +199,35 @@ export default function PlayerList() {
    */
   const rows = list.players
   const selected = useMemo(() => Object.keys(picked).map(Number), [picked])
-  const atCap = selected.length >= list.maxTargets
-  const spent = list.remaining <= 0
-  const alive = useMemo(
-    () => rows.filter((p) => !p.left && p.state !== 'dead').length,
-    [rows],
-  )
 
   const toggle = (src: number) => {
-    play('ui.select')
     setPicked((prev) => {
       if (prev[src]) {
+        play('ui.select')
         const next = { ...prev }
         delete next[src]
         return next
       }
-      // The cap is enforced here so the checkbox simply does not take, rather
-      // than accepting a sixth and refusing the whole submission later.
-      if (Object.keys(prev).length >= list.maxTargets) return prev
+      // THE CAP IS ENFORCED HERE AND NOW HAS TO BE AUDIBLE. It used to sit
+      // beside an "n/5 picked" readout, so a sixth tick that did not take
+      // explained itself; that readout went with the allowance text in #142, so
+      // a silent refusal would now just look like a broken checkbox. The server
+      // refuses the same submission for the same reason and costs the player
+      // nothing when it does -- this is only about not sending it.
+      if (Object.keys(prev).length >= list.maxTargets) {
+        play('ui.error')
+        return prev
+      }
+      play('ui.select')
       return { ...prev, [src]: list.defaultCategory }
     })
   }
 
   const submit = () => {
-    if (selected.length === 0 || spent) { play('ui.error'); return }
+    if (selected.length === 0) { play('ui.error'); return }
     play('ui.select')
     void fetchNui(CB.REPORT_SUBMIT, {
       targets: selected.map((src) => ({ src, category: picked[src] })),
-      note: note.trim() || undefined,
     })
   }
 
@@ -225,20 +283,18 @@ export default function PlayerList() {
               backdropFilter: 'blur(6px)',
             }}
           >
-            <div className="flex shrink-0 items-baseline justify-between px-4 pt-3.5 pb-3">
-              <div>
-                <div className="micro-label">This match</div>
-                <h2 className="font-display text-[1.35rem] uppercase leading-none tracking-[0.09em]">
-                  {reporting ? 'Report' : 'Players'}
-                </h2>
-              </div>
-              <div className="micro-label text-right">
-                {reporting
-                  ? `${selected.length}/${list.maxTargets} picked`
-                  : `${alive} alive`}
-              </div>
+            {/* THE HEADER SAYS WHAT THIS IS AND NOTHING ELSE. It carried the
+                alive count on the right, and #142 took it off: the HUD already
+                draws that number in the top-right corner, and two copies of a
+                figure that changes every elimination is one copy too many --
+                the moment they disagree for a frame, neither is trusted. */}
+            <div className="shrink-0 px-4 pt-3.5 pb-3">
+              <div className="micro-label">This match</div>
+              <h2 className="font-display text-[1.35rem] uppercase leading-none tracking-[0.09em]">
+                {reporting ? 'Report' : 'Players'}
+              </h2>
             </div>
-    
+
             <div className="min-h-0 flex-1 overflow-y-auto thin-scroll px-2">
               {rows.length === 0 ? (
                 <p className="micro-label px-2 pb-3">Nobody else is here.</p>
@@ -246,34 +302,124 @@ export default function PlayerList() {
                 <div className="flex flex-col gap-px pb-2">
                   {rows.map((p) => {
                     const on = picked[p.src] !== undefined
-                    // You cannot report yourself, so no checkbox is drawn. The
-                    // server refuses it too; this is only about not offering it.
+                    // You cannot report yourself, so no tick target is drawn.
+                    // The server refuses it too, and so does
+                    // BR.IncidentBuild.fromReport; this is only about not
+                    // offering it.
                     const selectable = reporting && !p.you
                     const gone = p.left || p.state === 'dead'
-    
+
+                    const status = p.left
+                      ? 'left'
+                      : p.state === 'dead'
+                        ? 'out'
+                        : p.state === 'dbno'
+                          ? 'down'
+                          : p.squadId
+                            ? 'squad'
+                            : ''
+
+                    const name = (
+                      <span className="min-w-0 flex-1 truncate text-[0.9rem] tscale leading-tight">
+                        {p.name}
+                        {p.you && <span className="micro-label ml-1.5">you</span>}
+                      </span>
+                    )
+
                     return (
                       <div key={p.src}>
-                        <div
-                          className="flex items-center gap-2.5 rounded-sm px-2 py-1.5"
-                          style={{
-                            background: on ? 'rgba(255,255,255,0.06)' : undefined,
-                            opacity: gone ? 0.5 : 1,
-                          }}
-                        >
-                          {selectable ? (
-                            <input
-                              type="checkbox"
-                              checked={on}
-                              disabled={!on && atCap}
-                              onChange={() => toggle(p.src)}
-                              className="size-3.5 shrink-0 accent-[var(--color-royale-accent)]"
-                              aria-label={`Report ${p.name}`}
-                            />
-                          ) : (
-                            // A STATE DOT INSTEAD OF A SENTENCE. At this width
-                            // "Eliminated" beside every dead player is most of the
-                            // panel; the colour carries it and the word only
-                            // appears on the right when it is not "alive".
+                        {selectable ? (
+                          /* THE WHOLE ROW IS THE TICK TARGET, not a 0.875rem
+                             box beside it. A name is the thing the player is
+                             actually aiming at, and this panel takes the cursor
+                             away from the game to be used -- so the hit area
+                             should be the width of the card, not the width of a
+                             checkbox.
+
+                             role=checkbox on a button rather than an <input>,
+                             which is what makes the drawn box below possible at
+                             all: see the note there. Space and Enter both
+                             activate a button, and `.btn` gives it the
+                             focus-visible ring every other control here has, so
+                             the keyboard route is the browser's rather than
+                             something reimplemented. */
+                          <button
+                            type="button"
+                            role="checkbox"
+                            aria-checked={on}
+                            onClick={() => toggle(p.src)}
+                            className="btn flex w-full items-center gap-2.5 rounded-sm px-2 py-1.5 text-left"
+                            style={{
+                              background: on ? 'rgba(255,255,255,0.06)' : 'transparent',
+                              opacity: gone ? 0.5 : 1,
+                            }}
+                          >
+                            {/* DRAWN, BECAUSE A NATIVE CHECKBOX IN CEF IS A
+                                WINDOWS CHECKBOX (owner, #142: the controls
+                                "look nothing like the rest of the interface").
+
+                                Chrome 103 renders <input type=checkbox> with
+                                the platform's own control -- a grey box with a
+                                blue system tick that belongs to the operating
+                                system, sitting inside a panel built out of
+                                chamfered near-black plates. `accent-color`
+                                recolours the tick and nothing else, which is
+                                why the old one still read as an OS widget.
+
+                                `appearance: none` plus drawn states is the
+                                usual answer and would have worked; not
+                                rendering an <input> at all is simpler and
+                                strictly better here, because the row already
+                                had to be a button for the hit area above. One
+                                control, one element, and no reset property
+                                whose support has to be checked against a 2022
+                                browser.
+
+                                The tick is an inline SVG rather than a glyph:
+                                a text checkmark is a font decision, and this
+                                interface ships two faces neither of which is
+                                guaranteed to have one. */}
+                            <span
+                              aria-hidden="true"
+                              className="grid size-3.5 shrink-0 place-items-center"
+                              style={{
+                                border: `1px solid ${on
+                                  ? 'var(--color-royale-accent)'
+                                  : 'rgba(255,255,255,0.34)'}`,
+                                background: on
+                                  ? 'var(--color-royale-accent)'
+                                  : 'rgba(6,8,13,0.85)',
+                                transition: 'background 120ms ease, border-color 120ms ease',
+                              }}
+                            >
+                              {on && (
+                                <svg
+                                  viewBox="0 0 10 10"
+                                  className="size-2.5"
+                                  fill="none"
+                                  stroke="#04222a"
+                                  strokeWidth="1.9"
+                                  strokeLinecap="square"
+                                >
+                                  <path d="M1.6 5.2 L4 7.5 L8.4 2.6" />
+                                </svg>
+                              )}
+                            </span>
+
+                            {name}
+
+                            <span className="micro-label shrink-0">{status}</span>
+                          </button>
+                        ) : (
+                          <div
+                            className="flex items-center gap-2.5 rounded-sm px-2 py-1.5"
+                            style={{ opacity: gone ? 0.5 : 1 }}
+                          >
+                            {/* A STATE DOT INSTEAD OF A SENTENCE. At this width
+                                "Eliminated" beside every dead player is most of
+                                the panel; the colour carries it and the word
+                                only appears on the right when it is not
+                                "alive". */}
                             <span
                               className="size-1.5 shrink-0 rounded-full"
                               style={{
@@ -285,49 +431,81 @@ export default function PlayerList() {
                                       : 'var(--color-royale-accent)',
                               }}
                             />
-                          )}
-    
-                          <span className="min-w-0 flex-1 truncate text-[0.9rem] tscale leading-tight">
-                            {p.name}
-                            {p.you && <span className="micro-label ml-1.5">you</span>}
-                          </span>
-    
-                          <span className="micro-label shrink-0">
-                            {p.left
-                              ? 'left'
-                              : p.state === 'dead'
-                                ? 'out'
-                                : p.state === 'dbno'
-                                  ? 'down'
-                                  : p.squadId
-                                    ? 'squad'
-                                    : ''}
-                          </span>
-                        </div>
-    
-                        {/* THE DROPDOWN ONLY APPEARS FOR A TICKED ROW, and it gets
-                            its own line rather than sharing one -- at this width a
-                            name and a category side by side truncates the name to
-                            nothing, which is the one field that must stay legible
-                            on a report. */}
+                            {name}
+                            <span className="micro-label shrink-0">{status}</span>
+                          </div>
+                        )}
+
+                        {/* THE CATEGORY PICKER ONLY APPEARS FOR A TICKED ROW,
+                            and it gets its own lines rather than sharing one --
+                            at this width a name and a category side by side
+                            truncates the name to nothing, which is the one
+                            field that must stay legible on a report.
+
+                            IT IS DRAWN OPEN RATHER THAN BEING A DROPDOWN, and
+                            that is not a preference. A native <select> POPUP is
+                            rendered by the browser outside the page and cannot
+                            be styled on any engine -- not with appearance:none,
+                            not with a pseudo-element, not at all -- so on CEF it
+                            arrives as a Windows combo list over a battle royale.
+                            The only way to control it is not to have one.
+
+                            AND A CUSTOM POPUP WOULD HAVE BEEN WORSE THAN THIS
+                            ONE. The list it would open into is inside
+                            `overflow-y: auto` (the roster scrolls), so an
+                            absolutely positioned menu is clipped by its own
+                            scroll container -- the fix for which is portalling
+                            it to the root, on a page whose root is deliberately
+                            pointer-events:none. An always-open group has none of
+                            that, costs one click fewer, and is the shape the
+                            settings screen already uses for voice routing and
+                            colourblind modes.
+
+                            PLAIN BUTTONS, NOT role=radio. ARIA radios promise
+                            arrow-key navigation and a single tab stop, and a
+                            role that promises behaviour the code does not
+                            implement is worse for a screen reader than no role
+                            -- so this is a labelled group of pressable buttons,
+                            which is exactly what it is, and Tab reaches every
+                            one of them. Same call the settings screen made. */}
                         {selectable && on && (
-                          <select
-                            value={picked[p.src]}
-                            onChange={(e) => {
-                              play('ui.hover')
-                              setPicked((prev) => ({ ...prev, [p.src]: e.target.value }))
-                            }}
-                            className="mb-1 ml-8 w-[calc(100%-2.5rem)] rounded-sm px-2 py-1 text-[0.78rem] tscale"
-                            style={{
-                              background: 'rgba(12,14,20,0.94)',
-                              border: '1px solid rgba(255,255,255,0.18)',
-                              color: '#fff',
-                            }}
+                          <div
+                            role="group"
+                            aria-label={`Why you are reporting ${p.name}`}
+                            className="mb-1.5 ml-8 mr-2 flex flex-wrap gap-1"
                           >
-                            {list.categories.map((c) => (
-                              <option key={c.id} value={c.id}>{c.label}</option>
-                            ))}
-                          </select>
+                            {list.categories.map((c) => {
+                              const chosen = picked[p.src] === c.id
+                              return (
+                                <button
+                                  key={c.id}
+                                  type="button"
+                                  aria-pressed={chosen}
+                                  className={`btn plate px-2 py-1 text-[0.72rem] tscale${
+                                    chosen ? ' is-active' : ''}`}
+                                  style={{
+                                    ['--edgec' as string]: chosen
+                                      ? 'var(--color-royale-accent)'
+                                      : 'rgba(255,255,255,0.16)',
+                                    ['--plate-fill' as string]: chosen
+                                      ? 'rgba(12,58,72,0.94)'
+                                      : 'rgba(24,28,40,0.92)',
+                                    ['--cut-max' as string]: '0.3rem',
+                                    color: chosen
+                                      ? 'var(--color-royale-accent)'
+                                      : 'rgba(255,255,255,0.8)',
+                                  }}
+                                  onPointerEnter={() => play('ui.hover')}
+                                  onClick={() => {
+                                    play('ui.select')
+                                    setPicked((prev) => ({ ...prev, [p.src]: c.id }))
+                                  }}
+                                >
+                                  {c.label}
+                                </button>
+                              )
+                            })}
+                          </div>
                         )}
                       </div>
                     )
@@ -335,58 +513,36 @@ export default function PlayerList() {
                 </div>
               )}
             </div>
-    
+
             <div
               className="shrink-0 px-4 pt-3 pb-3.5"
               style={{ borderTop: '1px solid rgba(255,255,255,0.10)' }}
             >
               {reporting ? (
-                <>
-                  {selected.length > 0 && (
-                    <input
-                      value={note}
-                      onChange={(e) => setNote(e.target.value)}
-                      placeholder="Anything else? (optional)"
-                      maxLength={300}
-                      className="mb-2.5 w-full rounded-sm px-2.5 py-1.5 text-[0.82rem] tscale"
-                      style={{
-                        background: 'rgba(12,14,20,0.94)',
-                        border: '1px solid rgba(255,255,255,0.18)',
-                        color: '#fff',
-                      }}
-                    />
-                  )}
-                  <div className="flex items-center gap-2">
-                    {/* SUBMIT ONLY EXISTS WITH A SELECTION. An always-present
-                        submit on an empty form is a button whose only function is
-                        to be refused. */}
-                    {selected.length > 0 && (
-                      <Btn variant="primary" size="sm" cue="ui.select" onPress={submit}>
-                        Send {selected.length === 1 ? 'report' : `${selected.length} reports`}
-                      </Btn>
-                    )}
-                    <Btn variant="ghost" size="sm" cue="ui.back" onPress={leaveReport}>
-                      Cancel
-                    </Btn>
-                    <span className="micro-label ml-auto">
-                      {list.remaining} left
-                    </span>
-                  </div>
-                </>
-              ) : (
                 <div className="flex items-center gap-2">
-                  <Btn
-                    variant="ghost"
-                    size="sm"
-                    cue="ui.select"
-                    onPress={() => { if (!spent) enterReport() }}
-                  >
-                    {spent ? 'No reports left' : 'Report'}
-                  </Btn>
-                  <Btn variant="ghost" size="sm" cue="ui.back" onPress={close}>
-                    Close
+                  {/* SUBMIT ONLY EXISTS WITH A SELECTION. An always-present
+                      submit on an empty form is a button whose only function is
+                      to be refused. */}
+                  {selected.length > 0 && (
+                    <Btn variant="primary" size="sm" cue="ui.select" onPress={submit}>
+                      Send {selected.length === 1 ? 'report' : `${selected.length} reports`}
+                    </Btn>
+                  )}
+                  <Btn variant="ghost" size="sm" cue="ui.back" onPress={leaveReport}>
+                    Cancel
                   </Btn>
                 </div>
+              ) : (
+                /* ONE BUTTON, AND IT NAMES ITS OBJECT (#142). "Report" on its
+                   own reads as a verb with no target on a panel that is a list
+                   of people; "Report player" says which of the two it means.
+                   It no longer changes to "No reports left" either -- the
+                   allowance is not the panel's to talk about, and a player who
+                   has spent it is told so by the refusal, in the same toast
+                   that would have carried any other reason. */
+                <Btn variant="ghost" size="sm" cue="ui.select" onPress={enterReport}>
+                  Report player
+                </Btn>
               )}
             </div>
           </div>

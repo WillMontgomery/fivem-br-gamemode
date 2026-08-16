@@ -140,6 +140,12 @@ for _, f in ipairs({
     -- AFTER combat_solve, whose enum values it keys its severity table on.
     'br_lib/shared/incident_build.lua',
     'br_core/server/incident.lua',     -- BR.Incident; listens to the refusal event
+    -- AFTER incident.lua, because the report path asks BR.Incident whether a
+    -- case about this player already exists before deciding to file one. It was
+    -- loaded by nothing here until #143 put a rule in it worth pinning -- the
+    -- report handler had no coverage at all, which is how "one report per
+    -- target" could be wrong in a way only a playtest would find.
+    'br_core/server/players.lua',      -- BR.Players; the list and the reports
 }) do
     local chunk, err = loadfile(ROOT .. f)
     if not chunk then
@@ -5157,6 +5163,234 @@ do
         'and the cross-reference map is dropped when the match is')
 
     BR.Damage.forgetRefusals(1)
+end
+
+describe('report.rules')
+do
+    -- ONE REPORT PER (REPORTER, TARGET, MATCH), AND WHAT THE SECOND ONE DOES
+    -- INSTEAD (#143).
+    --
+    -- The owner's sentence is the whole specification: "Reporting the same
+    -- player twice is possible in the same match by the same reporter - this
+    -- should not be possible, and any future reports during the same match from
+    -- other reporters to the same target should be corroborated per our
+    -- existing corroboration code."
+    --
+    -- So there are two different answers to "somebody has already been reported
+    -- for this", and which one applies depends on WHO is asking. Getting that
+    -- backwards is invisible from a chair -- both look like "my report went
+    -- through" from the panel, and the difference only shows up as an extra row
+    -- in a queue nobody is watching yet -- which is exactly why it is asserted
+    -- here rather than left to a playtest.
+    --
+    -- THE PANEL IS NOT INVOLVED IN ANY OF THIS. Every rule it appears to
+    -- enforce is enforced again on this side; these tests drive the net event
+    -- directly, which is what a modified client would do.
+    local function lastResult()
+        for i = #sent, 1, -1 do
+            if sent[i].event == BR.Net.REPORT_RESULT then return sent[i].args[1] end
+        end
+        return nil
+    end
+
+    local function threeUp()
+        reset()
+        queueUp(1, 'Ayla', BR.Mode.SOLO.key)
+        queueUp(2, 'Bex',  BR.Mode.SOLO.key)
+        queueUp(3, 'Cass', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for _, s in ipairs({ 1, 2, 3 }) do
+            BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        end
+        return theMatch()
+    end
+
+    local m = threeUp()
+    local licB = BR.Identity.qualified('license', BR.Identity.licenseOf(2))
+
+    -- THE CATEGORY LIST IS THE OWNER'S, EXACTLY. Asserted by name rather than by
+    -- count, because the failure worth catching is a category that survived a
+    -- rename -- a row filed under `teaming` is a row no console filter for the
+    -- new list will ever return.
+    do
+        local want = { 'cheating', 'abusive_chat', 'exploiting', 'power_gaming', 'other' }
+        local got = {}
+        for _, c in ipairs(BR.Config.Report.categories) do got[#got + 1] = c.id end
+        ok(table.concat(got, ',') == table.concat(want, ','),
+            'the categories are exactly the five asked for, in order',
+            table.concat(got, ','))
+        ok(BR.Config.isReportCategory('power_gaming'),
+            'and the validator accepts the new one')
+        ok(not BR.Config.isReportCategory('teaming'),
+            'and refuses the one that was removed')
+        ok(BR.Config.defaultReportCategory() == 'cheating',
+            'the pre-selected category is still cheating',
+            tostring(BR.Config.defaultReportCategory()))
+        -- The note went in #142 and the cap went with it. A cap left behind
+        -- would be the only surviving evidence of a field nothing sends.
+        ok(BR.Config.Report.maxNote == nil,
+            'and no note cap survives the field it capped')
+    end
+
+    -- A FIRST REPORT OPENS A CASE.
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 1, {
+        targets = { { src = 2, category = 'power_gaming' } },
+    })
+
+    local inc = firedOf('br:ringmaster:incident')[1]
+    ok(inc ~= nil, 'a report files an incident')
+    if inc then
+        ok(inc.kind == 'report', 'as a report, not an anticheat case', tostring(inc.kind))
+        ok(inc.category == 'power_gaming',
+            'carrying the category that was picked', tostring(inc.category))
+        ok(inc.subjectLicense == licB,
+            'about the license, never the server id', tostring(inc.subjectLicense))
+        ok(inc.reporterLicense ~= nil,
+            'and naming the reporter, which is what makes report-spam visible')
+        -- br_ddb writes `note: null` unconditionally and has since 2026-08-14,
+        -- so a note here was always a string on its way to being discarded.
+        ok(inc.note == nil, 'with no free-text note anywhere on it')
+    end
+    ok((lastResult() or {}).ok == true, 'and the reporter is told it worked')
+
+    -- THE SAME REPORTER, THE SAME TARGET, AGAIN: refused, and it files nothing
+    -- by either route. Corroborating this one would be worse than filing it --
+    -- it would let one player inflate the "how many people have said this"
+    -- number on their own.
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 1, {
+        targets = { { src = 2, category = 'cheating' } },
+    })
+    ok(#firedOf('br:ringmaster:incident') == 0,
+        'reporting the same player twice opens no second case',
+        tostring(#firedOf('br:ringmaster:incident')))
+    ok(#firedOf('br:ringmaster:corroborate') == 0,
+        'and does not corroborate their own report either')
+
+    local refused = lastResult()
+    ok(refused ~= nil and refused.ok == false, 'the reporter is refused')
+    -- NAMED. "That report could not be sent" over a five-name selection is a
+    -- refusal the player cannot act on: only the server knows which row to
+    -- untick.
+    ok(refused and tostring(refused.refused):find('Bex', 1, true) ~= nil,
+        'and told which player they had already reported',
+        refused and tostring(refused.refused) or 'nil')
+
+    -- IT IS PER TARGET, NOT PER MATCH. Spending the rule on one player must not
+    -- cost the reporter everybody else.
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 1, {
+        targets = { { src = 3, category = 'cheating' } },
+    })
+    ok(#firedOf('br:ringmaster:incident') == 1,
+        'the same reporter can still report a different player',
+        tostring(#firedOf('br:ringmaster:incident')))
+
+    -- The case about Bex becomes durable. This is br_ringmaster acknowledging
+    -- the DynamoDB write, and it is what makes corroboration possible at all --
+    -- until it lands there is no id to append to.
+    fire('br:incident:filed', nil,
+        { incidentId = 'inc-report-1', matchId = m.id, subjectLicense = licB })
+
+    -- A DIFFERENT REPORTER, THE SAME TARGET: corroborates rather than opening a
+    -- second case. This is the pairing the whole feature exists to produce --
+    -- two strangers independently naming the same player -- and it says so on
+    -- the case that already exists, because a queue is a shrinking worklist and
+    -- one offender must not be able to bury it.
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 3, {
+        targets = { { src = 2, category = 'exploiting' } },
+    })
+    ok(#firedOf('br:ringmaster:incident') == 0,
+        'a second reporter opens no second case about the same player',
+        tostring(#firedOf('br:ringmaster:incident')))
+
+    local corr = firedOf('br:ringmaster:corroborate')[1]
+    ok(corr ~= nil, 'it corroborates the existing one instead')
+    if corr then
+        ok(corr.incidentId == 'inc-report-1',
+            'naming the case it belongs to', tostring(corr.incidentId))
+        ok(corr.license == licB, 'and the player it is about', tostring(corr.license))
+        -- STARTS AT 2, whatever opened the case. br_ringmaster's contract for
+        -- this field is "report 1 is the case", and it is what lets the console
+        -- tell 1, 2, 4 with a gap in it -- a corroboration the outbox dropped
+        -- and told nobody about -- from a match where nothing more happened.
+        ok(corr.seq == 2, 'with the first corroboration numbered 2',
+            tostring(corr.seq))
+        ok(corr.count == 2, 'and the number of people who have now said it',
+            tostring(corr.count))
+        ok(corr.reason == 'exploiting',
+            'carrying the category the second reporter picked', tostring(corr.reason))
+    end
+
+    -- AND THE SECOND REPORTER LEARNS NOTHING FROM IT. "Your report was added to
+    -- an existing case" would tell a player that whoever they just named is
+    -- already under review, which is precisely what an offender's friend would
+    -- go looking for. Both answers are the same answer.
+    local ok2 = lastResult()
+    ok(ok2 ~= nil and ok2.ok == true and ok2.filed == 1,
+        'and is told exactly what the first reporter was told',
+        ok2 and tostring(ok2.filed) or 'nil')
+
+    -- The rule applies to them too.
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 3, {
+        targets = { { src = 2, category = 'cheating' } },
+    })
+    ok(#firedOf('br:ringmaster:corroborate') == 0,
+        'the second reporter cannot corroborate their own corroboration')
+    ok((lastResult() or {}).ok == false, 'and is refused in turn')
+
+    -- ONE SUBMISSION NAMING AN ALREADY-REPORTED PLAYER IS REFUSED WHOLE, rather
+    -- than filing the rest quietly. A partial file has no honest answer: "1
+    -- report sent" hides the refusal, and the panel has one toast.
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 3, {
+        targets = {
+            { src = 1, category = 'cheating' },      -- never reported by Cass
+            { src = 2, category = 'cheating' },      -- already reported by Cass
+        },
+    })
+    ok(#firedOf('br:ringmaster:incident') == 0
+       and #firedOf('br:ringmaster:corroborate') == 0,
+        'a submission containing a repeat files none of itself')
+    ok((lastResult() or {}).ok == false, 'and is refused as a whole')
+
+    -- THE RULE IS PER MATCH, WHICH IS THE POINT OF IT. Somebody who cheats in
+    -- three consecutive rounds is three things worth telling an admin about,
+    -- and a rule that outlived its match would be a permanent ban on ever
+    -- reporting the same person twice.
+    fire('br:match:destroyed', nil, { matchId = m.id })
+
+    local m2 = threeUp()
+    ok(m2.id ~= m.id, 'the next match is a different match', tostring(m2.id))
+
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 1, {
+        targets = { { src = 2, category = 'cheating' } },
+    })
+    ok(#firedOf('br:ringmaster:incident') == 1,
+        'and the same pair may be reported again in it',
+        tostring(#firedOf('br:ringmaster:incident')))
+    ok((lastResult() or {}).ok == true, 'with the reporter told it worked')
+
+    -- THE LIST ITSELF STOPPED CARRYING THE ALLOWANCE (#142). The limit is
+    -- untouched and still checked above; what went is the advertisement, and
+    -- with it the field -- a payload member that outlives the last thing that
+    -- rendered it is this project's most reliable bug.
+    sent = {}
+    fire(BR.Net.PLAYERS_ASK, 1)
+    local list
+    for i = #sent, 1, -1 do
+        if sent[i].event == BR.Net.PLAYERS_LIST then list = sent[i].args[1] break end
+    end
+    ok(list ~= nil and list.inMatch == true, 'the panel is still answered in a match')
+    ok(list ~= nil and list.remaining == nil,
+        'and the answer no longer carries a remaining-reports count')
+    ok(list ~= nil and list.categories ~= nil and list.maxTargets ~= nil,
+        'while the rules it does need still travel with the data')
 end
 
 describe('combat.attribution')

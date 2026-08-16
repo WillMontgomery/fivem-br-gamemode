@@ -625,6 +625,25 @@ BR.Config.Combat = {
     only teach players that reporting does nothing. Every option here is
     something an admin can actually do something about.
 
+    THIS EXACT LIST IS THE OWNER'S, given verbatim in #143 (2026-08-16) and in
+    this order. It is shorter than the one it replaces by one entry and the
+    swap is not cosmetic:
+
+      * `teaming` and `griefing` are GONE and `power_gaming` stands where both
+        of them stood. The pair were two names for the same complaint -- an
+        admin opening either had to read the case to find out which had been
+        meant -- and the split bought nothing, because the action on both is
+        the same conversation with the same player.
+      * `power_gaming` is the term the server's own community already uses for
+        it, so the word on the report is the word an admin will use in the
+        reply.
+
+    THE IDS ARE WHAT REACHES THE DATABASE, not the labels, and they are what a
+    console query filters on. Renaming one silently orphans every row filed
+    under the old spelling -- rows already written keep `teaming`, and nothing
+    here rewrites them, which is correct: a record of what somebody actually
+    reported must not be edited by a config change.
+
     A DEFAULT IS PRE-SELECTED, because a report filed with no category is still
     worth having and a required field is how you get "asdf". `cheating` is the
     default because it is both the most common and the one most worth a human
@@ -632,21 +651,36 @@ BR.Config.Combat = {
 
     RATE LIMITS ARE NOT OPTIONAL. This feature is, by construction, a way for
     any player to make the server write to DynamoDB on demand. The limits are
-    per match and enforced server-side; the client is told what remains so the
-    panel can say so rather than discovering it on submit.
+    per match and enforced server-side.
+
+    THE PANEL NO LONGER ADVERTISES THEM (owner, #142: "We don't need to tell a
+    player how many people they can report, or how many reports are left").
+    They are enforced exactly as hard as they were; the difference is that a
+    player discovers a limit by being told the reason it refused, rather than
+    by reading a running total they never asked for.
 
     REPORT SPAM IS ITSELF A SIGNAL and is kept rather than discarded -- the
     console's "reports they filed against others" section exists precisely so
     somebody who reports everybody is visible. A refused-for-rate report is
     still counted, because the attempt is the signal.
+
+    THERE IS NO `maxNote`, AND NO NOTE. It was deleted with #142 ("We don't
+    need a custom text field for reports. Just the dropdown"), and it turns out
+    it had never done anything: br_ddb has written `note: null` unconditionally
+    since 2026-08-14 ("NO FREE-TEXT NOTE, EVER, FROM THE GAME") -- so a cap on
+    a string that reached a page, a callback, a net event, an incident payload
+    and then a hard null was three layers of plumbing around a value the
+    database was already throwing away.
 ]]
 BR.Config.Report = {
     categories = {
         { id = 'cheating',     label = 'Cheating',     default = true },
-        { id = 'teaming',      label = 'Teaming' },
-        { id = 'griefing',     label = 'Griefing' },
         { id = 'abusive_chat', label = 'Abusive chat' },
         { id = 'exploiting',   label = 'Exploiting' },
+        { id = 'power_gaming', label = 'Power gaming' },
+        -- LAST, whatever else moves. "Something else" is the option a player
+        -- picks after failing to find theirs, so it has to be the one they
+        -- arrive at rather than the one they meet on the way.
         { id = 'other',        label = 'Something else' },
     },
 
@@ -654,10 +688,14 @@ BR.Config.Report = {
     maxTargets = 5,
 
     --- Submissions per player per match.
+    ---
+    --- NOT THE SAME LIMIT AS "one report per target per match" (#143), and both
+    --- are live. This one bounds how many times a player can make the server
+    --- write to a database; the other bounds how many times one accusation can
+    --- be made to count twice. Neither implies the other: three submissions of
+    --- five distinct targets is fifteen reports and is fine, and two
+    --- submissions naming the same person is one report and is refused.
     maxPerMatch = 3,
-
-    --- Free text length. Optional, and capped because it reaches a database.
-    maxNote = 300,
 }
 
 --- The category to pre-select, resolved from the table above rather than

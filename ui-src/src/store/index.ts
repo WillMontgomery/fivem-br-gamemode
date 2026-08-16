@@ -482,7 +482,7 @@ export const useUi = create<UiState>((set, get) => {
   earned: null,
   earnedStaged: false,
   market: { balance: 0, items: [] },
-  players: { players: [], categories: [], defaultCategory: 'cheating', maxTargets: 5, remaining: 0 },
+  players: { players: [], categories: [], defaultCategory: 'cheating', maxTargets: 5 },
   reportResult: null,
   keybinds: [],
   keybindsRaw: false,
