@@ -35,12 +35,33 @@ BR.Incident = {}
 --- [matchId] = { [license] = { incidentId, ... } }
 local filed = {}
 
+--- The key a match's filings are stored under.
+---
+--- NORMALISED, BECAUSE nil SILENTLY DISABLED THE WHOLE FEATURE. An anticheat
+--- firing outside a live match -- from the lobby, from warmup, or from
+--- `brrefuse` during a test -- carries no matchId, and `remember` returned
+--- early on exactly that. So nothing was ever remembered, `priorFor` always
+--- answered empty, and every doubling filed a BRAND NEW case instead of
+--- corroborating: three refusal reports, three separate incidents about one
+--- player, and nothing anywhere saying why (owner, 2026-08-16 -- `brring`
+--- read `filed 3` where it should have read `filed 1, corroborated 2`).
+---
+--- A sentinel keeps the grouping working outside a match. It is deliberately
+--- not shared with match 0 -- matches are numbered from 1 -- so a real match
+--- can never collide with it.
+local NO_MATCH = 'nomatch'
+
+local function key(matchId)
+    if matchId == nil then return NO_MATCH end
+    return matchId
+end
+
 --- Ids already filed against one player in one match.
 --- @param matchId any
 --- @param license string
 --- @return string[]
 function BR.Incident.priorFor(matchId, license)
-    local m = filed[matchId]
+    local m = filed[key(matchId)]
     if not m or license == nil then return {} end
     return m[license] or {}
 end
@@ -50,11 +71,13 @@ end
 --- @param license string
 --- @param incidentId string
 function BR.Incident.remember(matchId, license, incidentId)
-    if matchId == nil or license == nil or incidentId == nil then return end
-    local m = filed[matchId]
+    -- matchId is allowed to be nil; license and the id are not.
+    if license == nil or incidentId == nil then return end
+    local k = key(matchId)
+    local m = filed[k]
     if not m then
         m = {}
-        filed[matchId] = m
+        filed[k] = m
     end
     local list = m[license]
     if not list then
