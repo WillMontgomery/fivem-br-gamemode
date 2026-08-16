@@ -39,27 +39,53 @@ local function canDie(entry)
         or s == BR.PlayerState.GLIDE
 end
 
---- Has this player's match not actually started yet? (#144)
+--- Has this player left the bus into a match that has not started yet? (#144)
 ---
---- WARMUP and BUS only. WAITING has no players in it, and by ENDED or CLEANUP
---- the results are published or about to be -- holding a death open there would
---- be holding it open past the moment it is written down.
+--- THE WINDOW IS THE DESCENT AND WHAT FOLLOWS IT, NOT THE WARMUP PAD. Rescoped
+--- on the owner's correction, 2026-08-16:
 ---
---- The window is real and it is not small: a player becomes ALIVE the instant
---- they LAND (DROP_LANDED), while the match stays in BUS until the LAST player
---- is down, which server/match.lua extends in ten-second steps for anyone still
---- under canopy. So the first person to touch the ground is mortal, on foot, in
---- a POI, for as long as the slowest glider takes -- "what may be a minute or
---- more", in the issue's words. They are also the only players who can die here:
---- WARMUP, BUS, FREEFALL and GLIDE are all invincible client-side
---- (client/natives.lua), which is why this is the landed-early case and not a
---- theoretical one.
+---   "this was not supposed to cover dying during warmup, since that's not
+---    possible. instead, the issue is dying between jumping from the bus and
+---    game state changing to playing"
+---
+--- So it takes TWO facts, and neither alone is the window:
+---
+---   THE MATCH IS IN BUS. Which is not a small slice: BUS covers the whole
+---   descent AND the whole wait afterwards, because server/match.lua holds the
+---   state until the LAST player is down and extends it in ten-second steps for
+---   anyone still under canopy. WARMUP is deliberately excluded -- the owner
+---   says death is not possible there, and a hold that covered it would be
+---   holding open something that never happens. WAITING has no players in it,
+---   and by ENDED or CLEANUP the results are published or about to be, so
+---   holding a death there would be holding it open past the moment it is
+---   written down.
+---
+---   AND THIS PLAYER IS OUT OF THE DOOR. Somebody still ABOARD has not entered
+---   the window yet -- "between jumping from the bus and..." is where it starts,
+---   and starting it earlier would put the aircraft back inside a scope the
+---   owner has just taken it out of.
+---
+--- What is left is exactly the descent and the moments after it: FREEFALL and
+--- GLIDE in the air, ALIVE once their feet are down, DBNO if a squadmate's
+--- killer got there first. The last of those is the case that actually happens
+--- and the reason the window matters at all -- a player becomes ALIVE the
+--- instant they LAND, so the first person to touch the ground is mortal, on
+--- foot, in a POI, for as long as the slowest glider takes ("what may be a
+--- minute or more", in the issue's words). The airborne states are invincible
+--- client-side (client/natives.lua) and are covered anyway, because a client
+--- that loses that invincibility is not a reason to bank a death nobody could
+--- have earned.
 --- @param m table|nil
+--- @param entry table|nil
 --- @return boolean
-local function beforeTheMatch(m)
-    if not m then return false end
-    return m.state == BR.MatchState.WARMUP
-        or m.state == BR.MatchState.BUS
+local function beforeTheMatch(m, entry)
+    if not m or not entry then return false end
+    if m.state ~= BR.MatchState.BUS then return false end
+    local s = entry.state
+    return s == BR.PlayerState.FREEFALL
+        or s == BR.PlayerState.GLIDE
+        or s == BR.PlayerState.ALIVE
+        or s == BR.PlayerState.DBNO
 end
 
 --- A death that is going to be undone, recorded NOWHERE (#144).
@@ -206,7 +232,7 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     -- Everything else IS held, `brkill` included: an admin killing somebody
     -- during the flight is testing this path, and a test tool that took a
     -- different route would be testing itself.
-    if cause ~= 'left' and beforeTheMatch(m) then
+    if cause ~= 'left' and beforeTheMatch(m, entry) then
         holdForStart(src, entry, m)
         return
     end

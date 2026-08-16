@@ -148,6 +148,32 @@ local airborneSeen = false
 -- live parachute task is how you drop someone out of their own canopy.
 local chuteSpent = false
 
+--- What the descent prompt actually managed to do THIS drop, for /brdropdbg.
+---
+--- WRITTEN BECAUSE THE ONE QUESTION NOBODY COULD ANSWER WAS "DID IT DRAW" (#131).
+---
+--- Two rounds of that issue ended in "no prompt appeared", and neither could be
+--- narrowed from a chair: the decision to show the box, the message that carries
+--- its words, and the sprite that puts it on screen are three separate steps, any
+--- one of which failing looks identical from the cockpit -- and identical, too,
+--- to a player who simply has nothing equipped, which is the CORRECT outcome. So
+--- each step keeps a count and the readout prints all of them. Four numbers and
+--- one label, costing three increments a frame, against a playtest per guess.
+---
+--- Declared up here with the rest of the per-drop state rather than beside the
+--- prompt it belongs to, because br:drop:begin clears it and that handler is
+--- above the prompt block: a local referenced before its own declaration reads
+--- as a nil GLOBAL, which luac accepts and the game throws on (tools/verify.sh
+--- has a gate for exactly this, and it was written after a whole subsystem went
+--- silent behind one console line).
+local promptSeen = {
+    kind = nil,       -- what the last frame decided to say, if anything
+    sends = 0,        -- payloads pushed to the page
+    draws = 0,        -- frames the DUI sprite was actually drawn
+    fallbacks = 0,    -- frames the browser was not up and text stood in
+    trailFrames = 0,  -- frames the TRAIL half of the descent was on offer
+}
+
 --- Take the parachute away for good, and kill the vanilla prompt with it.
 ---
 --- `hard` is the second attempt: RemoveWeaponFromPed has now failed to shift
@@ -194,6 +220,12 @@ AddEventHandler('br:drop:begin', function(d)
     dropping = true
     airborneSeen = false
     chuteSpent = false
+    -- The prompt's counters describe THIS drop. Cumulative ones would answer
+    -- "has the box ever worked", which is not the question anybody asks after a
+    -- descent where it did not (#131).
+    promptSeen.kind = nil
+    promptSeen.sends, promptSeen.draws = 0, 0
+    promptSeen.fallbacks, promptSeen.trailFrames = 0, 0
     -- Out of the door is the one moment that unambiguously un-lands you. See
     -- the note where this is SET, at the bottom of the drop machine.
     BR.State.landed = false
@@ -388,8 +420,10 @@ end
 --- Put a phase of the descent in the box, or take the box away.
 --- @param kind string|nil  'glider', 'trail' or nil
 local function setPrompt(kind)
+    promptSeen.kind = kind
     if kind == promptKind then return end
     promptKind = kind
+    promptSeen.sends = promptSeen.sends + 1
 
     local page = promptPage()
     if not kind then
@@ -493,30 +527,78 @@ BR.Loop.register(BR.Loop.FRAME, 'skydive.prompt', function()
         -- a suppression left standing would have been hiding the key from the
         -- players most likely to have bought the thing it controls.
         --
-        -- NOT ON FOOT: a canopy still attached after touchdown holds the ped
-        -- off "on foot" (the landing branch's own scar), so this alone is not a
-        -- complete grounded test -- but it is the cheap half, it is exact for
-        -- the ordinary landing where the canopy sheds, and the TICK machine
-        -- clears `dropping` within 100ms for the case it misses. A tenth of a
-        -- second of a prompt is not worth GetEntityHeightAboveGround on the
-        -- frame path, which is the one native this file keeps off it by name.
+        -- THERE IS NO ON-FOOT TEST HERE ANY MORE, AND ITS REMOVAL IS #131's
+        -- THIRD ROUND.
         --
-        -- AND ON A KEY: a player who has deliberately cleared this binding has
-        -- nothing to be shown. The badge would render empty and the sentence
+        -- It read `not IsPedOnFoot(ped)`, argued as the cheap half of a grounded
+        -- test: a canopy still attached after touchdown holds the ped off "on
+        -- foot", so this would drop the prompt at the moment of landing. That
+        -- reasoning is fine and the clause still had to go, because it is the
+        -- ONE condition in this branch that has never been measured in the air
+        -- on this build -- and forty lines above, in this same callback, is the
+        -- live report of what happened the last time this file inferred
+        -- airborne-ness from IsPedOnFoot: "a ped in the parachute task's
+        -- freefall COUNTS AS ON FOOT, so that gate killed the prompt for the
+        -- entire healthy drop" (2026-08-04). The glider prompt lost its on-foot
+        -- gate for exactly that reason and has worked since; the trail prompt
+        -- kept one, and is the half of the descent that has now failed to appear
+        -- twice. That asymmetry is the only difference between the two branches
+        -- that the engine gets a vote in.
+        --
+        -- Nothing is lost by dropping it. The phase is already bounded twice
+        -- over -- `dropping`, which the TICK machine clears within 100ms of
+        -- touchdown, and the chute state, which this branch is inside -- and
+        -- clearTrail() on landing takes `trailArmed` down with it, which is the
+        -- first test below. The worst case is a tenth of a second of prompt
+        -- after a landing where the canopy stayed attached, which is the cost
+        -- the removed clause was itself willing to pay.
+        --
+        -- ARMED, AND ON A KEY. What remains is the pair that decides whether
+        -- there is anything honest to say: a trail actually flying, and a key
+        -- to name. A player who has deliberately cleared this binding has
+        -- nothing to be shown -- the badge would render empty and the sentence
         -- would be an instruction to press nothing. Cached, so this is a table
         -- lookup per frame rather than a lookup per frame.
-        if BR.Cosmetics.trailArmed
-           and not IsPedOnFoot(ped)
-           and keyName('brtrail') then
+        if BR.Cosmetics.trailArmed and keyName('brtrail') then
             kind = 'trail'
         end
     end
 
     setPrompt(kind)
-    if kind then
-        local D = BR.Config.Drop
-        BR.Dui.drawScreen(promptPage(),
+    if not kind then return end
+    if kind == 'trail' then promptSeen.trailFrames = promptSeen.trailFrames + 1 end
+
+    -- A BROWSER THAT NEVER CAME UP MUST NOT MEAN SILENCE (#131, third round).
+    --
+    -- BR.Dui.drawScreen draws nothing while IsDuiAvailable is false, and says
+    -- nothing about it -- which is right for a crate label on the far side of a
+    -- field and wrong here. A DUI is a whole CEF instance and this file asks for
+    -- a SECOND one; if it does not come up, or comes up late, or the sprite
+    -- never reaches the screen for any of the reasons a runtime texture can
+    -- fail, the descent gets no prompt at all and nothing anywhere says why.
+    -- That is indistinguishable from "the player has nothing equipped", which is
+    -- a correct outcome -- and telling those two apart from the cockpit is what
+    -- this issue has now cost three rounds.
+    --
+    -- So the words fall back to the engine's own help box. The GLYPH is what is
+    -- lost, and only in the case where the glyph could not have been drawn
+    -- anyway: the letter here is the player's own binding read from BR.Keys, so
+    -- the fallback names the key that works, and does NOT use an `~INPUT_~`
+    -- token -- the token for one of our commands renders as a hole, which is the
+    -- measurement that sent this prompt to a DUI in the first place.
+    local D = BR.Config.Drop
+    local page = promptPage()
+    if BR.Dui.ready(page) then
+        promptSeen.draws = promptSeen.draws + 1
+        BR.Dui.drawScreen(page,
             D.promptX or 0.5, D.promptY or 0.78, D.promptScale or 0.17)
+    else
+        promptSeen.fallbacks = promptSeen.fallbacks + 1
+        local key = (kind == 'glider') and keyName('brdeploy', 144)
+                                        or keyName('brtrail')
+        BR.Native.helpThisFrame(('Press %s to %s'):format(
+            tostring(key),
+            (kind == 'glider') and 'open the glider' or 'toggle smoke trails'))
     end
 end)
 
@@ -900,6 +982,38 @@ RegisterCommand('brdropdbg', function()
         tostring(BR.Cosmetics.trailSource or '(none)'),
         tostring(BR.Cosmetics.trailOn),
         tostring(BR.Native.keyLabelForCommand('brtrail') or '(none)')))
+
+    -- AND WHETHER ANY OF THAT REACHED THE SCREEN, which is the half the first
+    -- two rounds could not see (#131). The four counts separate the three ways
+    -- a prompt disappears, and they are three different bugs:
+    --
+    --   saying trail, drawn 0, text 0   the callback decided to show it and
+    --                                   nothing put it anywhere -- the loop line
+    --                                   below says whether it is still running.
+    --   saying trail, drawn 0, text >0  the browser never came up; the words are
+    --                                   in GTA's help box instead of our badge.
+    --   saying (none), armed false      nothing equipped paints. Not a bug: buy
+    --                                   a trail, equip it, drop SOLO.
+    --   trailFrames 0 after a glide     the canopy phase was never entered at
+    --                                   all -- read chuteState above, not this.
+    print(('  prompt: saying %s   sends %d   drawn %d   as text %d   trail frames %d   page %s'):format(
+        tostring(promptSeen.kind or '(none)'),
+        promptSeen.sends, promptSeen.draws, promptSeen.fallbacks,
+        promptSeen.trailFrames,
+        BR.Dui.ready(promptPage()) and 'up' or 'NOT UP'))
+
+    -- A SUSPENDED CALLBACK IS SILENT, AND SILENCE IS THIS ISSUE'S WHOLE SYMPTOM.
+    -- BR.Loop retires a callback after five consecutive errors and says so once,
+    -- in a console nobody was reading at the time. If the descent prompt has
+    -- been retired, everything above it is beside the point.
+    for _, s in ipairs(BR.Loop.stats()) do
+        if s.name == 'skydive.prompt' then
+            print(('  loop: skydive.prompt %s   calls %d   errors %d'):format(
+                s.suspended and 'SUSPENDED -- re-enable with /brloop enable skydive.prompt'
+                            or (s.enabled and 'running' or 'disabled'),
+                s.calls, s.errors))
+        end
+    end
 end, false)
 
 --- The last match state this handler acted on. See the edge note below.

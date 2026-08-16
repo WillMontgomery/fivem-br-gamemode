@@ -287,6 +287,10 @@ loadAll({
     'br_lib/shared/rng.lua', 'br_lib/shared/geo.lua', 'br_lib/shared/clock.lua',
     'br_lib/config/match.lua', 'br_lib/config/storm.lua', 'br_lib/config/map.lua',
     'br_lib/config/weapons.lua', 'br_lib/config/loot.lua',
+    -- The catalogue, for the descent block at the bottom: what `trail_ember`
+    -- resolves to is the first of the four things the smoke-trail prompt is
+    -- made of, and BR.Config.MarketIndex is where that answer lives.
+    'br_lib/config/market.lua',
     'br_lib/shared/storm_solve.lua', 'br_lib/shared/loot_gen.lua',
     'br_core/client/main.lua',       -- the loop registry; must be first
 })
@@ -1077,6 +1081,334 @@ do
         'and reports where audio is being sent, not just which room we are in')
     ok(said:find('NOTHING', 1, true) == nil,
         'and does not report silence on a healthy assignment', said)
+end
+
+-- ----------------------------------------------------------- the descent ---
+--
+-- #131, ON ITS THIRD ATTEMPT, AND THE REASON THIS SECTION EXISTS.
+--
+-- Twice now the smoke-trail prompt has been reported as simply absent -- "no
+-- hint text or DUI that shows anything other than how to pull the chute" -- and
+-- twice the answer has been reasoned out by reading the file rather than
+-- measured. The four things that decide whether the box is drawn are a chute
+-- state, a cosmetics flag, a ped pose and a key label, and NONE of them was
+-- reachable from any gate: the prompt lives in a FRAME callback in
+-- client/skydive.lua and nothing in verify.sh had ever stepped it.
+--
+-- So this block steps it. It loads the real cosmetics and drop modules, plays a
+-- descent through them a frame at a time, and asserts on the payload that
+-- reaches the DUI page -- which is the actual subject of the issue. What it
+-- cannot do is prove a browser drew the texture; that is the one part still
+-- left to a human, and it is called out as such in the validation steps.
+
+describe('the descent prompt hands the box from the glider to the trail')
+do
+    -- THREADS ARE RECORDED RATHER THAN DROPPED. `br:drop:begin` does its real
+    -- work -- the chute, the canopy tint, the trail colour -- inside a
+    -- Citizen.CreateThread, so the no-op stub above would have skipped the one
+    -- call that arms the prompt and this whole block would have been asserting
+    -- on a state nothing ever set. cosmetics.lua also opens a `while true`
+    -- weapon-tint thread at load, which is why they are run by index rather
+    -- than all at once.
+    local threads = {}
+    Citizen.CreateThread = function(fn) threads[#threads + 1] = fn end
+
+    -- The ped, as the drop machine asks about it.
+    local ped = {
+        state = -1,      -- GetPedParachuteState
+        freefall = false, falling = false,
+        onFoot = true, inWater = false,
+        agl = 0.0, speed = 0.0,
+        hasChute = false, ammo = 0,
+    }
+    function GetPedParachuteState() return ped.state end
+    function IsPedInParachuteFreeFall() return ped.freefall end
+    function IsPedFalling() return ped.falling end
+    function IsPedOnFoot() return ped.onFoot end
+    function IsEntityInWater() return ped.inWater end
+    function GetEntityHeightAboveGround() return ped.agl end
+    function GetEntitySpeed() return ped.speed end
+    function GetPlayerHasReserveParachute() return false end
+    function HasPedGotWeapon() return ped.hasChute end
+    function GetAmmoInPedWeapon() return ped.ammo end
+    function GetSelectedPedWeapon() return 0 end
+    function GetControlInstructionalButton() return '' end
+
+    -- What the trail natives were actually told, because "armed" is a claim and
+    -- the colour is the thing the player paid for.
+    local smoke = { allowed = nil, rgb = nil }
+    function SetPlayerCanLeaveParachuteSmokeTrail(_, on) smoke.allowed = on end
+    function SetPlayerParachuteSmokeTrailColor(_, r, g, b) smoke.rgb = { r, g, b } end
+
+    for _, n in ipairs({
+        'ClearHelp', 'ClearPedTasks', 'ClearPedTasksImmediately',
+        'ForcePedToOpenParachute', 'SetEntityVisible',
+        'SetPlayerParachuteModelOverride', 'SetPlayerParachuteTintIndex',
+        'SetPlayerParachutePackTintIndex', 'SetPedWeaponTintIndex',
+        'TaskParachute',
+    }) do _G[n] = noop end
+
+    -- THE PAGE, AS THE PROMPT USES IT. Every message and every draw is kept:
+    -- the issue is not "did a function run", it is "what did the box say", and
+    -- the last payload sent is the only honest answer to that.
+    local dui = { sends = {}, draws = 0 }
+    BR.Dui = {
+        page       = function(name) return { name = name } end,
+        send       = function(_, msg) dui.sends[#dui.sends + 1] = msg end,
+        drawScreen = function() dui.draws = dui.draws + 1 end,
+        drawWorld  = noop, drawOnEntity = noop,
+        ready      = function() return true end,
+    }
+    local function lastSend()
+        return dui.sends[#dui.sends]
+    end
+
+    BR.PushHud = BR.PushHud or noop
+    BR.State.me.src = 1
+    BR.State.match = { state = BR.MatchState.BUS }
+    BR.State.roster = {}
+
+    -- THE REAL KEY LOOKUP, not the loot suite's stub. `keyLabelForCommand` is
+    -- one of the four candidate faults the issue names -- `key (none)` means the
+    -- prompt has no key to print and correctly draws nothing -- so answering it
+    -- with a constant 'E' would test the harness instead of the game. The stub
+    -- is kept for everything else, which is loaded and running above.
+    local stubNative = BR.Native
+    BR.Native = nil
+    loadAll({ 'br_core/client/natives.lua' })
+    local realNative = BR.Native
+    BR.Native = stubNative
+    BR.Native.ChuteState = realNative.ChuteState
+    BR.Native.keyLabelForCommand = realNative.keyLabelForCommand
+
+    -- The help box the prompt falls back into when the browser is not up.
+    local helpText = nil
+    BR.Native.helpThisFrame = function(t) helpText = t end
+
+    loadAll({
+        'br_core/client/cosmetics.lua',
+        'br_core/client/skydive.lua',   -- after cosmetics, as fxmanifest orders it
+    })
+    local loadThreads = #threads        -- cosmetics' weapon-tint loop; never run
+
+    local CS = BR.Native.ChuteState
+
+    --- Everything br:drop:begin does, including the thread it does it in.
+    local function jump()
+        local before = #threads
+        fire('br:drop:begin', { heading = 0.0 })
+        for i = before + 1, #threads do threads[i]() end
+    end
+
+    --- Put the player in the plane door with `id` equipped and no squad.
+    local function equip(id, squadColour)
+        BR.State.roster[1] = { squadId = squadColour and 'sq1' or nil,
+                               colour = squadColour }
+        fire(BR.Net.MARKET_STATE, { equipped = { trail = id } })
+        ped.hasChute, ped.ammo = true, 1
+        ped.state, ped.freefall, ped.falling = CS.ON_BACK, true, true
+        ped.onFoot, ped.agl = true, 400.0
+    end
+
+    bootOn(true, true)   -- the raw key layer, on the build everyone plays
+
+    ok(BR.Keys.labelFor('brtrail') == 'B',
+        'the trail action is on a key the prompt can name',
+        tostring(BR.Keys.labelFor('brtrail')))
+    ok(BR.Native.keyLabelForCommand('brtrail') == 'B',
+        'and the prompt asks for it by command and gets the same answer',
+        tostring(BR.Native.keyLabelForCommand('brtrail')))
+
+    equip('trail_ember')
+    jump()
+
+    ok(BR.Cosmetics.trailArmed == true,
+        'a bought trail arms on the way out of the door',
+        ('armed %s source %s'):format(tostring(BR.Cosmetics.trailArmed),
+                                      tostring(BR.Cosmetics.trailSource)))
+    ok(BR.Cosmetics.trailSource == 'purchase' and smoke.allowed == true,
+        'and it is the purchase that is painted, solo or not')
+
+    -- Freefall: chute stowed, ped in the parachute task.
+    dui.sends, dui.draws = {}, 0
+    frame(16)
+    local g = lastSend()
+    ok(g and g.show == true and g.label == 'Open the glider',
+        'the freefall box offers the glider',
+        g and tostring(g.label) or 'nothing was sent')
+    ok(g and g.key == 'SPACE' or (g and g.key ~= nil),
+        'with a key in the cap', g and tostring(g.key) or 'nil')
+    ok(dui.draws > 0, 'and it is actually drawn')
+
+    -- The canopy opens. The ped is under it, off its feet, still descending.
+    dui.sends, dui.draws = {}, 0
+    ped.state, ped.freefall = CS.OPEN, false
+    ped.onFoot, ped.agl = false, 300.0
+    frame(16)
+    local t = lastSend()
+    ok(t and t.show == true and t.label == 'Toggle smoke trails',
+        'THE CANOPY HANDS THE BOX TO THE TRAIL -- #131',
+        t and ('label %s show %s'):format(tostring(t.label), tostring(t.show))
+           or 'nothing was sent to the page at all')
+    ok(t and t.key == 'B',
+        'naming the key the player is actually bound to',
+        t and tostring(t.key) or 'nil')
+    ok(dui.draws > 0, 'and the page is drawn under the canopy too',
+        ('draws %d'):format(dui.draws))
+
+    -- THE ENGINE CALLING A PARACHUTING PED "ON FOOT" MUST NOT TAKE THE PROMPT
+    -- (#131, third round). IS_PED_ON_FOOT is true for a ped inside the parachute
+    -- task's freefall on this build -- measured, live, 2026-08-04 -- and the
+    -- gate built on it killed the GLIDER prompt for a whole healthy drop back
+    -- then. The trail branch still had one until this round. Whatever the native
+    -- answers under a canopy, the box is not allowed to depend on it.
+    dui.sends, dui.draws = {}, 0
+    ped.onFoot = true
+    frame(16)
+    local stubborn = lastSend()
+    ok((stubborn == nil or stubborn.show ~= false) and dui.draws > 0,
+        'a ped the engine calls on-foot under an open canopy still gets the box',
+        ('draws %d last %s'):format(dui.draws,
+            stubborn and tostring(stubborn.show) or 'nothing re-sent'))
+    ped.onFoot = false
+
+    -- THE BROWSER NOT COMING UP IS NOT ALLOWED TO MEAN SILENCE. A DUI is a whole
+    -- CEF instance; if the second one never arrives the descent used to draw
+    -- nothing and say nothing, which is exactly what this issue has been
+    -- reported as twice and is indistinguishable from having nothing equipped.
+    helpText = nil
+    BR.Dui.ready = function() return false end
+    frame(16)
+    ok(helpText ~= nil and helpText:find('smoke trails', 1, true) ~= nil,
+        'a page that is not up falls back to words rather than nothing',
+        tostring(helpText))
+    ok(helpText ~= nil and helpText:find('B', 1, true) ~= nil,
+        'and the words still name the key the player is bound to',
+        tostring(helpText))
+    BR.Dui.ready = function() return true end
+
+    -- THE REBIND REACHES THE AIR. The FAIL condition the owner was given twice
+    -- is a cap that still says B after the key has been moved.
+    BR.Keys.set('brtrail', 0x4A)   -- J
+    dui.sends, dui.draws = {}, 0
+    frame(16)
+    local reb = lastSend()
+    ok(reb and reb.key == 'J',
+        'a mid-descent rebind moves the letter in the cap',
+        reb and tostring(reb.key) or 'nothing was re-sent')
+    BR.Keys.set('brtrail', 0x42)
+    frame(16)
+
+    -- The key does what the box says it does.
+    local wasOn = BR.Cosmetics.trailOn
+    fire('br:keys:changed')
+    BR.Cosmetics.showTrail(not wasOn)
+    ok(BR.Cosmetics.trailOn == (not wasOn) and smoke.allowed == (not wasOn),
+        'and the toggle withdraws the smoke rather than re-deciding its colour')
+    BR.Cosmetics.showTrail(true)
+    ok(smoke.rgb ~= nil, 'coming back in the colour that was bought')
+
+    -- Landed: the box goes away and stays away.
+    dui.sends = {}
+    ped.state, ped.onFoot, ped.agl, ped.falling = CS.NONE, true, 0.0, false
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    frame(16)
+    local gone = lastSend()
+    ok(gone and gone.show == false, 'and the match ending takes the box down',
+        gone and tostring(gone.show) or 'nothing was sent')
+end
+
+describe('nobody is offered a key for a trail they do not have')
+do
+    -- The owner's own rule for this issue: "somebody with nothing equipped
+    -- should see no prompt at all rather than a prompt for a thing they do not
+    -- have". Which makes an ABSENT prompt correct in one case and the bug in
+    -- another, and those two are indistinguishable from a chair -- the whole
+    -- reason /brdropdbg prints the four readings.
+    local threads = {}
+    Citizen.CreateThread = function(fn) threads[#threads + 1] = fn end
+
+    local sends = {}
+    BR.Dui.send = function(_, msg) sends[#sends + 1] = msg end
+
+    local function drop(id, squadColour)
+        BR.State.roster[1] = { squadId = squadColour and 'sq1' or nil,
+                               colour = squadColour }
+        fire(BR.Net.MARKET_STATE, { equipped = { trail = id } })
+        local before = #threads
+        fire('br:drop:begin', { heading = 0.0 })
+        for i = before + 1, #threads do threads[i]() end
+    end
+
+    -- Squad Colour is the free default -- `trailRgb = nil` -- so solo it paints
+    -- nothing, and a slot test would have offered a prompt anyway.
+    drop('trail_squad', nil)
+    ok(BR.Cosmetics.trailArmed == false,
+        'the default item paints nothing on a solo drop',
+        ('armed %s'):format(tostring(BR.Cosmetics.trailArmed)))
+
+    sends = {}
+    GetPedParachuteState = function() return BR.Native.ChuteState.OPEN end
+    IsPedOnFoot = function() return false end
+    frame(16)
+    local last = sends[#sends]
+    ok(last == nil or last.show == false,
+        'and no trail prompt is offered under the canopy',
+        last and tostring(last.label) or 'nothing sent')
+
+    -- Equipped Squad Colour IN a squad does paint, and that player owns the
+    -- choice, so they get the key like anyone else (#131 removed the override).
+    drop('trail_squad', '#3B9BFF')
+    ok(BR.Cosmetics.trailArmed == true and BR.Cosmetics.trailSource == 'squad',
+        'in a squad the same item paints the squad colour',
+        ('armed %s source %s'):format(tostring(BR.Cosmetics.trailArmed),
+                                      tostring(BR.Cosmetics.trailSource)))
+
+    -- A BOUGHT TRAIL IN A SQUAD IS THE REVERSAL THE OWNER ASKED FOR. `source
+    -- purchase` while squadded is the single line that proves it.
+    drop('trail_ember', '#3B9BFF')
+    ok(BR.Cosmetics.trailSource == 'purchase',
+        'and a bought trail outranks it -- the player earned that trail',
+        tostring(BR.Cosmetics.trailSource))
+
+    -- A CLEARED BINDING DRAWS NOTHING, because the cap would be empty and the
+    -- sentence would be an instruction to press nothing.
+    BR.Keys.set('brtrail', false)
+    fire('br:keys:changed')
+    sends = {}
+    frame(16)
+    local none = sends[#sends]
+    ok(none == nil or none.show == false,
+        'a cleared trail binding draws no box rather than an empty cap',
+        none and tostring(none.key) or 'nothing sent')
+    BR.Keys.reset('brtrail')
+    fire('br:keys:changed')
+end
+
+describe('the drop readout answers the four questions it was written for')
+do
+    -- /brdropdbg is what the owner is asked to paste when the prompt does not
+    -- appear, and it is the ONLY instrument for this issue. A readout that
+    -- throws, or that has been renamed out from under the instructions, is
+    -- worse than none -- see #137, where `brdrop` was two commands and the
+    -- loser never ran.
+    ok(commands['brdrop'] == nil or commands['brdropdbg'] ~= nil,
+        'the debug dump is not sitting on the drop-item keybind (#137)')
+    logged = {}
+    ok(pcall(commands['brdropdbg'], nil, {}, ''), '/brdropdbg does not throw')
+    local said = table.concat(logged, '\n')
+    ok(said:find('trail: armed', 1, true) ~= nil,
+        'and prints the trail line the issue asks for', said)
+    for _, word in ipairs({ 'armed', 'source', 'on ', 'key ' }) do
+        ok(said:find(word, 1, true) ~= nil,
+            ('the readout carries "%s"'):format(word), said)
+    end
+    -- AND THE HALF THAT WAS MISSING: whether the decision reached the screen.
+    -- "armed true, key B" and no box on screen was an unanswerable report.
+    ok(said:find('prompt: saying', 1, true) ~= nil,
+        'and says whether the box was drawn, as text, or not at all', said)
+    ok(said:find('loop: skydive.prompt', 1, true) ~= nil,
+        'and whether the callback that draws it is still running', said)
 end
 
 -- ------------------------------------------------------------------ report ---

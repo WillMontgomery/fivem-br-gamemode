@@ -6693,6 +6693,78 @@ do
         ('pending %s diedAt %s placement %s'):format(
             tostring(e2.revivePending), tostring(e2.diedAt),
             tostring(e2.placement)))
+
+    -- (5) WHERE THE WINDOW STARTS, which is the whole of the rescope (owner,
+    --     2026-08-16): "this was not supposed to cover dying during warmup,
+    --     since that's not possible. instead, the issue is dying between
+    --     jumping from the bus and game state changing to playing".
+    --
+    --     The first implementation held WARMUP and BUS by MATCH state alone.
+    --     Both halves of that were wrong in opposite directions and neither was
+    --     visible from the assertions above, because every one of them jumps
+    --     first: warmup was covering something that cannot happen, and holding
+    --     by match state alone put the AIRCRAFT inside the window -- a player
+    --     still in their seat had not left the bus yet, which is where the owner
+    --     says it begins.
+    reset()
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(mstate() == BR.MatchState.WARMUP, 'on the pad', tostring(mstate()))
+
+    -- WARMUP IS NOT A DEATH AT ALL, and that is the owner's point rather than a
+    -- consequence of this change: canDie has never included the warmup state, so
+    -- eliminate() returns before it reaches any window test. The old scope was
+    -- guarding a door with nothing behind it.
+    BR.Combat.eliminate(1, 'fall', nil)
+    local w = BR.Roster.get(1)
+    ok(w.state == BR.PlayerState.WARMUP,
+        'a death on the warmup pad does not happen in the first place',
+        tostring(w.state))
+    ok(w.revivePending == nil and w.diedAt == nil,
+        'so there is nothing to hold and nothing to bank')
+
+    -- ABOARD IS BEFORE THE WINDOW. The state that CAN die here is the bus seat,
+    -- and it is deliberately outside: "between jumping from the bus and..." is
+    -- where the hold begins, so a death in the seat is banked like any other.
+    fakeTime = mendsAt() + 1
+    BR.Sched.step(fakeTime)
+    ok(mstate() == BR.MatchState.BUS, 'and then aboard', tostring(mstate()))
+    ok(BR.Roster.get(2).state == BR.PlayerState.BUS, 'player 2 is in their seat')
+
+    BR.Combat.eliminate(2, 'fall', nil)
+    local b = BR.Roster.get(2)
+    ok(b.revivePending == nil,
+        'a death while still ON the bus is not held -- the window starts at the door',
+        tostring(b.revivePending))
+    ok(b.diedAt ~= nil and b.placement ~= nil,
+        'it is banked in full, like any other elimination',
+        ('diedAt %s placement %s'):format(
+            tostring(b.diedAt), tostring(b.placement)))
+
+    -- AND ONE STEP LATER, THE SAME MATCH STATE, THE OTHER SIDE OF THE DOOR.
+    -- Nothing about the match has changed between these two assertions; the only
+    -- difference is that this player jumped.
+    reset()
+    join(1, 'A'); join(2, 'B')
+    fire(BR.Net.QUEUE_JOIN, 1, { mode = BR.Mode.SOLO.key })
+    fire(BR.Net.QUEUE_JOIN, 2, { mode = BR.Mode.SOLO.key })
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    fakeTime = mendsAt() + 1
+    BR.Sched.step(fakeTime)
+    local r5 = BR.Bus.active(theMatch())
+    fakeTime = r5.jumpFrom + 1000
+    fire(BR.Net.BUS_JUMP, 2)
+    ok(BR.Roster.get(2).state == BR.PlayerState.FREEFALL, 'out of the door')
+    BR.Combat.eliminate(2, 'fall', nil)
+    local f = BR.Roster.get(2)
+    ok(f.revivePending == true,
+        'and the very next death IS held -- same match state, different side of the door')
+    ok(f.diedAt == nil and f.placement == nil,
+        'with nothing a results row is built from written')
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

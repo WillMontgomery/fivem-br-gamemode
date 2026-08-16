@@ -424,13 +424,13 @@ function BR.Match.awardPlacements(m)
             -- dies -- still falling is still standing.
             --
             -- AND A HELD DEATH IS STILL STANDING TOO (#144). `revivePending` is
-            -- a player whose ped is down and whose match has not started: they
-            -- have no diedAt, no placement and no results row saying otherwise,
-            -- and the only way this function ever sees one is an admin ending a
-            -- match during warmup or the flight -- there is no gameplay path,
-            -- because the pre-match tick refuses to end a match that is holding
-            -- somebody. Left out, they would be the one participant of a
-            -- force-ended match to finish with no placement at all, which
+            -- a player who left the bus, went down, and whose match has not
+            -- reached PLAYING: they have no diedAt, no placement and no results
+            -- row saying otherwise, and the only way this function ever sees one
+            -- is an admin ending a match during the flight -- there is no
+            -- gameplay path, because the pre-match tick refuses to end a match
+            -- that is holding somebody. Left out, they would be the one
+            -- participant of a force-ended match to finish with no placement, which
             -- br_stats reads as a non-winning finish and banks as a death: the
             -- exact outcome this whole change exists to prevent, arriving
             -- through the one door nobody was watching.
