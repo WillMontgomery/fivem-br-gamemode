@@ -145,12 +145,18 @@ AddEventHandler('br:ui:pauseAction', function(action)
         -- next match with somebody who has already gone -- the party would be
         -- holding a slot for a player who left, which is the same broken
         -- state a disconnect used to leave behind.
-        if S.party and S.party.id then
-            TriggerServerEvent(BR.Net.SQUAD_LEAVE)
-        end
-        -- The existing, proven leave path -- interstitial, server round trip,
-        -- teleport home -- rather than a second implementation of it.
-        ExecuteCommand('brleave')
+        --
+        -- PASSED IN RATHER THAN SENT FROM HERE, and that is #124's last path.
+        -- The party leave used to go out on this line, immediately, ahead of
+        -- everything -- so the pause menu's own party card rewrote itself in
+        -- front of the player before the screen had begun to darken. It now
+        -- rides inside the leave, which does not send ANYTHING until the page
+        -- reports the curtain solid black.
+        --
+        -- A direct call rather than ExecuteCommand('brleave'): the leave yields
+        -- now, and a fire-and-forget console command cannot carry an argument or
+        -- be sequenced against. See BR.Spawn.leaveMatch for the whole ordering.
+        BR.Spawn.leaveMatch(S.party ~= nil and S.party.id ~= nil)
 
     elseif action == 'squad' then
         -- DEFERRED, ON PURPOSE, and this is the user's design (2026-08-09):

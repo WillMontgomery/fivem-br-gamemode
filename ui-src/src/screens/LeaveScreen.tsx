@@ -73,7 +73,24 @@ export default function LeaveScreen({
     <div
       className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-6
                  bg-black transition-opacity duration-[600ms]"
-      style={{ opacity: show ? 1 : 0, pointerEvents: 'none' }}
+      // AN OPAQUE SCREEN SWALLOWS CLICKS -- while it is up, and only then.
+      //
+      // This was `'none'` unconditionally, which was harmless while there was
+      // never anything clickable underneath. There is now: the pause menu is
+      // held open on purpose while this curtain rises over it (#124, see
+      // br_ui/client/pause.lua), so a second click during the fade would land
+      // blind on a button the player can no longer see -- and the row directly
+      // under "Leave match" is "Disconnect".
+      //
+      // Off again the moment it is down, because the page is click-through by
+      // default (index.css) and a full-screen layer left at `auto` would eat
+      // every click in the lobby underneath it. The trade it accepts: a curtain
+      // that ever got STUCK up now takes the interface with it rather than
+      // leaving the player clicking blindly at a black screen. That is the
+      // better of two bad states, and it is already watched for from both sides
+      // -- br_core lifts an abandoned curtain after 15s, and /brunstuck drops it
+      // by hand.
+      style={{ opacity: show ? 1 : 0, pointerEvents: show ? 'auto' : 'none' }}
       aria-hidden={!show}
       // THIS ELEMENT'S OWN OPACITY, AND NOTHING ELSE'S. transitionend bubbles,
       // so any child of this curtain that ever grows a transition would
