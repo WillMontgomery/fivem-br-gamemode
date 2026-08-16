@@ -131,6 +131,20 @@ end
 --- while a ring outstaying its key is visible on screen.
 local HOLD_RELEASE_MS = 120
 
+--- How many times a rising edge has landed on a hold that was already running.
+---
+--- NOT PART OF `hold`, AND DELIBERATELY NOT CLEARED BY clearHold(): it counts
+--- for the whole session, because what it measures is how often this client's
+--- key state drops a frame -- which is a property of the machine, not of any
+--- one crate. /brloot prints it.
+---
+--- It exists because #129 has now cost four rounds, and the difference between
+--- "this client never sees a dropped frame" and "it sees one every 300ms" was
+--- not observable from anywhere. If a crate still refuses to open and this
+--- reads 0, the dropped-frame path is not what is happening and the next person
+--- should look elsewhere rather than at this file.
+local holdResumes = 0
+
 --- Is a hold in progress still being held, and should this frame count?
 ---
 --- ONE ANSWER, ASKED BY BOTH FRAME CHECKS. loot.render advances the clock and
@@ -1741,6 +1755,49 @@ local function interactPressed()
     if not e then return end
 
     if isContainer(e) then
+        -- A RISING EDGE THAT ARRIVES WITH THIS HOLD STILL RUNNING IS A RESUME,
+        -- NOT A RESTART, AND THAT IS THE WHOLE OF #129's FOURTH ROUND.
+        --
+        -- The second round established that a hold must survive a frame of key
+        -- state that reads UP without the player having let go
+        -- (citizenfx/fivem#3064; see HOLD_RELEASE_MS). It bought that with the
+        -- release grace, which keeps the hold ALIVE across the bad frame -- and
+        -- then this handler threw the progress away on the very next one:
+        --
+        --   frame 19  isHeld=true   holdMs=304
+        --   frame 20  isHeld=false  holdMs=304   <- grace holds the hold open
+        --   frame 21  isHeld=true   holdMs=16    <- the re-press restarts it
+        --
+        -- The bad frame fires a release edge and the frame after it fires a
+        -- press edge, because the raw layer derives both from the same sample.
+        -- So the grace kept the hold and this call reset its clock, which makes
+        -- the grace decorative for the exact case it was written for. Any
+        -- source of that pair -- once every 640ms is enough against a 1000ms
+        -- hold -- makes a crate structurally impossible to open while leaving
+        -- every press-to-pick-up working perfectly, because a press needs ONE
+        -- good frame and a hold needs a thousand milliseconds of consecutive
+        -- ones. That asymmetry is the reported symptom exactly: loose loot
+        -- works (#139), the crate does not (#129).
+        --
+        -- IT CANNOT RESURRECT A HOLD THE PLAYER ACTUALLY ENDED. `hold.id` is
+        -- only still ours because holdKeyAlive has not yet expired the grace --
+        -- loot.interact asks it every frame, unconditionally -- so reaching
+        -- here with the same id means the key has been up for less than
+        -- HOLD_RELEASE_MS. A real release clears the hold, and the press after
+        -- it lands on the branch below and starts from zero.
+        --
+        -- AND IT IS NOT A ROUTE BACK TO PRESS-TO-OPEN. Milliseconds are still
+        -- earned only on frames the key reads DOWN (see `counting` in
+        -- loot.render), so this hands out no progress whatsoever -- it only
+        -- stops progress already earned from being deleted.
+        if hold.id == e.id then
+            -- Back down, so the grace window starts again from here rather
+            -- than from the frame the bad sample arrived on.
+            hold.upAt = nil
+            holdResumes = holdResumes + 1
+            return
+        end
+
         -- The clock starts at zero and is advanced by loot.render, on frames
         -- where the key is still down. Nothing here is a deadline.
         --
@@ -2159,6 +2216,17 @@ RegisterCommand('brloot', function()
     print(('  hold key:  %s   via %s'):format(label or '(engine default)', via))
     print(('  release grace %dms -- the hold survives a dropped frame of key '
         .. 'state, and earns nothing during it'):format(HOLD_RELEASE_MS))
+    -- THE COUNT THAT SAYS WHETHER THE FOURTH ROUND'S FIX IS DOING ANYTHING
+    -- HERE. A rising edge arriving on a hold that is already running is the
+    -- key state having dropped a frame the player never let go of. Each one
+    -- used to reset the clock to zero, so on a client that produces them
+    -- faster than chestHoldMs the crate could never be opened at all.
+    --
+    --   0 and the crate opens   nothing to see; this client is clean.
+    --   >0 and the crate opens  they happen and are being absorbed.
+    --   0 and it does NOT open  this is not the fault -- look somewhere else.
+    print(('  key dropped a frame mid-hold %d time(s) this session '
+        .. '(each one used to restart the clock)'):format(holdResumes))
 end, false)
 
 --- Change the crate hold duration live, the same way /brlabel and /brshine

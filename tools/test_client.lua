@@ -811,6 +811,81 @@ do
     frames(20)
 end
 
+-- A DROPPED FRAME THAT HAPPENS MORE THAN ONCE, WHICH IS THE ONLY KIND THERE IS.
+--
+-- The block above fires exactly one dropout and then hands the hold a fresh
+-- second to finish in, so it passes whether or not the dropout costs the clock
+-- everything it had earned. It did cost it everything, and that is #129's
+-- fourth round -- the suite proved the release GRACE worked and never asked
+-- what the re-press did:
+--
+--   frame 19  isHeld=true   holdMs=304
+--   frame 20  isHeld=false  holdMs=304   <- the grace keeps the hold alive
+--   frame 21  isHeld=true   holdMs=16    <- the rising edge restarts the clock
+--
+-- The raw layer derives both edges from one sample, so a frame that reads UP
+-- fires a release AND the frame after it fires a press. A client that does that
+-- more often than once per chestHoldMs can therefore never open a crate, no
+-- matter how long the key is held -- while every press-to-pick-up keeps working,
+-- because a press needs one good frame and a hold needs a thousand milliseconds
+-- of consecutive ones.
+--
+-- 320ms apart is well inside the 1000ms the hold needs, which is the whole
+-- point: the test has to run the dropout at a rate the clock cannot outrun, or
+-- it is the one-shot test again with extra steps.
+describe('hold survives dropped frames that keep coming')
+do
+    bootOn(true, true)
+    clearWorld()
+    local id = addEntry('chest', nil, 1.0, 0.0)
+    frames(2)
+
+    pressInteract()
+    local best = 0
+    for i = 1, 300 do
+        -- One frame in twenty reads UP without the key having moved.
+        if i % 20 == 0 then lying[INTERACT_VK] = true end
+        frame(16)
+        best = math.max(best, holdMs() or 0)
+        if #claims() > 0 then break end
+    end
+
+    local got = claims()
+    ok(#got == 1 and got[1] == id,
+       'a hold whose key state drops a frame every 320ms still opens the crate',
+       ('claims=%d best=%dms of %dms -- the clock is being restarted by the '
+        .. 'press edge that follows each dropped frame')
+           :format(#got, best, CHEST_MS))
+    releaseInteract()
+    frames(20)
+end
+
+-- ...AND THE INVARIANT THAT FIX MUST NOT BUY ITS WAY OUT OF. Absorbing the
+-- re-press is only safe while the hold is still alive on the grace; a key with
+-- REAL gaps in it -- let go for longer than HOLD_RELEASE_MS -- has to keep
+-- failing, or #129's original complaint (a press opens a crate) walks back in
+-- through the fix for its fourth round.
+describe('mashing is still not holding')
+do
+    bootOn(true, true)
+    clearWorld()
+    addEntry('chest', nil, 1.0, 0.0)
+    frames(2)
+
+    -- Thirty presses, each held for one frame and released for 208ms. That is
+    -- eight seconds of contact with the key and eight times the hold's
+    -- duration in elapsed time.
+    for _ = 1, 30 do
+        pressInteract()
+        frame(16)
+        releaseInteract()
+        frames(13)
+    end
+    ok(#claims() == 0,
+       'a key let go of for longer than the grace never opens the crate',
+       ('claims=%d -- press-to-open is back'):format(#claims()))
+end
+
 -- ======================================================================== --
 -- 3. THE PICKUP PATH, KEYPRESS THROUGH TO AN INVENTORY DELTA
 -- ======================================================================== --
