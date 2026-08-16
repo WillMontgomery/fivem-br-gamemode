@@ -30,10 +30,23 @@ BR.Xp.Config = {
 --- Total XP required to have REACHED a given level.
 --- @param level integer
 --- @return integer
+--- ROUNDED TO THE NEAREST 50, because a player reads this number.
+---
+--- The raw curve produces thresholds like 2342 and spans like 1542, and "1,542
+--- XP to the next level" reads as a number that fell out of a spreadsheet
+--- rather than one somebody chose (owner, 2026-08-15). Rounding the THRESHOLD
+--- rather than the span is what keeps both tidy: a span is the difference of
+--- two thresholds, so multiples of 50 subtract to multiples of 50.
+---
+--- It cannot round to zero for level 2 and it cannot go backwards, because
+--- `base` is 800 and the curve is monotonic well above the rounding step.
+local ROUND_TO = 50
+
 function BR.Xp.thresholdFor(level)
     if level <= 1 then return 0 end
     local c = BR.Xp.Config
-    return math.floor(c.base * ((level - 1) ^ c.exponent))
+    local raw = c.base * ((level - 1) ^ c.exponent)
+    return math.floor(raw / ROUND_TO + 0.5) * ROUND_TO
 end
 
 --- Level implied by a total XP value.

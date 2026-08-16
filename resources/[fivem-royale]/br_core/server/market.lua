@@ -148,7 +148,14 @@ function BR.Market.load(src)
 
     -- Seeded before the answer arrives, so a purchase attempted during the
     -- round trip finds an entry to refuse against rather than nil.
-    inv[lic] = withDefaults({ balance = 0, owned = {}, equipped = {}, loaded = false })
+    -- `xp = 0` IS NOT DECORATION. The seeded stub was missing it, so during the
+    -- round trip `entry.xp` was nil -- and BR.Market.push feeds that straight to
+    -- BR.Xp.levelFor. Worse, `br:market:credited` does `(entry.xp or 0) + earned`,
+    -- so a match ending inside that window replaced the player's lifetime total
+    -- with just what the match paid. The window is short and the symptom is a
+    -- level that reads wrong and then silently corrects itself, which is exactly
+    -- the kind of thing that gets reported as "it took a while to update".
+    inv[lic] = withDefaults({ balance = 0, xp = 0, owned = {}, equipped = {}, loaded = false })
 
     ask('br:ddb:inventoryFetch', function(i, extra)
         local entry = { balance = 0, xp = 0, owned = {}, equipped = {}, loaded = true }
