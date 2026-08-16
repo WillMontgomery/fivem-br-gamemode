@@ -32,6 +32,35 @@ local open = false
 --- else asks the map to close.
 local frontendMap = false
 
+--- Tell the PAGE that the engine's frontend owns the screen.
+---
+--- CLEARING THE FOCUS STACK WAS NEVER ENOUGH, and this is the fix for the
+--- half of #122 that actually matters (owner, 2026-08-16: "results in the
+--- lobby UI overlaying on top of the GTA V settings screen").
+---
+--- The reasoning that was wrong: "our screens follow focus, so emptying the
+--- stack takes them all down". The LOBBY does not follow focus. It is drawn
+--- from match state on purpose -- a queue screen you cannot see is worse than
+--- one you cannot yet click -- so clearFocus released the cursor and left the
+--- lobby painted exactly where it was, on top of a scaleform that nothing we
+--- draw can sit under.
+---
+--- And the attempt before this one had the PAGE raise the flag itself, just
+--- before asking Lua to hand over. That loses a race it cannot see: the
+--- handover pops `pause` and `settings` off the stack, which leaves `lobby`
+--- on top, which makes the bridge send FOCUS{screen='lobby'} -- and the page
+--- treated focus coming back as the frontend having closed, so it cleared its
+--- own flag and redrew, a frame before the menu even appeared. It reproduced
+--- ONLY from the lobby for exactly that reason: nowhere else is there a
+--- `lobby` entry underneath to become the new top.
+---
+--- So the flag is LUA'S, it is set before the frontend is raised and cleared
+--- only once the frontend is genuinely down, and the page mirrors it.
+--- @param up boolean
+local function announceFrontend(up)
+    TriggerEvent('br:ui:sendLocal', BR.Nui.FRONTEND, { up = up == true })
+end
+
 --- @param tab string|nil  which tab to land on ('help', 'notices', ...)
 function BR.Pause.open(tab)
     if open then return end
@@ -221,6 +250,10 @@ function BR.Pause.openFrontendPlain()
     if frontendMap then return end
     frontendMap = true
     TriggerEvent('br:map:frontend', true)
+    -- BEFORE the menu is raised, not after. The scaleform can be on screen on
+    -- the very next frame, and a page still drawing on that frame is the
+    -- overlay the player reports.
+    announceFrontend(true)
 
     Citizen.CreateThread(function()
         ActivateFrontendMenu(GetHashKey('FE_MENU_VERSION_SP_PAUSE'), false, -1)
@@ -238,6 +271,13 @@ function BR.Pause.openFrontendPlain()
             -- emptied before this thread started, so returning quietly here
             -- would leave the player in a lobby they cannot see or click --
             -- a worse outcome than the frontend simply not opening.
+            --
+            -- AND THE PAGE IS TOLD IT MAY DRAW AGAIN, first. We hid it for a
+            -- frontend that never arrived; without this the player is left
+            -- staring at the world with no interface at all and no way to get
+            -- it back short of reconnecting -- strictly worse than the bug
+            -- this whole path exists to fix.
+            announceFrontend(false)
             TriggerEvent('br:ui:frontendClosed')
             return
         end
@@ -252,6 +292,13 @@ function BR.Pause.openFrontendPlain()
 
         frontendMap = false
         TriggerEvent('br:map:frontend', false)
+        -- THE PAGE DRAWS AGAIN BEFORE IT IS CLICKABLE AGAIN, in that order.
+        -- The loop above only ends when the frontend is genuinely gone, by
+        -- whatever route the player took out of it -- Escape, the menu's own
+        -- back button, a controller -- so this is the one place that knows the
+        -- screen is ours again, and it is reached no matter which of those it
+        -- was.
+        announceFrontend(false)
         -- AND THE PLAYER GETS THEIR MENU BACK. We emptied the focus stack to
         -- get out of the frontend's way; leaving it empty would drop them in
         -- the lobby with no cursor and nothing to click. br_core decides what
@@ -274,24 +321,55 @@ end)
 --
 -- Our screens come down first: the frontend is a scaleform, so a menu left
 -- open underneath would hold the cursor with nothing able to draw over it.
-RegisterNUICallback(BR.NuiCb.VOICE_SETTINGS, function(_, cb)
-    -- EVERY SCREEN COMES DOWN, not just the one that asked.
-    --
-    -- Closing the settings page and the pause menu was not enough: in the
-    -- LOBBY the focus stack still has `lobby` underneath, so the lobby menu
-    -- stayed up and drew over GTA's frontend (owner, 2026-08-09). A scaleform
-    -- cannot be covered by NUI and NUI cannot be covered by it, so anything
-    -- of ours left on screen is simply on top of the menu the player was sent
-    -- to use.
-    --
-    -- clearFocus empties the stack rather than popping one screen, which is
-    -- the same thing ESC-in-the-lobby did when it raised the engine's menu.
-    -- br_core hands focus back when the frontend closes -- see the restore
-    -- below.
+--- Hand the whole screen to GTA's own menu.
+---
+--- EVERY SCREEN COMES DOWN, not just the one that asked.
+---
+--- Closing the settings page and the pause menu was not enough: in the LOBBY
+--- the focus stack still has `lobby` underneath, so the lobby menu stayed up
+--- and drew over GTA's frontend (owner, 2026-08-09). A scaleform cannot be
+--- covered by NUI and NUI cannot be covered by it, so anything of ours left on
+--- screen is simply on top of the menu the player was sent to use.
+---
+--- clearFocus empties the stack rather than popping one screen, which is the
+--- same thing ESC-in-the-lobby did when it raised the engine's menu. br_core
+--- hands focus back when the frontend closes.
+---
+--- AND THAT STILL WAS NOT ENOUGH, which is #122 (owner, 2026-08-16). Focus is
+--- about the CURSOR. The lobby is drawn from match state, not from the focus
+--- stack, so emptying the stack took the mouse away and left the lobby
+--- painted over the settings screen -- the same report a second time, for a
+--- reason the first fix could not have addressed. openFrontendPlain announces
+--- the frontend to the page, which is what actually stops it drawing.
+---
+--- THE ORDER MATTERS AND IT IS THIS WAY ROUND ON PURPOSE. Every pop above
+--- emits a focus envelope, and popping `pause`/`settings` in the lobby leaves
+--- `lobby` on top -- so the page hears FOCUS{screen='lobby'} in the middle of
+--- this function. The announcement therefore goes LAST, after the stack has
+--- finished collapsing, or the page would be told to draw again immediately
+--- after being told not to.
+local function handOverToFrontend()
     BR.Pause.close()
     TriggerEvent('br:ui:closeSettings')
     TriggerEvent('br:ui:clearFocus')
     BR.Pause.openFrontendPlain()
+end
+
+RegisterNUICallback(BR.NuiCb.VOICE_SETTINGS, function(_, cb)
+    handOverToFrontend()
+    cb({ ok = true })
+end)
+
+-- THE SAME DOOR, LABELLED FOR THE PEOPLE WHO WANT GRAPHICS.
+--
+-- Mechanically identical to the voice handover, and deliberately not merged
+-- with it: the only route to the engine's settings used to be a button
+-- reading "Microphone & push-to-talk", buried in the Voice section, so a
+-- player looking for resolution, texture quality or FOV had nothing to find
+-- (owner, 2026-08-16). Two names for one mechanism costs four lines; a player
+-- who cannot change their resolution costs the session.
+RegisterNUICallback(BR.NuiCb.GAME_SETTINGS, function(_, cb)
+    handOverToFrontend()
     cb({ ok = true })
 end)
 
@@ -378,6 +456,15 @@ RegisterNUICallback(BR.NuiCb.PAUSE_ACTION, function(data, cb)
         -- The client's own `disconnect` is a restricted console command and
         -- comes back "Access denied" (user, 2026-08-09). The server drops us.
         BR.Pause.close()
+        -- THE CURTAIN, NOT A SECOND EXIT PATH. Disconnecting is a server round
+        -- trip and DropPlayer lands whenever it lands -- so without this the
+        -- player presses Disconnect and is returned to the lobby they were
+        -- trying to leave, for as long as the trip takes, with nothing saying
+        -- the press registered. The interstitial that already covers leaving a
+        -- match covers this for the same reason: something irreversible is
+        -- under way and there is nothing to look at while it happens.
+        TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING,
+                     { show = true, kind = 'disconnecting' })
         TriggerServerEvent(BR.Net.LEAVE_SERVER)
         cb({ ok = true })
         return

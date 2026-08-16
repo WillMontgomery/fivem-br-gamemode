@@ -42,11 +42,25 @@ export default function Lobby({
   const worldReady = useUi((s) => s.worldReady)
   const locker = useUi((s) => s.locker)
   const [queued, setQueued] = useState(false)
+  // THE DISCONNECT CONFIRM, INLINE (#83). Local state, and deliberately not a
+  // focus push or a sub-screen: the whole point of the issue is that leaving
+  // must not be behind a page. It resets itself whenever the lobby is hidden,
+  // below, so a half-answered confirm is never waiting on the way back in.
+  const [leaveConfirm, setLeaveConfirm] = useState(false)
   // WHY READY UP IS UNAVAILABLE, if it is. The party panel owns the answer --
   // it knows which way the player said they wanted a squad and whether they
   // have got one yet -- and this is where the button lives, so the reason
   // travels up rather than the button moving down.
   const [readyBlock, setReadyBlock] = useState<string | null>(null)
+
+  // A HALF-ANSWERED CONFIRM MUST NOT SURVIVE THE SCREEN. This component is
+  // hidden and shown rather than mounted and unmounted -- so without this, a
+  // player who opened the disconnect confirm, changed their mind, readied up
+  // and came back a match later would find "Disconnect from the server?" still
+  // sitting there waiting on an answer, one stray click from dropping them.
+  useEffect(() => {
+    if (!visible) setLeaveConfirm(false)
+  }, [visible])
 
   /**
    * MAINTENANCE OUTRANKS THE PARTY PANEL'S REASON, and it has to.
@@ -462,6 +476,74 @@ export default function Lobby({
               Settings
             </Btn>
           </div>
+        </div>
+
+        {/* THE WAY OUT OF THE SERVER (#83).
+            "There is no way to leave the server from within the lobby pause
+            menu" (owner, 2026-08-16) -- and the reason is worse than a missing
+            button. Our pause menu HAS a Leave server row, and in the lobby it
+            is unreachable: NUI holds the cursor there, so the game never sees
+            F1, and Escape is captured by the page and routed to Settings. The
+            lobby has no pause menu at all, so the exit has to live on the
+            lobby itself.
+
+            INLINE, NOT A PAGE, and the issue is explicit about why: a
+            dedicated screen for one destructive action is disproportionate and
+            puts a wall between the player and something they should reach in
+            one press. So the confirm happens in place, on this row.
+
+            SUBORDINATE TO READY UP. It sits below the four destinations, quiet
+            and right-aligned, because leaving is the thing a player does once
+            and readying up is the thing they came here for -- the same
+            argument that turned the pause menu's three exit cards into three
+            rows. */}
+        <div className="mt-5 flex items-center justify-end gap-3">
+          {leaveConfirm ? (
+            <>
+              {/* THE QUESTION SITS BESIDE THE ANSWER, so the row keeps its
+                  height and nothing below it moves when the confirm opens. */}
+              <div
+                className="micro-label ts"
+                style={{
+                  ['--fs' as string]: '0.62rem',
+                  textTransform: 'none',
+                  color: 'var(--color-danger)',
+                }}
+              >
+                Disconnect from the server?
+              </div>
+              <Btn
+                variant="danger" size="sm" cue="ui.select"
+                onPress={() => {
+                  setLeaveConfirm(false)
+                  // THE PROVEN PATH, not a second implementation of it. This
+                  // is the same verb the pause menu's Leave server row fires:
+                  // pause.lua raises the leaving curtain and asks the server
+                  // to drop us, because the client's own `disconnect` console
+                  // command is restricted and answers "Access denied".
+                  void fetchNui(CB.PAUSE_ACTION, { action: 'server' })
+                }}
+              >
+                Disconnect
+              </Btn>
+              {/* NEVER "CANCEL". The way out of a confirm should say what
+                  staying actually means -- the same wording rule the pause
+                  menu's exits follow. */}
+              <Btn
+                variant="default" size="sm" cue="ui.back"
+                onPress={() => setLeaveConfirm(false)}
+              >
+                Stay connected
+              </Btn>
+            </>
+          ) : (
+            <Btn
+              variant="default" size="sm" cue="ui.back"
+              onPress={() => setLeaveConfirm(true)}
+            >
+              Leave server
+            </Btn>
+          )}
         </div>
       </div>
     </div>
