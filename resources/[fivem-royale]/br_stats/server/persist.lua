@@ -85,7 +85,15 @@ end
 --- which is what "deaths" has always meant for a battle royale profile.
 local function deltasFor(p, ctx)
     local placement = p.placement or 0
-    local won = placement == 1
+    -- A WIN IS PLACEMENT 1 THAT THEY WERE ALIVE FOR. The last squad standing
+    -- can still be taken by the storm: eliminate() records placement 1,
+    -- because nobody outlasted them, and this used to read that as a win --
+    -- banking wins +1, deaths 0, the win payout and the win XP bonus for a
+    -- death. The client has always applied the extra condition
+    -- (client/state.lua: `placement == 1 and not diedThisMatch`) and showed
+    -- them a death, so the two halves of the same question disagreed.
+    -- `died` is now carried on the row rather than inferred here.
+    local won = placement == 1 and not p.died
     local squad = (p.squadId ~= nil)
 
     -- SURVIVAL IS PER PLAYER, AND IT USED NOT TO BE. This read
@@ -103,6 +111,9 @@ local function deltasFor(p, ctx)
         total      = ctx.total or 0,
         squadId    = p.squadId,
         survivedMs = p.survivedMs or 0,
+        -- Carried into the XP and payout functions so they can apply the same
+        -- rule as `won` above, rather than each re-deriving it from placement.
+        died       = p.died == true,
     }
 
     local xpEarned = BR.Xp and BR.Xp.forMatch(r) or 0

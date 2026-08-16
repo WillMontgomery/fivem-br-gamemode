@@ -115,8 +115,21 @@ function BR.Xp.forMatch(r)
         placement = math.floor(c.perPlacement * frac)
     end
 
-    local win = (place == 1) and c.winBonus or 0
-    local top10 = (place > 1 and place <= 10) and c.top10Bonus or 0
+    -- THE WIN BONUS NEEDS THEM TO HAVE SURVIVED IT. Placement 1 says nobody
+    -- outlasted them; it does not say they were alive at the end. The last
+    -- squad standing taken by the storm places 1st and died, and paying the
+    -- win bonus for that was worth more than the whole rest of the match.
+    -- `died` is absent on rows built before this existed, which reads as false
+    -- and preserves the old behaviour for them.
+    local win = (place == 1 and not r.died) and c.winBonus or 0
+    -- THE TOP-10 BONUS FILLS THE HOLE THE WIN BONUS LEAVES. It used to read
+    -- `place > 1` because placement 1 always collected the larger win bonus
+    -- instead -- but a placement-1 death now collects neither, and that made
+    -- outlasting everybody and dying pay LESS than finishing second, which is
+    -- the same inversion in a smaller coat. Gated on the win bonus not having
+    -- been paid rather than on the place, so the two can never both apply and
+    -- can never both be skipped.
+    local top10 = (win == 0 and place >= 1 and place <= 10) and c.top10Bonus or 0
 
     local breakdown = {
         kills = kills, downs = downs, revives = revives, damage = damage,

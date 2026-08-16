@@ -11,6 +11,11 @@ local ROOT = 'resources/[fivem-royale]/'
 for _, f in ipairs({
     'br_lib/shared/enums.lua',
     'br_lib/shared/xp.lua',
+    -- The Volts payout answers the same questions as the XP curve from the
+    -- same row, and the two have to agree about what a win is -- so they are
+    -- tested together rather than one here and one in a suite that has to boot
+    -- the whole roster to reach it.
+    'br_lib/config/market.lua',
 }) do
     local chunk, err = loadfile(ROOT .. f)
     if not chunk then
@@ -131,6 +136,34 @@ do
     local second = BR.Xp.forMatch({ kills = 3, downs = 0, revives = 0, damage = 400,
                                     survivedMs = 900000, placement = 2, total = 48 })
     ok(won > second, 'winning beats second place')
+
+    -- PLACEMENT 1 AND A DEATH IS NOT A WIN. The last squad standing can still
+    -- be taken by the storm: eliminate() records placement 1, because nobody
+    -- outlasted them, and they died. The client has always drawn that as a
+    -- death; the stats and payout path used to bank it as a win.
+    local diedLast = BR.Xp.forMatch({ kills = 3, downs = 0, revives = 0, damage = 400,
+                                      survivedMs = 900000, placement = 1, total = 48,
+                                      died = true })
+    ok(diedLast < won, 'placing first but dying does not earn the win bonus',
+        ('won=%d diedLast=%d'):format(won, diedLast))
+    ok(diedLast > second, 'but it still out-earns second place -- they did finish top',
+        ('diedLast=%d second=%d'):format(diedLast, second))
+
+    -- Absent `died` must read as false, or every row built before the field
+    -- existed silently loses its win bonus.
+    ok(BR.Xp.forMatch({ kills = 3, downs = 0, revives = 0, damage = 400,
+                        survivedMs = 900000, placement = 1, total = 48 }) == won,
+        'a row with no died field is still a win')
+
+    -- The same rule, on the Volts side. They keep the placement scale (they
+    -- did finish top) and lose only the win bonus.
+    local paidWin  = BR.Config.marketPayout({ placement = 1, total = 48, kills = 3 })
+    local paidDied = BR.Config.marketPayout({ placement = 1, total = 48, kills = 3,
+                                              died = true })
+    ok(paidDied < paidWin, 'the win payout needs them to have survived it',
+        ('win=%d died=%d'):format(paidWin, paidDied))
+    ok(paidDied > BR.Config.marketPayout({ placement = 2, total = 48, kills = 3 }),
+        'but placing first while dying still beats placing second')
 
     -- Second of 48 should land close to a win, not fall off a bracket edge.
     -- A flat "top N" bonus would make 10th and 11th wildly different for no

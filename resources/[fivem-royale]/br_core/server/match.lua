@@ -424,6 +424,20 @@ function BR.Match.publishResults(m)
             revives   = e.revives or 0,
             damage    = e.damage or 0.0,
             placement = e.placement,
+            -- PLACEMENT 1 IS NOT THE SAME QUESTION AS "DID THEY WIN".
+            --
+            -- The last squad standing can still be killed by the storm, and
+            -- eliminate() correctly records them as placement 1 -- nobody
+            -- outlasted them. But they died, and a match that ends with no
+            -- survivors has no winner. The client has always known this
+            -- (`placement == 1 and not diedThisMatch`, client/state.lua) and
+            -- shows them a death; the stats path never got the same rule and
+            -- banked a win, zero deaths, the win payout and the win XP bonus.
+            --
+            -- Sent as a fact about the player rather than left to be inferred,
+            -- because the two halves inferring it separately is exactly how
+            -- they came to disagree.
+            died      = e.diedAt ~= nil,
             squadId   = e.squadId,
             survivedMs = math.max(0, diedAt - startedAt),
             presentMs  = math.max(0, goneAt - startedAt),

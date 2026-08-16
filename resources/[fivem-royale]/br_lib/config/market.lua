@@ -464,7 +464,11 @@ function BR.Config.marketPayout(r)
     local placement = tonumber(r.placement) or 0
     local total     = tonumber(r.total) or 1
 
-    if placement == 1 then
+    -- SAME RULE AS THE XP WIN BONUS, and for the same reason: placement 1 says
+    -- nobody outlasted them, not that they were alive at the end. The last
+    -- squad standing taken by the storm places 1st and died. They still get
+    -- the placement scale below -- they did finish top -- just not the win.
+    if placement == 1 and not r.died then
         earned = earned + p.win
     elseif placement > 0 and total > 1 then
         earned = earned + math.floor(p.placementTop * (1.0 - (placement - 1) / (total - 1)))
