@@ -142,179 +142,211 @@ export default function PlayerList() {
     // through, and a full-screen interactive layer over a live match eats the
     // clicks that should have been shots.
     <div className="pointer-events-none fixed inset-0 z-50">
-      <div
-        className="interactive plate absolute right-8 top-1/2 flex max-h-[74vh] -translate-y-1/2 flex-col"
-        style={{
-          width: reporting ? '27rem' : '21rem',
-          transition: 'width 140ms ease-out',
-          ['--edgec' as string]: 'rgba(255,255,255,0.14)',
-          ['--plate-fill' as string]: 'rgba(10,12,18,0.90)',
-          backdropFilter: 'blur(6px)',
-        }}
-      >
-        <div className="flex shrink-0 items-baseline justify-between px-4 pt-3.5 pb-3">
-          <div>
-            <div className="micro-label">This match</div>
-            <h2 className="font-display text-[1.35rem] uppercase leading-none tracking-[0.09em]">
-              {reporting ? 'Report' : 'Players'}
-            </h2>
-          </div>
-          <div className="micro-label text-right">
-            {reporting
-              ? `${selected.length}/${list.maxTargets} picked`
-              : `${alive} alive`}
-          </div>
-        </div>
+      {/* THE SAME BOX THE HUD LAYS OUT IN, so the panel follows the player's
+          safe-zone slider and the ultrawide clamp instead of pinning itself to
+          the physical right edge of the glass. On a 32:9 panel an element
+          anchored to the raw viewport sits a head-turn away from everything
+          else on screen (#20), and this card is meant to be read at a glance
+          during a fight. */}
+      <div className="hud-safe">
+        {/* THE ANCHOR IS THIS DIV AND NOT THE PLATE, and that is the whole fix
+            rather than a tidy-up (owner, 2026-08-16: "you got your X coords
+            mixed up").
 
-        <div className="min-h-0 flex-1 overflow-y-auto thin-scroll px-2">
-          {rows.length === 0 ? (
-            <p className="micro-label px-2 pb-3">Nobody else is here.</p>
-          ) : (
-            <div className="flex flex-col gap-px pb-2">
-              {rows.map((p) => {
-                const on = picked[p.src] !== undefined
-                // You cannot report yourself, so no checkbox is drawn. The
-                // server refuses it too; this is only about not offering it.
-                const selectable = reporting && !p.you
-                const gone = p.left || p.state === 'dead'
+            `.plate` declares `position: relative` -- it has to, because its
+            two redrawn chamfers are absolutely positioned children of it. But
+            index.css opens with `@tailwind utilities`, so every utility class
+            is emitted ABOVE `.plate` in the sheet. `.absolute` and `.plate`
+            are both one class of specificity, so the later rule wins and the
+            card was `position: relative` with `right`/`top` doing nothing but
+            nudging it out of normal flow -- 22px LEFT of the document origin,
+            hanging off the left edge of the screen with most of the panel cut
+            off. It rendered on the wrong side of the screen entirely.
 
-                return (
-                  <div key={p.src}>
-                    <div
-                      className="flex items-center gap-2.5 rounded-sm px-2 py-1.5"
-                      style={{
-                        background: on ? 'rgba(255,255,255,0.06)' : undefined,
-                        opacity: gone ? 0.5 : 1,
-                      }}
-                    >
-                      {selectable ? (
-                        <input
-                          type="checkbox"
-                          checked={on}
-                          disabled={!on && atCap}
-                          onChange={() => toggle(p.src)}
-                          className="size-3.5 shrink-0 accent-[var(--color-royale-accent)]"
-                          aria-label={`Report ${p.name}`}
-                        />
-                      ) : (
-                        // A STATE DOT INSTEAD OF A SENTENCE. At this width
-                        // "Eliminated" beside every dead player is most of the
-                        // panel; the colour carries it and the word only
-                        // appears on the right when it is not "alive".
-                        <span
-                          className="size-1.5 shrink-0 rounded-full"
-                          style={{
-                            background:
-                              p.state === 'dbno'
-                                ? 'var(--color-royale-warn, #e0a33a)'
-                                : gone
-                                  ? 'rgba(255,255,255,0.3)'
-                                  : 'var(--color-royale-accent)',
-                          }}
-                        />
-                      )}
-
-                      <span className="min-w-0 flex-1 truncate text-[0.9rem] tscale leading-tight">
-                        {p.name}
-                        {p.you && <span className="micro-label ml-1.5">you</span>}
-                      </span>
-
-                      <span className="micro-label shrink-0">
-                        {p.left
-                          ? 'left'
-                          : p.state === 'dead'
-                            ? 'out'
-                            : p.state === 'dbno'
-                              ? 'down'
-                              : p.squadId
-                                ? 'squad'
-                                : ''}
-                      </span>
-                    </div>
-
-                    {/* THE DROPDOWN ONLY APPEARS FOR A TICKED ROW, and it gets
-                        its own line rather than sharing one -- at this width a
-                        name and a category side by side truncates the name to
-                        nothing, which is the one field that must stay legible
-                        on a report. */}
-                    {selectable && on && (
-                      <select
-                        value={picked[p.src]}
-                        onChange={(e) => {
-                          play('ui.hover')
-                          setPicked((prev) => ({ ...prev, [p.src]: e.target.value }))
-                        }}
-                        className="mb-1 ml-8 w-[calc(100%-2.5rem)] rounded-sm px-2 py-1 text-[0.78rem] tscale"
-                        style={{
-                          background: 'rgba(12,14,20,0.94)',
-                          border: '1px solid rgba(255,255,255,0.18)',
-                          color: '#fff',
-                        }}
-                      >
-                        {list.categories.map((c) => (
-                          <option key={c.id} value={c.id}>{c.label}</option>
-                        ))}
-                      </select>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </div>
-
+            Anchoring on a plain div sidesteps the collision instead of
+            fighting it, and it takes the translate off the plate as well --
+            `.plate` transitions `transform`, and a positioning transform on a
+            surface that animates transform is a trap waiting for whoever adds
+            the next state to this card. */}
         <div
-          className="shrink-0 px-4 pt-3 pb-3.5"
-          style={{ borderTop: '1px solid rgba(255,255,255,0.10)' }}
+          className="absolute top-1/2 -translate-y-1/2"
+          style={{ right: 'var(--safe-x)' }}
         >
-          {reporting ? (
-            <>
-              {selected.length > 0 && (
-                <input
-                  value={note}
-                  onChange={(e) => setNote(e.target.value)}
-                  placeholder="Anything else? (optional)"
-                  maxLength={300}
-                  className="mb-2.5 w-full rounded-sm px-2.5 py-1.5 text-[0.82rem] tscale"
-                  style={{
-                    background: 'rgba(12,14,20,0.94)',
-                    border: '1px solid rgba(255,255,255,0.18)',
-                    color: '#fff',
-                  }}
-                />
-              )}
-              <div className="flex items-center gap-2">
-                {/* SUBMIT ONLY EXISTS WITH A SELECTION. An always-present
-                    submit on an empty form is a button whose only function is
-                    to be refused. */}
-                {selected.length > 0 && (
-                  <Btn variant="primary" size="sm" cue="ui.select" onPress={submit}>
-                    Send {selected.length === 1 ? 'report' : `${selected.length} reports`}
-                  </Btn>
-                )}
-                <Btn variant="ghost" size="sm" cue="ui.back" onPress={leaveReport}>
-                  Cancel
-                </Btn>
-                <span className="micro-label ml-auto">
-                  {list.remaining} left
-                </span>
+          <div
+            className="interactive plate flex max-h-[74vh] flex-col"
+            style={{
+              width: reporting ? '27rem' : '21rem',
+              transition: 'width 140ms ease-out',
+              ['--edgec' as string]: 'rgba(255,255,255,0.14)',
+              ['--plate-fill' as string]: 'rgba(10,12,18,0.90)',
+              backdropFilter: 'blur(6px)',
+            }}
+          >
+            <div className="flex shrink-0 items-baseline justify-between px-4 pt-3.5 pb-3">
+              <div>
+                <div className="micro-label">This match</div>
+                <h2 className="font-display text-[1.35rem] uppercase leading-none tracking-[0.09em]">
+                  {reporting ? 'Report' : 'Players'}
+                </h2>
               </div>
-            </>
-          ) : (
-            <div className="flex items-center gap-2">
-              <Btn
-                variant="ghost"
-                size="sm"
-                cue="ui.select"
-                onPress={() => { if (!spent) enterReport() }}
-              >
-                {spent ? 'No reports left' : 'Report'}
-              </Btn>
-              <Btn variant="ghost" size="sm" cue="ui.back" onPress={close}>
-                Close
-              </Btn>
+              <div className="micro-label text-right">
+                {reporting
+                  ? `${selected.length}/${list.maxTargets} picked`
+                  : `${alive} alive`}
+              </div>
             </div>
-          )}
+    
+            <div className="min-h-0 flex-1 overflow-y-auto thin-scroll px-2">
+              {rows.length === 0 ? (
+                <p className="micro-label px-2 pb-3">Nobody else is here.</p>
+              ) : (
+                <div className="flex flex-col gap-px pb-2">
+                  {rows.map((p) => {
+                    const on = picked[p.src] !== undefined
+                    // You cannot report yourself, so no checkbox is drawn. The
+                    // server refuses it too; this is only about not offering it.
+                    const selectable = reporting && !p.you
+                    const gone = p.left || p.state === 'dead'
+    
+                    return (
+                      <div key={p.src}>
+                        <div
+                          className="flex items-center gap-2.5 rounded-sm px-2 py-1.5"
+                          style={{
+                            background: on ? 'rgba(255,255,255,0.06)' : undefined,
+                            opacity: gone ? 0.5 : 1,
+                          }}
+                        >
+                          {selectable ? (
+                            <input
+                              type="checkbox"
+                              checked={on}
+                              disabled={!on && atCap}
+                              onChange={() => toggle(p.src)}
+                              className="size-3.5 shrink-0 accent-[var(--color-royale-accent)]"
+                              aria-label={`Report ${p.name}`}
+                            />
+                          ) : (
+                            // A STATE DOT INSTEAD OF A SENTENCE. At this width
+                            // "Eliminated" beside every dead player is most of the
+                            // panel; the colour carries it and the word only
+                            // appears on the right when it is not "alive".
+                            <span
+                              className="size-1.5 shrink-0 rounded-full"
+                              style={{
+                                background:
+                                  p.state === 'dbno'
+                                    ? 'var(--color-royale-warn, #e0a33a)'
+                                    : gone
+                                      ? 'rgba(255,255,255,0.3)'
+                                      : 'var(--color-royale-accent)',
+                              }}
+                            />
+                          )}
+    
+                          <span className="min-w-0 flex-1 truncate text-[0.9rem] tscale leading-tight">
+                            {p.name}
+                            {p.you && <span className="micro-label ml-1.5">you</span>}
+                          </span>
+    
+                          <span className="micro-label shrink-0">
+                            {p.left
+                              ? 'left'
+                              : p.state === 'dead'
+                                ? 'out'
+                                : p.state === 'dbno'
+                                  ? 'down'
+                                  : p.squadId
+                                    ? 'squad'
+                                    : ''}
+                          </span>
+                        </div>
+    
+                        {/* THE DROPDOWN ONLY APPEARS FOR A TICKED ROW, and it gets
+                            its own line rather than sharing one -- at this width a
+                            name and a category side by side truncates the name to
+                            nothing, which is the one field that must stay legible
+                            on a report. */}
+                        {selectable && on && (
+                          <select
+                            value={picked[p.src]}
+                            onChange={(e) => {
+                              play('ui.hover')
+                              setPicked((prev) => ({ ...prev, [p.src]: e.target.value }))
+                            }}
+                            className="mb-1 ml-8 w-[calc(100%-2.5rem)] rounded-sm px-2 py-1 text-[0.78rem] tscale"
+                            style={{
+                              background: 'rgba(12,14,20,0.94)',
+                              border: '1px solid rgba(255,255,255,0.18)',
+                              color: '#fff',
+                            }}
+                          >
+                            {list.categories.map((c) => (
+                              <option key={c.id} value={c.id}>{c.label}</option>
+                            ))}
+                          </select>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+    
+            <div
+              className="shrink-0 px-4 pt-3 pb-3.5"
+              style={{ borderTop: '1px solid rgba(255,255,255,0.10)' }}
+            >
+              {reporting ? (
+                <>
+                  {selected.length > 0 && (
+                    <input
+                      value={note}
+                      onChange={(e) => setNote(e.target.value)}
+                      placeholder="Anything else? (optional)"
+                      maxLength={300}
+                      className="mb-2.5 w-full rounded-sm px-2.5 py-1.5 text-[0.82rem] tscale"
+                      style={{
+                        background: 'rgba(12,14,20,0.94)',
+                        border: '1px solid rgba(255,255,255,0.18)',
+                        color: '#fff',
+                      }}
+                    />
+                  )}
+                  <div className="flex items-center gap-2">
+                    {/* SUBMIT ONLY EXISTS WITH A SELECTION. An always-present
+                        submit on an empty form is a button whose only function is
+                        to be refused. */}
+                    {selected.length > 0 && (
+                      <Btn variant="primary" size="sm" cue="ui.select" onPress={submit}>
+                        Send {selected.length === 1 ? 'report' : `${selected.length} reports`}
+                      </Btn>
+                    )}
+                    <Btn variant="ghost" size="sm" cue="ui.back" onPress={leaveReport}>
+                      Cancel
+                    </Btn>
+                    <span className="micro-label ml-auto">
+                      {list.remaining} left
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <div className="flex items-center gap-2">
+                  <Btn
+                    variant="ghost"
+                    size="sm"
+                    cue="ui.select"
+                    onPress={() => { if (!spent) enterReport() }}
+                  >
+                    {spent ? 'No reports left' : 'Report'}
+                  </Btn>
+                  <Btn variant="ghost" size="sm" cue="ui.back" onPress={close}>
+                    Close
+                  </Btn>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       </div>
     </div>
