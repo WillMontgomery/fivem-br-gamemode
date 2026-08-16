@@ -114,11 +114,39 @@ BR.Config.RarityWeights = {
 }
 
 --- What kind of thing a roll INSIDE A CRATE produces.
+---
+--- THE WEIGHTS ARE WRITTEN TO SUM TO 100 so a row reads as a percentage of
+--- crate items. Nothing requires that -- rng:weighted normalises -- but it is
+--- the difference between retuning this table and doing arithmetic first.
+---
+--- INVERTED 2026-08-16 (#127). The owner opened crates for a full match and
+--- reported "disproportionately more ammo/medkits than weapons", and the table
+--- agreed with him: at 34/30/28/8, and with meleeChance taking 18% of the
+--- weapon rolls for a machete, a crate item was a FIREARM 27.9% of the time and
+--- ammo-or-consumable 58% of the time. That is 2.08 supporting items for every
+--- gun. Worse, because a crate holds 3 items on average (chestItems below),
+--- only 61% of crates contained a firearm at all -- so two crates in five paid
+--- out no weapon, which is the one thing a player crosses open ground for.
+---
+--- A battle royale's crate has to make a weapon the EXPECTED outcome: you find
+--- the gun, and the ammo and the shields are what you find alongside it. At
+--- 55/22/17/6 a crate item is a firearm 48.4% of the time, 85% of crates hold
+--- at least one, and the supporting-to-gun ratio is 0.81:1 -- the wrong way up
+--- from where it was, which is the point.
+---
+--- HOW TO RETUNE IT WITHOUT OPENING A HUNDRED CRATES: `brlootsim` on the server
+--- console rolls this table as many times as you like and prints the resulting
+--- distribution, including the number that actually matters here -- the share
+--- of crates holding a gun. Change a number, restart, run it again.
+---
+--- The FLOOR table below is deliberately NOT touched by this. Loose ground loot
+--- being almost all ammo is a separate, earlier decision (2026-08-06) and is
+--- where most of the ammo a player trips over comes from.
 BR.Config.KindWeights = {
-    { kind = BR.ItemKind.WEAPON,     weight = 34 },
-    { kind = BR.ItemKind.AMMO,       weight = 30 },
-    { kind = BR.ItemKind.CONSUMABLE, weight = 28 },
-    { kind = BR.ItemKind.THROWABLE,  weight =  8 },
+    { kind = BR.ItemKind.WEAPON,     weight = 55 },
+    { kind = BR.ItemKind.AMMO,       weight = 22 },
+    { kind = BR.ItemKind.CONSUMABLE, weight = 17 },
+    { kind = BR.ItemKind.THROWABLE,  weight =  6 },
 }
 
 --- What kind of thing a LOOSE GROUND roll produces.
@@ -475,7 +503,17 @@ BR.Config.Loot = {
     -- How often a CRATE weapon roll produces melee instead of a firearm.
     -- Crate-only: a machete on the roadside is a consolation prize, a machete
     -- in a box you crossed open ground for is a decision (user, 2026-08-07).
-    meleeChance     = 0.18,
+    --
+    -- THIS IS A FRACTION OF THE WEAPON ROLLS, SO IT IS COUPLED TO
+    -- BR.Config.KindWeights AND HAS TO MOVE WITH IT. Raising the weapon weight
+    -- from 34 to 55 for #127 would have taken melee from 6.1% of crate items to
+    -- 9.9% as a side effect -- a 62% increase in machetes that nobody asked
+    -- for, arriving inside a change whose entire purpose was "more guns".
+    -- 0.12 of the new weight lands melee back at 6.6% of crate items, so the
+    -- whole of the increase goes where the owner pointed it: firearms.
+    --
+    -- The knob still means what it always meant. Raise it for more machetes.
+    meleeChance     = 0.12,
 
     -- Crate mass, in kg, via SetObjectPhysicsParams. Tuned in game, in four
     -- passes: the prop default read as "extremely heavy", 12 overcorrected
