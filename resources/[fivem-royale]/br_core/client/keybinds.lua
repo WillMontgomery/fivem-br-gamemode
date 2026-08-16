@@ -627,6 +627,33 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
             -- state, so the state is what this has to ask for.
             local down = rawDownFn(code)
             local was = rawDown[b.command] == true
+
+            -- A HELD FLAG THAT IS ONLY EVER WRITTEN ON AN EDGE IS A LATCH, AND
+            -- A LATCH CAN BE LEFT ON.
+            --
+            -- BR.Keys.held is what every hold interaction in the game asks
+            -- ("is the player still holding this?") and until now the only
+            -- thing that ever wrote it was fire(), on a transition. So the
+            -- answer was not the key's state, it was a memory of the last
+            -- transition anybody noticed -- and one missed release edge left it
+            -- saying "held" for as long as nothing else moved that key. dbno.lua
+            -- has the scar: a brief tap completed an entire eight-second revive
+            -- in playtest (owner, 2026-08-09), because the stop was raised and
+            -- did not land, and nothing afterwards re-checked. The crate hold
+            -- has the same shape and #129 is the same complaint about it.
+            --
+            -- HOLD ACTIONS ONLY, and deliberately. For a hold the raw native
+            -- already answers the exact question every frame, so trusting the
+            -- sample over the memory costs nothing and a lost edge self-corrects
+            -- on the very next one. A tap has no held state worth the name, and
+            -- writing one here would fight rawUpAt/TAP_REARM_MS below -- which
+            -- exists precisely because this key state is NOT trustworthy across
+            -- a focus change. That is also the trade being made: a dropped
+            -- frame of key state now cancels a hold in progress rather than
+            -- being ridden out. For a hold that is the safe side to be wrong on
+            -- -- you press again -- and it is the side the owner asked for.
+            if b.hold then BR.Keys.held[b.action] = down end
+
             if down ~= was then
                 rawDown[b.command] = down or nil
                 if not down then

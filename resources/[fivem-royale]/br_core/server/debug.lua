@@ -115,6 +115,9 @@ RegisterCommand('brhelp', function()
     print('  brconfig             the tunables that most often explain odd behaviour')
     print('  brwhy <id>           why is this player in the state they are in')
     print('  brloot [matchId]     world loot: counts by kind and rarity, subscriptions')
+    print('  brlootsim [n] [tier] roll the crate table n times and print the')
+    print('                       distribution -- including the share of crates')
+    print('                       that hold a gun. Retune loot without playing.')
     print('  brinv <id>           one player\'s inventory, slot by slot')
     print('  brweapons [filter]   list every grantable item id')
     print('  brarm <id|all> <item> [rarity]  weapon + FULL reserve (dev mode)')
@@ -132,7 +135,10 @@ RegisterCommand('brhelp', function()
     print('    brboot, brblack, brfocus, brshield [0-100], brleave (leave the match),')
     print('    brdbno (what THIS client believes about being down, plus which')
     print('    crawl the build actually resolved),')
-    print('    brloot (what this client can see), brlootblips (dev: blip every')
+    print('    brcratehold <ms> (crate hold duration, live -- brloot shows the')
+    print('    hold counting up and whether the key is actually down),')
+    print('    brloot (what this client can see, what it is OFFERING you and')
+    print('    what else is in reach), brlootblips (dev: blip every')
     print('    item in scope), brpois (blip EVERY point of interest, map-wide,')
     print('    coloured by tier with its radius shaded), brpromptcheck,')
     print('    brprobe (what the natives actually do -- run "brprobe" alone')
@@ -441,6 +447,129 @@ RegisterCommand('brloot', function(_, args)
     end)
 
     if not any then print('  no matches running') end
+end, RESTRICTED)
+
+--- Roll the crate table N times and print what came out.
+---
+---   brlootsim [crates] [tier] [seed]
+---
+--- THE ANSWER TO "IS THERE ENOUGH GUN IN THE CRATES", WITHOUT OPENING A HUNDRED
+--- OF THEM. #127 was reported from a single match -- "disproportionately more
+--- ammo/medkits than weapons" -- and the only way to check the fix, or any
+--- future retune, was to go and play another one. That is a slow loop for a
+--- table that is four numbers, and it is a loop that cannot tell a real shift
+--- from a run of bad luck.
+---
+--- This rolls the SAME function the layout generator rolls (BR.LootChestContents,
+--- including the one-tier-hotter bump crates get), so it is not a model of the
+--- loot table -- it is the loot table.
+---
+--- The headline is the last line of each block: the share of crates holding at
+--- least one FIREARM. Per-item percentages are interesting, but a player does
+--- not experience percentages, they experience opening a box and finding no gun
+--- in it.
+---
+--- RESTRICTED rather than dev-mode-only, like brloot and brconfig above: it
+--- reads nothing about any player, changes nothing, and spawns nothing. The
+--- commands wearing devOnly are the ones that hand out gear.
+RegisterCommand('brlootsim', function(_, args)
+    local crates = math.tointeger(math.floor(tonumber(args[1]) or 20000))
+    local tierArg = math.tointeger(math.floor(tonumber(args[2]) or 0))
+    -- A FIXED DEFAULT SEED, so two runs either side of a config change differ
+    -- because the config changed. Pass one to check the numbers are not an
+    -- artefact of this particular sequence.
+    local seed = math.tointeger(math.floor(tonumber(args[3]) or 1))
+
+    if crates < 1 or crates > 2000000 then
+        print('  usage: brlootsim [crates] [tier] [seed]   (1..2000000 crates)')
+        return
+    end
+
+    header(('crate loot simulation -- %d crates/tier, seed %d'):format(crates, seed))
+
+    local K = BR.Config.KindWeights
+    local wsum = 0
+    for _, k in ipairs(K) do wsum = wsum + k.weight end
+    local parts = {}
+    for _, k in ipairs(K) do
+        parts[#parts + 1] = ('%s %.0f%%'):format(k.kind, k.weight / wsum * 100.0)
+    end
+    print('  kind weights:  ' .. table.concat(parts, '   '))
+    print(('  melee is %.0f%% of the weapon rolls; a crate holds %d..%d items')
+        :format((BR.Config.Loot.meleeChance or 0.0) * 100.0,
+                BR.Config.Loot.chestItems.min, BR.Config.Loot.chestItems.max))
+
+    local tiers = (tierArg >= 1 and tierArg <= 3) and { tierArg } or { 1, 2, 3 }
+
+    for _, tier in ipairs(tiers) do
+        local rng = BR.Rng(seed + tier)
+
+        local items, byLabel = 0, {}
+        local withFirearm, withAnyWeapon = 0, 0
+        -- Fixed print order. A distribution dump that reorders itself between
+        -- runs is one you cannot diff against the run before it.
+        local order = { 'firearm', 'melee', 'ammo', 'consumable', 'throwable' }
+
+        for _ = 1, crates do
+            local contents = BR.LootChestContents(rng, tier)
+            local gun, weapon = false, false
+            for _, s in ipairs(contents) do
+                items = items + 1
+
+                local bucket
+                if s.kind == BR.ItemKind.WEAPON then
+                    weapon = true
+                    local w = BR.Config.WeaponById[s.item]
+                    if w and w.melee then
+                        bucket = 'melee'
+                    else
+                        bucket = 'firearm'
+                        gun = true
+                    end
+                elseif s.kind == BR.ItemKind.AMMO then
+                    bucket = 'ammo'
+                elseif s.kind == BR.ItemKind.CONSUMABLE then
+                    bucket = 'consumable'
+                else
+                    bucket = 'throwable'
+                end
+
+                byLabel[bucket] = (byLabel[bucket] or 0) + 1
+                -- Consumables are counted a second time by id: "medkits" is
+                -- half of what was reported, and a lump labelled "consumable"
+                -- cannot answer it.
+                if s.kind == BR.ItemKind.CONSUMABLE then
+                    local key = 'consumable:' .. s.item
+                    byLabel[key] = (byLabel[key] or 0) + 1
+                end
+            end
+            if gun then withFirearm = withFirearm + 1 end
+            if weapon then withAnyWeapon = withAnyWeapon + 1 end
+        end
+
+        line('-')
+        print(('  POI tier %d  (crates roll tier %d)   %d items, %.2f per crate')
+            :format(tier, math.min(tier + 1, 3), items, items / crates))
+        for _, k in ipairs(order) do
+            local n = byLabel[k] or 0
+            print(('    %-12s %8d   %5.1f%%   %.2f per crate')
+                :format(k, n, n / items * 100.0, n / crates))
+        end
+        for _, c in ipairs(BR.Config.Consumables) do
+            local n = byLabel['consumable:' .. c.id] or 0
+            if n > 0 then
+                print(('      %-10s %8d   %5.1f%%   1 per %.1f crates')
+                    :format(c.id, n, n / items * 100.0, crates / n))
+            end
+        end
+
+        local guns = byLabel.firearm or 0
+        local support = (byLabel.ammo or 0) + (byLabel.consumable or 0)
+        print(('    support:gun ratio %.2f:1  (ammo+consumables per firearm)')
+            :format(guns > 0 and (support / guns) or 0.0))
+        print(('    CRATES WITH A FIREARM: %.1f%%   with any weapon: %.1f%%')
+            :format(withFirearm / crates * 100.0, withAnyWeapon / crates * 100.0))
+    end
 end, RESTRICTED)
 
 RegisterCommand('brinv', function(_, args)

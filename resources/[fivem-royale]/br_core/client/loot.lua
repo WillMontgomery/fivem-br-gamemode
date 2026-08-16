@@ -57,7 +57,45 @@ local reported  = {}      -- [id] = true, entries already sent back as misplaced
 --- or has settled on a slope has pitch and roll worth keeping too.
 local poses = {}
 
-local hold = { id = nil, from = 0 }
+--- The container hold in progress.
+---
+--- `heldMs` IS ACCUMULATED, NOT DERIVED FROM A START STAMP, and that is the
+--- whole of #129. The old shape was `{ id, from }` with the completion test
+--- `now - from >= chestHoldMs`, which asks "has enough wall-clock passed since
+--- the key went down" -- a question a momentary press answers just as well as a
+--- hold does. Nothing in that arithmetic requires the key to have been down for
+--- any of the interval; it relied entirely on some OTHER piece of code
+--- noticing the release and clearing `id` in time, and there were two of those,
+--- both with gates on them (see loot.interact below, and the canTake() early
+--- return in loot.render).
+---
+--- Milliseconds are added HERE, in the render pass, only on frames where the
+--- key reads down. A hold that stops being held stops accumulating and is
+--- dropped; a press that is never held accumulates one frame and dies. There is
+--- no interval left for a tap to sit out. Same reasoning dbno.lua reached for
+--- the revive after a brief tap completed a whole eight-second one in playtest
+--- (owner, 2026-08-09): progress needs continuous evidence, not an announcement.
+local hold = { id = nil, heldMs = 0.0 }
+
+--- THE ONE ENTRY THE PLAYER IS BEING OFFERED THIS FRAME, decided once in
+--- loot.render and read by everything else.
+---
+--- ONE TARGET, ONE PROMPT, ONE CLAIM (#128). The prompt and the pickup used to
+--- resolve their target INDEPENDENTLY -- the render pass called targetEntry()
+--- to decide what to draw, and the keypress handler called it again to decide
+--- what to take. Two calls, two answers: targetEntry mixed a 5.0m ray-cast with
+--- a 3.5m proximity fallback, so with two items in front of the player the
+--- answer flipped between them as the crosshair drifted a few pixels. The
+--- player pressed while looking at one prompt and took the other, and both
+--- items stayed live the whole time -- "we're able to accidentally pick up 2
+--- loot items if we're facing both of them" (owner, 2026-08-16).
+---
+--- Resolving it once and remembering it makes the drawn prompt and the claimed
+--- item the same object by construction rather than by two functions agreeing.
+--- It is a frame stale by the time the key is read, which is the correct
+--- staleness: what the player pressed on is what was on their screen.
+local target = nil
+
 local lastPrompt = { id = nil, hold = nil }
 
 -- REBINDING A KEY HAS TO REDRAW THE PROMPT THAT NAMES IT.
@@ -185,9 +223,11 @@ function BR.Loot.suppress(on)
     on = on == true
     if on == suppressed then return end
     suppressed = on
-    -- Drop any hold in progress. Walking up to a downed mate mid-crate must
-    -- not leave a timer running behind the revive prompt.
-    if on then hold.id = nil end
+    -- Drop any hold in progress, and the offer with it. Walking up to a downed
+    -- mate mid-crate must not leave a timer running behind the revive prompt --
+    -- nor a remembered target that the next keypress would claim instead of
+    -- starting the revive.
+    if on then hold.id, hold.heldMs, target = nil, 0.0, nil end
 end
 
 local function canTake()
@@ -208,6 +248,29 @@ end
 --- reads as swept from the doorway.
 local function isHusk(e)
     return e.kind == 'husk'
+end
+
+--- How far away this entry can still be interacted with, in metres.
+---
+--- ONE ANSWER, ASKED BY BOTH THE OFFER AND THE HOLD, because they used to
+--- disagree and the disagreement was reachable: the old targetEntry let a
+--- ray-cast prompt a crate out to pickupDistance + 1.5, while the hold loop
+--- cancelled anything past pickupDistance. A crate prompted at four metres
+--- therefore said "hold to open" and then dropped the hold on the first frame,
+--- every time, with nothing on screen to explain why.
+---
+--- Containers keep the longer reach the ray happened to give them. That is not
+--- generosity: a crate is a metre-wide box and the registry position is its
+--- CENTRE, so a player standing at its face is already the better part of a
+--- metre further away than the number suggests. The server allows
+--- pickupDistance + 4.0 (server/loot.lua inReach), so both of these sit well
+--- inside what it will accept.
+--- @param e table
+--- @return number
+local function reachOf(e)
+    local d = L.pickupDistance or 3.5
+    if isContainer(e) then return d + 1.5 end
+    return d
 end
 
 --- The pitch an item RESTS at, in degrees.
@@ -386,7 +449,11 @@ local function forget(id)
     entries[id] = nil
     queued[id] = nil
     poses[id] = nil
-    if hold.id == id then hold.id = nil end
+    if hold.id == id then hold.id, hold.heldMs = nil, 0.0 end
+    -- An entry that no longer exists cannot be the thing the player is being
+    -- offered. Left set, it is a claim waiting to be sent for an id the server
+    -- has already retired.
+    if target and target.id == id then target = nil end
     if outlinedId == id then outlinedId = nil end
 end
 
@@ -395,7 +462,7 @@ local function forgetAll()
     clearRetiring()
     for id in pairs(entries) do forget(id) end
     entries, queue, queued, byObject, reported = {}, {}, {}, {}, {}
-    myCell, hold.id = nil, nil
+    myCell, hold.id, hold.heldMs, target = nil, nil, 0.0, nil
     shineId, outlinedId = nil, nil
     burstUntil = 0
     -- Inline rather than through setPrompt(): that lives below this, and a
@@ -811,7 +878,8 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.props', function()
     if #queue > 0 then drain() end
 end)
 
---- The entry a player is closest to, within a distance.
+--- The entry a player is closest to, within a distance. Debug only -- /brloot
+--- uses it to name whatever is nearby, with no eligibility rules at all.
 --- @param px number
 --- @param py number
 --- @param maxDist number
@@ -827,21 +895,10 @@ local function nearestEntry(px, py, maxDist)
     return best
 end
 
---- What the player is interacting with right now.
----
---- LOOK-AT FIRST, PROXIMITY SECOND. A ray from the gameplay camera answers
---- "which crate am I standing in front of" the way players expect -- you face
---- the thing you want. Proximity is the fallback for loose floor items, which
---- have no collision to hit and are picked up by walking over them.
---- @param px number
---- @param py number
---- @return table|nil
 --- Is the player actually LOOKING at this thing?
 ---
 --- Walking down a corridor of loot used to flicker a prompt for whichever item
---- happened to be nearest, including ones behind you (user, 2026-08-08). The
---- ray-cast branch below already implies facing; this is the proximity
---- fallback, which did not.
+--- happened to be nearest, including ones behind you (user, 2026-08-08).
 ---
 --- Ped forward rather than camera forward: the prompt is about what the
 --- CHARACTER can reach, and in third person the camera can be looking
@@ -861,26 +918,74 @@ local function facing(ped, px, py, e)
     return ((dx / len) * f.x + (dy / len) * f.y) >= (L.promptFacingDot or 0.55)
 end
 
-local function targetEntry(px, py)
-    local hit, _, entity = BR.Native.aim(L.pickupDistance + 1.5, 16)
-    if hit and entity and entity ~= 0 then
-        local id = byObject[entity]
-        local e = id and entries[id]
-        if e and not isHusk(e)
-           and BR.Dist2(px, py, e.x, e.y)
-               <= (L.pickupDistance + 1.5) * (L.pickupDistance + 1.5) then
-            return e
+--- The single entry the player is being offered, or nil.
+---
+--- EXACTLY ONE, AND IT IS THE NEAREST ONE ELIGIBLE (#128). The old version was
+--- two rules stacked, and the seam between them is where the bug lived:
+---
+---   * a ray-cast that RETURNED EARLY, so whatever it hit won outright however
+---     far away it was, and
+---   * a proximity fallback that took the nearest entry and then threw it away
+---     if the player was not facing it -- which is not the same thing as
+---     "the nearest entry the player IS facing". An item at 1m behind the
+---     shoulder suppressed the prompt for the one at 2m dead ahead.
+---
+--- With two items in front of the player the two rules answered differently,
+--- and both answers were live: the ray-cast one was drawn, the proximity one
+--- was what a keypress a frame later could just as easily claim. Facing two
+--- items and taking the one you were not looking at is the fault the owner
+--- reported, and it is a gameplay fault -- you lose the item you wanted and a
+--- slot to one you did not.
+---
+--- Now there is one rule. Every candidate is judged on its own merits, and the
+--- nearest survivor wins. A single pass, single-valued, and it cannot disagree
+--- with itself.
+---
+--- The ray still earns its place, but it decides ELIGIBILITY rather than the
+--- winner: a crate the player is looking straight at is reachable out to
+--- reachOf() even if some loose item is technically nearer, which is the
+--- "which crate am I standing in front of" behaviour the ray was added for.
+---
+--- COST, SINCE THIS RUNS EVERY FRAME AND THE SHINE SCAN WAS MOVED OFF THE
+--- FRAME BAND FOR EXACTLY THIS REASON: it is one walk of the streamed entries,
+--- which is what the old proximity fallback already did on every frame the ray
+--- did not happen to hit something -- i.e. nearly all of them. What is gone is
+--- the ray's early return, which only ever fired while the player was looking
+--- directly at a prop. Unlike the shine, this cannot be sampled at 10Hz: it
+--- decides what a keypress claims, and a keypress lands on a frame.
+--- @param ped integer
+--- @param px number
+--- @param py number
+--- @return table|nil
+local function targetEntry(ped, px, py)
+    -- One ray per pass, not one per candidate. It answers a single question:
+    -- which entry, if any, is the player looking straight at.
+    local rayId = nil
+    local hit, _, entity = BR.Native.aim((L.pickupDistance or 3.5) + 1.5, 16)
+    if hit and entity and entity ~= 0 then rayId = byObject[entity] end
+
+    local best, bestD2 = nil, nil
+    for id, e in pairs(entries) do
+        -- A husk is an already-opened crate: scenery, and the server refuses
+        -- to claim it.
+        if not isHusk(e) then
+            local reach = reachOf(e)
+            local d2 = BR.Dist2(px, py, e.x, e.y)
+            if d2 <= reach * reach then
+                -- A container is exempt from the facing cone: a crate is a
+                -- metre-wide box you are standing at, and making players line
+                -- up with one to open it is friction for nothing. So is
+                -- anything the ray hit -- the ray IS a facing test, and a
+                -- stricter one.
+                if isContainer(e) or id == rayId
+                   or facing(ped, px, py, e) then
+                    if not bestD2 or d2 < bestD2 then best, bestD2 = e, d2 end
+                end
+            end
         end
     end
 
-    local near = nearestEntry(px, py, L.pickupDistance)
-    -- A container is exempt: a crate is a metre-wide box you are standing at,
-    -- and making players line up with one to open it is friction for nothing.
-    if near and not isContainer(near)
-       and not facing(PlayerPedId(), px, py, near) then
-        return nil
-    end
-    return near
+    return best
 end
 
 --- The prompt page. One browser for the whole system, created on first use.
@@ -948,10 +1053,14 @@ local function ease(t)
     return t * t * (3.0 - 2.0 * t)
 end
 
---- Move a value toward a target by at most `step`.
-local function approach(v, target, step)
-    if v < target then return math.min(target, v + step) end
-    return math.max(target, v - step)
+--- Move a value toward `to` by at most `step`.
+---
+--- The parameter is not called `target`: that is now a file-local holding the
+--- entry the player is being offered, and shadowing it inside a maths helper is
+--- how a later edit here reads as touching the offer.
+local function approach(v, to, step)
+    if v < to then return math.min(to, v + step) end
+    return math.max(to, v - step)
 end
 
 --- Animate one loose item's prop for this frame.
@@ -1090,8 +1199,15 @@ local function stepRetiring(now)
 end
 
 -- Glow, labels, the prompt and the container hold, all off one pass over the
--- entries in range. Disable with /brloop disable loot.render -- the loot still
--- works, which is the same drill the storm renderer answers to.
+-- entries in range. Disable with /brloop disable loot.render, the same drill
+-- the storm renderer answers to.
+--
+-- THAT TOGGLE NOW TAKES PICKUP WITH IT, and it is worth knowing before you
+-- reach for it to bisect a hitch. This pass is where the frame's one target is
+-- resolved (#128), so with it off nothing is being offered and the interact key
+-- has nothing to act on. That is the price of there being exactly one resolver:
+-- the alternative is a second one in the keypress handler, which is the pair
+-- that disagreed with each other in the first place.
 --- Crate physics: drag, and remembering where each crate actually is.
 ---
 --- SEPARATE FROM loot.props, AND TEN TIMES FASTER, and that separation is the
@@ -1171,7 +1287,15 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
     -- frozen in mid-air forever -- `next(entries)` is false and nothing runs.
     if next(retiring) then stepRetiring(frameNow) end
 
-    if not canSee() or not next(entries) then return end
+    if not canSee() or not next(entries) then
+        -- NOTHING TO OFFER MEANS NOTHING IS OFFERED. Both of these used to
+        -- return with `hold` and the target left exactly as they were, so a
+        -- hold begun on the last crate in scope stayed armed with its clock
+        -- notionally running, and the target stayed claimable. Neither can
+        -- survive the entries going away.
+        hold.id, hold.heldMs, target = nil, 0.0, nil
+        return
+    end
 
     dt = (dt and dt > 0) and math.min(dt, 100) or 16
 
@@ -1349,6 +1473,11 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
     end
 
     if not canTake() then
+        -- The offer goes with the ability to accept it. Leaving `target` set
+        -- through a spell of canTake() being false -- in a car, suppressed by
+        -- a downed mate, mid-respawn -- leaves a claim armed for an item the
+        -- player can no longer legitimately reach.
+        hold.id, hold.heldMs, target = nil, 0.0, nil
         setPrompt(nil)
         return
     end
@@ -1361,16 +1490,31 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
     local shown = nil
     if hold.id then
         local e = entries[hold.id]
-        if not e or BR.Dist2(p.x, p.y, e.x, e.y)
-            > L.pickupDistance * L.pickupDistance then
-            hold.id = nil
+        local reach = e and reachOf(e) or 0.0
+        -- THREE WAYS A HOLD ENDS, AND LETTING GO IS THE FIRST OF THEM (#129).
+        --
+        -- The key check is what makes this a hold rather than a timer with a
+        -- keypress in front of it. It is asked HERE, in the same pass that
+        -- advances the clock, so there is no arrangement of gates or loop
+        -- ordering under which the clock runs and the key is not checked --
+        -- which is exactly what the old split between this pass and
+        -- loot.interact allowed.
+        if not e
+           or BR.Dist2(p.x, p.y, e.x, e.y) > reach * reach
+           or not BR.Keys.isHeld('interact') then
+            hold.id, hold.heldMs = nil, 0.0
         else
             shown = e
             setPrompt(e, L.chestHoldMs or 1000)
 
-            if GetGameTimer() - hold.from >= (L.chestHoldMs or 1000) then
+            -- Only frames on which the key was down get counted, and `dt` is
+            -- already clamped to 100ms above so a stalled frame cannot hand
+            -- the player a tenth of a second of credit it did not earn.
+            hold.heldMs = hold.heldMs + dt
+
+            if hold.heldMs >= (L.chestHoldMs or 1000) then
                 local id = hold.id
-                hold.id = nil
+                hold.id, hold.heldMs = nil, 0.0
                 -- THE GLOW HAS DONE ITS JOB. Counted on the hold completing
                 -- rather than on the server's reply: the player has
                 -- demonstrably learned the interaction by this point, and a
@@ -1385,9 +1529,18 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
         end
     end
 
-    if not shown and not hold.id then
-        shown = targetEntry(p.x, p.y)
-        setPrompt(shown, nil)
+    -- THE FRAME'S ONE ANSWER, and everything downstream reads it rather than
+    -- asking again. A hold in progress IS the offer -- re-resolving mid-hold
+    -- would let the prompt wander onto a nearer item while the ring for the
+    -- crate kept filling.
+    if hold.id then
+        target = shown
+    else
+        target = targetEntry(ped, p.x, p.y)
+        if not shown then
+            shown = target
+            setPrompt(shown, nil)
+        end
     end
 
     -- DRAWN NATIVELY, EVERY FRAME. This is the half that used to lag: the
@@ -1432,16 +1585,32 @@ end)
 -- Input
 -- --------------------------------------------------------------------------
 
---- Begin an interaction with whatever is in front of the player.
+--- Begin an interaction with the item the player is being offered.
+---
+--- THE OFFER IS READ, NOT RECOMPUTED (#128). This used to call targetEntry()
+--- again, on the frame of the keypress, which made it a second opinion about
+--- what the player meant -- and a second opinion is exactly what nobody wants
+--- from a pickup. With two items in reach the render pass had drawn a prompt
+--- for one and this could claim the other, so the item that left the ground was
+--- decided by where the crosshair happened to be a sixtieth of a second after
+--- the player committed.
+---
+--- `target` is the entry the prompt on screen is FOR. Acting on it is the whole
+--- guarantee: you get what you were shown, or you get nothing.
 local function interactPressed()
     if not canTake() then return end
 
-    local p = GetEntityCoords(PlayerPedId())
-    local e = targetEntry(p.x, p.y)
+    -- Resolved back through `entries` by id rather than used directly. Opening
+    -- a crate REPLACES its entry table with the husk's, so a target held from
+    -- last frame can be a table nobody owns any more -- still reading as a
+    -- sealed chest, and good for a hold the server would then refuse.
+    local e = target and entries[target.id]
     if not e then return end
 
     if isContainer(e) then
-        hold.id, hold.from = e.id, GetGameTimer()
+        -- The clock starts at zero and is advanced by loot.render, on frames
+        -- where the key is still down. Nothing here is a deadline.
+        hold.id, hold.heldMs = e.id, 0.0
         return
     end
 
@@ -1455,7 +1624,11 @@ end
 
 BR.Keys.on('interact', function(pressed)
     if not pressed then
-        hold.id = nil
+        -- LETTING GO CANCELS, ON THE EDGE. loot.render checks the key state
+        -- every frame as well and is the check that cannot be skipped -- this
+        -- one just means the ring dies on the same frame the key came up
+        -- rather than on the next render pass.
+        hold.id, hold.heldMs = nil, 0.0
         return
     end
     interactPressed()
@@ -1478,15 +1651,23 @@ end)
 -- The keymapping is the only input now. BR.Keys owns it, the pause menu
 -- configures it, and the prompt names it.
 --
--- The release side lives here rather than in the BR.Keys handler for one
--- reason: a hold that is interrupted by anything OTHER than letting go --
--- walking out of range, the item being claimed by somebody else -- clears
--- hold.id elsewhere, and this is the frame check that notices the key is no
--- longer down at all.
+-- A THIRD PLACE THE KEY STATE IS CHECKED, AND IT IS UNCONDITIONAL.
+--
+-- loot.render owns the hold and cancels it on the same pass that advances it,
+-- so this is not load-bearing for the ordinary case. It exists for the case
+-- loot.render cannot cover: that pass is disableable (/brloop disable
+-- loot.render) and returns early whenever the player cannot see or take loot,
+-- and a hold left armed across such a spell is a crate that opens the moment
+-- the spell ends.
+--
+-- THE canTake() GATE THAT USED TO BE ON THIS LOOP IS GONE, and it was a hole
+-- rather than an optimisation. It made the cancel stop running under exactly
+-- the conditions that also stopped loot.render running -- get into a car
+-- mid-hold, or have dbno raise the suppression, and NEITHER check ran while
+-- the state persisted. Cancelling a hold is never the wrong thing to do.
 BR.Loop.register(BR.Loop.FRAME, 'loot.interact', function()
-    if not canTake() then return end
     if hold.id and not BR.Keys.isHeld('interact') then
-        hold.id = nil
+        hold.id, hold.heldMs = nil, 0.0
     end
 end)
 
@@ -1751,6 +1932,70 @@ RegisterCommand('brloot', function()
     print(('  crate props live: %d sealed, %d husk'):format(nSealed, nHusk))
     print(('  crate mass: %.0f kg  (glow off after %d opened; %d opened)')
         :format(L.crateMass or 0.0, L.shineOpenLimit or 0, BR.Loot.openedCount or 0))
+
+    -- WHAT IS BEING OFFERED, AND WHAT ELSE IS IN REACH (#128).
+    --
+    -- The whole claim of the fix is "exactly one thing is pickable, and it is
+    -- the nearest eligible one". That is not visible from a screenshot -- one
+    -- prompt on screen looks the same whether the second item is live or not --
+    -- so it is printed. Stand facing two items and read the list: every line is
+    -- something the old code could have claimed, and exactly one carries the
+    -- arrow.
+    local ped = PlayerPedId()
+    if target then
+        print(('  offering:  #%d %s (%s) at %.2fm')
+            :format(target.id, labelOf(target), target.kind,
+                    BR.Dist(p.x, p.y, target.x, target.y)))
+    else
+        print('  offering:  nothing')
+    end
+    local cands = 0
+    for _, e in pairs(entries) do
+        if not isHusk(e) then
+            local reach = reachOf(e)
+            local d = BR.Dist(p.x, p.y, e.x, e.y)
+            if d <= reach then
+                local look = isContainer(e) or facing(ped, p.x, p.y, e)
+                cands = cands + 1
+                print(('    %s #%-5d %-18s %5.2fm  reach %.1fm  %s')
+                    :format((target and target.id == e.id) and '->' or '  ',
+                            e.id, labelOf(e), d, reach,
+                            look and 'faced' or 'not faced'))
+            end
+        end
+    end
+    if cands == 0 then print('    (nothing within reach)') end
+
+    -- THE HOLD, LIVE. `heldMs` only advances on frames the key reads down, so
+    -- watching it climb and then reset on release is the whole of #129.
+    print(('  hold:      %s  %.0f/%dms   key down: %s')
+        :format(hold.id and ('#' .. hold.id) or '-',
+                hold.heldMs or 0.0, L.chestHoldMs or 1000,
+                tostring(BR.Keys.isHeld('interact'))))
+end, false)
+
+--- Change the crate hold duration live, the same way /brlabel and /brshine
+--- change their numbers.
+---
+--- It exists because #129 arrived with a number attached that the config does
+--- not have: the owner described "opening after 3 seconds" and
+--- BR.Config.Loot.chestHoldMs is 1000. That gap is not worth another round
+--- trip -- stand at a crate, try a value, and paste the one that feels right
+--- into br_lib/config/loot.lua. Client-local and not persisted, so a restart
+--- puts the configured value back.
+RegisterCommand('brcratehold', function(_, args)
+    local ms = tonumber(args[1])
+    if ms then
+        -- Floored rather than rejected: a hold of zero is a tap, which is the
+        -- exact behaviour #129 exists to remove, and shipping a debug command
+        -- that can reintroduce it is asking for it back.
+        L.chestHoldMs = math.max(100, math.floor(ms))
+        -- Any hold in flight was measured against the old number.
+        hold.id, hold.heldMs = nil, 0.0
+        lastPrompt.id, lastPrompt.hold = nil, nil
+    end
+    print(('[br_core] crate hold = %dms   (usage: brcratehold <ms>)')
+        :format(L.chestHoldMs or 1000))
 end, false)
 
 --- Tune the CRATE SHINE without a deploy -- the same ruler as /brlabel, for
