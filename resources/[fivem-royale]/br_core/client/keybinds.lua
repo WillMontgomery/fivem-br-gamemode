@@ -546,6 +546,44 @@ end
 -- fires true, release fires false, and `interact` keeps working as a hold.
 local rawDown = {}
 
+--- When each command's key was last seen genuinely UP.
+---
+--- A TAP MUST NOT BE RE-ARMED BY A KEY STATE THAT NEVER CAME BACK UP, and this
+--- is the whole reason it exists (owner, 2026-08-16: "holding tilde makes it
+--- flicker").
+---
+--- The player list latches on tilde and it is the first screen we have that
+--- KEEPS GAME INPUT while it is open (BR.FocusKeepsInput). That combination is
+--- what exposed this. Taking and releasing NUI focus disturbs the key state the
+--- raw natives read -- citizenfx/fivem#3064 reports exactly that, for
+--- IS_RAW_KEY_DOWN by name -- so a key that is still physically held reads UP
+--- for a frame or two around every focus change and DOWN again immediately
+--- after. The loop below sees that as a release followed by a fresh press,
+--- fires the tap again, and the toggle it drives changes focus again: the panel
+--- strobes open and shut for as long as the key is down. Tapping was always
+--- fine, because a tap is already over before the focus change lands.
+---
+--- So a tap now needs its key to have been up for a real interval before it can
+--- fire again. Nothing else changes: the FIRST press still fires on the frame it
+--- happens, with no added latency, and hold actions are not touched at all --
+--- their release edge has to stay immediate or the pickup hold stutters.
+local rawUpAt = {}
+
+--- How long a key must read UP before a TAP will fire from it a second time.
+---
+--- Sized against the failure, not against a feel: the gaps this has to swallow
+--- are single frames of dropped key state, tens of milliseconds at most. 200ms
+--- clears them with room to spare and matches the guard the pause menu already
+--- carries for the same class of problem (br_ui/client/pause.lua, "TWO PATHS CAN
+--- SEE ONE ESCAPE").
+---
+--- THE COST, STATED: a deliberate second press inside 200ms is read as part of
+--- the first one. That is the right side to be wrong on for everything on this
+--- table -- these are latching panels and slot keys, where pressing the same key
+--- twice in a fifth of a second means nothing, and where the alternative is a
+--- screen that strobes.
+local TAP_REARM_MS = 200
+
 --- Which native answers "is this key held right now".
 ---
 --- Resolved once at start rather than per frame, and it is deliberately a
@@ -591,11 +629,25 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
             local was = rawDown[b.command] == true
             if down ~= was then
                 rawDown[b.command] = down or nil
-                if down then
-                    fire(b.action, true)
-                    if not b.hold then fire(b.action, false) end
+                if not down then
+                    -- Remembered for every binding, used only by taps: the
+                    -- release is the only evidence there is that the next
+                    -- press is a different press.
+                    rawUpAt[b.command] = GetGameTimer()
+                    if b.hold then fire(b.action, false) end
                 elseif b.hold then
-                    fire(b.action, false)
+                    fire(b.action, true)
+                else
+                    -- A tap fires on this edge only if the key has been up long
+                    -- enough for the release to have been the player's rather
+                    -- than the engine's. See rawUpAt above; without this, a
+                    -- keep-input screen that its own key toggles will strobe
+                    -- for as long as that key is held.
+                    local upAt = rawUpAt[b.command]
+                    if (not upAt) or (GetGameTimer() - upAt) >= TAP_REARM_MS then
+                        fire(b.action, true)
+                        fire(b.action, false)
+                    end
                 end
             end
         end
