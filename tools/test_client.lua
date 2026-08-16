@@ -171,6 +171,85 @@ function IsPlayerFreeAiming() return false end
 function IsDisabledControlJustPressed() return false end
 function DoesBlipExist() return false end
 
+-- ------------------------------------------------------------------ mumble ---
+--
+-- THE ENGINE'S ROUTING, MODELLED RATHER THAN COUNTED (#150).
+--
+-- Asserting "MumbleSetVoiceChannel was called with 2003" would have passed on
+-- the build the owner reported. It WAS called, with the right number, on both
+-- machines, and neither player could hear the other:
+--
+--   "when in solos, 'nearby' doesn't seem to work. It's just not passing any
+--    audio. I had 2 players in the same match next to each other, neither
+--    could hear."
+--
+-- So this keeps the two halves Mumble actually distinguishes, because the bug
+-- lived in the gap between them:
+--
+--   CHANNEL  the room you are IN. Decides what you HEAR.
+--   TARGET   a numbered list of destinations. Decides where your own audio
+--            GOES. Being in a room does not put that room in your target, and
+--            an empty target is a microphone wired to nothing.
+--
+-- WHAT THIS DELIBERATELY DOES NOT MODEL: what a real FiveM client does when no
+-- resource ever selects a target. That is an engine default no Lua process can
+-- be asked, it has changed across builds, and #150 is the receipt for relying
+-- on it -- so the model treats "nothing selected" as "nothing sent" and the
+-- tests below pin that the client always states its routing explicitly. Nor is
+-- distance modelled: talkerProximity is handed to the engine and attenuation
+-- happens somewhere no test here can see. `hears` answers "is there a path at
+-- all", which is the question the report asked.
+local mumble = {}
+local function mumbleReset()
+    mumble = {
+        active   = true,
+        channel  = 0,      -- room we are in
+        target   = 0,      -- selected voice target; 0 = none selected
+        targets  = {},     -- [id] = { channel, ... }
+        listen   = {},     -- [channel] = true; rooms heard from outside
+        prox     = nil,    -- last NetworkSetTalkerProximity
+    }
+end
+mumbleReset()
+
+function MumbleSetActive(v) mumble.active = v and true or false end
+function MumbleIsConnected() return true end
+function MumbleSetVoiceChannel(ch) mumble.channel = ch end
+function MumbleClearVoiceChannel() mumble.channel = 0 end
+function NetworkSetTalkerProximity(d) mumble.prox = d end
+function MumbleSetVoiceTarget(id) mumble.target = id end
+function MumbleClearVoiceTarget(id) mumble.targets[id] = {} end
+function MumbleAddVoiceTargetChannel(id, ch)
+    mumble.targets[id] = mumble.targets[id] or {}
+    table.insert(mumble.targets[id], ch)
+end
+function MumbleAddVoiceChannelListen(ch) mumble.listen[ch] = true end
+function MumbleRemoveVoiceChannelListen(ch) mumble.listen[ch] = nil end
+
+--- Everything about one machine's voice routing, frozen.
+--- @return table
+local function mumbleSnapshot()
+    local t = {}
+    for _, ch in ipairs(mumble.targets[mumble.target] or {}) do
+        t[#t + 1] = ch
+    end
+    local l = {}
+    for ch in pairs(mumble.listen) do l[ch] = true end
+    return { active = mumble.active, channel = mumble.channel,
+             selected = mumble.target, sends = t, listen = l,
+             prox = mumble.prox }
+end
+
+--- Can `speaker` be heard by `listener`? Two snapshots, one question.
+--- @return boolean
+local function hears(speaker, listener)
+    if not speaker.active then return false end
+    for _, ch in ipairs(speaker.sends) do
+        if ch == listener.channel or listener.listen[ch] then return true end
+    end
+    return false
+end
+
 local function noop() end
 for _, n in ipairs({
     'ActivatePhysics', 'AddBlipForCoord', 'AddBlipForRadius',
@@ -236,6 +315,11 @@ loadAll({
     'br_core/client/keybinds.lua',   -- before loot.lua, as fxmanifest orders it
     'br_core/client/inventory.lua',
     'br_core/client/loot.lua',
+    -- The consumer half of the voice pair. Loaded here rather than left to the
+    -- server suite because #150 was entirely on this side: server/voice.lua's
+    -- arithmetic was right, tools/test_roster.lua proved it was right, and two
+    -- players still could not hear each other.
+    'br_core/client/voice.lua',
 })
 
 -- ---------------------------------------------------------------- harness ---
@@ -798,6 +882,201 @@ do
     logged = {}
     ok(pcall(commands['brloot'], nil, {}, ''), '/brloot does not throw')
     ok(pcall(commands['brkeys'], nil, {}, ''), '/brkeys does not throw')
+end
+
+-- ------------------------------------------------------------------- voice ---
+--
+-- WHY VOICE IS TESTED FROM THE CLIENT SIDE AT ALL.
+--
+-- tools/test_roster.lua has swept the channel arithmetic since the day voice
+-- shipped -- 64 matches by 16 squads, no collisions, nothing in channel 0 --
+-- and every one of those assertions was passing on the build where two solo
+-- players stood next to each other in silence (#150). The arithmetic was never
+-- the problem. What the server computes is only half a voice system; the other
+-- half is what the client does with it, and until this section nothing tested
+-- that half at all.
+
+--- Apply one server assignment to a FRESH engine, and freeze the result.
+---
+--- The settings event first, because that is the real order: br_ui pushes the
+--- stored preference on br:ui:ready and the server pushes channels on every
+--- state change. Whichever lands second re-applies.
+--- @param mode string   'squad' | 'nearby' | 'off'
+--- @param prox integer|nil
+--- @param squad integer|nil
+--- @return table snapshot
+local function voiceApply(mode, prox, squad)
+    mumbleReset()
+    fire('br:settings:changed', { voiceMode = mode })
+    fire(BR.Net.VOICE_SET, { prox = prox, squad = squad, proximity = 25.0 })
+    return mumbleSnapshot()
+end
+
+--- Change the preference on a machine that already has an assignment, without
+--- touching the engine model -- the settings screen mid-match.
+local function voiceMode(mode)
+    fire('br:settings:changed', { voiceMode = mode })
+    return mumbleSnapshot()
+end
+
+describe('solo proximity voice -- #150')
+do
+    -- Two players, one solo match, standing together. Both get the same
+    -- proximity room and no squad room, which is exactly the payload
+    -- tools/test_roster.lua asserts the server sends a solo.
+    local PROX = 2003
+
+    -- 'nearby' IS THE SHIPPED DEFAULT (br_ui/client/settings.lua), so this is
+    -- the configuration every player is in until they open the settings screen
+    -- and change it -- and it is the mode the owner named in the report.
+    local a = voiceApply('nearby', PROX, nil)
+    local b = voiceApply('nearby', PROX, nil)
+
+    ok(a.channel == PROX, 'a solo player is put in their match room',
+        tostring(a.channel))
+    ok(#a.sends > 0,
+        'AND is given somewhere to send audio -- the whole of #150',
+        ('sends=%d selected=%s'):format(#a.sends, tostring(a.selected)))
+    ok(a.sends[1] == PROX, 'and that somewhere is the match room',
+        tostring(a.sends[1]))
+    ok(hears(a, b) and hears(b, a),
+        'so two solos in one match can hear each other')
+    ok(a.prox == 25.0, 'with the talker proximity the server sent',
+        tostring(a.prox))
+
+    -- The other half of the solo case: a player whose preference is 'squad'
+    -- but who has no squad. Before the fix this was silent too -- the branch
+    -- that set the target needed a squad channel to exist.
+    local c = voiceApply('squad', PROX, nil)
+    ok(#c.sends > 0 and c.sends[1] == PROX,
+        'a solo who prefers squad voice still reaches the match room',
+        ('sends=%d'):format(#c.sends))
+    ok(hears(c, a), 'and is audible to a solo on the default preference')
+end
+
+describe('squad voice is unchanged')
+do
+    -- THE TRADE THIS FIX MUST NOT MAKE. Repairing solos by rerouting squads
+    -- would be a worse bug than the one being fixed, so the squad case is
+    -- asserted in the same breath.
+    local PROX, SQ_A, SQ_B = 2007, 5112, 5113
+
+    local a1 = voiceApply('squad', PROX, SQ_A)
+    local a2 = voiceApply('squad', PROX, SQ_A)
+    local b1 = voiceApply('squad', PROX, SQ_B)
+
+    ok(a1.channel == PROX, 'a squad player is still in the match room')
+    ok(a1.listen[SQ_A], 'and listens to their own squad room')
+    ok(not a1.listen[SQ_B], 'and to no other squad room')
+    ok(#a1.sends == 2, 'and sends to both rooms', ('sends=%d'):format(#a1.sends))
+    ok(hears(a1, a2) and hears(a2, a1), 'so squadmates hear each other')
+    ok(hears(a1, b1),
+        'while two squads in one match still share the proximity room')
+    ok(not b1.listen[SQ_A],
+        'without either squad listening in on the other')
+end
+
+describe('voice never crosses a match')
+do
+    -- The property the whole voice system exists for, now checked on the side
+    -- that actually talks to Mumble. Two matches, two proximity rooms.
+    local a = voiceApply('nearby', 2003, nil)
+    local b = voiceApply('nearby', 2004, nil)
+    ok(not hears(a, b) and not hears(b, a),
+        'two different matches cannot hear each other')
+
+    -- And the lobby is a room too -- leaving somebody in channel 0 puts them
+    -- with everyone whose assignment has not landed yet.
+    local lobby = voiceApply('nearby', BR.Config.Match.voice.lobbyChannel, nil)
+    ok(lobby.channel ~= 0 and #lobby.sends > 0,
+        'and a player in the lobby is in a real room with a real target')
+    ok(not hears(lobby, a) and not hears(a, lobby),
+        'which the match cannot hear and cannot be heard from')
+end
+
+describe('switching preference mid-match')
+do
+    local PROX, SQ = 2011, 5178
+
+    voiceApply('squad', PROX, SQ)
+    local before = mumbleSnapshot()
+    ok(before.listen[SQ], 'squad mode listens to the squad room')
+
+    -- A LISTEN OUTLIVES EVERYTHING ELSE. MumbleClearVoiceChannel takes us out
+    -- of the room we are IN and says nothing about rooms we asked to hear from
+    -- outside, so before this was fixed a player who chose 'nearby' kept
+    -- hearing their squad at unlimited range while the interface told them
+    -- they were on proximity only.
+    local after = voiceMode('nearby')
+    ok(not after.listen[SQ], 'and choosing nearby stops listening to it')
+    ok(#after.sends == 1 and after.sends[1] == PROX,
+        'leaving the proximity room as the only destination',
+        ('sends=%d'):format(#after.sends))
+
+    local back = voiceMode('squad')
+    ok(back.listen[SQ] and #back.sends == 2,
+        'and choosing squad again restores both')
+
+    local off = voiceMode('off')
+    ok(not off.active, 'off stops transmitting')
+    local on = voiceMode('nearby')
+    ok(on.active and #on.sends > 0, 'and coming back off it re-establishes audio')
+end
+
+describe('leaving a match takes its rooms with it')
+do
+    local PROX, SQ = 2019, 5306
+
+    voiceApply('squad', PROX, SQ)
+    -- Back to the lobby: the server pushes the lobby room and no squad room.
+    fire(BR.Net.VOICE_SET, { prox = BR.Config.Match.voice.lobbyChannel,
+                             squad = nil, proximity = 25.0 })
+    local lobby = mumbleSnapshot()
+
+    ok(not lobby.listen[SQ],
+        'the old squad room is not still being listened to')
+    ok(#lobby.sends == 1 and lobby.sends[1] == BR.Config.Match.voice.lobbyChannel,
+        'and nothing is still being sent into the match just left',
+        table.concat(lobby.sends, ','))
+
+    local stillIn = voiceApply('squad', PROX, SQ)
+    ok(not hears(lobby, stillIn) and not hears(stillIn, lobby),
+        'so the lobby and the match are mutually inaudible')
+end
+
+describe('a Mumble reconnect re-establishes the routing')
+do
+    -- The Mumble client drops and comes back underneath us with no event. A
+    -- channel set while it was down never took, and the 1Hz watcher is the
+    -- only thing that notices -- so it has to restore the TARGET as well as
+    -- the channel, or the player comes back in the right room and mute.
+    local PROX = 2023
+    voiceApply('nearby', PROX, nil)
+
+    mumbleReset()            -- the reconnect: the engine has forgotten everything
+    BR.Voice.state.applied = false
+    BR.Loop.step(BR.Loop.SLOW)
+    local healed = mumbleSnapshot()
+
+    ok(healed.channel == PROX, 'the room is re-joined', tostring(healed.channel))
+    ok(#healed.sends > 0 and healed.sends[1] == PROX,
+        'and the transmit path is re-established with it',
+        ('sends=%d'):format(#healed.sends))
+end
+
+describe('the voice readout runs')
+do
+    -- /brvoice is the one instrument a playtester has for this, and #150 is
+    -- being handed back to the owner with "run it and read the talking-into
+    -- line" -- so it must not throw and it must actually say something.
+    voiceApply('nearby', 2029, nil)
+    logged = {}
+    ok(pcall(commands['brvoice'], nil, {}, ''), '/brvoice does not throw')
+    local said = table.concat(logged, '\n')
+    ok(said:find('talking into', 1, true) ~= nil,
+        'and reports where audio is being sent, not just which room we are in')
+    ok(said:find('NOTHING', 1, true) == nil,
+        'and does not report silence on a healthy assignment', said)
 end
 
 -- ------------------------------------------------------------------ report ---

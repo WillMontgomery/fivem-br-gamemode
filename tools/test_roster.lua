@@ -4328,6 +4328,111 @@ do
         'and nothing is ever assigned channel 0')
 end
 
+describe('voice.channels -- solos')
+do
+    -- EVERY ASSERTION ABOVE THIS LINE QUEUES BR.Mode.SQUAD.key. Not one of
+    -- them had ever formed a solo match, and solo voice was broken from the
+    -- day it shipped until #150 -- reported by the owner from a playtest, not
+    -- by this file:
+    --
+    --   "when in solos, 'nearby' doesn't seem to work. It's just not passing
+    --    any audio. I had 2 players in the same match next to each other,
+    --    neither could hear."
+    --
+    -- The fault was on the CLIENT (tools/test_client.lua now covers it), and
+    -- that is exactly why this block belongs here too: the first job when a
+    -- report like that arrives is ruling the server out, and "the server has
+    -- always assigned solos a proximity room" was a claim nobody could check
+    -- without booting two game clients and standing them next to each other.
+    local V = BR.Config.Match.voice
+
+    reset()
+    for s = 1, 4 do queueUp(s, 'S' .. s, BR.Mode.SOLO.key) end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+
+    local m1 = theMatch()
+    ok(m1 ~= nil and m1.mode == BR.Mode.SOLO.key, 'a SOLO match formed',
+        m1 and tostring(m1.mode) or 'no match')
+
+    -- Out of warmup so the next ready-ups mint a second instance, exactly as
+    -- the squad block above does.
+    BR.Match.transition(m1, BR.MatchState.BUS)
+
+    for s = 5, 8 do queueUp(s, 'T' .. s, BR.Mode.SOLO.key) end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local m2 = theMatch()
+    ok(m2 ~= nil and m2.id ~= m1.id, 'and a second solo match alongside it')
+
+    -- The 1Hz sweep is what actually pushes an assignment to somebody whose
+    -- state changed on a path that forgot to push.
+    fakeTime = fakeTime + 1200
+    BR.Sched.step(fakeTime)
+
+    -- A SOLO PLAYER HAS NO SQUAD, AND THAT MUST NOT COST THEM A ROOM.
+    --
+    -- Every channel in this scheme derives from matchId, and a solo player has
+    -- one -- so there is no arithmetic reason for a solo to end up unassigned.
+    -- Pinning it means a future change that keys assignment off squadId (the
+    -- obvious shortcut, and the shape of the client bug) fails here instead of
+    -- in a playtest.
+    local assigned, inZero, gotSquadRoom = 0, false, false
+    local first = nil
+    local shared = true
+    BR.Roster.each(
+        function(e) return e.matchId == m1.id end,
+        function(_, e)
+            if e.voiceProx then assigned = assigned + 1 end
+            if not e.voiceProx or e.voiceProx == 0 then inZero = true end
+            if e.voiceSquad then gotSquadRoom = true end
+            if e.squadId then gotSquadRoom = true end
+            first = first or e.voiceProx
+            if e.voiceProx ~= first then shared = false end
+        end)
+
+    ok(assigned == 4, 'every solo player has a proximity room',
+        ('%d of 4'):format(assigned))
+    ok(not inZero, 'and none of them is left in the default channel 0')
+    ok(shared, 'and everyone in one solo match shares exactly one room',
+        tostring(first))
+    ok(not gotSquadRoom,
+        'and a solo has no squad room -- there is no squad to put in one')
+
+    local other = nil
+    BR.Roster.each(
+        function(e) return e.matchId == m2.id end,
+        function(_, e) other = other or e.voiceProx end)
+    ok(other ~= nil and first ~= nil and other ~= first,
+        'while two solo matches are never in the same room',
+        ('%s vs %s'):format(tostring(first), tostring(other)))
+
+    -- AND IT IS ACTUALLY SENT. The roster fields above are the server's own
+    -- bookkeeping; a player only ends up in a room because VOICE_SET reached
+    -- their client carrying a number. This project has shipped correct,
+    -- fully-connected code that emitted to nobody often enough to check.
+    local delivered = {}
+    for _, s in ipairs(sent) do
+        if s.event == BR.Net.VOICE_SET and type(s.args[1]) == 'table' then
+            delivered[s.target] = s.args[1]
+        end
+    end
+    local p1 = delivered[1]
+    ok(p1 ~= nil, 'and a VOICE_SET actually reached a solo player')
+    ok(p1 and p1.prox == first,
+        'carrying the proximity room the roster says they are in',
+        p1 and tostring(p1.prox) or 'nothing')
+    ok(p1 and p1.squad == nil, 'and no squad room')
+    -- The client needs a range to hand NetworkSetTalkerProximity. A nil here
+    -- falls back to config on the far side, but only by luck -- the payload is
+    -- the contract, so it is asserted.
+    ok(p1 and type(p1.proximity) == 'number' and p1.proximity > 0,
+        'and a talker proximity to apply',
+        p1 and tostring(p1.proximity) or 'nothing')
+    ok(p1 and p1.prox ~= V.lobbyChannel and p1.prox ~= V.warmupChannel,
+        'which is neither the lobby room nor the warmup room')
+end
+
 describe('combat.fire')
 do
     -- A MOLOTOV KILL BELONGED TO NOBODY.

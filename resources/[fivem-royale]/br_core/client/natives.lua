@@ -949,14 +949,28 @@ function BR.Native.check()
     probe('MumbleClearVoiceChannel', function()
         return MumbleClearVoiceChannel ~= nil
     end)
+    -- THE VOICE TARGET IS THE TRANSMIT PATH, and this trio is now load-bearing
+    -- rather than optional (#150). Being in a channel decides what a player
+    -- HEARS; the target decides where their own audio GOES, and client/voice.lua
+    -- builds one for every player in every mode because the version that only
+    -- built one for squads left every solo player inaudible. A nil in any of
+    -- these is not "no squad voice" any more -- it is no voice at all.
     probe('MumbleSetVoiceTarget', function()
         return MumbleSetVoiceTarget ~= nil
+    end)
+    probe('MumbleClearVoiceTarget', function()
+        return MumbleClearVoiceTarget ~= nil
     end)
     probe('MumbleAddVoiceTargetChannel', function()
         return MumbleAddVoiceTargetChannel ~= nil
     end)
     probe('MumbleAddVoiceChannelListen', function()
         return MumbleAddVoiceChannelListen ~= nil
+    end)
+    -- The undo for the line above. Without it a squad room a player has left
+    -- is a room they can still hear.
+    probe('MumbleRemoveVoiceChannelListen', function()
+        return MumbleRemoveVoiceChannelListen ~= nil
     end)
     probe('NetworkSetTalkerProximity', function()
         return NetworkSetTalkerProximity ~= nil

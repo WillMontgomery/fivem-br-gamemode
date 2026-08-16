@@ -148,11 +148,29 @@ RegisterCommand('brvoice', function()
     BR.Roster.each(
         function(e) return e.state ~= BR.PlayerState.LEFT end,
         function(src, e)
-            print(('  %-20s (%d)  match %-5s squad %-10s -> prox %s, squad %s')
+            -- THE MODE IS PRINTED BECAUSE #150 WAS A MODE-SHAPED BUG.
+            --
+            -- A solo match and a squad match are indistinguishable in every
+            -- other column here: both have a matchId, both have a proximity
+            -- channel, and solos simply have no squadId. Reading "squad -"
+            -- and inferring "so this is solos" is a step somebody has to know
+            -- to take, and the first thing anybody diagnosing voice needs to
+            -- establish is which of the two they are looking at.
+            local m = BR.Server.matchById(e.matchId)
+            print(('  %-20s (%d)  match %-5s %-6s squad %-10s -> prox %s, squad %s')
                 :format(e.name, src, tostring(e.matchId or '-'),
+                        m and tostring(m.mode) or '-',
                         tostring(e.squadId or '-'),
                         tostring(e.voiceProx or '-'),
                         tostring(e.voiceSquad or '-')))
         end)
     print('  Two players who should NOT hear each other must differ on prox.')
+    -- A CORRECT ASSIGNMENT HERE PROVES ALMOST NOTHING, which is the lesson of
+    -- #150: both silent players had the right prox channel on this readout the
+    -- whole time. What was missing was the client's voice TARGET, which this
+    -- side cannot see at all. If the numbers below look right and players
+    -- still cannot hear each other, the answer is on their machines.
+    print('  This is the ASSIGNMENT only. Whether audio is actually being sent')
+    print('  is client-side -- run /brvoice in a player\'s F8 console and read')
+    print('  the "talking into" line.')
 end, true)

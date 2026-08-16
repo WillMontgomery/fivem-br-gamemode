@@ -17,7 +17,17 @@ local V = (BR.Config.Match or {}).voice or {}
 
 -- What the server last told us. Kept so /brvoice can report it and so a
 -- re-apply after a Mumble reconnect has something to re-apply.
-BR.Voice.state = { prox = nil, squad = nil, proximity = nil, applied = false }
+--
+-- `talkTo` and `listening` are not from the server: they are what we last told
+-- the ENGINE, recorded so /brvoice can print the transmit path rather than
+-- just the assignment. #150 was invisible for a week precisely because the
+-- readout said "prox channel 2003" -- which was true, correct, and had nothing
+-- to do with whether any audio was leaving the machine.
+BR.Voice.state = {
+    prox = nil, squad = nil, proximity = nil, applied = false,
+    talkTo = {},        -- channels currently in our voice target
+    listening = nil,    -- channel we asked to hear without being in it
+}
 
 --- The player's own preference, from the settings screen. NOT authority --
 --- see apply(): it can only decline rooms the server already granted.
@@ -48,13 +58,69 @@ local function available()
     return ok
 end
 
---- Put us in our channels.
+--- The one Mumble voice target slot this file owns.
+---
+--- Mumble has thirty. We need exactly one, and naming it keeps the clear, the
+--- fills and the select from ever drifting onto different numbers -- a clear of
+--- 1 followed by a fill of 2 would read fine and transmit nothing.
+local TARGET = 1
+
+--- Can we ROUTE, as opposed to merely join a room? Deliberately separate from
+--- available() above, and the separation is the whole of the #150 fix.
+---
+--- available() answers "can we be in the right channel". This answers "can we
+--- send audio into it", which is a different set of natives and a different
+--- failure. If these are missing we must leave the engine's own routing
+--- ALONE -- clearing a voice target we have no way to refill is exactly how a
+--- player ends up in the correct room with nowhere to send audio, which is the
+--- bug this file shipped with.
+local function canRoute()
+    return MumbleClearVoiceTarget ~= nil
+        and MumbleAddVoiceTargetChannel ~= nil
+        and MumbleSetVoiceTarget ~= nil
+end
+
+--- Put us in our channels AND point our microphone at them.
 ---
 --- ORDER MATTERS AND THE CLEAR IS NOT OPTIONAL. MumbleSetVoiceChannel moves us
 --- into a channel; nothing moves us OUT of the previous one, so switching
 --- match without clearing first leaves a player audible in the match they just
 --- left. Clearing first costs a frame of silence and is the difference between
 --- a voice channel and a leak.
+---
+--- BEING IN A CHANNEL IS NOT THE SAME AS TRANSMITTING INTO IT (#150).
+---
+--- The owner, playtesting solos: "when in solos, 'nearby' doesn't seem to
+--- work. It's just not passing any audio. I had 2 players in the same match
+--- next to each other, neither could hear."
+---
+--- Both of those players WERE in the right channel. The server had assigned
+--- it, the client had applied it, and /brvoice on either machine would have
+--- printed the same correct number. What neither of them had was a voice
+--- TARGET: the list of destinations Mumble actually sends a captured frame to.
+--- This function cleared target 1 on every single call and then refilled it
+--- inside one `if` -- the branch that required a squad channel AND the 'squad'
+--- preference. Miss either and the target stayed empty, and an empty target is
+--- a microphone wired to nothing.
+---
+--- Two populations missed it, which is why the report reads the way it does:
+---
+---   SOLOS, always and from the first commit. A solo player has no squadId
+---   (party.lua's formSquads returns early for BR.Mode.SOLO), so the server
+---   correctly sends squad = nil, so the branch could never run. Solo voice
+---   has never worked, not once -- the squad tests in tools/test_roster.lua
+---   queue BR.Mode.SQUAD.key exclusively and no test ever reached the client.
+---
+---   EVERYBODY, from the moment the settings screen shipped, because its
+---   default is voiceMode = 'nearby' (br_ui/client/settings.lua) and 'nearby'
+---   is the one mode the branch explicitly excluded. A squad player who never
+---   opened settings was silent too.
+---
+--- So the target is now built unconditionally from the proximity channel --
+--- the room every player has in every mode -- and the squad room is ADDED to
+--- it when there is one. The old squad behaviour is a strict subset of this:
+--- squads still get both rooms in the target and still hear the squad room
+--- through a listen, so nothing that worked before stops working.
 local function apply()
     if not available() then return end
 
@@ -80,8 +146,23 @@ local function apply()
 
     NetworkSetTalkerProximity(s.proximity or V.talkerProximity or 25.0)
 
+    -- STOP HEARING THE LAST SQUAD ROOM BEFORE ANYTHING ELSE.
+    --
+    -- MumbleClearVoiceChannel takes us out of the room we are IN; it says
+    -- nothing about rooms we asked to LISTEN to from outside, and a listen
+    -- survives everything below. Without this, a player who switched from
+    -- 'squad' to 'nearby' kept hearing their squad at unlimited range while
+    -- the interface told them they were on proximity only -- and a player who
+    -- returned to the lobby kept hearing the match they had just left, which
+    -- is the leak the rest of this file exists to prevent.
+    if s.listening and MumbleRemoveVoiceChannelListen then
+        MumbleRemoveVoiceChannelListen(s.listening)
+    end
+    s.listening = nil
+
     MumbleClearVoiceChannel()
-    if MumbleClearVoiceTarget then MumbleClearVoiceTarget(1) end
+    if canRoute() then MumbleClearVoiceTarget(TARGET) end
+    s.talkTo = {}
 
     if not s.prox then
         s.applied = false
@@ -92,17 +173,29 @@ local function apply()
     -- distance deciding who actually hears us INSIDE it.
     MumbleSetVoiceChannel(s.prox)
 
-    -- The squad room, if we are in one AND the player wants it. Two halves,
-    -- and both are needed: LISTEN so their voices reach us, and a voice
-    -- TARGET so ours reaches them -- MumbleSetVoiceChannel only ever puts us
-    -- in one room to talk in.
-    if s.squad and BR.Voice.pref.mode ~= 'nearby'
-       and MumbleAddVoiceChannelListen and MumbleSetVoiceTarget
-       and MumbleAddVoiceTargetChannel then
+    -- The squad room, if we are in one AND the player wants it. LISTEN is the
+    -- half that brings their voices to us: MumbleSetVoiceChannel only ever
+    -- puts us in ONE room, and that one is the proximity room.
+    local wantSquad = (s.squad ~= nil) and BR.Voice.pref.mode ~= 'nearby'
+    if wantSquad and MumbleAddVoiceChannelListen then
         MumbleAddVoiceChannelListen(s.squad)
-        MumbleAddVoiceTargetChannel(1, s.prox)
-        MumbleAddVoiceTargetChannel(1, s.squad)
-        MumbleSetVoiceTarget(1)
+        s.listening = s.squad
+    end
+
+    -- THE OTHER HALF, AND THE ONE THAT WAS MISSING: where our own audio goes.
+    --
+    -- The proximity room is in the target for EVERY player in every mode --
+    -- that is the line whose absence made two solo players standing next to
+    -- each other inaudible to one another. The squad room joins it only when
+    -- there is one and the player has not asked for proximity only.
+    if canRoute() then
+        MumbleAddVoiceTargetChannel(TARGET, s.prox)
+        s.talkTo[#s.talkTo + 1] = s.prox
+        if wantSquad then
+            MumbleAddVoiceTargetChannel(TARGET, s.squad)
+            s.talkTo[#s.talkTo + 1] = s.squad
+        end
+        MumbleSetVoiceTarget(TARGET)
     end
 
     s.applied = true
@@ -221,9 +314,26 @@ RegisterCommand('brvoice', function()
     print(('  squad channel %s'):format(tostring(s.squad or 'none (solo)')))
     print(('  proximity    %.0fm'):format(s.proximity or V.talkerProximity or 25.0))
     print(('  applied      %s'):format(tostring(s.applied)))
+
+    -- THE LINE #150 NEEDED AND DID NOT HAVE.
+    --
+    -- Every readout above can be perfect while no audio leaves the machine,
+    -- because they all describe which room we are IN. This one describes where
+    -- the microphone is pointed, and an empty list here means silence however
+    -- right everything else looks. It must never be empty while a prox channel
+    -- is assigned and the mode is not 'off'.
+    print(('  talking into %s'):format(
+        #s.talkTo > 0 and table.concat(s.talkTo, ', ')
+            or 'NOTHING -- no audio is being sent'))
+    print(('  hearing also %s'):format(tostring(s.listening or 'nothing extra')))
+    print(('  can route    %s'):format(canRoute() and 'yes'
+        or 'NO -- voice-target natives missing on this build'))
+
     if MumbleGetVoiceChannelFromServerId and BR.State.me.src then
         print(('  engine says  %s'):format(
             tostring(MumbleGetVoiceChannelFromServerId(BR.State.me.src))))
     end
     print('  Two players who should NOT hear each other must differ on prox.')
+    print('  Two players who SHOULD hear each other need the same prox AND a')
+    print('  non-empty "talking into" on both machines.')
 end, false)
