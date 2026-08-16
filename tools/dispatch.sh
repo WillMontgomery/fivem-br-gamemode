@@ -30,8 +30,14 @@
 # THE VERB SET IS PINNED BY verify.sh, which greps this file for it and fails
 # the build when it grows. Every verb here is a capability the console has over
 # this box, so the set moving is a decision somebody records rather than a slip.
-# It is currently `status`, `telemetry`, `kick`, `deploy`, `branches` and
-# `switchref`.
+# It is currently `status`, `telemetry`, `configreport`, `kick`, `deploy`,
+# `branches` and `switchref`.
+#
+# `configreport` IS READ-ONLY and is named the long way round on purpose. The
+# forbidden list in verify.sh's boundary gate has always reserved the bare word
+# `config` for LIVE CONFIG EDITING -- the write path, still forbidden, still
+# M6's problem. A read verb wearing that name would quietly retire the reserved
+# word and leave the next person unable to tell which of the two had shipped.
 #
 # THE BRANCH-SWITCH INVARIANT, which is the reason `branches` and `switchref`
 # exist and the reason they are so fussy.
@@ -80,6 +86,26 @@ SRC_DIR="${BR_SRC_DIR:-$SERVER_ROOT/.gamemode-src}"
 # Fall back to the ops clone if the served one is missing (a box that has never
 # deployed), so status degrades to "roughly right" instead of "unknown".
 [ -d "$SRC_DIR/.git" ] || SRC_DIR="$REPO"
+
+# THE TWO FILES `configreport` READS, and both are "what the server actually
+# loaded" rather than "what the repo says", which is the whole point of asking
+# the box instead of reading GitHub.
+#
+# server.cfg is NOT in the repo and never will be -- it holds the real licence
+# key -- so there is nothing to compare it against and no version of this that
+# works without reading the file on the box.
+CFG_FILE="${BR_SERVER_CFG:-$SERVER_ROOT/server.cfg}"
+
+# The DEPLOYED resources, not the clone's. deploy.sh rsyncs
+# $SRC_DIR/resources/[fivem-royale] into $SERVER_ROOT/resources/<category>/,
+# and FXServer loads the copy. Reading the clone instead would report the
+# config of a commit that has been fetched but not yet deployed -- which is
+# precisely the "why is this not what I set" confusion the report exists to
+# end. Category default matches deploy.sh's own BR_TARGET_CATEGORY.
+TARGET_CATEGORY="${BR_TARGET_CATEGORY:-[gamemodes]}"
+LIB_DIR="$SERVER_ROOT/resources/$TARGET_CATEGORY/[fivem-royale]/br_lib"
+# A box that has never deployed still gets an answer, from the clone.
+[ -d "$LIB_DIR/config" ] || LIB_DIR="$SRC_DIR/resources/[fivem-royale]/br_lib"
 
 # WHICH REF THE NEXT DEPLOY SHOULD CHECK OUT, AS A PLAIN FILE THIS USER OWNS.
 #
@@ -360,6 +386,255 @@ do_telemetry() {
         "$(date +%s)" "$cpu_pct" "$cores" \
         "${mem_total:-0}" "${mem_avail:-0}" "$mem_pct" \
         "${rx:-0}" "${tx:-0}" "${disk_total:-0}" "${disk_avail:-0}"
+}
+
+# --- configreport ---------------------------------------------------------------
+#
+# What this server is actually configured with: an allowlisted set of engine
+# convars, plus the gamemode's tuning values. READ-ONLY -- it opens files and
+# runs one Lua script over them, touches no tmux session, starts nothing and
+# writes nothing. It takes no arguments, so there is nothing in
+# $SSH_ORIGINAL_COMMAND for it to interpret.
+#
+# ===========================================================================
+# THE ALLOWLIST IS THE WHOLE SECURITY MODEL, AND IT IS CLOSED, NOT OPEN.
+# ===========================================================================
+#
+# server.cfg on this box holds `sv_licenseKey`, and on a fuller deployment it
+# would hold `rcon_password`, `mumble_adminPass`, a Steam web API key and
+# `br_ringmaster_ingest_secret`. This output is rendered in a web browser and
+# written to an audit log. So the rule is the same one PUBLIC_FIELDS and
+# RINGMASTER_FIELDS follow in br_core/server/roster.lua: NAME WHAT GOES OUT,
+# never name what stays behind.
+#
+# A denylist of secret-looking names would be the obvious shortcut and it FAILS
+# OPEN. The day somebody adds a credential to server.cfg under a name nobody
+# anticipated -- and the natural name for a new secret is whatever that secret
+# is called, not something matching `*_password` -- it appears on a web page.
+# The allowlist fails the other way: a new convar is invisible here until a
+# person writes its name down, and the cost of that is a missing row.
+#
+# WHAT IS DELIBERATELY NOT HERE, so the omissions read as decisions:
+#
+#   sv_licenseKey, rcon_password, mumble_adminPass, steam_webApiKey,
+#   br_ringmaster_ingest_secret   -- credentials. Never.
+#
+#   br_ringmaster_ingest_url      -- not a credential, still off. It is a
+#                                    private VPC address, and internal network
+#                                    topology on a web page buys nothing.
+#
+#   add_principal / add_ace       -- these name admins by license identifier.
+#                                    Who is an admin is not a tuning value.
+#
+# ===========================================================================
+# WHAT "SOURCE" MEANS HERE, AND WHAT IT HONESTLY CANNOT MEAN
+# ===========================================================================
+#
+# "Why is this not what I set" is the question this page exists to answer, and a
+# bare value cannot answer it. So every convar comes back as one of:
+#
+#   server.cfg   the name appears in server.cfg -- value and LINE NUMBER, so
+#                the answer to "where is that set" is a line to go and look at.
+#   default      the name does not appear in server.cfg, so the engine's own
+#                built-in default is in effect. The value is null rather than a
+#                guess: this script does not know FXServer's defaults and
+#                inventing them would be confidently wrong, which is worse than
+#                blank. "Not set anywhere" is itself the useful answer -- it is
+#                exactly the answer #150 needed about voice_useNativeAudio.
+#
+# THERE IS NO "SET AT RUNTIME", AND THAT IS A LIMIT WORTH STATING OUT LOUD.
+# Reading a live convar means GetConvar, which means running inside FXServer;
+# the only channel from here into that process is `tmux send-keys`, which is a
+# WRITE into the server console and would make this verb one of the dangerous
+# ones. Refusing that is the right trade for a report. What this reports is the
+# CONFIGURED state -- the files as the server would load them right now.
+#
+# So the gap that matters is: the files may have changed since FXServer read
+# them. That is detectable without touching the process, and it is reported as
+# `staleSinceStart` -- newest mtime across server.cfg and the deployed config
+# files, against the FXServer process's own start time. When it is true the
+# console says the running server is on older values than these, which is the
+# one way this report could otherwise mislead somebody.
+
+# Read one allowlisted convar out of server.cfg.
+#
+# THE NAME IS OURS, NEVER THE CALLER'S. It comes from CONVAR_ALLOW below and
+# nowhere else, which is what makes it safe to put in a regex -- this verb takes
+# no arguments at all, so nothing from $SSH_ORIGINAL_COMMAND reaches this.
+#
+# LAST MATCH WINS. FXServer executes server.cfg top to bottom, so a name set
+# twice ends up holding the LAST value, and reporting the first would be a lie
+# that is very hard to spot. `tail -1`, not `head -1`.
+#
+# The optional `set|setr|sets|seta` prefix covers every spelling in
+# server.cfg.example; the mandatory whitespace after the name is what stops
+# `sv_maxclients` matching a line about `sv_maxclientsSomething`. A leading `#`
+# is not matched, so commented-out lines are correctly read as "not set".
+convar_line() {
+    grep -nE "^[[:space:]]*(set|setr|sets|seta)?[[:space:]]*$1[[:space:]]+" \
+        "$CFG_FILE" 2>/dev/null | tail -1
+}
+
+# The value half of such a line, unquoted and de-commented.
+#
+# A quoted value is taken up to its closing quote and nothing after it is
+# considered -- `sv_hostname "Royale | #1"` keeps its hash. An unquoted value
+# stops at a whitespace-then-hash, which is how server.cfg.example writes
+# trailing comments. Capped at 200 characters because this ends up in a 64KB
+# response buffer and no legitimate tuning value is longer.
+convar_value() {
+    local name="$1" line="$2" v
+    v="$(printf '%s' "$line" \
+         | sed -E "s/^[[:space:]]*(set|setr|sets|seta)?[[:space:]]*$name[[:space:]]+//")"
+    case "$v" in
+        '"'*)
+            v="${v#\"}"
+            v="${v%%\"*}"
+            ;;
+        *)
+            v="$(printf '%s' "$v" | sed -E 's/[[:space:]]+#.*$//')"
+            v="${v%"${v##*[![:space:]]}"}"
+            ;;
+    esac
+    printf '%s' "$v" | cut -c1-200
+}
+
+# A Lua interpreter, or empty. Mirrors tools/verify.sh's search: the box may
+# have any of these installed and none is guaranteed, which is why the
+# gamemode half of this report degrades to a NAMED error rather than to an
+# empty list. "No lua on this host" is a thing an operator can fix in one
+# apt-get; a silently empty section is a thing they file a bug about.
+find_lua() {
+    local c
+    for c in lua lua5.4 lua5.3 luajit; do
+        if command -v "$c" >/dev/null 2>&1; then command -v "$c"; return 0; fi
+    done
+    return 1
+}
+
+do_configreport() {
+    # ---- engine convars -----------------------------------------------------
+    #
+    # Voice first, because it is why this list looks the way it does. #150 cost
+    # a round to a wrong assumption about voice_useNativeAudio, and the useful
+    # answer -- "it is not set on this box, so the engine default is in
+    # effect" -- was unavailable without SSHing in and reading a file.
+    #
+    # Whitespace-separated, one name per line, and every name non-secret. Adding
+    # to this list is the one edit in this file that can leak something, so it
+    # is kept as a flat list of bare names with nothing clever around it: there
+    # is no expression to misread and no pattern that could match more than what
+    # is written.
+    local CONVAR_ALLOW="
+        voice_useNativeAudio
+        voice_use2dAudio
+        voice_use3dAudio
+        voice_useSendingRangeOnly
+        voice_inBitrate
+        sv_maxclients
+        sv_hostname
+        sv_scriptHookAllowed
+        onesync
+        sv_enforceGameBuild
+        sv_syncTickRate
+        sv_devMode
+        br_devMode
+    "
+
+    local convars="" name line lineno value
+    for name in $CONVAR_ALLOW; do
+        line="$(convar_line "$name")"
+        [ -n "$convars" ] && convars="$convars,"
+        if [ -n "$line" ]; then
+            lineno="${line%%:*}"
+            lineno="${lineno//[^0-9]/}"
+            [ -n "$lineno" ] || lineno=0
+            value="$(convar_value "$name" "${line#*:}")"
+            convars="$convars$(printf '{"name":"%s","value":"%s","source":"server.cfg","line":%s}' \
+                "$(json_str "$name")" "$(json_str "$value")" "$lineno")"
+        else
+            # null, not "" -- the console renders the two differently, and it
+            # must. An empty string is a convar set to nothing; null is a
+            # convar nobody has mentioned.
+            convars="$convars$(printf '{"name":"%s","value":null,"source":"default","line":0}' \
+                "$(json_str "$name")")"
+        fi
+    done
+
+    # ---- the gamemode's own config -----------------------------------------
+    #
+    # RUNS A TRACKED FILE FROM THE SERVED CLONE, which a deployable branch is
+    # allowed to change -- unlike this script, whose blob is pinned to main's by
+    # the branch-switch invariant. That is deliberate and it is not a widening:
+    # a branch that reaches this box has ALREADY had its resources/*.lua rsynced
+    # into FXServer and executed as this same user, so it can run whatever it
+    # likes here regardless. The invariant protects the console's CHANNEL -- the
+    # verb set and the forced command -- not code execution in general.
+    #
+    # If that ever stops being true, the fix is to widen ref_blocked_by to
+    # compare this file's blob as well, not to move the script somewhere the
+    # deploy cannot reach: that is what put dispatch.sh in the ops clone and
+    # cost us a kick that shipped and never arrived.
+    local game lua_bin script raw
+    game='{"ok":false,"loadErrors":["could not read the gamemode config"],"values":[]}'
+    lua_bin="$(find_lua || true)"
+    script="$SRC_DIR/tools/config_report.lua"
+
+    if [ -z "$lua_bin" ]; then
+        game='{"ok":false,"loadErrors":["no lua interpreter on this host -- install one with: sudo apt install -y lua5.4"],"values":[]}'
+    elif [ ! -r "$script" ]; then
+        game="$(printf '{"ok":false,"loadErrors":["%s is missing -- deploy a commit that has it"],"values":[]}' \
+                "$(json_str "$script")")"
+    else
+        # Bounded like every other subprocess here: the console allows this
+        # round trip six seconds in total. `timeout` is probed rather than
+        # assumed, the same way do_branches probes it -- a box without coreutils
+        # should still get a report, just without the belt.
+        if command -v timeout >/dev/null 2>&1; then
+            raw="$(timeout "${BR_LUA_TIMEOUT_SEC:-4}" \
+                   "$lua_bin" "$script" "$LIB_DIR" 2>/dev/null | head -c 49152)"
+        else
+            raw="$("$lua_bin" "$script" "$LIB_DIR" 2>/dev/null | head -c 49152)"
+        fi
+        # Its output is DATA, not something to trust into our own line. A
+        # truncated or crashed run must not be able to make this verb print
+        # something the console reads as half a report.
+        case "$raw" in
+            '{"ok":'*'}') game="$raw" ;;
+            *) game='{"ok":false,"loadErrors":["the config reader produced nothing usable"],"values":[]}' ;;
+        esac
+    fi
+
+    # ---- has any of it changed since FXServer started? ----------------------
+    local now_s started_at=0 pid et newest=0 m f stale=false
+    now_s="$(date +%s)"
+    pid="$(fxserver_pid)"
+    if [ -n "$pid" ]; then
+        et="$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')"
+        [ -n "$et" ] && started_at=$((now_s - et))
+    fi
+    for f in "$CFG_FILE" "$LIB_DIR"/config/*.lua; do
+        [ -r "$f" ] || continue
+        m="$(stat -c %Y "$f" 2>/dev/null || echo 0)"
+        [ "${m:-0}" -gt "$newest" ] && newest="$m"
+    done
+    # Only claimable when the server is actually running: with no process there
+    # is no "since it started", and answering true would read as "your edits are
+    # not live" when the truth is "nothing is live".
+    if [ "$started_at" -gt 0 ] && [ "$newest" -gt "$started_at" ]; then
+        stale=true
+    fi
+
+    # MILLISECONDS BY ARITHMETIC, NOT BY APPENDING "000", which is the spelling
+    # every other verb here uses and which is wrong the moment the number is
+    # zero: `%s000` on an absent value prints `0000`, and JSON forbids leading
+    # zeros, so a box with FXServer stopped answered with a line the console
+    # could not parse at all. The one state where the report is most worth
+    # reading is the one it broke in.
+    printf '{"ok":true,"at":%s,"serverCfg":"%s","libDir":"%s","startedAt":%s,"configMtime":%s,"staleSinceStart":%s,"convars":[%s],"game":%s}\n' \
+        "$((now_s * 1000))" "$(json_str "$CFG_FILE")" "$(json_str "$LIB_DIR")" \
+        "$((started_at * 1000))" "$((newest * 1000))" \
+        "$stale" "$convars" "$game"
 }
 
 # --- kick --------------------------------------------------------------------
@@ -701,6 +976,7 @@ do_switchref() {
 case "$verb" in
     status)    do_status ;;
     telemetry) do_telemetry ;;
+    configreport) do_configreport ;;
     kick)      do_kick ;;
     deploy)    do_deploy ;;
     branches)  do_branches ;;

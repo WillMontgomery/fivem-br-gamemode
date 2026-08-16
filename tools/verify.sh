@@ -312,10 +312,18 @@ boundary=0
 
 # dispatch.sh: the SSH verb surface.
 if [ -f tools/dispatch.sh ]; then
-    verbs=$(grep -oE '^\s+(status|telemetry|stop|restart|deploy|reload|config|kick|ban|branches|switchref)\)' tools/dispatch.sh \
+    # ANY case arm, not a list of names somebody anticipated.
+    #
+    # This used to grep a fixed alternation -- (status|telemetry|deploy|...) --
+    # which made it a DENYLIST inside the gate built to prevent denylists, and
+    # it failed open for exactly the case it exists to catch: a new capability
+    # arrives under a new name by definition. `configreport)` did not match
+    # `config)`, so the verb was invisible here and the check passed green with
+    # a new channel from the console to the host already added.
+    verbs=$(grep -oE '^[[:space:]]+[a-z_]+\)' tools/dispatch.sh \
             | tr -d ' )' | sort -u | tr '\n' ' ')
-    if [ "$verbs" != "branches deploy kick status switchref telemetry " ]; then
-        echo "${RED}FAIL${RST} dispatch.sh verb set is '${verbs}', expected 'branches deploy kick status switchref telemetry '"
+    if [ "$verbs" != "branches configreport deploy kick status switchref telemetry " ]; then
+        echo "${RED}FAIL${RST} dispatch.sh verb set is '${verbs}', expected 'branches configreport deploy kick status switchref telemetry '"
         echo "     A new verb is a new capability from the console to the host."
         echo "     Process control (stop/restart) is not a verb and never has been."
         echo "     If you are adding one on purpose, update THIS gate."
