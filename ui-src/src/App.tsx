@@ -264,10 +264,13 @@ export default function App() {
       {/* The market is the third face of the same screen. It has no ped to
           show, so it takes the whole width. */}
       <Page show={s.focus === 'market'}><Market /></Page>
-      {/* One panel, two focus screens. Report mode pushes `playersReport` over
-          `players` to give up game input for its text field, so the gate has
-          to accept either or the panel unmounts the moment it is used. */}
-      <Page show={s.focus === 'players' || s.focus === 'playersReport'}>
+      {/* ONE PANEL, ONE FOCUS SCREEN. This gate used to read `'players' ||
+          'playersReport'`, because report mode pushed a second screen purely to
+          give up game input for its note field and the panel would otherwise
+          have unmounted the moment it was used. View mode gave up game input
+          too in #135, so both modes hold the same focus and the second name is
+          gone from here, from the Lua side and from FocusPayload. */}
+      <Page show={s.focus === 'players'}>
         <PlayerList />
       </Page>
       {/* The manual, from the lobby. The same component the pause menu

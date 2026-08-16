@@ -466,16 +466,34 @@ BR.NUI_ENVELOPE_VERSION = 1
 --- listed is now a menu you cannot run around inside, which is the safe way to
 --- be wrong.
 ---
---- Only the inventory and the player list earn it, and both for the same
---- reason: they are meant to be READ during a fight. Checking who is left must
---- not mean standing still to do it.
+--- ONLY THE INVENTORY, AND IT PAYS A PRICE FOR IT THAT IS NOT WRITTEN HERE.
 ---
---- `players` and `playersReport` are the same panel in two modes, and only the
---- first is listed. Report mode has a text field in it, and with input kept
---- every keystroke in that field is also a movement key -- so typing a note
---- walks you off a roof. The page asks for one mode or the other; this table
---- is what makes the difference real.
-BR.FocusKeepsInput = { inventory = true, players = true }
+--- Keeping game input does not stop the page RECEIVING a click. It stops the
+--- player AIMING one, because the mouse is still the camera and the mouse
+--- buttons are still the trigger: reaching for a control turns your view away
+--- from it, and pressing it fires your gun. The inventory is usable in spite of
+--- that only because br_core/client/inventory.lua disables LOOK_LR, LOOK_UD,
+--- ATTACK and AIM every frame while its panel is up -- "the camera spins as you
+--- reach for a slot" (user, 2026-08-05). That per-frame suppressor is the real
+--- cost of an entry in this table, it is written per screen, and nothing here
+--- can grant it.
+---
+--- THE PLAYER LIST WAS ADDED HERE ON 2026-08-16 AND TAKEN BACK OUT THE DAY
+--- AFTER (#135). It never got a suppressor, so it inherited the whole cost and
+--- none of the remedy: "The player list doesn't capture mouse input today. It
+--- should" (owner, 2026-08-16). It also asks for far more pointing than five
+--- slot cards do -- a checkbox per row, a dropdown per ticked row, a note field
+--- -- and it is a latching panel opened deliberately rather than a thing
+--- glanced at mid-burst. So it trades "readable while running" for "clickable
+--- at all", which is the trade the owner asked for.
+---
+--- AND THAT TRADE IS WHAT COLLAPSED THE PANEL BACK TO ONE FOCUS SCREEN. There
+--- was a second, `playersReport`, whose entire reason for existing was to be
+--- ABSENT from this table: a report has a text field, and with input kept every
+--- keystroke in it is also a movement key, so typing a note walked you off a
+--- roof. With view mode out of the table too, both modes want the same focus
+--- and the second screen was machinery doing nothing. See br_ui/client/players.lua.
+BR.FocusKeepsInput = { inventory = true }
 
 --- What the engine and the page should be told, for a given focus stack.
 ---

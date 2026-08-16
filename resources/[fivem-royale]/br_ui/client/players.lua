@@ -20,20 +20,30 @@
 BR = BR or {}
 BR.PlayerList = {}
 
---- Whether the panel is currently up, and whether it is in report mode. Owned
---- here because the focus stack is the thing that actually knows, and asking
---- it is one hop.
+--- Whether the panel is currently up. Owned here because the keybind has to
+--- toggle something, and RECONCILED against the focus stack at the bottom of
+--- this file, because the stack is what actually knows (#121).
 local open = false
-local reporting = false
 
---- TWO SCREENS FOR ONE PANEL, because they need different focus (owner,
---- 2026-08-16). `players` keeps game input so the list can be read on the
---- move; `playersReport` does not, because its note field would otherwise
---- send every keystroke to the game as well. BR.FocusKeepsInput lists only the
---- first, and the resolver follows the TOP of the stack -- so pushing the
---- report screen over the list screen takes movement back on its own, and
---- popping it hands movement straight back.
-local VIEW, REPORT = 'players', 'playersReport'
+--- ONE SCREEN FOR ONE PANEL, again.
+---
+--- It was two for a day. `players` kept game input so the roster could be read
+--- on the move, and `playersReport` existed for no other reason than to NOT be
+--- in BR.FocusKeepsInput -- a report has a text field, and with input kept
+--- every keystroke in it is also a movement key, so typing a note walked you
+--- off a roof.
+---
+--- View mode gave up keep-input too in #135 ("The player list doesn't capture
+--- mouse input today. It should" -- owner, 2026-08-16), and the moment it did,
+--- both modes wanted the same focus and the second screen was machinery that
+--- did nothing. It is DELETED rather than left inert, here, in the resolver's
+--- table and in the page's focus union: an unused branch in the one part of
+--- this interface that has already been got wrong twice is not a spare part,
+--- it is a thing the next reader has to disprove.
+---
+--- The mode is now entirely the page's business. Lua is not told about it and
+--- has no reason to want to be.
+local SCREEN = 'players'
 
 --- Reconcile the focus stack to the state the page asked for.
 ---
@@ -41,40 +51,34 @@ local VIEW, REPORT = 'players', 'playersReport'
 --- it" -- a dropped message then costs one stale frame instead of leaving the
 --- panel and the cursor permanently disagreeing, which is the failure this
 --- interface has already had twice.
-local function apply(wantOpen, wantReport)
-    wantReport = wantOpen and wantReport or false
+---
+--- `open` IS WRITTEN BEFORE THE PUSH OR THE POP, and that ordering is load
+--- bearing now that the handler at the bottom of this file listens to focus:
+--- pushFocus/popFocus emit `br:ui:focusChanged` synchronously, so that handler
+--- runs INSIDE this function. It reads `open`, and it must read the value we
+--- are on our way to, not the one we are leaving.
+local function apply(wantOpen)
+    if wantOpen == open then return end
+    open = wantOpen
 
-    if wantReport ~= reporting then
-        reporting = wantReport
-        if wantReport then
-            TriggerEvent('br:ui:pushFocus', REPORT)
-        else
-            TriggerEvent('br:ui:popFocus', REPORT)
-        end
-    end
-
-    if wantOpen ~= open then
-        open = wantOpen
-        if wantOpen then
-            TriggerServerEvent(BR.Net.PLAYERS_ASK)
-            TriggerEvent('br:ui:pushFocus', VIEW)
-        else
-            TriggerEvent('br:ui:popFocus', VIEW)
-        end
+    if wantOpen then
+        TriggerServerEvent(BR.Net.PLAYERS_ASK)
+        TriggerEvent('br:ui:pushFocus', SCREEN)
+    else
+        TriggerEvent('br:ui:popFocus', SCREEN)
     end
 end
 
---- Ask the server and show the panel, in view mode.
+--- Ask the server and show the panel.
 local function show()
-    apply(true, false)
+    apply(true)
 end
 
---- Close it, whichever mode it is in. Pops REPORT first so the stack unwinds
---- in the order it was built; popFocus is order-independent, but leaving a
---- screen on the stack that nothing will ever pop is how the cursor got
---- carried into a match once already.
+--- Close it, in whichever mode the page had it in. There is nothing to unwind:
+--- the mode is React state on a component that unmounts with the panel, so it
+--- cannot survive to be wrong the next time this opens.
 local function hide()
-    apply(false, false)
+    apply(false)
 end
 
 --- The key. One press toggles.
@@ -139,7 +143,12 @@ AddEventHandler(BR.Net.REPORT_RESULT, function(res)
 end)
 
 RegisterNUICallback(BR.NuiCb.PLAYERS_FOCUS, function(data, cb)
-    apply(data ~= nil and data.open == true, data ~= nil and data.report == true)
+    -- `report` USED TO RIDE ALONG HERE and no longer does. The page sent it so
+    -- Lua could swap focus screens for the note field; with one screen there is
+    -- nothing to swap, so the page stopped sending it and this stopped reading
+    -- it. A field still parsed on one side and never written on the other is
+    -- how a contract quietly grows a member nobody can delete.
+    apply(data ~= nil and data.open == true)
     cb({ ok = true })
 end)
 
@@ -159,6 +168,32 @@ RegisterNUICallback(BR.NuiCb.REPORT_SUBMIT, function(data, cb)
         note    = data and data.note or nil,
     })
     cb({ ok = true })
+end)
+
+-- THE PANEL CAN BE TAKEN AWAY FROM UNDER US, and until now nothing here would
+-- ever find out (#121).
+--
+-- `open` above is this file's own boolean; the focus STACK is what actually
+-- decides whether the panel is on screen. Anything that empties or replaces
+-- the stack without asking -- a match ending, a br_ui restart, the focus
+-- watchdog, `brfocus clear`, the frontend handover in pause.lua -- left `open`
+-- still saying true. The next press of the key then tried to CLOSE a panel
+-- that was already gone: nothing appeared, and the player had to press twice.
+--
+-- br_ui/client/pause.lua carries the scar this is copied from, where the same
+-- drift also stranded a stack entry nothing would ever pop (user, 2026-08-09:
+-- readied up and "was brought back to the pause menu where I could not close
+-- the UI"). So this calls hide() rather than just clearing the flag -- popFocus
+-- is safe on a screen that does not hold focus, and letting go of both halves
+-- is the whole point.
+--
+-- IT IS FIXABLE IN ONE LINE ONLY BECAUSE THERE IS ONE SCREEN NOW. While report
+-- mode had its own, `screen` could be `playersReport` with the panel very much
+-- up, so "the top is not mine" was not the same question as "am I closed" and
+-- this handler would have had to know about both. Collapsing the screens is
+-- what made it trivial; #135 and #121 land together for that reason.
+AddEventHandler('br:ui:focusChanged', function(screen)
+    if screen ~= SCREEN and open then hide() end
 end)
 
 -- A REFRESH WHILE OPEN, because a match moves. Somebody dies, somebody leaves,
