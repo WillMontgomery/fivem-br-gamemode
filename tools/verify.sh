@@ -162,6 +162,51 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+# --- 3f. the config report still finds everything it names --------------------
+#
+# tools/config_report.lua is the gamemode half of the console's `configreport`
+# verb: it names about forty values by hand and reads them out of
+# br_lib/config/*.lua. That hand-written list is a SECOND PLACE where every one
+# of those key names is spelled out, and the first place -- the config file
+# itself -- gets renamed by people who have never heard of the second.
+#
+# WHAT GOES WRONG WITHOUT THIS GATE is not a crash. `try()` catches a moved key
+# and prints "(unreadable)" in its place, which is the right behaviour on a live
+# server at 2am and completely the wrong behaviour on a dev machine, where
+# nothing would say a word until somebody opened the Live config page weeks
+# later and found a blank where the payout table used to be. So: any unreadable
+# row is a build failure here, and a rename is caught by the person doing it.
+#
+# It also proves the property the whole script depends on -- that
+# br_lib/config/*.lua still loads in a BARE Lua state with no FXServer natives.
+# The day a config file grows a GetConvar call, this is what says so.
+echo "${DIM}== config report ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    if report=$("$LUA" tools/config_report.lua 2>&1); then
+        broken=$(printf '%s' "$report" | grep -oE '"key":"[^"]*","value":"\(unreadable[^"]*"' || true)
+        if printf '%s' "$report" | grep -q '"ok":false'; then
+            echo "${RED}FAIL${RST} tools/config_report.lua could not load the config files:"
+            printf '%s' "$report" | grep -oE '"loadErrors":\[[^]]*\]' | sed 's/^/     /'
+            rc=1
+        elif [ -n "$broken" ]; then
+            echo "${RED}FAIL${RST} config_report.lua names values that no longer exist:"
+            echo "$broken" | sed 's/^/     /'
+            echo "     A key was renamed or moved in br_lib/config/. Update the"
+            echo "     matching line in tools/config_report.lua."
+            rc=1
+        else
+            n=$(printf '%s' "$report" | grep -oE '"key":' | wc -l | tr -d ' ')
+            echo "${GRN}ok${RST}   $n config values readable, all groups present"
+        fi
+    else
+        echo "${RED}FAIL${RST} tools/config_report.lua did not run:"
+        printf '%s' "$report" | head -5 | sed 's/^/     /'
+        rc=1
+    fi
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
 # --- 4. manifest coverage -----------------------------------------------------
 #
 # Every .lua under a resource must be declared in its fxmanifest, or it simply
@@ -294,7 +339,12 @@ boundary=0
 #                             code, which is the only restart anybody actually
 #                             wants, and it is reached through a drained
 #                             maintenance window rather than a button.
-#   reload / config           live config editing. M6.
+#   reload / config           live config EDITING. Still M6, still forbidden,
+#                             and the bare word `config` stays reserved for it
+#                             -- which is why the read verb below is called
+#                             `configreport` and not `config`. Reading the
+#                             values and writing them are different
+#                             capabilities and must not share a name.
 #
 # `deploy` ARRIVED IN M6 AND IS THE HEAVIEST VERB HERE, because the restart ends
 # every match in progress. It is fenced by the maintenance flow: scheduled,
@@ -315,16 +365,70 @@ boundary=0
 # code, because dispatch.sh is a tracked file inside the tree deploy.sh
 # hard-resets.
 
+# `configreport` ARRIVED WITH THE LIVE CONFIG PAGE (ringmaster#21) AND IS THE
+# LIGHTEST VERB HERE. It opens server.cfg and the deployed config files, runs
+# one Lua script over them, and prints JSON. No tmux, no systemctl, no writes of
+# any kind -- it is `status` and `telemetry` with a different set of files. The
+# thing that makes it safe is not that it only reads, it is WHAT it reads: an
+# explicit allowlist of convar names, checked by the gate below, because
+# server.cfg is where sv_licenseKey lives.
+
 # dispatch.sh: the SSH verb surface.
+#
+# THE PATTERN IS DELIBERATELY GENERIC, AND IT USED NOT TO BE. This grep matched
+# an alternation of verb names somebody had thought of in advance --
+# `(status|telemetry|stop|restart|deploy|reload|config|kick|ban|...)` -- which
+# means a verb named anything else WAS INVISIBLE TO IT. Adding `configreport)`
+# to dispatch.sh left this gate reporting the old six and passing green; the
+# gate protecting the verb set could not see the verb set growing.
+#
+# That is the same failure mode as a denylist, in the one place built to prevent
+# it: it fails OPEN, and it fails open exactly for the case it exists to catch,
+# because a new capability arrives under a new name by definition. Matching the
+# shape of a case arm instead -- indented, lowercase, then `)` -- means the gate
+# reads what dispatch.sh actually dispatches. Verified to match the seven arms
+# and nothing else in the file; the `*)` fallthrough and the quoted patterns
+# inside `case` blocks do not start with a lowercase letter.
 if [ -f tools/dispatch.sh ]; then
-    verbs=$(grep -oE '^\s+(status|telemetry|stop|restart|deploy|reload|config|kick|ban|branches|switchref)\)' tools/dispatch.sh \
+    verbs=$(grep -oE '^[[:space:]]+[a-z_]+\)' tools/dispatch.sh \
             | tr -d ' )' | sort -u | tr '\n' ' ')
-    if [ "$verbs" != "branches deploy kick status switchref telemetry " ]; then
-        echo "${RED}FAIL${RST} dispatch.sh verb set is '${verbs}', expected 'branches deploy kick status switchref telemetry '"
+    if [ "$verbs" != "branches configreport deploy kick status switchref telemetry " ]; then
+        echo "${RED}FAIL${RST} dispatch.sh verb set is '${verbs}', expected 'branches configreport deploy kick status switchref telemetry '"
         echo "     A new verb is a new capability from the console to the host."
         echo "     Process control (stop/restart) is not a verb and never has been."
         echo "     If you are adding one on purpose, update THIS gate."
         boundary=1
+    fi
+
+    # THE CONVAR ALLOWLIST MAY NOT NAME A CREDENTIAL.
+    #
+    # `configreport` renders in a browser and lands in an audit log, and the
+    # allowlist in do_configreport is the only thing standing between that and
+    # server.cfg, which holds the real licence key. The allowlist itself is the
+    # control and this does not replace it -- this is the second pair of eyes on
+    # the one line of that file where a mistake is expensive.
+    #
+    # A DENYLIST IS THE WRONG TOOL FOR CHOOSING WHAT TO PUBLISH and the right
+    # one for reviewing a specific short list somebody just edited. It cannot
+    # catch a secret under an unguessable name, which is precisely why it is not
+    # what decides the output -- but `sv_licenseKey` pasted into that list at
+    # 1am is the realistic mistake, and this catches that.
+    allow_block=$(sed -n '/^    local CONVAR_ALLOW="$/,/^    "$/p' tools/dispatch.sh)
+    if [ -z "$allow_block" ]; then
+        echo "${RED}FAIL${RST} cannot find do_configreport's CONVAR_ALLOW list in tools/dispatch.sh"
+        echo "     The gate below cannot check a list it cannot find. If the list"
+        echo "     was reshaped, reshape this gate with it."
+        boundary=1
+    else
+        bad=$(printf '%s' "$allow_block" \
+              | grep -iE '(licen[cs]e|secret|password|passwd|_pass|token|api_?key|_key|webhook|principal|ingest_url)' \
+              || true)
+        if [ -n "$bad" ]; then
+            echo "${RED}FAIL${RST} configreport's convar allowlist names something credential-shaped:"
+            echo "$bad" | sed 's/^/     /'
+            echo "     This output is rendered in a browser and written to an audit log."
+            boundary=1
+        fi
     fi
 fi
 
@@ -353,7 +457,7 @@ if compgen -G "$rmdir_" >/dev/null 2>&1; then
 fi
 
 if [ "$boundary" -eq 0 ]; then
-    echo "${GRN}ok${RST}   the console can kick, ban, deploy and switch branch -- no raw stop/restart/config"
+    echo "${GRN}ok${RST}   the console can kick, ban, deploy, switch branch and READ config -- no raw stop/restart, no config writes"
 else
     rc=1
 fi
