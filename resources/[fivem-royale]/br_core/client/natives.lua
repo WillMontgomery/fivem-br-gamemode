@@ -976,14 +976,30 @@ function BR.Native.check()
     probe('MumbleAddVoiceTargetChannel', function()
         return MumbleAddVoiceTargetChannel ~= nil
     end)
-    probe('MumbleAddVoiceChannelListen', function()
-        return MumbleAddVoiceChannelListen ~= nil
+    -- SQUAD VOICE IS TWO NATIVES AND NO ROOM (#157). The first routes our
+    -- audio to a squadmate directly; the second exempts them from the distance
+    -- cutoff below, which is the only reason squad comms can outreach
+    -- proximity comms at all. A nil in either is not "no squad room" -- it is
+    -- squad voice silently collapsing back to 25 m of proximity.
+    probe('MumbleAddVoiceTargetPlayerByServerId', function()
+        return MumbleAddVoiceTargetPlayerByServerId ~= nil
     end)
-    -- The undo for the line above. Without it a squad room a player has left
-    -- is a room they can still hear.
-    probe('MumbleRemoveVoiceChannelListen', function()
-        return MumbleRemoveVoiceChannelListen ~= nil
+    probe('MumbleSetVolumeOverrideByServerId', function()
+        return MumbleSetVolumeOverrideByServerId ~= nil
     end)
+    -- HOW FAR A VOICE CARRIES, and the whole of #157: with no distance handed
+    -- to Mumble there is nothing for the mixer to gate on and every player in
+    -- a match hears every other one anywhere on the map. A nil in these is not
+    -- a degraded feature, it is voice with no range at all.
+    probe('MumbleSetAudioInputDistance', function()
+        return MumbleSetAudioInputDistance ~= nil
+    end)
+    probe('MumbleSetAudioOutputDistance', function()
+        return MumbleSetAudioOutputDistance ~= nil
+    end)
+    -- The GAME's own talker proximity. Mumble does not read it -- which is why
+    -- it looked like the range was configured for as long as it did -- but it
+    -- is the right number on the native-audio playback path.
     probe('NetworkSetTalkerProximity', function()
         return NetworkSetTalkerProximity ~= nil
     end)

@@ -148,39 +148,78 @@ BR.Config.Match = {
     -- players HEARING each other, and betting a whole match's comms on an
     -- undocumented side effect is how you find out in front of 48 people.
     --
-    -- So every match gets its own Mumble channel explicitly. Two channels per
-    -- player:
-    --
-    --   PROXIMITY  one per match. Everyone in the match shares it, and
-    --              talkerProximity decides how far a voice carries INSIDE it.
-    --              Nobody outside the match is in the channel at all, so
-    --              distance never enters into it for them.
-    --   SQUAD      one per squad. No distance limit -- the point of squad
-    --              comms is that they work across the map.
+    -- So every match gets its own Mumble channel explicitly. ONE channel per
+    -- player -- the match's proximity room -- and squadmates are reached by
+    -- NAME instead of by room. See BR.Config.Match.voice.range below and
+    -- br_core/client/voice.lua for why the squad room was removed (#157).
     --
     -- Channel numbers are opaque integers to the client. They are derived
     -- from matchId, which is NEVER public (roster.lua PUBLIC_FIELDS), so the
-    -- server hands each player their two numbers over VOICE_SET.
+    -- server hands each player their number over VOICE_SET.
     voice = {
         enabled          = true,
 
-        -- How far an ordinary voice carries, in metres. Deliberately short:
-        -- being heard is a positional tell, and a wide radius turns every
-        -- rooftop into a public address system.
-        talkerProximity  = 25.0,
+        -- ==================================================================
+        -- HOW FAR A VOICE CARRIES. TWO NUMBERS, BECAUSE THERE ARE TWO JOBS.
+        --
+        -- #157: "even when set to nearby (while in squads or solos), the
+        -- channel is global." Everybody in the match heard everybody, at any
+        -- range, because NOTHING EVER TOLD MUMBLE A DISTANCE. FiveM's Mumble
+        -- gates proximity on a distance value the game has to supply
+        -- (MUMBLE_SET_AUDIO_INPUT_DISTANCE / _OUTPUT_DISTANCE); with none
+        -- supplied there is nothing to gate on and the channel is a party
+        -- line. NetworkSetTalkerProximity, which this file used to configure,
+        -- belongs to the GAME's own voice chat and Mumble never reads it.
+        --
+        -- THE ENGINE'S CUTOFF IS BINARY, NOT A CURVE. On the stock convar path
+        -- a speaker is either in range at full volume or out of range at
+        -- nothing -- there is no fade. `setr voice_useNativeAudio true` in
+        -- server.cfg swaps that for the game's own attenuation curves; see the
+        -- note in server.cfg.example before turning it on.
+        --
+        -- WHY THE TWO NUMBERS CANNOT BE ONE. Mumble's distance is a property
+        -- of a SPEAKER and a LISTENER, not of a channel: every stream you
+        -- receive is gated by the same number whichever room it arrived
+        -- through. So "25 m for strangers, the whole map for my squad" is not
+        -- expressible as a distance at all. Squadmates get there by a
+        -- different door -- a per-player volume override, which the native's
+        -- own documentation says "will also bypass 3D audio and distance
+        -- calculations" -- and `squad` below is the range at which the client
+        -- stops opening that door. Radio, in other words, on top of proximity.
+        range = {
+            -- Ordinary speech, in metres. Deliberately short: being heard is
+            -- a positional tell, and a wide radius turns every rooftop into a
+            -- public address system.
+            nearby = 25.0,
+
+            -- Squadmates, in metres. THE DEFAULT IS PAST THE MAP DIAGONAL
+            -- (8 km x 11.5 km, so ~14 km corner to corner), which means squad
+            -- comms never cut out anywhere a player can stand. That is the
+            -- point of squad comms and 25 m would not be squad comms.
+            --
+            -- It is a real cutoff, not a synonym for infinity, so it is worth
+            -- knowing what the alternatives buy:
+            --   16000  never cuts out. The default.
+            --    3500  the opening storm circle (Config.Storm.radius0) --
+            --          squad comms cover the play area and no further, so a
+            --          squadmate who has not left the bus zone stays reachable
+            --          but one who has run to the far coast does not.
+            --     100  a "shout" band: squads keep contact through a fight
+            --          without a map-wide radio. Harsher, and legitimate.
+            squad  = 16000.0,
+        },
 
         -- Channel id bases. Kept far apart and far from 0, which is the
-        -- default channel every client starts in -- a squad channel that
-        -- collided with a match channel would put two squads in one room.
+        -- default channel every client starts in.
         lobbyChannel     = 1000,
         warmupChannel    = 1001,
         matchBase        = 2000,   -- + matchId
-        squadBase        = 5000,   -- + matchId * squadStride + squad index
-        squadStride      = 16,     -- max squads per match this scheme allows
 
-        -- Whether a squad hears each other at any range. Off means squads are
-        -- proximity-only, which is a legitimate (harsher) design and one
-        -- command away.
+        -- Whether a squad hears each other beyond `range.nearby` at all. Off
+        -- means squads are proximity-only, which is a legitimate (harsher)
+        -- design and one edit away: no squad routing is stated and no volume
+        -- override is opened, so a squadmate is exactly as audible as any
+        -- other player standing where they stand.
         squadIsGlobal    = true,
     },
 

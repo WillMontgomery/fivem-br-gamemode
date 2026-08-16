@@ -4325,7 +4325,21 @@ do
 
     local function channelsFor(src)
         local e = BR.Roster.get(src)
-        return e and e.voiceProx or nil, e and e.voiceSquad or nil
+        return e and e.voiceProx or nil
+    end
+
+    --- Who this player's microphone has a direct line to, as the server last
+    --- decided it. THE SQUAD ROOM IS GONE (#157): squadmates are addressed by
+    --- server id, so the thing to sweep for collisions is this list rather
+    --- than a channel number. It is cached on the entry as a sorted string
+    --- because that is what the push dedups on.
+    local function matesOf(src)
+        local e = BR.Roster.get(src)
+        local out = {}
+        for n in tostring(e and e.voiceMates or ''):gmatch('%d+') do
+            out[#out + 1] = tonumber(n)
+        end
+        return out
     end
 
     -- Two SEPARATE matches, which is the case the whole file exists for.
@@ -4371,32 +4385,28 @@ do
         end)
     ok(sameMatchShared, 'while one match shares exactly one proximity room')
 
-    -- Squads inside a match must NOT share a squad room, or two squads hear
-    -- each other's plans at unlimited range -- worse than no squad voice.
-    local seen, collided = {}, false
+    -- SEPARATION BETWEEN SQUADS, NOW THAT A SQUAD IS A LIST AND NOT A ROOM
+    -- (#157). The property is the same one the squad-channel sweep used to
+    -- check and it has to be checked on the mechanism that actually ships: a
+    -- player's radio list must contain their own squad and nobody else's, or
+    -- two squads hear each other's plans at unlimited range.
+    local strayMate, selfMate = nil, nil
     BR.Roster.each(
         function(e) return e.matchId == mA.id and e.squadId end,
         function(src, e)
-            local _, sq = channelsFor(src)
-            if sq then
-                if seen[sq] and seen[sq] ~= e.squadId then collided = true end
-                seen[sq] = e.squadId
+            for _, other in ipairs(matesOf(src)) do
+                if other == src then selfMate = src end
+                local oe = BR.Roster.get(other)
+                if not oe or oe.squadId ~= e.squadId then
+                    strayMate = ('%d -> %d'):format(src, other)
+                end
             end
         end)
-    ok(not collided, 'and no two squads share a squad room')
-
-    -- A squad channel must never collide with ANY proximity channel either.
-    local overlap = false
-    BR.Roster.each(
-        function(e) return e.state ~= BR.PlayerState.LEFT end,
-        function(src)
-            local prox, sq = channelsFor(src)
-            if sq and prox and sq == prox then overlap = true end
-            if sq and (sq == V.lobbyChannel or sq == V.warmupChannel) then
-                overlap = true
-            end
-        end)
-    ok(not overlap, 'and a squad room is never also a proximity room')
+    ok(strayMate == nil,
+        'and nobody has a radio open to a player outside their own squad',
+        strayMate)
+    ok(selfMate == nil, 'and nobody has one open to themselves',
+        tostring(selfMate))
 
     -- Nobody is left in channel 0, which is where every Mumble client starts
     -- and therefore the one room that is shared by default.
@@ -4412,41 +4422,31 @@ do
     -- THE WHOLE SPACE, not just the four players who happen to be online.
     --
     -- The live checks above can only fail on a collision that this particular
-    -- roster happens to produce -- and with one squad per match they cannot
-    -- see a squad collision at all. These sweep every match id and squad
-    -- index the scheme claims to support, which is what actually pins the
-    -- BASES apart: raising squadBase onto matchBase is a config edit nobody
-    -- would notice until two rooms merged in front of players.
-    local proxSeen, squadSeen = {}, {}
-    local dupProx, dupSquad, cross = nil, nil, nil
+    -- roster happens to produce. This sweeps every match id the scheme claims
+    -- to support, which is what actually pins the lobby and warmup rooms clear
+    -- of the match range: dropping matchBase onto lobbyChannel is a config
+    -- edit nobody would notice until a lobby could hear a match.
+    --
+    -- IT USED TO SWEEP SQUAD ROOMS TOO, 64 matches by a stride of 16. There
+    -- are no squad rooms any more (#157) -- a squad is a list of server ids,
+    -- and the collision that list can have is checked live above, where it can
+    -- actually happen, rather than in arithmetic.
+    local proxSeen = {}
+    local dupProx, cross = nil, nil
     local MATCHES = 64
     for mid = 1, MATCHES do
         local p = BR.Voice.proxChannel(mid, nil)
         if proxSeen[p] then dupProx = p end
+        if p == V.lobbyChannel or p == V.warmupChannel then cross = p end
         proxSeen[p] = mid
-
-        for idx = 1, V.squadStride do
-            local sc = BR.Voice.squadChannel(mid, idx)
-            if squadSeen[sc] then dupSquad = sc end
-            squadSeen[sc] = ('m%d/%d'):format(mid, idx)
-        end
-    end
-    for _, lone in ipairs({ V.lobbyChannel, V.warmupChannel }) do
-        proxSeen[lone] = 'lone'
-    end
-    for ch in pairs(squadSeen) do
-        if proxSeen[ch] then cross = ch end
     end
 
     ok(dupProx == nil, 'no two matches can ever share a proximity room',
         tostring(dupProx))
-    ok(dupSquad == nil, 'no two squads can ever share a squad room',
-        tostring(dupSquad))
     ok(cross == nil,
-        'and the squad range never overlaps the proximity range',
+        'and no match room is ever also the lobby or warmup room',
         tostring(cross))
-    ok(not squadSeen[0] and not proxSeen[0],
-        'and nothing is ever assigned channel 0')
+    ok(not proxSeen[0], 'and nothing is ever assigned channel 0')
 end
 
 describe('voice.channels -- solos')
@@ -4498,7 +4498,7 @@ do
     -- Pinning it means a future change that keys assignment off squadId (the
     -- obvious shortcut, and the shape of the client bug) fails here instead of
     -- in a playtest.
-    local assigned, inZero, gotSquadRoom = 0, false, false
+    local assigned, inZero, gotSquad = 0, false, false
     local first = nil
     local shared = true
     BR.Roster.each(
@@ -4506,8 +4506,8 @@ do
         function(_, e)
             if e.voiceProx then assigned = assigned + 1 end
             if not e.voiceProx or e.voiceProx == 0 then inZero = true end
-            if e.voiceSquad then gotSquadRoom = true end
-            if e.squadId then gotSquadRoom = true end
+            if e.voiceMates and e.voiceMates ~= '' then gotSquad = true end
+            if e.squadId then gotSquad = true end
             first = first or e.voiceProx
             if e.voiceProx ~= first then shared = false end
         end)
@@ -4517,8 +4517,8 @@ do
     ok(not inZero, 'and none of them is left in the default channel 0')
     ok(shared, 'and everyone in one solo match shares exactly one room',
         tostring(first))
-    ok(not gotSquadRoom,
-        'and a solo has no squad room -- there is no squad to put in one')
+    ok(not gotSquad,
+        'and a solo has no squad radio -- there is no squad to open one to')
 
     local other = nil
     BR.Roster.each(
@@ -4543,15 +4543,76 @@ do
     ok(p1 and p1.prox == first,
         'carrying the proximity room the roster says they are in',
         p1 and tostring(p1.prox) or 'nothing')
-    ok(p1 and p1.squad == nil, 'and no squad room')
-    -- The client needs a range to hand NetworkSetTalkerProximity. A nil here
-    -- falls back to config on the far side, but only by luck -- the payload is
-    -- the contract, so it is asserted.
-    ok(p1 and type(p1.proximity) == 'number' and p1.proximity > 0,
-        'and a talker proximity to apply',
-        p1 and tostring(p1.proximity) or 'nothing')
+    ok(p1 and type(p1.mates) == 'table' and #p1.mates == 0,
+        'and an empty squad list -- a solo has nobody to open a radio to',
+        p1 and type(p1.mates) == 'table' and ('%d'):format(#p1.mates) or 'nothing')
+
+    -- THE RANGES ARE PART OF THE CONTRACT (#157).
+    --
+    -- The client falls back to config when these are missing, which means a
+    -- server that stopped sending them would look fine and behave fine right
+    -- up until the two sides' config drifted. More to the point: for a week
+    -- nothing anywhere sent a range at all and voice carried across the whole
+    -- map, so "a number arrived" is exactly the assertion that was missing.
+    ok(p1 and type(p1.nearbyRange) == 'number' and p1.nearbyRange > 0,
+        'and a proximity range to apply',
+        p1 and tostring(p1.nearbyRange) or 'nothing')
+    ok(p1 and type(p1.squadRange) == 'number'
+        and p1.squadRange > p1.nearbyRange,
+        'and a squad range, which must be the LONGER of the two -- squad voice '
+        .. 'that cuts out at proximity range is not squad voice',
+        p1 and ('%s vs %s'):format(tostring(p1.squadRange),
+                                   tostring(p1.nearbyRange)) or 'nothing')
     ok(p1 and p1.prox ~= V.lobbyChannel and p1.prox ~= V.warmupChannel,
         'which is neither the lobby room nor the warmup room')
+end
+
+describe('voice.squad roster -- #157')
+do
+    -- THE PAYLOAD THAT REPLACED THE SQUAD ROOM. A squad channel was one
+    -- integer and its correctness was arithmetic; a squad roster is a list of
+    -- server ids and its correctness is membership, so it is checked here on a
+    -- real match rather than swept over an id space.
+    reset()
+    for s = 1, 4 do queueUp(s, 'S' .. s, BR.Mode.SQUAD.key) end
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    local m = theMatch()
+    ok(m ~= nil, 'a squad match formed')
+
+    fakeTime = fakeTime + 1200
+    BR.Sched.step(fakeTime)
+
+    local delivered = {}
+    for _, s in ipairs(sent) do
+        if s.event == BR.Net.VOICE_SET and type(s.args[1]) == 'table' then
+            delivered[s.target] = s.args[1]
+        end
+    end
+
+    local anyMates, selfListed, mutual = false, false, true
+    for src, payload in pairs(delivered) do
+        local e = BR.Roster.get(src)
+        for _, other in ipairs(payload.mates or {}) do
+            anyMates = true
+            if other == src then selfListed = true end
+            -- SQUAD VOICE HAS TO BE SYMMETRIC or one player can hear the other
+            -- and not the reverse, which reads in game as "my mic is broken"
+            -- and is impossible to diagnose from one machine.
+            local back = false
+            for _, mine in ipairs((delivered[other] or {}).mates or {}) do
+                if mine == src then back = true end
+            end
+            if not back then mutual = false end
+            local oe = BR.Roster.get(other)
+            if not oe or not e or oe.squadId ~= e.squadId then mutual = false end
+        end
+    end
+    ok(anyMates, 'a squad player is told who their squadmates are')
+    ok(not selfListed, 'and is never told about themselves')
+    ok(mutual,
+        'and every radio link is mutual and inside one squad -- a one-way link '
+        .. 'reads in game as a broken microphone')
 end
 
 describe('combat.fire')

@@ -89,7 +89,7 @@ BR.Net = {
     -- is derived from the match, and matchId is deliberately NEVER public
     -- (see PUBLIC_FIELDS in server/roster.lua). So the server hands each
     -- player the two numbers and nothing else.
-    VOICE_SET       = 'br:voice:set',        -- S->C  { prox, squad }
+    VOICE_SET       = 'br:voice:set',        -- S->C  { prox, mates, nearbyRange, squadRange }
 
     -- Loot / inventory
     LOOT_CELL       = 'br:loot:cell',        -- C->S  { cx, cy } subscribe to a grid cell

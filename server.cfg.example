@@ -135,21 +135,40 @@ ensure br_ringmaster     # optional -- the admin console's game-side half
 # set br_ddb_table_prefix "ringmaster-"
 
 # ---------------------------------------------------------------------------
-# Voice: THERE IS NOTHING TO SET HERE, AND THAT IS THE POINT.
+# Voice: NOTHING HERE IS REQUIRED. ONE LINE IS RECOMMENDED, AND IT IS OFF.
 #
-# There are no voice_* lines in this file and none are wanted. It was suggested
-# during #150 that some deployments need `setr voice_useNativeAudio true`
-# before Mumble channels exist; they do not, and adding it would have fixed
-# nothing. That convar chooses where decoded audio is rendered -- the engine
-# reads it at exactly one place, deciding between the game's own audio sink and
-# the built-in one, which is what you would turn on to use audio submixes. It
-# has no connection to channels, voice targets or listens, and the whole
-# channel system is unconfigurable: the engine reads no convar anywhere in it.
+# NOT REQUIRED, and this was checked twice. It was suggested during #150 that
+# some deployments need `setr voice_useNativeAudio true` before Mumble channels
+# exist; they do not. The channel system reads no convar anywhere -- rooms,
+# voice targets and listens are all unconfigurable -- and #157 confirmed the
+# same for range: the distance that decides who can hear whom is set by the
+# gamemode (br_lib/config/match.lua, Config.Match.voice.range), not here.
 #
-# So if voice is broken, it is not this file. The gamemode's own channels are
-# in br_lib/config/match.lua (Config.Match.voice) and the diagnosis lives in
-# `brvoice` -- server console for the assignment, F8 on a client for whether
-# any audio is actually leaving the machine.
+# WHAT IT ACTUALLY CHANGES, which is worth having:
+#
+#   OFF (default, what you are running now)
+#     Proximity is a HARD EDGE. Inside the range a player is at full volume;
+#     one step past it they are gone. There is no fade, and walking the
+#     boundary sounds like a switch being flicked.
+#
+#   ON
+#     Playback is handed to the game's own audio engine, which applies its
+#     normal attenuation curves and occlusion. The same range still applies --
+#     it is still 25 m -- but a voice now FADES toward the edge instead of
+#     cutting, and sounds like it is coming from where the player is standing.
+#
+# RECOMMENDED, BUT TURN IT ON SECOND. Verify the range works with the hard edge
+# first, because a hard edge is unambiguous: at 30 m you either hear somebody
+# or you do not, and there is nothing to argue about. A fade at 30 m and a
+# broken cutoff at 30 m can sound alike. Once the range test passes, uncomment
+# this, restart, and everything about voice should sound better and nothing
+# about who-hears-whom should change:
+#
+# setr voice_useNativeAudio true
+#
+# If voice is broken, it is still probably not this file. `brvoice` in the
+# server console shows the assignment; F8 `brvoice` on a client shows whether
+# audio is leaving the machine and what range is in force.
 # ---------------------------------------------------------------------------
 
 # Our loading screen draws its own progress; the engine's busy spinner over

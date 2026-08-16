@@ -46,63 +46,51 @@ function BR.Voice.proxChannel(matchId, state)
     return V.lobbyChannel or 1000
 end
 
---- Which squad channel a squad index inside a match is.
----
---- Keyed on the squad INDEX rather than the squadId string, because a Mumble
---- channel is a number and the id is not. The stride caps how many squads a
---- match can have distinct rooms for; exceeding it puts two squads in one
---- room, which is worse than no squad voice at all -- so it is announced
---- rather than allowed to happen quietly.
---- @param matchId integer
---- @param idx integer  0-based squad index
---- @return integer
-function BR.Voice.squadChannel(matchId, idx)
-    local stride = V.squadStride or 16
-    if idx >= stride then
-        print(('[br_core] VOICE: match %d has more squads than the channel '
-            .. 'stride allows (%d) -- two squads will share a room. Raise '
-            .. 'BR.Config.Match.voice.squadStride.'):format(matchId, stride))
-        idx = idx % stride
-    end
-    return (V.squadBase or 5000) + matchId * stride + idx
-end
-
 -- ==========================================================================
--- THE ROOMS HAVE TO BE MADE, AND THIS IS THE ONLY SIDE THAT CAN MAKE THEM.
+-- THERE IS NO SQUAD ROOM ANY MORE, AND THAT IS THE POINT (#157).
 --
--- MUMBLE_CREATE_CHANNEL IS A SERVER NATIVE. That one fact is the whole of the
--- second half of #150 and the reason it survived a careful reading of the
--- client: everybody looking for the missing call was looking in
--- client/voice.lua, where all the other Mumble natives live and where this one
--- does not exist. FiveM's Mumble surface is 29 client natives and 3 server
--- ones, and channel creation is one of the three.
+-- #150 ended with a caveat on the record: the squad room is created by this
+-- side, and whether a channel created MID-MATCH is announced to clients that
+-- already authenticated to the Mumble server was never confirmed. The named
+-- follow-up was to stop using a room for squad voice and address squadmates
+-- directly. Two things since have turned that from a fallback into the only
+-- option:
 --
--- WHAT WAS ACTUALLY HAPPENING WITHOUT IT:
+--   1. THE WARNING NEVER WENT AWAY. The owner still sees
+--        "MUMBLE_ADD_VOICE_CHANNEL_LISTEN: Tried to call native on a channel
+--         that didn't exist"
+--      and cannot say when. It is a race, which is why: the client withholds
+--      its routing until it has joined the PROXIMITY room, and then states a
+--      listen on the SQUAD room without ever asking whether that one arrived.
+--      Two rooms, two clocks, one wait. Sometimes the second room is late and
+--      the listen is refused -- loudly, once, with no retry.
 --
---   The PROXIMITY room got made by accident. MumbleSetVoiceChannel creates a
---   temporary channel when the one it is asked for does not exist, so the
---   first player into a match brought their match's room into being simply by
---   joining it. That is why the channel numbers always looked right.
+--   2. A ROOM CANNOT BEAT THE DISTANCE CUTOFF ANYWAY. Now that proximity
+--      actually has a range (#157), every stream a client receives is gated by
+--      that range whichever room carried it -- Mumble's distance belongs to
+--      the speaker and the listener, never to a channel. So the squad room
+--      would have delivered squad audio faithfully to a player standing 30 m
+--      away and had it thrown out by the mixer. Squad voice needs the
+--      per-player volume override, which needs squadmates' server ids, and
+--      once the client has those the room has nothing left to do.
 --
---   The SQUAD room was never made by anything. No client ever JOINS it -- it
---   is heard through a listen and spoken into through a voice target, and
---   neither of those creates anything. So it never existed, and the engine
---   said so every time a squad player applied their assignment:
---     "MUMBLE_ADD_VOICE_CHANNEL_LISTEN: Tried to call native on a channel
---      that didn't exist"
+-- So the server sends the squad's MEMBERSHIP instead of a squad channel, and
+-- the client points its voice target at those players by server id. No room,
+-- no creation, no round trip, and no listen -- which is the only way to say
+-- that warning line cannot come back rather than that it probably will not.
 --
--- Creating both here is cheap, idempotent from this side, and removes the
--- accident: the room exists because the server made it, not because somebody
--- happened to walk into it first.
+-- WHAT THIS COSTS, stated plainly. A voice target naming players is a target a
+-- modified client could point at server ids it was never given, so a cheat can
+-- now push its own audio at a stranger. It still cannot HEAR anyone it was not
+-- routed to -- that half is unchanged and it is the half that matters -- and
+-- the failure mode is nuisance, not surveillance. Muting is the answer to
+-- nuisance and it is per-player already.
 --
--- ONE CAVEAT, STATED PLAINLY because it decides what the owner should expect.
--- A channel created here is added to the Mumble server's channel list, and the
--- evidence that it is broadcast to clients who ALREADY authenticated is not
--- conclusive. If squad-at-range is still silent after this, that is the reason,
--- and the fix is to stop using a channel for squad voice at all and target
--- squadmates by server id instead (MumbleAddVoiceTargetPlayerByServerId) --
--- which needs no channel and cannot have this problem. Proximity voice, which
--- is what #150 is actually about, does not depend on any of this.
+-- THE PROXIMITY ROOM IS STILL MADE HERE, and still by MUMBLE_CREATE_CHANNEL,
+-- which is a SERVER native (FiveM's Mumble surface is 29 client natives and 3
+-- server ones). Without it that room existed only by accident, because
+-- MumbleSetVoiceChannel creates what it cannot find and the first player into
+-- a match brought the room into being by walking into it.
 local made = {}
 
 --- @param ch integer|nil
@@ -113,9 +101,9 @@ local function makeChannel(ch)
     if not MumbleCreateChannel then
         made[ch] = true   -- say it once, not once a second
         print('[br_core] VOICE: MUMBLE_CREATE_CHANNEL is missing on this '
-            .. 'server build. Squad rooms cannot be created, so squad voice '
-            .. 'at range will not work and clients will log '
-            .. '"Tried to call native on a channel that didn\'t exist".')
+            .. 'server build. Match rooms will exist only because the first '
+            .. 'player to join one creates it by accident, which is how it '
+            .. 'worked before #150 and is not something to rely on.')
         return
     end
     MumbleCreateChannel(ch)
@@ -128,16 +116,41 @@ local function proxChannelFor(e)
     return BR.Voice.proxChannel(e.matchId, e.state)
 end
 
+--- Who else is on this player's squad, by server id.
+---
+--- THIS REPLACES THE SQUAD CHANNEL and it is the server's decision, exactly as
+--- the channel was: a client is told who its squadmates are and can only
+--- decline them. Sorted so the payload is stable and the dedup below can
+--- compare two pushes as strings rather than re-deriving set equality every
+--- second for every player.
+---
+--- Departed players are excluded the same way every other sweep here excludes
+--- them -- a squadmate who has left is not somebody to keep a radio open to.
+--- @param src integer  the player being pushed; never in their own list
 --- @param e table
---- @return integer|nil
-local function squadChannelFor(e)
-    if not e.matchId or not e.squadId then return nil end
-    local idx = BR.Party.squadIndex and BR.Party.squadIndex(e.squadId) or nil
-    if not idx then return nil end
-    return BR.Voice.squadChannel(e.matchId, idx)
+--- @return table array of server ids, possibly empty
+local function squadmatesOf(src, e)
+    local out = {}
+    if V.squadIsGlobal == false then return out end
+    if not e.matchId or not e.squadId then return out end
+    BR.Roster.each(
+        function(o) return o.squadId == e.squadId
+            and o.matchId == e.matchId
+            and o.state ~= BR.PlayerState.LEFT end,
+        function(other)
+            if other ~= src then out[#out + 1] = other end
+        end)
+    table.sort(out)
+    return out
 end
 
---- Send one player their channels, if they have changed.
+--- @param list table
+--- @return string
+local function key(list)
+    return table.concat(list, ',')
+end
+
+--- Send one player their room and their squad, if either has changed.
 ---
 --- Deduplicated on the entry, because every caller below fires on a state
 --- change and several of them fire on the SAME state change -- a squad forming
@@ -150,27 +163,27 @@ function BR.Voice.push(src)
     if not e then return end
 
     local prox  = proxChannelFor(e)
-    local squad = V.squadIsGlobal ~= false and squadChannelFor(e) or nil
+    local mates = squadmatesOf(src, e)
+    local mk    = key(mates)
 
-    if e.voiceProx == prox and e.voiceSquad == squad then return end
-    e.voiceProx, e.voiceSquad = prox, squad
+    if e.voiceProx == prox and e.voiceMates == mk then return end
+    e.voiceProx, e.voiceMates = prox, mk
 
-    -- MAKE THE ROOMS BEFORE TELLING ANYONE TO GO TO THEM. Both of them, and
-    -- the squad room even though this server will never be in it -- see the
-    -- block above: nothing else in the system creates that one, which is why
-    -- squad players' consoles have been printing a Mumble warning.
+    -- MAKE THE ROOM BEFORE TELLING ANYONE TO GO TO IT. One room now: see the
+    -- block above for why the squad room is gone.
     makeChannel(prox)
-    makeChannel(squad)
 
+    local R = V.range or {}
     TriggerClientEvent(BR.Net.VOICE_SET, src, {
-        prox      = prox,
-        squad     = squad,
-        proximity = V.talkerProximity or 25.0,
+        prox        = prox,
+        mates       = mates,
+        nearbyRange = R.nearby or 25.0,
+        squadRange  = R.squad or 16000.0,
     })
 end
 
 --- Re-push everybody in a match. Used when squads are formed, which changes
---- every member's squad channel at once.
+--- every member's squad roster at once.
 --- @param m table
 function BR.Voice.pushMatch(m)
     if V.enabled == false or not m then return end
@@ -179,13 +192,13 @@ function BR.Voice.pushMatch(m)
         function(src) BR.Voice.push(src) end)
 end
 
---- Forget a player's cached channels so their next push always sends.
+--- Forget a player's cached assignment so their next push always sends.
 --- Called on disconnect: a reconnecting player inherits the src, and a stale
 --- cache would leave them silently in whatever channel the last holder had.
 --- @param src integer
 function BR.Voice.forget(src)
     local e = BR.Roster.get(src)
-    if e then e.voiceProx, e.voiceSquad = nil, nil end
+    if e then e.voiceProx, e.voiceMates = nil, nil end
 end
 
 -- THE SAFETY NET. Every path that changes a player's match or squad is
@@ -202,10 +215,11 @@ BR.Sched.every(1000, 'voice.sweep', function()
 end)
 
 RegisterCommand('brvoice', function()
+    local R = V.range or {}
     print('=== voice channels ===')
-    print(('  enabled %s   proximity %.0fm   squad-global %s')
+    print(('  enabled %s   nearby %.0fm   squad %.0fm   squad-global %s')
         :format(tostring(V.enabled ~= false),
-                V.talkerProximity or 25.0,
+                R.nearby or 25.0, R.squad or 16000.0,
                 tostring(V.squadIsGlobal ~= false)))
     BR.Roster.each(
         function(e) return e.state ~= BR.PlayerState.LEFT end,
@@ -219,12 +233,13 @@ RegisterCommand('brvoice', function()
             -- to take, and the first thing anybody diagnosing voice needs to
             -- establish is which of the two they are looking at.
             local m = BR.Server.matchById(e.matchId)
-            print(('  %-20s (%d)  match %-5s %-6s squad %-10s -> prox %s, squad %s')
+            print(('  %-20s (%d)  match %-5s %-6s squad %-10s -> prox %s, radio to [%s]')
                 :format(e.name, src, tostring(e.matchId or '-'),
                         m and tostring(m.mode) or '-',
                         tostring(e.squadId or '-'),
                         tostring(e.voiceProx or '-'),
-                        tostring(e.voiceSquad or '-')))
+                        e.voiceMates ~= nil and e.voiceMates ~= '' and e.voiceMates
+                            or 'nobody'))
         end)
     print('  Two players who should NOT hear each other must differ on prox.')
     -- A CORRECT ASSIGNMENT HERE PROVES ALMOST NOTHING, which is the lesson of
