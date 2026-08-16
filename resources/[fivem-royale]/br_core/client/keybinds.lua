@@ -874,10 +874,16 @@ RegisterCommand('brkeys', function(_, args)
     -- two are indistinguishable from a chair.
     print(('  resync   : %s   frames since the last focus change: %d'):format(
         resyncing and 'OPEN (taps suppressed)' or 'closed', resyncFrames))
+    -- `held` FOLDED IN FROM debug.lua's DUPLICATE (#137). That file registered a
+    -- second `brkeys` and, loading last, silently won -- so everything above
+    -- this loop was unreachable and the two diagnostics added for #90 and #129
+    -- printed for nobody. The held column was the only thing its version had
+    -- that this one did not, so it moved here and the duplicate is gone.
     for _, b in ipairs(BR.Keys.bindings) do
         local code = load()[b.command]
-        print(('  %-9s %-28s %s'):format(b.group, b.label,
-            code and (BR.Keys.vkName(code) or ('#' .. code)) or '(unbound)'))
+        print(('  %-9s %-28s %-12s held=%s'):format(b.group, b.label,
+            code and (BR.Keys.vkName(code) or ('#' .. code)) or '(unbound)',
+            tostring(BR.Keys.isHeld(b.action))))
     end
     print('  usage: brkeys [reset]')
 end, false)

@@ -551,6 +551,49 @@ else
     fi
 fi
 
+# --- 7. duplicate console commands --------------------------------------------
+#
+# TWO HANDLERS FOR ONE NAME MEANS LOAD ORDER DECIDES, AND LOAD ORDER IS NOT A
+# DECISION ANYBODY MADE. FiveM keeps the LAST registration, silently, so the
+# loser looks present in the source, reads correctly, and never runs.
+#
+# Three of these existed at once when this gate was written (#137):
+#
+#   brdrop   keybinds.lua's G binding vs skydive.lua's debug dump. On a client
+#            with no raw-key layer, G ran the debug print and dropped nothing.
+#   brkeys   keybinds.lua's real dump vs a thinner one in debug.lua that loaded
+#            later and won -- so the raw-layer, holds and focus-resync readings
+#            added for #90 and #129 printed for nobody, while we were telling
+#            the owner to run that exact command to diagnose those exact bugs.
+#   brstorm  storm.lua's vs debug.lua's; storm.lua's never ran.
+#
+# CLIENT AND SERVER ARE SEPARATE LUA STATES, so the same name in a client file
+# and a server file is fine and common here (brloot, brparty, brvoice...). Only
+# a collision WITHIN one state is a fault, which is why this buckets by folder.
+#
+# tap()/hold() register indirectly -- tap('drop','brdrop',...) becomes
+# RegisterCommand('brdrop'), and hold() becomes '+name' and '-name' -- so a grep
+# for RegisterCommand alone misses exactly the case that caused #137.
+echo "${DIM}== duplicate console commands ==${RST}"
+dupes=$(
+    for side in client server; do
+        for f in $(find "resources/[fivem-royale]" -path "*/$side/*.lua" 2>/dev/null); do
+            grep -v '^\s*--' "$f" \
+                | grep -oE "RegisterCommand\(\s*'[^']+'|^\s*(tap|hold)\s*\(\s*'[^']*'\s*,\s*'[^']+'" \
+                | grep -oE "'[^']+'\s*\)?$" | tr -d "' )" \
+                | sed "s/^/$side /"
+        done
+    done | sort | uniq -c | awk '$1 > 1 { print "     " $3 " (" $2 ", " $1 " registrations)" }'
+)
+if [ -z "$dupes" ]; then
+    echo "${GRN}ok${RST}   no console command name is registered twice in one Lua state"
+else
+    echo "${RED}FAIL${RST} a console command is registered more than once in one Lua state:"
+    echo "$dupes"
+    echo "     The later registration wins and the earlier one never runs."
+    rc=1
+fi
+
 # --- result ------------------------------------------------------------------
 
 echo

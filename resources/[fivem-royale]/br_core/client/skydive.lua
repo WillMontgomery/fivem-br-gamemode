@@ -740,7 +740,12 @@ BR.Loop.register(BR.Loop.TICK, 'skydive.disarm', function()
 end)
 
 --- Everything about the drop, in one paste.
-RegisterCommand('brdrop', function()
+-- RENAMED FROM `brdrop` (#137). keybinds.lua registers `brdrop` for the "drop
+-- selected item" action, this file loads after it, and the later registration
+-- wins -- so on a client with no raw-key layer the G key ran THIS debug dump
+-- and never dropped anything. The keybind's name is the one that cannot move:
+-- RegisterKeyMapping and every saved rebind in KVP refer to it by name.
+RegisterCommand('brdropdbg', function()
     local ped = PlayerPedId()
     print('=== drop (client) ===')
     print(('  dropping  %s   chuteState %d   hasChute %s   chuteAmmo %d   reserve %s'):format(

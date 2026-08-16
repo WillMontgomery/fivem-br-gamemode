@@ -55,7 +55,7 @@ Install the pre-commit hook with `./tools/install-hooks.sh`.
 | `brnativecheck` | client | Verify every native assumption against the running build |
 | `brblack` | client | Every state that can cause a black screen, at once |
 | `brfocus` | client | The NUI focus stack — why you do or don't have a cursor |
-| `brbus`, `brdrop` | client | Bus ride and skydive state, live |
+| `brbus`, `brdropdbg` | client | Bus ride and skydive state, live |
 | `brloot` | client | What this client can see: entries, live props, nearest item |
 | `brpromptcheck` | client | Which prompt glyph actually renders for a custom keybind |
 | `/brleave` | client | Leave the current match (counts as an elimination) |
