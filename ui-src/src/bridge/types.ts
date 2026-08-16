@@ -485,9 +485,23 @@ export interface PlayersPayload {
    *  or the limit, and must not hardcode one that drifts from the server. */
   categories: ReportCategory[]
   defaultCategory: string
+  /** How many players one submission may name. Read by the panel only to stop
+   *  a sixth tick taking; the server refuses the same submission for the same
+   *  reason, and costs the player nothing when it does. */
   maxTargets: number
-  /** Reports left this match. Zero disables submission. */
-  remaining: number
+  /**
+   * `remaining` USED TO BE HERE and was deleted with #142, not merely stopped
+   * being rendered. It carried the reports left this match for one line of
+   * text -- "2 left" -- and the owner's instruction was that the panel does not
+   * say it: "We don't need to tell a player how many people they can report, or
+   * how many reports are left."
+   *
+   * The LIMIT is untouched. What went is the advertisement, and with it the
+   * field: br_core stopped computing it, br_ui stopped forwarding it, and this
+   * stopped declaring it, in one change. A payload member that survives the
+   * last thing that read it is how this project has arrived at twelve confirmed
+   * subsystems wired to nothing.
+   */
 }
 
 /** The answer to a submitted report. */
