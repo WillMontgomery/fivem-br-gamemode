@@ -191,6 +191,29 @@ AddEventHandler('br:match:results', function(res)
             -- animated to a number nothing had persisted, and Volts were not
             -- mentioned at all.
             --
+            -- BOTH ENDS OF THE BAR, EVALUATED HERE, and this is the fix for the
+            -- verdict screen showing 0 XP (#91) and the lobby disagreeing with
+            -- the stored row (#130). The payload used to carry the earned
+            -- amount and the new level and nothing else, so the page had to
+            -- work out where the bar should END by adding the award to whatever
+            -- it happened to be showing. That is a derivation, on the client,
+            -- of a number the server already knows -- and every way it can go
+            -- wrong, it did:
+            --
+            --   * it added the award to a progress value that ALREADY included
+            --     it, because br:market:credited pushes the credited total on
+            --     MARKET_STATE the same tick this event is sent;
+            --   * on a level-up it subtracted the OLD level's span from that
+            --     doubled figure and clamped at zero, which is literally how
+            --     Epyc gained 1048 XP and was shown 0 (327 + 1048 - 2050 < 0);
+            --   * it kept the previous level's span as the denominator, so a
+            --     bar could sit past its own end and never reset.
+            --
+            -- So the server sends where the bar WAS and where it IS, both from
+            -- BR.Xp against the lifetime totals either side of this match. The
+            -- page renders two numbers it was given and derives nothing. There
+            -- is no third place for the curve to be evaluated any more.
+            --
             -- Sent before the write rather than after: the player is looking at
             -- the verdict screen now, and a DynamoDB round trip is exactly the
             -- window in which they stop looking. A failed write is reported in
@@ -202,10 +225,33 @@ AddEventHandler('br:match:results', function(res)
             -- get a verdict screen for a match they were not in. The write
             -- still happens; only the telling is skipped.
             if p.src and not p.left then
+                -- At maxLevel progress() reports a full bar with a zero span,
+                -- which is correct as a fact and useless as a denominator. One
+                -- is the smallest value that keeps the bar full rather than
+                -- dividing by nothing.
+                --
+                -- Guarded like every other BR.Xp call in this file: br_stats is
+                -- allowed to run on a server with no br_lib, and a verdict
+                -- screen with a flat bar beats a match-end handler that throws.
+                local intoBefore, spanBefore, intoAfter, spanAfter = 0, 1, 0, 1
+                if BR.Xp then
+                    local _
+                    _, intoBefore, spanBefore = BR.Xp.progress(before)
+                    _, intoAfter, spanAfter = BR.Xp.progress(after)
+                end
+
                 TriggerClientEvent(BR.Net.MATCH_EARNED, p.src, {
                     xp      = xpEarned,
                     volts   = deltas.balance,
+                    -- Where the bar is NOW.
                     level   = deltas.level,
+                    into    = intoAfter,
+                    needed  = math.max(1, spanAfter),
+                    -- Where it has to start from, so the fill is the match
+                    -- rather than a jump.
+                    fromLevel  = levelBefore,
+                    fromXp     = intoBefore,
+                    fromNeeded = math.max(1, spanBefore),
                     levelUp = deltas.level > levelBefore,
                 })
             end

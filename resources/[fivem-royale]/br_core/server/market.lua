@@ -142,6 +142,16 @@ function BR.Market.load(src)
 
     licenseOf[src] = lic
     if inv[lic] and inv[lic].loaded then
+        -- REPUBLISHED ON THE CACHED PATH TOO, and this is not belt-and-braces.
+        -- br_stats derives `levelBefore` -- which decides how many level-up
+        -- bonuses a match pays -- from the total this publishes, and it holds
+        -- that in its own table. A player who reconnects into an inventory
+        -- another session already loaded takes this branch, so leaving it out
+        -- meant br_stats could be running on whatever it last heard, or on
+        -- nothing at all if it restarted while br_core did not. Republishing a
+        -- number br_stats may already have is free; not publishing it pays a
+        -- level-up bonus for every level from 2 upward (#89).
+        BR.Market.publishXp(lic)
         BR.Market.push(src)
         return
     end
@@ -209,6 +219,23 @@ function BR.Market.publishXp(lic)
     local entry = inv[lic]
     if not entry then return end
     TriggerEvent('br:stats:knownXp', lic, entry.xp or 0)
+end
+
+--- One player's lifetime XP, as this side currently holds it.
+---
+--- EXISTS FOR THE DIAGNOSTIC, and deliberately reads rather than computes. The
+--- `brxpsim` console command has to pose a match award against a REAL profile
+--- to be worth anything -- a simulation run against a made-up total would
+--- confirm only that the arithmetic works on made-up totals, which was never
+--- in doubt. This is the same number br_stats is told on `br:stats:knownXp`,
+--- so a simulation that looks wrong is evidence about the real path.
+--- @param src integer
+--- @return integer|nil  nil when this player's inventory has not loaded
+function BR.Market.lifetimeXp(src)
+    local lic = licenseOf[src]
+    local entry = lic and inv[lic]
+    if not entry or not entry.loaded then return nil end
+    return entry.xp or 0
 end
 
 --- What is equipped, resolved to the apply tables the client needs.

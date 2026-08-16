@@ -347,15 +347,62 @@ BR.Config.Market = {
     matches teach people that playing was a waste of time, which is the exact
     opposite of what a progression system is for.
 
-    Roughly calibrated so a middling match pays ~150 and a strong one ~400: an
-    uncommon canopy is a handful of matches, a legendary is a season's habit.
+    ================== RETUNED 2026-08-16, AND WHY (#89) ==================
+
+    The first calibration paid a single match 470 Volts. Owner: "volts going
+    from 665 to 1135 in one match is insane lol. It should be like MAYBE 1/3 of
+    that max." So the whole table came down by roughly a third.
+
+    THE INVERSION WAS THE INFORMATIVE HALF. In the same match the player who
+    placed SECOND with one kill took 470, and the player who WON took 60 -- the
+    loser earning nearly eight times the winner. A payout where placement is the
+    headline term cannot do that, so placement was not the headline term. Two
+    things were:
+
+      * THE LEVEL-UP BONUS, which was the single largest line on the bill. At
+        100 + 25/level it could exceed the win bonus outright, and the player
+        who took 470 had just crossed a level while the winner had not. A bonus
+        that beats the thing it is a bonus ON is not a bonus. It is now a
+        quarter of a win rather than most of one.
+      * THE WIN AND PLACEMENT TERMS NOT REACHING THE WINNER AT ALL. 60 is
+        `completion` and nothing else, which means `placement` arrived at
+        marketPayout as 0 or nil for somebody who finished first. That is a
+        separate defect upstream of this file and no amount of retuning here
+        fixes it -- retuning a formula whose input is missing just moves the
+        wrong number. Called out so the next reader does not conclude these
+        weights are what produced 60.
+
+    CALIBRATED SO PLACEMENT DOMINATES. Worked examples on a 16-player field:
+
+      won it, no kills                 15 + 120                    = 135
+      2nd, 1 kill, levelled to 3       15 +  65 + 10 + 35          = 125
+      2nd, 4 kills                     15 +  65 + 40               = 120
+      8th, 2 kills                     15 +  37 + 20               =  72
+      last, nothing                    15                          =  15
+
+    The win is the biggest single line in a winning match; placement is the
+    biggest in every other one; kills are worth chasing without being the
+    strategy; and the level-up is a punctuation mark you notice rather than the
+    reason the number moved.
+
+    WHAT THIS DOES TO THE PRICES ABOVE, stated rather than quietly absorbed: at
+    ~70 for a middling match an uncommon canopy at 1200 is around 17 matches
+    where it used to be 8, and a legendary at 6000 is 60-80 where it used to be
+    40. The owner asked for a third of the payout and said nothing about
+    prices, so prices are untouched -- but "a handful of matches" for an
+    uncommon is no longer strictly true, and if that is the half that should
+    have moved, it is the table at the top of this file.
+
+    EVERY NUMBER BELOW IS MEANT TO BE ARGUED WITH. They are in one table, next
+    to the prices, on purpose: retuning is editing five integers and re-reading
+    the worked examples above, not tracing a formula through three files.
 ]]
 BR.Config.Market.payout = {
-    completion   = 60,    -- for turning up and finishing
-    win          = 240,
-    placementTop = 150,   -- scaled linearly by how far up you finished
-    perKill      = 20,
-    perRevive    = 15,    -- paid because it is the least selfish thing you can do
+    completion   = 15,    -- for turning up and finishing
+    win          = 120,
+    placementTop = 70,    -- scaled linearly by how far up you finished
+    perKill      = 10,
+    perRevive    = 8,     -- paid because it is the least selfish thing you can do
 }
 
 --- What the currency is called, in ONE place.
@@ -378,11 +425,25 @@ BR.Config.Market.currency = 'Volts'
 --- top of earning, not the earning itself. A player who levels every few
 --- matches should notice it; a player grinding for a legendary should still be
 --- getting there mostly by playing.
+---
+--- IT WAS NOT MODEST, AND THAT IS #89. At 100 + 25/level this line was worth
+--- more than winning the match -- level 3 paid 150 against a 240 win bonus, and
+--- by level 8 it had passed it outright. So the biggest payout in a session
+--- went to whoever happened to cross a boundary, regardless of how they placed,
+--- and a second-place finish with a level-up out-earned a victory by eight
+--- times. 25 + 5/level puts it at roughly a quarter of a win at low levels and
+--- keeps it there: still growing with the curve, no longer competing with it.
+---
+--- THE RISK THIS NUMBER CARRIES is that it is paid PER LEVEL CROSSED against a
+--- `levelBefore` that br_stats derives from a cached lifetime total. If that
+--- cache is ever empty when a match ends, `levelBefore` is 1 and this is paid
+--- for every level from 2 upward in one go. Keeping the per-level figure small
+--- is also what keeps that failure survivable rather than economy-breaking.
 --- @param level integer  the level just reached
 --- @return integer
 function BR.Config.levelBonus(level)
     local n = math.max(1, math.floor(tonumber(level) or 1))
-    return 100 + (n - 1) * 25
+    return 25 + (n - 1) * 5
 end
 
 --- What one match earned, in currency.

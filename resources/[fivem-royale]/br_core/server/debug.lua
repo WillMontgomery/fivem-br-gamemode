@@ -932,3 +932,89 @@ RegisterCommand('brprofile', function(src, args)
         TriggerEvent('br:ddb:profileFetch', req, p.license)
     end
 end, true)
+
+--- Pose a match-end award at a connected player without writing anything.
+---
+--- THE VALIDATION TOOL FOR #91 AND #130, and it exists because the one beat the
+--- progression system is built for -- the level-up flip -- is the beat nobody
+--- can stage on demand. Confirming it means getting a real player to within a
+--- few hundred XP of a real boundary and then playing a match big enough to
+--- cross it, which is a great deal of arranging to test a bar. Every failure so
+--- far has been in the DISPLAY of these numbers rather than in their
+--- arithmetic, so this drives the display path with real ones.
+---
+---   brxpsim 3          award that player enough to cross their next boundary
+---   brxpsim 3 250      award exactly 250 XP
+---
+--- WHAT IT PROVES AND WHAT IT DOES NOT. It sends the identical MATCH_EARNED a
+--- real match sends, from the identical BR.Xp calls against that player's real
+--- lifetime total -- so if the bar lands anywhere other than where this prints,
+--- the fault is in the interface. It writes NOTHING: no DynamoDB row, no
+--- balance, no XP. `brprofile` reads the same afterwards, and the bar returns
+--- to the stored truth on the next MARKET_STATE. Proving the WRITE path still
+--- takes a real match.
+---
+--- The verdict screen exists only while a match tears down, so run this in the
+--- lobby and watch the lobby's bar. Volts are reported as 0 on purpose:
+--- claiming a payout that nothing paid is the precise lie this issue was about.
+RegisterCommand('brxpsim', function(src, args)
+    if tonumber(src) ~= 0 then
+        print('  brxpsim is server-console only.')
+        return
+    end
+    if not BR.Xp then
+        print('  brxpsim: BR.Xp is not loaded, so there is no curve to evaluate.')
+        return
+    end
+
+    local target = tonumber(args[1])
+    if not target then
+        print('  usage: brxpsim <server id> [xp]   (default: enough to level up)')
+        return
+    end
+
+    local before = BR.Market and BR.Market.lifetimeXp and BR.Market.lifetimeXp(target)
+    if not before then
+        print(('  brxpsim: no loaded profile for %d. They have to be connected'):format(target))
+        print('  with their inventory read finished -- check brprofile first.')
+        return
+    end
+
+    -- The default is "just past the next boundary" rather than a round number,
+    -- because the interesting animation is the one that crosses. Leaving the
+    -- caller to work the gap out is how this ends up being run with a number
+    -- that does not cross and reported as the flip not happening.
+    local levelBefore = BR.Xp.levelFor(before)
+    local amount = tonumber(args[2])
+    if not amount then
+        amount = math.max(1, BR.Xp.thresholdFor(levelBefore + 1) - before + 1)
+    end
+    amount = math.max(0, math.floor(amount))
+
+    local after = before + amount
+    local levelAfter = BR.Xp.levelFor(after)
+    local _, intoBefore, spanBefore = BR.Xp.progress(before)
+    local _, intoAfter, spanAfter = BR.Xp.progress(after)
+
+    TriggerClientEvent(BR.Net.MATCH_EARNED, target, {
+        xp      = amount,
+        volts   = 0,
+        level   = levelAfter,
+        into    = intoAfter,
+        needed  = math.max(1, spanAfter),
+        fromLevel  = levelBefore,
+        fromXp     = intoBefore,
+        fromNeeded = math.max(1, spanBefore),
+        levelUp = levelAfter > levelBefore,
+    })
+
+    print(('=== brxpsim %s (%s) -- NOTHING WRITTEN ==='):format(
+        target, GetPlayerName(target) or '?'))
+    print(('  lifetime xp   %d  ->  %d   (+%d)'):format(before, after, amount))
+    print(('  bar should go lvl %d %d/%d  ->  lvl %d %d/%d%s'):format(
+        levelBefore, intoBefore, spanBefore,
+        levelAfter, intoAfter, spanAfter,
+        levelAfter > levelBefore and '   LEVEL UP' or ''))
+    print('  The lobby bar must land on the second pair exactly. If it does not,')
+    print('  the interface is deriving something it was handed.')
+end, true)

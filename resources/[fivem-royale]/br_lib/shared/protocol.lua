@@ -169,7 +169,18 @@ BR.Net = {
     -- fires at the end of the match, while this comes from br_stats after the
     -- result has been turned into deltas -- and it is the only place the real
     -- numbers exist. The verdict screen used to invent both.
-    MATCH_EARNED    = 'br:match:earned',     -- S->C  { xp, volts, level, levelUp }
+    --
+    -- IT CARRIES BOTH ENDS OF THE BAR, not just the award. It used to send the
+    -- earned amount and the level landed on, which left the page to work out
+    -- where the bar should stop -- and the page got it wrong in three separate
+    -- ways at once (#91, #130): it added the award to a total that already
+    -- included it, it subtracted the wrong level's span on a level-up and
+    -- clamped the result at zero, and it kept the old level's span as the
+    -- denominator so the bar could sit past its own end forever. Sending
+    -- `into`/`needed` alongside `fromXp`/`fromNeeded` removes the arithmetic
+    -- from the client entirely; there is nowhere left for it to be wrong.
+    MATCH_EARNED    = 'br:match:earned',     -- S->C  { xp, volts, level, into, needed,
+                                             --         fromLevel, fromXp, fromNeeded, levelUp }
     -- The in-game player list and reporting.
     --
     -- THE SERVER FILTERS THE BUCKET; THE CLIENT NEVER LEARNS WHICH ONE. `matchId`
@@ -276,16 +287,21 @@ BR.Nui = {
     -- every successful swap -- the page never assumes an apply worked, since
     -- a model that fails to stream leaves you wearing the old one.
     LOCKER    = 'locker',
-    -- LEVEL AND XP, AND THE STORE. Neither system exists server-side yet --
-    -- there is no persistence to hang them on. The envelopes and the screens
-    -- are built first so the shape can be argued about before anybody writes
-    -- the ledger; br_ui seeds a synthetic profile and catalogue, and the day a
-    -- server sends real ones nothing in the interface changes.
+    -- LEVEL AND XP. WHERE THE BAR IS, and the only envelope allowed to say so.
+    -- Every value on it is evaluated by BR.Xp on the server -- from MARKET_STATE
+    -- on connect and after a credit, and from MATCH_EARNED at the end of a
+    -- match. The interface renders it and derives nothing from it; the day it
+    -- derived a level and a span for itself is #91 and #130.
     PROGRESS  = 'progress',
-    -- The post-match award, sent AFTER the new profile so the bar knows both
-    -- where it is going and where it came from. Separate from PROGRESS
+    -- WHERE THE BAR WAS, so the fill has a start. Separate from PROGRESS
     -- because most progress pushes are not awards -- a reconnect should
     -- restore the bar, not replay a celebration.
+    --
+    -- IN PRODUCTION THE VERDICT SCREEN RAISES THIS ITSELF, off EARNED, because
+    -- it is the only thing that can see whether it is on screen. The one Lua
+    -- sender left is the `brxp` preview command. That is deliberate, not
+    -- neglect: an award pushed from Lua is an award timed against a screen Lua
+    -- cannot observe, which is how it went unseen twice.
     XP        = 'xp',
     MARKET    = 'market',
     -- The player list. Carries the roster projection AND the report state --
