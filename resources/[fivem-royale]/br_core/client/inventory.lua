@@ -31,7 +31,15 @@ local MELEE_SLOT = BR.Config.Loot.meleeSlot or 0
 
 -- The mirror. Empty slots are `false`, exactly as they are on the wire and on
 -- the server -- one representation, no boundary conversion to get wrong.
-local inv = { slots = {}, ammo = {}, active = 1, using = nil }
+--
+-- IT STARTS ON FISTS, LIKE THE SERVER DOES (#155). This value is only ever seen
+-- in the window before the first INV_SET lands -- on a fresh join and, more
+-- often, after a `restart br_core`, where the server keeps the real inventory in
+-- the roster and this file is rebuilt from nothing. Leaving it at 1 meant that
+-- window drew a bar highlighting slot 1 and, if the ped could be armed, put
+-- whatever ends up there into the hand. Short is not the same as never: it is
+-- exactly the "selection restore after a resource restart" path #155 names.
+local inv = { slots = {}, ammo = {}, active = MELEE_SLOT, using = nil }
 for i = 1, SLOTS do inv.slots[i] = false end
 
 -- What is actually in the ped's hands right now, and whose hands they were.
@@ -264,9 +272,14 @@ local function rebaseline()
 end
 
 --- Forget everything. Called at match teardown and on death.
+---
+--- BACK TO FISTS, NOT BACK TO SLOT 1 (#155). This is the death and teardown
+--- path, so the next thing that happens is a fresh drop -- and it has to leave
+--- the mirror agreeing with the server's own newInv() rather than spending the
+--- first frames of the next match disagreeing with it about what is in the hand.
 local function clearLocal()
     for i = 1, SLOTS do inv.slots[i] = false end
-    inv.ammo, inv.active, inv.using = {}, 1, nil
+    inv.ammo, inv.active, inv.using = {}, MELEE_SLOT, nil
     applied, appliedPed = nil, 0
     lastReport.clip, lastReport.total = -1, -1
     BR.Inv.lastGainAt = 0

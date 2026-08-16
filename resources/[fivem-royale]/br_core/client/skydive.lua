@@ -172,6 +172,23 @@ local promptSeen = {
     draws = 0,        -- frames the DUI sprite was actually drawn
     fallbacks = 0,    -- frames the browser was not up and text stood in
     trailFrames = 0,  -- frames the TRAIL half of the descent was on offer
+    -- THE ONE READING THAT SEPARATES "THE KEY IS DEAD" FROM "THE ENGINE IGNORED
+    -- US" (#131, fifth round). The owner reports a prompt that draws perfectly,
+    -- names his own rebound key, and does nothing when pressed. Three things can
+    -- produce that and they are indistinguishable from a chair: the action never
+    -- firing, the toggle never reaching BR.Cosmetics, or the engine declining to
+    -- drop the smoke mid-glide when SetPlayerCanLeaveParachuteSmokeTrail says
+    -- so. The first two are now proved by tools/test_client.lua, which presses
+    -- the key on both the default binding and a rebound one; this counter is how
+    -- the THIRD is told apart on a live client, from a single paste rather than
+    -- a before-and-after pair the reporter has to remember to take twice.
+    --
+    -- `toggles` counts presses that reached the listener at all. `acted` counts
+    -- the ones showTrail accepted and wrote to the native. toggles 0 is a dead
+    -- key; toggles > 0 with acted 0 is an armed-state problem; both above zero
+    -- with the smoke still flying is the engine, and the Lua is exonerated.
+    toggles = 0,      -- presses the trail listener actually received
+    acted = 0,        -- of those, the ones showTrail carried out
 }
 
 --- Take the parachute away for good, and kill the vanilla prompt with it.
@@ -226,6 +243,7 @@ AddEventHandler('br:drop:begin', function(d)
     promptSeen.kind = nil
     promptSeen.sends, promptSeen.draws = 0, 0
     promptSeen.fallbacks, promptSeen.trailFrames = 0, 0
+    promptSeen.toggles, promptSeen.acted = 0, 0
     -- Out of the door is the one moment that unambiguously un-lands you. See
     -- the note where this is SET, at the bottom of the drop machine.
     BR.State.landed = false
@@ -620,6 +638,11 @@ end)
 -- opened with.
 BR.Keys.on('trail', function(pressed)
     if not pressed or not dropping then return end
+    -- Counted HERE -- after the drop test, before the armed one -- so the number
+    -- means "a press arrived while there was a descent to act on". Counting
+    -- above the `dropping` test would tick for every press in the lobby and stop
+    -- answering the question it is here to answer. See promptSeen.toggles.
+    promptSeen.toggles = promptSeen.toggles + 1
 
     -- THE SQUAD REFUSAL THAT USED TO BE HERE IS GONE (#131, 2026-08-16). It
     -- answered a press in a squad with "your squad's colour is flying instead,
@@ -637,7 +660,14 @@ BR.Keys.on('trail', function(pressed)
     -- advertisement fired by a key press mid-fall.
     if not BR.Cosmetics.trailArmed then return end
 
-    BR.Cosmetics.showTrail(not BR.Cosmetics.trailOn)
+    -- showTrail returns false when there was no trail flying to act on, which
+    -- the guard above has already excluded -- so `acted` rising in step with
+    -- `toggles` is the readout saying the native was called with a new value
+    -- every single time. If it is and the smoke is still there, nothing left in
+    -- this file can be the cause.
+    if BR.Cosmetics.showTrail(not BR.Cosmetics.trailOn) then
+        promptSeen.acted = promptSeen.acted + 1
+    end
 end)
 
 -- Manual deploy on OUR keymapped binding too (the base game's own deploy
@@ -982,6 +1012,23 @@ RegisterCommand('brdropdbg', function()
         tostring(BR.Cosmetics.trailSource or '(none)'),
         tostring(BR.Cosmetics.trailOn),
         tostring(BR.Native.keyLabelForCommand('brtrail') or '(none)')))
+
+    -- AND WHETHER PRESSING THAT KEY DID ANYTHING (#131, fifth round). The line
+    -- above says what the trail IS; this one says what the key DID, which is the
+    -- half the report "draws perfectly but does not do anything" leaves open.
+    --
+    --   presses 0                the key never reached this file. The binding,
+    --                            not the trail -- check `brkeys` for the row and
+    --                            whether it says `via engine`.
+    --   presses > 0, acted 0     the presses arrived and were refused, which
+    --                            here can only mean nothing was armed to act on.
+    --   presses > 0, acted > 0   every press was carried out and the native was
+    --                            told a new value each time. If the smoke is
+    --                            still flying after that, the engine is not
+    --                            honouring the flag mid-glide and no change to
+    --                            this file will fix it.
+    print(('  trail key: presses %d   acted %d'):format(
+        promptSeen.toggles, promptSeen.acted))
 
     -- AND WHETHER ANY OF THAT REACHED THE SCREEN, which is the half the first
     -- two rounds could not see (#131). The four counts separate the three ways

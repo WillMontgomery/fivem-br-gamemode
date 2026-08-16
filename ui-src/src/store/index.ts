@@ -243,8 +243,11 @@ const emptyMatch: MatchPayload = {
 const emptyHud: HudPayload = {
   hp: 100, armour: 0, alive: 0, squadsAlive: 0, kills: 0, state: 'lobby',
 }
+/** Slot 0 is fists, and it is where an inventory starts (#155). The bar already
+ *  draws a fist plate for `active === 0`; what was wrong was the DEFAULT, which
+ *  highlighted slot 1 for every frame before the first INV_SET arrived. */
 const emptyInv: InvPayload = {
-  slots: [null, null, null, null, null], ammo: {}, active: 1, using: null,
+  slots: [null, null, null, null, null], ammo: {}, active: 0, using: null,
 }
 
 /** Lua sends an empty slot as `false` (nil does not survive serialisation in an
@@ -253,7 +256,10 @@ function normaliseInv(d: WireInvPayload): InvPayload {
   return {
     slots: (d.slots ?? []).map((s) => (s ? s : null)),
     ammo: d.ammo ?? {},
-    active: d.active ?? 1,
+    // Fists when the wire says nothing -- see emptyInv (#155). `??` and not
+    // `||`, because 0 is the fist slot and a real answer rather than an absent
+    // one.
+    active: d.active ?? 0,
     using: d.using ?? null,
   }
 }

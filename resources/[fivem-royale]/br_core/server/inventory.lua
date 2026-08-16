@@ -57,12 +57,33 @@ local LIVE = {
 -- Model
 -- --------------------------------------------------------------------------
 
+--- A FRESH INVENTORY STARTS ON FISTS, NOT ON SLOT 1 (#155).
+---
+--- Owner, 2026-08-16: "The default inventory slot should be fists, not slot 1."
+--- A player who lands holding something they never drew has had their first
+--- action taken for them, and on a battle-royale drop the first action is
+--- looking around rather than aiming.
+---
+--- THIS IS THE ONLY PLACE THAT DECIDES IT, and that is the point. `newInv` is
+--- reached by every path that starts or restarts an inventory -- first touch in
+--- BR.Inv.of (spawn and join), BR.Inv.reset (a party leave, a respawn), and
+--- BR.Inv.clearFor (match reset at CLEANUP and at match end) -- so there is one
+--- default rather than five that have to agree. Fixing one and leaving the
+--- others is how the last few of these have gone.
+---
+--- `choseActive` IS NOT BOOKKEEPING, IT IS THE HALF THAT KEEPS THE PICKUP
+--- WORKING. See the note in BR.Inv.give: "a weapon into an empty hand comes up
+--- in it" and "fists are a deliberate choice" used to be the same test, because
+--- the only way to be on slot 0 was to put yourself there. Now that fists are
+--- where everybody STARTS, those two facts have come apart and the flag is what
+--- tells them apart -- false means nobody has chosen anything yet, so the first
+--- gun off the floor still comes up in the hand.
 local function newInv()
     local slots = {}
     for i = 1, SLOTS do slots[i] = false end
     local ammo = {}
     for _, pool in ipairs(BR.Config.AmmoOrder) do ammo[pool] = 0 end
-    return { slots = slots, ammo = ammo, active = 1 }
+    return { slots = slots, ammo = ammo, active = MELEE_SLOT, choseActive = false }
 end
 
 --- The inventory for a player, created on first touch.
@@ -355,7 +376,16 @@ function BR.Inv.give(src, stack)
     -- FISTS ARE A DELIBERATE CHOICE, though: someone who selected slot 0 put
     -- their gun away on purpose, and yanking a rifle back into their hands
     -- because they walked over one undoes that.
-    if inv.active ~= MELEE_SLOT
+    --
+    -- ...AND SINCE #155, BEING ON SLOT 0 IS NO LONGER EVIDENCE OF A CHOICE.
+    -- Fists are now where every inventory starts, so `inv.active == MELEE_SLOT`
+    -- on its own would refuse to arm a player who has never touched a slot key
+    -- -- which is every player, on their first gun, in the first minute. That is
+    -- a straight trade of the bug being fixed for a worse one: landing
+    -- empty-handed is the ask, staying empty-handed while standing on a rifle is
+    -- not. `choseActive` is only set by an INV_SELECT the player actually sent,
+    -- so the deliberate holster is still honoured and the default is not.
+    if (inv.active ~= MELEE_SLOT or not inv.choseActive)
        and (displaced or not inv.slots[inv.active] or inv.active == at) then
         inv.active = at
     end
@@ -461,6 +491,13 @@ AddEventHandler(BR.Net.INV_SELECT, function(d)
     if inv.active == slot then return end
 
     inv.active = slot
+    -- THE PLAYER HAS NOW CHOSEN, and this is the only line in the file that may
+    -- say so (#155). It is what makes a hand-picked slot 0 different from the
+    -- one every inventory starts on -- see newInv and the pickup rule in
+    -- BR.Inv.give. Set for every slot, not just fists: coming back to a weapon
+    -- and then holstering it deliberately has to read the same as holstering
+    -- straight away.
+    inv.choseActive = true
     -- Switching weapons interrupts a consumable: both are "what my hands are
     -- doing", and letting a med kit finish while a rifle comes up would be a
     -- free heal mid-fight.

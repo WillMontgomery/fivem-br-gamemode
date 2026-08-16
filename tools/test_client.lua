@@ -1542,6 +1542,114 @@ do
     BR.Keys.set('brtrail', 0x42)
     frame(16)
 
+    -- THE KEY, PRESSED THE WAY A CLIENT PRESSES IT (#131, FIFTH ROUND).
+    --
+    -- Everything above proves the box says the right words and names the right
+    -- key. The owner reports that half as correct and the key as inert: "the
+    -- smoke trails prompt draws perfectly but does not do anything. It appeared
+    -- as H, which is exactly the key I set."
+    --
+    -- SO THIS DRIVES THE KEYBOARD, NOT `showTrail`. The checks a few lines below
+    -- call BR.Cosmetics.showTrail directly, which proves the CONSUMER and says
+    -- nothing whatsoever about whether a press reaches it -- and a listener
+    -- attached under a different action name than the one keybinds.lua registers
+    -- would satisfy every one of them while the key did nothing at all. That is
+    -- not a hypothetical shape in this project: it has thirteen confirmed
+    -- instances of code that is correct and connected to nothing, and #129's
+    -- third round was exactly this failure on `interact`. The press below runs
+    -- the whole chain -- raw sample, fire('trail'), skydive's listener,
+    -- BR.Cosmetics.showTrail, the native -- and nothing in it is stubbed except
+    -- the native at the far end, which records what it was told.
+    local function press(vk, engineName)
+        keys[vk] = true; edge[vk] = true
+        -- The engine's own command handler is invoked too, exactly as FiveM
+        -- would, so a regression that let BOTH paths fire shows up as a double
+        -- count rather than passing quietly.
+        if engineName then engineKey(engineName, true) end
+        frame(16)
+        keys[vk] = nil
+        if engineName then engineKey(engineName, false) end
+        frame(16)
+    end
+
+    local heard = 0
+    BR.Keys.on('trail', function(p) if p then heard = heard + 1 end end)
+
+    local litUp = BR.Cosmetics.trailOn
+    press(0x42, 'B')
+    ok(heard == 1,
+        'THE TRAIL KEY FIRES ITS ACTION, EXACTLY ONCE -- #131',
+        ('the action fired %d times for one press'):format(heard))
+    ok(BR.Cosmetics.trailOn == (not litUp),
+        'and it reaches BR.Cosmetics.trailOn, which is what the drop paints from',
+        ('on %s -> %s'):format(tostring(litUp), tostring(BR.Cosmetics.trailOn)))
+    ok(smoke.allowed == false,
+        'and the engine is actually told to stop leaving smoke',
+        ('the native was told %s'):format(tostring(smoke.allowed)))
+
+    press(0x42, 'B')
+    ok(BR.Cosmetics.trailOn == true and smoke.allowed == true,
+        'and pressing it again gives the trail back',
+        ('on %s allowed %s'):format(tostring(BR.Cosmetics.trailOn),
+                                    tostring(smoke.allowed)))
+    ok(smoke.rgb ~= nil, 'in the colour that was bought')
+
+    -- ON THE OWNER'S OWN KEY, AND NOT ONLY ON THE DEFAULT.
+    --
+    -- He plays this on H. H is not in keybinds.lua's DEFAULT_VK table and never
+    -- can be -- it is reached only through the KVP the rebinder writes -- so a
+    -- toggle proved on B and never on a rebound key is a toggle that passes here
+    -- and is dead on his machine. That is the exact shape of #129's third round:
+    -- the prompt said R, the engine was listening on E, and the rebound key was
+    -- being watched for by nobody.
+    BR.Keys.set('brtrail', 0x48)   -- H
+    fire('br:keys:changed')
+    frame(16)
+    ok(BR.Native.keyLabelForCommand('brtrail') == 'H',
+        'the cap follows a rebind to H, which is what the owner reports seeing',
+        tostring(BR.Native.keyLabelForCommand('brtrail')))
+
+    heard = 0
+    local onH = BR.Cosmetics.trailOn
+    -- No engine name: RegisterKeyMapping registered B and nothing can move it,
+    -- so H exists for the raw layer alone. That asymmetry IS the test.
+    press(0x48, nil)
+    ok(heard == 1,
+        'AND THE REBOUND KEY FIRES IT TOO -- the owner presses H, not B (#131)',
+        ('the action fired %d times for one press of H'):format(heard))
+    ok(BR.Cosmetics.trailOn == (not onH) and smoke.allowed == (not onH),
+        'and H reaches the engine flag by exactly the road B does',
+        ('on %s -> %s allowed %s'):format(tostring(onH),
+            tostring(BR.Cosmetics.trailOn), tostring(smoke.allowed)))
+
+    -- And the key it was moved OFF is dead, or a rebind that looks like it
+    -- worked has quietly left the action on two keys.
+    heard = 0
+    press(0x42, 'B')
+    ok(heard == 0,
+        'while the key it was rebound away from no longer fires it',
+        ('B fired the action %d times after the move to H'):format(heard))
+
+    BR.Keys.set('brtrail', 0x42)
+    fire('br:keys:changed')
+    frame(16)
+
+    -- AND THE READOUT COUNTED ALL OF IT. This is the number the owner will be
+    -- asked to paste, so it has to be true: three presses landed on the listener
+    -- (B, B, H -- the fourth, on the key H was rebound away from, correctly did
+    -- not) and showTrail carried out every one. A readout that under-reports is
+    -- worse than none, because it would send the next round of this issue after
+    -- the binding when the binding is fine.
+    logged = {}
+    pcall(commands['brdropdbg'], nil, {}, '')
+    local dbg = table.concat(logged, '\n')
+    ok(dbg:find('trail key: presses 3', 1, true) ~= nil,
+        'the readout counts the presses that actually reached the toggle',
+        dbg:match('trail key:[^\n]*') or 'no trail key line')
+    ok(dbg:find('acted 3', 1, true) ~= nil,
+        'and how many of them the toggle carried out',
+        dbg:match('trail key:[^\n]*') or 'no trail key line')
+
     -- The key does what the box says it does.
     local wasOn = BR.Cosmetics.trailOn
     fire('br:keys:changed')
@@ -1652,6 +1760,71 @@ do
         'and says whether the box was drawn, as text, or not at all', said)
     ok(said:find('loop: skydive.prompt', 1, true) ~= nil,
         'and whether the callback that draws it is still running', said)
+    -- AND WHAT THE KEY DID, which is what the fifth round of this issue turns on
+    -- (#131). "The prompt draws perfectly but does not do anything" is a report
+    -- the previous readout could not answer from a single paste: it said what
+    -- the trail WAS and never whether a press had reached the code at all.
+    ok(said:find('trail key: presses', 1, true) ~= nil,
+        'and how many presses reached the toggle, and how many were carried out',
+        said)
+    ok(said:find('acted', 1, true) ~= nil,
+        'so a dead key and an engine that ignores the flag are told apart', said)
+end
+
+describe('an inventory starts and returns to fists, not to slot 1 -- #155')
+do
+    -- Owner, 2026-08-16: "The default inventory slot should be fists, not slot
+    -- 1." Slot 0 is the fist slot (BR.Config.Loot.meleeSlot) -- selectable,
+    -- never fillable -- and landing with a weapon nobody drew takes the player's
+    -- first action for them.
+    --
+    -- THE MIRROR'S HALF ONLY. The server owns the active slot and its default
+    -- now lives in exactly one function, newInv(); tools/test_roster.lua asserts
+    -- that end, including the pickup rule that has to keep working around it.
+    -- What is proved here is the two client-side values #155 names: the one the
+    -- mirror holds before any INV_SET arrives -- a fresh join, and every
+    -- `restart br_core`, where the server keeps the real inventory and this file
+    -- is rebuilt from nothing -- and the one it goes back to at teardown.
+    local MELEE = BR.Config.Loot.meleeSlot or 0
+
+    fire(BR.Net.INV_SET, {
+        slots = {}, ammo = {}, active = 1,
+    })
+    ok(BR.Inv.local_().active == 1,
+        'a slot the server chose is still mirrored faithfully',
+        ('active %s'):format(tostring(BR.Inv.local_().active)))
+
+    -- Teardown: WAITING, ENDED and CLEANUP all reach clearLocal(), which is the
+    -- death and match-reset path.
+    fire(BR.Net.STATE, { state = BR.MatchState.ENDED })
+    ok(BR.Inv.local_().active == MELEE,
+        'A MATCH TEARDOWN PUTS THE HAND BACK TO FISTS, NOT TO SLOT 1 -- #155',
+        ('active %s'):format(tostring(BR.Inv.local_().active)))
+
+    fire(BR.Net.INV_SET, { slots = {}, ammo = {}, active = 1 })
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    ok(BR.Inv.local_().active == MELEE,
+        'and so does a match dropping back to WAITING',
+        ('active %s'):format(tostring(BR.Inv.local_().active)))
+
+    -- AN INV_SET THAT NAMES NO SLOT IS AN EMPTY HAND. The mirror reads
+    -- `d.active or MELEE_SLOT`, and this is the assertion that keeps the `or`
+    -- honest in both directions: absent must mean fists...
+    fire(BR.Net.INV_SET, { slots = {}, ammo = {}, active = 1 })
+    fire(BR.Net.INV_SET, { slots = {}, ammo = {} })
+    ok(BR.Inv.local_().active == MELEE,
+        'an inventory that names no active slot is fists, not slot 1',
+        ('active %s'):format(tostring(BR.Inv.local_().active)))
+
+    -- ...and an explicit 0 must survive the wire as a real answer rather than
+    -- being read as absence. In Lua `0 or x` is 0, so this passes today; it is
+    -- pinned because the same line in TypeScript needs `??` and not `||`, and
+    -- the two ends have to agree about what the fist slot is.
+    fire(BR.Net.INV_SET, { slots = {}, ammo = {}, active = 1 })
+    fire(BR.Net.INV_SET, { slots = {}, ammo = {}, active = MELEE })
+    ok(BR.Inv.local_().active == MELEE,
+        'and an explicit slot 0 is carried as a choice, not lost as an absence',
+        ('active %s'):format(tostring(BR.Inv.local_().active)))
 end
 
 -- ------------------------------------------------------------------ report ---

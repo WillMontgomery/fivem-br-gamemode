@@ -3887,6 +3887,98 @@ do
     ok(BR.Inv.of(1).slots[1].item == 'sawnoff', 'but it does move the items')
 end
 
+describe('inv.defaultSlot')
+do
+    -- THE DEFAULT IS FISTS, AND THE FIRST GUN STILL COMES UP (#155).
+    --
+    -- Owner, 2026-08-16: "The default inventory slot should be fists, not slot
+    -- 1." Landing holding something nobody drew takes the player's first action
+    -- for them.
+    --
+    -- The whole difficulty of this change is in the SECOND half of this block.
+    -- BR.Inv.give had one test doing two jobs -- `inv.active ~= MELEE_SLOT` meant
+    -- both "your hand is empty" and "you deliberately holstered" -- because the
+    -- only way to be on slot 0 was to put yourself there. Making fists the
+    -- default breaks that identity, and a naive fix trades this bug for a worse
+    -- one: a player standing on a rifle they cannot pick into their hands
+    -- because they have never pressed a slot key. Both directions are pinned
+    -- here, or the next person to touch that condition only finds out in a
+    -- playtest.
+    local m = lootMatch()
+    local MELEE = BR.Config.Loot.meleeSlot or 0
+
+    BR.Inv.reset(1)
+    ok(BR.Inv.of(1).active == MELEE,
+        'A FRESH INVENTORY IS ON FISTS, NOT SLOT 1 -- #155',
+        ('active %s'):format(tostring(BR.Inv.of(1).active)))
+    ok(BR.Inv.publicFor(1).active == MELEE,
+        'and that is what goes out on the wire, so the bar draws the fist plate',
+        ('active %s'):format(tostring(BR.Inv.publicFor(1).active)))
+
+    -- Every restart path funnels through newInv(), which is the point of there
+    -- being one: spawn (BR.Inv.of on first touch), a party leave and a respawn
+    -- (BR.Inv.reset), a match reset (BR.Inv.clearFor).
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    ok(BR.Inv.of(1).active == 1,
+        'a first weapon into an empty hand still comes up in it',
+        ('active %s'):format(tostring(BR.Inv.of(1).active)))
+    BR.Inv.reset(1)
+    ok(BR.Inv.of(1).active == MELEE,
+        'and a reset puts the hand back to fists rather than to slot 1',
+        ('active %s'):format(tostring(BR.Inv.of(1).active)))
+
+    -- Armed first, or this asserts nothing: clearFor on an inventory that is
+    -- already on fists passes however it is written.
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    ok(BR.Inv.of(1).active == 1, 'armed again, so the next check has work to do')
+    BR.Inv.clearFor(m)
+    ok(BR.Inv.of(1).active == MELEE,
+        'a match reset lands every player on fists too',
+        ('active %s'):format(tostring(BR.Inv.of(1).active)))
+
+    -- A DELIBERATE HOLSTER IS STILL A DELIBERATE HOLSTER. Somebody who pressed
+    -- the fist key put their gun away on purpose, and walking over a rifle must
+    -- not yank one back into their hands.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    fire(BR.Net.INV_SELECT, 1, { slot = MELEE })
+    ok(BR.Inv.of(1).active == MELEE, 'the fist slot is selectable')
+    BR.Inv.give(1, { item = 'sawnoff', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 8 })
+    ok(BR.Inv.of(1).active == MELEE,
+        'a pickup does NOT override a hand emptied on purpose',
+        ('active %s'):format(tostring(BR.Inv.of(1).active)))
+    ok(BR.Inv.of(1).slots[2] and BR.Inv.of(1).slots[2].item == 'sawnoff',
+        'though the weapon is still picked up into a free slot')
+
+    -- ...and choosing a real slot and then coming back to fists reads the same
+    -- as holstering straight away. `choseActive` is set for every selection, not
+    -- only for slot 0, so this cannot regress into "only the first choice counts".
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    fire(BR.Net.INV_SELECT, 1, { slot = 1 })
+    fire(BR.Net.INV_SELECT, 1, { slot = MELEE })
+    BR.Inv.give(1, { item = 'sawnoff', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 8 })
+    ok(BR.Inv.of(1).active == MELEE,
+        'holstering after using a weapon is honoured just the same',
+        ('active %s'):format(tostring(BR.Inv.of(1).active)))
+
+    -- And the flag does not outlive the inventory it belongs to: a reset player
+    -- is a player who has chosen nothing, so their next weapon comes up again.
+    -- Without this, one holster would follow somebody into every later match.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 12 })
+    ok(BR.Inv.of(1).active == 1,
+        'A RESET CLEARS THE CHOICE, so the next match arms normally -- #155',
+        ('active %s'):format(tostring(BR.Inv.of(1).active)))
+end
+
 describe('inv.use')
 do
     lootMatch()
