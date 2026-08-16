@@ -614,11 +614,60 @@ end)
 -- and a wheel that flickers into existence every other frame is worse than one
 -- that never goes away.
 BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
-    if not canArm() then return end
-
+    -- THE SUPPRESSION IS UNCONDITIONAL, AND IT SITS ABOVE THE canArm() GATE ON
+    -- PURPOSE (#134). Owner, playtesting the drop: "I just found out the GTA V
+    -- weapon wheel displays when holding TAB in the plane. That shouldn't
+    -- happen."
+    --
+    -- It used to sit BELOW the gate, so the suppression inherited canArm()'s
+    -- answer -- and canArm() answers a completely different question. It asks
+    -- "may this file put a weapon in this ped's hand", which is false for the
+    -- whole lobby, the whole bus ride and the whole descent because
+    -- RemoveAllPedWeapons would take the parachute with it. Whose UI owns TAB
+    -- is not that question and never was. Aboard the bus the state is BUS, the
+    -- callback returned on its first line, nothing disabled control 37, and
+    -- GTA's wheel was free to answer the key.
+    --
+    -- THE FIX IS NOT TO TAKE THE INVENTORY'S GAME INPUT AWAY. The inventory is
+    -- the one screen in this game deliberately marked BR.FocusKeepsInput -- it
+    -- is meant to be usable mid-fight, which means the engine keeps reading the
+    -- keyboard while it is open, which is what lets the engine see TAB at all.
+    -- That behaviour is load-bearing for the screen it belongs to, and trading
+    -- it away to stop a wheel appearing during a phase with no combat in it
+    -- would be paying for a cosmetic bug with a gameplay one.
+    --
+    -- WHAT THIS NOW COVERS, phase by phase, all of them phases where there is
+    -- nothing to select and the engine's wheel is GTA UI drawn on top of ours:
+    --
+    --   LOBBY      frozen ped, no weapons, a camera shot the wheel sat over.
+    --   BUS        the reported case.
+    --   FREEFALL   } the ped is holding GADGET_PARACHUTE for the entire
+    --   GLIDE      } descent, so the wheel there was not even empty -- it
+    --              } offered the canopy, mid-drop, over the drop UI.
+    --   DBNO       client/dbno.lua blocks attack, aim and melee for a downed
+    --              player and has never blocked 37, so the wheel opened while
+    --              crawling. Left to that file to keep or not; this covers it.
+    --   DEAD /     the spectator camera is somebody else's fight; the local
+    --   SPECTATING ped's wheel has no business over it.
+    --
+    -- There is no phase in this gamemode that wants the engine's weapon UI --
+    -- see the SUPPRESS table's own note -- so the correct gate is no gate.
+    --
+    -- DisableControlAction, NOT BLOCK_WEAPON_WHEEL_THIS_FRAME. The blocking
+    -- native may well be the tidier call and this project has never probed it,
+    -- and an unknown binding throws: five throws suspend this callback, and
+    -- THIS callback is the one holding the wheel down. That exact failure has
+    -- already happened once here (see the aiming note below) and the way it
+    -- presents is the wheel coming back. Control 37 is already proven on this
+    -- build by everything that works today in ALIVE and WARMUP.
+    --
+    -- Cost is twelve native calls a frame in the phases that previously made
+    -- none, and it has to be per-frame: a disable lasts exactly one frame.
     for i = 1, #SUPPRESS do
         DisableControlAction(0, SUPPRESS[i], true)
     end
+
+    if not canArm() then return end
 
     -- NOT WHILE THE PAUSE MENU IS UP, and not while aiming down a scope.
     --
