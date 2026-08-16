@@ -175,7 +175,24 @@ AddEventHandler('playerConnecting', function()
 end)
 
 AddEventHandler('playerDropped', function()
-    local src = source
+    --[[
+        NORMALISED, BECAUSE THE WRITE WAS AND THE READ WAS NOT.
+
+        capture() stores under `tonumber(src) or src` -- a NUMBER. `source` in
+        an event handler arrives as a STRING, and in Lua t[5] and t["5"] are
+        different keys. So this lookup missed every single time: `license` came
+        back nil, the handler returned early, and `emitLeft` was never called.
+
+        The console accumulates connected time on session CLOSE, so with no
+        close ever arriving, sessions and playtime sat at 0 for every player
+        forever -- which is exactly what was reported, twice, after two separate
+        fixes to other parts of this same path (ringmaster#6).
+
+        Both ends are normalised now rather than only one, which is the actual
+        lesson: a map whose writer normalises and whose reader does not is a map
+        that silently holds nothing.
+    ]]
+    local src = tonumber(source) or source
 
     -- THE LICENSE IS READ FROM THE MAP, NOT FROM THE PLAYER. By the time this
     -- fires the connection is already going away, and GetPlayerIdentifiers can
