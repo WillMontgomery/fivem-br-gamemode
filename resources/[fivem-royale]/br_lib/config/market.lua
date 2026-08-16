@@ -54,16 +54,20 @@ BR.Config.ItemKind = {
     makes the name plausible enough to mislead -- but 2, 3, 4 and 7 are multi
     colour striped liveries that no tint value could produce.
 
-    0-7 are the standard set. 8-13 are documented as requiring a parachute model
-    override to appear at all -- and this gamemode already overrides the model
-    (client/skydive.lua sets p_parachute1_mp_s before tasking the chute), so they
-    are expected to resolve here. EXPECTED IS NOT OBSERVED: see the note below.
+    0-7 ARE THE ONLY ONES THAT EXIST FOR US, and that is now observed rather
+    than assumed. 8-13 are the flight-school designs, documented as needing a
+    parachute model override -- which this gamemode already applies, so they
+    were expected to work. Checked in game on 2026-08-15 (#78): every index
+    above 7 renders as Hornet. The engine clamps to the standard canopy's range
+    on p_parachute1_mp_s, so those six designs are simply not reachable from
+    this model.
 
-    THE INDEX-TO-APPEARANCE MAPPING BELOW COMES FROM DOCUMENTATION, NOT FROM
-    THIS BUILD. `brchute` in the F8 console exists to confirm it: `brchute test`
-    lifts you to canopy height and deploys, `brchute cycle` steps through them.
-    An earlier version of this table was wrong about three of its four entries,
-    so this is a demonstrated risk rather than a theoretical one.
+    THE 0-7 MAPPING BELOW IS VERIFIED IN THIS BUILD, by eye, on the same date.
+    That is worth stating because it was not always true: an earlier version of
+    this table was wrong about three of its four entries. `brchute` in the F8
+    console is how it was checked and how it should be re-checked if the
+    parachute model ever changes -- `brchute cycle` steps 0-7 with a re-deploy
+    between each, since the tint is only read when the canopy opens.
 
     ORDER MATTERS WHEN APPLYING. The tint has to be set before the canopy opens
     -- after SetPlayerParachuteModelOverride and before TaskParachute, which is
@@ -193,48 +197,25 @@ BR.Config.Market = {
                     apply = { chuteTint = 7 },        -- black/yellow stripes
                 },
 
-                -- THE 8-13 SET. Documented as needing a model override, which
-                -- this gamemode already applies -- so they are expected to
-                -- work and are not yet observed to. Nothing can be bought at
-                -- all until the purchase path lands, so there is no window in
-                -- which a player could pay for one of these before the
-                -- canopy audit confirms it renders.
-                {
-                    id = 'chute_airforce', name = 'Air Force', sub = 'Canopy',
-                    kind = BR.Config.ItemKind.CHUTE,
-                    price = 3000, rarity = BR.Config.Rarity.RARE,
-                    apply = { chuteTint = 8 },        -- red/blue/green stripes
-                },
-                {
-                    id = 'chute_desert', name = 'Desert', sub = 'Canopy',
-                    kind = BR.Config.ItemKind.CHUTE,
-                    price = 3000, rarity = BR.Config.Rarity.RARE,
-                    apply = { chuteTint = 9 },        -- cream and tan stripes
-                },
-                {
-                    id = 'chute_shadow', name = 'Shadow', sub = 'Canopy',
-                    kind = BR.Config.ItemKind.CHUTE,
-                    price = 4500, rarity = BR.Config.Rarity.EPIC,
-                    apply = { chuteTint = 10 },       -- black and teal stripes
-                },
-                {
-                    id = 'chute_highaltitude', name = 'High Altitude', sub = 'Canopy',
-                    kind = BR.Config.ItemKind.CHUTE,
-                    price = 4500, rarity = BR.Config.Rarity.EPIC,
-                    apply = { chuteTint = 11 },       -- red and tan stripes
-                },
-                {
-                    id = 'chute_airborne', name = 'Airborne', sub = 'Canopy',
-                    kind = BR.Config.ItemKind.CHUTE,
-                    price = 5000, rarity = BR.Config.Rarity.EPIC,
-                    apply = { chuteTint = 12 },       -- white/orange/blue stripes
-                },
-                {
-                    id = 'chute_sunrise', name = 'Sunrise', sub = 'Canopy',
-                    kind = BR.Config.ItemKind.CHUTE,
-                    price = 7500, rarity = BR.Config.Rarity.LEGENDARY,
-                    apply = { chuteTint = 13 },       -- red/orange/yellow/blue
-                },
+                -- THE 8-13 SET IS GONE, AND THIS IS THE RECORD OF WHY.
+                --
+                -- Air Force, Desert, Shadow, High Altitude, Airborne and
+                -- Sunrise were priced and sold on the strength of documentation
+                -- saying they need a parachute model override -- which this
+                -- gamemode already applies, so they were expected to resolve.
+                --
+                -- THEY DO NOT. Verified in game 2026-08-15 (#78): every index
+                -- above 7 renders as Hornet. The engine clamps to the standard
+                -- canopy's range on p_parachute1_mp_s, so the flight-school
+                -- designs are not reachable from this model at all.
+                --
+                -- Six items that all looked identical, three of them priced
+                -- above 4000. Pulled before there was an economy to spend in,
+                -- which is the only reason this costs nothing: nobody owns one.
+                --
+                -- Reinstating them means a second parachute model, not a config
+                -- edit -- and that is a gameplay change, since the model is what
+                -- the drop sequence tasks and retries against.
 
                 -- --------------------------------------------------- trails ---
                 {

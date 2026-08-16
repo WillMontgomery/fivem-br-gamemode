@@ -450,15 +450,16 @@ local CHUTE_TINTS = {
     [5] = 'Blue             solid',
     [6] = 'Black            solid',
     [7] = 'Hornet           black/yellow',
-    -- 8-13 are the flight-school designs, documented as needing a model
-    -- override. This gamemode already overrides the model, so they may or may
-    -- not resolve -- which is exactly why they are testable here and not sold.
-    [8]  = 'Air Force       (flight school -- may not render)',
-    [9]  = 'Desert          (flight school -- may not render)',
-    [10] = 'Shadow          (flight school -- may not render)',
-    [11] = 'High Altitude   (flight school -- may not render)',
-    [12] = 'Airborne        (flight school -- may not render)',
-    [13] = 'Sunrise         (flight school -- may not render)',
+    -- 8-13 DO NOT RENDER, verified 2026-08-15 (#78): every one comes out as
+    -- Hornet. The engine clamps above 7 on p_parachute1_mp_s. Kept in this list
+    -- so the command still reports honestly if somebody tries them, and so the
+    -- finding is not rediscovered from scratch.
+    [8]  = 'Air Force       (DOES NOT RENDER -- clamps to Hornet)',
+    [9]  = 'Desert          (DOES NOT RENDER -- clamps to Hornet)',
+    [10] = 'Shadow          (DOES NOT RENDER -- clamps to Hornet)',
+    [11] = 'High Altitude   (DOES NOT RENDER -- clamps to Hornet)',
+    [12] = 'Airborne        (DOES NOT RENDER -- clamps to Hornet)',
+    [13] = 'Sunrise         (DOES NOT RENDER -- clamps to Hornet)',
 }
 
 --- Set the canopy tint, both halves of it.
