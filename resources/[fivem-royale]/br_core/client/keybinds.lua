@@ -125,10 +125,27 @@ end
 --- engine's own +/- pair, which has given both edges reliably since M0 -- drive
 --- it instead. Taps are untouched either way.
 ---
---- THE COST, STATED: on such a client, rebinding a HOLD action from our
---- settings screen does not take effect, because the engine owns the key. It is
---- one action (interact) on a build where IS_RAW_KEY_DOWN is missing, against
---- an interaction that otherwise does not work at all.
+--- THE COST WAS STATED AND THEN UNDERSTATED, AND THAT IS THE THIRD ROUND.
+---
+--- What was written here was: "on such a client, rebinding a HOLD action from
+--- our settings screen does not take effect, because the engine owns the key."
+--- True, and it reads like a shrug. It is not one. A rebind that does not take
+--- effect is not a preference quietly ignored -- the rebind still lands in the
+--- KVP, the settings screen still draws it, and every world prompt still NAMED
+--- it, so the crate said "hold R" while the only thing listening was the engine
+--- on E. The owner held R at crate after crate: "Welp, now trying to open a
+--- crate does nothing at all" (#129). Loose loot went with it, because the
+--- claim rides the same press (#139) -- one cause, two reports, and a core
+--- interaction dead on a client that had done nothing wrong except use the
+--- rebinder this file exists to provide.
+---
+--- The split itself is still right: a layer that cannot answer what a hold asks
+--- must not claim one. What was missing is that the handover has to be VISIBLE.
+--- See engineDrives below -- the prompt, the settings screen and the rebinder
+--- now all name the engine's key for a binding the engine is driving, and a
+--- rebind that cannot take effect is refused rather than stored. The player
+--- loses the ability to move one action on an old build, and is told so, which
+--- is a different thing entirely from the action silently going away.
 local function hold(action, command, description, key)
     RegisterCommand('+' .. command, function()
         if BR.Keys.rawHolds then return end
@@ -426,6 +443,47 @@ local function load()
     return vk
 end
 
+--- IS THIS BINDING BEING READ BY THIS LAYER, OR BY THE ENGINE?
+---
+--- THE QUESTION #129'S THIRD ROUND TURNED ON, AND THE ONE NOTHING WAS ASKING.
+---
+--- Our rebinder works by reading the keyboard itself: a rebind lands in the KVP
+--- below and the frame loop watches the new virtual-key code. The ENGINE's copy
+--- of the binding never moves -- nothing can change a RegisterKeyMapping
+--- default from script, which is the entire reason this layer exists -- so an
+--- action the engine is driving is an action sitting on its ORIGINAL key,
+--- whatever the player has since chosen.
+---
+--- That was survivable while the split was all-or-nothing: either this layer
+--- read every binding (and every rebind worked) or it read none (and the
+--- settings screen said as much). The per-question split introduced for #129's
+--- second round broke that symmetry. On a build without IS_RAW_KEY_DOWN the
+--- layer keeps every TAP on the player's own key and quietly hands the HOLDS
+--- back to the engine -- so `interact`, rebound to R, was being watched for by
+--- nobody: this layer skips hold bindings in that mode, and the engine is
+--- listening on E. Pressing R did nothing whatsoever. The crate would not open
+--- (#129: "Welp, now trying to open a crate does nothing at all") and the loose
+--- item would not be claimed, because the pickup rides the same press (#139).
+---
+--- One rule, and it is deliberately the exact complement of the test the frame
+--- loop applies -- `code and (rawHolds or not b.hold)` under `rawActive`. Two
+--- separately-written versions of "who owns this key" is how the prompt came to
+--- name a key nothing was listening to; derived from the loop, they cannot
+--- drift.
+--- @param b table  one row of BR.Keys.bindings
+--- @return boolean
+local function engineDrives(b)
+    if not BR.Keys.rawActive then return true end
+    return b.hold and not BR.Keys.rawHolds
+end
+
+--- The code the ENGINE's own default for this binding sits on, or nil.
+--- @param b table
+--- @return integer|nil
+local function engineCode(b)
+    return b.raw or DEFAULT_VK[b.default]
+end
+
 --- Push the whole table to the interface.
 function BR.Keys.push()
     local out = {}
@@ -434,6 +492,13 @@ function BR.Keys.push()
         -- screen draws both as "Unbound", and the wire should not carry a
         -- boolean in a field typed as a number.
         local code = load()[b.command] or nil
+        -- THE SCREEN SHOWS THE KEY THAT WORKS, not the key we wrote down.
+        --
+        -- A row the engine is driving is on its default and cannot be moved.
+        -- Drawing the player's stored choice for it is the same lie the world
+        -- prompts were telling, in the one place they would go to fix it.
+        local byEngine = engineDrives(b)
+        if byEngine then code = engineCode(b) end
         out[#out + 1] = {
             group   = b.group,
             command = b.command,
@@ -445,7 +510,12 @@ function BR.Keys.push()
             -- way back. It is the only way back for a key the capture cannot
             -- take -- Escape cancels a capture, so Escape can never be typed
             -- into one.
-            custom  = chosen[b.command] == true,
+            custom  = (not byEngine) and chosen[b.command] == true,
+            -- Additive, and the interface is free to ignore it: this row is
+            -- the engine's and rebinding it here will not take. Sent so a
+            -- screen that wants to say so has the fact rather than having to
+            -- infer it from `raw` plus a hold flag it is not given.
+            engine  = byEngine or nil,
         }
     end
     TriggerEvent('br:ui:sendLocal', BR.Nui.KEYBINDS,
@@ -492,18 +562,37 @@ end
 ---                        and naming the engine's stale default for it is a
 ---                        prompt that lies.
 function BR.Keys.labelFor(command)
-    -- OURS WHENEVER WE HAVE AN OPINION, not only while the raw layer runs.
+    -- THE KEY THAT WORKS, AND ONLY EVER THE KEY THAT WORKS.
     --
-    -- The gate used to be `rawActive` alone, which left a gap with teeth: if
-    -- the raw layer is off, every rebind still lands in the KVP and is still
-    -- what the settings screen draws -- so the screen said one key and the
-    -- world prompts said whatever the engine remembered, and the two openly
-    -- disagreed (user, 2026-08-09: "the loot and crates still show R"). One
-    -- table answers both, or they drift apart again.
+    -- A prompt exists to tell the player which key to press. A prompt naming a
+    -- key nothing is listening to is worse than no prompt at all, because it
+    -- turns "this feature is unavailable" into "this feature is broken" -- and
+    -- the player has no way to tell those apart from a chair. That is exactly
+    -- what #129's third round was: the crate said R, the engine was listening
+    -- on E, and the owner reported that opening a crate "does nothing at all".
     --
-    -- The engine keeps the last word for a command nobody has touched, which
-    -- is the case where it genuinely knows more than we do: a player who
-    -- rebinds in GTA's own list has changed something we never see.
+    -- So a binding the ENGINE is driving is named by the ENGINE's key. See
+    -- engineDrives: this layer's rebind never reaches an action it is not
+    -- reading, so our stored code is not an answer to the question being
+    -- asked, however deliberately the player chose it.
+    --
+    -- The previous rule was "ours whenever we have an opinion", written to
+    -- close a real gap -- with the raw layer off, the settings screen drew the
+    -- rebind and the world prompts drew the engine's default, and the two
+    -- openly disagreed (user, 2026-08-09: "the loot and crates still show R").
+    -- They agree again here, and now they agree on the truth: BR.Keys.push
+    -- draws the engine's key for those same rows.
+    for _, b in ipairs(BR.Keys.bindings) do
+        if b.command == command and engineDrives(b) then
+            local code = engineCode(b)
+            if not code then return nil end
+            return BR.Keys.vkName(code) or ('#' .. code), true
+        end
+    end
+
+    -- Anything this layer IS reading is ours to answer for, whether or not the
+    -- player has moved it. The engine keeps the last word only for a command
+    -- nobody here is watching at all.
     if not (BR.Keys.rawActive or chosen[command]) then return nil end
     local code = load()[command]
     if not code then return nil, chosen[command] == true end
@@ -558,7 +647,36 @@ end
 --- @param command string
 --- @param code integer|nil  nil or 0 unbinds
 function BR.Keys.set(command, code)
-    if not known(command) then return false end
+    local b = known(command)
+    if not b then return false end
+
+    -- A REBIND THAT CANNOT TAKE EFFECT IS REFUSED, NOT STORED.
+    --
+    -- The row this layer is not reading is the row the engine is driving, and
+    -- the engine's key cannot be moved from script. Accepting the rebind wrote
+    -- a preference that changed nothing, drew it on the settings screen and on
+    -- every world prompt, and left the action on a key the player had every
+    -- reason to believe they had abandoned -- which is #129's third round and
+    -- #139 in one line. Saying no is a worse feature and a far better answer:
+    -- the player learns immediately, and the action keeps working.
+    if engineDrives(b) then
+        -- The two ways to get here read differently to a player and the message
+        -- says which: no raw layer at all is "this client cannot rebind
+        -- anything", which the settings screen already announces; a hold on a
+        -- build without the level native is one row out of twenty-one, and
+        -- without being told, that row looks broken rather than unavailable.
+        local why = (not BR.Keys.rawActive)
+            and 'this client cannot read the keyboard directly'
+            or 'this build has no IS_RAW_KEY_DOWN, so the game engine drives '
+               .. 'hold actions'
+        TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
+            text = ('%s stays on %s -- %s.'):format(
+                (b.label:gsub('^Royale:%s*', '')), b.default, why),
+            tone = 'warn', ms = 8000,
+        })
+        BR.Keys.push()
+        return false
+    end
 
     load()
     code = tonumber(code)
@@ -656,6 +774,22 @@ local resyncFrames = 0
 --- hold actions degrade to taps, which is a known and survivable loss, unlike
 --- having no keys at all.
 local rawDownFn = nil
+
+--- ...AND WHETHER THAT FUNCTION ANSWERS A LEVEL OR AN EDGE, RECORDED BY THE
+--- BRANCH THAT CHOSE IT.
+---
+--- This used to be re-derived at the far end as `rawDownFn == IsRawKeyDown`,
+--- which asks the runtime a question it does not have to answer the same way
+--- twice. FiveM's natives are globals materialised by the Lua runtime, and
+--- comparing a stored reference against a fresh read of the global is a test
+--- that can come back false while the native is present and working perfectly.
+--- If it does, `rawHolds` goes false on a machine that has the level native,
+--- every hold binding is handed to the engine for no reason, and the failure
+--- that follows (see holdsOnEngine below) is silent.
+---
+--- The branch above already KNOWS which one it picked. Writing it down there
+--- costs a local and cannot be wrong.
+local rawLevel = false
 
 BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
     if not BR.Keys.rawActive then return end
@@ -825,10 +959,10 @@ AddEventHandler('onClientResourceStart', function(res)
     -- as a state is what turned every hold action into a tap.
     local ok = pcall(function() return IsRawKeyDown(0x77) end)
     if ok then
-        rawDownFn = IsRawKeyDown
+        rawDownFn, rawLevel = IsRawKeyDown, true
     else
         ok = pcall(function() return IsRawKeyPressed(0x77) end)
-        if ok then rawDownFn = IsRawKeyPressed end
+        if ok then rawDownFn, rawLevel = IsRawKeyPressed, false end
     end
     BR.Keys.rawActive = ok
     -- TWO FLAGS, BECAUSE THERE ARE TWO QUESTIONS. See the note on the hold()
@@ -837,10 +971,13 @@ AddEventHandler('onClientResourceStart', function(res)
     -- level native can, and the whole of #129's second round is a hold that was
     -- being driven by a layer answering the wrong one.
     --
-    -- The `~= nil` matters: with NEITHER native present rawDownFn is nil and so
-    -- is IsRawKeyDown, and nil == nil would have declared the fallback
-    -- perfectly capable of holds on the one build that has no raw layer at all.
-    BR.Keys.rawHolds = ok and rawDownFn ~= nil and rawDownFn == IsRawKeyDown
+    -- ASKED OF `rawLevel`, NOT OF A POINTER COMPARISON. The previous version
+    -- read `rawDownFn == IsRawKeyDown`, which is a question about the runtime's
+    -- global table rather than about this build's capabilities -- see the note
+    -- on rawLevel. A false answer there silently moves every hold action onto
+    -- the engine's key, which on a client that has rebound one is an
+    -- interaction that stops responding entirely (#129 third round, #139).
+    BR.Keys.rawHolds = ok and rawLevel
     print(('[br_core] raw key layer %s%s'):format(
         ok and 'active' or 'UNAVAILABLE',
         (ok and not BR.Keys.rawHolds)
@@ -874,15 +1011,26 @@ RegisterCommand('brkeys', function(_, args)
     -- two are indistinguishable from a chair.
     print(('  resync   : %s   frames since the last focus change: %d'):format(
         resyncing and 'OPEN (taps suppressed)' or 'closed', resyncFrames))
-    -- `held` FOLDED IN FROM debug.lua's DUPLICATE (#137). That file registered a
-    -- second `brkeys` and, loading last, silently won -- so everything above
-    -- this loop was unreachable and the two diagnostics added for #90 and #129
-    -- printed for nobody. The held column was the only thing its version had
-    -- that this one did not, so it moved here and the duplicate is gone.
+    -- WHAT THE KEY ACTUALLY IS, WHO IS LISTENING FOR IT, AND WHETHER IT IS
+    -- DOWN RIGHT NOW -- the three questions a stuck interaction raises.
+    --
+    -- Printing the stored code alone is what made #129's third round unreadable
+    -- from a paste: interact said R, the engine was on E, and this line agreed
+    -- with the lie. `via engine` on a row means the stored rebind does not
+    -- apply and the key printed is the engine's -- which is now also what the
+    -- prompt and the settings screen say.
+    --
+    -- `held` came from debug.lua's DUPLICATE of this command (#137). That file
+    -- registered a second `brkeys` and, loading last, silently won -- so
+    -- everything above this loop was unreachable and the diagnostics added for
+    -- #90 and #129 printed for nobody. Its held column was the only thing it
+    -- had that this did not, so it moved here and the duplicate is gone.
     for _, b in ipairs(BR.Keys.bindings) do
-        local code = load()[b.command]
-        print(('  %-9s %-28s %-12s held=%s'):format(b.group, b.label,
+        local byEngine = engineDrives(b)
+        local code = byEngine and engineCode(b) or load()[b.command]
+        print(('  %-9s %-28s %-10s %-11s held=%s'):format(b.group, b.label,
             code and (BR.Keys.vkName(code) or ('#' .. code)) or '(unbound)',
+            byEngine and 'via engine' or '',
             tostring(BR.Keys.isHeld(b.action))))
     end
     print('  usage: brkeys [reset]')

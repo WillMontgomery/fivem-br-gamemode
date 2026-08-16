@@ -80,7 +80,8 @@ local poses = {}
 --- HOLD_RELEASE_MS below. It is the second round of #129: the accumulator was
 --- right and it was hanging off a single per-frame boolean with no tolerance
 --- for that boolean being momentarily wrong, which this project has already
---- documented that it is (keybinds.lua, rawUpAt).
+--- documented that it is (keybinds.lua, the resync window and the note on
+--- citizenfx/fivem#3064 beside it).
 local hold = { id = nil, heldMs = 0.0, upAt = nil }
 
 --- Forget the hold in progress -- all three fields, in one call.
@@ -100,8 +101,9 @@ end
 --- HOW LONG THE KEY MUST READ UP BEFORE A HOLD IN PROGRESS IS ABANDONED.
 ---
 --- A HOLD MUST NOT BE KILLED BY A KEY STATE THAT WAS NEVER RELEASED, which is
---- the mirror image of the tap guard in keybinds.lua (`rawUpAt` /
---- TAP_REARM_MS) and rests on the same measured fact: taking or releasing NUI
+--- the mirror image of the tap guard in keybinds.lua (the resync window, which
+--- replaced an earlier rawUpAt/TAP_REARM_MS pair) and rests on the same
+--- measured fact: taking or releasing NUI
 --- focus disturbs the key state the raw natives read -- citizenfx/fivem#3064
 --- names IS_RAW_KEY_DOWN specifically -- so a key that is still physically held
 --- reads UP for a frame or two around every focus change. A dropped frame used
@@ -124,8 +126,9 @@ end
 --- 120ms because the gaps this has to swallow are one or two frames -- 100ms
 --- even on a client running at 20fps -- and because the cost of being wrong is
 --- a ring that lingers for a tenth of a second after a real release, which is
---- below what reads as lag. It is deliberately SHORTER than TAP_REARM_MS: a tap
---- re-arming late costs nothing, a ring outstaying its key is visible.
+--- below what reads as lag. Deliberately short, for the same reason the tap
+--- side stopped using a duration at all: a tap re-arming late costs nothing,
+--- while a ring outstaying its key is visible on screen.
 local HOLD_RELEASE_MS = 120
 
 --- Is a hold in progress still being held, and should this frame count?

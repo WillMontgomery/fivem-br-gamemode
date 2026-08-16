@@ -85,7 +85,12 @@ fi
 
 echo "${DIM}== tests ==${RST}"
 if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua; do
+    # test_client.lua is the odd one out and deliberately so: every other suite
+    # here is server-side or pure arithmetic, and all three of the regressions
+    # that shipped on 2026-08-16 landed on a CLIENT interaction that no gate
+    # touched (#140). It stubs the FiveM natives and steps the frame band by
+    # hand, the same shape test_roster.lua uses for the server.
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_client.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1
