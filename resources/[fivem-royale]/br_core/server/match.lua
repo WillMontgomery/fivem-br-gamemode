@@ -275,8 +275,35 @@ function BR.Match.onEnter(m, state, from)
         BR.Storm.begin(m)
 
     elseif state == BR.MatchState.ENDED then
-        BR.Match.awardPlacements(m)
-        BR.Match.publishResults(m)
+        -- ONCE PER MATCH, AND THE SECOND TIME IS WORSE THAN A DUPLICATE.
+        --
+        -- transition() only no-ops on `from == state`, so ENDED can be entered
+        -- again from anywhere -- `brforce ended` after CLEANUP is the reachable
+        -- path today. By then resetPlayers has zeroed kills, downs, revives and
+        -- damage, cleared placement, and nil'd diedAt, while matchId is left
+        -- intact ON PURPOSE (the summary screen still needs this match's
+        -- traffic). So the rows published the second time are not duplicates of
+        -- the first -- they are a fabrication: placement nil, kills 0, damage 0,
+        -- and survivedMs equal to the WHOLE MATCH for every participant.
+        --
+        -- Those rows are not cosmetic. br_stats' `br:match:results` handler
+        -- writes an atomic ADD to DynamoDB, so a second pass adds a second
+        -- `matches`, a second `deaths`, more xp and more Volts -- and there is
+        -- no compensating write to undo it. A 2026-08-16 playtest produced
+        -- exactly this fingerprint: a winner paid the bare completion payout
+        -- with an XP gain equal to survival time alone.
+        --
+        -- Guarded here AND inside publishResults. Here because awardPlacements
+        -- must not re-run either; there because publishResults is the one with
+        -- side effects outside this resource, and a future caller should not
+        -- have to know about this.
+        if m.publishedAt then
+            print(('[br_core] match %d: results already published, not republishing')
+                :format(m.id))
+        else
+            BR.Match.awardPlacements(m)
+            BR.Match.publishResults(m)
+        end
 
         -- Everyone goes HOME at ENDED, not at cleanup. Placements are
         -- already awarded (the line above; the CLEANUP wipe keeps them until
@@ -356,6 +383,14 @@ end
 --- absent, broken or slow cannot affect the match ending.
 --- @param m table
 function BR.Match.publishResults(m)
+    -- AT MOST ONCE, whoever calls. The consumer's DynamoDB write is an atomic
+    -- ADD with no compensating write, so a second publish is unrecoverable
+    -- without a manual repair -- see the long note at the ENDED branch. Stamped
+    -- before the rows are built rather than after they are sent, so a throw
+    -- part-way through cannot leave the flag clear and invite a retry.
+    if m.publishedAt then return end
+    m.publishedAt = GetGameTimer()
+
     local rows = {}
     local endedAt = GetGameTimer()
     local startedAt = m.startedAt or endedAt

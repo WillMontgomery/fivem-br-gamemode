@@ -6087,6 +6087,27 @@ do
     BR.Match.transition(m, BR.MatchState.CLEANUP)
     ok(#BR.Roster.departedIn(m.id) == 0, 'CLEANUP drops the sealed entries')
 
+    -- RESULTS ARE PUBLISHED ONCE PER MATCH, and the second publish was not a
+    -- duplicate -- it was a fabrication.
+    --
+    -- transition() only no-ops on `from == state`, so CLEANUP -> ENDED is a
+    -- real transition and `brforce ended` reaches it. By this point
+    -- resetPlayers has zeroed kills, downs, revives and damage, cleared
+    -- placement and nil'd diedAt, while matchId is left intact on purpose. So
+    -- the rows the second pass built carried placement nil, kills 0, damage 0
+    -- and survivedMs equal to the whole match for everybody -- and br_stats
+    -- ADDs those to DynamoDB on top of the real ones, with no compensating
+    -- write. A 2026-08-16 playtest produced exactly that fingerprint.
+    captured = nil
+    BR.Match.transition(m, BR.MatchState.ENDED)
+    ok(captured == nil, 'CLEANUP -> ENDED does not republish results')
+
+    -- Guarded on the function as well as on the branch: publishResults is the
+    -- one with side effects outside this resource, and a future caller should
+    -- not have to know the rule.
+    BR.Match.publishResults(m)
+    ok(captured == nil, 'and publishResults refuses a direct second call')
+
     TriggerEvent = realTrigger
 end
 

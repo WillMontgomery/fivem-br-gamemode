@@ -69,3 +69,7 @@ PLAN.md
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Agent worktrees. Each is a full checkout; committing them turns this repo
+# into an accidental submodule host.
+.claude/worktrees/
