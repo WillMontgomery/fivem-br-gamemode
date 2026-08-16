@@ -523,9 +523,14 @@ AddEventHandler(BR.Net.STATE, function(d)
                 cause      = myDeathCause,
                 byPlayer   = myDeathByPlayer,
                 total      = 0,
-                damage     = 0,
-                survivedMs = 0,
-                xpEarned   = 0,
+                -- `damage`, `survivedMs` and `xpEarned` used to be sent here as
+                -- a hardcoded 0 each. Nothing has ever rendered them, and they
+                -- were three zeroes on the wire sitting immediately next to the
+                -- XP bug -- which is how an hour went into checking whether the
+                -- verdict screen's "0 XP" was reading one of them (#91). What a
+                -- match paid comes from br_stats on MATCH_EARNED, from the same
+                -- numbers written to the database. This payload says what
+                -- HAPPENED to you; that one says what it was worth.
             })
         end)
     end

@@ -15,15 +15,16 @@ const AWARD_TOTAL_MS = 5200
 /**
  * LEVEL AND XP.
  *
- * WHAT THIS IS AND IS NOT, because the honesty matters more than the pixels:
- * there is no XP system in this game yet. There is no persistence, no server
- * ledger, no economy. `SummaryPayload.xpEarned` has existed on the wire since
- * M2 and nothing has ever written a non-zero value into it.
+ * EVERY NUMBER IT DRAWS BELONGS TO THE SERVER. This file reads `progress` and
+ * `xpAward` and renders them; it does not add the award to the profile, derive
+ * a level, or work out a span. That is not a stylistic rule -- it is the fix
+ * for #91 and #130, where the verdict screen did all three and produced a
+ * level-up shown as 0 XP and a bar reading 3,472 / 2,450.
  *
- * So this is the INTERFACE for one, built against synthetic data, so the shape
- * of it can be argued about before anyone writes the server half. The store
- * seeds a plausible profile in the browser harness and Lua will send a real
- * one when there is a real one; nothing in this file knows the difference.
+ * The two payloads are deliberately separate. `progress` is where the bar IS,
+ * pushed by MARKET_STATE on connect and by MATCH_EARNED at the end of a match.
+ * `xpAward` is where it WAS, and exists only for the length of one animation --
+ * which is why a reconnect restores the bar without replaying a celebration.
  *
  * THE DESIGN, in three moments:
  *

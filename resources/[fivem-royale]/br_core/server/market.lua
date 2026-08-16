@@ -101,6 +101,25 @@ function BR.Market.push(src)
     local entry = lic and inv[lic]
     if not entry then return end
 
+    -- br_stats HEARS IT EVERY TIME THIS SIDE TELLS A CLIENT ANYTHING.
+    --
+    -- `br:stats:knownXp` populates BR.Stats.cachedXp, which is what br_stats
+    -- uses as the lifetime total a match starts from -- and therefore what
+    -- decides the level it writes to the profile row and shows on the verdict
+    -- screen. That table lives in br_stats' Lua state, so RESTARTING br_stats
+    -- empties it, permanently: it was only published from the inventory fetch
+    -- and from a credit, and both of those are behind branches a player who is
+    -- already loaded never takes again. The MARKET_STATE handler sends such a
+    -- player down `push`, and `load` early-returns for them -- so nothing
+    -- republished, and the next match for every connected player was processed
+    -- against a lifetime total of zero.
+    --
+    -- Publishing from here instead makes the rule trivial: br_stats knows what
+    -- the client knows. It is a same-process TriggerEvent against a number
+    -- already in memory, so doing it on every push costs nothing worth naming,
+    -- and re-publishing a value br_stats already holds is a plain assignment.
+    BR.Market.publishXp(lic)
+
     local owned = {}
     for id in pairs(entry.owned) do owned[#owned + 1] = id end
     table.sort(owned)   -- never send a hash's iteration order over the wire
@@ -142,6 +161,9 @@ function BR.Market.load(src)
 
     licenseOf[src] = lic
     if inv[lic] and inv[lic].loaded then
+        -- `push` republishes the lifetime XP to br_stats, so this branch --
+        -- a reconnect racing a drop, where the license is still cached -- is
+        -- covered without a second call here.
         BR.Market.push(src)
         return
     end
@@ -209,6 +231,23 @@ function BR.Market.publishXp(lic)
     local entry = inv[lic]
     if not entry then return end
     TriggerEvent('br:stats:knownXp', lic, entry.xp or 0)
+end
+
+--- One player's lifetime XP, as this side currently holds it.
+---
+--- EXISTS FOR THE DIAGNOSTIC, and deliberately reads rather than computes. The
+--- `brxpsim` console command has to pose a match award against a REAL profile
+--- to be worth anything -- a simulation run against a made-up total would
+--- confirm only that the arithmetic works on made-up totals, which was never
+--- in doubt. This is the same number br_stats is told on `br:stats:knownXp`,
+--- so a simulation that looks wrong is evidence about the real path.
+--- @param src integer
+--- @return integer|nil  nil when this player's inventory has not loaded
+function BR.Market.lifetimeXp(src)
+    local lic = licenseOf[src]
+    local entry = lic and inv[lic]
+    if not entry or not entry.loaded then return nil end
+    return entry.xp or 0
 end
 
 --- What is equipped, resolved to the apply tables the client needs.

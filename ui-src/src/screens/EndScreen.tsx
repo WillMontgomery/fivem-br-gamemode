@@ -1,7 +1,7 @@
 import Ring from '../hud/Ring'
 import Progress from './Progress'
 import { useUi } from '../store'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { SummaryPayload } from '../bridge/types'
 
 /**
@@ -133,28 +133,6 @@ export default function EndScreen({ summary }: { summary: SummaryPayload }) {
 }
 
 /**
- * The post-match XP award, staged here.
- *
- * WHY IT IS IN THE COMPONENT AND NOT IN LUA. It was: br_ui's market.lua heard
- * the SUMMARY net event and pushed an award a couple of seconds later. It was
- * reported as never animating, twice, and the reason it is hard to see is that
- * every part of it is timing against a screen it cannot observe -- the verdict
- * exists only while the match tears down, and a delay tuned against that
- * window is a delay that misses it whenever teardown is quick.
- *
- * THIS COMPONENT ONLY EXISTS WHILE THE VERDICT IS ON SCREEN. Firing the award
- * from its own mount removes the guess entirely: there is no window to miss,
- * because the thing that starts the clock is the thing that would have to be
- * there to see it.
- *
- * IT IS SYNTHETIC AND IT IS STAGED. It poses the profile two thirds along the
- * level and awards exactly enough to reach a third of the next one, so the
- * interesting animation -- fill, hold, flip, refill -- happens every match
- * rather than one in four. DELETE THIS WHOLE COMPONENT when a server issues
- * real XP: the award then arrives on the wire and Progress renders it with no
- * staging at all.
- */
-/**
  * The Volts line under the verdict.
  *
  * Reads the same `earned` envelope the award does, and renders nothing at all
@@ -175,11 +153,33 @@ function VoltsEarned() {
   )
 }
 
+/**
+ * The post-match XP award, staged here.
+ *
+ * WHY IT IS IN THE COMPONENT AND NOT IN LUA. It was: br_ui's market.lua heard
+ * the SUMMARY net event and pushed an award a couple of seconds later. It was
+ * reported as never animating, twice, and the reason it is hard to see is that
+ * every part of it is timing against a screen it cannot observe -- the verdict
+ * exists only while the match tears down, and a delay tuned against that
+ * window is a delay that misses it whenever teardown is quick.
+ *
+ * THIS COMPONENT ONLY EXISTS WHILE THE VERDICT IS ON SCREEN. Firing the award
+ * from its own mount removes the guess entirely: there is no window to miss,
+ * because the thing that starts the clock is the thing that would have to be
+ * there to see it.
+ *
+ * IT OWNS THE TIMING AND NOTHING ELSE. It used to own the arithmetic too --
+ * first by fabricating an award outright, then by deriving where the bar should
+ * stop from where it happened to be. Both were the same mistake in different
+ * clothes: a progression number computed anywhere except the server is a number
+ * that will eventually disagree with the database, and the player believes the
+ * screen. All this does now is decide WHEN, and hand two server-issued
+ * snapshots to Progress.
+ */
 function StagedAward() {
-  const progress = useUi((s) => s.progress)
   const awardXp = useUi((s) => s.awardXp)
   const setProgress = useUi((s) => s.setProgress)
-  const fired = useRef(false)
+  const stageEarned = useUi((s) => s.stageEarned)
 
   useEffect(() => {
     // THE GUARD GOES INSIDE THE TIMER, NOT AROUND THE EFFECT.
@@ -190,42 +190,55 @@ function StagedAward() {
     // the timer, and the second pass returns early, so nothing is left
     // running. Caught by testing it rather than by reading it.
     //
-    // Setting the timer every time and claiming the award inside it is
-    // correct under both: cancelled passes simply never reach the ref.
+    // AND THE GUARD IS IN THE STORE, NOT IN A REF, because a ref is per mount
+    // and this component remounts whenever App's `showEnd` flickers -- and
+    // `earned` was never cleared, so each remount replayed the same award.
+    // `stageEarned` claims the payload once and returns null to everybody
+    // afterwards.
     const t = window.setTimeout(() => {
-      if (fired.current) return
-
       // NO REAL AWARD, NO ANIMATION. This used to fabricate one every match --
       // it invented a level-up unconditionally, so the bar celebrated a
       // milestone that had not happened and animated to a number nothing had
       // persisted. A player who reconnected saw the real level and would
       // reasonably conclude they had been robbed.
       //
-      // The numbers now arrive on the `earned` envelope from br_stats, which
+      // The numbers arrive on the `earned` envelope from br_stats, which
       // computes them from the same values it writes to the database. If none
       // arrived -- br_ddb down, stats not recorded -- the correct behaviour is
       // silence.
-      const e = useUi.getState().earned
+      const e = stageEarned()
       if (!e) return
-      fired.current = true
 
-      const fromLevel = progress.level
-      const fromXp = progress.xp
-      const fromNeeded = Math.max(1, progress.needed)
-
-      // The new profile FIRST, then the award: the bar animates FROM where
-      // the award says it was, TO where the profile says it is now.
+      // EVERY NUMBER BELOW CAME OFF THE WIRE. Nothing here adds, subtracts or
+      // clamps, and that is the fix for #91 and #130 rather than a style
+      // preference.
       //
-      // The server sends the level it landed on; everything else is derived
-      // from where the bar already was, so the fill starts where the player
-      // was actually looking.
-      const carried = fromXp + e.xp
-      setProgress({
-        level: e.level,
-        xp: e.levelUp ? Math.max(0, carried - fromNeeded) : carried,
-        needed: fromNeeded,
+      // What used to be here: `carried = progress.xp + e.xp`, then on a
+      // level-up `Math.max(0, carried - progress.needed)`, keeping the old
+      // `needed` as the denominator. Three faults compounding:
+      //
+      //   1. DOUBLE COUNT. br_stats fires `br:market:credited` on the same
+      //      tick as this award, which pushes MARKET_STATE carrying the
+      //      already-credited total -- so `progress.xp` here was the POST
+      //      match figure, and adding the award to it counted the match twice.
+      //   2. CLAMPED TO ZERO ON A LEVEL-UP. Subtracting the old span from that
+      //      doubled figure goes negative whenever the match was worth less
+      //      than a level, and Math.max(0, ...) turned that into a confident
+      //      "0 XP". A real case: 327 + 1048 - 2050 = -675, shown as 0, for a
+      //      player who had just gained 1048.
+      //   3. FROZEN DENOMINATOR. `needed: fromNeeded` kept the previous
+      //      level's span forever, which is how a bar reads 3,472 / 2,450 and
+      //      never resets.
+      //
+      // The server knows all of it -- it evaluated the curve to write the row.
+      // So it sends both ends and this renders them.
+      setProgress({ level: e.level, xp: e.into, needed: Math.max(1, e.needed) })
+      awardXp({
+        xp: e.xp,
+        fromLevel: e.fromLevel,
+        fromXp: e.fromXp,
+        fromNeeded: Math.max(1, e.fromNeeded),
       })
-      awardXp({ xp: e.xp, fromLevel, fromXp, fromNeeded })
     }, 1600)
 
     return () => window.clearTimeout(t)

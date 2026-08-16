@@ -96,14 +96,26 @@ export interface UiState {
    *  that opens onto nothing reads as broken. */
   locker: LockerPayload
 
-  /** Level and XP. SYNTHETIC until a server writes one -- see
-   *  screens/Progress.tsx for what is and is not real here. */
+  /** Level and XP, exactly as the server last reported them. NOTHING IN THE UI
+   *  MAY WRITE A DERIVED VALUE HERE -- the verdict screen doing precisely that
+   *  is what put a bar past its own end and a level-up at 0 XP (#91, #130). */
   progress: ProgressPayload
   /** A post-match award, which is what animates the bar. Cleared by the
    *  component once the animation has played out. */
   xpAward: XpAward | null
-  /** The real match payout, held until the verdict screen stages it. */
+  /** The real match payout, held until the verdict screen stages it.
+   *
+   *  CLEARED WHEN A NEW MATCH OPENS, which is not housekeeping. It used to
+   *  persist for the whole session, so a match whose stats never recorded --
+   *  br_ddb down, no MATCH_EARNED sent -- showed the PREVIOUS match's Volts and
+   *  replayed its award. That is the one failure the verdict screen is not
+   *  allowed to have: claiming a reward nothing wrote. */
   earned: EarnedPayload | null
+  /** True once the verdict screen has staged `earned` into an animation. The
+   *  guard lives here rather than in a component ref because EndScreen
+   *  remounts whenever App's `showEnd` flickers, and a per-mount ref let the
+   *  same award fire again on every remount. */
+  earnedStaged: boolean
 
   /** The store catalogue and the player's balance. Also synthetic. */
   market: MarketPayload
@@ -192,6 +204,9 @@ export interface UiState {
   setProgress: (p: ProgressPayload) => void
   awardXp: (a: XpAward) => void
   setEarned: (e: EarnedPayload | null) => void
+  /** Claim the pending award for animation. Returns it the FIRST time and null
+   *  every time after, so a remounting verdict screen cannot replay it. */
+  stageEarned: () => EarnedPayload | null
   clearXpAward: () => void
   setPlayers: (p: PlayersPayload) => void
   setReportResult: (r: ReportResult | null) => void
@@ -450,6 +465,7 @@ export const useUi = create<UiState>((set, get) => {
   progress: { level: 1, xp: 0, needed: 1000 },
   xpAward: null,
   earned: null,
+  earnedStaged: false,
   market: { balance: 0, items: [] },
   players: { players: [], categories: [], defaultCategory: 'cheating', maxTargets: 5, remaining: 0 },
   reportResult: null,
@@ -476,12 +492,18 @@ export const useUi = create<UiState>((set, get) => {
   // list mid-fight, and a log that only ever grows makes the one line that
   // matters harder to find. Cleared as a NEW match opens -- on the edge into
   // `warmup`, which is the first state of a round and fires once.
+  // A NEW MATCH ALSO DROPS THE LAST ONE'S PAYOUT. `earned` is what the verdict
+  // screen renders Volts from and stages the XP award out of, and it used to
+  // live for the whole session -- so a match that recorded nothing (br_ddb
+  // down, or a row with no license) would show the previous match's reward and
+  // animate its bar. #91 asks for exactly the opposite: no award and no Volts
+  // line rather than a celebration of something never written.
   setMatch: (match) => {
     const fresh = match.state === 'warmup' && get().match.state !== 'warmup'
     set({
       match,
       ...(match.serverNow ? { clockOffset: match.serverNow - Date.now() } : {}),
-      ...(fresh ? { noticeLog: [] } : {}),
+      ...(fresh ? { noticeLog: [], earned: null, earnedStaged: false } : {}),
     })
   },
   // Unpausing flushes the notice queue: whatever arrived under the pause
@@ -617,7 +639,13 @@ export const useUi = create<UiState>((set, get) => {
   setLocker: (locker) => set({ locker }),
   setProgress: (progress) => set({ progress }),
   awardXp: (xpAward) => set({ xpAward }),
-  setEarned: (earned) => set({ earned }),
+  setEarned: (earned) => set({ earned, earnedStaged: false }),
+  stageEarned: () => {
+    const { earned, earnedStaged } = get()
+    if (!earned || earnedStaged) return null
+    set({ earnedStaged: true })
+    return earned
+  },
   clearXpAward: () => set({ xpAward: null }),
   setMarket: (market) => set({ market }),
   setPlayers: (players) => set({ players }),

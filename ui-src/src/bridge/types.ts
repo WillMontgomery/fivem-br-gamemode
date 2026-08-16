@@ -212,13 +212,20 @@ export interface SpectatePayload {
   remaining: number
 }
 
+/**
+ * The verdict: what happened to you, not what you were paid.
+ *
+ * `xpEarned`, `damage` and `survivedMs` USED TO BE HERE and were removed. Lua
+ * sent all three as a hardcoded 0 from the day the payload was written, nothing
+ * ever rendered them, and they sat on the wire next to the XP bug looking for
+ * all the world like the thing that fed it (owner, #91). What a match paid
+ * arrives on EarnedPayload, from br_stats, computed from the values actually
+ * written to the database. Two payloads, one of which is a fact.
+ */
 export interface SummaryPayload {
   placement: number
   total: number
   kills: number
-  damage: number
-  survivedMs: number
-  xpEarned: number
   won: boolean
   /** How this player died, when they did: 'storm', 'fall', 'drowned',
    *  'burned', 'explosion', 'roadkill', or undefined/unknown. Drives the
@@ -435,10 +442,6 @@ export interface ProgressPayload {
   needed: number
 }
 
-/** The post-match award, which is what animates the bar. Carries where the
- *  player WAS, because the fill has to start from there. */
-/** What one match actually paid. Server-computed, from the same numbers
- *  written to the database -- not a client-side guess. */
 /** One row of the in-game player list. Everything here is already in
  *  PUBLIC_FIELDS - no position, no health, no matchId. */
 export interface ListedPlayer {
@@ -477,11 +480,35 @@ export interface ReportResult {
   refused?: string
 }
 
+/**
+ * What one match actually paid, and BOTH ENDS OF THE BAR.
+ *
+ * Every number here is evaluated on the server, by BR.Xp, against the lifetime
+ * total either side of this match. The page renders them and derives nothing.
+ *
+ * IT USED TO CARRY ONLY `xp` AND `level`, and the verdict screen worked out
+ * where the bar should stop by adding the award to whatever it was showing.
+ * That is the whole of #91 and #130: the value it added to had ALREADY been
+ * credited by the MARKET_STATE that lands the same tick, so the sum was
+ * double-counted; on a level-up it then subtracted the wrong level's span and
+ * clamped at zero, which is exactly how a player who gained 1048 XP was shown
+ * 0; and it kept the old span as the denominator, so a bar could read
+ * "3,472 / 2,450" and never reset.
+ */
 export interface EarnedPayload {
   xp: number
   volts: number
   /** Level AFTER the match. */
   level: number
+  /** XP into that level after the match. Server-derived; do not recompute. */
+  into: number
+  /** What that level costs. Never zero -- the server floors it at 1. */
+  needed: number
+  /** Where the bar has to start the fill from: the level, the XP into it, and
+   *  its span, all as they were BEFORE this match. */
+  fromLevel: number
+  fromXp: number
+  fromNeeded: number
   levelUp: boolean
 }
 
