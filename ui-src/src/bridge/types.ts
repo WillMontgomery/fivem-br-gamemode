@@ -298,7 +298,9 @@ export interface LobbyPlayer {
  * holding the match. Absent when nothing is blocking.
  */
 export interface LobbyWait {
-  reason: 'players' | 'squads' | 'party'
+  /** 'maintenance' outranks the rest: it is not about the queue being too
+   *  small, and no number of extra players will clear it. */
+  reason: 'players' | 'squads' | 'party' | 'maintenance'
   have: number
   need: number
 }
