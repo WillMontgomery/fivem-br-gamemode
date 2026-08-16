@@ -364,13 +364,18 @@ BR.Config.Market = {
         who took 470 had just crossed a level while the winner had not. A bonus
         that beats the thing it is a bonus ON is not a bonus. It is now a
         quarter of a win rather than most of one.
-      * THE WIN AND PLACEMENT TERMS NOT REACHING THE WINNER AT ALL. 60 is
-        `completion` and nothing else, which means `placement` arrived at
-        marketPayout as 0 or nil for somebody who finished first. That is a
-        separate defect upstream of this file and no amount of retuning here
-        fixes it -- retuning a formula whose input is missing just moves the
-        wrong number. Called out so the next reader does not conclude these
-        weights are what produced 60.
+      * THE RESULTS ROW REACHING THIS FUNCTION BLANK. 60 is `completion` and
+        nothing else, which takes more than a missing placement: it needs
+        placement ≠ 1, zero kills AND zero revives on the same row. The ENDED
+        transition awards placements before it publishes results and nothing
+        writes LOBBY in between, so this is not an ordering bug -- it is the
+        shape of a row published by a SECOND ENDED transition, after
+        BR.Match.resetPlayers has zeroed the per-match counters and cleared
+        placement while leaving matchId intact. That is a defect upstream of
+        this file and no amount of retuning here touches it: retuning a formula
+        whose inputs are blank only changes which wrong number comes out.
+        Called out so the next reader does not conclude these weights produced
+        60.
 
     CALIBRATED SO PLACEMENT DOMINATES. Worked examples on a 16-player field:
 
@@ -426,19 +431,22 @@ BR.Config.Market.currency = 'Volts'
 --- matches should notice it; a player grinding for a legendary should still be
 --- getting there mostly by playing.
 ---
---- IT WAS NOT MODEST, AND THAT IS #89. At 100 + 25/level this line was worth
---- more than winning the match -- level 3 paid 150 against a 240 win bonus, and
---- by level 8 it had passed it outright. So the biggest payout in a session
---- went to whoever happened to cross a boundary, regardless of how they placed,
---- and a second-place finish with a level-up out-earned a victory by eight
---- times. 25 + 5/level puts it at roughly a quarter of a win at low levels and
---- keeps it there: still growing with the curve, no longer competing with it.
+--- IT WAS NOT MODEST, AND THAT IS #89. At 100 + 25/level this line competed
+--- with winning the match: level 3 paid 150 against a 240 win bonus, and at
+--- level 7 it passed it outright and never came back. So the largest single
+--- term in a session's earnings went to whoever happened to cross a boundary,
+--- regardless of how they placed. 25 + 5/level puts it at roughly a quarter of
+--- a win and keeps it there -- still growing with the curve, no longer racing
+--- it.
 ---
---- THE RISK THIS NUMBER CARRIES is that it is paid PER LEVEL CROSSED against a
---- `levelBefore` that br_stats derives from a cached lifetime total. If that
---- cache is ever empty when a match ends, `levelBefore` is 1 and this is paid
---- for every level from 2 upward in one go. Keeping the per-level figure small
---- is also what keeps that failure survivable rather than economy-breaking.
+--- THE INPUT THIS DEPENDS ON is `levelBefore`, which br_stats derives from a
+--- lifetime total br_core publishes to it. When that total is missing the
+--- damage is NOT an unbounded payout -- br_stats computes `after` as
+--- `before + xpEarned`, so a zero `before` gives a small `after` and the loop
+--- crosses at most a level or two. The real cost is the level itself: the
+--- profile row and the verdict screen both take a veteran's level from one
+--- match's XP. Small per-level numbers here are what keep the money half of
+--- that failure boring while the level half gets fixed properly.
 --- @param level integer  the level just reached
 --- @return integer
 function BR.Config.levelBonus(level)

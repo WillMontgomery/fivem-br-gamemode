@@ -101,6 +101,25 @@ function BR.Market.push(src)
     local entry = lic and inv[lic]
     if not entry then return end
 
+    -- br_stats HEARS IT EVERY TIME THIS SIDE TELLS A CLIENT ANYTHING.
+    --
+    -- `br:stats:knownXp` populates BR.Stats.cachedXp, which is what br_stats
+    -- uses as the lifetime total a match starts from -- and therefore what
+    -- decides the level it writes to the profile row and shows on the verdict
+    -- screen. That table lives in br_stats' Lua state, so RESTARTING br_stats
+    -- empties it, permanently: it was only published from the inventory fetch
+    -- and from a credit, and both of those are behind branches a player who is
+    -- already loaded never takes again. The MARKET_STATE handler sends such a
+    -- player down `push`, and `load` early-returns for them -- so nothing
+    -- republished, and the next match for every connected player was processed
+    -- against a lifetime total of zero.
+    --
+    -- Publishing from here instead makes the rule trivial: br_stats knows what
+    -- the client knows. It is a same-process TriggerEvent against a number
+    -- already in memory, so doing it on every push costs nothing worth naming,
+    -- and re-publishing a value br_stats already holds is a plain assignment.
+    BR.Market.publishXp(lic)
+
     local owned = {}
     for id in pairs(entry.owned) do owned[#owned + 1] = id end
     table.sort(owned)   -- never send a hash's iteration order over the wire
@@ -142,16 +161,9 @@ function BR.Market.load(src)
 
     licenseOf[src] = lic
     if inv[lic] and inv[lic].loaded then
-        -- REPUBLISHED ON THE CACHED PATH TOO, and this is not belt-and-braces.
-        -- br_stats derives `levelBefore` -- which decides how many level-up
-        -- bonuses a match pays -- from the total this publishes, and it holds
-        -- that in its own table. A player who reconnects into an inventory
-        -- another session already loaded takes this branch, so leaving it out
-        -- meant br_stats could be running on whatever it last heard, or on
-        -- nothing at all if it restarted while br_core did not. Republishing a
-        -- number br_stats may already have is free; not publishing it pays a
-        -- level-up bonus for every level from 2 upward (#89).
-        BR.Market.publishXp(lic)
+        -- `push` republishes the lifetime XP to br_stats, so this branch --
+        -- a reconnect racing a drop, where the license is still cached -- is
+        -- covered without a second call here.
         BR.Market.push(src)
         return
     end
