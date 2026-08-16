@@ -546,43 +546,54 @@ end
 -- fires true, release fires false, and `interact` keeps working as a hold.
 local rawDown = {}
 
---- When each command's key was last seen genuinely UP.
+--- Whether the raw layer is currently being LIED TO about the keyboard.
 ---
---- A TAP MUST NOT BE RE-ARMED BY A KEY STATE THAT NEVER CAME BACK UP, and this
---- is the whole reason it exists (owner, 2026-08-16: "holding tilde makes it
---- flicker").
+--- THE STROBE, AND WHY THE FIRST FIX FOR IT WAS THE WRONG SHAPE (#90).
 ---
---- The player list latches on tilde and it is the first screen we have that
---- KEEPS GAME INPUT while it is open (BR.FocusKeepsInput). That combination is
---- what exposed this. Taking and releasing NUI focus disturbs the key state the
---- raw natives read -- citizenfx/fivem#3064 reports exactly that, for
---- IS_RAW_KEY_DOWN by name -- so a key that is still physically held reads UP
---- for a frame or two around every focus change and DOWN again immediately
---- after. The loop below sees that as a release followed by a fresh press,
---- fires the tap again, and the toggle it drives changes focus again: the panel
---- strobes open and shut for as long as the key is down. Tapping was always
---- fine, because a tap is already over before the focus change lands.
+--- "holding tilde makes it flicker" (owner, 2026-08-16) -- and it was still
+--- flickering after the first attempt, held down and watched. The mechanism, as
+--- far as the engine will admit to one: taking or releasing the NUI cursor
+--- disturbs the key state the raw natives read, which citizenfx/fivem#3064
+--- reports for IS_RAW_KEY_DOWN by name. A key that is still physically held
+--- reads UP and then DOWN again with no human involved. The loop below reads
+--- that pair as a release and a fresh press, fires the tap, and the tap toggles
+--- the very focus that produced it.
 ---
---- So a tap now needs its key to have been up for a real interval before it can
---- fire again. Nothing else changes: the FIRST press still fires on the frame it
---- happens, with no added latency, and hold actions are not touched at all --
---- their release edge has to stay immediate or the pickup hold stutters.
-local rawUpAt = {}
-
---- How long a key must read UP before a TAP will fire from it a second time.
+--- THAT IS A LOOP, NOT A GLITCH, and it is the loop that makes it a strobe
+--- rather than one lost keystroke: focus change -> false press -> focus change.
+--- The panel opens and shuts for as long as the key is down.
 ---
---- Sized against the failure, not against a feel: the gaps this has to swallow
---- are single frames of dropped key state, tens of milliseconds at most. 200ms
---- clears them with room to spare and matches the guard the pause menu already
---- carries for the same class of problem (br_ui/client/pause.lua, "TWO PATHS CAN
---- SEE ONE ESCAPE").
+--- THE FIRST FIX MEASURED THE WRONG QUANTITY. It required a tap's key to have
+--- read UP for 200ms before it could fire again -- a duration, chosen against a
+--- guess at how long the disturbance lasts, and the disturbance turned out not
+--- to fit inside the guess. A bigger number is not the next move. The number
+--- was never the mechanism, and a constant tuned by trial is precisely what let
+--- the transition-ordering bug survive for months behind a 450ms guess (#124).
 ---
---- THE COST, STATED: a deliberate second press inside 200ms is read as part of
---- the first one. That is the right side to be wrong on for everything on this
---- table -- these are latching panels and slot keys, where pressing the same key
---- twice in a fifth of a second means nothing, and where the alternative is a
---- screen that strobes.
-local TAP_REARM_MS = 200
+--- SO THIS SUPPRESSES ON A STATE WE ACTUALLY KNOW. We know exactly when the
+--- reading becomes untrustworthy, because br_ui says so: `br:ui:focusChanged`
+--- is emitted by the same function that calls SetNuiFocus (br_ui/client/nui.lua,
+--- applyFocus). From that event until the reading settles, a rising edge is
+--- ADOPTED rather than fired -- the layer takes the new state as truth and tells
+--- nobody. A focus change therefore cannot manufacture the tap that causes the
+--- next focus change, which cuts the loop at the only point that closes it.
+---
+--- AND IT ENDS WHEN THE READING SETTLES, NOT AFTER AN INTERVAL. Any frame in
+--- which a bound key changed state extends the window; the first quiet frame
+--- after that closes it. When nothing was held as the menu opened -- the
+--- ordinary case, every key already up -- that is two frames and costs nothing
+--- measurable. When something was held, it lasts exactly as long as the engine
+--- keeps changing its mind, which is the quantity the 200ms was trying to guess.
+---
+--- HOLDS ARE DELIBERATELY NOT SUPPRESSED. A hold's edges are not idempotent:
+--- swallow a release and the revive or the crate pickup runs on with nothing
+--- left to stop it, which is a scar dbno.lua already carries (owner,
+--- 2026-08-09: a brief tap completed an entire eight-second revive). A hold
+--- wrongly cancelled costs one more press; a hold never cancelled costs the
+--- round. Only taps go quiet -- and only a tap can strobe anyway, because only
+--- a tap toggles.
+local resyncing = false
+local resyncFrames = 0
 
 --- Which native answers "is this key held right now".
 ---
@@ -597,6 +608,11 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
     if not BR.Keys.rawActive then return end
 
     local map = load()
+    -- Did the keyboard move at all this frame? Only used while resyncing, where
+    -- it is the whole termination condition: the window lasts until the reading
+    -- stops changing, rather than for a length of time somebody picked.
+    local moved = false
+
     for _, b in ipairs(BR.Keys.bindings) do
         local code = map[b.command]
         if code then
@@ -646,7 +662,7 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
             -- already answers the exact question every frame, so trusting the
             -- sample over the memory costs nothing and a lost edge self-corrects
             -- on the very next one. A tap has no held state worth the name, and
-            -- writing one here would fight rawUpAt/TAP_REARM_MS below -- which
+            -- writing one here would fight the resync window below -- which
             -- exists precisely because this key state is NOT trustworthy across
             -- a focus change. That is also the trade being made: a dropped
             -- frame of key state now cancels a hold in progress rather than
@@ -655,30 +671,59 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
             if b.hold then BR.Keys.held[b.action] = down end
 
             if down ~= was then
+                moved = true
                 rawDown[b.command] = down or nil
-                if not down then
-                    -- Remembered for every binding, used only by taps: the
-                    -- release is the only evidence there is that the next
-                    -- press is a different press.
-                    rawUpAt[b.command] = GetGameTimer()
-                    if b.hold then fire(b.action, false) end
-                elseif b.hold then
+
+                if b.hold then
+                    -- Both edges, always, resync or not. See the note on
+                    -- `resyncing`: a swallowed release leaves a revive or a
+                    -- crate pickup running with nothing left to stop it.
+                    fire(b.action, down)
+                elseif down and not resyncing then
                     fire(b.action, true)
-                else
-                    -- A tap fires on this edge only if the key has been up long
-                    -- enough for the release to have been the player's rather
-                    -- than the engine's. See rawUpAt above; without this, a
-                    -- keep-input screen that its own key toggles will strobe
-                    -- for as long as that key is held.
-                    local upAt = rawUpAt[b.command]
-                    if (not upAt) or (GetGameTimer() - upAt) >= TAP_REARM_MS then
-                        fire(b.action, true)
-                        fire(b.action, false)
-                    end
+                    fire(b.action, false)
                 end
+                -- The `elseif` above is the whole of the strobe fix. A rising
+                -- edge inside the resync window still updates rawDown -- the
+                -- layer ADOPTS the new state, so it is not left disagreeing
+                -- with the keyboard -- it simply does not announce it. A focus
+                -- change cannot then produce the tap that produces the next
+                -- focus change.
             end
         end
     end
+
+    -- THE WINDOW CLOSES WHEN THE KEYBOARD GOES QUIET, and never on a clock.
+    --
+    -- A frame in which something changed is evidence the engine is still
+    -- settling, so it extends the window. The floor of one frame is not a
+    -- tuning knob: the disturbance cannot be observed on the same frame the
+    -- focus change was announced, so exiting immediately would be exiting
+    -- before there was anything to see.
+    if resyncing then
+        if resyncFrames > 0 and not moved then
+            resyncing = false
+        end
+        resyncFrames = resyncFrames + 1
+    end
+end)
+
+-- THE ONE EVENT THAT MEANS "STOP TRUSTING THE KEYBOARD".
+--
+-- br_ui emits this from applyFocus, in the same breath as SetNuiFocus (see
+-- br_ui/client/nui.lua), and TriggerEvent crosses resources -- the same hop
+-- br_core and br_ui already use in both directions. Every SetNuiFocus call in
+-- the project is covered by one: the bridge only changes `held` when the top of
+-- the stack changes, and the top of the stack changing is exactly what this
+-- announces.
+--
+-- IT DOES NOT CARE WHICH SCREEN. Any focus change disturbs the reading, and a
+-- layer that only distrusted the keyboard for the screens it expected to be
+-- opened would be back to reasoning about a list somebody has to remember to
+-- update -- which is the mistake BR.FocusKeepsInput's allowlist note is about.
+AddEventHandler('br:ui:focusChanged', function()
+    resyncing = true
+    resyncFrames = 0
 end)
 
 -- UI actions arrive through br_ui's forwarder, the same road the locker and
@@ -741,6 +786,13 @@ RegisterCommand('brkeys', function(_, args)
     print('=== keybinds ===')
     print(('  raw layer: %s   escape is ours: %s'):format(
         tostring(BR.Keys.rawActive), tostring(BR.Keys.ownsEscape())))
+    -- THE ONE READING THAT SAYS WHETHER THE STROBE FIX IS EVEN RUNNING. If a
+    -- panel is still flickering and this has never left 0 frames, the focus
+    -- event is not arriving from br_ui and the window has never opened -- which
+    -- is a different fault from the window opening and being too short, and the
+    -- two are indistinguishable from a chair.
+    print(('  resync   : %s   frames since the last focus change: %d'):format(
+        resyncing and 'OPEN (taps suppressed)' or 'closed', resyncFrames))
     for _, b in ipairs(BR.Keys.bindings) do
         local code = load()[b.command]
         print(('  %-9s %-28s %s'):format(b.group, b.label,

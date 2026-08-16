@@ -2424,9 +2424,28 @@ do
     -- the safe default: the deny-list version silently gave game input to
     -- every screen added after it was written.
     ok(R({ 'inventory' }).keepInput, 'the inventory keeps game input -- it is used mid-fight')
-    for _, s in ipairs({ 'lobby', 'chat', 'settings', 'locker', 'summary', 'squad' }) do
+
+    -- `players` IS IN THE SECOND LIST AND NOT THE FIRST, and it is the only
+    -- entry on either that anybody has argued about. It kept game input for one
+    -- day so the roster could be read on the move, and the owner reported the
+    -- result (2026-08-16): "the pointer is available for use while the menu is
+    -- open, but doesn't prevent game control. So moving the mouse still moves
+    -- the camera, and I'm able to walk as well while it's open." A panel of
+    -- checkboxes and dropdowns whose cursor is also the camera is a panel you
+    -- cannot point at (#135). Asserted here so putting it back is a red build
+    -- and a decision, rather than a one-word edit to a table.
+    for _, s in ipairs({ 'lobby', 'chat', 'settings', 'locker', 'summary', 'squad',
+                         'players' }) do
         ok(not R({ s }).keepInput, ('%s does not keep game input'):format(s))
     end
+
+    -- AND `playersReport` IS NOT A SCREEN ANY MORE. It existed only to be
+    -- absent from BR.FocusKeepsInput; with view mode absent too, it was a
+    -- second name for the same focus. An unknown screen resolving to
+    -- keepInput=false is the allowlist behaving correctly -- this asserts the
+    -- table does not still carry a special case for a name nothing sends.
+    ok(BR.FocusKeepsInput['playersReport'] == nil,
+        'the report screen is gone from the keep-input table, not just unused')
 
     -- A menu OVER the inventory has to take input back, or the player is
     -- reading a slider while running.

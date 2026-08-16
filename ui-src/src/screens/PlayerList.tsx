@@ -12,9 +12,22 @@ import { play } from '../audio/cues'
  * was wrong for the same reason a full-screen map would be: the player is
  * standing in a battle royale while they read it. An opaque overlay means the
  * one thing they cannot do while checking who is left is see the fight they are
- * in. So it is a card on the right, the game stays visible behind it, and the
+ * in. So it is a card down one side, the game stays visible behind it, and the
  * root is pointer-events:none -- a click outside the card reaches the game
  * rather than being swallowed by an invisible full-screen div.
+ *
+ * THE LEFT SIDE, on the owner's call after playing with it on the right
+ * (2026-08-16). Nothing about the shape changed; it is the side that changed.
+ * `.page-in` already enters from translate3d(-1.4rem, ...), so on this side the
+ * existing animation reads as the card sliding in from the edge it lives on --
+ * which is why there is no new keyframe here.
+ *
+ * IT SITS OVER THE CHAT, and that falls out of the z ladder rather than from a
+ * number chosen here: this renders inside a `.page` (z-index 50, "above the HUD
+ * (40) and below the black curtain (60)" -- index.css), and the chat column is
+ * HUD chrome with no z-index at all. On the right the two never met. On the
+ * left they overlap in the lower corner, so the ladder is now load-bearing and
+ * is written down instead of assumed.
  *
  * TWO MODES ON ONE CARD. By default it is a list: who is here, who is still
  * alive, who has gone. Pressing "Report" turns the same rows into a form --
@@ -25,11 +38,35 @@ import { play } from '../audio/cues'
  * A separate report dialog would mean picking a name twice: once to find them,
  * once to accuse them.
  *
- * THE TWO MODES HOLD DIFFERENT FOCUS, and that is the substantive half of the
- * change. Reading the list keeps game input -- you can still run while you
- * read. Reporting does not, because the note field is a text input and every
- * keystroke in it would otherwise also be a movement key. Lua owns both; this
- * only says which one it wants (see `wantFocus`).
+ * THE PANEL OWNS THE CURSOR, AND YOU STAND STILL WHILE IT DOES (#135).
+ *
+ * For one day it did not. View mode was granted focus WITH keep-input so the
+ * roster could be read on the move, and the owner described the result exactly
+ * (2026-08-16): "the pointer is available for use while the menu is open, but
+ * doesn't prevent game control. So moving the mouse still moves the camera, and
+ * I'm able to walk as well while it's open. That should be changed."
+ *
+ * That is the whole mechanism. The clicks were arriving all along -- keep-input
+ * does not take them away -- but the mouse was also the camera and the mouse
+ * buttons were also the trigger, so reaching for a checkbox turned the view away
+ * from it and pressing one fired the gun. A cursor you cannot aim is not a
+ * cursor, which is why the first report of this reads as "doesn't capture mouse
+ * input".
+ *
+ * The inventory keeps game input and is clickable anyway, but only because
+ * br_core/client/inventory.lua disables LOOK_LR, LOOK_UD, ATTACK and AIM every
+ * frame while its panel is up. That suppressor is what an entry in
+ * BR.FocusKeepsInput actually costs, and this panel never had one. It could have
+ * been given one -- and if standing still turns out to be the worse half of the
+ * trade, that is the change to make -- but it asks for far more pointing than
+ * five slot cards do, and it is a latching panel opened deliberately rather than
+ * glanced at mid-burst. So it takes plain focus and accepts the cost.
+ *
+ * WHICH IS WHY THIS FILE NO LONGER TELLS LUA ITS MODE. It had to for a day:
+ * report mode pushed a second focus screen, `playersReport`, purely to give up
+ * game input for the note field. Both modes now hold the same focus, so
+ * `reporting` below is local state and nothing more, and the second screen has
+ * been deleted rather than left inert.
  *
  * NOTHING HERE IS AUTHORITATIVE. The bucket was resolved server-side, the
  * categories and the remaining allowance arrived with the list, and every rule
@@ -48,26 +85,25 @@ export default function PlayerList() {
   const [picked, setPicked] = useState<Record<number, string>>({})
   const [note, setNote] = useState('')
 
+  /**
+   * The only thing this panel asks Lua for. STATE, NOT A TOGGLE -- `open:
+   * false` rather than "flip it" -- so a message lost on a busy frame costs one
+   * stale frame instead of leaving the panel and the cursor permanently
+   * disagreeing about which of them exists.
+   */
   const close = () => { void fetchNui(CB.PLAYERS_FOCUS, { open: false }) }
 
-  /**
-   * Ask Lua for the focus this mode needs. Sent as the state we want rather
-   * than as a toggle, so a dropped message cannot leave the two out of step.
-   */
-  const wantFocus = (report: boolean) => {
-    void fetchNui(CB.PLAYERS_FOCUS, { open: true, report })
-  }
-
+  // SWITCHING MODES IS A LOCAL EVENT NOW. It used to be a focus change as well,
+  // because report mode needed a screen that gave game input back up; both
+  // modes hold the same focus since #135, so there is nothing to tell Lua.
   const enterReport = () => {
     setReporting(true)
-    wantFocus(true)
   }
 
   const leaveReport = () => {
     setReporting(false)
     setPicked({})
     setNote('')
-    wantFocus(false)
   }
 
   // Escape backs out one step -- report mode first, then the panel. Two steps
@@ -144,10 +180,11 @@ export default function PlayerList() {
     <div className="pointer-events-none fixed inset-0 z-50">
       {/* THE SAME BOX THE HUD LAYS OUT IN, so the panel follows the player's
           safe-zone slider and the ultrawide clamp instead of pinning itself to
-          the physical right edge of the glass. On a 32:9 panel an element
-          anchored to the raw viewport sits a head-turn away from everything
-          else on screen (#20), and this card is meant to be read at a glance
-          during a fight. */}
+          the physical edge of the glass. On a 32:9 panel an element anchored to
+          the raw viewport sits a head-turn away from everything else on screen
+          (#20), and this card is meant to be read at a glance during a fight.
+          That is also why the side swap below is one property and not a
+          rewrite: both edges of this box are already the right edges. */}
       <div className="hud-safe">
         {/* THE ANCHOR IS THIS DIV AND NOT THE PLATE, and that is the whole fix
             rather than a tidy-up (owner, 2026-08-16: "you got your X coords
@@ -167,10 +204,16 @@ export default function PlayerList() {
             fighting it, and it takes the translate off the plate as well --
             `.plate` transitions `transform`, and a positioning transform on a
             surface that animates transform is a trap waiting for whoever adds
-            the next state to this card. */}
+            the next state to this card.
+
+            AND THE SIDE IS THIS ONE LINE, which is the point of having fixed
+            the anchor properly first. `left` instead of `right`, against the
+            same safe-zone inset, on the same box -- no negative margins, no
+            second transform, and nothing that has to know how wide the card
+            is in either mode. */}
         <div
           className="absolute top-1/2 -translate-y-1/2"
-          style={{ right: 'var(--safe-x)' }}
+          style={{ left: 'var(--safe-x)' }}
         >
           <div
             className="interactive plate flex max-h-[74vh] flex-col"
