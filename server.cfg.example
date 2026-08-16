@@ -134,6 +134,24 @@ ensure br_ringmaster     # optional -- the admin console's game-side half
 # set br_ddb_region       "us-east-2"
 # set br_ddb_table_prefix "ringmaster-"
 
+# ---------------------------------------------------------------------------
+# Voice: THERE IS NOTHING TO SET HERE, AND THAT IS THE POINT.
+#
+# There are no voice_* lines in this file and none are wanted. It was suggested
+# during #150 that some deployments need `setr voice_useNativeAudio true`
+# before Mumble channels exist; they do not, and adding it would have fixed
+# nothing. That convar chooses where decoded audio is rendered -- the engine
+# reads it at exactly one place, deciding between the game's own audio sink and
+# the built-in one, which is what you would turn on to use audio submixes. It
+# has no connection to channels, voice targets or listens, and the whole
+# channel system is unconfigurable: the engine reads no convar anywhere in it.
+#
+# So if voice is broken, it is not this file. The gamemode's own channels are
+# in br_lib/config/match.lua (Config.Match.voice) and the diagnosis lives in
+# `brvoice` -- server console for the assignment, F8 on a client for whether
+# any audio is actually leaving the machine.
+# ---------------------------------------------------------------------------
+
 # Our loading screen draws its own progress; the engine's busy spinner over
 # it is just a second, contradicting voice.
 setr sv_showBusySpinnerOnLoadingScreen false

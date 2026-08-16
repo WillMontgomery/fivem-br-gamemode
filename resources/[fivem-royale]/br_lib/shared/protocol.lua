@@ -292,7 +292,11 @@ BR.Nui = {
     -- them, and mid-match it describes the squad -- which is why party
     -- management had nothing to read.
     PARTY     = 'party',
-    -- Who is speaking right now, so the squad panel can say so.
+    -- Who is speaking right now: { talking = {src...}, names = {name...} },
+    -- the two arrays in the same order. The squad panel marks the ids; the
+    -- bottom-centre indicator prints the names, and it has to name people who
+    -- are NOT squadmates -- anyone in proximity can be heard -- so the names
+    -- travel with the ids rather than being looked up in the squad payload.
     VOICE     = 'voice',
     INV       = 'inv',
     PROMPT    = 'prompt',    -- world-anchored interaction prompt + progress ring

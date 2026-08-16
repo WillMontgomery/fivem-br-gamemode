@@ -646,9 +646,11 @@ export type Envelope =
   // are different groups -- the squad is this round's team, the party is who
   // you keep -- and one channel can only describe one of them.
   | { k: 'party';    d: SquadPayload }
-  // Who is speaking right now, by server id. Voice was the one system in the
-  // game with no visual at all.
-  | { k: 'voice';    d: { talking: number[] } }
+  // Who is speaking right now: ids for the squad panel's markers, and their
+  // names in the SAME ORDER for the bottom-centre indicator. The names have to
+  // be on the wire because proximity voice carries anyone in the match, and
+  // the interface has no other way to name a player who is not a squadmate.
+  | { k: 'voice';    d: { talking: number[]; names?: string[] } }
   | { k: 'inv';      d: WireInvPayload }
   | { k: 'feed';     d: FeedEntry }
   | { k: 'hit';      d: HitPayload }

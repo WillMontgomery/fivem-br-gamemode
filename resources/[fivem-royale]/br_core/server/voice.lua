@@ -67,6 +67,61 @@ function BR.Voice.squadChannel(matchId, idx)
     return (V.squadBase or 5000) + matchId * stride + idx
 end
 
+-- ==========================================================================
+-- THE ROOMS HAVE TO BE MADE, AND THIS IS THE ONLY SIDE THAT CAN MAKE THEM.
+--
+-- MUMBLE_CREATE_CHANNEL IS A SERVER NATIVE. That one fact is the whole of the
+-- second half of #150 and the reason it survived a careful reading of the
+-- client: everybody looking for the missing call was looking in
+-- client/voice.lua, where all the other Mumble natives live and where this one
+-- does not exist. FiveM's Mumble surface is 29 client natives and 3 server
+-- ones, and channel creation is one of the three.
+--
+-- WHAT WAS ACTUALLY HAPPENING WITHOUT IT:
+--
+--   The PROXIMITY room got made by accident. MumbleSetVoiceChannel creates a
+--   temporary channel when the one it is asked for does not exist, so the
+--   first player into a match brought their match's room into being simply by
+--   joining it. That is why the channel numbers always looked right.
+--
+--   The SQUAD room was never made by anything. No client ever JOINS it -- it
+--   is heard through a listen and spoken into through a voice target, and
+--   neither of those creates anything. So it never existed, and the engine
+--   said so every time a squad player applied their assignment:
+--     "MUMBLE_ADD_VOICE_CHANNEL_LISTEN: Tried to call native on a channel
+--      that didn't exist"
+--
+-- Creating both here is cheap, idempotent from this side, and removes the
+-- accident: the room exists because the server made it, not because somebody
+-- happened to walk into it first.
+--
+-- ONE CAVEAT, STATED PLAINLY because it decides what the owner should expect.
+-- A channel created here is added to the Mumble server's channel list, and the
+-- evidence that it is broadcast to clients who ALREADY authenticated is not
+-- conclusive. If squad-at-range is still silent after this, that is the reason,
+-- and the fix is to stop using a channel for squad voice at all and target
+-- squadmates by server id instead (MumbleAddVoiceTargetPlayerByServerId) --
+-- which needs no channel and cannot have this problem. Proximity voice, which
+-- is what #150 is actually about, does not depend on any of this.
+local made = {}
+
+--- @param ch integer|nil
+local function makeChannel(ch)
+    -- Channel 0 is the root every client already starts in; the native ignores
+    -- it, and asking would be asking for the one room nobody can create.
+    if not ch or ch == 0 or made[ch] then return end
+    if not MumbleCreateChannel then
+        made[ch] = true   -- say it once, not once a second
+        print('[br_core] VOICE: MUMBLE_CREATE_CHANNEL is missing on this '
+            .. 'server build. Squad rooms cannot be created, so squad voice '
+            .. 'at range will not work and clients will log '
+            .. '"Tried to call native on a channel that didn\'t exist".')
+        return
+    end
+    MumbleCreateChannel(ch)
+    made[ch] = true
+end
+
 --- @param e table roster entry
 --- @return integer
 local function proxChannelFor(e)
@@ -99,6 +154,13 @@ function BR.Voice.push(src)
 
     if e.voiceProx == prox and e.voiceSquad == squad then return end
     e.voiceProx, e.voiceSquad = prox, squad
+
+    -- MAKE THE ROOMS BEFORE TELLING ANYONE TO GO TO THEM. Both of them, and
+    -- the squad room even though this server will never be in it -- see the
+    -- block above: nothing else in the system creates that one, which is why
+    -- squad players' consoles have been printing a Mumble warning.
+    makeChannel(prox)
+    makeChannel(squad)
 
     TriggerClientEvent(BR.Net.VOICE_SET, src, {
         prox      = prox,

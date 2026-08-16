@@ -199,31 +199,122 @@ function DoesBlipExist() return false end
 -- distance modelled: talkerProximity is handed to the engine and attenuation
 -- happens somewhere no test here can see. `hears` answers "is there a path at
 -- all", which is the question the report asked.
+-- A CHANNEL ID NAMES A ROOM THAT EXISTS, OR IT NAMES NOTHING.
+--
+-- THIS IS THE HOLE THE SUITE HAD, and it is why 77 assertions -- 31 of them
+-- about voice -- passed green on a build where nobody could hear anybody
+-- (#150, second report). The old stubs accepted any integer:
+-- MumbleSetVoiceChannel(2003) put you in room 2003 instantly whether or not
+-- room 2003 existed, and MumbleAddVoiceTargetChannel(1, 2003) faithfully
+-- recorded a destination that was not there. So `hears` answered "yes, these
+-- two can hear each other" about a pair of clients the engine was refusing
+-- outright, and every voice assertion was checking the gamemode's arithmetic
+-- against a fiction that could not be wrong.
+--
+-- The engine's own words, from the playtest these tests were supposed to have
+-- made unnecessary:
+--
+--   Warning: [mumble] MUMBLE_ADD_VOICE_CHANNEL_LISTEN: Tried to call native
+--   on a channel that didn't exist
+--
+-- WHAT THIS MODELS NOW, taken from what the engine actually does rather than
+-- from what the native names suggest -- the three calls behave differently and
+-- the differences are the bug:
+--
+--   SET_VOICE_CHANNEL          creates the room if it is missing, and joins
+--                              it. Both take a round trip; neither happens in
+--                              the calling frame.
+--   ADD_VOICE_CHANNEL_LISTEN   refuses a missing room LOUDLY and drops it.
+--   ADD_VOICE_TARGET_CHANNEL   refuses a missing room SILENTLY, drops it, and
+--                              never retries.
+--
+-- That last one is why the first attempt at #150 looked correct and changed
+-- nothing: it filled the voice target in the same frame as the join, before
+-- the room existed, and the engine threw every one of those calls away without
+-- a word. A stub that answers "channel joined" for a channel nobody created is
+-- a stub that will keep lying, so this one refuses -- and, just as important,
+-- refuses for a WHILE, because a stub that says yes instantly hides the race
+-- just as thoroughly as one that never says no.
 local mumble = {}
 local function mumbleReset()
     mumble = {
         active   = true,
-        channel  = 0,      -- room we are in
+        channel  = 0,      -- room we are actually in
+        want     = nil,    -- room we have asked to be in, not yet joined
         target   = 0,      -- selected voice target; 0 = none selected
         targets  = {},     -- [id] = { channel, ... }
         listen   = {},     -- [channel] = true; rooms heard from outside
         prox     = nil,    -- last NetworkSetTalkerProximity
+        -- Rooms that EXIST. 0 is the root channel every Mumble client starts
+        -- in; it is the one room nobody has to create, and also the one room
+        -- this gamemode must never leave anybody sitting in.
+        channels = { [0] = true },
+        pending  = {},     -- asked for, not yet echoed back by the server
+        refused  = {},     -- calls the engine threw out, and which ones
+        -- The Mumble client's own connection, which drops and returns
+        -- underneath the game with no event to hang anything on. It is a
+        -- field rather than a constant because the only thing that notices is
+        -- the 1Hz watcher in voice.lua, and a test that cannot take the
+        -- connection away cannot exercise it.
+        connected = true,
     }
 end
 mumbleReset()
 
+local function refuse(native, ch)
+    mumble.refused[#mumble.refused + 1] = ('%s(%s)'):format(native, tostring(ch))
+end
+
+--- The SERVER creating a room, which is the only thing that can.
+---
+--- MUMBLE_CREATE_CHANNEL IS A SERVER NATIVE -- it is deliberately NOT defined
+--- anywhere in this file, because defining it would let a future client-side
+--- call look like it worked here and do nothing in the game. That is exactly
+--- the shape of mistake #150 was: the missing call was being looked for in
+--- client/voice.lua, among the other 29 Mumble natives, and it was never going
+--- to be there. server/voice.lua calls this; the client cannot.
+local function serverCreates(ch)
+    if ch and not mumble.channels[ch] then mumble.pending[ch] = true end
+end
+
 function MumbleSetActive(v) mumble.active = v and true or false end
-function MumbleIsConnected() return true end
-function MumbleSetVoiceChannel(ch) mumble.channel = ch end
-function MumbleClearVoiceChannel() mumble.channel = 0 end
+function MumbleIsConnected() return mumble.connected end
+function MumbleDoesChannelExist(ch) return mumble.channels[ch] == true end
+
+--- Which room the engine believes a player is in. -1 for "none I know of",
+--- which is the state the settle band exists to wait out.
+function MumbleGetVoiceChannelFromServerId(_)
+    if mumble.channel == nil then return -1 end
+    return mumble.channel
+end
+
+--- JOINING IS A REQUEST, NOT AN ASSIGNMENT -- and it is also how a room comes
+--- into existence at all from the client's side. Neither half lands in the
+--- calling frame: the Mumble client does its channel work on a timer of its
+--- own and then waits for the server. mumbleSettle() is that reply arriving.
+function MumbleSetVoiceChannel(ch) mumble.want = ch end
+function MumbleClearVoiceChannel() mumble.channel, mumble.want = 0, nil end
 function NetworkSetTalkerProximity(d) mumble.prox = d end
 function MumbleSetVoiceTarget(id) mumble.target = id end
 function MumbleClearVoiceTarget(id) mumble.targets[id] = {} end
 function MumbleAddVoiceTargetChannel(id, ch)
+    -- THE SILENT ONE, AND THE BUG. The listen below announces its refusal in
+    -- the console, which is what finally identified this; the target just
+    -- drops the channel, ships an empty packet, clears the pending update and
+    -- never tries again -- leaving a microphone wired to nothing and no
+    -- diagnostic anywhere.
+    if not mumble.channels[ch] then
+        return refuse('MUMBLE_ADD_VOICE_TARGET_CHANNEL', ch)
+    end
     mumble.targets[id] = mumble.targets[id] or {}
     table.insert(mumble.targets[id], ch)
 end
-function MumbleAddVoiceChannelListen(ch) mumble.listen[ch] = true end
+function MumbleAddVoiceChannelListen(ch)
+    if not mumble.channels[ch] then
+        return refuse('MUMBLE_ADD_VOICE_CHANNEL_LISTEN', ch)
+    end
+    mumble.listen[ch] = true
+end
 function MumbleRemoveVoiceChannelListen(ch) mumble.listen[ch] = nil end
 
 --- Everything about one machine's voice routing, frozen.
@@ -235,9 +326,12 @@ local function mumbleSnapshot()
     end
     local l = {}
     for ch in pairs(mumble.listen) do l[ch] = true end
+    local ex = {}
+    for ch in pairs(mumble.channels) do ex[ch] = true end
     return { active = mumble.active, channel = mumble.channel,
              selected = mumble.target, sends = t, listen = l,
-             prox = mumble.prox }
+             prox = mumble.prox, exists = ex,
+             refused = table.concat(mumble.refused, ' ') }
 end
 
 --- Can `speaker` be heard by `listener`? Two snapshots, one question.
@@ -299,7 +393,10 @@ loadAll({
 -- would pull in the DUI browser and the ray-cast for no gain: what matters here
 -- is which entry the pickup path resolves and what it sends, not what is drawn.
 BR.State = BR.State or {}
-BR.State.me = { state = BR.PlayerState.ALIVE }
+-- `src` is set because voice.lua asks the engine which room IT thinks this
+-- player is in, keyed on the server id, and that readback is the gate on the
+-- whole transmit path now (#150).
+BR.State.me = { src = 1, state = BR.PlayerState.ALIVE }
 BR.State.landed = true
 BR.State.roster = {}
 BR.Native = {
@@ -909,10 +1006,43 @@ end
 --- @param prox integer|nil
 --- @param squad integer|nil
 --- @return table snapshot
+--- The Mumble server answering, and the client noticing.
+---
+--- One turn is one round trip: everything asked for comes into existence, a
+--- pending join completes, and the 10Hz band gets a step so voice.lua can
+--- state the routing it deliberately withheld while the room was still on its
+--- way. Both halves matter -- a client that states its routing once, in the
+--- frame it was told the numbers, states it into a void and never finds out.
+--- @param turns integer|nil  round trips to let pass; three by default
+local function mumbleSettle(turns)
+    for _ = 1, turns or 3 do
+        for ch in pairs(mumble.pending) do mumble.channels[ch] = true end
+        mumble.pending = {}
+        if mumble.want then
+            if mumble.channels[mumble.want] then
+                mumble.channel = mumble.want
+            else
+                -- The implicit create: asking to join a room that does not
+                -- exist is what brings it into being, one round trip later.
+                mumble.pending[mumble.want] = true
+            end
+        end
+        BR.Loop.step(BR.Loop.TICK)
+    end
+end
+
 local function voiceApply(mode, prox, squad)
     mumbleReset()
     fire('br:settings:changed', { voiceMode = mode })
+    -- THE SERVER MAKES THE ROOMS FIRST. This is br_core/server/voice.lua's
+    -- makeChannel(), in the order it really happens -- both rooms created,
+    -- then the assignment sent. The squad room matters most: no client ever
+    -- joins it, so nothing on the client side would ever bring it into being.
+    serverCreates(prox)
+    serverCreates(squad)
     fire(BR.Net.VOICE_SET, { prox = prox, squad = squad, proximity = 25.0 })
+    -- AND THEN A MOMENT PASSES, because it has to. See mumbleSettle.
+    mumbleSettle()
     return mumbleSnapshot()
 end
 
@@ -920,7 +1050,86 @@ end
 --- touching the engine model -- the settings screen mid-match.
 local function voiceMode(mode)
     fire('br:settings:changed', { voiceMode = mode })
+    -- A PREFERENCE CHANGE COSTS A BEAT TOO. Applying one clears the room and
+    -- re-joins it, and re-joining is a round trip like any other -- so the
+    -- transmit path is withheld across it exactly as it is on a fresh
+    -- assignment. That is a real half-second of silence when a player flips
+    -- the setting mid-match, and it is the correct trade: the alternative is
+    -- re-stating a target against a room the engine has not confirmed, which
+    -- is the bug.
+    mumbleSettle()
     return mumbleSnapshot()
+end
+
+describe('a room has to exist before anything can use it -- #150')
+do
+    -- THE ASSERTIONS THAT WOULD HAVE CAUGHT THIS, and did not exist.
+    --
+    -- Every other voice test in this file used to run against a model in which
+    -- naming a room was the same as there being one, which is why they were
+    -- all green while two players stood next to each other in silence. These
+    -- are the three facts that separate naming a room from having one.
+    local PROX, SQ = 2041, 5420
+
+    -- 1. THE ROUTING IS WITHHELD UNTIL THE ROOM IS REAL.
+    --
+    --    This is the assignment arriving and the client acting on it, with no
+    --    time allowed to pass -- which is exactly what the shipped build did,
+    --    all of it in one frame. The engine has not joined the room yet, so
+    --    the voice target must not be filled: every channel handed to
+    --    MumbleAddVoiceTargetChannel here would be discarded in silence and
+    --    never retried, leaving the microphone wired to nothing.
+    mumbleReset()
+    fire('br:settings:changed', { voiceMode = 'squad' })
+    serverCreates(PROX)
+    serverCreates(SQ)
+    fire(BR.Net.VOICE_SET, { prox = PROX, squad = SQ, proximity = 25.0 })
+
+    local early = mumbleSnapshot()
+    ok(early.channel ~= PROX,
+        'the room is not joined in the frame it was asked for',
+        tostring(early.channel))
+    ok(#early.sends == 0,
+        'so nothing is transmitted into it yet -- and nothing is thrown away',
+        ('sends=%d'):format(#early.sends))
+    ok(early.refused == '',
+        'and the engine is asked to resolve nothing it cannot', early.refused)
+
+    -- 2. AND THEN IT IS STATED, WITHOUT A NEW ASSIGNMENT TO PROMPT IT. The
+    --    room turns up about half a second later and something has to notice.
+    --    Nothing did before this fix: the client spoke once, into a void.
+    mumbleSettle()
+    local settled = mumbleSnapshot()
+    ok(settled.channel == PROX,
+        'once the room exists the player is in it', tostring(settled.channel))
+    ok(#settled.sends == 2,
+        'and the transmit path is stated then, not before',
+        ('sends=%d refused=%s'):format(#settled.sends, settled.refused))
+    ok(settled.listen[SQ], 'including the squad room')
+
+    local other = voiceApply('squad', PROX, SQ)
+    ok(hears(settled, other) and hears(other, settled),
+        'so two players in a room that exists can hear each other')
+
+    -- 3. AND A ROOM NOBODY MADE CARRIES NOTHING. The squad room is the case:
+    --    no client ever JOINS it -- it is heard through a listen and spoken
+    --    into through a target, and neither of those creates anything -- so if
+    --    the server does not make it, it does not exist. That is the console
+    --    warning in the issue, reproduced.
+    mumbleReset()
+    fire('br:settings:changed', { voiceMode = 'squad' })
+    serverCreates(PROX)          -- ...and deliberately NOT the squad room
+    fire(BR.Net.VOICE_SET, { prox = PROX, squad = SQ, proximity = 25.0 })
+    mumbleSettle()
+    local noSquadRoom = mumbleSnapshot()
+    ok(not noSquadRoom.listen[SQ],
+        'a squad room the server never created cannot be listened to')
+    ok(noSquadRoom.refused:find('MUMBLE_ADD_VOICE_CHANNEL_LISTEN', 1, true) ~= nil,
+        'and the engine says so in the words the owner pasted into the issue',
+        noSquadRoom.refused)
+    ok(#noSquadRoom.sends == 1 and noSquadRoom.sends[1] == PROX,
+        'while proximity, whose room was made, is unaffected',
+        ('sends=%d'):format(#noSquadRoom.sends))
 end
 
 describe('solo proximity voice -- #150')
@@ -1035,6 +1244,11 @@ do
     -- Back to the lobby: the server pushes the lobby room and no squad room.
     fire(BR.Net.VOICE_SET, { prox = BR.Config.Match.voice.lobbyChannel,
                              squad = nil, proximity = 25.0 })
+    -- The lobby is a room like any other and has to be created like any other
+    -- -- so there is a beat between leaving the match and arriving in it. That
+    -- beat is silent rather than leaky: the voice target is cleared before the
+    -- new one is built, so a player mid-transition is transmitting nowhere.
+    mumbleSettle()
     local lobby = mumbleSnapshot()
 
     ok(not lobby.listen[SQ],
@@ -1057,9 +1271,30 @@ do
     local PROX = 2023
     voiceApply('nearby', PROX, nil)
 
-    mumbleReset()            -- the reconnect: the engine has forgotten everything
-    BR.Voice.state.applied = false
+    -- THE DROP, MODELLED AS A DROP rather than by reaching in and clearing a
+    -- flag by hand. The engine forgets everything it knew, the connection goes
+    -- away, and the 1Hz watcher is the only thing in the game that can notice
+    -- either of those.
+    mumbleReset()
+    mumble.connected = false
     BR.Loop.step(BR.Loop.SLOW)
+
+    mumble.connected = true      -- ...and it comes back
+    BR.Loop.step(BR.Loop.SLOW)
+
+    -- NOTHING IS ASSUMED TO HAVE SURVIVED IT. A reconnected Mumble client
+    -- rebuilds its channel list from the server, so the room has to be joined
+    -- again and the routing has to wait for it again. A client that trusted
+    -- its own memory here would come back holding the right room number with
+    -- nothing behind it, for the rest of the match.
+    ok(mumble.want == PROX, 'the room is joined again from scratch',
+        tostring(mumble.want))
+    -- And the target stays empty until it is: re-stating routing into a room
+    -- the engine has not rejoined is the original bug, arriving by a new road.
+    ok(#(mumble.targets[1] or {}) == 0,
+        'and nothing is transmitted into it while that is pending')
+
+    mumbleSettle()
     local healed = mumbleSnapshot()
 
     ok(healed.channel == PROX, 'the room is re-joined', tostring(healed.channel))
@@ -1081,6 +1316,14 @@ do
         'and reports where audio is being sent, not just which room we are in')
     ok(said:find('NOTHING', 1, true) == nil,
         'and does not report silence on a healthy assignment', said)
+    -- The line the second attempt at #150 needed. "talking into" is what this
+    -- client ASKED the engine for, and on the reported build the engine
+    -- accepted none of it -- so the readout has to say whether the engine
+    -- agrees the player is in the room those numbers came from.
+    ok(said:find('in the room', 1, true) ~= nil,
+        'and says whether the engine has actually joined the room')
+    ok(said:find('NOT YET', 1, true) == nil,
+        'which on a settled assignment it has', said)
 end
 
 -- ----------------------------------------------------------- the descent ---

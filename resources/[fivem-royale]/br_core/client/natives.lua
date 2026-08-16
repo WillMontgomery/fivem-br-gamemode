@@ -943,6 +943,18 @@ function BR.Native.check()
     -- Read-only calls only: setting a channel here would move the player out
     -- of whatever room they are legitimately in.
     probe('MumbleIsConnected',   function() return MumbleIsConnected() end)
+    -- THE FIRST OF THE THREE, AND THE ONE THAT WAS NEVER CALLED (#150).
+    --
+    -- A Mumble channel does not exist because a script named it. Nothing can
+    -- be joined, listened to or transmitted into until it has been created,
+    -- and a nil here is not a degraded voice system -- it is no voice system,
+    -- because every channel id this gamemode uses would name a room that is
+    -- not there. The engine says so out loud when it happens:
+    --   "MUMBLE_ADD_VOICE_CHANNEL_LISTEN: Tried to call native on a channel
+    --    that didn't exist"
+    probe('MumbleCreateChannel', function()
+        return MumbleCreateChannel ~= nil
+    end)
     probe('MumbleSetVoiceChannel', function()
         return MumbleSetVoiceChannel ~= nil
     end)

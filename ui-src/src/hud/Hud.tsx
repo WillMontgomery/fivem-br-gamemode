@@ -11,6 +11,7 @@ import SquadPanel from './SquadPanel'
 import DbnoOverlay from './DbnoOverlay'
 import InventoryBar from './InventoryBar'
 import HitFeedback from './HitFeedback'
+import TalkingBar from './TalkingBar'
 
 /**
  * The in-match HUD.
@@ -178,6 +179,12 @@ export default function Hud({ visible }: { visible: boolean }) {
           </div>
         )}
 
+
+        {/* Bottom centre: who is speaking. Deliberately NOT hidden during the
+            descent -- the corners that hide are the ones the game's own help
+            boxes take over, and this is not one of them. Squad comms during
+            the drop is exactly when knowing who is talking matters. */}
+        <TalkingBar />
 
         {dbno.downed && <DbnoOverlay dbno={dbno} />}
 
