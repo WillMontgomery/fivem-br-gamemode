@@ -173,3 +173,56 @@ if fail > 0 then
     os.exit(1)
 end
 io.write('\n')
+
+-- ---------------------------------------------------------------------------
+-- THE CURVE CONTRACT, shared with Ringmaster.
+--
+-- The console cannot run Lua, so it carries its own port of this curve in
+-- src/lib/xp.ts. Two implementations of one rule are only safe when something
+-- fails loudly the moment they disagree -- the same arrangement the ban rule
+-- already has, for the same reason.
+--
+-- THESE CASES ARE THE CONTRACT. The identical list lives in the console's
+-- scripts/check-xp-curve.mjs and both sides must satisfy it. If you change the
+-- curve here, change it there, and these will tell you if you got it wrong.
+--
+-- THE BOUNDARY CASES ARE THE POINT. A port that rounds differently agrees on
+-- most values and diverges near a threshold -- correct almost always, wrong
+-- exactly when somebody is about to level up. 2498 is in the list because it
+-- is the real value that exposed Ringmaster showing level 2 for a player the
+-- game showed as level 3.
+-- ---------------------------------------------------------------------------
+describe('xp.curve contract (mirrored in fivem-ringmaster)')
+
+for _, c in ipairs({
+    { level = 1, threshold = 0 },
+    { level = 2, threshold = 800 },
+    { level = 3, threshold = 2350 },
+    { level = 4, threshold = 4400 },
+    { level = 5, threshold = 6850 },
+}) do
+    ok(BR.Xp.thresholdFor(c.level) == c.threshold,
+        ('thresholdFor(%d) == %d'):format(c.level, c.threshold))
+    ok(BR.Xp.thresholdFor(c.level) % 50 == 0,
+        ('thresholdFor(%d) is a multiple of 50'):format(c.level))
+end
+
+for _, c in ipairs({
+    { xp = 0,    level = 1, into = 0,    span = 800 },
+    { xp = 1,    level = 1, into = 1,    span = 800 },
+    { xp = 799,  level = 1, into = 799,  span = 800 },
+    { xp = 800,  level = 2, into = 0,    span = 1550 },
+    { xp = 801,  level = 2, into = 1,    span = 1550 },
+    { xp = 2349, level = 2, into = 1549, span = 1550 },
+    { xp = 2350, level = 3, into = 0,    span = 2050 },
+    { xp = 2498, level = 3, into = 148,  span = 2050 },
+    { xp = 4399, level = 3, into = 2049, span = 2050 },
+    { xp = 4400, level = 4, into = 0,    span = 2450 },
+}) do
+    ok(BR.Xp.levelFor(c.xp) == c.level,
+        ('levelFor(%d) == %d'):format(c.xp, c.level))
+
+    local _, into, span = BR.Xp.progress(c.xp)
+    ok(into == c.into and span == c.span,
+        ('progress(%d) == %d/%d'):format(c.xp, c.into, c.span))
+end
