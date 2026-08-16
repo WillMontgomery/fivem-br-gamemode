@@ -391,11 +391,39 @@ html, body, #root {
    name' and our keybind rows like 'Use selected item' -- the color there works
    better too."
 
-   SO IT IS COPIED OFF THOSE TWO ROWS RATHER THAN INVENTED. Both are, to the
-   character, `text-[0.82rem] text-white/70` in Barlow at its inherited 400:
+   SO IT IS COPIED OFF THOSE TWO ROWS RATHER THAN INVENTED -- BUT OFF WHAT THEY
+   RENDER, NOT WHAT THEY SAY, AND #148 GOT THAT WRONG (#156).
+
+   Both rows are, to the character, `text-[0.82rem] text-white/70 tscale`:
    Settings' Display name field label (Settings.tsx) and Keybinds' action
-   labels (Keybinds.tsx). 0.82rem, weight 400, no tracking, no transform, and
-   --color-text-body for the 0.70.
+   labels (Keybinds.tsx). #148 read the 0.82rem off the source and copied it.
+   They do not render at 0.82rem. `.tscale` is declared after Tailwind's
+   utilities at the same specificity, so it WINS over `text-[0.82rem]`, and it
+   resolves to `calc(1em * var(--text-scale))` -- the PARENT's size. Measured in
+   the harness at a 16px root, both rows render at exactly 1.000rem, as does
+   every other `text-[...] tscale` element on screen.
+
+   So the owner approved the look of 1rem text, #148 shipped him 0.82rem, and
+   #156 ("make the text about 3x larger and bold") is the sound of that 18%
+   shortfall -- prose that came out SMALLER than the field labels sitting above
+   it, which is backwards. 1rem is therefore not a new invention: it is the
+   size #148 was asked for and meant to copy.
+
+   1rem, weight 600, no tracking, no transform, --color-text-body for the 0.70.
+
+   WHY NOT LARGER, GIVEN "3x". 0.82 * 3 is 2.46rem, which is display-heading
+   size -- larger than the 1.6rem READY UP button and half again the 1.6rem
+   lobby heading. Read as direction rather than arithmetic it says "much too
+   small, and it should be bold". The ceiling is the Settings section headings
+   it sits under (`font-display` Anton caps at 0.95rem): prose has to stay
+   subordinate to those, and it does at 1rem because Anton in uppercase with
+   0.08em tracking reads as a heading at a smaller nominal size than Barlow
+   sentence case. Above ~1.05rem the prose starts competing with SAVE/CANCEL.
+
+   WHY 600 AND NOT 700. Both are real loaded weights (main.tsx imports Barlow
+   400/500/600/700, so neither synthesises). 600 is the project's existing
+   emphasis weight -- `.micro-label`, chat author names -- and 700 across a
+   four-line paragraph reads as shouting rather than as body copy.
 
    IT CARRIES THE TEXT-SIZE PREFERENCE ITSELF, which is the one thing it does
    that neither named row does. `.tscale` multiplies 1em -- the PARENT's size --
@@ -407,15 +435,23 @@ html, body, #root {
 
    --fs IS STILL HONOURED for the sites that need a smaller prose than the
    default -- a timestamp in the notice log is a sentence fragment in a row
-   sized 0.85rem, and 0.82 there would shout. Set --fs and the scaling still
-   works; that is the same name `.ts` uses, deliberately.
+   sized 0.85rem, and the default there would shout. Set --fs and the scaling
+   still works; that is the same name `.ts` uses, deliberately.
+
+   THE --fs SITES DELIBERATELY DID NOT MOVE WITH THE DEFAULT IN #156. Every one
+   of them is anchored to a LOCAL sibling rather than to this default: the
+   notice-log timestamp to the 0.85rem notice beside it, the voice-mode and
+   colourblind-mode descriptions to the labels above them inside narrow
+   buttons, the lobby mode tile to a width that was tuned so the pair does not
+   re-wrap. Scaling them with the default would have re-wrapped exactly the
+   tight boxes those values were chosen to fit.
 
    DO NOT ALSO ADD `ts`. It is declared later in this file and would win with
    `var(--fs, 1em)`, so a site with `ts` and no --fs silently gets the parent's
    size back. This class already does what `ts` was there for. */
 .body-text {
-  font-size: calc(var(--fs, 0.82rem) * var(--text-scale));
-  font-weight: 400;
+  font-size: calc(var(--fs, 1rem) * var(--text-scale));
+  font-weight: 600;
   letter-spacing: normal;
   text-transform: none;
   line-height: 1.5;
