@@ -27,11 +27,40 @@
 # eval's it. An unrecognised verb exits non-zero. The forced-command line in
 # authorized_keys is the outer boundary; this case statement is the inner one.
 #
-# SLICE 1 IS READ-ONLY. The verb set is EXACTLY `status` and `telemetry` --
-# nothing that can change a running game. There is deliberately no stop, no
-# restart, no config. verify.sh greps this file to enforce that the set has not
-# grown, so the read-before-write boundary is mechanical rather than a promise.
-# The dangerous verbs arrive in Slice 4, behind an audit log.
+# THE VERB SET IS PINNED BY verify.sh, which greps this file for it and fails
+# the build when it grows. Every verb here is a capability the console has over
+# this box, so the set moving is a decision somebody records rather than a slip.
+# It is currently `status`, `telemetry`, `kick`, `deploy`, `branches` and
+# `switchref`.
+#
+# THE BRANCH-SWITCH INVARIANT, which is the reason `branches` and `switchref`
+# exist and the reason they are so fussy.
+#
+# Read the paragraph above again: authorized_keys pins Ringmaster's key to THIS
+# FILE, inside the clone deploy.sh hard-resets. That was the right call while
+# main was the only thing ever checked out. The moment the console can ask for
+# another branch, "switch to branch X" and "replace the console's only channel
+# to this box with whatever X says that channel should be" become mechanically
+# the same operation -- the deploy would overwrite this script with an
+# unreviewed copy of itself, and the next `kick` would run that copy.
+#
+#   SO: A REF IS ONLY DEPLOYABLE IF <sha>:tools/dispatch.sh EXISTS, IS MODE
+#   100755, AND ITS BLOB ID EQUALS origin/main:tools/dispatch.sh's BLOB ID.
+#
+# Blob ids rather than a diff or a checksum of our own, because git already
+# content-addresses every file: the whole rule is two `ls-tree` calls and a
+# string compare (see ref_blocked_by below).
+#
+# It is enforced TWICE -- here before the pin is written, and again in
+# tools/deploy.sh before the working tree is touched. Twice because the two run
+# at different times: a switch is staged now and deployed when the match ends,
+# and the ref can move in between. deploy.sh's copy is the load-bearing one; see
+# the comment on it there for why.
+#
+# THE ACCEPTED COST: this feature cannot be used to test a change to tools/.
+# Such a branch is listed, shown ineligible, and refused. Changes to tools/ go
+# through main and PR review, which is where verify.sh's gates run. That is the
+# right place for them.
 
 set -uo pipefail
 
@@ -52,6 +81,38 @@ SRC_DIR="${BR_SRC_DIR:-$SERVER_ROOT/.gamemode-src}"
 # deployed), so status degrades to "roughly right" instead of "unknown".
 [ -d "$SRC_DIR/.git" ] || SRC_DIR="$REPO"
 
+# WHICH REF THE NEXT DEPLOY SHOULD CHECK OUT, AS A PLAIN FILE THIS USER OWNS.
+#
+# One line: `<ref> <sha>`, or `<ref>` once the sha has been consumed by a
+# successful deploy. deploy.sh reads it, re-validates the name from scratch, and
+# never trusts a byte of it.
+#
+# WHY A FILE AND NOT AN ARGUMENT. do_deploy shells out through a sudoers rule
+# that matches
+#
+#   ubuntu ALL=(root) NOPASSWD: /usr/bin/systemctl start royale-deploy
+#
+# and sudo matches a command line EXACTLY. Appending a branch would silently
+# stop matching the rule already deployed on the box -- the same trap that kept
+# `--no-block` out of do_deploy. There is no argument to pass, so the ref has to
+# be somewhere the unit can find it.
+#
+# WHY NOT A systemd EnvironmentFile, which is the obvious answer and is wrong.
+# That file is read by systemd AS ROOT while being writable by the deploy user,
+# so anything able to write it chooses environment variables for a root unit --
+# PATH, LD_PRELOAD, anything. It converts "can pin a branch" into "can run code
+# as root", which is a strictly larger capability than this feature is asking
+# for. A plain ref-name file that an unprivileged deploy.sh reads and
+# re-validates cannot do that: the worst a corrupted one can say is the name of
+# a branch, which is exactly the decision it is allowed to make.
+PIN_FILE="${BR_PIN_FILE:-$SERVER_ROOT/.branch-pin}"
+
+# Who asked for the pin, and when. PURELY COSMETIC and deliberately a second
+# file: the banner in the console has to be able to name a person, and putting
+# that on the line deploy.sh parses would mean deploy.sh parsing a human's
+# display name. Nothing reads this to make a decision.
+PIN_BY_FILE="${BR_PIN_BY_FILE:-$SERVER_ROOT/.branch-pin.by}"
+
 # First word is the verb; the rest are its arguments. The verb is only ever
 # MATCHED against the case below, never executed -- so a payload in
 # $SSH_ORIGINAL_COMMAND cannot become a command.
@@ -69,6 +130,91 @@ args_raw="${SSH_ORIGINAL_COMMAND#* }"
 # runs it (see the process list in DEPLOY.md's crash notes).
 fxserver_pid() {
     pgrep -f 'cfx-server/FXServer' 2>/dev/null | head -1
+}
+
+# One JSON string body, escaped. NOT optional decoration: `branches` prints
+# commit subjects and author names straight off a branch anybody can push, and a
+# single `"` in one of them turns this script's output into something the
+# console reports as `dispatch returned non-JSON` -- i.e. an apostrophe in a
+# commit message would break the branch list and look like the SSH channel was
+# down. Backslash first, then quote, or the escapes escape each other. Control
+# characters are DROPPED rather than escaped: \u sequences are the one part of
+# JSON string encoding that cannot be done with sed, and nothing legitimate puts
+# a control character in a commit subject.
+json_str() {
+    printf '%s' "${1:-}" \
+        | tr -d '\000-\037' \
+        | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+# Is this a ref name we are willing to hand to git, judged as a RAW STRING
+# before git has seen it?
+#
+# THIS IS A SHAPE CHECK, NOT A NAMING POLICY. There is deliberately no allowlist
+# of `feature/`-style prefixes: which branches are worth deploying is a judgement
+# for the person clicking, and a regex that encodes it only teaches people to
+# name branches to get past it. What this refuses is the handful of strings that
+# stop being a branch name once something else reads them:
+#
+#   a leading '-'      is an OPTION to every git command below. `--upload-pack=`
+#                      on a fetch is arbitrary code execution on this box, and it
+#                      arrives looking exactly like a branch name.
+#   '..' or '//' or a
+#   trailing '/'       climb out of, or fall out of, refs/remotes/origin/<ref>.
+#   anything outside
+#   [A-Za-z0-9._/-]    never reaches a shell here -- nothing is eval'd -- but it
+#                      does reach the JSON we print and the pin file deploy.sh
+#                      parses, and both are read by something that trusts us.
+#
+# `git check-ref-format` is the real authority on what git considers a legal
+# ref, and it runs LAST: it is itself a git command taking this string as an
+# argument, so it cannot be the thing that decides the string is safe to pass to
+# a git command.
+valid_ref() {
+    local r="${1:-}"
+    [ -n "$r" ] || return 1
+    [ "${#r}" -le 120 ] || return 1
+    printf '%s' "$r" | grep -qE '^[A-Za-z0-9][A-Za-z0-9._/-]*$' || return 1
+    case "$r" in
+        *..*|*//*|*/) return 1 ;;
+    esac
+    git check-ref-format "refs/heads/$r" >/dev/null 2>&1
+}
+
+# "<mode> <blobid>" for tools/dispatch.sh at a commit, or empty if it is absent.
+dispatch_entry() {
+    git -C "$SRC_DIR" ls-tree "$1" -- tools/dispatch.sh 2>/dev/null \
+        | awk '{print $1" "$3}'
+}
+
+# THE RULE, in one function. Silent and returns 0 when <sha> may be deployed;
+# prints the operator-facing reason and returns 1 when it may not.
+#
+# The reason is a sentence rather than a code because it is rendered verbatim
+# next to a disabled branch in the console, and "this branch changes
+# tools/dispatch.sh" is precisely the thing whoever is looking needs to know.
+ref_blocked_by() {
+    local sha="${1:-}" want have
+    want="$(dispatch_entry origin/main)"
+    if [ -z "$want" ]; then
+        echo "cannot read tools/dispatch.sh on origin/main"
+        return 1
+    fi
+    have="$(dispatch_entry "$sha")"
+    if [ -z "$have" ]; then
+        echo "deletes tools/dispatch.sh, which is the console's channel to this box"
+        return 1
+    fi
+    case "$have" in
+        "100755 "*) : ;;
+        *)  echo "tools/dispatch.sh is not executable (mode 100755) on this branch"
+            return 1 ;;
+    esac
+    if [ "$have" != "$want" ]; then
+        echo "changes tools/dispatch.sh -- deploy it through main and PR review"
+        return 1
+    fi
+    return 0
 }
 
 # --- verbs -------------------------------------------------------------------
@@ -126,8 +272,41 @@ do_status() {
         host_uptime="$(cut -d. -f1 /proc/uptime)"
     fi
 
-    printf '{"running":%s,"pid":%s,"uptimeSec":%s,"commit":"%s","behindMain":%s,"hostUptimeSec":%s}\n' \
-        "$running" "${pid:-0}" "$uptime" "$commit" "$behind" "$host_uptime"
+    # WHICH REF IS ACTUALLY SERVED, read off the clone rather than off the pin.
+    #
+    # The two differ for real and the difference matters: a switch staged into
+    # the pin file and then cancelled leaves a pin naming a branch this box has
+    # never run. The console's off-main banner is about what is RUNNING, so this
+    # is the symbolic ref of the served clone and nothing else.
+    #
+    # EMPTY WHEN HEAD IS DETACHED, and that is left empty on purpose. The
+    # console computes `onMain = deployedRef === 'main'`, so an answer we cannot
+    # give reads as "not main" and shows the banner. Being wrong in that
+    # direction costs a banner; being wrong in the other costs an unannounced
+    # automatic deploy of main over a parked branch.
+    local deployed_ref
+    deployed_ref="$(git -C "$SRC_DIR" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+
+    # The pin, and who asked for it. Re-validated here as well, because the
+    # console renders it and a status line is not the place to discover that
+    # somebody hand-edited a file on the box.
+    local pinned_ref="" pinned_by="" pinned_at=0
+    if [ -r "$PIN_FILE" ]; then
+        read -r pinned_ref _ < "$PIN_FILE" || true
+        valid_ref "$pinned_ref" || pinned_ref=""
+    fi
+    if [ -r "$PIN_BY_FILE" ]; then
+        read -r pinned_at pinned_by < "$PIN_BY_FILE" || true
+        pinned_at="${pinned_at//[^0-9]/}"
+        [ -n "$pinned_at" ] || pinned_at=0
+    fi
+
+    printf '{"running":%s,"pid":%s,"uptimeSec":%s,"commit":"%s","sha":"%s","behindMain":%s,"hostUptimeSec":%s,"deployedRef":"%s","pinnedRef":"%s","pinnedBy":"%s","pinnedAt":%s}\n' \
+        "$running" "${pid:-0}" "$uptime" "$commit" \
+        "$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || echo unknown)" \
+        "$behind" "$host_uptime" \
+        "$(json_str "$deployed_ref")" "$(json_str "$pinned_ref")" \
+        "$(json_str "$pinned_by")" "$pinned_at"
 }
 
 do_telemetry() {
@@ -309,11 +488,223 @@ do_deploy() {
     echo '{"ok":true,"started":true}'
 }
 
+# --- branches ------------------------------------------------------------------
+#
+# Every remote branch, newest commit first, capped at 20, each one carrying
+# whether it may be deployed and -- if not -- why.
+#
+# NOTHING IS EVER OMITTED. An ineligible branch is returned with
+# `eligible: false` and a `blockedBy` sentence, because a branch that simply is
+# not in the list reads as a bug in the list: the operator knows the branch
+# exists, cannot see it, and has no way to tell "we refuse this" from "the
+# dropdown is broken". Saying "changes tools/dispatch.sh" is the entire
+# difference between a rule and a mystery.
+#
+# THE CAP IS 20 AND IT IS A DISPLAY CAP, nothing more. A remote with 200 stale
+# branches would otherwise send a JSON document nobody reads through a 64KB
+# buffer, and the twenty most recently committed branches are the ones anybody
+# is deploying.
+#
+# THE FETCH IS BOUNDED AND ITS FAILURE IS REPORTED, not swallowed. The console
+# allows this whole SSH round trip six seconds, so an unbounded fetch against
+# GitHub over a cold link would turn "show me the branches" into "the game
+# server is unreachable". If the fetch does not finish in time the answer comes
+# from the refs already on disk and `stale` is true, which the console says out
+# loud -- a branch list quietly a day old is how somebody deploys a sha that no
+# longer exists.
+do_branches() {
+    local stale=true
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "${BR_FETCH_TIMEOUT_SEC:-4}" \
+            git -C "$SRC_DIR" fetch --quiet --prune origin >/dev/null 2>&1 \
+            && stale=false
+    fi
+
+    local deployed_sha deployed_ref
+    deployed_sha="$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || echo '')"
+    deployed_ref="$(git -C "$SRC_DIR" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+
+    local out="" n=0
+    local raw sha tip_at tip_author subject symref name ahead behind counts blocked eligible
+
+    # THE FULL refname, NOT %(refname:short), AND THAT IS NOT A STYLE CHOICE.
+    # git shortens refs/remotes/origin/HEAD to the bare word `origin`, because
+    # that is its unambiguous short form -- so a list built on the short name
+    # contains an entry called "origin" that looks exactly like a mispushed
+    # branch, is not one, and cannot be deployed. (docs/branch-switch.md's
+    # earlier draft recorded it as a real branch on the remote. It never was:
+    # `git ls-remote --heads origin` has never listed it.) Stripping the known
+    # prefix ourselves gives HEAD its real name, which is then skipped.
+    #
+    # FIELDS ARE SEPARATED BY 0x1F, NOT A TAB, and that is a bug fix. Tab is an
+    # IFS *whitespace* character, so bash collapses runs of them and drops empty
+    # fields -- the first version of this used tabs, and because %(symref) is
+    # empty for an ordinary branch every field after it shifted left by one. The
+    # symptom was an entirely empty branch list from a working command. 0x1F is
+    # not whitespace, so an empty field stays an empty field. It also cannot
+    # occur in a ref name, an author name or a commit subject, all of which are
+    # attacker-supplied in the sense that anyone with push access writes them.
+    #
+    # The subject is still LAST on the line: `read` puts whatever is left over
+    # into the final variable, so nothing a subject contains can shift a field.
+    while IFS=$'\x1f' read -r raw sha tip_at tip_author symref subject; do
+        [ -n "$raw" ] || continue
+        name="${raw#refs/remotes/origin/}"
+        # HEAD is a pointer at whatever main is, not a branch anybody pushed.
+        # Offering it would offer to deploy "HEAD".
+        [ "$name" = "HEAD" ] && continue
+        [ -n "$symref" ] && continue
+        [ "$n" -ge 20 ] && break
+
+        tip_at="${tip_at//[^0-9]/}"
+        [ -n "$tip_at" ] || tip_at=0
+
+        # Ahead and behind THE DEPLOYED SHA, not main. The question in front of
+        # the operator is "what changes if I switch to this", and the answer is
+        # relative to what is running right now.
+        #
+        # `A...B` counts left = reachable from A only, right = from B only. A is
+        # what is deployed, so left is how far this branch is BEHIND it.
+        ahead=0; behind=0
+        if [ -n "$deployed_sha" ]; then
+            counts="$(git -C "$SRC_DIR" rev-list --left-right --count \
+                      "$deployed_sha...$sha" 2>/dev/null || true)"
+            if [ -n "$counts" ]; then
+                behind="$(printf '%s' "$counts" | awk '{print $1+0}')"
+                ahead="$(printf '%s' "$counts" | awk '{print $2+0}')"
+            fi
+        fi
+
+        if ! valid_ref "$name"; then
+            eligible=false
+            blocked="this branch name cannot be handled safely"
+        elif blocked="$(ref_blocked_by "$sha")"; then
+            eligible=true
+            blocked=""
+        else
+            eligible=false
+        fi
+
+        [ -n "$out" ] && out="$out,"
+        out="$out$(printf '{"name":"%s","sha":"%s","ahead":%s,"behind":%s,"tipAt":%s000,"tipAuthor":"%s","subject":"%s","eligible":%s,"blockedBy":"%s"}' \
+            "$(json_str "$name")" "$(json_str "$sha")" \
+            "$ahead" "$behind" "$tip_at" \
+            "$(json_str "$tip_author")" "$(json_str "$subject")" \
+            "$eligible" "$(json_str "$blocked")")"
+        n=$((n + 1))
+    done < <(git -C "$SRC_DIR" for-each-ref \
+                --sort=-committerdate \
+                --format='%(refname)%1f%(objectname)%1f%(committerdate:unix)%1f%(authorname)%1f%(symref)%1f%(contents:subject)' \
+                refs/remotes/origin/ 2>/dev/null)
+
+    printf '{"ok":true,"stale":%s,"deployedSha":"%s","deployedRef":"%s","branches":[%s]}\n' \
+        "$stale" "$(json_str "$deployed_sha")" "$(json_str "$deployed_ref")" "$out"
+}
+
+# --- switchref -----------------------------------------------------------------
+#
+#   switchref <ref> <40-hex sha> [base64 display name]
+#
+# Pins the ref the NEXT deploy will check out. IT DOES NOT DEPLOY. Those are
+# separated because they happen at different times and for different reasons:
+# the pin is chosen by an admin looking at a branch list, and the deploy fires
+# when the last match ends, which may be hours later and may be somebody else
+# pressing the button. Rolling them together would mean either a switch that
+# restarts the server immediately or a deploy that silently decides its own ref.
+#
+# THE SHA IS THE POINT. The console resolved this branch to a sha when it drew
+# the list; anyone with push access can force-push in the meantime. Comparing
+# the two here means a moved branch is a REFUSAL that says so, never a silent
+# deploy of a tip nobody looked at.
+do_switchref() {
+    local ref sha by_b64 by have blocked
+    # shellcheck disable=SC2086
+    read -r ref sha by_b64 <<< "$args_raw"
+
+    if ! valid_ref "${ref:-}"; then
+        printf '{"ok":false,"error":"%s"}\n' "not a usable branch name"
+        exit 3
+    fi
+    if ! printf '%s' "${sha:-}" | grep -qE '^[0-9a-fA-F]{40}$'; then
+        printf '{"ok":false,"error":"%s"}\n' "expected a full 40-character commit id"
+        exit 3
+    fi
+    sha="$(printf '%s' "$sha" | tr 'A-F' 'a-f')"
+
+    # Refresh just the ref in question (and main, which the rule is measured
+    # against) rather than the whole remote. Bounded for the same six-second
+    # reason as `branches`; a fetch that times out is not fatal here, because
+    # the comparison below still refuses anything that does not match and
+    # deploy.sh fetches and re-checks before it touches the working tree.
+    if command -v timeout >/dev/null 2>&1; then
+        if [ "$ref" = "main" ]; then
+            timeout "${BR_FETCH_TIMEOUT_SEC:-4}" \
+                git -C "$SRC_DIR" fetch --quiet origin main >/dev/null 2>&1 || true
+        else
+            timeout "${BR_FETCH_TIMEOUT_SEC:-4}" \
+                git -C "$SRC_DIR" fetch --quiet origin "$ref" main >/dev/null 2>&1 || true
+        fi
+    fi
+
+    have="$(git -C "$SRC_DIR" rev-parse -q --verify \
+            "refs/remotes/origin/$ref^{commit}" 2>/dev/null || true)"
+    if [ -z "$have" ]; then
+        printf '{"ok":false,"error":"origin has no branch called %s"}\n' \
+            "$(json_str "$ref")"
+        exit 3
+    fi
+    if [ "$have" != "$sha" ]; then
+        printf '{"ok":false,"error":"%s has moved since it was chosen (now %s, expected %s) -- pick it again"}\n' \
+            "$(json_str "$ref")" "${have:0:8}" "${sha:0:8}"
+        exit 3
+    fi
+
+    if ! blocked="$(ref_blocked_by "$sha")"; then
+        printf '{"ok":false,"error":"%s cannot be deployed: %s"}\n' \
+            "$(json_str "$ref")" "$(json_str "$blocked")"
+        exit 3
+    fi
+
+    # WRITTEN THROUGH A TEMPORARY AND RENAMED. A deploy can start at any moment
+    # -- the maintenance driver fires on a timer -- and rename is atomic on the
+    # same filesystem, so deploy.sh reads either the old pin or the new one and
+    # never a half-written line naming a branch that does not exist.
+    local tmp="$PIN_FILE.tmp.$$"
+    if ! printf '%s %s\n' "$ref" "$sha" > "$tmp" 2>/dev/null; then
+        printf '{"ok":false,"error":"cannot write the branch pin at %s"}\n' \
+            "$(json_str "$PIN_FILE")"
+        exit 5
+    fi
+    if ! mv -f "$tmp" "$PIN_FILE" 2>/dev/null; then
+        rm -f "$tmp"
+        printf '{"ok":false,"error":"cannot replace the branch pin at %s"}\n' \
+            "$(json_str "$PIN_FILE")"
+        exit 5
+    fi
+
+    # Attribution, best effort and never fatal. Same treatment as a kick reason:
+    # it arrives base64 so no space, quote or newline can survive the trip as
+    # anything but one opaque token, and it is scrubbed again after decoding
+    # because it ends up inside the JSON `status` prints.
+    by=""
+    if printf '%s' "${by_b64:-}" | grep -qE '^[A-Za-z0-9+/=]{0,256}$'; then
+        by="$(printf '%s' "${by_b64:-}" | base64 -d 2>/dev/null \
+              | tr -cd 'A-Za-z0-9 ._#-' | cut -c1-64)"
+    fi
+    [ -n "$by" ] || by="an admin"
+    printf '%s000 %s\n' "$(date +%s)" "$by" > "$PIN_BY_FILE" 2>/dev/null || true
+
+    printf '{"ok":true,"pinnedRef":"%s","pinnedSha":"%s"}\n' \
+        "$(json_str "$ref")" "$sha"
+}
+
 case "$verb" in
     status)    do_status ;;
     telemetry) do_telemetry ;;
     kick)      do_kick ;;
     deploy)    do_deploy ;;
+    branches)  do_branches ;;
+    switchref) do_switchref ;;
     *)
         echo "dispatch: unknown verb '${verb:-<empty>}'" >&2
         exit 2

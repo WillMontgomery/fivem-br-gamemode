@@ -297,15 +297,28 @@ boundary=0
 # that runs it with players online is an explicit force with its own
 # confirmation and an audit row naming who chose it.
 
+# `branches` AND `switchref` ARRIVED WITH BRANCH SWITCHING, and they are the
+# reason gate 4e below exists. `branches` only reads refs. `switchref` writes
+# one file naming the ref the next deploy should check out -- it starts nothing
+# and restarts nothing, which is why the pair is nowhere near as heavy as
+# `deploy` despite being the feature people will call dangerous.
+#
+# What makes them safe is not that they are small. It is the invariant in
+# docs/branch-switch.md: a ref is only deployable if its tools/dispatch.sh is
+# byte-identical to main's. Without that, `switchref` is a way to replace THIS
+# FILE'S SUBJECT -- the console's only channel to the box -- with unreviewed
+# code, because dispatch.sh is a tracked file inside the tree deploy.sh
+# hard-resets.
+
 # dispatch.sh: the SSH verb surface.
 if [ -f tools/dispatch.sh ]; then
-    verbs=$(grep -oE '^\s+(status|telemetry|stop|restart|deploy|reload|config|kick|ban)\)' tools/dispatch.sh \
+    verbs=$(grep -oE '^\s+(status|telemetry|stop|restart|deploy|reload|config|kick|ban|branches|switchref)\)' tools/dispatch.sh \
             | tr -d ' )' | sort -u | tr '\n' ' ')
-    if [ "$verbs" != "deploy kick status telemetry " ]; then
-        echo "${RED}FAIL${RST} dispatch.sh verb set is '${verbs}', expected 'deploy kick status telemetry '"
+    if [ "$verbs" != "branches deploy kick status switchref telemetry " ]; then
+        echo "${RED}FAIL${RST} dispatch.sh verb set is '${verbs}', expected 'branches deploy kick status switchref telemetry '"
         echo "     A new verb is a new capability from the console to the host."
-        echo "     Process control (stop/restart/deploy) is M6's maintenance flow,"
-        echo "     not a verb. If you are adding one on purpose, update THIS gate."
+        echo "     Process control (stop/restart) is not a verb and never has been."
+        echo "     If you are adding one on purpose, update THIS gate."
         boundary=1
     fi
 fi
@@ -335,8 +348,119 @@ if compgen -G "$rmdir_" >/dev/null 2>&1; then
 fi
 
 if [ "$boundary" -eq 0 ]; then
-    echo "${GRN}ok${RST}   the console can kick, ban and deploy -- no raw stop/restart/config"
+    echo "${GRN}ok${RST}   the console can kick, ban, deploy and switch branch -- no raw stop/restart/config"
 else
+    rc=1
+fi
+
+# --- 4e. the branch-switch invariant ------------------------------------------
+#
+# THE ONE RULE BRANCH SWITCHING HANGS OFF, made mechanical.
+#
+#   A ref is only deployable if <sha>:tools/dispatch.sh exists, is mode 100755,
+#   and its blob id equals origin/main:tools/dispatch.sh's blob id.
+#
+# Why it has to exist at all: authorized_keys pins Ringmaster's SSH key to a
+# forced command at $SERVER_ROOT/.gamemode-src/tools/dispatch.sh, and deploy.sh
+# `reset --hard`s that same directory. The dispatcher is a tracked file inside
+# the tree the deploy overwrites -- so "switch to branch X" and "replace the
+# console's only channel to this box with whatever X says that channel should
+# be" are mechanically the same operation. Without the rule, the first thing a
+# branch deploy does is install the code that answers every later console
+# request, including the request to switch back.
+#
+# THIS GATE IS WHAT KEEPS docs/branch-switch.md TRUE AFTER EVERYONE STOPS
+# LOOKING AT IT. The check inside deploy.sh is a line of shell somebody can
+# delete, move below the reset, or lose in a refactor, and nothing about the
+# resulting server would look wrong until the day it mattered. So the rule is
+# asserted here, from outside, on the text of the scripts: the reset must not be
+# reachable without the check standing in front of it.
+#
+# It is deliberately structural rather than behavioural. Running the real thing
+# needs two clones, a remote and a box; asserting that the call is there and is
+# ABOVE the reset needs none of that and catches the failure that actually
+# happens, which is the check being removed rather than the check being wrong.
+
+echo "${DIM}== branch-switch invariant ==${RST}"
+inv=0
+
+if [ -f tools/deploy.sh ]; then
+    if ! grep -qE '^assert_dispatch_invariant\(\)' tools/deploy.sh; then
+        echo "${RED}FAIL${RST} tools/deploy.sh does not define assert_dispatch_invariant()"
+        inv=1
+    fi
+
+    # It has to actually compare tools/dispatch.sh across two refs. A function
+    # with the right name and an empty body would otherwise pass forever.
+    if ! grep -q 'tools/dispatch.sh' tools/deploy.sh \
+       || ! grep -q 'dispatch_entry origin/main' tools/deploy.sh; then
+        echo "${RED}FAIL${RST} assert_dispatch_invariant does not compare tools/dispatch.sh against origin/main"
+        inv=1
+    fi
+
+    # Comment lines are dropped first: this file's own prose says "reset --hard"
+    # several times, and a gate that trips over the explanation of itself would
+    # be deleted within the week.
+    gate_line=$(grep -nE '^[[:space:]]*assert_dispatch_invariant[[:space:]]+"' tools/deploy.sh \
+                | grep -vE '^[0-9]+:[[:space:]]*#' | head -1 | cut -d: -f1)
+
+    while IFS= read -r hit; do
+        [ -n "$hit" ] || continue
+        n="${hit%%:*}"
+        if [ -z "${gate_line:-}" ] || [ "$gate_line" -ge "$n" ]; then
+            echo "${RED}FAIL${RST} tools/deploy.sh reaches a hard reset with no invariant check above it:"
+            echo "     line $n: ${hit#*:}"
+            echo
+            echo "     That reset overwrites \$SRC_DIR/tools/dispatch.sh, which is the"
+            echo "     forced command authorized_keys pins the console's SSH key to."
+            echo "     Call assert_dispatch_invariant \"\$REMOTE\" before it, or the"
+            echo "     branch being deployed gets to rewrite the console's channel."
+            inv=1
+        fi
+    done < <(grep -nE 'reset[[:space:]].*--hard' tools/deploy.sh \
+             | grep -vE '^[0-9]+:[[:space:]]*#')
+fi
+
+# The second enforcement point. dispatch.sh checks the same rule before it
+# writes the pin -- earlier, friendlier, and not load-bearing (it lives in the
+# clone a branch switch replaces, so a hostile branch could remove it; deploy.sh
+# lives in the ops clone and cannot be touched by a deploy). It still has to be
+# there and it still has to run BEFORE the pin is written, or the console would
+# happily stage a switch it could never carry out.
+if [ -f tools/dispatch.sh ]; then
+    if ! grep -qE '^ref_blocked_by\(\)' tools/dispatch.sh; then
+        echo "${RED}FAIL${RST} tools/dispatch.sh does not define ref_blocked_by()"
+        inv=1
+    else
+        # SCOPED TO do_switchref, and that is the whole difficulty. `branches`
+        # calls ref_blocked_by too, on an earlier line, so a naive "is it called
+        # before the pin write" search finds the LISTING's call and passes even
+        # when the WRITER's has been deleted -- a gate that goes green on
+        # precisely the change it exists to catch. Bound the window at the
+        # function header instead.
+        fn_line=$(grep -nE '^do_switchref\(\)' tools/dispatch.sh | head -1 | cut -d: -f1)
+        pin_line=$(grep -nE 'mv -f "\$tmp" "\$PIN_FILE"' tools/dispatch.sh \
+                   | head -1 | cut -d: -f1)
+        check_line=$(grep -nE 'ref_blocked_by "\$sha"' tools/dispatch.sh \
+                     | grep -vE '^[0-9]+:[[:space:]]*#' | cut -d: -f1 \
+                     | awk -v lo="${fn_line:-0}" -v hi="${pin_line:-0}" \
+                           '$1 > lo && $1 < hi { print; exit }')
+        if [ -z "${fn_line:-}" ] || [ -z "${pin_line:-}" ] || [ -z "${check_line:-}" ]; then
+            echo "${RED}FAIL${RST} do_switchref writes the branch pin without checking the invariant first"
+            echo "     Expected a ref_blocked_by \"\$sha\" call between do_switchref()"
+            echo "     and the line that renames the pin into place."
+            inv=1
+        fi
+    fi
+fi
+
+if [ "$inv" -eq 0 ]; then
+    echo "${GRN}ok${RST}   no path to a hard reset that skips the dispatch.sh blob check"
+else
+    echo
+    echo "     See docs/branch-switch.md. If the rule itself is changing, change"
+    echo "     the document and this gate in the same commit -- that is the whole"
+    echo "     point of the gate."
     rc=1
 fi
 

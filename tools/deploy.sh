@@ -6,6 +6,11 @@
 #   ./deploy.sh --dry-run    show what would change, touch nothing
 #   ./deploy.sh --status     show local vs remote without deploying
 #
+# WHICH BRANCH: $BR_BRANCH if set, else the ref pinned in
+# $SERVER_ROOT/.branch-pin, else whatever the served clone already has checked
+# out, else main. It does NOT unconditionally default to main -- on a box parked
+# on a branch that would make every routine deploy a silent revert.
+#
 # Chain it with your start command so every boot gets the latest:
 #
 #   /opt/fivem-server-classic/deploy.sh && cd /opt/fivem-server-classic && ./run.sh +exec server.cfg
@@ -30,7 +35,10 @@ set -euo pipefail
 # purely to fetch something anyone can curl. One less secret on the box that is
 # most exposed to the internet.
 REPO="${BR_REPO:-https://github.com/WillMontgomery/fivem-br-gamemode.git}"
-BRANCH="${BR_BRANCH:-main}"
+
+# Deliberately NOT defaulted here. Resolving it needs the clone, the pin file
+# and a validator, all of which are below; see "which ref" further down.
+BRANCH="${BR_BRANCH:-}"
 
 SERVER_ROOT="${BR_SERVER_ROOT:-/opt/fivem-server-classic}"
 TARGET_CATEGORY="${BR_TARGET_CATEGORY:-[gamemodes]}"
@@ -39,6 +47,12 @@ TARGET_CATEGORY="${BR_TARGET_CATEGORY:-[gamemodes]}"
 # scan the .git directory on every refresh, and the repo contains files (ui-src,
 # tools, docs) that have no business being served to clients.
 SRC_DIR="${BR_SRC_DIR:-$SERVER_ROOT/.gamemode-src}"
+
+# The branch pin the console writes through tools/dispatch.sh's `switchref`.
+# One line, `<ref>` or `<ref> <sha>`. Owned by this user, read here, and trusted
+# for nothing: the name is re-validated from scratch below and the sha is
+# checked against the remote before anything is checked out.
+PIN_FILE="${BR_PIN_FILE:-$SERVER_ROOT/.branch-pin}"
 
 # The one directory we own inside the category. Everything outside it is left
 # alone, so other gamemodes in [gamemodes] are never touched.
@@ -56,7 +70,7 @@ for arg in "$@"; do
         --dry-run)       DRY_RUN=1 ;;
         --status)        STATUS_ONLY=1 ;;
         --check-payload) want_payload_dir=1 ;;
-        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
         *) echo "unknown option: $arg (try --help)"; exit 2 ;;
     esac
 done
@@ -151,6 +165,80 @@ if [ -n "$CHECK_PAYLOAD_DIR" ]; then
     exit 0
 fi
 
+# --- the branch-switch invariant ----------------------------------------------
+#
+# THIS IS THE LOAD-BEARING COPY OF THE RULE. tools/dispatch.sh checks it too,
+# before it writes the pin, and that check is worth having -- but it is not the
+# one that has to be right.
+#
+# The reason is which clone each script lives in. dispatch.sh is pinned by
+# authorized_keys to $SERVER_ROOT/.gamemode-src/tools/dispatch.sh, INSIDE the
+# tree this script hard-resets: deploy a branch that ships a different
+# dispatch.sh and the console's own channel to this box has been replaced with
+# unreviewed code, and every check in it after that point is a check written by
+# whoever pushed the branch.
+#
+# This script runs from the OPS clone, /opt/misc/fivem-br-gamemode -- see
+# royale-deploy.service's ExecStart. A branch switch never touches that
+# directory. Nothing a deployed branch contains can edit, weaken or skip the
+# check below, which is exactly why the check below is the one that counts.
+#
+#   A REF IS ONLY DEPLOYABLE IF <sha>:tools/dispatch.sh EXISTS, IS MODE 100755,
+#   AND ITS BLOB ID EQUALS origin/main:tools/dispatch.sh's BLOB ID.
+#
+# Accepted cost, and it is a feature: this cannot be used to test a change to
+# tools/. Those go through main and PR review.
+
+# Same shape check dispatch.sh applies, for the same reasons, on a string that
+# by the time it gets here has been through a file on disk. A leading '-' is an
+# option to git; '..' and '//' climb out of refs/remotes/origin/<ref>.
+valid_ref() {
+    local r="${1:-}"
+    [ -n "$r" ] || return 1
+    [ "${#r}" -le 120 ] || return 1
+    printf '%s' "$r" | grep -qE '^[A-Za-z0-9][A-Za-z0-9._/-]*$' || return 1
+    case "$r" in
+        *..*|*//*|*/) return 1 ;;
+    esac
+    git check-ref-format "refs/heads/$r" >/dev/null 2>&1
+}
+
+# "<mode> <blobid>" for tools/dispatch.sh at a commit, or empty if absent.
+dispatch_entry() {
+    git -C "$SRC_DIR" ls-tree "$1" -- tools/dispatch.sh 2>/dev/null \
+        | awk '{print $1" "$3}'
+}
+
+# Dies unless <sha> satisfies the rule. Called on the resolved tip of whatever
+# is about to be checked out, on EVERY deploy including main's -- main trivially
+# equals itself, and a gate with an exemption is a gate with a way around it.
+assert_dispatch_invariant() {
+    local sha="$1" want have
+    want="$(dispatch_entry origin/main)"
+    [ -n "$want" ] || die "cannot read tools/dispatch.sh on origin/main.
+  The rule that keeps a branch from replacing the console's channel to this box
+  is measured against main, so a deploy cannot proceed without it."
+
+    have="$(dispatch_entry "$sha")"
+    [ -n "$have" ] || die "refusing $BRANCH: it deletes tools/dispatch.sh.
+  That file IS the console's channel to this box, and it lives inside the tree
+  this deploy is about to overwrite. Land the change on main instead."
+
+    case "$have" in
+        "100755 "*) : ;;
+        *) die "refusing $BRANCH: tools/dispatch.sh is not mode 100755 there.
+  It would stop being executable after the reset, and the forced command in
+  authorized_keys would fail for every console action." ;;
+    esac
+
+    [ "$have" = "$want" ] || die "refusing $BRANCH: it changes tools/dispatch.sh.
+  Deploying it would replace the console's only channel to this box with code
+  that has not been through PR review -- and the replacement would be the thing
+  answering the next kick. Land changes to tools/ on main.
+    on main:   $want
+    on branch: $have"
+}
+
 # --- preflight ---------------------------------------------------------------
 
 command -v git   >/dev/null || die "git is not installed:  sudo apt install -y git"
@@ -161,13 +249,65 @@ command -v rsync >/dev/null || die "rsync is not installed:  sudo apt install -y
 
 TARGET_DIR="$SERVER_ROOT/resources/$TARGET_CATEGORY"
 
+# --- which ref ----------------------------------------------------------------
+#
+# In order: $BR_BRANCH, the pin file, whatever the clone already has checked
+# out, main.
+#
+# THE THIRD STEP IS THE ONE THAT MATTERS AND IT USED TO BE ABSENT. `main` was
+# the unconditional default, which was correct while main was the only thing
+# this box ever ran. Once it can be parked on a branch, an unconditional default
+# turns EVERY routine deploy -- the console's 72-hour automation, a force, a
+# human typing `systemctl start royale-deploy` -- into a silent, unannounced
+# revert to main, with players online and nothing in any log saying a branch had
+# been swapped out from under them. Falling back to what is already checked out
+# means a plain deploy refreshes the ref this box is on, which is the only
+# behaviour that is never a surprise.
+
+PINNED_SHA=""
+if [ -n "$BRANCH" ]; then
+    say "branch from BR_BRANCH: $BRANCH"
+elif [ -r "$PIN_FILE" ]; then
+    PIN_REF=""; PIN_SHA=""
+    read -r PIN_REF PIN_SHA _ < "$PIN_FILE" || true
+    if valid_ref "${PIN_REF:-}"; then
+        BRANCH="$PIN_REF"
+        # Optional, and consumed on success. It exists to make ONE staged switch
+        # exact: hours pass between an admin choosing a branch in the console and
+        # the last match ending, and a force-push in the gap must be a refusal
+        # rather than a silent deploy of a tip nobody looked at. Once that switch
+        # has landed, later routine deploys legitimately track the branch's tip,
+        # so keeping the sha forever would instead make every one of them fail.
+        if printf '%s' "${PIN_SHA:-}" | grep -qE '^[0-9a-f]{40}$'; then
+            PINNED_SHA="$PIN_SHA"
+        fi
+        say "branch from $PIN_FILE: $BRANCH${PINNED_SHA:+ @ ${PINNED_SHA:0:8}}"
+    else
+        # Ignored rather than fatal: a corrupt pin must not be able to stop the
+        # server being deployed at all. Loud, because it means somebody wrote
+        # something by hand that this script will not act on.
+        echo "${YEL}deploy: ignoring $PIN_FILE -- '${PIN_REF:-}' is not a usable branch name${RST}" >&2
+    fi
+fi
+if [ -z "$BRANCH" ] && [ -d "$SRC_DIR/.git" ]; then
+    BRANCH="$(git -C "$SRC_DIR" symbolic-ref --short -q HEAD || true)"
+    valid_ref "${BRANCH:-}" || BRANCH=""
+fi
+[ -n "$BRANCH" ] || BRANCH=main
+
 # --- fetch -------------------------------------------------------------------
 
 if [ ! -d "$SRC_DIR/.git" ]; then
+    # ALWAYS CLONES main, WHATEVER $BRANCH SAYS. A first clone has nothing to
+    # measure the invariant against -- there is no origin/main on disk yet -- so
+    # cloning the requested branch directly would install an unreviewed
+    # tools/dispatch.sh before any check could run. Clone the reviewed ref, then
+    # fall through into the ordinary fetch-check-reset path below, which is the
+    # only code that ever puts a branch on this box.
     say "cloning $REPO"
     # A private repo needs credentials. SSH deploy key is the usual answer on a
     # headless box; if this fails, that is almost always why.
-    git clone --branch "$BRANCH" "$REPO" "$SRC_DIR" \
+    git clone --branch main "$REPO" "$SRC_DIR" \
         || die "clone failed.
   For a private repo, add a read-only deploy key:
     ssh-keygen -t ed25519 -C fivem-deploy -f ~/.ssh/fivem_deploy -N ''
@@ -175,26 +315,71 @@ if [ ! -d "$SRC_DIR/.git" ]; then
   then add it under the repo's Settings > Deploy keys, and in ~/.ssh/config:
     Host github.com
       IdentityFile ~/.ssh/fivem_deploy"
+fi
+
+say "fetching $BRANCH"
+git -C "$SRC_DIR" remote set-url origin "$REPO"
+git -C "$SRC_DIR" fetch --quiet origin "$BRANCH" || die "origin has no branch called '$BRANCH'.
+  It was probably deleted after the console pinned it. Nothing has been
+  deployed and the server is still running what it was.
+  To go back to main by hand:  echo main > $PIN_FILE"
+# main as well, always, because the invariant below is measured against it and a
+# stale origin/main would measure against a rule that has since changed.
+[ "$BRANCH" = "main" ] || git -C "$SRC_DIR" fetch --quiet origin main \
+    || die "cannot fetch origin/main, which the branch rule is measured against."
+
+LOCAL=$(git -C "$SRC_DIR" rev-parse HEAD)
+REMOTE=$(git -C "$SRC_DIR" rev-parse "origin/$BRANCH")
+
+# THE STAGED SHA, IF THERE IS ONE. A moved branch is a refusal and says so; it
+# is never a silent deploy of whatever the tip happens to be now.
+if [ -n "$PINNED_SHA" ] && [ "$PINNED_SHA" != "$REMOTE" ]; then
+    die "$BRANCH has moved since it was chosen in the console.
+  chosen:  ${PINNED_SHA:0:8}
+  now:     ${REMOTE:0:8}
+  Nothing has been deployed. Pick the branch again in Ringmaster, which
+  re-checks it and re-pins the commit you are actually looking at."
+fi
+
+# THE GATE. Above the reset, and above it on purpose -- see the long comment on
+# assert_dispatch_invariant. tools/verify.sh fails the build if a `reset --hard`
+# ever appears in this file without one of these calls before it.
+assert_dispatch_invariant "$REMOTE"
+
+if [ "$LOCAL" = "$REMOTE" ]; then
+    say "already up to date at ${LOCAL:0:8}"
 else
-    say "fetching $BRANCH"
-    git -C "$SRC_DIR" remote set-url origin "$REPO"
-    git -C "$SRC_DIR" fetch --quiet origin "$BRANCH"
+    say "updating ${LOCAL:0:8} -> ${REMOTE:0:8}"
+    git -C "$SRC_DIR" log --oneline "$LOCAL..$REMOTE" | sed 's/^/     /'
+fi
 
-    LOCAL=$(git -C "$SRC_DIR" rev-parse HEAD)
-    REMOTE=$(git -C "$SRC_DIR" rev-parse "origin/$BRANCH")
+# MOVE HEAD FIRST, WITH PLUMBING, AND THEN RESET.
+#
+# `git reset --hard origin/feature/x` while HEAD still points at refs/heads/main
+# does exactly what it says: it moves the LOCAL main branch to the feature
+# branch's commit. The tree would be right and every question about it would be
+# answered wrong -- `symbolic-ref HEAD` would say main, so the fallback above
+# would resolve to main, the console's off-main banner would never appear, and
+# `status` would report the box as running main while it ran something else.
+#
+# `symbolic-ref` is pure ref plumbing: it writes .git/HEAD and touches no file
+# in the working tree, so unlike `checkout` it cannot fail because somebody
+# edited a resource in place -- which is the exact failure `reset --hard` is
+# here to be immune to. The branch need not exist yet; the reset creates it.
+git -C "$SRC_DIR" symbolic-ref HEAD "refs/heads/$BRANCH"
 
-    if [ "$LOCAL" = "$REMOTE" ]; then
-        say "already up to date at ${LOCAL:0:8}"
-    else
-        say "updating ${LOCAL:0:8} -> ${REMOTE:0:8}"
-        git -C "$SRC_DIR" log --oneline "$LOCAL..$REMOTE" | sed 's/^/     /'
-    fi
+# Hard reset rather than pull. The server clone is a deployment artifact,
+# not a workspace -- if someone edited a file in place, their change is not
+# in git and must not block a deploy or produce a merge conflict at boot.
+git -C "$SRC_DIR" reset --quiet --hard "origin/$BRANCH"
+git -C "$SRC_DIR" clean --quiet -fd
 
-    # Hard reset rather than pull. The server clone is a deployment artifact,
-    # not a workspace -- if someone edited a file in place, their change is not
-    # in git and must not block a deploy or produce a merge conflict at boot.
-    git -C "$SRC_DIR" reset --quiet --hard "origin/$BRANCH"
-    git -C "$SRC_DIR" clean --quiet -fd
+# The staged switch has happened, so the sha has done its job. Rewriting the pin
+# with the ref alone means the next ordinary deploy refreshes this branch
+# normally instead of refusing forever the moment somebody pushes to it. The
+# invariant above still runs on every deploy, on whatever the tip is then.
+if [ -n "$PINNED_SHA" ]; then
+    printf '%s\n' "$BRANCH" > "$PIN_FILE.tmp.$$" && mv -f "$PIN_FILE.tmp.$$" "$PIN_FILE"
 fi
 
 COMMIT=$(git -C "$SRC_DIR" rev-parse --short HEAD)
@@ -203,6 +388,7 @@ SUBJECT=$(git -C "$SRC_DIR" log -1 --pretty=%s)
 if [ "$STATUS_ONLY" -eq 1 ]; then
     echo
     echo "  source:   $SRC_DIR"
+    echo "  branch:   $BRANCH"
     echo "  commit:   $COMMIT  $SUBJECT"
     echo "  target:   $TARGET_DIR/$RESOURCE_GROUP"
     [ -d "$TARGET_DIR/$RESOURCE_GROUP" ] && echo "  deployed: yes" || echo "  deployed: no"
@@ -240,7 +426,13 @@ fi
 # --- done --------------------------------------------------------------------
 
 echo
-echo "${GRN}deployed${RST} $COMMIT  $SUBJECT"
+echo "${GRN}deployed${RST} $BRANCH  $COMMIT  $SUBJECT"
+if [ "$BRANCH" != "main" ]; then
+    # Said here as well as in the console, because the person reading a deploy
+    # log at 3am is not necessarily the person who pressed the button.
+    echo "${YEL}  NOT ON main.${RST} This box is parked on '$BRANCH'."
+    echo "${YEL}  Every later deploy refreshes that branch until somebody switches back.${RST}"
+fi
 echo "  -> $TARGET_DIR/$RESOURCE_GROUP"
 echo
 echo "The server does not pick this up on its own while running. Either restart"
