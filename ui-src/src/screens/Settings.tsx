@@ -248,6 +248,11 @@ export default function Settings({
   // screen is asking, and nothing else in the interface needs to know it was
   // asked.
   const [voiceConfirm, setVoiceConfirm] = useState(false)
+  // The same question for the graphics handover. A SECOND flag rather than one
+  // shared "a handover is pending", so the confirm text can name what the
+  // player is about to go and change -- the whole point of the confirm is that
+  // a full-screen game menu appearing is something they chose.
+  const [gfxConfirm, setGfxConfirm] = useState(false)
 
   // The draft is seeded from the store and pushed straight back into it on
   // every change -- which is what makes the preview live. It is NOT a
@@ -378,6 +383,97 @@ export default function Settings({
                 format={(v) => `${Math.round(v * 100)}%`}
                 onChange={(v) => set('textScale', v)}
               />
+          </Section>
+
+          {/* DISPLAY IS ITS OWN HEADING, and that is the entire discoverability
+              half of #122 (owner, 2026-08-16: "no clear way to reach GTA's own
+              graphics/display settings"). The handover already existed -- it
+              was a button reading "Microphone & push-to-talk" at the bottom of
+              the Voice section, which is not a place anybody looks for their
+              resolution. A player scanning headings for where the graphics
+              live needs to find a word that means graphics.
+
+              IT SITS ABOVE AUDIO, next to Interface size, because "the game
+              looks wrong" and "the interface is too small" are the same
+              complaint arriving from two directions, and a player who came
+              here for one should see the other. */}
+          <Section title="Display">
+              <div className="flex flex-col gap-1.5">
+                <div className="micro-label">In the game&apos;s own menu</div>
+                <ul
+                  className="micro-label ts"
+                  style={{
+                    ['--fs' as string]: '0.62rem',
+                    textTransform: 'none',
+                    listStyle: 'disc',
+                    paddingLeft: '1.1rem',
+                    lineHeight: 1.7,
+                  }}
+                >
+                  <li>Resolution, refresh rate and screen type</li>
+                  <li>Texture, shadow and reflection quality</li>
+                  <li>Field of view</li>
+                  <li>Brightness and safe-zone size</li>
+                </ul>
+              </div>
+
+              {gfxConfirm ? (
+                <div
+                  className="plate px-4 py-3 flex flex-col gap-3"
+                  style={{
+                    ['--edgec' as string]: 'var(--color-royale-accent)',
+                    ['--plate-fill' as string]: 'rgba(12,40,50,0.94)',
+                    ['--cut-max' as string]: '0.5rem',
+                  }}
+                >
+                  {/* WHAT IS ABOUT TO HAPPEN, in the same words the voice
+                      handover uses. These are client settings no script can
+                      read or write, and deep-linking the page does not work
+                      (GoDeeper reaches the map, not Settings), so the player
+                      walks the last two steps and is told which they are. */}
+                  <p
+                    className="ts"
+                    style={{ ['--fs' as string]: '0.88rem', lineHeight: 1.5 }}
+                  >
+                    Graphics and display settings belong to GTA&nbsp;V itself.
+                    Choose OK to open its menu, then go to the{' '}
+                    <span className="font-semibold">Settings</span> tab and pick{' '}
+                    <span className="font-semibold">Graphics</span> or{' '}
+                    <span className="font-semibold">Display</span>. Close that
+                    menu and you will come straight back here.
+                  </p>
+                  <div className="flex gap-2">
+                    <Btn
+                      variant="primary" size="sm" cue="ui.select"
+                      onPress={() => {
+                        setGfxConfirm(false)
+                        void fetchNui(CB.GAME_SETTINGS, {})
+                      }}
+                    >
+                      OK
+                    </Btn>
+                    <Btn variant="default" size="sm" cue="ui.back"
+                         onPress={() => setGfxConfirm(false)}>
+                      Stay here
+                    </Btn>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="btn plate px-4 py-2 self-start font-display uppercase
+                             tracking-[0.12em] text-[0.78rem]"
+                  style={{
+                    ['--edgec' as string]: 'rgba(255,255,255,0.22)',
+                    ['--plate-fill' as string]: 'rgba(30,34,48,0.94)',
+                    ['--cut-max' as string]: '0.4rem',
+                  }}
+                  onPointerEnter={() => play('ui.hover')}
+                  onClick={() => { play('ui.select'); setGfxConfirm(true) }}
+                >
+                  Graphics &amp; display
+                </button>
+              )}
           </Section>
 
           <Section title="Audio">
@@ -518,11 +614,14 @@ export default function Settings({
                       variant="primary" size="sm" cue="ui.select"
                       onPress={() => {
                         setVoiceConfirm(false)
-                        // The lobby FADES rather than being yanked. Lua is
-                        // about to empty the focus stack and raise a
-                        // scaleform; this is the same flag ESC-in-the-lobby
-                        // used, and it clears itself when focus comes back.
-                        useUi.getState().setPauseHiding(true)
+                        // THE PAGE NO LONGER HIDES ITSELF HERE, and that is
+                        // the fix rather than an omission (#122). It used to
+                        // raise a flag on this line -- and lost, every time,
+                        // to the focus envelopes Lua emits while collapsing
+                        // its own stack a millisecond later, which the page
+                        // read as the frontend having closed. Lua raises the
+                        // flag now, after the collapse, and holds it until the
+                        // frontend is genuinely down.
                         void fetchNui(CB.VOICE_SETTINGS, {})
                       }}
                     >

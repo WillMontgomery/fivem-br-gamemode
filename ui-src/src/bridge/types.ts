@@ -589,7 +589,7 @@ export interface KeybindAction {
 }
 
 /** What the black curtain is covering. See screens/LeaveScreen.tsx. */
-export type CurtainKind = 'leaving' | 'dropping'
+export type CurtainKind = 'leaving' | 'dropping' | 'disconnecting'
 
 /** Which screen currently owns NUI focus. Lua is the authority. */
 export interface FocusPayload {
@@ -646,6 +646,10 @@ export type Envelope =
   | { k: 'lobby';    d: LobbyPayload }
   | { k: 'invite';   d: InvitePayload }
   | { k: 'leaving';  d: { show: boolean; kind?: CurtainKind } }
+  /** GTA's own menu owns the screen; this page must not draw. Lua is the
+   *  authority and holds it true for as long as the frontend is up -- see the
+   *  note on BR.Nui.FRONTEND in br_lib/shared/protocol.lua. */
+  | { k: 'frontend'; d: { up: boolean } }
   | { k: 'settings'; d: SettingsPayload }
   | { k: 'locker';   d: LockerPayload }
   | { k: 'progress'; d: ProgressPayload }
@@ -696,6 +700,9 @@ export const CB = {
   PAUSE_FOCUS:    'br/pause/focus',
   HELP_FOCUS:     'br/help/focus',
   VOICE_SETTINGS: 'br/voice/settings',
+  /** The same handover as VOICE_SETTINGS, for a player who wants graphics
+   *  rather than a microphone. Separate name so the button can say so. */
+  GAME_SETTINGS:  'br/game/settings',
   XP_BUSY:        'br/xp/busy',
   PAUSE_ACTION:   'br/pause/action',
   KEYBIND_SET:    'br/settings/keybind',

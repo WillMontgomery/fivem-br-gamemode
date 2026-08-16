@@ -148,10 +148,25 @@ export interface UiState {
    *  would just cost the player their health bar in a fight. */
   scoped: boolean
 
-  /** True from the moment ESC is pressed in the lobby until Lua hands the
-   *  lobby its focus back after the pause menu closes -- the menu fades out
-   *  under GTA's pause screen and back in afterwards. */
-  pauseHiding: boolean
+  /**
+   * True while GTA'S OWN MENU OWNS THE SCREEN and this page must draw nothing.
+   *
+   * LUA SETS IT AND LUA CLEARS IT (BR.Nui.FRONTEND). This replaced a flag the
+   * page raised for itself just before asking Lua to hand over, and the
+   * difference is the whole of #122: the handover pops `pause` and `settings`
+   * off the focus stack, which leaves `lobby` on top, which made the bridge
+   * send FOCUS{screen='lobby'} -- and the page read focus coming back as the
+   * frontend having closed and cleared its own flag, one frame before the
+   * menu appeared. The lobby then sat on top of GTA's settings screen (owner,
+   * 2026-08-16). It reproduced only from the lobby because nowhere else is
+   * there a `lobby` entry underneath to become the new top.
+   *
+   * IT IS NOT THE SAME QUESTION AS FOCUS and must not be derived from it.
+   * Focus decides who owns the CURSOR; this decides who owns the SCREEN. The
+   * lobby is drawn from match state on purpose, so emptying the focus stack
+   * takes the mouse away and leaves the lobby painted where it was.
+   */
+  frontendUp: boolean
 
   /** True while the voluntary-leave interstitial covers the screen: black
    *  plus a quiet "Leaving the match" while the world swaps underneath. */
@@ -189,7 +204,7 @@ export interface UiState {
   setSpectate: (s: SpectatePayload | null) => void
   setSummary: (s: SummaryPayload | null) => void
   setFocus: (f: FocusPayload['screen'], tab?: string) => void
-  setPauseHiding: (v: boolean) => void
+  setFrontendUp: (v: boolean) => void
   setLeaving: (v: boolean, kind?: CurtainKind) => void
   setLobby: (l: LobbyPayload) => void
   setScreen: (s: ScreenPayload) => void
@@ -475,7 +490,7 @@ export const useUi = create<UiState>((set, get) => {
   screen: null,
   scoped: false,
   worldReady: import.meta.env.DEV,
-  pauseHiding: false,
+  frontendUp: false,
   leaving: false,
   curtain: 'leaving',
   invite: null,
@@ -537,7 +552,7 @@ export const useUi = create<UiState>((set, get) => {
   setSpectate: (spectate) => set({ spectate }),
   setSummary:  (summary) => set({ summary }),
   setFocus:    (focus, focusTab) => set({ focus, focusTab }),
-  setPauseHiding: (pauseHiding) => set({ pauseHiding }),
+  setFrontendUp: (frontendUp) => set({ frontendUp }),
   setLeaving: (leaving, curtain) => set(curtain ? { leaving, curtain } : { leaving }),
   setLobby:    (lobby) => set({ lobby }),
   // THE SCOPE FLAG NEVER TOUCHES THE METRICS.

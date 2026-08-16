@@ -68,6 +68,10 @@ export default function App() {
   // their anchor by whether the radar is on screen.
   useNuiEvent('screen',   (d) => s.setScreen(d))
   useNuiEvent('leaving',  (d) => s.setLeaving(d.show, d.kind))
+  // GTA'S OWN MENU IS ON SCREEN AND WE MUST NOT DRAW OVER IT (#122). Lua holds
+  // this true for as long as the engine's frontend is up, because Lua is the
+  // only thing that can see the frontend at all.
+  useNuiEvent('frontend', (d) => s.setFrontendUp(d.up === true))
   // Pushed on every br:ui:ready, not only the first: br_ui restarting
   // mid-match hands CEF a fresh page at default scale, and without a re-push
   // the player's interface would silently revert for the rest of the session.
@@ -87,8 +91,18 @@ export default function App() {
   // focus away, the input closes. The UI never decides this on its own.
   useNuiEvent('focus', (d) => {
     s.setFocus(d.screen, d.tab)
-    // Focus returning to the lobby is the pause round-trip completing.
-    if (d.screen === 'lobby') s.setPauseHiding(false)
+    // RECONCILED AGAINST THE FOCUS STACK, the same way pause.lua reconciles
+    // `open` against it and for the same reason: a flag that says the screen
+    // is not ours, left set by a message that never arrived, is a page that is
+    // invisible with no cursor and a reconnect as the only way out. That is
+    // the worst outcome this file can produce, so it gets a second way back.
+    //
+    // Lua granting focus to a real screen is proof the frontend is down --
+    // nothing pushes focus while the engine owns the screen, and the restore
+    // in br_core fires on exactly that transition. `none` is NOT proof: the
+    // handover empties the stack on its way into the frontend, so treating it
+    // as the frontend closing would clear the flag the moment it was set.
+    if (d.screen !== 'none') s.setFrontendUp(false)
     if (d.screen === 'chat') {
       s.openChat(d.channel ?? s.chatChannel)
     } else if (s.chatOpen) {
@@ -166,7 +180,34 @@ export default function App() {
   const hudUp = !showLobby && !ridingBus && !tearingDown
 
   return (
-    <>
+    /* THE WHOLE INTERFACE, BEHIND ONE GATE (#122).
+     *
+     * While GTA's own menu is up, EVERYTHING of ours has to stop drawing --
+     * not just the screen that asked for the handover. The engine's frontend
+     * is a scaleform: nothing we draw can sit under it, so anything still
+     * painting is on top of the menu the player was sent to use.
+     *
+     * ONE WRAPPER RATHER THAN A CONDITION ON EACH SCREEN, because the list of
+     * things that draw is not the list of things that follow focus -- the
+     * lobby comes from match state, the HUD from `hudUp` -- and the previous
+     * fix missed the lobby for exactly that reason. A gate around all of it
+     * cannot miss a screen, and cannot be missed by a screen added later.
+     *
+     * OPACITY, NOT UNMOUNTING. Screens are mounted once and toggled by
+     * visibility so a transition never costs mount work mid-fight; tearing the
+     * tree down here would throw that away and remount the HUD every time
+     * somebody checked their resolution. Opacity 0 paints nothing, which is
+     * all the scaleform needs, and pointer-events off means a page that is
+     * invisible cannot also be quietly swallowing clicks.
+     */
+    <div
+      style={{
+        opacity: s.frontendUp ? 0 : 1,
+        pointerEvents: s.frontendUp ? 'none' : undefined,
+        transition: 'opacity 120ms linear',
+      }}
+      aria-hidden={s.frontendUp || undefined}
+    >
       {/* Always mounted; visibility follows match state so transitions cost no
           mount work mid-fight. Hidden under the pause menu -- the fullscreen
           map does not need our chrome floating over it. */}
@@ -184,7 +225,7 @@ export default function App() {
           menu was visible underneath both of them, reading as two screens
           stacked rather than one navigating (user, 2026-08-09). */}
       <Lobby
-        visible={showLobby && !s.pauseHiding}
+        visible={showLobby}
         under={LOBBY_SUBSCREENS.has(s.focus)}
       />
       {showEnd && s.summary && <EndScreen summary={s.summary} />}
@@ -235,6 +276,6 @@ export default function App() {
       {/* The pause menu REPLACES GTA's, so it sits above everything our own
           screens draw and below only the curtain. */}
       <Page show={s.focus === 'pause'}><PauseMenu /></Page>
-    </>
+    </div>
   )
 }

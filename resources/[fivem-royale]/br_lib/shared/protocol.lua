@@ -294,6 +294,27 @@ BR.Nui = {
     LOBBY     = 'lobby',     -- queue progress, so waiting has a visible reason
     INVITE    = 'invite',    -- an incoming party invite
     LEAVING   = 'leaving',   -- the voluntary-leave interstitial (black + text)
+    -- THE ENGINE'S FRONTEND OWNS THE SCREEN, so our page must not draw.
+    --
+    -- A scaleform cannot be covered by NUI and NUI cannot be covered by it, so
+    -- for as long as GTA's own menu is up, anything we paint is simply sitting
+    -- ON TOP of the menu the player was sent to use (owner, 2026-08-16:
+    -- "results in the lobby UI overlaying on top of the GTA V settings
+    -- screen").
+    --
+    -- THIS IS A SEPARATE QUESTION FROM FOCUS AND HAS TO BE. Focus decides who
+    -- owns the CURSOR; this decides who owns the SCREEN. The lobby is drawn
+    -- from match state, not from the focus stack -- deliberately, so a queue
+    -- screen is visible before it is clickable -- which means emptying the
+    -- focus stack releases the mouse and leaves the lobby painted exactly
+    -- where it was. That is the whole bug, and one more focus call could
+    -- never have fixed it.
+    --
+    -- LUA OWNS IT, and the page only mirrors it. The previous attempt had the
+    -- PAGE raise a flag before asking Lua to hand over, and the focus
+    -- envelopes Lua emits while tearing its own stack down cleared that flag
+    -- again a frame later.
+    FRONTEND  = 'frontend',  -- { up } -- GTA's menu is on screen; draw nothing
     -- The player's own preferences, read back out of KVP on boot. Sent as a
     -- whole object rather than as deltas: there are a dozen of them, they
     -- change when a human drags a slider, and a merge protocol for that would
@@ -398,6 +419,13 @@ BR.NuiCb = {
     -- Opens GTA's own pause menu so the player can reach the settings no
     -- script can write: microphone, push-to-talk, output device.
     VOICE_SETTINGS = 'br/voice/settings',
+    -- The same handover, asked for by somebody who wants GRAPHICS rather than
+    -- a microphone: resolution, quality, FOV. Identical mechanically, and a
+    -- separate name because the only route to the engine's settings used to be
+    -- a button reading "Microphone & push-to-talk" -- which is not a place any
+    -- player looks for their resolution (owner, 2026-08-16: "no clear way to
+    -- reach GTA's own graphics/display settings").
+    GAME_SETTINGS  = 'br/game/settings',
     -- The interface saying "an animation is playing, do not take the screen
     -- away yet". The post-match XP award is the only thing that raises it.
     XP_BUSY      = 'br/xp/busy',

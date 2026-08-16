@@ -30,7 +30,7 @@ import Ring from '../hud/Ring'
 import { useCoverReport } from '../bridge/cover'
 
 /** What the curtain is covering. Lua names it; the wording lives here. */
-export type CurtainKind = 'leaving' | 'dropping'
+export type CurtainKind = 'leaving' | 'dropping' | 'disconnecting'
 
 /**
  * The opacity transition's own duration, in ms, and it MUST match the class
@@ -42,6 +42,13 @@ const FADE_MS = 600
 const COPY: Record<CurtainKind, { title: string; sub: string }> = {
   leaving:  { title: 'Leaving the match', sub: 'Cleaning up the world…' },
   dropping: { title: 'Dropping in',       sub: 'Building the island…' },
+  // A THIRD KIND RATHER THAN REUSING `leaving`, because the words would be a
+  // lie: somebody disconnecting from the lobby is not leaving a match, and
+  // there is no world to clean up. Same component, same shape of moment --
+  // something irreversible is under way and there is nothing to look at --
+  // which is the whole argument for one curtain with three vocabularies
+  // instead of three interstitials that drift apart.
+  disconnecting: { title: 'Leaving the server', sub: 'Disconnecting…' },
 }
 
 export default function LeaveScreen({
