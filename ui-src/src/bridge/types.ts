@@ -549,8 +549,11 @@ export type CurtainKind = 'leaving' | 'dropping'
 
 /** Which screen currently owns NUI focus. Lua is the authority. */
 export interface FocusPayload {
+  /** `players` and `playersReport` are one panel in two modes. They are two
+   *  screens because they hold different focus -- see BR.FocusKeepsInput. */
   screen: 'none' | 'lobby' | 'squad' | 'inventory' | 'summary' | 'chat'
-        | 'settings' | 'locker' | 'market' | 'pause' | 'help' | 'players'
+        | 'settings' | 'locker' | 'market' | 'pause' | 'help'
+        | 'players' | 'playersReport'
   /** Which channel a chat focus should open in. Rides along here rather than
    *  needing its own envelope kind. */
   channel?: ChatChannel

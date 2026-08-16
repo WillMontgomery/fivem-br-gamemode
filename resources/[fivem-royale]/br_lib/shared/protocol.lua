@@ -384,9 +384,16 @@ BR.NUI_ENVELOPE_VERSION = 1
 --- listed is now a menu you cannot run around inside, which is the safe way to
 --- be wrong.
 ---
---- Only the inventory earns it: it is meant to be used DURING a fight, and
---- that is the whole reason the match keeps running while it is open.
-BR.FocusKeepsInput = { inventory = true }
+--- Only the inventory and the player list earn it, and both for the same
+--- reason: they are meant to be READ during a fight. Checking who is left must
+--- not mean standing still to do it.
+---
+--- `players` and `playersReport` are the same panel in two modes, and only the
+--- first is listed. Report mode has a text field in it, and with input kept
+--- every keystroke in that field is also a movement key -- so typing a note
+--- walks you off a roof. The page asks for one mode or the other; this table
+--- is what makes the difference real.
+BR.FocusKeepsInput = { inventory = true, players = true }
 
 --- What the engine and the page should be told, for a given focus stack.
 ---

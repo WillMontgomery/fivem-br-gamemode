@@ -20,20 +20,61 @@
 BR = BR or {}
 BR.PlayerList = {}
 
---- Whether the panel is currently up. Owned here because the focus stack is
---- the thing that actually knows, and asking it is one hop.
+--- Whether the panel is currently up, and whether it is in report mode. Owned
+--- here because the focus stack is the thing that actually knows, and asking
+--- it is one hop.
 local open = false
+local reporting = false
 
---- Ask the server and show the panel.
-local function show()
-    open = true
-    TriggerServerEvent(BR.Net.PLAYERS_ASK)
-    TriggerEvent('br:ui:pushFocus', 'players')
+--- TWO SCREENS FOR ONE PANEL, because they need different focus (owner,
+--- 2026-08-16). `players` keeps game input so the list can be read on the
+--- move; `playersReport` does not, because its note field would otherwise
+--- send every keystroke to the game as well. BR.FocusKeepsInput lists only the
+--- first, and the resolver follows the TOP of the stack -- so pushing the
+--- report screen over the list screen takes movement back on its own, and
+--- popping it hands movement straight back.
+local VIEW, REPORT = 'players', 'playersReport'
+
+--- Reconcile the focus stack to the state the page asked for.
+---
+--- STATE, NOT TOGGLES. The page sends what it wants to be true, never "flip
+--- it" -- a dropped message then costs one stale frame instead of leaving the
+--- panel and the cursor permanently disagreeing, which is the failure this
+--- interface has already had twice.
+local function apply(wantOpen, wantReport)
+    wantReport = wantOpen and wantReport or false
+
+    if wantReport ~= reporting then
+        reporting = wantReport
+        if wantReport then
+            TriggerEvent('br:ui:pushFocus', REPORT)
+        else
+            TriggerEvent('br:ui:popFocus', REPORT)
+        end
+    end
+
+    if wantOpen ~= open then
+        open = wantOpen
+        if wantOpen then
+            TriggerServerEvent(BR.Net.PLAYERS_ASK)
+            TriggerEvent('br:ui:pushFocus', VIEW)
+        else
+            TriggerEvent('br:ui:popFocus', VIEW)
+        end
+    end
 end
 
+--- Ask the server and show the panel, in view mode.
+local function show()
+    apply(true, false)
+end
+
+--- Close it, whichever mode it is in. Pops REPORT first so the stack unwinds
+--- in the order it was built; popFocus is order-independent, but leaving a
+--- screen on the stack that nothing will ever pop is how the cursor got
+--- carried into a match once already.
 local function hide()
-    open = false
-    TriggerEvent('br:ui:popFocus', 'players')
+    apply(false, false)
 end
 
 --- The key. One press toggles.
@@ -98,11 +139,7 @@ AddEventHandler(BR.Net.REPORT_RESULT, function(res)
 end)
 
 RegisterNUICallback(BR.NuiCb.PLAYERS_FOCUS, function(data, cb)
-    if data and data.open then
-        show()
-    else
-        hide()
-    end
+    apply(data ~= nil and data.open == true, data ~= nil and data.report == true)
     cb({ ok = true })
 end)
 

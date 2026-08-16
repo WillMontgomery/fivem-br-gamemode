@@ -223,7 +223,12 @@ export default function App() {
       {/* The market is the third face of the same screen. It has no ped to
           show, so it takes the whole width. */}
       <Page show={s.focus === 'market'}><Market /></Page>
-      <Page show={s.focus === 'players'}><PlayerList /></Page>
+      {/* One panel, two focus screens. Report mode pushes `playersReport` over
+          `players` to give up game input for its text field, so the gate has
+          to accept either or the panel unmounts the moment it is used. */}
+      <Page show={s.focus === 'players' || s.focus === 'playersReport'}>
+        <PlayerList />
+      </Page>
       {/* The manual, from the lobby. The same component the pause menu
           embeds, in its own frame. */}
       <Page show={s.focus === 'help'}><Help /></Page>
