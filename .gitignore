@@ -70,6 +70,9 @@ Thumbs.db
 desktop.ini
 .DS_Store
 
-# Agent worktrees. Each is a full checkout; committing them turns this repo
-# into an accidental submodule host.
-.claude/worktrees/
+# Local editor/agent state. Nothing in here is part of the game or the build,
+# and the paths inside it are machine-specific. Ignored as a whole rather than
+# per-subdirectory because of `.claude/worktrees/`: each worktree is a full
+# checkout carrying its own `.git` file, which `git add -A` happily commits as
+# an embedded repo. That has already happened here once.
+.claude/
