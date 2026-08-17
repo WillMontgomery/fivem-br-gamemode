@@ -189,6 +189,21 @@ local promptSeen = {
     -- with the smoke still flying is the engine, and the Lua is exonerated.
     toggles = 0,      -- presses the trail listener actually received
     acted = 0,        -- of those, the ones showTrail carried out
+
+    -- THE COUNTER THAT WOULD HAVE FOUND THIS IN ROUND ONE (#131, 2026-08-16).
+    --
+    -- Every number above this line measures OUR side of the trail: what we
+    -- decided, what we drew, what the key did. All five were healthy in the
+    -- owner's readout and the sky was still empty, because none of them measures
+    -- the thing that actually makes smoke -- GTA's own INPUT_PARACHUTE_SMOKE
+    -- being held. The permission natives were mistaken for the emitter, so
+    -- nothing anywhere pressed it and no counter was watching the gap.
+    --
+    -- This counts frames we asserted that control. It is the divider the old
+    -- readout was missing: emit 0 across a whole canopy phase is this file's
+    -- fault, while emit in the hundreds with an empty sky is the engine's, and
+    -- before today there was no reading that could tell those apart.
+    emits = 0,        -- frames INPUT_PARACHUTE_SMOKE was actually held for us
 }
 
 --- Take the parachute away for good, and kill the vanilla prompt with it.
@@ -244,6 +259,7 @@ AddEventHandler('br:drop:begin', function(d)
     promptSeen.sends, promptSeen.draws = 0, 0
     promptSeen.fallbacks, promptSeen.trailFrames = 0, 0
     promptSeen.toggles, promptSeen.acted = 0, 0
+    promptSeen.emits = 0
     -- Out of the door is the one moment that unambiguously un-lands you. See
     -- the note where this is SET, at the bottom of the drop machine.
     BR.State.landed = false
@@ -498,14 +514,49 @@ BR.Loop.register(BR.Loop.FRAME, 'skydive.prompt', function()
     end
     local ped = PlayerPedId()
 
-    -- F IS NOT A RIPCORD-CUTTER. INPUT_PARACHUTE_DETACH (153, default F)
-    -- cuts the canopy mid-glide in base GTA -- and F is also the default
-    -- enter-vehicle key, so players who reached for a door mid-descent
-    -- dropped out of the sky (live report, 2026-08-04). Dead for the
-    -- whole drop.
-    DisableControlAction(0, 153, true)
+    -- F IS NOT A RIPCORD-CUTTER. INPUT_PARACHUTE_DETACH cuts the canopy
+    -- mid-glide in base GTA -- and F is also the default enter-vehicle key, so
+    -- players who reached for a door mid-descent dropped out of the sky (live
+    -- report, 2026-08-04). Dead for the whole drop.
+    --
+    -- THE INDEX WAS WRONG AND THIS FIX HAS NEVER WORKED. It disabled 153,
+    -- which is INPUT_PARACHUTE_BRAKE_RIGHT (E) -- so right-brake steering was
+    -- dead for every descent since 2026-08-04, and the canopy-cutter it was
+    -- written to stop stayed live the whole time. Detach is 145. Verified
+    -- against the FiveM control table, not from memory; the same table is what
+    -- settled INPUT_PARACHUTE_SMOKE being 154 rather than a native that emits
+    -- on its own. See BR.Cosmetics.emitTrailThisFrame.
+    DisableControlAction(0, 145, true)
 
     local cs = GetPedParachuteState(ped)
+
+    -- THE SMOKE ITSELF, AND IT IS A HELD KEY RATHER THAN A FLAG (#131).
+    --
+    -- Everything this issue has done until now set a PERMISSION and expected
+    -- smoke. GTA does not work that way: the parachute trail comes out while
+    -- INPUT_PARACHUTE_SMOKE is held and stops when it is released, and the two
+    -- SetPlayerParachute* natives only decide whether that key is allowed to do
+    -- anything and what colour it makes. Nothing in this codebase has ever held
+    -- it, which is why the owner's readout could show `armed true on true` with
+    -- both natives called and a completely empty sky. The argument, and the
+    -- verification behind the control index, are in cosmetics.emitTrailThisFrame.
+    --
+    -- HERE, NOT IN THE PROMPT BRANCH BELOW, and the distinction matters: that
+    -- branch also requires a nameable key, because a prompt with an empty badge
+    -- is worse than no prompt. Smoke has no such requirement -- a player who
+    -- deliberately cleared their `brtrail` binding still bought the trail and
+    -- still gets it, they simply cannot toggle it off. Hanging the emission off
+    -- the prompt's conditions would have made a cosmetic depend on whether we
+    -- could draw a letter.
+    --
+    -- Per frame because SetControlNormal lasts exactly one frame, and cheap: one
+    -- native call, only under a canopy, only when the trail is armed and on.
+    if cs == BR.Native.ChuteState.OPENING or cs == BR.Native.ChuteState.OPEN then
+        if BR.Cosmetics.emitTrailThisFrame() then
+            promptSeen.emits = promptSeen.emits + 1
+        end
+    end
+
     local kind = nil
 
     -- The airborne test must NOT be `not IsPedOnFoot`: a ped in the
@@ -1007,11 +1058,19 @@ RegisterCommand('brdropdbg', function()
     -- "my bought trail did not fly in a squad" is the report this issue has
     -- outlived twice. `source purchase` while squadded is the one line that
     -- settles it.
-    print(('  trail: armed %s   source %s   on %s   key %s'):format(
+    --
+    -- AND `engine` IS THE ONLY ONE OF THESE THE GAME SAID RATHER THAN US. The
+    -- other three are our own variables agreeing with one another, which is
+    -- exactly what they did through all three of the owner's prints while
+    -- nothing rendered. A colour here that is not the one the equipped item
+    -- names means the write never reached the engine; the right colour with an
+    -- empty sky means it did, and the emit count below is the next question.
+    print(('  trail: armed %s   source %s   on %s   key %s   engine rgb %s'):format(
         tostring(BR.Cosmetics.trailArmed),
         tostring(BR.Cosmetics.trailSource or '(none)'),
         tostring(BR.Cosmetics.trailOn),
-        tostring(BR.Native.keyLabelForCommand('brtrail') or '(none)')))
+        tostring(BR.Native.keyLabelForCommand('brtrail') or '(none)'),
+        BR.Cosmetics.engineTrailColour()))
 
     -- AND WHETHER PRESSING THAT KEY DID ANYTHING (#131, fifth round). The line
     -- above says what the trail IS; this one says what the key DID, which is the
@@ -1022,13 +1081,29 @@ RegisterCommand('brdropdbg', function()
     --                            whether it says `via engine`.
     --   presses > 0, acted 0     the presses arrived and were refused, which
     --                            here can only mean nothing was armed to act on.
-    --   presses > 0, acted > 0   every press was carried out and the native was
-    --                            told a new value each time. If the smoke is
-    --                            still flying after that, the engine is not
-    --                            honouring the flag mid-glide and no change to
-    --                            this file will fix it.
-    print(('  trail key: presses %d   acted %d'):format(
-        promptSeen.toggles, promptSeen.acted))
+    --   presses > 0, acted > 0   every press was carried out and the permission
+    --                            native was told a new value each time.
+    --
+    -- AND THAT LAST LINE USED TO END "so the engine is at fault and no change to
+    -- this file will fix it", WHICH WAS WRONG AND COST THIS ISSUE A ROUND. The
+    -- owner's readout hit exactly that case -- presses 1, acted 1, permission
+    -- granted, no smoke -- and the conclusion drawn from it was that GTA was
+    -- declining to honour the flag mid-glide. It was not. Nothing had ever asked
+    -- for smoke: the permission natives are not emitters, and the emit count is
+    -- the reading that was missing.
+    --
+    --   emits 0 under a canopy      nothing held INPUT_PARACHUTE_SMOKE. Either
+    --                               the trail is toggled off (`on false` above)
+    --                               or this file's descent loop is not running
+    --                               (see the loop line below).
+    --   emits > 0 and an empty sky  the control was held for that many frames
+    --                               with permission granted and the colour the
+    --                               engine reports above. THAT is the reading
+    --                               that would exonerate the Lua -- and it is
+    --                               the first time this issue has been able to
+    --                               produce it.
+    print(('  trail key: presses %d   acted %d   emit frames %d'):format(
+        promptSeen.toggles, promptSeen.acted, promptSeen.emits))
 
     -- AND WHETHER ANY OF THAT REACHED THE SCREEN, which is the half the first
     -- two rounds could not see (#131). The four counts separate the three ways

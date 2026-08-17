@@ -358,6 +358,18 @@ local function mumbleReset()
         -- the 1Hz watcher in voice.lua, and a test that cannot take the
         -- connection away cannot exercise it.
         connected = true,
+        -- GTA'S OWN VOICE CHAT, WHICH IS A SEPARATE SWITCH FROM MUMBLE'S.
+        --
+        -- Owner, on the mode that is supposed to be silence: "When set to
+        -- 'off', pressing the PTT button still shows that I'm talking." The
+        -- prose he is looking at is the GAME's, not ours -- ours is the
+        -- bottom-centre panel talkingNames() reads. MumbleSetActive(false) says
+        -- nothing about this one, so `active` alone could never have caught it
+        -- and 'off' passed green while the game announced him to the room.
+        --
+        -- Modelled as its own field for exactly that reason: two switches, two
+        -- fields, and a test that can tell which one a fix actually threw.
+        gameVoice = true,
     }
 end
 mumbleReset()
@@ -380,6 +392,17 @@ end
 
 function MumbleSetActive(v) mumble.active = v and true or false end
 function MumbleIsConnected() return mumble.connected end
+
+--- NETWORK_SET_VOICE_ACTIVE -- the GAME's voice chat, not Mumble's.
+---
+--- Defined here because voice.lua now calls it, guarded, on the 'off' path. It
+--- is a stock GTA native and this is what it is for; what nobody on this
+--- project has watched is whether it suppresses the specific "currently
+--- talking" prose the owner reported seeing while muted. The suite can only
+--- prove the call is made and paired -- off turns it off, every other mode
+--- turns it back on -- which is the honest limit and is exactly what is
+--- asserted below. The rest is a playtest.
+function NetworkSetVoiceActive(v) mumble.gameVoice = v and true or false end
 
 --- IS THIS PLAYER SENDING US FRAMES? Note what this is NOT: it is not "can we
 --- hear them". The engine sets it from decoded packets arriving, which happens
@@ -482,7 +505,7 @@ local function mumbleSnapshot()
              selected = mumble.target, sends = t, people = p, listen = l,
              prox = mumble.prox, exists = ex,
              inDist = mumble.inDist, outDist = mumble.outDist, volume = vol,
-             src = BR.State.me.src,
+             src = BR.State.me.src, gameVoice = mumble.gameVoice,
              refused = table.concat(mumble.refused, ' ') }
 end
 
@@ -2068,8 +2091,13 @@ do
         ('so squadmates %dm apart still hear each other'):format(FAR))
     ok(hears(a1, b1near, 5.0),
         'while a rival squad standing next to them hears them as proximity')
-    ok(not hears(a1, b1far, FAR),
-        'and the same rival, walked away, does not')
+    -- AND THE RIVAL WALKED AWAY STILL HEARS THEM, which is the capability this
+    -- round gives up and is asserted so that nobody gives it BACK by accident.
+    -- It used to say `not hears`, and buying that word cost the owner his squad.
+    ok(hears(a1, b1far, FAR),
+        'and the same rival, walked away, still does -- there is no cutoff')
+    ok(b1far.volume[1] == nil,
+        'because walking away writes no mute at all', tostring(b1far.volume[1]))
     ok(#b1.people == 1 and b1.people[1] == 4,
         'each squad having a radio only to its own', ('%d'):format(#b1.people))
 end
@@ -2170,8 +2198,9 @@ do
     -- volume overrides open, which is the state a reconnect destroys.
     playersAt({ [2] = false, [3] = { x = VR.nearby + 100.0, y = 0 } })
     squadAt({ { src = 2, x = 900.0, y = 0 } })
-    ok(mumble.volume[2] == 1.0 and mumble.volume[3] == 0.0,
-        'before the drop, the radio and the mute are both open')
+    ok(mumble.volume[2] == 1.0 and mumble.volume[3] == nil,
+        'before the drop, the squad radio is open and the distant stranger is '
+        .. 'left to the engine -- one override, not two')
 
     -- THE DROP, MODELLED AS A DROP rather than by reaching in and clearing a
     -- flag by hand. The engine forgets everything it knew, the connection goes
@@ -2193,8 +2222,10 @@ do
     ok(mumble.volume[2] == 1.0,
         'the squad radio is re-opened against the new engine, not assumed',
         tostring(mumble.volume[2]))
-    ok(mumble.volume[3] == 0.0,
-        'and the out-of-range stranger is muted again', tostring(mumble.volume[3]))
+    ok(mumble.volume[3] == nil,
+        'and the distant stranger is left audible, not re-muted -- a reconnect '
+        .. 'is exactly the moment a whitelist would have gone deaf',
+        tostring(mumble.volume[3]))
     nobodyElse()
 
     -- NOTHING IS ASSUMED TO HAVE SURVIVED IT. A reconnected Mumble client
@@ -2265,27 +2296,36 @@ do
         .. 'makes the receive-side gate the only thing holding the range')
 end
 
-describe('THE RECEIVE SIDE IS GATED -- can A actually hear B? -- #157')
+describe('NOBODY IS MUTED BY DEFAULT -- the receive side FAILS OPEN -- #157')
 do
-    -- THE HOLE THE SUITE HAD, AND THE REASON IT PASSED TWICE ON A BROKEN BUILD.
+    -- THIS BLOCK USED TO ASSERT THE OPPOSITE, AND THAT IS THE WHOLE STORY.
     --
-    -- Every voice assertion in this file was about TRANSMIT: which room, which
-    -- target, which server ids. All of them stayed green while voice was
-    -- globally audible, and all of them stayed green again while 'nearby' was
-    -- completely silent, because not one of them asked the only question a
-    -- player cares about -- given a mode and a distance, can this player hear
-    -- that one.
+    -- It was called "THE RECEIVE SIDE IS GATED" and it pinned a proximity
+    -- cutoff built out of per-player mutes: 0.0 for anyone past range.nearby,
+    -- 0.0 for anyone the client could not place. Every assertion in it passed.
+    -- The owner then could not hear anybody, in any mode, including his own
+    -- squad, standing directly across from them:
     --
-    -- So that is what this block asks, four times, once per requirement.
+    --   "Confirmed in squads that the squad chat no longer works either. No
+    --    errors in the console, and it looks like I'm talking, but nobody can
+    --    hear me."
+    --
+    -- WHY THE TESTS COULD NOT SEE IT. The gate keyed on a distance read off
+    -- another player's PED, and a test can place a ped whenever it likes. A
+    -- real match cannot: for the first seconds nothing has streamed, every
+    -- distance is nil, and the rule that says "nil means too far" wrote a mute
+    -- over the entire roster before anyone had moved. The suite tested the rule
+    -- in a world where the rule's input was always available.
+    --
+    -- SO THE ASSERTIONS ARE INVERTED, AND THE THIRD ONE IS THE POINT: a player
+    -- this client cannot place must be AUDIBLE. It is the one assertion in this
+    -- file that fails on the code being replaced.
     local PROX = 2051
-    local NEAR = VR.nearby - 5.0    -- inside the range
-    local FAR  = VR.nearby + 5.0    -- one step outside it
+    local NEAR = VR.nearby - 5.0
+    local FAR  = VR.nearby + 5.0
 
-    -- 1. NEARBY DELIVERS AUDIO INSIDE THE RANGE.
-    --
-    --    Two solos in one match. B is standing NEAR, and this is the case that
-    --    was silent on the reported build -- not a subtle edge, two players on
-    --    top of each other hearing nothing.
+    -- 1. TWO PLAYERS STANDING TOGETHER HEAR EACH OTHER, which is the floor and
+    --    was already true.
     nobodyElse()
     standAt(0, 0)
     local a = voiceApply('nearby', PROX, nil, 1)
@@ -2298,45 +2338,65 @@ do
     b = mumbleSnapshot()
 
     ok(hears(a, b, NEAR) and hears(b, a, NEAR),
-        ('two solos %.0fm apart hear each other -- the reported silence')
-            :format(NEAR))
+        ('two solos %.0fm apart hear each other'):format(NEAR))
     ok(a.volume[2] == nil and b.volume[1] == nil,
-        'and neither is overridden, so proximity voice stays positional',
+        'and neither is overridden, so the engine mixes them positionally',
         ('a=%s b=%s'):format(tostring(a.volume[2]), tostring(b.volume[1])))
 
-    -- 2. AND NONE OUTSIDE IT. Same two players, one step further apart. The
-    --    listener has to have DONE something -- the engine is wide open, so an
-    --    inactive client would hear them fine.
+    -- 2. AND SO DO TWO PLAYERS WHO ARE FURTHER APART THAN range.nearby.
+    --
+    --    THIS IS THE CAPABILITY BEING KNOWINGLY GIVEN UP and it is asserted
+    --    rather than merely allowed, so that nobody re-adds a cutoff by
+    --    accident and calls the resulting silence a fix. If falloff comes back
+    --    it comes back on the transmit side, and this assertion changes with a
+    --    playtest attached to it.
     standAt(0, 0)
     a = voiceApply('nearby', PROX, nil, 1)
     playersAt({ [2] = { x = FAR, y = 0 } })
     a = mumbleSnapshot()
 
-    ok(a.volume[2] == 0.0,
-        ('a player %.0fm away is muted outright'):format(FAR),
+    ok(a.volume[2] == nil,
+        ('a player %.0fm away is NOT muted -- there is no cutoff'):format(FAR),
         tostring(a.volume[2]))
-    ok(not hears(b, a, FAR),
-        ('so %.0fm apart they cannot hear each other -- the cutoff')
-            :format(FAR))
+    ok(hears(b, a, FAR),
+        ('so %.0fm apart they still hear each other: match-wide voice, '):format(FAR)
+        .. 'which is the trade this round makes on purpose')
 
-    -- ...and walking back in restores them, without a new assignment from the
-    -- server. A cutoff that only ever tightens is a cutoff that silences a
-    -- match over ten minutes.
-    playersAt({ [2] = { x = NEAR, y = 0 } })
-    local backIn = mumbleSnapshot()
-    ok(backIn.volume[2] == nil,
-        'and walking back inside the range hands them to the engine again',
-        tostring(backIn.volume[2]))
-    ok(hears(b, backIn, NEAR), 'so they are audible again')
-
-    -- 3. AND A PLAYER WE CANNOT EVEN PLACE IS SILENT. Out of scope is hundreds
-    --    of metres; the danger is treating "no position" as position zero,
-    --    which would make the whole map audible from the origin.
+    -- 3. AND A PLAYER THIS CLIENT CANNOT PLACE AT ALL IS AUDIBLE.
+    --
+    --    THE ASSERTION THE LAST ROUND GOT BACKWARDS. It read: "a roster player
+    --    with no ped -- out of scope -- is muted, not assumed to be standing at
+    --    the origin", and it was defended as exact rather than approximate,
+    --    because out of scope really is hundreds of metres.
+    --
+    --    Out of scope is not the only way to have no ped. The first tick of a
+    --    match is another, and a squadmate on the far side of a hot drop is a
+    --    third, and both of those are people who must be heard. "I cannot place
+    --    you" is not a distance. It is an absence of information, and the only
+    --    safe answer to an absence of information in a voice system is SOUND.
     playersAt({ [2] = false })
     local unseen = mumbleSnapshot()
-    ok(unseen.volume[2] == 0.0,
-        'a roster player with no ped -- out of scope -- is muted, not assumed '
-        .. 'to be standing at the origin', tostring(unseen.volume[2]))
+    ok(unseen.volume[2] == nil,
+        'a roster player with no ped is NOT muted -- unplaceable is not a '
+        .. 'distance, and silence is not the safe default',
+        tostring(unseen.volume[2]))
+    ok(hears(b, unseen, 5000.0),
+        'so a player we cannot see is still one we can hear -- this is the '
+        .. 'assertion that fails on the code this replaces')
+
+    -- 4. AND NOTHING IS MUTED, FULL STOP. The count matters as much as any
+    --    individual entry: the failure mode was a whitelist that wrote silence
+    --    as its default answer, so the test that catches it is "how many mutes
+    --    exist", not "is this particular player muted".
+    playersAt({ [2] = false, [3] = { x = 5.0, y = 0 },
+                [4] = { x = 3000.0, y = 0 } })
+    local wide = mumbleSnapshot()
+    local muted = 0
+    for _, v in pairs(wide.volume) do if v == 0.0 then muted = muted + 1 end end
+    ok(muted == 0,
+        'and across a mixed roster -- unplaceable, near, and 3km away -- not '
+        .. 'one 0.0 is written outside off', ('muted=%d'):format(muted))
+    nobodyElse()
 end
 
 describe('OFF MEANS NOT LISTENING, NOT JUST NOT TRANSMITTING -- #157')
@@ -2376,6 +2436,15 @@ do
         'and nothing is left loaded in the voice target either',
         ('sends=%d people=%d'):format(#off.sends, #off.people))
 
+    -- AND THE GAME'S OWN VOICE GOES WITH IT. Owner: "When set to 'off',
+    -- pressing the PTT button still shows that I'm talking." MumbleSetActive is
+    -- one switch and GTA's voice chat is another; `active` above was true for
+    -- the first and said nothing about the second, which is why 'off' could
+    -- pass every assertion in this block and still announce the player.
+    ok(off.gameVoice == false,
+        'and GTA\'s own voice chat is switched off too -- the other half of '
+        .. '"still shows that I\'m talking"', tostring(off.gameVoice))
+
     -- THE ASSERTION IN THE OWNER'S OWN TERMS. A speaker who is right next to
     -- this player, in the same room, with a perfectly good transmit path, and
     -- who was audible one line ago.
@@ -2398,14 +2467,30 @@ do
         tostring(later.volume[4]))
 
     -- AND COMING BACK RESTORES EVERYTHING, which is the other half of a switch.
+    --
+    -- THIS IS THE ONE PATH LEFT IN THE FILE THAT DEPENDS ON RELEASING AN
+    -- OVERRIDE, and therefore the one place a wrong guess about -1.0 could
+    -- still strand a player in silence. It is why listen() writes 1.0 before
+    -- it writes -1.0: whichever of the two the engine honours, the player is
+    -- audible. The model here treats -1.0 as removal, so it can only prove the
+    -- -1.0 branch -- the 1.0 belt is deliberately unprovable from Lua and is
+    -- named as such rather than asserted into a false confidence.
     voiceMode('squad')
     local back = mumbleSnapshot()
     ok(back.active, 'coming off off transmits again')
+    ok(back.gameVoice == true, 'and the game\'s voice chat comes back with it',
+        tostring(back.gameVoice))
     ok(back.volume[2] ~= nil and back.volume[2] >= 0.005,
         'and hears the squad again', tostring(back.volume[2]))
     ok(back.volume[4] == nil,
         'and the nearby stranger is handed back to the engine, not left muted',
         tostring(back.volume[4]))
+    ok(back.volume[3] == nil,
+        'and so is the one who was never near us -- coming off off leaves no '
+        .. 'mute anywhere', tostring(back.volume[3]))
+    ok(hears(speaker, back, 1.0) and hears(speaker, back, 4000.0),
+        'so the player who tried off once can hear the match again at any '
+        .. 'distance -- the trap this round was most at risk of setting')
 end
 
 describe('SQUAD STILL WORKS -- the thing a bad fix would trade away -- #157')
@@ -2446,38 +2531,45 @@ do
         'while a rival 10m away is heard as proximity, not as radio',
         tostring(me.volume[3]))
 
-    -- AND A SQUADMATE BEYOND THE SQUAD RANGE FALLS OFF IT. range.squad is a
-    -- real number, not a synonym for infinity.
+    -- AND A SQUADMATE BEYOND THE SQUAD RANGE LOSES THE RADIO AND KEEPS THEIR
+    -- VOICE. range.squad may DECLINE an upgrade; it may not take away ears.
+    --
+    -- This assertion said `== 0.0` one round ago, and the sentence defending it
+    -- read "because there is no proximity to fall back to at that distance".
+    -- There is now: there is no cutoff, so the fallback is simply being heard.
     squadAt({ { src = 2, x = VR.squad + 500.0, y = 0 } })
     local tooFar = mumbleSnapshot()
-    ok(tooFar.volume[2] == 0.0,
-        'a squadmate past the squad range loses the radio -- and is muted, '
-        .. 'because there is no proximity to fall back to at that distance',
+    ok(tooFar.volume[2] == nil,
+        'a squadmate past the squad range loses the flat radio and falls back '
+        .. 'to being an ordinary audible player, NOT to silence',
         tostring(tooFar.volume[2]))
+    ok(hears(mate, tooFar, VR.squad + 500.0),
+        'so even past range.squad a squadmate can still be heard')
 end
 
-describe('the talking indicator names only people we can hear -- #157')
+describe('the talking indicator renders again, and matches the audio -- #157')
 do
-    -- THE DISPLAY BUG, AND THE CLUE THAT DIAGNOSED THE REST. Owner: 'nearby'
-    -- "doesn't output audio, though it does show who's talking, even when they
-    -- should be out of range."
+    -- THE INDICATOR IS TIED TO THE AUDIO DECISION, AND THAT IS WHY IT WENT
+    -- BLANK. Owner, after the round that muted everybody: "when using my PTT,
+    -- the fivem default prose shows up 'currently talking' but ours doesn't
+    -- anymore."
     --
-    -- MumbleIsPlayerTalking is set by frames arriving, not by anything being
-    -- played, and every player in the match is in one room -- so the indicator
-    -- listed the entire match and the audio listed nobody. Two halves of one
-    -- system with nothing joining them. They are joined now, and this is what
-    -- proves it: the same three speakers, all talking, one of them audible.
+    -- Nothing was wrong with the indicator. It reads BR.Voice.state.audible,
+    -- listen() had muted the whole roster, so the set was empty and there was
+    -- nobody to name. The tie is KEPT -- a name on screen must mean "you are
+    -- hearing this person" -- and this block asserts both directions of it:
+    -- with no cutoff, everybody talking in the match is named, and on 'off'
+    -- nobody is.
     local PROX = 2069
 
     nobodyElse()
     standAt(0, 0)
     voiceApply('squad', PROX, { 4 }, 1)
-    playersAt({ [2] = { x = 5.0, y = 0 },                 -- near: audible
-                [3] = { x = VR.nearby + 100.0, y = 0 },   -- far:   not
+    playersAt({ [2] = { x = 5.0, y = 0 },                 -- standing on us
+                [3] = { x = VR.nearby + 100.0, y = 0 },   -- well past 'nearby'
                 [4] = false })                            -- squadmate, no ped
     squadAt({ { src = 4, x = 3000.0, y = 0 } })
 
-    -- All three are sending frames. On the reported build all three appeared.
     mumble.talking = { [2] = true, [3] = true }
     BR.Loop.step(BR.Loop.TICK)
 
@@ -2485,24 +2577,33 @@ do
     local seen = {}
     for _, n in ipairs(names) do seen[n] = true end
 
-    ok(seen['p2'], 'somebody talking inside the range is named',
+    ok(seen['p2'], 'somebody talking next to us is named',
         table.concat(names, ', '))
-    ok(not seen['p3'],
-        'and somebody talking OUT of range is NOT named, however loudly they '
-        .. 'are transmitting -- this is the reported display bug',
+    ok(seen['p3'],
+        'AND so is somebody talking from the far side of the match -- they are '
+        .. 'audible now, so naming them is the truth and not the bug it was',
         table.concat(names, ', '))
 
-    -- AND THE INDICATOR CANNOT DISAGREE WITH THE AUDIO, because it is filtered
-    -- through the same table the mutes were applied from. Muting somebody has
-    -- to remove them from the list in the same pass, with no second push and
-    -- no window in which the two say different things.
+    -- AND WALKING AWAY CHANGES NOTHING, which is the assertion that would have
+    -- caught this round's regression from the display side alone. It used to
+    -- read `#talkingNames() == 0` here, and an empty indicator was taken as
+    -- proof the cutoff worked rather than as the symptom it turned out to be.
     mumble.talking = { [2] = true, [3] = true }
     playersAt({ [2] = { x = VR.nearby + 100.0, y = 0 },
                 [3] = { x = VR.nearby + 100.0, y = 0 }, [4] = false })
     BR.Loop.step(BR.Loop.TICK)
-    ok(#talkingNames() == 0,
-        'walking away from a talker removes them from the indicator as well '
-        .. 'as from the mix', table.concat(talkingNames(), ', '))
+    ok(#talkingNames() == 2,
+        'walking away from two talkers leaves both on the indicator, because '
+        .. 'it leaves both in the mix', table.concat(talkingNames(), ', '))
+
+    -- AND A PLAYER WE CANNOT PLACE IS STILL COUNTED AS AUDIBLE, even though the
+    -- indicator cannot ask the engine whether they are talking -- there is no
+    -- player index for somebody out of scope. Audibility and presentation are
+    -- allowed to disagree in THAT direction: we may fail to name somebody we
+    -- can hear. We must never name somebody we cannot.
+    ok(BR.Voice.state.audible[4] == true,
+        'an unplaceable squadmate is in the audible set even though no name '
+        .. 'can be drawn for them')
 
     -- AND ON 'off' IT IS EMPTY, whoever is shouting.
     mumble.talking = { [2] = true, [3] = true }
@@ -2512,6 +2613,28 @@ do
     ok(#talkingNames() == 0,
         'and a player on off is told nobody is talking, because to them '
         .. 'nobody is', table.concat(talkingNames(), ', '))
+
+    -- AND ON A BUILD WITH NO VOLUME-OVERRIDE NATIVE IT IS NOT EMPTY, which is
+    -- the exact inverse and is the case the indicator got wrong for free.
+    --
+    -- Without that native nothing can be muted, so EVERY player is audible --
+    -- it is the one configuration in which voice is guaranteed to work. The
+    -- receive logic used to bail out at the top on precisely that build and
+    -- leave the audible set untouched, so the build where everybody could hear
+    -- everybody was also the build that displayed nobody. A blank indicator is
+    -- meant to be an alarm now; it must not fire when the audio is fine.
+    local realOverride = MumbleSetVolumeOverrideByServerId
+    MumbleSetVolumeOverrideByServerId = nil
+    voiceMode('squad')
+    mumble.talking = { [2] = true, [3] = true }
+    playersAt({ [2] = { x = 2.0, y = 0 }, [3] = { x = 900.0, y = 0 } })
+    BR.Loop.step(BR.Loop.TICK)
+    ok(#talkingNames() == 2,
+        'a build that cannot mute anybody still names both talkers, because '
+        .. 'on that build it really can hear both',
+        table.concat(talkingNames(), ', '))
+    MumbleSetVolumeOverrideByServerId = realOverride
+
     nobodyElse()
 end
 
@@ -2634,9 +2757,20 @@ do
 
     -- What the trail natives were actually told, because "armed" is a claim and
     -- the colour is the thing the player paid for.
-    local smoke = { allowed = nil, rgb = nil }
+    -- `allowed` IS PERMISSION, `held` IS EMISSION, AND ONLY ONE OF THEM MAKES
+    -- SMOKE. SET_PLAYER_CAN_LEAVE_PARACHUTE_SMOKE_TRAIL grants the right to use
+    -- INPUT_PARACHUTE_SMOKE (control 154, default X); it does not press it, and
+    -- nothing in this codebase ever did. So `allowed == true` -- the only thing
+    -- this block used to assert -- was true through every round of #131 while
+    -- the sky stayed empty, and the suite agreed with the owner's readout that
+    -- the feature worked. `held` is the fact that was missing.
+    local smoke = { allowed = nil, rgb = nil, held = nil }
     function SetPlayerCanLeaveParachuteSmokeTrail(_, on) smoke.allowed = on end
     function SetPlayerParachuteSmokeTrailColor(_, r, g, b) smoke.rgb = { r, g, b } end
+    function SetControlNormal(_, control, amount)
+        smoke.held = (control == 154 and amount == 1.0)
+    end
+    function GetPlayerParachuteSmokeTrailColor() return 0, 0, 0 end
 
     for _, n in ipairs({
         'ClearHelp', 'ClearPedTasks', 'ClearPedTasksImmediately',
@@ -2842,12 +2976,41 @@ do
         'and the engine is actually told to stop leaving smoke',
         ('the native was told %s'):format(tostring(smoke.allowed)))
 
+    -- Cleared first: the stub only records when the native is CALLED, so a
+    -- stale `true` from an earlier frame would read as an emission that is no
+    -- longer happening. Absence is the thing being asserted here.
+    smoke.held = nil
+    frame(16)
+    ok(smoke.held ~= true,
+        'and stops PRESSING the smoke control, which is what actually emits',
+        ('held %s'):format(tostring(smoke.held)))
+
     press(0x42, 'B')
     ok(BR.Cosmetics.trailOn == true and smoke.allowed == true,
         'and pressing it again gives the trail back',
         ('on %s allowed %s'):format(tostring(BR.Cosmetics.trailOn),
                                     tostring(smoke.allowed)))
     ok(smoke.rgb ~= nil, 'in the colour that was bought')
+
+    -- THE ASSERTION THAT WOULD HAVE CAUGHT #131 ON DAY ONE.
+    --
+    -- Permission is not emission. Every earlier assertion in this block checks
+    -- `smoke.allowed`, and `allowed` was true on the owner's machine through
+    -- four rounds while nothing rendered -- because the smoke trail is a HELD
+    -- CONTROL (INPUT_PARACHUTE_SMOKE, 154, default X) and the codebase never
+    -- pressed it. `brdropdbg` faithfully reported `on true`, the suite
+    -- faithfully reported `allowed == true`, and both were describing a
+    -- permission nobody was exercising.
+    --
+    -- So: assert the PRESS, every frame, under canopy. This fails on any build
+    -- that grants the right without asserting the control -- which is every
+    -- build this project shipped before 2026-08-16.
+    smoke.held = nil
+    frame(16)
+    ok(smoke.held == true,
+        'and under canopy the smoke control is actually HELD, not merely allowed',
+        ('allowed %s held %s'):format(tostring(smoke.allowed),
+                                      tostring(smoke.held)))
 
     -- ON THE OWNER'S OWN KEY, AND NOT ONLY ON THE DEFAULT.
     --

@@ -245,6 +245,67 @@ function BR.Cosmetics.showTrail(on)
     return true
 end
 
+--- GTA'S OWN SMOKE INPUT. Verified against docs.fivem.net's control table and
+--- the alt:V control reference, 2026-08-16: index 154, INPUT_PARACHUTE_SMOKE,
+--- default X on keyboard / A on Xbox. 145 is DETACH and 152/153 are the brakes.
+local INPUT_PARACHUTE_SMOKE = 154
+
+--- Actually leave smoke this frame. THIS IS THE LINE #131 WAS MISSING.
+---
+--- SET_PLAYER_CAN_LEAVE_PARACHUTE_SMOKE_TRAIL IS A PERMISSION, NOT AN EMITTER,
+--- and that single misreading is the whole of this bug. Everything above sets
+--- the permission and the colour and then stops, on the assumption that the
+--- engine would start trailing on its own. It does not. In base GTA the
+--- parachute smoke trail is a HELD CONTROL -- the player holds X under the
+--- canopy and smoke comes out for exactly as long as they hold it. The two
+--- natives decide whether that key is allowed to do anything and what colour it
+--- produces; neither of them presses it.
+---
+--- So the owner's readout was true in every particular and still had no smoke in
+--- it: `armed true`, `on true`, both natives called with a colour, permission
+--- granted -- and nobody ever holding the key the permission was granted for.
+--- That is why it has never rendered in either state, for anyone, since the
+--- feature was written.
+---
+--- WE HOLD IT FOR THEM, because the owner's design is a TOGGLE on our own
+--- rebindable key ("press [key] to toggle smoke trails"), not a hold on GTA's.
+--- SetControlNormal writes the control's value for one frame only, so this has
+--- to run every frame the trail is meant to be visible -- which is what makes it
+--- a per-frame call in skydive.lua's descent loop rather than one more one-shot
+--- beside the natives above.
+---
+--- The player's own X is left alone and still works: this ADDS a press, it does
+--- not block one. With the trail toggled off the permission is false, so their X
+--- produces nothing either -- the toggle stays authoritative, which is what the
+--- prompt promises.
+--- @return boolean  whether smoke was actually asked for this frame
+function BR.Cosmetics.emitTrailThisFrame()
+    if not BR.Cosmetics.trailArmed or not BR.Cosmetics.trailOn then
+        return false
+    end
+    SetControlNormal(0, INPUT_PARACHUTE_SMOKE, 1.0)
+    return true
+end
+
+--- What colour the ENGINE thinks it is holding, for /brdropdbg and nothing else.
+---
+--- AN ENGINE READBACK, WHICH IS THE ONE THING THE OLD READOUT DID NOT HAVE.
+--- `armed`/`on`/`source` are all our own variables agreeing with themselves --
+--- the owner's three prints showed them all healthy while nothing rendered, so
+--- as evidence they are worth nothing. GET_PLAYER_PARACHUTE_SMOKE_TRAIL_COLOR
+--- asks the game what it actually stored, so a write that never landed shows up
+--- as a colour that is not the one we sent.
+---
+--- pcall'd because an absent native throws, and this runs inside a debug command
+--- whose whole job is to still print the other twenty facts if one of them is
+--- unavailable on this build.
+--- @return string
+function BR.Cosmetics.engineTrailColour()
+    local ok, r, g, b = pcall(GetPlayerParachuteSmokeTrailColor, PlayerId())
+    if not ok or type(r) ~= 'number' then return '(unreadable)' end
+    return ('%d,%d,%d'):format(r, g, b)
+end
+
 --- The drop is over: no trail, and no state left claiming otherwise.
 ---
 --- ONE PLACE TURNS IT OFF, and that is the point of the function existing for
