@@ -253,6 +253,52 @@ end
 -- sound alike, and testing them together tells nobody anything.
 --
 -- ==========================================================================
+-- CHECKED AGAINST pma-voice (MIT, (c) 2021 Dillon Skaggs), which is the most
+-- widely deployed voice resource on FiveM. Two things came out of reading
+-- client/init/proximity.lua and its README, and they point opposite ways.
+--
+-- IT CONFIRMS THE DIAGNOSIS ABOVE, INDEPENDENTLY. pma-voice does not call
+-- MumbleSetAudioInputDistance or MumbleSetAudioOutputDistance anywhere, and
+-- its README asks other resources not to set them either, because "there have
+-- been cases where it breaks pma-voice". A resource with years of field
+-- exposure computes the distance in Lua and acts on it per player rather than
+-- handing the engine a number and trusting the gate -- which is what this file
+-- now does, and it is a stronger reason for doing it than our own playtest.
+--
+-- IT ALSO DOES IT ON THE OTHER SIDE OF THE CONVERSATION, AND THAT IS BETTER.
+-- Every player there has their own channel and listens ONLY to their own. A
+-- speaker walks the players near THEM and adds each one's channel to their own
+-- voice target -- so you hear somebody because they decided you were close
+-- enough to send to. Proximity is enforced by the speaker, and audio from out
+-- of range never leaves their machine.
+--
+-- (Note for anyone reading pma-voice to check this: its MumbleAddVoiceChannelListen
+-- calls are NOT how it does proximity. Ordinary range is target selection,
+-- above; the per-player listen calls serve spectator mode and phone calls.)
+--
+-- WHY THIS FILE STILL SILENCES ON ARRIVAL INSTEAD, for now:
+--
+--   * IT IS THE TRANSMIT PATH, AND THE TRANSMIT PATH IS THE ONE THING THAT
+--     WORKS. #150 is what made it work and it took three attempts. Rebuilding
+--     it in the same change that repairs listening puts the working half at
+--     risk to fix the broken half.
+--   * A VOICE TARGET HAS LIMITS NOTHING HERE CAN MEASURE. Twenty-five metres on
+--     a hot drop is twenty players, and a target that overflows fails the way
+--     everything in this file fails -- silently. That is the exact failure
+--     class this issue has already shipped twice.
+--   * IT CHANGES NOTHING A PLAYER CAN HEAR. Both designs give "audible inside
+--     the range, silent outside it". What the other one buys is that a modified
+--     client cannot listen in, and less decoding -- both real, neither urgent.
+--
+-- IT IS THE RIGHT NEXT STEP AND IT DOES NOT NEED PER-PLAYER CHANNELS: we have
+-- MumbleAddVoiceTargetPlayerByServerId already, squad voice has been riding it
+-- since #157, and pointing it at nearby players instead of at the match room
+-- expresses the same idea without touching the server's channel scheme -- which
+-- is worth keeping, because pma-voice serves one world and we run parallel
+-- matches on the same coordinates. AFTER the playtest, not with it.
+-- ==========================================================================
+--
+-- ==========================================================================
 -- WHICH IS ALSO WHY SQUAD VOICE IS NOT A ROOM.
 --
 -- Audibility is a property of a SPEAKER and a LISTENER, never of a channel. A

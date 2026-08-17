@@ -164,6 +164,14 @@ ensure br_ringmaster     # optional -- the admin console's game-side half
 #     but the FADE is applied by the playback path to voices that are already
 #     allowed through, so what this changes is the edge, and the edge only.
 #
+#     AND ONE THING TO WATCH, worth knowing before it costs a playtest. On the
+#     native-audio path the game's distance units are LARGER than Mumble's --
+#     pma-voice multiplies its range by three when this convar is on. Our 25 m
+#     is measured in Lua, in world metres, so the CUTOFF will not move. But if
+#     voices sound like they fade out well before the cutoff once this is on,
+#     that mismatch is why, and the answer is to tune
+#     Config.Match.voice.range.nearby rather than to touch this line.
+#
 # RECOMMENDED, BUT TURN IT ON SECOND. Verify the range works with the hard edge
 # first, because a hard edge is unambiguous: at 30 m you either hear somebody
 # or you do not, and there is nothing to argue about. A fade at 30 m and a
