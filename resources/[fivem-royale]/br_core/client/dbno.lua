@@ -82,6 +82,47 @@ local CRAWL_CANDIDATES = {
 -- The one that loaded, or false once every candidate has been tried and failed.
 local crawl = nil
 
+-- Whether the clip is running (true) or held on the frame it is on (false).
+-- nil means "unknown", which makes the next decision write itself through
+-- whatever it turns out to be -- the state after a re-task, where the engine
+-- has just reset the playback rate under us.
+local crawlMoving = nil
+
+-- Where the player last asked to be, while they are not asking to move. See
+-- the movement loop: this is what "stay put" is made of.
+local hold = nil      -- { x = number, y = number } or nil
+
+--- Did a shape test hit anything?
+---
+--- `hit == 1` ALONE IS NOT THE QUESTION. A FiveM native declared BOOL can hand
+--- Lua a number or a boolean depending on the build, and this codebase carries
+--- two scars from assuming otherwise (client/natives.lua compares both forms on
+--- this very native; client/spawn.lua does the same on the screen fade). The
+--- ray below is the only thing stopping a downed player crawling into the
+--- geometry, and on a build that answers `true` the old comparison declined
+--- every hit silently.
+--- @param v any
+--- @return boolean
+local function didHit(v)
+    return v == 1 or v == true
+end
+
+--- Where a label -- or a camera -- belongs over a body.
+---
+--- The head bone, via the one resolver the client has for it. Anchoring to the
+--- ped's ORIGIN is what put the revive prompt above a standing player's head
+--- while the player it pointed at was lying on the floor (owner, 2026-08-17);
+--- client/squadmates.lua carries the long note and the fallback.
+--- @param ped integer
+--- @return number x, number y, number z
+local function overhead(ped)
+    if BR.Squadmates and BR.Squadmates.headAnchor then
+        return BR.Squadmates.headAnchor(ped)
+    end
+    local c = GetEntityCoords(ped)
+    return c.x, c.y, c.z + 0.6
+end
+
 --- Request a dictionary and wait a beat for it. Returns whether it landed.
 --- @param dict string
 --- @return boolean
@@ -120,16 +161,159 @@ end
 
 --- Start (or restart) the downed loop on our own ped.
 --- @param force boolean|nil  play even if something is already running
-local function playCrawl(force)
+--- @param snap boolean|nil   arrive at the pose with no blend at all
+local function playCrawl(force, snap)
     local c = resolveCrawl()
     if not c then return end
 
     local ped = PlayerPedId()
     if not force and IsEntityPlayingAnim(ped, c.dict, c.anim, 3) then return end
-    -- Flag 1 is the looping one, and the clip plays IN PLACE -- the movement
-    -- below is ours, because none of these assets is a locomotion clipset.
-    TaskPlayAnim(ped, c.dict, c.anim, 8.0, -8.0, -1, 1, 0.0, false, false, false)
+
+    -- THE LAST THREE BOOLEANS ARE THE MOVER, AND ALL THREE USED TO BE FALSE.
+    --
+    -- "There's no way for a DBNO player to stop crawling" (owner, 2026-08-17).
+    -- The comment that used to sit here said the clip "plays IN PLACE", and
+    -- nothing ever made that true. `move_injured_ground` is a LOCOMOTION
+    -- dictionary: its clips carry the translation the move blender normally
+    -- extracts and turns into velocity, and TaskPlayAnim applies that
+    -- translation to the ped unless the lock flags tell it not to. A player
+    -- who let go of the keyboard went on crawling, because the animation --
+    -- not the input -- was driving them.
+    --
+    -- lockX/lockY stop the clip pushing the ped across the ground. Z is left
+    -- free so gravity still owns their height. Whether these flags bite is the
+    -- engine's answer and not one that can be read off a file, which is
+    -- exactly why the hold in dbno.controls exists as well: that one measures
+    -- the ped's position and puts it back, so a downed player stays put
+    -- whatever the clip is doing.
+    --
+    -- `snap` is the resurrection case. The pose being blended FROM there is a
+    -- standing idle the player must never see, so it is not blended from.
+    local blend = snap and 1000.0 or 8.0
+    TaskPlayAnim(ped, c.dict, c.anim, blend, -blend, -1, 1, 0.0,
+                 true, true, false)
+    -- A fresh task runs at rate 1.0 whatever we last asked for.
+    crawlMoving = nil
 end
+
+--- Run the crawl clip, or hold it still on the frame it is on.
+---
+--- THE OTHER HALF OF "STOP CRAWLING". Pinning the ped's coordinates stops them
+--- travelling; it does not stop them ANIMATING, and a downed player who has let
+--- go of everything and is still visibly hauling themselves forward is the same
+--- report in a different form. The clip is a loop, so holding it costs nothing
+--- and releasing it resumes from where it was.
+---
+--- Guarded on the native rather than assumed: an unknown native throws, five
+--- throws suspend the frame callback, and the callback being suspended here is
+--- the one that also keeps the player on the floor.
+--- @param moving boolean
+local function crawlPlaying(moving)
+    if crawlMoving == moving then return end
+    if not SetEntityAnimSpeed or not crawl then
+        crawlMoving = moving
+        return
+    end
+    SetEntityAnimSpeed(PlayerPedId(), crawl.dict, crawl.anim,
+                       moving and 1.0 or 0.0)
+    crawlMoving = moving
+end
+
+-- --------------------------------------------------------------------------
+-- The view from the floor
+-- --------------------------------------------------------------------------
+--
+-- "The DBNO player's camera is too high when in DBNO. Can we lower it closer
+-- to the ground? Otherwise seems like it's hovering over their standing
+-- height." (owner, 2026-08-17.)
+--
+-- It is hovering over their standing height, and the reason is the same one
+-- behind the labels: a downed ped is only downed to LOOK at. The crawl is an
+-- animation, so as far as the engine is concerned the capsule is still stood
+-- up, and the follow camera orbits the head it believes is up there. There is
+-- no native that lowers the gameplay camera -- it takes a heading, a pitch and
+-- an orbit distance, and no height -- so the downed view is a scripted camera,
+-- and it is pointed at the ped's actual head bone, which is where the player
+-- can see their own body is.
+--
+-- Free look is kept, on the same two control normals bus.lua's orbit uses, and
+-- the base heading is the PED's: a crawl is steered by turning the body, so a
+-- camera that did not follow the turn would leave the player driving blind.
+
+local cam = nil
+local camYaw, camPitch = 0.0, -10.0
+
+--- Take the downed camera down. Safe to call when nothing is up.
+local function camDown()
+    if not cam then return end
+    if DoesCamExist and DoesCamExist(cam) then
+        RenderScriptCams(false, false, 0, true, true)
+        DestroyCam(cam, true)
+    end
+    cam = nil
+end
+
+BR.Loop.register(BR.Loop.FRAME, 'dbno.camera', function()
+    if not mine.downed then
+        camDown()
+        return
+    end
+    -- A build without the camera natives keeps the gameplay camera. Too high
+    -- is a complaint; a black screen on the floor is a match.
+    if not CreateCamWithParams then return end
+
+    local ped = PlayerPedId()
+    local hx, hy, hz = overhead(ped)
+
+    -- Re-created rather than remembered when the handle stops existing:
+    -- /brunstuck calls DestroyAllCams, and a handle to a camera that is gone
+    -- would leave the player looking through nothing for the rest of the bleed.
+    if not cam or (DoesCamExist and not DoesCamExist(cam)) then
+        camYaw, camPitch = 0.0, -10.0
+        cam = CreateCamWithParams('DEFAULT_SCRIPTED_CAMERA',
+            hx, hy, hz, 0.0, 0.0, 0.0, 55.0, false, 0)
+        if not cam or cam == -1 then
+            cam = nil
+            print('[br_core] dbno: no downed camera -- staying on the gameplay one')
+            return
+        end
+        SetCamActive(cam, true)
+        RenderScriptCams(true, false, 0, true, true)
+    end
+
+    camYaw   = (camYaw - GetControlNormal(0, 1) * 8.0) % 360.0
+    camPitch = BR.Clamp(camPitch - GetControlNormal(0, 2) * 6.0, -55.0, 20.0)
+
+    local dist  = M.dbnoCamDist or 2.2
+    local yaw   = math.rad(GetEntityHeading(ped) + 180.0 + camYaw)
+    local pitch = math.rad(camPitch)
+    local horiz = dist * math.cos(pitch)
+
+    local cx = hx - math.sin(yaw) * horiz
+    local cy = hy + math.cos(yaw) * horiz
+    local cz = hz + (M.dbnoCamLift or 0.25) - dist * math.sin(pitch)
+
+    -- The floor is a floor. The whole point of this camera is to sit low, and
+    -- low plus a downhill slope is under the ground, where the shot is black.
+    local feet = GetEntityCoords(ped)
+    if cz < feet.z + 0.3 then cz = feet.z + 0.3 end
+
+    -- AND WALLS ARE WALLS. A camera two metres behind a body that is lying
+    -- against a doorframe is inside the doorframe; the crawl already casts one
+    -- ray per frame for the same reason, and this is the second.
+    local ray = StartShapeTestRay(hx, hy, hz, cx, cy, cz, 1 | 16, ped, 4)
+    local _, hit, ep = GetShapeTestResult(ray)
+    if didHit(hit) and ep and ep.x then
+        -- Short of the surface rather than flush with it, or the near plane
+        -- clips through and the shot is the inside of the wall anyway.
+        cx = hx + (ep.x - hx) * 0.8
+        cy = hy + (ep.y - hy) * 0.8
+        cz = hz + (ep.z - hz) * 0.8
+    end
+
+    SetCamCoord(cam, cx, cy, cz)
+    PointCamAtCoord(cam, hx, hy, hz + 0.05)
+end)
 
 --- Put the player on the floor and start whatever crawl this build supports.
 local function enterDowned()
@@ -165,38 +349,76 @@ local function enterDowned()
     -- The health that follows is the SERVER's: knock() sends HEALTH_SYNC with
     -- the downed floor immediately after DBNO_SET, because a resurrection
     -- restores GTA's defaults rather than ours.
-    if IsEntityDead(PlayerPedId()) then
-        local ped = PlayerPedId()
-        local p = GetEntityCoords(ped)
-        NetworkResurrectLocalPlayer(p.x, p.y, p.z, GetEntityHeading(ped),
-                                    true, false)
-        -- The dying animation outlives the resurrection otherwise: the ped
-        -- stands up and then finishes collapsing over the top of the crawl.
-        ClearPedTasksImmediately(PlayerPedId())
-        print('[br_core] dbno: the world had already killed this ped -- resurrected onto the downed floor')
-    end
+    --
+    -- THE WEAPON GOES FIRST, before anything can be fired from the floor, and
+    -- before anything below is allowed to yield. The inventory's own weapon
+    -- application is already suspended by canArm(); this is the half that
+    -- clears what is currently in their hands.
+    RemoveAllPedWeapons(PlayerPedId(), true)
+    SetCurrentPedWeapon(PlayerPedId(), GetHashKey('WEAPON_UNARMED'), true)
 
-    local ped = PlayerPedId()
-
-    -- THE WEAPON GOES FIRST, before anything can be fired from the floor. The
-    -- inventory's own weapon application is already suspended by canArm(); this
-    -- is the half that clears what is currently in their hands.
-    RemoveAllPedWeapons(ped, true)
-    SetCurrentPedWeapon(ped, GetHashKey('WEAPON_UNARMED'), true)
-
-    -- The knockdown instant. Ragdoll type 0 (CTaskNMRelax) and only for the
-    -- moment of falling -- sustained ragdoll is too unstable to hold a player
-    -- in, which is why the crawl is animation-driven from here on.
-    BR.Native.knockdown(1200, 1600)
-
+    -- EVERYTHING ELSE IS AN ORDER, AND THE ORDER WAS THE BUG (owner,
+    -- 2026-08-17): "When DBNO starts, the ped first stands up fully before
+    -- snapping to the crawling position."
+    --
+    -- They did, and there were two ways to see it. A resurrection restores a
+    -- STANDING IDLE -- that is what being alive looks like with no task on you
+    -- -- and the crawl that replaced it used to be tasked from inside a thread
+    -- that waited 1200ms first. Between those two moments the player was stood
+    -- upright in front of everybody. And the clip was not even loaded yet:
+    -- resolveCrawl() streams a dictionary and WAITS for it, up to 400ms per
+    -- candidate on the first knock of a session, and that wait was being paid
+    -- AFTER the ped had been stood up rather than before.
+    --
+    -- So the sequence is: load first, then touch the ped, and never yield
+    -- between the resurrection and the pose.
     Citizen.CreateThread(function()
-        -- Let the ragdoll land before asking for an animation on top of it, or
-        -- the clip is cancelled by a physics state that has not settled.
-        Citizen.Wait(1200)
+        -- 1. THE POSE, BEFORE THE PED IS TOUCHED AT ALL. Paid here, the
+        --    streaming wait is paid by a body that is already lying on the
+        --    ground, which is exactly where a fallen player is.
+        resolveCrawl()
         if not mine.downed then return end
 
-        if not mine.downed then return end
-        playCrawl(true)
+        if IsEntityDead(PlayerPedId()) then
+            -- 2. THE RESURRECTION AND THE POSE ARE ONE TICK. No Citizen.Wait
+            --    between these calls, and that is load-bearing rather than
+            --    tidy: nothing is rendered in the middle of a tick, so the
+            --    standing idle the resurrection restores is overwritten
+            --    before it can be drawn once.
+            local p = GetEntityCoords(PlayerPedId())
+            NetworkResurrectLocalPlayer(p.x, p.y, p.z,
+                                        GetEntityHeading(PlayerPedId()),
+                                        true, false)
+            -- The dying animation outlives the resurrection otherwise: the ped
+            -- stands up and then finishes collapsing over the top of the crawl.
+            ClearPedTasksImmediately(PlayerPedId())
+            playCrawl(true, true)
+
+            -- AND NO KNOCKDOWN ON THIS PATH. The ragdoll below is the knock
+            -- INSTANT -- the moment of falling over -- and this player has
+            -- already fallen; the world killed them doing it. Ragdolling a
+            -- freshly resurrected ped stands the skeleton up to drop it again,
+            -- which is the very frame this whole ordering exists to remove.
+            --
+            -- The health is re-applied for the same reason the resurrection is
+            -- here at all: the server sent the downed floor alongside DBNO_SET,
+            -- and a health write onto a ped that was still a corpse when it
+            -- landed is thrown away. Same shared number, not a second opinion.
+            if M.dbnoHp then BR.Native.setDisplayHealth(M.dbnoHp) end
+            print('[br_core] dbno: the world had already killed this ped -- resurrected onto the downed floor')
+        else
+            -- 3. A LIVE KNOCK KEEPS ITS KNOCKDOWN. Ragdoll type 0
+            --    (CTaskNMRelax) and only for the moment of falling -- sustained
+            --    ragdoll is too unstable to hold a player in, which is why the
+            --    crawl is animation-driven from here on.
+            BR.Native.knockdown(1200, 1600)
+            -- Let the ragdoll land before asking for an animation on top of
+            -- it, or the clip is cancelled by a physics state that has not
+            -- settled.
+            Citizen.Wait(1200)
+            if not mine.downed then return end
+            playCrawl(true)
+        end
 
         -- AND NOTHING KNOCKS THEM OUT OF IT AGAIN. The knockdown above is the
         -- only ragdoll a downed player gets; leaving it enabled meant a passing
@@ -212,6 +434,12 @@ end
 --- Stand back up: undo everything enterDowned did.
 local function leaveDowned()
     local ped = PlayerPedId()
+    -- The view goes back to the game's own camera before anything moves the
+    -- ped, so a revive is not watched from the floor.
+    camDown()
+    -- Nothing is being held down any more, and the clip that was held still
+    -- dies with the tasks below.
+    hold, crawlMoving = nil, nil
     -- Reset the movement clipset even though nothing sets one any more. It is
     -- two native calls, and the alternative -- a player who was downed by an
     -- OLDER client build walking into the lobby at crawling pace -- is the
@@ -267,8 +495,44 @@ local DOWNED_BLOCKED = {
     140, 141, 142, 143,          -- melee attacks and block
 }
 
+-- HOW FAR THE PED IS ALLOWED TO WANDER FROM THE SPOT IT IS BEING HELD ON,
+-- in metres. Not zero: a float round-trip through the engine is not exact, and
+-- writing a position every frame to correct a millimetre would be a teleport
+-- per frame forever. A centimetre is under a pixel at any distance a downed
+-- player is looked at from, and it is far below one frame of the clip's own
+-- drift, so nothing accumulates.
+local HOLD_SLACK = 0.01
+
+--- Keep the ped on the spot it stopped at.
+---
+--- THE OTHER READING OF "NO WAY TO STOP CRAWLING", AND THE ONE THAT DOES NOT
+--- DEPEND ON A NATIVE'S GOODWILL. The lock flags in playCrawl tell the engine
+--- not to let the clip drive the ped; this MEASURES whether something did
+--- anyway and puts them back. Between the two, a downed player who is not
+--- pressing anything stays where they are whatever the animation is made of --
+--- which is the only claim about this that can be made from outside the game.
+---
+--- X and Y only. Pinning Z as well would hold a downed player in the air over
+--- a slope they should be sliding down, and gravity is not the thing moving
+--- them sideways.
+--- @param ped integer
+--- @param c table  the ped's coordinates this frame
+local function stayPut(ped, c)
+    if not hold then
+        hold = { x = c.x, y = c.y }
+        return
+    end
+    local dx, dy = c.x - hold.x, c.y - hold.y
+    if (dx * dx + dy * dy) > (HOLD_SLACK * HOLD_SLACK) then
+        SetEntityCoordsNoOffset(ped, hold.x, hold.y, c.z, true, true, false)
+    end
+end
+
 BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
-    if not mine.downed then return end
+    if not mine.downed then
+        hold = nil
+        return
+    end
 
     for i = 1, #DOWNED_BLOCKED do
         DisableControlAction(0, DOWNED_BLOCKED[i], true)
@@ -280,7 +544,13 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
     playCrawl(false)
 
     local ped = PlayerPedId()
-    if IsPedRagdoll(ped) or IsEntityInAir(ped) then return end
+    -- Being thrown about is the one time the ped is allowed to travel without
+    -- being asked to, so the hold is dropped rather than fought with -- and it
+    -- is re-taken from wherever they land.
+    if IsPedRagdoll(ped) or IsEntityInAir(ped) then
+        hold = nil
+        return
+    end
 
     -- Turn on the horizontal axis, inch forward on the vertical one. Both are
     -- read from the DISABLED control, which is the whole point of disabling it.
@@ -293,14 +563,25 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
              * GetFrameTime()) % 360.0)
     end
 
+    local c = GetEntityCoords(ped)
+
     -- Forward only. A crawl has no reverse gear, and -ud would let a downed
     -- player back out of a doorway faster than they went in.
-    if ud >= -0.1 then return end
+    --
+    -- NOT ASKING TO MOVE NOW MEANS NOT MOVING. This used to be a bare `return`
+    -- -- the input was read, found to be nothing, and the frame was dropped on
+    -- the assumption that nothing else could be moving the ped. Something was.
+    if ud >= -0.1 then
+        crawlPlaying(false)
+        stayPut(ped, c)
+        return
+    end
+
+    crawlPlaying(true)
 
     local step = (M.dbnoCrawlSpeed or 0.55) * GetFrameTime()
     local h    = math.rad(GetEntityHeading(ped))
     local dx, dy = -math.sin(h) * step, math.cos(h) * step
-    local c = GetEntityCoords(ped)
 
     -- A RAY BEFORE EVERY STEP, because moving a ped by hand does not resolve
     -- collision -- SetEntityCoords would happily post them through a wall, and
@@ -313,9 +594,30 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
                                   c.y + dy * (reach / step),
                                   c.z + 0.25, 1 | 16, ped, 4)
     local _, hit = GetShapeTestResult(ray)
-    if hit == 1 then return end
+    if didHit(hit) then
+        -- A wall is a reason to stay put, not a reason to stop enforcing it:
+        -- a clip with a mover in it would push them into the geometry the ray
+        -- just refused to walk them through.
+        stayPut(ped, c)
+        return
+    end
 
-    SetEntityCoordsNoOffset(ped, c.x + dx, c.y + dy, c.z, false, false, false)
+    -- THE LAST THREE ARGUMENTS ARE NOT AXES. They read like the xAxis/yAxis/
+    -- zAxis triple SET_ENTITY_COORDS takes, and they are not: this native's
+    -- signature is (entity, x, y, z, keepTasks, keepIK, doWarp). Passing
+    -- `false, false, false` here -- which is what shipped -- told the engine to
+    -- CLEAR THE PED'S TASKS on every single frame of a crawl, which is the
+    -- crawl animation itself, sixty times a second. The watchdog above then put
+    -- it straight back, so the clip restarted from its first frame every frame
+    -- and never played more than one of them.
+    --
+    -- keepTasks and keepIK are true so the pose survives the step. doWarp stays
+    -- false on purpose, and the native's own documentation is why: false is for
+    -- "simulating continuous movement", which is exactly what a crawl driven
+    -- one step per frame is -- true would clear contacts and shove the ped
+    -- space to arrive in, on every frame.
+    SetEntityCoordsNoOffset(ped, c.x + dx, c.y + dy, c.z, true, true, false)
+    hold = { x = c.x + dx, y = c.y + dy }
 end)
 
 RegisterNetEvent(BR.Net.DBNO_SET)
@@ -508,9 +810,15 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
         -- standing on the ground; this one is written for something lying on
         -- it, and at the standing height it floated clear of the player it was
         -- pointing at (owner, in game).
-        local c = GetEntityCoords(ped)
-        BR.Dui.drawWorld(promptPage(), c.x, c.y,
-                         c.z + (M.dbnoPromptLift or 0.35),
+        --
+        -- AND THE LIFT IS MEASURED FROM THE HEAD, NOT FROM THE ORIGIN. A
+        -- constant off the entity's position is a constant off a capsule that
+        -- is still standing up whatever the ped is doing, which is why the box
+        -- was still drawing at head height over a body on the floor (owner,
+        -- 2026-08-17). The anchor now moves with the animation.
+        local hx, hy, hz = overhead(ped)
+        BR.Dui.drawWorld(promptPage(), hx, hy,
+                         hz + (M.dbnoPromptLift or 0.35),
                          BR.Config.Loot.promptScale or 2.0)
     end
 end)
@@ -548,6 +856,11 @@ local function forgetAll()
         leaveDowned()
         pushMine()
     end
+    -- Unconditional, unlike leaveDowned's copy: a scripted camera is the one
+    -- thing here that survives every other kind of forgetting, and a match
+    -- that ended while it was up would leave the player looking at the floor
+    -- from two metres behind their own body for the whole lobby.
+    camDown()
     holding, sentStart = nil, false
     setPrompt(nil)
 end
@@ -569,6 +882,10 @@ AddEventHandler('onClientResourceStop', function(res)
     local ped = PlayerPedId()
     ResetPedMovementClipset(ped, 0.0)
     SetPedMoveRateOverride(ped, 1.0)
+    -- And a rendering camera survives it even harder: nothing else in the game
+    -- knows this handle exists, so `restart br_core` while downed would leave
+    -- the view welded to a dead camera with no code left to release it.
+    camDown()
 end)
 
 -- --------------------------------------------------------------------------
@@ -641,6 +958,31 @@ RegisterCommand('brdbno', function()
     print(('  pose       : %s   (brcrawl for the candidate list)'):format(
         crawl and (crawl.dict .. ' / ' .. crawl.anim)
               or (crawl == false and 'none -- lying still' or 'not resolved yet')))
+    -- THE FOUR PRESENTATION FAULTS, AS FOUR READINGS (owner, 2026-08-17). Each
+    -- of these is a thing that can only be judged by eye in game, so the
+    -- readout says what the client BELIEVES and the player says what they saw;
+    -- the pair is what makes the next report answerable in one paste.
+    print(('  clip       : %s   (%s)'):format(
+        crawlMoving == nil and 'rate not set yet'
+            or (crawlMoving and 'running' or 'held still'),
+        SetEntityAnimSpeed and 'SetEntityAnimSpeed present'
+                            or 'NO SetEntityAnimSpeed on this build'))
+    print(('  held at    : %s'):format(
+        hold and ('%.2f, %.2f'):format(hold.x, hold.y)
+              or '- (moving, or not downed)'))
+    do
+        local ped = PlayerPedId()
+        local hx, hy, hz = overhead(ped)
+        local c = GetEntityCoords(ped)
+        print(('  head       : %.2f above the ped origin  (%s)'):format(
+            hz - c.z,
+            GetPedBoneCoords and 'from the head bone'
+                              or 'NO GetPedBoneCoords -- fallback lift'))
+        print(('  camera     : %s'):format(
+            cam and ('up, handle %s, %.2f above the head'):format(
+                        tostring(cam), (M.dbnoCamLift or 0.25))
+                or 'down -- the gameplay camera is rendering'))
+    end
     local target, dist = nearestDowned()
     print(('  in reach   : %s%s'):format(tostring(target),
         dist and (' at %.2fm'):format(dist) or ''))

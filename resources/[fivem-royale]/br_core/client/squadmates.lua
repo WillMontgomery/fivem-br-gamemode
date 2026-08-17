@@ -27,6 +27,10 @@ local tags     = {}   -- [src] = { tag = gamerTagId, ped = pedHandle }
 local mates    = {}   -- [src] = latest server record for that squadmate
 local peds     = {}   -- [src] = local ped handle, or absent when out of scope
 local lastPush = 0
+-- Mates whose name is drawn BY US rather than by the engine, because they are
+-- on the floor and a gamer tag cannot be lowered onto them.
+-- [src] = { ped = handle, text = 'Alice [DOWN]', dim = boolean }
+local low      = {}
 
 --- A squadmate's LOCAL ped handle, or 0 when they are not streamed in.
 ---
@@ -46,6 +50,52 @@ function BR.Squadmates.pedOf(src)
     local ped = peds[src]
     if not ped or ped == 0 or not DoesEntityExist(ped) then return 0 end
     return ped
+end
+
+-- SKEL_Head. The BONE ID, which is what GET_PED_BONE_COORDS takes -- not the
+-- bone INDEX that GetPedBoneIndex hands back, which is a different number and
+-- a different native.
+local HEAD_BONE = 31086
+
+--- WHERE A LABEL BELONGS OVER A PED, WHICH IS NOT WHERE THE PED'S ORIGIN IS.
+---
+--- THE BUG (owner, 2026-08-17): "DUIs and playernames (on their heads) show
+--- too high for DBNO players (drawing above a ped's standing height vs.
+--- near-ground-level for their crawling position). The playernames thing is
+--- also true for dead players."
+---
+--- Both labels were anchored to something that does not know which way the ped
+--- is lying. A fake MP gamer tag is placed by the ENGINE at a fixed lift off
+--- the ped's origin -- there is no native that moves it, which is why a downed
+--- mate's name has to stop being a gamer tag entirely (see the tick below) --
+--- and the revive prompt in client/dbno.lua was drawn at the origin plus a
+--- constant. A crawling ped's origin is still its standing capsule's, so both
+--- ended up over a head that was not there.
+---
+--- The head BONE is the one thing on a ped that moves with the animation, so
+--- it is what both labels hang off now. For a body on the floor it is a few
+--- centimetres of ground clearance; standing, it is where it always was.
+--- @param ped integer
+--- @return number x, number y, number z
+function BR.Squadmates.headAnchor(ped)
+    local c = GetEntityCoords(ped)
+
+    if GetPedBoneCoords then
+        local b = GetPedBoneCoords(ped, HEAD_BONE, 0.0, 0.0, 0.0)
+        -- A bone the model does not carry answers with the entity's own
+        -- position, and a ped that has gone out of scope answers with the
+        -- world origin. Neither is a head, and the second one is a name
+        -- floating over Los Santos harbour.
+        if b and b.z and (b.x ~= 0.0 or b.y ~= 0.0) then
+            return b.x, b.y, b.z
+        end
+    end
+
+    -- No bone native on this build: the origin, plus a compromise between a
+    -- head that is standing and one that is on the floor. Wrong in both
+    -- postures rather than right in one, which is the honest degrade -- there
+    -- is nothing else on a ped that knows which way it is lying.
+    return c.x, c.y, c.z + 0.6
 end
 
 local PLAYER_GROUP = GetHashKey('PLAYER')
@@ -81,12 +131,17 @@ local function dropMate(src)
         blips[src] = nil
     end
     dropTag(src)
+    low[src]   = nil
     mates[src] = nil
     peds[src]  = nil
 end
 
 local function clearAll()
     for src in pairs(mates) do dropMate(src) end
+    -- Emptied outright rather than left to dropMate: a drawn name is the one
+    -- piece of squad presence with no engine handle behind it, so nothing
+    -- reclaims it if an entry ever outlives its mate record.
+    low = {}
     disbandAllies()
 end
 
@@ -199,7 +254,29 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
             mark = ' [DEAD]'
         end
 
-        if ped ~= 0 and jumped then
+        -- A GAMER TAG CANNOT BE LOWERED, SO A BODY ON THE FLOOR DOES NOT GET
+        -- ONE (owner, 2026-08-17: names "drawing above a ped's standing height
+        -- vs. near-ground-level for their crawling position... also true for
+        -- dead players").
+        --
+        -- CREATE_FAKE_MP_GAMER_TAG hands the label to the engine, and the
+        -- engine hangs it off the ped's ORIGIN at a lift of its own choosing --
+        -- there is no SET_MP_GAMER_TAG_HEIGHT and there never was. A downed
+        -- ped's origin is its standing capsule's, because the crawl is an
+        -- animation rather than a posture the engine knows about, so the tag
+        -- floats where the head would be if they stood up.
+        --
+        -- So the two upright states keep the engine's tag -- it is the proven
+        -- path, it fades and occludes the way every other name in the game
+        -- does -- and the two floor states get a name this file draws itself,
+        -- at the head bone, in the loop below. The seam is deliberate: the
+        -- common case is not being rewritten to fix the uncommon one.
+        local onFloor = st == BR.PlayerState.DBNO
+            or st == BR.PlayerState.DEAD
+            or st == BR.PlayerState.SPECTATING
+
+        if ped ~= 0 and jumped and not onFloor then
+            low[src] = nil
             local t = tags[src]
             -- Re-tag when the ped handle changes (respawn or re-entering
             -- scope hands the mate a new ped, and the old tag dies with the
@@ -213,8 +290,94 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
                 SetMpGamerTagVisibility(tag, 0, true)   -- component 0: the name
                 tags[src] = { tag = tag, ped = ped, mark = mark }
             end
+        elseif ped ~= 0 and jumped then
+            dropTag(src)
+            low[src] = {
+                ped  = ped,
+                text = m.name .. mark,
+                -- Dimmed for the same reason their blip is: a body is a place
+                -- to go, not a teammate to rotate to.
+                dim  = st ~= BR.PlayerState.DBNO,
+            }
         else
             dropTag(src)
+            low[src] = nil
+        end
+    end
+end)
+
+-- THE NAMES THE ENGINE WILL NOT DRAW LOW ENOUGH.
+--
+-- One line of text pinned to the head bone of every downed or dead mate in
+-- scope. SetDrawOrigin is the same projection client/dui.lua draws the crate
+-- prompt through -- the position is a world point and the renderer does the
+-- rest -- so this adds no maths that can be got wrong, only a Z that follows
+-- the body instead of the capsule.
+--
+-- FRAME, and it has to be: a draw call lasts exactly one frame, and this is
+-- welded to a ped that is being dragged along the ground by the player it
+-- belongs to.
+--
+-- SetDrawOrigin is documented as good for 32 different origins per frame, and
+-- this loop can want at most three of them -- a squad is four people and one of
+-- them is you. The loot prompt and the revive prompt are two more. There is no
+-- budget problem here and there cannot be one, because the squad size is the
+-- ceiling.
+local NAME_LIFT = 0.30    -- clearance above the head bone, in metres
+local NAME_FAR  = 120.0   -- past this a body is a blip, not a label
+
+--- @param x number
+--- @param y number
+--- @param z number
+--- @param s string
+--- @param scale number
+--- @param alpha integer
+local function worldName(x, y, z, s, scale, alpha)
+    SetDrawOrigin(x, y, z, 0)
+    SetTextFont(4)
+    SetTextScale(0.0, scale)
+    SetTextColour(255, 255, 255, alpha)
+    SetTextCentre(true)
+    SetTextDropshadow(0, 0, 0, 0, 255)
+    SetTextEdge(1, 0, 0, 0, 205)
+    SetTextDropShadow()
+    SetTextOutline()
+    BeginTextCommandDisplayText('STRING')
+    AddTextComponentSubstringPlayerName(s)
+    EndTextCommandDisplayText(0.0, 0.0)
+    ClearDrawOrigin()
+end
+
+BR.Loop.register(BR.Loop.FRAME, 'squadmates.lownames', function()
+    if not next(low) then return end
+
+    local me = GetEntityCoords(PlayerPedId())
+
+    for src, e in pairs(low) do
+        if not DoesEntityExist(e.ped) then
+            -- The mate walked out of scope between the tick and this frame.
+            -- The tick will drop the entry; drawing at a dead handle would
+            -- put the name at the world origin in the meantime.
+            low[src] = nil
+        else
+            local x, y, z = BR.Squadmates.headAnchor(e.ped)
+            z = z + NAME_LIFT
+            local d = #(GetEntityCoords(e.ped) - me)
+
+            -- BEHIND THE CAMERA IS NOT A PLACE TO DRAW. SetDrawOrigin projects
+            -- whatever it is given, including points behind the viewer, which
+            -- come out smeared across the edge of the screen. The gamer tag
+            -- this replaces was culled by the engine; this is that cull, done
+            -- by hand, and it is guarded because a build without the native
+            -- should show names rather than throw on every frame.
+            local onScreen = (not IsSphereVisible)
+                or IsSphereVisible(x, y, z, 0.5)
+
+            if d <= NAME_FAR and onScreen then
+                worldName(x, y, z, e.text,
+                    BR.Clamp(0.34 * (10.0 / math.max(d, 4.0)), 0.16, 0.34),
+                    e.dim and 150 or 235)
+            end
         end
     end
 end)

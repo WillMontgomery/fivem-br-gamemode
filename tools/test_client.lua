@@ -1905,10 +1905,16 @@ local function voiceApply(mode, prox, mates, me)
     -- its bookkeeping populated across the reset would have it skip every call
     -- as already-done and assert against an engine nobody ever spoke to. The
     -- real game reaches the same state on a Mumble reconnect, which is why
-    -- voice.watch clears exactly these three; see the block there.
+    -- voice.watch clears exactly these four; see the block there.
     BR.Voice.state.over = {}
     BR.Voice.state.heard = {}
     BR.Voice.state.audible = {}
+    -- ...and the microphone switch, which is diffed for the same reason and on
+    -- the same 10Hz band. A fresh engine is transmitting (mumbleReset sets
+    -- `active`), so a stale `mic = false` left over from a bus block would have
+    -- setMic() skip the call that says so and the next assertion would be
+    -- reading the stub's default rather than anything voice.lua decided.
+    BR.Voice.state.mic = nil
     fire('br:settings:changed', { voiceMode = mode })
     -- THE SERVER MAKES THE ROOM FIRST. This is br_core/server/voice.lua's
     -- makeChannel(), in the order it really happens. ONE room now: the squad
@@ -2673,6 +2679,191 @@ do
         .. 'second -- is audible rather than silent')
 end
 
+describe('THE BUS IS NOT A ROOM YOU SHOUT INTO -- nearby is gagged aboard')
+do
+    -- Owner, 2026-08-17: "can you make it so talking is not an option while in
+    -- the bus and set to 'nearby'? That would be chaos."
+    --
+    -- IT IS CHAOS BECAUSE OF THE TRADE TWO BLOCKS UP. 'nearby' has no distance
+    -- cutoff at all any more (#157, round three) -- deliberately, because every
+    -- attempt at one shipped silence. So a rider on 'nearby' is not talking to
+    -- the people in the seat beside them, they are talking to the entire match,
+    -- and so is every other rider: one room, ninety-nine microphones, at the one
+    -- moment a squad most needs to hear a drop called.
+    --
+    -- WHAT THIS BLOCK IS ACTUALLY FOR, because the gag itself is three lines and
+    -- would be hard to get wrong: the gag is not the risk. The risk is where it
+    -- LIVES. apply() runs on a Mumble reconnect, on its self-heal, and on a
+    -- preference change, and on nothing else -- boarding the bus calls it, and
+    -- jumping out of the bus calls it, exactly never. A gate written there would
+    -- mute a rider once and never unmute them, which is worse than the noise it
+    -- was fixing and is a shape this project has shipped more than once. So the
+    -- assertions below drive the state mirror and the 10Hz band and NOTHING
+    -- else, and the one that matters is the last one, not the first.
+    local PROX = 2087
+
+    --- Somebody out in the world with a working transmit path, who exists to be
+    --- talked at and to talk back. Built fresh per assertion because hears()
+    --- reads both directions off these tables.
+    local function outsider(src)
+        return { active = true, channel = PROX, sends = { PROX }, people = {},
+                 listen = {}, volume = {}, src = src,
+                 inDist = nil, outDist = nil }
+    end
+
+    nobodyElse()
+    standAt(0, 0)
+
+    -- 1. THE CONTROL. On the ground, 'nearby' transmits -- without this the two
+    --    assertions after it would both pass on a client whose microphone is
+    --    simply never on, which is the cheapest way to fake this whole feature.
+    BR.State.me.state = BR.PlayerState.WARMUP
+    voiceApply('nearby', PROX, nil, 1)
+    playersAt({ [2] = { x = 5.0, y = 0 } })
+    local ground = mumbleSnapshot()
+    ok(ground.active, 'before boarding, nearby transmits',
+        tostring(ground.active))
+    ok(hears(ground, outsider(2), 5.0),
+        'and somebody standing next to us hears it')
+
+    -- 2. BOARDING TAKES THE MICROPHONE AWAY -- ON THE BAND ALONE.
+    --
+    --    Nothing here fires VOICE_SET. Nothing fires br:settings:changed.
+    --    Nothing reconnects Mumble. That is the complete list of things that
+    --    reach apply(), so a gate written inside apply() fails this line
+    --    outright rather than subtly.
+    BR.State.me.state = BR.PlayerState.BUS
+    BR.Loop.step(BR.Loop.TICK)
+    local aboard = mumbleSnapshot()
+    ok(not aboard.active,
+        'BOARDING THE BUS ON nearby TAKES THE MICROPHONE AWAY, with no new '
+        .. 'assignment, no settings change and no reconnect to prompt it',
+        tostring(aboard.active))
+    ok(aboard.gameVoice == false,
+        'and GTA\'s own voice chat goes with it -- the same pair \'off\' takes, '
+        .. 'because either one alone leaves the player announced',
+        tostring(aboard.gameVoice))
+    ok(not hears(aboard, outsider(2), 5.0),
+        'so nobody in the match hears a rider on nearby, at any distance')
+
+    -- 3. AND THEY CAN STILL HEAR EVERYTHING. "Talking is not an option" is
+    --    about the talking; a gag that also deafened the rider would be the
+    --    receive-side bug this file has now shipped twice, wearing a new hat.
+    ok(aboard.volume[2] == nil,
+        'no volume override is written by the gag -- listening is untouched',
+        tostring(aboard.volume[2]))
+    ok(hears(outsider(2), aboard, 5.0),
+        'a gagged rider still hears the match perfectly well')
+    ok(BR.Voice.state.audible[2] == true,
+        'and is still told they can hear them')
+    mumble.talking = { [2] = true }
+    BR.Loop.step(BR.Loop.TICK)
+    ok(#talkingNames() == 1,
+        'and the talking indicator still names whoever is speaking',
+        table.concat(talkingNames(), ', '))
+    mumble.talking = {}
+
+    -- 4. AND JUMPING OUT GIVES IT BACK. THIS IS THE ASSERTION THAT MATTERS.
+    --
+    --    Everything above passes on a fix that mutes a rider and forgets them
+    --    for the rest of the match, which is the strictly worse bug. Same
+    --    driver as boarding: one field on the state mirror and one tick.
+    BR.State.me.state = BR.PlayerState.FREEFALL
+    BR.Loop.step(BR.Loop.TICK)
+    local jumped = mumbleSnapshot()
+    ok(jumped.active,
+        'JUMPING OUT GIVES THE MICROPHONE BACK -- the regression a gate in '
+        .. 'apply() ships, because nothing calls apply() on BUS -> FREEFALL',
+        tostring(jumped.active))
+    ok(jumped.gameVoice == true,
+        'and brings GTA\'s voice chat back with it, so leaving the bus '
+        .. 'restores everything boarding it took',
+        tostring(jumped.gameVoice))
+    ok(hears(jumped, outsider(2), 5.0),
+        'so the match can hear them again the moment they are out of the seat')
+    ok(#jumped.sends == 1 and jumped.sends[1] == PROX,
+        'with the transmit path never having been torn down and rebuilt -- the '
+        .. 'gag is a switch, not a re-route, so there is no room to re-join and '
+        .. 'no half-second of silence on the way down',
+        ('sends=%d refused=%s'):format(#jumped.sends, jumped.refused))
+
+    -- 5. AND IT COSTS NOTHING WHEN NOTHING CHANGES. The gate rides a 10Hz band
+    --    in a file whose every other reconcile is diffed for exactly this
+    --    reason; a settled rider must not re-state the switch ten times a
+    --    second. Modelled by taking the natives away and stepping the band: a
+    --    client that re-asserts every tick throws here, a client that diffs
+    --    does not notice they are gone.
+    BR.State.me.state = BR.PlayerState.BUS
+    BR.Loop.step(BR.Loop.TICK)          -- the transition, while they still exist
+    local realActive, realGame = MumbleSetActive, NetworkSetVoiceActive
+    MumbleSetActive = function() error('MumbleSetActive re-stated on a '
+        .. 'settled tick -- the mic gate is not diffing', 2) end
+    NetworkSetVoiceActive = function() error('NetworkSetVoiceActive re-stated '
+        .. 'on a settled tick -- the mic gate is not diffing', 2) end
+    local quiet = pcall(function()
+        for _ = 1, 10 do BR.Loop.step(BR.Loop.TICK) end
+    end)
+    MumbleSetActive, NetworkSetVoiceActive = realActive, realGame
+    ok(quiet,
+        'ten settled ticks aboard the bus make no microphone calls at all')
+
+    -- 6. SQUAD ON THE BUS IS UNTOUCHED, which is the half of the request that
+    --    is a requirement rather than a fix. Squads coordinating their drop is
+    --    the point; a gag that caught them would have traded the one thing the
+    --    owner says works for the thing he asked to be quieter.
+    BR.State.me.state = BR.PlayerState.BUS
+    voiceApply('squad', PROX, { 2 }, 1)
+    playersAt({ [2] = false })
+    local squadBus = mumbleSnapshot()
+    ok(squadBus.active,
+        'A SQUAD ON THE BUS STILL TALKS -- the gag is nearby-only',
+        tostring(squadBus.active))
+    ok(squadBus.gameVoice == true,
+        'with GTA\'s voice chat left alone too', tostring(squadBus.gameVoice))
+    ok(#squadBus.people == 1 and squadBus.people[1] == 2,
+        'with the microphone pointed straight at the squadmate',
+        ('people=%d'):format(#squadBus.people))
+    local mate = outsider(2)
+    mate.people = { 1 }
+    ok(hears(squadBus, mate, 0.0),
+        'so a drop call reaches the squad from inside the seat')
+
+    -- 7. AND 'off' ABOARD IS STILL 'off'. The gate computes one answer for the
+    --    microphone and 'off' has to survive being that answer's neighbour --
+    --    an `or` written the other way round would hand a muted player their
+    --    microphone back the moment they boarded.
+    voiceMode('off')
+    local offBus = mumbleSnapshot()
+    ok(not offBus.active and offBus.gameVoice == false,
+        'off on the bus is still off, not un-gagged by the mode check',
+        ('active=%s gameVoice=%s'):format(tostring(offBus.active),
+            tostring(offBus.gameVoice)))
+
+    -- 8. AND SWITCHING TO nearby WHILE ALREADY SEATED IS CAUGHT TOO. Boarding
+    --    is not the only way into the gagged state: a player can be sitting
+    --    there and open the settings screen. That path DOES run apply(), which
+    --    sets MumbleSetActive(true) unconditionally for every non-off mode --
+    --    so this is the assertion that the gate wins over apply() rather than
+    --    being overwritten by it one line later.
+    voiceMode('nearby')
+    local seatedSwitch = mumbleSnapshot()
+    ok(not seatedSwitch.active,
+        'switching TO nearby while already in the seat gags immediately -- '
+        .. 'listen() runs after apply() has turned the microphone on, and wins',
+        tostring(seatedSwitch.active))
+
+    -- AND BACK TO THE GROUND, because BR.State.me.state is shared with every
+    -- block after this one and loot/inventory read it to decide what a player
+    -- may do at all.
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.Loop.step(BR.Loop.TICK)
+    local landed = mumbleSnapshot()
+    ok(landed.active,
+        'and landing leaves them transmitting, whatever route they took here',
+        tostring(landed.active))
+    nobodyElse()
+end
+
 describe('the voice readout runs')
 do
     -- /brvoice is the one instrument a playtester has for this, and #150 is
@@ -3243,6 +3434,713 @@ do
     ok(BR.Inv.local_().active == MELEE,
         'and an explicit slot 0 is carried as a choice, not lost as an absence',
         ('active %s'):format(tostring(BR.Inv.local_().active)))
+end
+
+-- ------------------------------------------------ the downed presentation ---
+--
+-- FOUR THINGS THE OWNER WATCHED GO WRONG ON THE FLOOR (2026-08-17), and the
+-- first coverage client/dbno.lua has ever had. Before this block it was loaded
+-- by NO suite at all -- neither was client/squadmates.lua -- so the crawl, the
+-- knock sequence, the revive prompt's position and the overhead names had
+-- exactly the same amount of automated evidence behind them as a file that was
+-- never written.
+--
+--   1. the labels over a downed or dead player draw at standing height
+--   2. a downed player cannot stop crawling
+--   3. the ped stands fully upright before snapping into the crawl
+--   4. the downed camera hovers at standing height
+--
+-- WHAT THIS BLOCK CAN AND CANNOT SETTLE, said once here rather than hedged at
+-- every assertion. It can settle ORDER, ANCHORING and CONSEQUENCE: which
+-- native ran before which, what world point a label was pinned to, and whether
+-- the ped had moved after sixty frames of nobody touching the keyboard. It
+-- cannot settle whether any of it LOOKS right -- a camera height, an animation
+-- transition and a label's clearance are judgements a person makes with their
+-- eyes, and a Lua process asserting that a shot reads as "on the floor" would
+-- be asserting its own opinion.
+--
+-- The model below is written to be able to FAIL. In particular the crawl clip
+-- is modelled as a locomotion clip that MOVES THE PED BY ITSELF, because that
+-- is the only mechanism that explains "there's no way to stop crawling" -- and
+-- a stub that quietly held the ped still would have made the fix untestable in
+-- exactly the way #129 and #131 were untestable for six rounds.
+
+describe('the downed presentation')
+do
+    -- A REAL VECTOR, because dbno.lua measures reach with `#(a - b)` and a
+    -- plain table cannot be subtracted. FiveM's vector3 does both, so the model
+    -- does both -- otherwise nearestDowned() throws and every revive assertion
+    -- below would be testing a suspended callback.
+    local V = {}
+    V.__index = V
+    V.__sub = function(a, b)
+        return setmetatable({ x = a.x - b.x, y = a.y - b.y, z = a.z - b.z }, V)
+    end
+    V.__len = function(a)
+        return math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z)
+    end
+    local function vec(x, y, z) return setmetatable({ x = x, y = y, z = z }, V) end
+
+    -- WHERE A HEAD IS, WHICH IS THE WHOLE OF FAULT 1. A ped's origin is at its
+    -- feet in both postures; the HEAD moves, and by more than a metre. Anything
+    -- anchored to the origin therefore cannot tell the two apart, which is
+    -- precisely what the owner was looking at.
+    local HEAD_STANDING = 1.65
+    local HEAD_PRONE    = 0.30
+
+    -- [pedHandle] = a body in the world.
+    local bodies = {
+        [1]    = { x = 0.0, y = 0.0, z = 30.0, h = 0.0, dead = false,
+                   prone = false },
+        [5002] = { x = 1.0, y = 0.0, z = 30.0, h = 0.0, dead = false,
+                   prone = true },
+    }
+    local MATE = 5002
+
+    local world = {
+        ragdoll = false, air = false,
+        -- The clip's own mover. See the header: a locomotion clip translates
+        -- the ped whether or not anybody asked it to.
+        mover   = 0.0,
+        rayHit  = false,
+        -- WHAT THE SHAPE TEST ANSWERS WITH. `true` rather than `1` by default,
+        -- because that is the shape this project has already been bitten by
+        -- twice and the one the old `hit == 1` comparison silently declined.
+        hitShape = true,
+    }
+    local input = { lr = 0.0, ud = 0.0 }
+    local look  = { [1] = 0.0, [2] = 0.0 }
+    -- Forward-declared: the teleport stub below has to be able to cancel the
+    -- clip, because that is what the engine does with it.
+    local anim
+
+    -- Everything the client did, in order. The ORDER is the deliverable for
+    -- fault 3: a wait between the resurrection and the pose is a frame of a
+    -- player standing up in front of everybody.
+    local log = {}
+    local function note(what, extra) log[#log + 1] = { what = what, extra = extra } end
+    local function firstAt(what)
+        for i, e in ipairs(log) do if e.what == what then return i end end
+        return nil
+    end
+    local function countOf(what)
+        local n = 0
+        for _, e in ipairs(log) do if e.what == what then n = n + 1 end end
+        return n
+    end
+    --- Did anything YIELD between two calls? The question fault 3 turns on.
+    local function waitedBetween(a, b)
+        local i, j = firstAt(a), firstAt(b)
+        if not i or not j then return nil end
+        for k = i + 1, j - 1 do
+            if log[k].what == 'wait' then return true end
+        end
+        return false
+    end
+
+    -- ---------------------------------------------------------- the world ---
+
+    function PlayerPedId() return 1 end
+    function DoesEntityExist(ped) return bodies[ped] ~= nil end
+    function GetEntityCoords(ped)
+        local b = bodies[ped] or bodies[1]
+        return vec(b.x, b.y, b.z)
+    end
+    function GetEntityHeading(ped) return (bodies[ped] or bodies[1]).h end
+    function SetEntityHeading(ped, h) (bodies[ped] or bodies[1]).h = h end
+    --- SET_ENTITY_COORDS_NO_OFFSET(entity, x, y, z, keepTasks, keepIK, doWarp).
+    ---
+    --- THE LAST THREE ARE NOT AXES, and modelling them as though they were is
+    --- how the shipped call went unnoticed: it passed `false, false, false`,
+    --- which reads as an innocent xAxis/yAxis/zAxis triple and actually means
+    --- "clear this ped's tasks". The ped's task IS the crawl animation, and the
+    --- crawl teleports the ped every frame -- so the clip was being destroyed
+    --- and rebuilt sixty times a second and never played past its first frame.
+    ---
+    --- Modelled as the native documents it, which is what makes the assertion
+    --- about a stable clip able to fail.
+    function SetEntityCoordsNoOffset(ped, x, y, z, keepTasks)
+        local b = bodies[ped] or bodies[1]
+        b.x, b.y, b.z = x, y, z
+        if not keepTasks then anim.playing = false end
+        note('move')
+    end
+    function IsEntityDead(ped) return (bodies[ped] or bodies[1]).dead end
+    function IsPedFatallyInjured() return false end
+    function IsPedRagdoll() return world.ragdoll end
+    function IsEntityInAir() return world.air end
+    function GetEntityHealth() return 200 end
+    function SetEntityHealth(_, hp) note('health', hp) end
+    function GetFrameTime() return 0.016 end
+    function GetDisabledControlNormal(_, control)
+        if control == 30 then return input.lr end
+        if control == 31 then return input.ud end
+        return 0.0
+    end
+    function GetControlNormal(_, control) return look[control] or 0.0 end
+    function GetActivePlayers() return {} end
+
+    --- THE HEAD BONE, WHICH IS THE ONE THING ON A PED THAT KNOWS THE POSTURE.
+    function GetPedBoneCoords(ped, _bone, _ox, _oy, _oz)
+        local b = bodies[ped] or bodies[1]
+        return vec(b.x, b.y, b.z + (b.prone and HEAD_PRONE or HEAD_STANDING))
+    end
+
+    local rays = {}
+    function StartShapeTestRay(_, _, _, x2, y2, z2)
+        rays[#rays + 1] = { x = x2, y = y2, z = z2 }
+        return #rays
+    end
+    function GetShapeTestResult(h)
+        local r = rays[h] or { x = 0.0, y = 0.0, z = 0.0 }
+        if world.rayHit then
+            return 2, world.hitShape, vec(r.x, r.y, r.z)
+        end
+        return 2, world.hitShape == true and false or 0, vec(0.0, 0.0, 0.0)
+    end
+
+    -- ------------------------------------------------------------- the ped ---
+
+    -- STREAMING, MODELLED AS A COST RATHER THAN AS A FLAG. Only the dictionary
+    -- the owner chose in game exists on this build, and it is not loaded until
+    -- something asks for it -- which is the whole of fault 3's first half: WHEN
+    -- the asking happens relative to standing the corpse back up.
+    anim = {
+        exists  = { ['move_injured_ground'] = true },
+        loaded  = false,
+        playing = false,
+        speed   = nil,
+        last    = nil,
+    }
+    function DoesAnimDictExist(d) return anim.exists[d] == true end
+    function HasAnimDictLoaded(d) return anim.exists[d] == true and anim.loaded end
+    function RequestAnimDict(d)
+        note('anim:request', d)
+        if anim.exists[d] then anim.loaded = true end
+    end
+    function TaskPlayAnim(_, dict, name, blendIn, _bo, _dur, flag, _rate,
+                          lockX, lockY, lockZ)
+        note('anim:play')
+        anim.playing = true
+        -- A fresh task runs at the engine's rate whatever it was last told.
+        anim.speed = 1.0
+        anim.last = { dict = dict, name = name, blendIn = blendIn, flag = flag,
+                      lockX = lockX, lockY = lockY, lockZ = lockZ }
+    end
+    function IsEntityPlayingAnim() return anim.playing end
+    function SetEntityAnimSpeed(_, _, _, s)
+        anim.speed = s
+        note('anim:speed', s)
+    end
+    function ClearPedTasks() anim.playing = false note('cleartasks') end
+    function ClearPedTasksImmediately() anim.playing = false note('cleartasks!') end
+    function SetPedCanRagdoll() end
+    function ResetPedMovementClipset() end
+    function SetPedMoveRateOverride() end
+    function SetPedRelationshipGroupHash() end
+    function SetEntityLocallyInvisible() end
+
+    -- The resurrection, and the reading that matters at the moment it happens.
+    local resurrect = { count = 0, dictLoadedFirst = nil, posed = nil }
+    function NetworkResurrectLocalPlayer()
+        note('resurrect')
+        resurrect.count = resurrect.count + 1
+        resurrect.dictLoadedFirst = anim.loaded
+        bodies[1].dead = false
+    end
+
+    -- ---------------------------------------------------------- the labels ---
+
+    local tagsMade = 0
+    function CreateFakeMpGamerTag(_, text)
+        tagsMade = tagsMade + 1
+        note('gamertag', text)
+        return 900 + tagsMade
+    end
+    function RemoveMpGamerTag() end
+    function SetMpGamerTagVisibility() end
+    function IsSphereVisible() return true end
+
+    local drawn, origin, pending = {}, nil, nil
+    function SetDrawOrigin(x, y, z) origin = { x = x, y = y, z = z } end
+    function ClearDrawOrigin() origin = nil end
+    function SetTextFont() end
+    function SetTextScale() end
+    function SetTextColour() end
+    function SetTextCentre() end
+    function SetTextDropshadow() end
+    function SetTextEdge() end
+    function SetTextDropShadow() end
+    function SetTextOutline() end
+    function BeginTextCommandDisplayText() end
+    function AddTextComponentSubstringPlayerName(s) pending = s end
+    function EndTextCommandDisplayText()
+        if origin then
+            drawn[#drawn + 1] = { text = pending, x = origin.x, y = origin.y,
+                                  z = origin.z }
+        end
+    end
+    --- The last name this client drew for itself, or nil.
+    local function lastName()
+        return drawn[#drawn]
+    end
+
+    -- ---------------------------------------------------------- the camera ---
+
+    local cams = {}
+    local shot = { rendering = false, coord = nil, aim = nil, built = 0 }
+    function CreateCamWithParams()
+        shot.built = shot.built + 1
+        local h = 700 + shot.built
+        cams[h] = true
+        return h
+    end
+    function DoesCamExist(h) return cams[h] == true end
+    function DestroyCam(h) cams[h] = nil note('cam:destroy') end
+    function SetCamActive() end
+    function RenderScriptCams(on)
+        shot.rendering = on and true or false
+        note('cam:render', shot.rendering)
+    end
+    function SetCamCoord(_, x, y, z) shot.coord = { x = x, y = y, z = z } end
+    function PointCamAtCoord(_, x, y, z) shot.aim = { x = x, y = y, z = z } end
+
+    -- ------------------------------------------------------ the neighbours ---
+
+    local threads = {}
+    Citizen.CreateThread = function(fn) threads[#threads + 1] = fn end
+    Citizen.Wait = function(ms) note('wait', ms) end
+    local function runThreads()
+        local i = 1
+        while i <= #threads do
+            threads[i]()
+            i = i + 1
+        end
+        threads = {}
+    end
+
+    local dui = { draws = {}, sends = {} }
+    BR.Dui = {
+        page       = function(n) return { name = n } end,
+        send       = function(_, m) dui.sends[#dui.sends + 1] = m end,
+        drawWorld  = function(_, x, y, z) dui.draws[#dui.draws + 1] =
+                         { x = x, y = y, z = z } end,
+        drawScreen = noop, drawOnEntity = noop,
+        ready      = function() return true end,
+    }
+    BR.Sfx = BR.Sfx or { play = noop }
+    BR.Native.knockdown = function() note('knockdown') end
+    BR.Native.setDisplayHealth = function(hp) note('setHealth', hp) end
+    BR.Native.keyLabelForCommand = function() return 'E' end
+    BR.Native.ALLY_GROUP = 1
+
+    -- The mate has to be a player the engine will hand us a ped for, which is
+    -- what the harness's `others` table decides.
+    others[2] = { x = 1.0, y = 0.0 }
+
+    loadAll({
+        'br_core/client/squadmates.lua',   -- owns the head anchor; loads first
+        'br_core/client/dbno.lua',         -- as fxmanifest orders them
+    })
+    -- The load-time threads are NOT run: the first knock below has to be the
+    -- first time anything asks for the crawl dictionary, or the ordering
+    -- question fault 3 turns on cannot be asked.
+    threads = {}
+
+    local function tickBand() BR.Loop.step(BR.Loop.TICK) end
+
+    --- One frame, with the CLIP'S OWN MOVER applied first.
+    ---
+    --- Deliberately applied whether or not the clip has been told to hold: the
+    --- client cannot know what the engine does with a playback rate of zero, so
+    --- the model assumes the worst and the fix has to hold the ped still on its
+    --- own evidence.
+    local function drift(n)
+        for _ = 1, n do
+            if world.mover ~= 0.0 then
+                local h = math.rad(bodies[1].h)
+                bodies[1].x = bodies[1].x - math.sin(h) * world.mover
+                bodies[1].y = bodies[1].y + math.cos(h) * world.mover
+            end
+            frame(16)
+        end
+    end
+
+    --- How many times a loop callback has thrown, and whether it is suspended.
+    --- A suspended dbno.controls is a player stuck on the floor with nothing
+    --- left running to move them, so it is asserted rather than assumed.
+    local function loopHealth(name)
+        for _, s in ipairs(BR.Loop.stats()) do
+            if s.name == name then return s.errors, s.suspended end
+        end
+        return nil, nil
+    end
+
+    local function travelled(fromX, fromY)
+        local dx, dy = bodies[1].x - fromX, bodies[1].y - fromY
+        return math.sqrt(dx * dx + dy * dy)
+    end
+
+    -- ====================================================================== --
+    -- 1. THE LABELS SIT ON THE BODY, NOT ON THE CAPSULE
+    -- ====================================================================== --
+
+    describe('the labels over a body follow the body -- fault 1')
+
+    BR.State.me = { src = 1, state = BR.PlayerState.ALIVE, squadId = 'sq1' }
+    BR.State.roster = {
+        [1] = { src = 1, name = 'Me',    squadId = 'sq1',
+                state = BR.PlayerState.ALIVE },
+        [2] = { src = 2, name = 'Bravo', squadId = 'sq1',
+                state = BR.PlayerState.DBNO },
+    }
+    fire(BR.Net.SQUAD_POS, { { src = 2, name = 'Bravo', i = 2, x = 1.0, y = 0.0,
+                              state = BR.PlayerState.DBNO } })
+    tagsMade = 0
+    tickBand()
+    drawn = {}
+    frame(16)
+
+    ok(BR.Squadmates.pedOf(2) == MATE,
+        'the harness can see the downed mate at all',
+        ('pedOf(2) = %s'):format(tostring(BR.Squadmates.pedOf(2))))
+
+    ok(tagsMade == 0,
+        'A BODY ON THE FLOOR GETS NO GAMER TAG, because a gamer tag cannot be lowered',
+        ('the engine was asked for %d tag(s) over a downed mate'):format(tagsMade))
+
+    local proneName = lastName()
+    ok(proneName ~= nil and proneName.text == 'Bravo [DOWN]',
+        'and gets a name this client draws itself instead',
+        proneName and tostring(proneName.text) or 'nothing was drawn')
+    ok(proneName ~= nil
+       and math.abs(proneName.z - (30.0 + HEAD_PRONE + 0.30)) < 0.01,
+        'pinned just above the head bone of a body that is lying down',
+        proneName and ('drawn at z %.2f, the head is at %.2f')
+            :format(proneName.z, 30.0 + HEAD_PRONE) or 'nothing was drawn')
+
+    -- THE ASSERTION THAT CANNOT PASS ON AN ORIGIN-ANCHORED LABEL. Same ped,
+    -- same coordinates, different posture: an anchor that reads the entity's
+    -- position answers identically both times, which is the fault exactly as
+    -- the owner described it.
+    bodies[MATE].prone = false
+    drawn = {}
+    frame(16)
+    local standName = lastName()
+    ok(standName ~= nil and proneName ~= nil
+       and (standName.z - proneName.z) > 1.0,
+        'AND THE LABEL MOVES WHEN THE BODY DOES -- fault 1',
+        (standName and proneName)
+            and ('lying %.2f, standing %.2f -- a difference of %.2f')
+                :format(proneName.z, standName.z, standName.z - proneName.z)
+            or 'one of the two frames drew nothing')
+    bodies[MATE].prone = true
+
+    -- The upright states keep the ENGINE's tag. The common case is not being
+    -- rewritten to fix the uncommon one, and a fix that silently moved every
+    -- squadmate's name onto a hand-rolled draw would be a much larger change
+    -- than the one that was asked for.
+    BR.State.roster[2].state = BR.PlayerState.ALIVE
+    fire(BR.Net.SQUAD_POS, { { src = 2, name = 'Bravo', i = 2, x = 1.0, y = 0.0,
+                              state = BR.PlayerState.ALIVE } })
+    tagsMade = 0
+    tickBand()
+    drawn = {}
+    frame(16)
+    ok(tagsMade == 1,
+        'a mate on their feet still wears the engine tag they always did',
+        ('tags made: %d'):format(tagsMade))
+    ok(#drawn == 0,
+        'and nothing is drawn over them by hand',
+        ('%d hand-drawn name(s)'):format(#drawn))
+
+    -- A DEAD mate is the owner's second sentence: "the playernames thing is
+    -- also true for dead players".
+    BR.State.roster[2].state = BR.PlayerState.DEAD
+    fire(BR.Net.SQUAD_POS, { { src = 2, name = 'Bravo', i = 2, x = 1.0, y = 0.0,
+                              state = BR.PlayerState.DEAD } })
+    tagsMade = 0
+    tickBand()
+    drawn = {}
+    frame(16)
+    local deadName = lastName()
+    ok(tagsMade == 0 and deadName ~= nil and deadName.text == 'Bravo [DEAD]',
+        'A DEAD MATE IS LABELLED THE SAME WAY, which the owner asked for by name',
+        ('tags %d, drew %s'):format(tagsMade,
+            deadName and tostring(deadName.text) or 'nothing'))
+    ok(deadName ~= nil and deadName.z < 30.0 + HEAD_STANDING,
+        'and below the height a standing head would be at',
+        deadName and ('%.2f vs %.2f'):format(deadName.z, 30.0 + HEAD_STANDING)
+                  or 'nothing was drawn')
+
+    -- THE REVIVE PROMPT IS THE DUI HALF OF THE SAME SENTENCE.
+    BR.State.roster[2].state = BR.PlayerState.DBNO
+    fire(BR.Net.SQUAD_POS, { { src = 2, name = 'Bravo', i = 2, x = 1.0, y = 0.0,
+                              state = BR.PlayerState.DBNO } })
+    tickBand()
+    dui.draws = {}
+    frame(16)
+    local pronePrompt = dui.draws[#dui.draws]
+    ok(pronePrompt ~= nil,
+        'a mate within reach is offered a revive prompt at all',
+        ('%d world draws'):format(#dui.draws))
+    ok(pronePrompt ~= nil
+       and math.abs(pronePrompt.z - (30.0 + HEAD_PRONE
+                                     + (BR.Config.Match.dbnoPromptLift or 0.35)))
+           < 0.01,
+        'and it hangs off the head bone rather than off the ped origin',
+        pronePrompt and ('drawn at %.2f'):format(pronePrompt.z) or 'nothing drawn')
+
+    bodies[MATE].prone = false
+    dui.draws = {}
+    frame(16)
+    local standPrompt = dui.draws[#dui.draws]
+    ok(standPrompt ~= nil and pronePrompt ~= nil
+       and (standPrompt.z - pronePrompt.z) > 1.0,
+        'AND THE PROMPT MOVES WITH THE BODY TOO -- fault 1',
+        (standPrompt and pronePrompt)
+            and ('lying %.2f, standing %.2f'):format(pronePrompt.z, standPrompt.z)
+            or 'one of the two frames drew nothing')
+    bodies[MATE].prone = true
+
+    ok(select(1, loopHealth('squadmates.lownames')) == 0,
+        'and the loop that draws them has not thrown once',
+        ('errors %s'):format(tostring(select(1, loopHealth('squadmates.lownames')))))
+
+    -- ====================================================================== --
+    -- 3. A FALL PUTS NOBODY BACK ON THEIR FEET, NOT EVEN FOR A FRAME
+    -- ====================================================================== --
+    --
+    -- Ordered before the movement block on purpose: this has to be the FIRST
+    -- knock of the session, because the question is what happens the one time
+    -- the crawl dictionary is not in memory yet.
+
+    describe('a fall never shows a standing frame -- fault 3')
+
+    BR.State.me.state = BR.PlayerState.DBNO
+    bodies[1].dead = true      -- the world killed this ped on the way down
+    bodies[1].prone = false    -- ...and it has not been posed yet
+    log = {}
+    fire(BR.Net.DBNO_SET, { downed = true, bleedEndsAt = 60000 })
+    runThreads()
+
+    ok(anim.loaded == true and resurrect.count == 1,
+        'the fall is resurrected and the pose is resolved',
+        ('resurrects %d, dict loaded %s')
+            :format(resurrect.count, tostring(anim.loaded)))
+
+    ok(resurrect.dictLoadedFirst == true,
+        'THE CRAWL CLIP IS IN MEMORY BEFORE THE CORPSE IS STOOD BACK UP -- fault 3',
+        ('at the moment of the resurrection the dictionary was %s')
+            :format(resurrect.dictLoadedFirst and 'loaded' or 'NOT loaded'))
+
+    ok(waitedBetween('resurrect', 'anim:play') == false,
+        'AND NOTHING YIELDS BETWEEN THE RESURRECTION AND THE POSE -- fault 3',
+        ('a yield between them is a frame of a player standing up; waited: %s')
+            :format(tostring(waitedBetween('resurrect', 'anim:play'))))
+
+    local iRes, iClear, iPose = firstAt('resurrect'), firstAt('cleartasks!'),
+                                firstAt('anim:play')
+    ok(iRes and iClear and iPose and iRes < iClear and iClear < iPose,
+        'in the one order that works: resurrect, clear the dying task, pose',
+        ('resurrect %s, clear %s, pose %s'):format(tostring(iRes),
+            tostring(iClear), tostring(iPose)))
+
+    ok(countOf('knockdown') == 0,
+        'and a body that has already fallen is not ragdolled again',
+        ('knockdowns on the fall path: %d'):format(countOf('knockdown')))
+
+    ok(anim.last ~= nil and anim.last.blendIn >= 100.0,
+        'the pose snaps rather than blending out of the standing idle',
+        anim.last and ('blend in %.1f'):format(anim.last.blendIn) or 'no anim')
+
+    ok(countOf('setHealth') == 1,
+        'and the downed floor is re-applied over whatever the resurrection gave',
+        ('health writes: %d'):format(countOf('setHealth')))
+
+    -- A LIVE KNOCK IS THE OTHER PATH AND IT KEEPS ITS KNOCKDOWN. The ragdoll
+    -- instant is the feel of being shot down; only the fall path skips it.
+    fire(BR.Net.DBNO_SET, { downed = false })
+    runThreads()
+    log = {}
+    bodies[1].dead = false
+    fire(BR.Net.DBNO_SET, { downed = true, bleedEndsAt = 60000 })
+    runThreads()
+    ok(countOf('resurrect') == 0 and countOf('knockdown') == 1,
+        'a player shot down is knocked down, not resurrected',
+        ('resurrects %d, knockdowns %d')
+            :format(countOf('resurrect'), countOf('knockdown')))
+
+    -- ====================================================================== --
+    -- 2. LETTING GO MEANS STOPPING
+    -- ====================================================================== --
+
+    describe('a downed player can stop crawling -- fault 2')
+
+    bodies[1].prone = true
+    world.ragdoll, world.air = false, false
+    input.lr, input.ud = 0.0, 0.0
+    frame(16)   -- the pose is on, the hold is taken
+
+    ok(anim.last ~= nil and anim.last.lockX == true and anim.last.lockY == true,
+        'the crawl clip is tasked with its mover locked, not left to drive the ped',
+        anim.last and ('lockX %s lockY %s lockZ %s'):format(
+            tostring(anim.last.lockX), tostring(anim.last.lockY),
+            tostring(anim.last.lockZ)) or 'no anim was tasked')
+
+    -- THE CONSEQUENCE, NOT THE CALL. The clip is modelled as one that moves the
+    -- ped by itself -- see the header -- so this fails on any build where the
+    -- client does not actively hold them still.
+    world.mover = 0.009        -- about the crawl's own speed, per frame
+    bodies[1].x, bodies[1].y = 0.0, 0.0
+    frame(16)                  -- the frame that takes the hold
+    local sx, sy = bodies[1].x, bodies[1].y
+    drift(60)
+    ok(travelled(sx, sy) <= 0.05,
+        'A DOWNED PLAYER WHO PRESSES NOTHING STAYS PUT -- fault 2',
+        ('they travelled %.3fm in 60 frames of pressing nothing')
+            :format(travelled(sx, sy)))
+
+    ok(anim.speed == 0.0,
+        'and the crawl clip is held still rather than hauling them along forever',
+        ('clip rate %s'):format(tostring(anim.speed)))
+
+    -- AND THE CRAWL ITSELF STILL WORKS, which is the half a "fix" could
+    -- trivially break: a downed player pinned in place is a worse bug than one
+    -- who cannot stop.
+    input.ud = -1.0
+    sx, sy = bodies[1].x, bodies[1].y
+    log = {}
+    drift(60)
+    ok(travelled(sx, sy) > 0.3,
+        'and one who presses forward still crawls',
+        ('they travelled %.3fm in 60 frames of holding forward')
+            :format(travelled(sx, sy)))
+
+    -- THE CLIP SURVIVES THE STEP THAT MOVES THEM.
+    --
+    -- Every crawling frame teleports the ped, and SET_ENTITY_COORDS_NO_OFFSET's
+    -- fifth argument decides whether that teleport takes the ped's tasks with
+    -- it -- which is to say, whether it destroys the crawl animation. It was
+    -- being passed `false`, so the clip was torn down and rebuilt on every
+    -- frame of movement and never got past its opening pose.
+    ok(countOf('anim:play') <= 2,
+        'AND THE CRAWL CLIP IS NOT TORN DOWN AND REBUILT ON EVERY STEP',
+        ('the clip was re-tasked %d times in 60 frames of crawling')
+            :format(countOf('anim:play')))
+    ok(anim.speed == 1.0,
+        'with the clip running again the moment they ask to move',
+        ('clip rate %s'):format(tostring(anim.speed)))
+
+    -- Steering survives too.
+    input.lr, input.ud = 1.0, 0.0
+    local h0 = bodies[1].h
+    drift(10)
+    ok(math.abs(bodies[1].h - h0) > 1.0,
+        'and can still turn on the spot without travelling',
+        ('heading %.1f -> %.1f'):format(h0, bodies[1].h))
+    input.lr = 0.0
+
+    -- A WALL, ON THE BUILD WHOSE SHAPE TEST ANSWERS `true`. The old comparison
+    -- was `hit == 1` alone, which reads a boolean answer as a miss -- the same
+    -- shape bug natives.lua already carries the fix for on this very native.
+    world.rayHit, world.hitShape = true, true
+    world.mover = 0.0
+    input.ud = -1.0
+    sx, sy = bodies[1].x, bodies[1].y
+    drift(30)
+    ok(travelled(sx, sy) <= 0.02,
+        'a wall stops the crawl even when the shape test answers `true`',
+        ('they travelled %.3fm into it'):format(travelled(sx, sy)))
+    world.rayHit = false
+    input.ud = 0.0
+
+    ok(select(1, loopHealth('dbno.controls')) == 0
+       and select(2, loopHealth('dbno.controls')) ~= true,
+        'and the loop that does all of this has never thrown or been suspended',
+        ('errors %s suspended %s'):format(
+            tostring(select(1, loopHealth('dbno.controls'))),
+            tostring(select(2, loopHealth('dbno.controls')))))
+
+    -- ====================================================================== --
+    -- 4. THE VIEW IS FROM THE FLOOR
+    -- ====================================================================== --
+
+    describe('the downed camera is on the floor -- fault 4')
+
+    frame(16)
+    ok(shot.rendering == true and shot.coord ~= nil,
+        'A DOWNED PLAYER GETS A CAMERA OF THEIR OWN -- fault 4',
+        ('rendering %s, positioned %s'):format(tostring(shot.rendering),
+            shot.coord and 'yes' or 'no'))
+
+    ok(shot.coord ~= nil and shot.coord.z < 30.0 + HEAD_STANDING,
+        'and it sits below the standing head it used to hover over',
+        shot.coord and ('camera at %.2f, a standing head at %.2f')
+            :format(shot.coord.z, 30.0 + HEAD_STANDING) or 'no camera')
+
+    ok(shot.coord ~= nil and shot.coord.z >= 30.0 + 0.3,
+        'without dropping through the floor it is meant to be lying on',
+        shot.coord and ('%.2f above a floor at 30.00'):format(shot.coord.z - 30.0)
+                    or 'no camera')
+
+    ok(shot.aim ~= nil and math.abs(shot.aim.z - (30.0 + HEAD_PRONE)) < 0.2,
+        'pointed at the body rather than at where the body would be standing',
+        shot.aim and ('aimed at %.2f'):format(shot.aim.z) or 'no aim')
+
+    -- DERIVED FROM THE POSTURE, not from a constant that happens to be small.
+    --
+    -- Written nil-safe on purpose: a build with no downed camera at all has to
+    -- come out of here as a FAILED ASSERTION and not as a crashed suite, or the
+    -- revert that proves this block bites cannot be run.
+    local proneCam = shot.coord and shot.coord.z
+    bodies[1].prone = false
+    frame(16)
+    local standCam = shot.coord and shot.coord.z
+    ok(proneCam and standCam and (standCam - proneCam) > 1.0,
+        'and the height is the posture -- a standing ped would put it back up',
+        (proneCam and standCam)
+            and ('lying %.2f, standing %.2f'):format(proneCam, standCam)
+            or 'there was no camera to measure')
+    bodies[1].prone = true
+    frame(16)
+
+    -- AND IT IS HANDED BACK. A scripted camera nobody destroys is the whole
+    -- game rendered from a dead handle.
+    fire(BR.Net.DBNO_SET, { downed = false })
+    runThreads()
+    frame(16)
+    ok(shot.rendering == false and next(cams) == nil,
+        'standing back up gives the game its own camera back',
+        ('rendering %s, cameras alive %s'):format(tostring(shot.rendering),
+            next(cams) and 'yes' or 'no'))
+
+    -- A match ending mid-bleed is the other way out, and the one that leaves no
+    -- DBNO_SET behind to do the tidying.
+    bodies[1].dead = false
+    fire(BR.Net.DBNO_SET, { downed = true, bleedEndsAt = 60000 })
+    runThreads()
+    frame(16)
+    local upMidMatch = shot.rendering
+    fire(BR.Net.STATE, { state = BR.MatchState.ENDED })
+    ok(upMidMatch == true and shot.rendering == false and next(cams) == nil,
+        'and so does the match ending while they are still on the floor',
+        ('up %s, then rendering %s'):format(tostring(upMidMatch),
+                                            tostring(shot.rendering)))
+
+    -- ====================================================================== --
+    -- THE READOUT, which is the only instrument for any of this
+    -- ====================================================================== --
+
+    describe('/brdbno answers the four questions it was extended for')
+
+    logged = {}
+    ok(pcall(commands['brdbno'], nil, {}, ''), '/brdbno does not throw')
+    local said = table.concat(logged, '\n')
+    for _, word in ipairs({ 'pose', 'clip', 'held at', 'head', 'camera' }) do
+        ok(said:find(word, 1, true) ~= nil,
+            ('the readout carries "%s"'):format(word), said)
+    end
 end
 
 -- ------------------------------------------------------------------ report ---
