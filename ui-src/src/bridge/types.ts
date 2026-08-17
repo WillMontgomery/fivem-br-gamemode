@@ -106,6 +106,26 @@ export interface SquadMember {
   hp: number
   armour: number
   colour: string
+  /**
+   * WHEN THIS MATE BLEEDS OUT. A SERVER timestamp, on the same clock as every
+   * other `endsAt` in this file, so it is only comparable to
+   * `Date.now() + clockOffset` -- never to a bare Date.now().
+   *
+   * Set only while `state === 'dbno'`, and OPTIONAL BECAUSE LUA DOES NOT SEND
+   * IT YET. `dbnoUntil` is explicitly marked non-public in br_core's
+   * roster.lua ("the client is TOLD its own downed state on BR.Net.DBNO_SET,
+   * and other players learn about it only from the `state` field"), so the
+   * squad payload assembled in br_core/client/state.lua carries no deadline at
+   * all -- see the note in hud/SquadPanel.tsx for exactly what has to change.
+   *
+   * The panel renders NO TIMER when this is absent rather than starting one of
+   * its own. A browser-side countdown seeded from the first frame it saw a mate
+   * go down would be wrong by however late that frame was, would reset on a
+   * br_ui restart, and -- the one that matters -- would keep counting down
+   * while enemy fire SHORTENS the real bleed, telling a squad they have time to
+   * make the pickup when they do not.
+   */
+  bleedEndsAt?: number
 }
 
 export interface SquadPayload {

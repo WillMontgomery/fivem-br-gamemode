@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useUi } from '../store'
 import type { SquadMember, SquadPayload } from '../bridge/types'
 
 /**
@@ -16,6 +17,14 @@ import type { SquadMember, SquadPayload } from '../bridge/types'
  * DOWNED AND DEAD MUST NEVER LOOK ALIKE. Downed pulses the colour tag and turns
  * the health bar red -- it is recoverable and the player has a decision to
  * make. Dead is finished and still.
+ *
+ * ...AND A DECISION NEEDS A NUMBER. Two of the three things the owner could not
+ * read off this panel in the playtest were quantities: how long a downed mate
+ * has left, and what a mate's health and shield actually are. Both are now
+ * numerals rather than lengths -- see BleedClock and VitalBar below. A bar
+ * answers "roughly how much?" at a glance and that is all it will ever answer;
+ * "can I get there in time" and "is he one shot from down" are questions with
+ * digits in them.
  */
 
 type Phase = 'alive' | 'down' | 'dying' | 'dead'
@@ -58,6 +67,128 @@ function useDeathSequence(m: SquadMember) {
   return { phase, flash }
 }
 
+/**
+ * HOW LONG A DOWNED MATE HAS LEFT.
+ *
+ * Owner, from the playtest: "There's no way for team mates to see how much time
+ * is left on DBNO players." A squad's whole decision -- push the pickup or take
+ * the fight first -- is a question about this number, and the only player who
+ * could see it was the one who could do nothing with it.
+ *
+ * THE SAME NUMBER THE DOWNED PLAYER IS WATCHING, by construction: same field,
+ * same clock, same `Math.ceil(left / 1000)` and the same trailing `s` as
+ * DbnoOverlay. Two countdowns for one deadline that round differently would
+ * have a squad and their downed mate reading two different answers out loud.
+ *
+ * `bleedEndsAt` is a SERVER timestamp, so it is compared to
+ * `Date.now() + clockOffset` -- the rule StormBar, WarmupTimer and DbnoOverlay
+ * already follow. Against a bare Date.now() it is wrong by however far the two
+ * clocks happen to sit apart, which is a number nobody can predict and
+ * everybody would report as a broken timer.
+ *
+ * WRITTEN STRAIGHT TO THE NODE, exactly as DbnoOverlay does it, because the
+ * alternative is re-rendering a plate several times a second to move two
+ * digits -- and a squad can hold three of these at once.
+ *
+ * ON AN INTERVAL RATHER THAN rAF, which is the one place this deliberately
+ * differs from DbnoOverlay. That component is on rAF because it also drives a
+ * bar's transform, which genuinely wants a value every frame. There is no bar
+ * here: the only output is a whole number of seconds, so 60 callbacks a second
+ * per downed mate would be ~180 wakeups to change one character. 250ms is fast
+ * enough that the digit never visibly lags the player's own placard, and the
+ * text is only written when it actually differs, so a tick that changes nothing
+ * touches no DOM at all.
+ */
+function BleedClock({ endsAt }: { endsAt: number }) {
+  const ref = useRef<HTMLSpanElement>(null)
+  const offset = useUi((s) => s.clockOffset)
+
+  useEffect(() => {
+    const tick = () => {
+      const left = Math.max(0, endsAt - (Date.now() + offset))
+      const txt = `${Math.ceil(left / 1000)}s`
+      if (ref.current && ref.current.textContent !== txt) {
+        ref.current.textContent = txt
+      }
+    }
+    tick()
+    const id = window.setInterval(tick, 250)
+    return () => window.clearInterval(id)
+  }, [endsAt, offset])
+
+  return (
+    <span
+      ref={ref}
+      className="font-display leading-none tabular-nums text-[0.72rem] shrink-0"
+      style={{ color: 'var(--color-danger)', textShadow: 'var(--shadow-text)' }}
+    >
+      --
+    </span>
+  )
+}
+
+/**
+ * ONE BAR AND ITS NUMBER, side by side.
+ *
+ * Owner, from the playtest: "There's no way to see a squad member's health or
+ * shield level value in numbers. Don't put the numbers inside the bars like the
+ * player's own health - those numbers would be too small to read."
+ *
+ * SO THE NUMBER IS OUTSIDE THE BAR, and that is the whole instruction. Vitals
+ * grew its bar to 1.05rem so a 0.88rem numeral could live inside it; these bars
+ * are 0.4rem, a quarter of that, and there is no version of a numeral inside
+ * one that a player reads mid-fight. Beside it, the number is free to be
+ * BIGGER than anything else in the row -- 0.82rem against the name's 0.72rem --
+ * because nothing has to grow to hold it.
+ *
+ * BESIDE RATHER THAN UNDER, because a squad panel is a stack of pairs: hp over
+ * shield, four times. A number under its bar sits closer to the NEXT bar than
+ * to its own, and the reader has to work out which line owns which figure.
+ * Beside, on one baseline, the pairing is not a question -- and the two
+ * numbers form a right-hand column that reads down as fast as the bars do.
+ *
+ * FIXED-WIDTH AND RIGHT-ALIGNED, in tabular figures, so 7 and 100 put their
+ * last digit in the same place and the bars either side of them never move.
+ *
+ * The numeral wears its bar's colour, which is the same argument the row's
+ * edge tag makes: the colour is on the thing rather than beside it. It comes
+ * from --color-hp / --color-shield / --color-danger rather than a literal, so
+ * it follows the colourblind modes exactly as the fill it names does.
+ */
+function VitalBar({ value, colour, dying }:
+  { value: number; colour: string; dying: boolean }) {
+  const pct = Math.max(0, Math.min(1, value / 100))
+  return (
+    <div className="flex items-center gap-1">
+      {/* 0.4rem, and it has been raised twice. These began as 1px hairlines,
+          went to 0.2rem, and were STILL too thin to read at a glance (user,
+          2026-08-08 -- "this was true before we started"). A squadmate's
+          health is something you check in the middle of a fight, with your
+          eyes mostly elsewhere; a line you have to look at twice is a line
+          you stop looking at. At 0.4rem the fill has enough body to carry its
+          colour, which is what actually does the reading -- green, red, or
+          nearly gone. */}
+      <div className="flex-1 h-[0.4rem] rounded-full bg-black/55 overflow-hidden">
+        <div
+          className={`bar-fill h-full rounded-full${dying ? ' mate-drain' : ''}`}
+          style={{
+            width: '100%',
+            transform: `scaleX(${pct})`,
+            background: colour,
+          }}
+        />
+      </div>
+      <span
+        className="font-display leading-none tabular-nums text-[0.82rem]
+                   w-[1.65rem] text-right shrink-0"
+        style={{ color: colour, textShadow: 'var(--shadow-text)' }}
+      >
+        {Math.round(value)}
+      </span>
+    </div>
+  )
+}
+
 function Row({ m, talking }: { m: SquadMember; talking: boolean }) {
   const { phase, flash } = useDeathSequence(m)
 
@@ -67,8 +198,14 @@ function Row({ m, talking }: { m: SquadMember; talking: boolean }) {
 
   // Draining to zero is what the eye actually reads as death; the numbers are
   // already gone from the payload by then, so the phase drives it.
-  const hp = dead || dying ? 0 : Math.max(0, Math.min(1, m.hp / 100))
-  const sh = dead || dying ? 0 : Math.max(0, Math.min(1, (m.armour ?? 0) / 100))
+  //
+  // ONE SOURCE FOR THE BAR AND THE NUMBER BESIDE IT. The fill is derived from
+  // these same two values rather than from the payload, so a number can never
+  // disagree with the bar it is standing next to -- including through the
+  // death drain, where the payload has already gone to zero and the phase is
+  // the only thing that knows what to show.
+  const hp = dead || dying ? 0 : Math.max(0, Math.min(100, m.hp))
+  const sh = dead || dying ? 0 : Math.max(0, Math.min(100, m.armour ?? 0))
 
   // A MATE IS A PLATE. Each row is its own object carrying that player's
   // colour on its edge, rather than a stripe inside one shared box -- so a
@@ -123,47 +260,42 @@ function Row({ m, talking }: { m: SquadMember; talking: boolean }) {
             <span className="text-[0.72rem] font-semibold truncate">{m.name}</span>
           </span>
           {(dead || downed) && (
-            <span
-              key={dead ? 'out' : 'down'}
-              className="mate-stamp font-display text-[0.62rem] tracking-[0.18em]"
-              style={{ color: dead ? 'rgba(255,255,255,0.5)' : 'var(--color-danger)' }}
-            >
-              {dead ? 'OUT' : 'DOWN'}
+            // The stamp and the clock travel together on the right edge. The
+            // clock is deliberately NOT inside the stamp: .mate-stamp is a
+            // scale animation that replays on every state change, and a
+            // countdown living inside it would pop once a second.
+            <span className="flex items-baseline gap-1 shrink-0">
+              <span
+                key={dead ? 'out' : 'down'}
+                className="mate-stamp font-display text-[0.62rem] tracking-[0.18em]"
+                style={{ color: dead ? 'rgba(255,255,255,0.5)' : 'var(--color-danger)' }}
+              >
+                {dead ? 'OUT' : 'DOWN'}
+              </span>
+              {/* NOTHING AT ALL WHEN LUA IS SILENT. Absent means "no deadline
+                  on the wire", and the honest rendering of that is no timer --
+                  not a zero, not a dash, and not a locally invented clock.
+                  See SquadMember.bleedEndsAt in bridge/types.ts. */}
+              {downed && !!m.bleedEndsAt && <BleedClock endsAt={m.bleedEndsAt} />}
             </span>
           )}
         </div>
 
         {!dead && (
-          <>
-            {/* 0.4rem, and it has been raised twice. These began as 1px
-                hairlines, went to 0.2rem, and were STILL too thin to read at
-                a glance (user, 2026-08-08 -- "this was true before we
-                started"). A squadmate's health is something you check in the
-                middle of a fight, with your eyes mostly elsewhere; a line you
-                have to look at twice is a line you stop looking at. At 0.4rem
-                the fill has enough body to carry its colour, which is what
-                actually does the reading -- green, red, or nearly gone. */}
-            <div className="h-[0.4rem] mt-1 rounded-full bg-black/55 overflow-hidden">
-              <div
-                className={`bar-fill h-full rounded-full${dying ? ' mate-drain' : ''}`}
-                style={{
-                  width: '100%',
-                  transform: `scaleX(${hp})`,
-                  background: downed ? 'var(--color-danger)' : 'var(--color-hp)',
-                }}
-              />
-            </div>
-            <div className="h-[0.4rem] mt-[0.2rem] rounded-full bg-black/55 overflow-hidden">
-              <div
-                className={`bar-fill h-full rounded-full${dying ? ' mate-drain' : ''}`}
-                style={{
-                  width: '100%',
-                  transform: `scaleX(${sh})`,
-                  background: 'var(--color-shield)',
-                }}
-              />
-            </div>
-          </>
+          <div className="mt-1 flex flex-col gap-[0.2rem]">
+            <VitalBar
+              value={hp}
+              colour={downed ? 'var(--color-danger)' : 'var(--color-hp)'}
+              dying={dying}
+            />
+            {/* SHIELD SHOWS ITS ZERO. Vitals hides a zero because its numeral
+                sits INSIDE the bar, where a lone 0 floating in an empty track
+                reads as a glitch. Out here it is a column entry, and "this
+                mate has no shield left" is precisely the thing the owner
+                could not see. A blank where a figure belongs would read as
+                the panel failing rather than as an answer. */}
+            <VitalBar value={sh} colour="var(--color-shield)" dying={dying} />
+          </div>
         )}
       </div>
     </div>

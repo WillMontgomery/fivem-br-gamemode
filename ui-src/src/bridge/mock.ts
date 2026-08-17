@@ -205,7 +205,12 @@ export function startMockDriver(): void {
         members: [
           { src: 1, name: 'You',     state: 'alive', hp: 82,  armour: 45, colour: '#6EE7F9' },
           { src: 2, name: 'Kestrel', state: 'alive', hp: 100, armour: 80, colour: '#2DD4BF' },
-          { src: 3, name: 'Vandal',  state: 'dbno',  hp: 12,  armour: 0,  colour: '#FBBF24' },
+          // `bleedEndsAt` rides along on the downed mate, because the squad
+          // panel's timer is unbuildable without it and the harness is where
+          // it gets built. It is a SERVER timestamp everywhere else, and
+          // `serverNow` above is `now`, so `now + n` is the honest shape here.
+          { src: 3, name: 'Vandal',  state: 'dbno',  hp: 12,  armour: 0,  colour: '#FBBF24',
+            bleedEndsAt: now + 40_000 },
           { src: 4, name: 'Nyx',     state: 'dead',  hp: 0,   armour: 0,  colour: '#F472B6' },
         ],
       },
@@ -259,6 +264,49 @@ export function startMockDriver(): void {
     if (Math.random() < 0.05) { kills += 1 }
     emit({ k: 'hud', d: { hp, armour, alive, squadsAlive: Math.ceil(alive / 3), kills, state: 'alive' } })
   }, 900)
+
+  // THE SQUAD RE-PUSH, at the SLOW rate br_core/client/state.lua drives
+  // pushSquadOrParty at. Two things only this can exercise: a downed mate's
+  // bleed deadline actually counting down (and re-arming, so the panel is not
+  // stuck on 0s for the rest of the session), and the panel surviving a
+  // payload landing on it several times a second without flickering.
+  let knockAt = now
+  window.setInterval(() => {
+    const t = Date.now()
+    // Re-knock once the last bleed has run out, so the countdown loops.
+    if (t > knockAt + 40_000) knockAt = t
+    emit({
+      k: 'squad',
+      d: {
+        id: 'sq_1',
+        members: [
+          { src: 1, name: 'You',     state: 'alive', hp: Math.round(hp), armour: Math.round(armour), colour: '#6EE7F9' },
+          { src: 2, name: 'Kestrel', state: 'alive', hp: 100, armour: 80, colour: '#2DD4BF' },
+          { src: 3, name: 'Vandal',  state: 'dbno',  hp: 12,  armour: 0,  colour: '#FBBF24',
+            bleedEndsAt: knockAt + 40_000 },
+          { src: 4, name: 'Nyx',     state: 'dead',  hp: 0,   armour: 0,  colour: '#F472B6' },
+        ],
+      },
+    })
+  }, 1000)
+
+  // WHO IS SPEAKING. Nothing drove this channel before, so TalkingBar rendered
+  // nothing at all in the harness -- which is how a bottom-centre element ends
+  // up being reviewed only in the source. Names AND ids, because the squad
+  // panel's dots read the ids and the bar reads the names.
+  const VOICE = [
+    { talking: [2], names: ['Kestrel'] },
+    { talking: [2, 4], names: ['Kestrel', 'Nyx'] },
+    { talking: [], names: [] },
+    // A CROWD, because proximity voice carries anyone in the match and the
+    // 46% cap is only ever exercised by a line long enough to hit it.
+    { talking: [4, 2, 3, 9, 11, 12, 13],
+      names: ['Nyx', 'Kestrel', 'Vandal', 'Halcyon', 'Rook', 'Marrow', 'Quillon'] },
+  ]
+  let voiceAt = 0
+  window.setInterval(() => {
+    emit({ k: 'voice', d: VOICE[voiceAt++ % VOICE.length]! })
+  }, 4000)
 
   // Storm ticks at the same 4 Hz the server would use.
   let radius = 520, edge = -180
