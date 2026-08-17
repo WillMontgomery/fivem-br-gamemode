@@ -158,6 +158,28 @@ AddEventHandler('br:ui:ready', function()
     BR.Settings.push()
 end)
 
+--- SOMEBODY ELSE STARTED AND MISSED THE PUSH.
+---
+--- `br:ui:ready` is the NUI page coming up, and it is the only thing that has
+--- ever caused a push. That is enough for the page -- it is the page's own
+--- event -- but it is not enough for the other CONSUMERS of these settings,
+--- which are now br_core's voice channels and its DUI prompts. Restart br_core
+--- on its own and it starts with defaults, having missed a push that already
+--- happened and will not happen again until the player opens this screen.
+---
+--- So the read is available on request as well as on schedule. push() is
+--- idempotent -- it re-sends the stored object to the page and re-fires
+--- br:settings:changed -- so answering costs one repaint and cannot desync
+--- anything: nothing here writes, and the answer is whatever is in KVP.
+---
+--- The caller is br_core/client/dui.lua on its own onClientResourceStart. If
+--- br_ui is the one that restarted, this handler does not exist for a moment
+--- and the request is dropped -- which is correct, because br_ui coming up
+--- fires `br:ui:ready` and pushes anyway.
+AddEventHandler('br:settings:request', function()
+    BR.Settings.push()
+end)
+
 -- ------------------------------------------------------------- callbacks ---
 
 RegisterNUICallback(BR.NuiCb.SETTINGS_SAVE, function(data, cb)

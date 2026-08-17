@@ -184,6 +184,26 @@ ensure br_ringmaster     # optional -- the admin console's game-side half
 # If voice is broken, it is still probably not this file. `brvoice` in the
 # server console shows the assignment; F8 `brvoice` on a client shows whether
 # audio is leaving the machine and what range is in force.
+#
+# `voice_enableUi` DOES NOTHING ON THIS SERVER. WRITTEN DOWN BECAUSE IT HAS NOW
+# BEEN TRIED, ON MY ADVICE, AND MY ADVICE WAS WRONG.
+#
+# It was suggested as the way to remove the duplicated "currently talking"
+# readout. It is not a FiveM convar at all -- it belongs to pma-voice, which
+# reads it as `GetConvarInt("voice_enableUi", 1)` in its own client Lua and
+# declares it in its own fxmanifest, to switch pma-voice's own NUI overlay
+# on and off. It gates that resource's interface and nothing else.
+#
+# WE DO NOT RUN pma-voice. There is no voice resource in the `ensure` list
+# above at all: br_core/client/voice.lua drives FiveM's built-in Mumble through
+# the natives directly, and pma-voice appears in this project only as a
+# reference that file was checked against. So setting this convar -- `set` or
+# `setr`, `0` or `false` -- writes a value that no running code ever reads.
+#
+# The duplicate readout is a CODE question, not a config one. GTA's own voice
+# chat is switched by NETWORK_SET_VOICE_ACTIVE, which FiveM hooks to call the
+# real game function; br_core/client/voice.lua is the only thing in the project
+# that calls it. Look there, not here.
 # ---------------------------------------------------------------------------
 
 # Our loading screen draws its own progress; the engine's busy spinner over
