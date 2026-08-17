@@ -133,6 +133,49 @@ end
 
 --- Put the player on the floor and start whatever crawl this build supports.
 local function enterDowned()
+    -- BEING DOWNED MEANS BEING ALIVE, AND THE WORLD DOES NOT KNOW THAT.
+    --
+    -- THE BUG (owner, 2026-08-16): a player who fell from a height went straight
+    -- to OUT. Their screen read 0 health, they could not crawl, their body stayed
+    -- in the world and a squadmate standing over them got no revive prompt at
+    -- all. The squad panel said "out" the moment they landed.
+    --
+    -- Every knock the server hands out through a validated GUNSHOT arrives at a
+    -- ped that is still alive: BR.Damage.applyHit clamps the damage it instructs
+    -- us to apply so the ped survives at the downed floor, on purpose. Nothing
+    -- clamps a fall. Falls, fire, drowning and cars are damage paths M6
+    -- deliberately left to the engine (server/damage.lua reads them off
+    -- weaponDamageEvent as environmental and returns), so the ped is genuinely
+    -- DEAD by the time DBNO_SET arrives -- and a dead ped takes no animation,
+    -- holds no health, and reads as a corpse to the server's own health sampler,
+    -- which then eliminates the player it just knocked down.
+    --
+    -- The server cannot fix this from its side: NetworkResurrectLocalPlayer runs
+    -- on the machine that owns the ped or nowhere (see the REVIVED note in
+    -- shared/protocol.lua, which says exactly this about the #144 path). So the
+    -- knock and the resurrection are two halves of one event, and this is the
+    -- half that lives here.
+    --
+    -- IN PLACE, AND WITHOUT BR.Spawn.respawn. This body is already lying on the
+    -- ground it fell to; respawn() is the verb for arriving somewhere NEW and
+    -- carries luggage that is wrong here (it strips the inventory's weapons and
+    -- ground-probes from fifty metres up, which indoors finds the roof). Same
+    -- reasoning, and the same three calls, as spawn.lua's REVIVED handler.
+    --
+    -- The health that follows is the SERVER's: knock() sends HEALTH_SYNC with
+    -- the downed floor immediately after DBNO_SET, because a resurrection
+    -- restores GTA's defaults rather than ours.
+    if IsEntityDead(PlayerPedId()) then
+        local ped = PlayerPedId()
+        local p = GetEntityCoords(ped)
+        NetworkResurrectLocalPlayer(p.x, p.y, p.z, GetEntityHeading(ped),
+                                    true, false)
+        -- The dying animation outlives the resurrection otherwise: the ped
+        -- stands up and then finishes collapsing over the top of the crawl.
+        ClearPedTasksImmediately(PlayerPedId())
+        print('[br_core] dbno: the world had already killed this ped -- resurrected onto the downed floor')
+    end
+
     local ped = PlayerPedId()
 
     -- THE WEAPON GOES FIRST, before anything can be fired from the floor. The

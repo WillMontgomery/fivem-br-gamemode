@@ -872,19 +872,56 @@ end)
 --- Spawning a thread per correction would be wasteful on the common path --
 --- one arrives per bullet -- so the retry loop is only entered when there is
 --- actually a corpse to argue with.
+---
+--- WHICH QUESTION DECIDES "A CORPSE TO ARGUE WITH", AND WHY IT IS NOT
+--- IsEntityDead (#115, owner 2026-08-16).
+---
+--- The owner shot a squadmate, the server refused the shot as friendly fire,
+--- and the mate died on the SHOOTER'S screen anyway and stayed dead. A second
+--- shot brought them back -- "they sprung to life, t-posed, then was synced
+--- perfectly" -- and a third killed them for good. One correction per shot, and
+--- the same correction did the right thing on the second one and nothing on the
+--- first and third: a race, decided differently each time.
+---
+--- The race was here. `IsEntityDead` is an INSTANT read of a state the engine
+--- has not finished entering. GTA applies the damage locally, starts
+--- CTaskDyingDead, and only settles the flag some frames later -- so a
+--- correction that arrives inside that window took the "merely wrong" branch,
+--- wrote the health ONCE, returned, and let the death task finish over the top
+--- of the value it had just written. Nothing retried, because the branch that
+--- retries was never entered. That is why the first shot left a corpse, the
+--- second (arriving after the flag had settled) resurrected it, and the third
+--- lost the race again.
+---
+--- So the ENGINE'S OWN NUMBER decides it, through the same helper the server
+--- uses to read a corpse: at or below the death floor the ped is dead or on its
+--- way there, whether or not the flag agrees yet -- and either way the write has
+--- to be watched rather than assumed. `BR.IsDeadHp` is the one definition of
+--- that threshold in the project and this is not the place to grow a second.
+---
+--- The cheap path is unchanged and is still the common one: a ped merely
+--- carrying GTA's damage number (170 where the ledger says 200) is one write and
+--- no thread, exactly as before.
 --- @param netId integer
 --- @param hp integer   ENGINE units
 local function correctPed(netId, hp)
-    if not netId or hp <= 0 then return end
+    -- A CORRECTION TO A DEAD NUMBER IS NOT A CORRECTION. This used to read
+    -- `hp <= 0`, which is not the threshold: engine health floors at 100 for a
+    -- player ped, so a target of 100 is a corpse that would have been
+    -- resurrected once per retry into a value that keeps it dead. The server no
+    -- longer sends one (BR.Damage.resync declines a victim who is out), and this
+    -- is the half that cannot be reached by getting that wrong again.
+    if not netId or BR.IsDeadHp(hp) then return end
     if not NetworkDoesNetworkIdExist(netId) then return end
 
     local ped = NetworkGetEntityFromNetworkId(netId)
     if not ped or ped == 0 or not DoesEntityExist(ped) then return end
 
-    if not IsEntityDead(ped) then
+    local now = GetEntityHealth(ped)
+    if not IsEntityDead(ped) and not BR.IsDeadHp(now) then
         -- Only ever UPWARD. Writing it down would be us arguing with the
         -- owner's own sync about a ped we do not own, for no gain.
-        if GetEntityHealth(ped) < hp then SetEntityHealth(ped, hp) end
+        if now < hp then SetEntityHealth(ped, hp) end
         return
     end
 
@@ -899,15 +936,18 @@ local function correctPed(netId, hp)
             local p = NetworkGetEntityFromNetworkId(netId)
             if not p or p == 0 or not DoesEntityExist(p) then return end
 
-            if IsEntityDead(p) then
+            local h = GetEntityHealth(p)
+            if IsEntityDead(p) or BR.IsDeadHp(h) then
                 ResurrectPed(p)
                 ClearPedTasksImmediately(p)
                 SetEntityHealth(p, hp)
-            elseif GetEntityHealth(p) < hp then
+            elseif h < hp then
+                -- Corrected but not yet confirmed: write it and come back once
+                -- more. Returning here is what let a death that was still
+                -- settling finish over the top of the write.
                 SetEntityHealth(p, hp)
-                return
             else
-                return   -- already correct; the owner's sync got there first
+                return   -- alive, at the server's number: nothing left to argue
             end
             Citizen.Wait(150)
         end

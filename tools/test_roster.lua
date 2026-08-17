@@ -5953,6 +5953,169 @@ do
         BR.Roster.get(1).state)
 end
 
+describe('dbno.deadPed')
+do
+    -- THE FALL THAT WENT STRAIGHT TO OUT (owner, 2026-08-16).
+    --
+    -- "I just tried reviving (who should be) a DBNO player in the same squad and
+    --  never even got a prompt or DUI... Their screen reads 0 health and they're
+    --  unable to crawl... The squad panel went straight to 'out' when they
+    --  dropped."
+    --
+    -- A knock from a validated GUNSHOT arrives at a ped that is still alive:
+    -- BR.Damage.applyHit clamps the damage it instructs the victim to apply so
+    -- the ped survives at the downed floor, deliberately. NOTHING CLAMPS A FALL.
+    -- Falls, fire, drowning and cars are damage paths M6 leaves to the engine on
+    -- purpose, so the ped is genuinely dead by the time the knock lands -- and
+    -- the server-observed death check then read that corpse and finished the
+    -- player it had knocked down a fraction of a second earlier.
+    --
+    -- This block is the whole shape of that: knocked, still knocked a couple of
+    -- seconds later, and finished by the clock that is supposed to finish them.
+    local m = squadMatch(2)
+
+    -- One pass of the sampler first, so `engineHp` holds a real reading. Without
+    -- it the entry has never been sampled and "the corpse sample is dropped"
+    -- would pass by never having existed.
+    tick(300)
+    ok(BR.Roster.get(1).engineHp ~= nil, 'the sampler has an opinion to begin with')
+
+    pedHealth[1001] = 0            -- the drop killed the ped outright
+    sent = {}
+    fire(BR.Net.PLAYER_DIED, 1, { cause = 'fall' })
+
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+        'a fall knocks a squad player down like every other damage path',
+        BR.Roster.get(1).state)
+
+    -- THE STALE READING IS DROPPED WITH THE KNOCK. It is up to 250ms old and, on
+    -- every engine-owned path, it is a reading of a corpse -- an opinion from
+    -- before the event, which is exactly what reviveHeld clears for the same
+    -- reason.
+    ok(BR.Roster.get(1).engineHp == nil,
+        'and the health sample from before the knock does not outlive it',
+        tostring(BR.Roster.get(1).engineHp))
+
+    -- The server cannot write a ped, so it says what the number IS. Without
+    -- this the downed player is left on whatever the world left them on, which
+    -- for a fall is zero -- "their screen reads 0 health".
+    local hs = nil
+    for _, s in ipairs(sent) do
+        if s.event == BR.Net.HEALTH_SYNC and s.target == 1 then hs = s.args[1] end
+    end
+    ok(hs ~= nil and hs.hp == BR.Config.Match.dbnoHp,
+        'and the client is told what a downed ped weighs, whatever put them there',
+        hs and tostring(hs.hp) or 'no HEALTH_SYNC at all')
+
+    -- THE HEADLINE. Two seconds is two passes of combat.deathcheck and eight of
+    -- the sampler, every one of them looking at a ped that reads dead.
+    tick(1000)
+    tick(1000)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DBNO,
+        'and they are STILL down two seconds later -- the ped reading is not '
+        .. 'evidence about a player whose health is a bleed clock',
+        BR.Roster.get(1).state)
+    ok(BR.Roster.get(1).placement == nil,
+        'with nothing banked: a knock is not a finishing position',
+        tostring(BR.Roster.get(1).placement))
+
+    -- ...AND DECLINING THE PED READING IS NOT IMMORTALITY. The bleed clock owns
+    -- the ending and still delivers it, which is what makes the check above safe
+    -- to give up rather than a hole to hide in.
+    tick(BR.Config.Match.dbnoBleedBase * 1000 + 500)
+    ok(BR.Roster.get(1).state == BR.PlayerState.DEAD,
+        'the bleed clock still finishes them on time',
+        BR.Roster.get(1).state)
+    ok(BR.Roster.get(1).placement ~= nil,
+        'and THAT death is banked in full')
+
+    pedHealth[1001] = nil
+end
+
+describe('combat.resync.corpse')
+do
+    -- THE FALSE CORPSE, FROM THE OTHER END (#115, owner 2026-08-16).
+    --
+    -- "Friendly fire - I shot a squad mate, they got 0 damage, and on my screen
+    --  they perished. After shooting their ped once more they sprung to life,
+    --  t-posed, then was synced perfectly."
+    --
+    -- The correction that stands a mate back up is right, and it is the ONLY
+    -- thing on this path that can be: the engine applies damage locally on the
+    -- shooter's machine before the server ever sees the event, and CancelEvent
+    -- stops it replicating rather than undoing it.
+    --
+    -- What it must not do is stand up a body that is genuinely a body. The
+    -- SUCCESS path has said so since it was written -- applyHit withholds the
+    -- netId once the ledger reads zero -- and the REFUSAL path, which is where
+    -- every friendly-fire shot goes, said nothing at all.
+    local m = squadMatch(2)
+    local pistol = BR.Config.WeaponById['pistol']
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = pistol.clip })
+    BR.Inv.of(1).ammo[BR.AmmoType.LIGHT] = 40
+    BR.Inv.of(1).active = 1
+    BR.Roster.get(1).pos = { x = 0.0, y = 0.0, z = 30.0 }
+    BR.Roster.get(2).pos = { x = 2.0, y = 0.0, z = 30.0 }
+
+    --- Shoot the squadmate and hand back the correction the shooter was sent.
+    local function shootMate()
+        sent = {}
+        fakeTime = fakeTime + 5000
+        fire('weaponDamageEvent', 1, 1, {
+            damageType = 3, weaponType = pistol.hash, hitComponent = 0,
+            weaponDamage = 26, hitGlobalIds = { 1002 },
+        })
+        local found = nil
+        for _, s in ipairs(sent) do
+            if s.event == BR.Net.HIT_RESYNC and s.target == 1 then
+                found = s.args[1]
+            end
+        end
+        return found
+    end
+
+    local live = shootMate()
+    ok(BR.Roster.get(2).hp == 100.0,
+        'friendly fire takes nothing off the mate', tostring(BR.Roster.get(2).hp))
+    ok(live ~= nil,
+        'and the shooter is told to put their own copy of them back')
+    ok(live and live.hp == math.floor(BR.ToEngineHp(BR.Roster.get(2).hp) + 0.5),
+        'with the ledger\'s number, in engine units',
+        live and tostring(live.hp) or 'nil')
+
+    -- A DOWNED MATE IS STILL A LIVING PED. Their health is a bleed clock, but
+    -- the thing standing in the world is alive at the downed floor and a
+    -- shooter's corpse-copy of it is just as wrong.
+    BR.Combat.defeat(2, 'gunshot', nil)
+    ok(BR.Roster.get(2).state == BR.PlayerState.DBNO, 'the mate goes down')
+    local downed = shootMate()
+    ok(downed ~= nil and downed.hp > BR.Config.Match.healthFloor,
+        'a downed squadmate is still corrected, and to a LIVING number',
+        downed and tostring(downed.hp) or 'nil')
+
+    -- ...and once they are out, the corpse is real.
+    BR.Combat.eliminate(2, 'admin', nil)
+    ok(BR.Roster.get(2).state == BR.PlayerState.DEAD, 'the mate is eliminated')
+
+    -- WHY THE GUARD IS ON THE STATE AND NOT ON THE NUMBER. An eliminated
+    -- player's ledger health is never zeroed -- a knock parks it on the downed
+    -- floor and nothing takes it off -- so copying applyHit's `hp > 0` test here
+    -- would have let a minute-old corpse through carrying a live-looking 105.
+    ok(BR.Roster.get(2).hp > 0.0,
+        'an eliminated player\'s ledger health is NOT zero',
+        tostring(BR.Roster.get(2).hp))
+    ok(BR.IsDeadHp(math.floor(BR.ToEngineHp(BR.Roster.get(2).hp) + 0.5)) == false,
+        '...and converts to a number that reads perfectly alive',
+        tostring(math.floor(BR.ToEngineHp(BR.Roster.get(2).hp) + 0.5)))
+
+    local corpse = shootMate()
+    ok(corpse == nil,
+        'so shooting the body sends no correction at all: that corpse is real',
+        corpse and ('hp ' .. tostring(corpse.hp)) or 'nil')
+end
+
 describe('dbno.bleed')
 do
     -- THE BLEED TIMER IS THE HEALTH BAR. Everything here is about that one

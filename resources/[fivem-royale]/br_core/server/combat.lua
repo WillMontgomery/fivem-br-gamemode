@@ -543,7 +543,34 @@ function BR.Combat.knock(src, killerSrc)
     BR.Roster.update(src, { hp = (M.dbnoHp or 5) + 0.0, armour = 0.0 })
     BR.Roster.setState(src, BR.PlayerState.DBNO)
 
+    -- THE SAMPLE FROM BEFORE THE KNOCK MUST NOT OUTLIVE IT.
+    --
+    -- `engineHp` is up to 250ms old and, on every damage path the engine still
+    -- owns, it is a reading of a CORPSE: a fall, a fire, drowning or a car kills
+    -- the ped outright, and the knock that follows is the server deciding that
+    -- death means "down" instead. Left in place, the server-observed death check
+    -- reads that stale zero and finishes a player it knocked a fraction of a
+    -- second ago. Cleared for exactly the reason reviveHeld clears it -- no
+    -- opinion until the next sample beats an opinion from before the event.
+    entry.engineHp = nil
+
     BR.Combat.pushDbno(src)
+
+    -- ...AND THE PED IS PUT ON THE DOWNED FLOOR, WHATEVER PUT THEM THERE.
+    --
+    -- Sent AFTER pushDbno, and the order is load-bearing: DBNO_SET is what makes
+    -- the client resurrect a ped the world killed (client/dbno.lua), and a
+    -- resurrection restores GTA's default health -- so a health write that
+    -- arrived first would simply be overwritten by it.
+    --
+    -- This used to be implicit and only true down one path. BR.Damage.applyHit
+    -- clamps a knocking shot so the victim's ped survives at this floor, so a
+    -- GUNSHOT knock landed on the right number by construction. Nothing clamps a
+    -- fall, so a player who dropped from a height was handed the downed STATE
+    -- with a dead ped reading zero -- no crawl, no health, and no way back
+    -- (owner, 2026-08-16). The server cannot write a ped; it can say what the
+    -- number is, which is the contract HEALTH_SYNC already exists for.
+    TriggerClientEvent(BR.Net.HEALTH_SYNC, src, { hp = M.dbnoHp or 5, armour = 0 })
 
     -- THE SQUAD IS TOLD IN WORDS, not only in pixels. The panel stripe and the
     -- [DOWN] gamer tag both already say this, and both require the mate to be
@@ -876,6 +903,28 @@ BR.Sched.every(1000, 'combat.deathcheck', function()
     -- player against THEIR match's state -- matches advance independently.
     BR.Roster.each(function(e)
         if not canDie(e) then return false end
+
+        -- A DOWNED PLAYER IS NEVER FINISHED BY THIS CHECK, AND THAT IS THE
+        -- WHOLE POINT OF THE STATE (#115 sibling, owner 2026-08-16).
+        --
+        -- For everybody else the ped IS the evidence -- it is the half a
+        -- cheating client cannot avoid. For a downed player it is not evidence
+        -- of anything: the bleed clock is their health (see the DBNO section
+        -- above), their ped is invincible by design (client/natives.lua), and a
+        -- ped reading dead here means only that the ENGINE killed it down a path
+        -- we never took over -- a fall, a fire, drowning, a car -- a beat before
+        -- the knock landed. Reading that corpse turned every fall in a squad
+        -- match into an instant elimination one second after the squad panel
+        -- said DOWN, with the body still lying there and no revive prompt for
+        -- anyone (owner, 2026-08-16).
+        --
+        -- Nothing is lost by declining: defeat() on a DBNO entry can only ever
+        -- eliminate anyway -- canBeDowned requires ALIVE -- so this branch was
+        -- never deciding "down or out", it was racing the bleed clock that
+        -- already owns the answer and already terminates, at dbnoBleedBase and
+        -- faster under fire.
+        if e.state == BR.PlayerState.DBNO then return false end
+
         local m = e.matchId and BR.Server.matches[e.matchId]
         return m ~= nil and (m.state == BR.MatchState.PLAYING
                           or m.state == BR.MatchState.BUS)

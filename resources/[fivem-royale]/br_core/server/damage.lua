@@ -411,11 +411,28 @@ end
 --- The server's ledger is the truth about the victim's health; this hands that
 --- truth to the one client whose local copy disagrees. Sent only to the
 --- shooter, because nobody else's view was ever wrong.
+---
+--- ...AND ONLY WHILE THEY ACTUALLY ARE FINE. The success path has always said
+--- this -- applyHit withholds the netId once the ledger reads zero, because "the
+--- corpse on the shooter's screen is correct and resurrecting it would be the
+--- bug". The refusal path never did, and a refusal is exactly where it bites:
+--- friendly fire is refused, so every shot into a dead squadmate's body came
+--- back here and told the shooter to stand it up.
+---
+--- THE STATE, NOT THE NUMBER, and that is not a stylistic preference. Copying
+--- applyHit's `e.hp > 0` test would not work here: an eliminated player's ledger
+--- health is never zeroed -- a bleed-out leaves it parked on the DBNO floor --
+--- so `e.hp` reads 5 for a player who has been out of the match for a minute,
+--- and BR.ToEngineHp(5) is a perfectly live-looking 105 on the wire. The roster
+--- state is the fact; the health is a leftover.
 --- @param shooter integer
 --- @param victim integer
 function BR.Damage.resync(shooter, victim)
     local e = BR.Roster.get(victim)
     if not e then return end
+    if e.state ~= BR.PlayerState.ALIVE and e.state ~= BR.PlayerState.DBNO then
+        return
+    end
 
     local ped = GetPlayerPed(victim)
     if not ped or ped == 0 then return end
