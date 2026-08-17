@@ -1112,6 +1112,77 @@ do
         ('2:%d 4:%d'):format(lo, hi))
 end
 
+describe('loot.shields')
+do
+    -- HOW OFTEN A CRATE PAYS OUT A SHIELD, WHICH IS THE ONLY FORM OF THIS
+    -- NUMBER A PLAYER EXPERIENCES.
+    --
+    -- Owner, 2026-08-17: "seems shield is a very rare item - took me 10 crates
+    -- to get one. That should be increased." His ten crates were the table
+    -- working as configured, not a bad run: at rarity RARE the Shield sat in a
+    -- band worth 27% of consumable rolls while consumables were 17% of crate
+    -- items, which is 11.1% of crates holding one -- one in nine.
+    --
+    -- NOTHING PINNED THAT, WHICH IS WHY IT COULD DRIFT. The block above proves
+    -- healing is crate-only and that crates hold 2..4 items; neither notices a
+    -- consumable becoming unfindable. So the rate is asserted here as a BAND
+    -- rather than a value: the intent is "a crate in three, give or take", not
+    -- a particular seed's 28.5%, and a band survives an unrelated retune of the
+    -- kind weights while still failing if the Shield falls back off a cliff.
+    --
+    -- The layout is the same seed the block above builds, so this is the whole
+    -- map's ~2200 crates rather than a model of them.
+    local layout = BR.BuildLootLayout(31337)
+
+    local crates, withShield, shields = 0, 0, 0
+    for _, e in ipairs(layout) do
+        if e.kind == 'chest' then
+            crates = crates + 1
+            local got = false
+            for _, s in ipairs(e.contents or {}) do
+                if s.item == 'shield' then got = true; shields = shields + 1 end
+            end
+            if got then withShield = withShield + 1 end
+        end
+    end
+
+    local rate = withShield / math.max(1, crates)
+    ok(rate > 0.22 and rate < 0.38,
+        'a crate holds a Shield about one time in three',
+        ('%.1f%% of %d crates (1 in %.1f)')
+            :format(rate * 100, crates, crates / math.max(1, withShield)))
+
+    -- AND IT IS STILL THE UNCOMMON ITEM IT IS AUTHORED AS. The rate above is
+    -- reached by which rarity BANDS the Shield owns (BR.LootPickOfRarity picks
+    -- uniformly inside a band), so a future edit that moves it back to RARE --
+    -- or that authors a new UNCOMMON consumable beside it, halving its share --
+    -- fails this rather than the arithmetic being rediscovered from a playtest.
+    ok(BR.Config.ConsumableById['shield'].rarity == BR.Rarity.UNCOMMON,
+        'the Shield owns the UNCOMMON consumable band',
+        tostring(BR.Config.ConsumableById['shield'].rarity))
+    ok(#BR.Config.ConsumablesByRarity[BR.Rarity.UNCOMMON] == 1,
+        'and owns it alone',
+        ('%d items in the band'):format(#BR.Config.ConsumablesByRarity[BR.Rarity.UNCOMMON]))
+
+    -- HEALING WAS NOT COLLATERAL. Widening the Shield's band takes its share
+    -- from the other consumables, so the consumable kind weight was raised to
+    -- offset it -- and this is the assertion that says so. Bandages and med
+    -- kits must still be a real fraction of what a crate pays out.
+    local items, heal = 0, 0
+    for _, e in ipairs(layout) do
+        if e.kind == 'chest' then
+            for _, s in ipairs(e.contents or {}) do
+                items = items + 1
+                if s.item == 'bandage' or s.item == 'medkit' then heal = heal + 1 end
+            end
+        end
+    end
+    local healShare = heal / math.max(1, items)
+    ok(healShare > 0.05,
+        'and crates still carry a real share of healing',
+        ('%.1f%% of crate items'):format(healShare * 100))
+end
+
 describe('storm.breakout')
 do
     -- THE CIRCLE MUST BE ABLE TO LEAVE THE CIRCLE.
@@ -2976,6 +3047,862 @@ do
     ok(bare ~= nil, 'an incident with no evidence is still filed')
     ok(#bare.evidence == 0, 'with an empty evidence list')
     ok(bare.subjects[1].squadId == nil, 'and no squad claim it cannot support')
+end
+
+-- ==========================================================================
+-- A FALL, END TO END. (owner, 2026-08-17: "I tried triggering DBNO by falling
+-- from a height but it went straight to dead")
+-- ==========================================================================
+--
+-- WHY THIS IS HERE AND NOT IN A CLIENT SUITE. This is the THIRD round on the
+-- same symptom. `ef501ef` fixed it and the owner confirmed it working;
+-- `58502b0` re-sequenced the knock and it came back. Neither suite could have
+-- caught the return trip, and the reason is the same one `a8b22c7` gave for
+-- #115: the question is a RACE, and no suite in this repo lets time pass
+-- during one.
+--
+--   * ef501ef's own coverage (the `dbno.deadPed` block) is entirely SERVER
+--     side. It asserts the knock, the dropped `engineHp` sample and the
+--     HEALTH_SYNC -- and never loads `client/dbno.lua`, so `enterDowned()`,
+--     which is the half that stands the corpse back up, was never executed by
+--     anything at all. Rewriting it could not turn that block red.
+--
+--   * 58502b0's coverage DOES load `client/dbno.lua`, and it is about ORDER,
+--     not TIME: `Citizen.CreateThread` collects thunks that the test calls by
+--     hand and `Citizen.Wait` is a no-op that only records that it happened.
+--     The whole knock therefore occurs in a single instant, with `dead = true`
+--     set by hand beforehand. In that world "has the death flag settled yet?"
+--     is not a question that can be asked, let alone answered wrongly.
+--
+-- So this block runs BOTH REAL FILES -- `server/combat.lua` and
+-- `client/dbno.lua` -- in two sandboxes wired together with a latency, over
+-- REAL coroutines driven by a 16ms pump, with the engine's death modelled the
+-- way `a8b22c7` established it for `client/state.lua`:
+--
+--   1. the death TASK and the `IsEntityDead` FLAG are separate things;
+--   2. the flag settles LATE, some frames after the task starts;
+--   3. writing health does not cancel a death task, and a settled corpse
+--      ignores the write entirely;
+--   4. `NetworkResurrectLocalPlayer` clears the task, the flag and the health.
+--
+-- WHAT THE FALL ACTUALLY IS. `server/damage.lua` reads WEAPON_FALL as
+-- environmental and returns, so GTA kills the ped and nothing clamps it. The
+-- client's own `gamerules.death` watcher reports that death; the server turns
+-- it into a knock. Everything after that is the two halves of one event
+-- racing: the ped finishing its death, and the client being told to stand it
+-- back up.
+--
+-- WHAT IT DOES NOT CLAIM: entity ownership, and the exact number of
+-- milliseconds GTA takes to settle `IsEntityDead`. That is why the settle time
+-- and the round trip are a MATRIX rather than a number -- the fix has to make
+-- the outcome timing-independent, which is the only property a test can
+-- honestly demand of a race.
+
+local SANDBOX_STD = {
+    assert = assert, error = error, ipairs = ipairs, next = next,
+    pairs = pairs, pcall = pcall, rawequal = rawequal, rawget = rawget,
+    rawlen = rawlen, rawset = rawset, select = select, xpcall = xpcall,
+    setmetatable = setmetatable, getmetatable = getmetatable,
+    tonumber = tonumber, tostring = tostring, type = type,
+    math = math, string = string, table = table,
+    coroutine = coroutine, unpack = table.unpack,
+}
+
+local RES = 'resources/[fivem-royale]/'
+
+-- Every br_lib file a br_core file expects to have been loaded before it, in
+-- fxmanifest order. Each sandbox gets its OWN copy: a client and a server are
+-- separate Lua states in the real game and they are separate ones here.
+local SANDBOX_LIB = {
+    'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
+    'br_lib/shared/names.lua', 'br_lib/shared/rng.lua',
+    'br_lib/shared/geo.lua', 'br_lib/shared/clock.lua',
+    'br_lib/shared/sched.lua', 'br_lib/config/match.lua',
+    'br_lib/config/storm.lua', 'br_lib/config/map.lua',
+    'br_lib/config/weapons.lua', 'br_lib/config/loot.lua',
+    'br_lib/config/audio.lua', 'br_lib/config/peds.lua',
+    'br_lib/config/market.lua', 'br_lib/shared/xp.lua',
+    'br_lib/shared/storm_solve.lua', 'br_lib/shared/combat_solve.lua',
+    'br_lib/shared/loot_gen.lua',
+}
+
+--- A fresh sandbox with nothing of the host process in it but SANDBOX_STD.
+---
+--- Explicit rather than inherited, so a native the production code reaches for
+--- and this harness never defined is an immediate "attempt to call a nil value"
+--- rather than a silent no-op. A silent no-op is how a suite goes green while
+--- the thing it claims to test does nothing.
+local function newSandbox()
+    local env = setmetatable({}, { __index = function(_, k) return SANDBOX_STD[k] end })
+    env._G = env
+    return env
+end
+
+--- Load real production files into a sandbox, or die loudly.
+local function loadInto(env, list)
+    for _, f in ipairs(list) do
+        local chunk, err = loadfile(RES .. f, 't', env)
+        if not chunk then
+            io.write('\27[31msandbox load error\27[0m ', f, ': ', tostring(err), '\n')
+            os.exit(1)
+        end
+        local okc, e2 = pcall(chunk)
+        if not okc then
+            io.write('\27[31msandbox run error\27[0m ', f, ': ', tostring(e2), '\n')
+            os.exit(1)
+        end
+    end
+end
+
+-- ---------------------------------------------------------------------------
+-- The server: the real server/combat.lua, behind the smallest roster that can
+-- hold it up.
+-- ---------------------------------------------------------------------------
+
+--- @return table  { env, roster, clientEvents, died(src, data), tick(nowMs) }
+local function newServer()
+    local env = newSandbox()
+    local S = { now = 0, roster = {}, out = {}, notices = {} }
+
+    env.GetGameTimer   = function() return S.now end
+    env.print          = function() end
+    env.GetCurrentResourceName = function() return 'br_core' end
+    env.GetPlayerName  = function(s) return 'P' .. tostring(s) end
+    env.GetPlayers     = function() return {} end
+    env.GetPlayerPed   = function() return 0 end
+    env.GetHashKey     = function(s) return #tostring(s) end
+    env.RegisterNetEvent = function() end
+    env.RegisterCommand  = function() end
+    env.CancelEvent      = function() end
+    env.Citizen = { CreateThread = function() end, Wait = function() end,
+                    SetTimeout = function() end }
+
+    local handlers = {}
+    env.AddEventHandler = function(n, fn)
+        handlers[n] = handlers[n] or {}
+        handlers[n][#handlers[n] + 1] = fn
+    end
+    env.TriggerEvent = function(n, ...)
+        for _, fn in ipairs(handlers[n] or {}) do fn(...) end
+    end
+    env.TriggerClientEvent = function(ev, target, payload)
+        S.out[#S.out + 1] = { event = ev, target = target, payload = payload }
+    end
+
+    loadInto(env, SANDBOX_LIB)
+
+    -- The roster, reduced to the four verbs combat.lua actually uses. Real
+    -- enough that `BR.Roster.each` predicates run: `combat.deathcheck` is one
+    -- of the two paths under test and it is a predicate over the whole roster.
+    env.BR.Roster = {
+        get = function(s) return S.roster[s] end,
+        update = function(s, fields)
+            local e = S.roster[s]
+            if e then for k, v in pairs(fields) do e[k] = v end end
+        end,
+        setState = function(s, st) if S.roster[s] then S.roster[s].state = st end end,
+        each = function(pred, fn)
+            for src, e in pairs(S.roster) do
+                if pred(e) and fn then fn(src, e) end
+            end
+        end,
+    }
+    env.BR.Server = {
+        devMode = false, matches = {},
+        count = function() return 2 end,
+        matchOf = function(s)
+            local e = S.roster[s]
+            return e and env.BR.Server.matches[e.matchId] or nil
+        end,
+        notify = function(_, msg) S.notices[#S.notices + 1] = msg end,
+        notifyClear = function() end,
+        squadsAlive = function() return 2 end,
+    }
+    env.BR.Broadcast = { delta = function() end, toMatch = function() end }
+    env.BR.Evidence  = { noteKill = function() end }
+    env.BR.Loot      = { deathBox = function() end }
+    env.BR.Damage    = { applyHit = function() end }
+
+    loadInto(env, { 'br_core/server/combat.lua' })
+
+    env.BR.Server.matches[1] = { id = 1, state = env.BR.MatchState.PLAYING,
+                                 mode = env.BR.Mode.SQUAD.key,
+                                 players = { 1, 2 }, startedAt = 0 }
+    for _, src in ipairs({ 1, 2 }) do
+        S.roster[src] = { src = src, name = 'P' .. src, matchId = 1, squadId = 'sq1',
+                          state = env.BR.PlayerState.ALIVE, hp = 100.0, armour = 0.0,
+                          kills = 0, ped = 9000 + src }
+    end
+
+    S.env = env
+    --- A client's death report, delivered exactly as FiveM delivers one.
+    function S.died(src, data)
+        env.source = src
+        for _, fn in ipairs(handlers[env.BR.Net.PLAYER_DIED] or {}) do fn(data) end
+    end
+    --- One scheduler pass: combat.deathcheck and the bleed tick really run.
+    function S.tick(nowMs)
+        S.now = nowMs
+        env.BR.Sched.step(nowMs)
+    end
+    return S
+end
+
+describe('dbno.fall.server')
+do
+    -- THE ASYMMETRY, WHICH IS THE WHOLE BUG. There are exactly two paths from
+    -- "this ped reads dead" to `BR.Combat.defeat`, and `defeat` on a DBNO entry
+    -- can only ever eliminate -- `canBeDowned` requires ALIVE, so the knock
+    -- branch is unreachable and the fall-through is `eliminate`.
+    --
+    --   * the SERVER's own health sampler (`combat.deathcheck`), which ef501ef
+    --     taught to decline a downed entry;
+    --   * the CLIENT's death report (`BR.Net.PLAYER_DIED`), which it did not.
+    --
+    -- The reason ef501ef gave for the first applies word for word to the
+    -- second: a downed player's ped is not evidence about them, because their
+    -- health IS the bleed clock. The engine kills that ped down paths the
+    -- server never took over -- a fall, a fire, drowning, a car -- and a client
+    -- that faithfully reports what its engine did is not lying, it is
+    -- describing the very death the knock was the answer to.
+    local S = newServer()
+    local PS = S.env.BR.PlayerState
+
+    S.died(1, { cause = 'fall' })
+    ok(S.roster[1].state == PS.DBNO,
+        'a fall knocks a squad player down',
+        tostring(S.roster[1].state))
+
+    -- THE HEADLINE. The engine finishes killing the ped a beat after the knock
+    -- and the watcher reports it a second time -- which is not a cheat, not a
+    -- duplicate and not avoidable from the client: `gamerules.death` re-arms
+    -- the moment the ped stops reading dead, and a downed ped that has been
+    -- resurrected does exactly that.
+    S.died(1, { cause = 'fall' })
+    ok(S.roster[1].state == PS.DBNO,
+        'AND A SECOND REPORT DOES NOT FINISH THEM -- the ped is not evidence '
+        .. 'about a player whose health is a bleed clock',
+        tostring(S.roster[1].state))
+    ok(S.roster[1].placement == nil,
+        'with nothing banked: a knock is not a finishing position',
+        tostring(S.roster[1].placement))
+
+    -- ...AND THE TWO PATHS NOW AGREE. The server's own sampler has declined a
+    -- downed entry since ef501ef; this is the same reading, arriving by the
+    -- other door, getting the same answer.
+    S.roster[1].engineHp = 0
+    S.tick(1000)
+    S.tick(2000)
+    ok(S.roster[1].state == PS.DBNO,
+        'and the server-observed check still declines the same corpse',
+        tostring(S.roster[1].state))
+
+    -- DECLINING IS NOT IMMORTALITY, said with the clock rather than with a
+    -- promise. The bleed clock owns this ending and still delivers it.
+    S.tick(2000 + S.env.BR.Config.Match.dbnoBleedBase * 1000 + 500)
+    ok(S.roster[1].state == PS.DEAD,
+        'the bleed clock still finishes them on time',
+        tostring(S.roster[1].state))
+
+    -- ...and a report from somebody who is genuinely ALIVE still works, which
+    -- is the thing a lazy guard would trade away.
+    ok(S.roster[2].state == PS.ALIVE, 'the mate is still standing')
+    S.died(2, { cause = 'fall' })
+    ok(S.roster[2].state == PS.DEAD,
+        'a live player with no standing mate left is still eliminated by their '
+        .. 'own report',
+        tostring(S.roster[2].state))
+end
+
+-- ---------------------------------------------------------------------------
+-- The client: the real client/dbno.lua and client/gamerules.lua, on real
+-- coroutines, wired to the real server above.
+-- ---------------------------------------------------------------------------
+
+--- Boot one FiveM client whose ped can be killed by the world.
+--- @param settleMs integer  how long GTA takes to admit the ped is dead
+--- @param streamMs integer  how long the crawl dictionary takes to arrive
+local function newClient(settleMs, streamMs)
+    local env = newSandbox()
+    local C = { now = 0, reports = 0, resurrects = 0, knockdowns = 0 }
+
+    env.GetGameTimer = function() return C.now end
+    env.print = function() end
+    env.GetCurrentResourceName = function() return 'br_core' end
+    env.GetHashKey = function(s) return #tostring(s) end
+    env.PlayerId = function() return 0 end
+    env.GetPlayerServerId = function() return 1 end
+
+    loadInto(env, SANDBOX_LIB)
+
+    local FLOOR = env.BR.Config.Match.healthFloor
+    local MAXHP = env.BR.Config.Match.maxHealth
+
+    -- THE PED. `hp` is the number, `dying` is the task and `dead` is the flag,
+    -- and they are three different things on purpose -- see the header.
+    local P = { hp = MAXHP, dying = false, dead = false, since = 0,
+                x = 0.0, y = 0.0, z = 30.0, h = 0.0, anim = nil, ragdoll = false }
+    C.ped = P
+
+    --- One engine frame of the death task: the flag catches up (rule 2).
+    local function pedFrame()
+        if P.dying and not P.dead and (C.now - P.since) >= settleMs then
+            P.dead = true
+        end
+    end
+
+    -- A REAL VECTOR, because dbno.lua measures with `#(a - b)`.
+    local V = {}
+    V.__index = V
+    V.__sub = function(a, b)
+        return setmetatable({ x = a.x - b.x, y = a.y - b.y, z = a.z - b.z }, V)
+    end
+    V.__len = function(a) return math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z) end
+    local function vec(x, y, z) return setmetatable({ x = x, y = y, z = z }, V) end
+
+    env.PlayerPedId      = function() return 1 end
+    env.DoesEntityExist  = function() return true end
+    env.GetEntityCoords  = function() return vec(P.x, P.y, P.z) end
+    env.GetEntityHeading = function() return P.h end
+    env.SetEntityHeading = function(_, h) P.h = h end
+    env.GetPedBoneCoords = function() return vec(P.x, P.y, P.z + 0.3) end
+    env.GetEntityHealth  = function() return P.dead and 0 or P.hp end
+    env.IsEntityDead     = function() return P.dead end
+    -- GTA's own threshold, which is what `healthFloor` was chosen to be: a ped
+    -- at or under it is on its way out whether or not the flag has caught up.
+    env.IsPedFatallyInjured = function() return P.dead or P.hp <= FLOOR end
+    env.SetEntityHealth = function(_, v)
+        -- Rule 3: a settled corpse ignores the write, and writing health never
+        -- cancels a death task that is already running.
+        if P.dead then return end
+        P.hp = v
+        if v <= FLOOR and not P.dying then P.dying, P.since = true, C.now end
+    end
+    env.NetworkResurrectLocalPlayer = function()
+        P.dead, P.dying, P.hp = false, false, MAXHP     -- rule 4
+        C.resurrects = C.resurrects + 1
+    end
+    env.ClearPedTasksImmediately = function()
+        if not P.dead then P.dying = false end
+        P.anim = nil
+    end
+    env.ClearPedTasks    = function() P.anim = nil end
+    env.SetPedArmour     = function() end
+    env.GetPedArmour     = function() return 0 end
+    env.RemoveAllPedWeapons = function() end
+    env.SetCurrentPedWeapon = function() end
+    env.SetPedCanRagdoll = function() end
+    env.IsPedRagdoll     = function() return P.ragdoll end
+    env.IsEntityInAir    = function() return false end
+    env.ResetPedMovementClipset = function() end
+    env.SetPedMoveRateOverride  = function() end
+    env.SetPedRelationshipGroupHash = function() end
+    env.SetEntityLocallyInvisible   = function() end
+    env.SetEntityCoordsNoOffset = function(_, x, y, z) P.x, P.y, P.z = x, y, z end
+    env.DisableControlAction    = function() end
+    env.GetDisabledControlNormal = function() return 0.0 end
+    env.GetControlNormal = function() return 0.0 end
+    env.GetFrameTime     = function() return 0.016 end
+    env.StartShapeTestRay = function() return 1 end
+    env.GetShapeTestResult = function() return 2, false, vec(0.0, 0.0, 0.0) end
+    env.GetPedSourceOfDeath = function() return 0 end
+    env.GetPedCauseOfDeath  = function() return 0 end
+    env.NetworkGetNetworkIdFromEntity = function() return 0 end
+    env.GetGamePool = function() return {} end
+
+    -- STREAMING AS A COST, NOT A FLAG. Only the dictionary the owner chose in
+    -- game exists, and it is not in memory until something asks -- which is
+    -- what puts a yield between the knock arriving and the ped being touched.
+    local reqAt = nil
+    env.DoesAnimDictExist = function(d) return d == 'move_injured_ground' end
+    env.HasAnimDictLoaded = function(d)
+        return d == 'move_injured_ground' and reqAt ~= nil
+           and (C.now - reqAt) >= streamMs
+    end
+    env.RequestAnimDict = function(d)
+        if d == 'move_injured_ground' and not reqAt then reqAt = C.now end
+    end
+    env.TaskPlayAnim = function(_, d, a)
+        if P.dead then return end       -- a corpse takes no animation
+        P.anim = d .. '/' .. a
+    end
+    env.IsEntityPlayingAnim = function() return P.anim ~= nil end
+    env.SetEntityAnimSpeed  = function() end
+
+    env.CreateCamWithParams = function() return 700 end
+    env.DoesCamExist  = function() return true end
+    env.DestroyCam    = function() end
+    env.SetCamActive  = function() end
+    env.RenderScriptCams = function() end
+    env.SetCamCoord   = function() end
+    env.PointCamAtCoord = function() end
+
+    local handlers = {}
+    env.AddEventHandler = function(n, fn)
+        handlers[n] = handlers[n] or {}
+        handlers[n][#handlers[n] + 1] = fn
+    end
+    env.RegisterNetEvent = function() end
+    env.RegisterCommand  = function() end
+    env.TriggerEvent = function(n, ...)
+        for _, fn in ipairs(handlers[n] or {}) do fn(...) end
+    end
+    C.toServer = {}
+    env.TriggerServerEvent = function(n, d)
+        C.toServer[#C.toServer + 1] = { at = C.now, event = n, data = d }
+        if n == env.BR.Net.PLAYER_DIED then C.reports = C.reports + 1 end
+    end
+
+    -- THREADS ARE MODELLED, NOT MOCKED. This is the whole reason the block
+    -- exists: `enterDowned` does its work inside a thread that yields, and a
+    -- stub that runs the thunk on the spot removes the only interval in which
+    -- anything can go wrong.
+    local threads = {}
+    env.Citizen = {
+        CreateThread = function(fn)
+            threads[#threads + 1] = { co = coroutine.create(fn), wake = C.now + 16 }
+        end,
+        Wait = function(ms) coroutine.yield(ms or 0) end,
+        SetTimeout = function() end,
+    }
+
+    loadInto(env, { 'br_core/client/main.lua' })
+
+    env.BR.State.me = { src = 1, state = env.BR.PlayerState.ALIVE, squadId = 'sq1' }
+    env.BR.State.roster = {}
+    env.BR.Sfx  = { play = function() end }
+    env.BR.Dui  = { page = function(n) return { name = n } end,
+                    send = function() end, drawWorld = function() end,
+                    drawScreen = function() end, drawOnEntity = function() end,
+                    ready = function() return true end }
+    env.BR.Native = env.BR.Native or {}
+    env.BR.Native.knockdown = function()
+        C.knockdowns = C.knockdowns + 1
+        P.ragdoll = true
+    end
+    env.BR.Native.setDisplayHealth = function(hp)
+        env.SetEntityHealth(1, env.BR.ToEngineHp(hp))
+    end
+    env.BR.Native.keyLabelForCommand = function() return 'E' end
+    env.BR.Native.applyGameRules = function() end
+    env.BR.Native.ALLY_GROUP = 1
+    env.BR.Keys  = { isHeld = function() return false end, on = function() end }
+    env.BR.Loot  = { suppress = function() end }
+    env.BR.Squadmates = { headAnchor = function() return P.x, P.y, P.z + 0.3 end,
+                          pedOf = function() return 0 end }
+
+    loadInto(env, { 'br_core/client/dbno.lua', 'br_core/client/gamerules.lua' })
+
+    -- The REAL loop threads, on the REAL intervals. `BR.Loop.step` running
+    -- inside a coroutine is not a detail: `dbno.controls` calls `playCrawl`,
+    -- which can reach the streaming wait, and where that yield lands is part
+    -- of what is being tested.
+    env.BR.Loop.start()
+
+    C.env = env
+    C.handlers = handlers
+
+    --- Advance the client by `ms`, one 16ms frame at a time.
+    function C.pump(ms, onFrame)
+        local target = C.now + ms
+        while C.now < target do
+            C.now = math.min(C.now + 16, target)
+            pedFrame()
+            if onFrame then onFrame(C.now) end
+            for i = #threads, 1, -1 do
+                local t = threads[i]
+                if C.now >= t.wake and coroutine.status(t.co) == 'suspended' then
+                    local okr, waitMs = coroutine.resume(t.co)
+                    if not okr then
+                        io.write('\27[31mclient thread error\27[0m ',
+                                 tostring(waitMs), '\n')
+                    end
+                    if coroutine.status(t.co) == 'dead' then
+                        table.remove(threads, i)
+                    else
+                        t.wake = C.now + (tonumber(waitMs) or 0)
+                    end
+                end
+            end
+        end
+    end
+
+    --- The ground arrives. GTA applies the damage locally, before the server
+    --- has seen anything -- `server/damage.lua` reads WEAPON_FALL as
+    --- environmental and returns, so nothing clamps it.
+    function C.fall()
+        P.hp, P.dying, P.since = 0, true, C.now
+    end
+
+    return C
+end
+
+describe('dbno.fall.client')
+do
+    -- THE MATRIX, and it is a matrix rather than a number because the fix has
+    -- to be timing-independent. Every cell is a legitimate configuration of
+    -- the same two unknowns: how long GTA takes to admit a ped is dead, and
+    -- how long the round trip to the server is. A fix that works in some cells
+    -- and not others is the bug, not the fix -- that is what shipped twice.
+    local SETTLES = { 32, 96, 200, 320 }
+    local RTTS    = { 30, 90 }
+    local STREAMS = { 0, 250 }    -- 0 = the crawl clip is already in memory
+
+    local worstState, worstWhere = nil, nil
+    local corpses, corpseWhere = 0, nil
+    local doubles, doubleWhere = 0, nil
+    local unposed, unposedWhere = 0, nil
+    local cells = 0
+
+    for _, settle in ipairs(SETTLES) do
+    for _, rtt in ipairs(RTTS) do
+    for _, stream in ipairs(STREAMS) do
+        cells = cells + 1
+        local where = ('settle %dms, round trip %dms, streaming %dms')
+            :format(settle, rtt, stream)
+
+        local SRV = newServer()
+        local CLI = newClient(settle, stream)
+        local PS  = CLI.env.BR.PlayerState
+
+        -- The wire. FIFO in both directions, because the order combat.knock
+        -- writes -- DBNO_SET and then HEALTH_SYNC -- is load-bearing and says
+        -- so in its own comment.
+        local wire = {}
+        local function drain(now)
+            SRV.tick(now)
+            for i = 1, #SRV.out do
+                local m = SRV.out[i]
+                wire[#wire + 1] = { at = now + rtt, event = m.event,
+                                    payload = m.payload }
+            end
+            for i = #SRV.out, 1, -1 do SRV.out[i] = nil end
+
+            while wire[1] and now >= wire[1].at do
+                local m = table.remove(wire, 1)
+                CLI.env.BR.State.me.state = SRV.roster[1].state
+                CLI.env.TriggerEvent(m.event, m.payload)
+            end
+
+            for i = 1, #CLI.toServer do
+                local m = CLI.toServer[i]
+                if now >= m.at + rtt then
+                    -- The server samples the ped's health the same way
+                    -- roster.positions does, off the entity, not off a report.
+                    SRV.roster[1].engineHp = CLI.env.GetEntityHealth(1)
+                    SRV.died(1, m.data)
+                    CLI.toServer[i] = nil
+                end
+            end
+            local kept = {}
+            for i = 1, #CLI.toServer do
+                if CLI.toServer[i] then kept[#kept + 1] = CLI.toServer[i] end
+            end
+            CLI.toServer = kept
+        end
+
+        -- SIX SECONDS ON THEIR FEET FIRST, because that is what a match is. A
+        -- player falls minutes into a round, not on the frame the resource
+        -- started -- and that interval is exactly what dbno.lua now uses to get
+        -- the downed pose into memory before anybody needs it. Pumping straight
+        -- to the fall would model a knock the game cannot produce, and would
+        -- hide the warm-up rather than test it.
+        CLI.pump(6000, drain)
+        CLI.fall()
+        CLI.pump(4000, drain)
+
+        if SRV.roster[1].state ~= PS.DBNO then
+            worstState, worstWhere = SRV.roster[1].state, where
+        end
+        if CLI.ped.dead then
+            corpses, corpseWhere = corpses + 1, where
+        end
+        if CLI.reports > 1 then
+            doubles, doubleWhere = doubles + 1, where
+        end
+        if CLI.ped.anim == nil then
+            unposed, unposedWhere = unposed + 1, where
+        end
+    end
+    end
+    end
+
+    -- THE HEADLINE, and the owner's sentence turned into an assertion.
+    ok(worstState == nil,
+        'A FALL IS A KNOCK IN EVERY TIMING -- the squad panel never goes '
+        .. 'straight to OUT',
+        worstWhere and ('state %s at %s'):format(tostring(worstState), worstWhere)
+                   or nil)
+
+    -- WHY IT WENT OUT, which is the part a state assertion alone would let
+    -- somebody fix in the wrong place. `defeat()` on a DBNO entry can only
+    -- eliminate, and the client sends a second report the moment its ped
+    -- finishes a death the knock was supposed to have undone.
+    ok(doubles == 0,
+        'and the client never has to report the same death twice: the body it '
+        .. 'was told to stand up is standing',
+        doubleWhere and ('%d/%d cells reported twice, e.g. %s')
+            :format(doubles, cells, doubleWhere) or nil)
+
+    -- ...AND THE BODY IS ACTUALLY BACK. "Their screen reads 0 health and
+    -- they're unable to crawl" is the other half of the same report, and a
+    -- corpse in the DBNO state satisfies every state assertion above.
+    ok(corpses == 0,
+        'the ped is ALIVE on the downed floor rather than a corpse wearing the '
+        .. 'downed state',
+        corpseWhere and ('%d/%d cells left a corpse, e.g. %s')
+            :format(corpses, cells, corpseWhere) or nil)
+
+    ok(unposed == 0,
+        'and it is playing the crawl, which a dead ped cannot be told to do',
+        unposedWhere and ('%d/%d cells never posed, e.g. %s')
+            :format(unposed, cells, unposedWhere) or nil)
+
+    -- THE HEALTH IS THE SERVER'S NUMBER, not whatever a resurrection restored.
+    -- One last cell, read rather than counted, so the number is in the output.
+    local SRV = newServer()
+    local CLI = newClient(200, 0)
+    local wire = {}
+    local function drain(now)
+        SRV.tick(now)
+        for i = 1, #SRV.out do
+            wire[#wire + 1] = { at = now + 30, event = SRV.out[i].event,
+                                payload = SRV.out[i].payload }
+        end
+        for i = #SRV.out, 1, -1 do SRV.out[i] = nil end
+        while wire[1] and now >= wire[1].at do
+            local m = table.remove(wire, 1)
+            CLI.env.BR.State.me.state = SRV.roster[1].state
+            CLI.env.TriggerEvent(m.event, m.payload)
+        end
+        for i = 1, #CLI.toServer do
+            local m = CLI.toServer[i]
+            if m and now >= m.at + 30 then
+                SRV.roster[1].engineHp = CLI.env.GetEntityHealth(1)
+                SRV.died(1, m.data)
+                CLI.toServer[i] = false
+            end
+        end
+    end
+    CLI.pump(6000, drain)
+    CLI.fall()
+    CLI.pump(4000, drain)
+
+    local floorHp = CLI.env.BR.ToEngineHp(CLI.env.BR.Config.Match.dbnoHp)
+    ok(CLI.env.GetEntityHealth(1) == floorHp,
+        'and it is left on the downed floor the server named, not on whatever '
+        .. 'the resurrection restored',
+        ('engine health %s, expected %s')
+            :format(tostring(CLI.env.GetEntityHealth(1)), tostring(floorHp)))
+end
+
+-- ==========================================================================
+-- THE DOWNED MATE'S CLOCK, ON THE SQUAD BEACON AND NOWHERE ELSE.
+-- ==========================================================================
+--
+-- The panel half shipped in b944039 and has rendered nothing since, because no
+-- Lua ever sent the field. The interesting part of this feature is not the
+-- value, it is the AUDIENCE, so that is what is asserted: a bleed-out deadline
+-- is a countdown to when it is safe to stop watching a body, and roster.lua's
+-- PUBLIC_FIELDS -- the obvious place to add it -- is broadcast to every client
+-- in the match, enemies included.
+
+describe('dbno.bleedEndsAt')
+do
+    local env = newSandbox()
+    local now, roster, out = 0, {}, {}
+
+    env.GetGameTimer = function() return now end
+    env.print = function() end
+    env.GetCurrentResourceName = function() return 'br_core' end
+    env.GetPlayerName = function(s) return 'P' .. tostring(s) end
+    env.GetPlayers = function() return {} end
+    env.GetHashKey = function(s) return #tostring(s) end
+    env.RegisterNetEvent = function() end
+    env.RegisterCommand = function() end
+    env.AddEventHandler = function() end
+    env.TriggerEvent = function() end
+    env.TriggerClientEvent = function(ev, target, payload)
+        out[#out + 1] = { event = ev, target = target, payload = payload }
+    end
+    env.Citizen = { CreateThread = function() end, Wait = function() end,
+                    SetTimeout = function() end }
+
+    loadInto(env, SANDBOX_LIB)
+
+    env.BR.Roster = {
+        get = function(s) return roster[s] end,
+        each = function(pred, fn)
+            for src, e in pairs(roster) do
+                if (pred == nil or pred(e)) and fn then fn(src, e) end
+            end
+        end,
+        clearFields = function() end,
+        setMatch = function() end,
+        setState = function() end,
+    }
+    env.BR.Server = {
+        devMode = false, matches = {}, parties = {}, roster = roster,
+        isInMatch = function(st)
+            return st == env.BR.PlayerState.ALIVE or st == env.BR.PlayerState.BUS
+                or st == env.BR.PlayerState.FREEFALL or st == env.BR.PlayerState.GLIDE
+                or st == env.BR.PlayerState.DBNO or st == env.BR.PlayerState.WARMUP
+        end,
+        notify = function() end,
+    }
+    env.BR.Broadcast = { delta = function() end }
+    env.BR.Bus = { sendPreview = function() end }
+    env.BR.Inv = { reset = function() end }
+
+    loadInto(env, { 'br_core/server/party.lua' })
+
+    env.BR.Server.matches[1] = { id = 1, state = env.BR.MatchState.PLAYING,
+                                 mode = env.BR.Mode.SQUAD.key, players = { 1, 2 },
+                                 startedAt = 0 }
+    local PS = env.BR.PlayerState
+    for _, src in ipairs({ 1, 2 }) do
+        roster[src] = { src = src, name = 'P' .. src, matchId = 1, squadId = 'sq1',
+                        state = PS.ALIVE, pos = { x = src * 1.0, y = 0.0, z = 30.0 } }
+    end
+
+    --- One beacon pass, and the member record it produced for `src`.
+    local function beaconFor(src)
+        out = {}
+        now = now + 1000
+        env.BR.Sched.step(now)
+        for _, m in ipairs(out) do
+            if m.event == env.BR.Net.SQUAD_POS then
+                for _, member in ipairs(m.payload) do
+                    if member.src == src then return member end
+                end
+            end
+        end
+        return nil
+    end
+
+    local standing = beaconFor(1)
+    ok(standing ~= nil, 'a squad member is beaconed to their squad')
+    ok(standing and standing.bleedEndsAt == nil,
+        'a player on their feet carries no deadline',
+        standing and tostring(standing.bleedEndsAt) or 'no member at all')
+
+    -- KNOCKED. The deadline is the raw server clock, unconverted -- the same
+    -- number the downed player's own DBNO envelope already carries, so both
+    -- ends of one clock reach the client in one set of units.
+    roster[1].state = PS.DBNO
+    roster[1].dbnoUntil = now + 41000
+
+    local downed = beaconFor(1)
+    ok(downed ~= nil,
+        'a DOWNED mate is still beaconed -- visibleStates already covers them')
+    ok(downed and downed.bleedEndsAt == roster[1].dbnoUntil,
+        'and now carries the bleed deadline, raw and unconverted',
+        downed and ('%s, entry holds %s')
+            :format(tostring(downed.bleedEndsAt), tostring(roster[1].dbnoUntil))
+            or 'no member at all')
+
+    -- ...AND IT GOES AWAY AGAIN. `nil` cannot travel in a roster delta, but
+    -- this list is rebuilt whole on every push, so leaving the key off IS the
+    -- clear -- which is the reason the field lives here rather than there.
+    roster[1].state = PS.ALIVE
+    local revived = beaconFor(1)
+    ok(revived and revived.bleedEndsAt == nil,
+        'a revived mate does not keep a stale deadline',
+        revived and tostring(revived.bleedEndsAt) or 'no member at all')
+
+    -- THE AUDIENCE, WHICH IS THE POINT. Two guards, because this is the half
+    -- that cannot be seen by looking at the panel.
+    roster[1].state = PS.DBNO
+    beaconFor(1)
+    local strangers = 0
+    for _, m in ipairs(out) do
+        if m.event == env.BR.Net.SQUAD_POS then
+            local mate = roster[m.target]
+            if not mate or mate.squadId ~= 'sq1' then strangers = strangers + 1 end
+        end
+    end
+    ok(strangers == 0,
+        'the deadline reaches the downed player\'s own squad and nobody else',
+        ('%d sends went outside the squad'):format(strangers))
+
+    -- AND IT IS NOT ON THE PUBLIC ROSTER, asserted against the real allowlist
+    -- rather than by reading it. Adding it there would tell the people who shot
+    -- you exactly when to stop watching your body.
+    local chunk = loadfile(RES .. 'br_core/server/roster.lua', 't', newSandbox())
+    ok(chunk ~= nil, 'server/roster.lua parses')
+    local src = io.open(RES .. 'br_core/server/roster.lua', 'r')
+    local text = src and src:read('a') or ''
+    if src then src:close() end
+    local publicList = text:match('local PUBLIC_FIELDS = {(.-)}')
+    ok(publicList ~= nil, 'PUBLIC_FIELDS is where it was')
+    ok(publicList and not publicList:find('bleedEndsAt', 1, true)
+       and not publicList:find('dbnoUntil', 1, true),
+        'and the bleed deadline is NOT on it: that list goes to the whole match',
+        publicList)
+end
+
+-- ==========================================================================
+-- THE REVIVE HOLD IS ONE NUMBER.
+-- ==========================================================================
+
+describe('dbno.reviveTime')
+do
+    local M = BR.Config.Match
+
+    ok(M.dbnoReviveTime == 2.8,
+        'the hold is 2.8s -- 65% off the 8.0 that shipped (owner, 2026-08-17)',
+        tostring(M.dbnoReviveTime))
+
+    -- THE RING FOLLOWS THE RULE RATHER THAN AGREEING WITH IT.
+    --
+    -- A hold duration is the classic thing to end up hardcoded twice: once for
+    -- what the server measures and once for the picture that draws it. Both
+    -- ends are read from the real files here, because "they happen to be equal
+    -- today" is exactly the state a second constant starts in.
+    local function slurp(path)
+        local f = io.open(path, 'r')
+        if not f then return '' end
+        local s = f:read('a')
+        f:close()
+        return s
+    end
+
+    local client = slurp(RES .. 'br_core/client/dbno.lua')
+    ok(client:find('M.dbnoReviveTime', 1, true) ~= nil,
+        'the prompt\'s holdMs is computed from dbnoReviveTime')
+
+    local server = slurp(RES .. 'br_core/server/combat.lua')
+    ok(server:find('M.dbnoReviveTime', 1, true) ~= nil,
+        'and so is the progress the server reports')
+
+    -- The page takes its animation-duration from the message and from nothing
+    -- else -- there is no second duration in the DUI to drift out of step.
+    local page = slurp(RES .. 'br_ui/dui/prompt.html')
+    ok(page:find('animationDuration = (ms', 1, true) ~= nil,
+        'and the ring\'s animation-duration comes from that message',
+        'br_ui/dui/prompt.html no longer sets animationDuration from its argument')
+
+    -- ...AND THE SERVER REALLY MEASURES AGAINST IT. Read off the live code
+    -- path rather than off the constant: pushDbno reports revivePct, and a
+    -- hold of exactly half the configured time has to read as half.
+    local S = newServer()
+    local PS = S.env.BR.PlayerState
+    S.died(1, { cause = 'fall' })
+    ok(S.roster[1].state == PS.DBNO, 'a mate is down to be picked up')
+
+    S.now = 10000
+    S.roster[1].reviverSrc = 2
+    S.roster[1].reviveFrom = S.now - (M.dbnoReviveTime * 1000.0) / 2.0
+
+    local out = nil
+    for i = #S.out, 1, -1 do S.out[i] = nil end
+    S.env.BR.Combat.pushDbno(1)
+    for _, m in ipairs(S.out) do
+        if m.event == S.env.BR.Net.DBNO_SET and m.target == 1 then out = m.payload end
+    end
+    ok(out ~= nil and math.abs(out.revivePct - 50.0) < 0.001,
+        'half the configured hold reads as half a ring, whatever the number is',
+        out and tostring(out.revivePct) or 'no DBNO_SET at all')
 end
 
 -- ----------------------------------------------------------------- result ---

@@ -444,6 +444,19 @@ function BR.Damage.resync(shooter, victim)
         netId = netId,
         -- Engine units, because the client writes this straight onto a ped.
         hp    = math.floor(BR.ToEngineHp(e.hp or 100.0) + 0.5),
+        -- WHO THIS IS, so the correction can be CALLED OFF (#115, round four).
+        --
+        -- The client's correction is a watch that outlives the shot -- it has
+        -- to be, because nothing a client can read tells it when a death
+        -- animation has finished. A watch that outlives the PLAYER is the same
+        -- bug inverted: an enemy finishes the squadmate mid-watch and the
+        -- shooter's machine keeps standing the real corpse back up.
+        --
+        -- The roster is the server's verdict and the client already mirrors it,
+        -- so the id is all that has to travel. It reveals nothing: the roster
+        -- is keyed by server id on every client already, and the kill feed
+        -- broadcasts victimSrc to the whole server.
+        src   = victim,
     })
 end
 
@@ -643,6 +656,12 @@ function BR.Damage.applyHit(shooter, victim, amount, meta)
         killed   = e.hp <= 0.0,
         netId    = netId,
         hp       = engineHp,
+        -- Rides with the netId and means nothing without it: whose ped the
+        -- correction is for, so the client's watch can be called off the moment
+        -- the ledger takes them out. See BR.Damage.resync for the argument.
+        -- Withheld with the netId, so a hit that sends no correction still says
+        -- nothing at all about the victim on this channel.
+        src      = netId and victim or nil,
     })
 
     -- Attribution, for the kill feed and for anything that finishes them

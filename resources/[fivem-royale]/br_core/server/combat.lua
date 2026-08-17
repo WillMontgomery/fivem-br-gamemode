@@ -880,6 +880,41 @@ AddEventHandler(BR.Net.PLAYER_DIED, function(data)
         return
     end
 
+    -- ...AND A DOWNED PLAYER IS NOT FINISHED BY THEIR OWN CLIENT EITHER
+    -- (owner, 2026-08-17: "I tried triggering DBNO by falling from a height but
+    -- it went straight to dead").
+    --
+    -- THE ASYMMETRY THIS CLOSES. There are exactly two doors from "this ped
+    -- reads dead" to defeat(), and defeat() on a DBNO entry can only ever
+    -- eliminate -- canBeDowned requires ALIVE, so the knock branch is
+    -- unreachable and the fall-through is the whole of it. ef501ef locked one
+    -- door (the server's own sampler, in combat.deathcheck below) and left this
+    -- one standing open, which is why the same symptom came back the moment
+    -- client/dbno.lua's timing changed underneath it.
+    --
+    -- The reason given there applies here word for word: for everybody else the
+    -- ped is the evidence, and for a downed player it is evidence of nothing.
+    -- Their health IS the bleed clock, their ped is invincible by design
+    -- (client/natives.lua), and the engine still kills it down the paths we
+    -- never took over -- a fall, a fire, drowning, a car. A fall is the ordinary
+    -- case: the report BELOW is the one that produced the knock in the first
+    -- place, and the engine then finishes the same death a beat later. The
+    -- client is not lying and is not duplicating; gamerules.death re-arms the
+    -- instant the ped stops reading dead, which is exactly what being
+    -- resurrected onto the downed floor does to it.
+    --
+    -- Nothing is lost by declining. The bleed clock owns this ending and still
+    -- delivers it, at dbnoBleedBase and faster under fire, and a downed player
+    -- can still be finished with a gun through BR.Combat.bleed. What goes is
+    -- only the ability to end yourself twice over one fall.
+    if entry.state == BR.PlayerState.DBNO then
+        if BR.Server.devMode then
+            print(('[br_core] ignored death report from %d: already down, the '
+                   .. 'bleed clock owns that ending'):format(src))
+        end
+        return
+    end
+
     -- A recent storm tick outranks whatever the engine blames: the finishing
     -- blow of a storm death often reads as generic damage.
     local cause = describeCause(data and data.cause)

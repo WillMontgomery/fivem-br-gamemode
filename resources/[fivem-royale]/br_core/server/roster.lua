@@ -85,9 +85,17 @@ local function newEntry(src)
         lastDamageBy = nil,
         lastDamageAt = 0,
 
-        -- DBNO bookkeeping (M7). All server-side, none of it public: the
-        -- client is TOLD its own downed state on BR.Net.DBNO_SET, and other
-        -- players learn about it only from the `state` field, which is.
+        -- DBNO bookkeeping (M7). All server-side, none of it PUBLIC: the
+        -- client is TOLD its own downed state on BR.Net.DBNO_SET, and everyone
+        -- else learns about it only from the `state` field, which is.
+        --
+        -- `dbnoUntil` HAS ONE SQUAD-ONLY EXIT and it is worth naming here,
+        -- because the next person to want it will reach for PUBLIC_FIELDS
+        -- first: server/party.lua copies it onto the squad beacon as
+        -- `bleedEndsAt`, to the downed player's own squad and to nobody else.
+        -- It must NOT join PUBLIC_FIELDS -- that list goes to every client in
+        -- the match, so putting a bleed-out deadline on it would hand each
+        -- downed player's exact remaining seconds to the people who shot them.
         --   dbnoUntil   when the bleed runs out (server ms)
         --   dbnoCount   knocks this match; each one bleeds faster
         --   downedBy    who gets the kill if nobody touches them again --

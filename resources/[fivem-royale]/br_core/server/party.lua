@@ -945,6 +945,35 @@ BR.Sched.every(250, 'party.squadpos', function()
                 x     = e.pos.x,
                 y     = e.pos.y,
                 state = e.state,
+
+                -- HOW LONG A DOWNED MATE HAS LEFT, AND ONLY TO THEIR SQUAD.
+                --
+                -- The panel has had somewhere to draw this since b944039 and
+                -- has been drawing nothing, because no Lua ever sent the field.
+                --
+                -- IT RIDES THE BEACON RATHER THAN THE ROSTER, deliberately.
+                -- The obvious home is roster.lua's PUBLIC_FIELDS, and that is
+                -- the wrong one: that list is broadcast to every client in the
+                -- match, so it would tell the people who just shot you exactly
+                -- when to stop watching your body -- a different feature, and a
+                -- meaningful one to hand out by accident. This push is already
+                -- squad-only and already carries DBNO players (see
+                -- visibleStates above), so the audience is right by
+                -- construction.
+                --
+                -- THE RAW SERVER DEADLINE, unconverted. It is the same
+                -- GetGameTimer() number the downed player's own DBNO envelope
+                -- already carries as `bleedEndsAt` (server/combat.lua), so
+                -- both ends of the same clock reach the client in the same
+                -- units and the interface can hold one countdown.
+                --
+                -- ABSENT UNLESS THEY ARE DOWN, which is why this is a
+                -- conditional rather than `e.dbnoUntil` on its own: a revived
+                -- or eliminated mate must not keep a stale deadline, and the
+                -- membership list is rebuilt whole every push, so leaving the
+                -- key off IS the clear.
+                bleedEndsAt = (e.state == BR.PlayerState.DBNO)
+                              and e.dbnoUntil or nil,
             }
         end
     end)

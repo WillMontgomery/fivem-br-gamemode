@@ -909,14 +909,57 @@ end)
 --- only `IsEntityDead` may reach for ResurrectPed. A low number is a reason to
 --- keep correcting, never a reason to declare a corpse.
 ---
---- THE COST. One coroutine per correction that has actual work to do, living
---- 150ms per pass and stopping as soon as the ped has read alive-at-the-number
---- twice running. The correction that arrives with nothing to do -- the owner's
---- own sync got there first -- still costs one health read and no thread, and
---- that is the common one.
+--- ROUND FOUR: THE WATCHER STOPPED WATCHING TOO SOON, AND IT STOPPED ON A
+--- QUESTION A DYING PED ANSWERS CORRECTLY (#115, owner 2026-08-17).
+---
+--- a8b22c7 built the loop and then handed it an exit: "alive at the number twice
+--- running, 150ms apart, outlives the task". That is a GUESS about how long
+--- `IsEntityDead` takes to catch up with a fatal hit, wearing the clothes of a
+--- fact -- and the whole reason this bug exists is that during that window a
+--- dying ped reads EXACTLY like a healthy one. Two clean samples are not
+--- evidence the death task has gone; they are evidence it has not finished yet.
+--- The same guess is in the loop's length: six passes is 900ms, and then the
+--- thread stops whatever the ped is doing.
+---
+--- tools/test_roster.lua modelled that settle at 64ms, which is under the 150ms
+--- poll -- so the shipped fix passed a suite that had assumed the answer. Move
+--- the model's settle to 800ms, change nothing else, and the suite reproduces
+--- the owner's report verbatim: shot 1 corpse, shot 2 fine, shot 3 down for
+--- good. It never was a race that "went differently each time"; it is one number
+--- nobody knows, and every version of this fix has been a bet on it.
+---
+--- SO THIS ONE DOES NOT BET. There is no early exit and no confirmation count.
+--- The watch runs for a fixed budget that is longer than any dying animation,
+--- re-asserting the server's number whenever the ped disagrees with it, and the
+--- things that stop it early are FACTS rather than guesses:
+---
+---   * the entity is gone (OneSync re-created it; the new copy is correct);
+---   * the SERVER says the victim is no longer someone to correct -- they were
+---     downed and then finished while we were arguing with their corpse. That is
+---     what `src` is for, and it is the guard that makes a five-second watch safe
+---     to run at all: without it a genuine death landing mid-watch would be
+---     resurrected, which is this bug pointed the other way.
+---
+--- ONE WATCH PER PED, NOT ONE PER BULLET. A burst of automatic fire used to
+--- start a coroutine per round, all of them writing the same value to the same
+--- ped. A later correction now refreshes the running watch -- newest number,
+--- deadline pushed out -- and starts nothing.
+---
+--- THE COST. One coroutine per PED being corrected, waking 33 times over five
+--- seconds to read a health value, and stopped early by the two facts above. The
+--- correction that arrives with nothing to do -- the owner's own sync got there
+--- first -- still costs one health read and no thread, and that is the common
+--- one.
+local WATCH_MS = 5000
+local WATCH_POLL_MS = 150
+
+-- netId -> { hp, src, deadline }. Presence IS "a watch is running".
+local watching = {}
+
 --- @param netId integer
 --- @param hp integer   ENGINE units
-local function correctPed(netId, hp)
+--- @param src integer|nil  the victim's server id, so the roster can call it off
+local function correctPed(netId, hp, src)
     -- A CORRECTION TO A DEAD NUMBER IS NOT A CORRECTION. This used to read
     -- `hp <= 0`, which is not the threshold: engine health floors at 100 for a
     -- player ped, so a target of 100 is a corpse that would have been
@@ -924,6 +967,30 @@ local function correctPed(netId, hp)
     -- longer sends one (BR.Damage.resync declines a victim who is out), and this
     -- is the half that cannot be reached by getting that wrong again.
     if not netId or BR.IsDeadHp(hp) then return end
+
+    -- A WATCH ALREADY RUNNING IS THE ANSWER TO THIS BULLET TOO. Refresh it and
+    -- go: newest number, deadline pushed out. This is checked BEFORE the
+    -- "nothing to do" test on purpose -- a ped mid-death reads perfectly fine,
+    -- and exiting here on that reading is the exact mistake this round is
+    -- undoing.
+    --
+    -- ...UNLESS THE ENTRY HAS OUTLIVED ITS THREAD. A bare Citizen thread that
+    -- throws simply stops -- no handler, nothing to notice -- and it would leave
+    -- this table holding a watch with nothing behind it. Every later correction
+    -- for that ped would then be answered by refreshing a corpse of a watch, for
+    -- the rest of the session. An entry past its own deadline is that, by
+    -- definition, so it is thrown away and a fresh one started. (The same shape
+    -- of failure as the uiHold thread at the top of this file, which is why it
+    -- gets the same kind of net.)
+    local w = watching[netId]
+    if w and GetGameTimer() < w.deadline then
+        w.hp = hp
+        w.src = src or w.src
+        w.deadline = GetGameTimer() + WATCH_MS
+        return
+    end
+    watching[netId] = nil
+
     if not NetworkDoesNetworkIdExist(netId) then return end
 
     local ped = NetworkGetEntityFromNetworkId(netId)
@@ -941,34 +1008,62 @@ local function correctPed(netId, hp)
     -- clearing tasks is what actually ends it. Before this, the body lay
     -- there for the better part of ten seconds until OneSync re-created it
     -- (user, 2026-08-08).
+    watching[netId] = { hp = hp, src = src,
+                        deadline = GetGameTimer() + WATCH_MS }
+
     Citizen.CreateThread(function()
-        -- Consecutive passes on which the ped has read alive at the server's
-        -- number. ONE is not enough and that is the entire lesson of this bug:
-        -- a single clean sample is what a settling death looks like from the
-        -- inside. Two of them, 150ms apart, outlive the task.
-        local confirmed = 0
+        while true do
+            local watch = watching[netId]
+            -- Cleared by a stop condition below, or never created. Either way
+            -- this thread has nothing left to own.
+            if not watch then return end
 
-        for _ = 1, 6 do
-            if not NetworkDoesNetworkIdExist(netId) then return end
+            --- Give up the watch and the thread together, so the table can
+            --- never hold an entry with nothing behind it.
+            local function stop()
+                watching[netId] = nil
+            end
+
+            if GetGameTimer() >= watch.deadline then return stop() end
+
+            if not NetworkDoesNetworkIdExist(netId) then return stop() end
             local p = NetworkGetEntityFromNetworkId(netId)
-            if not p or p == 0 or not DoesEntityExist(p) then return end
+            if not p or p == 0 or not DoesEntityExist(p) then return stop() end
 
-            local h = GetEntityHealth(p)
+            -- THE SERVER GETS THE LAST WORD, AND IT CAN CHANGE ITS MIND.
+            --
+            -- A watch outlives the correction that started it, which is the
+            -- whole point -- and a five-second one comfortably outlives the
+            -- squadmate too, if an enemy finishes them mid-watch. Reviving a
+            -- teammate who has genuinely just died would be #115 inverted and
+            -- far worse: the corpse would be the truth and we would be the
+            -- ones deleting it. The mirror already holds the server's verdict,
+            -- so it is read every pass rather than trusted once.
+            --
+            -- Absent entry means keep going: a squadmate is always in the
+            -- roster, and failing open here costs a correction that the next
+            -- OneSync re-creation would have made anyway.
+            local e = watch.src and S.roster[watch.src]
+            if e and e.state ~= BR.PlayerState.ALIVE
+               and e.state ~= BR.PlayerState.DBNO then
+                return stop()
+            end
+
+            local target = watch.hp
             if IsEntityDead(p) then
                 ResurrectPed(p)
                 ClearPedTasksImmediately(p)
-                SetEntityHealth(p, hp)
-                confirmed = 0
-            elseif h < hp then
+                SetEntityHealth(p, target)
+            elseif GetEntityHealth(p) < target then
                 -- Only ever UPWARD. Writing it down would be us arguing with
                 -- the owner's own sync about a ped we do not own, for no gain.
-                SetEntityHealth(p, hp)
-                confirmed = 0
-            else
-                confirmed = confirmed + 1
-                if confirmed >= 2 then return end
+                SetEntityHealth(p, target)
             end
-            Citizen.Wait(150)
+            -- ...AND NO `else return`. There is no reading of a ped that proves
+            -- its death task has finished, so there is nothing here to confirm
+            -- against. The deadline is the exit.
+
+            Citizen.Wait(WATCH_POLL_MS)
         end
     end)
 end
@@ -1001,9 +1096,42 @@ AddEventHandler(BR.Net.DAMAGE_FEED, function(d)
     -- is absent when the ledger says they are dead, because then the corpse
     -- is right and reviving it would be the bug.
     if d.netId then
-        correctPed(d.netId, math.floor(tonumber(d.hp) or 0))
+        correctPed(d.netId, math.floor(tonumber(d.hp) or 0), tonumber(d.src))
     end
 end)
+
+-- IS ENTITY OWNERSHIP THE BLOCKER? ASK THE ENGINE, IN GAME (#115).
+--
+-- Everything above is a write to a ped this machine does not own, and GTA is
+-- entitled to ignore those. The suite cannot answer that question -- it is a
+-- property of the running session, not of the logic -- so this prints what the
+-- engine says about the last ped we tried to correct, live, next to the number
+-- we were trying to write.
+--
+-- The natives here are READ-ONLY on purpose. `NetworkRequestControlOfEntity` is
+-- deprecated by Cfx.re over cheat abuse, and `sv_filterRequestControl` defaults
+-- to blocking control requests for entities controlled by players -- which is
+-- every player ped on the server. Calling it would be asking for something the
+-- server is configured to refuse.
+RegisterCommand('brcorpse', function()
+    print('=== corpse watch ===')
+    local any = false
+    for netId, w in pairs(watching) do
+        any = true
+        local exists = NetworkDoesNetworkIdExist(netId)
+        local p = exists and NetworkGetEntityFromNetworkId(netId) or 0
+        print(('  netId %s  target hp %s  src %s')
+            :format(tostring(netId), tostring(w.hp), tostring(w.src)))
+        print(('    exists %s  health %s  dead %s')
+            :format(tostring(exists),
+                    tostring(p ~= 0 and GetEntityHealth(p) or '-'),
+                    tostring(p ~= 0 and IsEntityDead(p) or '-')))
+        print(('    I control this ped: %s   <-- false here means every write '
+               .. 'above is the engine\'s to ignore')
+            :format(tostring(p ~= 0 and NetworkHasControlOfEntity(p) or '-')))
+    end
+    if not any then print('  nothing being corrected right now') end
+end, false)
 
 -- --------------------------------------------------------------------------
 -- Storm
@@ -1052,7 +1180,7 @@ end)
 RegisterNetEvent(BR.Net.HIT_RESYNC)
 AddEventHandler(BR.Net.HIT_RESYNC, function(d)
     if type(d) ~= 'table' then return end
-    correctPed(d.netId, math.floor(tonumber(d.hp) or 0))
+    correctPed(d.netId, math.floor(tonumber(d.hp) or 0), tonumber(d.src))
 end)
 
 RegisterNetEvent(BR.Net.HIT_DAMAGE)
@@ -1266,9 +1394,21 @@ function pushSquadOrParty()
     local members = {}
     for src, e in pairs(S.roster) do
         if e.squadId == me.squadId then
+            -- THE BLEED CLOCK COMES OFF THE SQUAD BEACON, NOT THE ROSTER, and
+            -- that is the whole point of it. `dbnoUntil` is deliberately absent
+            -- from PUBLIC_FIELDS -- on the public set it would hand every
+            -- enemy the exact second a downed player expires. The beacon is
+            -- already squad-only, so this is the channel that may carry it.
+            local b = BR.Squadmates and BR.Squadmates.beaconOf
+                and BR.Squadmates.beaconOf(src)
             members[#members + 1] = {
                 src = src, name = e.name, state = e.state,
                 hp = e.hp or 0, armour = e.armour or 0,
+                -- Absent unless they are down. The panel renders nothing at all
+                -- for a missing value rather than seeding a local countdown
+                -- that would drift from the server and keep ticking through a
+                -- revive.
+                bleedEndsAt = b and b.bleedEndsAt or nil,
             }
         end
     end

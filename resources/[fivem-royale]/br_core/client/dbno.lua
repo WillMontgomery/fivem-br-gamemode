@@ -159,6 +159,35 @@ local function resolveCrawl()
     return nil
 end
 
+-- THE POSE IS RESOLVED BEFORE ANYBODY IS KNOCKED DOWN, AND THAT IS A FIX
+-- RATHER THAN AN OPTIMISATION.
+--
+-- resolveCrawl() is memoised for the session, so exactly ONE knock per session
+-- ever pays the streaming wait: the first. That is why the owner's report is
+-- always about the first fall they try -- every later knock reads the cached
+-- answer and returns without yielding at all, so it never had the window.
+--
+-- The window is worth naming, because two separate things fall into it. The
+-- knock's own thread resolves the pose BEFORE it touches the ped (so a fallen
+-- body pays the wait instead of a standing one), which means up to 400ms in
+-- which the ped has not been looked at and the engine is still finishing the
+-- death that caused the knock. And dbno.controls -- a FRAME callback -- calls
+-- playCrawl on its watchdog pass, which reaches the same wait: a yield inside a
+-- frame callback stalls the whole band until the dictionary lands.
+--
+-- Asking here costs one streaming request at boot and closes both. Best-effort
+-- by design: if it fails, or the resource starts before the streamer is ready,
+-- resolveCrawl still does the whole job on the first knock exactly as before --
+-- this only takes the cost off the one path where it is measured in a player
+-- dying wrong.
+Citizen.CreateThread(function()
+    -- Not on the first frame of the resource. The streamer is still bringing
+    -- the world up and a request made into that is the one most likely to be
+    -- dropped -- and nothing can be knocked down for a whole lobby yet.
+    Citizen.Wait(5000)
+    resolveCrawl()
+end)
+
 --- Start (or restart) the downed loop on our own ped.
 --- @param force boolean|nil  play even if something is already running
 --- @param snap boolean|nil   arrive at the pose with no blend at all
@@ -315,6 +344,84 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.camera', function()
     PointCamAtCoord(cam, hx, hy, hz + 0.05)
 end)
 
+-- HOW LONG THE KNOCK KEEPS WATCHING THE PED, and how often.
+--
+-- 50ms because client/gamerules.lua's death watcher is on the 100ms TICK band:
+-- watching at the same cadence would be a coin toss over which of the two saw
+-- a settling corpse first, and watching at half of it means the body is back on
+-- its feet before the watcher's next look, in every phase alignment.
+--
+-- 30 beats -- a second and a half -- because that is the outside of the window
+-- the engine's death task can still be settling in, and because it comfortably
+-- outlasts the ragdoll below. Nothing is watched after that: a ped which is
+-- still alive a second and a half after the knock is not going to be killed by
+-- the fall that caused it.
+local FLOOR_WATCH_MS    = 50
+local FLOOR_WATCH_BEATS = 30
+-- The beat the knockdown ragdoll has landed on: 24 * 50ms, the 1200ms this
+-- used to sleep in one go.
+local KNOCKDOWN_LANDED  = 24
+
+--- Has the world killed this ped, or is it in the middle of doing so?
+---
+--- THE SAME QUESTION client/gamerules.lua ASKS BEFORE REPORTING A DEATH, and
+--- asking it in the same words is the entire point. That watcher reports on
+--- `IsEntityDead or IsPedFatallyInjured`; if it would call this ped dead, then
+--- this file has to have put it back, or the two disagree and the server
+--- believes the watcher.
+---
+--- IsEntityDead ALONE IS NOT THE QUESTION -- the scar client/state.lua already
+--- carries (a8b22c7). A fatal hit starts CTaskDyingDead and the flag settles
+--- frames later, so there is a window in which the ped is unrecoverably on its
+--- way out and `IsEntityDead` still answers "alive". A fall lands squarely in
+--- that window: the knock is a round trip away, which is the same order of
+--- magnitude as the settle. Reading the flag alone there takes the LIVE branch
+--- on a corpse-to-be -- no resurrection, no health, and a ped that finishes
+--- dying a moment later with the downed state painted on it.
+---
+--- IsPedFatallyInjured cannot false-positive a real knock: BR.Damage.applyHit
+--- clamps a knocking shot so the victim's ped survives AT the downed floor, and
+--- the floor is above the threshold by construction (BR.ToEngineHp(dbnoHp)
+--- against BR.Config.Match.healthFloor).
+--- @param ped integer
+--- @return boolean
+local function worldTookUs(ped)
+    return IsEntityDead(ped) or IsPedFatallyInjured(ped)
+end
+
+--- Put a body the world killed back onto the downed floor, in one tick.
+---
+--- IN PLACE, AND WITHOUT BR.Spawn.respawn. This body is already lying on the
+--- ground it fell to; respawn() is the verb for arriving somewhere NEW and
+--- carries luggage that is wrong here (it strips the inventory's weapons and
+--- ground-probes from fifty metres up, which indoors finds the roof). Same
+--- reasoning, and the same three calls, as spawn.lua's REVIVED handler.
+---
+--- NOTHING YIELDS INSIDE THIS. Nothing is rendered in the middle of a tick, so
+--- the standing idle a resurrection restores is overwritten before it can be
+--- drawn once -- which is the whole of the owner's "the ped first stands up
+--- fully before snapping to the crawling position".
+local function floorTheBody()
+    local p = GetEntityCoords(PlayerPedId())
+    NetworkResurrectLocalPlayer(p.x, p.y, p.z,
+                                GetEntityHeading(PlayerPedId()),
+                                true, false)
+    -- The dying animation outlives the resurrection otherwise: the ped stands
+    -- up and then finishes collapsing over the top of the crawl.
+    ClearPedTasksImmediately(PlayerPedId())
+    playCrawl(true, true)
+
+    -- THE HEALTH IS RE-APPLIED HERE AND NOT LEFT TO THE SERVER'S HEALTH_SYNC.
+    --
+    -- knock() sends the downed floor immediately after DBNO_SET and that used
+    -- to be enough, because the resurrection happened inside the DBNO_SET
+    -- handler itself and so ran FIRST. It does not any more -- the pose is
+    -- streamed before the ped is touched, which puts a yield in between -- so
+    -- the server's write lands on a ped that is still a corpse and is thrown
+    -- away. Same shared number, not a second opinion.
+    if M.dbnoHp then BR.Native.setDisplayHealth(M.dbnoHp) end
+end
+
 --- Put the player on the floor and start whatever crawl this build supports.
 local function enterDowned()
     -- BEING DOWNED MEANS BEING ALIVE, AND THE WORLD DOES NOT KNOW THAT.
@@ -379,55 +486,77 @@ local function enterDowned()
         resolveCrawl()
         if not mine.downed then return end
 
-        if IsEntityDead(PlayerPedId()) then
-            -- 2. THE RESURRECTION AND THE POSE ARE ONE TICK. No Citizen.Wait
-            --    between these calls, and that is load-bearing rather than
-            --    tidy: nothing is rendered in the middle of a tick, so the
-            --    standing idle the resurrection restores is overwritten
-            --    before it can be drawn once.
-            local p = GetEntityCoords(PlayerPedId())
-            NetworkResurrectLocalPlayer(p.x, p.y, p.z,
-                                        GetEntityHeading(PlayerPedId()),
-                                        true, false)
-            -- The dying animation outlives the resurrection otherwise: the ped
-            -- stands up and then finishes collapsing over the top of the crawl.
-            ClearPedTasksImmediately(PlayerPedId())
-            playCrawl(true, true)
+        -- 2. WHICH KIND OF KNOCK THIS IS, asked with the predicate the death
+        --    watcher uses rather than with the flag alone. See worldTookUs.
+        local fell = worldTookUs(PlayerPedId())
 
+        if fell then
+            -- THE RESURRECTION AND THE POSE ARE ONE TICK -- see floorTheBody.
+            --
             -- AND NO KNOCKDOWN ON THIS PATH. The ragdoll below is the knock
             -- INSTANT -- the moment of falling over -- and this player has
             -- already fallen; the world killed them doing it. Ragdolling a
             -- freshly resurrected ped stands the skeleton up to drop it again,
             -- which is the very frame this whole ordering exists to remove.
-            --
-            -- The health is re-applied for the same reason the resurrection is
-            -- here at all: the server sent the downed floor alongside DBNO_SET,
-            -- and a health write onto a ped that was still a corpse when it
-            -- landed is thrown away. Same shared number, not a second opinion.
-            if M.dbnoHp then BR.Native.setDisplayHealth(M.dbnoHp) end
+            floorTheBody()
             print('[br_core] dbno: the world had already killed this ped -- resurrected onto the downed floor')
+
+            -- AND NOTHING KNOCKS THEM OUT OF IT AGAIN. The knockdown below is
+            -- the only ragdoll a downed player gets; leaving it enabled meant a
+            -- passing car stood them back up mid-bleed, because the collision
+            -- ragdolls them and the getup task that follows outranks a looping
+            -- animation (owner, in game). The watchdog in dbno.controls covers
+            -- everything else that can cancel a clip -- but not being ragdolled
+            -- in the first place is the cheaper half, and it is the half that
+            -- stops them standing. Immediate here: there is nothing to land.
+            SetPedCanRagdoll(PlayerPedId(), false)
         else
             -- 3. A LIVE KNOCK KEEPS ITS KNOCKDOWN. Ragdoll type 0
             --    (CTaskNMRelax) and only for the moment of falling -- sustained
             --    ragdoll is too unstable to hold a player in, which is why the
             --    crawl is animation-driven from here on.
             BR.Native.knockdown(1200, 1600)
-            -- Let the ragdoll land before asking for an animation on top of
-            -- it, or the clip is cancelled by a physics state that has not
-            -- settled.
-            Citizen.Wait(1200)
-            if not mine.downed then return end
-            playCrawl(true)
         end
 
-        -- AND NOTHING KNOCKS THEM OUT OF IT AGAIN. The knockdown above is the
-        -- only ragdoll a downed player gets; leaving it enabled meant a passing
-        -- car stood them back up mid-bleed, because the collision ragdolls them
-        -- and the getup task that follows outranks a looping animation (owner,
-        -- in game). The watchdog below covers everything else that can cancel a
-        -- clip -- but not being ragdolled in the first place is the cheaper
-        -- half, and it is the half that stops them standing.
-        SetPedCanRagdoll(PlayerPedId(), false)
+        -- 4. AND THEN THE PED IS WATCHED, BECAUSE ONE LOOK IS NOT AN ANSWER TO
+        --    A RACE (owner, 2026-08-17: a fall "went straight to dead" again).
+        --
+        --    THE THREE WAYS ONE LOOK LOSES, all of them real and all of them a
+        --    round trip wide:
+        --
+        --      * the look above happens while CTaskDyingDead is still settling,
+        --        so `fell` reads false on a body that is already gone. Nothing
+        --        is resurrected, nothing is put on the floor, and the ped
+        --        finishes dying wearing the downed state.
+        --      * the server's HEALTH_SYNC lands on that same half-dead ped
+        --        FIRST and writes the downed floor onto it. The number now says
+        --        "alive" while the task still says "dying" -- which un-arms
+        --        gamerules.death's latch, so when the task does finish, that
+        --        watcher reports a SECOND death. On the server a second report
+        --        from a downed player used to be an instant elimination.
+        --      * something kills the ped after the knock lands -- the fire they
+        --        fell into, the car that hit them -- down a path the server
+        --        never took over and cannot clamp.
+        --
+        --    All three have the same repair, so it is written once and applied
+        --    on a beat rather than reasoned about per case: while the server
+        --    says we are down, a ped that reads dead gets put back. Re-applying
+        --    is free when nothing is wrong -- worldTookUs is two natives -- and
+        --    idempotent when something is, because floorTheBody writes the same
+        --    shared number every time.
+        for beat = 1, FLOOR_WATCH_BEATS do
+            Citizen.Wait(FLOOR_WATCH_MS)
+            if not mine.downed then return end
+
+            -- Let the ragdoll land before asking for an animation on top of it,
+            -- or the clip is cancelled by a physics state that has not settled.
+            if not fell and beat == KNOCKDOWN_LANDED then
+                playCrawl(true)
+                SetPedCanRagdoll(PlayerPedId(), false)
+            end
+
+            if worldTookUs(PlayerPedId()) then floorTheBody() end
+        end
     end)
 end
 

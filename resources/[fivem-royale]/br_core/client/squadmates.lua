@@ -32,6 +32,31 @@ local lastPush = 0
 -- [src] = { ped = handle, text = 'Alice [DOWN]', dim = boolean }
 local low      = {}
 
+-- THE PLAYER'S INTERFACE SIZE, FOR THE NAMES THIS FILE DRAWS ITSELF.
+--
+-- Owner, 2026-08-17: "can you make the playernames font size respect our
+-- player's preference too?" -- the same preference the HUD and the DUI prompts
+-- already follow.
+--
+-- BOTH HALVES, MULTIPLIED TOGETHER, because that is what the other two
+-- surfaces actually do:
+--
+--   the HUD's uiScale multiplies the ROOT font size (index.css), so HUD prose
+--   grows with it, and textScale is a further multiplier that `.tscale` applies
+--   on top. HUD prose is therefore ui * text.
+--   a DUI prompt's sprite is multiplied by uiScale in Lua (client/dui.lua), and
+--   the page multiplies its label by textScale inside a texture that is then
+--   drawn at that sprite size -- so DUI prose is ui * text as well.
+--
+-- An overhead name has no plate to break and no layout to push off screen: its
+-- size IS its text size, so following only one half would make it the one piece
+-- of prose in the game that disagrees with the other two.
+--
+-- THE SAME CHANNEL client/dui.lua USES, deliberately -- br_ui owns the value
+-- and fires `br:settings:changed` on every push and save, and answers
+-- `br:settings:request`. See the settings block at the bottom of this file.
+local prefs = { ui = 1.0, text = 1.0 }
+
 --- A squadmate's LOCAL ped handle, or 0 when they are not streamed in.
 ---
 --- ONE RESOLVER FOR THE WHOLE CLIENT, and that is the point of it existing at
@@ -50,6 +75,23 @@ function BR.Squadmates.pedOf(src)
     local ped = peds[src]
     if not ped or ped == 0 or not DoesEntityExist(ped) then return 0 end
     return ped
+end
+
+--- The last squad beacon received for this mate, or nil.
+---
+--- THE BEACON IS SQUAD-ONLY AND THAT IS WHY IT CARRIES THE BLEED CLOCK. A
+--- downed player's expiry is not in `PUBLIC_FIELDS` and must not be: broadcast
+--- there it would tell their ENEMIES exactly how long to wait them out. It
+--- arrives here instead, on the channel the server already limits to their own
+--- squad, and `state.lua` folds it into the panel row.
+---
+--- `mates` EXCLUDES SELF, so your own row gets no clock from here. It does not
+--- need one -- your own countdown is the DBNO overlay, which reads the value
+--- the server sends you directly on DBNO_SET.
+--- @param src integer
+--- @return table|nil
+function BR.Squadmates.beaconOf(src)
+    return mates[src]
 end
 
 -- SKEL_Head. The BONE ID, which is what GET_PED_BONE_COORDS takes -- not the
@@ -206,6 +248,23 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
         return
     end
 
+    -- OVER A SCOPE, A NAME IS THE SAME PROBLEM THE HUD WAS.
+    --
+    -- Owner, 2026-08-17: "the playernames text still shows while zoomed in with
+    -- a sniper. Good thing is our HUD is hidden (great! keep this!) but
+    -- playernames text should not be shown during that time."
+    --
+    -- Read from BR.Screen.scoped rather than asking the engine again, which is
+    -- the point of that flag existing: client/screen.lua owns the one answer to
+    -- "is a scope scaleform up", it is deliberately narrower than "is the player
+    -- aiming" (a pistol must not blank anything), and client/natives.lua already
+    -- reads it the same way for the radar. Nothing about the HUD is touched
+    -- here -- this only adds the overhead names to what that flag already hides.
+    --
+    -- Guarded, because screen.lua may not have run yet on a cold start; a nil
+    -- flag means "not scoped", which is the safe default for a name.
+    local scoped = (BR.Screen and BR.Screen.scoped) and true or false
+
     for src, m in pairs(mates) do
         -- Presentation-only use of scope: a name can only hang over a ped
         -- that is streamed in, and no game state is derived from whether it
@@ -287,9 +346,21 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
                 dropTag(src)
                 local tag = CreateFakeMpGamerTag(ped, m.name .. mark,
                     false, false, '', 0)
-                SetMpGamerTagVisibility(tag, 0, true)   -- component 0: the name
-                tags[src] = { tag = tag, ped = ped, mark = mark }
+                t = { tag = tag, ped = ped, mark = mark }
+                tags[src] = t
             end
+
+            -- Component 0 is the name, and its visibility is now written EVERY
+            -- tick rather than once at creation -- the same reasoning the blip
+            -- alpha above is set unconditionally. An edge test cannot cover the
+            -- tag that is BORN while the player is already scoped (a mate who
+            -- streams in mid-shot), and one native write per mate per tick is
+            -- nothing next to a name drawn across a scope.
+            --
+            -- 10Hz is the same clock screen.lua toggles the HUD and the radar
+            -- on, so the name leaves and returns with them rather than a beat
+            -- apart.
+            SetMpGamerTagVisibility(t.tag, 0, not scoped)
         elseif ped ~= 0 and jumped then
             dropTag(src)
             low[src] = {
@@ -351,6 +422,13 @@ end
 BR.Loop.register(BR.Loop.FRAME, 'squadmates.lownames', function()
     if not next(low) then return end
 
+    -- SCOPED: NOTHING OVERHEAD, the same rule the engine tags follow in the
+    -- tick above and the HUD follows in screen.lua. Checked per FRAME here
+    -- rather than inherited from the tick because this loop is per frame: a
+    -- flag sampled at 10Hz and drawn at 60 would leave up to six frames of name
+    -- across the scope every time the player raises it.
+    if BR.Screen and BR.Screen.scoped then return end
+
     local me = GetEntityCoords(PlayerPedId())
 
     for src, e in pairs(low) do
@@ -374,8 +452,16 @@ BR.Loop.register(BR.Loop.FRAME, 'squadmates.lownames', function()
                 or IsSphereVisible(x, y, z, 0.5)
 
             if d <= NAME_FAR and onScreen then
+                -- ...AND THEN THE PLAYER'S OWN PREFERENCE, LAST -- after the
+                -- distance clamp, not inside it, exactly as client/dui.lua
+                -- applies it to a sprite. Inside, the clamp would eat it: a
+                -- mate at 10m is already sitting on the 0.34 ceiling, so a
+                -- player who asked for larger text would get nothing at every
+                -- distance that matters. Outside, a name at 1.15 is 15% larger
+                -- than the same name at 1.00 whatever the distance term did.
                 worldName(x, y, z, e.text,
-                    BR.Clamp(0.34 * (10.0 / math.max(d, 4.0)), 0.16, 0.34),
+                    BR.Clamp(0.34 * (10.0 / math.max(d, 4.0)), 0.16, 0.34)
+                        * prefs.ui * prefs.text,
                     e.dim and 150 or 235)
             end
         end
@@ -508,4 +594,60 @@ end)
 AddEventHandler('onResourceStop', function(res)
     if res ~= GetCurrentResourceName() then return end
     clearAll()
+end)
+
+-- ---------------------------------------------------------------------------
+-- Settings
+-- ---------------------------------------------------------------------------
+
+--- Coerce one preference off the wire. Never throws, never returns nil.
+---
+--- The same widened band client/dui.lua uses, and for the same reason: br_ui
+--- owns the REAL range (0.80..1.30 and 0.90..1.15, clamped in its settings.lua
+--- before it stores), and repeating those exact numbers here would give the
+--- project a third clamp to keep in step. This one only exists to stop a
+--- hand-fired event or a stale build putting a nil, a NaN or a 40x name on the
+--- frame path.
+--- @param v any
+--- @param fallback number
+--- @return number
+local function pref(v, fallback)
+    v = tonumber(v)
+    if not v or v ~= v then return fallback end   -- nil, or NaN, which compares false to itself
+    if v < 0.5 then return 0.5 end
+    if v > 2.0 then return 2.0 end
+    return v
+end
+
+--- THE SAME EVENT client/dui.lua AND client/voice.lua ALREADY LISTEN TO, fired
+--- by br_ui's client/settings.lua on every push and every save.
+---
+--- NOTHING TO PUSH ANYWHERE. Unlike a DUI -- which is a second browser that has
+--- to be told -- the name is drawn by this file, per frame, from this table. So
+--- changing it changes the next frame, for every mate already on screen and
+--- every one that streams in later. There is nothing to miss and no page to be
+--- half-started.
+AddEventHandler('br:settings:changed', function(s)
+    if type(s) ~= 'table' then return end
+    prefs.ui   = pref(s.uiScale, prefs.ui)
+    prefs.text = pref(s.textScale, prefs.text)
+end)
+
+--- ASK, RATHER THAN WAIT -- and ask FROM THIS FILE rather than leaning on
+--- client/dui.lua's identical request.
+---
+--- br_ui pushes on `br:ui:ready`, which covers a fresh join and a br_ui restart
+--- but NOT a `restart br_core` on its own: this file would start at 1.00 and no
+--- push would ever be coming. dui.lua fires the same request from the same
+--- resource event, so in practice one of the two would answer for both -- but
+--- "my names are the right size because a different file happened to ask" is
+--- precisely the silent half-wiring this project keeps shipping, and it breaks
+--- the day dui.lua's line moves.
+---
+--- The cost of asking twice is one extra push, and BR.Settings.push is
+--- documented idempotent: it re-sends the stored object and re-fires this
+--- event, so a second answer costs a repaint and cannot desync anything.
+AddEventHandler('onClientResourceStart', function(res)
+    if res ~= GetCurrentResourceName() then return end
+    TriggerEvent('br:settings:request')
 end)

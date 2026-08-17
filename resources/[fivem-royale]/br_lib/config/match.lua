@@ -259,7 +259,19 @@ BR.Config.Match = {
     dbnoBleedBase   = 45,     -- seconds on the first knock
     dbnoBleedStep   = -8,     -- each subsequent knock in the same match is shorter
     dbnoBleedMin    = 15,
-    dbnoReviveTime  = 8.0,    -- seconds of held interact
+    -- SECONDS OF HELD INTERACT. 2.8, down 65% from the 8.0 that shipped
+    -- (owner, 2026-08-17: "the revive button hold from last round took too
+    -- long - let's cut it by like 65%").
+    --
+    -- THIS IS THE ONLY NUMBER, and that is worth stating because a hold
+    -- duration is the classic thing to end up hardcoded twice -- once for the
+    -- rule and once for the picture that draws it. Everything reads this key:
+    -- server/combat.lua measures the hold against it and reports progress as a
+    -- fraction of it, client/dbno.lua sends it to the prompt as `holdMs`, and
+    -- br_ui/dui/prompt.html sets the ring's animation-duration from that
+    -- message and from nothing else. Change it here and the ring closes with
+    -- the revive, on its own.
+    dbnoReviveTime  = 2.8,
     dbnoReviveDist  = 1.5,
     dbnoReviveHp    = 30,     -- displayed HP after a successful revive
 

@@ -20,7 +20,43 @@ BR.Config.Consumables = {
         armour = 25, armourCap = 50,   -- small potions only take you to half shield
     },
     {
-        id = 'shield', label = 'Shield', rarity = R.RARE,
+        -- UNCOMMON, NOT RARE (owner, 2026-08-17: "seems shield is a very rare
+        -- item - took me 10 crates to get one. That should be increased").
+        --
+        -- HIS TEN CRATES WERE NOT BAD LUCK -- THEY WERE THE TABLE. At RARE a
+        -- crate held a Shield 11.1% of the time across a whole match layout,
+        -- which is one in nine. The report and the model agree to within a
+        -- crate, so there was nothing to explain away.
+        --
+        -- AND THE RARITY FIELD IS THE ONLY LEVER THAT COULD MOVE IT. There is
+        -- no per-item weight in this table: BR.LootPickOfRarity picks UNIFORMLY
+        -- from a rarity bucket (rng:pick, not rng:weighted), so an item's share
+        -- of consumable rolls is decided entirely by which rarity BANDS it owns.
+        -- The Shield owned exactly one, RARE, worth 27% of consumable rolls at
+        -- crate tier -- already the largest single share of the four
+        -- consumables, which is why the kind weight below could not fix this on
+        -- its own: reaching one crate in three that way needs CONSUMABLE at ~46
+        -- out of 100, which would take crate ammo to almost nothing.
+        --
+        -- Moving it to UNCOMMON widens the band to UNCOMMON *and* RARE, because
+        -- the bucket walk goes DOWN: with RARE now empty, a RARE consumable
+        -- roll falls through to this. 27% -> 55% of consumable rolls, which is
+        -- a crate in 3.3 rather than a crate in 9.
+        --
+        -- WHAT IT COSTS: the Shield now renders GREEN/Uncommon rather than
+        -- blue/Rare. That is the whole cost -- rarity on a CONSUMABLE is
+        -- presentation only. RarityInfo.damageMult is read in exactly one place
+        -- (config/weapons.lua's damage calc) and a consumable never reaches it;
+        -- the 50 armour and the 100 cap are fields on this row, not functions of
+        -- the tier. The other half of the cost is inside the consumable bucket:
+        -- Small Shield and Bandage lose the UNCOMMON fall-through they used to
+        -- collect, which the kind weight below is raised to offset.
+        --
+        -- IT IS ALSO THE GENRE'S OWN MAPPING, which is worth saying because it
+        -- means this is not a number bent to hit a target: Fortnite ships Small
+        -- Shield Potion as Common and Shield Potion as Uncommon, and a 50-point
+        -- shield is a staple you expect to find, not a prize.
+        id = 'shield', label = 'Shield', rarity = R.UNCOMMON,
         kind = BR.ItemKind.CONSUMABLE, prop = 'prop_bodyarmour_06',
         useMs = 5000, maxStack = 3,
         armour = 50, armourCap = 100,
@@ -142,10 +178,28 @@ BR.Config.RarityWeights = {
 --- The FLOOR table below is deliberately NOT touched by this. Loose ground loot
 --- being almost all ammo is a separate, earlier decision (2026-08-06) and is
 --- where most of the ammo a player trips over comes from.
+--- CONSUMABLE 17 -> 21, PAID FOR BY AMMO (owner, 2026-08-17, the shield report).
+---
+--- Moving the Shield to the UNCOMMON band above roughly doubles its share of
+--- consumable rolls, and it takes that share from Small Shield and Bandage --
+--- which is a healing nerf nobody asked for. Widening the consumable slice by
+--- the same factor puts the healing back: Bandage lands at 2.6% of crate items
+--- against 4.5% before, Med Kit at 4.2% against 3.4%, so the two HEALING items
+--- together move 7.9% -> 6.8% rather than 7.9% -> 5.5%.
+---
+--- WEAPON STAYS AT 55, EXACTLY. That number is #127's whole result -- a crate
+--- item is a firearm 48.4% of the time and 85% of crates hold at least one --
+--- and this change must not be the thing that quietly undoes it. THROWABLE
+--- stays at 6 because it is already the thinnest row on the table.
+---
+--- SO AMMO PAYS, and it is the right row to take from: the FLOOR table below is
+--- 74% ammo and untouched, so loose ground loot remains the ammo firehose it
+--- was deliberately made into (2026-08-06). Crate ammo drops 22 -> 18, which is
+--- about 11% off the map's total ammo once floor loot is counted.
 BR.Config.KindWeights = {
     { kind = BR.ItemKind.WEAPON,     weight = 55 },
-    { kind = BR.ItemKind.AMMO,       weight = 22 },
-    { kind = BR.ItemKind.CONSUMABLE, weight = 17 },
+    { kind = BR.ItemKind.AMMO,       weight = 18 },
+    { kind = BR.ItemKind.CONSUMABLE, weight = 21 },
     { kind = BR.ItemKind.THROWABLE,  weight =  6 },
 }
 

@@ -295,10 +295,15 @@ export default function Settings({
     setSettings(next)
   }
 
+  // NO CUE FIRED HERE. `ui.ready` used to be, and it was wrong twice over: it
+  // is the ready-up sound (reserved for that one button -- owner, 2026-08-17),
+  // and Btn already plays its own `cue` on click, so pressing Save produced two
+  // overlapping sounds. The button below carries the cue; this function is the
+  // save, not the press. `ui.error` on a refusal stays -- that one is a second
+  // event, not a second press.
   const save = async () => {
     setSaving(true)
     setNameError(null)
-    play('ui.ready')
     const res = await fetchNui<Draft, {
       ok: boolean; settings?: SettingsPayload; field?: string; reason?: string
     }>(CB.SETTINGS_SAVE, draft)
@@ -802,7 +807,12 @@ export default function Settings({
       </div>
 
         <div className="flex gap-3 mt-4">
-          <Btn variant="primary" size="lg" cue="ui.ready" onPress={save}>
+          {/* `ui.select`, NOT `ui.ready`. Saving a preference is an ordinary
+              affirmative press; the ready-up swell is a 0.9s struck stack that
+              announces a match starting, and hearing it for "Save" in the pause
+              menu makes the one moment it belongs to mean nothing (owner,
+              2026-08-17). Cancel keeps `ui.back` -- the pair reads correctly. */}
+          <Btn variant="primary" size="lg" cue="ui.select" onPress={save}>
             {saving ? 'Saving…' : 'Save'}
           </Btn>
           <Btn variant="default" size="lg" cue="ui.back" onPress={cancel}>

@@ -6084,6 +6084,14 @@ do
     ok(live and live.hp == math.floor(BR.ToEngineHp(BR.Roster.get(2).hp) + 0.5),
         'with the ledger\'s number, in engine units',
         live and tostring(live.hp) or 'nil')
+    -- WHO IT IS FOR (#115, round four). The client's correction is now a watch
+    -- that outlives the shot, and the only thing that can call it off early is
+    -- the roster saying this player is out. Without an id on the wire there is
+    -- nothing to look up, and a five-second watch would resurrect a teammate an
+    -- enemy had genuinely just killed.
+    ok(live and live.src == 2,
+        'and it names the victim, so the watch can be called off',
+        live and tostring(live.src) or 'nil')
 
     -- A DOWNED MATE IS STILL A LIVING PED. Their health is a bleed clock, but
     -- the thing standing in the world is alive at the downed floor and a
@@ -6154,10 +6162,31 @@ end
 --   5. `ResurrectPed` clears the task, clears the flag and restores health;
 --      `ClearPedTasksImmediately` ends the dying animation and nothing else.
 --
--- WHAT IT DOES NOT CLAIM: entity ownership. Every write here is assumed to
--- TAKE. That is deliberately the most favourable model available to the
--- production code -- the sequence below still ends in a corpse under it, so the
--- fault is in the logic and not in an argument about who owns the ped.
+-- ...AND RULE 2 IS A NUMBER NOBODY MEASURED. "Some frames" was written as 64ms,
+-- which is under correctPed's own 150ms poll -- so the suite handed the fix the
+-- one settle time at which its exit condition cannot be wrong. That number is
+-- now a KNOB (`opts.settle`) and the sweep below runs the owner's three shots
+-- across three orders of magnitude of it. A fix that only works at one settle
+-- time is a bet, and this file exists to stop us placing another one.
+--
+-- ENTITY OWNERSHIP IS MODELLED TOO (`opts.ownership`), and it is the one thing
+-- in here that is NOT a claim about the logic. In GTA network play a ped is
+-- owned by one machine, and a player's ped is always owned by that player --
+-- writes from anybody else are the engine's to ignore. `opts.ownership = true`
+-- makes SetEntityHealth / ResurrectPed / ClearPedTasksImmediately on the mate's
+-- ped no-ops, which is the pessimistic end of the range.
+--
+-- Under that setting NO correction of any shape can work, and that is not a
+-- defeat, it is the DISCRIMINATOR. The tests at the bottom pin it, including the
+-- reason the obvious escape is not one: `NetworkRequestControlOfEntity` is
+-- deprecated by Cfx.re over cheat abuse, and `sv_filterRequestControl` defaults
+-- to refusing control requests for entities controlled by players -- which is
+-- every player ped there is. So it is modelled as refusing, because that is what
+-- a default-configured FiveM server does.
+--
+-- The default stays FAVOURABLE (writes land) so that the sweep is testing the
+-- logic and nothing else. Which of the two the owner is actually looking at is
+-- answered in game by `/brcorpse`, not here.
 
 describe('resync.client')
 do
@@ -6179,11 +6208,19 @@ do
 
     --- Boot one FiveM client with `client/state.lua` in it.
     --- @param netId integer   the network id its copy of the mate answers to
+    --- @param opts table|nil  { settle = ms, ownership = bool }
     --- @return table
-    local function newClient(netId)
+    local function newClient(netId, opts)
+        opts = opts or {}
         local FLOOR = BR.Config.Match.healthFloor
         local MAXHP = BR.Config.Match.maxHealth
-        local SETTLE = 64        -- ms before IsEntityDead agrees with the task
+        -- ms before IsEntityDead agrees with the task. 64 is the number
+        -- ef501ef/a8b22c7 assumed; the sweep below runs 16 to 3500 because
+        -- nobody has measured it and the fix must not care.
+        local SETTLE = opts.settle or 64
+        -- true => this client does NOT own the mate's ped, and the engine
+        -- silently drops every write to it.
+        local OWNED = not opts.ownership
 
         local env
         env = setmetatable({}, { __index = function(_, k) return STD[k] end })
@@ -6220,7 +6257,7 @@ do
 
         local C = {
             now = 0,
-            calls = { set = 0, resurrect = 0, cleartasks = 0 },
+            calls = { set = 0, resurrect = 0, cleartasks = 0, request = 0 },
             log = {},
             -- The squadmate's ped, as the SHOOTER's machine sees it.
             mate = { handle = 9000 + netId, netId = netId, hp = MAXHP,
@@ -6249,9 +6286,24 @@ do
             return m.dead and 0 or m.hp
         end
         env.IsEntityDead = function(h) return h == m.handle and m.dead end
+        --- WHO IS ALLOWED TO WRITE TO THIS PED.
+        ---
+        --- In network play the ped is owned by ONE machine and a player's ped is
+        --- always owned by that player. A write from anybody else is the
+        --- engine's to ignore -- so with `opts.ownership` set, every mutating
+        --- native below counts the CALL and then does nothing, which is exactly
+        --- what a dropped write looks like from Lua: no error, no return value,
+        --- no effect.
+        local function mayWrite()
+            if OWNED then return true end
+            note('DROPPED (this client does not own that ped)')
+            return false
+        end
+
         env.SetEntityHealth = function(h, v)
             if h ~= m.handle then return end
             C.calls.set = C.calls.set + 1
+            if not mayWrite() then return end
             m.hp = v
             note(('SetEntityHealth(%d)  dying=%s dead=%s')
                 :format(v, tostring(m.dying), tostring(m.dead)))
@@ -6260,16 +6312,36 @@ do
         env.ResurrectPed = function(h)
             if h ~= m.handle then return end
             C.calls.resurrect = C.calls.resurrect + 1
+            if not mayWrite() then return end
             m.dead, m.dying, m.hp = false, false, MAXHP
             note('ResurrectPed')
         end
         env.ClearPedTasksImmediately = function(h)
             if h ~= m.handle then return end
             C.calls.cleartasks = C.calls.cleartasks + 1
+            if not mayWrite() then return end
             -- Ends the dying ANIMATION. It does not un-flag a settled corpse,
             -- which is why the production code calls ResurrectPed first.
             if not m.dead then m.dying = false end
             note('ClearPedTasksImmediately')
+        end
+
+        -- CONTROL, AND WHY ASKING FOR IT IS NOT THE WAY OUT.
+        --
+        -- `NetworkHasControlOfEntity` answers the question /brcorpse prints in
+        -- game. `NetworkRequestControlOfEntity` REFUSES, because that is what a
+        -- default-configured FiveM server does: the native is deprecated over
+        -- cheat abuse and `sv_filterRequestControl` defaults to blocking control
+        -- requests for entities controlled by players. There is no player ped on
+        -- any server that is not controlled by a player.
+        env.NetworkHasControlOfEntity = function(h)
+            return h == m.handle and OWNED
+        end
+        env.NetworkRequestControlOfEntity = function(h)
+            if h ~= m.handle then return false end
+            C.calls.request = C.calls.request + 1
+            note('NetworkRequestControlOfEntity -> REFUSED (player ped)')
+            return OWNED
         end
 
         -- ---------------------------------------------------- the runtime ---
@@ -6421,7 +6493,8 @@ do
     -- "a race decided differently each time" -- one of the three has no race in
     -- it. The fix has to make the OUTCOME independent of the timing, so both
     -- round trips are driven below.
-    local function threeShots(rtt)
+    local function threeShots(rtt, opts)
+        opts = opts or {}
         squadMatch(2)
         local pistol = BR.Config.WeaponById['pistol']
         BR.Inv.reset(1)
@@ -6430,7 +6503,7 @@ do
         BR.Inv.of(1).ammo[BR.AmmoType.LIGHT] = 200
         BR.Inv.of(1).active = 1
 
-        local C = newClient(1002)
+        local C = newClient(1002, opts)
 
         --- Squeeze the trigger once at the mate and let the answer come back.
         --- The frame that reaches the client is the one server/damage.lua
@@ -6452,7 +6525,11 @@ do
             end
             C.pump(rtt)
             for _, d in ipairs(frames) do C.resync(d) end
-            C.pump(1500)        -- longer than any watch loop can possibly run
+            -- Long enough for the death to SETTLE and for the watch to answer
+            -- it. This used to be a flat 1500ms -- fine while the modelled
+            -- settle was 64ms, and a test that ends before the corpse appears
+            -- once it is not.
+            C.pump((opts.settle or 64) + 2500)
             C.note(('after %s: %s'):format(label, C.describe()))
             return #frames
         end
@@ -6486,6 +6563,115 @@ do
             tag .. 'SHOT 3: and the third shot is no different from the first '
             .. '-- this is the one the owner called "down for good"',
             C.describe() .. '\n       ' .. table.concat(C.log, '\n       '))
+    end
+
+    -- ------------------------------------------------------------------------
+    -- THE SWEEP: how long does a death take to show up? (#115, round four)
+    -- ------------------------------------------------------------------------
+    --
+    -- Nobody knows, and that is the point. `IsEntityDead` is the LAST thing
+    -- about a death to become true -- the project's own gamerules.lua pairs it
+    -- with IsPedFatallyInjured for exactly that reason -- and the shipped fix
+    -- stopped watching after two clean samples 150ms apart and gave up entirely
+    -- after 900ms. Both of those are bets on this number.
+    --
+    -- The suite modelled it as 64ms, which is UNDER the poll interval, so the
+    -- bet could not lose here. Raise it to 800 and the owner's report comes back
+    -- word for word: shot 1 corpse, shot 2 fine, shot 3 down for good. That is
+    -- not a race the network decides -- it is the same arithmetic every time,
+    -- which is why the report reads as "still happening" rather than
+    -- "sometimes".
+    --
+    -- So the fix is not allowed to know this number. Three orders of magnitude
+    -- of it, and the answer has to be the same.
+    for _, settle in ipairs({ 16, 250, 800, 2000, 3500 }) do
+        local C, shoot = threeShots(32, { settle = settle })
+        local tag = ('(death settles after %dms) '):format(settle)
+
+        shoot('shot 1')
+        ok(C.alive(), tag .. 'SHOT 1 leaves the squadmate standing',
+            C.describe() .. '\n       ' .. table.concat(C.log, '\n       '))
+        shoot('shot 2')
+        ok(C.alive(), tag .. 'SHOT 2 leaves the squadmate standing', C.describe())
+        shoot('shot 3')
+        ok(C.alive(), tag .. 'SHOT 3 leaves the squadmate standing',
+            C.describe() .. '\n       ' .. table.concat(C.log, '\n       '))
+    end
+
+    -- ------------------------------------------------------------------------
+    -- ONE WATCH PER PED, NOT ONE PER BULLET.
+    -- ------------------------------------------------------------------------
+    do
+        local C = newClient(1002, { settle = 800 })
+        C.lethal(26)
+        for _ = 1, 10 do C.resync({ netId = 1002, hp = 200, src = 2 }) end
+        ok(#C.threads == 1,
+            'a ten-round burst into one squadmate starts ONE watch, not ten',
+            ('%d threads'):format(#C.threads))
+        C.pump(4000)
+        ok(C.alive(), '...and that one watch still stands them back up',
+            C.describe())
+    end
+
+    -- ------------------------------------------------------------------------
+    -- A WATCH MUST NOT OUTLIVE THE PLAYER IT IS CORRECTING.
+    -- ------------------------------------------------------------------------
+    --
+    -- The watch now runs for five seconds, which is long enough for an ENEMY to
+    -- finish the squadmate while it is still going. Standing that corpse back up
+    -- would be #115 inverted and strictly worse: the body would be the truth and
+    -- this client would be the thing deleting it. The server's verdict is in the
+    -- mirror, so it is re-read every pass -- and `src` on the wire is what makes
+    -- that lookup possible.
+    do
+        local C = newClient(1002, { settle = 200 })
+        local cenv = C.env
+        cenv.BR.State.roster[2] = { state = cenv.BR.PlayerState.ALIVE }
+
+        C.lethal(26)
+        C.resync({ netId = 1002, hp = 200, src = 2 })
+        C.pump(600)
+        ok(C.alive(), 'the watch stands a falsely-dead mate up', C.describe())
+
+        -- ...and now they are killed for real, by somebody else.
+        cenv.BR.State.roster[2].state = cenv.BR.PlayerState.DEAD
+        C.lethal(26)
+        C.pump(2500)
+        ok(not C.alive(),
+            'and once the SERVER says they are out, the watch lets the real '
+            .. 'corpse lie', C.describe())
+    end
+
+    -- ------------------------------------------------------------------------
+    -- THE DISCRIMINATOR: what this looks like if OWNERSHIP is the blocker.
+    -- ------------------------------------------------------------------------
+    --
+    -- Everything above assumes the writes land. They land in this model because
+    -- they are writes to a LOCAL COPY, and that is the favourable reading. The
+    -- pessimistic one is that GTA ignores writes to a ped this machine does not
+    -- own -- and a player's ped is always owned by that player.
+    --
+    -- Under that reading no correction can work, whatever shape it is, and these
+    -- tests say so out loud rather than leaving a fourth round to discover it.
+    -- The in-game answer to WHICH of the two is happening is `/brcorpse`.
+    do
+        local C, shoot = threeShots(32, { settle = 800, ownership = true })
+        shoot('shot 1')
+        ok(not C.alive(),
+            'OWNERSHIP ENFORCED: the corpse stands, and this is what the owner '
+            .. 'still sees if that is the blocker',
+            C.describe() .. '\n       ' .. table.concat(C.log, '\n       '))
+        ok(C.calls.set > 0 and C.calls.resurrect > 0,
+            '...not because the client stopped trying -- it wrote and it '
+            .. 'resurrected, and the engine dropped both',
+            ('SetEntityHealth x%d, ResurrectPed x%d')
+                :format(C.calls.set, C.calls.resurrect))
+        ok(C.env.NetworkHasControlOfEntity(C.mate.handle) == false,
+            '...this client does not control that ped')
+        ok(C.env.NetworkRequestControlOfEntity(C.mate.handle) == false,
+            '...and asking for control is REFUSED, which is what a default '
+            .. 'FiveM server does: the native is deprecated over cheat abuse '
+            .. 'and sv_filterRequestControl blocks player-controlled entities')
     end
 
     -- ------------------------------------------------------------------------
