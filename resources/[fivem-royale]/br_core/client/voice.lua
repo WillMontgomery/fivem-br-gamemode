@@ -563,7 +563,13 @@ local function setMic(on)
     if BR.Voice.state.mic == on then return end
     BR.Voice.state.mic = on
     if MumbleSetActive then MumbleSetActive(on) end
-    if NetworkSetVoiceActive then NetworkSetVoiceActive(on) end
+
+    -- GTA'S OWN VOICE IS NEVER TURNED ON HERE, and that asymmetry is the point.
+    -- See apply(): this project speaks over Mumble, and the stock voice system
+    -- draws its own "currently talking" readout on top of ours the moment it is
+    -- active. Turning it OFF alongside the mic is still right -- either switch
+    -- left alone leaves the player announced -- but it is never turned back on.
+    if not on and NetworkSetVoiceActive then NetworkSetVoiceActive(false) end
 end
 
 --- Put us in our channels AND point our microphone at them.
@@ -693,8 +699,26 @@ local function apply()
         return
     end
     if MumbleSetActive then MumbleSetActive(true) end
-    -- ...and the game's own voice comes back with it, whatever 'off' did to it.
-    if NetworkSetVoiceActive then NetworkSetVoiceActive(true) end
+
+    -- AND GTA'S OWN VOICE STAYS OFF. THIS LINE USED TO SAY `true` AND IT IS
+    -- WHERE THE DUPLICATE "CURRENTLY TALKING" CAME FROM.
+    --
+    -- `git log -S NetworkSetVoiceActive` returns exactly one commit in this
+    -- repo's history -- 3fc061f, the round that fixed the receive side -- so
+    -- nothing had ever called this native before, and the owner's report of two
+    -- talking readouts arrived with it. That commit's own comment admitted the
+    -- call was guarded and unverified. It was.
+    --
+    -- FiveM hooks NETWORK_SET_VOICE_ACTIVE: it calls the original GTA function
+    -- and then sets g_voiceActiveByScript. So it does two things, and only the
+    -- second was wanted. MumbleSetActive on the line above sets that flag by
+    -- itself -- Mumble_ShouldConnect reads VoiceChatPrefs && OneSync &&
+    -- g_voiceActiveByScript -- so turning the stock system on buys nothing and
+    -- costs a second readout drawn by the game, over which we have no say.
+    --
+    -- Off on 'off' and off on the bus gag is still correct: either switch left
+    -- alone leaves the player announced. It is simply never turned back on.
+    if NetworkSetVoiceActive then NetworkSetVoiceActive(false) end
 
     -- THE ENGINE'S OWN DISTANCE CUTOFF IS NOT ARMED, DELIBERATELY.
     --

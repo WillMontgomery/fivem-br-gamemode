@@ -2484,7 +2484,13 @@ do
     voiceMode('squad')
     local back = mumbleSnapshot()
     ok(back.active, 'coming off off transmits again')
-    ok(back.gameVoice == true, 'and the game\'s voice chat comes back with it',
+    -- THIS ASSERTION USED TO SAY `== true` AND IT ENCODED THE BUG. GTA's own
+    -- voice draws its own "currently talking" readout, so turning it on gave
+    -- the owner two of them. We speak over Mumble; the stock system is never
+    -- wanted on, only ever turned off.
+    ok(back.gameVoice == false,
+        'and GTA\'s own voice chat stays off, because it draws a SECOND '
+        .. '"currently talking" over ours',
         tostring(back.gameVoice))
     ok(back.volume[2] ~= nil and back.volume[2] >= 0.005,
         'and hears the squad again', tostring(back.volume[2]))
@@ -2775,9 +2781,10 @@ do
         'JUMPING OUT GIVES THE MICROPHONE BACK -- the regression a gate in '
         .. 'apply() ships, because nothing calls apply() on BUS -> FREEFALL',
         tostring(jumped.active))
-    ok(jumped.gameVoice == true,
-        'and brings GTA\'s voice chat back with it, so leaving the bus '
-        .. 'restores everything boarding it took',
+    ok(jumped.gameVoice == false,
+        'while GTA\'s own voice stays off throughout -- the microphone that '
+        .. 'comes back is the Mumble one, which is the only one ever carrying '
+        .. 'audio here',
         tostring(jumped.gameVoice))
     ok(hears(jumped, outsider(2), 5.0),
         'so the match can hear them again the moment they are out of the seat')
@@ -2818,8 +2825,10 @@ do
     ok(squadBus.active,
         'A SQUAD ON THE BUS STILL TALKS -- the gag is nearby-only',
         tostring(squadBus.active))
-    ok(squadBus.gameVoice == true,
-        'with GTA\'s voice chat left alone too', tostring(squadBus.gameVoice))
+    ok(squadBus.gameVoice == false,
+        'with GTA\'s own voice off, as it is in every state -- the gag decides '
+        .. 'the Mumble microphone and nothing else',
+        tostring(squadBus.gameVoice))
     ok(#squadBus.people == 1 and squadBus.people[1] == 2,
         'with the microphone pointed straight at the squadmate',
         ('people=%d'):format(#squadBus.people))
