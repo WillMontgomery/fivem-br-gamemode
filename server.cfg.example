@@ -157,6 +157,13 @@ ensure br_ringmaster     # optional -- the admin console's game-side half
 #     it is still 25 m -- but a voice now FADES toward the edge instead of
 #     cutting, and sounds like it is coming from where the player is standing.
 #
+#     ONE CAVEAT, ADDED AFTER THE SECOND ROUND OF #157. The cutoff itself is no
+#     longer the engine's: the client mutes players outside the range itself,
+#     because the engine's own distance cutoff silenced everybody on this build.
+#     A muted player is muted on either setting, so the range will not change --
+#     but the FADE is applied by the playback path to voices that are already
+#     allowed through, so what this changes is the edge, and the edge only.
+#
 # RECOMMENDED, BUT TURN IT ON SECOND. Verify the range works with the hard edge
 # first, because a hard edge is unambiguous: at 30 m you either hear somebody
 # or you do not, and there is nothing to argue about. A fade at 30 m and a

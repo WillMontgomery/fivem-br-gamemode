@@ -162,30 +162,38 @@ BR.Config.Match = {
         -- ==================================================================
         -- HOW FAR A VOICE CARRIES. TWO NUMBERS, BECAUSE THERE ARE TWO JOBS.
         --
-        -- #157: "even when set to nearby (while in squads or solos), the
-        -- channel is global." Everybody in the match heard everybody, at any
-        -- range, because NOTHING EVER TOLD MUMBLE A DISTANCE. FiveM's Mumble
-        -- gates proximity on a distance value the game has to supply
-        -- (MUMBLE_SET_AUDIO_INPUT_DISTANCE / _OUTPUT_DISTANCE); with none
-        -- supplied there is nothing to gate on and the channel is a party
-        -- line. NetworkSetTalkerProximity, which this file used to configure,
-        -- belongs to the GAME's own voice chat and Mumble never reads it.
+        -- #157, first report: "even when set to nearby (while in squads or
+        -- solos), the channel is global." Everybody heard everybody at any
+        -- range, because nothing ever told Mumble a distance.
         --
-        -- THE ENGINE'S CUTOFF IS BINARY, NOT A CURVE. On the stock convar path
-        -- a speaker is either in range at full volume or out of range at
-        -- nothing -- there is no fade. `setr voice_useNativeAudio true` in
-        -- server.cfg swaps that for the game's own attenuation curves; see the
-        -- note in server.cfg.example before turning it on.
+        -- #157, second report, after a distance WAS supplied: "regardless of
+        -- distance, 'nearby' doesn't output audio." Silent at every range,
+        -- including nose to nose, while the talking indicator kept naming
+        -- people. That is the engine's own behaviour and not a bug in these
+        -- numbers: MUMBLE_SET_AUDIO_INPUT_DISTANCE / _OUTPUT_DISTANCE switch
+        -- MumbleAudioOutput onto a listener-to-speaker position comparison,
+        -- and a speaker whose position it does not have is silenced outright
+        -- rather than treated as near. So those natives are no longer called.
         --
-        -- WHY THE TWO NUMBERS CANNOT BE ONE. Mumble's distance is a property
-        -- of a SPEAKER and a LISTENER, not of a channel: every stream you
-        -- receive is gated by the same number whichever room it arrived
-        -- through. So "25 m for strangers, the whole map for my squad" is not
-        -- expressible as a distance at all. Squadmates get there by a
-        -- different door -- a per-player volume override, which the native's
-        -- own documentation says "will also bypass 3D audio and distance
-        -- calculations" -- and `squad` below is the range at which the client
-        -- stops opening that door. Radio, in other words, on top of proximity.
+        -- BOTH NUMBERS ARE ENFORCED BY THE CLIENT NOW, one player at a time,
+        -- with MUMBLE_SET_VOLUME_OVERRIDE_BY_SERVER_ID -- 0.0 for somebody out
+        -- of range, 1.0 for a squadmate on the radio, and no override at all
+        -- for somebody inside `nearby`, which leaves the engine to mix them
+        -- positionally as it always has. See br_core/client/voice.lua.
+        --
+        -- THE CUTOFF IS BINARY, NOT A CURVE: in range at full volume, out of
+        -- range at nothing, no fade. `setr voice_useNativeAudio true` in
+        -- server.cfg changes how the edge sounds; see server.cfg.example, and
+        -- do it after the range has been checked rather than with it.
+        --
+        -- WHY THE TWO NUMBERS CANNOT BE ONE. Audibility belongs to a SPEAKER
+        -- and a LISTENER, never to a channel -- every stream a client receives
+        -- meets the same rule whichever room carried it. So "25 m for
+        -- strangers, the whole map for my squad" cannot be one number, and
+        -- squadmates get there by the volume override, whose documentation is
+        -- explicit that it "will also bypass 3D audio and distance
+        -- calculations". `squad` below is the range at which the client stops
+        -- opening that door. Radio, in other words, on top of proximity.
         range = {
             -- Ordinary speech, in metres. Deliberately short: being heard is
             -- a positional tell, and a wide radius turns every rooftop into a

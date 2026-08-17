@@ -977,29 +977,37 @@ function BR.Native.check()
         return MumbleAddVoiceTargetChannel ~= nil
     end)
     -- SQUAD VOICE IS TWO NATIVES AND NO ROOM (#157). The first routes our
-    -- audio to a squadmate directly; the second exempts them from the distance
-    -- cutoff below, which is the only reason squad comms can outreach
-    -- proximity comms at all. A nil in either is not "no squad room" -- it is
-    -- squad voice silently collapsing back to 25 m of proximity.
+    -- audio to a squadmate directly; the second is now the load-bearing one for
+    -- the WHOLE receive side, not just for squads: it is the only per-listener
+    -- volume control the engine has, and the proximity cutoff, the squad radio
+    -- and the 'off' switch are all made out of it. A nil in the second one is
+    -- not "no squad radio" -- it is a client with no way to decline audio at
+    -- all, so every player in the match is audible everywhere.
     probe('MumbleAddVoiceTargetPlayerByServerId', function()
         return MumbleAddVoiceTargetPlayerByServerId ~= nil
     end)
     probe('MumbleSetVolumeOverrideByServerId', function()
         return MumbleSetVolumeOverrideByServerId ~= nil
     end)
-    -- HOW FAR A VOICE CARRIES, and the whole of #157: with no distance handed
-    -- to Mumble there is nothing for the mixer to gate on and every player in
-    -- a match hears every other one anywhere on the map. A nil in these is not
-    -- a degraded feature, it is voice with no range at all.
+    -- THE ENGINE'S OWN DISTANCE CUTOFF, PROBED BUT DELIBERATELY NEVER CALLED.
+    --
+    -- These were called for one release and they are what made 'nearby' silent
+    -- at every distance: stating a distance switches MumbleAudioOutput onto a
+    -- position comparison, and a speaker whose position it does not have is
+    -- silenced rather than treated as near. They are still probed because their
+    -- presence is worth knowing when reading a bug report -- if they are
+    -- missing, this build predates the whole mechanism -- but client/voice.lua
+    -- applies the cutoff itself and must not call either of these.
     probe('MumbleSetAudioInputDistance', function()
         return MumbleSetAudioInputDistance ~= nil
     end)
     probe('MumbleSetAudioOutputDistance', function()
         return MumbleSetAudioOutputDistance ~= nil
     end)
-    -- The GAME's own talker proximity. Mumble does not read it -- which is why
-    -- it looked like the range was configured for as long as it did -- but it
-    -- is the right number on the native-audio playback path.
+    -- The GAME's own talker proximity, which is a different native from
+    -- MumbleSetTalkerProximity -- that one feeds the engine's SetAudioDistance
+    -- and is avoided for the same reason as the two above. This one belongs to
+    -- the game's voice path and is the right number on native-audio playback.
     probe('NetworkSetTalkerProximity', function()
         return NetworkSetTalkerProximity ~= nil
     end)

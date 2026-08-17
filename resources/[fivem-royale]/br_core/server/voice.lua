@@ -81,10 +81,18 @@ end
 --
 -- WHAT THIS COSTS, stated plainly. A voice target naming players is a target a
 -- modified client could point at server ids it was never given, so a cheat can
--- now push its own audio at a stranger. It still cannot HEAR anyone it was not
--- routed to -- that half is unchanged and it is the half that matters -- and
--- the failure mode is nuisance, not surveillance. Muting is the answer to
--- nuisance and it is per-player already.
+-- push its own audio at a stranger. The failure mode is nuisance, not
+-- surveillance, and muting is the answer to nuisance and is per-player already.
+--
+-- AND THE SECOND ROUND OF #157 WIDENED THAT, so it is restated here rather than
+-- left to age. The proximity cutoff is now applied by the LISTENER, in
+-- br_core/client/voice.lua, because the engine's own distance cutoff silenced
+-- every speaker on the owner's build. So audio from anyone in the same match
+-- does reach a client whether or not they are close enough to hear it, and a
+-- modified client could play it. WHAT IS UNCHANGED is the part this file owns:
+-- the room. Two matches are two rooms, nothing crosses between them, and no
+-- client can put itself in a room it was not given -- so the blast radius of a
+-- liar is the match they are already in, and never the server.
 --
 -- THE PROXIMITY ROOM IS STILL MADE HERE, and still by MUMBLE_CREATE_CHANNEL,
 -- which is a SERVER native (FiveM's Mumble surface is 29 client natives and 3
