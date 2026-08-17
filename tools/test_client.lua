@@ -714,15 +714,74 @@ local function claims()
     return out
 end
 
---- The live hold clock, read the same way /brloot reads it.
-local function holdMs()
+--- Every line /brloot printed, as an array.
+---
+--- The readout IS the deliverable for #129's sixth round -- it is the only
+--- thing a player can send back -- so it is asserted on rather than trusted.
+--- A diagnostic nobody tests is a diagnostic that can print the wrong number
+--- for six rounds without anyone noticing, which is most of this issue.
+local function brloot()
     logged = {}
     commands['brloot'](nil, {}, '')
-    for _, line in ipairs(logged) do
+    return logged
+end
+
+--- The live hold clock, read the same way /brloot reads it.
+local function holdMs()
+    for _, line in ipairs(brloot()) do
         local ms = line:match('^%s*hold:%s+#?%-?%d*%s+(%d+)/%d+ms')
         if ms then return tonumber(ms) end
     end
     return nil
+end
+
+--- The first /brloot line matching `pat`, or nil.
+local function lootLine(pat)
+    for _, line in ipairs(brloot()) do
+        if line:match(pat) then return line end
+    end
+    return nil
+end
+
+--- How many holds crossed chestHoldMs, as /brloot reports it.
+local function completions()
+    local line = lootLine('^%s*completed%s+%d+ hold')
+    return line and tonumber(line:match('completed%s+(%d+)'))
+end
+
+--- How many claims /brloot says this client has sent.
+local function claimsReported()
+    local line = lootLine('^%s*claims%s+%d+ sent')
+    return line and tonumber(line:match('claims%s+(%d+)'))
+end
+
+--- The last hold's summary: id, best ms, frames alive, frames that earned
+--- time, and the reason it ended.
+local function lastHold()
+    local out = {}
+    local lines = brloot()
+    for i, line in ipairs(lines) do
+        local id, best = line:match('^%s*last hold%s+#(%S+) reached (%d+) of %d+ms')
+        if id then
+            out.id, out.best = id, tonumber(best)
+            local frames, counted, pct =
+                (lines[i + 1] or ''):match('(%d+) frame%(s%) alive, (%d+) earned time%s+%((%d+)%%%)')
+            out.frames, out.counted = tonumber(frames), tonumber(counted)
+            out.pct = tonumber(pct)
+            out.why = (lines[i + 2] or ''):match('it ended because (.+)$')
+            return out
+        end
+    end
+    return nil
+end
+
+--- The last claim line, split into { id, kind, answered }.
+local function lastClaim()
+    local line = lootLine('^%s*last claim')
+    if not line then return nil end
+    local id, kind = line:match('last claim #(%S+) %((%w+)%)')
+    if not id then return { none = true } end
+    return { id = id, kind = kind, answered = line:find('SERVER ACTED') ~= nil }
 end
 
 local CHEST_MS = BR.Config.Loot.chestHoldMs or 1000
@@ -948,6 +1007,149 @@ do
     ok(#claims() == 0,
        'a key let go of for longer than the grace never opens the crate',
        ('claims=%d -- press-to-open is back'):format(#claims()))
+end
+
+-- ======================================================================== --
+-- 2b. THE READOUT, WHICH IS THE DELIVERABLE OF #129'S SIXTH ROUND
+-- ======================================================================== --
+--
+-- "When I press E the orange circle does animate. It fills up in the expected
+--  period of time, and properly resets if I release the key. However -- after
+--  holding the key for the fully satisfied time, the crate does not open."
+--  (owner, 2026-08-16)
+--
+-- That sentence was read as proof the clock completes, and it is not proof of
+-- anything of the sort. The ring is a CSS animation started ONCE with
+-- `chestHoldMs` as its duration (br_ui/dui/prompt.html: `restartHold`), so it
+-- fills over exactly that duration no matter what the accumulator underneath
+-- it is doing, and it resets on release because the next prompt carries no
+-- duration at all. A hold whose key sample reads down on one frame in six
+-- produces a ring indistinguishable from a healthy one and a clock six times
+-- too slow -- which is the reported symptom, word for word.
+--
+-- So the blocks below pin the READOUT rather than the mechanism. They are the
+-- test this issue has been missing for five rounds: not "does the hold work"
+-- but "if it does not, does anything say which half is wrong".
+
+local function sessionCounts()
+    return completions() or -1, claimsReported() or -1
+end
+
+describe('a starved key fills the ring and never opens the crate')
+do
+    bootOn(true, true)
+    clearWorld()
+    local id = addEntry('chest', nil, 1.0, 0.0)
+    frames(2)
+    local comp0, claim0 = sessionCounts()
+
+    pressInteract()
+    -- PHYSICALLY HELD THE WHOLE TIME. The raw sample reads UP on five frames
+    -- in every six -- gaps of 80ms, comfortably inside the 120ms grace -- so
+    -- the hold never dies, the ring never resets, and the player sees a ring
+    -- that filled almost four times over.
+    for i = 1, 240 do
+        if i % 6 ~= 0 then lying[INTERACT_VK] = true end
+        frame(16)
+    end
+
+    local live = holdMs()
+    local comp1, claim1 = sessionCounts()
+
+    ok(#claims() == 0, 'the crate does not open')
+    ok(comp1 == comp0, 'and no hold is reported as having completed',
+       ('completed went %d -> %d'):format(comp0, comp1))
+    ok(claim1 == claim0, 'and no claim is reported as sent',
+       ('claims went %d -> %d'):format(claim0, claim1))
+    ok(live ~= nil and live < CHEST_MS,
+       'the clock is still short of the threshold after 3.8s of holding',
+       ('holdMs=%s of %d'):format(tostring(live), CHEST_MS))
+
+    releaseInteract()
+    frames(20)
+
+    -- ...AND THE READOUT SAYS WHY, WHICH IS THE ENTIRE POINT. Without the duty
+    -- cycle this state and a healthy completed hold print the same three lines.
+    local h = lastHold()
+    ok(h ~= nil, 'the readout remembers the hold after the key is let go')
+    ok(h and h.id == tostring(id), 'and which crate it was for',
+       ('id=%s want %s'):format(h and tostring(h.id), tostring(id)))
+    ok(h and h.frames and h.counted and h.counted < h.frames,
+       'and that most frames earned no time',
+       h and ('%d alive, %d earned'):format(h.frames or -1, h.counted or -1))
+    ok(h and h.pct and h.pct < 50,
+       'and reports the duty cycle, which is what separates this from a '
+       .. 'clock that simply completed',
+       h and ('duty=%s%%'):format(tostring(h.pct)))
+end
+
+describe('a completed hold reports the completion, the claim and no answer')
+do
+    bootOn(true, true)
+    clearWorld()
+    local id = addEntry('chest', nil, 1.0, 0.0)
+    frames(2)
+    local comp0, claim0 = sessionCounts()
+
+    pressInteract()
+    frames(math.ceil(CHEST_MS / 16) + 4)
+
+    local comp1, claim1 = sessionCounts()
+    ok(comp1 == comp0 + 1, 'one hold is reported as completed',
+       ('completed went %d -> %d'):format(comp0, comp1))
+    ok(claim1 == claim0 + 1, 'and one claim as sent',
+       ('claims went %d -> %d'):format(claim0, claim1))
+
+    local h = lastHold()
+    ok(h and h.pct == 100, 'the healthy hold reports a 100% duty cycle',
+       h and ('duty=%s%%'):format(tostring(h.pct)))
+    ok(h and h.why and h.why:find('completed'),
+       'and says it ended by completing',
+       h and tostring(h.why))
+
+    -- NOTHING HAS COME BACK YET, and saying so is the line that separates a
+    -- client that never asked from a server that never answered.
+    local c = lastClaim()
+    ok(c and c.id == tostring(id) and c.kind == 'crate',
+       'the last claim names the crate and the path it came from',
+       c and ('id=%s kind=%s'):format(tostring(c.id), tostring(c.kind)))
+    ok(c and c.answered == false,
+       'and reports the server as not having answered it')
+
+    -- The husk coming back under the same id IS the server's answer; there is
+    -- no reply message and there never was.
+    fire(BR.Net.LOOT_ADD, { {
+        id = id, kind = 'husk', item = 'husk', prop = 'open',
+        x = 1.0, y = 0.0, z = 30.0, rarity = BR.Rarity.COMMON, count = 1,
+    } })
+    frames(2)
+    local c2 = lastClaim()
+    ok(c2 and c2.answered == true,
+       'and flips to answered when the crate comes back as its husk')
+    releaseInteract()
+    frames(20)
+end
+
+describe('a loose pickup is counted as a claim too')
+do
+    bootOn(true, true)
+    clearWorld()
+    local id = addEntry(BR.ItemKind.WEAPON, 'pistol', 1.0, 0.0)
+    frames(2)
+    local _, claim0 = sessionCounts()
+
+    pressInteract()
+    frame(16)
+    releaseInteract()
+    frames(2)
+
+    local _, claim1 = sessionCounts()
+    ok(claim1 == claim0 + 1, 'the press path is counted by the same readout',
+       ('claims went %d -> %d'):format(claim0, claim1))
+    local c = lastClaim()
+    ok(c and c.kind == 'item' and c.id == tostring(id),
+       'and is reported as an item rather than a crate',
+       c and ('id=%s kind=%s'):format(tostring(c.id), tostring(c.kind)))
 end
 
 -- ======================================================================== --

@@ -82,9 +82,46 @@ local poses = {}
 --- for that boolean being momentarily wrong, which this project has already
 --- documented that it is (keybinds.lua, the resync window and the note on
 --- citizenfx/fivem#3064 beside it).
-local hold = { id = nil, heldMs = 0.0, upAt = nil }
+--- `frames` and `counted` are the DUTY CYCLE, and they are instrumentation
+--- rather than mechanism -- nothing reads them but /brloot. They exist because
+--- #129 has now cost six rounds and "the ring filled up" was taken as proof the
+--- clock filled up. It is not. The ring is a CSS animation started ONCE with
+--- `chestHoldMs` as its duration (br_ui/dui/prompt.html), so it fills over that
+--- duration whatever the accumulator is doing, and it resets when the hold ends
+--- because the next prompt carries no duration. A hold whose key reads down on
+--- one frame in six therefore shows a ring that fills in a second and a clock
+--- that needs six -- and until now nothing anywhere could tell those apart.
+--- `counted/frames` can: 100% means the clock is running at wall-clock speed.
+local hold = { id = nil, heldMs = 0.0, upAt = nil, frames = 0, counted = 0 }
 
---- Forget the hold in progress -- all three fields, in one call.
+--- WHAT THE LAST HOLD ACTUALLY DID, kept after it ends so it can be read.
+---
+--- Deliberately outlives the hold: the player has to let go of the key to type
+--- in the F8 console, so a readout that only describes a LIVE hold describes
+--- nothing by the time anybody looks at it. { id, best, frames, counted, why }.
+local lastHold = nil
+
+--- Holds that actually crossed chestHoldMs, and claims that actually left.
+---
+--- TWO SEPARATE FACTS, WHICH IS THE WHOLE POINT (#129, sixth round). "The ring
+--- filled", "the hold completed" and "the claim went out" are three different
+--- things and only the first has ever been visible -- from the player's chair
+--- they are the same silence. Counting the second and the third is what says
+--- which half of the system to look at next.
+local completions = 0
+local claimsSent  = 0
+
+--- The last LOOT_CLAIM this client sent, and whether the server ever acted.
+---
+--- `answeredAt` is set when the authoritative consequence comes back -- the
+--- crate re-announced as its husk, or the entry retired for a loose item. A
+--- claim with no answer means the message left here and the server either never
+--- heard it or refused it silently, which is a different bug entirely from a
+--- claim that was never sent.
+--- @type table|nil  { id, at, kind, answeredAt }
+local lastClaim = nil
+
+--- Forget the hold in progress -- all its fields, in one call.
 ---
 --- TEN places abandon a hold: an entry dying, every entry going away, the
 --- downed-mate suppression rising, leaving the take states, walking out of
@@ -94,8 +131,45 @@ local hold = { id = nil, heldMs = 0.0, upAt = nil }
 --- travelled with `id` -- and a hold whose clock outlives its own cancellation
 --- is precisely the shape of bug #129 is about. Adding `upAt` would have been a
 --- third field for all ten of them to forget. One call instead.
-local function clearHold()
+---
+--- `why` is recorded, not acted on. Every one of those ten sites is a different
+--- answer to "why did the crate not open", and they are indistinguishable on
+--- screen -- the ring goes out for all of them.
+--- @param why string|nil
+local function clearHold(why)
+    if hold.id then
+        lastHold = {
+            id      = hold.id,
+            best    = hold.heldMs,
+            frames  = hold.frames,
+            counted = hold.counted,
+            why     = why or 'unrecorded',
+            at      = GetGameTimer(),
+        }
+    end
     hold.id, hold.heldMs, hold.upAt = nil, 0.0, nil
+    hold.frames, hold.counted = 0, 0
+end
+
+--- Send a claim, and remember that we did.
+---
+--- ONE DOOR OUT, so "did the client ask" is answerable for both the crate hold
+--- and the loose-item press without trusting two call sites to have been
+--- counted the same way.
+--- @param id integer
+--- @param kind string  'crate' or 'item' -- which path asked
+local function sendClaim(id, kind)
+    claimsSent = claimsSent + 1
+    lastClaim = { id = id, at = GetGameTimer(), kind = kind }
+    TriggerServerEvent(BR.Net.LOOT_CLAIM, { id = id })
+end
+
+--- The server did the thing a claim asked for. Called from the wire handlers.
+--- @param id integer
+local function noteClaimAnswered(id)
+    if lastClaim and lastClaim.id == id and not lastClaim.answeredAt then
+        lastClaim.answeredAt = GetGameTimer()
+    end
 end
 
 --- HOW LONG THE KEY MUST READ UP BEFORE A HOLD IN PROGRESS IS ABANDONED.
@@ -334,7 +408,7 @@ function BR.Loot.suppress(on)
     -- mate mid-crate must not leave a timer running behind the revive prompt --
     -- nor a remembered target that the next keypress would claim instead of
     -- starting the revive.
-    if on then clearHold(); target = nil end
+    if on then clearHold('a downed squadmate took the interact key'); target = nil end
 end
 
 --- ...AND A LANDED PLAYER MAY REACH FOR THINGS, before the server has caught up.
@@ -574,7 +648,7 @@ local function forget(id)
     entries[id] = nil
     queued[id] = nil
     poses[id] = nil
-    if hold.id == id then clearHold() end
+    if hold.id == id then clearHold('the entry it was for went away') end
     -- An entry that no longer exists cannot be the thing the player is being
     -- offered. Left set, it is a claim waiting to be sent for an id the server
     -- has already retired.
@@ -588,7 +662,7 @@ local function forgetAll()
     for id in pairs(entries) do forget(id) end
     entries, queue, queued, byObject, reported = {}, {}, {}, {}, {}
     myCell, target = nil, nil
-    clearHold()
+    clearHold('the whole registry was dropped')
     shineId, outlinedId = nil, nil
     burstUntil, burstArmed = 0, false
     -- Inline rather than through setPrompt(): that lives below this, and a
@@ -819,6 +893,15 @@ local function addEntries(list)
                 local reskinned = have.kind ~= d.kind or have.prop ~= d.prop
 
                 if moved or reskinned then
+                    -- THE SERVER ANSWERED, and this is the only place a client
+                    -- can see that it did. A crate re-announced as its husk IS
+                    -- the confirmation that a claim landed -- there is no reply
+                    -- message and never was -- so the claim receipt is closed
+                    -- here (#129, sixth round: "the claim went out" and "the
+                    -- server acted on it" were the same silence from a chair).
+                    if reskinned and d.kind == 'husk' then
+                        noteClaimAnswered(d.id)
+                    end
                     -- THE REVEAL, on the authoritative moment -- and only for
                     -- the player who opened it. This fires when the crate
                     -- ACTUALLY opened, so it cannot play for a claim the
@@ -874,6 +957,9 @@ RegisterNetEvent(BR.Net.LOOT_GONE)
 AddEventHandler(BR.Net.LOOT_GONE, function(ids)
     for _, id in ipairs(ids or {}) do
         local e = entries[id]
+        -- A loose item's claim is answered by its RETIREMENT, the way a crate's
+        -- is answered by its husk. Same receipt, different shape.
+        noteClaimAnswered(id)
         -- SOMETHING I TOOK FLIES TO ME. Somebody else's pickup just goes --
         -- LOOT_GONE does not say who claimed it, and inventing a direction
         -- would be a lie about where a player is standing.
@@ -1429,7 +1515,8 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
         -- hold begun on the last crate in scope stayed armed with its clock
         -- notionally running, and the target stayed claimable. Neither can
         -- survive the entries going away.
-        clearHold()
+        clearHold(canSee() and 'no loot is streamed in'
+                           or 'loot is not visible in this state')
         target = nil
         return
     end
@@ -1614,7 +1701,7 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
         -- through a spell of canTake() being false -- in a car, suppressed by
         -- a downed mate, mid-respawn -- leaves a claim armed for an item the
         -- player can no longer legitimately reach.
-        clearHold()
+        clearHold('the player cannot take anything right now')
         target = nil
         setPrompt(nil)
         return
@@ -1649,26 +1736,50 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
         if not e
            or BR.Dist2(p.x, p.y, e.x, e.y) > reach * reach
            or not alive then
-            clearHold()
+            -- WHICH OF THE THREE, RECORDED. They look identical on screen --
+            -- the ring goes out -- and they point at completely different
+            -- files. Worked out here rather than in clearHold so the test can
+            -- read the same string the player pastes.
+            local why
+            if not e then
+                why = 'the crate stopped existing'
+            elseif BR.Dist2(p.x, p.y, e.x, e.y) > reach * reach then
+                why = 'the player walked out of reach'
+            else
+                why = 'the key was released'
+            end
+            clearHold(why)
         else
             shown = e
             setPrompt(e, L.chestHoldMs or 1000)
 
+            -- THE DUTY CYCLE, MEASURED WHERE IT IS SPENT. `frames` is every
+            -- frame this hold survived; `counted` is the subset that earned
+            -- milliseconds. They are equal on a healthy client and that is the
+            -- single number #129 has never had: a ring that fills in a second
+            -- over a clock that earned a fifth of one is the reported symptom
+            -- exactly, and it is invisible without this.
+            hold.frames = hold.frames + 1
+
             -- Only frames on which the key was down get counted, and `dt` is
             -- already clamped to 100ms above so a stalled frame cannot hand
             -- the player a tenth of a second of credit it did not earn.
-            if counting then hold.heldMs = hold.heldMs + dt end
+            if counting then
+                hold.counted = hold.counted + 1
+                hold.heldMs = hold.heldMs + dt
+            end
 
             if hold.heldMs >= (L.chestHoldMs or 1000) then
                 local id = hold.id
-                clearHold()
+                completions = completions + 1
+                clearHold('it completed')
                 -- THE GLOW HAS DONE ITS JOB. Counted on the hold completing
                 -- rather than on the server's reply: the player has
                 -- demonstrably learned the interaction by this point, and a
                 -- refused claim (someone beat them to it) taught them just as
                 -- well.
                 BR.Loot.openedCount = BR.Loot.openedCount + 1
-                TriggerServerEvent(BR.Net.LOOT_CLAIM, { id = id })
+                sendClaim(id, 'crate')
                 claimedByMe[id] = GetGameTimer()
                 setPrompt(nil)
                 shown = nil
@@ -1805,7 +1916,7 @@ local function interactPressed()
         -- of the one before it: a hold begun 20ms after the last one was let go
         -- would otherwise start life already counting down towards its own
         -- cancellation.
-        clearHold()
+        clearHold('a fresh hold started on another crate')
         hold.id = e.id
         return
     end
@@ -1815,7 +1926,7 @@ local function interactPressed()
     local now = GetGameTimer()
     if now - (claimedAt[e.id] or 0) < 500 then return end
     claimedAt[e.id] = now
-    TriggerServerEvent(BR.Net.LOOT_CLAIM, { id = e.id })
+    sendClaim(e.id, 'item')
 end
 
 BR.Keys.on('interact', function(pressed)
@@ -1887,7 +1998,7 @@ end)
 -- another.
 BR.Loop.register(BR.Loop.FRAME, 'loot.interact', function()
     if hold.id and not holdKeyAlive(GetGameTimer()) then
-        clearHold()
+        clearHold('the key stayed up past the grace (net check)')
     end
 end)
 
@@ -2227,6 +2338,64 @@ RegisterCommand('brloot', function()
     --   0 and it does NOT open  this is not the fault -- look somewhere else.
     print(('  key dropped a frame mid-hold %d time(s) this session '
         .. '(each one used to restart the clock)'):format(holdResumes))
+
+    -- ====================================================================
+    -- THE THREE FACTS THE RING CANNOT TELL YOU (#129, sixth round).
+    --
+    -- Five rounds were spent arguing about the key layer because the only
+    -- thing anybody could see was an orange ring, and the ring is a CSS
+    -- animation started ONCE with `chestHoldMs` as its duration -- it fills
+    -- over that duration whether or not the clock underneath it is moving,
+    -- and it resets on release because the next prompt carries no duration.
+    -- So "the ring filled" is compatible with every one of:
+    --
+    --   the clock was starved and never finished       -> `last hold` below
+    --   the clock finished and no claim went out       -> `completed` vs `claims`
+    --   the claim went out and the server ignored it   -> `last claim` below
+    --   the server acted and the world did not show it -> `last claim` answered
+    --
+    -- Each line below separates one of those from the next. Read them in
+    -- order; the first one that reads wrong is the half to look in.
+    -- ====================================================================
+    print('  --- what the hold actually did ---')
+
+    if lastHold then
+        local pct = (lastHold.frames > 0)
+            and (100.0 * lastHold.counted / lastHold.frames) or 0.0
+        print(('  last hold  #%s reached %.0f of %dms')
+            :format(tostring(lastHold.id), lastHold.best, L.chestHoldMs or 1000))
+        -- THE DUTY CYCLE. 100% means the clock ran at wall-clock speed and
+        -- the ring told the truth. Anything well below it means the ring
+        -- finished while the clock was still a fraction of the way there --
+        -- which looks exactly like a crate that refuses to open.
+        print(('             %d frame(s) alive, %d earned time  (%.0f%%)')
+            :format(lastHold.frames, lastHold.counted, pct))
+        print(('             it ended because %s'):format(lastHold.why))
+    else
+        print('  last hold  (none started yet this session)')
+    end
+
+    print(('  completed  %d hold(s) crossed %dms this session')
+        :format(completions, L.chestHoldMs or 1000))
+    print(('  claims     %d sent this session (crates and loose items)')
+        :format(claimsSent))
+
+    if lastClaim then
+        local ago = (GetGameTimer() - lastClaim.at) / 1000.0
+        if lastClaim.answeredAt then
+            print(('  last claim #%s (%s) sent %.1fs ago -- SERVER ACTED %.1fs later')
+                :format(tostring(lastClaim.id), lastClaim.kind, ago,
+                        (lastClaim.answeredAt - lastClaim.at) / 1000.0))
+        else
+            -- THE LINE THAT SPLITS THE CLIENT FROM THE SERVER. A claim with
+            -- no answer left this machine and produced nothing: the server
+            -- either never received it or refused it without saying so.
+            print(('  last claim #%s (%s) sent %.1fs ago -- NO ANSWER FROM THE SERVER')
+                :format(tostring(lastClaim.id), lastClaim.kind, ago))
+        end
+    else
+        print('  last claim (nothing has ever been claimed this session)')
+    end
 end, false)
 
 --- Change the crate hold duration live, the same way /brlabel and /brshine
@@ -2246,7 +2415,7 @@ RegisterCommand('brcratehold', function(_, args)
         -- that can reintroduce it is asking for it back.
         L.chestHoldMs = math.max(100, math.floor(ms))
         -- Any hold in flight was measured against the old number.
-        clearHold()
+        clearHold('the hold duration was retuned')
         lastPrompt.id, lastPrompt.hold = nil, nil
     end
     print(('[br_core] crate hold = %dms   (usage: brcratehold <ms>)')
