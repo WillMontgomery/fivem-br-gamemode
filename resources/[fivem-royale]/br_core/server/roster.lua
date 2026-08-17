@@ -353,6 +353,42 @@ function BR.Roster.remove(src)
     return entry
 end
 
+--- Seal a COPY of a player's match record, for somebody leaving the MATCH but
+--- not the SERVER (#161).
+---
+--- THE SAME MOVE AS remove(), FOR THE OTHER WAY OUT. A disconnect seals because
+--- the entry is about to be deleted; a voluntary leave has to seal because the
+--- entry is about to be DETACHED -- `BR.Match.leaveMatch` clears matchId so the
+--- player stops hearing this match's traffic, and publishResults finds its rows
+--- by matchId. Either way the record has to survive the exit, and until this
+--- existed only one of the two ways out was covered: a player who pressed Leave
+--- Match forfeited their whole record even from a match that ended normally,
+--- which is #100's bug arriving through the door nobody checked.
+---
+--- A COPY, NOT THE ENTRY ITSELF, and that is the difference from remove(). This
+--- player is still connected and still playing -- they will queue again, take
+--- damage again, and every one of those writes would land on a sealed record if
+--- it were the same table. The entry stays live; the match takes a photograph.
+---
+--- The license is resolved HERE for the reason #100 gives: they may well close
+--- the game before the match they just left finishes dissolving, and by then
+--- `licenseOf` answers for nobody.
+--- @param src integer
+--- @return table|nil the sealed copy
+function BR.Roster.sealLeaver(src)
+    local entry = roster[src]
+    if not entry or not entry.matchId then return nil end
+
+    local copy = {}
+    for k, v in pairs(entry) do copy[k] = v end
+    copy.state  = BR.PlayerState.LEFT
+    copy.leftAt = GetGameTimer()
+    copy.license = BR.Roster.licenseOf(src)
+
+    departed[#departed + 1] = copy
+    return copy
+end
+
 --- @param src integer
 --- @return table|nil
 function BR.Roster.get(src)

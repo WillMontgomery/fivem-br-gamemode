@@ -1530,10 +1530,25 @@ do
     forceState(BR.MatchState.PLAYING)
 
     sent = {}
+    local mleave = theMatch()
     fire(BR.Net.MATCH_LEAVE, 2)
     local e = BR.Roster.get(2)
     ok(e.state == BR.PlayerState.LOBBY, 'the leaver is back in the lobby')
-    ok(e.placement ~= nil, 'with a placement recorded, like any elimination')
+
+    -- THE PLACEMENT IS ON THE SEALED COPY NOW (#161), and that is where it has
+    -- to be. This used to assert on the live entry -- where nothing ever read
+    -- it: publishResults finds its rows by matchId, and leaving detaches this
+    -- player's, so the placement sat on a roster entry as evidence of an
+    -- elimination that could never be published. The same fact, moved somewhere
+    -- that actually reaches DynamoDB.
+    local sealed = BR.Roster.departedIn(mleave.id)[1]
+    ok(sealed ~= nil, 'the leaver is sealed into the match they left (#161)')
+    ok(sealed and sealed.placement ~= nil,
+        'with a placement recorded, like any elimination',
+        ('sealed placement %s'):format(tostring(sealed and sealed.placement)))
+    ok(e.placement == nil and e.diedAt == nil,
+        'and the live entry is wiped, so last match does not ride into the next one',
+        ('placement %s diedAt %s'):format(tostring(e.placement), tostring(e.diedAt)))
     ok(#eventsOf(BR.Net.TO_LOBBY) == 1, 'and is sent home')
     ok(mstate() == BR.MatchState.PLAYING,
         'while the match plays on for everyone else')
@@ -7022,13 +7037,19 @@ do
     fakeTime = r3.jumpFrom + 1000
     fire(BR.Net.BUS_JUMP, 2)
     fire(BR.Net.DROP_LANDED, 2)
+    local mbus = theMatch()
     BR.Match.leaveMatch(2)
     local e2 = BR.Roster.get(2)
-    ok(e2.revivePending == nil and e2.diedAt ~= nil and e2.placement ~= nil,
+    -- Read off the SEALED copy (#161): leaving detaches matchId, so a leaver's
+    -- record now travels in `departed` rather than on the live entry, which is
+    -- wiped so none of it reaches their next match.
+    local bailed = BR.Roster.departedIn(mbus.id)[1]
+    ok(e2.revivePending == nil and bailed ~= nil
+       and bailed.diedAt ~= nil and bailed.placement ~= nil,
         'quitting during the flight is still a real elimination',
         ('pending %s diedAt %s placement %s'):format(
-            tostring(e2.revivePending), tostring(e2.diedAt),
-            tostring(e2.placement)))
+            tostring(e2.revivePending), tostring(bailed and bailed.diedAt),
+            tostring(bailed and bailed.placement)))
 
     -- (5) WHERE THE WINDOW STARTS, which is the whole of the rescope (owner,
     --     2026-08-16): "this was not supposed to cover dying during warmup,
@@ -7101,6 +7122,291 @@ do
         'and the very next death IS held -- same match state, different side of the door')
     ok(f.diedAt == nil and f.placement == nil,
         'with nothing a results row is built from written')
+end
+
+describe('match.abandonedResults')
+do
+    -- #161: "A match everybody leaves records nothing for anybody."
+    --
+    -- Two players joined a match, both left early, the match emptied and cleaned
+    -- up, and `brprofile` showed `matches` unchanged for both. No aggregate, no
+    -- XP, no Volts, no history row. THE OWNER'S CALL: "we should record
+    -- everything."
+    --
+    -- WHY IT HAPPENED, AND WHY IT WAS TWO BUGS WEARING ONE COAT:
+    --
+    --   1. Results are published on entering ENDED. A match nobody is left in is
+    --      dissolved through BR.Match.destroy instead and never enters ENDED, so
+    --      publishResults was never asked to run.
+    --   2. And even when it did run, it could not see a player who used Leave
+    --      Match: that path detaches matchId, which is the key publishResults
+    --      builds its rows from. #100 fixed exactly this for DISCONNECTS and the
+    --      other door was never checked -- so a leaver forfeited their record
+    --      even from a match that ran all the way to a winner.
+    --
+    -- Both are staged below, because "left the match" means either one in
+    -- practice and the owner cannot be expected to know which button was pressed.
+    --
+    -- WHAT THIS BLOCK IS REALLY GUARDING is the same thing #132 and #144 guard:
+    -- br_stats writes an atomic ADD to DynamoDB and there is NO COMPENSATING
+    -- WRITE. Publishing twice, or publishing after CLEANUP has zeroed everything,
+    -- is unrecoverable without a manual repair. So every assertion here is really
+    -- about counting to exactly one and about what the rows contain when it does.
+    local realTrigger = TriggerEvent
+
+    --- Every br:match:results payload published since a mark.
+    local function resultsSince(n)
+        local out = {}
+        for i = n + 1, #fired do
+            if fired[i].event == 'br:match:results' then
+                out[#out + 1] = fired[i].args[1]
+            end
+        end
+        return out
+    end
+
+    --- Everything br_stats emitted since a mark, split by verb.
+    local function statsSince(n)
+        local rows, deltasBy, batches = nil, {}, 0
+        for i = n + 1, #fired do
+            local f = fired[i]
+            if f.event == 'br:ddb:historyPut' then
+                batches = batches + 1
+                rows = f.args[2]
+            elseif f.event == 'br:ddb:statsApply' then
+                deltasBy[f.args[2]] = f.args[3]
+            end
+        end
+        return rows, deltasBy, batches
+    end
+
+    --- Two players, a live match, and real numbers on both of them.
+    ---
+    --- The numbers are the point. A published row of zeroes is not a lesser
+    --- version of this fix, it is #132 -- so every assertion below reads a value
+    --- that could only have come from before the teardown.
+    local function twoInAMatch()
+        reset()
+        BR.Server.devMode = true
+        join(1, 'Stayer'); join(2, 'Bailer')
+        forceState(BR.MatchState.PLAYING)
+        BR.Roster.each(nil, function(src)
+            BR.Roster.setState(src, BR.PlayerState.ALIVE)
+        end)
+        BR.Roster.get(1).kills, BR.Roster.get(1).damage = 2, 350.0
+        BR.Roster.get(2).kills, BR.Roster.get(2).damage = 1, 120.0
+        fakeTime = fakeTime + 60000
+        return theMatch()
+    end
+
+    --- Advance one match tick.
+    local function tick()
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+    end
+
+    -- ------------------------------------------------------------------
+    -- (1) EVERYBODY USES LEAVE MATCH. #161's headline case.
+    -- ------------------------------------------------------------------
+    local mark = #fired
+    local m1 = twoInAMatch()
+    fire(BR.Net.MATCH_LEAVE, 2)     -- Bailer goes first...
+    fire(BR.Net.MATCH_LEAVE, 1)     -- ...then the last player out
+    tick()
+
+    ok(BR.Server.matches[m1.id] == nil,
+        'a match nobody is left in is dissolved')
+
+    local pub = resultsSince(mark)
+    ok(#pub == 1, 'and its results are published -- EXACTLY ONCE (#161)',
+        ('got %d publishes'):format(#pub))
+
+    local res = pub[1]
+    local by = {}
+    for _, r in ipairs(res and res.players or {}) do by[r.name] = r end
+
+    ok(by.Stayer ~= nil and by.Bailer ~= nil,
+        'with a row for both players, not just whoever was last out')
+    ok(res and res.total == 2, 'and a field size that counts them both',
+        ('got %s'):format(tostring(res and res.total)))
+
+    -- THE REAL NUMBERS, WHICH IS THE WHOLE DELIVERABLE. If the publish happened
+    -- one line later -- after destroy's roster sweep, or after CLEANUP's wipe --
+    -- these are the assertions that would fail, and they would fail as zeroes
+    -- rather than as an error.
+    ok(by.Stayer and by.Stayer.kills == 2 and by.Stayer.damage == 350.0,
+        "the stayer's real kills and damage are on the row",
+        ('kills %s damage %s'):format(tostring(by.Stayer and by.Stayer.kills),
+            tostring(by.Stayer and by.Stayer.damage)))
+    ok(by.Bailer and by.Bailer.kills == 1 and by.Bailer.damage == 120.0,
+        "and the first leaver's too -- their record survived being detached")
+    ok(by.Stayer and by.Stayer.license == 'license:test1'
+       and by.Bailer and by.Bailer.license == 'license:test2',
+        'both rows are keyable, so br_stats can write them (#100)')
+
+    -- THE HAZARD THIS ISSUE IS MOST LIKELY TO CREATE: "record everything" makes
+    -- the last player to walk out look exactly like the last player standing.
+    --
+    -- They DO take placement 1, and that is correct -- at the moment they left,
+    -- nobody had outlasted them, which is what placement means. What must never
+    -- follow is a WIN. eliminate('left') stamps diedAt, and #133 settled the rule
+    -- as `won = placement == 1 and not died`.
+    ok(by.Stayer and by.Stayer.placement == 1,
+        'the last player out places first -- nobody outlasted them',
+        ('got %s'):format(tostring(by.Stayer and by.Stayer.placement)))
+    ok(by.Stayer and by.Stayer.died == true,
+        'but leaving while alive is an elimination, so `died` is set (#133)')
+    ok(by.Bailer and by.Bailer.placement == 2,
+        'and the player who left first placed behind them',
+        ('got %s'):format(tostring(by.Bailer and by.Bailer.placement)))
+
+    -- ...AND THE CONSUMER AGREES, which is the half that reaches DynamoDB.
+    -- Asserted through br_stats rather than by re-deriving the rule here: two
+    -- copies of this rule disagreeing is precisely what #133 was.
+    local smark = #fired
+    -- Guarded so that a run with the fix REVERTED reports honest pass/fail counts
+    -- instead of dying here on a nil payload. br_stats indexes res.players
+    -- directly, as it should -- br_core never sends it nothing.
+    if res then fire('br:match:results', nil, res) end
+    local hrows, deltasBy, batches = statsSince(smark)
+
+    ok(deltasBy['license:test1'] and deltasBy['license:test1'].wins == 0,
+        'NOBODY WINS AN ABANDONED MATCH -- leaving last is not a victory (#133)',
+        ('wins %s'):format(tostring(deltasBy['license:test1']
+            and deltasBy['license:test1'].wins)))
+    ok(deltasBy['license:test1'] and deltasBy['license:test1'].matches == 1,
+        'the match is banked, once, for the last player out')
+    ok(deltasBy['license:test2'] and deltasBy['license:test2'].matches == 1,
+        'and once for the player who left first -- which is what #161 reported missing')
+    ok(deltasBy['license:test1'] and deltasBy['license:test1'].kills == 2,
+        'with their kills', ('got %s'):format(tostring(deltasBy['license:test1']
+            and deltasBy['license:test1'].kills)))
+
+    -- MATCH HISTORY (#153) FOLLOWS FOR FREE, and this is the assertion that says
+    -- so rather than assuming it. The rows are built inside the same
+    -- br:match:results handler as the aggregate, so publishing an abandoned match
+    -- is the only thing that was needed -- #153 was never broken here, it was
+    -- never asked to write anything. That is what made its first test
+    -- inconclusive.
+    ok(batches == 1, 'the abandoned match writes ONE history batch (#153)',
+        ('got %d'):format(batches))
+    ok(hrows ~= nil and #hrows == 2, 'with a per-match row for both players',
+        ('got %s'):format(tostring(hrows and #hrows)))
+    local hby = {}
+    for _, r in ipairs(hrows or {}) do hby[r.license] = r end
+    ok(hby['license:test1'] and hby['license:test1'].won == false,
+        'and the record agrees with the aggregate: no win on the history row either')
+    ok(hby['license:test2'] and hby['license:test2'].kills == 1,
+        'the first leaver is in the history too')
+
+    -- ------------------------------------------------------------------
+    -- (2) AND IT DOES NOT PUBLISH AGAIN IF DESTROY RUNS TWICE.
+    --
+    -- m.publishedAt is the one guard, and it is inside publishResults. A second
+    -- pass would not be a duplicate -- by now the roster is detached and the
+    -- sealed entries are gone, so it would ADD a fresh set of near-empty rows to
+    -- DynamoDB on top of the real ones, with nothing able to take them back.
+    -- ------------------------------------------------------------------
+    local dmark = #fired
+    BR.Match.destroy(m1)
+    BR.Match.destroy(m1)
+    ok(#resultsSince(dmark) == 0,
+        'destroying an already-dissolved match publishes nothing further (#132)',
+        ('got %d publishes'):format(#resultsSince(dmark)))
+    local _, _, again = statsSince(dmark)
+    ok(again == 0, 'so no second history batch is filed either',
+        ('got %d'):format(again))
+
+    -- ------------------------------------------------------------------
+    -- (3) THE OTHER WAY OUT: everybody CLOSES THE GAME. Same match, same
+    --     outcome -- this is the path #100's sealing was built for, and the one
+    --     the issue's own diagnosis is written against.
+    -- ------------------------------------------------------------------
+    mark = #fired
+    local m2 = twoInAMatch()
+    leave(2); leave(1)
+    tick()
+
+    ok(BR.Server.matches[m2.id] == nil, 'a match everybody disconnects from dissolves')
+    local pub2 = resultsSince(mark)
+    ok(#pub2 == 1, 'and publishes exactly once as well',
+        ('got %d'):format(#pub2))
+    local by2 = {}
+    for _, r in ipairs(pub2[1] and pub2[1].players or {}) do by2[r.name] = r end
+    ok(by2.Stayer and by2.Stayer.kills == 2 and by2.Bailer and by2.Bailer.kills == 1,
+        'with both sealed records intact (#100)')
+    -- A DISCONNECT IS NOT AN ELIMINATION, so there is no placement and no death
+    -- flag -- the same shape #100 already produces on a match that ends normally.
+    -- Which means there is no route to a win here either.
+    ok(by2.Stayer and by2.Stayer.placement == nil and by2.Stayer.died == false,
+        'a disconnect records no placement, so nobody can win by quitting last')
+
+    -- ------------------------------------------------------------------
+    -- (4) A MATCH THAT NEVER WENT LIVE RECORDS NOTHING, and that is a decision
+    --     rather than an omission. Warmup is invincible and the flight is
+    --     untouchable, so every field a row is built from is still zero and
+    --     survivedMs would be zero for everybody. Publishing that is not
+    --     "recording a short match", it is filing #132's fingerprint on purpose.
+    -- ------------------------------------------------------------------
+    mark = #fired
+    reset()
+    BR.Server.devMode = true
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    ok(mstate() == BR.MatchState.WARMUP, 'a warmup starts')
+    local m3 = theMatch()
+    ok(m3.startedAt == nil, 'and it has not gone live')
+    fire(BR.Net.MATCH_LEAVE, 1)
+    fire(BR.Net.MATCH_LEAVE, 2)
+    tick()
+    ok(BR.Server.matches[m3.id] == nil, 'everybody leaves and it dissolves')
+    ok(#resultsSince(mark) == 0,
+        'a match dissolved off the warmup pad records nothing for anybody',
+        ('got %d publishes'):format(#resultsSince(mark)))
+
+    -- ------------------------------------------------------------------
+    -- (5) PUBLISHING NEVER HAPPENS AFTER THE DATA IS DESTROYED.
+    --
+    --     `brforce cleanup` straight from PLAYING runs resetPlayers -- zeroing
+    --     kills, downs, revives and damage, clearing placement, nil'ing diedAt
+    --     and dropping the sealed entries -- with nothing yet published. The
+    --     dissolve that follows must then record NOTHING rather than a match in
+    --     which nobody did anything. Better a missing match than a permanent
+    --     fabrication: the ADD has no compensating write.
+    -- ------------------------------------------------------------------
+    mark = #fired
+    local m4 = twoInAMatch()
+    BR.Match.transition(m4, BR.MatchState.CLEANUP)
+    ok(BR.Roster.get(1).kills == 0, 'CLEANUP has zeroed the numbers')
+    ok(m4.wipedAt ~= nil, 'and stamped the match as wiped')
+    BR.Match.destroy(m4)
+    ok(#resultsSince(mark) == 0,
+        'a match dissolved AFTER the wipe files nothing rather than rows of zeroes',
+        ('got %d publishes'):format(#resultsSince(mark)))
+
+    -- ------------------------------------------------------------------
+    -- (6) AND A MATCH THAT ENDS NORMALLY IS STILL PUBLISHED EXACTLY ONCE.
+    --
+    --     THE MOST DANGEROUS THING ABOUT THIS CHANGE. destroy now publishes, and
+    --     every finished match ends ENDED -> CLEANUP -> destroy -- so if the new
+    --     call were not covered by m.publishedAt, EVERY match on the server would
+    --     be banked twice. This is the assertion that would catch that, and it is
+    --     worth more than all the ones above.
+    -- ------------------------------------------------------------------
+    mark = #fired
+    local m5 = twoInAMatch()
+    BR.Combat.eliminate(2, 'weapon', 1)
+    BR.Match.transition(m5, BR.MatchState.ENDED)
+    ok(#resultsSince(mark) == 1, 'a normal end publishes once',
+        ('got %d'):format(#resultsSince(mark)))
+    BR.Match.transition(m5, BR.MatchState.CLEANUP)
+    BR.Match.destroy(m5)
+    ok(#resultsSince(mark) == 1,
+        'and the CLEANUP -> destroy that follows every finished match adds no second one',
+        ('got %d'):format(#resultsSince(mark)))
+
+    TriggerEvent = realTrigger
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
