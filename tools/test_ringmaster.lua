@@ -611,6 +611,647 @@ do
     ok(d.doneCount == 1 and d.doneArg == nil, 'no license means admitted, not refused')
 end
 
+-- ======================================================================== --
+-- THE SERVER HALF OF A CRATE CLAIM  (br_core/server/loot.lua)
+-- ======================================================================== --
+--
+-- WHY THIS LIVES AT THE BOTTOM OF THE RINGMASTER SUITE, which is otherwise a
+-- strange place for it. br_core is loaded HERE and not at the top because the
+-- Slice-1 gate above counts the commands registered up to that point and
+-- asserts there are exactly two; br_core/server/loot.lua registers two more of
+-- its own (brlootseed, brcrate). Everything above this line is br_ringmaster
+-- and is finished asserting by the time the first br_core file is read.
+--
+-- WHAT THIS BLOCK IS FOR. #129 was a client bug: a FiveM native answered `1`
+-- rather than `true`, so `isHeld` was false every frame and LOOT_CLAIM was
+-- never sent for a crate -- not once, in any session, ever. The client now
+-- sends one, which means the container branch of the claim handler is about to
+-- run in play for the first time.
+--
+-- Every case below drives the REAL AddEventHandler(BR.Net.LOOT_CLAIM) handler
+-- in br_core/server/loot.lua through the harness's own dispatch, against a
+-- REAL generated layout (BR.BuildLootLayout) and the REAL registry, and
+-- asserts on the resulting ENTRY LIST -- what is on the ground afterwards and
+-- what the client was told -- rather than on any function having been called.
+-- Nothing in br_core is stubbed: BR.Roster, BR.Server, BR.Inv, BR.Loot and the
+-- generator are the shipping files. The only stubs are FiveM natives.
+
+-- Natives br_core needs and br_ringmaster does not. Defined now rather than at
+-- the top so the blocks above run against exactly the surface they were
+-- written for.
+function GetPlayerPed(src) return 1000 + (tonumber(src) or 0) end
+function GetEntityCoords() return { x = 0.0, y = 0.0, z = 0.0 } end
+function GetEntityHealth() return 200 end
+function GetPedArmour() return 0 end
+function SetPlayerRoutingBucket() end
+function SetRoutingBucketPopulationEnabled() end
+function DropPlayer() end
+function RegisterNetEvent() end
+function GetCurrentResourceName() return 'br_core' end
+
+--- Everything the server sent to a client, in order.
+local sent = {}
+function TriggerClientEvent(event, target, ...)
+    sent[#sent + 1] = { event = event, target = target, args = { ... } }
+end
+
+loadAll({
+    'br_lib/shared/protocol.lua',
+    'br_lib/shared/names.lua',
+    'br_lib/shared/rng.lua',
+    'br_lib/shared/geo.lua',
+    'br_lib/shared/clock.lua',
+    'br_lib/config/match.lua',
+    'br_lib/config/storm.lua',
+    'br_lib/config/map.lua',
+    'br_lib/config/weapons.lua',
+    'br_lib/config/loot.lua',
+    'br_lib/shared/loot_gen.lua',
+    'br_core/server/main.lua',
+    'br_core/server/broadcast.lua',
+    'br_core/server/roster.lua',
+    'br_core/server/inventory.lua',   -- BR.Inv, for the non-container path
+    'br_core/server/loot.lua',
+})
+
+local LOOT = BR.Config.Loot
+
+--- Dispatch a net event AS THE SERVER RECEIVES IT: `source` set, every
+--- registered handler run. Same shape the ban gate above uses.
+local function fire(name, src, payload)
+    source = src
+    for _, fn in ipairs(handlers[name] or {}) do fn(payload) end
+end
+
+--- Where the outbound log currently ends, so a test can read only what its own
+--- claim produced.
+local function mark() return #sent end
+
+--- Every message sent to `target` since `from`, optionally of one event name.
+local function heard(from, target, event)
+    local out = {}
+    for i = from + 1, #sent do
+        local s = sent[i]
+        if s.target == target and (not event or s.event == event) then
+            out[#out + 1] = s
+        end
+    end
+    return out
+end
+
+--- The notice texts a player was shown since `from`. The distinction between
+--- "refused with a reason" and "refused in silence" is the whole point of the
+--- refusal block below, so it gets its own reader.
+local function notices(from, target)
+    local out = {}
+    for _, s in ipairs(heard(from, target, BR.Net.NOTIFY)) do
+        out[#out + 1] = s.args[1] and s.args[1].text or ''
+    end
+    return out
+end
+
+--- The registry, flattened to comparable strings. A refusal must leave this
+--- IDENTICAL -- not merely leave the claimed entry alone, which would miss a
+--- refusal that scattered contents on its way out.
+local function worldOf(m)
+    local out, n = {}, 0
+    for id, e in pairs(m.loot.items) do
+        out[id] = ('%s|%s|%.3f|%.3f|%s|%s|%d'):format(
+            tostring(e.kind), tostring(e.item), e.x, e.y,
+            tostring(e.prop), tostring(e.cell), e.contents and #e.contents or -1)
+        n = n + 1
+    end
+    out.n = n
+    return out
+end
+
+local function sameWorld(a, b)
+    for id, v in pairs(a) do if b[id] ~= v then return false, id end end
+    for id in pairs(b) do if a[id] == nil then return false, id end end
+    return true
+end
+
+--- What an id currently is, or nil if the entry is gone. Nil-tolerant on
+--- purpose: these tests have to survive a claim handler that does nothing at
+--- all and still report a COUNT, because the count is the sanity check.
+local function kindOf(m, id)
+    local e = m.loot.items[id]
+    return e and e.kind or nil
+end
+
+--- Entries born since `fromId`, which is what "the contents actually spawned"
+--- means in observable terms.
+local function newborn(m, fromId)
+    local out = {}
+    for id = fromId + 1, m.loot.nextId do
+        if m.loot.items[id] then out[#out + 1] = m.loot.items[id] end
+    end
+    return out
+end
+
+--- item id -> count, for comparing what was in the crate against what is now
+--- on the floor without depending on scatter order.
+local function tally(stacks, key)
+    local out = {}
+    for _, s in ipairs(stacks) do
+        local k = s[key or 'item']
+        out[k] = (out[k] or 0) + 1
+    end
+    return out
+end
+
+local function tallyEq(a, b)
+    for k, v in pairs(a) do if b[k] ~= v then return false, k end end
+    for k in pairs(b) do if a[k] == nil then return false, k end end
+    return true
+end
+
+--- Walk a player up to an entry the way a client does: position first, then
+--- the cell subscription. LOOT_CLAIM refuses anything outside the subscription,
+--- so a test that skipped this would be testing the refusal, not the claim.
+local function walkTo(src, e)
+    BR.Roster.get(src).pos = { x = e.x, y = e.y, z = e.z }
+    local cx, cy = BR.LootCellOf(e.x, e.y)
+    fire(BR.Net.LOOT_CELL, src, { cx = cx, cy = cy })
+end
+
+--- The next sealed crate with at least `least` things in it. Tests take a
+--- fresh one each time rather than resetting the world, so an earlier block
+--- cannot leave a later one claiming a husk by accident.
+local function firstSealed(m, least)
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.kind == 'chest' and #(e.contents or {}) >= (least or 1) then
+            return e
+        end
+    end
+    return nil
+end
+
+--- Move past the claim rate limiter's one-second window. Claims are 4/s, and
+-- several blocks below spend the whole budget deliberately.
+local function nextSecond() fakeTime = fakeTime + 2000 end
+
+-- One world, generated from a pinned seed, shared by the blocks below. Two
+-- players in it, both ALIVE, plus a third attached to a match whose loot has
+-- already been torn down.
+local theMatch = { id = 1, state = BR.MatchState.PLAYING, bucket = 1 }
+do
+    BR.Server.matches[1] = theMatch
+    BR.Server.matches[2] = { id = 2, state = BR.MatchState.CLEANUP, bucket = 2 }
+    for _, src in ipairs({ 101, 102, 103, 104 }) do BR.Roster.add(src) end
+    BR.Roster.setMatch(101, 1); BR.Roster.setState(101, BR.PlayerState.ALIVE)
+    BR.Roster.setMatch(102, 1); BR.Roster.setState(102, BR.PlayerState.ALIVE)
+    BR.Roster.setState(103, BR.PlayerState.WARMUP)      -- the shared pad
+    BR.Roster.setMatch(104, 2); BR.Roster.setState(104, BR.PlayerState.ALIVE)
+    BR.Loot.begin(theMatch, 90210)
+end
+
+describe('loot.chest.open')
+do
+    -- THE CASE THAT HAS NEVER RUN IN PLAY. A player standing on a sealed crate
+    -- they have been streamed, claiming it once.
+    local crate = firstSealed(theMatch, 2)
+    ok(crate ~= nil, 'the generated layout contains a sealed crate to open')
+
+    local wanted   = tally(crate.contents)
+    local nInside  = #crate.contents
+    local cx, cy = crate.x, crate.y
+    walkTo(101, crate)
+
+    local before = theMatch.loot.nextId
+    local at     = mark()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = crate.id })
+
+    -- 1. THE CONTENTS ARE ON THE GROUND, as entries, by item id. Counting new
+    -- ids would pass if the crate scattered three copies of the wrong thing.
+    local born = newborn(theMatch, before)
+    ok(#born == nInside, 'opening a crate lays exactly its contents on the ground',
+        ('%d entries for %d items'):format(#born, nInside))
+    local eq, missing = tallyEq(wanted, tally(born))
+    ok(eq, 'and they are the items that were inside it, item for item',
+        tostring(missing))
+
+    -- Nothing born from a crate is itself a container, or the world grows.
+    local nested = 0
+    for _, e in ipairs(born) do
+        if e.kind == 'chest' or e.kind == 'deathbox' or e.kind == 'husk' then
+            nested = nested + 1
+        end
+    end
+    ok(nested == 0, 'and none of them is another container')
+
+    -- REACHABLE FROM WHERE THE CRATE WAS. Contents that land outside the
+    -- server's own pickup reach are contents the opener has to go hunting for.
+    local furthest, coincident = 0.0, false
+    for i, e in ipairs(born) do
+        local d = BR.Dist(e.x, e.y, cx, cy)
+        if d > furthest then furthest = d end
+        for j = i + 1, #born do
+            if BR.Dist(e.x, e.y, born[j].x, born[j].y) < 0.01 then coincident = true end
+        end
+    end
+    ok(furthest <= LOOT.pickupDistance + 4.0,
+        'all of it inside the reach the server itself enforces',
+        ('%.2fm'):format(furthest))
+    ok(not coincident, 'laid out in a ring -- nothing lands inside anything else')
+
+    -- 2. THE CRATE STAYS, OPENED, under its own id.
+    local husk = theMatch.loot.items[crate.id]
+    ok(husk ~= nil, 'the crate entry survives the claim')
+    ok(husk and husk.kind == 'husk' and husk.item == 'husk', 'as a husk')
+    ok(husk and husk.prop == LOOT.chestOpenProp, 'wearing the opened model')
+    ok(husk and husk.contents == nil, 'holding nothing')
+    ok(husk and math.abs(husk.x - cx) < 0.001 and math.abs(husk.y - cy) < 0.001,
+        'exactly where the sealed one stood')
+    ok(husk and theMatch.loot.cells[husk.cell]
+        and theMatch.loot.cells[husk.cell][husk.id],
+        'and still indexed in its cell, so it streams to whoever walks up next')
+
+    -- 3. THE CLIENT WAS TOLD, and told the right things. The husk arrives under
+    -- the ORIGINAL id so the client swaps a model instead of deleting a prop
+    -- and streaming a new one.
+    local sawHusk, sawContents, leaked = false, 0, false
+    for _, s in ipairs(heard(at, 101, BR.Net.LOOT_ADD)) do
+        for _, w in ipairs(s.args[1]) do
+            if w.id == crate.id and w.kind == 'husk' then sawHusk = true end
+            if w.id > before then sawContents = sawContents + 1 end
+            if w.contents ~= nil then leaked = true end
+        end
+    end
+    ok(sawHusk, 'the opener is sent the husk under the crate\'s original id')
+    ok(sawContents == nInside, 'and every scattered item',
+        ('%d of %d'):format(sawContents, nInside))
+    ok(not leaked, 'with no container contents on the wire, ever')
+
+    -- THE ARC ORIGIN travels with the item, which is the whole reason fx/fy/fl
+    -- exist: the client throws the prop out of the crate's mouth rather than
+    -- popping it into being on the grass. `fl` is a LIFT above the ground the
+    -- client probed, never an absolute z -- an absolute one burst items out of
+    -- the floor wherever the authored z sat below the real ground.
+    local arced = 0
+    for _, s in ipairs(heard(at, 101, BR.Net.LOOT_ADD)) do
+        for _, w in ipairs(s.args[1]) do
+            if w.id > before
+                and w.fx and math.abs(w.fx - cx) < 0.001
+                and w.fy and math.abs(w.fy - cy) < 0.001
+                and w.fl == (LOOT.crateMouthHeight or 0.6) then
+                arced = arced + 1
+            end
+        end
+    end
+    ok(arced == nInside, 'each one carrying the crate it came out of as its arc origin',
+        ('%d of %d'):format(arced, nInside))
+
+    -- A MATCH crate is not a pad crate: nothing is queued to come back.
+    ok(#theMatch.loot.respawn == 0,
+        'a crate opened in a match schedules no respawn')
+end
+
+describe('loot.chest.husk')
+do
+    -- AN OPENED CRATE CANNOT BE OPENED AGAIN. If it could, one crate would be
+    -- an infinite loot fountain -- which is the failure mode that makes this
+    -- the single most load-bearing assertion in the file.
+    nextSecond()
+    local crate = firstSealed(theMatch, 2)
+    walkTo(101, crate)
+    fire(BR.Net.LOOT_CLAIM, 101, { id = crate.id })
+    local husk = theMatch.loot.items[crate.id]
+    ok(husk and husk.kind == 'husk', 'a crate is opened')
+
+    nextSecond()
+    local was  = worldOf(theMatch)
+    local wasN = theMatch.loot.nextId
+    local at   = mark()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = crate.id })
+
+    ok(theMatch.loot.nextId == wasN,
+        'claiming the husk spawns no second set of contents',
+        ('%d new entries'):format(theMatch.loot.nextId - wasN))
+    local same, which = sameWorld(was, worldOf(theMatch))
+    ok(same, 'and mutates nothing at all in the registry', 'entry ' .. tostring(which))
+    ok(theMatch.loot.items[crate.id] ~= nil, 'the husk itself stays -- it is scenery')
+
+    -- SILENT, and deliberately so: the client already refuses to target a husk
+    -- (client/loot.lua:522), so an honest player never produces this claim.
+    ok(#heard(at, 101) == 0,
+        'a husk claim is refused in COMPLETE SILENCE -- nothing is sent at all')
+end
+
+describe('loot.chest.refusals')
+do
+    -- EVERY GATE ABOVE THE CONTAINER BRANCH, each one asserted twice: the claim
+    -- is refused, and the world is byte-identical afterwards. A refusal that
+    -- scatters on its way out would pass a "the crate is still sealed" check.
+    --
+    -- The second column is the deliverable: WHICH OF THESE SAY ANYTHING. A
+    -- silent refusal is indistinguishable from #129 -- the player presses the
+    -- key, nothing happens, and nothing anywhere says why.
+
+    -- (a) CAN_TAKE[e.state] -- a corpse reaching for a crate.
+    nextSecond()
+    local crate = firstSealed(theMatch, 2)
+    walkTo(101, crate)
+    BR.Roster.setState(101, BR.PlayerState.DEAD)
+    local was, at = worldOf(theMatch), mark()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = crate.id })
+    ok(sameWorld(was, worldOf(theMatch)), 'a DEAD player cannot open a crate')
+    ok(kindOf(theMatch, crate.id) == 'chest', 'it is still sealed')
+    ok(#notices(at, 101) == 1 and notices(at, 101)[1] == 'You cannot pick that up right now.',
+        'CAN_TAKE refuses AUDIBLY', table.concat(notices(at, 101), ' / '))
+    BR.Roster.setState(101, BR.PlayerState.ALIVE)
+
+    -- (b) rateOk -- the token bucket. Burned on ids that do not exist, so the
+    -- budget is spent without opening anything; then a real crate is claimed
+    -- inside the same window.
+    nextSecond()
+    for _ = 1, (LOOT.pickupRateLimit or 4) do
+        fire(BR.Net.LOOT_CLAIM, 101, { id = theMatch.loot.nextId + 9999 })
+    end
+    was, at = worldOf(theMatch), mark()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = crate.id })
+    ok(sameWorld(was, worldOf(theMatch)), 'a rate-limited claim opens nothing')
+    ok(kindOf(theMatch, crate.id) == 'chest', 'the crate is still sealed')
+    ok(#heard(at, 101) == 0,
+        'and the rate limiter refuses in SILENCE -- the server logs it, the player is not told')
+
+    -- ...and the limiter is a window, not a ban: the same crate opens a second
+    -- later. Without this the case above would pass on a permanently broken
+    -- limiter.
+    nextSecond()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = crate.id })
+    ok(kindOf(theMatch, crate.id) == 'husk',
+        'once the window rolls over the same claim succeeds')
+
+    -- (c) not in the client's subscribed cells. Answers IDENTICALLY to an
+    -- entry that never existed -- otherwise the refusal text is an existence
+    -- oracle over a dense id space.
+    nextSecond()
+    local outside
+    for id = 1, theMatch.loot.nextId do
+        local e = theMatch.loot.items[id]
+        if e and e.kind == 'chest' and not (theMatch.loot.subs[101] or {})[e.cell] then
+            outside = e break
+        end
+    end
+    ok(outside ~= nil, 'the layout has a crate this player was never streamed')
+    was, at = worldOf(theMatch), mark()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = outside.id })
+    ok(sameWorld(was, worldOf(theMatch)), 'an unstreamed crate cannot be opened')
+    local unseen = notices(at, 101)
+    at = mark()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = theMatch.loot.nextId + 9999 })
+    local absent = notices(at, 101)
+    ok(#unseen == 1 and unseen[1] == 'Someone beat you to it.',
+        'the subscription check refuses AUDIBLY', table.concat(unseen, ' / '))
+    ok(#absent == 1 and absent[1] == unseen[1],
+        'in the same words as an id that never existed -- no existence oracle')
+
+    -- (d) inReach -- subscribed, in the same 256m cell, 100m from the crate.
+    nextSecond()
+    local far = firstSealed(theMatch, 2)
+    walkTo(101, far)
+    BR.Roster.get(101).pos = { x = far.x + 100.0, y = far.y, z = far.z }
+    was, at = worldOf(theMatch), mark()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = far.id })
+    ok(sameWorld(was, worldOf(theMatch)), 'a crate 100m away cannot be opened')
+    ok(#notices(at, 101) == 1 and notices(at, 101)[1] == 'Too far away.',
+        'inReach refuses AUDIBLY', table.concat(notices(at, 101), ' / '))
+
+    -- (e) no zone: ALIVE, in a match whose loot has been torn down. This is
+    -- reachable in play -- a claim in flight when the match cleans up.
+    nextSecond()
+    was, at = worldOf(theMatch), mark()
+    fire(BR.Net.LOOT_CLAIM, 104, { id = far.id })
+    ok(sameWorld(was, worldOf(theMatch)),
+        'a player whose match has no loot cannot reach another match\'s crates')
+    ok(#heard(at, 104) == 0,
+        'and is refused in SILENCE -- zoneFor returns before CAN_TAKE is consulted')
+
+    -- (f) the malformed shapes, which must not reach anything.
+    at = mark()
+    fire(BR.Net.LOOT_CLAIM, 101, 'not a table')
+    fire(BR.Net.LOOT_CLAIM, 101, { id = 'seven' })
+    fire(BR.Net.LOOT_CLAIM, 101, {})
+    fire(BR.Net.LOOT_CLAIM, 999, { id = far.id })   -- no roster entry
+    ok(sameWorld(was, worldOf(theMatch)), 'a malformed claim changes nothing')
+    ok(#heard(at, 101) == 0 and #heard(at, 999) == 0,
+        'and is refused in SILENCE')
+end
+
+describe('loot.chest.race')
+do
+    -- TWO PLAYERS, ONE CRATE, SAME TICK. The normal case at a hot drop, and the
+    -- one the whole handler is arranged around. Exactly one set of contents may
+    -- reach the ground; a second would be a duplication exploit anybody could
+    -- run by accident.
+    nextSecond()
+    local crate  = firstSealed(theMatch, 2)
+    local nInside = #crate.contents
+    walkTo(101, crate)
+    walkTo(102, crate)
+
+    local before = theMatch.loot.nextId
+    local at     = mark()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = crate.id })
+    fire(BR.Net.LOOT_CLAIM, 102, { id = crate.id })
+
+    local born = newborn(theMatch, before)
+    ok(#born == nInside,
+        'two claims in one tick produce EXACTLY ONE set of contents',
+        ('%d entries for %d items'):format(#born, nInside))
+    ok(kindOf(theMatch, crate.id) == 'husk', 'and one husk')
+
+    -- Both are subscribed, so both must see the crate open and both must see
+    -- the contents -- or the loser is left staring at a sealed prop.
+    local sawHusk = { [101] = false, [102] = false }
+    for _, who in ipairs({ 101, 102 }) do
+        for _, s in ipairs(heard(at, who, BR.Net.LOOT_ADD)) do
+            for _, w in ipairs(s.args[1]) do
+                if w.id == crate.id and w.kind == 'husk' then sawHusk[who] = true end
+            end
+        end
+    end
+    ok(sawHusk[101] and sawHusk[102],
+        'both claimants are shown the crate opening, not just the winner')
+
+    -- THE LOSER IS TOLD NOTHING. The loser of a race for a loose item hears
+    -- "Someone beat you to it"; the loser of a race for a CRATE hears nothing,
+    -- because the second claim lands on a husk and the husk branch is silent.
+    ok(#notices(at, 102) == 0,
+        'the loser of a CRATE race is given no refusal -- the husk branch is silent')
+end
+
+describe('loot.deathbox')
+do
+    -- A DEATH BOX RETIRES RATHER THAN HUSKING, and the comment in the handler
+    -- says why: an empty box left lying there reads as a body nobody has
+    -- looted yet, and sends people across open ground for nothing.
+    --
+    -- Built with the real BR.Loot.spawnStack, because NOTHING IN THE CODEBASE
+    -- MINTS A 'deathbox' ENTRY ANY MORE -- BR.Loot.deathBox scatters a kit
+    -- directly. The branch is still live in the handler, so it is still tested.
+    nextSecond()
+    local anchor = firstSealed(theMatch, 1)
+    walkTo(101, anchor)
+
+    local box = BR.Loot.spawnStack(theMatch, {
+        item = 'deathbox', kind = 'deathbox', rarity = BR.Rarity.RARE, count = 1,
+        contents = {
+            { item = 'pistol',  kind = BR.ItemKind.WEAPON,     rarity = 1, count = 1, clip = 12 },
+            { item = 'bandage', kind = BR.ItemKind.CONSUMABLE, rarity = 1, count = 3 },
+        },
+    }, anchor.x, anchor.y, anchor.z)
+    ok(box ~= nil and theMatch.loot.items[box.id] ~= nil, 'a death box is on the ground')
+
+    local cell   = box.cell
+    local before = theMatch.loot.nextId
+    local at     = mark()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = box.id })
+
+    ok(theMatch.loot.items[box.id] == nil,
+        'claiming a death box RETIRES it -- no husk is left behind')
+    ok(not (theMatch.loot.cells[cell] or {})[box.id],
+        'and it is out of its cell, so it streams to nobody')
+
+    local born = newborn(theMatch, before)
+    ok(#born == 2, 'its contents are on the ground', ('%d entries'):format(#born))
+    ok(tallyEq({ pistol = 1, bandage = 1 }, tally(born)),
+        'item for item, exactly what was in it')
+
+    -- ORDER MATTERS ON THE WIRE: the box is retired before its contents are
+    -- announced, so no client ever holds the box and its spilled kit at once.
+    local goneAt, addAt
+    for i = at + 1, #sent do
+        local s = sent[i]
+        if s.target == 101 and s.event == BR.Net.LOOT_GONE and not goneAt then
+            for _, id in ipairs(s.args[1]) do if id == box.id then goneAt = i end end
+        end
+        if s.target == 101 and s.event == BR.Net.LOOT_ADD and not addAt then
+            for _, w in ipairs(s.args[1]) do if w.id > before then addAt = i end end
+        end
+    end
+    ok(goneAt ~= nil, 'every subscriber is told the box is gone')
+    ok(goneAt and addAt and goneAt < addAt,
+        'and told that BEFORE the contents arrive')
+end
+
+describe('loot.warmup.respawn')
+do
+    -- THE PAD MUST NOT BE STRIPPABLE. Everybody waiting shares one island, so
+    -- whoever queued first opening every crate on it would leave the next
+    -- twenty arrivals with nothing to practise on.
+    --
+    -- THE SHARED ZONE IS PRIVATE TO loot.lua and there is no accessor for it,
+    -- so this block never touches the table. It censuses the island the only
+    -- way anything outside that file can: a WARMUP player walked across it,
+    -- subscribing cell by cell, with BR.Loot.viewFor read at each stop. That is
+    -- the same route a real client takes, and it means every number below is
+    -- one the game itself could produce.
+    nextSecond()
+    local pad = BR.Config.Match.warmupPos
+    local pcx, pcy = BR.LootCellOf(pad.x, pad.y)
+    local size = LOOT.cellSize
+
+    --- Every entry on the pad, id -> wire entry. The island is a 460m annulus
+    --- around the pad, so a 5x5 block of 256m cells covers all of it.
+    local function census()
+        local out = {}
+        for dx = -2, 2 do
+            for dy = -2, 2 do
+                local cx, cy = pcx + dx, pcy + dy
+                BR.Roster.get(103).pos =
+                    { x = (cx + 0.5) * size, y = (cy + 0.5) * size, z = pad.z or 30.0 }
+                fire(BR.Net.LOOT_CELL, 103, { cx = cx, cy = cy })
+                for _, w in ipairs(BR.Loot.viewFor(103) or {}) do out[w.id] = w end
+            end
+        end
+        return out
+    end
+
+    local function countKind(c, kind)
+        local n = 0
+        for _, w in pairs(c) do if w.kind == kind then n = n + 1 end end
+        return n
+    end
+
+    local before = census()
+    local sealed0 = countKind(before, 'chest')
+    ok(sealed0 > 0, 'the shared pad is stocked with sealed crates',
+        ('%d crates'):format(sealed0))
+
+    local padCrate
+    for _, w in pairs(before) do if w.kind == 'chest' then padCrate = w break end end
+
+    -- Open it, standing on it, exactly as in a match.
+    BR.Roster.get(103).pos = { x = padCrate.x, y = padCrate.y, z = padCrate.z }
+    local ccx, ccy = BR.LootCellOf(padCrate.x, padCrate.y)
+    fire(BR.Net.LOOT_CELL, 103, { cx = ccx, cy = ccy })
+    local highest = 0
+    for id in pairs(before) do if id > highest then highest = id end end
+    fire(BR.Net.LOOT_CLAIM, 103, { id = padCrate.id })
+
+    local opened = census()
+    ok(opened[padCrate.id] and opened[padCrate.id].kind == 'husk',
+        'a pad crate opens the same way a match crate does')
+    ok(countKind(opened, 'chest') == sealed0 - 1,
+        'leaving the island one sealed crate short',
+        ('%d -> %d'):format(sealed0, countKind(opened, 'chest')))
+
+    -- Only the respawn job runs. Everything else in br_core and br_ringmaster
+    -- is parked, so what follows is attributable to THAT job rather than to a
+    -- whole server tick.
+    local parked = {}
+    for _, j in ipairs(BR.Sched.stats()) do
+        if j.name ~= 'loot.warmupRespawn' and j.enabled then
+            parked[#parked + 1] = j.name
+            BR.Sched.setEnabled(j.name, false)
+        end
+    end
+
+    -- ONE MILLISECOND EARLY: still short. This is what makes the next
+    -- assertion mean "the timer landed" rather than "a crate exists".
+    fakeTime = fakeTime + (LOOT.warmup.respawnMs or 45000) - 1
+    BR.Sched.step(fakeTime)
+    ok(countKind(census(), 'chest') == sealed0 - 1,
+        'nothing comes back before the respawn is due')
+
+    fakeTime = fakeTime + 2000
+    BR.Sched.step(fakeTime)
+    local back = census()
+    ok(countKind(back, 'chest') == sealed0,
+        'and exactly one crate comes back once it is',
+        ('%d of %d'):format(countKind(back, 'chest'), sealed0))
+
+    -- SOMEWHERE ELSE ON THE ISLAND, under a new id: the husk stays put, so a
+    -- replacement on the same spot would stack two props in one place.
+    local fresh
+    for id, w in pairs(back) do
+        if id > highest and w.kind == 'chest' then fresh = w break end
+    end
+    ok(fresh ~= nil, 'as a new entry rather than the old one un-opened')
+    ok(fresh and BR.Dist(fresh.x, fresh.y, padCrate.x, padCrate.y) > 1.0,
+        'in a different place')
+    ok(back[padCrate.id] and back[padCrate.id].kind == 'husk',
+        'and the husk it replaces is still standing where it was opened')
+
+    -- A SECOND CLAIM ON THE HUSK MUST NOT QUEUE ANOTHER, or the pad is a crate
+    -- printer for anybody willing to press the key twice.
+    nextSecond()
+    local farmFrom = countKind(census(), 'chest')
+    BR.Roster.get(103).pos = { x = padCrate.x, y = padCrate.y, z = padCrate.z }
+    fire(BR.Net.LOOT_CELL, 103, { cx = ccx, cy = ccy })
+    for _ = 1, 3 do fire(BR.Net.LOOT_CLAIM, 103, { id = padCrate.id }) end
+    fakeTime = fakeTime + (LOOT.warmup.respawnMs or 45000) + 2000
+    BR.Sched.step(fakeTime)
+    ok(countKind(census(), 'chest') == farmFrom,
+        'reclaiming a husk queues NO further crates -- the pad cannot be farmed',
+        ('%d -> %d'):format(farmFrom, countKind(census(), 'chest')))
+
+    for _, n in ipairs(parked) do BR.Sched.setEnabled(n, true) end
+end
+
 -- ----------------------------------------------------------------- result ---
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
