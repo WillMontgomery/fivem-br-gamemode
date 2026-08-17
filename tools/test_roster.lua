@@ -6116,6 +6116,501 @@ do
         corpse and ('hp ' .. tostring(corpse.hp)) or 'nil')
 end
 
+-- ==========================================================================
+-- A CLIENT, IN THE SERVER SUITE. (#115)
+-- ==========================================================================
+--
+-- WHY THIS EXISTS. #115 has now been "fixed" twice from the symptom, and the
+-- owner has reported it unchanged both times. The reason is stated plainly in
+-- ef501ef's own message: `client/state.lua` is loaded by NO suite, so
+-- `correctPed` -- the ONE piece of code in the entire project that can put a
+-- falsely-killed squadmate back on the shooter's screen -- has never been
+-- executed outside the game. A fix that cannot be run cannot be wrong in a way
+-- anybody notices until a human boots a client.
+--
+-- So this block loads the real file into a sandboxed _ENV with a real (small)
+-- model of the engine behind it, and drives the owner's exact sequence through
+-- the REAL server handler that is already wired up above. Nothing here is a
+-- fixture: the HIT_RESYNC frames that reach the client are the ones
+-- server/damage.lua actually produced from a weaponDamageEvent.
+--
+-- WHAT THE ENGINE MODEL CLAIMS, AND WHY. Five rules, each of them the reason a
+-- native in correctPed exists at all:
+--
+--   1. DEATH AND THE HEALTH NUMBER ARE TWO DIFFERENT THINGS. A fatal hit starts
+--      CTaskDyingDead; it does not have to take the health value with it. A
+--      headshot is the everyday example -- the ped is dying from the first
+--      frame and `GetEntityHealth` still reads whatever the bullet left behind.
+--   2. `IsEntityDead` settles LATE -- some frames after the task starts. This is
+--      ef501ef's own premise; modelling it is what lets that fix be judged
+--      rather than believed.
+--   3. So during that window BOTH questions correctPed asks answer "alive":
+--      the flag has not caught up and the number never fell. That is the whole
+--      of #115 and it is why this model exists.
+--   4. Writing health does NOT cancel a death task, and once the flag is set
+--      `GetEntityHealth` reads 0 whatever was written. Health alone never
+--      revives a ped -- client/probe.lua says exactly this, which is why
+--      `ResurrectPed` is in the file at all.
+--   5. `ResurrectPed` clears the task, clears the flag and restores health;
+--      `ClearPedTasksImmediately` ends the dying animation and nothing else.
+--
+-- WHAT IT DOES NOT CLAIM: entity ownership. Every write here is assumed to
+-- TAKE. That is deliberately the most favourable model available to the
+-- production code -- the sequence below still ends in a corpse under it, so the
+-- fault is in the logic and not in an argument about who owns the ped.
+
+describe('resync.client')
+do
+    local CROOT = 'resources/[fivem-royale]/'
+
+    -- Everything the sandbox may see of the host process. Explicit, so a native
+    -- the client reaches for and this harness never defined is an immediate
+    -- "attempt to call a nil value" rather than a silent no-op -- the failure
+    -- mode that makes a green suite worthless.
+    local STD = {
+        assert = assert, error = error, ipairs = ipairs, next = next,
+        pairs = pairs, pcall = pcall, rawequal = rawequal, rawget = rawget,
+        rawlen = rawlen, rawset = rawset, select = select, xpcall = xpcall,
+        setmetatable = setmetatable, getmetatable = getmetatable,
+        tonumber = tonumber, tostring = tostring, type = type,
+        math = math, string = string, table = table,
+        coroutine = coroutine, unpack = table.unpack,
+    }
+
+    --- Boot one FiveM client with `client/state.lua` in it.
+    --- @param netId integer   the network id its copy of the mate answers to
+    --- @return table
+    local function newClient(netId)
+        local FLOOR = BR.Config.Match.healthFloor
+        local MAXHP = BR.Config.Match.maxHealth
+        local SETTLE = 64        -- ms before IsEntityDead agrees with the task
+
+        local env
+        env = setmetatable({}, { __index = function(_, k) return STD[k] end })
+        env._G = env
+
+        local function load(list)
+            for _, f in ipairs(list) do
+                local chunk, err = loadfile(CROOT .. f, 't', env)
+                if not chunk then
+                    realPrint('\27[31mclient load error\27[0m ' .. f .. ': ' .. tostring(err))
+                    os.exit(1)
+                end
+                chunk()
+            end
+        end
+
+        -- The client's OWN br_lib. A client is a separate Lua state in the real
+        -- game and it is one here too, so nothing this block does can reach
+        -- back into the server suite's BR.
+        env.BR = nil
+        load({
+            'br_lib/shared/enums.lua', 'br_lib/shared/protocol.lua',
+            'br_lib/shared/names.lua', 'br_lib/shared/rng.lua',
+            'br_lib/shared/geo.lua', 'br_lib/shared/clock.lua',
+            'br_lib/config/match.lua', 'br_lib/config/storm.lua',
+            'br_lib/config/map.lua', 'br_lib/config/weapons.lua',
+            'br_lib/config/loot.lua', 'br_lib/config/audio.lua',
+            'br_lib/config/peds.lua', 'br_lib/config/market.lua',
+            'br_lib/shared/xp.lua', 'br_lib/shared/storm_solve.lua',
+            'br_lib/shared/combat_solve.lua', 'br_lib/shared/loot_gen.lua',
+        })
+
+        -- ---------------------------------------------------------- engine ---
+
+        local C = {
+            now = 0,
+            calls = { set = 0, resurrect = 0, cleartasks = 0 },
+            log = {},
+            -- The squadmate's ped, as the SHOOTER's machine sees it.
+            mate = { handle = 9000 + netId, netId = netId, hp = MAXHP,
+                     dead = false, dying = false, since = 0, exists = true },
+        }
+        local m = C.mate
+
+        local function note(s)
+            C.log[#C.log + 1] = ('%6dms  %s'):format(C.now, s)
+        end
+        C.note = note
+
+        --- One engine frame of the death task: the flag catches up (rule 2).
+        local function frame()
+            if not m.dying then return end
+            if not m.dead and (C.now - m.since) >= SETTLE then m.dead = true end
+        end
+
+        env.NetworkDoesNetworkIdExist = function(id) return id == m.netId end
+        env.NetworkGetEntityFromNetworkId = function(id)
+            return id == m.netId and m.handle or 0
+        end
+        env.DoesEntityExist = function(h) return h == m.handle and m.exists end
+        env.GetEntityHealth = function(h)
+            if h ~= m.handle then return 0 end
+            return m.dead and 0 or m.hp
+        end
+        env.IsEntityDead = function(h) return h == m.handle and m.dead end
+        env.SetEntityHealth = function(h, v)
+            if h ~= m.handle then return end
+            C.calls.set = C.calls.set + 1
+            m.hp = v
+            note(('SetEntityHealth(%d)  dying=%s dead=%s')
+                :format(v, tostring(m.dying), tostring(m.dead)))
+            if v <= FLOOR and not m.dying then m.dying, m.since = true, C.now end
+        end
+        env.ResurrectPed = function(h)
+            if h ~= m.handle then return end
+            C.calls.resurrect = C.calls.resurrect + 1
+            m.dead, m.dying, m.hp = false, false, MAXHP
+            note('ResurrectPed')
+        end
+        env.ClearPedTasksImmediately = function(h)
+            if h ~= m.handle then return end
+            C.calls.cleartasks = C.calls.cleartasks + 1
+            -- Ends the dying ANIMATION. It does not un-flag a settled corpse,
+            -- which is why the production code calls ResurrectPed first.
+            if not m.dead then m.dying = false end
+            note('ClearPedTasksImmediately')
+        end
+
+        -- ---------------------------------------------------- the runtime ---
+
+        env.GetGameTimer = function() return C.now end
+        env.GetCurrentResourceName = function() return 'br_core' end
+        env.GetPlayerServerId = function() return 1 end
+        env.PlayerId = function() return 0 end
+        env.PlayerPedId = function() return 1 end
+        env.GetPedArmour = function() return 0 end
+        env.SetPedArmour = function() end
+        env.IsPauseMenuActive = function() return false end
+        env.SetFrontendActive = function() end
+        env.ExecuteCommand = function() end
+        env.print = function() end
+
+        local handlers = {}
+        env.AddEventHandler = function(n, fn)
+            handlers[n] = handlers[n] or {}
+            handlers[n][#handlers[n] + 1] = fn
+        end
+        env.RegisterNetEvent = function() end
+        env.RegisterCommand = function() end
+        env.TriggerEvent = function(n, ...)
+            for _, fn in ipairs(handlers[n] or {}) do fn(...) end
+        end
+        env.TriggerServerEvent = function() end
+
+        -- THREADS ARE MODELLED, NOT MOCKED, and that is the point of the file.
+        -- Every client suite in this repo stubs Citizen.CreateThread to a
+        -- no-op, which makes correctPed's retry loop -- the entire fix in
+        -- ef501ef -- literally unrunnable. Coroutines are what turn "the loop
+        -- exists" into "the loop was entered N times and wrote M values".
+        local threads = {}
+        env.Citizen = {
+            CreateThread = function(fn)
+                threads[#threads + 1] =
+                    { co = coroutine.create(fn), wake = C.now }
+            end,
+            Wait = function(ms) coroutine.yield(ms or 0) end,
+            SetTimeout = function() end,
+        }
+
+        --- Advance the client by `ms`, one 16ms frame at a time.
+        function C.pump(ms)
+            local target = C.now + ms
+            while C.now < target do
+                C.now = math.min(C.now + 16, target)
+                frame()
+                for i = #threads, 1, -1 do
+                    local t = threads[i]
+                    if C.now >= t.wake and coroutine.status(t.co) == 'suspended' then
+                        local okr, wait = coroutine.resume(t.co)
+                        if not okr then
+                            realPrint('\27[31mclient thread error\27[0m ' .. tostring(wait))
+                        end
+                        if coroutine.status(t.co) == 'dead' then
+                            table.remove(threads, i)
+                        else
+                            t.wake = C.now + (tonumber(wait) or 0)
+                        end
+                    end
+                end
+            end
+        end
+
+        load({ 'br_core/client/main.lua', 'br_core/client/state.lua' })
+        env.BR.Sfx = { play = function() end }
+        env.BR.State.me.src = 1
+        env.BR.State.me.state = env.BR.PlayerState.ALIVE
+
+        C.env = env
+        C.threads = threads
+        C.resync = handlers[env.BR.Net.HIT_RESYNC][1]
+        C.feed   = handlers[env.BR.Net.DAMAGE_FEED][1]
+
+        --- GTA applies the shooter's own bullet to their local copy, before the
+        --- server has seen anything at all. This is the fact every comment in
+        --- damage.lua and state.lua is written around.
+        function C.bullet(dmg)
+            if m.dead then
+                note('bullet into a settled corpse')
+                return false
+            end
+            m.hp = m.hp - dmg
+            if m.hp <= FLOOR and not m.dying then
+                m.dying, m.since = true, C.now
+                note(('bullet -> local copy at %d, death task starts'):format(m.hp))
+            else
+                note(('bullet -> local copy at %d'):format(m.hp))
+            end
+            return true
+        end
+
+        --- A FATAL hit that does NOT take the health number with it (rule 1).
+        --- The everyday version of this is a headshot: the ped is dying from
+        --- the first frame and the number still reads perfectly healthy.
+        function C.lethal(dmg)
+            if m.dead then
+                note('lethal hit into a settled corpse')
+                return false
+            end
+            m.hp = m.hp - (dmg or 26)
+            m.dying, m.since = true, C.now
+            note(('LETHAL hit -> dying, and the number still reads %d'):format(m.hp))
+            return true
+        end
+
+        function C.alive()
+            return not m.dead and not m.dying
+        end
+
+        function C.describe()
+            return ('hp=%d dead=%s dying=%s')
+                :format(env.GetEntityHealth(m.handle), tostring(m.dead),
+                        tostring(m.dying))
+        end
+
+        return C
+    end
+
+    -- ------------------------------------------------------------------------
+    -- THE OWNER'S THREE SHOTS. This is the reproduction.
+    -- ------------------------------------------------------------------------
+    --
+    -- "Friendly fire - I shot a squad mate, they got 0 damage, and on my screen
+    --  they perished. After shooting their ped once more they sprung to life,
+    --  t-posed, then was synced perfectly. I thought we almost had it - but I
+    --  did it again, and now their ped is down for good."
+    --
+    -- SHOT 2 IS THE ONLY ONE THAT IS NOT A RACE, AND THAT IS THE ASYMMETRY.
+    --
+    --   shot 1  fired at a LIVING mate. The hit is fatal and the health number
+    --           does not fall with it (rule 1), so for the few frames before
+    --           `IsEntityDead` settles BOTH of correctPed's questions answer
+    --           "alive": the flag has not caught up and the number never
+    --           dropped. A correction that lands inside that window takes the
+    --           single-write path, writes once, RETURNS, and the death finishes
+    --           over the top of the value it just wrote. Corpse.
+    --   shot 2  fired INTO that corpse. There is nothing left to race -- the
+    --           flag settled seconds ago -- so the correction cannot help but
+    --           take the watch path, and it resurrects. "Sprung to life,
+    --           t-posed" is ResurrectPed followed by ClearPedTasksImmediately,
+    --           in that order, which is what that branch does.
+    --   shot 3  fired at the mate shot 2 just stood back up. A living ped
+    --           again, so a race again, and lost the same way.
+    --
+    -- That is why the middle one worked and the outer two did not, and it is not
+    -- "a race decided differently each time" -- one of the three has no race in
+    -- it. The fix has to make the OUTCOME independent of the timing, so both
+    -- round trips are driven below.
+    local function threeShots(rtt)
+        squadMatch(2)
+        local pistol = BR.Config.WeaponById['pistol']
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                         count = 1, clip = pistol.clip })
+        BR.Inv.of(1).ammo[BR.AmmoType.LIGHT] = 200
+        BR.Inv.of(1).active = 1
+
+        local C = newClient(1002)
+
+        --- Squeeze the trigger once at the mate and let the answer come back.
+        --- The frame that reaches the client is the one server/damage.lua
+        --- actually produced -- there is no fixture anywhere in here.
+        local function shoot(label)
+            C.note('===== ' .. label .. ' =====')
+            C.lethal(26)
+            fakeTime = fakeTime + 400
+            sent = {}
+            fire('weaponDamageEvent', 1, 1, {
+                damageType = 3, weaponType = pistol.hash, hitComponent = 0,
+                weaponDamage = 26, hitGlobalIds = { 1002 },
+            })
+            local frames = {}
+            for _, s in ipairs(sent) do
+                if s.event == BR.Net.HIT_RESYNC and s.target == 1 then
+                    frames[#frames + 1] = s.args[1]
+                end
+            end
+            C.pump(rtt)
+            for _, d in ipairs(frames) do C.resync(d) end
+            C.pump(1500)        -- longer than any watch loop can possibly run
+            C.note(('after %s: %s'):format(label, C.describe()))
+            return #frames
+        end
+
+        return C, shoot
+    end
+
+    -- 32ms: the owner's own box. This whole gamemode is developed and played
+    -- against a server the player is standing next to (tools/deploy.sh), so the
+    -- correction beating the death flag home is the NORMAL case there, not the
+    -- unlucky one -- which is why the report reads as "every time" rather than
+    -- "sometimes".
+    for _, rtt in ipairs({ 32, 96 }) do
+        local C, shoot = threeShots(rtt)
+        local tag = ('(round trip %dms) '):format(rtt)
+
+        local sentOne = shoot('shot 1')
+        ok(sentOne == 1,
+            tag .. 'the server DOES answer a friendly-fire shot with a correction',
+            ('%d HIT_RESYNC frames'):format(sentOne))
+        ok(C.alive(),
+            tag .. 'SHOT 1: and the squadmate is still standing on the '
+            .. 'shooter\'s screen',
+            C.describe() .. '\n       ' .. table.concat(C.log, '\n       '))
+
+        shoot('shot 2')
+        ok(C.alive(), tag .. 'SHOT 2: still standing', C.describe())
+
+        shoot('shot 3')
+        ok(C.alive(),
+            tag .. 'SHOT 3: and the third shot is no different from the first '
+            .. '-- this is the one the owner called "down for good"',
+            C.describe() .. '\n       ' .. table.concat(C.log, '\n       '))
+    end
+
+    -- ------------------------------------------------------------------------
+    -- The four assertions ef501ef named and did not write.
+    -- ------------------------------------------------------------------------
+
+    do
+        -- 1. A CORRECTION IS WATCHED, NEVER FIRED AND FORGOTTEN. The ped here
+        --    is dying with the flag not yet set -- the state the whole issue
+        --    lives in -- and the correction must still be in force once the
+        --    flag catches up.
+        local C = newClient(1002)
+        C.lethal(26)                                  -- dying; number reads 174
+        C.resync({ netId = 1002, hp = 200 })
+        C.pump(1000)
+        ok(C.calls.resurrect > 0,
+            'a correction that lands mid-death is still holding when the flag '
+            .. 'settles, and resurrects',
+            ('ResurrectPed x%d, SetEntityHealth x%d -- %s')
+                :format(C.calls.resurrect, C.calls.set, C.describe()))
+        ok(C.alive(), 'and the ped ends the exchange alive', C.describe())
+    end
+
+    do
+        -- 2. THE NAMED ONE: a write followed by the ped flipping back to dead
+        --    must be written again. Returning after one write is what let the
+        --    death task finish over the top of it.
+        local C = newClient(1002)
+        C.mate.hp, C.mate.dead, C.mate.dying, C.mate.since = 140, false, true, 0
+        C.resync({ netId = 1002, hp = 200 })
+        C.pump(1000)
+        ok(C.calls.set >= 2,
+            'a correction the engine takes back is written again',
+            ('SetEntityHealth x%d'):format(C.calls.set))
+    end
+
+    do
+        -- 3. The death floor IS a dead number. Resurrecting a ped into 100
+        --    would be reviving it into the value that keeps it dead.
+        local C = newClient(1002)
+        C.mate.hp, C.mate.dead, C.mate.dying = 0, true, false
+        C.resync({ netId = 1002, hp = BR.Config.Match.healthFloor })
+        C.pump(1000)
+        ok(C.calls.resurrect == 0 and C.calls.set == 0,
+            'correctPed(netId, healthFloor) does nothing at all',
+            ('ResurrectPed x%d, SetEntityHealth x%d')
+                :format(C.calls.resurrect, C.calls.set))
+    end
+
+    do
+        -- 4. END TO END, through the real server: a shot into an ELIMINATED
+        --    player's body must reach the client as nothing whatsoever.
+        squadMatch(2)
+        local pistol = BR.Config.WeaponById['pistol']
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                         count = 1, clip = pistol.clip })
+        BR.Inv.of(1).ammo[BR.AmmoType.LIGHT] = 40
+        BR.Inv.of(1).active = 1
+        BR.Combat.eliminate(2, 'admin', nil)
+
+        local C = newClient(1002)
+        C.mate.hp, C.mate.dead = 0, true
+        sent = {}
+        fakeTime = fakeTime + 5000
+        fire('weaponDamageEvent', 1, 1, {
+            damageType = 3, weaponType = pistol.hash, hitComponent = 0,
+            weaponDamage = 26, hitGlobalIds = { 1002 },
+        })
+        local delivered = 0
+        for _, s in ipairs(sent) do
+            if s.event == BR.Net.HIT_RESYNC and s.target == 1 then
+                delivered = delivered + 1
+                C.resync(s.args[1])
+            end
+        end
+        C.pump(1000)
+        ok(delivered == 0 and C.calls.resurrect == 0,
+            'a shot into a real corpse reaches the shooter as no correction at all',
+            ('%d frames, ResurrectPed x%d'):format(delivered, C.calls.resurrect))
+    end
+
+    do
+        -- THE OTHER HALF OF THE T-POSE: a LIVING ped is not stood up.
+        --
+        -- The shooter's local copy of a mate carries GTA's own damage numbers,
+        -- which owe the project's health mapping nothing at all -- four pistol
+        -- rounds put it at engine 96, under BR.Config.Match.healthFloor, on a
+        -- ped that is upright and running. Treating that number as proof of
+        -- death fires ResurrectPed and ClearPedTasksImmediately at somebody who
+        -- is very much alive, and the visible result of clearing a running
+        -- animation is the T-POSE the owner reported.
+        --
+        -- The flag is the fact. The number only decides whether there is still
+        -- something to correct.
+        local C = newClient(1002)
+        C.mate.hp, C.mate.dead, C.mate.dying = 96, false, false
+        C.resync({ netId = 1002, hp = 200 })
+        C.pump(1000)
+        ok(C.calls.resurrect == 0 and C.calls.cleartasks == 0,
+            'a living ped carrying GTA\'s damage number is corrected, not '
+            .. 'resurrected and stripped of its animation',
+            ('ResurrectPed x%d, ClearPedTasksImmediately x%d')
+                :format(C.calls.resurrect, C.calls.cleartasks))
+        ok(C.env.GetEntityHealth(C.mate.handle) == 200,
+            '...and it IS corrected', C.describe())
+    end
+
+    -- ------------------------------------------------------------------------
+    -- ...AND THE CHEAP PATH IS STILL CHEAP.
+    -- ------------------------------------------------------------------------
+    do
+        -- The common correction by a distance is the one that has nothing to
+        -- do: the owner's own sync got there first, or the shot missed the
+        -- shooter's local copy entirely. That one must not cost a coroutine,
+        -- because one arrives per bullet.
+        local C = newClient(1002)
+        C.resync({ netId = 1002, hp = 200 })
+        ok(#C.threads == 0 and C.calls.set == 0,
+            'a ped already standing at the server\'s number costs no thread and '
+            .. 'no write',
+            ('%d threads, SetEntityHealth x%d'):format(#C.threads, C.calls.set))
+    end
+end
+
 describe('dbno.bleed')
 do
     -- THE BLEED TIMER IS THE HEALTH BAR. Everything here is about that one
