@@ -61,17 +61,11 @@ BR.Voice.state = {
     -- for almost everyone -- means we hold none and the engine mixes them.
     over   = {},
 
-    -- WHETHER OUR OWN MICROPHONE IS LIVE, as last stated to the engine, and nil
-    -- for "never stated". Recorded for exactly the reason talkTo is: setMic()
-    -- below only touches the natives when the answer CHANGES, because the thing
-    -- that asks it runs at 10Hz, and a diff needs something to diff against.
-    --
-    -- It lives here rather than in a file local so that the two places which
-    -- have to FORGET it can reach it -- a Mumble reconnect (voice.watch) and the
-    -- suite's fresh-engine reset -- and so /brvoice can print it. "Why can
-    -- nobody hear me" has two answers now instead of one; see the bus gate in
-    -- listen().
-    mic    = nil,
+    -- THERE WAS A `mic` FIELD HERE AND IT IS GONE WITH THE THING THAT WROTE IT.
+    -- It cached what setMic() had last told MumbleSetActive so a 10Hz band could
+    -- diff against it. See the block in listen() where the bus gag used to be:
+    -- nothing outside apply() may state that native at all any more, so there is
+    -- nothing left to remember.
 }
 
 --- The player's own preference, from the settings screen. NOT authority --
@@ -519,58 +513,18 @@ end)
 -- the pma-voice block), where the same nil cannot deafen the person holding it.
 -- git show 6f40809 has the body if it is ever wanted back.
 
---- Are we aboard the drop bus right now?
----
---- BR.State.me.state IS THE ONE ANSWER AND THIS FILE DOES NOT INVENT A SECOND.
---- It is the mirror client/state.lua keeps of our own roster entry, fed by the
---- snapshot and the roster deltas (state.lua:458), and it is the same field
---- client/bus.lua boards and tears the plane down on (bus.lua:277, :281). The
---- plane's own `riding` flag is a local of that file and deliberately lags this
---- one by design -- see the jump race it documents -- and BR.State.match.state
---- says the MATCH is flying the bus, not that WE are on it, which is exactly
---- the distinction that would gag a lobby bystander.
----
---- Missing state is NOT the bus. Everything in this file that guesses must
---- guess toward the microphone working; see the NOBODY IS MUTED BY DEFAULT
---- block.
-local function onBus()
-    local me = BR.State and BR.State.me
-    return me ~= nil and me.state == BR.PlayerState.BUS
-end
-
---- THE MICROPHONE. One switch, one writer, and a memory of what it last said.
----
---- IT REMEMBERS BECAUSE ITS CALLER RUNS AT 10Hz. listen() re-decides this every
---- tick, and a native call per tick per player is exactly the cost the volume
---- overrides are diffed to avoid -- so this diffs too, against
---- BR.Voice.state.mic, and a settled player costs one comparison.
----
---- BOTH SWITCHES, ALWAYS TOGETHER, because 'off' is the proof that either one
---- alone is not the microphone. MumbleSetActive is Mumble's capture;
---- NetworkSetVoiceActive is GTA's own voice chat, behind its own flag, and the
---- owner watched the second announce him while the first was off -- see the
---- 'off' branch of apply(), which is where that pairing is argued in full. A
---- gate that took only one of them would reproduce exactly that report.
----
---- IT MIRRORS apply(), AND IF THAT PAIRING EVER CHANGES IT CHANGES HERE TOO.
---- apply() states the same two natives directly for the mode's baseline -- both
---- false on 'off', both true otherwise -- and this states them for the
---- situation on top of it. They have to agree about what "the microphone" is,
---- or leaving the bus restores half of what boarding it took away.
---- @param on boolean
-local function setMic(on)
-    on = on and true or false
-    if BR.Voice.state.mic == on then return end
-    BR.Voice.state.mic = on
-    if MumbleSetActive then MumbleSetActive(on) end
-
-    -- GTA'S OWN VOICE IS NEVER TURNED ON HERE, and that asymmetry is the point.
-    -- See apply(): this project speaks over Mumble, and the stock voice system
-    -- draws its own "currently talking" readout on top of ours the moment it is
-    -- active. Turning it OFF alongside the mic is still right -- either switch
-    -- left alone leaves the player announced -- but it is never turned back on.
-    if not on and NetworkSetVoiceActive then NetworkSetVoiceActive(false) end
-end
+-- ==========================================================================
+-- THERE WAS AN onBus() AND A setMic() HERE. THEY WERE THE VOICE REGRESSION.
+--
+-- 58502b0 added them to gag a 'nearby' rider on the drop bus; the owner
+-- playtested it and reported the fourth silent 'nearby' in this file's history:
+-- "while in the same squad and both set to 'nearby' while standing nearby,
+-- players can no longer hear each other." Both functions are removed rather
+-- than repaired. The full argument is in listen(), where the gate itself was.
+--
+-- THE ONE RULE THAT REPLACES THEM: MumbleSetActive is stated by apply() and by
+-- nothing else, ever. It is not a microphone switch -- see listen().
+-- ==========================================================================
 
 --- Put us in our channels AND point our microphone at them.
 ---
@@ -620,24 +574,6 @@ local function apply()
     if not available() then return end
 
     local s = BR.Voice.state
-
-    -- AND WHATEVER WE BELIEVED ABOUT THE MICROPHONE, WE NO LONGER DO.
-    --
-    -- Both branches below write MumbleSetActive directly -- that is this
-    -- function's job, to state the baseline the MODE implies -- and both of
-    -- them then call listen(), which states the baseline the SITUATION implies
-    -- on top of it and is the one that gets the last word (see its bus gate).
-    -- Dropping the belief here is what stops the second write being skipped as
-    -- already-done: a player who boarded the bus on 'nearby' has a mic this
-    -- file believes is off, and apply() is about to turn it back on underneath
-    -- that belief.
-    --
-    -- The cost is one duplicate native call on the paths that DON'T need
-    -- correcting, and those paths are events -- an assignment, a settings
-    -- change, a Mumble reconnect -- not a band. Two writers sharing one cache
-    -- would be cheaper and is precisely how a mute outlives the thing that
-    -- asked for it.
-    s.mic = nil
 
     -- THE PLAYER'S OWN PREFERENCE, LAYERED OVER THE SERVER'S ASSIGNMENT.
     --
@@ -700,24 +636,33 @@ local function apply()
     end
     if MumbleSetActive then MumbleSetActive(true) end
 
-    -- AND GTA'S OWN VOICE STAYS OFF. THIS LINE USED TO SAY `true` AND IT IS
-    -- WHERE THE DUPLICATE "CURRENTLY TALKING" CAME FROM.
+    -- AND GTA'S OWN VOICE STAYS OFF. THIS LINE USED TO SAY `true`.
     --
-    -- `git log -S NetworkSetVoiceActive` returns exactly one commit in this
-    -- repo's history -- 3fc061f, the round that fixed the receive side -- so
-    -- nothing had ever called this native before, and the owner's report of two
-    -- talking readouts arrived with it. That commit's own comment admitted the
-    -- call was guarded and unverified. It was.
+    -- THE CLAIM THAT USED TO BE HERE -- "THIS IS WHERE THE DUPLICATE 'CURRENTLY
+    -- TALKING' CAME FROM" -- IS FALSIFIED, BY THE OWNER, ON THIS BUILD. He is
+    -- running 475429f, the commit that made this line say `false`, and the stock
+    -- readout is still on screen. Leaving that claim standing would cost the
+    -- next round a day, so it is corrected rather than deleted.
     --
-    -- FiveM hooks NETWORK_SET_VOICE_ACTIVE: it calls the original GTA function
-    -- and then sets g_voiceActiveByScript. So it does two things, and only the
-    -- second was wanted. MumbleSetActive on the line above sets that flag by
-    -- itself -- Mumble_ShouldConnect reads VoiceChatPrefs && OneSync &&
-    -- g_voiceActiveByScript -- so turning the stock system on buys nothing and
-    -- costs a second readout drawn by the game, over which we have no say.
+    -- AND IT WAS REFUTABLE FROM THIS FILE ALL ALONG, which is the lesson worth
+    -- more than the line. That commit's own mechanism was: FiveM hooks
+    -- NETWORK_SET_VOICE_ACTIVE to call the stock function AND set
+    -- g_voiceActiveByScript -- and MumbleSetActive sets that same flag by itself
+    -- (Mumble_ShouldConnect reads VoiceChatPrefs && OneSync &&
+    -- g_voiceActiveByScript). One line above, unconditionally, for every mode
+    -- that is not 'off', this function calls MumbleSetActive(true). So the flag
+    -- is set either way. If the readout follows the FLAG, no edit to this file
+    -- can remove it while voice works at all; if it follows the stock GTA
+    -- function, this line is the fix and it did not work. The owner's playtest
+    -- says it is not the second one.
     --
-    -- Off on 'off' and off on the bus gag is still correct: either switch left
-    -- alone leaves the player announced. It is simply never turned back on.
+    -- WHAT IS LEFT IS OUTSIDE THIS FILE AND IS NOT GUESSED AT HERE. FiveM draws
+    -- voice UI of its own and it is convar-driven, not native-driven; no voice
+    -- resource is started on this server, so it is not pma-voice's. Nobody on
+    -- this project has established which surface it is, and this file has now
+    -- guessed twice. It stays `false` -- turning the stock system ON is a thing
+    -- we affirmatively do not want, and never turning it on is free -- but no
+    -- further claim is made for it.
     if NetworkSetVoiceActive then NetworkSetVoiceActive(false) end
 
     -- THE ENGINE'S OWN DISTANCE CUTOFF IS NOT ARMED, DELIBERATELY.
@@ -859,66 +804,62 @@ listen = function()
     local mode = BR.Voice.pref.mode
 
     -- ================================================================
-    -- A BUS ON 'nearby' IS EVERY PLAYER IN THE MATCH TALKING AT ONCE.
+    -- THE BUS GAG WAS HERE. IT IS REMOVED, AND NOTHING LIKE IT MAY BE REBUILT
+    -- ON MumbleSetActive. THIS IS THE FOURTH SILENT 'nearby' IN THIS FILE.
     --
-    -- Owner, 2026-08-17: "can you make it so talking is not an option while in
-    -- the bus and set to 'nearby'? That would be chaos."
+    -- The line was:
     --
-    -- It is chaos because of the trade recorded above: 'nearby' has NO distance
-    -- cutoff at all any more (#157, round three). A rider on 'nearby' is not
-    -- talking to the sixty people sitting next to them, they are talking to the
-    -- whole match, and so is everybody else in the seat -- one room, one
-    -- undifferentiated wall of noise, at the one moment of the match when a
-    -- squad most needs to hear each other call a drop.
+    --   setMic(mode ~= 'off' and not (mode == 'nearby' and onBus()))
     --
-    -- THE DECISION IS HERE AND NOT IN apply(), AND THAT IS THE WHOLE OF IT.
+    -- and setMic() wrote MumbleSetActive. The owner playtested it, 2026-08-17:
+    -- "while in the same squad and both set to 'nearby' while standing nearby,
+    -- players can no longer hear each other. It shows someone is talking, but
+    -- no audio passes." Everybody rides the bus, so everybody on 'nearby' was
+    -- gagged once -- and the gag was never really lifted.
     --
-    -- apply() runs on three things and a match-state change is NONE of them: a
-    -- Mumble (re)connect and its self-heal (voice.watch, below), and a
-    -- preference change from the settings screen. Nothing calls it when a
-    -- player goes BUS -> FREEFALL. A gate written inside apply() would
-    -- therefore take the microphone away on boarding -- if it caught the
-    -- boarding at all, which it would not -- and NEVER GIVE IT BACK for the
-    -- rest of the match. That is a strictly worse bug than the one being fixed
-    -- and it is the shape this project has shipped before: code that is correct
-    -- and connected to nothing.
+    -- MumbleSetActive IS NOT A MICROPHONE SWITCH. THAT IS THE WHOLE BUG.
     --
-    -- listen() is the band that genuinely re-asks. It runs from voice.hear at
-    -- 10Hz, unconditionally, in every mode -- so the answer is recomputed from
-    -- BR.State.me.state within 100ms of it changing, with no event to register
-    -- and nothing to remember to fire. setMic() carries the diff, so both
-    -- steady states cost zero native calls and only the transition writes.
+    -- It sets g_voiceActiveByScript, and Mumble_ShouldConnect reads
+    -- VoiceChatPrefs && OneSync && g_voiceActiveByScript -- which is written
+    -- down in this project's own history (475429f, the commit AFTER the gag,
+    -- researching a different native). So MumbleSetActive(false) does not mute
+    -- a capture device: it takes the Mumble CONNECTION down, and with it the
+    -- joined channel and the voice target this file spent two rounds of #150
+    -- learning to fill. MumbleSetActive(true) starts a reconnect and restores
+    -- NEITHER.
     --
-    -- AND IT WINS OVER apply() BY RUNNING LAST. apply() sets
-    -- MumbleSetActive(true) unconditionally for every non-'off' mode and then
-    -- calls listen() -- this function -- which is why the order there matters
-    -- and why apply() drops s.mic first. There is no flapping: apply() is an
-    -- event, not a band, so the two never alternate.
+    -- AND NOTHING HERE REBUILT THEM, which is why the silence lasted all match
+    -- instead of a second. The gag never touched BR.Voice.state.applied -- and
+    -- `applied` is exactly what gates the two things that could have healed it:
+    -- voice.settle re-joins the room only while `not applied`, and voice.watch's
+    -- self-heal is written `not applied` too. Both early-returned. The only
+    -- remaining road back was voice.watch's connect edge, a 1Hz poll of
+    -- MumbleIsConnected() that has to catch the drop to fire at all.
     --
-    -- WHAT THIS DOES NOT DO, all three deliberate:
+    -- COMPARE 'off', WHICH USES THE SAME NATIVE AND WORKS. apply()'s 'off'
+    -- branch clears the voice target, empties talkTo/radioTo, and sets
+    -- `applied = false` -- so coming back off 'off' re-joins the room and
+    -- refills the target through the settle band. The gag copied the switch and
+    -- none of the bookkeeping around it.
     --
-    --   'squad' IS UNTOUCHED ON THE BUS. Coordinating the drop is the entire
-    --   point of the squad radio, and it is the mode where the audio goes to
-    --   three people rather than to ninety-nine.
+    -- AND THE SUITE COULD NOT SEE ANY OF IT, which is the part worth keeping.
+    -- Its stub was `mumble.active = v`, one boolean, and its hears() said in a
+    -- comment that MumbleSetActive "IS A MICROPHONE SWITCH AND NOTHING ELSE".
+    -- Both halves agreed with the code and neither had asked the engine. The
+    -- stub is now honest -- false drops the connection, the channel and the
+    -- target -- and on that model the assertion "the match can hear them again
+    -- the moment they are out of the seat" fails with sends=0. That is this
+    -- report, reproduced offline.
     --
-    --   LISTENING IS UNTOUCHED. This writes no volume override and does not
-    --   narrow `audible` -- a gagged rider hears every person they would have
-    --   heard, and the talking indicator keeps naming them. "Talking is not an
-    --   option" was about the talking.
-    --
-    --   THE SEAT IS THE ONLY THING GATED. Not the warmup, not the freefall,
-    --   not the glide. The instant BR.State.me.state stops saying BUS the
-    --   microphone comes back, which is the regression a careless version of
-    --   this breaks and is asserted as such in tools/test_client.lua.
-    --
-    -- KNOWN AND OUT OF SCOPE: a SOLO player whose preference is 'squad' has no
-    -- squadmates, so route() puts them in the proximity room alone -- they can
-    -- still shout at the whole bus. The owner asked about 'nearby' and 'squad'
-    -- on the bus must keep working, so that case is left alone rather than
-    -- guessed at; gating it needs its own decision about what a solo's 'squad'
-    -- setting is supposed to mean.
+    -- IF THE BUS RULE IS WANTED BACK, and the owner did ask for it, these are
+    -- the terms. Do not state MumbleSetActive anywhere but apply(). The only
+    -- silencer this project has ever WATCHED work in game is an empty voice
+    -- target -- that is the whole of #150, "it looks like I'm talking and
+    -- nobody hears me" -- so a gag is MumbleClearVoiceTarget(TARGET) plus
+    -- `s.applied = false` on the way out so the settle band refills it, and it
+    -- costs the half-second of silence a re-route costs. It is a re-route, not
+    -- a switch, and it needs its own playtest before it is believed.
     -- ================================================================
-    setMic(mode ~= 'off' and not (mode == 'nearby' and onBus()))
 
     -- WHAT WE HOLD OPEN, and WHO WE CAN HEAR. Two different questions now that
     -- they have stopped being the same one: `want` is the small set of players
@@ -1115,15 +1056,6 @@ BR.Loop.register(BR.Loop.SLOW, 'voice.watch', function()
         BR.Voice.state.heard = {}
         BR.Voice.state.audible = {}
 
-        -- AND THE MICROPHONE SWITCH, for the identical reason. setMic() skips a
-        -- call that agrees with what it believes, and a reconnected client holds
-        -- none of what this field claims -- so a player on 'off', or a player in
-        -- the seat, would have their silence skipped as already-applied and come
-        -- back transmitting. apply() clears this too; it is repeated here
-        -- because this is the one place that knows the ENGINE forgot, which is
-        -- a different fact from us changing our mind.
-        BR.Voice.state.mic = nil
-
         apply()
     end
     wasConnected = now
@@ -1287,22 +1219,10 @@ RegisterCommand('brvoice', function()
     -- the microphone is pointed, and an empty list here means silence however
     -- right everything else looks. It must never be empty while a prox channel
     -- is assigned and the mode is not 'off'.
-    -- WHY THE MICROPHONE IS DOWN, WHICH NOW HAS TWO ANSWERS INSTEAD OF ONE.
-    --
-    -- 'off' is the silence the player chose. The bus is the silence the game
-    -- chose for them, and from the seat the two are indistinguishable: the
-    -- settings screen still says 'nearby', "talking into" below still names a
-    -- perfectly good room, and every other line in this readout is unchanged.
-    -- Without this line a gagged rider looks exactly like the bug this file has
-    -- shipped twice, so it says which one it is and what to do about it.
-    print(('  microphone   %s'):format(
-        s.mic == nil and 'not stated yet'
-        or s.mic and 'live'
-        or (BR.Voice.pref.mode == 'off' and 'MUTED -- you chose off'
-            or (onBus() and 'MUTED -- riding the bus on nearby. Switch to '
-                    .. 'squad, or jump.'
-                or 'MUTED -- and NOT for a reason this file knows about'))))
-
+    -- THERE IS ONE ANSWER TO "WHY CAN NOBODY HEAR ME" AGAIN, AND IT IS THIS
+    -- LINE. A `microphone` line briefly sat above it, reporting the bus gag
+    -- that is now removed; the gag's own damage showed up HERE, as an empty
+    -- transmit path, which is what this line has always been for.
     print(('  talking into %s'):format(
         #s.talkTo > 0 and table.concat(s.talkTo, ', ')
             or 'NOTHING -- no audio is being sent'))
