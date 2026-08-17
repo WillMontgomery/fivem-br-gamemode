@@ -128,19 +128,51 @@ local edge = {}
 --- completed on a machine that ever opens a menu.
 local lying = {}
 
---- Which raw natives this simulated BUILD has. Flipped per block so the same
---- interaction is proved on all three mechanisms rather than on the developer's.
-local build = { rawDown = true, rawPressed = true }
+--- WHAT THE NATIVE HANDS BACK, WHICH IS NOT THE SAME QUESTION AS WHAT IT MEANS.
+---
+--- The stub these tests ran on for six rounds was `return keys[vk] == true` --
+--- a strict Lua boolean. keybinds.lua then stored that value and compared it
+--- with `== true` in two places. Stub and code agreed, the suite passed 202
+--- assertions, and the interaction was dead on the owner's client: one press of
+--- the trail key counted 545 presses and toggled the smoke 545 times, and a
+--- crate hold ran 446 frames earning 0 of 1000ms (#129/#131, 2026-08-16).
+---
+--- A STUB THAT AGREES WITH THE CODE IT TESTS PROVES NOTHING. FiveM natives
+--- declared BOOL do not have to hand Lua a boolean, and this codebase already
+--- carries two scars from exactly that -- natives.lua compares `hit == 1 or
+--- hit == true` on the shape test, spawn.lua compares `== true or == 1` on the
+--- screen fade. Both were written after the value arrived as a NUMBER in play.
+---
+--- So the shape is a dimension of the test matrix now, alongside which natives
+--- the build has. `1/0` is in the list specifically because 0 is TRUTHY in Lua:
+--- it is the shape that punishes the obvious one-line normalisation
+--- (`v and true or false`), which would read a released key as held forever.
+local SHAPES = {
+    { name = 'boolean true/false', down = true, up = false },
+    { name = 'number 1 / false',   down = 1,    up = false },
+    { name = 'number 1 / 0',       down = 1,    up = 0     },
+    { name = 'number 1 / nil',     down = 1,    up = nil   },
+}
 
+--- Which raw natives this simulated BUILD has, and in what shape it answers.
+--- Flipped per block so the same interaction is proved on every mechanism
+--- rather than on the developer's.
+local build = { rawDown = true, rawPressed = true, shape = SHAPES[1] }
+
+--- IS_RAW_KEY_DOWN -- a per-frame LEVEL. True for EVERY frame of a hold.
 function IsRawKeyDown(vk)
     if not build.rawDown then error('IS_RAW_KEY_DOWN: no such native', 0) end
-    if lying[vk] then return false end
-    return keys[vk] == true
+    if lying[vk] then return build.shape.up end
+    if keys[vk] then return build.shape.down end
+    return build.shape.up
 end
 
+--- IS_RAW_KEY_PRESSED -- `keys[active][k] & changed(k)` in FiveM's
+--- InputNatives.cpp. An EDGE: true for EXACTLY the first frame of a hold.
 function IsRawKeyPressed(vk)
     if not build.rawPressed then error('IS_RAW_KEY_PRESSED: no such native', 0) end
-    return edge[vk] == true
+    if edge[vk] then return build.shape.down end
+    return build.shape.up
 end
 
 -- ------------------------------------------------------------------ world ---
@@ -674,13 +706,17 @@ end
 
 --- Put the client on a simulated BUILD and restart the resource on it.
 ---
---- The three cases are the three `via` lines /brloot prints, and every one of
---- them is a machine somebody is actually playing on.
+--- The three `rawDown`/`rawPressed` cases are the three `via` lines /brloot
+--- prints, and every one of them is a machine somebody is actually playing on.
 --- @param rawDown boolean     IS_RAW_KEY_DOWN exists (the level sample)
 --- @param rawPressed boolean  IS_RAW_KEY_PRESSED exists (the edge fallback)
-local function bootOn(rawDown, rawPressed)
+--- @param shape table|nil     what the natives RETURN; defaults to booleans,
+---                            so every block written before #129's seventh
+---                            round keeps testing what it always tested
+local function bootOn(rawDown, rawPressed, shape)
     releaseInteract()
     build.rawDown, build.rawPressed = rawDown, rawPressed
+    build.shape = shape or SHAPES[1]
     -- One quiet frame so the raw layer's remembered edge state agrees with a
     -- keyboard on which nothing is held, before the flags change under it.
     frame(16)
@@ -797,15 +833,28 @@ local CHEST_MS = BR.Config.Loot.chestHoldMs or 1000
 -- all. Both directions have to be nailed down at once or fixing either one
 -- reintroduces the other, which is precisely the history of this interaction.
 
-for _, mech in ipairs({
-    { name = 'raw level sample (IsRawKeyDown)', rawDown = true,  rawPressed = true },
+--- THE MECHANISMS, TIMES THE SHAPES THE NATIVE CAN ANSWER IN.
+---
+--- The three mechanisms were here already. The shapes were not, and their
+--- absence is the whole of #129's seventh round: every raw-layer block below
+--- ran against a stub that returned a strict Lua boolean, which is the one
+--- shape the broken code handled correctly.
+local MECHS = {
     { name = 'engine +/- pair (no IsRawKeyDown)', rawDown = false, rawPressed = true },
     { name = 'engine +/- pair (no raw layer)',  rawDown = false, rawPressed = false },
-}) do
+}
+for _, s in ipairs(SHAPES) do
+    MECHS[#MECHS + 1] = {
+        name = 'raw level sample (IsRawKeyDown -> ' .. s.name .. ')',
+        rawDown = true, rawPressed = true, shape = s,
+    }
+end
+
+for _, mech in ipairs(MECHS) do
 
 describe('crate hold -- ' .. mech.name)
 do
-    bootOn(mech.rawDown, mech.rawPressed)
+    bootOn(mech.rawDown, mech.rawPressed, mech.shape)
     clearWorld()
     local id = addEntry('chest', nil, 1.0, 0.0)
     frames(2)
@@ -828,7 +877,7 @@ end
 
 describe('crate tap -- ' .. mech.name)
 do
-    bootOn(mech.rawDown, mech.rawPressed)
+    bootOn(mech.rawDown, mech.rawPressed, mech.shape)
     clearWorld()
     addEntry('chest', nil, 1.0, 0.0)
     frames(2)
@@ -1330,6 +1379,275 @@ do
         ok(BR.Keys.isHeld('interact') == false,
            ('held reads false after release -- %s'):format(mech.name))
     end
+end
+
+-- ======================================================================== --
+-- 4b. THE SHAPE OF THE NATIVE'S ANSWER (#129 / #131, SEVENTH ROUND)
+-- ======================================================================== --
+--
+-- One press of the smoke-trail key registered 545 presses and toggled the smoke
+-- 545 times; a crate hold ran 446 frames and earned 0 of 1000ms at 0% duty.
+-- Two reports, opposite in shape -- a key that fires far too often and a key
+-- that never fires at all -- and ONE cause, which is why they are asserted
+-- together in one block:
+--
+--   keybinds.lua stored the native's answer verbatim and then tested it with
+--   `== true`, twice. `rawDown[cmd] == true` decides whether this frame is an
+--   EDGE; `BR.Keys.held[action] == true` is BR.Keys.isHeld, which every hold in
+--   the game asks. Hand those a value that is TRUTHY BUT NOT `true` and the
+--   first is false on every frame -- so every frame is a rising edge, and a tap
+--   repeats at 60Hz -- while the second is false on every frame, so a hold is
+--   alive and earns nothing. Both symptoms, one line.
+--
+-- THE OLD SUITE COULD NOT SEE ANY OF IT, and that is the part worth keeping in
+-- mind before trusting a green run: its stub was `return keys[vk] == true`, so
+-- it handed the code the one shape the code got right, agreed with itself, and
+-- reported 202 passing assertions while the interaction was dead on the owner's
+-- machine. These blocks run the same interactions over every shape a FiveM BOOL
+-- native is known to arrive in.
+
+--- A TAP key, physically held. TAB is `brinventory`, registered through tap().
+local TAP_VK  = 0x09
+local TAP_KEY = 'TAB'
+
+local function tapKey(down)
+    if down then
+        if not keys[TAP_VK] then
+            keys[TAP_VK] = true
+            edge[TAP_VK] = true
+        end
+    else
+        keys[TAP_VK] = nil
+    end
+    engineKey(TAP_KEY, down)
+end
+
+for _, shape in ipairs(SHAPES) do
+
+--- ONE PHYSICAL PRESS IS ONE TAP, HELD FOR AS LONG AS YOU LIKE.
+---
+--- The existing "exactly one mechanism drives the interact press" block holds
+--- the key for a SINGLE frame, which cannot tell "once per press" from "once
+--- per frame" -- there is only one frame. Sixty is what a real press is, and it
+--- is the length at which #131 became visible from a chair.
+describe('a tap fires once across a 60-frame hold -- ' .. shape.name)
+do
+    bootOn(true, true, shape)
+    local n = 0
+    BR.Keys.on('inventory', function(pressed) if pressed then n = n + 1 end end)
+
+    tapKey(true)
+    frames(60)
+    local held = n
+    tapKey(false)
+    frames(10)
+
+    ok(held == 1,
+       'one press of a tap key fires exactly once, however long it is held',
+       ('fired %d time(s) across 60 frames -- a tap is repeating per frame, '
+        .. 'which is #131: one press of the trail key toggled the smoke 545 '
+        .. 'times'):format(held))
+    ok(n == held,
+       'and the release adds nothing',
+       ('fired %d before release, %d after'):format(held, n))
+end
+
+--- A HOLD EARNS EVERY FRAME OF ITS LIFE, AND THEN COMPLETES.
+---
+--- Asserted on the ACCUMULATOR and the duty cycle rather than only on the
+--- claim, because "the crate opened" is satisfied by a clock running at any
+--- speed given enough frames, and the fault being pinned here is a clock that
+--- runs at zero.
+describe('a hold accumulates the full duration -- ' .. shape.name)
+do
+    bootOn(true, true, shape)
+    clearWorld()
+    local id = addEntry('chest', nil, 1.0, 0.0)
+    frames(2)
+
+    pressInteract()
+    frames(1)
+    ok(BR.Keys.isHeld('interact') == true,
+       'isHeld reads true on the first frame of the hold',
+       ('isHeld=%s -- BR.Keys.held is holding a value that is not the boolean '
+        .. 'true, so every hold in the game is dead')
+           :format(tostring(BR.Keys.isHeld('interact'))))
+
+    -- 39 more frames: 40 x 16ms = 640ms, deliberately short of the 1000ms
+    -- threshold so the accumulator can be read mid-flight.
+    frames(39)
+    local ms = holdMs() or -1
+    ok(ms == 40 * 16,
+       'the clock has earned every millisecond of a 40-frame hold',
+       ('holdMs=%d, want %d -- the hold is alive and not counting')
+           :format(ms, 40 * 16))
+    ok(BR.Keys.isHeld('interact') == true,
+       'and the key still reads held 40 frames in')
+
+    frames(math.ceil(CHEST_MS / 16))
+    local got = claims()
+    ok(#got == 1 and got[1] == id,
+       'and the hold crosses the threshold and opens the crate',
+       ('claims=%d'):format(#got))
+
+    local h = lastHold()
+    ok(h and h.why == 'it completed', 'the readout says it completed',
+       h and h.why)
+    ok(h and h.pct == 100, 'at a 100% duty cycle',
+       h and ('%d of %d frames earned time'):format(h.counted or -1, h.frames or -1))
+
+    releaseInteract()
+    frames(20)
+end
+
+end  -- shapes
+
+--- AND THE HOLD SIDE OF THE SAME LINE, ASSERTED ON THE KEY LAYER ALONE.
+---
+--- The block above proves it through the crate. This proves it about
+--- BR.Keys.held itself, which dbno.lua's revive and every future hold read
+--- through the same isHeld() -- so a regression here is not a loot bug.
+describe('isHeld is a boolean whatever the native returns')
+do
+    for _, shape in ipairs(SHAPES) do
+        bootOn(true, true, shape)
+        pressInteract()
+        frames(30)
+        local downOk = true
+        for _ = 1, 30 do
+            frame(16)
+            if BR.Keys.isHeld('interact') ~= true then downOk = false end
+        end
+        ok(downOk,
+           ('isHeld stays true for every frame of a 60-frame hold -- %s')
+               :format(shape.name))
+        releaseInteract()
+        frames(20)
+        ok(BR.Keys.isHeld('interact') == false,
+           ('and goes false on the release -- %s'):format(shape.name))
+    end
+end
+
+-- ======================================================================== --
+-- 4c. AN UNPRODUCTIVE HOLD FAILS LOUDLY
+-- ======================================================================== --
+--
+-- The fix above stops this happening. The alarm exists because it happened for
+-- six rounds and NOTHING SAID SO: the hold stayed alive (every frame re-stamped
+-- the release grace), the ring filled (it is a CSS animation on a fixed
+-- duration), and /brloot printed `0/1000ms` -- which is also exactly what a
+-- hold that has not started prints. The owner pasted that line and it was read
+-- as "no hold is running".
+--
+-- Driven here through `lying`, which is a key state that reads UP while the key
+-- is physically DOWN -- the same shape citizenfx/fivem#3064 describes, and the
+-- same shape the value bug produced. What is asserted is not the mechanism but
+-- the NOISE: a counter, a warning, a live marker and a post-mortem.
+
+--- The session-wide starved-hold counter, read the way a player reads it.
+local function starvedCount()
+    local line = lootLine('^%s*starved%s+%d+ hold')
+    return line and tonumber(line:match('starved%s+(%d+)'))
+end
+
+describe('a hold that earns nothing says so')
+do
+    bootOn(true, true)
+    clearWorld()
+    local id = addEntry('chest', nil, 1.0, 0.0)
+    frames(2)
+
+    local before = starvedCount()
+    ok(before ~= nil, '/brloot reports a starved-hold counter at all',
+       'no `starved` line in the readout')
+
+    -- PHYSICALLY HELD THROUGHOUT, AND THE SAMPLE READS UP ON FIVE FRAMES IN
+    -- SIX. Gaps of 80ms, comfortably inside the 120ms grace, so the hold never
+    -- dies -- which is the whole trap. The ring fills, the clock crawls at a
+    -- sixth of wall-clock speed, and nothing ends. 2.4 seconds of that is more
+    -- than twice what the hold needs and it is still nowhere near done.
+    --
+    -- The first frame is honest so the press lands and the hold starts; a
+    -- rising edge is what creates a hold, and a sample that lies from the very
+    -- first frame produces no hold to starve.
+    pressInteract()
+    frame(16)
+    -- /brloot must not be called inside this loop: it resets `logged`, which is
+    -- where the console warning has to be caught.
+    logged = {}
+    for i = 1, 150 do
+        if i % 6 ~= 0 then lying[INTERACT_VK] = true end
+        frame(16)
+    end
+
+    local warned = 0
+    for _, l in ipairs(logged) do
+        if l:find('STARVED HOLD', 1, true) then warned = warned + 1 end
+    end
+    ok(warned > 0, 'a warning naming the numbers reached the console',
+       'the hold ran 2.4s earning a sixth of wall clock and said nothing')
+    ok(warned <= 3, 'and it does not repeat at frame rate',
+       ('printed %d times across 150 frames'):format(warned))
+
+    ok(#claims() == 0, 'the crate does not open')
+    ok(starvedCount() == (before or 0) + 1,
+       'and the starved counter has gone up exactly once for this hold',
+       ('starved %s -> %s'):format(tostring(before), tostring(starvedCount())))
+
+    local live = lootLine('^%s*hold:')
+    ok(live and live:find('STARVED', 1, true) ~= nil,
+       'the live hold line is flagged rather than reading as an ordinary hold',
+       tostring(live))
+
+    releaseInteract()
+    frames(20)
+
+    local h = lastHold()
+    ok(h ~= nil and h.best < CHEST_MS,
+       'the post-mortem records a hold that never reached the threshold',
+       h and tostring(h.best))
+    ok(h and h.why == 'the key was released',
+       'it still records the literal reason it ended', h and h.why)
+
+    -- ...AND THE LINE THAT STOPS THAT REASON BEING BELIEVED. "it ended because
+    -- the key was released" sent five rounds into the release path. It is true
+    -- and it is not the fault.
+    ok(lootLine('AND IT WAS STARVED') ~= nil,
+       'and says the release was not why it failed',
+       'the post-mortem blames the release with nothing to contradict it')
+    ok(h and h.id == tostring(id), 'about the right crate',
+       h and tostring(h.id))
+end
+
+--- THE ALARM MUST NOT FIRE ON A HOLD THAT IS MERELY IMPERFECT.
+---
+--- A false STARVED on a healthy client is worse than no alarm: it would send
+--- the next person to the key layer, which is where the last six rounds went.
+--- One dropped frame in twenty is the worst tolerated real fault
+--- (citizenfx/fivem#3064) and it completes 50ms late.
+describe('a healthy hold is never called starved')
+do
+    bootOn(true, true)
+    clearWorld()
+    local id = addEntry('chest', nil, 1.0, 0.0)
+    frames(2)
+
+    local before = starvedCount()
+
+    pressInteract()
+    for i = 1, 300 do
+        if i % 20 == 0 then lying[INTERACT_VK] = true end
+        frame(16)
+        if #claims() > 0 then break end
+    end
+    ok(#claims() == 1 and claims()[1] == id,
+       'a hold that drops one frame in twenty still opens the crate')
+    ok(starvedCount() == before,
+       'and is not reported as starved',
+       ('starved %s -> %s'):format(tostring(before), tostring(starvedCount())))
+
+    releaseInteract()
+    frames(20)
 end
 
 -- ======================================================================== --

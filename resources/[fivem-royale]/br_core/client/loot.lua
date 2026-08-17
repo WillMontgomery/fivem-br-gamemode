@@ -92,7 +92,19 @@ local poses = {}
 --- one frame in six therefore shows a ring that fills in a second and a clock
 --- that needs six -- and until now nothing anywhere could tell those apart.
 --- `counted/frames` can: 100% means the clock is running at wall-clock speed.
-local hold = { id = nil, heldMs = 0.0, upAt = nil, frames = 0, counted = 0 }
+---
+--- `aliveMs` IS NOT A START STAMP AND MUST NEVER BECOME ONE. It is accumulated
+--- exactly like `heldMs`, from the same `dt`, on the same frames -- the only
+--- difference is that it is added unconditionally while `heldMs` is gated on
+--- `counting`. The pair is the whole instrument: `aliveMs` is how long this
+--- hold has EXISTED, `heldMs` is how much of that it EARNED, and the gap
+--- between them is the fault (see STARVE_RATIO below). Deriving `aliveMs` from
+--- `GetGameTimer() - startedAt` would reintroduce the exact quantity #129's
+--- first round shipped and the accumulator was written to delete, sitting in
+--- the same table one field away from the completion test. It is not worth the
+--- two operations it would save.
+local hold = { id = nil, heldMs = 0.0, upAt = nil,
+               frames = 0, counted = 0, aliveMs = 0.0, warnedAt = nil }
 
 --- WHAT THE LAST HOLD ACTUALLY DID, kept after it ends so it can be read.
 ---
@@ -143,12 +155,19 @@ local function clearHold(why)
             best    = hold.heldMs,
             frames  = hold.frames,
             counted = hold.counted,
+            aliveMs = hold.aliveMs,
+            -- Carried into the post-mortem so the readout can say "this hold
+            -- was starved" about a hold that has already ended -- which is the
+            -- only kind anybody ever reads, because letting go of the key is
+            -- what it takes to reach the F8 console.
+            starved = hold.warnedAt ~= nil,
             why     = why or 'unrecorded',
             at      = GetGameTimer(),
         }
     end
     hold.id, hold.heldMs, hold.upAt = nil, 0.0, nil
     hold.frames, hold.counted = 0, 0
+    hold.aliveMs, hold.warnedAt = 0.0, nil
 end
 
 --- Send a claim, and remember that we did.
@@ -218,6 +237,60 @@ local HOLD_RELEASE_MS = 120
 --- reads 0, the dropped-frame path is not what is happening and the next person
 --- should look elsewhere rather than at this file.
 local holdResumes = 0
+
+-- ---------------------------------------------------------------------------
+-- A HOLD THAT CANNOT COMPLETE AND CANNOT VISIBLY FAIL (#129, seventh round)
+--
+-- The release grace and the resume absorb a key state that drops a frame. What
+-- they do NOT distinguish is a key state that is wrong on EVERY frame -- and
+-- that combination is silent by construction:
+--
+--   * the hold never completes, because milliseconds are earned only on frames
+--     the key reads down and none of them do;
+--   * the hold never dies, because every frame re-stamps the release grace, so
+--     `alive` is true forever;
+--   * the ring fills anyway, because it is a CSS animation started once with
+--     `chestHoldMs` as its duration (br_ui/dui/prompt.html).
+--
+-- So the player holds the key, watches a full orange ring, and the crate does
+-- not open -- for as long as they care to stand there. That is the state the
+-- owner pasted: 446 frames alive, 0 of 1000ms earned, 0%, and a readout that
+-- reported it as "the key was released". Nothing anywhere said "this hold is
+-- not progressing", so five rounds were spent arguing about which key layer was
+-- at fault while the readout sat at 0/1000ms and volunteered nothing.
+--
+-- The mechanism was fixed in keybinds.lua. This is the alarm that makes the
+-- NEXT one of these audible on the first playtest instead of the sixth: a hold
+-- that has existed for longer than it needed and earned less than half of it is
+-- not slow, it is broken, and it says so.
+-- ---------------------------------------------------------------------------
+
+--- How much of its own lifetime a hold must EARN before it is called healthy.
+---
+--- Half, and the margin either side is wide on purpose. A healthy client earns
+--- 100%; the worst tolerated real fault -- a key state that drops one frame in
+--- twenty around NUI focus changes (citizenfx/fivem#3064) -- earns 95% and
+--- completes 50ms late. A hold that has been alive for a full `chestHoldMs`
+--- with less than half of it banked is not going to finish in any time the
+--- player will wait: at 49% it needs another full second, and the reported
+--- cases were at 0% and 17%. Nothing sits near the line.
+local STARVE_RATIO = 0.5
+
+--- Holds that outlived their own duration without earning half of it.
+---
+--- SESSION-WIDE AND NOT CLEARED BY clearHold(), for the same reason
+--- holdResumes is not: what it measures is a property of this client's key
+--- state, not of any one crate. /brloot prints it, and a non-zero value there
+--- is the single line that says "stop looking at the loot code".
+local starvedHolds = 0
+
+--- How often the console warning may repeat while one hold stays starved.
+---
+--- The first one is what matters -- it lands in F8 with the numbers in it. The
+--- repeat exists because a player who is holding a key and watching nothing
+--- happen is not reading the console at that moment, and 2s is slow enough that
+--- a stuck hold produces a readable trickle rather than a 60Hz wall.
+local STARVE_WARN_MS = 2000
 
 --- Is a hold in progress still being held, and should this frame count?
 ---
@@ -1761,12 +1834,50 @@ BR.Loop.register(BR.Loop.FRAME, 'loot.render', function(dt)
             -- exactly, and it is invisible without this.
             hold.frames = hold.frames + 1
 
+            -- ...AND THE SAME MEASUREMENT IN MILLISECONDS, which is what the
+            -- alarm below compares against `chestHoldMs`. Frames cannot be
+            -- compared against a duration: at 20fps a starved hold would take
+            -- three times as long to be noticed as at 60.
+            hold.aliveMs = hold.aliveMs + dt
+
             -- Only frames on which the key was down get counted, and `dt` is
             -- already clamped to 100ms above so a stalled frame cannot hand
             -- the player a tenth of a second of credit it did not earn.
             if counting then
                 hold.counted = hold.counted + 1
                 hold.heldMs = hold.heldMs + dt
+            end
+
+            -- THE ALARM. Checked BEFORE the completion test so it can never
+            -- fire on a hold that is about to succeed, and it costs two
+            -- comparisons on a healthy frame.
+            --
+            -- IT DOES NOT CANCEL THE HOLD, DELIBERATELY. Ending it here would
+            -- be a NINTH way for a hold to die, on a rule about progress rather
+            -- than about the player -- and on a client that produces a rising
+            -- edge every frame (which is exactly the fault this is here to
+            -- catch) the cancel and the restart would fight at 60Hz. The hold
+            -- is left exactly as it was and the SILENCE is what gets fixed:
+            -- the console says so, /brloot flags the live hold, the session
+            -- counter climbs, and the post-mortem carries `starved` into
+            -- `lastHold`. A hold that cannot complete can now be seen failing
+            -- from four places instead of none.
+            local need = L.chestHoldMs or 1000
+            if hold.aliveMs >= need and hold.heldMs < need * STARVE_RATIO then
+                if not hold.warnedAt then starvedHolds = starvedHolds + 1 end
+                if not hold.warnedAt
+                   or (frameNow - hold.warnedAt) >= STARVE_WARN_MS then
+                    hold.warnedAt = frameNow
+                    print(('[br_core] STARVED HOLD on crate #%s: alive %.0fms, '
+                        .. 'earned %.0f of %dms on %d of %d frame(s) (%.0f%%). '
+                        .. 'The interact key is not reading as HELD on most '
+                        .. 'frames -- the ring will fill anyway and the crate '
+                        .. 'will not open. Run /brkeys (check `held=`) and '
+                        .. '/brprobe rawkey.')
+                        :format(tostring(hold.id), hold.aliveMs, hold.heldMs,
+                                need, hold.counted, hold.frames,
+                                100.0 * hold.counted / math.max(hold.frames, 1)))
+                end
             end
 
             if hold.heldMs >= (L.chestHoldMs or 1000) then
@@ -2299,10 +2410,21 @@ RegisterCommand('brloot', function()
 
     -- THE HOLD, LIVE. `heldMs` only advances on frames the key reads down, so
     -- watching it climb and then reset on release is the whole of #129.
-    print(('  hold:      %s  %.0f/%dms   key down: %s')
+    --
+    -- THE `STARVED` MARKER IS THE LINE THAT WOULD HAVE ENDED THIS IN ONE PASTE.
+    -- `0/1000ms` on its own is ambiguous -- it is what a hold that has not
+    -- started yet prints too, and the owner's paste of exactly that was read as
+    -- "the hold has not begun" for six rounds. The marker says the hold IS
+    -- running, HAS outlived its own duration, and has earned nothing.
+    print(('  hold:      %s  %.0f/%dms   key down: %s%s')
         :format(hold.id and ('#' .. hold.id) or '-',
                 hold.heldMs or 0.0, L.chestHoldMs or 1000,
-                tostring(BR.Keys.isHeld('interact'))))
+                tostring(BR.Keys.isHeld('interact')),
+                hold.warnedAt
+                    and ('   *** STARVED: %.0fms alive, %d of %d frame(s) '
+                         .. 'earning ***'):format(hold.aliveMs, hold.counted,
+                                                  hold.frames)
+                    or ''))
 
     -- ...AND WHICH MECHANISM IS ANSWERING "key down", WHICH IS THE LINE THAT
     -- WOULD HAVE SETTLED THE SECOND ROUND OF #129 IN ONE PASTE.
@@ -2338,6 +2460,19 @@ RegisterCommand('brloot', function()
     --   0 and it does NOT open  this is not the fault -- look somewhere else.
     print(('  key dropped a frame mid-hold %d time(s) this session '
         .. '(each one used to restart the clock)'):format(holdResumes))
+    -- THE COUNTER THAT SAYS "STOP LOOKING AT THE LOOT CODE" (#129, seventh
+    -- round). A starved hold is one that outlived `chestHoldMs` without
+    -- earning half of it: alive, ring filling, clock going nowhere. That state
+    -- was completely silent for six rounds -- it printed `0/1000ms`, which is
+    -- also what a hold that has not begun prints -- and it is the state the
+    -- owner was actually in.
+    --
+    --   0                        no hold has ever failed this way here.
+    --   >0 and crates open       a hold was interrupted; not the key layer.
+    --   >0 and crates NEVER open the interact key is not reading as HELD.
+    --                            /brkeys `held=`, then /brprobe rawkey.
+    print(('  starved    %d hold(s) outlived %dms without earning half of it')
+        :format(starvedHolds, L.chestHoldMs or 1000))
 
     -- ====================================================================
     -- THE THREE FACTS THE RING CANNOT TELL YOU (#129, sixth round).
@@ -2371,6 +2506,16 @@ RegisterCommand('brloot', function()
         print(('             %d frame(s) alive, %d earned time  (%.0f%%)')
             :format(lastHold.frames, lastHold.counted, pct))
         print(('             it ended because %s'):format(lastHold.why))
+        -- AND WHETHER IT WAS EVER GOING TO END ANY OTHER WAY. "it ended
+        -- because the key was released" is a true and completely misleading
+        -- sentence about a hold that had already been alive for four seconds
+        -- earning nothing -- it points at the release path, which is where
+        -- five rounds went. This line says the release was not the problem.
+        if lastHold.starved then
+            print(('             AND IT WAS STARVED: alive %.0fms, earned %.0f. '
+                .. 'It was never going to complete.')
+                :format(lastHold.aliveMs or 0.0, lastHold.best))
+        end
     else
         print('  last hold  (none started yet this session)')
     end

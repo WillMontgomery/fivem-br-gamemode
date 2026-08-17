@@ -417,6 +417,25 @@ local function rawKeyWatch(vk, seconds)
     Citizen.Wait(700)
 
     local frames, down, pressed = 0, 0, 0
+    -- WHAT THE NATIVE ACTUALLY HANDED BACK, NOT JUST WHETHER IT WAS TRUTHY.
+    --
+    -- THIS PROBE IS THE INSTRUMENT THAT EXONERATED THE KEY LAYER FOR SIX
+    -- ROUNDS. It counted with `if ok and v then`, a TRUTHINESS test, and then
+    -- printed "IsRawKeyDown is a LEVEL ... so a hold that does not complete is
+    -- NOT the key layer's fault". Both halves were correct and the conclusion
+    -- was wrong: the native was returning the NUMBER 1, keybinds.lua stored it
+    -- and compared it with `== true` in two places, and every one of those
+    -- comparisons failed. 576 frames of "true" measured a value that no
+    -- consumer in the game could read (owner, 2026-08-16).
+    --
+    -- A truthiness count cannot tell `true` from `1`, and `1` is the whole bug.
+    -- So the shape is recorded beside the count and printed unconditionally.
+    local shapes = {}       -- 'boolean true' / 'number 1' -> how many frames
+    local function note(v)
+        local k = ('%s %s'):format(type(v), tostring(v))
+        shapes[k] = (shapes[k] or 0) + 1
+    end
+
     local deadline = GetGameTimer() + ms
     while GetGameTimer() < deadline do
         frames = frames + 1
@@ -424,7 +443,10 @@ local function rawKeyWatch(vk, seconds)
         -- throws on a later call is a shape this file exists to catch.
         if hasDown then
             local ok, v = pcall(IsRawKeyDown, vk)
-            if ok and v then down = down + 1 end
+            if ok then
+                note(v)
+                if v then down = down + 1 end
+            end
         end
         if hasPressed then
             local ok, v = pcall(IsRawKeyPressed, vk)
@@ -437,6 +459,20 @@ local function rawKeyWatch(vk, seconds)
     val('frames sampled', frames)
     val('IsRawKeyDown true on', ('%d frame(s)'):format(down))
     val('IsRawKeyPressed true on', ('%d frame(s)'):format(pressed))
+
+    -- THE VALUES THEMSELVES. Anything other than `boolean true` / `boolean
+    -- false` here is a raw layer whose consumers cannot read it -- see the note
+    -- above, and truth() in keybinds.lua, which is where that is now handled.
+    local exotic = false
+    for k, n in pairs(shapes) do
+        val('IsRawKeyDown returned', ('%s on %d frame(s)'):format(k, n))
+        if k ~= 'boolean true' and k ~= 'boolean false' then exotic = true end
+    end
+    if exotic then
+        print('  NOT A LUA BOOLEAN. keybinds.lua normalises this at the sample')
+        print('  (truth()); if any other file compares a raw-key result with')
+        print('  `== true`, that comparison is dead on this build.')
+    end
     line()
     if frames == 0 then
         print('  No frames sampled -- the loop never ran. Nothing measured.')

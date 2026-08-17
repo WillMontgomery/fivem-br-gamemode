@@ -791,6 +791,54 @@ local rawDownFn = nil
 --- costs a local and cannot be wrong.
 local rawLevel = false
 
+--- A NATIVE'S ANSWER, TURNED INTO A LUA BOOLEAN. THIS IS #129's SEVENTH ROUND
+--- AND THE ONLY LINE OF MECHANISM IN IT.
+---
+--- Everything downstream of the sample compares it with `==`:
+---
+---   keybinds.lua  `rawDown[b.command] == true`   -- is this frame an EDGE
+---   keybinds.lua  `BR.Keys.held[action] == true` -- is the key down (isHeld)
+---
+--- and a FiveM native declared BOOL does not have to hand Lua a boolean. This
+--- codebase has already been bitten twice by the same runtime: natives.lua's
+--- shape test compares `hit == 1 or hit == true`, and spawn.lua's screen-fade
+--- reply compares `== true or == 1`. Both were written after the value arrived
+--- as a number in play and matched nothing.
+---
+--- Store `1` here instead of `true` and BOTH of those comparisons fail forever,
+--- from one cause, in opposite directions:
+---
+---   `was` is permanently false, so `down ~= was` is true on EVERY frame the
+---   key is held -- a tap fires once per frame instead of once per press. One
+---   press of the trail key registered 545 presses and toggled the smoke 545
+---   times (owner, #131, 2026-08-16).
+---
+---   `BR.Keys.held.interact` holds `1`, so isHeld() returns false on every
+---   frame -- the crate hold is alive and earns nothing. 446 frames alive,
+---   0 of 1000ms earned, 0% duty (owner, #129, 2026-08-16).
+---
+--- Neither instrument could see it. /brprobe rawkey counted with `if ok and v`,
+--- a TRUTHINESS test, so "IsRawKeyDown true on 576 frames" proved only that the
+--- value was truthy and the probe then printed that the key layer was
+--- exonerated. tools/test_client.lua stubbed the native as `keys[vk] == true`,
+--- a strict boolean, so the suite agreed with the broken code and passed 202/202
+--- with the interaction dead on the real client.
+---
+--- ZERO IS FALSE, AND THAT IS WHY THIS IS NOT `v and true or false`. In Lua the
+--- number 0 is TRUTHY, so the one-liner normalisation would map a native that
+--- answers 1/0 to "held forever" -- a worse bug than the one being fixed, and
+--- indistinguishable from it in a paste. Only the values that can actually mean
+--- "not down" -- nil, false, 0 -- are false here, and every other answer is
+--- true. That covers all four shapes the runtime is known to produce
+--- (true/false, 1/0, 1/false, 1/nil) without needing to know which one this
+--- build uses.
+--- @param v any
+--- @return boolean
+local function truth(v)
+    if v == nil or v == false or v == 0 then return false end
+    return true
+end
+
 BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
     if not BR.Keys.rawActive then return end
 
@@ -834,7 +882,13 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
             -- became a tap (user, 2026-08-09: "why do I no longer have to
             -- HOLD the pickup button"). The edges below are derived from the
             -- state, so the state is what this has to ask for.
-            local down = rawDownFn(code)
+            -- NORMALISED AT THE SAMPLE, WHICH IS THE ONE PLACE IT CAN BE DONE
+            -- ONCE. `down` is written into BR.Keys.held, into rawDown, and
+            -- passed to every listener through fire() -- three consumers, two
+            -- of which test it with `== true`. Converting here means none of
+            -- them can ever see the native's own shape. See truth() above for
+            -- what went wrong when they did.
+            local down = truth(rawDownFn(code))
             local was = rawDown[b.command] == true
 
             -- A HELD FLAG THAT IS ONLY EVER WRITTEN ON AN EDGE IS A LATCH, AND
