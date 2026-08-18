@@ -102,15 +102,20 @@ ensure pma-voice
 #            started before anything referencing '@br_lib/...' loads.
 #   br_core  defines the loop registry and scheduler.
 #   br_ui    owns the NUI page and NUI focus.
-#   br_stats is last; it is the only optional one.
+#   br_stats and br_ringmaster are the optional ones, and each declares only
+#            br_lib on purpose. br_ringmaster refuses `dependency 'br_core'`
+#            so the `restart br_core` ending every deploy cannot take the
+#            moderation channel with it; br_stats refuses `dependency 'br_ddb'`
+#            so a server with no database still plays. Both degrade to "no live
+#            state" rather than to "not running".
 # ---------------------------------------------------------------------------
 ensure br_lib
 ensure br_core
 ensure br_environment    # world state: IPLs + the Cayo Perico lobby island
 ensure br_ui
 ensure br_loadscreen     # branded loading screen; br_core releases it
-ensure br_ddb            # DynamoDB: ban checks, grants, and stats persistence
-ensure br_stats          # match results + XP, written through br_ddb
+ensure br_ddb            # DynamoDB: bans, grants, profiles, stats, incidents
+ensure br_stats          # match results, XP, Volts, and the report-reward sweep
 ensure br_ringmaster     # optional -- the admin console's game-side half
 
 # ---------------------------------------------------------------------------

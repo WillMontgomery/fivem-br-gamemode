@@ -214,11 +214,21 @@ grenade at your own feet lands several ticks well inside that. A pure-self clust
 of eight is two grenades, not somebody exercising something.
 
 **The game files the row itself, and that is a deliberate widening of `br_ddb`.**
-`ringmaster-incidents` is the one console-owned table the game may write, and it
-is **append-only**: file a case, never read one back, no access at all to grants,
-bans or audit. The write is conditional on the id being absent, so a repeat can
-only be refused — it cannot overwrite a case, or erase a verdict and the admin who
-made it.
+`ringmaster-incidents` is the one console-owned table the game may write. The
+write is conditional on the id being absent, so a repeat can only be refused — it
+cannot overwrite a case, or erase a verdict and the admin who made it. The game
+holds **no access at all** to `ringmaster-audit`, and read-only single-key access
+to `ringmaster-bans` and `ringmaster-grants`.
+
+**This table was write-only until 2026-08-17 and is not any more.** Report
+rewards (#168) added `incidentVerdict`, a `GetItem` by an id the game minted
+itself, projected to four attributes — `incidentId`, `state`, `verdict`,
+`resolvedAt`. Nothing else on the row crosses into the game server: not the
+evidence, not the chat log, not the reporter, not the subject, not the
+moderator's written resolution. A compromised game box can now learn whether a
+case it filed was decided and whether an action followed. It still cannot
+enumerate cases — there is no `Query` and no `Scan` anywhere in `br_ddb` — and it
+still cannot alter a verdict. See [the ban contract](ban-contract.md).
 
 The alternative was posting the case over the event channel and letting the
 console write it. That is worse: the channel drops batches silently after four
@@ -226,6 +236,77 @@ attempts and nothing on either envelope says so, and an incident lost that way i
 unrecoverable because the evidence buffer behind it is discarded at match end. So
 the row is written by the game and the event carries only an id. What a
 compromised game box gains from this grant is the ability to file noise.
+
+## A case has two states, and a verdict is final
+
+`pending_review` and `resolved`. There is no third state, **a resolved case
+cannot be re-opened, and a verdict cannot be changed after the fact.** The
+console writes the state and the verdict in one conditional update that refuses
+to run twice, so there is no window in which a resolved row is still waiting for
+its decision to arrive.
+
+That is what lets the game read a case with a single question and no polling
+subtlety: `state === 'resolved'` means finished, whatever else is or is not on
+the row. It is also why a resolved row carrying **no verdict at all** has to be
+its own answer rather than being folded into "no action taken" — a row that
+predates the field, or one the system auto-resolved, records that nobody decided
+anything, and reporting it as a decision would be a claim about a human who never
+looked.
+
+**A ban issued from a case is an ordinary ban.** It is a standard audit action,
+recorded in `ringmaster-audit` like any other admin action, and the row it writes
+to `ringmaster-bans` is the one in [the ban contract](ban-contract.md) with no
+extra field. There is no separate enforcement pathway that skips the audit log —
+which matters here, because the whole reason the game does not decide what
+happens to a player is that the console is the side with the ban list, the audit
+log and a human.
+
+## Players filing cases, and why the panel gives them so little
+
+A report opens or corroborates a case on the same table the anticheat writes to.
+The limits are in `BR.Config.Report` and there are three of them at once:
+
+| limit | value | what it bounds |
+|---|---|---|
+| `maxTargets` | 5 | players nameable in one submission |
+| `maxPerMatch` | 3 | submissions per player per match |
+| one per target per match | — | how many times one accusation can be made to count twice |
+
+Those are deliberately not the same rule. Three submissions of five distinct
+targets is fifteen reports and is fine; two submissions naming the same person is
+one report and the second is refused. The first bounds how often a player can
+make the server write to a database, the second bounds how often one accusation
+can be double-counted.
+
+- **A submission naming somebody already reported is refused whole**, not partly
+  filed. A partial file has no honest answer — "3 reports sent" is true and hides
+  the refusal — and the panel keeps the selection on a refusal, so an explicit
+  "you have already reported X" leaves the player one untick away from sending
+  the rest. It does **not** cost them a submission; hitting the rate limit does,
+  because hammering the limit is itself a signal worth keeping.
+- **There is no free-text box.** The dropdown reason is the whole report. A note
+  field existed through a page, a callback, a net event and an incident payload,
+  and `br_ddb` had been writing `note: null` unconditionally the whole time.
+- **The reporter is never told whether a case already existed.** "Your report was
+  added to an existing case" would leak that the person they just named is under
+  review, which is precisely what an offender's friend would go looking for.
+- **A report with no license is refused.** An unattributable accusation is worth
+  less than none: the console's "who reports everybody" signal depends on knowing
+  who filed it.
+
+**"Suspect cheating? Press &lt;key&gt; to report &lt;name&gt;" carries no
+subject on the wire.** `BR.Net.REPORT_KILLED` takes **no payload at all**. The
+server resolves the asker's own killer from the roster and the damage records it
+already keeps — the same attribution the kill feed uses — and answers about that
+player or answers nothing. The obvious shape, "is player 14 under suspicion?", is
+a probe: a modified client would walk the roster and read back exactly the list
+this feature must never produce. Rate-limiting a probe does not stop it, it slows
+it. **The guard is the absence of a parameter, not a check on one.**
+
+It requires state DEAD — being knocked down is not being killed — a killer the
+server itself attributed, and a case already open on that killer. What a player
+can still learn is one bit about one player they were already looking at, and
+only after being killed by them. The subject learns nothing, here or anywhere.
 
 **One event, three answers, and `weaponType` gives all of them.**
 `weaponDamageEvent` fires for everything that hurts a player — gunfire, melee,

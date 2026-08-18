@@ -20,8 +20,9 @@ the two halves start disagreeing about a shape neither of them is testing.
 
 **Outbound only. FXServer never listens.** The game host opens a connection to
 Ringmaster's ingest endpoint over the VPC peering link and pushes. There is no
-inbound HTTP surface on the game box at all — commands, when they exist, arrive
-over SSH instead (see PLAN.md, M9).
+inbound HTTP surface on the game box at all — commands arrive over SSH instead,
+through `tools/dispatch.sh`'s pinned verb set (see
+[branch-switch.md](branch-switch.md)).
 
 ```
 br_ringmaster  ──HTTP POST──▶  https://ringmaster/api/ingest

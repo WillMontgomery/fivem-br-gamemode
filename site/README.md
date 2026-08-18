@@ -1,26 +1,38 @@
 # site/ — the player manual
 
-The public how-to for players, published by GitHub Pages straight out of this
-folder. Deliberately two hand-written files and no build step: a manual that
-needs a toolchain to edit is a manual that stops being edited.
+The public how-to for players. Deliberately two hand-written files and no build
+step for the content: a manual that needs a toolchain to edit is a manual that
+stops being edited.
 
 ```
 site/
   index.html   the whole manual
   style.css    the whole stylesheet
   shots/       screenshots (see below)
+  .nojekyll    belt and braces against Pages treating this as a Jekyll site
 ```
 
-## Turning it on (one time)
+## How it gets published
 
-Repo **Settings → Pages → Build and deployment**:
+`.github/workflows/pages.yml` uploads this folder as the entire site on every
+push to `main` that touches `site/**`. Nothing is compiled — the workflow
+uploads these files exactly as they sit here.
 
-- Source: **Deploy from a branch**
-- Branch: **main**, folder: **/site**
+The one-time repo setting is **Settings → Pages → Source: GitHub Actions**.
+The legacy "deploy from a branch" mode can only serve the repository root or
+`/docs`, never `/site`, which is the whole reason the workflow exists.
 
-It lands at `https://willmontgomery.github.io/fivem-br-gamemode/`.
+It is live at <https://blitz-royale.com/>. The domain is configured in the
+repo's Pages settings rather than in a `CNAME` file here, because that is where
+it lives when the build type is a workflow.
 
-A custom domain is a `CNAME` file here plus a DNS record, if it is ever wanted.
+**`main` is the only branch that publishes.** Work merged to `dev` does not
+change the live site until `dev` reaches `main`, so "I fixed it" and "it is
+fixed for players" are two different days.
+
+**Everything in this folder is public**, including this file — it is uploaded
+with the rest and served as a static file. Write nothing here you would not put
+on the front page.
 
 ## Adding screenshots
 
@@ -41,15 +53,15 @@ Drop the file in `shots/` and swap the placeholder for an `img`:
 
 The stylesheet already handles `img` inside `.shot` — full width, rounded,
 bordered. Nothing else to change. There are five slots: `lobby`, `drop`,
-`loot`, `fight`, `storm`.
+`loot`, `fight`, `storm`. All five are still placeholders.
 
 Write a real `alt`. Some of the people reading this play with a screen reader.
 
 ## Keeping it honest
 
-**Every number in here is duplicated from `br_lib/config/`**, which means it can
-go stale. A manual that disagrees with the game is worse than no manual. The
-values currently baked in:
+**Every number in the manual is duplicated from the game's config**, which
+means it can go stale. A manual that disagrees with the game is worse than no
+manual. What is currently baked in, and where it comes from:
 
 | In the manual | Comes from |
 |---|---|
@@ -59,21 +71,52 @@ values currently baked in:
 | Default keybinds | `br_core/client/keybinds.lua` |
 | Five ammo pools | `br_lib/shared/enums.lua` → `BR.AmmoType` |
 | 48 players, squads of 4 | `br_lib/config/match.lua` |
+| XP per event, and the level curve | `br_lib/shared/xp.lua` → `BR.Xp.Config` |
+| Volts per event, and the worked totals | `br_lib/config/market.lua` → `BR.Config.Market.payout` |
+| What crossing a level pays | `br_lib/config/market.lua` → `BR.Config.levelBonus` |
+| Bleed timer and its escalation, revive hold, revive health | `br_lib/config/match.lua` → the `dbno*` values |
+| "About four rifle rounds to finish a knock" | `br_lib/config/match.lua` → `dbnoBleedPerDamage`, whose own note states the design as a round count |
+| Voice range, and the three voice modes | `br_lib/config/match.lua` → `Config.Match.voice`; `br_ui/client/settings.lua` |
+| Report rules — five at a time, three submissions a match, one per player per match | `br_lib/config/match.lua` → `BR.Config.Report` |
+| What an accurate report pays | `br_stats/server/awards.lua` → `AWARD_VOLTS`. **Not** in `market.lua`: it is a bounty on a moderation outcome, not part of the earn-per-hour curve |
 
-**This should be generated, not typed** — a script in `tools/` emitting the
+**This table is the only thing standing between the manual and quiet drift, so
+it has to grow whenever the manual does.** It has already failed twice exactly
+that way. The XP and Volts tables were added to the manual without being added
+here, the payout was retuned four days later, and nothing connected the two — the
+live site went on quoting the old numbers to players. Then the downed timers *did*
+get a row here, and the manual still went stale anyway: it was written against a
+45-second bleed and an eight-second revive hold, both of which had already
+changed. **A row is a pointer, not a check.** Until the generator below exists,
+adding a number without a row is one failure mode and trusting a row you have not
+re-read is the other.
+
+**It should be generated, not typed** — a script in `tools/` emitting these
 tables into `index.html`, gated so the build fails when the committed output
-drifts from the config. That is tracked as part of the M9 site work and is the
-main thing standing between this being scrappy and being trustworthy.
+drifts from the config. Until that exists, the table above is the manual
+version of it.
 
 ## Previewing locally
 
-`.claude/launch.json` has a `br_site` entry that serves this folder on
-port 3100. Opening `index.html` as a `file://` URL does **not** work — the
-stylesheet silently fails to apply and the page renders unstyled, which looks
-like a CSS bug and is not one.
+Serve this folder over HTTP. Any static server will do, from inside `site/`:
+
+```
+python -m http.server 3100
+npx --yes http-server -p 3100     # if you would rather use node
+```
+
+Then open <http://localhost:3100/>.
+
+Opening `index.html` as a `file://` URL does **not** work — the stylesheet
+silently fails to apply and the page renders unstyled, which looks like a CSS
+bug and is not one.
 
 ## House style
 
 Written for a player, not a maintainer. Second person, short sentences, and
-every section answers "what do I actually do". Anything that reads like
-implementation belongs in `docs/` instead.
+every section answers "what do I actually do".
+
+Nothing internal ever goes in `index.html`: no issue numbers, no milestone
+names, no file paths, no resource names. A player has no way to resolve any of
+it, and this page is the front door. Anything that reads like implementation
+belongs in `docs/` instead.

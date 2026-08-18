@@ -196,6 +196,35 @@
      four swings to drop someone with no shield. Fine for the first ten seconds
      of a hot drop, not a plan.</p>
 
+  <h3>Going down</h3>
+  <p>In <strong>squads</strong>, running out of health does not kill you outright
+     — it puts you on the floor. You can crawl and nothing else, and a timer
+     starts. Run it out and you are gone.</p>
+  <ul>
+    <li>It is <strong>two minutes</strong> the first time. Every knock after that
+        in the same match is shorter — about 100 seconds, then 78, then 57,
+        settling at a floor of <strong>40</strong>. The third knock is a much
+        shorter conversation than the first.</li>
+    <li><strong>Shooting someone who is already down takes time off that timer</strong>
+        rather than health off a second bar. About four rifle rounds finish a
+        fresh knock, and it costs you the seconds you spend doing it.</li>
+    <li>A squadmate picks you up by <strong>holding the interact key</strong>
+        beside you for <strong>under three seconds</strong>. Short, but they have
+        to be standing still and out in the open to do it — which is what smoke
+        is for.</li>
+    <li><strong>Your timer stops while somebody is actually picking you up.</strong>
+        A revive started with three seconds left is a revive, not a race you
+        lose. If they let go, or get shot, it starts running again.</li>
+    <li>You come back on <strong>30 health and no shield</strong>. Get behind
+        something before you do anything else.</li>
+    <li>You can be picked up <strong>more than once</strong> in a match. That is
+        what the shortening timer is there to price.</li>
+  </ul>
+  <p class="note"><strong>Only if somebody is left to pick you up.</strong> Going
+     down needs a squadmate still on their feet — if you are the last one
+     standing on your team, or you are playing solo, the shot that would have
+     knocked you down kills you.</p>
+
   <h3>Throwables</h3>
   <p>Grenades, sticky bombs, molotovs and smoke. <strong>Three of each,
      maximum</strong> — a fourth stays on the ground.</p>
@@ -288,7 +317,7 @@
       <tr><td>Time survived</td><td>12 per minute you stayed alive</td></tr>
       <tr><td>Placement</td><td>up to 500, scaled smoothly by where you finished</td></tr>
       <tr><td>Winning</td><td>+400</td></tr>
-      <tr><td>Finishing 2nd to 10th</td><td>+120</td></tr>
+      <tr><td>Finishing top ten without the win</td><td>+120</td></tr>
     </tbody>
   </table>
 
@@ -309,16 +338,21 @@
   <table class="items">
     <thead><tr><th>For</th><th>Volts</th></tr></thead>
     <tbody>
-      <tr><td>Finishing the match</td><td>60</td></tr>
-      <tr><td>Winning</td><td>+240</td></tr>
-      <tr><td>Placement</td><td>up to +150, more the further you get</td></tr>
-      <tr><td>Each elimination</td><td>+20</td></tr>
-      <tr><td>Each revive</td><td>+15</td></tr>
-      <tr><td>Each level you cross</td><td>+100, rising as you go</td></tr>
+      <tr><td>Finishing the match</td><td>15</td></tr>
+      <tr><td>Winning</td><td>+120</td></tr>
+      <tr><td>Placement</td><td>up to +70, more the further you get</td></tr>
+      <tr><td>Each elimination</td><td>+10</td></tr>
+      <tr><td>Each revive</td><td>+8</td></tr>
+      <tr><td>Each level you cross</td><td>+30 early on, more as you climb</td></tr>
     </tbody>
   </table>
 
-  <p>A middling match is worth around 150. A good one is around 400.</p>
+  <p><strong>Winning pays the win bonus instead of the placement bonus</strong>,
+     not on top of it — so a clean win is 135 before eliminations, and the
+     placement scale is what pays everybody else.</p>
+
+  <p>A middling match is worth around 70. A win with a few eliminations on it is
+     around 175.</p>
 
   <p class="note"><strong>Every match pays something.</strong> Drop badly, lose
      the first fight, finish last — you still get paid for turning up. Reviving
@@ -332,9 +366,17 @@
      the verdict screen, because you are not there to see it, but nothing is
      withheld.</p>
 
+  <h3>The one thing that pays outside a match</h3>
+
+  <p>Report somebody, and if a human reviews the case and acts on it, you are
+     paid <strong>250 Volts</strong> — whenever that decision happens, whether or
+     not you are online. It is the only Volts that do not come from playing a
+     match. <a href="#fairplay">How reporting works</a>.</p>
+
   <p class="note"><strong>Volts cannot be bought.</strong> There is no store, no
-     top-up, no bundle. The only thing in this game that gives you Volts is
-     finishing a match, and that is deliberate — see below.</p>
+     top-up, no bundle, and no admin can hand you any. The only ways to get Volts
+     are playing matches and reporting cheaters accurately — that is deliberate,
+     and it is why nothing in the market changes how a fight goes.</p>
 </section>
 
 <!-- ───────────────────────────────────────────────────────────── market -->
@@ -385,16 +427,17 @@
 <section id="controls">
   <h2>Controls</h2>
 
-  <p class="callout"><strong>Every single one of these is rebindable.</strong>
-     Pause &rarr; <em>Settings</em> &rarr; <em>Key Bindings</em> &rarr;
-     <em>FiveM</em>. Everything below is just the default, and the prompts
-     in-game always show <em>your</em> key, not ours.</p>
+  <p class="callout"><strong>Every single one of these is rebindable, in game.</strong>
+     <kbd>Esc</kbd> &rarr; <em>Settings</em> &rarr; <em>Controls</em>. Click the
+     key you want to change and press the new one. Everything below is just the
+     default, and the prompts in-game always show <em>your</em> key, not ours.</p>
 
   <div class="keys">
     <div>
       <h3>Movement</h3>
       <dl>
         <dt><kbd>Space</kbd></dt><dd>Jump from the plane / open glider</dd>
+        <dt><kbd>B</kbd></dt><dd>Toggle your smoke trail on the way down</dd>
       </dl>
 
       <h3>Combat &amp; items</h3>
@@ -419,10 +462,41 @@
         <dt><kbd>M</kbd></dt><dd>Map</dd>
         <dt><kbd>Backspace</kbd></dt><dd>Clear your map waypoint</dd>
         <dt><kbd>&larr;</kbd> <kbd>&rarr;</kbd></dt><dd>Spectate previous / next</dd>
+        <dt><kbd>~</kbd></dt><dd>Player list — and reporting, from the same panel</dd>
         <dt><kbd>Esc</kbd></dt><dd>Pause menu</dd>
       </dl>
     </div>
   </div>
+
+  <h3>Voice</h3>
+
+  <p>Voice is on out of the box and it is <strong>positional</strong>: anyone
+     within about <strong>25 metres</strong> hears you, on your squad or not.
+     Talking inside a building is the same kind of tell as sprinting through
+     one. Push-to-talk is FiveM's own key rather than one of ours: press
+     <kbd>Esc</kbd> twice to get past our pause menu to GTA's, then
+     <em>Settings</em> &rarr; <em>Key Bindings</em>.</p>
+
+  <p>Three settings, under <em>Settings</em> &rarr; <em>Voice</em>:</p>
+
+  <ul>
+    <li><strong>Nearby</strong> — the default. Anyone close enough, and nobody
+        else, your squad included once they are further away than that.</li>
+    <li><strong>Squad</strong> — the same 25 metres, <em>plus</em> your squad
+        wherever they are on the map, on the radio key. Pick this one if you want
+        to talk to your team across the island. It is not offered in solo,
+        because there is no squad to route to.</li>
+    <li><strong>Off</strong> — you are not transmitting, and you are not hearing
+        anyone either.</li>
+  </ul>
+
+  <p class="note"><strong>On the bus, Nearby does not transmit.</strong> Everyone
+     is packed into one plane and proximity would be forty people in a room.
+     Squad still works up there, so if you want to talk on the ride, use it.</p>
+
+  <p>A name appears on screen when somebody is talking, and it only ever lists
+     people you can actually hear — if you cannot see a name, they are out of
+     range.</p>
 </section>
 
 <!-- ──────────────────────────────────────────────────────────── fair play -->
@@ -452,9 +526,49 @@
   <p>If someone is repeatedly trying something the server did not issue them
      the means to do, we hear about it. Their shots were not landing anyway.</p>
 
-  <p class="note">Found a bug, or someone behaving badly? Tell an admin for
-     now — in-game reporting is being built, and this page will say so the day
-     it lands.</p>
+  <h3>Reporting someone</h3>
+
+  <p>Open the <strong>player list</strong> during a match — <kbd>~</kbd> by
+     default — press <strong>Report player</strong>, tick the people you mean,
+     and pick a reason from the dropdown. There is no box to type in — the
+     reason is the whole report, and it goes straight to the people who can do
+     something about it.</p>
+
+  <ul>
+    <li>You can name up to <strong>five players in one go</strong>, and you get
+        <strong>three goes per match</strong>.</li>
+    <li>You can report the same player <strong>once per match</strong>. If you
+        try twice you will be told who you have already reported, rather than
+        the second one quietly vanishing — and a submission refused that way
+        does not use up one of your three.</li>
+    <li>The list keeps people who have already died, because the player you want
+        to report is often the one who just killed you.</li>
+    <li>If you are killed by somebody already under review, the game will offer
+        you a one-key report on the spot. You will never be told anything about
+        anyone else's case, and nobody is ever told they have been reported.</li>
+  </ul>
+
+  <p class="note"><strong>Reporting somebody is not an accusation you have to
+     prove.</strong> Nothing happens to a player because a report exists — it
+     puts a human in the loop, and that is all it is for. Found a bug instead of
+     a person? Tell an admin.</p>
+
+  <h3>Getting paid for a good report</h3>
+
+  <p>If a report you filed is looked at by a human and something is actually
+     done about it, you are paid <strong>250 Volts</strong>. Everybody who
+     reported that player gets it, not just whoever was first.</p>
+
+  <ul>
+    <li>It arrives <strong>whenever the decision is made</strong> — often hours
+        or days after the match, and you do not have to be online. The Volts are
+        on your account either way; you will see a message if you happen to be
+        playing when it lands.</li>
+    <li>A report that turns out to be nothing costs you nothing. You are paid
+        for the outcome, never for filing.</li>
+    <li>You cannot be paid twice for the same case, so there is no point
+        reporting somebody again to try.</li>
+  </ul>
 </section>
 
 </main>

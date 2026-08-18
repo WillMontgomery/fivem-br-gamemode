@@ -47,7 +47,7 @@ actually is.
 
 | Term | Meaning |
 |---|---|
-| **POI** | Point of interest: 101 places (`br_lib/config/map.lua`) with a tier that drives loot density. 65 are north of the city, and 25 of those are **backcountry** — sited from the empty ground *between* the road corridors rather than from a place name, because named places are all on roads and the authored set had inherited the road network's shape. `tools/check_pois.lua` gates the spacing and the distance to the nearest corridor. They double as storm-anchor candidates. |
+| **POI** | Point of interest: 107 places (`br_lib/config/map.lua`) with a tier that drives loot density. 66 are north of the city, and 25 of those are **backcountry** — sited from the empty ground *between* the road corridors rather than from a place name, because named places are all on roads and the authored set had inherited the road network's shape. `tools/check_pois.lua` gates the spacing and the distance to the nearest corridor. They double as storm-anchor candidates. |
 | **Anchor** | The place a match's whole storm sequence homes on. Picked at warmup: one random waypoint of this match's tour, then one random POI 500–1500 units off it — route-coupled, always on land, never a pattern. |
 | **Record** | The one table the server publishes per phase: current circle, target circle, timestamps, dps. Whole-record broadcasts only, never incremental mutation. |
 | **Solver** | `BR.StormAt(record, now)` — a pure function both sides run to get the circle at any instant. A shrinking storm costs zero per-frame network traffic. |
@@ -61,8 +61,8 @@ actually is.
 |---|---|
 | **Layout** | A match's whole loot map, generated once at warmup by `BR.BuildLootLayout(seed)` — a pure function in `br_lib/shared/loot_gen.lua` with no FiveM dependencies, so its determinism is proven outside the game. Same seed, same map, entry for entry. |
 | **Entry** | One thing on the ground: an id, a stack (item, kind, rarity, count) and a position. Weapons, ammo, consumables, throwables, chests and death boxes are all entries. |
-| **Cell** | The streaming grid, 256 m squares. Clients subscribe to the 3×3 block around them and are sent only those entries — roughly 50–150 in flight instead of ~1900. Props are a much smaller radius again (90 m), because entries are cheap and objects are not. |
-| **Claim** | The pickup request. The server re-validates distance (with slack for its own 2 Hz position sampling), rate-limits, and arbitrates: the first claim wins and the loser is told. Nothing about a pickup is decided client-side. |
+| **Cell** | The streaming grid, 256 m squares. Clients subscribe to the 3×3 block around them and are sent only those entries — a small fraction in flight instead of the whole layout (~3,370 entries: 2,196 crates + 754 floor items + 420 roadside filler). Props are a much smaller radius again (90 m), because entries are cheap and objects are not. |
+| **Claim** | The pickup request. The server re-validates distance (with slack for its own 4 Hz position sampling), rate-limits, and arbitrates: the first claim wins and the loser is told. Nothing about a pickup is decided client-side. |
 | **Container** | A crate (`prop_box_wood05a`) or a death box. Holds a rolled burst of items the client is never told about — the contents are the reason to open it — and opening one takes a held key, so it is a commitment in the open. |
 | **Husk** | What an opened crate leaves behind: `prop_box_wood05b`, the same crate open and empty. Not loot — no glow, no prompt, and the server refuses to claim it. It exists so a room you have already swept reads as swept from the doorway. |
 | **Look-at targeting** | `BR.Native.aim()` fires a synchronous shapetest from the *gameplay camera* (not the ped's facing — those differ by up to 180° and the player's expectation follows the camera) and resolves the hit entity through a handle→entry map. Crates keep collision so the ray has something to hit; loose floor items do not, and fall back to proximity. |
@@ -111,6 +111,25 @@ Infinite ammo and infinite-ammo-clip are asserted **off every tick**, not once
 per weapon grant: the raw probe showed the flag surviving a grant-time clear.
 Two natives a tick is cheaper than finding out what re-sets it.
 
+### Downed, and getting back up
+
+Squads only, and only while a squadmate is still on their feet. The numbers are
+in [match-math.md](match-math.md); the rules are here.
+
+| Term | Meaning |
+|---|---|
+| **Knock / DBNO** | Running out of health puts you on the floor instead of killing you (`br_core/server/combat.lua`). `BR.Combat.canBeDowned` wants three things at once: state ALIVE, a mode whose `dbno` flag is set, and a squadmate who is ALIVE, FREEFALL or GLIDE — a mate mid-canopy can land and pick you up, a mate already down cannot. Solo has no DBNO because nothing could revive you; the switch for it is `BR.Mode.SOLO.dbno` plus a second answer to "who picks them up", which is why the two conditions are separate. |
+| **Bleed clock** | The downed player's health, denominated in seconds. There is no second health bar: shooting a downed body takes **time** off the clock (`dbnoBleedPerDamage`), and the tuning target for that number is a *round count* — about four rifle rounds to finish a fresh knock — not the seconds it converts to. |
+| **Escalation** | Each knock in the same match is shorter: `base + step × (n − 1)`, floored. Per match, wiped at CLEANUP. A squad cannot farm revives out of one long fight. The three numbers are one **shape** rather than three independent values — when the base moved, the step, the floor and the per-damage cost all moved with it in proportion, or the same table would have described a different rule. |
+| **Crawl** | A downed player can move, and that is the whole reason the state reads differently from death across a street: an enemy has to be able to tell "finish them" from "they are already gone", and a body that moves is the only signal that carries that far. No build here has a downed *locomotion* clipset, so `client/dbno.lua` drives the ped by hand at a real m/s and °/s rather than scaling a walk that is not happening. |
+| **Revive** | A held interact key at close range, reusing the crate hold rather than a second implementation of it. **Multiple revives per match are normal** — a hold arms from the key's *level* in the frame band, so a held key is a held key however the last hold ended. It used to arm only on the key-down edge and be cleared on five different paths, which is exactly why "the second one never works" was the symptom. |
+| **The clock stops while somebody is on you** | A genuinely progressing hold pushes the deadline along with the tick. It is the only thing that moves the deadline forward; damage moves it back and letting go simply stops it. A revive begun with three seconds left that still ended in a death read as the game ignoring what you did. |
+| **Cover pose** | `SET_ENTITY_LOCALLY_INVISIBLE` for one frame (capped at 250 ms) around a resurrection. `TaskPlayAnim` *queues* a task and the engine evaluates the tree after the tick, so a resurrected ped renders one standing idle frame however tightly the calls are ordered — re-ordering could never fix it, so the frame is covered instead. Locally invisible rather than `SetEntityVisible` because `applyGameRules` asserts visibility every frame and would stomp a property write within a frame; the local flag also lasts exactly one frame, so there is no un-hide to forget on a failure path. |
+| **Squad cues** | `squad.down`, `squad.out` and `squad.revived`, filtered on the **server** where the squad is actually known, and sent to every mate except the subject, who has their own sounds. `down` fires on the knock; `out` fires only from `eliminate`'s was-downed branch, so a straight elimination that was never a knock plays neither. The `squadcue` envelope had no subscriber in `ui-src` for a while and all three were dropped by the router with no error anywhere — the shape of "my change didn't do anything". `App.tsx` handles it now, outside the store, because it is fire-and-forget with no state any component reads. |
+
+`brdbno` (client and server both have one) and `brcrawl` read this state back;
+`brdown`, `brrevive` and `brbleed` drive it by hand from the server console.
+
 ### Health units
 
 | Term | Meaning |
@@ -123,9 +142,50 @@ Two natives a tick is cheaper than finding out what re-sets it.
 | Term | Meaning |
 |---|---|
 | **NUI** | FiveM's in-game browser layer (CEF, Chrome 103) where the React interface renders. |
-| **Envelope** | The single message shape crossing the Lua→UI bridge: `{ k = kind, d = payload, s = sequence }`, numerics normalised once at the boundary. |
+| **Envelope (UI)** | The single message shape crossing the Lua→UI bridge: `{ k = kind, d = payload, s = sequence }`, numerics normalised once at the boundary. **Not** the ingest envelope below — two different shapes share the word. |
 | **Focus stack** | `br_ui`'s ownership of `SetNuiFocus` — the only file allowed to touch it. Screens push and pop; a thrown React error can never strand a player without controls. |
 | **Loop registry** | The client performance contract: exactly three loops (per-frame, 10 Hz, 1 Hz); every subsystem registers a measured callback instead of spawning threads. The server mirror of this is the **scheduler** (`BR.Sched`, interval-based jobs). |
+
+### Progression and cosmetics
+
+See **[progression.md](progression.md)** for the tuning and the reasoning.
+
+| Term | Meaning |
+|---|---|
+| **XP** | Drives levels only, and has no purchasing power. The curve is `base = 800`, `exponent = 1.55`, `maxLevel = 100`, in `br_lib/shared/xp.lua` — one implementation shared by `br_stats` (which stores the level) and `br_core` (which sends the lobby a level and bar). The client never derives a level; it renders what the server sends, because a client that computed its own would eventually disagree and the player believes the number in front of them. |
+| **Volts** | The currency, named in exactly one place (`BR.Config.Market.currency`). Levels say how long you have played; Volts say what you have done recently. **Earned, never bought** — no purchase path, no top-up, no admin grant. Two verbs can increase a balance and both are earned: `br_ddb`'s `statsApply` at match end, and `awardPay` when an incident you reported resolves with an action taken. It was one until `e4f211d`; see [progression.md](progression.md). |
+| **Market** | The cosmetics storefront (`br_lib/config/market.lua`). Payout and prices live in the same file on purpose: they only mean anything relative to each other, so changing one forces you to look at the other. |
+| **Item kind** | Which slot a cosmetic occupies and which tab it appears under: `character`, `chute`, `trail`, `weapon`, `banner`, `verdict`. One equipped item per kind, stored as flat `equip_<kind>` attributes on the profile row rather than a nested map. |
+| **Season** | A group of market items. `MarketIndex` flattens every item across every season into one id-keyed table, built once at load rather than searched per lookup. |
+
+### Voice
+
+| Term | Meaning |
+|---|---|
+| **pma-voice** | The third-party resource that owns voice (MIT, © Dillon Skaggs), pinned at **v7.0.2-rc3** and installed outside `resources/[fivem-royale]/` so a deploy never touches it. Not in this repository. `br_core/client/voice.lua` expresses our rules through its extension points and calls exactly one Mumble native itself — `MumbleIsPlayerTalking`, a read. Every setter is gone, and `test_client.lua` asserts they stay gone. |
+| **Proximity** | Enforced by the **speaker**, not the listener. Every player has their own Mumble channel; pma-voice rebuilds each player's voice target four times a second from the channels of players near *them*, so out-of-range audio never leaves the machine that made it. There is no receive-side gate, which is why a mistake here costs one player's microphone rather than one player's ears. Range comes from `Config.Match.voice.range.nearby` via `overrideProximityRange`. |
+| **Voice modes** | `nearby`, `squad`, `off`, set under **Settings → Voice**. `nearby` is proximity with falloff and no radio. `squad` is that plus a server-assigned pma-voice radio channel, audible at any distance on the radio key — and the option is hidden in solo, where there is no squad to route to. `off` is the only thing in the client that can make a player deaf, it happens only because they asked for it in settings, and the loop that applies it is driven by the mode alone so it lifts the instant the mode changes. **The default is `nearby`**, from `br_ui/client/settings.lua`'s `DEFAULTS` — which is the value a player actually gets. `br_core/client/voice.lua` carries `squad` as its own fallback for a payload that has not arrived yet; the two disagree on paper and the settings resource wins. |
+| **The bus rule** | `nearby` does not transmit while you are in the bus seat; `squad` on the bus is untouched, and listening is never affected. It lives **inside** the proximity check pma-voice calls four times a second, re-deriving "am I on the bus" from the roster on every call — there is no transition handler, no cached boolean and no event that can be missed. Two earlier attempts both failed on the clock rather than the rule, and left the gag on for a whole match. |
+
+### Moderation and the console
+
+See **[ingest-envelope.md](ingest-envelope.md)**, **[ban-contract.md](ban-contract.md)** and **[branch-switch.md](branch-switch.md)**.
+
+| Term | Meaning |
+|---|---|
+| **Ringmaster** | The admin console — a separate repo (`fivem-ringmaster`) on a separate machine. `br_ringmaster` is the game-side resource that talks to it. The two are deliberately decoupled: each half can be built and verified with the other absent. |
+| **Envelope (ingest)** | The outbound HTTP contract from `br_ringmaster` to Ringmaster's ingest endpoint — the only contract between the two repos, versioned and pinned by fixtures in `tools/fixtures/` that **both** sides test against. Outbound only: FXServer never listens, and commands arrive over SSH instead. Distinct from the **Envelope (UI)** above. |
+| **Incident** | A case filed for human review, in `ringmaster-incidents`. Two states and no others: **`pending_review`** and **`resolved`**. There is no re-open — a resolved case stays resolved — and a verdict cannot be changed after the fact. A case opened by the *anticheat* can only come from a reason in `BR.ShotSuspicious`; `BR.Damage.noteRefusal` returns early for anything else, and `verify.sh`'s *incident surface* gate pins that table, because the distance between "the game declined a shot" and "a human has to review a case" is the whole point. Reports open cases on the same table by a different path. |
+| **Verdict** | What an admin decided: `action` of `ban`, `kick` or `none`, plus `expiresAt` **if and only if** the action is a ban (`null` there means permanent). Written once, with the state, in one conditional update that refuses to run twice — so there is no window in which a resolved row is still waiting for its verdict. A resolved row carrying **no verdict at all** is a real state and is not `none`: it is a row that predates the field, or one the system auto-resolved, and reading it as "no action was taken" would be a claim about a decision nobody made. Read `action` first, always. |
+| **A ban from an incident is a normal ban** | Issuing one out of a case is a **standard audit action** — the console records it in `ringmaster-audit` exactly as it records a ban issued from anywhere else. There is no separate incident-ban pathway. The row it writes to `ringmaster-bans` is the one described in [ban-contract.md](ban-contract.md), with no extra field, so the game server's connect check neither knows nor needs to know that a case was behind it. |
+| **Report** | A player naming another from the in-game player list. `BR.Config.Report` bounds it three ways at once: **5 targets** in one submission (`maxTargets`), **3 submissions** per player per match (`maxPerMatch`), and **one report per target per match**. Those are separate limits — three submissions of five distinct targets is fifteen reports and is fine; two submissions naming the same person is one report and the second is refused whole. A submission naming somebody already reported is refused **entirely** rather than partly filed, and does not cost an allowance; hitting the rate limit *does* count, because hammering it is itself a signal. There is no free-text field: the dropdown reason is the whole report. |
+| **Report reward** | 250 Volts to the reporter and every corroborator when their case resolves with an action taken. The debt is queued durably on the game's own table because the verdict arrives days and several deploys later; the credit and the receipt are one conditional write, so it cannot be paid twice. See [progression.md](progression.md). |
+| **Killer nudge** | "Suspect cheating? Press &lt;key&gt; to report &lt;name&gt;", offered once per killer per match to a player who has just been killed by somebody with a case already open. `BR.Net.REPORT_KILLED` **carries no payload at all** — the server resolves the asker's killer from its own damage records. That absence is the guard: the obvious shape ("is player 14 under suspicion?") is a probe a modified client would walk the roster with, and there is no field to enumerate with here. It requires state DEAD, not DBNO — being knocked is not being killed — and answers nothing when no case exists. The subject is told nothing, ever. |
+| **Doorbell** | The design rule for incidents: **the DynamoDB write is the source of truth, the event is only a doorbell.** The tidier-looking design (send it over the event channel, let the console write it) is wrong, because that channel discards a batch after four attempts silently — so the console could not tell "thirty-two refusals were dropped" from "no refusals happened", and the evidence buffer behind a lost incident is discarded at match end. The game writes the row and the event carries only an id; a lost doorbell costs a delay, not the case. |
+| **Outbox** | The batching event channel to Ringmaster. Gives a batch four attempts and then discards it — which is acceptable for telemetry and is exactly why incidents do not ride it. |
+| **Drain gate / maintenance window** | The controlled path to taking the server down or switching what it runs: the console schedules a window, the server stops starting new matches and holds the door at the connect gate (`BR.Ring.draining()`), and the switch lands once it is empty. The game **polls** the maintenance row rather than being told — a pushed flag lives in memory, so a server that restarted mid-window would come back accepting players with nothing anywhere to notice. Re-reading every twenty seconds means the truth is re-derived continuously and heals itself after a restart on either side. |
+| **Branch pin** | The file `switchref` writes and a deploy consumes, naming which ref to deploy. The sha is consumed by the first successful deploy, so a switch is a *one-time* act rather than a standing instruction — later routine deploys legitimately track the branch tip. |
+| **Dispatch invariant** | `tools/dispatch.sh` must be byte-identical on every ref that can ever be deployed, so a branch can never rewrite the console's own SSH channel. Enforced in two places and gated from outside by `verify.sh`. |
 
 ---
 

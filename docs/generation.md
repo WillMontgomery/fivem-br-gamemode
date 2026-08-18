@@ -25,7 +25,7 @@ differ every match** — `brlootseed <n>` pins one when you need to debug the
 same map twice. The seed never leaves the server: a client that could replay
 it would know where every item is.
 
-**How much, and where.** For each of the 101 POIs, by tier:
+**How much, and where.** For each of the 107 POIs, by tier:
 
 ```
 crates(tier)     = 20 | 20 | 24          (tier 1 | 2 | 3)

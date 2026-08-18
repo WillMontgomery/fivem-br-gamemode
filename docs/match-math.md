@@ -291,7 +291,7 @@ water.
 
 ### How much, and where
 
-For each of the 105 POIs, by tier:
+For each of the 107 POIs, by tier:
 
 ```
 crates(tier)      = 20 | 20 | 24
@@ -401,6 +401,52 @@ headMult(d) = lerp(2.3, 1.25, clamp((d − 30) / (120 − 30), 0, 1))
 
 Snipers are unaffected in the way that matters — they one-shot centre mass
 through raw damage at any range.
+
+### Going down
+
+Squads only, and only while a squadmate is ALIVE, FREEFALL or GLIDE — a mate on
+canopy can land and pick you up, a mate already down cannot, so the last knock of
+a wipe is a death rather than four bodies waiting out four timers.
+
+```
+bleed(n) = max(dbnoBleedMin, dbnoBleedBase + dbnoBleedStep × (n − 1))
+         = max(40, 120 − 21 × (n − 1))          seconds
+
+  knock   1     2     3     4     5     6
+          120   99    78    57    40    40   (floor)
+```
+
+`n` is per **match** and is wiped at CLEANUP.
+
+| Quantity | Value | Notes |
+|---|---|---|
+| First knock | 120 s | Was 45 s. "The DBNO bleed out timer seems awfully short… 2 minutes minimum" |
+| Step per later knock | −21 s | |
+| Floor | 40 s | |
+| Revive hold | 2.8 s | Was 8.0 s, cut 65% on the owner's call. **The only place this number exists** — the server measures against it, the client sends it to the prompt as `holdMs`, and the ring's CSS `animation-duration` comes from that message and nothing else |
+| Revive range | 1.5 m | +1.0 m slack on the server's own check, for the same 4 Hz sampling skew the loot claim allows |
+| Revive heartbeat | 750 ms | The client re-asserts every 250 ms; three misses drops the hold. One lost stop message once handed out a completed hold for a brief tap |
+| Health on getting up | 30 | Display units, no shield |
+| Ledger health while down | 5 | Must be above zero, or the shooter never gets the correction that stops a downed player reading as a permanent corpse, and the roster's own sampling eliminates the body |
+| Seconds off the clock per damage | 0.93 | |
+| Crawl | 0.55 m/s, 90 °/s | Real units, because no downed animation in this build is a locomotion clipset — the ped is driven by hand |
+
+**The three bleed numbers are one shape, not three values.** When the base went
+45 → 120, the step went −8 → −21 and the floor 15 → 40, so the curve is identical
+in proportion and only the units changed. Raising only the base would have
+flattened it: at −8 a second knock cost 18% of a 45-second bleed and would have
+cost 7% of a 120-second one — the same table describing a different rule.
+
+**`dbnoBleedPerDamage` is tuned against a round count, not against seconds.** The
+property it holds is "about four rifle rounds finish a fresh knock, a shotgun
+blast takes roughly a third of it". It had to move 0.35 → 0.93 with the base, or
+the same four rounds would have taken 42 s off a two-minute clock and finishing
+somebody would have needed eleven of them — at which point nobody shoots a downed
+player at all. Tune it against the round count.
+
+**The clock stops while a revive is genuinely progressing**, and that is the only
+thing that moves the deadline forward. Damage moves it back; letting go simply
+stops it.
 
 ### Health units
 
