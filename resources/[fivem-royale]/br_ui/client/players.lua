@@ -207,8 +207,47 @@ AddEventHandler(BR.Net.PLAYERS_LIST, function(payload)
     -- forwarded here would have been read by nothing at either end -- and a
     -- payload key that survives the last thing that rendered it is how a
     -- contract quietly grows a member nobody can delete.
+    --
+    -- AND `squadId` IS NOW STRIPPED ON ITS WAY PAST, which is the one thing this
+    -- file does to the list rather than merely carrying it.
+    --
+    -- Owner, 2026-08-17: "I don't want players to be able to tell how many
+    -- squads are left if we show them 38 players and 18 squads for example."
+    --
+    -- The panel drew a `squad` tag off this field and that tag is gone
+    -- (PlayerList.tsx carries what it meant). Removing only the tag would have
+    -- been cosmetic: `squadId` is a STABLE PER-SQUAD STRING and there is one on
+    -- every row, so counting distinct values gives the exact number of squads
+    -- still in the match -- no arithmetic, no inference, no modified client
+    -- needed beyond reading the envelope that is already on its way to the page.
+    -- The leak is the field, not the label.
+    --
+    -- REBUILT ROW BY ROW RATHER THAN NILLED IN PLACE, because `payload` is the
+    -- table the net event handed us and mutating it would be editing somebody
+    -- else's object for the benefit of ours. The four keys below are exactly
+    -- what ListedPlayer declares and exactly what the panel renders; anything
+    -- the server adds later has to be added here deliberately, which is the
+    -- point of an allowlist over a delete.
+    --
+    -- THIS IS THE NARROW HALF OF THE FIX AND IT IS WORTH SAYING SO. The field is
+    -- still computed and still sent over the network to this client
+    -- (br_core/server/players.lua builds it into PLAYERS_LIST) -- what changes
+    -- here is that it never reaches the page. Closing it at the source is a
+    -- server change and is called out in the hand-over rather than done from
+    -- br_ui.
+    local rows = {}
+    for i, p in ipairs(payload.players or {}) do
+        rows[i] = {
+            src   = p.src,
+            name  = p.name,
+            state = p.state,
+            left  = p.left,
+            you   = p.you,
+        }
+    end
+
     TriggerEvent('br:ui:sendLocal', BR.Nui.PLAYERS, {
-        players         = payload.players or {},
+        players         = rows,
         categories      = payload.categories or {},
         defaultCategory = payload.defaultCategory,
         maxTargets      = payload.maxTargets,

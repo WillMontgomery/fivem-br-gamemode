@@ -77,10 +77,29 @@ end
 --- Read by skydive.lua to decide whether to draw the descent prompt at all and
 --- what the key does when it is pressed:
 ---
----   armed   a trail is actually flying -- there is something to turn off.
+---   armed   a trail is EQUIPPED AND PAINTED -- there is something to turn on.
 ---   on      whether it is currently visible, so the toggle knows which way to
 ---           go and a fresh drop starts from a known state rather than from
 ---           whatever the last one left behind.
+---
+--- `on` STARTS FALSE ON EVERY DROP, WHATEVER IS EQUIPPED (owner, 2026-08-17:
+--- "smoke trails should always default to off, which requires the player to
+--- press the button, which will then dismiss our DUI").
+---
+--- It used to start TRUE in all three painting branches, so a player who owned a
+--- trail flew it from the moment the canopy opened and the prompt was offering
+--- them a way to switch something OFF. The prompt's sentence is "toggle smoke
+--- trails" and the owner's design is that pressing it is what starts them; a
+--- default of on made the key a mute button and made the box a notice rather
+--- than an instruction.
+---
+--- ARMED IS UNCHANGED AND THAT SEPARATION IS NOW LOAD-BEARING. `armed` still
+--- means a trail was painted, so it is still the test that decides whether there
+--- is anything honest to prompt for; `on` is the player's answer. Skydive's
+--- emitter holds INPUT_PARACHUTE_SMOKE only while BOTH are true, so nothing
+--- comes out of the canopy until the key is pressed -- and `/brdropdbg` reading
+--- `armed true  on false  emit frames 0` mid-glide is the CORRECT readout now,
+--- not the symptom it was during #131.
 ---   source  'purchase' or 'squad', for /brdrop only. It decides NOTHING; see
 ---           the note on it below.
 ---
@@ -169,10 +188,17 @@ function BR.Cosmetics.applyTrail(squadColour, hexToRgb)
     BR.Cosmetics.trailSource = nil
     liveRgb = nil
 
+    -- THE PERMISSION STARTS OFF IN EVERY BRANCH BELOW, and it is the permission
+    -- rather than only our own flag for a reason: with it granted, the player's
+    -- own vanilla X still produces smoke, so a trail that is "off" would come
+    -- out for anyone who happened to press it. `showTrail` grants it on the
+    -- first press, and re-asserts the colour at the same time, which is what
+    -- liveRgb above exists for. The COLOUR is still written here -- it costs one
+    -- native and means the first press has nothing left to get wrong.
     if apply.trailCycle then
-        SetPlayerCanLeaveParachuteSmokeTrail(pid, true)
+        SetPlayerCanLeaveParachuteSmokeTrail(pid, false)
         BR.Cosmetics.trailArmed = true
-        BR.Cosmetics.trailOn = true
+        BR.Cosmetics.trailOn = false
         BR.Cosmetics.trailSource = 'purchase'
         local gen = trailGen
         local colours = apply.trailCycle
@@ -196,12 +222,12 @@ function BR.Cosmetics.applyTrail(squadColour, hexToRgb)
     end
 
     if apply.trailRgb then
-        SetPlayerCanLeaveParachuteSmokeTrail(pid, true)
+        SetPlayerCanLeaveParachuteSmokeTrail(pid, false)
         SetPlayerParachuteSmokeTrailColor(pid,
             apply.trailRgb[1], apply.trailRgb[2], apply.trailRgb[3])
         liveRgb = apply.trailRgb
         BR.Cosmetics.trailArmed = true
-        BR.Cosmetics.trailOn = true
+        BR.Cosmetics.trailOn = false
         BR.Cosmetics.trailSource = 'purchase'
         return
     end
@@ -211,12 +237,21 @@ function BR.Cosmetics.applyTrail(squadColour, hexToRgb)
     -- wearing it, because every paid trail returns above. Solo, there is no
     -- colour to use and the trail stays off.
     if squadColour then
-        SetPlayerCanLeaveParachuteSmokeTrail(pid, true)
+        -- OFF LIKE THE OTHER TWO, and the squad case is the one where that is
+        -- worth arguing rather than asserting: a squad colour is a POSITION
+        -- MARKER, so defaulting it off costs the team a read they used to get
+        -- for free. The owner's instruction is unconditional -- "smoke trails
+        -- should always default to off" -- and the read is one keypress away for
+        -- anyone who wants it, with the prompt naming that key for the whole
+        -- canopy phase. A rule with a carve-out for the commonest case would
+        -- also mean the prompt lied to exactly the players most likely to see
+        -- it: it would say "toggle" over a trail already flying.
+        SetPlayerCanLeaveParachuteSmokeTrail(pid, false)
         local r, g, b = hexToRgb(squadColour)
         SetPlayerParachuteSmokeTrailColor(pid, r, g, b)
         liveRgb = { r, g, b }
         BR.Cosmetics.trailArmed = true
-        BR.Cosmetics.trailOn = true
+        BR.Cosmetics.trailOn = false
         BR.Cosmetics.trailSource = 'squad'
         return
     end

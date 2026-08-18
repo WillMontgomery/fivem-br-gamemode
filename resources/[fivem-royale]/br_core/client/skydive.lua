@@ -148,6 +148,31 @@ local airborneSeen = false
 -- live parachute task is how you drop someone out of their own canopy.
 local chuteSpent = false
 
+--- Has the trail key been pressed at all during THIS drop?
+---
+--- THE PROMPT IS AN INSTRUCTION, AND AN INSTRUCTION THAT HAS BEEN FOLLOWED IS
+--- CLUTTER (owner, 2026-08-17: "after the smoke trails button has been pressed
+--- once, the DUI for it should be hidden").
+---
+--- It pairs with the trail now defaulting OFF (cosmetics.lua): the box appears
+--- under the canopy saying which key starts the smoke, the player presses it,
+--- and the box has said everything it had to say. Leaving it up for the rest of
+--- the glide would be a permanent caption over the middle of the screen during
+--- the one phase where the player is steering at a landing spot -- and it would
+--- be offering to do a thing they have just done.
+---
+--- PER DROP, NOT PER MATCH, and cleared in br:drop:begin with the rest of the
+--- descent state. A latch that survived into the next round would silently
+--- suppress the prompt for a player who never saw it -- which is the shape of
+--- every bug #131 has had: an interface confidently silent about something the
+--- player has not been told.
+---
+--- ONE PRESS IS THE WHOLE TEST. It deliberately does NOT track whether the trail
+--- ended up on or off: the owner asked for the box to go after the button is
+--- pressed, and a box that came back when the player toggled the smoke off again
+--- would be the prompt flashing on and off with the key.
+local trailKeyUsed = false
+
 --- What the descent prompt actually managed to do THIS drop, for /brdropdbg.
 ---
 --- WRITTEN BECAUSE THE ONE QUESTION NOBODY COULD ANSWER WAS "DID IT DRAW" (#131).
@@ -252,6 +277,8 @@ AddEventHandler('br:drop:begin', function(d)
     dropping = true
     airborneSeen = false
     chuteSpent = false
+    -- A new drop is a new prompt. See the note beside the declaration.
+    trailKeyUsed = false
     -- The prompt's counters describe THIS drop. Cumulative ones would answer
     -- "has the box ever worked", which is not the question anybody asks after a
     -- descent where it did not (#131).
@@ -628,7 +655,13 @@ BR.Loop.register(BR.Loop.FRAME, 'skydive.prompt', function()
         -- nothing to be shown -- the badge would render empty and the sentence
         -- would be an instruction to press nothing. Cached, so this is a table
         -- lookup per frame rather than a lookup per frame.
-        if BR.Cosmetics.trailArmed and keyName('brtrail') then
+        --
+        -- AND ONCE IS ENOUGH (owner, 2026-08-17). `trailKeyUsed` is the third
+        -- test and it is the only one that can go from true to false and never
+        -- back within a drop: the box is an instruction, the player has followed
+        -- it, and it stops. See the declaration at the top of this file for why
+        -- it does not track the trail's on/off state.
+        if BR.Cosmetics.trailArmed and not trailKeyUsed and keyName('brtrail') then
             kind = 'trail'
         end
     end
@@ -710,6 +743,15 @@ BR.Keys.on('trail', function(pressed)
     -- question and not a descent one -- a message here would be an
     -- advertisement fired by a key press mid-fall.
     if not BR.Cosmetics.trailArmed then return end
+
+    -- THE BOX HAS BEEN ANSWERED. Set here rather than beside the toggle count
+    -- above, and the placement is the whole of it: `trailArmed` is exactly the
+    -- condition the prompt is drawn under, so a press that reaches this line is
+    -- a press against a box that was on offer. A press during freefall counts
+    -- too -- the player has still used the key, the trail still comes on the
+    -- moment the canopy does, and re-offering it under the canopy would be the
+    -- interface forgetting something it was told fifteen seconds ago.
+    trailKeyUsed = true
 
     -- showTrail returns false when there was no trail flying to act on, which
     -- the guard above has already excluded -- so `acted` rising in step with
@@ -1102,8 +1144,15 @@ RegisterCommand('brdropdbg', function()
     --                               that would exonerate the Lua -- and it is
     --                               the first time this issue has been able to
     --                               produce it.
-    print(('  trail key: presses %d   acted %d   emit frames %d'):format(
-        promptSeen.toggles, promptSeen.acted, promptSeen.emits))
+    --
+    -- `used` IS WHY THE BOX IS NOT ON SCREEN, and it is printed because it is
+    -- now the commonest honest reason for that. The trail defaults OFF and the
+    -- prompt retires after one press, so `used true  on false` is a player who
+    -- turned the smoke on and straight back off again -- correct, and otherwise
+    -- indistinguishable from a prompt that failed to draw.
+    print(('  trail key: presses %d   acted %d   emit frames %d   used %s'):format(
+        promptSeen.toggles, promptSeen.acted, promptSeen.emits,
+        tostring(trailKeyUsed)))
 
     -- AND WHETHER ANY OF THAT REACHED THE SCREEN, which is the half the first
     -- two rounds could not see (#131). The four counts separate the three ways

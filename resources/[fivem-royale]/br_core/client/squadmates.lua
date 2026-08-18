@@ -29,7 +29,7 @@ local peds     = {}   -- [src] = local ped handle, or absent when out of scope
 local lastPush = 0
 -- Mates whose name is drawn BY US rather than by the engine, because they are
 -- on the floor and a gamer tag cannot be lowered onto them.
--- [src] = { ped = handle, text = 'Alice [DOWN]', dim = boolean }
+-- [src] = { ped = handle, text = 'Alice [DOWN]', dim = boolean, downed = boolean }
 local low      = {}
 
 -- THE PLAYER'S INTERFACE SIZE, FOR THE NAMES THIS FILE DRAWS ITSELF.
@@ -369,6 +369,13 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
                 -- Dimmed for the same reason their blip is: a body is a place
                 -- to go, not a teammate to rotate to.
                 dim  = st ~= BR.PlayerState.DBNO,
+                -- STATED RATHER THAN INFERRED FROM `dim`. The draw loop needs
+                -- to know whether this body can be picked up (see the revive
+                -- clash there), and `not e.dim` happens to answer that today
+                -- only because dim is currently defined as "not downed". Two
+                -- facts sharing one field is how the next edit to the dimming
+                -- rule silently changes the suppression rule.
+                downed = st == BR.PlayerState.DBNO,
             }
         else
             dropTag(src)
@@ -431,6 +438,44 @@ BR.Loop.register(BR.Loop.FRAME, 'squadmates.lownames', function()
 
     local me = GetEntityCoords(PlayerPedId())
 
+    -- THE NAME AND THE REVIVE PROMPT ARE THE SAME POINT ON THE SCREEN, AND ONE
+    -- OF THEM HAS TO GO (owner, 2026-08-17: "when going in for the revive, the
+    -- playernames text is shown at the exact same position as the DUI,
+    -- resulting in an overlap effect").
+    --
+    -- It is the cost of the previous fix, not a new fault. Both labels used to
+    -- hang off the ped's ORIGIN and were moved to the head bone the same round,
+    -- because a crawling ped's origin is still its standing capsule's and both
+    -- were drawing above a head that was not there. They now agree about where
+    -- the head is -- to within five centimetres, NAME_LIFT 0.30 against
+    -- client/dbno.lua's dbnoPromptLift 0.35 -- and the prompt is a DUI sprite
+    -- roughly 16% of the screen's height tall, centred on that point. Five
+    -- centimetres of world does not separate them at revive range: the name
+    -- lands inside the plate.
+    --
+    -- SUPPRESSED RATHER THAN OFFSET, for two reasons. The prompt's own label IS
+    -- this player's name (dbno.lua sets `label = e.name`), so nothing is lost --
+    -- the name is still on screen, in a box, in the place the eye is already
+    -- looking. And an offset would have to be a WORLD lift converted through a
+    -- SCREEN-space sprite whose size does not change with distance, so the
+    -- clearance that works at arm's length is a name in the sky at twenty
+    -- metres. There is no constant that is right at both.
+    --
+    -- THE TEST MIRRORS dbno.lua's nearestDowned RATHER THAN GUESSING AT IT: I am
+    -- ALIVE and in a squad, the body is DOWNED, and it is within dbnoReviveDist
+    -- of my ped -- the same two positions, differenced the same way, against the
+    -- same config number, so the name leaves on the frame the prompt arrives.
+    -- What is deliberately NOT copied is the nearest-of test: with two mates
+    -- down inside one and a half metres of each other only one is prompted for,
+    -- and hiding both names is better than drawing one of them through a plate.
+    --
+    -- It cannot suppress a name for a prompt that is not there: every clause is
+    -- a precondition of dbno.lua drawing one, so a false positive here is
+    -- impossible in the direction that costs information.
+    local mine = BR.State.me
+    local canRevive = mine.state == BR.PlayerState.ALIVE and mine.squadId ~= nil
+    local reach = (BR.Config.Match and BR.Config.Match.dbnoReviveDist) or 1.5
+
     for src, e in pairs(low) do
         if not DoesEntityExist(e.ped) then
             -- The mate walked out of scope between the tick and this frame.
@@ -451,7 +496,11 @@ BR.Loop.register(BR.Loop.FRAME, 'squadmates.lownames', function()
             local onScreen = (not IsSphereVisible)
                 or IsSphereVisible(x, y, z, 0.5)
 
-            if d <= NAME_FAR and onScreen then
+            -- The revive prompt owns this spot while it is up. See the block
+            -- above the loop.
+            local promptHasIt = canRevive and e.downed and d <= reach
+
+            if d <= NAME_FAR and onScreen and not promptHasIt then
                 -- ...AND THEN THE PLAYER'S OWN PREFERENCE, LAST -- after the
                 -- distance clamp, not inside it, exactly as client/dui.lua
                 -- applies it to a sprite. Inside, the clamp would eat it: a

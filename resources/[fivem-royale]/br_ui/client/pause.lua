@@ -235,8 +235,93 @@ function BR.Pause.openFrontendMap(page)
         -- broad rather than precise. A false positive here costs a map that
         -- closes slightly too eagerly; a false negative is a player stuck in
         -- a menu, which is what we have had twice.
-        local EXITS = { 202, 200, 199, 177, 194, 195, 25 }
+        --
+        -- ...AND "SLIGHTLY TOO EAGERLY" IS NOT WHAT A FALSE POSITIVE COSTS. It
+        -- costs the map, mid-match, while the player is reading it -- which is
+        -- the owner's re-report, made more than once and never addressed:
+        -- "opening the pause menu, then map, within the match, then scrolling in
+        -- quick succession, results in the map being dismissed."
+        --
+        -- WHY THIS ROUTE AND NOT THE OTHER ONE, which is the question that was
+        -- never asked. The engine's frontend has TWO openers in this file and
+        -- they are the same scaleform:
+        --
+        --   openFrontendPlain (below) has NO watcher at all. It raises the menu
+        --     and then polls IsPauseMenuActive() every 100ms, letting GTA own
+        --     every input -- because the player has to WALK there themselves and
+        --     "an exit watcher would close it the moment they tried to go
+        --     anywhere". That is the route reachable from the lobby (Settings ->
+        --     Voice / Graphics / GTA key bindings), and it is the one a previous
+        --     round fixed by taking its watcher away.
+        --
+        --   this one keeps the watcher, because the map is entered SIDEWAYS --
+        --     driven straight to a page whose own Back has nowhere sensible to
+        --     go -- so something has to notice the player wanting out.
+        --
+        -- The in-match Map card is the only way in here (PauseMenu.tsx hides it
+        -- in the lobby), so the fix for the lobby could not have reached this and
+        -- the report is not a regression: it is the half that was never touched.
+        -- Nothing in the page is involved -- while the frontend is up the whole
+        -- NUI document is opacity 0 with pointer events off, and PauseMenu.tsx's
+        -- keydown listener is unmounted with the menu -- and CEF is not receiving
+        -- the wheel at all with the cursor released.
+        --
+        -- 195 WAS NOT A BUTTON. The comment above says these are "INPUT_FRONTEND_
+        -- RRIGHT/ACCEPT-adjacent ids", and 194 is indeed INPUT_FRONTEND_RRIGHT --
+        -- but ACCEPT is 201, and 195 is INPUT_FRONTEND_AXIS_X, an ANALOG AXIS.
+        -- IsControlJustPressed on an analog control fires when the axis crosses
+        -- its press threshold, so every pan and every scroll-driven zoom on the
+        -- map page was being read as somebody asking to leave. That is a
+        -- one-number typo doing exactly what the report describes, and it is
+        -- removed rather than corrected: there is no button at 195 to want.
+        local EXITS = { 202, 200, 199, 177, 194, 25 }
+
+        -- AND USING THE MAP IS NOT LEAVING IT. Dropping 195 removes the id we
+        -- can prove is wrong; this removes the CLASS. The wheel is bound to
+        -- several control ids at once in the frontend and which of them the map
+        -- page answers on is a question the game settles, not the documentation
+        -- -- so rather than guess again, any frame in which the player is
+        -- zooming, scrolling or panning suppresses the exit test outright, plus
+        -- a short tail for the input the scaleform is still digesting.
+        --
+        --   241/242  INPUT_CURSOR_SCROLL_UP/DOWN
+        --   180/181  INPUT_CELLPHONE_SCROLL_FORWARD/BACKWARD
+        --   207/208  INPUT_FRONTEND_LT/RT      -- the map's own zoom pair
+        --    14/15   INPUT_WEAPON_WHEEL_NEXT/PREV
+        --   195..198 the frontend axes, which is what a pan is
+        --
+        -- JUST-pressed rather than held, deliberately: a held reading would let a
+        -- drifting controller stick sit on the guard forever and make the map
+        -- unleavable by mouse, which is a worse bug than the one being fixed. An
+        -- edge fires once and the window expires on its own, while a wheel being
+        -- spun produces one edge per notch and therefore keeps refreshing it --
+        -- which is precisely the "in quick succession" case.
+        local USING = { 241, 242, 180, 181, 207, 208, 14, 15, 195, 196, 197, 198 }
+        local BUSY_MS = 300
+        local busyUntil = 0
+
         local function wantsOut()
+            -- ESCAPE FIRST AND OUTSIDE THE GUARD, so there is always one way
+            -- out that nothing above can suppress. IsRawKeyDown reports the HELD
+            -- state, so this fires on the frame it goes down and every frame
+            -- after -- which is fine, because the first one already leaves.
+            local ok, down = pcall(IsRawKeyDown, 0x1B)
+            if ok and down then
+                if BR.Pause.mapDebug then print('[br_ui] map: exit raw ESC') end
+                return true
+            end
+
+            for _, c in ipairs(USING) do
+                if IsControlJustPressed(2, c) or IsDisabledControlJustPressed(2, c) then
+                    if BR.Pause.mapDebug then
+                        print(('[br_ui] map: using the map (control %d) -- holding the exit off'):format(c))
+                    end
+                    busyUntil = GetGameTimer() + BUSY_MS
+                    return false
+                end
+            end
+            if GetGameTimer() < busyUntil then return false end
+
             for _, c in ipairs(EXITS) do
                 if IsControlJustPressed(2, c) or IsDisabledControlJustPressed(2, c) then
                     if BR.Pause.mapDebug then
@@ -244,14 +329,6 @@ function BR.Pause.openFrontendMap(page)
                     end
                     return true
                 end
-            end
-            -- Escape, raw. IsRawKeyDown reports the HELD state, so this fires
-            -- on the frame it goes down and every frame after -- which is
-            -- fine, because the first one already leaves.
-            local ok, down = pcall(IsRawKeyDown, 0x1B)
-            if ok and down then
-                if BR.Pause.mapDebug then print('[br_ui] map: exit raw ESC') end
-                return true
             end
             return false
         end
