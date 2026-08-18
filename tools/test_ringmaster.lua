@@ -1259,6 +1259,310 @@ do
     for _, n in ipairs(parked) do BR.Sched.setEnabled(n, true) end
 end
 
+-- ===========================================================================
+-- THE OTHER HALF OF THE INCIDENT PIPELINE, IN A SANDBOX
+-- ===========================================================================
+--
+-- br_core/server/incident.lua and br_core/server/players.lua are the two files
+-- that decide WHO IS TOLD WHAT about a case, and both of those decisions landed
+-- with #168 and #169. They belong in this suite because the thing they are
+-- about -- an incident becoming real -- is what this whole resource exists for,
+-- and because the rule they enforce is a rule about silence: the offender is
+-- shown nothing, and no client can ask who is under suspicion. A rule that says
+-- "nothing happens" is exactly the kind that passes a playtest by accident.
+--
+-- IN A SANDBOX, and not loaded alongside br_ringmaster above. Both halves
+-- register handlers for `br:ringmaster:refusal` and `br:incident:filed`, so
+-- sharing one environment would have every existing case in this file start
+-- driving the br_core builder as a side effect -- which is a suite testing
+-- something other than what it says. The pattern is test_shared.lua's.
+
+local SANDBOX_STD = {
+    ipairs = ipairs, pairs = pairs, next = next, type = type, select = select,
+    tostring = tostring, tonumber = tonumber, error = error, pcall = pcall,
+    setmetatable = setmetatable, rawget = rawget, rawset = rawset,
+    table = table, string = string, math = math, os = os,
+}
+
+--- A fresh world, with the smallest amount of br_core that will hold up the two
+--- files under test.
+---
+--- @return table  { fire, filed, clientEvents, roster, incidents, setPrior }
+local function newIncidentWorld()
+    local env = setmetatable({}, { __index = function(_, k) return SANDBOX_STD[k] end })
+    env._G = env
+
+    local S = {
+        roster = {},        -- [src] = entry
+        licenses = {},      -- [src] = 'license:...'
+        out = {},           -- every TriggerClientEvent
+        killer = {},        -- [src] = attributed killer src
+    }
+
+    local h = {}
+    env.AddEventHandler = function(name, fn)
+        h[name] = h[name] or {}
+        table.insert(h[name], fn)
+    end
+    env.TriggerEvent = function(name, ...)
+        for _, fn in ipairs(h[name] or {}) do fn(...) end
+    end
+    env.TriggerClientEvent = function(name, src, payload)
+        S.out[#S.out + 1] = { name = name, src = src, payload = payload }
+    end
+    env.RegisterNetEvent = function() end
+    env.RegisterCommand  = function() end
+    env.GetGameTimer     = function() return 1000 end
+    env.GetCurrentResourceName = function() return 'br_core' end
+    env.print = function() end
+    env.GetNumPlayerIdentifiers = function(src) return S.licenses[src] and 1 or 0 end
+    env.GetPlayerIdentifier = function(src) return S.licenses[src] end
+
+    -- Loaded one at a time into THIS env rather than through loadAll above,
+    -- which deliberately loads into the global one.
+    for _, f in ipairs({
+        'br_lib/shared/enums.lua',
+        'br_lib/shared/protocol.lua',
+        'br_lib/shared/identity.lua',
+    }) do
+        local chunk, err = loadfile(ROOT .. f, 't', env)
+        if not chunk then
+            realPrint('\27[31msandbox load error\27[0m ' .. f .. ': ' .. tostring(err))
+            os.exit(1)
+        end
+        chunk()
+    end
+
+    local BRs = env.BR
+
+    -- The smallest roster that answers the two questions these files ask of it.
+    BRs.Roster = {
+        get = function(src) return S.roster[src] end,
+        each = function(pred, fn)
+            local ids = {}
+            for src in pairs(S.roster) do ids[#ids + 1] = src end
+            table.sort(ids)
+            for _, src in ipairs(ids) do
+                local e = S.roster[src]
+                if pred(e) then fn(src, e) end
+            end
+        end,
+    }
+    -- players.lua reads the report rules off BR.Config; none of them is under
+    -- test here, so they are the smallest values that let the file load.
+    BRs.Config = {
+        Report = { maxPerMatch = 3, maxTargets = 5, categories = { 'cheating' } },
+        isReportCategory = function(c) return c == 'cheating' end,
+        defaultReportCategory = function() return 'cheating' end,
+    }
+    -- The REAL attribution question, answered by a stub, because combat.lua's
+    -- own version is a rule about assist windows and is tested where it lives.
+    BRs.Combat = { attributedKiller = function(entry) return S.killer[entry.src] end }
+
+    for _, f in ipairs({
+        'br_core/server/incident.lua',
+        'br_core/server/players.lua',
+    }) do
+        local chunk, err = loadfile(ROOT .. f, 't', env)
+        if not chunk then
+            realPrint('\27[31msandbox load error\27[0m ' .. f .. ': ' .. tostring(err))
+            os.exit(1)
+        end
+        chunk()
+    end
+
+    local W = { env = env, BR = BRs, out = S.out }
+
+    function W.join(src, matchId, license, state)
+        S.roster[src] = {
+            src = src, name = 'P' .. src, matchId = matchId,
+            state = state or BRs.PlayerState.ALIVE,
+        }
+        S.licenses[src] = license
+    end
+
+    function W.killedBy(victim, killer) S.killer[victim] = killer end
+
+    --- The acknowledgement br_ringmaster sends once a row is durable.
+    function W.filed(incidentId, matchId, subjectLicense)
+        env.TriggerEvent('br:incident:filed', {
+            incidentId = incidentId, matchId = matchId,
+            subjectLicense = subjectLicense,
+        })
+    end
+
+    --- A net event from one client.
+    function W.fromClient(name, src)
+        env.source = src
+        env.TriggerEvent(name, nil)
+        env.source = nil
+    end
+
+    --- Everything sent to clients on one event name.
+    function W.sentOn(name)
+        local list = {}
+        for _, o in ipairs(S.out) do
+            if o.name == name then list[#list + 1] = o end
+        end
+        return list
+    end
+
+    function W.clear() for i = #S.out, 1, -1 do S.out[i] = nil end end
+
+    return W
+end
+
+describe('incident.announce')
+do
+    -- #168: everybody in the match is told that reporting exists, once, the
+    -- first time anybody in it draws a case -- and the subject is told nothing.
+    local W = newIncidentWorld()
+    W.join(1, 7, 'license:one')
+    W.join(2, 7, 'license:two')
+    W.join(3, 7, 'license:cheat')
+    W.join(9, 8, 'license:other')          -- a different match entirely
+
+    W.filed('inc-1', 7, 'license:cheat')
+
+    local hints = W.sentOn(W.BR.Net.REPORT_HINT)
+    ok(#hints == 2, 'everybody else in the match is told', tostring(#hints))
+
+    local told = {}
+    for _, hh in ipairs(hints) do told[hh.src] = hh.payload.kind end
+    ok(told[1] == 'exists' and told[2] == 'exists',
+        'and what they are told is that reporting exists')
+
+    -- THE RULE THIS TEST EXISTS FOR (#93). An offender who learns they are
+    -- under suspicion changes behaviour, which costs the case the evidence it
+    -- was going to be made of.
+    ok(told[3] == nil, 'the player the incident is ABOUT is told nothing at all')
+    ok(told[9] == nil, 'and neither is anybody in another match')
+
+    -- ONCE PER MATCH, however many cases are filed in it. A hint per incident
+    -- would nag the whole server every time a persistent cheater tripped the
+    -- threshold again.
+    W.clear()
+    W.filed('inc-2', 7, 'license:cheat')
+    W.filed('inc-3', 7, 'license:two')
+    ok(#W.sentOn(W.BR.Net.REPORT_HINT) == 0,
+        'the second and third cases in the same match announce nothing')
+
+    -- A NEW MATCH IS A CLEAN SHEET, because the people in it are different.
+    W.clear()
+    W.filed('inc-4', 8, 'license:someone')
+    ok(#W.sentOn(W.BR.Net.REPORT_HINT) == 1,
+        'the first case in the NEXT match announces again')
+end
+
+describe('incident.announce.edges')
+do
+    local W = newIncidentWorld()
+    W.join(1, 7, 'license:one')
+    W.join(2, 7, 'license:gone', nil)
+    W.BR.Roster.get(2).state = W.BR.PlayerState.LEFT
+
+    W.filed('inc-1', 7, 'license:cheat')
+    local hints = W.sentOn(W.BR.Net.REPORT_HINT)
+    ok(#hints == 1 and hints[1].src == 1,
+        'a player who has already left is not addressed -- their id may be recycled')
+
+    -- NO MATCH, NO AUDIENCE. `brrefuse` from a console and an anticheat firing
+    -- in the lobby both file under the no-match sentinel; there is no round for
+    -- the nudge to be about.
+    local X = newIncidentWorld()
+    X.join(1, 7, 'license:one')
+    X.filed('inc-lobby', nil, 'license:cheat')
+    ok(#X.sentOn(X.BR.Net.REPORT_HINT) == 0,
+        'an incident filed outside a match announces to nobody')
+end
+
+describe('report.killedBy')
+do
+    -- #169: killed by somebody who ALREADY has a case open, and only then.
+    local W = newIncidentWorld()
+    W.join(1, 7, 'license:victim', W.BR.PlayerState.DEAD)
+    W.join(2, 7, 'license:suspect')
+    W.join(3, 7, 'license:clean')
+    W.killedBy(1, 2)
+
+    -- No case yet: the prompt would be an invitation to report whoever just
+    -- killed you, which is a machine for generating noise.
+    W.fromClient(W.BR.Net.REPORT_KILLED, 1)
+    ok(#W.sentOn(W.BR.Net.REPORT_HINT) == 0,
+        'a killer with no incident against them produces nothing at all')
+
+    -- Now there is one. The announcement fires too, so filter to the nudge.
+    W.filed('inc-1', 7, 'license:suspect')
+    W.clear()
+
+    W.fromClient(W.BR.Net.REPORT_KILLED, 1)
+    local hints = W.sentOn(W.BR.Net.REPORT_HINT)
+    ok(#hints == 1 and hints[1].src == 1, 'the victim is prompted', tostring(#hints))
+    ok(hints[1] and hints[1].payload.kind == 'killer',
+        'with the killer-flavoured prompt')
+    ok(hints[1] and hints[1].payload.name == 'P2',
+        'naming the killer by their display name')
+
+    -- NOTHING ON THE WIRE THAT NAMES A PLAYER THE CLIENT COULD NOT ALREADY SEE.
+    -- No license, no incident id, no list -- see the handler's own note.
+    local p = hints[1] and hints[1].payload or {}
+    local keys = {}
+    for k in pairs(p) do keys[#keys + 1] = k end
+    table.sort(keys)
+    ok(table.concat(keys, ',') == 'kind,name',
+        'and the payload carries only the occasion and a display name',
+        table.concat(keys, ','))
+
+    -- ONCE. A client that fires this every frame gets one answer, because the
+    -- latch is the server's.
+    W.clear()
+    W.fromClient(W.BR.Net.REPORT_KILLED, 1)
+    W.fromClient(W.BR.Net.REPORT_KILLED, 1)
+    ok(#W.sentOn(W.BR.Net.REPORT_HINT) == 0,
+        'asking again about the same killer answers nothing')
+end
+
+describe('report.killedBy.refusals')
+do
+    local W = newIncidentWorld()
+    W.join(1, 7, 'license:victim')          -- ALIVE
+    W.join(2, 7, 'license:suspect')
+    W.killedBy(1, 2)
+    W.filed('inc-1', 7, 'license:suspect')
+    W.clear()
+
+    -- A LIVING PLAYER HAS NOT BEEN KILLED BY ANYBODY, so there is nothing to
+    -- answer -- and answering would turn this into a probe usable at any time.
+    W.fromClient(W.BR.Net.REPORT_KILLED, 1)
+    ok(#W.sentOn(W.BR.Net.REPORT_HINT) == 0, 'a living player is told nothing')
+
+    W.BR.Roster.get(1).state = W.BR.PlayerState.DBNO
+    W.fromClient(W.BR.Net.REPORT_KILLED, 1)
+    ok(#W.sentOn(W.BR.Net.REPORT_HINT) == 0,
+        'and neither is one who is only downed -- being knocked is not being killed')
+
+    W.BR.Roster.get(1).state = W.BR.PlayerState.DEAD
+    W.fromClient(W.BR.Net.REPORT_KILLED, 1)
+    ok(#W.sentOn(W.BR.Net.REPORT_HINT) == 1, 'a dead player is')
+
+    -- NOBODY THE SERVER DOES NOT KNOW ABOUT. A client that is not in the roster
+    -- at all cannot use this to find out anything.
+    W.clear()
+    W.fromClient(W.BR.Net.REPORT_KILLED, 99)
+    ok(#W.sentOn(W.BR.Net.REPORT_HINT) == 0, 'a stranger asking is answered with silence')
+
+    -- THE STORM, A FALL, A FIRE. No attributed killer means no prompt, and the
+    -- server decides that from its own damage records rather than from a claim.
+    local X = newIncidentWorld()
+    X.join(1, 7, 'license:victim', X.BR.PlayerState.DEAD)
+    X.join(2, 7, 'license:suspect')
+    X.filed('inc-1', 7, 'license:suspect')
+    X.clear()
+    X.fromClient(X.BR.Net.REPORT_KILLED, 1)   -- killedBy was never set
+    ok(#X.sentOn(X.BR.Net.REPORT_HINT) == 0,
+        'dying to the storm prompts nothing -- there is no killer to report')
+end
+
 -- ----------------------------------------------------------------- result ---
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

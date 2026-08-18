@@ -72,6 +72,73 @@ end
 --- the number the case itself already has.
 local subjects = {}
 
+--- Reporters whose case has been sent to be written but not yet acknowledged.
+---
+--- [matchId] = { [targetLicense] = { reporterLicense, ... } }
+---
+--- WHY THIS EXISTS AT ALL: br_ddb mints the incident id, so at the moment a
+--- report is accepted there is nothing to pay AGAINST. The id comes back
+--- seconds later on `br:incident:filed`, which carries the match and the
+--- subject and -- correctly -- says nothing about who reported. This is the
+--- one table that can join the two.
+---
+--- A QUEUE PER SUBJECT, NOT A SINGLE SLOT. Two reporters submitting inside the
+--- acknowledgement window both see an empty `prior` and both open a case; that
+--- race is documented below and accepted. A single slot would drop one of them,
+--- and the person dropped would be the one who reported first.
+---
+--- FIFO, and the pairing is therefore approximate: if two acknowledgements
+--- cross, reporter A may be recorded against reporter B's row. Both rows are
+--- about the same player in the same match and both resolve together, so the
+--- reward lands either way -- and the alternative, threading a token through
+--- br_ringmaster and br_ddb purely to make an already-duplicated case tidy, is
+--- more machinery than the outcome is worth.
+local awaiting = {}
+
+local function awaitAck(matchId, license, reporter)
+    if matchId == nil or license == nil or reporter == nil then return end
+    local m = awaiting[matchId]
+    if not m then
+        m = {}
+        awaiting[matchId] = m
+    end
+    local q = m[license]
+    if not q then
+        q = {}
+        m[license] = q
+    end
+    q[#q + 1] = reporter
+end
+
+--- Whoever is next in line for this subject's case, or nil.
+local function takeAck(matchId, license)
+    local m = awaiting[matchId]
+    local q = m and m[license]
+    if not q or #q == 0 then return nil end
+    return table.remove(q, 1)
+end
+
+--- Say that somebody is owed for a case, once it is real.
+---
+--- AN EVENT, NOT A CALL INTO br_ddb. br_core states the fact and br_stats owns
+--- the ledger, the same split `br:market:credited` already runs on -- so a
+--- server with no br_stats simply does not pay, exactly as it does not record
+--- match results, rather than failing a report path over a reward.
+---
+--- THE ANTICHEAT NEVER GETS ONE OF THESE. It has no reporter to pay, and a
+--- claim keyed on nobody would sit on the reward queue until its age cap
+--- expired it. Only the two call sites below emit this, and both are on the
+--- player-report path.
+local function claimReward(incidentId, license, matchId)
+    if type(incidentId) ~= 'string' or incidentId == '' then return end
+    if type(license) ~= 'string' or license == '' then return end
+    TriggerEvent('br:report:claim', {
+        incidentId = incidentId,
+        license    = license,
+        matchId    = matchId,
+    })
+end
+
 --- The running record for one subject in one match.
 local function subjectIn(matchId, license)
     local m = subjects[matchId]
@@ -381,6 +448,14 @@ AddEventHandler(BR.Net.REPORT_SUBMIT, function(data)
                 -- it here would invent confidence that does not exist.
             })
 
+            -- CORROBORATORS ARE PAID TOO, AND THAT IS THE WHOLE POINT (#168).
+            -- The limit is five players or three submissions a match, so a
+            -- genuine cheater usually draws several reports -- and paying only
+            -- whoever got there first teaches everybody to race the panel
+            -- instead of watching the fight. The id is already in hand here,
+            -- unlike the opening path below, so the claim is immediate.
+            claimReward(prior[#prior], reporter, me.matchId)
+
             print(('[br_core] report: %s corroborates case %s about %s (report %d, seq %d)')
                 :format(tostring(me.name), tostring(prior[#prior]),
                         tostring(t.name), s.reports, s.seq))
@@ -401,6 +476,12 @@ AddEventHandler(BR.Net.REPORT_SUBMIT, function(data)
                 -- field and the anticheat's own filing path sets it for exactly
                 -- the same reason.
                 payload.priorIncidentIds = prior
+                -- QUEUED BEFORE THE EMIT, NOT AFTER. `br:ringmaster:incident`
+                -- is a same-state TriggerEvent and br_ringmaster's handler runs
+                -- synchronously inside it -- only the DynamoDB round trip is
+                -- asynchronous -- so anything registered afterwards would be a
+                -- race against a write that is already in flight.
+                awaitAck(me.matchId, t.license, reporter)
                 TriggerEvent('br:ringmaster:incident', payload)
             else
                 -- LOUD, and the count is rolled back: `fromReport` refuses a
@@ -444,6 +525,119 @@ AddEventHandler(BR.Net.REPORT_SUBMIT, function(data)
     -- unmounted. The two-second refresh loop covers a panel left open.
 end)
 
+-- THE CASE IS NOW REAL, SO THE DEBT IS TOO.
+--
+-- A SECOND HANDLER ON THE SAME EVENT, alongside the one in server/incident.lua,
+-- and that is the point rather than an accident: FiveM runs every registered
+-- handler, so the corroboration map and the reward queue each hear the
+-- acknowledgement directly instead of one of them being threaded through the
+-- other. Neither has to know the other exists.
+--
+-- NOTHING HAPPENS FOR AN ANTICHEAT FILING. `takeAck` answers nil when no report
+-- opened this case, so a machine-opened incident registers no debt -- correct,
+-- because there is nobody to pay. A human who later corroborates it is claimed
+-- on the corroboration path above, against this same id.
+AddEventHandler('br:incident:filed', function(ack)
+    if type(ack) ~= 'table' then return end
+    local reporter = takeAck(ack.matchId, ack.subjectLicense)
+    if reporter then claimReward(ack.incidentId, reporter, ack.matchId) end
+end)
+
+--[[
+    "SUSPECT CHEATING? PRESS <KEY> TO REPORT <NAME>." -- the answer half (#169).
+
+    ═══ THE CLIENT SENDS NOTHING, AND THAT IS THE DESIGN ═══
+
+    The obvious shape for this is "client asks, is player 14 under suspicion?"
+    and it is a probe. A modified client would walk the roster and read back
+    exactly the list this feature must never produce -- who has a case open --
+    which is the same information #93 spends its whole argument keeping away
+    from the one player who most wants it. Rate limiting a probe does not stop
+    it; it stops it being fast.
+
+    So the question carries no subject at all. This handler resolves the asker's
+    own killer from the roster and the damage records the server already keeps,
+    and answers about that player or answers nothing. There is no field a client
+    can put a name in, so there is nothing to enumerate WITH -- the guard is the
+    absence of a parameter, not a check on one.
+
+    WHAT A PLAYER CAN STILL LEARN: that the person who just killed them has a
+    case open. That is the feature, it is one bit about one player they were
+    already looking at, and there is no way to obtain it without first being
+    killed by that player in a match they are both in.
+
+    AND THE SUBJECT IS STILL SHOWN NOTHING. This goes to the victim. The player
+    it is about learns nothing, here or anywhere else.
+
+    ONCE PER DEATH. The latch is the killer's license against this asker for
+    this match, held in `nudged` -- so a client that fires this every frame gets
+    one answer, and a player killed twice by the same suspect is not nagged
+    twice about the same case.
+]]
+
+--- [matchId] = { [reporterLicense] = { [killerLicense] = true } }
+local nudged = {}
+
+RegisterNetEvent(BR.Net.REPORT_KILLED)
+AddEventHandler(BR.Net.REPORT_KILLED, function()
+    local src = source
+
+    local me = BR.Roster.get(src)
+    if not me or not me.matchId then return end
+
+    -- ONLY THE DEAD ASK. A living player has not been killed by anybody, so
+    -- there is no killer to resolve and no occasion for the prompt. DBNO is
+    -- excluded too: being knocked is not being killed, and the player who
+    -- knocked you may yet be the one who revives nobody.
+    if me.state ~= BR.PlayerState.DEAD then return end
+
+    -- THE SERVER'S OWN ATTRIBUTION, not the client's claim -- the same function
+    -- combat.lua uses to decide who gets the kill, so the player named here is
+    -- exactly the player named in the kill feed. It already applies the assist
+    -- window, refuses self-attribution and refuses a killer who has left.
+    local killerSrc = BR.Combat and BR.Combat.attributedKiller(me)
+    if not killerSrc then return end
+
+    local killer = BR.Roster.get(killerSrc)
+    if not killer or killer.matchId ~= me.matchId then return end
+
+    local kBy = BR.Identity and BR.Identity.ofPlayer(killerSrc)
+    local kLicense = kBy and BR.Identity.qualified('license', kBy.license)
+    if not kLicense then return end
+
+    -- THE ONE QUESTION, ASKED THE WAY EVERY OTHER PART OF THIS FILE ASKS IT.
+    -- `priorFor` is fed by `br:incident:filed`, so it answers for cases opened
+    -- by the anticheat as well as by a report -- which is the pairing worth
+    -- nudging toward: somebody the machine already flagged, named independently
+    -- by a human who just fought them.
+    local prior = BR.Incident and BR.Incident.priorFor(me.matchId, kLicense) or {}
+    if #prior == 0 then return end
+
+    -- A player with no license cannot be rate limited, and cannot be paid
+    -- either, so there is nothing to gain by prompting them.
+    local myBy = BR.Identity and BR.Identity.ofPlayer(src)
+    local myLicense = myBy and BR.Identity.qualified('license', myBy.license)
+    if not myLicense then return end
+
+    local m = nudged[me.matchId]
+    if not m then
+        m = {}
+        nudged[me.matchId] = m
+    end
+    local mine = m[myLicense]
+    if not mine then
+        mine = {}
+        m[myLicense] = mine
+    end
+    if mine[kLicense] then return end
+    mine[kLicense] = true
+
+    -- NO ID AND NO LICENSE ON THE WIRE, only the display name the kill feed has
+    -- already put on this player's screen. The panel resolves the target the
+    -- same way it always has, from the list the server sends it.
+    TriggerClientEvent(BR.Net.REPORT_HINT, src, { kind = 'killer', name = killer.name })
+end)
+
 --- Reports do not survive the match they were filed in.
 ---
 --- WHICH IS THE POINT OF THE RULE, not a tidy-up. "One report per target per
@@ -461,4 +655,14 @@ AddEventHandler('br:match:destroyed', function(ev)
         if u.matchId == ev.matchId then usage[license] = nil end
     end
     subjects[ev.matchId] = nil
+    -- The nudge latch is per match for the same reason the report limit is: a
+    -- player who cheats in three consecutive rounds is three things worth
+    -- telling an admin about, and the prompt should offer each of them.
+    nudged[ev.matchId] = nil
+    -- ANY REPORT STILL AWAITING AN ACKNOWLEDGEMENT AT TEARDOWN HAS LOST ITS
+    -- REWARD, and that is the honest outcome rather than a leak. br_ringmaster
+    -- gives a write about thirty seconds and a match is destroyed well after
+    -- that, so an entry surviving to here means the case was never written --
+    -- there is no incident to be paid against and nothing to keep the row for.
+    awaiting[ev.matchId] = nil
 end)

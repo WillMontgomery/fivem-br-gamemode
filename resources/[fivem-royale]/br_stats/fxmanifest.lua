@@ -36,6 +36,11 @@ server_scripts {
     '@br_lib/config/market.lua',
     '@br_lib/shared/xp.lua',        -- the curve; must load before persist
     'server/persist.lua',           -- br:match:results -> DynamoDB
+    -- #168: 250 Volts for an accurate report, paid when the verdict lands.
+    -- HERE RATHER THAN IN br_core BECAUSE IT IS A CURRENCY WRITE, and this is
+    -- the resource that owns those. It needs nothing from persist.lua and
+    -- persist.lua needs nothing from it; the order is alphabetical by accident.
+    'server/awards.lua',            -- br:report:claim -> the reward queue
 }
 
 dependency 'br_lib'

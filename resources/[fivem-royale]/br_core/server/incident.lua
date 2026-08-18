@@ -67,17 +67,28 @@ function BR.Incident.priorFor(matchId, license)
 end
 
 --- Note that an incident landed, so the next one this match can point at it.
+---
+--- RETURNS WHETHER IT WAS THE FIRST IN THIS MATCH, because that is the exact
+--- moment #168's announcement is owed and this is the only function that can
+--- tell. Derived from the map rather than tracked beside it: a second boolean
+--- saying "we have announced" would be a copy of a fact this table already
+--- holds, and the two would eventually disagree after a `br:match:destroyed`
+--- clears one and not the other.
+---
 --- @param matchId any
 --- @param license string
 --- @param incidentId string
+--- @return boolean first  true when nothing had been filed in this match before
 function BR.Incident.remember(matchId, license, incidentId)
     -- matchId is allowed to be nil; license and the id are not.
-    if license == nil or incidentId == nil then return end
+    if license == nil or incidentId == nil then return false end
     local k = key(matchId)
     local m = filed[k]
+    local first = false
     if not m then
         m = {}
         filed[k] = m
+        first = true
     end
     local list = m[license]
     if not list then
@@ -85,6 +96,7 @@ function BR.Incident.remember(matchId, license, incidentId)
         m[license] = list
     end
     list[#list + 1] = incidentId
+    return first
 end
 
 --- Counters, for brdebug-style introspection.
@@ -177,13 +189,83 @@ AddEventHandler('br:ringmaster:refusal', function(ev)
     TriggerEvent('br:ringmaster:incident', payload)
 end)
 
+-- ---------------------------------------------------------------------------
+-- Telling the rest of the match that reporting exists (#168)
+-- ---------------------------------------------------------------------------
+
+--- Announce once per match, to everybody in it except the subject.
+---
+--- WHY IT HANGS OFF THE FIRST FILING RATHER OFF THE MATCH STARTING. The owner's
+--- framing is a nudge at the moment it is worth acting on -- somebody in this
+--- round has drawn a case, so "if you saw something, say something" is about
+--- tonight rather than about the feature existing. A hint at the start of every
+--- match is a tutorial nobody reads; this one arrives when it is true.
+---
+--- THE SUBJECT IS SHOWN NOTHING AT ALL, and that is #93's rule applied intact.
+--- The offender learns nothing at any point -- not a notice, not a hint, not a
+--- kick -- because a player who discovers they are under suspicion changes
+--- behaviour, which costs the case the evidence it was going to be made of. The
+--- exclusion is by LICENSE and is resolved per player here rather than trusted
+--- off the roster: `entry.license` is documented as "filled by br_stats if it is
+--- running", so a match with br_stats absent would silently exclude nobody --
+--- and quietly telling the offender is the one failure this function must not
+--- have.
+---
+--- THE TEXT IS NOT SENT. The envelope carries an occasion and the client writes
+--- the sentence, because the sentence names the player-list key and only the
+--- client knows which key that is. This project has already shipped a prompt
+--- naming a key nothing was listening to (#129); the fix then was to resolve the
+--- label where the binding lives, and that is why nothing here composes prose.
+---
+--- @param matchId any
+--- @param subjectLicense string
+local function announceReporting(matchId, subjectLicense)
+    -- NOT OUTSIDE A MATCH. `brrefuse` from a console, or an anticheat firing in
+    -- the lobby, files under the `nomatch` sentinel -- there is no audience to
+    -- address and no round for the nudge to be about.
+    if matchId == nil then return end
+    if not BR.Roster then return end
+
+    local told, skipped = 0, 0
+
+    BR.Roster.each(
+        function(e) return e.matchId == matchId end,
+        function(src, e)
+            -- A player who has already left is not on the wire; TriggerClientEvent
+            -- to a recycled id would address whoever landed in that slot.
+            if e.state == BR.PlayerState.LEFT then return end
+
+            local byKind = BR.Identity and BR.Identity.ofPlayer(src)
+            local lic = byKind and BR.Identity.qualified('license', byKind.license)
+            if lic ~= nil and lic == subjectLicense then
+                skipped = skipped + 1
+                return
+            end
+
+            TriggerClientEvent(BR.Net.REPORT_HINT, src, { kind = 'exists' })
+            told = told + 1
+        end)
+
+    print(('[br_core] report hint: told %d player(s) in match %s, withheld from %d subject(s)')
+        :format(told, tostring(matchId), skipped))
+end
+
 -- The other half of the loop: br_ringmaster reports back what id the write got,
 -- and this is where it becomes available for corroboration. Fire-and-forget in
 -- the other direction too -- an incident that was written but whose confirmation
 -- was lost costs the NEXT incident its cross-reference, and nothing else.
+--
+-- IT IS ALSO WHERE #168's ANNOUNCEMENT BELONGS, and deliberately not on the
+-- submit path in server/players.lua. This handler runs when a row is DURABLE --
+-- it is the acknowledgement br_ringmaster sends after DynamoDB accepted the
+-- write -- so the hint cannot go out about a case that failed to file. It is
+-- also the one place both sources meet: the anticheat's filing and a player's
+-- report arrive here identically, which is what makes "the first incident filed
+-- against anyone" one condition rather than two that can disagree.
 AddEventHandler('br:incident:filed', function(ack)
     if type(ack) ~= 'table' then return end
-    BR.Incident.remember(ack.matchId, ack.subjectLicense, ack.incidentId)
+    local first = BR.Incident.remember(ack.matchId, ack.subjectLicense, ack.incidentId)
+    if first then announceReporting(ack.matchId, ack.subjectLicense) end
 end)
 
 -- Same teardown hook the evidence buffer uses, and for the same reason: `destroy`

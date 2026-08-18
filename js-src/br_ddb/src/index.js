@@ -11,6 +11,7 @@ import { marshall, unmarshall } from '@aws-sdk/util-dynamodb'
 
 import { isActive } from './ban.js'
 import { buildIncidentItem } from './incident.js'
+import { projectVerdict } from './verdict.js'
 
 /**
  * br_ddb -- the game server's read-only window onto DynamoDB.
@@ -37,8 +38,8 @@ import { buildIncidentItem } from './incident.js'
  * a match because a web console in another region is down.
  *
  * WITH ONE DELIBERATE EXCEPTION, ADDED 2026-08-14: `ringmaster-incidents` is
- * APPEND-ONLY from here. The game may file a case and cannot read one back, and
- * still has no access at all to grants, bans or the audit log.
+ * APPENDABLE from here. The game may file a case, and still has no access at all
+ * to grants, bans or the audit log.
  *
  * That is the narrowest grant that makes the pipeline work, and the narrowness is
  * the point. The alternative was sending incidents to the console over the event
@@ -47,11 +48,20 @@ import { buildIncidentItem } from './incident.js'
  * evidence buffer behind it is discarded at match end. So the game writes the row
  * and the event carries only an id.
  *
- * WHAT A COMPROMISED GAME BOX CAN DO WITH THIS: file noise. What it still cannot
- * do: enumerate open cases, read who is an admin, discover who is banned, alter a
- * verdict, or overwrite an existing incident -- the write is conditional on the
- * id being absent. Append without read is a much smaller blast radius than it
- * first sounds.
+ * AND SINCE 2026-08-17 IT CAN READ ONE BACK, but only the verdict, and only by an
+ * id it minted itself. See `br:ddb:incidentVerdict` near the bottom of this file:
+ * that verb is the entire second exception, it names the one table it touches,
+ * and it projects four attributes off the row rather than fetching it. The
+ * sentence that used to sit here -- "the game may file a case and cannot read one
+ * back" -- is no longer true, and it was load-bearing enough in the console's
+ * docs/aws-setup.md that it is worth saying so plainly rather than quietly
+ * editing it out.
+ *
+ * WHAT A COMPROMISED GAME BOX CAN DO WITH THIS: file noise, and read the verdicts
+ * on cases it filed. What it still cannot do: enumerate open cases (there is no
+ * Query or Scan in this file), read who is an admin, discover who is banned,
+ * alter a verdict, or overwrite an existing incident -- the write is conditional
+ * on the id being absent.
  *
  * NO CREDENTIALS ANYWHERE. The SDK's default provider chain finds the EC2
  * instance role through IMDS on its own. Same rule as the Ringmaster box: if
@@ -125,12 +135,15 @@ function withTimeout(promise, ms) {
 /**
  * One point lookup, keyed on license.
  *
- * GetItem rather than Query or Scan, deliberately: the only question this
- * resource ever asks is about one specific license. On the `ringmaster-*` family
- * the game box's IAM policy grants GetItem and -- since 2026-08-14 -- PutItem on
- * `ringmaster-incidents` alone; there is no Query anywhere and no read of any
- * kind on incidents. If this ever needs a Query, that is a conversation about the
- * policy, not a change to this function.
+ * GetItem rather than Query or Scan, deliberately: every question this resource
+ * asks is about one specific key it already holds -- a license, or an incident id
+ * it minted itself. On the `ringmaster-*` family the game box's IAM policy grants
+ * GetItem (broadly, since 2026-08-17) and PutItem on `ringmaster-incidents`
+ * alone. THERE IS STILL NO QUERY AND NO SCAN ANYWHERE IN THIS FILE, which is the
+ * property that stops a compromised box enumerating anything, and it is worth
+ * more than the table list now that the read grant is wider than the code. If
+ * this ever needs a Query, that is a conversation about the policy, not a change
+ * to this function.
  */
 async function getByKey(table, key, prefix) {
   const out = await withTimeout(
@@ -889,6 +902,359 @@ on('br:ddb:putIncident', (req, token, payload) => {
 })
 
 /**
+ * ═══ THE SECOND READ INTO A `ringmaster-*` TABLE, AND THE ONLY ONE ═══
+ *
+ * THIS IS THE WHOLE OF THE NEW GRANT AND IT IS DELIBERATELY ONE FUNCTION.
+ * The owner added `dynamodb:GetItem` on `ringmaster-*` on 2026-08-17, with the
+ * words "this is deliberately broad, I know". That prefix covers `audit`,
+ * `bans`, `grants`, `incidents`, `sessions`, `telemetry` and `to-gameserver`.
+ * Nothing in this file reads six of those seven, and nothing should: the game
+ * box previously held GetItem on `bans` and `grants` alone, and the reason that
+ * exception was written down rather than buried is that a policy nobody can
+ * summarise is a policy nobody can narrow.
+ *
+ * SO THE GRANT IS BROAD AND THE CODE IS NOT. Exactly one table is named here
+ * and it is named once. When somebody comes to tighten the policy back to a
+ * list of ARNs, the answer is this file's table list and nothing else:
+ *
+ *     ringmaster-bans        GetItem   the connect gate
+ *     ringmaster-grants      GetItem   in-game admin scopes
+ *     ringmaster-maintenance GetItem   the drain gate
+ *     ringmaster-incidents   GetItem   THIS, and PutItem above
+ *
+ * IT IS NARROWER THAN THE GRANT IN THREE MORE WAYS, all of them enforced here
+ * rather than promised:
+ *
+ *   * GetItem, keyed on `incidentId`. There is still no Query and no Scan
+ *     anywhere in this file, so a compromised game box cannot enumerate cases.
+ *   * BY AN ID IT MINTED ITSELF. Every id this verb is ever called with came
+ *     back from `putIncident` on this same box. It cannot discover an id it did
+ *     not file, so "read back cases whose ids it knows" means "read back its own".
+ *   * A PROJECTION, NOT THE ROW. `ProjectionExpression` asks for four
+ *     attributes. The evidence, the chat log, the kill log, the reporter, the
+ *     subject, the admin's written resolution and the capture keys are all on
+ *     that item and NONE of them crosses into the game server. What comes back
+ *     is "decided or not, and did anything happen" -- which is the entire
+ *     question #168 asks, and the projection is what makes that a fact rather
+ *     than a description.
+ *
+ * WHAT IT COSTS, STATED PLAINLY so nobody has to rediscover it: the property
+ * "there is no read of any kind on this table" is gone, and with it the
+ * sentence in the console's docs/aws-setup.md that a compromised game box
+ * "cannot alter a verdict" -- it still cannot alter one, but it can now see
+ * one. That was the price of #168 and the owner paid it knowingly.
+ *
+ * FAILS CLOSED, unlike the ban gate. The ban check fails OPEN because an
+ * unreachable database must not become a server nobody can join. Here the
+ * opposite is right: an unreadable incident answers "not settled", the claim
+ * stays on the queue, and the next sweep asks again. Paying on a failed read
+ * would credit 250 Volts against a verdict nobody has seen.
+ */
+on('br:ddb:incidentVerdict', (req, incidentId) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:verdictResult', req, ok, extra ?? {})
+  }
+
+  const id = typeof incidentId === 'string' ? incidentId : ''
+  if (id === '') {
+    answer(false, { error: 'no incidentId' })
+    return
+  }
+
+  withTimeout(
+    ddb().send(
+      new GetItemCommand({
+        TableName: `${TABLE_PREFIX}incidents`,
+        Key: marshall({ incidentId: id }),
+        /**
+         * FOUR ATTRIBUTES. `state` is a DynamoDB reserved word and has to be
+         * aliased; the other three are not, and are named literally so this
+         * list reads as the list it is.
+         *
+         * DELIBERATELY NOT `resolution`, `resolvedByName`, `reporterLicense`
+         * or `subjectLicense`. The game already knows who it told us about;
+         * what it must not gain is a way to read a moderator's prose or to
+         * confirm an identity it did not already hold.
+         */
+        ProjectionExpression: 'incidentId, #st, verdict, resolvedAt',
+        ExpressionAttributeNames: { '#st': 'state' },
+        // Eventually consistent, like every other read here. A verdict that is
+        // one sweep late is paid one sweep late.
+        ConsistentRead: false,
+      }),
+    ),
+    TIMEOUT_MS,
+  )
+    .then((out) => {
+      const row = out.Item ? unmarshall(out.Item) : null
+      answer(true, projectVerdict(row))
+    })
+    .catch((e) => {
+      console.log(`[br_ddb] verdict read failed for ${id}: ${e.message}`)
+      answer(false, { error: e.message })
+    })
+})
+
+/**
+ * ═══ THE REWARD LEDGER -- ALL OF IT ON THE GAME'S OWN TABLE ═══
+ *
+ * #168 pays 250 Volts to a reporter, and to every corroborator, when an
+ * incident resolves with an action taken. The verdict arrives HOURS after the
+ * report and often after a deploy, so "remember who to pay" cannot live in Lua
+ * memory: a restart between the report and the admin's decision would lose the
+ * debt silently, with nothing anywhere recording that it was owed. That is the
+ * exact failure the console's own notes warn about, and it is the reason this
+ * queue is durable.
+ *
+ * ONE ITEM HOLDS THE WHOLE QUEUE, and it is not a hot partition worth worrying
+ * about: it is written once per report filed, which on a healthy server is a
+ * handful a week.
+ *
+ *     {pk: 'br:reportaward', sk: 'queue'}
+ *         ids                  SS   incidents awaiting a verdict
+ *         p_<incidentId>       SS   the licenses owed for that incident
+ *         t_<incidentId>       N    when it was first claimed, for the age cap
+ *
+ * WHY NOT ONE ITEM PER INCIDENT: because finding them again would need a Query,
+ * and there is no Query anywhere in this file. Keeping the queue in one item
+ * makes the sweep a single GetItem on a known key -- the same shape as every
+ * other read here -- and the queue drains itself, so it does not grow.
+ *
+ * ADD ON A STRING SET IS IDEMPOTENT, which is what makes every write here safe
+ * to repeat. Claiming the same payee twice is a no-op at the storage layer, so
+ * the caller needs no dedupe of its own and a retry costs nothing.
+ */
+const AWARD_PK = 'br:reportaward'
+const AWARD_SK = 'queue'
+
+/** Per-incident attribute names. Aliased in every expression, so the ids in
+ *  them never have to be a valid identifier. */
+const payeesAttr = (id) => `p_${id}`
+const claimedAtAttr = (id) => `t_${id}`
+
+/**
+ * A sanity ceiling on one award, checked here rather than trusted.
+ *
+ * The amount comes from the caller for the same reason a purchase price does --
+ * this file cannot see BR.Config -- and for the same reason it is bounded here:
+ * the only caller is server-side Lua, so a value outside this range is a bug on
+ * that side and should be refused loudly rather than written to a balance.
+ */
+const AWARD_MAX = 5000
+
+on('br:ddb:awardClaim', (req, incidentId, license) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:awardClaimResult', req, ok, extra ?? {})
+  }
+
+  const id = typeof incidentId === 'string' ? incidentId : ''
+  if (id === '' || typeof license !== 'string' || license === '') {
+    answer(false, { error: 'no incidentId or license' })
+    return
+  }
+
+  withTimeout(
+    ddb().send(
+      new UpdateItemCommand({
+        TableName: `${TABLE_PREFIX_GAME}players`,
+        Key: marshall({ pk: AWARD_PK, sk: AWARD_SK }),
+        // `if_not_exists` so a corroborator arriving an hour later does not
+        // restart the age cap the first reporter's claim began.
+        UpdateExpression: 'SET #t = if_not_exists(#t, :now) ADD #ids :idset, #p :licset',
+        ExpressionAttributeNames: {
+          '#ids': 'ids',
+          '#p': payeesAttr(id),
+          '#t': claimedAtAttr(id),
+        },
+        ExpressionAttributeValues: {
+          ':idset': { SS: [id] },
+          ':licset': { SS: [license] },
+          ':now': { N: String(Date.now()) },
+        },
+      }),
+    ),
+    TIMEOUT_MS,
+  )
+    .then(() => answer(true, {}))
+    .catch((e) => {
+      // A LOST CLAIM COSTS ONE REWARD AND NOTHING ELSE. The report itself is
+      // already durable in `ringmaster-incidents`; this is only the promise to
+      // pay for it, so the failure is a log line and never touches the report
+      // path that called it.
+      console.log(`[br_ddb] award claim failed for ${id}: ${e.message}`)
+      answer(false, { error: e.message })
+    })
+})
+
+on('br:ddb:awardQueue', (req) => {
+  const answer = (rows, extra) => {
+    emit('br:ddb:awardQueueResult', req, rows, extra ?? {})
+  }
+
+  getByKey('players', { pk: AWARD_PK, sk: AWARD_SK }, TABLE_PREFIX_GAME)
+    .then((row) => {
+      if (!row) {
+        answer([], {})
+        return
+      }
+
+      // unmarshall turns a DynamoDB string set into a JS Set, which does not
+      // survive the trip across the runtime boundary into Lua. Flatten every
+      // one of them -- the same rule inventoryFetch applies to `owned`.
+      const ids = row.ids instanceof Set ? Array.from(row.ids) : []
+
+      answer(
+        ids.map((id) => {
+          const p = row[payeesAttr(id)]
+          return {
+            incidentId: id,
+            licenses: p instanceof Set ? Array.from(p) : [],
+            claimedAt: num(row[claimedAtAttr(id)]),
+          }
+        }),
+        {},
+      )
+    })
+    .catch((e) => {
+      console.log('[br_ddb] award queue read failed: ' + e.message)
+      answer([], { error: e.message })
+    })
+})
+
+/**
+ * Pay one payee for one incident, once, forever.
+ *
+ * ═══ THE IDEMPOTENCE, AND IT IS THE WHOLE OF IT ═══
+ *
+ * `reportRewards` is a string set of the incident ids this account has already
+ * been paid for, and it lives on the SAME item as the balance. So the credit
+ * and the record that it happened are one conditional UpdateItem: DynamoDB
+ * evaluates "have I already paid this?" at write time and rejects the loser.
+ * There is no window between deciding to pay and recording it, because there is
+ * no second write.
+ *
+ * THAT IS THE `purchase` PATTERN, ON PURPOSE. The debit-and-grant above is one
+ * conditional write for exactly the same reason -- it cannot half-apply -- and
+ * this is its mirror image: credit-and-mark. Nothing else in this system needs
+ * to know how many times the queue was swept, a resolution re-read, or the
+ * resource restarted mid-sweep. The second attempt is refused by the database.
+ *
+ * A REFUSAL IS REPORTED AS SUCCESS, deliberately, and it is the opposite call
+ * from `purchase` -- which reports its refusal as a failure because the player
+ * asked for something and did not get it. Here nobody asked: the condition
+ * failing means the money is already in the account, which is the outcome the
+ * caller wanted. Reporting it as a failure would make the sweep retry a payment
+ * that has already landed, forever.
+ *
+ * IT IS THE SECOND WRITER OF `balance`, AND THAT IS A REAL CHANGE. Until now
+ * `statsApply` was the only path that could increase a balance, and
+ * docs/progression.md leans on that: "there is exactly one writer". The
+ * no-pay-to-win property survives intact -- this is still earned, still not
+ * purchasable, and still not an admin grant -- but the one-writer sentence does
+ * not, and whoever revises that document should revise it knowingly rather than
+ * discover this here.
+ */
+on('br:ddb:awardPay', (req, license, incidentId, amount) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:awardPayResult', req, ok, extra ?? {})
+  }
+
+  const id = typeof incidentId === 'string' ? incidentId : ''
+  const amt = Number(amount)
+
+  if (typeof license !== 'string' || license === '') {
+    answer(false, { error: 'no license' })
+    return
+  }
+  if (id === '' || !Number.isFinite(amt) || amt <= 0 || amt > AWARD_MAX) {
+    answer(false, { error: 'bad incident or amount' })
+    return
+  }
+
+  withTimeout(
+    ddb().send(
+      new UpdateItemCommand({
+        TableName: `${TABLE_PREFIX_GAME}players`,
+        Key: marshall({ pk: license, sk: 'profile' }),
+        UpdateExpression: 'ADD #bal :amt, #paid :idset',
+        ConditionExpression: 'attribute_not_exists(#paid) OR NOT contains(#paid, :id)',
+        ExpressionAttributeNames: { '#bal': 'balance', '#paid': 'reportRewards' },
+        ExpressionAttributeValues: {
+          ':amt': { N: String(Math.round(amt)) },
+          ':idset': { SS: [id] },
+          ':id': { S: id },
+        },
+        ReturnValues: 'UPDATED_NEW',
+      }),
+    ),
+    TIMEOUT_MS,
+  )
+    .then((out) => {
+      const after = out.Attributes ? unmarshall(out.Attributes) : {}
+      // THE ROW IS CREATED IF IT IS NOT THERE, which is correct here and would
+      // not be for a purchase: a player who reported somebody accurately and
+      // has never finished a match still earned this.
+      answer(true, { paid: true, balance: Number(after.balance ?? 0) })
+    })
+    .catch((e) => {
+      if (e.name === 'ConditionalCheckFailedException') {
+        answer(true, { paid: false, alreadyPaid: true })
+        return
+      }
+      console.log(`[br_ddb] award pay failed for ${license}: ${e.message}`)
+      answer(false, { error: e.message })
+    })
+})
+
+/**
+ * Take one incident off the queue.
+ *
+ * SEPARATE FROM THE PAYMENT, because it is a different question. A payment is
+ * about one account; this says "nobody is owed anything more for this case",
+ * and only the caller -- which watched every payee answer -- can know that.
+ *
+ * `DELETE` ON A SET AND `REMOVE` ON THE ATTRIBUTES, in one update, so a queue
+ * entry cannot survive its own payee list. Both are `dynamodb:UpdateItem`; no
+ * DeleteItem is granted to this box anywhere and none is needed here.
+ */
+on('br:ddb:awardSettle', (req, incidentId) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:awardSettleResult', req, ok, extra ?? {})
+  }
+
+  const id = typeof incidentId === 'string' ? incidentId : ''
+  if (id === '') {
+    answer(false, { error: 'no incidentId' })
+    return
+  }
+
+  withTimeout(
+    ddb().send(
+      new UpdateItemCommand({
+        TableName: `${TABLE_PREFIX_GAME}players`,
+        Key: marshall({ pk: AWARD_PK, sk: AWARD_SK }),
+        UpdateExpression: 'DELETE #ids :idset REMOVE #p, #t',
+        ExpressionAttributeNames: {
+          '#ids': 'ids',
+          '#p': payeesAttr(id),
+          '#t': claimedAtAttr(id),
+        },
+        ExpressionAttributeValues: { ':idset': { SS: [id] } },
+      }),
+    ),
+    TIMEOUT_MS,
+  )
+    .then(() => answer(true, {}))
+    .catch((e) => {
+      // Harmless to fail: the payments are already idempotent, so the worst a
+      // stuck queue entry costs is one wasted GetItem per sweep until the next
+      // settle succeeds.
+      console.log(`[br_ddb] award settle failed for ${id}: ${e.message}`)
+      answer(false, { error: e.message })
+    })
+})
+
+/**
  * A self-test, so "can this box reach DynamoDB at all" is one command rather
  * than a guess. Reads a license that will never exist -- a successful lookup
  * returning nothing proves credentials, network and permissions all work,
@@ -916,5 +1282,6 @@ on('br:ddb:selftest', (req) => {
 
 console.log(
   `[br_ddb] ready -- region ${REGION}, ${TABLE_PREFIX}* read-only (bans, grants, maintenance)`
-    + ` + append-only (incidents), ${TABLE_PREFIX_GAME}* read/write (profile, inventory, stats, history)`,
+    + ` + append + verdict-read (incidents),`
+    + ` ${TABLE_PREFIX_GAME}* read/write (profile, inventory, stats, history, report awards)`,
 )

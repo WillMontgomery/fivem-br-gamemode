@@ -1,11 +1,88 @@
--- Unit tests for br_stats' XP curve.
+-- Unit tests for br_stats' XP curve, and for the report-reward pipeline.
 --
 -- xp.lua is pure arithmetic with no database and no natives, so it is testable
 -- outside the game. The level inversion is the part worth testing hard: it uses
 -- a closed-form root rather than a loop, and floating-point pow is exactly where
 -- an off-by-one at a level boundary would hide.
+--
+-- server/awards.lua (#168) is here for a different reason: every interesting
+-- thing it does happens against a database that is not present, hours after the
+-- event that started it, and its whole job is to be safe when repeated. That is
+-- untestable in game and trivially testable with a stubbed br_ddb, which is
+-- what the second half of this file is.
 
 function GetGameTimer() return 0 end
+
+-- --------------------------------------------------------------- harness ---
+--
+-- Enough of FiveM for awards.lua to load and be driven. Nothing here fires on
+-- its own: the sweep thread is a no-op and the tests call BR.Awards.sweep()
+-- when they want one, which is the only way to test "the answer never came".
+
+local handlers = {}
+function AddEventHandler(name, fn)
+    handlers[name] = handlers[name] or {}
+    table.insert(handlers[name], fn)
+end
+
+--- Every br_ddb request this file made, in order. The test answers them by
+--- firing the matching result event, exactly as the JS half would.
+local asked = {}
+
+function TriggerEvent(name, ...)
+    asked[#asked + 1] = { name = name, args = { ... } }
+    for _, fn in ipairs(handlers[name] or {}) do fn(...) end
+end
+
+--- Requests of one kind, oldest first.
+local function askedFor(name)
+    local out = {}
+    for _, a in ipairs(asked) do
+        if a.name == name then out[#out + 1] = a end
+    end
+    return out
+end
+
+local sent = {}
+function TriggerClientEvent(name, src, payload)
+    sent[#sent + 1] = { name = name, src = src, payload = payload }
+end
+
+local timers = {}
+function SetTimeout(ms, fn) timers[#timers + 1] = { ms = ms, fn = fn } end
+local function fireTimers()
+    local due = timers
+    timers = {}
+    for _, t in ipairs(due) do t.fn() end
+end
+
+local resourceState = { br_ddb = 'started' }
+function GetResourceState(name) return resourceState[name] or 'missing' end
+
+--- Who is connected, and what their identifiers are. Empty by default: the
+--- award has to land for somebody who is NOT here, and that is the case most
+--- likely to be got wrong.
+local online = {}          -- [src] = { 'license:aaa', ... }
+function GetPlayers()
+    local out = {}
+    for src in pairs(online) do out[#out + 1] = tostring(src) end
+    table.sort(out)
+    return out
+end
+function GetNumPlayerIdentifiers(src) return #(online[tonumber(src)] or {}) end
+function GetPlayerIdentifier(src, i)  return (online[tonumber(src)] or {})[i + 1] end
+
+-- The sweep loop must not run itself; every test drives it explicitly.
+Citizen = { CreateThread = function() end, Wait = function() end }
+
+local commands = {}
+function RegisterCommand(name, fn, restricted)
+    commands[name] = { fn = fn, restricted = restricted }
+end
+
+local realPrint = print
+local printed = {}
+function print(s) printed[#printed + 1] = tostring(s) end
 
 local ROOT = 'resources/[fivem-royale]/'
 for _, f in ipairs({
@@ -16,6 +93,11 @@ for _, f in ipairs({
     -- tested together rather than one here and one in a suite that has to boot
     -- the whole roster to reach it.
     'br_lib/config/market.lua',
+    -- BR.Net.NOTIFY, for the sentence the reward sends.
+    'br_lib/shared/protocol.lua',
+    -- BR.Identity; awards.lua resolves a license back to a connected src.
+    'br_lib/shared/identity.lua',
+    'br_stats/server/awards.lua',
 }) do
     local chunk, err = loadfile(ROOT .. f)
     if not chunk then
@@ -359,6 +441,280 @@ do
     ok(#bad == 0, 'the cumulative pair and the bar agree at every total',
         table.concat(bad, '; '))
 end
+
+-- ========================================================================
+-- server/awards.lua -- 250 Volts for an accurate report (#168)
+-- ========================================================================
+
+local INC = 'incident-abc'
+local ALICE = 'license:alice'
+local BOB   = 'license:bob'
+
+--- Start each case from a clean bench.
+local function reset()
+    asked, sent, timers, printed, online = {}, {}, {}, {}, {}
+end
+
+--- Request event -> reply event, SPELLED OUT rather than derived by appending
+--- 'Result'. br_ddb's naming is "noun + Result" and not "request + Result" --
+--- `putIncident` answers on `incidentResult`, `banCheck` on `banResult` -- so a
+--- helper that appended would silently answer nothing and every assertion below
+--- would fail for the wrong reason. It cost one debugging round to find that
+--- out; the table is the fix.
+local REPLY = {
+    ['br:ddb:awardClaim']      = 'br:ddb:awardClaimResult',
+    ['br:ddb:awardQueue']      = 'br:ddb:awardQueueResult',
+    ['br:ddb:incidentVerdict'] = 'br:ddb:verdictResult',
+    ['br:ddb:awardPay']        = 'br:ddb:awardPayResult',
+    ['br:ddb:awardSettle']     = 'br:ddb:awardSettleResult',
+}
+
+--- Answer the LAST request of one kind, the way br_ddb would.
+--- @return boolean  whether there was one to answer
+local function answer(name, ...)
+    local list = askedFor(name)
+    local last = list[#list]
+    if not last then return false end
+    -- arg 1 of every br_ddb request is the correlation id.
+    TriggerEvent(REPLY[name], last.args[1], ...)
+    return true
+end
+
+--- Answer EVERY outstanding request of one kind, oldest first. The pay path
+--- fans out one request per payee and settles only when all have answered, so
+--- a helper that answers one of them would test the wrong thing.
+local function answerAll(name, ...)
+    for _, a in ipairs(askedFor(name)) do
+        TriggerEvent(REPLY[name], a.args[1], ...)
+    end
+end
+
+--- Put one case on the queue and sweep, with a given verdict projection.
+local function sweepWith(projection, licenses, claimedAt)
+    BR.Awards.sweep()
+    answer('br:ddb:awardQueue', { {
+        incidentId = INC,
+        licenses   = licenses or { ALICE },
+        claimedAt  = claimedAt or (os.time() * 1000),
+    } }, {})
+    answer('br:ddb:incidentVerdict', true, projection)
+end
+
+local BANNED  = { found = true, settled = true, payable = true,  word = 'banned', action = 'ban' }
+local KICKED  = { found = true, settled = true, payable = true,  word = 'kicked', action = 'kick' }
+local NOACTION= { found = true, settled = true, payable = false, word = nil,      action = 'none' }
+local NOVERDICT={ found = true, settled = true, payable = false, word = nil,      action = nil }
+local PENDING = { found = true, settled = false, payable = false, word = nil,     action = nil }
+
+describe('awards.claim')
+do
+    reset()
+    TriggerEvent('br:report:claim', { incidentId = INC, license = ALICE, matchId = 7 })
+    local c = askedFor('br:ddb:awardClaim')[1]
+    ok(c ~= nil, 'a claim reaches br_ddb')
+    ok(c and c.args[2] == INC and c.args[3] == ALICE,
+        'and carries the incident id and the license, in that order',
+        c and (tostring(c.args[2]) .. ' / ' .. tostring(c.args[3])))
+
+    reset()
+    TriggerEvent('br:report:claim', { incidentId = '', license = ALICE })
+    TriggerEvent('br:report:claim', { incidentId = INC, license = '' })
+    TriggerEvent('br:report:claim', 'not a table')
+    ok(#askedFor('br:ddb:awardClaim') == 0,
+        'a claim with no id or no license is dropped rather than queued')
+
+    -- THE CLAIM IS NOT A CURRENCY WRITE and must never look like one. It only
+    -- records who is owed; the pay verb is the one that touches a balance.
+    reset()
+    TriggerEvent('br:report:claim', { incidentId = INC, license = ALICE })
+    ok(#askedFor('br:ddb:awardPay') == 0,
+        'filing a report pays nobody -- the verdict has not happened yet')
+end
+
+describe('awards.sweep.pending')
+do
+    reset()
+    sweepWith(PENDING)
+    ok(#askedFor('br:ddb:awardPay') == 0, 'a case still under review pays nobody')
+    ok(#askedFor('br:ddb:awardSettle') == 0,
+        'and stays on the queue, so the next sweep asks again')
+end
+
+describe('awards.sweep.paid')
+do
+    -- Alice is here, Bob is not. Both reported; both are owed.
+    reset()
+    online[3] = { 'license:alice' }
+    sweepWith(BANNED, { ALICE, BOB })
+
+    local pays = askedFor('br:ddb:awardPay')
+    ok(#pays == 2, 'the reporter AND the corroborator are both paid', tostring(#pays))
+
+    local amounts, ids = {}, {}
+    for _, p in ipairs(pays) do
+        amounts[#amounts + 1] = p.args[4]
+        ids[p.args[2]] = p.args[3]
+    end
+    ok(amounts[1] == 250 and amounts[2] == 250, 'each is worth 250 Volts')
+    ok(ids[ALICE] == INC and ids[BOB] == INC,
+        'and each payment is keyed on the incident, which is what makes it idempotent')
+
+    answerAll('br:ddb:awardPay', true, { paid = true, balance = 250 })
+
+    local told = {}
+    for _, s in ipairs(sent) do
+        if s.name == BR.Net.NOTIFY then told[#told + 1] = s end
+    end
+    ok(#told == 1, 'only the player who is actually in the server is told', tostring(#told))
+    ok(told[1] and told[1].src == 3, 'and it goes to their server id')
+    ok(told[1] and told[1].payload.text:find('250 Volts', 1, true) ~= nil
+        and told[1].payload.text:find('has now been banned', 1, true) ~= nil
+        and told[1].payload.text:find('Thanks for your help', 1, true) ~= nil,
+        'the sentence names the amount and the verdict, in past tense',
+        told[1] and told[1].payload.text)
+
+    local credited = 0
+    for _, a in ipairs(asked) do
+        if a.name == 'br:market:credited' then credited = credited + 1 end
+    end
+    ok(credited == 2,
+        "br_core's balance cache is corrected for BOTH, present or not -- the "
+        .. 'award is on the account, not the session', tostring(credited))
+
+    ok(#askedFor('br:ddb:awardSettle') == 1,
+        'the case leaves the queue once, after every payee has answered')
+end
+
+describe('awards.sweep.kick')
+do
+    reset()
+    online[4] = { 'license:alice' }
+    sweepWith(KICKED)
+    answerAll('br:ddb:awardPay', true, { paid = true })
+    local text
+    for _, s in ipairs(sent) do
+        if s.name == BR.Net.NOTIFY then text = s.payload.text end
+    end
+    ok(text and text:find('has now been kicked', 1, true) ~= nil,
+        'a kick verdict pays, and the sentence says kicked', tostring(text))
+end
+
+describe('awards.idempotence')
+do
+    -- THE CASE THE WHOLE DESIGN IS FOR. DynamoDB refuses the second credit and
+    -- reports it as success, so a re-swept case must settle without paying and
+    -- without telling anybody a second time.
+    reset()
+    online[5] = { 'license:alice' }
+    sweepWith(BANNED)
+    answerAll('br:ddb:awardPay', true, { paid = false, alreadyPaid = true })
+
+    local told = 0
+    for _, s in ipairs(sent) do
+        if s.name == BR.Net.NOTIFY then told = told + 1 end
+    end
+    ok(told == 0, 'a payment that was already made tells nobody a second time')
+
+    local credited = 0
+    for _, a in ipairs(asked) do
+        if a.name == 'br:market:credited' then credited = credited + 1 end
+    end
+    ok(credited == 0, 'and does not move the balance cache either')
+    ok(#askedFor('br:ddb:awardSettle') == 1,
+        'but it still counts as answered, so the case is settled rather than retried forever')
+end
+
+describe('awards.noaction')
+do
+    reset()
+    sweepWith(NOACTION)
+    ok(#askedFor('br:ddb:awardPay') == 0,
+        "an admin who decided 'no action' pays nobody")
+    ok(#askedFor('br:ddb:awardSettle') == 1,
+        'and the case leaves the queue -- the decision is final')
+
+    -- THE DISTINCTION THE VERDICT CONTRACT INSISTS ON. A resolved case with NO
+    -- verdict is a legacy row or a system auto-resolution; nobody decided
+    -- anything, and it is NOT the same as 'none'. It pays nobody either way,
+    -- and the log has to be able to tell them apart.
+    reset()
+    sweepWith(NOVERDICT)
+    ok(#askedFor('br:ddb:awardPay') == 0,
+        'a resolved case carrying no verdict at all pays nobody')
+    ok(#askedFor('br:ddb:awardSettle') == 1, 'and is also final')
+
+    local said = table.concat(printed, '\n')
+    ok(said:find('no verdict recorded', 1, true) ~= nil,
+        'and it is logged as an absent verdict, never as "no action taken"', said)
+end
+
+describe('awards.failure')
+do
+    -- FAILS CLOSED. An unreadable verdict is not a decision: paying on it would
+    -- credit 250 Volts against something nobody has seen.
+    reset()
+    BR.Awards.sweep()
+    answer('br:ddb:awardQueue', { { incidentId = INC, licenses = { ALICE },
+        claimedAt = os.time() * 1000 } }, {})
+    answer('br:ddb:incidentVerdict', false, { error = 'timed out' })
+    ok(#askedFor('br:ddb:awardPay') == 0, 'an unreadable verdict pays nobody')
+    ok(#askedFor('br:ddb:awardSettle') == 0, 'and leaves the case on the queue')
+
+    -- A FAILED PAYMENT KEEPS THE CASE. The next sweep re-pays everybody, and
+    -- the ones who already landed are refused by the condition.
+    reset()
+    sweepWith(BANNED, { ALICE, BOB })
+    local pays = askedFor('br:ddb:awardPay')
+    TriggerEvent('br:ddb:awardPayResult', pays[1].args[1], true, { paid = true })
+    TriggerEvent('br:ddb:awardPayResult', pays[2].args[1], false, { error = 'throttled' })
+    ok(#askedFor('br:ddb:awardSettle') == 0,
+        'one payee failing leaves the whole case on the queue for the next sweep')
+
+    -- br_ddb ABSENT is not an error worth a stack trace; it is a server with no
+    -- persistence, which this resource has always been allowed to be.
+    reset()
+    resourceState.br_ddb = 'missing'
+    BR.Awards.sweep()
+    ok(#asked == 0, 'no br_ddb means no sweep, and nothing thrown')
+    resourceState.br_ddb = 'started'
+end
+
+describe('awards.expiry')
+do
+    -- A CASE NOBODY EVER TRIAGES must not be read on every sweep forever. It is
+    -- dropped unpaid: no verdict is not a verdict.
+    reset()
+    local old = (os.time() * 1000) - (40 * 24 * 60 * 60 * 1000)
+    sweepWith(PENDING, { ALICE }, old)
+    ok(#askedFor('br:ddb:awardPay') == 0, 'an expired claim pays nobody')
+    ok(#askedFor('br:ddb:awardSettle') == 1, 'and is taken off the queue')
+
+    reset()
+    local recent = (os.time() * 1000) - (24 * 60 * 60 * 1000)
+    sweepWith(PENDING, { ALICE }, recent)
+    ok(#askedFor('br:ddb:awardSettle') == 0,
+        'a day-old claim is still waiting, not expired')
+end
+
+describe('awards.timeout')
+do
+    -- A br_ddb THAT NEVER ANSWERS must not leak a pending closure per request,
+    -- which on this path would hold a payee list for the life of the server.
+    reset()
+    BR.Awards.sweep()
+    fireTimers()
+    ok(#askedFor('br:ddb:awardPay') == 0,
+        'a queue read that never answers resolves as empty rather than hanging')
+end
+
+describe('awards.command')
+do
+    ok(commands.brawards ~= nil, 'brawards is registered')
+    ok(commands.brawards and commands.brawards.restricted == true,
+        'and it is restricted -- it names licenses')
+end
+
+print = realPrint
 
 io.write(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then

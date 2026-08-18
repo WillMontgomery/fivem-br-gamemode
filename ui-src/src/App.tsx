@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { useNuiEvent } from './bridge/useNuiEvent'
 import { fetchNui } from './bridge/nui'
 import { CB } from './bridge/types'
+import { play } from './audio/cues'
 import { useUi } from './store'
 import Hud from './hud/Hud'
 import Chat from './chat/Chat'
@@ -90,6 +91,17 @@ export default function App() {
   useNuiEvent('market',   (d) => s.setMarket(d))
   useNuiEvent('players',  (d) => s.setPlayers(d))
   useNuiEvent('report',   (d) => s.setReportResult(d))
+  // A SQUADMATE WENT DOWN, OUT, OR CAME BACK UP -- and nothing here was
+  // listening. Lua has sent `squadcue` since the squad audio landed and this
+  // handler did not exist, so all three sounds were dropped by the router with
+  // no error anywhere: the envelope arrived, matched no subscriber, and was
+  // discarded. It presents as "the squad sounds don't work", which is
+  // indistinguishable from them never having been written.
+  //
+  // NOT IN THE STORE, the same call HitFeedback.tsx makes: this is a
+  // fire-and-forget event with no state any component reads, and routing it
+  // through zustand would re-render every subscriber to play a sound.
+  useNuiEvent('squadcue', (d) => play(d.cue))
   useNuiEvent('keybinds', (d) => s.setKeybinds(d.actions, d.raw === true))
   // Separate from 'progress' on purpose: a reconnect restores the bar, it
   // does not replay a celebration.

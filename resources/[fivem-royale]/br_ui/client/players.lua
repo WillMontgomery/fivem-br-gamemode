@@ -112,6 +112,31 @@ local NO_PANEL = {
 --- correct.
 local myState = nil
 
+--- The key this panel is CURRENTLY on, as a readable label, or '' when it is
+--- on none.
+---
+--- MIRRORED FOR THE SAME REASON `myState` IS, off the same wire. The bindings
+--- live in br_core/client/keybinds.lua and this is a different Lua state, so
+--- BR.Keys.labelFor -- the authority every world prompt asks -- is not callable
+--- from here. What IS available is the table that function feeds: BR.Keys.push
+--- builds a row per binding with the key that actually works on this client and
+--- sends it as BR.Nui.KEYBINDS, and it re-sends on `br:ui:ready`, on a rebind
+--- and on a reset. So this follows a rebind by construction rather than by a
+--- cache that has to be invalidated.
+---
+--- IT IS THE SAME SOURCE THE PANEL ALREADY USES. PlayerList.tsx reads the
+--- `brplayers` row out of this exact envelope to know which key closes it. Two
+--- readers of one table beats a second answer to the same question -- this
+--- project has already shipped a prompt naming a key nothing was listening to
+--- (#129), and the fix was to stop having two places that knew.
+---
+--- EMPTY MEANS UNBOUND AND IS NOT A GAP. `BR.Keys.push` sends '' for a binding
+--- with no key, and the prompts below name the panel instead of naming a key.
+--- A prompt that says "press F2" when nothing is listening on F2 turns "this
+--- feature is unavailable" into "this feature is broken", and the player cannot
+--- tell those apart from a chair.
+local myKey = ''
+
 --- Reconcile the focus stack to the state the page asked for.
 ---
 --- STATE, NOT TOGGLES. The page sends what it wants to be true, never "flip
@@ -185,10 +210,61 @@ end)
 --- It calls hide() rather than dropping a flag, so the focus stack lets go too.
 --- A panel that is merely invisible is a panel that is still holding the
 --- cursor, and that is the worst bug this interface can produce.
+---
+--- THREE ENVELOPES ARE READ HERE, all of them ones br_core was already sending
+--- to the page. This file adds no channel of its own; it listens to the wire
+--- that runs past it.
 AddEventHandler('br:ui:sendLocal', function(kind, data)
-    if kind ~= BR.Nui.HUD or type(data) ~= 'table' then return end
-    myState = data.state
-    if open and NO_PANEL[myState] then hide() end
+    if type(data) ~= 'table' then return end
+
+    if kind == BR.Nui.HUD then
+        myState = data.state
+        if open and NO_PANEL[myState] then hide() end
+        return
+    end
+
+    -- The key this panel is on, so the two prompts below can name it. See
+    -- `myKey`: this is the same row PlayerList.tsx reads to know what closes it.
+    if kind == BR.Nui.KEYBINDS then
+        for _, row in ipairs(data.actions or {}) do
+            if row.command == 'brplayers' then
+                myKey = type(row.key) == 'string' and row.key or ''
+                break
+            end
+        end
+        return
+    end
+
+    -- THE VERDICT SCREEN IS ARRIVING, SO THE PANEL GOES (#169).
+    --
+    -- Owner: "the player list should be auto-dismissed when the verdict screen
+    -- is shown in-game". Two full-screen surfaces at once, one of which is the
+    -- end of the match -- and this one is holding the cursor, so the player is
+    -- reading their placement through a roster they cannot dismiss without
+    -- finding the key again.
+    --
+    -- HERE RATHER THAN IN React, and rather than in the state machine that
+    -- ends the match. The page cannot do it: closing this panel means letting
+    -- go of the FOCUS STACK, which is Lua's, and a component that merely stops
+    -- rendering is a component that is still holding the mouse -- the worst bug
+    -- this interface can produce, and one it has produced twice.
+    --
+    -- The end-of-match focus sweep in br_core/client/state.lua does pop
+    -- `settings`, `locker` and `lobby`, but not this one -- and it could not
+    -- have rescued us anyway: popFocus only emits `br:ui:focusChanged` when the
+    -- TOP of the stack changes, so popping three screens from UNDER an open
+    -- player list fires nothing and the reconciler at the bottom of this file
+    -- never hears about it.
+    --
+    -- SUMMARY IS THE RIGHT SIGNAL, not the ENDED state. `hud.state` reaching
+    -- `ended` is the match being decided; this envelope is the verdict screen
+    -- actually having something to draw, and br_core only sends it to players
+    -- who were in the round. A bystander watching from the lobby has no verdict
+    -- screen and keeps their panel.
+    if kind == BR.Nui.SUMMARY then
+        if open then hide() end
+        return
+    end
 end)
 
 RegisterNetEvent(BR.Net.PLAYERS_LIST)
@@ -282,6 +358,89 @@ AddEventHandler(BR.Net.REPORT_RESULT, function(res)
             tone = 'warn', key = 'report.refused', ms = 6000,
         })
     end
+end)
+
+--[[
+    THE TWO PROMPTS, AND THE SENTENCES ARE WRITTEN HERE (#168, #169).
+
+    THE SERVER SENDS AN OCCASION, NEVER TEXT. Both lines name the key this panel
+    is on and only this side knows which key that is -- it is rebindable, the
+    engine and the raw layer can disagree about it, and a hint naming a key
+    nothing is listening to is worse than no hint at all. So the wire carries
+    `kind` (and, for the nudge, a display name the kill feed has already shown
+    this player) and the prose is assembled against `myKey`.
+
+    WHO GETS THEM IS NOT DECIDED HERE AND MUST NOT BE. The server withholds the
+    first from the player the incident is about, and answers the second only for
+    somebody who was actually killed by somebody with a case open. A client that
+    decided either for itself would be a client that knows who is under
+    suspicion, which is the whole thing this feature is not allowed to leak.
+
+    THEY RENDER AS NOTICES, which is where every other server-originated line in
+    this game appears, bottom of the screen beside the radar. Not the DUI prompt
+    -- that is a world-anchored interaction ring for a key being HELD, and this
+    is a piece of news.
+]]
+
+--- "press F2", or a way to say it that names no key at all.
+local function pressPhrase()
+    if myKey ~= '' then return ('pressing %s'):format(myKey) end
+    -- No binding. Name the surface rather than a key, and the player can bind
+    -- one in Settings -- where the same table this reads is what the screen
+    -- lists.
+    return 'opening the player list'
+end
+
+RegisterNetEvent(BR.Net.REPORT_HINT)
+AddEventHandler(BR.Net.REPORT_HINT, function(d)
+    if type(d) ~= 'table' then return end
+
+    if d.kind == 'exists' then
+        TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
+            text = ('See something suspicious? You can report players by %s. '
+                .. 'As a bonus, all accurate reports are rewarded with Volts.')
+                :format(pressPhrase()),
+            tone = 'info', key = 'report.exists', ms = 12000,
+        })
+        return
+    end
+
+    if d.kind == 'killer' then
+        local name = type(d.name) == 'string' and d.name ~= '' and d.name or 'them'
+        TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
+            text = myKey ~= ''
+                and ('Suspect cheating? Press %s to report %s.'):format(myKey, name)
+                or ('Suspect cheating? Open the player list to report %s.'):format(name),
+            tone = 'warn', key = 'report.nudge', ms = 10000,
+        })
+    end
+end)
+
+--- Ask whether the player who just killed us already has a case open.
+---
+--- THE ASK CARRIES NOTHING. Not the killer's id, not their name, not our own --
+--- the server resolves the asker from `source` and their killer from its own
+--- damage records. That is deliberate and it is the anti-enumeration design:
+--- there is no field a modified client could put a name in, so there is nothing
+--- to walk the roster WITH. See the handler in br_core/server/players.lua.
+---
+--- FIRED OFF THE KILL FEED because that is the message this client already gets
+--- when it dies, and it is the one that carries `victimSrc`. br_core's own
+--- state.lua reads the same envelope for the verdict screen's slam text; this
+--- is a second reader of a broadcast, not a new channel.
+---
+--- ONLY FOR A PLAYER KILL. `killerSrc` is nil for the storm, a fall or a fire,
+--- and there is nobody to report for those.
+---
+--- ONE ANSWER PER KILLER PER MATCH, and the latch is the SERVER's -- a client
+--- that spams this gets the same single reply, because the rate limit cannot be
+--- ours to keep.
+RegisterNetEvent(BR.Net.KILL_FEED)
+AddEventHandler(BR.Net.KILL_FEED, function(d)
+    if type(d) ~= 'table' then return end
+    if d.killerSrc == nil then return end
+    if d.victimSrc ~= GetPlayerServerId(PlayerId()) then return end
+    TriggerServerEvent(BR.Net.REPORT_KILLED)
 end)
 
 RegisterNUICallback(BR.NuiCb.PLAYERS_FOCUS, function(data, cb)

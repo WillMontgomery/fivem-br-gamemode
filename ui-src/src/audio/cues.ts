@@ -243,6 +243,10 @@ export type Cue =
   | 'ui.hover' | 'ui.select' | 'ui.back' | 'ui.toggle' | 'ui.ready' | 'ui.error'
   | 'loot' | 'loot.rare' | 'loot.legendary'
   | 'elim' | 'downed' | 'storm.phase' | 'victory' | 'defeat'
+  // WHAT HAPPENED TO SOMEBODY ELSE ON YOUR SQUAD. The names are written
+  // literally in br_core/client/dbno.lua's MATE_CUE table, which is the only
+  // thing that sends them; if you rename one here, rename it there.
+  | 'squad.down' | 'squad.out' | 'squad.revived'
 
 const CUES: Record<Cue, () => void> = {
   'ui.hover':  () => { noise({ hz: 5200, type: 'bandpass', len: 0.028, g: 0.055 }) },
@@ -293,6 +297,44 @@ const CUES: Record<Cue, () => void> = {
   'downed': () => {
     struck(82, { n: 3, type: 'sawtooth', len: 0.65, g: 0.17, lp: 1800, lp2: 160 })
     noise({ hz: 300, type: 'lowpass', len: 0.5, g: 0.12, at: 0.04 })
+  },
+
+  // ── THE SQUAD SET ─────────────────────────────────────────────────────────
+  //
+  // ABOUT SOMEBODY ELSE, AND THEY HAVE TO SOUND LIKE IT. `downed` above is what
+  // the player who went down hears; these are what the rest of the squad hears,
+  // and the server picks the audience so the subject never gets one. If a mate
+  // going down sounded like YOU going down, the first thing every player would
+  // do is check their own health -- so the family is the same struck stack an
+  // octave up, at about two thirds the level, and shorter. Related, clearly not
+  // yours.
+  //
+  // THE THREE READ AS ONE PROGRESSION BY BRIGHTNESS, which is this file's whole
+  // expressive axis: down closes part-way, out closes to nothing and goes
+  // lower, revived opens. No pitch walks, no arpeggios, no third anywhere, so
+  // none of them carries a key.
+
+  // Part-way closed, and short. Something happened and it is not over.
+  'squad.down': () => {
+    struck(164, { n: 3, type: 'triangle', len: 0.42, g: 0.1, lp: 2400, lp2: 520 })
+    noise({ hz: 500, type: 'lowpass', len: 0.3, g: 0.07, at: 0.03 })
+  },
+
+  // Closed to nothing, lower, longer. The same gesture finishing.
+  'squad.out': () => {
+    struck(110, { n: 3, type: 'sawtooth', len: 0.85, g: 0.12, lp: 2000, lp2: 120 })
+    voice({ f: 55, type: 'sine', len: 0.9, g: 0.14, atk: 0.02 })
+    noise({ hz: 380, type: 'lowpass', len: 0.6, g: 0.08, at: 0.05 })
+  },
+
+  // OPEN, and the only one of the three that is. Fifths rather than bell
+  // partials, for the same reason `ui.ready` uses them -- an open stack reads
+  // as resolved without having a mood to fight the music. Deliberately much
+  // shorter and higher than `victory`: getting a mate back up is good news in
+  // the middle of a fight, not the end of the match.
+  'squad.revived': () => {
+    struck(147, { ratios: FIFTHS, type: 'triangle', len: 0.6, g: 0.1, atk: 0.008, lp: 900, lp2: 7000 })
+    noise({ hz: 4200, type: 'bandpass', len: 0.45, g: 0.03, at: 0.03 })
   },
 
   // ~3s, NO pitch movement anywhere and no closing hit -- it swells and is

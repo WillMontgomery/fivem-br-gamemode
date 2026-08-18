@@ -10,6 +10,16 @@
  * `s` is monotonic so stale or out-of-order messages can be dropped.
  */
 
+/**
+ * The one import in this file, and it is type-only.
+ *
+ * `squadcue` carries a cue NAME, and the set of legal names is the cue table's
+ * to define -- so the envelope references it rather than restating it as a
+ * string. audio/cues.ts imports nothing, so this cannot become a cycle, and
+ * `import type` is erased at build time either way.
+ */
+import type { Cue } from '../audio/cues'
+
 export const ENVELOPE_VERSION = 1
 
 // --- enums, mirroring br_lib/shared/enums.lua -------------------------------
@@ -714,6 +724,19 @@ export type Envelope =
   | { k: 'earned';   d: EarnedPayload }
   | { k: 'players';  d: PlayersPayload }
   | { k: 'report';   d: ReportResult }
+  /** A SQUADMATE changed phase, and this is the sound everybody else hears.
+   *
+   *  NOT IN BR.Nui, deliberately, and it is the one kind here that is not. The
+   *  sender (br_core/client/dbno.lua) writes the string literally, next to the
+   *  cue table it has to agree with -- adding a constant for it would create a
+   *  name with no caller, which is a shape this project has shipped often
+   *  enough to have a rule about.
+   *
+   *  THE SERVER DECIDES THE AUDIENCE. `src` and `name` identify the mate for a
+   *  visual that does not exist yet; today only `cue` is read. They are on the
+   *  wire because the sender already had them, not because anything wants them.
+   */
+  | { k: 'squadcue'; d: { cue: Cue; src?: number; name?: string } }
 
 export type EnvelopeKind = Envelope['k']
 

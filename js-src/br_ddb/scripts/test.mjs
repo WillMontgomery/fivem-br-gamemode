@@ -1,5 +1,6 @@
 import { isActive } from '../src/ban.js'
 import { buildIncidentItem, LIMITS } from '../src/incident.js'
+import { projectVerdict, verdictWord } from '../src/verdict.js'
 
 /**
  * Tests for the two decisions in br_ddb that are pure arithmetic on data, and
@@ -299,6 +300,129 @@ check(
   buildIncidentItem(ID, refusalPayload({ state: 'closed' }), NOW).item.state,
   'pending_review',
 )
+
+// ----------------------------------------------------------------- verdict ---
+//
+// THE RULE THAT DECIDES WHETHER 250 VOLTS ARE PAID TO A STRANGER, and the one
+// place in this repository that can be tested against the console's contract
+// without a table. The cases below are the contract's own edge list: absent is
+// not 'none', a pending row is not a decision, and a missing row is not a
+// verdict of any kind.
+
+console.log('\nverdict reader\n')
+
+const resolvedRow = (verdict) => ({
+  incidentId: ID,
+  state: 'resolved',
+  resolvedAt: NOW,
+  ...(verdict === undefined ? {} : { verdict }),
+})
+
+const shape = (row) => {
+  const v = projectVerdict(row)
+  return { found: v.found, settled: v.settled, payable: v.payable, word: v.word }
+}
+
+check(
+  'a permanent ban pays, and the sentence says banned',
+  shape(resolvedRow({ action: 'ban', expiresAt: null })),
+  { found: true, settled: true, payable: true, word: 'banned' },
+)
+check(
+  'a temporary ban pays exactly the same -- the expiry is not a discount',
+  shape(resolvedRow({ action: 'ban', expiresAt: NOW + HOUR })),
+  { found: true, settled: true, payable: true, word: 'banned' },
+)
+check(
+  'a kick pays, and the sentence says kicked',
+  shape(resolvedRow({ action: 'kick' })),
+  { found: true, settled: true, payable: true, word: 'kicked' },
+)
+check(
+  "an admin who decided 'no action' is settled and pays nobody",
+  shape(resolvedRow({ action: 'none' })),
+  { found: true, settled: true, payable: false, word: null },
+)
+
+// THE CASE THE WHOLE FIELD EXISTS FOR. A resolved row with no verdict is a
+// legacy row or a system auto-resolution -- nobody decided anything -- and it is
+// NOT 'none'. It must not pay, and it must not be left on the queue forever
+// either, because no verdict is ever coming.
+check(
+  'a resolved row with the verdict attribute absent is settled and pays nobody',
+  shape(resolvedRow(undefined)),
+  { found: true, settled: true, payable: false, word: null },
+)
+check(
+  'an explicit null verdict is the same state as an absent one',
+  shape(resolvedRow(null)),
+  { found: true, settled: true, payable: false, word: null },
+)
+check(
+  'absent is reported as action null, never coerced to none',
+  projectVerdict(resolvedRow(undefined)).action,
+  null,
+)
+
+// A PENDING ROW IS NOT A DECISION, however tempting the verdict field looks.
+// The console writes state and verdict in one update, so this shape should never
+// exist -- and if it ever does, waiting is the only safe reading of it.
+check(
+  'a pending row is not settled and pays nobody',
+  shape({ incidentId: ID, state: 'pending_review', verdict: null }),
+  { found: true, settled: false, payable: false, word: null },
+)
+check(
+  'a verdict on a row still marked pending is refused rather than paid',
+  shape({ incidentId: ID, state: 'pending_review', verdict: { action: 'ban', expiresAt: null } }),
+  { found: true, settled: false, payable: false, word: null },
+)
+
+// A ROW THAT IS NOT THERE IS NOT SETTLED. Reporting it as settled would drop the
+// claim; the sweep's age cap is what ends it instead.
+check(
+  'a missing row is not found, not settled, and not payable',
+  shape(null),
+  { found: false, settled: false, payable: false, word: null },
+)
+check(
+  'undefined is treated the same as a missing row',
+  shape(undefined),
+  { found: false, settled: false, payable: false, word: null },
+)
+
+// A MALFORMED VERDICT IS NOT A VERDICT. An action this reader does not
+// recognise reads as absent, which pays nobody and does not guess.
+check(
+  'an unrecognised action pays nobody',
+  shape(resolvedRow({ action: 'warn' })),
+  { found: true, settled: true, payable: false, word: null },
+)
+check(
+  'a verdict that is a string rather than an object pays nobody',
+  shape(resolvedRow('ban')),
+  { found: true, settled: true, payable: false, word: null },
+)
+
+// expiresAt IS READ ONLY THROUGH action, never beside it.
+check(
+  'expiresAt is carried for a temporary ban',
+  projectVerdict(resolvedRow({ action: 'ban', expiresAt: NOW + HOUR })).expiresAt,
+  NOW + HOUR,
+)
+check(
+  'expiresAt is null for a permanent ban, and for a kick that never had one',
+  [
+    projectVerdict(resolvedRow({ action: 'ban', expiresAt: null })).expiresAt,
+    projectVerdict(resolvedRow({ action: 'kick' })).expiresAt,
+  ],
+  [null, null],
+)
+
+check('the word for a ban is past tense and lower case', verdictWord('ban'), 'banned')
+check('the word for a kick is past tense and lower case', verdictWord('kick'), 'kicked')
+check('there is no word for no action', verdictWord('none'), null)
+check('there is no word for an absent verdict', verdictWord(null), null)
 
 if (failed) {
   console.error(`\nbr_ddb: ${failed} of ${ran} case(s) failed`)

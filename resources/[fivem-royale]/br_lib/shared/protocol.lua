@@ -229,6 +229,26 @@ BR.Net = {
     -- not when the request was received -- the promise to the player is that an
     -- admin will see it, and that promise is only true once a row exists.
     REPORT_RESULT   = 'br:report:result',
+    -- S->C { kind = 'exists' } | { kind = 'killer', name = <who> }.
+    --
+    -- THE SERVER DECIDES WHO GETS IT; THE CLIENT WRITES THE SENTENCE. Both
+    -- prompts name the player-list key, and only the client knows which key that
+    -- is -- it is rebindable, and a hint naming the wrong key is worse than no
+    -- hint (#168, #169). So the envelope carries the OCCASION and never the
+    -- text, and br_ui composes it against the keybind table it is already sent.
+    --
+    -- NO LICENSES, NO IDS, NO LISTS. `name` is a display name the recipient has
+    -- already been shown by the kill feed. Nothing here tells a client anything
+    -- about a player it was not already looking at.
+    REPORT_HINT     = 'br:report:hint',
+    -- C->S, NO PAYLOAD AT ALL, and that is the entire anti-enumeration design
+    -- (#169). "Was I just killed by somebody who already has a case open?" is a
+    -- question only the server may answer, and a client that could NAME the
+    -- player it is asking about would be a probe for who is under suspicion.
+    -- So the client asks about nobody: the server resolves the asker's own
+    -- attributed killer from its own damage records and answers about that
+    -- player or says nothing.
+    REPORT_KILLED   = 'br:report:killed',
 
     MARKET_STATE    = 'br:market:state',     -- S->C  { balance, owned, equipped }
     MARKET_BUY      = 'br:market:buy',       -- C->S  { id }
