@@ -492,7 +492,27 @@ export interface ProgressPayload {
 /** One row of the in-game player list. Everything here is already in
  *  PUBLIC_FIELDS - no position, no health, no matchId. */
 export interface ListedPlayer {
-  src: number
+  /**
+   * WHO THIS ROW IS ABOUT, AS AN OPAQUE PER-MATCH TOKEN (#172).
+   *
+   * It was `src: number` -- the player's server id -- and it could not stay
+   * one, because the rows that matter most now include players who have LEFT
+   * and a server id does not survive a disconnect. FiveM recycles them within
+   * the minute, so a departed row keyed by its old id resolves to whoever holds
+   * that slot now: the report would be filed against a stranger, and inside one
+   * match two rows could have collided on the same key.
+   *
+   * NOT A LICENSE WITH THE PREFIX TRIMMED, WHICH WAS THE PROPOSAL THIS
+   * REPLACED. `license:` is a constant, so removing it is a rename rather than
+   * obfuscation, and what would be left is the durable identifier this project
+   * files bans and moderation under. The server mints this instead, keeps the
+   * mapping, and drops it when the match ends -- so the page holds a string
+   * that means nothing anywhere else and never sees a license.
+   *
+   * SEND IT BACK EXACTLY AS IT ARRIVED. It is the row's React key, the key of
+   * the tick map, and the only thing REPORT_SUBMIT carries about a target.
+   */
+  id: string
   name: string
   state: PlayerState
   /**

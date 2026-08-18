@@ -141,7 +141,19 @@ export default function PlayerList() {
   const rawKeys = useUi((s) => s.keybindsRaw)
 
   const [reporting, setReporting] = useState(false)
-  const [picked, setPicked] = useState<Record<number, string>>({})
+  /**
+   * WHO IS TICKED, AND WHAT THEY ARE TICKED FOR -- keyed by the row's opaque
+   * token rather than by a server id (#172).
+   *
+   * The keys are the strings the server minted; nothing on this page can or
+   * should decode one. Two properties come out of that and both are load
+   * bearing for a panel that refreshes every two seconds under the player's
+   * hands: the token is STABLE for a given player across those refreshes, so a
+   * selection survives them, and it is stable across that player LEAVING, so a
+   * report already ticked against somebody who then ragequits is still a report
+   * about them -- which is the case this whole issue is about.
+   */
+  const [picked, setPicked] = useState<Record<string, string>>({})
 
   /**
    * WHAT THE PLAYER IS LOOKING FOR, AND THE FIELD THEY TYPED IT INTO.
@@ -524,14 +536,16 @@ export default function PlayerList() {
     return list.players.filter((p) => p.name.toLowerCase().includes(q))
   }, [list.players, query, filtering])
 
-  const selected = useMemo(() => Object.keys(picked).map(Number), [picked])
+  // NO `.map(Number)` ANY MORE, and its absence is the point: the keys are
+  // opaque tokens, and coercing one would have produced NaN silently.
+  const selected = useMemo(() => Object.keys(picked), [picked])
 
-  const toggle = (src: number) => {
+  const toggle = (id: string) => {
     setPicked((prev) => {
-      if (prev[src]) {
+      if (prev[id]) {
         play('ui.select')
         const next = { ...prev }
-        delete next[src]
+        delete next[id]
         return next
       }
       // THE CAP IS ENFORCED HERE AND NOW HAS TO BE AUDIBLE. It used to sit
@@ -545,7 +559,7 @@ export default function PlayerList() {
         return prev
       }
       play('ui.select')
-      return { ...prev, [src]: list.defaultCategory }
+      return { ...prev, [id]: list.defaultCategory }
     })
   }
 
@@ -553,7 +567,7 @@ export default function PlayerList() {
     if (selected.length === 0) { play('ui.error'); return }
     play('ui.select')
     void fetchNui(CB.REPORT_SUBMIT, {
-      targets: selected.map((src) => ({ src, category: picked[src] })),
+      targets: selected.map((id) => ({ id, category: picked[id] })),
     })
   }
 
@@ -902,7 +916,7 @@ export default function PlayerList() {
               ) : (
                 <div className="flex flex-col gap-px pb-2">
                   {rows.map((p) => {
-                    const on = picked[p.src] !== undefined
+                    const on = picked[p.id] !== undefined
                     // You cannot report yourself, so no tick target is drawn.
                     // The server refuses it too, and so does
                     // BR.IncidentBuild.fromReport; this is only about not
@@ -954,7 +968,14 @@ export default function PlayerList() {
                     )
 
                     return (
-                      <div key={p.src}>
+                      /* KEYED ON THE ROW TOKEN, WHICH IS ALSO A CORRECTNESS FIX
+                         RATHER THAN A RENAME (#172). This was `key={p.src}`,
+                         and server ids are recycled inside a single match -- so
+                         once departed players stay listed, a row about somebody
+                         who left and a row about the player who took their slot
+                         could carry the same key. React would have treated them
+                         as one child. */
+                      <div key={p.id}>
                         {selectable ? (
                           /* THE WHOLE ROW IS THE TICK TARGET, not a 0.875rem
                              box beside it. A name is the thing the player is
@@ -974,7 +995,7 @@ export default function PlayerList() {
                             type="button"
                             role="checkbox"
                             aria-checked={on}
-                            onClick={() => toggle(p.src)}
+                            onClick={() => toggle(p.id)}
                             className="btn flex w-full items-center gap-2.5 rounded-sm px-2 py-1.5 text-left"
                             style={{
                               background: on ? 'rgba(255,255,255,0.06)' : 'transparent',
@@ -1102,7 +1123,7 @@ export default function PlayerList() {
                             className="mb-1.5 ml-8 mr-2 flex flex-wrap gap-1"
                           >
                             {list.categories.map((c) => {
-                              const chosen = picked[p.src] === c.id
+                              const chosen = picked[p.id] === c.id
                               return (
                                 <button
                                   key={c.id}
@@ -1125,7 +1146,7 @@ export default function PlayerList() {
                                   onPointerEnter={() => play('ui.hover')}
                                   onClick={() => {
                                     play('ui.select')
-                                    setPicked((prev) => ({ ...prev, [p.src]: c.id }))
+                                    setPicked((prev) => ({ ...prev, [p.id]: c.id }))
                                   }}
                                 >
                                   {c.label}

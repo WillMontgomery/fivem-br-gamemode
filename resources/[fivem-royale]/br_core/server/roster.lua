@@ -576,9 +576,18 @@ end
 
 --- Sealed entries for one match: the players who disconnected before it ended.
 ---
---- ONLY THE RESULTS PUBLISHER SHOULD CALL THIS. Everything else -- the alive
---- count, the squad panel, the win condition, the console snapshot -- must go
---- on seeing a departed player as gone, because they are.
+--- TWO CALLERS, AND THE RULE THEY BOTH OBEY. This said "only the results
+--- publisher should call this", and the second one (#172) is the in-game player
+--- list: a player who ragequits after cheating is exactly the person still
+--- worth reporting, so `BR.Players.listFor` merges these rows in and marks them
+--- gone. That is the same permission the publisher has, not a new one -- both
+--- are RENDERING a finished record, neither is treating its subject as present.
+---
+--- WHAT IS STILL FORBIDDEN, and it is the part worth keeping loud: nothing may
+--- put a sealed entry back into `roster`, and nothing that counts players may
+--- read this. The alive count, the squad panel, the win condition and the
+--- console snapshot must all go on seeing a departed player as gone, because
+--- they are.
 --- @param matchId integer
 --- @return table array of entries
 function BR.Roster.departedIn(matchId)

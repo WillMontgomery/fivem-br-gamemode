@@ -157,10 +157,18 @@ BR.Net = {
     DBNO_SET        = 'br:dbno:set',
     REVIVE_START    = 'br:revive:start',     -- C->S  { target }
     REVIVE_STOP     = 'br:revive:stop',      -- C->S
-    -- S->C { pct, target, reviverName }. Sent to BOTH parties while a revive
-    -- runs: the reviver needs it for their hold ring, and the downed player
-    -- needs to know somebody is actually coming for them -- which is the one
-    -- piece of information that decides whether they hang on or give up.
+    -- S->C { pct, target, reviverName, bleedEndsAt }. Sent to BOTH parties while
+    -- a revive runs: the reviver needs it for their hold ring, and the downed
+    -- player needs to know somebody is actually coming for them -- which is the
+    -- one piece of information that decides whether they hang on or give up.
+    --
+    -- `bleedEndsAt` RIDES HERE FOR ONE REASON: the bleed clock is PAUSED while a
+    -- hold is progressing, and a pause is not a mode -- it is the server moving
+    -- the deadline forward 250ms at a time. DBNO_SET carries that deadline but
+    -- is only sent on edges, so between them the interface counts down from a
+    -- number that has already moved, and the timer visibly runs while the hold
+    -- that stopped it is working. Same units and same origin as DBNO_SET's copy:
+    -- a SERVER timestamp, comparable only to the clock-corrected browser time.
     REVIVE_PROGRESS = 'br:revive:progress',
     -- S->C (no payload) "get up, the match is starting" (#144).
     --
@@ -220,10 +228,22 @@ BR.Net = {
     -- asking the client to filter on it, which would leak the very field the
     -- projection exists to withhold.
     PLAYERS_ASK     = 'br:players:ask',      -- C->S  (no payload; the server knows who asked)
-    PLAYERS_LIST    = 'br:players:list',     -- S->C  { players = { { src, name, state, squadId, left } } }
-    -- C->S { targets = { { src, category } }, note? }. NEVER a license: the
-    -- client names a server id and the server resolves it, the same rule the
-    -- market follows for item ids.
+    PLAYERS_LIST    = 'br:players:list',     -- S->C  { players = { { id, name, state, squadId, left } } }
+    -- C->S { targets = { { id, category } } }.
+    --
+    -- `id` IS AN OPAQUE PER-MATCH ROW TOKEN, NOT A SERVER ID AND NOT A LICENSE
+    -- (#172). It was `src` until players who have left had to stay reportable,
+    -- and a server id cannot carry that: it is recycled within the minute, so a
+    -- departed row named by its old `src` resolves to whoever holds that slot
+    -- now and files the accusation against a stranger.
+    --
+    -- A LICENSE WITH THE `license:` PREFIX STRIPPED IS NOT THE ANSWER EITHER,
+    -- and the reasoning is on BR.Players.listFor rather than repeated here: the
+    -- prefix is a constant, so removing it is a rename rather than obfuscation,
+    -- and the raw value is the durable key bans and moderation are filed under.
+    -- The token is minted server-side, means nothing outside the match that
+    -- minted it, and dies with that match -- so the client still names something
+    -- the server resolves, which is the rule the market follows for item ids.
     REPORT_SUBMIT   = 'br:report:submit',
     -- S->C { ok, filed, refused? }. Sent when the incident has actually LANDED,
     -- not when the request was received -- the promise to the player is that an

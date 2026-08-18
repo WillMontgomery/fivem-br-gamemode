@@ -311,10 +311,26 @@ AddEventHandler(BR.Net.PLAYERS_LIST, function(payload)
     -- here is that it never reaches the page. Closing it at the source is a
     -- server change and is called out in the hand-over rather than done from
     -- br_ui.
+    -- `src` IS GONE FROM THE ROW AND `id` HAS TAKEN ITS PLACE (#172). The row
+    -- now carries an opaque per-match token the server minted; the panel ticks
+    -- it and hands it straight back, and only the server can turn it into a
+    -- person. Two things fall out of that and both are improvements here:
+    --
+    --   * a player who has LEFT is still on this list and still reportable. A
+    --     server id could not have carried them -- theirs was freed the moment
+    --     they dropped and is being handed to the next connection.
+    --   * the panel keys its rows and its ticks on this. Server ids are
+    --     recycled INSIDE one match, so a departed row and a live row could
+    --     have collided on `src`: React would have seen two children with one
+    --     key and ticking one name would have ticked the other.
+    --
+    -- The allowlist is still a REBUILD rather than a delete, so `squadId` is
+    -- still dropped on the way past (the note above), and anything the server
+    -- adds later still has to be added here deliberately.
     local rows = {}
     for i, p in ipairs(payload.players or {}) do
         rows[i] = {
-            src   = p.src,
+            id    = p.id,
             name  = p.name,
             state = p.state,
             left  = p.left,
@@ -455,10 +471,15 @@ end)
 
 --- Submit. FORWARDS AND NOTHING ELSE.
 ---
---- The client names server ids and a category string; the server resolves the
+--- The client names ROW TOKENS and a category string; the server resolves the
 --- licenses, checks the bucket, applies the limit and refuses anything it does
 --- not like. Every rule this panel appears to enforce is enforced again there,
 --- because a panel is a suggestion and a server is an authority.
+---
+--- IT NAMES A TOKEN RATHER THAN A SERVER ID SINCE #172, and this side is not
+--- told what a token means -- which is the point. It is the string that arrived
+--- on the row, echoed back unread; the server minted it, keeps the mapping, and
+--- throws it away when the match ends.
 ---
 --- The callback resolves immediately: CEF promises must always resolve, and
 --- the real answer arrives as REPORT_RESULT. A page that awaited the round

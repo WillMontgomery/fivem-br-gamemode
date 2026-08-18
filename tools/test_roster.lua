@@ -14,8 +14,20 @@ function GetPlayerName(src) return playerNames[src] or ('Player' .. tostring(src
 -- Identifier natives, for BR.Roster.ringmaster's lazy license resolution. A
 -- test player's license is synthesised from its src so it is stable and
 -- distinct; the ringmaster projection block is the only thing that reads them.
+--
+-- A SERVER ID IS NOT A PERSON, AND THE OVERRIDE IS WHAT LETS A TEST SAY SO
+-- (#172). Deriving the license from `src` alone made the harness quietly
+-- incapable of expressing the failure the report path exists to prevent: FiveM
+-- recycles ids within the minute, so the player who takes slot 2 after a
+-- disconnect is a DIFFERENT human with a different license -- and under a
+-- src-derived stub they share one, which would make a report misattributed to
+-- them look correct. Tests that care set `licenseOf[src]`; everything else keeps
+-- the stable per-src default it was written against.
+local licenseOf = {}
 function GetNumPlayerIdentifiers(src) return 1 end
-function GetPlayerIdentifier(src, i)  return 'license:test' .. tostring(src) end
+function GetPlayerIdentifier(src, i)
+    return 'license:' .. (licenseOf[src] or ('test' .. tostring(src)))
+end
 
 -- Server-side player enumeration and entity reads. Not scope-limited on the
 -- server, which is the whole reason the roster is built here.
@@ -225,6 +237,11 @@ local function reset()
     for k in pairs(BR.Server.matches) do BR.Server.matches[k] = nil end
     BR.Server.partyHoldSince = nil
     for k in pairs(pedCoords) do pedCoords[k] = nil end
+    -- Back to the src-derived default. A block that made a recycled id belong
+    -- to a different person (see the identifier stub) must not leave that
+    -- opinion lying around: the next block asserts on `license:test<src>` and
+    -- would fail somewhere with no visible connection to the cause.
+    for k in pairs(licenseOf) do licenseOf[k] = nil end
 end
 
 -- ------------------------------------------------ parallel-match helpers ---
@@ -6101,6 +6118,43 @@ do
         return nil
     end
 
+    -- ASK THE SERVER FOR THE LIST, THE WAY THE PANEL DOES, and pick the target
+    -- out of it BY NAME (#172).
+    --
+    -- THE ALTERNATIVE WOULD HAVE BEEN A TEST THAT CANNOT FAIL. A report now
+    -- names an opaque row token, and the tempting shortcut is to reach into the
+    -- server's own token map for it -- which asserts that the map agrees with
+    -- itself and would pass just as happily if `listFor` never sent the row at
+    -- all. Going through PLAYERS_LIST means every one of these submissions
+    -- proves the panel could have made it: the row was listed, it carried a
+    -- token, and that token resolves. This suite's stated failure mode is a stub
+    -- that re-encodes the assumption under test, so the round trip is the point.
+    local function listSeenBy(src)
+        sent = {}
+        fire(BR.Net.PLAYERS_ASK, src)
+        for i = #sent, 1, -1 do
+            if sent[i].event == BR.Net.PLAYERS_LIST then return sent[i].args[1] end
+        end
+        return nil
+    end
+
+    --- The row `src` can see for the player called `name`, or nil.
+    local function rowSeenBy(src, name)
+        local l = listSeenBy(src)
+        for _, p in ipairs((l or {}).players or {}) do
+            if p.name == name then return p end
+        end
+        return nil
+    end
+
+    --- The token `src` would tick to report `name`. nil (rather than a
+    --- fabricated string) when there is no such row, so a submission built on a
+    --- missing row fails loudly instead of resolving to nothing quietly.
+    local function tokenFor(src, name)
+        local row = rowSeenBy(src, name)
+        return row and row.id or nil
+    end
+
     local function threeUp()
         reset()
         queueUp(1, 'Ayla', BR.Mode.SOLO.key)
@@ -6141,10 +6195,41 @@ do
             'and no note cap survives the field it capped')
     end
 
+    -- THE ROW TOKEN IS WHAT A TARGET IS NAMED BY (#172), and the three
+    -- properties the report path depends on are asserted before anything is
+    -- built on them -- otherwise every submission below could be passing for
+    -- the wrong reason.
+    do
+        local rowB = rowSeenBy(1, 'Bex')
+        ok(rowB ~= nil, 'the list names the other players in the match')
+        ok(rowB ~= nil and type(rowB.id) == 'string' and rowB.id ~= '',
+            'and each row carries a token to report it by',
+            rowB and tostring(rowB.id) or 'nil')
+        -- THE SERVER ID IS GONE FROM THE WIRE. It had to be: it does not
+        -- survive a disconnect and it is recycled inside one match.
+        ok(rowB ~= nil and rowB.src == nil,
+            'the row no longer carries a server id')
+        -- AND THE TOKEN IS NOT THE LICENSE WITH THE PREFIX TRIMMED, which is
+        -- the proposal this design replaced. Asserted rather than argued,
+        -- because the failure it guards is silent: a token that CONTAINS the
+        -- license would look exactly like this one from the panel's side.
+        local rawB = BR.Identity.licenseOf(2)
+        ok(rowB ~= nil and rowB.id ~= rawB
+           and rowB.id ~= BR.Identity.qualified('license', rawB)
+           and tostring(rowB.id):find(tostring(rawB), 1, true) == nil,
+            'and it is not the license, trimmed or otherwise',
+            rowB and tostring(rowB.id) or 'nil')
+        -- STABLE ACROSS REFRESHES, or the panel's ticks would clear themselves
+        -- every two seconds while a player was choosing.
+        ok(rowB ~= nil and rowSeenBy(1, 'Bex').id == rowB.id,
+            'the same row keeps the same token on the next refresh')
+    end
+
     -- A FIRST REPORT OPENS A CASE.
+    local idB = tokenFor(1, 'Bex')
     fired, sent = {}, {}
     fire(BR.Net.REPORT_SUBMIT, 1, {
-        targets = { { src = 2, category = 'power_gaming' } },
+        targets = { { id = idB, category = 'power_gaming' } },
     })
 
     local inc = firedOf('br:ringmaster:incident')[1]
@@ -6169,7 +6254,7 @@ do
     -- number on their own.
     fired, sent = {}, {}
     fire(BR.Net.REPORT_SUBMIT, 1, {
-        targets = { { src = 2, category = 'cheating' } },
+        targets = { { id = idB, category = 'cheating' } },
     })
     ok(#firedOf('br:ringmaster:incident') == 0,
         'reporting the same player twice opens no second case',
@@ -6188,9 +6273,10 @@ do
 
     -- IT IS PER TARGET, NOT PER MATCH. Spending the rule on one player must not
     -- cost the reporter everybody else.
+    local idC = tokenFor(1, 'Cass')
     fired, sent = {}, {}
     fire(BR.Net.REPORT_SUBMIT, 1, {
-        targets = { { src = 3, category = 'cheating' } },
+        targets = { { id = idC, category = 'cheating' } },
     })
     ok(#firedOf('br:ringmaster:incident') == 1,
         'the same reporter can still report a different player',
@@ -6207,9 +6293,10 @@ do
     -- two strangers independently naming the same player -- and it says so on
     -- the case that already exists, because a queue is a shrinking worklist and
     -- one offender must not be able to bury it.
+    local idBfromC = tokenFor(3, 'Bex')
     fired, sent = {}, {}
     fire(BR.Net.REPORT_SUBMIT, 3, {
-        targets = { { src = 2, category = 'exploiting' } },
+        targets = { { id = idBfromC, category = 'exploiting' } },
     })
     ok(#firedOf('br:ringmaster:incident') == 0,
         'a second reporter opens no second case about the same player',
@@ -6245,7 +6332,7 @@ do
     -- The rule applies to them too.
     fired, sent = {}, {}
     fire(BR.Net.REPORT_SUBMIT, 3, {
-        targets = { { src = 2, category = 'cheating' } },
+        targets = { { id = idBfromC, category = 'cheating' } },
     })
     ok(#firedOf('br:ringmaster:corroborate') == 0,
         'the second reporter cannot corroborate their own corroboration')
@@ -6254,11 +6341,12 @@ do
     -- ONE SUBMISSION NAMING AN ALREADY-REPORTED PLAYER IS REFUSED WHOLE, rather
     -- than filing the rest quietly. A partial file has no honest answer: "1
     -- report sent" hides the refusal, and the panel has one toast.
+    local idAfromC = tokenFor(3, 'Ayla')
     fired, sent = {}, {}
     fire(BR.Net.REPORT_SUBMIT, 3, {
         targets = {
-            { src = 1, category = 'cheating' },      -- never reported by Cass
-            { src = 2, category = 'cheating' },      -- already reported by Cass
+            { id = idAfromC,  category = 'cheating' },  -- never reported by Cass
+            { id = idBfromC,  category = 'cheating' },  -- already reported by Cass
         },
     })
     ok(#firedOf('br:ringmaster:incident') == 0
@@ -6275,9 +6363,31 @@ do
     local m2 = threeUp()
     ok(m2.id ~= m.id, 'the next match is a different match', tostring(m2.id))
 
+    -- A TOKEN FROM THE PREVIOUS MATCH RESOLVES TO NOBODY. That comes from the
+    -- map being per match and a submission only ever being looked up in the
+    -- reporter's own -- not from the teardown free, which is a memory bound and
+    -- is asserted separately in report.departed. The same player is listed
+    -- again under a fresh token, so nothing a client kept can be replayed
+    -- forward to join two rounds up. Sent first, because it must not be the
+    -- thing that files the report the next assertion is counting.
     fired, sent = {}, {}
     fire(BR.Net.REPORT_SUBMIT, 1, {
-        targets = { { src = 2, category = 'cheating' } },
+        targets = { { id = idB, category = 'cheating' } },
+    })
+    ok(#firedOf('br:ringmaster:incident') == 0
+       and #firedOf('br:ringmaster:corroborate') == 0,
+        'last match\'s token names nobody in this one',
+        tostring(#firedOf('br:ringmaster:incident')))
+    ok((lastResult() or {}).ok == false, 'and the submission is refused')
+
+    local idB2 = tokenFor(1, 'Bex')
+    ok(idB2 ~= nil and idB2 ~= idB,
+        'the same player is listed under a fresh token in the new match',
+        tostring(idB2))
+
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 1, {
+        targets = { { id = idB2, category = 'cheating' } },
     })
     ok(#firedOf('br:ringmaster:incident') == 1,
         'and the same pair may be reported again in it',
@@ -6299,6 +6409,272 @@ do
         'and the answer no longer carries a remaining-reports count')
     ok(list ~= nil and list.categories ~= nil and list.maxTargets ~= nil,
         'while the rules it does need still travel with the data')
+end
+
+describe('report.departed')
+do
+    --[[
+        THE PLAYER LIST KEEPS THE PEOPLE WHO LEFT, AND THEY STAY REPORTABLE
+        (#172).
+
+        Owner: "the in-game player list doesn't show anyone who's left the
+        match, but it should. We should still be able to report players after
+        they've left the match."
+
+        Leaving is the most common thing a cheater does after being noticed, so
+        a list that forgets them closes the report window at exactly the moment
+        it matters. Every assertion below is written so it would FAIL against
+        the shipped behaviour rather than merely describe the new one -- this
+        suite's own stated hazard is a test that re-encodes the assumption it is
+        checking, and the report path is where that would be least visible.
+
+        EVERY REPORT HERE GOES THROUGH PLAYERS_LIST FIRST. The token is read off
+        the envelope the panel would have received, so a row that stopped being
+        sent takes the submission down with it instead of being papered over by
+        a token fetched from the server's own map.
+    ]]
+    local function lastResult()
+        for i = #sent, 1, -1 do
+            if sent[i].event == BR.Net.REPORT_RESULT then return sent[i].args[1] end
+        end
+        return nil
+    end
+    local function listSeenBy(src)
+        sent = {}
+        fire(BR.Net.PLAYERS_ASK, src)
+        for i = #sent, 1, -1 do
+            if sent[i].event == BR.Net.PLAYERS_LIST then return sent[i].args[1] end
+        end
+        return nil
+    end
+    local function rowSeenBy(src, name)
+        for _, p in ipairs((listSeenBy(src) or {}).players or {}) do
+            if p.name == name then return p end
+        end
+        return nil
+    end
+    local function tokenFor(src, name)
+        local row = rowSeenBy(src, name)
+        return row and row.id or nil
+    end
+
+    -- ---------------------------------------------------------------------
+    -- A DEPARTED PLAYER IS STILL ON THE LIST, AND STILL REPORTABLE.
+    -- ---------------------------------------------------------------------
+    reset()
+    queueUp(1, 'Ayla',  BR.Mode.SOLO.key)
+    queueUp(2, 'Quinn', BR.Mode.SOLO.key)
+    queueUp(3, 'Cass',  BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    for _, s in ipairs({ 1, 2, 3 }) do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
+    local m = theMatch()
+
+    local licQuinn = BR.Identity.qualified('license', BR.Identity.licenseOf(2))
+    local aliveBefore = BR.Server.aliveCount(m)
+
+    -- THE TOKEN IS TAKEN WHILE THEY ARE STILL HERE, because that is the real
+    -- sequence: the reporter opens the panel, sees the name, and the cheater
+    -- quits while they are picking a category.
+    local idQuinn = tokenFor(1, 'Quinn')
+    ok(idQuinn ~= nil, 'a live player is listed with a token')
+
+    fakeTime = fakeTime + 1000
+    leave(2)
+
+    ok(BR.Roster.get(2) == nil,
+        'the disconnect takes them out of the live roster')
+
+    local goneRow = rowSeenBy(1, 'Quinn')
+    ok(goneRow ~= nil, 'but the player list still shows them (#172)')
+    ok(goneRow ~= nil and goneRow.left == true,
+        'visibly marked as gone', goneRow and tostring(goneRow.left) or 'nil')
+    ok(goneRow ~= nil and goneRow.id == idQuinn,
+        'under the SAME token they were ticked with before they left',
+        goneRow and tostring(goneRow.id) or 'nil')
+
+    -- AND NOT COUNTED AS PRESENT ANYWHERE ELSE. This is the constraint that
+    -- makes the merge safe: it happens inside listFor and nowhere else, so
+    -- the alive count, the win condition and the squad panel never see it.
+    ok(BR.Server.aliveCount(m) == aliveBefore - 1,
+        'and the alive count has dropped by one, not stayed flat',
+        ('%d -> %d'):format(aliveBefore, BR.Server.aliveCount(m)))
+
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 1, {
+        targets = { { id = idQuinn, category = 'cheating' } },
+    })
+    local inc = firedOf('br:ringmaster:incident')[1]
+    ok(inc ~= nil, 'a player who has left can still be reported (#172)')
+    ok(inc ~= nil and inc.subjectLicense == licQuinn,
+        'against the license sealed when they disconnected',
+        inc and tostring(inc.subjectLicense) or 'nil')
+    ok((lastResult() or {}).ok == true, 'and the reporter is told it worked')
+
+    -- ---------------------------------------------------------------------
+    -- THE RECYCLED SERVER ID, WHICH IS THE FAILURE A NAIVE FIX WOULD SHIP.
+    -- ---------------------------------------------------------------------
+    -- Somebody else connects into the slot Quinn just freed and joins the same
+    -- match. If the row still named a server id, the accusation above would
+    -- have been filed against THIS player, under THEIR license, and counted
+    -- against their record. Nothing downstream could tell.
+    licenseOf[2] = 'stranger'
+    join(2, 'Newcomer')
+    BR.Roster.setMatch(2, m.id)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+
+    local licNewcomer = BR.Identity.qualified('license', BR.Identity.licenseOf(2))
+    ok(licNewcomer ~= licQuinn,
+        'the recycled id belongs to a different person', tostring(licNewcomer))
+
+    local qRow = rowSeenBy(1, 'Quinn')
+    local nRow = rowSeenBy(1, 'Newcomer')
+    ok(qRow ~= nil and nRow ~= nil,
+        'both the departed player and the id-recycler are listed')
+    ok(qRow ~= nil and nRow ~= nil and qRow.id ~= nRow.id,
+        'as two rows with two different tokens -- not one collided row',
+        qRow and nRow and (qRow.id .. ' / ' .. nRow.id) or 'nil')
+
+    -- Cass has reported nobody, so this submission is clean.
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 3, {
+        targets = { { id = tokenFor(3, 'Quinn'), category = 'cheating' } },
+    })
+    local corr = firedOf('br:ringmaster:corroborate')[1]
+    local inc2 = firedOf('br:ringmaster:incident')[1]
+    local named = (corr and corr.license) or (inc2 and inc2.subjectLicense)
+    ok(named == licQuinn,
+        'reporting the departed row names the player who left, not the '
+        .. 'stranger holding their old id',
+        tostring(named))
+
+    -- ---------------------------------------------------------------------
+    -- THE RATE LIMITS HOLD ACROSS THE DEPARTURE BOUNDARY.
+    -- ---------------------------------------------------------------------
+    -- ONE REPORT PER (REPORTER, TARGET, MATCH), and quitting must not buy a
+    -- fresh accusation slot from everybody who already reported you. Ayla
+    -- reported Quinn while she was still connected, above.
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 1, {
+        targets = { { id = idQuinn, category = 'exploiting' } },
+    })
+    ok(#firedOf('br:ringmaster:incident') == 0
+       and #firedOf('br:ringmaster:corroborate') == 0,
+        'a player already reported cannot be reported again by leaving',
+        tostring(#firedOf('br:ringmaster:incident')))
+    local again = lastResult()
+    ok(again ~= nil and again.ok == false, 'the second one is refused')
+    ok(again ~= nil and tostring(again.refused):find('Quinn', 1, true) ~= nil,
+        'and names them, so the reporter can untick the right row',
+        again and tostring(again.refused) or 'nil')
+
+    -- MAX TARGETS PER SUBMISSION, counted the same whoever is on the list.
+    ok(BR.Config.Report.maxTargets == 5,
+        'the target cap is still five', tostring(BR.Config.Report.maxTargets))
+    ok(BR.Config.Report.maxPerMatch == 3,
+        'and the submission cap still three', tostring(BR.Config.Report.maxPerMatch))
+
+    fired, sent = {}, {}
+    local over = {}
+    for i = 1, BR.Config.Report.maxTargets + 1 do
+        over[i] = { id = idQuinn, category = 'cheating' }
+    end
+    fire(BR.Net.REPORT_SUBMIT, 3, { targets = over })
+    ok((lastResult() or {}).ok == false
+       and #firedOf('br:ringmaster:incident') == 0,
+        'naming more than the cap is refused, departed rows included')
+
+    -- MAX SUBMISSIONS PER MATCH. Cass has spent one (on Quinn); two more are
+    -- allowed and the fourth is not -- and the departed player being among
+    -- them changes nothing.
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 3, {
+        targets = { { id = tokenFor(3, 'Ayla'), category = 'cheating' } },
+    })
+    ok((lastResult() or {}).ok == true, 'a second submission goes through')
+
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 3, {
+        targets = { { id = tokenFor(3, 'Newcomer'), category = 'cheating' } },
+    })
+    ok((lastResult() or {}).ok == true, 'and a third')
+
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 3, {
+        targets = { { id = tokenFor(3, 'Quinn'), category = 'cheating' } },
+    })
+    local spent = lastResult()
+    ok(spent ~= nil and spent.ok == false
+       and #firedOf('br:ringmaster:incident') == 0
+       and #firedOf('br:ringmaster:corroborate') == 0,
+        'the fourth is refused -- the allowance is not reset by a departure')
+    ok(spent ~= nil and tostring(spent.refused):find('all 3 reports', 1, true) ~= nil,
+        'for the reason that actually applies',
+        spent and tostring(spent.refused) or 'nil')
+
+    -- ---------------------------------------------------------------------
+    -- A CLIENT THAT MAKES A TOKEN UP GETS NOWHERE.
+    -- ---------------------------------------------------------------------
+    -- The panel is a suggestion; this is what a modified client would send.
+    -- Ayla still has submissions left, so a refusal here is about the token.
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 1, {
+        targets = {
+            { id = 'deadbeefdeadbeef', category = 'cheating' },
+            { id = 2,                  category = 'cheating' },  -- the old shape
+            { id = licQuinn,           category = 'cheating' },  -- the license itself
+        },
+    })
+    ok(#firedOf('br:ringmaster:incident') == 0
+       and #firedOf('br:ringmaster:corroborate') == 0,
+        'an invented token, a server id and a license all name nobody')
+    ok((lastResult() or {}).ok == false, 'and the submission is refused')
+
+    -- ---------------------------------------------------------------------
+    -- WHAT EVICTS A DEPARTED ROW: THE MATCH ENDING, AND NOTHING ELSE.
+    -- ---------------------------------------------------------------------
+    -- Retention is bounded by one match, which is also the window every report
+    -- rule is scoped to. `BR.Roster.clearDeparted` runs at CLEANUP and again on
+    -- destroy for a match that dissolved without reaching it.
+    ok(#BR.Roster.departedIn(m.id) == 1,
+        'the sealed entry is held for the length of the match',
+        tostring(#BR.Roster.departedIn(m.id)))
+
+    -- THE TOKEN MAP IS THE OTHER THING THAT HAS TO GO, and it is the one whose
+    -- leak would be silent: nothing observable changes if it is never freed,
+    -- because a later match never looks in an earlier match's bucket. So it is
+    -- watched directly. Four entries -- Ayla, Cass, Quinn's sealed entry and
+    -- the Newcomer who took her id.
+    ok(BR.Players.tokenCount(m.id) == 4,
+        'the match is holding one row token per entry ever listed in it',
+        tostring(BR.Players.tokenCount(m.id)))
+
+    BR.Match.destroy(m)
+
+    ok(#BR.Roster.departedIn(m.id) == 0,
+        'and is dropped when the match is destroyed',
+        tostring(#BR.Roster.departedIn(m.id)))
+
+    -- FIRED BY HAND, because the harness's TriggerEvent RECORDS server-side
+    -- events rather than dispatching them -- so `destroy` announcing the
+    -- teardown is captured in `fired` and no handler runs. Every block that
+    -- exercises an on-destroy free does this (report.rules does it for the
+    -- per-match report rules); it is driving the same event br_core really
+    -- emits, one line later.
+    ok(#firedOf('br:match:destroyed') > 0,
+        'destroying the match announces it, which is what the free hangs off')
+    fire('br:match:destroyed', nil, { matchId = m.id })
+
+    ok(BR.Players.tokenCount(m.id) == 0,
+        'and the row tokens go with it, so retention is bounded by one match',
+        tostring(BR.Players.tokenCount(m.id)))
+
+    -- AND THE LIST STOPS OFFERING THEM. Ayla is back in the lobby with no
+    -- matchId, so the panel is answered `inMatch = false` -- there is no
+    -- surface left for a stale row to appear on.
+    local after = listSeenBy(1)
+    ok(after ~= nil and after.inMatch == false,
+        'a player with no match gets no list at all')
 end
 
 describe('combat.attribution')
