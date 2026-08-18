@@ -200,12 +200,17 @@ do
         ('got %s'):format(tostring(missing)))
 end
 
-io.write(('\n\27[32m%d passed\27[0m'):format(pass))
-if fail > 0 then
-    io.write(('  \27[31m%d failed\27[0m\n'):format(fail))
-    os.exit(1)
-end
-io.write('\n')
+-- THE SUMMARY USED TO BE HERE, WHICH DISARMED EVERYTHING BELOW IT.
+--
+-- It printed the totals and called `os.exit(1)` on failure -- and the curve
+-- contract, the section this file exists to enforce, runs AFTER it. So a
+-- contract failure printed a red FAIL line and then the script ran off the end
+-- of the file and exited 0. tools/verify.sh reads the exit code, so the one
+-- thing pinning the game's curve to Ringmaster's could not fail the build; it
+-- could only leave a message in a passing log.
+--
+-- That is the same shape as the rest of this bug: a check that exists, looks
+-- right, and is wired to nothing. The summary now runs once, at the bottom.
 
 -- ---------------------------------------------------------------------------
 -- THE CURVE CONTRACT, shared with Ringmaster.
@@ -227,12 +232,21 @@ io.write('\n')
 -- ---------------------------------------------------------------------------
 describe('xp.curve contract (mirrored in fivem-ringmaster)')
 
+-- THE FIRST TEN, not the first five. These are the numbers the curve was
+-- explained to the owner with, so they are the ones that have to stay true: a
+-- tuning that moves level 7 moves who is level 7, and it should fail here
+-- rather than on somebody's profile.
 for _, c in ipairs({
-    { level = 1, threshold = 0 },
-    { level = 2, threshold = 800 },
-    { level = 3, threshold = 2350 },
-    { level = 4, threshold = 4400 },
-    { level = 5, threshold = 6850 },
+    { level = 1,  threshold = 0 },
+    { level = 2,  threshold = 800 },
+    { level = 3,  threshold = 2350 },
+    { level = 4,  threshold = 4400 },
+    { level = 5,  threshold = 6850 },
+    { level = 6,  threshold = 9700 },
+    { level = 7,  threshold = 12850 },
+    { level = 8,  threshold = 16350 },
+    { level = 9,  threshold = 20100 },
+    { level = 10, threshold = 24100 },
 }) do
     ok(BR.Xp.thresholdFor(c.level) == c.threshold,
         ('thresholdFor(%d) == %d'):format(c.level, c.threshold))
@@ -240,22 +254,115 @@ for _, c in ipairs({
         ('thresholdFor(%d) is a multiple of 50'):format(c.level))
 end
 
+-- THE CUMULATIVE PAIR IS PINNED TOO, and that is what this revision adds.
+--
+-- These cases used to assert `into`/`span` alone -- the offset inside the
+-- current level and what that level costs -- which is the pair every surface
+-- renders, and is not the pair a player is asking about. 18,196 lifetime XP
+-- displayed as "1,846 / 3,750", and the owner read it as a level 8 player
+-- holding less XP than level 3 costs. The curve was right; the pair on screen
+-- was the wrong one. Pinning one representation and not the other is how a
+-- display drifts from the curve underneath it with every test still green.
 for _, c in ipairs({
-    { xp = 0,    level = 1, into = 0,    span = 800 },
-    { xp = 1,    level = 1, into = 1,    span = 800 },
-    { xp = 799,  level = 1, into = 799,  span = 800 },
-    { xp = 800,  level = 2, into = 0,    span = 1550 },
-    { xp = 801,  level = 2, into = 1,    span = 1550 },
-    { xp = 2349, level = 2, into = 1549, span = 1550 },
-    { xp = 2350, level = 3, into = 0,    span = 2050 },
-    { xp = 2498, level = 3, into = 148,  span = 2050 },
-    { xp = 4399, level = 3, into = 2049, span = 2050 },
-    { xp = 4400, level = 4, into = 0,    span = 2450 },
+    { xp = 0,    level = 1, into = 0,    span = 800,  next = 800 },
+    { xp = 1,    level = 1, into = 1,    span = 800,  next = 800 },
+    { xp = 799,  level = 1, into = 799,  span = 800,  next = 800 },
+    { xp = 800,  level = 2, into = 0,    span = 1550, next = 2350 },
+    { xp = 801,  level = 2, into = 1,    span = 1550, next = 2350 },
+    { xp = 2349, level = 2, into = 1549, span = 1550, next = 2350 },
+    { xp = 2350, level = 3, into = 0,    span = 2050, next = 4400 },
+    { xp = 2498, level = 3, into = 148,  span = 2050, next = 4400 },
+    { xp = 4399, level = 3, into = 2049, span = 2050, next = 4400 },
+    { xp = 4400, level = 4, into = 0,    span = 2450, next = 6850 },
+
+    -- THE OWNER'S OWN PROFILE (2026-08-17), by the exact numbers reported.
+    -- Level 8 begins at 16,350 and costs 3,750: 16,350 + 1,846 = 18,196, and
+    -- the next level begins at 20,100.
+    { xp = 18196, level = 8, into = 1846, span = 3750, next = 20100 },
+
+    -- Both sides of the top of the curve. `next` is 0 at max level rather than
+    -- a threshold that does not exist, and every display has to branch on it.
+    { xp = 991549, level = 99,  into = 15449, span = 15450, next = 991550 },
+    { xp = 991550, level = 100, into = 0,     span = 0,     next = 0 },
+
+    -- A negative total cannot reach the store, which only applies non-negative
+    -- ADDs -- but levelFor clamps and progress has to clamp with it, or one
+    -- half answers level 1 while the other answers into = -500.
+    { xp = -500, level = 1, into = 0, span = 800, next = 800 },
 }) do
     ok(BR.Xp.levelFor(c.xp) == c.level,
         ('levelFor(%d) == %d'):format(c.xp, c.level))
 
-    local _, into, span = BR.Xp.progress(c.xp)
+    local _, into, span, total, nxt = BR.Xp.progress(c.xp)
     ok(into == c.into and span == c.span,
-        ('progress(%d) == %d/%d'):format(c.xp, c.into, c.span))
+        ('progress(%d) into/span == %d/%d'):format(c.xp, c.into, c.span),
+        ('got %s/%s'):format(tostring(into), tostring(span)))
+
+    -- The pair the player reads.
+    ok(nxt == c.next,
+        ('progress(%d) next == %d'):format(c.xp, c.next),
+        ('got %s'):format(tostring(nxt)))
+    ok(BR.Xp.nextThresholdFor(c.xp) == c.next,
+        ('nextThresholdFor(%d) == %d'):format(c.xp, c.next),
+        ('got %s'):format(tostring(BR.Xp.nextThresholdFor(c.xp))))
+    ok(total == math.max(0, c.xp),
+        ('progress(%d) total == %d'):format(c.xp, math.max(0, c.xp)),
+        ('got %s'):format(tostring(total)))
 end
+
+-- THE TWO REPRESENTATIONS ARE ONE FACT, across the whole curve rather than at
+-- the handful of totals above.
+--
+-- This is the check the feature never had. The cumulative pair and the bar's
+-- per-level pair describe the same position and nothing said so, so a screen
+-- could render one while the level came from the other and everything passed.
+-- The identical sweep runs in the console's scripts/check-xp-curve.mjs.
+do
+    -- MAX LEVEL IS A DIFFERENT CONTRACT AND IS STATED AS ONE.
+    --
+    -- The first version of this sweep asserted `into == total - floor`
+    -- everywhere and failed at 992,136 -- in BOTH repos, at the identical
+    -- total, which is the fixture doing exactly its job. Past 991,550 a player
+    -- keeps earning XP and `into` stays 0, because there is no level to be
+    -- part-way through. That is deliberate: into/span is bar geometry and
+    -- there is no bar up there. The cumulative pair is what stays meaningful.
+    local bad = {}
+    local maxLevel = BR.Xp.Config.maxLevel
+    for xp = 0, 1100000, 617 do
+        local pct, into, span, total, nxt = BR.Xp.progress(xp)
+        local level = BR.Xp.levelFor(xp)
+        local floor = BR.Xp.thresholdFor(level)
+
+        if nxt == 0 then
+            if level ~= maxLevel or into ~= 0 or span ~= 0 or pct ~= 1.0 then
+                bad[#bad + 1] = ('at %d: max level should be %d/0/0/1, got %d/%d/%d/%s')
+                    :format(xp, maxLevel, level, into, span, tostring(pct))
+            elseif total < BR.Xp.thresholdFor(maxLevel) then
+                bad[#bad + 1] = ('at %d: no next level below the level-%d threshold')
+                    :format(xp, maxLevel)
+            end
+        elseif into ~= total - floor then
+            bad[#bad + 1] = ('at %d: into %d ~= total %d - floor %d')
+                :format(xp, into, total, floor)
+        elseif nxt ~= floor + span then
+            bad[#bad + 1] = ('at %d: next %d ~= floor %d + span %d')
+                :format(xp, nxt, floor, span)
+        elseif not (total >= floor and total < nxt) then
+            bad[#bad + 1] = ('at %d: total %d outside [%d, %d)')
+                :format(xp, total, floor, nxt)
+        elseif BR.Xp.levelFor(nxt) ~= level + 1 then
+            bad[#bad + 1] = ('at %d: next %d is level %d, expected %d')
+                :format(xp, nxt, BR.Xp.levelFor(nxt), level + 1)
+        end
+        if #bad > 0 then break end
+    end
+    ok(#bad == 0, 'the cumulative pair and the bar agree at every total',
+        table.concat(bad, '; '))
+end
+
+io.write(('\n\27[32m%d passed\27[0m'):format(pass))
+if fail > 0 then
+    io.write(('  \27[31m%d failed\27[0m\n'):format(fail))
+    os.exit(1)
+end
+io.write('\n')

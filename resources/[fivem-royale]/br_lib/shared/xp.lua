@@ -6,6 +6,12 @@
 -- The curve is quadratic rather than exponential. Exponential curves look
 -- generous early and become a wall; a quadratic keeps later levels meaningful
 -- without the gap between level 40 and 41 being measured in weeks.
+--
+-- THE MODEL IS CUMULATIVE LIFETIME XP AGAINST RISING THRESHOLDS, and always
+-- has been -- `thresholdFor` is a running total and `levelFor` is its inverse,
+-- so nothing is ever reset or spent. What resets is `into`, the offset used to
+-- draw a bar, and rendering that offset as though it were the player's XP is
+-- what made level 8 look like it held 1,846 XP. See `nextThresholdFor`.
 
 BR = BR or {}
 BR.Xp = {}
@@ -49,6 +55,31 @@ function BR.Xp.thresholdFor(level)
     return math.floor(raw / ROUND_TO + 0.5) * ROUND_TO
 end
 
+--- The LIFETIME total at which this player reaches their next level.
+---
+--- THE CURVE HAS ALWAYS BEEN CUMULATIVE AND THE SCREEN HAS ALWAYS HIDDEN IT.
+--- `progress` below returns `into`/`span` -- where you are inside the current
+--- level, counted from zero again every time you level up -- and that is the
+--- pair every surface renders. So a player holding 18,196 lifetime XP reads
+--- "1,846 / 3,750" beside a level 8 chip, and asked the obvious question: how
+--- can I be level 8 with less XP than level 3 costs? (owner, 2026-08-17)
+---
+--- They could not, and they never were: 16,350 + 1,846 = 18,196, and 3,750 is
+--- exactly what level 8 costs. Both numbers were true and neither was the one
+--- being asked for. This is the pair that answers it -- 18,196 / 20,100 -- the
+--- same two numbers `levelFor` already derives the level from.
+---
+--- 0 MEANS THERE IS NO NEXT LEVEL rather than "the next level is free". nil
+--- would make every arithmetic caller guard, and 0 fails the `> 0` test that
+--- the max-level branch needs anyway.
+--- @param xp integer
+--- @return integer
+function BR.Xp.nextThresholdFor(xp)
+    local level = BR.Xp.levelFor(xp)
+    if level >= BR.Xp.Config.maxLevel then return 0 end
+    return BR.Xp.thresholdFor(level + 1)
+end
+
 --- Level implied by a total XP value.
 --- @param xp integer
 --- @return integer
@@ -73,21 +104,50 @@ function BR.Xp.levelFor(xp)
     return level
 end
 
---- Progress through the current level, 0..1.
+--- Where one lifetime XP total sits on the curve.
+---
+--- TWO REPRESENTATIONS OF ONE POSITION, AND BOTH ARE NEEDED -- which is why
+--- they come back from one call rather than from two functions a caller can
+--- pick the wrong one of:
+---
+---   total / next   THE CUMULATIVE PAIR. Lifetime XP, and the lifetime XP at
+---                  which the next level starts. The owner's model, and the
+---                  only pair that means anything on its own -- "18,196 /
+---                  20,100" is legible without knowing what level you are.
+---   into / span    THE BAR'S GEOMETRY. A bar cannot be drawn from the
+---                  cumulative pair: 18,196 of 20,100 is 90% full at level 8
+---                  and 99% full at level 50, so every bar past the early game
+---                  would read as nearly finished. A bar's zero is the level's
+---                  floor, not the player's first ever match.
+---
+--- They are the same fact -- `into == total - thresholdFor(level)` and
+--- `next == thresholdFor(level) + span` -- and tools/test_stats.lua asserts
+--- exactly that, on both sides of the repo boundary. THE FIRST THREE RETURNS
+--- ARE UNCHANGED AND IN THE SAME ORDER: br_core/server/market.lua and
+--- br_stats/server/persist.lua both destructure `local _, into, span`, and the
+--- new values are appended so neither has to move to keep working.
 --- @param xp integer
 --- @return number pct
 --- @return integer intoLevel
 --- @return integer levelSpan
+--- @return integer total    lifetime xp, clamped at zero
+--- @return integer next     lifetime xp the next level begins at; 0 at max
 function BR.Xp.progress(xp)
-    local level = BR.Xp.levelFor(xp)
+    -- Clamped rather than passed through. A negative total is impossible --
+    -- the store only ever applies non-negative ADDs -- but `levelFor` already
+    -- answers 1 for it, and reporting level 1 alongside `into = -500` would be
+    -- the two halves of one function disagreeing about one input.
+    local total = (xp and xp > 0) and xp or 0
+
+    local level = BR.Xp.levelFor(total)
     if level >= BR.Xp.Config.maxLevel then
-        return 1.0, 0, 0
+        return 1.0, 0, 0, total, 0
     end
     local lo = BR.Xp.thresholdFor(level)
     local hi = BR.Xp.thresholdFor(level + 1)
     local span = hi - lo
-    if span <= 0 then return 0.0, 0, 0 end
-    return (xp - lo) / span, xp - lo, span
+    if span <= 0 then return 0.0, 0, 0, total, hi end
+    return (total - lo) / span, total - lo, span, total, hi
 end
 
 --- XP earned from one match result.
