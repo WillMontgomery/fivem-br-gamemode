@@ -3352,8 +3352,19 @@ local function newClient(settleMs, streamMs)
                 x = 0.0, y = 0.0, z = 30.0, h = 0.0, anim = nil, ragdoll = false }
     C.ped = P
 
-    --- One engine frame of the death task: the flag catches up (rule 2).
+    --- One engine frame: the death flag catches up (rule 2), and any task
+    --- asked for during the LAST script tick becomes the ped's actual pose.
+    ---
+    --- RULE 5, AND IT IS THE WHOLE OF THE SECOND PLAYTEST ITEM. TaskPlayAnim
+    --- does not pose a ped -- it queues a task, and the engine evaluates the
+    --- task tree AFTER the script tick that asked. Until then the ped renders
+    --- whatever it currently has, which after a resurrection is a standing
+    --- idle. A rig that applies the pose inside TaskPlayAnim is asserting the
+    --- thing client/dbno.lua's old note assumed and the owner disproved by
+    --- looking at it: "the ped briefly stands between the moment of dying,
+    --- reviving, and going to the emote we chose" (owner, 2026-08-18).
     local function pedFrame()
+        if P.pending then P.anim, P.pending = P.pending, nil end
         if P.dying and not P.dead and (C.now - P.since) >= settleMs then
             P.dead = true
         end
@@ -3392,9 +3403,9 @@ local function newClient(settleMs, streamMs)
     end
     env.ClearPedTasksImmediately = function()
         if not P.dead then P.dying = false end
-        P.anim = nil
+        P.anim, P.pending = nil, nil
     end
-    env.ClearPedTasks    = function() P.anim = nil end
+    env.ClearPedTasks    = function() P.anim, P.pending = nil, nil end
     env.SetPedArmour     = function() end
     env.GetPedArmour     = function() return 0 end
     env.RemoveAllPedWeapons = function() end
@@ -3432,7 +3443,7 @@ local function newClient(settleMs, streamMs)
     end
     env.TaskPlayAnim = function(_, d, a)
         if P.dead then return end       -- a corpse takes no animation
-        P.anim = d .. '/' .. a
+        P.pending = d .. '/' .. a       -- ...and a live one takes it NEXT frame
     end
     env.IsEntityPlayingAnim = function() return P.anim ~= nil end
     env.SetEntityAnimSpeed  = function() end
@@ -4068,6 +4079,11 @@ local function newReviver(mySrc, mateSrc, peds)
     env.ResetPedMovementClipset = function() end
     env.SetPedMoveRateOverride = function() end
     env.SetEntityCoordsNoOffset = function() end
+    -- The cover over the resurrection's standing frame. Present in the rig
+    -- because a build WITHOUT it is a real configuration -- client/dbno.lua
+    -- guards the call -- and the tests that measure the cover replace this with
+    -- a recorder.
+    env.SetEntityLocallyInvisible = function() end
     env.DisableControlAction = function() end
     env.GetDisabledControlNormal = function() return 0.0 end
     env.GetControlNormal = function() return 0.0 end
@@ -4621,7 +4637,35 @@ end
 -- on its own.
 --
 -- The count below is therefore the honest measurement: position writes per
--- second of lying still. 0.0 before, ~4 after.
+-- second of lying still. 0.0 before the first fix, and now ONE PAIR PER CRAWL
+-- TASK rather than one pair every 500ms -- which is the follow-on below.
+--
+-- ==========================================================================
+-- #164 FOLLOW-ON: THE CORRECTION ITSELF BECAME THE DRIFT.
+-- ==========================================================================
+--
+-- "DBNO is kinda fixed - they're inching forward extremely slowly in steps, but
+-- they are synced. If we can play that step exactly once and only once - we're
+-- clear." (owner, 2026-08-18.)
+--
+-- WHAT A BEAT COSTS, counted rather than argued. The pair is TWO FRAMES: one
+-- that moves the body ~9mm and one that puts it back. Both of those are real
+-- position writes, so both are things other machines can sample -- and the
+-- network samples on its own cadence, not on ours, so every beat is a chance
+-- for a watcher to catch the body mid-pair. config/match.lua bleeds for 40
+-- seconds at the floor and 120 at the base; at 500ms that is 80 to 240 chances
+-- per knock, forever, for a correction that only ever had one thing to cancel.
+--
+-- AND A PAIR THAT LOSES ITS SECOND HALF KEEPS THE STEP. dbno.controls drops
+-- `hold` on any frame reading IsPedRagdoll or IsEntityInAir, and the `back`
+-- half refuses to run without it -- so stayPut re-anchors AT THE STEPPED-OUT
+-- POSITION and 9mm is never given back. That is modelled below, because it is
+-- the mechanism that turns "a twitch" into "inching forward", and because it is
+-- the difference between an error that happens once and an error that
+-- accumulates twice a second for two minutes.
+--
+-- THE CONTRACT AFTER THE FIX IS NOT A RATE. It is: one step per crawl TASK,
+-- because a task is the only thing that creates the mover the step cancels.
 
 describe('dbno.clone.sync')
 do
@@ -4631,18 +4675,34 @@ do
     local CLI = newReviver(1, 2, peds)
     local env = CLI.env
 
+    -- THE PED'S POSITION IS REAL HERE, and that is the change this block needed
+    -- to be able to say anything about creep at all: the rig used to throw
+    -- every write away and count them, which can measure a beat and cannot
+    -- measure a metre.
     local coordWrites, rateWrites = 0, 0
-    env.SetEntityCoordsNoOffset = function() coordWrites = coordWrites + 1 end
+    env.SetEntityCoordsNoOffset = function(_, x, y, z)
+        coordWrites = coordWrites + 1
+        peds[5001].x, peds[5001].y, peds[5001].z = x, y, z
+    end
     env.SetEntityAnimSpeed = function() rateWrites = rateWrites + 1 end
+
+    -- THE CRAWL TASK IS A REAL OBJECT TOO. `playCrawl` only issues one when the
+    -- clip is not already running, and the whole re-arm now hangs off that --
+    -- so a rig that answers "yes, always" to IsEntityPlayingAnim cannot see a
+    -- re-task and cannot see the watchdog.
+    local tasks, anim = 0, nil
+    env.TaskPlayAnim = function(_, d, a) tasks = tasks + 1 anim = d .. '/' .. a end
+    env.IsEntityPlayingAnim = function() return anim ~= nil end
+
+    local startX = peds[5001].x
 
     env.TriggerEvent(env.BR.Net.DBNO_SET,
         { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
 
-    -- THE INPUT IS DEAD STILL FOR THE WHOLE WINDOW. GetDisabledControlNormal
-    -- already answers 0.0 in this sandbox, so every frame below is a frame in
-    -- which the player is touching nothing -- which is the case the report is
-    -- about, and the case in which the old code emitted nothing at all.
-    local SECONDS = 3
+    -- A FULL BLEED AT THE FLOOR, not three seconds. The old window was shorter
+    -- than the fault: a beat is only a problem in the aggregate, and 40 seconds
+    -- is the SHORTEST knock config/match.lua can produce (dbnoBleedMin).
+    local SECONDS = 40
     for _ = 1, SECONDS * 62 do
         CLI.now = CLI.now + 16
         CLI.frame()
@@ -4650,30 +4710,37 @@ do
 
     ok(env.BR.Dbno.ledger ~= nil, 'the dbno readings are published')
 
-    -- 500ms beat over three seconds: six, give or take the frame the knock
-    -- lands on. Asserted as a band rather than a number, because the beat is
-    -- counted in whole frames.
-    local perSecond = coordWrites / SECONDS
-    ok(coordWrites >= 4,
-        'a downed player who is not moving still tells the network where they '
-        .. 'are -- BEFORE: 0 writes in three seconds, so nothing could ever '
-        .. 'correct a clone',
-        ('%d writes in %ds (%.1f/s)'):format(coordWrites, SECONDS, perSecond))
-    ok(coordWrites <= SECONDS * 20,
-        'and it is a beat, not a per-frame teleport -- the thing HOLD_SLACK '
-        .. 'exists to prevent',
-        ('%d writes in %d frames'):format(coordWrites, SECONDS * 62))
+    -- TWO TASKS, AND BOTH OF THEM ARE REAL. dbno.controls' watchdog tasks the
+    -- crawl on the first downed frame, because the ped is not playing it yet;
+    -- the live-knock path then re-tasks it when the knockdown lands, from where
+    -- the body actually came to rest. A quiet 40 seconds adds nothing to that.
+    ok(tasks == 2,
+        'a knock that nothing interrupts settles on two crawl tasks and then '
+        .. 'stops asking',
+        ('%d tasks'):format(tasks))
 
-    -- THE OWNER'S SEQUENCE, NOT AN INVENTION OF ONE. Their manual workaround is
-    -- a forward press and a release; controls 30-35 are disabled for a downed
-    -- player, so the ENGINE never sees that press -- the only thing that reads
-    -- it is dbno.controls, through GetDisabledControlNormal. Its whole
-    -- observable effect is the rate going 1.0 then 0.0 with a real position
-    -- step in between, and that is what the beat replays.
-    ok(rateWrites >= 4,
-        'and the clip rate is cycled, which is the other half of what the '
-        .. 'owner does by hand',
+    -- ONE PAIR EACH. Two writes per pair: the step out and the step back.
+    --
+    -- THIS IS THE CONTRACT, and it is deliberately written as an equation
+    -- against `tasks` rather than as a number. A count would pass for the wrong
+    -- reason the moment anything changed how many times the pose is issued; the
+    -- claim being made is "once per task, and never on a clock".
+    ok(coordWrites == tasks * 2,
+        'and the clone resync is played exactly ONCE for each of them -- '
+        .. 'BEFORE: 152 writes over the SHORTEST knock the config can produce, '
+        .. 'and it scales with the bleed rather than with the cause',
+        ('%d writes for %d tasks in %ds'):format(coordWrites, tasks, SECONDS))
+    ok(rateWrites <= tasks * 2 + 2,
+        'and the clip rate is cycled with it, not twice a second -- BEFORE: '
+        .. '153 rate writes over the same 40 seconds',
         ('%d rate writes'):format(rateWrites))
+
+    -- THE STEP IS GIVEN BACK. Measured on the ped rather than asserted from
+    -- the code: the pair ends where it started.
+    ok(math.abs(peds[5001].x - startX) < 1e-9,
+        'and the body is exactly where it was put down, not one step further '
+        .. 'forward',
+        ('%.6fm from the anchor'):format(peds[5001].x - startX))
 
     -- IT MUST NOT COST THE PLAYER THEIR OWN CRAWL. One frame of dbnoCrawlSpeed
     -- is under a centimetre and it is put straight back, so a watching player
@@ -4682,11 +4749,28 @@ do
     local M = env.BR.Config.Match
     local step = (M.dbnoCrawlSpeed or 0.55) * 0.016
     ok(step < 0.01,
-        'the beat moves the body less than a centimetre before putting it back',
+        'the step moves the body less than a centimetre before putting it back',
         ('%.4fm'):format(step))
 
-    -- ...AND IT STOPS DEAD WHEN THEY STAND UP.
+    -- ...AND A RE-TASK IS THE THING THAT BUYS ANOTHER ONE. Something cancels
+    -- the clip -- a car, a blast, a scripted task, the list dbno.controls'
+    -- watchdog exists for -- and the watchdog puts it back. That new task is a
+    -- new mover on every clone, so it is owed a new step and gets exactly one.
     local before = coordWrites
+    anim = nil
+    for _ = 1, 120 do
+        CLI.now = CLI.now + 16
+        CLI.frame()
+    end
+    ok(tasks == 3, 'the watchdog re-tasks a cancelled crawl',
+        ('%d tasks'):format(tasks))
+    ok(coordWrites - before == 2,
+        'and a re-task -- a FRESH mover on every clone -- buys exactly one '
+        .. 'more step, which is what makes the arm an event and not a clock',
+        ('%d writes for the re-task'):format(coordWrites - before))
+
+    -- ...AND IT STOPS DEAD WHEN THEY STAND UP.
+    before = coordWrites
     env.TriggerEvent(env.BR.Net.DBNO_SET, { downed = false })
     for _ = 1, 120 do
         CLI.now = CLI.now + 16
@@ -4695,6 +4779,260 @@ do
     ok(coordWrites == before,
         'and a player who is back on their feet is not being written at all',
         ('%d more writes after standing up'):format(coordWrites - before))
+end
+
+-- THE CREEP ITSELF, IN METRES.
+--
+-- The frame that loses half a pair is not a hypothetical: dbno.controls drops
+-- `hold` and returns on any frame reading IsPedRagdoll or IsEntityInAir, and a
+-- downed body on a slope, a staircase, a kerb or a rock reads in-air
+-- intermittently. Modelled here as one frame in thirty -- and the model is
+-- stated rather than hidden, because the NUMBER depends on it and the SHAPE
+-- does not: on a beat the leak is paid twice a second for the whole bleed, and
+-- on a one-shot it can be paid at most once per task, whatever the frequency.
+describe('dbno.clone.creep')
+do
+    local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                   [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+    local CLI = newReviver(1, 2, peds)
+    local env = CLI.env
+
+    env.SetEntityCoordsNoOffset = function(_, x, y, z)
+        peds[5001].x, peds[5001].y, peds[5001].z = x, y, z
+    end
+    local anim = nil
+    env.TaskPlayAnim = function(_, d, a) anim = d .. '/' .. a end
+    env.IsEntityPlayingAnim = function() return anim ~= nil end
+
+    -- ONE FRAME IN THIRTY, FROM THE FIRST FRAME OF THE WINDOW. Not tuned to
+    -- miss the pair and not tuned to hit it: 30 frames and the old 500ms beat
+    -- (~31 frames) are close enough to be out of phase with each other, so the
+    -- leak lands where it lands. Both builds face exactly this hazard, from the
+    -- same moment, for the same 40 seconds.
+    local frames = 0
+    env.IsEntityInAir = function() return frames > 0 and frames % 30 == 0 end
+
+    env.TriggerEvent(env.BR.Net.DBNO_SET,
+        { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
+
+    local SECONDS = 40
+    for _ = 1, SECONDS * 62 do
+        frames = frames + 1
+        CLI.now = CLI.now + 16
+        CLI.frame()
+    end
+
+    local drift = math.sqrt(peds[5001].x ^ 2 + peds[5001].y ^ 2)
+    -- One step is 9.2mm. A one-shot can leak at most that, once.
+    ok(drift <= 0.02,
+        'a body that loses a frame mid-step gives up one step and no more -- '
+        .. 'BEFORE: 0.026m over the SHORTEST knock the config can produce, '
+        .. 'because the beat re-offered the leak 76 times and this one-shot '
+        .. 'offers it twice',
+        ('%.3fm over %ds'):format(drift, SECONDS))
+end
+
+-- ==========================================================================
+-- THE STANDING FRAME BETWEEN DYING AND THE DOWNED POSE.
+-- ==========================================================================
+--
+-- "When going from alive -> DBNO the ped briefly stands between the moment of
+-- dying, reviving, and going to the emote we chose. During that period we
+-- should have the ped be briefly invisible instead." (owner, 2026-08-18.)
+--
+-- THIS IS THE SECOND ATTEMPT AT THIS FRAME AND THE FIRST ONE'S ARGUMENT IS THE
+-- REASON IT NEEDS A TEST. floorTheBody() carried a note saying the frame could
+-- not exist: "NOTHING YIELDS INSIDE THIS. Nothing is rendered in the middle of a
+-- tick, so the standing idle a resurrection restores is overwritten before it
+-- can be drawn once." Every word of that is true and the conclusion does not
+-- follow -- TaskPlayAnim QUEUES a task, the engine evaluates the task tree after
+-- the tick, and the ped renders the pose it already has until then. The rig now
+-- models that (see pedFrame, rule 5), which is what lets this block fail against
+-- the ordering-only build and pass against the cover.
+--
+-- WHAT IS ASSERTED IS THE OWNER'S SENTENCE AND NOT THE MECHANISM: across a fall
+-- in every timing the matrix above uses, there is no frame on which a downed
+-- player's ped is standing (resurrected, no downed clip) AND visible.
+describe('dbno.cover')
+do
+    local SETTLES = { 32, 96, 200, 320 }
+    local STREAMS = { 0, 250 }
+    local rtt = 60
+
+    local exposed, exposedWhere = 0, nil
+    local covered, longest = 0, 0
+    local blindAfter, blindWhere = 0, nil
+    local cells = 0
+
+    for _, settle in ipairs(SETTLES) do
+    for _, stream in ipairs(STREAMS) do
+        cells = cells + 1
+        local where = ('settle %dms, streaming %dms'):format(settle, stream)
+
+        local SRV = newServer()
+        local CLI = newClient(settle, stream)
+        local env = CLI.env
+        local P   = CLI.ped
+
+        -- HIDDEN IS A FRAME, NOT A PROPERTY, and the rig has to hold it the
+        -- same way the engine does: set during this tick, gone by the next.
+        local hiddenNow = false
+        env.SetEntityLocallyInvisible = function() hiddenNow = true end
+
+        local wire = {}
+        local function drain(now)
+            hiddenNow = false          -- before the tick, every tick
+            SRV.tick(now)
+            for i = 1, #SRV.out do
+                local m = SRV.out[i]
+                wire[#wire + 1] = { at = now + rtt, event = m.event,
+                                    target = m.target, payload = m.payload }
+            end
+            for i = #SRV.out, 1, -1 do SRV.out[i] = nil end
+            while wire[1] and now >= wire[1].at do
+                local m = table.remove(wire, 1)
+                env.BR.State.me.state = SRV.roster[1].state
+                if m.target == 1 or m.target == -1 then
+                    env.TriggerEvent(m.event, m.payload)
+                end
+            end
+            for i = 1, #CLI.toServer do
+                local m = CLI.toServer[i]
+                if now >= m.at + rtt then
+                    SRV.roster[1].engineHp = env.GetEntityHealth(1)
+                    SRV.died(1, m.data)
+                    CLI.toServer[i] = nil
+                end
+            end
+            local kept = {}
+            for i = 1, #CLI.toServer do
+                if CLI.toServer[i] then kept[#kept + 1] = CLI.toServer[i] end
+            end
+            CLI.toServer = kept
+        end
+
+        -- THE VERDICT IS TAKEN AT THE END OF THE TICK, which is why this is a
+        -- registered callback and not the pump's onFrame hook: onFrame runs
+        -- BEFORE the frame band, and the whole question is what dbno.controls
+        -- did during it. Registration order is execution order (BR.Loop), so
+        -- appending here puts this after every dbno callback.
+        local run = 0
+        env.BR.Loop.register(env.BR.Loop.FRAME, 'test.cover', function()
+            run = run + 1
+            if SRV.roster[1].state ~= env.BR.PlayerState.DBNO then return end
+
+            -- STANDING: RESURRECTED, alive, and wearing no downed clip. All
+            -- three, and the first one is the one that makes this the owner's
+            -- frame rather than a different one. Before the resurrection the
+            -- ped is dying on the floor -- GTA's own death animation, which is
+            -- what a player who just fell off a building is supposed to see and
+            -- is not what "the ped briefly stands" describes. The frame under
+            -- test is the one AFTER NetworkResurrectLocalPlayer has put a
+            -- standing idle back on a body that is about to be re-posed.
+            local standing = CLI.resurrects > 0 and not P.dead
+                             and P.anim == nil
+            if standing and not hiddenNow then
+                exposed = exposed + 1
+                exposedWhere = exposedWhere or where
+            end
+            if hiddenNow then
+                covered = covered + 1
+            end
+            -- ...AND THE COVER MUST COME DOWN. A downed player who stays
+            -- invisible is a worse bug than one who flickers upright, so the
+            -- frames after the pose has landed are counted separately.
+            if P.anim ~= nil and hiddenNow then
+                blindAfter = blindAfter + 1
+                blindWhere = blindWhere or where
+            end
+        end)
+
+        CLI.pump(6000, drain)
+        CLI.fall()
+        CLI.pump(4000, drain)
+
+        if covered > longest then longest = covered end
+    end
+    end
+
+    -- THE HEADLINE, and the owner's sentence turned into an assertion.
+    ok(exposed == 0,
+        'A RESURRECTED PED IS NEVER SEEN STANDING -- across every settle and '
+        .. 'streaming cell, no frame renders a downed player upright and '
+        .. 'visible. BEFORE: 8 exposed frames across 8 cells -- the '
+        .. 'ordering-only build renders EXACTLY ONE standing frame per knock, '
+        .. 'in every timing there is',
+        exposedWhere and ('%d frames, e.g. %s'):format(exposed, exposedWhere)
+                     or nil)
+
+    -- ...AND IT IS A COVER, NOT A DISAPPEARANCE.
+    ok(blindAfter == 0,
+        'and the cover drops the moment the downed clip is actually on the '
+        .. 'ped -- nothing holds a posed body invisible',
+        blindWhere and ('%d frames, e.g. %s'):format(blindAfter, blindWhere)
+                   or nil)
+    ok(covered > 0,
+        'and the cover really was raised, so the first assertion is not '
+        .. 'passing because nothing ever resurrected',
+        ('%d covered frames across %d cells'):format(covered, cells))
+    ok(longest * 16 <= 250 * cells,
+        'and no cell holds it past the cap',
+        ('%d frames'):format(longest))
+end
+
+-- A BUILD WITHOUT THE NATIVE STILL PLAYS. client/dbno.lua guards the call, and
+-- the guard is the difference between "the standing frame is visible on this
+-- build" and "the frame callback that also keeps the player on the floor threw
+-- five times and was suspended".
+describe('dbno.cover.absent')
+do
+    local SRV = newServer()
+    local CLI = newClient(96, 0)
+    local env = CLI.env
+    env.SetEntityLocallyInvisible = nil
+
+    local wire = {}
+    local function drain(now)
+        SRV.tick(now)
+        for i = 1, #SRV.out do
+            local m = SRV.out[i]
+            wire[#wire + 1] = { at = now + 40, event = m.event,
+                                target = m.target, payload = m.payload }
+        end
+        for i = #SRV.out, 1, -1 do SRV.out[i] = nil end
+        while wire[1] and now >= wire[1].at do
+            local m = table.remove(wire, 1)
+            env.BR.State.me.state = SRV.roster[1].state
+            if m.target == 1 or m.target == -1 then
+                env.TriggerEvent(m.event, m.payload)
+            end
+        end
+        for i = 1, #CLI.toServer do
+            local m = CLI.toServer[i]
+            if now >= m.at + 40 then
+                SRV.roster[1].engineHp = env.GetEntityHealth(1)
+                SRV.died(1, m.data)
+                CLI.toServer[i] = nil
+            end
+        end
+        local kept = {}
+        for i = 1, #CLI.toServer do
+            if CLI.toServer[i] then kept[#kept + 1] = CLI.toServer[i] end
+        end
+        CLI.toServer = kept
+    end
+
+    CLI.pump(6000, drain)
+    CLI.fall()
+    CLI.pump(4000, drain)
+
+    ok(SRV.roster[1].state == env.BR.PlayerState.DBNO,
+        'a build with no SET_ENTITY_LOCALLY_INVISIBLE still knocks rather '
+        .. 'than suspending the callback that keeps the player down',
+        tostring(SRV.roster[1].state))
+    ok(CLI.ped.anim ~= nil,
+        'and still ends up wearing the downed pose',
+        tostring(CLI.ped.anim))
 end
 
 -- ==========================================================================
@@ -4772,6 +5110,50 @@ do
     ok(next(cues()) == nil,
         'and a straight elimination -- never downed -- plays neither',
         'a cue went out for a player who was never on the floor')
+
+    -- ...AND THE THIRD PHASE, WHICH IS THE ONLY GOOD ONE (owner, 2026-08-18:
+    -- "when a player is revived all squad mates should hear a success sound").
+    --
+    -- KNOCKED AND PICKED UP, on the same channel and with the same audience
+    -- rule. Player 2 is the reviver and hears it as a mate -- they are one --
+    -- and the subject does not, because they are being told in words instead.
+    S.roster[1].state = PS.ALIVE
+    S.env.BR.Combat.knock(1, 4)
+    for i = #S.out, 1, -1 do S.out[i] = nil end
+    S.env.BR.Combat.revive(1, 2)
+    local up = cues()
+
+    ok(S.roster[1].state == PS.ALIVE, 'a revive puts them back on their feet')
+    ok(up[2] ~= nil and up[2].phase == 'up',
+        'and DBNO -> up is its own cue, on the same envelope as the other two',
+        up[2] and tostring(up[2].phase) or 'nothing was sent')
+    ok(up[3] ~= nil and up[3].phase == 'up',
+        'heard by every mate and not only by the one who did it',
+        up[3] and tostring(up[3].phase) or 'the third mate heard nothing')
+    ok(up[1] == nil,
+        'and never by the player it happened to -- the same rule as the other '
+        .. 'two phases, and the reason the SERVER owns the audience',
+        up[1] and 'the subject was sent one' or nil)
+    ok(up[4] == nil,
+        'and not by the squad that put them there',
+        up[4] and 'an enemy was sent one' or nil)
+    ok(up[2] and up[2].src == 1 and up[2].name == 'P1',
+        'and it names who came back up',
+        up[2] and tostring(up[2].src) or nil)
+
+    -- THE ADMIN PATH RAISES IT TOO, and that is why it is sent from
+    -- BR.Combat.revive rather than from the hold that usually causes one.
+    -- `/brrevive` runs the same function precisely so it cannot drift from the
+    -- player-facing path, and a cue wired to the hold would have been the
+    -- drift.
+    S.env.BR.Combat.knock(1, 4)
+    for i = #S.out, 1, -1 do S.out[i] = nil end
+    S.env.BR.Combat.revive(1, nil)
+    local admin = cues()
+    ok(admin[2] ~= nil and admin[2].phase == 'up',
+        'and a revive with no reviver -- /brrevive -- is still a revive the '
+        .. 'squad hears',
+        admin[2] and tostring(admin[2].phase) or 'nothing was sent')
 end
 
 -- The client half of the same feature: the second shape on DBNO_SET is answered
@@ -4805,6 +5187,21 @@ do
         'and going out is a DIFFERENT cue -- two events, two sounds',
         c and tostring(c.cue) or 'nothing was pushed')
 
+    -- THE CUE NAME IS THE DELIVERABLE HERE, and it is asserted rather than
+    -- described because it is a string that has to match one in
+    -- ui-src/src/audio/cues.ts. Nothing in Lua can check the far side, so the
+    -- least this side can do is fail loudly if the name it sends ever moves.
+    env.TriggerEvent(env.BR.Net.DBNO_SET,
+        { mate = { src = 1, name = 'P1', phase = 'up' } })
+    c = lastUi('squadcue')
+    ok(c ~= nil and c.cue == 'squad.revived',
+        'and being picked up is a THIRD cue -- squad.revived, the success '
+        .. 'sound the owner asked for',
+        c and tostring(c.cue) or 'nothing was pushed')
+    ok(c ~= nil and c.src == 1 and c.name == 'P1',
+        'carrying who it was, so the interface can say the name',
+        c and tostring(c.name) or nil)
+
     -- THE TRAP THIS EXISTS FOR. `mate` envelopes carry no `downed` field, so a
     -- handler that fell through would read nil, decide we are not down, and
     -- stand a downed player up on the strength of somebody else's news.
@@ -4818,7 +5215,7 @@ do
         { mate = { src = 1, name = 'P1', phase = 'sideways' } })
     local n = 0
     for _, e in ipairs(CLI.ui) do if e.kind == 'squadcue' then n = n + 1 end end
-    ok(n == 2, 'an unrecognised phase plays nothing', ('%d cues'):format(n))
+    ok(n == 3, 'an unrecognised phase plays nothing', ('%d cues'):format(n))
 end
 
 -- ----------------------------------------------------------------- result ---

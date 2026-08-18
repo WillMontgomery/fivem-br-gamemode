@@ -227,7 +227,7 @@ end
 ---
 --- @param subject integer  who it happened to
 --- @param entry table      their roster entry
---- @param phase string     'down' | 'out'
+--- @param phase string     'down' | 'out' | 'up'
 local function tellSquad(subject, entry, phase)
     if not entry.squadId then return end
     BR.Roster.each(
@@ -803,6 +803,23 @@ function BR.Combat.revive(src, reviverSrc)
     TriggerClientEvent(BR.Net.HEALTH_SYNC, src,
         { hp = M.dbnoReviveHp or 30, armour = 0 })
     BR.Combat.pushDbno(src)
+
+    -- ...AND THE SQUAD HEARS IT, which is the third of the three phases this
+    -- channel carries (owner, 2026-08-18: "when a player is revived all squad
+    -- mates should hear a success sound").
+    --
+    -- SENT FROM HERE AND NOT FROM THE HOLD THAT CAUSED IT, because this is the
+    -- one function every revive goes through: a completed eight seconds,
+    -- `/brrevive`, and anything later that decides to put somebody back on
+    -- their feet all land here. A cue raised at the end of the hold instead
+    -- would be silent for the admin path and would fire for a hold that was
+    -- refused on the last tick.
+    --
+    -- The subject is excluded by tellSquad and that is deliberate and
+    -- unchanged: they are being told in words ("X picked you up") on the line
+    -- below, and the whole reason the server owns the audience is that the
+    -- subject is the one client that must not hear the squad's version.
+    tellSquad(src, entry, 'up')
 
     if reviverSrc then
         TriggerClientEvent(BR.Net.REVIVE_PROGRESS, reviverSrc,

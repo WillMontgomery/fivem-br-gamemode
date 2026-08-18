@@ -154,6 +154,12 @@ local crawl = nil
 -- has just reset the playback rate under us.
 local crawlMoving = nil
 
+-- How many crawl tasks this session has actually issued. Only for /brdbno, and
+-- only because it is the denominator the clone resync below has to be read
+-- against: one step per task is the contract, so a readout with one number in
+-- it cannot say whether it is being met.
+local crawlTasks = 0
+
 -- Where the player last asked to be, while they are not asking to move. See
 -- the movement loop: this is what "stay put" is made of.
 local hold = nil      -- { x = number, y = number } or nil
@@ -308,6 +314,12 @@ Citizen.CreateThread(function()
     resolveCrawl()
 end)
 
+-- Forward-declared: playCrawl arms the clone resync, and the resync's own state
+-- belongs with the #164 note several hundred lines below rather than up here.
+-- `local resyncArm` IS the declaration, so the binding exists by the time
+-- anything calls it (tools/check_forward_locals.lua).
+local resyncArm
+
 --- Start (or restart) the downed loop on our own ped.
 --- @param force boolean|nil  play even if something is already running
 --- @param snap boolean|nil   arrive at the pose with no blend at all
@@ -343,6 +355,13 @@ local function playCrawl(force, snap)
                  true, true, false)
     -- A fresh task runs at rate 1.0 whatever we last asked for.
     crawlMoving = nil
+    crawlTasks  = crawlTasks + 1
+
+    -- ...AND A FRESH TASK IS A FRESH MOVER ON EVERY OTHER MACHINE. This is the
+    -- arm for the clone resync below, and it is here rather than on a clock
+    -- because THIS CALL is the event: see the #164 block for why one step is
+    -- the whole of the correction and a repeat of it is the creep.
+    resyncArm()
 end
 
 --- Run the crawl clip, or hold it still on the frame it is on.
@@ -366,6 +385,112 @@ local function crawlPlaying(moving)
     SetEntityAnimSpeed(PlayerPedId(), crawl.dict, crawl.anim,
                        moving and 1.0 or 0.0)
     crawlMoving = moving
+end
+
+-- ==========================================================================
+-- THE STANDING FRAME, AND WHY NO AMOUNT OF RE-ORDERING CLOSES IT.
+-- ==========================================================================
+--
+-- "When going from alive -> DBNO the ped briefly stands between the moment of
+-- dying, reviving, and going to the emote we chose. During that period we
+-- should have the ped be briefly invisible instead." (owner, 2026-08-18.)
+--
+-- floorTheBody() already carries a note claiming this cannot happen -- "NOTHING
+-- YIELDS INSIDE THIS. Nothing is rendered in the middle of a tick, so the
+-- standing idle a resurrection restores is overwritten before it can be drawn
+-- once". That was the previous round's fix and it is WRONG, in a way the owner
+-- can see and the file cannot:
+--
+--   TaskPlayAnim DOES NOT POSE A PED. It queues a task. The task tree is
+--   evaluated by the ENGINE, after the script tick that asked for it, and the
+--   ped renders whatever pose it currently has until then. A resurrection
+--   restores a standing idle immediately -- that IS what being alive with no
+--   task looks like -- so the frame between the resurrection and the engine's
+--   next animation update renders a player standing up, every time, however
+--   tightly the two calls are written together. `blend = 1000.0` removes the
+--   blend, not the frame.
+--
+-- So the window is not closable by ordering, and the owner's instruction is the
+-- correct one: cover it instead.
+--
+-- SET_ENTITY_LOCALLY_INVISIBLE, AND NOT SetEntityVisible, AND THE REASON IS
+-- ALREADY WRITTEN DOWN TWICE IN THIS CODEBASE.
+--
+--   * SetEntityVisible is a NETWORKED PROPERTY, and client/natives.lua asserts
+--     it on our own ped EVERY FRAME: `SetEntityVisible(ped, st ~= BUS, false)`
+--     inside BR.Native.applyGameRules, which client/gamerules.lua runs on the
+--     FRAME band. A downed player is not on the bus, so that line writes TRUE
+--     sixty times a second. Anything this file wrote would be stomped within a
+--     frame -- which is exactly the "everyone flickers or simply stays visible"
+--     failure client/squadmates.lua records from the lobby-hiding attempts.
+--   * SET_ENTITY_LOCALLY_INVISIBLE is not a property at all. It hides the
+--     entity FOR YOURSELF FOR THE CURRENT FRAME. There is nothing for
+--     applyGameRules to overwrite and nothing to replicate.
+--
+-- AND THAT IS ALSO THE WHOLE OF "MAKE SURE IT IS VISIBLE AGAIN ON EVERY EXIT,
+-- INCLUDING THE FAILURE PATHS". There is no un-hide to forget. The flag lasts
+-- one frame, so a Lua error, a resource stop, a match teardown, a revive, a
+-- bleed-out, a build with no crawl clip and a ped that never poses all end the
+-- same way: this stops calling, and the ped is visible on the next frame.
+-- Nothing can leave a player invisible, because nothing is ever left set.
+--
+-- IT IS THE OWNER'S OWN SCREEN THAT IS BEING FIXED, and that is not a
+-- compromise -- it is the report. Other machines never see this frame anyway:
+-- they receive the resurrection and the task over the wire, already ordered.
+
+--- How long the cover may last at the very outside, ms.
+---
+--- The pose lands on the engine's next animation update, so the honest answer
+--- is "one frame" and everything past that is the build being unusual. 250ms is
+--- there so a build that never poses at all (crawl resolved to nothing, the
+--- task refused, the ped re-killed mid-window) cannot hold a player invisible
+--- for a bleed -- an invisible downed player is a worse bug than a visible
+--- standing one, and it is the kind that reads as an exploit.
+local HIDE_MAX_MS = 250
+
+-- When the cover was raised, or nil when nothing is being covered.
+local hiddenFrom = nil
+
+--- Hide our own ped for THIS frame only. Never a property write.
+--- @param ped integer
+local function hideBody(ped)
+    if SetEntityLocallyInvisible then SetEntityLocallyInvisible(ped) end
+end
+
+--- Raise the cover over a re-pose that is about to happen.
+local function coverPose()
+    hiddenFrom = GetGameTimer()
+    hideBody(PlayerPedId())
+end
+
+--- Hold the cover until the pose is actually on the ped, then drop it.
+---
+--- ASKED ON A LATER FRAME THAN THE ONE THAT TASKED IT, which is the whole
+--- subtlety. A task issued this tick has not been evaluated yet, so
+--- IsEntityPlayingAnim on the same frame is answering about the pose we are
+--- trying to hide -- and believing it would uncover exactly the frame the cover
+--- exists for. GetGameTimer is stamped per frame, so `now > hiddenFrom` is
+--- precisely "a frame boundary has passed".
+--- @param ped integer
+local function holdCover(ped)
+    if not hiddenFrom then return end
+
+    -- A build with no downed animation has no pose to wait for, and hiding a
+    -- ped nothing is ever going to re-pose is just a disappearing player.
+    if crawl == false then hiddenFrom = nil return end
+
+    local now = GetGameTimer()
+    if now > hiddenFrom and crawl
+       and IsEntityPlayingAnim(ped, crawl.dict, crawl.anim, 3) then
+        hiddenFrom = nil
+        return
+    end
+    if now - hiddenFrom >= HIDE_MAX_MS then
+        hiddenFrom = nil
+        return
+    end
+
+    hideBody(ped)
 end
 
 -- --------------------------------------------------------------------------
@@ -517,11 +642,20 @@ end
 --- ground-probes from fifty metres up, which indoors finds the roof). Same
 --- reasoning, and the same three calls, as spawn.lua's REVIVED handler.
 ---
---- NOTHING YIELDS INSIDE THIS. Nothing is rendered in the middle of a tick, so
---- the standing idle a resurrection restores is overwritten before it can be
---- drawn once -- which is the whole of the owner's "the ped first stands up
---- fully before snapping to the crawling position".
+--- NOTHING YIELDS INSIDE THIS, and that is still worth keeping -- but it is NOT
+--- enough on its own and the note that used to end here said it was. A tick
+--- with no yield in it still ends, and the engine still evaluates the task tree
+--- afterwards: the pose asked for below lands on the NEXT animation update, and
+--- the resurrected ped renders a standing idle until it does. See the cover
+--- above (owner, 2026-08-18: "the ped briefly stands between the moment of
+--- dying, reviving, and going to the emote"). The ordering keeps that to one
+--- frame; the cover is what stops it being seen.
 local function floorTheBody()
+    -- FIRST, BEFORE THE RESURRECTION. The standing idle exists from the moment
+    -- NetworkResurrectLocalPlayer returns, so the cover has to be up before it
+    -- is called and not after.
+    coverPose()
+
     local p = GetEntityCoords(PlayerPedId())
     NetworkResurrectLocalPlayer(p.x, p.y, p.z,
                                 GetEntityHeading(PlayerPedId()),
@@ -710,6 +844,11 @@ local function leaveDowned()
     -- Nothing is being held down any more, and the clip that was held still
     -- dies with the tasks below.
     hold, crawlMoving = nil, nil
+    -- AND NOTHING DOWNED-SHAPED SURVIVES STANDING UP. The resync has no body to
+    -- speak for and the cover has no re-pose to hide -- a revived player must be
+    -- indistinguishable from one who was never downed, which is the whole of
+    -- the fourth report on this file.
+    resyncPhase, resyncArmed, hiddenFrom = 0, false, nil
     -- Reset the movement clipset even though nothing sets one any more. It is
     -- two native calls, and the alternative -- a player who was downed by an
     -- OLDER client build walking into the lobby at crawling pace -- is the
@@ -841,31 +980,88 @@ end
 -- idle branch putting the rate back to zero. That is a sequence this file can
 -- perform on its own, and it is exactly what is replayed here.
 --
--- ON A BEAT RATHER THAN ONCE, and that is the half a one-shot at the knock
--- would miss: a squadmate who streams in ten seconds later gets a fresh clone
--- with a fresh mover, and the reviver walking up to a body is precisely that
--- case. Two frames every half second is four natives a second.
+-- ONCE PER TASK, AND NOT ON A CLOCK. THIS IS THE #164 FOLLOW-ON.
+--
+-- "DBNO is kinda fixed - they're inching forward extremely slowly in steps, but
+-- they are synced. If we can play that step exactly once and only once - we're
+-- clear." (owner, 2026-08-18.)
+--
+-- The first cut ran this every 500ms, and the note that used to sit here argued
+-- for the beat on the grounds that a client streaming in later gets a fresh
+-- clone. The beat is what the owner is now watching, and it is worth being
+-- exact about why it is visible rather than invisible:
+--
+--   THE PAIR IS TWO FRAMES LONG AND THE NETWORK IS NOT FRAME-LOCKED TO IT.
+--   Phase 1 moves the body ~9mm and phase 2 puts it back on the NEXT frame.
+--   Entity positions are snapshotted on the network's own cadence, not on
+--   ours, so a snapshot that lands between the two carries the stepped-out
+--   position and one that lands after it carries the anchor. Every beat is
+--   therefore a coin toss that other machines see as a twitch forward -- and
+--   the beat fires for the whole bleed, which config/match.lua sets at 40
+--   seconds at the floor and 120 at the base: 80 to 240 of them per knock.
+--
+--   AND ANY PATH THAT LOSES HALF A PAIR LEAKS THE STEP. The `back` below only
+--   runs while `hold` is set, and dbno.controls drops `hold` on any frame that
+--   reads IsPedRagdoll or IsEntityInAir -- so a body on a slope that loses one
+--   frame between phase 1 and phase 2 is re-anchored by stayPut AT THE
+--   STEPPED-OUT POSITION. That is 9mm the body never gives back, and on a beat
+--   it is 9mm every half second in whichever direction the ped is facing.
+--   Nothing here can promise that never happens; a one-shot can promise it
+--   cannot happen twice.
+--
+-- SO WHAT ARMS IT, if not a clock. The thing being cancelled is the emote's
+-- default animated state ON THE CLONES, and that state has exactly one source:
+-- a TaskPlayAnim on this ped, which is replicated and replayed over there at
+-- rate 1.0 with the clip's mover intact. A fresh task is a fresh mover; no
+-- fresh task is no fresh mover. So playCrawl arms this, every time it actually
+-- issues one -- the knock, the resurrection, the beat the knockdown lands on,
+-- and the frame-band watchdog putting a cancelled clip back. The re-arm is
+-- driven by the event rather than by a guess about when the event might have
+-- happened, which is the whole of the change.
+--
+-- WHAT THIS GIVES UP, said plainly rather than left for the next round to
+-- discover: a client that streams the body in LATER, with no re-task in
+-- between, builds its clone from the task as it stands and is not covered by a
+-- step that has already been performed. The owner has watched a build with the
+-- beat in it and reports the bodies are SYNCED -- so one cancellation holds --
+-- and the revive no longer depends on the clone being in the right place
+-- anyway (#163 moved the reach test to the server's own samples). If a body
+-- that nobody re-tasked is ever seen crawling on a newcomer's screen, THAT is
+-- the report that brings a second arm back, and it should arm off the scope
+-- change rather than off a clock.
 --
 -- IT CANNOT CANCEL THE CRAWL. It only runs on frames where the player is
 -- pressing nothing at all -- one touch of the movement axis and the real input
 -- owns the frame -- and the step it takes is one frame of dbnoCrawlSpeed
 -- (~9mm), put straight back on the following frame.
-local RESYNC_EVERY_MS = 500
 
-local resyncAt    = 0     -- when the next beat is due
+local resyncArmed = false -- a task has been issued and not yet answered for
 local resyncPhase = 0     -- 0 idle, 1 the step out, 2 the step back
 local resyncs     = 0     -- for /brdbno
 
---- One beat of "this body is HERE", performed for the benefit of other clients.
+--- A fresh crawl task exists, so a fresh mover exists on every clone of us.
+---
+--- Assigned rather than declared: playCrawl calls this and is written above,
+--- so the binding has to exist up there (tools/check_forward_locals.lua).
+resyncArm = function()
+    resyncArmed = true
+    -- A task issued while a pair was half done abandons that pair rather than
+    -- finishing it against an anchor the new task has already invalidated.
+    resyncPhase = 0
+end
+
+--- One "this body is HERE", performed for the benefit of other clients.
 --- @param ped integer
 --- @param c table   the ped's coordinates this frame
 --- @return boolean  true if this frame belonged to the resync
 local function resyncBody(ped, c)
     if not hold then return false end
-    local now = GetGameTimer()
 
     if resyncPhase == 0 then
-        if now < resyncAt then return false end
+        if not resyncArmed then return false end
+        -- SPENT HERE, ON THE FRAME THE PAIR STARTS, so nothing can arrive
+        -- between the two halves and buy a second one.
+        resyncArmed = false
         resyncPhase = 1
         resyncs = resyncs + 1
     end
@@ -888,17 +1084,20 @@ local function resyncBody(ped, c)
 
     -- BACK, and unconditionally -- not through stayPut, whose HOLD_SLACK (1cm)
     -- is wider than one frame of crawl (~9mm). Left to the slack test the body
-    -- would creep 9mm per beat, which is two metres over a full bleed.
+    -- would keep the step rather than give it back.
     crawlPlaying(false)
     SetEntityCoordsNoOffset(ped, hold.x, hold.y, c.z, true, true, false)
     resyncPhase = 0
-    resyncAt    = now + RESYNC_EVERY_MS
     return true
 end
 
 BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
     if not mine.downed then
-        hold, resyncPhase = nil, 0
+        hold, resyncPhase, resyncArmed = nil, 0, false
+        -- Not `hideBody` -- the cover is simply not asserted, and a flag that
+        -- lasts one frame is already gone. Clearing the stamp is only so a
+        -- later knock starts a fresh window.
+        hiddenFrom = nil
         return
     end
 
@@ -906,12 +1105,19 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
         DisableControlAction(0, DOWNED_BLOCKED[i], true)
     end
 
+    local ped = PlayerPedId()
+
+    -- THE COVER, BEFORE ANY OTHER BRANCH CAN RETURN. A resurrection can be
+    -- performed on any frame the floor watch is running, and the ragdoll and
+    -- input branches below both leave early -- so the one call that must not be
+    -- skipped goes first. It does nothing at all unless a re-pose is in flight.
+    holdCover(ped)
+
     -- The loop is the pose; if anything cancelled it -- a car, a blast, a
     -- scripted task -- put it straight back. Cheap: one IsEntityPlayingAnim
     -- when nothing is wrong.
     playCrawl(false)
 
-    local ped = PlayerPedId()
     -- Being thrown about is the one time the ped is allowed to travel without
     -- being asked to, so the hold is dropped rather than fought with -- and it
     -- is re-taken from wherever they land.
@@ -1005,9 +1211,16 @@ end)
 -- native, mixed against gunfire) is what the player who went down hears, and
 -- these are what everybody else hears -- which is the whole of the owner's
 -- "they have their own sounds for this phase".
+--
+-- THREE PHASES, THREE SOUNDS, and the third is the only good one (owner,
+-- 2026-08-18: "when a player is revived all squad mates should hear a success
+-- sound"). It rides the same envelope for the same reason the other two do --
+-- the SERVER decides the audience, because it is the only party that knows the
+-- squad and knows not to address the subject.
 local MATE_CUE = {
     down = 'squad.down',
     out  = 'squad.out',
+    up   = 'squad.revived',
 }
 
 RegisterNetEvent(BR.Net.DBNO_SET)
@@ -1519,9 +1732,20 @@ RegisterCommand('brdbno', function()
                             or 'NO SetEntityAnimSpeed on this build'))
     -- BOTH OF THE ABOVE ARE LOCAL-ONLY. This is the line that says whether
     -- anything is being done about the copies on other machines (#164).
-    print(('  clone sync : %d beats, every %dms, phase %d   (the pin above is '
-           .. 'local; this is what other clients see)')
-        :format(resyncs, RESYNC_EVERY_MS, resyncPhase))
+    --
+    -- READ `steps` AGAINST `tasks`, not against the clock. One step per crawl
+    -- task is the contract; a step count climbing on its own is the beat that
+    -- creeps coming back, and steps well under tasks is a re-task the resync
+    -- never got a still frame to answer.
+    print(('  clone sync : %d steps for %d crawl tasks, %s, phase %d   (the pin '
+           .. 'above is local; this is what other clients see)')
+        :format(resyncs, crawlTasks, resyncArmed and 'ARMED -- owed a step'
+                                                 or 'settled', resyncPhase))
+    print(('  cover      : %s   (the resurrection\'s standing frame, %dms cap)')
+        :format(hiddenFrom
+                    and ('UP, %dms'):format(GetGameTimer() - hiddenFrom)
+                    or 'down',
+                HIDE_MAX_MS))
     print(('  held at    : %s'):format(
         hold and ('%.2f, %.2f'):format(hold.x, hold.y)
               or '- (moving, or not downed)'))
