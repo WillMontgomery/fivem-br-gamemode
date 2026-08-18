@@ -256,9 +256,27 @@ BR.Config.Match = {
     maxArmour       = 100,    -- armour is already 0..100 natively, no conversion
 
     -- DBNO (squads only -- solo has nobody who could revive you).
-    dbnoBleedBase   = 45,     -- seconds on the first knock
-    dbnoBleedStep   = -8,     -- each subsequent knock in the same match is shorter
-    dbnoBleedMin    = 15,
+    --
+    -- TWO MINUTES ON THE FIRST KNOCK, up from 45 seconds (owner, playtest:
+    -- "The DBNO bleed out timer seems awfully short. We should probably double
+    -- it at least. It should be 2 minutes minimum").
+    --
+    -- THE OTHER TWO MOVED WITH IT, AND THAT IS THE POINT. The escalation is a
+    -- SHAPE, not three independent numbers: knock N is meant to be a fixed
+    -- FRACTION of the first, so a squad cannot farm revives out of one long
+    -- fight. Raising only the base would have flattened it -- at -8s a step the
+    -- second knock would have dropped 18% of a 45s bleed and 7% of a 120s one,
+    -- which is the same table describing a different rule. Scaled by the same
+    -- 120/45, the curve is identical in proportion and only the units changed:
+    --
+    --   knock  1      2      3      4      5      6
+    --   was    45s    37s    29s    21s    15s    15s   (floor)
+    --   now    120s   99s    78s    57s    40s    40s   (floor)
+    --
+    -- dbnoBleedPerDamage below moved for the same reason -- see its note.
+    dbnoBleedBase   = 120,    -- seconds on the first knock
+    dbnoBleedStep   = -21,    -- each subsequent knock in the same match is shorter
+    dbnoBleedMin    = 40,
     -- SECONDS OF HELD INTERACT. 2.8, down 65% from the 8.0 that shipped
     -- (owner, 2026-08-17: "the revive button hold from last round took too
     -- long - let's cut it by like 65%").
@@ -282,10 +300,18 @@ BR.Config.Match = {
     -- countdown, and visible to everyone else as a body still crawling.
     --
     -- THE NUMBER IS A GUESS AND IS WRITTEN DOWN AS ONE, like the molotov's 42.
-    -- At 0.35 a 30-damage rifle round takes 10.5s off a fresh 45s knock -- four
-    -- rounds finish it -- and a shotgun blast (~90) takes 31s. That feels right
-    -- on paper and has never been played. Tune it before defending it.
-    dbnoBleedPerDamage = 0.35,
+    -- The guess is not the seconds, it is the ROUND COUNT: four rifle rounds
+    -- finish a fresh knock, a shotgun blast (~90 damage) takes about a third of
+    -- it. That is the property this key exists to hold, and it is why the number
+    -- had to move when dbnoBleedBase went from 45s to 120s -- at 0.35 the same
+    -- four rounds would have taken 42 seconds off a two-minute clock, so
+    -- finishing somebody would have needed eleven of them and shooting a downed
+    -- player would have stopped being a thing anybody does.
+    --
+    -- 0.93: 30 damage -> 27.9s, four rounds -> 111.6s of a 120s knock, a shotgun
+    -- blast -> 84s. Still a guess, still never played. Tune it before defending
+    -- it -- but tune it against the round count, not against the seconds.
+    dbnoBleedPerDamage = 0.93,
 
     -- The display health the LEDGER holds a downed player at. It has to be
     -- greater than zero for two separate reasons and both are load-bearing:

@@ -34,9 +34,24 @@ local mine = { downed = false, bleedEndsAt = 0, reviverName = nil,
 -- The revive we are performing on somebody else, or nil.
 local holding = nil   -- { target = src, from = ms }
 
--- Whether we have told the server we are holding. The key can be released and
--- re-pressed faster than the round trip, so the request is edge-driven.
-local sentStart = false
+-- THE LAST TIME WE ASKED THE SERVER FOR ANYTHING, and it is deliberately NOT
+-- part of `holding`.
+--
+-- It replaces a `sentStart` boolean that guarded the FIRST ask of a hold. That
+-- guard was already dead weight -- the frame loop re-asserts off `holding.beat`
+-- and a fresh `holding` has no beat, so the ask went out on the next frame
+-- either way -- and it hid the real problem, which was that `holding` itself
+-- was only ever created on a key-DOWN edge. Now that a hold can be (re-)armed
+-- from the frame band, the throttle has to outlive the table it throttles, or
+-- an arm-refuse-arm cycle would ask sixty times a second instead of four.
+--
+-- Reset to 0 on a genuine press edge, so a deliberate press is never delayed by
+-- up to 250ms behind an ask the player did not make.
+local lastAsk = 0
+
+--- How often we re-assert a hold, ms. The server expires one it has not heard
+--- about in dbnoReviveBeatMs (750), so three of these fit inside its patience.
+local ASK_EVERY_MS = 250
 
 -- --------------------------------------------------------------------------
 -- Being down
@@ -91,6 +106,60 @@ local crawlMoving = nil
 -- Where the player last asked to be, while they are not asking to move. See
 -- the movement loop: this is what "stay put" is made of.
 local hold = nil      -- { x = number, y = number } or nil
+
+--- Pin the ped to where it is standing RIGHT NOW.
+---
+--- THE HOLD USED TO ARM ITSELF LATE, AND THAT IS THE WHOLE OF "THE PED DRIFTS
+--- ON ENTRY" (owner, 2026-08-17 -- the lock flags and stayPut had already
+--- shipped and the body still slid).
+---
+--- stayPut() is the only thing that ever set `hold`, it is reached only from
+--- dbno.controls, and its first call RECORDS rather than corrects -- it has
+--- nothing to correct towards yet. So the anchor was whatever position the ped
+--- had reached by the time that callback next ran with the player downed, not
+--- ragdolling, not airborne and not pressing forward. Every one of those
+--- conditions is a delay, and two of them are long:
+---
+---   * `hold` is cleared to nil at the top of dbno.controls whenever we are not
+---     downed, so a knock always starts with no anchor at all;
+---   * a LIVE knock ragdolls for 1200-1600ms (BR.Native.knockdown), and the
+---     ragdoll branch clears `hold` on every frame of it -- so on that path
+---     nothing is anchored until the ragdoll releases, and `move_injured_ground`
+---     is a LOCOMOTION dictionary whose clip is already running by then.
+---
+--- Arming it HERE -- at the knock, at the resurrection, and at the frame the
+--- knockdown lets go -- means the very first correction has somewhere to correct
+--- to, instead of spending that frame deciding where "here" is.
+---
+--- AND HERE IS THE MEASUREMENT, BECAUSE IT DOES NOT SAY WHAT IT WAS EXPECTED TO
+--- SAY. Driven against the real file with the clip's mover modelled at 0.35 m/s
+--- and the lock flags assumed to do NOTHING -- the worst case the hold exists to
+--- cover -- three seconds of being downed and never touching the keyboard:
+---
+---                        before      after     what the mover would have done
+---   fall (resurrect)     0.000 m     0.000 m   1.05 m
+---   shot (knockdown)     0.006 m     0.006 m   1.05 m
+---
+--- So the hold was ALREADY biting inside one frame, and this changes neither
+--- number. It is kept because arming at the knock is simply the correct place to
+--- arm -- it costs two natives and removes a frame of "no opinion" -- but it is
+--- NOT an explanation for a drift anybody can see, and nobody should read it as
+--- one.
+---
+--- WHAT IS LEFT, for whoever picks this up next: dbno.controls deliberately
+--- drops the hold on every frame where IsPedRagdoll or IsEntityInAir is true,
+--- and a LIVE knock spends 1200-1600ms ragdolling by design
+--- (BR.Native.knockdown). A body sliding under physics for a second and a half
+--- is exactly what "the ped drifts on entry" describes, it is the engine and not
+--- the clip, and no anchor here touches it -- the branch that drops the hold is
+--- the same branch that lets a thrown body travel, which is wanted. If the
+--- owner's drift survives this, that ragdoll is the thing to shorten.
+---
+--- Cheap enough to call unconditionally: two natives and a table.
+local function anchorHere()
+    local c = GetEntityCoords(PlayerPedId())
+    hold = { x = c.x, y = c.y }
+end
 
 --- Did a shape test hit anything?
 ---
@@ -411,6 +480,12 @@ local function floorTheBody()
     ClearPedTasksImmediately(PlayerPedId())
     playCrawl(true, true)
 
+    -- ...AND THE SPOT IS RE-TAKEN FROM WHERE THE RESURRECTION PUT THEM. A
+    -- resurrection is a position write, and the crawl that was just tasked
+    -- carries a mover; an anchor from before either of those would drag the
+    -- body back to where the corpse was.
+    anchorHere()
+
     -- THE HEALTH IS RE-APPLIED HERE AND NOT LEFT TO THE SERVER'S HEALTH_SYNC.
     --
     -- knock() sends the downed floor immediately after DBNO_SET and that used
@@ -463,6 +538,13 @@ local function enterDowned()
     -- clears what is currently in their hands.
     RemoveAllPedWeapons(PlayerPedId(), true)
     SetCurrentPedWeapon(PlayerPedId(), GetHashKey('WEAPON_UNARMED'), true)
+
+    -- AND THE SPOT IS TAKEN ON THE FRAME OF THE KNOCK, not on the first frame
+    -- dbno.controls happens to like the look of. See anchorHere: everything
+    -- below this line can yield, the clip has a mover in it, and the hold is
+    -- the only thing that measures. Synchronous, before the thread, so the
+    -- FIRST frame of being downed already has something to correct towards.
+    anchorHere()
 
     -- EVERYTHING ELSE IS AN ORDER, AND THE ORDER WAS THE BUG (owner,
     -- 2026-08-17): "When DBNO starts, the ped first stands up fully before
@@ -553,6 +635,14 @@ local function enterDowned()
             if not fell and beat == KNOCKDOWN_LANDED then
                 playCrawl(true)
                 SetPedCanRagdoll(PlayerPedId(), false)
+                -- THE ANCHOR IS RE-TAKEN HERE AND NOWHERE ELSE ON THIS PATH.
+                -- The knockdown has just thrown the body somewhere, and
+                -- playCrawl(true) restarts a LOCOMOTION clip from its first
+                -- frame with a full mover in it. The anchor from before the
+                -- ragdoll points at where they were standing when they were
+                -- shot -- metres away, and pinning them to it would teleport
+                -- them back. Where they LANDED is the answer.
+                anchorHere()
             end
 
             if worldTookUs(PlayerPedId()) then floorTheBody() end
@@ -749,9 +839,46 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
     hold = { x = c.x + dx, y = c.y + dy }
 end)
 
+-- WHICH CUE A SQUADMATE'S PHASE CHANGE PLAYS.
+--
+-- Named here rather than at the call site so the two strings that have to match
+-- something in ui-src/src/audio/cues.ts sit on two adjacent lines, where a
+-- rename can see both. They are NOT the subject's own cues: `hit.crit` (below,
+-- native, mixed against gunfire) is what the player who went down hears, and
+-- these are what everybody else hears -- which is the whole of the owner's
+-- "they have their own sounds for this phase".
+local MATE_CUE = {
+    down = 'squad.down',
+    out  = 'squad.out',
+}
+
 RegisterNetEvent(BR.Net.DBNO_SET)
 AddEventHandler(BR.Net.DBNO_SET, function(d)
     if type(d) ~= 'table' then return end
+
+    -- A SECOND SHAPE ON THE SAME EVENT, AND IT IS ABOUT SOMEBODY ELSE.
+    --
+    -- `mate` means "one of your squad changed phase" -- see tellSquad in
+    -- server/combat.lua, which decides the audience and never addresses the
+    -- subject. It carries no opinion about OUR downed state, so it is answered
+    -- and returned from before a single field of `mine` is touched: falling
+    -- through would read `d.downed` as nil and quietly stand a downed player up.
+    --
+    -- The interface plays it. This side does not reach for BR.Sfx, because
+    -- config/audio.lua is deliberately COMBAT ONLY -- native audio earns its
+    -- place by ducking against gunfire, and a squad status cue is interface
+    -- audio in the same sense the elimination banner's is.
+    if type(d.mate) == 'table' then
+        local cue = MATE_CUE[d.mate.phase]
+        if cue then
+            TriggerEvent('br:ui:sendLocal', 'squadcue', {
+                cue  = cue,
+                src  = d.mate.src,
+                name = d.mate.name,
+            })
+        end
+        return
+    end
 
     local was = mine.downed
     mine.downed      = d.downed == true
@@ -805,7 +932,9 @@ AddEventHandler(BR.Net.REVIVE_PROGRESS, function(d)
     if not holding or d.target ~= holding.target then return end
     if d.cancelled or d.done then
         holding = nil
-        sentStart = false
+        -- NOT `lastAsk = 0`. A cancel is the server saying no; re-arming is the
+        -- frame loop's job and it must stay on the 250ms leash, or a refusal
+        -- the player is holding through becomes a per-frame conversation.
     end
 end)
 
@@ -896,34 +1025,73 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
     -- they were looking at and the thing that happened would disagree.
     BR.Loot.suppress(target ~= nil or holding ~= nil)
 
-    if holding then
+    -- A HOLD IS A LEVEL, NOT AN EDGE, AND THAT WAS THE SECOND-REVIVE BUG.
+    --
+    -- "Reviving a player twice doesn't seem to work. I can hold the input, the
+    -- ring fills up, but then nothing happens" (owner, playtest).
+    --
+    -- `holding` used to be created in ONE place: the key-DOWN listener. Every
+    -- other line in this file only ever cleared it -- the reach test below, the
+    -- server's cancel, the server's completion, the match teardown. So the
+    -- moment anything ended a hold, the player was left leaning on a key that
+    -- no longer meant anything, and nothing could re-arm it until they let go
+    -- and pressed again. A completed revive is exactly that: it clears
+    -- `holding` while the key is still down, so the NEXT knock on the same mate
+    -- found a held key and a dead interaction. Same shape for stepping out of
+    -- reach and stepping back in, and for pressing before the mate is down.
+    --
+    -- Proved with the real client and the real server wired over a latency
+    -- (tools/test_shared.lua, `dbno.hold.rearm`): at 20/40/120ms round trips,
+    -- every one of those sequences failed on the second cycle before this and
+    -- passes after it. It is not timing-dependent and never was -- which is why
+    -- watching the ring could never find it.
+    --
+    -- The ring is the reason it survived a playtest, and this is worth saying
+    -- out loud because it has cost four rounds once already (#129):
+    -- br_ui/dui/prompt.html runs a ONE-SHOT CSS animation from a single
+    -- "a hold began, it lasts N ms" message. It fills on schedule whatever the
+    -- server thinks, so a full ring is evidence that setPrompt was called and
+    -- evidence of nothing else at all.
+    --
+    -- KEY DOWN + A TARGET IN REACH IS THE WHOLE CONDITION. The server is the
+    -- authority on whether that becomes a revive; this side's job is to keep
+    -- telling it the truth about the key.
+    if holding and (target ~= holding.target
+                    or not BR.Keys.isHeld('interact')) then
         -- The hold is only ours to keep while the reach still holds. The
         -- SERVER makes the same judgement every 250ms off its own position
         -- samples and is the one that counts; this is what keeps the ring
         -- honest in between.
-        if target ~= holding.target or not BR.Keys.isHeld('interact') then
-            TriggerServerEvent(BR.Net.REVIVE_STOP)
-            holding, sentStart = nil, false
-            setPrompt(target, nil)
-        else
-            setPrompt(holding.target, math.floor((M.dbnoReviveTime or 8.0) * 1000))
+        TriggerServerEvent(BR.Net.REVIVE_STOP)
+        holding = nil
+    end
 
-            -- THE HOLD IS RE-ASSERTED, NOT ANNOUNCED ONCE.
-            --
-            -- A brief tap completed a whole revive in playtest (owner,
-            -- 2026-08-09). The key layer is not the problem -- it derives both
-            -- edges correctly -- so the STOP was raised and did not land, and
-            -- the design was one message away from an eight-second hold
-            -- happening for free. Progress now requires CONTINUOUS evidence:
-            -- the server expires a revive it has not heard about recently, so
-            -- silence stops it and a lost STOP costs a fraction of a second
-            -- instead of the whole interaction. Same reasoning as the bus's
-            -- landing notices being polled rather than hooked.
-            local now = GetGameTimer()
-            if now - (holding.beat or 0) >= 250 then
-                holding.beat = now
-                TriggerServerEvent(BR.Net.REVIVE_START, { target = holding.target })
-            end
+    if not holding and target and BR.Keys.isHeld('interact') then
+        holding = { target = target, from = GetGameTimer() }
+    end
+
+    if holding then
+        setPrompt(holding.target, math.floor((M.dbnoReviveTime or 8.0) * 1000))
+
+        -- THE HOLD IS RE-ASSERTED, NOT ANNOUNCED ONCE.
+        --
+        -- A brief tap completed a whole revive in playtest (owner,
+        -- 2026-08-09). The key layer is not the problem -- it derives both
+        -- edges correctly -- so the STOP was raised and did not land, and
+        -- the design was one message away from an eight-second hold
+        -- happening for free. Progress now requires CONTINUOUS evidence:
+        -- the server expires a revive it has not heard about recently, so
+        -- silence stops it and a lost STOP costs a fraction of a second
+        -- instead of the whole interaction. Same reasoning as the bus's
+        -- landing notices being polled rather than hooked.
+        --
+        -- Throttled on `lastAsk` rather than on anything inside `holding`: the
+        -- table is rebuilt whenever a hold is re-armed, and a throttle that
+        -- died with it would be no throttle at all.
+        local now = GetGameTimer()
+        if now - lastAsk >= ASK_EVERY_MS then
+            lastAsk = now
+            TriggerServerEvent(BR.Net.REVIVE_START, { target = holding.target })
         end
     else
         setPrompt(target, nil)
@@ -952,23 +1120,29 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
     end
 end)
 
+-- THE EDGES, AND ONLY THE EDGES.
+--
+-- Arming a hold is no longer this listener's job -- dbno.revive does it from
+-- the key's LEVEL, every frame, which is what makes a hold that was interrupted
+-- resume without a re-press. Two things still genuinely belong on an edge:
+--
+--   RELEASE has to raise the STOP immediately. The frame loop would notice
+--   within a frame anyway, but the round trip is the expensive part and a
+--   release is the one message the server most wants early.
+--
+--   PRESS clears the ask throttle. Without that, a deliberate press landing
+--   240ms after some earlier ask would sit for a tenth of a second before
+--   anything went out -- invisible in isolation, and exactly the kind of "the
+--   key does not always work" that costs a playtest round to characterise.
 BR.Keys.on('interact', function(pressed)
     if not pressed then
         if holding then
             TriggerServerEvent(BR.Net.REVIVE_STOP)
-            holding, sentStart = nil, false
+            holding = nil
         end
         return
     end
-
-    local target = nearestDowned()
-    if not target then return end
-
-    holding = { target = target, from = GetGameTimer() }
-    if not sentStart then
-        sentStart = true
-        TriggerServerEvent(BR.Net.REVIVE_START, { target = target })
-    end
+    lastAsk = 0
 end)
 
 -- --------------------------------------------------------------------------
@@ -990,7 +1164,7 @@ local function forgetAll()
     -- that ended while it was up would leave the player looking at the floor
     -- from two metres behind their own body for the whole lobby.
     camDown()
-    holding, sentStart = nil, false
+    holding, lastAsk = nil, 0
     setPrompt(nil)
 end
 

@@ -201,6 +201,47 @@ function BR.Combat.reviveHeld(src, entry)
         :format(entry.name, src))
 end
 
+--- Tell a squad that one of them just changed phase -- and never tell the
+--- subject.
+---
+--- "When a squad player goes from alive to DBNO and DBNO to out, a sound effect
+--- should be played that all squadmates can hear, except the one which is down.
+--- They have their own sounds for this phase." (owner, playtest.)
+---
+--- THE AUDIENCE IS THE FEATURE, AND IT IS DECIDED HERE. Every client already
+--- learns that a mate went down -- the roster delta carries `state`, the squad
+--- beacon carries the row, the panel stripe turns red. Any of those could be
+--- watched for an edge and turned into a sound, and every one of those clients
+--- would then be deciding for itself who is allowed to hear it. Two of them
+--- would disagree the first time a delta was coalesced, and the one client that
+--- must NOT play it -- the subject, who has their own cue for this and is busy
+--- hearing it -- is the client least able to tell the difference. The server
+--- knows the squad and the server knows the subject, so the server addresses the
+--- envelope and no client ever holds an opinion about it.
+---
+--- IT RIDES DBNO_SET, which is already the downed channel and already has
+--- exactly one handler in the whole client (client/dbno.lua). The `mate` key is
+--- what distinguishes the two shapes: an envelope with `mate` is ABOUT SOMEBODY
+--- ELSE and says nothing about the receiver's own state, so the handler answers
+--- it and returns before it can touch `mine`.
+---
+--- @param subject integer  who it happened to
+--- @param entry table      their roster entry
+--- @param phase string     'down' | 'out'
+local function tellSquad(subject, entry, phase)
+    if not entry.squadId then return end
+    BR.Roster.each(
+        function(e)
+            return e.squadId == entry.squadId
+               and e.src ~= subject
+               and e.matchId == entry.matchId
+        end,
+        function(mate)
+            TriggerClientEvent(BR.Net.DBNO_SET, mate,
+                { mate = { src = subject, name = entry.name, phase = phase } })
+        end)
+end
+
 --- Eliminate a player.
 ---
 --- Placement is assigned as the number of teams still standing INCLUDING this
@@ -281,6 +322,11 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     if wasDowned then
         TriggerClientEvent(BR.Net.DBNO_SET, src, { downed = false, died = true })
         TriggerClientEvent(BR.Net.HEALTH_SYNC, src, { hp = 0, armour = 0 })
+        -- DBNO -> OUT, the second of the owner's two moments. Only from a knock:
+        -- a squadmate who was shot dead outright never took a knee, and the kill
+        -- feed is what carries that. Sent to the squad and not to them -- they
+        -- are watching a verdict screen and have their own sound for it.
+        tellSquad(src, entry, 'out')
     end
 
     local killer = killerSrc and BR.Roster.get(killerSrc)
@@ -523,7 +569,7 @@ function BR.Combat.knock(src, killerSrc)
 
     -- WHO OWNS THE FINISH IF NOBODY EVER TOUCHES THEM AGAIN, and this is the
     -- trap the whole field exists for. BR.Combat.attributedKiller expires at
-    -- assistWindowMs (10s) and a bleed runs 15-45s, so a player who is knocked
+    -- assistWindowMs (10s) and a bleed runs 40-120s, so a player who is knocked
     -- and simply left alone would be credited to nobody -- the same shape as
     -- the "0 eliminations" summary M6 had to fix. downedBy does not expire: it
     -- is cleared by a revive or by the match ending, and by nothing else.
@@ -571,6 +617,10 @@ function BR.Combat.knock(src, killerSrc)
     -- (owner, 2026-08-16). The server cannot write a ped; it can say what the
     -- number is, which is the contract HEALTH_SYNC already exists for.
     TriggerClientEvent(BR.Net.HEALTH_SYNC, src, { hp = M.dbnoHp or 5, armour = 0 })
+
+    -- ...AND IN SOUND, which is the half that does not need them to be looking
+    -- anywhere at all. ALIVE -> DBNO, the first of the owner's two moments.
+    tellSquad(src, entry, 'down')
 
     -- THE SQUAD IS TOLD IN WORDS, not only in pixels. The panel stripe and the
     -- [DOWN] gamer tag both already say this, and both require the mate to be
@@ -810,15 +860,47 @@ BR.Sched.every(250, 'combat.dbno', function()
         function(src, entry) stepDowned(src, entry, now) end)
 end)
 
+--- Tell a would-be reviver their hold is not happening.
+---
+--- A REFUSAL THAT SAYS NOTHING LOOKS EXACTLY LIKE A HOLD THAT IS WORKING, and
+--- on this interaction that is not a nuance -- it is the entire failure mode.
+--- br_ui/dui/prompt.html fills its ring from a ONE-SHOT CSS animation started by
+--- a single "a hold began, it lasts N ms" message, so the ring closes on
+--- schedule whether or not this file ever agreed to anything. Three of the
+--- returns below used to be silent, which meant the player watched a full ring
+--- and then watched nothing happen, with no evidence anywhere pointing at the
+--- server (owner, playtest; and the same false signal cost four rounds on #129).
+---
+--- The reply is the same envelope stopRevive already sends, so the client needs
+--- no new branch: a cancelled REVIVE_PROGRESS drops the hold and the next
+--- setPrompt takes the ring back down. `reason` is for the log and for whatever
+--- the interface decides to say later; nothing depends on its value today.
+---
+--- CHEAP BY CONSTRUCTION. The client asks at most four times a second per hold,
+--- so a refusal costs the same traffic as the progress ticks an ACCEPTED hold
+--- already generates -- and only while somebody is actually leaning on a key.
+--- @param src integer
+--- @param targetSrc integer
+--- @param reason string
+local function refuseRevive(src, targetSrc, reason)
+    TriggerClientEvent(BR.Net.REVIVE_PROGRESS, src,
+        { pct = 0.0, target = targetSrc, cancelled = true, reason = reason })
+end
+
 RegisterNetEvent(BR.Net.REVIVE_START)
 AddEventHandler(BR.Net.REVIVE_START, function(data)
     local src = source
     local targetSrc = math.tointeger(tonumber(data and data.target))
+    -- The one refusal that stays silent, because there is nobody to answer
+    -- about: without a target id there is no ring on the far side to take down.
     if not targetSrc then return end
 
     local reviver = BR.Roster.get(src)
     local target  = BR.Roster.get(targetSrc)
-    if not reviveAllowed(reviver, target) then return end
+    if not reviveAllowed(reviver, target) then
+        refuseRevive(src, targetSrc, 'notallowed')
+        return
+    end
 
     -- ALREADY OURS: this is the heartbeat, not a new hold. The client
     -- re-asserts every 250ms and the clock below is what expires a revive
@@ -830,7 +912,10 @@ AddEventHandler(BR.Net.REVIVE_START, function(data)
 
     -- FIRST HAND ON WINS. Two mates holding the same body is not twice as fast
     -- and it must not restart the clock for whoever pressed second.
-    if target.reviverSrc then return end
+    if target.reviverSrc then
+        refuseRevive(src, targetSrc, 'taken')
+        return
+    end
 
     target.reviverSrc = src
     target.reviveFrom = GetGameTimer()

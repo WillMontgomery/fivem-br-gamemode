@@ -3240,6 +3240,14 @@ local function newServer()
         env.source = src
         for _, fn in ipairs(handlers[env.BR.Net.PLAYER_DIED] or {}) do fn(data) end
     end
+    --- Any client event, from any player, delivered the way FiveM delivers one:
+    --- `source` set on the environment and then the handlers run. The revive
+    --- handshake is two events from a player who is not the subject, so PLAYER_DIED
+    --- on its own stopped being enough.
+    function S.fire(event, src, data)
+        env.source = src
+        for _, fn in ipairs(handlers[event] or {}) do fn(data) end
+    end
     --- One scheduler pass: combat.deathcheck and the bleed tick really run.
     function S.tick(nowMs)
         S.now = nowMs
@@ -3574,14 +3582,22 @@ do
             for i = 1, #SRV.out do
                 local m = SRV.out[i]
                 wire[#wire + 1] = { at = now + rtt, event = m.event,
-                                    payload = m.payload }
+                                    target = m.target, payload = m.payload }
             end
             for i = #SRV.out, 1, -1 do SRV.out[i] = nil end
 
+            -- ADDRESSED, NOT BROADCAST. This used to hand every message to the
+            -- one client in the rig whoever it was for, which was invisible
+            -- while the only sender was TriggerClientEvent(.., src, ..) to the
+            -- player under test -- and stopped being invisible the moment
+            -- combat.lua started addressing a player's SQUADMATES as well. A
+            -- harness that delivers somebody else's post is not a network.
             while wire[1] and now >= wire[1].at do
                 local m = table.remove(wire, 1)
                 CLI.env.BR.State.me.state = SRV.roster[1].state
-                CLI.env.TriggerEvent(m.event, m.payload)
+                if m.target == 1 or m.target == -1 then
+                    CLI.env.TriggerEvent(m.event, m.payload)
+                end
             end
 
             for i = 1, #CLI.toServer do
@@ -3667,13 +3683,16 @@ do
         SRV.tick(now)
         for i = 1, #SRV.out do
             wire[#wire + 1] = { at = now + 30, event = SRV.out[i].event,
+                                target = SRV.out[i].target,
                                 payload = SRV.out[i].payload }
         end
         for i = #SRV.out, 1, -1 do SRV.out[i] = nil end
         while wire[1] and now >= wire[1].at do
             local m = table.remove(wire, 1)
             CLI.env.BR.State.me.state = SRV.roster[1].state
-            CLI.env.TriggerEvent(m.event, m.payload)
+            if m.target == 1 or m.target == -1 then
+                CLI.env.TriggerEvent(m.event, m.payload)
+            end
         end
         for i = 1, #CLI.toServer do
             local m = CLI.toServer[i]
@@ -3903,6 +3922,620 @@ do
     ok(out ~= nil and math.abs(out.revivePct - 50.0) < 0.001,
         'half the configured hold reads as half a ring, whatever the number is',
         out and tostring(out.revivePct) or 'no DBNO_SET at all')
+end
+
+-- ==========================================================================
+-- TWO MINUTES ON THE FLOOR.
+-- ==========================================================================
+--
+-- Owner, playtest: "The DBNO bleed out timer seems awfully short. We should
+-- probably double it at least. It should be 2 minutes minimum."
+--
+-- The number is asserted, and then the two things that MOVE WITH IT are
+-- asserted -- because the failure mode of a config change like this is not a
+-- wrong constant, it is three constants that used to describe one rule and now
+-- describe three.
+
+describe('dbno.bleed')
+do
+    local M = BR.Config.Match
+
+    ok(M.dbnoBleedBase >= 120,
+        'a first knock lasts at least two minutes (owner, playtest)',
+        tostring(M.dbnoBleedBase))
+
+    -- THE ESCALATION IS A SHAPE, and this is what stops the base being raised
+    -- on its own. dbnoBleedStep is an absolute number of seconds, so leaving it
+    -- at -8 against a 120s base would have turned an 18%-per-knock penalty into
+    -- a 7% one: the same three keys, a different rule, and nothing anywhere
+    -- would have said so.
+    local secondKnockFraction = (M.dbnoBleedBase + M.dbnoBleedStep) / M.dbnoBleedBase
+    ok(math.abs(secondKnockFraction - 0.825) < 0.02,
+        'and a second knock still costs the same FRACTION it always did (~17.5%)',
+        ('%.1f%% of the first'):format(secondKnockFraction * 100.0))
+    ok(M.dbnoBleedMin / M.dbnoBleedBase > 0.3
+       and M.dbnoBleedMin < M.dbnoBleedBase,
+        'and the floor is still a floor, in proportion',
+        ('%s of %s'):format(M.dbnoBleedMin, M.dbnoBleedBase))
+
+    -- ...AND SO IS SHOOTING A DOWNED PLAYER. dbnoBleedPerDamage converts damage
+    -- into SECONDS, so it is denominated in the number that just tripled. Its
+    -- own note in config/match.lua states the design as a ROUND COUNT -- "four
+    -- rounds finish it" -- which is the thing that has to survive, and which a
+    -- base change silently breaks in the direction of "nobody can ever finish
+    -- anybody".
+    local rifleRound   = 30.0
+    local roundsToKill = M.dbnoBleedBase / (rifleRound * M.dbnoBleedPerDamage)
+    ok(roundsToKill >= 3.0 and roundsToKill <= 5.5,
+        'and four rifle rounds still finish a fresh knock, whatever the clock is',
+        ('%.1f rounds of %.0f damage'):format(roundsToKill, rifleRound))
+
+    -- THE ONE THING THAT DELIBERATELY DID NOT MOVE. attributedKiller expires at
+    -- assistWindowMs, and a bleed has always outlived it -- which is the entire
+    -- reason `downedBy` exists and does not expire (see BR.Combat.knock). If a
+    -- bleed ever became SHORTER than the assist window, that field would become
+    -- dead weight and nobody would notice.
+    ok(M.dbnoBleedMin * 1000 > M.assistWindowMs,
+        'and even the shortest bleed still outlives the assist window, which is '
+        .. 'why downedBy exists',
+        ('%ds bleed vs %dms window'):format(M.dbnoBleedMin, M.assistWindowMs))
+
+    -- The real ledger, on the real clock: knock, wait the configured time, and
+    -- see the player go out -- and NOT go out a beat early.
+    local S = newServer()
+    local PS = S.env.BR.PlayerState
+    S.env.BR.Combat.knock(1, 2)
+    ok(S.roster[1].state == PS.DBNO, 'a knock puts them down')
+
+    S.tick(M.dbnoBleedBase * 1000 - 2000)
+    ok(S.roster[1].state == PS.DBNO,
+        'two seconds before the deadline they are still bleeding',
+        tostring(S.roster[1].state))
+
+    S.tick(M.dbnoBleedBase * 1000 + 500)
+    ok(S.roster[1].state == PS.DEAD,
+        'and the clock still finishes them, on the new number',
+        tostring(S.roster[1].state))
+end
+
+-- ==========================================================================
+-- A HOLD IS A LEVEL. (owner, playtest: "Reviving a player twice doesn't seem
+-- to work. I can hold the input, the ring fills up, but then nothing happens.")
+-- ==========================================================================
+--
+-- WHY THIS BLOCK EXISTS IN THIS SHAPE. The ring is a lie, and it is a lie by
+-- construction rather than by accident: br_ui/dui/prompt.html starts a ONE-SHOT
+-- CSS animation from a single "a hold began, it lasts N ms" message and fills on
+-- schedule whatever the server thinks. So the only instrument that can answer
+-- "did the revive happen" is the server's own roster, driven by the REAL client
+-- over a REAL latency -- which is what this builds. The same reasoning, and the
+-- same rig, as dbno.fall.client above.
+--
+-- THE BUG, once it is written down, is not timing-dependent at all: `holding`
+-- was created in exactly ONE place, the key-DOWN listener, and cleared in five.
+-- Anything that ended a hold left the player leaning on a key that no longer
+-- meant anything. A COMPLETED REVIVE is one of those five, which is why the
+-- symptom is "the second one" -- and why no amount of watching the ring could
+-- find it.
+
+--- One squadmate's client, standing over a downed mate with the real
+--- client/dbno.lua and the real dbno.revive frame loop.
+--- @param mySrc integer
+--- @param mateSrc integer
+--- @param peds table  ped handle -> { x, y, z }; shared with the rig
+local function newReviver(mySrc, mateSrc, peds)
+    local env = newSandbox()
+    local C = { now = 0, toServer = {}, held = false }
+
+    env.GetGameTimer = function() return C.now end
+    env.print = function() end
+    env.GetCurrentResourceName = function() return 'br_core' end
+    env.GetHashKey = function(s) return #tostring(s) end
+    env.PlayerId = function() return 0 end
+    env.GetPlayerServerId = function() return mySrc end
+
+    loadInto(env, SANDBOX_LIB)
+
+    local V = {}
+    V.__index = V
+    V.__sub = function(a, b)
+        return setmetatable({ x = a.x - b.x, y = a.y - b.y, z = a.z - b.z }, V)
+    end
+    V.__len = function(a) return math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z) end
+    local function vec(x, y, z) return setmetatable({ x = x, y = y, z = z }, V) end
+    local function at(p) return peds[p] or peds[5000 + mySrc] end
+
+    env.PlayerPedId = function() return 5000 + mySrc end
+    env.DoesEntityExist = function() return true end
+    env.GetEntityCoords = function(p) local q = at(p) return vec(q.x, q.y, q.z) end
+    env.GetPedBoneCoords = function(p) local q = at(p) return vec(q.x, q.y, q.z + 0.3) end
+    env.GetEntityHeading = function() return 0.0 end
+    env.SetEntityHeading = function() end
+    env.GetEntityHealth = function() return env.BR.Config.Match.maxHealth end
+    env.IsEntityDead = function() return false end
+    env.IsPedFatallyInjured = function() return false end
+    env.SetEntityHealth = function() end
+    env.NetworkResurrectLocalPlayer = function() end
+    env.ClearPedTasksImmediately = function() end
+    env.ClearPedTasks = function() end
+    env.SetPedArmour = function() end
+    env.GetPedArmour = function() return 0 end
+    env.RemoveAllPedWeapons = function() end
+    env.SetCurrentPedWeapon = function() end
+    env.SetPedCanRagdoll = function() end
+    env.IsPedRagdoll = function() return false end
+    env.IsEntityInAir = function() return false end
+    env.ResetPedMovementClipset = function() end
+    env.SetPedMoveRateOverride = function() end
+    env.SetEntityCoordsNoOffset = function() end
+    env.DisableControlAction = function() end
+    env.GetDisabledControlNormal = function() return 0.0 end
+    env.GetControlNormal = function() return 0.0 end
+    env.GetFrameTime = function() return 0.016 end
+    env.StartShapeTestRay = function() return 1 end
+    env.GetShapeTestResult = function() return 2, false, vec(0, 0, 0) end
+    env.GetPedSourceOfDeath = function() return 0 end
+    env.GetPedCauseOfDeath = function() return 0 end
+    env.NetworkGetNetworkIdFromEntity = function() return 0 end
+    env.GetGamePool = function() return {} end
+    env.DoesAnimDictExist = function(d) return d == 'move_injured_ground' end
+    env.HasAnimDictLoaded = function(d) return d == 'move_injured_ground' end
+    env.RequestAnimDict = function() end
+    env.TaskPlayAnim = function() end
+    env.IsEntityPlayingAnim = function() return true end
+    env.SetEntityAnimSpeed = function() end
+    env.RequestClipSet = function() end
+    env.HasClipSetLoaded = function() return false end
+    env.CreateCamWithParams = function() return 700 end
+    env.DoesCamExist = function() return true end
+    env.DestroyCam = function() end
+    env.SetCamActive = function() end
+    env.RenderScriptCams = function() end
+    env.SetCamCoord = function() end
+    env.PointCamAtCoord = function() end
+
+    local handlers = {}
+    env.AddEventHandler = function(n, fn)
+        handlers[n] = handlers[n] or {}
+        handlers[n][#handlers[n] + 1] = fn
+    end
+    env.RegisterNetEvent = function() end
+    env.RegisterCommand = function() end
+    env.TriggerEvent = function(n, ...)
+        for _, fn in ipairs(handlers[n] or {}) do fn(...) end
+    end
+    env.TriggerServerEvent = function(n, d)
+        C.toServer[#C.toServer + 1] = { at = C.now, event = n, data = d }
+    end
+    local threads = {}
+    env.Citizen = {
+        CreateThread = function(fn)
+            threads[#threads + 1] = { co = coroutine.create(fn), wake = C.now + 16 }
+        end,
+        Wait = function(ms) coroutine.yield(ms or 0) end,
+        SetTimeout = function() end,
+    }
+
+    loadInto(env, { 'br_core/client/main.lua' })
+
+    env.BR.State.me = { src = mySrc, state = env.BR.PlayerState.ALIVE, squadId = 'sq1' }
+    env.BR.State.roster = {
+        [mateSrc] = { src = mateSrc, name = 'P' .. mateSrc, squadId = 'sq1',
+                      state = env.BR.PlayerState.ALIVE },
+        [mySrc]   = { src = mySrc, name = 'P' .. mySrc, squadId = 'sq1',
+                      state = env.BR.PlayerState.ALIVE },
+    }
+    env.BR.Sfx = { play = function() end }
+    env.BR.Dui = { page = function(n) return { name = n } end, send = function() end,
+                   drawWorld = function() end, drawScreen = function() end,
+                   drawOnEntity = function() end, ready = function() return true end }
+    env.BR.Native = env.BR.Native or {}
+    env.BR.Native.knockdown = function() end
+    env.BR.Native.setDisplayHealth = function() end
+    env.BR.Native.keyLabelForCommand = function() return 'E' end
+    env.BR.Native.applyGameRules = function() end
+    env.BR.Native.ALLY_GROUP = 1
+
+    -- THE KEY LAYER IS A PHYSICAL KEY HERE, and that is the point: isHeld is a
+    -- LEVEL that answers honestly on every frame, which is what keybinds.lua's
+    -- raw sampler was rewritten to guarantee (#129). The bug under test is what
+    -- dbno.lua does with that level, not whether the level is right.
+    local listeners = {}
+    env.BR.Keys = {
+        isHeld = function() return C.held end,
+        on = function(action, fn)
+            listeners[action] = listeners[action] or {}
+            listeners[action][#listeners[action] + 1] = fn
+        end,
+    }
+    function C.press(down)
+        C.held = down
+        for _, fn in ipairs(listeners.interact or {}) do fn(down) end
+    end
+    env.BR.Loot = { suppress = function() end }
+    env.BR.Squadmates = {
+        headAnchor = function(p) local q = at(p) return q.x, q.y, q.z + 0.3 end,
+        pedOf = function(s) return 5000 + s end,
+    }
+
+    -- THE ENVELOPES THIS CLIENT PUSHES AT THE INTERFACE, kept whole. The squad
+    -- cue (item 4) is one of them and it has no other observable.
+    C.ui = {}
+    env.AddEventHandler('br:ui:sendLocal', function(kind, payload)
+        C.ui[#C.ui + 1] = { kind = kind, d = payload }
+    end)
+
+    loadInto(env, { 'br_core/client/dbno.lua' })
+
+    C.env = env
+    function C.frame()
+        for i = #threads, 1, -1 do
+            local t = threads[i]
+            if C.now >= t.wake and coroutine.status(t.co) == 'suspended' then
+                local okr, err = coroutine.resume(t.co)
+                if not okr then
+                    io.write('\27[31mreviver thread error\27[0m ', tostring(err), '\n')
+                end
+                if coroutine.status(t.co) == 'dead' then table.remove(threads, i)
+                else t.wake = C.now + (tonumber(err) or 0) end
+            end
+        end
+        env.BR.Loop.step(env.BR.Loop.FRAME)
+    end
+    return C
+end
+
+--- Player 1 gets knocked; player 2 stands over them holding the key.
+--- @param rtt integer  one-way latency, ms
+local function newReviveRig(rtt)
+    local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                   [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+    local SRV = newServer()
+    local CLI = newReviver(2, 1, peds)
+    local PS  = SRV.env.BR.PlayerState
+    local wire = {}
+    local H = { srv = SRV, cli = CLI }
+
+    function H.pump(ms, onFrame)
+        local target = CLI.now + ms
+        while CLI.now < target do
+            CLI.now = math.min(CLI.now + 16, target)
+            local now = CLI.now
+            SRV.tick(now)
+
+            -- roster.positions, reduced to what it produces: reviveAllowed
+            -- measures from the SERVER's own samples and from nothing a client
+            -- said, so the rig has to keep them fed.
+            for _, s in ipairs({ 1, 2 }) do
+                local q = peds[5000 + s]
+                SRV.roster[s].pos = { x = q.x, y = q.y, z = q.z }
+            end
+
+            for i = 1, #SRV.out do
+                local m = SRV.out[i]
+                wire[#wire + 1] = { at = now + rtt, event = m.event,
+                                    target = m.target, payload = m.payload }
+            end
+            for i = #SRV.out, 1, -1 do SRV.out[i] = nil end
+            while wire[1] and now >= wire[1].at do
+                local m = table.remove(wire, 1)
+                if m.target == 2 then CLI.env.TriggerEvent(m.event, m.payload) end
+            end
+
+            -- The roster delta, which is how a client learns a mate went down.
+            CLI.env.BR.State.roster[1].state = SRV.roster[1].state
+
+            if onFrame then onFrame(now) end
+            CLI.frame()
+
+            local kept = {}
+            for i = 1, #CLI.toServer do
+                local m = CLI.toServer[i]
+                if now >= m.at + rtt then SRV.fire(m.event, 2, m.data)
+                else kept[#kept + 1] = m end
+            end
+            CLI.toServer = kept
+        end
+    end
+
+    function H.knock() SRV.env.BR.Combat.knock(1, 3) end
+    function H.press(down) CLI.press(down) end
+    function H.moveTo(x) peds[5002].x = x end
+    function H.up() return SRV.roster[1].state == PS.ALIVE end
+
+    --- Pump up to `ms` waiting for player 1 to come back up.
+    function H.revived(ms)
+        local done = false
+        H.pump(ms, function()
+            if SRV.roster[1].state == PS.ALIVE then done = true end
+        end)
+        return done
+    end
+
+    H.pump(2000)
+    return H
+end
+
+describe('dbno.hold.rearm')
+do
+    -- THREE ROUND TRIPS, because "it works on my connection" is what the last
+    -- three rounds on this file each turned out to mean. Every sequence below
+    -- failed on its SECOND cycle at all three before the fix and at none after,
+    -- which is how a bug is shown to be a rule rather than a race.
+    local RTTS = { 20, 40, 120 }
+
+    local plans = {
+        {
+            name = 'press, hold, release -- three times',
+            run = function(H)
+                local out = {}
+                for i = 1, 3 do
+                    H.knock(); H.pump(500)
+                    H.press(true)
+                    out[i] = H.revived(6000)
+                    H.press(false); H.pump(500)
+                end
+                return out
+            end,
+        },
+        {
+            -- THE OWNER'S SENTENCE, as a sequence. Nobody lets go of a key
+            -- between one revive and the next knock ten seconds later.
+            name = 'never lets go of the key between knocks',
+            run = function(H)
+                local out = {}
+                H.press(true)
+                for i = 1, 3 do
+                    H.knock()
+                    out[i] = H.revived(6000)
+                    H.pump(800)
+                end
+                H.press(false)
+                return out
+            end,
+        },
+        {
+            name = 'presses before the mate is down',
+            run = function(H)
+                local out = {}
+                for i = 1, 3 do
+                    H.press(true); H.pump(400)
+                    H.knock()
+                    out[i] = H.revived(6000)
+                    H.press(false); H.pump(500)
+                end
+                return out
+            end,
+        },
+        {
+            -- The reach test drops the hold, and walking back into reach used
+            -- to be no way to get it back.
+            name = 'steps out of reach mid-hold and steps back',
+            run = function(H)
+                local out = {}
+                for i = 1, 3 do
+                    H.knock(); H.pump(300)
+                    H.press(true); H.pump(600)
+                    H.moveTo(9.0); H.pump(600)
+                    H.moveTo(0.8)
+                    out[i] = H.revived(6000)
+                    H.press(false); H.pump(500)
+                end
+                return out
+            end,
+        },
+        {
+            name = 'mate goes down again under the same held key',
+            run = function(H)
+                local out = {}
+                H.knock(); H.pump(300)
+                H.press(true)
+                out[1] = H.revived(6000)
+                H.pump(400)
+                H.knock()
+                out[2] = H.revived(6000)
+                H.press(false)
+                return out
+            end,
+        },
+    }
+
+    for _, plan in ipairs(plans) do
+        local failures, where = 0, nil
+        for _, rtt in ipairs(RTTS) do
+            local res = plan.run(newReviveRig(rtt))
+            for i, up in ipairs(res) do
+                if not up then
+                    failures = failures + 1
+                    where = where or ('cycle %d at %dms'):format(i, rtt)
+                end
+            end
+        end
+        ok(failures == 0,
+            'every revive lands: ' .. plan.name,
+            where and ('%d failed, first %s'):format(failures, where) or nil)
+    end
+end
+
+describe('dbno.refusal')
+do
+    -- A REFUSAL THE CLIENT NEVER HEARS IS THE RING'S ALIBI. The prompt page runs
+    -- a one-shot CSS fill from one message, so a hold the server silently
+    -- declined looks exactly like a hold that is working -- for the full
+    -- duration, and then forever. Every refused REVIVE_START now answers.
+    local S = newServer()
+    local Net = S.env.BR.Net
+    S.env.BR.Combat.knock(1, 3)
+    for _, src in ipairs({ 1, 2 }) do
+        S.roster[src].pos = { x = (src - 1) * 0.5, y = 0.0, z = 30.0 }
+    end
+
+    --- @return table|nil the REVIVE_PROGRESS sent to `to`, if any
+    local function askAs(who, target, to)
+        for i = #S.out, 1, -1 do S.out[i] = nil end
+        S.fire(Net.REVIVE_START, who, { target = target })
+        for _, m in ipairs(S.out) do
+            if m.event == Net.REVIVE_PROGRESS and m.target == to then
+                return m.payload
+            end
+        end
+        return nil
+    end
+
+    -- Out of reach: the client's own 1.5m test would normally stop this, but a
+    -- client is not something the server gets to rely on.
+    S.roster[2].pos = { x = 40.0, y = 0.0, z = 30.0 }
+    local far = askAs(2, 1, 2)
+    ok(far ~= nil and far.cancelled == true,
+        'a refused hold answers the holder instead of leaving the ring running',
+        far and tostring(far.reason) or 'nothing was sent at all')
+
+    -- ...and an ALLOWED one still says nothing on the START itself: the progress
+    -- ticks are what report it, and an extra cancel here would kill the hold it
+    -- just accepted.
+    S.roster[2].pos = { x = 0.5, y = 0.0, z = 30.0 }
+    local near = askAs(2, 1, 2)
+    ok(near == nil,
+        'and an accepted hold is NOT answered with a cancel',
+        near and tostring(near.reason) or nil)
+    ok(S.roster[1].reviverSrc == 2, 'the accepted hold is on the books')
+
+    -- SECOND HAND ON LOSES, AND IS TOLD. This is the refusal that used to be
+    -- indistinguishable from a working hold for the mate who pressed second.
+    S.roster[3] = { src = 3, name = 'P3', matchId = 1, squadId = 'sq1',
+                    state = S.env.BR.PlayerState.ALIVE, hp = 100.0, armour = 0.0,
+                    pos = { x = 0.5, y = 0.0, z = 30.0 } }
+    local second = askAs(3, 1, 3)
+    ok(second ~= nil and second.cancelled == true and second.reason == 'taken',
+        'and the mate who pressed second is told the body is taken',
+        second and tostring(second.reason) or 'nothing was sent at all')
+    ok(S.roster[1].reviverSrc == 2,
+        'without disturbing the hold that was already running',
+        tostring(S.roster[1].reviverSrc))
+end
+
+-- ==========================================================================
+-- THE SQUAD HEARS IT; THE SUBJECT DOES NOT.
+-- ==========================================================================
+--
+-- Owner: "When a squad player goes from alive to DBNO and DBNO to out, a sound
+-- effect should be played that all squadmates can hear, except the one which is
+-- down. They have their own sounds for this phase."
+--
+-- THE AUDIENCE IS THE ONLY INTERESTING PART, and it is the part that cannot be
+-- seen by playing -- a two-machine playtest with the subject's own cue also
+-- firing sounds exactly like a correct one. So the audience is what is asserted,
+-- on both edges, against the real server.
+
+describe('dbno.squadcue')
+do
+    local S = newServer()
+    local Net = S.env.BR.Net
+    local PS  = S.env.BR.PlayerState
+
+    -- A third mate, and a stranger in the same match who must hear nothing.
+    S.roster[3] = { src = 3, name = 'P3', matchId = 1, squadId = 'sq1',
+                    state = PS.ALIVE, hp = 100.0, armour = 0.0, kills = 0 }
+    S.roster[4] = { src = 4, name = 'P4', matchId = 1, squadId = 'sq2',
+                    state = PS.ALIVE, hp = 100.0, armour = 0.0, kills = 0 }
+
+    --- Every DBNO_SET carrying a `mate` envelope, by recipient.
+    local function cues()
+        local out = {}
+        for _, m in ipairs(S.out) do
+            if m.event == Net.DBNO_SET and type(m.payload) == 'table'
+               and type(m.payload.mate) == 'table' then
+                out[m.target] = m.payload.mate
+            end
+        end
+        return out
+    end
+
+    for i = #S.out, 1, -1 do S.out[i] = nil end
+    S.env.BR.Combat.knock(1, 4)
+    local down = cues()
+
+    ok(down[2] ~= nil and down[3] ~= nil,
+        'a knock is heard by every squadmate')
+    ok(down[1] == nil,
+        'and NOT by the player it happened to -- they have their own cue',
+        down[1] and 'the subject was sent one' or nil)
+    ok(down[4] == nil,
+        'and not by the squad that shot them',
+        down[4] and 'an enemy was sent one' or nil)
+    ok(down[2] and down[2].phase == 'down' and down[2].src == 1
+       and down[2].name == 'P1',
+        'and it names the phase and who it happened to',
+        down[2] and (tostring(down[2].phase) .. ' ' .. tostring(down[2].src)) or nil)
+
+    -- ...AND THE SECOND EDGE. The bleed runs out with nobody on them.
+    for i = #S.out, 1, -1 do S.out[i] = nil end
+    S.tick(S.roster[1].dbnoUntil + 500)
+    local out = cues()
+
+    ok(S.roster[1].state == PS.DEAD, 'the bleed clock finishes them')
+    ok(out[2] ~= nil and out[2].phase == 'out',
+        'and DBNO -> out is its own cue to the squad',
+        out[2] and tostring(out[2].phase) or 'nothing was sent')
+    ok(out[1] == nil,
+        'still not to the subject',
+        out[1] and 'the subject was sent one' or nil)
+
+    -- A DEATH THAT WAS NEVER A KNOCK IS NOT THIS EVENT. Being shot dead outright
+    -- is what the kill feed is for; firing the downed-to-out cue for it would
+    -- tell a squad somebody had just bled out when nobody ever took a knee.
+    for i = #S.out, 1, -1 do S.out[i] = nil end
+    S.env.BR.Combat.eliminate(3, 'admin', nil)
+    ok(next(cues()) == nil,
+        'and a straight elimination -- never downed -- plays neither',
+        'a cue went out for a player who was never on the floor')
+end
+
+-- The client half of the same feature: the second shape on DBNO_SET is answered
+-- and, crucially, does NOT fall through into the receiver's own downed state.
+describe('dbno.squadcue.client')
+do
+    local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                   [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+    local CLI = newReviver(2, 1, peds)
+    local env = CLI.env
+
+    --- The last envelope of a kind this client pushed at the interface.
+    local function lastUi(kind)
+        for i = #CLI.ui, 1, -1 do
+            if CLI.ui[i].kind == kind then return CLI.ui[i].d end
+        end
+        return nil
+    end
+
+    env.TriggerEvent(env.BR.Net.DBNO_SET,
+        { mate = { src = 1, name = 'P1', phase = 'down' } })
+    local c = lastUi('squadcue')
+    ok(c ~= nil and c.cue == 'squad.down',
+        'a mate going down reaches the interface as a cue',
+        c and tostring(c.cue) or 'nothing was pushed')
+
+    env.TriggerEvent(env.BR.Net.DBNO_SET,
+        { mate = { src = 1, name = 'P1', phase = 'out' } })
+    c = lastUi('squadcue')
+    ok(c ~= nil and c.cue == 'squad.out',
+        'and going out is a DIFFERENT cue -- two events, two sounds',
+        c and tostring(c.cue) or 'nothing was pushed')
+
+    -- THE TRAP THIS EXISTS FOR. `mate` envelopes carry no `downed` field, so a
+    -- handler that fell through would read nil, decide we are not down, and
+    -- stand a downed player up on the strength of somebody else's news.
+    local dbno = lastUi(env.BR.Nui.DBNO)
+    ok(dbno == nil,
+        'and a cue about somebody else never writes our own downed state',
+        'the DBNO envelope was rewritten by a message about a mate')
+
+    -- An unknown phase is dropped rather than guessed at.
+    env.TriggerEvent(env.BR.Net.DBNO_SET,
+        { mate = { src = 1, name = 'P1', phase = 'sideways' } })
+    local n = 0
+    for _, e in ipairs(CLI.ui) do if e.kind == 'squadcue' then n = n + 1 end end
+    ok(n == 2, 'an unrecognised phase plays nothing', ('%d cues'):format(n))
 end
 
 -- ----------------------------------------------------------------- result ---
