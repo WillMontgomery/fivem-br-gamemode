@@ -509,7 +509,24 @@ find_lua() {
     for c in lua lua5.4 lua5.3 luajit; do
         if command -v "$c" >/dev/null 2>&1; then command -v "$c"; return 0; fi
     done
+    # Last resort: the absolute paths apt actually installs to. A forced SSH
+    # command runs with sshd's environment, not a login shell's, and its PATH is
+    # whatever sshd was built with -- so `command -v` can miss an interpreter
+    # that is plainly installed. The owner hit exactly that: lua5.4 present,
+    # this function returning empty (2026-08-17).
+    for c in /usr/bin/lua5.4 /usr/bin/lua5.3 /usr/bin/lua /usr/local/bin/lua \
+             /usr/bin/luajit /snap/bin/lua5.4; do
+        if [ -x "$c" ]; then printf '%s\n' "$c"; return 0; fi
+    done
     return 1
+}
+
+# What find_lua searched and what it had to search WITH. A message that names
+# only the fix is useless when the fix is already applied -- which is the state
+# the owner was in when he reported this.
+lua_search_note() {
+    printf 'tried: lua lua5.4 lua5.3 luajit on PATH, then the usual absolute paths. PATH was: %s' \
+        "${PATH:-<empty>}"
 }
 
 do_configreport() {
@@ -581,7 +598,7 @@ do_configreport() {
     script="$SRC_DIR/tools/config_report.lua"
 
     if [ -z "$lua_bin" ]; then
-        game='{"ok":false,"loadErrors":["no lua interpreter on this host -- install one with: sudo apt install -y lua5.4"],"values":[]}'
+        game="{\"ok\":false,\"loadErrors\":[\"no lua interpreter this dispatcher could reach -- $(lua_search_note)\"],\"values\":[]}"
     elif [ ! -r "$script" ]; then
         game="$(printf '{"ok":false,"loadErrors":["%s is missing -- deploy a commit that has it"],"values":[]}' \
                 "$(json_str "$script")")"
