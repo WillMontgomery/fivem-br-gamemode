@@ -6021,24 +6021,25 @@ end
 -- ------------------------------------------------------------------ report ---
 
 -- ======================================================================== --
--- COURTESY BLIPS DO NOT COME BACK AFTER A REVIVE (#164, item 4)
+-- COURTESY BLIPS ARE ONCE PER MATCH (#164, item 4)
 -- ======================================================================== --
 --
--- Owner, 2026-08-18: "Courtesy blips can come on after revive - that should
--- never happen."
+-- Owner, 2026-08-18: "It runs exactly once per match, at most. That's it.
+-- There's no logic to say we restart the courtesy blips, ever."
 --
--- The `loot.mercy` band cleared its once-per-life latch on EVERY pass where the
--- player was not ALIVE. DBNO is not ALIVE, so a knock wiped `done` and
--- `landedAt`, and sixty seconds after being revived an empty-handed player got
--- the blips and the toast a second time -- while a player who was never downed,
--- and whose grace had expired, could never get them again. Being shot was
--- rewarding them.
+-- Two rounds of fixes here were built on a once-per-LIFE latch, and a battle
+-- royale has no second life -- the only way back onto your feet is a revive. So
+-- the per-life reset was the between-MATCHES reset in disguise, and the DBNO
+-- special case existed only to defend against it. Both are gone: the latch is
+-- cleared by the match teardown transition and by nothing else.
 --
--- DBNO IS THE ONE NON-ALIVE STATE A PLAYER COMES BACK FROM, which is why it is
--- the only exception. The control below proves the exception is specific: a
--- real death still resets, because that IS a new life.
+-- THE EXHAUSTIVE CASES LIVE IN tools/test_shared.lua ('loot.mercy'), which
+-- sandboxes client/loot.lua on its own and can count real blip handles. This
+-- block is the integration half -- the same band inside the FULL client, with
+-- every other module loaded around it -- and it is deliberately short. Two
+-- suites with two models of the same latch is how this file ended up with two.
 
-describe('courtesy blips survive a knock, not a death')
+describe('courtesy blips are once per match')
 
 local function mercyToasts()
     local n = 0
@@ -6073,16 +6074,18 @@ ok(mercyToasts() == 1,
     'an empty-handed player is offered the courtesy blips once',
     ('toasts: %d'):format(mercyToasts()))
 
--- 2. AND NOT AGAIN, which is the latch that already worked.
+-- 2. AND NOT AGAIN. The expiry was never the broken half; the pass AFTER it
+--    was, where the arming test `now - landedAt >= afterMs` is still true.
 events = {}
 waitOutGrace()
 waitOutGrace()
 ok(mercyToasts() == 0,
-    'and never again on the same life -- the once-per-life latch',
+    'and never again -- the latch holds past the expiry',
     ('toasts: %d'):format(mercyToasts()))
 
--- 3. A KNOCK MUST NOT REARM THEM. This is the owner's report: go down, come
---    back, wait out a fresh grace period, and hear nothing.
+-- 3. NO PLAYER STATE REOPENS THE WINDOW. A knock, a bleed-out, a trip through
+--    the lobby: player state moves the blips on and off the map and touches
+--    nothing else. There is no second life for it to reset for.
 events = {}
 BR.State.me.state = BR.PlayerState.DBNO
 BR.Loop.step(BR.Loop.SLOW)
@@ -6091,22 +6094,32 @@ BR.State.me.state = BR.PlayerState.ALIVE
 waitOutGrace()
 waitOutGrace()
 ok(mercyToasts() == 0,
-    'A REVIVED PLAYER IS NOT OFFERED THEM AGAIN -- a knock is not a new life',
+    'A REVIVED PLAYER IS NOT OFFERED THEM AGAIN -- a knock is not a new match',
     ('toasts after a knock and revive: %d'):format(mercyToasts()))
 
--- 4. THE CONTROL, and it is the half that keeps this honest: a real death DOES
---    reset, because a new life genuinely starts empty-handed on a new drop. A
---    fix that simply stopped clearing the latch would pass test 3 and break
---    this one.
 events = {}
 BR.State.me.state = BR.PlayerState.DEAD
+BR.Loop.step(BR.Loop.SLOW)
+BR.State.me.state = BR.PlayerState.LOBBY
 BR.Loop.step(BR.Loop.SLOW)
 BR.State.me.state = BR.PlayerState.ALIVE
 BR.Loop.step(BR.Loop.SLOW)
 waitOutGrace()
-ok(mercyToasts() == 1,
-    'but a real death still resets them, because that IS a new life',
+ok(mercyToasts() == 0,
+    'and nor is a death -- that is what "once per MATCH" costs the old '
+    .. 'per-life control, and it is the point',
     ('toasts after a death and respawn: %d'):format(mercyToasts()))
+
+-- 4. THE MATCH TEARDOWN DOES, and it is the only thing that does. Fired here
+--    the way the wire fires it, so a handler that stops listening fails this.
+events = {}
+TriggerEvent(BR.Net.STATE, { state = BR.MatchState.WAITING })
+BR.State.me.state = BR.PlayerState.ALIVE
+BR.Loop.step(BR.Loop.SLOW)
+waitOutGrace()
+ok(mercyToasts() == 1,
+    'A NEW MATCH RE-ARMS THEM -- once per match, not once per session',
+    ('toasts after a new match: %d'):format(mercyToasts()))
 
 -- ---------------------------------------------------------------------------
 -- THE TWO REPORT PROMPTS, AND THE KEY BEHIND ONE OF THEM (#177, #180)

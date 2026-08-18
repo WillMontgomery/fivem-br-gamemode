@@ -2248,16 +2248,56 @@ local blips   = {}   -- [id] = handle
 
 -- THE MERCY BLIPS.
 --
--- A player who lands somewhere empty and spends a minute and a half finding
--- nothing has no way to tell "there is no loot here" from "this mode is
--- broken" -- and the second conclusion is the one they act on. After 90
--- seconds empty-handed the crates near them go on the map, with a notice
--- saying so (user, 2026-08-05).
+-- A player who lands somewhere empty and spends a minute finding nothing has no
+-- way to tell "there is no loot here" from "this mode is broken" -- and the
+-- second conclusion is the one they act on. So after a minute empty-handed the
+-- crates near them go on the map, with a notice saying so (user, 2026-08-05).
 --
--- They stay until BOTH conditions are met: something has been picked up AND
--- three minutes have passed. Whichever is later -- so the help does not
--- vanish the instant it starts working.
-local mercy = { landedAt = 0, armedAt = 0, on = false }
+-- ONCE PER MATCH, AND THAT IS THE WHOLE LIFECYCLE. This mode has no second
+-- life: the only way back onto your feet is a revive, so there is no per-life
+-- anything to reason about, and four fields say all of it.
+--
+--   * `done` is the latch, and it must exist. The expiry works fine; what did
+--     not was the very NEXT pass, where `on` is false, control falls into the
+--     arming test `now - landedAt >= afterMs` -- still true, and true forever --
+--     and re-arms. They re-armed a second later, every second, indefinitely
+--     (user, 2026-08-07: "courtesy loot blips don't remove after 1 minute" --
+--     they were removed, and immediately put back). Nothing but a new match
+--     reopens it, which is the one reset below.
+--   * `landedAt` is the grace clock, and it counts an UNBROKEN minute ON YOUR
+--     FEET. Every pass spent off them restarts it. That is what stops the map
+--     lighting up and the toast firing on the frame a revived player gets their
+--     weapon back -- the middle of the fight they just lost (owner, 2026-08-18):
+--     the clock used to keep running through the bleed and the pickup, so they
+--     stood up into a window that had expired while they were unconscious.
+--     Restarting it is not a latch reset and costs them nothing but the wait
+--     they would have had anyway; they still get the help if the map really is
+--     empty. The old answer was to close the window outright on a knock, which
+--     denied the help for the rest of the match to exactly the player who had
+--     the best reason to doubt the mode.
+--   * `armedAt` is when the window opened, and `on` is presentation -- whether
+--     the blips are drawn right now. Player state decides `on` and nothing else.
+local mercy = { landedAt = 0, armedAt = 0, on = false, done = false }
+
+-- THE ONE RESET: a new match.
+--
+-- The same edge this file already forgets its entries on, because it is the
+-- same fact -- that match is over, drop what we knew about it. It is also the
+-- match transition a client is guaranteed to see: client/state.lua replays
+-- WAITING locally off both the digest and the snapshot precisely so that every
+-- subsystem's teardown still runs when the scoped broadcast cannot reach it.
+-- The start-of-match edge carries no such guarantee -- a player attached to a
+-- match ALREADY in warmup never hears the transition into it.
+RegisterNetEvent(BR.Net.STATE)
+AddEventHandler(BR.Net.STATE, function(d)
+    if not d then return end
+    if d.state == BR.MatchState.WAITING
+       or d.state == BR.MatchState.ENDED
+       or d.state == BR.MatchState.CLEANUP then
+        mercy.landedAt, mercy.armedAt = 0, 0
+        mercy.on, mercy.done = false, false
+    end
+end)
 
 local function clearBlips()
     for id, b in pairs(blips) do
@@ -2271,109 +2311,63 @@ end
 BR.Loop.register(BR.Loop.SLOW, 'loot.mercy', function()
     local cfg = L.mercyBlips
     if not cfg or not cfg.enabled then return end
-
-    if BR.State.me.state ~= BR.PlayerState.ALIVE then
-        -- The blips go out while the player is not on their feet whatever put
-        -- them there -- `on` is the presentation. What happens to the LATCH is
-        -- the question, and DBNO is the one non-ALIVE state a player comes BACK
-        -- from, so it is the only state that gets its own answer.
-        mercy.on = false
-
-        if BR.State.me.state == BR.PlayerState.DBNO then
-            -- A KNOCK CLOSES THE COURTESY WINDOW FOR THIS LIFE. Not "preserves
-            -- the latch" -- SETS it. That distinction is the whole of the
-            -- second round on this report (owner, 2026-08-18: "courtesy blips
-            -- do still appear after revive yes").
-            --
-            -- The previous fix stopped a knock from CLEARING `done`, which
-            -- closed exactly one path: the player who had already been offered
-            -- the blips and had them taken away. Every other knock happens with
-            -- `done` still false -- the window has not been used yet -- and
-            -- preserving false preserves nothing. Worse, the grace period is
-            -- `now - landedAt` and `landedAt` keeps its stamp while they are on
-            -- the floor, so the bleed and the revive COUNT TOWARDS IT. A player
-            -- knocked at forty seconds and picked up at ninety stands up into a
-            -- grace period that expired while they were unconscious, and the
-            -- map lights up and the toast fires on the frame they get their
-            -- weapon back -- which is the middle of the fight they just lost.
-            --
-            -- So the rule is the owner's, stated as a rule: after a revive,
-            -- never. And it is worth saying what it costs, because it is a real
-            -- cost and not nothing: a player who genuinely has found no loot,
-            -- and who is knocked before their sixty seconds are up, does not get
-            -- the help on that life. They have also just been in a fight with
-            -- somebody, which is the one thing that answers the question these
-            -- blips exist for -- "is this mode broken, or is this map empty?"
-            mercy.done = true
-        else
-            mercy.landedAt, mercy.armedAt = 0, 0
-            mercy.done = false
-        end
-        return
-    end
-
-    -- ONCE PER LIFE. Without this the blips never go away, and the reason is
-    -- not the expiry -- that works -- it is what happens on the very next
-    -- pass. `mercy.on` goes false, control falls into the arming branch, and
-    -- the arming test is `now - landedAt >= afterMs`, which is still true and
-    -- will be true forever. So it re-armed a second later, every second,
-    -- indefinitely (user, 2026-08-07: "courtesy loot blips don't remove after
-    -- 1 minute" -- they were removed, and then immediately put back).
     if mercy.done then return end
 
-    local now = GetGameTimer()
-    if mercy.landedAt == 0 then mercy.landedAt = now end
+    local afoot = BR.State.me.state == BR.PlayerState.ALIVE
+    local now   = GetGameTimer()
 
-    -- "HAS THIS PLAYER FOUND ANYTHING" INCLUDES OPENING A CRATE.
-    --
-    -- This used to read BR.Inv.lastGainAt alone -- i.e. "is anything in your
-    -- inventory". But opening a chest does not put anything in your inventory:
-    -- it SCATTERS the contents on the ground for you to pick up. So a player
-    -- who walked up to a crate, held the key, watched it burst open and then
-    -- got into a fight still counted as empty-handed, and the courtesy blips
-    -- lit up the map for them anyway (user, 2026-08-08: "courtesy blips show
-    -- even after a client has opened a chest").
-    --
-    -- openedCount is the right signal and it is already maintained for the
-    -- glow: somebody who has opened a crate has demonstrably found the loot.
+    -- "HAS THIS PLAYER FOUND ANYTHING" INCLUDES OPENING A CRATE, which puts
+    -- nothing in the inventory -- it SCATTERS the contents on the ground. Read
+    -- as BR.Inv.lastGainAt alone, a player who burst a crate open and then got
+    -- into a fight still counted as empty-handed and had the map lit up for them
+    -- anyway (user, 2026-08-08). openedCount is the honest signal and the glow
+    -- already maintains it.
     local gained = (BR.Inv and BR.Inv.lastGainAt or 0) > 0
                 or (BR.Loot.openedCount or 0) > 0
 
-    if not mercy.on then
-        -- Only for someone who has actually found nothing. Picking something
-        -- up at any point before the timer means they know how this works.
-        if not gained and now - mercy.landedAt >= (cfg.afterMs or 60000) then
-            mercy.on, mercy.armedAt = true, now
-            -- THE NOTICE SAYS HOW LONG IT LASTS (user call, 2026-08-06).
-            -- Help that vanishes without warning reads as a bug; help with a
-            -- stated duration reads as a grace period, and the player knows to
-            -- use it now. Derived from the config rather than written out, so
-            -- retuning minShownMs cannot leave the text lying.
-            local mins = (cfg.minShownMs or 60000) / 60000.0
-            local howLong
-            if mins >= 2.0 then
-                howLong = ('%d minutes'):format(math.floor(mins + 0.5))
-            elseif mins >= 1.0 then
-                howLong = '1 minute'
-            else
-                howLong = ('%d seconds'):format(
-                    math.floor((cfg.minShownMs or 60000) / 1000 + 0.5))
-            end
-            TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
-                text = ('No loot nearby? Crates are marked on your map for %s.')
-                    :format(howLong),
-                tone = 'info', ms = 8000,
-            })
+    if mercy.armedAt == 0 then
+        -- The window has not opened. It counts an unbroken minute on their feet,
+        -- so time spent off them is not spent towards it: see the header.
+        if not afoot then
+            mercy.landedAt = 0
+            return
         end
-        return
+        if mercy.landedAt == 0 then mercy.landedAt = now end
+        -- Only for someone who has actually found nothing. Picking anything up
+        -- before the timer means they know how this works.
+        if gained or now - mercy.landedAt < (cfg.afterMs or 60000) then return end
+        mercy.armedAt = now
+
+        -- THE NOTICE SAYS HOW LONG IT LASTS (user call, 2026-08-06). Help that
+        -- vanishes without warning reads as a bug; help with a stated duration
+        -- reads as a grace period, and the player knows to use it now. Derived
+        -- from the config so retuning minShownMs cannot leave the text lying.
+        local mins = (cfg.minShownMs or 60000) / 60000.0
+        local howLong
+        if mins >= 2.0 then
+            howLong = ('%d minutes'):format(math.floor(mins + 0.5))
+        elseif mins >= 1.0 then
+            howLong = '1 minute'
+        else
+            howLong = ('%d seconds'):format(
+                math.floor((cfg.minShownMs or 60000) / 1000 + 0.5))
+        end
+        TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
+            text = ('No loot nearby? Crates are marked on your map for %s.')
+                :format(howLong),
+            tone = 'info', ms = 8000,
+        })
     end
+
+    -- Open. Drawing follows the player -- downed, dead, spectating, no blips --
+    -- and the clock underneath carries on regardless.
+    mercy.on = afoot
 
     -- EITHER, not both (user correction, 2026-08-05): they go away as soon as
     -- something has been found, or after the timeout, whichever comes first.
     -- Help that outstays the problem is just a wallhack left switched on.
     if gained or now - mercy.armedAt >= (cfg.minShownMs or 60000) then
-        mercy.on   = false
-        mercy.done = true   -- and never again this life
+        mercy.on, mercy.done = false, true   -- and never again this match
     end
 end)
 

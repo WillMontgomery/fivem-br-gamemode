@@ -5970,37 +5970,39 @@ do
 end
 
 -- ==========================================================================
--- COURTESY BLIPS AFTER A REVIVE, ROUND TWO.
+-- THE COURTESY BLIPS ARE ONCE PER MATCH.
 -- ==========================================================================
 --
--- "Courtesy blips do still appear after revive yes" (owner, 2026-08-18), after
--- a fix for exactly this shipped in 2a673ce.
+-- "It runs exactly once per match, at most. That's it. There's no logic to say
+-- we restart the courtesy blips, ever" (owner, 2026-08-18) -- after two rounds
+-- of fixes built on a per-LIFE latch, which is a lifecycle this mode does not
+-- have. The only way back onto your feet in a battle royale is a revive, so the
+-- per-life reset was really the between-MATCHES reset wearing the wrong hat,
+-- and the DBNO special case existed solely to defend against it.
 --
--- WHY THE FIRST FIX MISSED, AND IT IS NOT A TYPO -- it is a whole case. That
--- change stopped a knock CLEARING the once-per-life latch. It never SET one. So
--- it closed the single path where the blips had already been offered and taken
--- away, and left untouched every knock that happens with the latch still false,
--- which is every knock before the courtesy window has been used.
+-- WHAT THIS BLOCK HAS TO PIN, because each one has shipped broken:
 --
--- AND THE GRACE PERIOD RUNS WHILE YOU ARE UNCONSCIOUS. The arming test is
--- `now - landedAt >= afterMs` and `landedAt` keeps its stamp through DBNO -- so
--- a bleed and a revive count towards it. A player knocked inside their first
--- minute stands up into a window that expired while they were on the floor, and
--- the map lights up and the toast fires on the frame they get their weapon back.
---
--- THE OLD SUITE COULD NOT SEE THIS, and the reason is worth writing down because
--- it is the same reason four times over in this repo: tools/test_client.lua's
--- block walks the player through a FULL grace period BEFORE knocking them, so
--- `done` is already true when the knock lands and the only thing the assertion
--- can observe is whether the knock cleared it. The case the owner is reporting
--- was not in the fixture.
+--   * they arm ONCE and never re-arm (user, 2026-08-07: "courtesy loot blips
+--     don't remove after 1 minute" -- the arming test `now - landedAt >=
+--     afterMs` stays true forever, so the expiry was undone on the next pass);
+--   * they do NOT fire on the frame a revived player gets their weapon back
+--     (owner, 2026-08-18) -- the grace clock used to run through the bleed;
+--   * but a player knocked BEFORE the window opened still gets them afterwards
+--     if the map really is empty. That is the cost the old DBNO special case
+--     charged, and it is the thing being removed;
+--   * player state moves the BLIPS and nothing else -- no state transition
+--     reopens the window;
+--   * a new match, and only a new match, does.
 --
 -- THE REAL CALLBACK, LIFTED OUT OF THE REAL FILE. `mercy` is a file-local and
 -- there is no accessor, so the only honest way to drive it is to load
--- client/loot.lua into a sandbox and pull the registered SLOW callback back out
--- of BR.Loop -- which also means a rename or a deletion of the band fails this
--- block loudly rather than silently testing nothing.
-describe('loot.mercy.revive')
+-- client/loot.lua into a sandbox and pull the registered SLOW callbacks back
+-- out of BR.Loop -- which also means a rename or a deletion of the band fails
+-- this block loudly rather than silently testing nothing. The blips themselves
+-- are counted through the blip natives for the same reason: `mercy.on` is not
+-- reachable from here, so the assertion is made on what the player would
+-- actually see on their map.
+describe('loot.mercy')
 do
     --- One client with the real client/loot.lua in it, and nothing else.
     local function newLootClient()
@@ -6038,12 +6040,22 @@ do
         env.GetFrameTime      = function() return 0.016 end
         env.RegisterNetEvent  = function() end
         env.RegisterCommand   = function() end
-        env.AddBlipForCoord   = function() return 1 end
-        env.DoesBlipExist     = function() return true end
-        env.RemoveBlip        = function() end
-        env.SetBlipSprite     = function() end
-        env.SetBlipScale      = function() end
-        env.SetBlipColour     = function() end
+
+        -- LIVE BLIP HANDLES, not a constant. The old rig answered 1 to
+        -- AddBlipForCoord and true to DoesBlipExist forever, which makes "are
+        -- the blips on the map right now" unanswerable -- and that is exactly
+        -- the question "player state controls drawing only" is a claim about.
+        local live, nextBlip = {}, 0
+        env.AddBlipForCoord = function()
+            nextBlip = nextBlip + 1
+            live[nextBlip] = true
+            return nextBlip
+        end
+        env.DoesBlipExist = function(b) return live[b] == true end
+        env.RemoveBlip    = function(b) live[b] = nil end
+        env.SetBlipSprite = function() end
+        env.SetBlipScale  = function() end
+        env.SetBlipColour = function() end
         env.SetBlipAsShortRange = function() end
 
         local handlers = {}
@@ -6089,6 +6101,25 @@ do
             C.now = C.now + (ms or 1000)
             env.BR.Loop.step(env.BR.Loop.SLOW)
         end
+        --- Where the player is: `C.be(PS.DBNO)`.
+        function C.be(st) env.BR.State.me.state = st end
+        --- A match transition off the wire.
+        function C.match(st) env.TriggerEvent(env.BR.Net.STATE, { state = st }) end
+        --- Two crates within reach of the map, so there is something to blip.
+        function C.crates()
+            env.TriggerEvent(env.BR.Net.LOOT_ADD, {
+                { id = 'c1', kind = 'chest', x = 10.0, y = 10.0, z = 30.0,
+                  prop = 'prop_box_ammo04a' },
+                { id = 'c2', kind = 'chest', x = 20.0, y = 20.0, z = 30.0,
+                  prop = 'prop_box_ammo04a' },
+            })
+        end
+        --- How many blips are on the map right now.
+        function C.blips()
+            local n = 0
+            for _ in pairs(live) do n = n + 1 end
+            return n
+        end
         --- How many "crates are marked on your map" toasts have been raised.
         function C.toasts()
             local n = 0
@@ -6108,119 +6139,214 @@ do
         'the courtesy blips are switched on, or none of this means anything',
         cfg and tostring(cfg.enabled) or 'no mercyBlips config at all')
     local AFTER = (cfg and cfg.afterMs) or 60000
+    local SHOWN = (cfg and cfg.minShownMs) or 60000
 
     -- 1. THE CONTROL AT THE TOP, not at the bottom: a player who is never
     --    touched still gets the help, because a fix that simply disabled the
-    --    feature would pass every assertion below.
+    --    feature would pass every assertion below. And it arms ONCE -- the
+    --    2026-08-07 report was the expiry being undone on the very next pass,
+    --    which a rig that stops stepping at the expiry cannot see.
     do
         local C  = newLootClient()
         local PS = C.env.BR.PlayerState
-        C.env.BR.State.me.state = PS.ALIVE
+        C.crates()
+        C.be(PS.ALIVE)
         C.slow(0)
         C.slow(AFTER + 1000)
         ok(C.toasts() == 1,
-            'an empty-handed player who is never downed is still offered the '
+            'an empty-handed player who is never touched is offered the '
             .. 'courtesy blips',
             ('%d toasts'):format(C.toasts()))
+        ok(C.blips() == 2, 'and the crates near them go on the map',
+            ('%d blips'):format(C.blips()))
+
+        C.slow(SHOWN + 1000)
+        ok(C.blips() == 0, 'they come off the map when the window expires',
+            ('%d blips'):format(C.blips()))
+
+        for _ = 1, 20 do C.slow(30000) end
+        ok(C.toasts() == 1 and C.blips() == 0,
+            'AND THEY NEVER COME BACK -- ten minutes of passes past the expiry '
+            .. 'and the arming test, which stays true forever, re-arms nothing',
+            ('%d toasts, %d blips'):format(C.toasts(), C.blips()))
     end
 
-    -- 2. THE OWNER'S CASE, AND THE ONE THE OLD FIXTURE DID NOT HAVE: knocked
-    --    BEFORE the window was ever used, and picked up after it would have
-    --    expired.
+    -- 2. KNOCKED BEFORE THE WINDOW EVER OPENED. Both halves of this are the
+    --    point, and they used to be traded off against each other: the old
+    --    answer closed the window outright on a knock, which killed the second
+    --    half to buy the first.
     do
         local C  = newLootClient()
         local PS = C.env.BR.PlayerState
-        C.env.BR.State.me.state = PS.ALIVE
+        C.crates()
+        C.be(PS.ALIVE)
         C.slow(0)
         C.slow(20000)                       -- 20s in, nothing found yet
-
         ok(C.toasts() == 0,
             'nothing has been offered yet -- the grace period is still running',
             ('%d toasts'):format(C.toasts()))
 
-        C.env.BR.State.me.state = PS.DBNO   -- shot, and on the floor
+        C.be(PS.DBNO)
         C.slow(1000)
         C.slow(AFTER)                       -- a long bleed and a long revive
-        C.env.BR.State.me.state = PS.ALIVE  -- picked up
+        ok(C.toasts() == 0 and C.blips() == 0,
+            'a downed player is offered nothing and shown nothing',
+            ('%d toasts, %d blips'):format(C.toasts(), C.blips()))
 
+        C.be(PS.ALIVE)                      -- picked up
         C.slow(1000)
-        C.slow(AFTER + 1000)
-        C.slow(AFTER + 1000)
-
         ok(C.toasts() == 0,
-            'A KNOCK CLOSES THE COURTESY WINDOW FOR THAT LIFE -- BEFORE: the '
-            .. 'latch was still false when the knock landed, the grace period '
-            .. 'ran while they were unconscious, and the map lit up on the '
-            .. 'frame they were picked up',
-            ('%d toasts after a knock and revive'):format(C.toasts()))
+            'AND NOTHING FIRES ON THE FRAME THEY ARE PICKED UP (owner, '
+            .. '2026-08-18) -- the grace clock counts time on your feet, so '
+            .. 'the bleed and the revive did not spend it',
+            ('%d toasts on the revive pass'):format(C.toasts()))
+
+        C.slow(AFTER)
+        ok(C.toasts() == 1 and C.blips() == 2,
+            'BUT THEY STILL GET THE HELP once they have genuinely spent the '
+            .. 'grace period on their feet with nothing -- the old DBNO special '
+            .. 'case charged them their whole match for being knocked early',
+            ('%d toasts, %d blips'):format(C.toasts(), C.blips()))
     end
 
-    -- 3. AND A KNOCK WHILE THE BLIPS ARE STILL ON SCREEN. The window has been
-    --    OPENED but not yet closed -- `mercy.done` is set by the expiry, not by
-    --    the arming -- so preserving the latch preserves a latch that is still
-    --    false, and this case failed the shipped fix as squarely as case 2 did.
+    -- 3. KNOCKED WHILE THE BLIPS ARE ON SCREEN. The window is OPEN, so the
+    --    blips must come off the map and back on with the player -- and the
+    --    clock underneath must not restart, or a knock buys a fresh minute of
+    --    wallhack every time.
     do
         local C  = newLootClient()
         local PS = C.env.BR.PlayerState
-        C.env.BR.State.me.state = PS.ALIVE
+        C.crates()
+        C.be(PS.ALIVE)
         C.slow(0)
         C.slow(AFTER + 1000)
-        ok(C.toasts() == 1, 'the blips are offered once', ('%d'):format(C.toasts()))
+        ok(C.toasts() == 1 and C.blips() == 2, 'the blips are offered once',
+            ('%d toasts, %d blips'):format(C.toasts(), C.blips()))
 
-        C.env.BR.State.me.state = PS.DBNO
+        C.be(PS.DBNO)
         C.slow(1000)
-        C.env.BR.State.me.state = PS.ALIVE
+        ok(C.blips() == 0, 'a knock takes them off the map',
+            ('%d blips'):format(C.blips()))
+
+        C.be(PS.ALIVE)
+        C.slow(1000)
+        ok(C.toasts() == 1 and C.blips() == 2,
+            'and a revive puts them back WITHOUT a second toast -- the window '
+            .. 'never closed, so it was never reopened',
+            ('%d toasts, %d blips'):format(C.toasts(), C.blips()))
+
+        C.slow(SHOWN)
+        ok(C.blips() == 0 and C.toasts() == 1,
+            'and the window still expires on its own clock, which the knock '
+            .. 'did not rewind',
+            ('%d toasts, %d blips'):format(C.toasts(), C.blips()))
+    end
+
+    -- 4. NO PLAYER-STATE TRANSITION REOPENS THE WINDOW. This is the assertion
+    --    the old per-life model fails, and it is the whole of the owner's
+    --    point: there is no second life to reset for. A DEATH is not a new
+    --    match -- what follows a death in this mode is the lobby.
+    do
+        local C  = newLootClient()
+        local PS = C.env.BR.PlayerState
+        C.crates()
+        C.be(PS.ALIVE)
+        C.slow(0)
+        C.slow(AFTER + 1000)
+        C.slow(SHOWN + 1000)
+        ok(C.toasts() == 1, 'offered once, and expired',
+            ('%d'):format(C.toasts()))
+
+        C.be(PS.DEAD)
+        C.slow(1000)
+        C.be(PS.ALIVE)
+        C.slow(1000)
         C.slow(AFTER + 1000)
         C.slow(AFTER + 1000)
         ok(C.toasts() == 1,
-            'and a knock after they were used does not offer them again either',
+            'a death and a return to their feet does NOT re-arm them -- the '
+            .. 'latch is per MATCH, and nothing about a player state says a '
+            .. 'match began',
+            ('%d toasts after a death'):format(C.toasts()))
+
+        C.be(PS.DBNO)
+        C.slow(1000)
+        C.be(PS.DEAD)                       -- bled out
+        C.slow(1000)
+        C.be(PS.LOBBY)                      -- and back to the menu
+        C.slow(1000)
+        C.be(PS.ALIVE)
+        C.slow(AFTER + 1000)
+        ok(C.toasts() == 1,
+            'nor does a bleed-out, nor a trip through the lobby',
             ('%d toasts'):format(C.toasts()))
     end
 
-    -- 4. THE CONTROL THAT KEEPS THE RULE HONEST, and it is the one a lazy fix
-    --    breaks: a real DEATH still resets, because a new life genuinely starts
-    --    empty-handed on a new drop. Latching `done` forever would pass every
-    --    assertion above and silently delete the feature from the second match
-    --    of every session.
+    -- 5. A NEW MATCH DOES. The teardown transition is the one this file already
+    --    drops its entries on, and the one client/state.lua replays locally off
+    --    the digest and the snapshot so a scoped broadcast cannot miss it.
+    --    Case 4 above is what makes this case mean something: without it, a
+    --    green run here could be the lobby transition doing the work.
     do
         local C  = newLootClient()
         local PS = C.env.BR.PlayerState
-        C.env.BR.State.me.state = PS.ALIVE
+        local MS = C.env.BR.MatchState
+        C.crates()
+        C.be(PS.ALIVE)
         C.slow(0)
         C.slow(AFTER + 1000)
-        ok(C.toasts() == 1, 'offered once on the first life',
-            ('%d'):format(C.toasts()))
+        C.slow(SHOWN + 1000)
+        ok(C.toasts() == 1, 'used up in the first match', ('%d'):format(C.toasts()))
 
-        C.env.BR.State.me.state = PS.DEAD
+        C.match(MS.ENDED)                   -- the round is over
+        C.be(PS.LOBBY)
         C.slow(1000)
-        C.env.BR.State.me.state = PS.ALIVE
+        C.match(MS.WAITING)                 -- released to the lobby
         C.slow(1000)
-        C.slow(AFTER + 1000)
-        ok(C.toasts() == 2,
-            'but a real death DOES reset them, because that IS a new life',
-            ('%d toasts after a death and a respawn'):format(C.toasts()))
+        ok(C.toasts() == 1, 'the lobby is offered nothing',
+            ('%d toasts'):format(C.toasts()))
+
+        C.crates()                          -- a new layout streams in
+        C.be(PS.WARMUP)
+        C.slow(1000)
+        C.be(PS.ALIVE)                      -- landed in the new match
+        C.slow(1000)
+        ok(C.toasts() == 1,
+            'and the new match does not start by offering them either -- the '
+            .. 'grace period runs from the landing, not from the reset',
+            ('%d toasts'):format(C.toasts()))
+
+        C.slow(AFTER)
+        ok(C.toasts() == 2 and C.blips() == 2,
+            'THE NEW MATCH RE-ARMS THE LATCH -- the courtesy blips are once '
+            .. 'per match, not once per session',
+            ('%d toasts, %d blips'):format(C.toasts(), C.blips()))
     end
 
-    -- 5. ...AND A KNOCK IS NOT A DEATH EVEN WHEN A DEATH FOLLOWS IT. Bleeding
-    --    out goes DBNO -> DEAD, and the DEAD pass has to be the one that
-    --    reopens the window -- otherwise the latch a knock sets would follow a
-    --    player into their next life.
+    -- 6. THE SAME CLAIM WITH THE PLAYER STATE HELD STILL. Case 5 walks a
+    --    realistic path -- lobby, warmup, landing -- and every one of those is
+    --    a transition the OLD per-life reset also fired on, so on its own it
+    --    cannot say which signal did the work. Here the player never leaves
+    --    ALIVE and the match transition is the only thing that happens, so a
+    --    second offer can have come from nowhere else.
     do
         local C  = newLootClient()
         local PS = C.env.BR.PlayerState
-        C.env.BR.State.me.state = PS.ALIVE
+        local MS = C.env.BR.MatchState
+        C.crates()
+        C.be(PS.ALIVE)
         C.slow(0)
-        C.slow(20000)
-        C.env.BR.State.me.state = PS.DBNO
-        C.slow(1000)
-        C.env.BR.State.me.state = PS.DEAD      -- bled out
-        C.slow(1000)
-        C.env.BR.State.me.state = PS.ALIVE     -- next match, fresh drop
-        C.slow(1000)
         C.slow(AFTER + 1000)
-        ok(C.toasts() == 1,
-            'and a knock that ends in a bleed-out does not follow the player '
-            .. 'into the next life',
+        C.slow(SHOWN + 1000)
+        ok(C.toasts() == 1, 'used up once', ('%d'):format(C.toasts()))
+
+        C.match(MS.WAITING)
+        C.crates()
+        C.slow(1000)
+        C.slow(AFTER)
+        ok(C.toasts() == 2,
+            'the match transition ALONE reopens the window -- no player state '
+            .. 'was touched between the two offers',
             ('%d toasts'):format(C.toasts()))
     end
 end
