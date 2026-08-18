@@ -538,6 +538,12 @@ end)
 --- is its own third answer and is printed as such.
 local promptCreatedAt, promptReadyAt = nil, nil
 
+--- How long the prompt waits for its own browser before using the engine box.
+--- Three seconds, the owner's number. Long enough that a slow start is covered
+--- and short enough that a browser which is never coming does not eat the whole
+--- jump window in silence.
+local PROMPT_GRACE_MS = 3000
+
 --- The jump prompt's page. Its own browser, NOT the descent prompt's.
 ---
 --- skydive.lua makes this argument for `descentprompt` and it holds here with
@@ -647,7 +653,7 @@ end)
 --- "The prompt did not appear" and "the prompt appeared and the key did
 --- nothing" are the same sentence from a chair, and #131 cost five rounds
 --- partly because no readout could separate them.
-local promptSeen = { kind = nil, sends = 0, draws = 0, fallbacks = 0 }
+local promptSeen = { kind = nil, sends = 0, draws = 0, fallbacks = 0, waited = 0 }
 
 --- Put the jump window in the box, or take the box away.
 --- @param kind string|nil  'open', 'closing' or nil
@@ -727,6 +733,26 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.prompt', function()
                                 (D and D.promptY) or 0.78,
                                 (D and D.promptScale) or 0.17)
     else
+        -- GIVE THE BROWSER THREE SECONDS BEFORE FALLING BACK (owner,
+        -- 2026-08-18): "If we can't draw the bus text for one beat that's fine.
+        -- We should still use DUI - fallback after 3 seconds if we still have
+        -- no browser."
+        --
+        -- The prewarm above means a healthy client is ready long before the
+        -- doors open, so this grace is normally never spent. What it buys is
+        -- the case it was written for: a slow client where the browser arrives
+        -- a beat late no longer shows the engine box for that beat and then
+        -- swaps, which reads as two different prompts fighting.
+        --
+        -- MEASURED FROM CREATION, NOT FROM THE FIRST DRAW. The doors can open
+        -- long after the warm edge, and a grace that started here would give a
+        -- browser that has already had thirty seconds another three.
+        local waited = GetGameTimer() - (promptCreatedAt or GetGameTimer())
+        if waited < PROMPT_GRACE_MS then
+            promptSeen.waited = promptSeen.waited + 1
+            return
+        end
+
         -- A BROWSER THAT NEVER CAME UP MUST NOT MEAN SILENCE (#131's third
         -- round), and here it would cost the whole match rather than a
         -- cosmetic: a player who cannot see the jump prompt does not jump.
