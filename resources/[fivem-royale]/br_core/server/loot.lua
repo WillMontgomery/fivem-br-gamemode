@@ -603,6 +603,26 @@ end
 --
 -- So the chain is gone. There is a table with a DEFAULT under it, which is the
 -- only shape in which a reason added later cannot arrive silent.
+--
+-- AND THEN A SECOND ROUND, BECAUSE SPEAKING IS NOT THE SAME AS BEING TRUE
+-- (owner, 2026-08-18, after playtest). Once every refusal had a sentence, the
+-- one that had been silent turned out to be saying the wrong thing: `sameitem`
+-- announced a MAXIMUM, and it was neither a maximum nor global.
+--
+-- ONE SENTENCE PER QUESTION, and there are two questions:
+--
+--   HAVE I REACHED MY LIMIT?  -- `carrymax`, and only `carrymax`. Asked of the
+--     WHOLE inventory (BR.Inv.give counts every slot) and asked only of items
+--     that have a limit at all (BR.Inv.carryMax returns nil, not zero, for the
+--     ones that do not). It is the one sentence entitled to quote a number.
+--
+--   CAN THIS GO WHERE I AM STANDING?  -- `sameitem`. One slot, no ceiling
+--     involved, and an item the player is perfectly entitled to more of. It
+--     offers the remedy instead of a verdict.
+--
+-- Merging those two is what reopened this issue. Anything added below that
+-- reads like a limit should be checked against BR.Inv.carryMax before it is
+-- allowed to say so.
 -- --------------------------------------------------------------------------
 
 --- "No, and the reason is not worth a sentence of its own."
@@ -629,6 +649,26 @@ local REFUSAL = {
     -- the reason. It cost nothing and it was silent.
     noinv    = REFUSED,
 }
+
+--- What to call this item, one of it.
+---
+--- Three tables and a fallback, in the same order pluralOf walks them, because
+--- an item id can be a consumable, a weapon or throwable, or an ammo pool and
+--- the sentence has no way to know which. The last line is the one that
+--- matters: a refusal that renders `nil` into its own text is worse than the
+--- refusal it replaced.
+--- @param stack table|nil
+--- @return string
+local function labelOf(stack)
+    local id = stack and stack.item
+    local c = id and BR.Config.ConsumableById[id]
+    if c then return c.label or 'item' end
+    local w = id and BR.Config.WeaponById[id]
+    if w then return w.label or 'item' end
+    local a = id and BR.Config.AmmoPickups[id]
+    if a then return a.label or 'item' end
+    return 'item'
+end
 
 --- What to call this item when there is more than one of it.
 ---
@@ -676,23 +716,33 @@ function BR.Loot.refusalText(reason, stack)
         return ('You cannot carry more than %d %s.'):format(cap, pluralOf(stack))
     end
 
-    -- THE LIKE-FOR-LIKE REFUSAL, WHICH ALSO NAMES THE ITEM (owner, 2026-08-18:
-    -- "'You are already holding that' should say 'You cannot pickup any more
-    -- [item name]s'").
+    -- THE LIKE-FOR-LIKE REFUSAL, WHICH IS NOT A LIMIT AND NO LONGER TALKS LIKE
+    -- ONE (#171, reopened -- owner, 2026-08-18: "the 'you cannot pickup any
+    -- more X' notification should really only appear if I'm actively holding an
+    -- item id that has a maximum, and I've reached my maximum already").
     --
-    -- THE NAME IS pluralOf, NOT label .. 's'. The bracketed "[item name]s" in
-    -- the request is shorthand for the plural, not an instruction to build one
-    -- by concatenation -- `plural` exists in br_lib/config/loot.lua precisely
-    -- because the last refusal that assembled its own noun shipped as "You can
-    -- only carry 0 of thoses." pluralOf reads the authored plural first and
-    -- falls back twice, so this cannot render nil for any item, configured or
-    -- not.
+    -- IT SAID "You cannot pickup any more %s." AND THAT SENTENCE WAS TWO LIES
+    -- AT ONCE. It announced a maximum for an SNS Pistol, which has never had
+    -- one -- weapons have no carryMax and BR.Inv.carryMax returns nil for every
+    -- one of them. And it announced that maximum off the ACTIVE SLOT, so the
+    -- player who took it at face value learned the ceiling was three shields,
+    -- switched to slot 4, and picked up three more. A per-slot rule wearing a
+    -- global sentence teaches the player a limit that does not exist.
     --
-    -- FULL STOP ADDED. The request carries none; every other sentence in this
-    -- file and in BR.Server.notify does, and a toast that ends mid-air next to
-    -- one that does not is the wording bug this change is fixing.
+    -- WHAT IS ACTUALLY TRUE HERE is that the inventory is full and the one slot
+    -- a swap may spend holds this same item -- so spending it would trade a
+    -- stack of three for a pickup of one, or a loaded magazine for a floor
+    -- copy's. The player may still have more of this item; they just cannot
+    -- have it HERE. So the sentence is the way out rather than a verdict, and
+    -- it is the way out the owner found for himself: change slots.
+    --
+    -- SINGULAR, AND "another". `pluralOf` belongs to the carrymax sentence,
+    -- which counts; this one names a single item and dodges the a/an problem
+    -- that "a SNS Pistol" would otherwise walk into. labelOf falls back three
+    -- times for the same reason pluralOf does -- "You can only carry 0 of
+    -- thoses." was born of a lookup that came back empty.
     if reason == 'sameitem' then
-        return ('You cannot pickup any more %s.'):format(pluralOf(stack))
+        return ('Switch slots to pick up another %s.'):format(labelOf(stack))
     end
 
     return REFUSAL[reason] or REFUSED

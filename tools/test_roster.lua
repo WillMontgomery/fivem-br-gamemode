@@ -3847,6 +3847,17 @@ do
     -- shield stack is three; a loose pickup is one. The swap therefore took
     -- THREE out of the inventory and put ONE back, for a key the player
     -- pressed wanting more shields.
+    --
+    -- ...AND THEN THE PLAYTEST SENT IT BACK, because the refusal that replaced
+    -- the swap announced a MAXIMUM (owner, 2026-08-18: "the 'you cannot pickup
+    -- any more X' notification should really only appear if I'm actively
+    -- holding an item id that has a maximum, and I've reached my maximum
+    -- already"). There is no maximum here -- see the assertion directly below,
+    -- which is the same fact this block was already resting on and which the
+    -- sentence then contradicted. So the block keeps every behavioural claim it
+    -- had and swaps every wording claim: the stack survives, the floor copy
+    -- survives, the refusal talks -- and what it says is now about the SLOT,
+    -- which is the only thing that was ever full.
     -- ----------------------------------------------------------------------
     local shieldCfg = BR.Config.ConsumableById['shield']
     ok(shieldCfg.carryMax == nil,
@@ -3891,33 +3902,64 @@ do
         'and leaves the loose one on the floor rather than trading for it')
     ok((saidS[1] or '') ~= '', 'and it SAYS so -- a silent refusal is #171',
         ('%q'):format(saidS[1] or ''))
-    -- THE OWNER'S WORDING, verbatim but for the full stop this file's other
-    -- sentences all carry (owner, 2026-08-18: "should say 'You cannot pickup
-    -- any more [item name]s'").
-    ok(saidS[1] == ('You cannot pickup any more %s.'):format(shieldCfg.plural),
-        'in the words the owner asked for, with the item named',
-        ('%q'):format(saidS[1] or ''))
-    -- The wording also has to be true of the reason. Nothing here was a
-    -- CEILING -- shields have none -- so the carrymax sentence, which quotes a
-    -- cap, would be a lie in both halves.
-    ok((saidS[1] or ''):find('carry', 1, true) == nil,
-        'and never in carrymax wording, which quotes a cap that does not exist',
+    -- THE ITEM IS NAMED, which is the half of the owner's first request that
+    -- survived the playtest (2026-08-18: "should say ... [item name]").
+    ok((saidS[1] or ''):find(shieldCfg.label, 1, true) ~= nil,
+        'and names the item, so the player knows which pickup was refused',
         ('%q'):format(saidS[1] or ''))
 
-    -- THE NAME COMES FROM THE CONFIG, NOT FROM label .. "s". Every plural in
-    -- the game today happens to be regular, so nothing else in this file can
-    -- tell the two implementations apart -- which is exactly how "of thoses"
-    -- got shipped. Bending one config plural out of shape for a single claim
-    -- separates them: the sentence either follows `plural` or it does not.
-    local realPlural = shieldCfg.plural
-    shieldCfg.plural = 'Shieldes'
+    --- Every way a refusal can claim a ceiling that is not there.
+    ---
+    --- ONE BATTERY, RUN AGAINST BOTH REPORTED ITEMS, because the owner reported
+    --- this twice against two kinds -- a Shield (CONSUMABLE, uncapped) and an
+    --- SNS Pistol (WEAPON, uncapped by construction) -- and a wording assertion
+    --- written out twice is a wording assertion that gets half-updated. Each
+    --- string below is a different way of saying the same false thing, and the
+    --- sentence is only honest if it says none of them.
+    ---
+    --- THE DIGIT CHECK IS THE ONE THAT CANNOT BE ARGUED WITH. A cap is a
+    --- number; an item with no cap has no number to print, so a refusal for an
+    --- uncapped item containing any digit at all has invented one.
+    ---
+    --- AND IT MUST STILL POINT SOMEWHERE. What is genuinely full here is one
+    --- SLOT, and the remedy is the one the owner found for himself before
+    --- anybody told him. Naming a true obstacle the player can act on is the
+    --- whole difference between this and the sentence it replaced -- and
+    --- without this half the battery above would pass on silence, which is the
+    --- original #171.
+    local function pinsNoCeiling(text, who)
+        for _, lie in ipairs({ 'any more', 'cannot carry', 'max' }) do
+            ok(text:lower():find(lie, 1, true) == nil,
+                ('a refused %s never says %q -- it has no ceiling to say it about')
+                    :format(who, lie),
+                ('%q'):format(text))
+        end
+        ok(text:find('%d') == nil,
+            ('and quotes no number at a %s, because there is no cap to quote')
+                :format(who),
+            ('%q'):format(text))
+        ok(text:lower():find('slot', 1, true) ~= nil,
+            ('and points a %s at the slot, the thing that IS actually full')
+                :format(who),
+            ('%q'):format(text))
+    end
+
+    pinsNoCeiling(saidS[1] or '', 'shield')
+
+    -- THE NAME COMES FROM THE CONFIG, NOT FROM A LITERAL. Every label in the
+    -- game reads plausibly, so nothing else in this file can tell a config
+    -- lookup from a hardcoded string -- which is exactly how "of thoses" got
+    -- shipped. Bending one label out of shape for a single claim separates
+    -- them: the sentence either follows `label` or it does not.
+    local realLabel = shieldCfg.label
+    shieldCfg.label = 'Bubble Of Protection'
     holdingShields(shieldCfg.maxStack)
-    local saidIrreg = claimLater(1, { item = 'shield',
+    local saidOdd = claimLater(1, { item = 'shield',
         kind = BR.ItemKind.CONSUMABLE, rarity = shieldCfg.rarity, count = 1 })
-    shieldCfg.plural = realPlural
-    ok((saidIrreg[1] or ''):find('Shieldes', 1, true) ~= nil,
-        'an irregular plural is read from the config, never assembled',
-        ('%q'):format(saidIrreg[1] or ''))
+    shieldCfg.label = realLabel
+    ok((saidOdd[1] or ''):find('Bubble Of Protection', 1, true) ~= nil,
+        'an item name is read from the config, never written into the sentence',
+        ('%q'):format(saidOdd[1] or ''))
 
     -- AND AN ITEM WITH NO CONFIG AT ALL STILL RENDERS A SENTENCE. A refusal
     -- that interpolates a nil is worse than the one it replaced.
@@ -3927,6 +3969,178 @@ do
         and orphan:find('nil', 1, true) == nil,
         'and an unconfigured item falls back rather than printing a nil',
         ('%q'):format(tostring(orphan)))
+
+    -- ======================================================================
+    -- THREE CASES, AND ONLY THE THIRD SAYS "MAXIMUM" (#171, reopened).
+    --
+    -- The commit before this one asked ONE question -- "is the active slot the
+    -- same item" -- and answered it with a sentence about a limit. Two
+    -- different rules had been folded into one test, and the playtest found
+    -- both halves of the fold:
+    --
+    --   1. NO CEILING EXISTS. An SNS Pistol has no carryMax and never will.
+    --      A second one is legitimate and goes to a free slot in silence.
+    --   2. A CEILING EXISTS AND IS NOT REACHED. It fills, even when the active
+    --      slot holds the very same item -- which is the case the like-for-like
+    --      rule must NOT eat.
+    --   3. A CEILING EXISTS AND IS REACHED, counted across EVERY slot. Refused,
+    --      and this is the only refusal entitled to quote a number.
+    --
+    -- Each case below is claimed end-to-end through the handler rather than
+    -- asserted against BR.Inv.give, because the sentence the player reads is
+    -- produced a file away from the reason that chose it and #171 has already
+    -- been reopened once by exactly that gap.
+    -- ======================================================================
+
+    --- Five slots: `first` in slot 1 and pistols after it, `freeFrom` onward
+    --- left empty. Active is slot 1 -- the slot the like-for-like rule reads.
+    local function holdingWith(first, freeFrom)
+        BR.Inv.reset(1)
+        BR.Inv.give(1, first)
+        for i = 2, (freeFrom or (BR.Config.Loot.slots + 1)) - 1 do
+            local _ = i
+            BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                             rarity = 1, count = 1, clip = 12 })
+        end
+        local i = BR.Inv.of(1)
+        i.active = 1
+        return i
+    end
+
+    -- ----------------------------------------------------------------------
+    -- CASE 1 -- NO CEILING, AND A SLOT TO PUT IT IN (owner, 2026-08-18:
+    -- "holding an SNS pistol in slot 3 with slot 3 active, trying to pickup
+    -- another SNS pistol tells me I already have the max. But I don't, because
+    -- there is no max for that id").
+    --
+    -- THE ITEM HE REPORTED IT AGAINST, by id, so this cannot be argued about.
+    -- ----------------------------------------------------------------------
+    local sns = BR.Config.WeaponById['snspistol']
+    ok(BR.Inv.carryMax({ item = 'snspistol', kind = BR.ItemKind.WEAPON }) == nil,
+        'an SNS Pistol has no carry ceiling -- no weapon does')
+
+    inv = holdingWith({ item = 'snspistol', kind = BR.ItemKind.WEAPON,
+                        rarity = sns.rarity, count = 1, clip = sns.clip },
+                      BR.Config.Loot.slots)   -- slot 5 left empty
+    local saidFree, snsFreeE = claimLater(1, { item = 'snspistol',
+        kind = BR.ItemKind.WEAPON, rarity = sns.rarity, count = 1, clip = 1 })
+    ok(inv.slots[BR.Config.Loot.slots]
+        and inv.slots[BR.Config.Loot.slots].item == 'snspistol',
+        'a second SNS Pistol goes to the FREE SLOT, cap or no cap',
+        tostring(inv.slots[BR.Config.Loot.slots]
+                 and inv.slots[BR.Config.Loot.slots].item))
+    ok(inv.slots[1] and inv.slots[1].clip == sns.clip,
+        'and the one in the active slot is not touched on the way past',
+        ('clip %s'):format(tostring(inv.slots[1] and inv.slots[1].clip)))
+    ok(#saidFree == 0, 'and NOTHING IS SAID, because nothing was refused',
+        table.concat(saidFree, ' / '))
+    ok(m.loot.items[snsFreeE.id] == nil, 'and it leaves the world, taken')
+
+    -- The same pickup with every slot full is still refused -- the swap rule,
+    -- not a ceiling -- and the sentence has to know the difference.
+    inv = holdingWith({ item = 'snspistol', kind = BR.ItemKind.WEAPON,
+                        rarity = sns.rarity, count = 1, clip = sns.clip })
+    local saidFull, snsFullE = claimLater(1, { item = 'snspistol',
+        kind = BR.ItemKind.WEAPON, rarity = sns.rarity, count = 1, clip = 1 })
+    ok(inv.slots[1] and inv.slots[1].clip == sns.clip,
+        'with no free slot the loaded one is still not traded for a floor copy',
+        ('clip %s'):format(tostring(inv.slots[1] and inv.slots[1].clip)))
+    ok(m.loot.items[snsFullE.id] ~= nil, 'and the floor copy stays put')
+    ok((saidFull[1] or ''):find(sns.label, 1, true) ~= nil,
+        'the refusal names the SNS Pistol', ('%q'):format(saidFull[1] or ''))
+    -- THE EXACT SENTENCE THE OWNER WAS SHOWN, put through the same battery the
+    -- shield goes through. This is the toast he quoted: "tells me I already
+    -- have the max. But I don't, because there is no max for that id."
+    pinsNoCeiling(saidFull[1] or '', 'SNS Pistol')
+
+    -- ----------------------------------------------------------------------
+    -- CASE 2 -- A CEILING THAT IS NOT REACHED FILLS, even from the active slot.
+    --
+    -- THE ONE THE LIKE-FOR-LIKE RULE MUST NOT EAT. A bandage in hand and a
+    -- bandage on the floor is the same shape as a shield in hand and a shield
+    -- on the floor; what makes it different is that there is room. Refusing
+    -- here on "same item" alone would strand a player one short of their cap
+    -- with the cure at their feet.
+    -- ----------------------------------------------------------------------
+    inv = holdingWith({ item = 'bandage', kind = BR.ItemKind.CONSUMABLE,
+                        rarity = band.rarity, count = 1 })
+    local saidFill, fillE = claimLater(1, { item = 'bandage',
+        kind = BR.ItemKind.CONSUMABLE, rarity = band.rarity, count = 1 })
+    ok(inv.slots[1] and inv.slots[1].count == 2,
+        'a same-id pickup BELOW the cap fills the stack it is standing on',
+        ('bandage x%s'):format(tostring(inv.slots[1] and inv.slots[1].count)))
+    ok(#saidFill == 0, 'and says nothing, because it was not refused',
+        table.concat(saidFill, ' / '))
+    ok(m.loot.items[fillE.id] == nil, 'and the floor copy is gone, taken')
+
+    -- ----------------------------------------------------------------------
+    -- CASE 3 -- A CEILING THAT IS REACHED, COUNTED ACROSS EVERY SLOT (owner,
+    -- 2026-08-18: "Anything with a max carry limit should be applied across all
+    -- slots, not a per-slot basis").
+    --
+    -- THE ACTIVE SLOT HOLDS SOMETHING ELSE AND THERE IS A FREE SLOT WAITING,
+    -- so a rule that reads one slot -- either the active one or the one it
+    -- would land in -- lets this through and opens a second stack. Only a count
+    -- over the whole inventory refuses it.
+    -- ----------------------------------------------------------------------
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                     rarity = 1, count = 1, clip = 12 })
+    BR.Inv.give(1, { item = 'bandage', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = band.rarity, count = band.carryMax })
+    inv = BR.Inv.of(1)
+    inv.active = 1                       -- a PISTOL is in hand, not a bandage
+    ok(inv.slots[2] and inv.slots[2].count == band.carryMax
+        and inv.slots[3] == false,
+        'set up: the cap sits in slot 2 with slots 3 to 5 free',
+        ('slot2 x%s'):format(tostring(inv.slots[2] and inv.slots[2].count)))
+    local saidCap, capE = claimLater(1, { item = 'bandage',
+        kind = BR.ItemKind.CONSUMABLE, rarity = band.rarity, count = 1 })
+    ok(inv.slots[3] == false,
+        'a cap reached in ANOTHER slot still refuses -- no second stack opens',
+        tostring(inv.slots[3] and inv.slots[3].item))
+    ok(m.loot.items[capE.id] ~= nil, 'and the refused bandage stays in the world')
+    ok((saidCap[1] or ''):find(tostring(band.carryMax), 1, true) ~= nil
+        and (saidCap[1] or ''):find('Bandages', 1, true) ~= nil,
+        'and THIS is the sentence that quotes the cap, because there is one',
+        ('%q'):format(saidCap[1] or ''))
+
+    -- AND WHEN BOTH RULES COULD FIRE, THE CEILING WINS. Bandages at the cap in
+    -- the ACTIVE slot with the inventory full satisfies the like-for-like test
+    -- and the carrymax test at once. The player is genuinely at a maximum, so
+    -- they hear about the maximum -- "switch slots" would be advice that leads
+    -- nowhere, since no slot in the game has room for a fourth bandage.
+    inv = holdingWith({ item = 'bandage', kind = BR.ItemKind.CONSUMABLE,
+                        rarity = band.rarity, count = band.carryMax })
+    local saidBoth = claimLater(1, { item = 'bandage',
+        kind = BR.ItemKind.CONSUMABLE, rarity = band.rarity, count = 1 })
+    ok((saidBoth[1] or ''):find(tostring(band.carryMax), 1, true) ~= nil,
+        'a same-id pickup AT the cap hears the cap, not the slot advice',
+        ('%q'):format(saidBoth[1] or ''))
+    ok(inv.slots[1] and inv.slots[1].count == band.carryMax,
+        'and the stack it already had is untouched')
+
+    -- A SPLIT STACK ALREADY OVER THE CAP DOES NOT GO NEGATIVE. Nothing in the
+    -- game builds this today -- every carryMax equals its maxStack, so a capped
+    -- item fills exactly one slot -- but INV_SWAP moves slots around, dropAll
+    -- and the death box rebuild inventories from stored stacks, and /brgive
+    -- writes whatever it is asked for. `cap - held` is NEGATIVE here, and a
+    -- negative that reached `math.min(left, room)` would hand the player a
+    -- stack of minus one.
+    inv = holdingWith({ item = 'bandage', kind = BR.ItemKind.CONSUMABLE,
+                        rarity = band.rarity, count = band.carryMax })
+    inv.slots[3] = { item = 'bandage', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = band.rarity, count = 1 }   -- four, against a cap of three
+    local saidSplit, splitE = claimLater(1, { item = 'bandage',
+        kind = BR.ItemKind.CONSUMABLE, rarity = band.rarity, count = 1 })
+    ok(inv.slots[1].count == band.carryMax and inv.slots[3].count == 1,
+        'an inventory already OVER a cap takes nothing more and loses nothing',
+        ('%s + %s'):format(tostring(inv.slots[1].count),
+                           tostring(inv.slots[3].count)))
+    ok(m.loot.items[splitE.id] ~= nil, 'the pickup stays in the world')
+    ok((saidSplit[1] or ''):find(tostring(band.carryMax), 1, true) ~= nil,
+        'and the sentence quotes the CONFIGURED cap, not what is held',
+        ('%q'):format(saidSplit[1] or ''))
 
     -- ...AND THE UNLIKE SWAP IS UNTOUCHED. Every assertion above is worthless
     -- if it was bought by deleting the swap, so each refusal has its own

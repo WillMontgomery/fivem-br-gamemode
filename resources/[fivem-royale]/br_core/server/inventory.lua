@@ -230,6 +230,59 @@ end
 -- Giving
 -- --------------------------------------------------------------------------
 
+--- How many of one item this inventory holds, ACROSS EVERY SLOT.
+---
+--- A question about the PLAYER, not about a slot, and that is the whole of
+--- #171's second fault (owner, 2026-08-18: "with 3 shield in one slot, I can
+--- pickup more shields in a different slot. Anything with a max carry limit
+--- should be applied across all slots, not a per-slot basis"). A rule that
+--- reads one slot enforces a PER-SLOT limit no matter how globally it is
+--- worded, and the player discovers that by putting the same item somewhere
+--- else.
+---
+--- `or 1` rather than `or 0` for a countless stack: a weapon slot is one
+--- weapon. Nothing in the game writes a stack without a count today, but a
+--- missing one meaning ZERO would silently under-count a cap, and a cap that
+--- under-counts is the permissive failure -- it lets a player past a ceiling
+--- rather than stopping them short of it.
+--- @param inv table
+--- @param item string
+--- @return integer
+local function heldOf(inv, item)
+    local n = 0
+    for i = 1, SLOTS do
+        local s = inv.slots[i]
+        if s and s.item == item then n = n + (s.count or 1) end
+    end
+    return n
+end
+
+--- How much more of this item the player may carry. THREE ANSWERS (#171).
+---
+---   nil -- THERE IS NO CEILING. Weapons never have one; neither do shields.
+---   > 0 -- there is a ceiling and it has not been reached.
+---   0   -- there is a ceiling and it has been reached.
+---
+--- NIL IS NOT ZERO, and keeping the two apart is the point of returning nil at
+--- all. Reading "no cap" as "a cap of zero" is what shipped "You can only carry
+--- 0 of thoses." out of this pair of files once already, and the reopened half
+--- of #171 is the same confusion wearing a different sentence: a refusal that
+--- announced a maximum for an SNS Pistol, which has never had one.
+---
+--- math.max, because an inventory can already sit OVER a ceiling -- see the
+--- split-stack note in BR.Inv.give. Without it a player holding four bandages
+--- against a cap of three gets a NEGATIVE room, which is not <= 0 by accident
+--- but by arithmetic, and clamping `left` to it would hand them a negative
+--- count.
+--- @param inv table
+--- @param stack table
+--- @return integer|nil
+local function carryRoom(inv, stack)
+    local cap = carryMaxOf(stack)
+    if not cap then return nil end
+    return math.max(0, cap - heldOf(inv, stack.item))
+end
+
 --- Would this swap trade the active slot for something exactly like it?
 ---
 --- THE ONE SWAP THAT IS NEVER A CHOICE (owner, 2026-08-18: "I don't want the
@@ -254,6 +307,15 @@ end
 --- inventory, because the active slot is the only thing a swap can throw away.
 --- Holding the same gun in slot 4 while slot 2 is a pistol still swaps, and
 --- should: that trade loses nothing.
+---
+--- THIS IS NOT A CARRY LIMIT AND MUST NEVER SPEAK AS ONE. That conflation is
+--- the reopened half of #171. The two rules answer different questions --
+--- "would this trade cost me goods" reads ONE slot, "have I reached my
+--- maximum" reads ALL of them and only exists for items that have a maximum --
+--- and carryRoom above is consulted FIRST in BR.Inv.give so that a player who
+--- really is at a ceiling hears the ceiling's own sentence. What is left for
+--- this to refuse is a swap, so BR.Loot.refusalText answers `sameitem` with the
+--- way out of it: pick another slot.
 --- @param displaced table|nil  what the swap would push out (false when empty)
 --- @param stack table          what is being picked up
 --- @return boolean
@@ -292,29 +354,36 @@ function BR.Inv.give(src, stack)
         return true, nil, nil
     end
 
+    -- THE CARRY CEILING, ASKED ONCE AND FOR EVERY KIND (#171).
+    --
+    -- It used to be asked inside the consumable branch alone, which was true to
+    -- the config -- only consumables and throwables have ceilings -- and false
+    -- to the READER, who could no longer tell whether a weapon was uncapped or
+    -- merely unchecked. It is asked here now so that the three cases are one
+    -- decision made in one place, above every branch that could disagree:
+    --
+    --   nil ceiling  -- pick it up; find it a slot. A second SNS Pistol is
+    --                   legitimate and always was.
+    --   room left    -- pick it up, clamped to what is left.
+    --   no room      -- refuse, and this is the ONLY refusal entitled to talk
+    --                   about a maximum.
+    --
+    -- `room and room <= 0` and not `not room`: nil is uncapped, zero is full,
+    -- and the day those two collapse into each other is the day every weapon in
+    -- the game becomes unpickable. Lua treats both as falsey; only the code has
+    -- to keep them apart.
+    local room = carryRoom(inv, stack)
+    if room and room <= 0 then return false, nil, 'carrymax' end
+
     if stack.kind == BR.ItemKind.CONSUMABLE
        or stack.kind == BR.ItemKind.THROWABLE then
         local left = stack.count or 1
         local max  = maxStackOf(stack)
 
-        -- A CARRY CEILING ACROSS EVERY SLOT, not just per stack. Without it,
-        -- capping the stack at three simply produced two stacks of three
-        -- (user call, 2026-08-06: "no higher quantities of either item should
-        -- be allowed").
-        local c = BR.Config.ConsumableById[stack.item]
-        local carry = carryMaxOf(stack)
-        if carry then
-            local held = 0
-            for i = 1, SLOTS do
-                local s = inv.slots[i]
-                if s and s.item == stack.item then held = held + (s.count or 0) end
-            end
-            local room = math.max(0, carry - held)
-            if room <= 0 then
-                return false, nil, 'carrymax'
-            end
-            left = math.min(left, room)
-        end
+        -- The ceiling is across EVERY SLOT, not per stack. Without it, capping
+        -- the stack at three simply produced two stacks of three (user call,
+        -- 2026-08-06: "no higher quantities of either item should be allowed").
+        if room then left = math.min(left, room) end
 
         local before = left
 
@@ -324,8 +393,12 @@ function BR.Inv.give(src, stack)
         for i = 1, SLOTS do
             local s = inv.slots[i]
             if left > 0 and s and s.item == stack.item and s.count < max then
-                local room = max - s.count
-                local move = math.min(room, left)
+                -- `space`, not `room`: `room` is the WHOLE INVENTORY's headroom
+                -- and it is still live here. Two different numbers under one
+                -- name inside one function is how a global cap quietly becomes
+                -- a per-slot one.
+                local space = max - s.count
+                local move = math.min(space, left)
                 s.count = s.count + move
                 left = left - move
             end
@@ -363,6 +436,12 @@ function BR.Inv.give(src, stack)
             -- ...BUT NOT FOR AN IDENTICAL ITEM. See isLikeForLike: reaching a
             -- full inventory with a shield in hand and a shield on the floor
             -- would otherwise trade a full stack for a single pickup.
+            --
+            -- REACHED ONLY WHEN THERE IS NO CEILING TO BLAME, because carryRoom
+            -- ran above and a player who is genuinely at their maximum already
+            -- left with `carrymax`. Everything that gets this far is an item
+            -- the player MAY have more of and has nowhere to put -- so the
+            -- refusal is about the slot, and says so.
             if isLikeForLike(displaced, stack) then
                 return false, nil, 'sameitem'
             end
@@ -422,6 +501,13 @@ function BR.Inv.give(src, stack)
         -- written to the inventory yet, so this returns clean -- and it must
         -- return here rather than proceed, because the swap would hand the
         -- player the floor copy's magazine and drop their own loaded one.
+        --
+        -- AND IT IS NOT A MAXIMUM. A weapon has no carryMax and never will, so
+        -- carryRoom returned nil above and no ceiling was ever in play here.
+        -- This is the branch that told the owner he could not pick up any more
+        -- SNS Pistols (2026-08-18) -- reachable at all only because every one
+        -- of his five slots was full, since `free` is taken first and a second
+        -- pistol into an empty slot never reaches this line.
         if isLikeForLike(displaced, stack) then
             return false, nil, 'sameitem'
         end
