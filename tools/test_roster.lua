@@ -6599,6 +6599,81 @@ do
     end
 
     -- ------------------------------------------------------------------------
+    -- ROUND FIVE: THE BET DID NOT GO AWAY, IT MOVED TO THE DOOR (#115).
+    -- ------------------------------------------------------------------------
+    --
+    -- Round four took every guess out of the WATCH: no confirmation count, no
+    -- settle time, no early exit -- "the deadline is the exit". It left one
+    -- judgement standing, in front of the watch rather than inside it:
+    --
+    --     if not IsEntityDead(ped) and GetEntityHealth(ped) >= hp then return end
+    --
+    -- and the comment above it confessed the flaw in the same breath it shipped
+    -- it: "A ped that is quietly dying reads exactly like a healthy one here."
+    -- It does. That reading is not "nothing to write" -- it is "nothing to write
+    -- YET", and the difference between the two is a coroutine that never starts.
+    -- A watch is what survives being wrong about a single sample; the door is
+    -- the one place left where a single sample still decides.
+    --
+    -- THE SUITE COULD NOT SEE IT because `C.lethal(dmg)` always took a number
+    -- with it. `m.hp = m.hp - 26` on a full-health clone is 174, which is under
+    -- any target the server ever sends, so the health half of that guard was
+    -- false in every case ever run and the door was never tested. The harness
+    -- modelled rule 1 ("a fatal hit need not take the health number with it")
+    -- and then never exercised the version of it that matters.
+    --
+    -- Two ways in, both ordinary, and neither of them a race the network
+    -- decides -- they are the same arithmetic every time, which is why the
+    -- owner's report reads as "still happening":
+    --
+    --   A. THE NUMBER DOES NOT MOVE AT ALL. The everyday version is a headshot:
+    --      CTaskDyingDead from the first frame, health untouched. The
+    --      correction lands, reads 200 against a target of 200, and walks away
+    --      from a ped that is already gone.
+    --   B. THE SERVER'S NUMBER IS BELOW THE LOCAL COPY'S. It usually is: the
+    --      mate has taken storm or enemy damage the shooter's clone never
+    --      received, so the ledger reads 60 display (160 engine) while the
+    --      clone still reads 174 after our own bullet. `174 >= 160` -- nothing
+    --      to write, says the door, to a ped that is mid-death.
+    --
+    -- Both end the same way: no thread, no watch, and nothing in the client
+    -- ever looks at that ped again. That is "down for good", exactly.
+    for _, settle in ipairs({ 16, 250, 800, 2000, 3500 }) do
+        local tag = ('(death settles after %dms) '):format(settle)
+
+        -- A. the fatal hit that leaves the number alone.
+        local C = newClient(1002, { settle = settle })
+        C.env.BR.State.roster[2] = { state = C.env.BR.PlayerState.ALIVE }
+        C.lethal(0)
+        C.resync({ netId = 1002, hp = 200, src = 2 })
+        ok(#C.threads == 1,
+            tag .. 'a fatal hit that leaves the health number ALONE still '
+            .. 'gets a watch',
+            ('%d threads -- %s'):format(#C.threads, C.describe()))
+        C.pump(settle + 2500)
+        ok(C.alive(),
+            tag .. '...and the squadmate is still standing afterwards',
+            C.describe() .. '\n       ' .. table.concat(C.log, '\n       '))
+
+        -- B. the server's number is BELOW the shooter's local copy.
+        local D = newClient(1002, { settle = settle })
+        D.env.BR.State.roster[2] = { state = D.env.BR.PlayerState.ALIVE }
+        D.lethal(26)                                   -- clone 200 -> 174
+        D.resync({ netId = 1002, hp = 160, src = 2 })  -- ledger says 60 display
+        ok(#D.threads == 1,
+            tag .. 'a clone standing ABOVE the ledger\'s number still gets a '
+            .. 'watch when it is dying',
+            ('%d threads -- %s'):format(#D.threads, D.describe()))
+        D.pump(settle + 2500)
+        ok(D.alive(),
+            tag .. '...and that squadmate is still standing too',
+            D.describe() .. '\n       ' .. table.concat(D.log, '\n       '))
+        ok(D.env.GetEntityHealth(D.mate.handle) == 160,
+            tag .. '...at the LEDGER\'s number, not the clone\'s',
+            D.describe())
+    end
+
+    -- ------------------------------------------------------------------------
     -- ONE WATCH PER PED, NOT ONE PER BULLET.
     -- ------------------------------------------------------------------------
     do
@@ -6781,19 +6856,34 @@ do
     end
 
     -- ------------------------------------------------------------------------
-    -- ...AND THE CHEAP PATH IS STILL CHEAP.
+    -- ...AND WHAT THE CHEAP PATH COSTS NOW.
     -- ------------------------------------------------------------------------
     do
-        -- The common correction by a distance is the one that has nothing to
-        -- do: the owner's own sync got there first, or the shot missed the
-        -- shooter's local copy entirely. That one must not cost a coroutine,
-        -- because one arrives per bullet.
+        -- THIS TEST USED TO ASSERT `#C.threads == 0`, AND THAT ASSERTION WAS
+        -- THE BUG WRITTEN DOWN. "A ped already standing at the server's number
+        -- costs no thread" is only true if a single health read can tell a
+        -- healthy ped from a dying one, and the entire issue is that it cannot
+        -- -- so what it actually pinned was the door that walked away from a
+        -- corpse-to-be. It is inverted rather than deleted, because the cost is
+        -- still worth knowing: a thread, and no WRITE.
+        --
+        -- One per bullet is what the dedupe exists for, and the burst test
+        -- above pins that at one thread for ten rounds. This pins the other
+        -- half: the watch that has nothing to do does nothing.
         local C = newClient(1002)
         C.resync({ netId = 1002, hp = 200 })
-        ok(#C.threads == 0 and C.calls.set == 0,
-            'a ped already standing at the server\'s number costs no thread and '
-            .. 'no write',
-            ('%d threads, SetEntityHealth x%d'):format(#C.threads, C.calls.set))
+        ok(#C.threads == 1,
+            'a correction for a ped that looks fine STILL watches -- looking '
+            .. 'fine is what a dying ped does',
+            ('%d threads'):format(#C.threads))
+        C.pump(6000)
+        ok(C.calls.set == 0 and C.calls.resurrect == 0,
+            '...and having nothing to do, it writes nothing at all',
+            ('SetEntityHealth x%d, ResurrectPed x%d')
+                :format(C.calls.set, C.calls.resurrect))
+        ok(#C.threads == 0,
+            '...and lets go of the thread at the deadline',
+            ('%d threads'):format(#C.threads))
     end
 end
 

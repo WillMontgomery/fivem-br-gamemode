@@ -945,16 +945,61 @@ end)
 --- ped. A later correction now refreshes the running watch -- newest number,
 --- deadline pushed out -- and starts nothing.
 ---
---- THE COST. One coroutine per PED being corrected, waking 33 times over five
---- seconds to read a health value, and stopped early by the two facts above. The
---- correction that arrives with nothing to do -- the owner's own sync got there
---- first -- still costs one health read and no thread, and that is the common
---- one.
+--- ROUND FIVE: THE BET DID NOT GO AWAY. IT MOVED TO THE DOOR (#115, owner
+--- 2026-08-17, fifth report).
+---
+--- Round four took every guess out of the watch and said so: no confirmation
+--- count, no settle time, no early exit, "the deadline is the exit". It left
+--- exactly one judgement standing -- in FRONT of the watch rather than inside
+--- it -- and the comment that used to sit on it confessed the flaw in the same
+--- breath it shipped it:
+---
+---     if not IsEntityDead(ped) and GetEntityHealth(ped) >= hp then return end
+---     -- "A ped that is quietly dying reads exactly like a healthy one here"
+---
+--- It does. And that reading was not deciding what to WRITE -- it was deciding
+--- whether a watch would exist at all. "Nothing to write" and "nothing to write
+--- YET" are the same sample and opposite answers, and the gap between them is a
+--- coroutine that never starts. Everything after this point in the function was
+--- built to survive being wrong about a single sample; this was the one place
+--- where a single sample still ended the conversation.
+---
+--- TWO ORDINARY WAYS IN, neither of them a race the network decides -- they are
+--- the same arithmetic every time, which is why the report reads "still
+--- happening" rather than "sometimes":
+---
+---   * THE NUMBER DOES NOT MOVE. A headshot is CTaskDyingDead from the first
+---     frame with the health untouched -- rule 1, the thing this whole file is
+---     written around. The correction reads 200 against a target of 200 and
+---     walks away from a ped that is already gone.
+---   * THE SERVER'S NUMBER IS BELOW THE CLONE'S, which it usually is: the mate
+---     has taken storm or enemy damage this machine's copy never received, so
+---     the ledger holds 60 display (160 engine) while the clone still reads 174
+---     after our own bullet. `174 >= 160` -- nothing to do, said the door, to a
+---     ped in the middle of dying.
+---
+--- Both leave no thread and nothing anywhere that ever looks at that ped again.
+--- That is "down for good", precisely. tools/test_roster.lua now drives both,
+--- at five settle times from 16ms to 3500ms; before this change all five failed
+--- identically, which is the shape of an arithmetic bug rather than a race.
+---
+--- SO THE DOOR ASKS NOTHING. A correction watches.
+---
+--- THE COST, honestly. One coroutine per PED under fire -- not per bullet, the
+--- refresh above sees to that -- waking 33 times over five seconds to read a
+--- health value. The correction with nothing to do now costs that instead of
+--- costing nothing, and that is the trade this round makes on purpose: the
+--- saving was paid for by a single sample deciding whether the ped was fine,
+--- and that sample cannot tell.
 local WATCH_MS = 5000
 local WATCH_POLL_MS = 150
 
--- netId -> { hp, src, deadline }. Presence IS "a watch is running".
+-- netId -> { hp, src, deadline, ... }. Presence IS "a watch is running".
 local watching = {}
+
+-- The last watch to finish, kept for /brcorpse. A finished watch is exactly
+-- the one worth reading and exactly the one `watching` no longer has.
+local lastWatch = nil
 
 --- @param netId integer
 --- @param hp integer   ENGINE units
@@ -969,10 +1014,12 @@ local function correctPed(netId, hp, src)
     if not netId or BR.IsDeadHp(hp) then return end
 
     -- A WATCH ALREADY RUNNING IS THE ANSWER TO THIS BULLET TOO. Refresh it and
-    -- go: newest number, deadline pushed out. This is checked BEFORE the
-    -- "nothing to do" test on purpose -- a ped mid-death reads perfectly fine,
-    -- and exiting here on that reading is the exact mistake this round is
-    -- undoing.
+    -- go: newest number, deadline pushed out. This is now the ONLY question
+    -- asked before a watch starts, and it is a question about this table rather
+    -- than about the ped -- which is the whole of round five. Nothing here reads
+    -- the engine to decide whether the correction is needed, because a ped
+    -- mid-death reads perfectly fine and deciding on that reading is what left
+    -- four rounds of corpses standing.
     --
     -- ...UNLESS THE ENTRY HAS OUTLIVED ITS THREAD. A bare Citizen thread that
     -- throws simply stops -- no handler, nothing to notice -- and it would leave
@@ -996,20 +1043,28 @@ local function correctPed(netId, hp, src)
     local ped = NetworkGetEntityFromNetworkId(netId)
     if not ped or ped == 0 or not DoesEntityExist(ped) then return end
 
-    -- NOTHING TO ARGUE ABOUT, AND NO THREAD TO ARGUE IT WITH. Note what this
-    -- does NOT claim: it does not claim the ped is fine, only that right now
-    -- there is nothing to write. A ped that is quietly dying reads exactly like
-    -- a healthy one here -- which is why this is the ONLY early exit, and why
-    -- everything else goes to the loop instead of being handled in passing.
-    if not IsEntityDead(ped) and GetEntityHealth(ped) >= hp then return end
-
+    -- ...AND THERE IS NO LONGER A TEST HERE AT ALL. See the round-five note
+    -- above: the reading this used to take -- "not dead and already at the
+    -- number, so nothing to do" -- is the one reading a dying ped answers
+    -- exactly like a healthy one, and answering it decided whether a watch ever
+    -- existed. A correction watches. That is the whole door.
+    --
     -- A CORPSE THAT SHOULD NOT BE ONE. ResurrectPed alone leaves the death
     -- TASK running, so the ped stands up and immediately plays dying again;
     -- clearing tasks is what actually ends it. Before this, the body lay
     -- there for the better part of ten seconds until OneSync re-created it
     -- (user, 2026-08-08).
+    --
+    -- The counters are evidence for /brcorpse, and they are the point of round
+    -- five's other half: if this is STILL a corpse in game, the next question
+    -- is not "was the logic right" but "did the writes land", and that is a
+    -- question about the engine that only the engine can answer. See the
+    -- command at the bottom of this section.
     watching[netId] = { hp = hp, src = src,
-                        deadline = GetGameTimer() + WATCH_MS }
+                        deadline = GetGameTimer() + WATCH_MS,
+                        startedAt = GetGameTimer(),
+                        passes = 0, writes = 0, resurrects = 0,
+                        sawDead = false }
 
     Citizen.CreateThread(function()
         while true do
@@ -1020,15 +1075,24 @@ local function correctPed(netId, hp, src)
 
             --- Give up the watch and the thread together, so the table can
             --- never hold an entry with nothing behind it.
-            local function stop()
+            ---
+            --- The finished watch is KEPT, once, for /brcorpse. `watching` is
+            --- empty by the time the player alt-tabs out to type a command, so
+            --- without this the one moment worth inspecting is the one moment
+            --- there is nothing to inspect.
+            local function stop(why)
+                watch.why, watch.netId = why, netId
+                lastWatch = watch
                 watching[netId] = nil
             end
 
-            if GetGameTimer() >= watch.deadline then return stop() end
+            if GetGameTimer() >= watch.deadline then return stop('deadline') end
 
-            if not NetworkDoesNetworkIdExist(netId) then return stop() end
+            if not NetworkDoesNetworkIdExist(netId) then return stop('netid gone') end
             local p = NetworkGetEntityFromNetworkId(netId)
-            if not p or p == 0 or not DoesEntityExist(p) then return stop() end
+            if not p or p == 0 or not DoesEntityExist(p) then
+                return stop('entity gone')
+            end
 
             -- THE SERVER GETS THE LAST WORD, AND IT CAN CHANGE ITS MIND.
             --
@@ -1046,15 +1110,28 @@ local function correctPed(netId, hp, src)
             local e = watch.src and S.roster[watch.src]
             if e and e.state ~= BR.PlayerState.ALIVE
                and e.state ~= BR.PlayerState.DBNO then
-                return stop()
+                return stop('server says they are out')
             end
 
+            watch.passes = watch.passes + 1
             local target = watch.hp
             if IsEntityDead(p) then
+                watch.sawDead = true
+                watch.resurrects = watch.resurrects + 1
+                watch.writes = watch.writes + 1
                 ResurrectPed(p)
                 ClearPedTasksImmediately(p)
                 SetEntityHealth(p, target)
+                -- WHETHER THAT TOOK IS NOT SOMETHING THIS FILE MAY ASSUME. The
+                -- one thing it can do is record the reading the engine gives
+                -- back on the very next line, so /brcorpse can say "resurrected
+                -- 33 times and it read dead every time" -- which is a fact
+                -- about the ENGINE, and the only kind of evidence that settles
+                -- whether a clone of somebody else's player ped can be stood up
+                -- from here at all.
+                watch.stillDeadAfterWrite = IsEntityDead(p)
             elseif GetEntityHealth(p) < target then
+                watch.writes = watch.writes + 1
                 -- Only ever UPWARD. Writing it down would be us arguing with
                 -- the owner's own sync about a ped we do not own, for no gain.
                 SetEntityHealth(p, target)
@@ -1113,24 +1190,59 @@ end)
 -- to blocking control requests for entities controlled by players -- which is
 -- every player ped on the server. Calling it would be asking for something the
 -- server is configured to refuse.
+--
+-- ROUND FIVE ADDS THE FINISHED WATCH, and that is the reading that matters.
+-- The live table is empty five seconds after the shot, which is roughly when a
+-- player finishes saying "it's still a corpse" and reaches for the console. The
+-- last watch to end says how many passes it got, how many times it wrote, how
+-- many times it resurrected, and -- the one that settles the argument -- what
+-- the engine answered on the line immediately AFTER a resurrection.
+--
+--   resurrects > 0 and stillDead=true   the logic ran and the ENGINE refused.
+--                                       Nothing in Lua fixes that; the repair
+--                                       has to come from the ped's owner, the
+--                                       way client/dbno.lua's floorTheBody does
+--                                       it with NetworkResurrectLocalPlayer.
+--   passes 0, or no watch at all        the correction never arrived, or the
+--                                       roster called it off. That is a logic
+--                                       fault, and this file's to fix.
+local function printWatch(label, netId, w)
+    local exists = NetworkDoesNetworkIdExist(netId)
+    local p = exists and NetworkGetEntityFromNetworkId(netId) or 0
+    print(('  %s netId %s  target hp %s  src %s')
+        :format(label, tostring(netId), tostring(w.hp), tostring(w.src)))
+    print(('    exists %s  health %s  dead %s  fatally injured %s')
+        :format(tostring(exists),
+                tostring(p ~= 0 and GetEntityHealth(p) or '-'),
+                tostring(p ~= 0 and IsEntityDead(p) or '-'),
+                tostring(p ~= 0 and IsPedFatallyInjured
+                         and IsPedFatallyInjured(p) or '-')))
+    print(('    started %dms ago  passes %d  writes %d  resurrects %d  '
+           .. 'saw a corpse %s  ended: %s')
+        :format(GetGameTimer() - (w.startedAt or GetGameTimer()),
+                w.passes or 0, w.writes or 0, w.resurrects or 0,
+                tostring(w.sawDead), tostring(w.why or 'still running')))
+    print(('    STILL DEAD ON THE LINE AFTER RESURRECTING: %s   <-- true here '
+           .. 'means the engine refused the write, not that the logic missed it')
+        :format(tostring(w.stillDeadAfterWrite)))
+    print(('    I control this ped: %s')
+        :format(tostring(p ~= 0 and NetworkHasControlOfEntity(p) or '-')))
+end
+
 RegisterCommand('brcorpse', function()
     print('=== corpse watch ===')
     local any = false
     for netId, w in pairs(watching) do
         any = true
-        local exists = NetworkDoesNetworkIdExist(netId)
-        local p = exists and NetworkGetEntityFromNetworkId(netId) or 0
-        print(('  netId %s  target hp %s  src %s')
-            :format(tostring(netId), tostring(w.hp), tostring(w.src)))
-        print(('    exists %s  health %s  dead %s')
-            :format(tostring(exists),
-                    tostring(p ~= 0 and GetEntityHealth(p) or '-'),
-                    tostring(p ~= 0 and IsEntityDead(p) or '-')))
-        print(('    I control this ped: %s   <-- false here means every write '
-               .. 'above is the engine\'s to ignore')
-            :format(tostring(p ~= 0 and NetworkHasControlOfEntity(p) or '-')))
+        printWatch('RUNNING', netId, w)
     end
     if not any then print('  nothing being corrected right now') end
+    if lastWatch then
+        print('  --- the last watch to finish ---')
+        printWatch('ENDED  ', lastWatch.netId, lastWatch)
+    else
+        print('  no watch has finished this session')
+    end
 end, false)
 
 -- --------------------------------------------------------------------------
