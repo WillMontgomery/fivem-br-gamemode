@@ -139,15 +139,71 @@
 -- and it has no BUS -> FREEFALL edge to react to: it never learns the state
 -- changed.
 --
--- WHAT DOES RAISE IT IS OUR CAMERA. pma-voice calls that native in exactly
--- three places, and two of them are setSpectatorMode(), which it enters when
+-- THE CAMERA WAS ONE OF THREE, AND IT WAS THE WRONG TWO. Round two of this
+-- issue found MumbleAddVoiceChannelListen in three places in pma-voice v7.0.0
+-- and named two of them: both inside setSpectatorMode(), entered when
 --     NetworkIsInSpectatorMode() or GetRenderingCam() ~= -1
--- -- ANY rendering scripted camera. client/bus.lua puts one up as the last step
--- of boarding. So the bus, and nothing else about the bus, flips pma-voice into
--- spectator listening: it walks the streamed player list adding a channel
--- listen for every one of them, unchecked, and warns for each channel that is
--- not there. The convar that turns that behaviour off is named in the CONVARS
--- table below, and the server now sets it.
+-- -- ANY rendering scripted camera, which client/bus.lua puts up as the last
+-- step of boarding. voice_disableAutomaticListenerOnCamera 1 closes that, the
+-- server now sets it, and IT WORKED: the overlay went with it, and the two
+-- setSpectatorMode sites are now unreachable on this server (the proof is in
+-- the CONVARS block below). The warning came back anyway, on join, permanently.
+--
+-- THE THIRD SITE IS THE ONE THAT IS ACTUALLY FIRING, and it is nothing to do
+-- with cameras, spectating, the bus or us. pma-voice v7.0.0,
+-- client/init/proximity.lua line 32, seven lines into addNearbyPlayers():
+--
+--     MumbleClearVoiceTargetChannels(voiceTarget)
+--     if LocalPlayer.state.disableProximity then return end
+--     MumbleAddVoiceChannelListen(playerServerId)      <-- line 32
+--     MumbleAddVoiceTargetChannel(voiceTarget, playerServerId)
+--
+-- That is this client listening to ITS OWN channel, unconditionally, on every
+-- turn of pma-voice's main loop -- five times a second. It sits ABOVE the loop
+-- that consults our proximity check and is gated by nothing except
+-- LocalPlayer.state.disableProximity, the blunt lever we decline to pull
+-- (see the note further up: it would also skip line 33 and make us mute).
+--
+-- IT WARNS WHENEVER WE ARE NOT IN THAT CHANNEL YET. FiveM's native
+-- (code/components/gta-net-five/src/MumbleVoice.cpp, MUMBLE_ADD_VOICE_CHANNEL_
+-- LISTEN) resolves "Game Channel <n>" and warns on exactly one condition:
+-- DoesChannelExist is false. Nothing but pma-voice's own handleInitialState()
+-- (client/events.lua) ever calls MumbleSetVoiceChannel to create it -- and in
+-- v7.0.0 the proximity loop does not wait for it:
+--
+--     while not MumbleIsConnected() do Wait(100) end     -- v7.0.0, line 116
+--
+-- So the loop starts hammering line 32 the moment Mumble connects, while
+-- handleInitialState is still in its own `Wait(250)` retry loop, and it has no
+-- way to stop: there is no state, no backoff and no second attempt at anything.
+-- On join, immediately, and for as long as the join has not landed. THAT IS THE
+-- REPORT, word for word.
+--
+-- UPSTREAM FIXED ALL OF IT AFTER v7.0.0, which is the part that decides what we
+-- do about it. v7.0.1-rc2 / v7.0.2-rc3 rewrote every one of the three sites:
+--
+--   * the loop gained the missing gate --
+--         while not MumbleIsConnected() or not isInitialized do Wait(100) end
+--     where isInitialized is set by handleInitialState AFTER its channel join
+--     converges, and cleared on mumbleDisconnected;
+--   * our own channel is no longer assumed to be our server id. The server
+--     hands out LocalPlayer.state.assignedChannel (server/main.lua,
+--     firstFreeChannel()) and the client listens to THAT;
+--   * the other two sites became addChannelListener(serverId), which resolves
+--     MumbleGetVoiceChannelFromServerId first and DOES NOTHING when it is -1,
+--     recording the miss for tryListeningToFailedListeners() to retry. The
+--     upstream comment on that table names our exact symptom: the value is
+--     false "in situations where their channel didn't exist".
+--
+-- WHICH MEANS THERE IS NO CONVAR FOR THIS, AND THERE CANNOT BE. Line 32 takes
+-- no convar, no export and no state bag we are willing to set. Two rounds of
+-- this issue were closed with a convar because two of the three sites happened
+-- to have one; the third does not, and the fix is the VERSION. server.cfg
+-- .example now pins v7.0.2-rc3.
+--
+-- AND BECAUSE A PIN IN A FILE NO DEPLOY COPIES IS EXACTLY HOW THIS ISSUE GOT
+-- TO ROUND THREE, br_core detects the old resource itself and says so on both
+-- consoles. See BR.Voice.generation() below.
 -- ==========================================================================
 
 BR = BR or {}
@@ -414,6 +470,37 @@ end
 -- because "the server set it" and "this client has it" are different claims and
 -- #150 was a week of confusing exactly that kind of pair.
 --
+-- ==========================================================================
+-- AND THEY DO ARRIVE. ESTABLISHED, NOT ASSUMED -- round three of #165 opened by
+-- doubting exactly this, and it is worth writing the answer down once so the
+-- next round does not spend a day on it again.
+--
+--   STRUCTURALLY, for the camera one: pma-voice re-reads it INSIDE its loop
+--   body, every 200 ms (client/init/proximity.lua, the `local cam = ...` line).
+--   There is no start-time read to lose a race against. A convar that lands
+--   late takes effect on the next tick, and one that lands early is simply
+--   already there. Start order cannot break it.
+--
+--   EMPIRICALLY, for both: voice_enableUi is the harder case -- it IS read
+--   once, at pma-voice's own onClientResourceStart (client/init/init.lua),
+--   to decide whether its overlay draws at all. The overlay is gone. So the
+--   replicated value was present on the client BEFORE pma-voice's client
+--   scripts ran, which is strictly earlier than the camera convar needs.
+--
+-- AND WITH THE CAMERA ONE IN FORCE, pma-voice's spectator listening is not
+-- merely off, it is UNREACHABLE HERE. `cam` is pinned to -1, so
+-- `isSpectating` collapses to NetworkIsInSpectatorMode() -- and the only
+-- caller of NetworkSetInSpectatorMode in this gamemode is BR.Native.spectate,
+-- behind BR.Native.use.spectatorNative, which is false (client/natives.lua).
+-- The other way in is pma-voice's setListenerOverride export, which br_core
+-- never calls. isListenerEnabled therefore cannot become true, setSpectatorMode
+-- cannot run, and the two listen sites inside it cannot fire.
+--
+-- WHICH IS HOW WE KNOW WHICH SITE IS LEFT. There are three in v7.0.0; two are
+-- proven unreachable above; the warning is still being printed. It is line 32.
+-- See the #165 block at the top of this file.
+-- ==========================================================================
+--
 --   voice_disableAutomaticListenerOnCamera 1
 --     pma-voice's proximity loop (client/init/proximity.lua) computes
 --         local cam = GetConvarInt("voice_disableAutomaticListenerOnCamera", 0)
@@ -469,6 +556,113 @@ function BR.Voice.convarProblems()
     return out
 end
 
+-- ------------------------------------------ WHICH pma-voice IS INSTALLED ---
+--
+-- THE VERSION IS NOW A RUNTIME FACT, NOT A LINE IN A DOCUMENT.
+--
+-- #165 has been closed twice by writing something true into server.cfg.example
+-- and twice been reopened because server.cfg.example is documentation:
+-- .gitignore keeps the real server.cfg out of the repository and
+-- tools/deploy.sh rsyncs the resource group and nothing else. The convars
+-- escaped that trap by being settable from code. THE VERSION CANNOT BE -- no
+-- resource can re-clone another one -- so the only thing left is to make the
+-- wrong version impossible to run quietly. This is that.
+--
+-- THE PROBE IS pma-voice's OWN STATE BAG, and it needs no natives, no Mumble
+-- and no guessing:
+--
+--   assignedChannel   set by the SERVER half of pma-voice, replicated, from
+--                     v7.0.1-rc2 onwards (server/main.lua, firstFreeChannel()).
+--                     It does not exist in v7.0.0, which assumed a client's
+--                     channel number IS its server id -- the assumption that
+--                     produces the MUMBLE_ADD_VOICE_CHANNEL_LISTEN spam.
+--   voiceIntent       set by both versions, replicated, in the same function.
+--
+-- TWO KEYS RATHER THAN ONE, because one key cannot tell "old pma-voice" from
+-- "pma-voice has not got to this player yet", and reporting the first when the
+-- truth is the second is how a diagnostic becomes noise a playtester learns to
+-- scroll past. voiceIntent present means pma-voice HAS initialised us; from
+-- there, assignedChannel absent is a verdict rather than a timing artefact.
+local INIT_KEY, CHANNEL_KEY = 'voiceIntent', 'assignedChannel'
+
+--- The verdict, as a pure function of the two reads. Split out so the suite can
+--- put it through all four states without a game.
+--- @param up boolean       is pma-voice running
+--- @param inited boolean   has pma-voice initialised this player's state bag
+--- @param assigned any     the assignedChannel value, or nil
+--- @return string  'absent' | 'pending' | 'legacy' | 'current'
+function BR.Voice.generationOf(up, inited, assigned)
+    if not up then return 'absent' end
+    if assigned ~= nil then return 'current' end
+    if not inited then return 'pending' end
+    return 'legacy'
+end
+
+--- @return string  see generationOf
+---
+--- ONE pcall AROUND BOTH READS, and it answers 'pending' rather than guessing.
+--- A state bag is engine-backed and this runs on a shared loop band; a read
+--- that raises must not become an accusation, because "we could not ask" and
+--- "the answer is the bad one" are the two claims this project keeps merging.
+function BR.Voice.generation()
+    if not present() then return 'absent' end
+    local ok, inited, assigned = pcall(function()
+        local st = LocalPlayer and LocalPlayer.state
+        if not st then return nil end
+        return st[INIT_KEY] ~= nil, st[CHANNEL_KEY]
+    end)
+    if not ok or inited == nil then return 'pending' end
+    return BR.Voice.generationOf(true, inited, assigned)
+end
+
+--- What to print about a 'legacy' pma-voice. One string, two callers -- the
+--- start-up warning and /brvoice -- for the same reason gagged() is one
+--- function: they must not be able to disagree.
+--- @return table array of lines
+function BR.Voice.legacyLines()
+    return {
+        'pma-voice is older than v7.0.1-rc2 (no assignedChannel).',
+        'THIS IS #165. Its proximity loop listens to a channel it has not '
+            .. 'joined yet, five times a second, from the moment you connect:',
+        '  client/init/proximity.lua  MumbleAddVoiceChannelListen(playerServerId)',
+        'which is the "MUMBLE_ADD_VOICE_CHANNEL_LISTEN: Tried to call native '
+            .. 'on a channel that didn\'t exist" spam in this console.',
+        'NO CONVAR FIXES IT -- that call takes none. Upgrade the resource:',
+        '  cd <server-data>/resources/[voice] && rm -rf pma-voice && \\',
+        '    git clone --branch v7.0.2-rc3 --depth 1 \\',
+        '      https://github.com/AvarianKnight/pma-voice.git pma-voice',
+        'then restart. See server.cfg.example, Voice section.',
+    }
+end
+
+--- SAID ONCE, AND NOT BEFORE THERE IS AN ANSWER TO SAY.
+---
+--- On the 1 Hz band rather than at start-up, because the state bag this reads
+--- is replicated and is not there on the frame br_core boots -- a check that
+--- ran at onClientResourceStart would report 'pending' on a healthy server and
+--- teach everyone to ignore it. It stops asking the moment it has a verdict,
+--- and gives up quietly after a minute rather than polling for the session.
+local versionSaid, versionSince = false, nil
+BR.Loop.register(BR.Loop.SLOW, 'voice.version', function()
+    if versionSaid then return end
+    versionSince = versionSince or GetGameTimer()
+
+    local gen = BR.Voice.generation()
+    if gen == 'pending' or gen == 'absent' then
+        -- 'absent' is already shouted about at start-up; 'pending' is not a
+        -- finding. Either way, keep waiting -- but not forever.
+        if GetGameTimer() - versionSince > 60000 then versionSaid = true end
+        return
+    end
+
+    versionSaid = true
+    if gen == 'legacy' then
+        for _, line in ipairs(BR.Voice.legacyLines()) do
+            print('[br_core] VOICE: ' .. line)
+        end
+    end
+end)
+
 AddEventHandler('onClientResourceStart', function(res)
     if res == GetCurrentResourceName() then
         if not present() then
@@ -488,6 +682,10 @@ AddEventHandler('onClientResourceStart', function(res)
         -- pma-voice came up (or came back). Everything we told it is gone.
         BR.Voice.state.joined = nil
         BR.Voice.state.muted = {}
+        -- AND IT MAY BE A DIFFERENT ONE. An admin swapping the resource and
+        -- restarting it is exactly how the fix for this issue will land on a
+        -- live box, so the verdict is re-taken rather than kept.
+        versionSaid, versionSince = false, nil
         install()
         BR.Voice.apply()
     end
@@ -772,11 +970,29 @@ RegisterCommand('brvoice', function()
             or (VOICE_RES .. ' IS NOT RUNNING. There is no voice at all. '
                 .. 'Nothing below this line does anything.')))
 
-    -- THE SECOND LINE, AND IT IS SECOND BECAUSE OF #165. A running pma-voice
-    -- with these two convars unset is a running pma-voice that draws its own
-    -- overlay and turns every bus rider into a spectator of the whole plane --
-    -- and neither of those shows up anywhere else on this readout. Silence
-    -- here means both are correct.
+    -- THE SECOND LINE IS THE VERSION, AND IT IS SECOND BECAUSE ROUND THREE OF
+    -- #165 WAS THE VERSION. A pma-voice that is running, correctly configured
+    -- and simply too old is indistinguishable from a healthy one everywhere
+    -- else on this readout -- and it is the state the box was actually in.
+    if up then
+        local gen = BR.Voice.generation()
+        print(('  %-13s%s'):format('version', ({
+            current = 'v7.0.1-rc2 or later -- has the #165 fix',
+            legacy  = 'PRE-v7.0.1-rc2 -- THIS IS #165, see below',
+            pending = 'not answered yet (pma-voice has not set our state bag; '
+                   .. 'run this again in a few seconds)',
+        })[gen] or gen))
+        if gen == 'legacy' then
+            for _, line in ipairs(BR.Voice.legacyLines()) do
+                print('    ' .. line)
+            end
+        end
+    end
+
+    -- THE CONVARS, THIRD. A running pma-voice with these two unset is a running
+    -- pma-voice that draws its own overlay and turns every bus rider into a
+    -- spectator of the whole plane -- and neither of those shows up anywhere
+    -- else on this readout. Silence here means both are correct.
     local probs = BR.Voice.convarProblems()
     if #probs > 0 then
         print(('  %-13s%d WRONG on this client:'):format('convars', #probs))

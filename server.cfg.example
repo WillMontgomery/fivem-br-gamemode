@@ -158,17 +158,51 @@ ensure br_ringmaster     # optional -- the admin console's game-side half
 #
 #     cd /path/to/server-data/resources
 #     mkdir -p '[voice]'
-#     git clone --branch v7.0.0 --depth 1 \
+#     git clone --branch v7.0.2-rc3 --depth 1 \
 #         https://github.com/AvarianKnight/pma-voice.git '[voice]/pma-voice'
 #
 # Then `ensure pma-voice` (already in the list above) and restart.
 #
-# THE PIN IS DELIBERATE. v7.0.0 is the latest tag that is not a release
-# candidate; v7.0.1-rc2 and v7.0.2-rc3 exist and are not recommended for a live
-# box. Every export br_core uses -- overrideProximityCheck,
-# overrideProximityRange, setRadioChannel, addChannelCheck, setPlayerRadio,
-# getMutedPlayers, toggleMutePlayer -- was verified present at v7.0.0. Upgrading
-# is fine; upgrading blind is what the pin exists to stop.
+# THE PIN MOVED OFF v7.0.0, AND THIS PARAGRAPH USED TO ARGUE THE OPPOSITE.
+#
+# It said v7.0.0 was "the latest tag that is not a release candidate" and that
+# the rcs were "not recommended for a live box". That was a reasonable default
+# and it was wrong here, because v7.0.0 has the bug this server is reporting.
+#
+# v7.0.0, client/init/proximity.lua, inside addNearbyPlayers():
+#
+#     MumbleAddVoiceChannelListen(playerServerId)
+#
+# -- listen to our OWN Mumble channel, unconditionally, every 200 ms, started
+# by a loop that waits only for `MumbleIsConnected()` and NOT for pma-voice's
+# own handleInitialState() to have joined that channel. Until the join lands the
+# native has nothing to resolve, and FiveM prints
+#
+#     MUMBLE_ADD_VOICE_CHANNEL_LISTEN: Tried to call native on a channel that
+#     didn't exist
+#
+# five times a second, from the moment a player connects. That is #165's third
+# report, in full. NO CONVAR REACHES IT: the call takes none, and the two convars
+# below (which do work, and did close the two OTHER listen sites) cannot help.
+#
+# v7.0.1-rc2 and v7.0.2-rc3 fix exactly this, upstream, three ways: the loop is
+# gated on an `isInitialized` flag that handleInitialState sets only after the
+# join converges; the own-channel listen uses a server-assigned
+# `assignedChannel` instead of the player's server id; and the other two listen
+# sites resolve MumbleGetVoiceChannelFromServerId first and do nothing when it
+# is -1, queueing a retry instead of warning.
+#
+# THE RC LABEL IS UPSTREAM'S RELEASE PROCESS, NOT A STATEMENT ABOUT THIS CODE.
+# Every export br_core uses -- overrideProximityCheck, overrideProximityRange,
+# setRadioChannel, addChannelCheck, setPlayerRadio, getMutedPlayers,
+# toggleMutePlayer -- was checked present in v7.0.2-rc3 as well as v7.0.0, and
+# the proximity-check contract (fn(ply) -> shouldAdd, distance) is unchanged.
+#
+# AND br_core NO LONGER TRUSTS THIS PARAGRAPH TO REACH ANYONE. It reads
+# pma-voice's own `assignedChannel` state bag at runtime, which exists from
+# v7.0.1-rc2 onwards and does not in v7.0.0, and prints the upgrade command on
+# the server console and in `brvoice` on both sides when it finds the old one.
+# This file has now been the place a #165 fix went to die twice.
 #
 # THE DIRECTORY MATTERS AND IT IS NOT ARBITRARY. `[voice]` is a sibling of
 # `[gamemodes]`, and tools/deploy.sh rsyncs with --delete scoped to
@@ -212,16 +246,22 @@ ensure br_ringmaster     # optional -- the admin console's game-side half
 # falloff. This gamemode renders a scripted camera in the lobby
 # (br_core/client/lobbycam.lua), ON THE DROP BUS (client/bus.lua) and while
 # downed (client/dbno.lua), so with this at its default of 0 every rider spends
-# the flight listening to the whole plane. That is where #165's
-#     MUMBLE_ADD_VOICE_CHANNEL_LISTEN: Tried to call native on a channel that
-#     didn't exist
-# comes from -- pma-voice adds those listens unchecked, one per player, and
-# warns for each channel that is not there.
+# the flight listening to the whole plane.
 #
 # IT ALSO LEAKS. The listens are taken over the WARMUP bucket's player list and
 # dropped over the MATCH bucket's a flight later, so whatever was in the first
 # and not the second is never removed -- an unlimited-range listen on players
 # in other matches, for the rest of the session.
+#
+# WHAT THIS BLOCK USED TO CLAIM AND SHOULD NOT HAVE. It said this convar was
+# where #165's
+#     MUMBLE_ADD_VOICE_CHANNEL_LISTEN: Tried to call native on a channel that
+#     didn't exist
+# came from. It is where SOME of it came from: pma-voice v7 reaches that native
+# from three places, two of them inside the spectator path this convar closes.
+# The third is in addNearbyPlayers() and takes no convar at all -- that one is
+# the version, and it is why the pin above moved. Setting this convar is still
+# required, and on its own it is not enough on v7.0.0.
 # setr voice_disableAutomaticListenerOnCamera 1
 #
 # REQUIRED (2) -- turn pma-voice's own overlay off.
