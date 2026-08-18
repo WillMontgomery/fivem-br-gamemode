@@ -55,6 +55,25 @@ function GetPlayerServerId() return 1 end
 function PlayerId() return 0 end
 function PlayerPedId() return 1 end
 
+--- THE SERVER'S REPLICATED CONVARS, AS THIS CLIENT SEES THEM.
+---
+--- Modelled rather than stubbed away because #165 turned on one of them: two
+--- pma-voice convars decide whether a rendering scripted camera turns this
+--- client into a spectator of everybody in scope, and whether pma-voice draws
+--- its own overlay -- and BOTH were "fixed" last round by writing a line into
+--- server.cfg.example, which no deploy has ever copied to a server. An empty
+--- table is therefore the DEFAULT here, because an unconfigured box is the
+--- state the issue was reported from.
+local convars = {}
+function GetConvar(name, default)
+    local v = convars[name]
+    return v == nil and default or tostring(v)
+end
+function GetConvarInt(name, default)
+    local v = tonumber(convars[name])
+    return v == nil and default or math.floor(v)
+end
+
 local realPrint = print
 local logged = {}
 function print(s) logged[#logged + 1] = tostring(s) end
@@ -2426,6 +2445,107 @@ do
     local _, why = BR.Voice.gagged()
     ok(type(why) == 'string' and why:find('bus') ~= nil,
         'and it explains itself to /brvoice in words', tostring(why))
+end
+
+describe('#165 -- the two pma-voice convars are checked, not just documented')
+do
+    -- THE FAILURE THIS BLOCK EXISTS FOR IS NOT A CODE PATH. It is that both of
+    -- these convars were "fixed" last round by adding a line to
+    -- server.cfg.example -- a file .gitignore keeps off the server and
+    -- tools/deploy.sh never copies -- and both symptoms came back the same
+    -- week. Nothing in this repository could have caught that, because nothing
+    -- in this repository had ever read a convar.
+    --
+    -- WHY THESE TWO AND NOT ANY OTHER:
+    --
+    --   voice_disableAutomaticListenerOnCamera  pma-voice's proximity loop
+    --     treats a rendering scripted camera as spectating and gives a
+    --     spectator a Mumble channel listen on EVERY streamed player, at no
+    --     range limit. client/bus.lua renders one. That is where #165's
+    --     MUMBLE_ADD_VOICE_CHANNEL_LISTEN warning comes from -- the listens go
+    --     out unchecked, one per player, and warn for every channel that is not
+    --     there. It is also why it never recovered: the listens are taken over
+    --     the warmup bucket's player list and dropped over the match bucket's,
+    --     so the difference is held for the rest of the session.
+    --
+    --   voice_enableUi  the bottom-right "Custom [Range]" overlay.
+    --
+    -- The default here is an EMPTY convar table -- an unconfigured box, which
+    -- is the state the issue was reported from.
+    convars = {}
+
+    local probs = BR.Voice.convarProblems()
+    local byName = {}
+    for _, p in ipairs(probs) do byName[p.name] = p end
+
+    ok(byName['voice_disableAutomaticListenerOnCamera'] ~= nil,
+        'an unset camera-listener convar is reported as wrong',
+        'the bus camera silently puts every rider into pma-voice spectator '
+            .. 'listening and nothing says so')
+    ok(byName['voice_enableUi'] ~= nil,
+        'and so is an unset voice_enableUi -- the bottom-right overlay')
+
+    -- IT IS THE ENGINE'S DEFAULT THAT IS WRONG, not merely "not ours". Asserted
+    -- on the numbers so a later round cannot quietly flip which value we want.
+    -- Read through a default rather than indexed directly: this block has to
+    -- report a MISSING check as two clean failures, not take the rest of the
+    -- suite down with a nil index. The two assertions above are the ones that
+    -- say it is missing; these two say it is right.
+    local none = {}
+    local cam = byName['voice_disableAutomaticListenerOnCamera'] or none
+    local ui  = byName['voice_enableUi'] or none
+    ok(cam.want == 1 and cam.have == 0,
+        'and it says what it is and what it must be')
+    ok(ui.want == 0 and ui.have == 1,
+        'for both of them')
+
+    -- SAID OUT LOUD AT START, once, in the client console -- the same treatment
+    -- a missing pma-voice gets, and for the same reason: the previous outage
+    -- was invisible for a week.
+    logged = {}
+    nobodyElse()
+    standAt(0, 0)
+    voiceApply('nearby', nil, nil, 1)
+    local start = table.concat(logged, '\n')
+    ok(start:find('voice_disableAutomaticListenerOnCamera') ~= nil,
+        'br_core starting says the camera convar is wrong', start)
+    ok(start:find('voice_enableUi') ~= nil,
+        'and that the overlay convar is wrong', start)
+
+    -- AND IN /brvoice, which is the command a playtester is told to run.
+    logged = {}
+    pcall(commands['brvoice'])
+    local said = table.concat(logged, '\n')
+    ok(said:find('convars') ~= nil
+        and said:find('voice_disableAutomaticListenerOnCamera') ~= nil,
+        'and /brvoice names them too', said)
+
+    -- THE OTHER HALF, AND THE ONE THAT MAKES THIS A TEST RATHER THAN A COUNTER:
+    -- a correctly configured box says NOTHING. A check that fires either way
+    -- would be noise, and noise in this console is what hid #150.
+    convars = {
+        voice_disableAutomaticListenerOnCamera = 1,
+        voice_enableUi = 0,
+    }
+    ok(#BR.Voice.convarProblems() == 0,
+        'a configured box reports no convar problems at all',
+        tostring(#BR.Voice.convarProblems()))
+
+    logged = {}
+    voiceApply('nearby', nil, nil, 1)
+    local quiet = table.concat(logged, '\n')
+    ok(quiet:find('voice_enableUi') == nil
+        and quiet:find('voice_disableAutomaticListenerOnCamera') == nil,
+        'and br_core starting is silent about them', quiet)
+
+    logged = {}
+    pcall(commands['brvoice'])
+    ok(table.concat(logged, '\n'):find('convars') == nil,
+        'and so is /brvoice', table.concat(logged, '\n'))
+
+    -- Left correct for everything after this block: the rest of the suite is
+    -- about the rules, not the configuration.
+    logged = {}
 end
 
 describe('voice never crosses a match')

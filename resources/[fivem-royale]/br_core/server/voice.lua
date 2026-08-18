@@ -256,7 +256,81 @@ local function guard(channel)
     end
 end
 
+-- ------------------------------------------------ the two convars ---
+--
+-- THE CONFIGURATION pma-voice NEEDS, SET FROM HERE RATHER THAN ASKED FOR.
+--
+-- #165 IS WHAT ASKING LOOKS LIKE. Both convars below were added to
+-- server.cfg.example last round and both were reported broken again the same
+-- week, because server.cfg.example is documentation, not configuration:
+-- .gitignore keeps the real server.cfg out of this repository and
+-- tools/deploy.sh rsyncs resources/[fivem-royale]/ and nothing else. A convar
+-- written into the example reaches the box only if somebody retypes it into a
+-- file no deploy will ever touch. Two rounds of "it is in the config" have now
+-- been two rounds of it not being on the server.
+--
+-- SO br_core SETS THEM, and only when the operator has not. GetConvar with an
+-- empty sentinel distinguishes "never set" from "set to the default", so an
+-- operator who deliberately wants the other value keeps it and gets told what
+-- it costs instead of being silently overridden.
+--
+-- WHAT EACH ONE IS FOR is argued at length in client/voice.lua; the short of it:
+--
+--   voice_disableAutomaticListenerOnCamera 1
+--     pma-voice enters SPECTATOR LISTENING whenever a scripted camera is
+--     rendering. This gamemode renders one in the lobby, ON THE BUS and while
+--     downed. Left at 0, every bus rider silently starts listening to every
+--     streamed player's Mumble channel at unlimited range -- which is where
+--     #165's MUMBLE_ADD_VOICE_CHANNEL_LISTEN warnings come from -- and because
+--     the listens are taken over the WARMUP bucket's player list and dropped
+--     over the MATCH bucket's one flight later, the difference is never
+--     removed. That residue is a hole through the match isolation this file
+--     spends forty lines arguing for, so this convar is load-bearing HERE, not
+--     just on the client.
+--
+--   voice_enableUi 0
+--     pma-voice's own bottom-right overlay ("Custom [Range]", "[Call]",
+--     "N Mhz [Radio]"), which the gamemode duplicates and the owner has now
+--     asked about twice.
+--
+-- IF SPECTATOR VOICE IS EVER WANTED for dead players, it has to be built
+-- deliberately -- BR.Native.spectate's free-cam path would otherwise hand a
+-- dead player every conversation in the match, which is a different feature
+-- from "the downed camera happens to be up".
+local CONVARS = {
+    { name = 'voice_disableAutomaticListenerOnCamera', want = '1',
+      cost = 'every rider on the drop bus, every player in the lobby and every '
+          .. 'downed player will listen to every streamed player at unlimited '
+          .. 'range, and will keep some of those listens after the drop' },
+    { name = 'voice_enableUi', want = '0',
+      cost = 'pma-voice draws its own talking/range overlay bottom-right, on '
+          .. 'top of the one br_ui draws' },
+}
+
+--- Put the convars in force, or say why they are not. Idempotent.
+---
+--- Guarded on both natives: the unit suites run this file without the Cfx
+--- runtime, and a nil global here would raise inside onResourceStart and take
+--- the radio guards down with it.
+local function applyConvars()
+    if not GetConvar or not SetConvarReplicated then return end
+    for _, c in ipairs(CONVARS) do
+        local cur = GetConvar(c.name, '')
+        if cur == '' then
+            -- REPLICATED, because both of these are read on the CLIENT.
+            SetConvarReplicated(c.name, c.want)
+            print(('[br_core] VOICE: set %s %s (unset in server.cfg -- br_core '
+                .. 'requires it).'):format(c.name, c.want))
+        elseif cur ~= c.want then
+            print(('[br_core] VOICE: server.cfg sets %s to %q and br_core needs '
+                .. '%s. LEAVING YOURS. The cost: %s.')
+                :format(c.name, cur, c.want, c.cost))
+        end
+    end
+end
+
 AddEventHandler('onResourceStart', function(name)
+    if name == GetCurrentResourceName() then applyConvars() end
     if name == VOICE_RES then
         -- pma-voice came back holding nothing of ours. Every guard has to be
         -- re-registered, and forgetting each player's cached assignment is what
@@ -393,6 +467,17 @@ RegisterCommand('brvoice', function()
         and (VOICE_RES .. ' -- running')
         or (VOICE_RES .. ' IS NOT RUNNING. There is no voice chat on this '
             .. 'server at all.')))
+    -- THE CONVARS, SECOND. A pma-voice that is running and misconfigured is the
+    -- shape #165 arrived in, and nothing else on this readout can show it.
+    if GetConvar then
+        for _, c in ipairs(CONVARS) do
+            local cur = GetConvar(c.name, '')
+            print(('  convar       %s = %s%s'):format(c.name,
+                cur == '' and '(unset)' or cur,
+                cur == c.want and '' or ('   <-- MUST BE ' .. c.want)))
+        end
+    end
+
     print(('  enabled      %s   nearby %.0fm (falloff, speaker-side)   squad-global %s')
         :format(tostring(V.enabled ~= false), R.nearby or 25.0,
                 tostring(V.squadIsGlobal ~= false)))

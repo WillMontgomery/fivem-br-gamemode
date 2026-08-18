@@ -114,11 +114,40 @@
 --     the value pma-voice reads back for its own range maths. We no longer
 --     care in the way we used to -- we do our own distance comparison -- but
 --     it is not a settled question and it is not settled here.
---   * Whether `voice_enableUi 0` removes the duplicate "currently talking"
---     readout the owner has been looking at. It removes PMA-VOICE'S overlay --
---     that much is read off its source, see the note on the convar below --
---     and pma-voice's overlay is the only voice UI this server will now be
---     running. If a readout survives it, it is FiveM's own and it is not ours.
+--
+-- SETTLED SINCE, AND KEPT HERE BECAUSE IT WAS ONCE ON THIS LIST: whether
+-- `voice_enableUi 0` removes the readout the owner is looking at. It does. All
+-- three lines of pma-voice's overlay -- "Custom [Range]", "[Call]" and
+-- "N Mhz [Radio]" -- are inside one `v-if="voice.uiEnabled"` in its
+-- voice-ui/src/App.vue, positioned bottom-right, and `uiEnabled` is that
+-- convar. What was NOT true is that writing the line into server.cfg.example
+-- would put it on the box; see the convar block further down.
+--
+-- ==========================================================================
+-- #165: WHAT THE BUS ACTUALLY BROKE, AND WHY IT IS NOT THE GAG BELOW.
+--
+-- "Nearby voice worked in solo before the bus, then after I get
+--  MUMBLE_ADD_VOICE_CHANNEL_LISTEN: Tried to call native on a channel that
+--  didn't exist."
+--
+-- THE GAG CANNOT RAISE THAT WARNING, and that is structural rather than
+-- fortunate. pma-voice's addNearbyPlayers() issues its channel listen and its
+-- own-channel target ABOVE the loop that consults our check, and unconditionally
+-- (client/init/proximity.lua). A check that returns false skips ONE
+-- MumbleAddVoiceTargetChannel call for that player and nothing else. pma-voice
+-- neither tears down nor rebuilds any channel in response to a proximity check,
+-- and it has no BUS -> FREEFALL edge to react to: it never learns the state
+-- changed.
+--
+-- WHAT DOES RAISE IT IS OUR CAMERA. pma-voice calls that native in exactly
+-- three places, and two of them are setSpectatorMode(), which it enters when
+--     NetworkIsInSpectatorMode() or GetRenderingCam() ~= -1
+-- -- ANY rendering scripted camera. client/bus.lua puts one up as the last step
+-- of boarding. So the bus, and nothing else about the bus, flips pma-voice into
+-- spectator listening: it walks the streamed player list adding a channel
+-- listen for every one of them, unchecked, and warns for each channel that is
+-- not there. The convar that turns that behaviour off is named in the CONVARS
+-- table below, and the server now sets it.
 -- ==========================================================================
 
 BR = BR or {}
@@ -367,6 +396,79 @@ local function install()
     call('overrideProximityRange', BR.Voice.state.nearby + 0.0, true)
 end
 
+-- ------------------------------------------------- the two convars ---
+--
+-- TWO pma-voice CONVARS THIS GAMEMODE CANNOT RUN WITHOUT, AND THE REASON THEY
+-- ARE CHECKED FROM CODE RATHER THAN WRITTEN DOWN.
+--
+-- Both of them were "fixed" last round by adding a line to server.cfg.example.
+-- server.cfg.example is not a config file. tools/deploy.sh rsyncs
+-- resources/[fivem-royale]/ and nothing else, and .gitignore line 33 keeps the
+-- real server.cfg off this repository entirely -- so a convar added to the
+-- example reaches the box only when a human retypes it. That did not happen,
+-- and the two symptoms in #165 are exactly what their absence looks like.
+--
+-- br_core/server/voice.lua now SETS both (SetConvarReplicated) when the
+-- operator has not, so a fresh box is correct without anyone editing anything.
+-- This half is the receipt: the client reads what actually arrived and says so,
+-- because "the server set it" and "this client has it" are different claims and
+-- #150 was a week of confusing exactly that kind of pair.
+--
+--   voice_disableAutomaticListenerOnCamera 1
+--     pma-voice's proximity loop (client/init/proximity.lua) computes
+--         local cam = GetConvarInt("voice_disableAutomaticListenerOnCamera", 0)
+--                       ~= 1 and GetRenderingCam() or -1
+--         local isSpectating = NetworkIsInSpectatorMode() or cam ~= -1
+--     -- ANY RENDERING SCRIPTED CAMERA puts this client into pma-voice's
+--     SPECTATOR LISTENING mode, which walks the whole streamed player list
+--     calling MumbleAddVoiceChannelListen on each of their channels. This
+--     gamemode renders a scripted camera in the lobby (client/lobbycam.lua),
+--     ON THE BUS (client/bus.lua, RenderScriptCams at the end of boarding) and
+--     while downed (client/dbno.lua). So the bus silently turns every rider
+--     into a spectator of everybody in scope: unlimited-range listening, the
+--     MUMBLE_ADD_VOICE_CHANNEL_LISTEN warnings in #165, and -- because the
+--     listens are added over the WARMUP bucket's player list and removed over
+--     the MATCH bucket's one flight later -- a residue of listens on players
+--     this client can no longer see and will never remove. That residue is a
+--     hole straight through the match isolation server/voice.lua argues for.
+--
+--   voice_enableUi 0
+--     pma-voice's own bottom-right overlay: the "Custom [Range]" readout the
+--     owner is looking at, plus "[Call]" and "N Mhz [Radio]". All three sit
+--     inside one `v-if="voice.uiEnabled"` (its voice-ui/src/App.vue), fed by a
+--     single message sent from client/init/init.lua at pma-voice's start. It
+--     defaults to ON, and the gamemode draws its own indicator.
+local CONVARS = {
+    { name    = 'voice_disableAutomaticListenerOnCamera',
+      want    = 1,
+      default = 0,   -- pma-voice's own default, so an unset convar reads as it
+      why     = 'the bus/lobby/downed cameras put this client into pma-voice '
+             .. 'spectator listening -- unlimited range, and it leaks across '
+             .. 'the drop' },
+    { name    = 'voice_enableUi',
+      want    = 0,
+      default = 1,
+      why     = 'pma-voice draws its own bottom-right overlay on top of ours' },
+}
+
+--- WHICH OF THEM ARE WRONG ON THIS CLIENT, RIGHT NOW.
+---
+--- One function, two callers, for the same reason BR.Voice.gagged() is: the
+--- start-up warning and /brvoice must not be able to disagree about it.
+--- @return table array of { name, have, want, why }
+function BR.Voice.convarProblems()
+    local out = {}
+    if not GetConvarInt then return out end   -- a harness, not a game
+    for _, c in ipairs(CONVARS) do
+        local have = GetConvarInt(c.name, c.default)
+        if have ~= c.want then
+            out[#out + 1] = { name = c.name, have = have,
+                              want = c.want, why = c.why }
+        end
+    end
+    return out
+end
+
 AddEventHandler('onClientResourceStart', function(res)
     if res == GetCurrentResourceName() then
         if not present() then
@@ -376,6 +478,10 @@ AddEventHandler('onClientResourceStart', function(res)
             print('[br_core] VOICE: ' .. VOICE_RES .. ' is NOT running. There '
                 .. 'is no voice chat at all -- proximity, squad and the mode '
                 .. 'setting all do nothing. See server.cfg.example.')
+        end
+        for _, p in ipairs(BR.Voice.convarProblems()) do
+            print(('[br_core] VOICE: %s is %d on this client, must be %d -- %s')
+                :format(p.name, p.have, p.want, p.why))
         end
         install()
     elseif res == VOICE_RES then
@@ -665,6 +771,23 @@ RegisterCommand('brvoice', function()
         up and (VOICE_RES .. ' -- running')
             or (VOICE_RES .. ' IS NOT RUNNING. There is no voice at all. '
                 .. 'Nothing below this line does anything.')))
+
+    -- THE SECOND LINE, AND IT IS SECOND BECAUSE OF #165. A running pma-voice
+    -- with these two convars unset is a running pma-voice that draws its own
+    -- overlay and turns every bus rider into a spectator of the whole plane --
+    -- and neither of those shows up anywhere else on this readout. Silence
+    -- here means both are correct.
+    local probs = BR.Voice.convarProblems()
+    if #probs > 0 then
+        print(('  %-13s%d WRONG on this client:'):format('convars', #probs))
+        for _, p in ipairs(probs) do
+            print(('    %s is %d, must be %d'):format(p.name, p.have, p.want))
+            print(('      %s'):format(p.why))
+        end
+        print('    br_core/server/voice.lua sets these when the operator has')
+        print('    not. Seeing them here means the server was overridden, or')
+        print('    this client joined before that ran -- rejoin and re-check.')
+    end
 
     print(('  %-13s%s'):format('mode', BR.Voice.pref.mode))
 

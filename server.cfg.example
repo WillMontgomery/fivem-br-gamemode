@@ -189,24 +189,59 @@ ensure br_ringmaster     # optional -- the admin console's game-side half
 # first line of `brvoice`.
 #
 # ---------------------------------------------------------------------------
-# CONVARS. ONE IS REQUIRED. THE REST ARE OPTIONAL.
+# CONVARS. TWO ARE REQUIRED -- AND br_core NOW SETS BOTH ITSELF.
 #
-# REQUIRED -- turn pma-voice's own overlay off.
+# READ THIS BEFORE ADDING ANYTHING BELOW. THIS FILE IS NOT A CONFIG FILE.
+# server.cfg is in .gitignore and tools/deploy.sh syncs
+# resources/[fivem-royale]/ and nothing else, so a line added HERE reaches the
+# box only when a human retypes it into the real server.cfg. #165 is what that
+# costs: both required convars were added to this file last round, neither was
+# ever on the server, and both symptoms were reported again the same week.
 #
-# This is the duplicate "currently talking" readout. The gamemode draws its own
-# indicator (bottom centre, driven by br_core/client/voice.lua), and running
+# So br_core/server/voice.lua now calls SetConvarReplicated for both of them at
+# start, and ONLY when server.cfg has not set them. Leaving both lines below
+# commented out is a supported, and frankly the recommended, configuration --
+# br_core says in the server console which ones it had to set. Setting one
+# explicitly to something else keeps YOUR value and prints what it costs.
+#
+# REQUIRED (1) -- stop a scripted camera turning players into spectators.
+#
+# pma-voice's proximity loop treats ANY rendering scripted camera as spectating
+# (client/init/proximity.lua: `GetRenderingCam() ~= -1`), and a spectator gets
+# a Mumble channel listen on every streamed player -- unlimited range, no
+# falloff. This gamemode renders a scripted camera in the lobby
+# (br_core/client/lobbycam.lua), ON THE DROP BUS (client/bus.lua) and while
+# downed (client/dbno.lua), so with this at its default of 0 every rider spends
+# the flight listening to the whole plane. That is where #165's
+#     MUMBLE_ADD_VOICE_CHANNEL_LISTEN: Tried to call native on a channel that
+#     didn't exist
+# comes from -- pma-voice adds those listens unchecked, one per player, and
+# warns for each channel that is not there.
+#
+# IT ALSO LEAKS. The listens are taken over the WARMUP bucket's player list and
+# dropped over the MATCH bucket's a flight later, so whatever was in the first
+# and not the second is never removed -- an unlimited-range listen on players
+# in other matches, for the rest of the session.
+# setr voice_disableAutomaticListenerOnCamera 1
+#
+# REQUIRED (2) -- turn pma-voice's own overlay off.
+#
+# This is the bottom-RIGHT readout: "Custom [Range]", and "[Call]" and
+# "N Mhz [Radio]" alongside it. All three are one `v-if="voice.uiEnabled"` in
+# pma-voice's voice-ui/src/App.vue, and `uiEnabled` is this convar, sent to its
+# NUI once at start from client/init/init.lua. The gamemode draws its own
+# indicator (bottom CENTRE, driven by br_core/client/voice.lua), and running
 # both is the second contradicting voice this config already complains about
 # elsewhere.
 #
 # WRITTEN DOWN BECAUSE THIS FILE PREVIOUSLY GOT IT WRONG IN BOTH DIRECTIONS. It
 # was first recommended while no voice resource was installed, where it did
 # nothing at all, and this file then said it "DOES NOTHING ON THIS SERVER" --
-# true at the time, false the moment pma-voice is ensured. It is read in
-# pma-voice's own client Lua in two places (client/init/init.lua, which sends
-# `uiEnabled` to its NUI at start, and client/init/proximity.lua, which gates
-# the talking/radio updates it pushes to that NUI), so 0 stops both the overlay
-# and the traffic that feeds it.
-setr voice_enableUi 0
+# true at the time, false the moment pma-voice is ensured.
+#
+# IF YOU SET IT AT RUNTIME rather than in server.cfg, `restart pma-voice`
+# afterwards: the value is read once, when pma-voice's client script starts.
+# setr voice_enableUi 0
 #
 # RECOMMENDED -- stop F11 cycling the proximity range.
 #
@@ -259,10 +294,12 @@ setr voice_enableProximityCycle 0
 # IF VOICE IS BROKEN, IN ORDER:
 #
 #   1. `brvoice` in the SERVER console. First line says whether pma-voice is
-#      running at all. It lists squad radios only -- proximity is not assigned
-#      by the server any more and cannot be diagnosed from there.
+#      running at all; the `convar` lines under it say whether it is configured.
+#      It lists squad radios only -- proximity is not assigned by the server any
+#      more and cannot be diagnosed from there.
 #   2. F8 `brvoice` on the affected CLIENT. First line, again, is the engine.
-#      Then the "transmitting" line.
+#      A `convars` line appears only when one is wrong ON THIS CLIENT, which is
+#      the claim that matters -- both are read client-side. Then "transmitting".
 #   3. AND THIS IS THE PART THAT IS NEW: proximity is enforced by the SPEAKER.
 #      If A cannot hear B, the machine to run /brvoice on is B'S, not A's.
 #      There is nothing on A's client that can be refusing B.
