@@ -2273,20 +2273,39 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.mercy', function()
     if not cfg or not cfg.enabled then return end
 
     if BR.State.me.state ~= BR.PlayerState.ALIVE then
-        -- A KNOCK IS NOT A NEW LIFE. DBNO is the one non-ALIVE state a player
-        -- comes BACK from, and clearing `done` here is what let the courtesy
-        -- blips return after a revive (owner, 2026-08-18) -- a revived player
-        -- must be indistinguishable from one who was never downed.
-        --
-        -- The asymmetry is the bug in one line: a player who spent their whole
-        -- unused grace period can NEVER see these again, while one who was
-        -- knocked down gets a fresh 60 seconds and the "Crates are marked on
-        -- your map" toast a second time. Being shot was rewarding them.
-        --
-        -- The blips still go out while they are on the floor -- `on` is the
-        -- presentation and it clears either way. It is the LATCH that survives.
+        -- The blips go out while the player is not on their feet whatever put
+        -- them there -- `on` is the presentation. What happens to the LATCH is
+        -- the question, and DBNO is the one non-ALIVE state a player comes BACK
+        -- from, so it is the only state that gets its own answer.
         mercy.on = false
-        if BR.State.me.state ~= BR.PlayerState.DBNO then
+
+        if BR.State.me.state == BR.PlayerState.DBNO then
+            -- A KNOCK CLOSES THE COURTESY WINDOW FOR THIS LIFE. Not "preserves
+            -- the latch" -- SETS it. That distinction is the whole of the
+            -- second round on this report (owner, 2026-08-18: "courtesy blips
+            -- do still appear after revive yes").
+            --
+            -- The previous fix stopped a knock from CLEARING `done`, which
+            -- closed exactly one path: the player who had already been offered
+            -- the blips and had them taken away. Every other knock happens with
+            -- `done` still false -- the window has not been used yet -- and
+            -- preserving false preserves nothing. Worse, the grace period is
+            -- `now - landedAt` and `landedAt` keeps its stamp while they are on
+            -- the floor, so the bleed and the revive COUNT TOWARDS IT. A player
+            -- knocked at forty seconds and picked up at ninety stands up into a
+            -- grace period that expired while they were unconscious, and the
+            -- map lights up and the toast fires on the frame they get their
+            -- weapon back -- which is the middle of the fight they just lost.
+            --
+            -- So the rule is the owner's, stated as a rule: after a revive,
+            -- never. And it is worth saying what it costs, because it is a real
+            -- cost and not nothing: a player who genuinely has found no loot,
+            -- and who is knocked before their sixty seconds are up, does not get
+            -- the help on that life. They have also just been in a fight with
+            -- somebody, which is the one thing that answers the question these
+            -- blips exist for -- "is this mode broken, or is this map empty?"
+            mercy.done = true
+        else
             mercy.landedAt, mercy.armedAt = 0, 0
             mercy.done = false
         end

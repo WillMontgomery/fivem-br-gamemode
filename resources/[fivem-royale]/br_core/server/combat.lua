@@ -897,8 +897,28 @@ local function stepDowned(src, entry, now)
             entry.dbnoUntil = (entry.dbnoUntil or now) + (now - (entry.reviveTickAt or now))
             entry.reviveTickAt = now
 
+            -- ...AND THE MOVED DEADLINE GOES BACK TO THE PLAYER IT BELONGS TO.
+            --
+            -- THE PAUSE ABOVE HAS ALWAYS WORKED AND HAS NEVER BEEN VISIBLE, and
+            -- that is the whole of "while actively reviving, the DBNO timer does
+            -- not stop" (owner, 2026-08-18). The number the downed player WATCHES
+            -- is not this one: DBNO_SET carries `bleedEndsAt` to their client,
+            -- their client hands it to the interface, and ui-src's DbnoOverlay
+            -- counts down from it on requestAnimationFrame -- continuously, on
+            -- the browser's own clock, against whatever deadline it was last
+            -- given. DBNO_SET is sent on EDGES. The last edge before a hold is
+            -- the hold registering, so the browser spent the entire revive
+            -- counting down from a deadline this line had already moved four
+            -- times a second and never mentioned.
+            --
+            -- Carried on the tick that already exists rather than by pushing a
+            -- second envelope beside it: this payload is the only thing sent
+            -- while a hold runs, and both ends of the clock now travel together.
+            -- It reaches the reviver too, who is a squadmate and already sees
+            -- this exact number on the squad beacon (server/party.lua).
             local payload = { pct = pct * 100.0, target = src,
-                              reviverName = reviver.name }
+                              reviverName = reviver.name,
+                              bleedEndsAt = entry.dbnoUntil }
             TriggerClientEvent(BR.Net.REVIVE_PROGRESS, reviverSrc, payload)
             TriggerClientEvent(BR.Net.REVIVE_PROGRESS, src, payload)
         end
@@ -991,6 +1011,12 @@ AddEventHandler(BR.Net.REVIVE_START, function(data)
     target.reviverSrc = src
     target.reviveFrom = GetGameTimer()
     target.reviveBeat = target.reviveFrom
+    -- THE PAUSE STARTS HERE, NOT ON THE FIRST TICK. stepDowned advances the
+    -- deadline by `now - reviveTickAt`, and with nothing stamped that first
+    -- pass measured zero -- so the quarter second between the hold registering
+    -- and the scheduler's next look ran off the clock every single time. It is
+    -- a fifth of a knock over a full 2.8s hold, and it is free to close.
+    target.reviveTickAt = target.reviveFrom
     BR.Combat.pushDbno(targetSrc)
 end)
 

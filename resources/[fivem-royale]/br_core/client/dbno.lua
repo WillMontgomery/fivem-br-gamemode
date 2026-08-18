@@ -160,6 +160,15 @@ local crawlMoving = nil
 -- it cannot say whether it is being met.
 local crawlTasks = 0
 
+-- THE ORIENTATION THE CLONES WERE LAST HANDED, and the moment they were handed
+-- it. Written by playCrawl -- and ONLY by playCrawl, because the thing they
+-- describe is a task on the wire, not a number in this file. `turnedSince` is
+-- the arm: nothing re-tasks a crawl unless the PLAYER turned it. See the
+-- heading block below dbno.controls.
+local taskHeading = 0.0
+local taskAt      = 0
+local turnedSince = false
+
 -- Where the player last asked to be, while they are not asking to move. See
 -- the movement loop: this is what "stay put" is made of.
 local hold = nil      -- { x = number, y = number } or nil
@@ -231,6 +240,30 @@ end
 --- @return boolean
 local function didHit(v)
     return v == 1 or v == true
+end
+
+--- Is this ped playing the downed clip RIGHT NOW?
+---
+--- THE SAME SCAR AS didHit, ON THE NATIVE THE COVER AND THE WATCHDOG BOTH TURN
+--- ON -- and it was still being read raw. `IsEntityPlayingAnim` is declared BOOL
+--- and answers `1`/`0` on a build that hands numbers back, and IN LUA `0` IS
+--- TRUTHY. Two things were reading it directly and both did the opposite of
+--- what they say they do on such a build:
+---
+---   * holdCover uncovered on the FIRST frame it looked, because `0` passed the
+---     `and` -- so the cover over the resurrection's standing frame lasted
+---     exactly one frame and the owner watched their ped stand up anyway
+---     ("I do still see the DBNO player stand briefly", 2026-08-18);
+---   * playCrawl's watchdog took `not 0` == false and returned, so a clip that
+---     something had cancelled was never put back.
+---
+--- One reader, one comparison, and it is the comparison this file already uses
+--- three lines up.
+--- @param ped integer
+--- @return boolean
+local function playingCrawl(ped)
+    if not crawl then return false end
+    return didHit(IsEntityPlayingAnim(ped, crawl.dict, crawl.anim, 3))
 end
 
 --- Where a label -- or a camera -- belongs over a body.
@@ -328,7 +361,7 @@ local function playCrawl(force, snap)
     if not c then return end
 
     local ped = PlayerPedId()
-    if not force and IsEntityPlayingAnim(ped, c.dict, c.anim, 3) then return end
+    if not force and playingCrawl(ped) then return end
 
     -- THE LAST THREE BOOLEANS ARE THE MOVER, AND ALL THREE USED TO BE FALSE.
     --
@@ -356,6 +389,13 @@ local function playCrawl(force, snap)
     -- A fresh task runs at rate 1.0 whatever we last asked for.
     crawlMoving = nil
     crawlTasks  = crawlTasks + 1
+
+    -- WHICH WAY THE BODY WAS POINTING WHEN THE CLONES LAST HEARD FROM IT, and
+    -- when. The turn watchdog below measures against these two and nothing
+    -- else; see the #164 heading block for why a turn has to become a task.
+    taskHeading = GetEntityHeading(ped)
+    taskAt      = GetGameTimer()
+    turnedSince = false
 
     -- ...AND A FRESH TASK IS A FRESH MOVER ON EVERY OTHER MACHINE. This is the
     -- arm for the clone resync below, and it is here rather than on a clock
@@ -440,16 +480,43 @@ end
 
 --- How long the cover may last at the very outside, ms.
 ---
---- The pose lands on the engine's next animation update, so the honest answer
---- is "one frame" and everything past that is the build being unusual. 250ms is
---- there so a build that never poses at all (crawl resolved to nothing, the
---- task refused, the ped re-killed mid-window) cannot hold a player invisible
---- for a bleed -- an invisible downed player is a worse bug than a visible
---- standing one, and it is the kind that reads as an exploit.
-local HIDE_MAX_MS = 250
+--- ONLY THE CAP IS A TIMER. What actually ends the cover is the pose being
+--- CONFIRMED on the ped and then given a beat to become the pose -- see
+--- holdCover. This number exists so a build that never poses at all (crawl
+--- resolved to nothing, the task refused, the ped re-killed mid-window) cannot
+--- hold a player invisible for a bleed: an invisible downed player is a worse
+--- bug than a visible standing one, and it is the kind that reads as an exploit.
+local HIDE_MAX_MS = 1500
+
+--- How long AFTER the clip is confirmed running the cover stays up, ms.
+---
+--- "I do still see the DBNO player stand briefly -- let's just make the
+--- invisibility time like 1 more second or so, should be enough for their ped
+--- to be in the crawl position by then" (owner, 2026-08-18).
+---
+--- A SECOND IS NOT A GUESS ABOUT WHEN THE TASK LANDS -- the confirmation above
+--- already answers that exactly. It is the interval between the task landing and
+--- the BODY being on the floor, and it is documented FiveM behaviour rather than
+--- something this file can shorten: TaskPlayAnim makes a ped LEAVE its current
+--- state before it enters the clip (citizenfx/fivem#2236), so
+--- `IsEntityPlayingAnim` goes true while the ped is still standing up out of the
+--- old one. That is the frame the owner is describing, and it is on the far side
+--- of the only signal the engine offers, which is why the cover cannot simply
+--- watch harder.
+---
+--- IT COSTS NOBODY ELSE ANYTHING. SET_ENTITY_LOCALLY_INVISIBLE is not a
+--- property and does not replicate: this is a second of the owner not seeing
+--- their own body while the downed camera is still swinging into place, and no
+--- other machine is affected at all.
+local POSE_SETTLE_MS = 1000
 
 -- When the cover was raised, or nil when nothing is being covered.
 local hiddenFrom = nil
+
+-- When the crawl clip was first CONFIRMED on the ped inside this cover, or nil
+-- if it has not been yet. The settle above is measured from here and not from
+-- hiddenFrom, so a slow streaming wait does not eat the settle.
+local posedAt = nil
 
 --- Hide our own ped for THIS frame only. Never a property write.
 --- @param ped integer
@@ -460,10 +527,11 @@ end
 --- Raise the cover over a re-pose that is about to happen.
 local function coverPose()
     hiddenFrom = GetGameTimer()
+    posedAt    = nil
     hideBody(PlayerPedId())
 end
 
---- Hold the cover until the pose is actually on the ped, then drop it.
+--- Hold the cover until the pose is actually on the ped, then a beat longer.
 ---
 --- ASKED ON A LATER FRAME THAN THE ONE THAT TASKED IT, which is the whole
 --- subtlety. A task issued this tick has not been evaluated yet, so
@@ -471,22 +539,37 @@ end
 --- trying to hide -- and believing it would uncover exactly the frame the cover
 --- exists for. GetGameTimer is stamped per frame, so `now > hiddenFrom` is
 --- precisely "a frame boundary has passed".
+---
+--- TWO THINGS WERE WRONG WITH THE ROUND THAT SHIPPED THIS, and the owner could
+--- see both as one symptom:
+---
+---   1. `IsEntityPlayingAnim` WAS READ RAW. It is declared BOOL and can answer
+---      `0`, and `0` is truthy in Lua -- so on such a build the `and` passed on
+---      the first frame this ran and the cover came down instantly. It now goes
+---      through playingCrawl, which compares rather than believes.
+---   2. THE CLIP RUNNING IS NOT THE BODY BEING DOWN. TaskPlayAnim makes a ped
+---      leave its current state before entering the clip
+---      (citizenfx/fivem#2236), so confirmation is the START of the transition,
+---      not the end of it. Confirmation therefore starts POSE_SETTLE_MS rather
+---      than ending the cover.
 --- @param ped integer
 local function holdCover(ped)
     if not hiddenFrom then return end
 
     -- A build with no downed animation has no pose to wait for, and hiding a
     -- ped nothing is ever going to re-pose is just a disappearing player.
-    if crawl == false then hiddenFrom = nil return end
+    if crawl == false then hiddenFrom, posedAt = nil, nil return end
 
     local now = GetGameTimer()
-    if now > hiddenFrom and crawl
-       and IsEntityPlayingAnim(ped, crawl.dict, crawl.anim, 3) then
-        hiddenFrom = nil
+    if not posedAt and now > hiddenFrom and playingCrawl(ped) then
+        posedAt = now
+    end
+    if posedAt and now - posedAt >= POSE_SETTLE_MS then
+        hiddenFrom, posedAt = nil, nil
         return
     end
     if now - hiddenFrom >= HIDE_MAX_MS then
-        hiddenFrom = nil
+        hiddenFrom, posedAt = nil, nil
         return
     end
 
@@ -818,6 +901,17 @@ local function enterDowned()
             -- Let the ragdoll land before asking for an animation on top of it,
             -- or the clip is cancelled by a physics state that has not settled.
             if not fell and beat == KNOCKDOWN_LANDED then
+                -- AND THIS RE-POSE IS COVERED TOO, which the round that added
+                -- the cover missed: it hung the cover on floorTheBody, so only
+                -- the FALL path ever had one. A live knock ends with a ragdoll
+                -- releasing, and a ped coming out of a ragdoll runs a GETUP --
+                -- which is the engine standing the body up, in front of
+                -- everybody, on exactly the boundary this cover exists for
+                -- ("the ped briefly stands ... and going to the emote we
+                -- chose", owner). The ragdoll itself is deliberately NOT
+                -- covered: falling over is the knock, and it is the one frame
+                -- of this that is supposed to be watched.
+                coverPose()
                 playCrawl(true)
                 SetPedCanRagdoll(PlayerPedId(), false)
                 -- THE ANCHOR IS RE-TAKEN HERE AND NOWHERE ELSE ON THIS PATH.
@@ -848,7 +942,11 @@ local function leaveDowned()
     -- speak for and the cover has no re-pose to hide -- a revived player must be
     -- indistinguishable from one who was never downed, which is the whole of
     -- the fourth report on this file.
-    resyncPhase, resyncArmed, hiddenFrom = 0, false, nil
+    resyncPhase, resyncArmed, hiddenFrom, posedAt = 0, false, nil, nil
+    -- ...and the turn watchdog with them: a body that stood up owes the clones
+    -- nothing, and a stale taskHeading would re-task the first crawl of the
+    -- NEXT knock for a turn that happened in a previous one.
+    turnedSince = false
     -- Reset the movement clipset even though nothing sets one any more. It is
     -- two native calls, and the alternative -- a player who was downed by an
     -- OLDER client build walking into the lobby at crawling pace -- is the
@@ -1030,10 +1128,90 @@ end
 -- the report that brings a second arm back, and it should arm off the scope
 -- change rather than off a clock.
 --
--- IT CANNOT CANCEL THE CRAWL. It only runs on frames where the player is
--- pressing nothing at all -- one touch of the movement axis and the real input
--- owns the frame -- and the step it takes is one frame of dbnoCrawlSpeed
--- (~9mm), put straight back on the following frame.
+-- IT CANNOT CANCEL THE CRAWL. It only runs on frames where the player is not
+-- travelling -- one touch of the FORWARD axis and the real input owns the frame
+-- -- and the step it takes is one frame of dbnoCrawlSpeed (~9mm), put straight
+-- back on the following frame.
+--
+-- ==========================================================================
+-- #164, SECOND HALF: THE BODY TURNS AND THE CLONES DO NOT.
+-- ==========================================================================
+--
+-- "When DBNO and a player crawls, their ped position is not synced with anyone
+-- else's screen ... if they go forward, they go forward on everyone's screen.
+-- But if they turn, they're still moving forward on other player's screens."
+-- (owner, 2026-08-18.)
+--
+-- TRANSLATION REPLICATES AND ROTATION DOES NOT, and the asymmetry is not a
+-- mystery once the two are written next to each other. Everything in
+-- dbno.controls that moves the body forward ends in SetEntityCoordsNoOffset --
+-- a real position write, on a networked entity, every frame of a crawl. A TURN
+-- writes ONE THING:
+--
+--     SetEntityHeading(ped, (GetEntityHeading(ped) - lr * turnRate * dt) % 360)
+--
+-- and then falls into the "not asking to move" branch, where stayPut declines to
+-- write anything at all because the ped has not drifted a centimetre -- it
+-- turned, it did not move. So a pure turn produces no entity update of any kind,
+-- and a turn WHILE crawling produces position updates that say nothing about
+-- which way the body is now pointing.
+--
+-- That matters because of the model the block above is built on and the owner
+-- confirmed in game: a clone is driven by the REPLICATED TASK, replayed at rate
+-- 1.0 with `move_injured_ground`'s mover intact, and the only thing that has
+-- ever cancelled that mover is a fresh task followed by the one-shot step. The
+-- direction that mover carries the clone in is the direction the clone was
+-- facing when it got the task. Turn on this machine and nothing re-tasks: the
+-- clones keep the heading they were handed and keep crawling along it. Which is
+-- the owner's sentence, exactly.
+--
+-- SO A TURN IS A RE-POSE, AND IT GOES THROUGH THE MECHANISM THAT ALREADY
+-- EXISTS. There is no second resync here and there deliberately is not one:
+-- playCrawl(true) issues a fresh task and playCrawl is what calls resyncArm, so
+-- a settled turn produces exactly one task and exactly one step -- the same
+-- one-per-task contract /brdbno's `clone sync` line is read against, and the
+-- same thing the owner's own manual workaround does by hand.
+--
+-- WHAT STOPS IT BECOMING THE 500ms BEAT AGAIN, because that is the failure this
+-- has to avoid rather than re-invent:
+--
+--   * `turnedSince` -- only the PLAYER'S OWN TURN INPUT arms it. The clip has a
+--     rotational mover of its own; without this arm, a body rotating gently
+--     under its own animation would re-task forever at four a second, and every
+--     one of those is a 9mm step. Nothing on the keyboard, nothing on the wire.
+--   * RETASK_EVERY_MS -- a spin cannot re-task per frame, which is the bug that
+--     restarted the clip 59 times in 60 frames.
+--   * TURN_RETASK_DEG vs TURN_SETTLE_DEG -- mid-turn the body is allowed to be
+--     20 degrees stale before it is worth a task; once the stick is back in the
+--     deadzone, anything worth seeing is corrected. So a long sweep costs one
+--     task per 20 degrees and a flick costs one, total.
+local TURN_RETASK_DEG = 20.0
+local TURN_SETTLE_DEG = 2.0
+local RETASK_EVERY_MS = 250
+
+--- The shortest angle between two headings, in degrees. Never negative, never
+--- more than 180 -- 359 and 1 are two degrees apart, not three hundred and
+--- fifty-eight, and a crawl steered across the wrap would otherwise re-task on
+--- every frame of it.
+--- @param a number
+--- @param b number
+--- @return number
+local function headingGap(a, b)
+    local d = (a - b) % 360.0
+    if d > 180.0 then d = 360.0 - d end
+    return d
+end
+
+--- Do the clones need to be told which way this body is now facing?
+--- @param ped integer
+--- @param turning boolean  is the player on the turn axis THIS frame
+--- @return boolean
+local function turnedAway(ped, turning)
+    if not crawl or not turnedSince then return false end
+    if GetGameTimer() - taskAt < RETASK_EVERY_MS then return false end
+    local gap = headingGap(GetEntityHeading(ped), taskHeading)
+    return gap >= (turning and TURN_RETASK_DEG or TURN_SETTLE_DEG)
+end
 
 local resyncArmed = false -- a task has been issued and not yet answered for
 local resyncPhase = 0     -- 0 idle, 1 the step out, 2 the step back
@@ -1097,7 +1275,7 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
         -- Not `hideBody` -- the cover is simply not asserted, and a flag that
         -- lasts one frame is already gone. Clearing the stamp is only so a
         -- later knock starts a fresh window.
-        hiddenFrom = nil
+        hiddenFrom, posedAt, turnedSince = nil, nil, false
         return
     end
 
@@ -1131,11 +1309,21 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
     local lr = GetDisabledControlNormal(0, 30)
     local ud = GetDisabledControlNormal(0, 31)
 
-    if math.abs(lr) > 0.1 then
+    local turning = math.abs(lr) > 0.1
+    if turning then
         SetEntityHeading(ped,
             (GetEntityHeading(ped) - lr * (M.dbnoTurnRate or 90.0)
              * GetFrameTime()) % 360.0)
+        -- THE ARM, AND IT IS THE PLAYER'S HAND RATHER THAN THE BODY'S ANGLE.
+        -- See turnedAway: measuring the angle alone would let the clip's own
+        -- rotation re-task the crawl forever with nobody touching anything.
+        turnedSince = true
     end
+
+    -- ...AND A TURN THE CLONES HAVE NOT HEARD ABOUT BECOMES A TASK. Not a
+    -- second resync: playCrawl is what arms the one below, so this produces one
+    -- task and one step exactly as the knock does.
+    if turnedAway(ped, turning) then playCrawl(true) end
 
     local c = GetEntityCoords(ped)
 
@@ -1147,10 +1335,16 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
     -- the assumption that nothing else could be moving the ped. Something was.
     if ud >= -0.1 then
         -- ...AND NOT MOVING IS WHEN THE BODY HAS TO SAY SO OUT LOUD (#164).
-        -- Only on a frame with no input at all: a player who is turning is
-        -- already generating entity updates, and a player who is crawling owns
-        -- the frame outright.
-        if math.abs(lr) <= 0.1 and resyncBody(ped, c) then return end
+        --
+        -- THIS USED TO EXCLUDE A TURNING PLAYER, on the grounds that they were
+        -- "already generating entity updates". They are not, and that sentence
+        -- is the second half of #164 in one line: a turn writes a heading and
+        -- nothing else -- stayPut declines to write a position because the body
+        -- has not drifted a centimetre. So a hold armed by a turn would have sat
+        -- armed until the player let go of the stick, which on a slow sweep is
+        -- the whole of the turn. The ped is not travelling on this frame either
+        -- way, which is the only thing the pair actually needs.
+        if resyncBody(ped, c) then return end
         crawlPlaying(false)
         stayPut(ped, c)
         return
@@ -1295,6 +1489,24 @@ AddEventHandler(BR.Net.REVIVE_PROGRESS, function(d)
     if mine.downed and d.target == BR.State.me.src then
         mine.revivePct   = d.pct or 0.0
         mine.reviverName = d.cancelled and nil or (d.reviverName or mine.reviverName)
+        -- AND THE DEADLINE, BECAUSE THE PAUSE IS A NUMBER AND NOT A MODE.
+        --
+        -- "While actively reviving, the DBNO timer does not stop for some
+        -- reason" (owner, 2026-08-18). It stops on the SERVER -- stepDowned
+        -- pushes `dbnoUntil` along with each tick, which is what "the clock
+        -- stops during a revive" is made of -- and it stopped nowhere else,
+        -- because nothing carried the moved deadline back. DBNO_SET is sent on
+        -- EDGES (the knock, the hold registering, a cancel, the revive); the
+        -- pause happens four times a second in between. So the browser went on
+        -- counting down against the deadline it was handed when the hold
+        -- started -- DbnoOverlay runs its countdown on requestAnimationFrame
+        -- from `bleedEndsAt` -- and a player watched their own timer run out
+        -- under a revive the server had already paused.
+        --
+        -- Guarded rather than defaulted: a payload without the field must leave
+        -- the deadline alone, not zero it. `or 0` here would bleed them out on
+        -- the spot.
+        if d.bleedEndsAt then mine.bleedEndsAt = d.bleedEndsAt end
         pushMine()
         return
     end
@@ -1741,11 +1953,23 @@ RegisterCommand('brdbno', function()
            .. 'above is local; this is what other clients see)')
         :format(resyncs, crawlTasks, resyncArmed and 'ARMED -- owed a step'
                                                  or 'settled', resyncPhase))
-    print(('  cover      : %s   (the resurrection\'s standing frame, %dms cap)')
+    -- READ `heading` AGAINST `clone sync` ABOVE. A turn that nothing re-tasked
+    -- is the second half of #164: the gap is how far the body has turned since
+    -- the last thing the clones were told, so a large gap sitting still while
+    -- the player is not touching the stick is this watchdog failing to fire.
+    print(('  heading    : %.1f deg, clones last told %.1f (gap %.1f), %s')
+        :format(GetEntityHeading(PlayerPedId()), taskHeading,
+                headingGap(GetEntityHeading(PlayerPedId()), taskHeading),
+                turnedSince and 'turned since that task' or 'no turn since'))
+    print(('  cover      : %s   (%s; %dms settle after the clip is confirmed, '
+           .. '%dms cap)')
         :format(hiddenFrom
                     and ('UP, %dms'):format(GetGameTimer() - hiddenFrom)
                     or 'down',
-                HIDE_MAX_MS))
+                posedAt and ('clip confirmed %dms ago'):format(
+                                GetGameTimer() - posedAt)
+                        or 'clip not confirmed yet',
+                POSE_SETTLE_MS, HIDE_MAX_MS))
     print(('  held at    : %s'):format(
         hold and ('%.2f, %.2f'):format(hold.x, hold.y)
               or '- (moving, or not downed)'))

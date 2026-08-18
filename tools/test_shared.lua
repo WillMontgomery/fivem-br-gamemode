@@ -3936,6 +3936,231 @@ do
 end
 
 -- ==========================================================================
+-- THE CLOCK STOPS DURING A REVIVE, ON BOTH SIDES OF THE WIRE.
+-- ==========================================================================
+--
+-- "While actively reviving, the DBNO timer does not stop for some reason."
+-- (owner, 2026-08-18.)
+--
+-- IT STOPPED. IT HAD ALWAYS STOPPED. server/combat.lua's stepDowned pushes
+-- `dbnoUntil` forward by the length of every tick a hold is progressing through,
+-- and that line has been correct and reachable the whole time -- which is
+-- exactly why three readings of the server file could not find this.
+--
+-- THE NUMBER THE PLAYER WATCHES IS A DIFFERENT NUMBER. It is `bleedEndsAt`,
+-- carried on DBNO_SET, held by client/dbno.lua and handed to the interface,
+-- where ui-src/src/hud/DbnoOverlay.tsx counts down from it on
+-- requestAnimationFrame -- continuously, on the browser's own clock, against
+-- whatever deadline it was last given. DBNO_SET is sent on EDGES. The last edge
+-- before a hold is the hold registering. So for the whole of a revive the
+-- browser counted down from a deadline the server had already moved, four times
+-- a second, and never mentioned.
+--
+-- THIS IS THE PROJECT'S SIGNATURE FAILURE AND THIS BLOCK IS SHAPED AGAINST IT:
+-- two representations of one clock, each internally consistent, with nothing
+-- anywhere asserting they agree. So the assertion is the agreement itself --
+-- the client's deadline against the server's entry, read off both live objects
+-- rather than off either one's idea of the other.
+describe('dbno.revive.clock')
+do
+    local SRV = newServer()
+    local CLI = newClient(96, 0)
+    local env = CLI.env
+    local PS  = env.BR.PlayerState
+    local rtt = 60
+
+    -- WHAT THE INTERFACE WOULD BE COUNTING DOWN FROM. Captured off the real
+    -- envelope client/dbno.lua pushes at br_ui, because that is the only place
+    -- the player's number exists -- reading the client's own local would be
+    -- reading the wrong side of the bridge.
+    local shown = nil
+    env.AddEventHandler('br:ui:sendLocal', function(kind, payload)
+        if kind == env.BR.Nui.DBNO and type(payload) == 'table'
+           and payload.downed then
+            shown = payload.bleedEndsAt
+        end
+    end)
+
+    -- The server samples positions itself; a reviver has to be within
+    -- dbnoReviveDist + dbnoReviveSlack of the body or reviveAllowed refuses.
+    SRV.roster[1].pos = { x = 0.0, y = 0.0, z = 30.0 }
+    SRV.roster[2].pos = { x = 0.5, y = 0.0, z = 30.0 }
+
+    local holding, lastAsk = false, -10000
+    local wire = {}
+    local function drain(now)
+        -- THE REVIVER'S CLIENT, REDUCED TO THE ONE THING IT DOES: re-assert the
+        -- hold every ASK_EVERY_MS. The server expires a revive it has not heard
+        -- about in dbnoReviveBeatMs, so a rig that asked once would be testing
+        -- the expiry instead of the pause.
+        if holding and now - lastAsk >= 250 then
+            lastAsk = now
+            SRV.fire(SRV.env.BR.Net.REVIVE_START, 2, { target = 1 })
+        end
+        SRV.tick(now)
+        for i = 1, #SRV.out do
+            local m = SRV.out[i]
+            wire[#wire + 1] = { at = now + rtt, event = m.event,
+                                target = m.target, payload = m.payload }
+        end
+        for i = #SRV.out, 1, -1 do SRV.out[i] = nil end
+        while wire[1] and now >= wire[1].at do
+            local m = table.remove(wire, 1)
+            env.BR.State.me.state = SRV.roster[1].state
+            if m.target == 1 or m.target == -1 then
+                env.TriggerEvent(m.event, m.payload)
+            end
+        end
+        for i = 1, #CLI.toServer do
+            local m = CLI.toServer[i]
+            if m and now >= m.at + rtt then
+                SRV.roster[1].engineHp = env.GetEntityHealth(1)
+                SRV.died(1, m.data)
+                CLI.toServer[i] = false
+            end
+        end
+    end
+
+    CLI.pump(6000, drain)
+    CLI.fall()
+    CLI.pump(2000, drain)
+
+    ok(SRV.roster[1].state == PS.DBNO, 'the player is down and bleeding',
+        tostring(SRV.roster[1].state))
+    ok(shown ~= nil and shown == SRV.roster[1].dbnoUntil,
+        'and the deadline the interface would count down from is the server\'s '
+        .. 'own, to the millisecond',
+        ('interface %s, server %s')
+            :format(tostring(shown), tostring(SRV.roster[1].dbnoUntil)))
+
+    --- What DbnoOverlay would be putting on screen right now, in ms.
+    local function remaining() return (shown or 0) - CLI.now end
+
+    -- ------------------------------------------------- the control first ---
+    -- IT HAS TO BE ABLE TO GO DOWN. An assertion that a number did not move is
+    -- satisfied by a number that never moves, which is precisely how a fix that
+    -- froze the clock outright would pass the headline below and lose the mode.
+    local beforeIdle = remaining()
+    CLI.pump(3000, drain)
+    local idleDrop = beforeIdle - remaining()
+    ok(idleDrop >= 2800 and idleDrop <= 3200,
+        'with nobody on them the timer runs, second for second',
+        ('%dms lost over 3000ms of lying there'):format(idleDrop))
+
+    -- ------------------------------------------------------- the headline ---
+    holding = true
+    local heldFrom      = CLI.now
+    local beforeHold    = remaining()
+    local serverBefore  = SRV.roster[1].dbnoUntil
+    local worstDip      = 0
+
+    -- SHORT OF dbnoReviveTime ON PURPOSE. A completed revive clears dbnoUntil
+    -- outright, and "the deadline is nil" would satisfy any comparison at all.
+    local HOLD_MS = 2000
+    local target = CLI.now + HOLD_MS
+    while CLI.now < target do
+        CLI.pump(64, drain)
+        local dip = beforeHold - remaining()
+        if dip > worstDip then worstDip = dip end
+    end
+    holding = false
+
+    ok(SRV.roster[1].reviverSrc == nil or SRV.roster[1].state == PS.DBNO,
+        'the hold ran without completing, so there is still a deadline to read',
+        tostring(SRV.roster[1].state))
+
+    local serverMoved = (SRV.roster[1].dbnoUntil or 0) - serverBefore
+    ok(serverMoved >= HOLD_MS - 300,
+        'the server pauses for essentially the whole hold',
+        ('deadline moved %dms over a %dms hold'):format(serverMoved, HOLD_MS))
+
+    ok(shown == SRV.roster[1].dbnoUntil,
+        'AND THE INTERFACE IS LOOKING AT THAT SAME NUMBER -- the two '
+        .. 'representations of one clock are asserted against each other, which '
+        .. 'is the thing nothing was doing',
+        ('interface %s, server %s')
+            :format(tostring(shown), tostring(SRV.roster[1].dbnoUntil)))
+
+    -- THE OWNER'S SENTENCE, IN MILLISECONDS. Before this, the browser counted
+    -- down from a deadline nothing was updating, so a two-second hold cost two
+    -- seconds of visible clock. What is left is the wire: the client is always
+    -- one round trip and up to one 250ms tick behind the pause, and that is a
+    -- floor rather than a bug.
+    ok(worstDip <= 250 + rtt + 100,
+        'SO THE TIMER THE PLAYER SEES STOPS TOO -- it never falls further '
+        .. 'behind than one server tick plus the round trip. BEFORE: it fell '
+        .. 'by the entire length of the hold',
+        ('worst dip %dms over a %dms hold (tick 250 + rtt %d)')
+            :format(worstDip, HOLD_MS, rtt))
+
+    -- ...AND IT STARTS AGAIN WHEN THE HAND COMES OFF. A pause that never ends
+    -- is immortality, and the bleed clock is the only thing that ends a knock
+    -- nobody answers.
+    CLI.pump(400, drain)               -- let the release land
+    local afterRelease = remaining()
+    CLI.pump(3000, drain)
+    local resumedDrop = afterRelease - remaining()
+    ok(resumedDrop >= 2800 and resumedDrop <= 3200,
+        'and it resumes the moment the hold stops: a pause, not a reprieve',
+        ('%dms lost over 3000ms after the release'):format(resumedDrop))
+
+    -- --------------------------------------------------------------------
+    -- WHERE THE PAUSE STARTS, ON A CLOCK NOTHING ELSE IS DRIVING.
+    -- --------------------------------------------------------------------
+    --
+    -- The end-to-end run above cannot say this and it is worth being explicit
+    -- about why, because a suite that pretended otherwise would be measuring
+    -- luck. `reviveTickAt` used to be stamped by the FIRST scheduler pass after
+    -- the hold registered rather than by the hold registering, so the interval
+    -- between the two ran off the clock. That interval is anywhere from zero to
+    -- one full 250ms tick depending on where the ask happens to land in the
+    -- scheduler's phase -- so end to end it hides inside the tolerance, and in
+    -- the rig's own alignment it came out at 32ms.
+    --
+    -- Driven directly instead: hold at a known instant, tick at a known instant,
+    -- and the deadline must have moved by exactly the difference.
+    do
+        local S = newServer()
+        local PS2 = S.env.BR.PlayerState
+        S.roster[1].pos = { x = 0.0, y = 0.0, z = 30.0 }
+        S.roster[2].pos = { x = 0.5, y = 0.0, z = 30.0 }
+
+        S.tick(10000)
+        S.died(1, { cause = 'fall' })
+        ok(S.roster[1].state == PS2.DBNO, 'a player is down on the server rig',
+            tostring(S.roster[1].state))
+
+        local D0 = S.roster[1].dbnoUntil
+        S.fire(S.env.BR.Net.REVIVE_START, 2, { target = 1 })
+        ok(S.roster[1].reviverSrc == 2, 'and a mate has hold of them',
+            tostring(S.roster[1].reviverSrc))
+
+        -- ONE SCHEDULER PASS, and it is the FIRST one this hold has seen. The
+        -- pass at 10000 above is what puts the scheduler on a known phase, so
+        -- the next one is exactly a period later and the interval under test --
+        -- hold registered at 10000, first look at 10250 -- is the whole 250ms.
+        S.tick(10250)
+        local moved = (S.roster[1].dbnoUntil or 0) - D0
+        ok(moved == 250,
+            'THE PAUSE STARTS WHEN THE HOLD REGISTERS, not when the scheduler '
+            .. 'next looks -- the first tick pays for the interval before it. '
+            .. 'BEFORE: it paid 0 and that quarter second was gone',
+            ('the deadline moved %dms over the first 250ms of a hold')
+                :format(moved))
+
+        -- ...AND IT IS THE HOLD DOING IT. A downed player nobody is touching
+        -- must lose that time, or the fix is immortality with extra steps.
+        S.fire(S.env.BR.Net.REVIVE_STOP, 2, nil)
+        local D1 = S.roster[1].dbnoUntil
+        S.tick(10500)
+        ok((S.roster[1].dbnoUntil or 0) == D1,
+            'and a released body\'s deadline stops moving again immediately',
+            ('moved %dms after the release')
+                :format((S.roster[1].dbnoUntil or 0) - D1))
+    end
+end
+
+-- ==========================================================================
 -- TWO MINUTES ON THE FLOOR.
 -- ==========================================================================
 --
@@ -4833,6 +5058,295 @@ do
 end
 
 -- ==========================================================================
+-- A FIVEM NATIVE DECLARED BOOL CAN ANSWER `1`, AND IN LUA `0` IS TRUTHY.
+-- ==========================================================================
+--
+-- client/dbno.lua turns TWO things on IsEntityPlayingAnim -- the watchdog that
+-- puts a cancelled crawl back, and the cover over the resurrection's standing
+-- frame -- and both read it raw. On a build that hands numbers back:
+--
+--     if not force and IsEntityPlayingAnim(...) then return end
+--
+-- reads `not 0` as FALSE, so the watchdog decides the clip is running and
+-- returns, every frame, forever. A car knocks the pose off a downed player and
+-- nothing ever puts it back: they lie there in whatever the collision left them
+-- in for the rest of the bleed, and the clone resync -- which is armed by
+-- playCrawl and by nothing else -- is never armed again either.
+--
+-- THIS IS THE THIRD TIME THIS EXACT MISTAKE HAS BEEN MADE IN THIS CODEBASE
+-- (client/natives.lua on the shape test, client/spawn.lua on the screen fade,
+-- and dbno.lua's own `didHit` was written for the first one). Every rig in this
+-- file answered `true`/`false`, which is why none of them could see it.
+--
+-- IT IS ASSERTED HERE RATHER THAN IN dbno.cover, and that distinction is the
+-- point: with a settle on the cover, the numeric bug only moves the moment of
+-- confirmation by one frame and the cover still covers. The watchdog is where
+-- it is load-bearing, so the watchdog is where the axis lives.
+describe('dbno.crawl.watchdog')
+do
+    local SHAPES = {
+        { name = 'true/false', yes = true, no = false },
+        { name = '1/0',        yes = 1,    no = 0     },
+    }
+
+    for _, shape in ipairs(SHAPES) do
+        local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                       [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+        local CLI = newReviver(1, 2, peds)
+        local env = CLI.env
+
+        local tasks, anim = 0, nil
+        env.TaskPlayAnim = function(_, d, a) tasks = tasks + 1 anim = d .. '/' .. a end
+        env.IsEntityPlayingAnim = function()
+            return anim ~= nil and shape.yes or shape.no
+        end
+        local steps = 0
+        env.SetEntityCoordsNoOffset = function(_, x, y, z)
+            steps = steps + 1
+            peds[5001].x, peds[5001].y, peds[5001].z = x, y, z
+        end
+
+        local function run(n)
+            for _ = 1, n do CLI.now = CLI.now + 16 CLI.frame() end
+        end
+
+        env.TriggerEvent(env.BR.Net.DBNO_SET,
+            { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
+        run(120)
+
+        local settled = tasks
+        ok(settled > 0,
+            ('a knock poses the body when the native answers %s'):format(shape.name),
+            ('%d tasks'):format(settled))
+
+        -- ...AND THE CLIP IS THEN CANCELLED BY SOMETHING THAT IS NOT US: a car,
+        -- a blast, a scripted task. The list dbno.controls' watchdog exists for.
+        anim = nil
+        local beforeSteps = steps
+        run(120)
+
+        ok(tasks == settled + 1,
+            ('AND THE WATCHDOG PUTS IT BACK when the native answers %s -- '
+             .. 'BEFORE: `not 0` is false, so a build answering numbers left a '
+             .. 'downed player in whatever pose the car left them in for the '
+             .. 'rest of the bleed'):format(shape.name),
+            ('%d tasks after the clip was cancelled'):format(tasks - settled))
+
+        -- ...AND THE CLONES ARE TOLD, which is the same failure wearing its
+        -- other face: resyncArm is called by playCrawl and by nothing else, so
+        -- a watchdog that never fires is also a clone that is never corrected.
+        ok(steps - beforeSteps == 2,
+            ('and the re-task buys exactly one clone-resync pair on %s')
+                :format(shape.name),
+            ('%d writes'):format(steps - beforeSteps))
+    end
+end
+
+-- ==========================================================================
+-- #164, SECOND HALF: A CRAWLING BODY TURNS AND THE CLONES DO NOT.
+-- ==========================================================================
+--
+-- "When DBNO and a player crawls, their ped position is not synced with anyone
+-- else's screen ... if they go forward, they go forward on everyone's screen.
+-- But if they turn, they're still moving forward on other player's screens."
+-- (owner, 2026-08-18.)
+--
+-- WHAT THIS RIG CAN AND CANNOT SEE, SAID FIRST, because the temptation here is
+-- to write an assertion about "replication" that no sandbox can honestly make.
+-- There is no second machine in this process and there is no engine. What there
+-- IS, and what the whole fix turns on, is the record of WHAT WAS PUT ON THE
+-- WIRE: a crawl task is the only thing that reaches a clone, client/dbno.lua's
+-- own model says so, and the clone crawls along the heading it was holding when
+-- it got one. So the question a test can answer exactly is:
+--
+--     when the body has finished turning, does the last crawl task the clones
+--     were given match the direction the body is now facing?
+--
+-- Before the fix that difference is the whole of the turn -- nothing re-tasks on
+-- a heading change, so the last task is the one from the knock. A ninety-degree
+-- turn leaves ninety degrees of disagreement, which is exactly the owner's
+-- sentence with a number on it.
+--
+-- AND THE TRAP ON THE OTHER SIDE, which is why the second half of this block is
+-- as long as the first: the cure for #164's first half was killing a 500ms beat,
+-- because every beat was a 9mm step other machines saw as a twitch. A re-task on
+-- a heading change is a beat in disguise unless something stops it firing when
+-- nobody turned. So the creep guard is asserted as hard as the fix.
+describe('dbno.heading')
+do
+    local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                   [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+    local CLI = newReviver(1, 2, peds)
+    local env = CLI.env
+    local M   = env.BR.Config.Match
+
+    -- A REAL HEADING. The reviver rig pins it at 0.0 and stubs the setter,
+    -- which is exactly the shape that cannot see this bug: with the heading
+    -- constant, "the task is stale by ninety degrees" is unrepresentable.
+    local heading = 0.0
+    env.GetEntityHeading = function() return heading end
+    env.SetEntityHeading = function(_, h) heading = h % 360.0 end
+
+    -- THE TURN AXIS, DRIVEN. controls 30/31 are DISABLED for a downed player
+    -- and read back through GetDisabledControlNormal, which is the only reader
+    -- there is -- so this IS the player's hand on the stick.
+    local lr, ud = 0.0, 0.0
+    env.GetDisabledControlNormal = function(_, c)
+        if c == 30 then return lr end
+        if c == 31 then return ud end
+        return 0.0
+    end
+
+    -- WHAT THE CLONES WERE TOLD, and when. Every crawl task is recorded with
+    -- the heading the body had at the moment it was issued, because that is the
+    -- direction the clone will carry the clip's mover along.
+    local tasks, anim = {}, nil
+    env.TaskPlayAnim = function(_, d, a)
+        tasks[#tasks + 1] = { at = CLI.now, h = heading }
+        anim = d .. '/' .. a
+    end
+    env.IsEntityPlayingAnim = function() return anim ~= nil end
+
+    local steps = 0
+    env.SetEntityCoordsNoOffset = function(_, x, y, z)
+        steps = steps + 1
+        peds[5001].x, peds[5001].y, peds[5001].z = x, y, z
+    end
+
+    local function run(frames)
+        for _ = 1, frames do
+            CLI.now = CLI.now + 16
+            CLI.frame()
+        end
+    end
+
+    --- The shortest angle between two headings, the same way dbno.lua measures.
+    local function gap(a, b)
+        local d = (a - b) % 360.0
+        if d > 180.0 then d = 360.0 - d end
+        return d
+    end
+
+    local function lastTold() return tasks[#tasks] and tasks[#tasks].h or nil end
+
+    env.TriggerEvent(env.BR.Net.DBNO_SET,
+        { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
+    run(120)                                   -- settle: the knock's own tasks
+
+    local settledTasks, settledSteps = #tasks, steps
+    ok(settledTasks > 0 and gap(heading, lastTold()) < 0.001,
+        'a body that has not turned is pointing exactly where the clones were '
+        .. 'last told it was pointing',
+        ('facing %.1f, told %.1f'):format(heading, lastTold() or -1))
+
+    -- ---------------------------------------------------------------- turn ---
+    -- A QUARTER TURN, at the rate the config actually gives a downed player,
+    -- and then the stick goes back to centre. dbnoTurnRate is degrees per
+    -- second, so this is however many frames that takes and not a magic number.
+    local turnFrames = math.ceil((90.0 / (M.dbnoTurnRate or 90.0)) / 0.016)
+    lr = -1.0                                  -- negative lr turns clockwise
+    run(turnFrames)
+    lr = 0.0
+    run(60)                                    -- let the settle fire
+
+    ok(gap(heading, 90.0) < 15.0,
+        'the player turns about ninety degrees, which is what the rest of this '
+        .. 'block is about',
+        ('%.1f degrees'):format(heading))
+
+    -- THE HEADLINE. This is the owner's sentence as an equation.
+    ok(gap(heading, lastTold()) <= 2.0,
+        'AND THE CLONES WERE TOLD ABOUT IT -- the last crawl task on the wire '
+        .. 'points the way the body now points. BEFORE: the last task is the '
+        .. 'one from the knock, so this gap is the whole of the turn',
+        ('facing %.1f, last task said %.1f, gap %.1f')
+            :format(heading, lastTold() or -1, gap(heading, lastTold() or 0)))
+
+    -- ...AND IT WENT THROUGH THE MECHANISM THAT WAS ALREADY THERE. One task,
+    -- one step: a second resync living beside the first is the thing the #164
+    -- follow-on explicitly refused, and this is the equation that catches it.
+    ok(steps - settledSteps == (#tasks - settledTasks) * 2,
+        'and every task it issued bought exactly one clone-resync pair -- no '
+        .. 'second mechanism beside resyncArm',
+        ('%d writes for %d tasks')
+            :format(steps - settledSteps, #tasks - settledTasks))
+
+    -- ...AND IT IS NOT A CLIP RESTARTED PER FRAME. That bug has shipped here
+    -- once already, at 59 re-tasks in 60 frames.
+    ok(#tasks - settledTasks <= math.ceil(90.0 / 20.0) + 1,
+        'and a ninety-degree sweep costs a handful of tasks, not one per frame',
+        ('%d tasks for %d frames of turning')
+            :format(#tasks - settledTasks, turnFrames))
+
+    -- --------------------------------------------------------- the guard ---
+    -- NOBODY TOUCHED ANYTHING FOR FORTY SECONDS. This is the creep test from
+    -- dbno.clone.sync pointed at the new arm: the crawl clip has a rotational
+    -- mover of its own, so an arm that watched the ANGLE rather than the HAND
+    -- would re-task four times a second forever, and every one of those is a
+    -- 9mm step other machines see as a twitch.
+    local quietTasks, quietSteps = #tasks, steps
+    run(40 * 62)
+    ok(#tasks == quietTasks,
+        'A QUIET BODY IS NEVER RE-TASKED -- forty seconds, the shortest knock '
+        .. 'the config can produce, and nothing is asked of the clones at all',
+        ('%d tasks in 40s of nothing'):format(#tasks - quietTasks))
+    ok(steps == quietSteps,
+        'and no steps either: the arm is the player\'s hand, not a clock',
+        ('%d writes'):format(steps - quietSteps))
+
+    -- ...AND A TWITCH OF THE STICK IS NOT A TASK. Below the settle threshold
+    -- there is nothing worth telling anybody about, and a body that re-tasked
+    -- on a degree would be back on a beat the moment somebody rested a thumb
+    -- on an analogue stick.
+    local tinyTasks = #tasks
+    lr = -0.15                                 -- just past the 0.1 deadzone
+    run(2)                                     -- ~0.3 degrees
+    lr = 0.0
+    run(60)
+    ok(#tasks == tinyTasks,
+        'and a nudge under the settle threshold is not worth a task',
+        ('%d tasks for %.2f degrees')
+            :format(#tasks - tinyTasks, gap(heading, 90.0)))
+
+    -- ------------------------------------------------------------- wrap ---
+    -- 359 AND 1 ARE TWO DEGREES APART. A gap computed without the wrap is 358
+    -- there, which is over every threshold in the file -- so a body steered
+    -- across north would re-task on every frame of it, forever, and the creep
+    -- would come back in the one place nobody would think to look.
+    heading = 350.0
+    lr = -0.15
+    run(2)
+    lr = 0.0
+    run(60)                                    -- re-align: the clones are told 350
+
+    local wrapTasks, wrapFrames = #tasks, 40
+    lr = -1.0
+    run(wrapFrames)                            -- a long sweep across 0/360
+    lr = 0.0
+    run(60)
+    ok(#tasks - wrapTasks <= math.ceil(
+            (wrapFrames * 0.016 * (M.dbnoTurnRate or 90.0)) / 20.0) + 1,
+        'and steering across north costs one task per twenty degrees, not one '
+        .. 'per frame: the gap is the SHORT way round, so 359 and 1 are two '
+        .. 'degrees apart and not three hundred and fifty-eight',
+        ('%d tasks for %d frames of turning, now facing %.1f')
+            :format(#tasks - wrapTasks, wrapFrames, heading))
+    ok(gap(heading, lastTold()) <= 2.0,
+        'and the clones are still told the truth across the wrap',
+        ('facing %.1f, told %.1f'):format(heading, lastTold() or -1))
+
+    -- ...AND STANDING UP ENDS IT. A revived player owes the clones nothing,
+    -- and a stale taskHeading would re-task the first crawl of the NEXT knock.
+    local upTasks = #tasks
+    env.TriggerEvent(env.BR.Net.DBNO_SET, { downed = false })
+    lr = -1.0
+    run(120)
+    ok(#tasks == upTasks,
+        'and a player on their feet is not tasked by the turn watchdog at all',
+        ('%d tasks after standing up'):format(#tasks - upTasks))
+end
+
+-- ==========================================================================
 -- THE STANDING FRAME BETWEEN DYING AND THE DOWNED POSE.
 -- ==========================================================================
 --
@@ -4853,31 +5367,124 @@ end
 -- WHAT IS ASSERTED IS THE OWNER'S SENTENCE AND NOT THE MECHANISM: across a fall
 -- in every timing the matrix above uses, there is no frame on which a downed
 -- player's ped is standing (resurrected, no downed clip) AND visible.
+-- THE COVER'S OWN NUMBERS, READ OUT OF THE FILE THAT OWNS THEM.
+--
+-- They are file-locals, so a suite that wanted them had exactly two choices:
+-- copy them, or read them. Copying is how this repo has produced green runs
+-- over broken code before -- the test re-encodes the assumption the code makes
+-- and the pair agree with each other about something that is not true. Read
+-- here, retuning the cover in dbno.lua retunes what the assertions expect,
+-- while the one thing that is a JUDGEMENT rather than a mechanism -- "about a
+-- second" -- is asserted against a literal below, where changing it is visible.
+local COVER_SETTLE_MS, COVER_CAP_MS
+do
+    local f = io.open(RES .. 'br_core/client/dbno.lua', 'r')
+    local text = f and f:read('a') or ''
+    if f then f:close() end
+    COVER_SETTLE_MS = tonumber(text:match('local POSE_SETTLE_MS = (%d+)'))
+    COVER_CAP_MS    = tonumber(text:match('local HIDE_MAX_MS = (%d+)'))
+end
+
 describe('dbno.cover')
 do
+    ok(COVER_SETTLE_MS ~= nil and COVER_CAP_MS ~= nil,
+        'the cover\'s settle and cap are readable from client/dbno.lua',
+        ('settle %s, cap %s'):format(tostring(COVER_SETTLE_MS),
+                                     tostring(COVER_CAP_MS)))
+    COVER_SETTLE_MS = COVER_SETTLE_MS or 0
+    COVER_CAP_MS    = COVER_CAP_MS or 0
+
+    -- THE OWNER'S NUMBER, AS A NUMBER. "Let's just make the invisibility time
+    -- like 1 more second or so -- should be enough for their ped to be in the
+    -- crawl position by then" (2026-08-18). The mechanism is asserted below;
+    -- this is the only place the SIZE of it is written down twice on purpose,
+    -- because shrinking it back to a frame is the regression that would leave
+    -- every mechanical assertion green and the owner still watching a ped stand.
+    ok(COVER_SETTLE_MS >= 750,
+        'the cover outlives the clip landing by about a second, which is the '
+        .. 'owner\'s own instruction and not something the engine reports',
+        ('%dms'):format(COVER_SETTLE_MS))
+    ok(COVER_CAP_MS > COVER_SETTLE_MS,
+        'and the cap is longer than the settle, or the settle could never run',
+        ('cap %dms vs settle %dms'):format(COVER_CAP_MS, COVER_SETTLE_MS))
+
     local SETTLES = { 32, 96, 200, 320 }
     local STREAMS = { 0, 250 }
     local rtt = 60
 
+    -- A FIVEM NATIVE DECLARED BOOL CAN ANSWER `1`, AND IN LUA `0` IS TRUTHY.
+    --
+    -- Every cell in the matrix that shipped the cover ran against a rig whose
+    -- IsEntityPlayingAnim returned a Lua BOOLEAN, so the shape the natives
+    -- actually vary in was never exercised at all. It is a cell now.
+    --
+    -- WHAT THIS AXIS DOES AND DOES NOT CATCH, because an axis that cannot fail
+    -- is worse than no axis -- it reads as coverage. WITH the settle in place,
+    -- reading the native raw only moves the moment of confirmation by one frame
+    -- and the cover still covers: none of the assertions below can tell the two
+    -- builds apart, and the revert check says so. The place that read is
+    -- load-bearing is the crawl WATCHDOG (`not 0` is false, so it returns and
+    -- never re-poses), and that is asserted in dbno.crawl.watchdog, which does
+    -- fail on the raw read. This axis is here because both builds must behave
+    -- identically and it costs one table to say so.
+    local BOOLS = {
+        { name = 'boolean', yes = true, no = false },
+        { name = 'number',  yes = 1,    no = 0     },
+    }
+
     local exposed, exposedWhere = 0, nil
-    local covered, longest = 0, 0
-    local blindAfter, blindWhere = 0, nil
     local cells = 0
+    local neverCovered, neverCoveredWhere = 0, nil
+    local droppedAtOnce, droppedWhere = 0, nil
+    local overCap, overCapWhere = 0, nil
+    local stuckHidden, stuckWhere = 0, nil
+    local settleLow, settleHigh, settleWhere = nil, nil, nil
 
     for _, settle in ipairs(SETTLES) do
     for _, stream in ipairs(STREAMS) do
+    for _, bool in ipairs(BOOLS) do
         cells = cells + 1
-        local where = ('settle %dms, streaming %dms'):format(settle, stream)
+        local where = ('settle %dms, streaming %dms, BOOL as %s')
+            :format(settle, stream, bool.name)
 
         local SRV = newServer()
         local CLI = newClient(settle, stream)
         local env = CLI.env
         local P   = CLI.ped
 
+        env.IsEntityPlayingAnim = function()
+            return P.anim ~= nil and bool.yes or bool.no
+        end
+
         -- HIDDEN IS A FRAME, NOT A PROPERTY, and the rig has to hold it the
         -- same way the engine does: set during this tick, gone by the next.
         local hiddenNow = false
         env.SetEntityLocallyInvisible = function() hiddenNow = true end
+
+        -- WHEN THE POSE LANDED AND WHEN THE COVER CAME DOWN. The gap between
+        -- them is the fix: it used to be zero by construction.
+        --
+        -- PER EPISODE, and that is not bookkeeping pedantry. A knock can raise
+        -- the cover TWICE -- the resurrection is one, and a live knock's ragdoll
+        -- releasing into a getup is the other -- and measuring first-raise to
+        -- last-hidden across both reports a single 2.4s cover that never
+        -- happened. Each window is stamped and capped on its own.
+        local posedAt, coverUpAt, lastHiddenAt = nil, nil, nil
+        local coveredFrames, episodes = 0, 0
+        local worstSpan, worstHeld, bestHeld = 0, nil, nil
+
+        local function closeEpisode()
+            if not coverUpAt then return end
+            episodes = episodes + 1
+            local span = lastHiddenAt - coverUpAt
+            if span > worstSpan then worstSpan = span end
+            if posedAt then
+                local held = lastHiddenAt - posedAt
+                if not worstHeld or held > worstHeld then worstHeld = held end
+                if not bestHeld  or held < bestHeld  then bestHeld  = held end
+            end
+            posedAt, coverUpAt, lastHiddenAt = nil, nil, nil
+        end
 
         local wire = {}
         local function drain(now)
@@ -4936,48 +5543,192 @@ do
                 exposedWhere = exposedWhere or where
             end
             if hiddenNow then
-                covered = covered + 1
-            end
-            -- ...AND THE COVER MUST COME DOWN. A downed player who stays
-            -- invisible is a worse bug than one who flickers upright, so the
-            -- frames after the pose has landed are counted separately.
-            if P.anim ~= nil and hiddenNow then
-                blindAfter = blindAfter + 1
-                blindWhere = blindWhere or where
+                coveredFrames = coveredFrames + 1
+                coverUpAt     = coverUpAt or CLI.now
+                lastHiddenAt  = CLI.now
+                -- THE POSE LANDING IS A MOMENT, and it is the one the settle is
+                -- measured from. Only while a cover is actually up, so a clip
+                -- still running an hour later is not mistaken for one.
+                if P.anim ~= nil and not posedAt then posedAt = CLI.now end
+            else
+                closeEpisode()
             end
         end)
 
         CLI.pump(6000, drain)
         CLI.fall()
         CLI.pump(4000, drain)
+        closeEpisode()
 
-        if covered > longest then longest = covered end
+        if coveredFrames == 0 then
+            neverCovered, neverCoveredWhere = neverCovered + 1,
+                                              neverCoveredWhere or where
+        end
+        if hiddenNow then
+            stuckHidden, stuckWhere = stuckHidden + 1, stuckWhere or where
+        end
+        if worstSpan > COVER_CAP_MS + 32 then
+            overCap, overCapWhere = overCap + 1,
+                overCapWhere or ('%s (%dms across %d episodes)')
+                    :format(where, worstSpan, episodes)
+        end
+        -- THE ASSERTION THE OLD BUILD CANNOT PASS. It uncovered on the frame
+        -- the clip was confirmed, so this difference was one frame -- 16ms --
+        -- in every cell. It is now the settle.
+        if bestHeld then
+            if bestHeld <= 32 then
+                droppedAtOnce, droppedWhere = droppedAtOnce + 1,
+                                              droppedWhere or where
+            end
+            if not settleLow or bestHeld < settleLow then
+                settleLow, settleWhere = bestHeld, where
+            end
+            if not settleHigh or worstHeld > settleHigh then
+                settleHigh = worstHeld
+            end
+        end
+    end
     end
     end
 
     -- THE HEADLINE, and the owner's sentence turned into an assertion.
     ok(exposed == 0,
-        'A RESURRECTED PED IS NEVER SEEN STANDING -- across every settle and '
-        .. 'streaming cell, no frame renders a downed player upright and '
-        .. 'visible. BEFORE: 8 exposed frames across 8 cells -- the '
-        .. 'ordering-only build renders EXACTLY ONE standing frame per knock, '
-        .. 'in every timing there is',
+        'A RESURRECTED PED IS NEVER SEEN STANDING -- across every settle, '
+        .. 'streaming and BOOL-shape cell, no frame renders a downed player '
+        .. 'upright and visible',
         exposedWhere and ('%d frames, e.g. %s'):format(exposed, exposedWhere)
                      or nil)
 
-    -- ...AND IT IS A COVER, NOT A DISAPPEARANCE.
-    ok(blindAfter == 0,
-        'and the cover drops the moment the downed clip is actually on the '
-        .. 'ped -- nothing holds a posed body invisible',
-        blindWhere and ('%d frames, e.g. %s'):format(blindAfter, blindWhere)
+    ok(neverCovered == 0,
+        'and the cover really was raised in EVERY cell -- including the builds '
+        .. 'where IsEntityPlayingAnim answers 1/0 rather than true/false, on '
+        .. 'which the raw read uncovered on its first look because 0 is truthy',
+        neverCoveredWhere and ('%d/%d cells never covered, e.g. %s')
+            :format(neverCovered, cells, neverCoveredWhere) or nil)
+
+    -- ...AND THE CLIP RUNNING IS NOT THE BODY BEING DOWN (owner, 2026-08-18:
+    -- "I do still see the DBNO player stand briefly"). TaskPlayAnim makes a ped
+    -- leave its current state before entering the clip (citizenfx/fivem#2236),
+    -- so confirmation is the start of the transition. The cover has to outlive
+    -- it.
+    ok(droppedAtOnce == 0,
+        'AND THE COVER OUTLIVES THE CLIP LANDING -- confirmation starts the '
+        .. 'settle rather than ending the cover, which is the frame the owner '
+        .. 'could still see',
+        droppedWhere and ('%d/%d cells uncovered within a frame of the pose, '
+                          .. 'e.g. %s'):format(droppedAtOnce, cells, droppedWhere)
+                     or ('held %d-%dms past the pose, settle is %dms')
+                          :format(settleLow or -1, settleHigh or -1,
+                                  COVER_SETTLE_MS))
+
+    -- ...AND IT IS STILL A COVER, NOT A DISAPPEARANCE. An invisible downed
+    -- player is the worse bug, and it is the one that reads as an exploit.
+    ok(stuckHidden == 0,
+        'and nothing is left invisible: every cell ends with a visible body',
+        stuckWhere and ('%d cells, e.g. %s'):format(stuckHidden, stuckWhere)
                    or nil)
-    ok(covered > 0,
-        'and the cover really was raised, so the first assertion is not '
-        .. 'passing because nothing ever resurrected',
-        ('%d covered frames across %d cells'):format(covered, cells))
-    ok(longest * 16 <= 250 * cells,
-        'and no cell holds it past the cap',
-        ('%d frames'):format(longest))
+    ok(overCap == 0,
+        ('and no cell holds the cover past the %dms cap'):format(COVER_CAP_MS),
+        overCapWhere and ('%d cells, e.g. %s'):format(overCap, overCapWhere)
+                     or nil)
+    ok(settleHigh ~= nil and settleHigh <= COVER_SETTLE_MS + 32,
+        'and the thing that ends it is the settle rather than the cap -- a '
+        .. 'cover that runs to the cap in the ordinary case is a confirmation '
+        .. 'that never fired',
+        ('longest hold past the pose %sms, settle %dms')
+            :format(tostring(settleHigh), COVER_SETTLE_MS))
+end
+
+-- ==========================================================================
+-- THE OTHER STANDING FRAME: A LIVE KNOCK'S RAGDOLL LETTING GO.
+-- ==========================================================================
+--
+-- The cover shipped hung off floorTheBody, so only the FALL path ever had one.
+-- A live knock -- shot, not killed -- never resurrects: it ragdolls for
+-- 1200-1600ms and then re-poses. A ped coming out of a ragdoll runs a GETUP,
+-- which is the engine standing the body up in front of everybody, and the crawl
+-- is tasked over the top of it. That is the same frame the owner is describing
+-- ("the ped briefly stands ... and going to the emote we chose") arriving down
+-- the other road, and being SHOT is by far the commoner way to be knocked down.
+--
+-- THE RAGDOLL ITSELF IS DELIBERATELY NOT COVERED and this block asserts that
+-- too: falling over is the knock, and it is the one part of this the whole
+-- state exists to let an enemy across the street see.
+describe('dbno.cover.knockdown')
+do
+    local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                   [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+    local CLI = newReviver(1, 2, peds)
+    local env = CLI.env
+
+    -- A REAL RAGDOLL, because the branch under test is the beat it lands on.
+    local ragdollUntil = nil
+    env.BR.Native.knockdown = function(ms) ragdollUntil = CLI.now + (ms or 1200) end
+    env.IsPedRagdoll = function()
+        return ragdollUntil ~= nil and CLI.now < ragdollUntil
+    end
+
+    local tasks, anim = {}, nil
+    env.TaskPlayAnim = function(_, d, a)
+        tasks[#tasks + 1] = CLI.now
+        anim = d .. '/' .. a
+    end
+    env.IsEntityPlayingAnim = function() return anim ~= nil end
+
+    local hidden = {}
+    env.SetEntityLocallyInvisible = function() hidden[#hidden + 1] = CLI.now end
+
+    local function run(n)
+        for _ = 1, n do CLI.now = CLI.now + 16 CLI.frame() end
+    end
+
+    -- A KNOCK THAT LEAVES THE PED ALIVE. IsEntityDead and IsPedFatallyInjured
+    -- both answer false in this rig, so enterDowned takes the LIVE branch --
+    -- which is the one with the knockdown in it and the one that had no cover.
+    env.TriggerEvent(env.BR.Net.DBNO_SET,
+        { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
+
+    local knockAt = CLI.now
+    run(40)                              -- ~640ms: mid-ragdoll
+    local duringRagdoll = #hidden
+
+    run(90)                              -- past the 1200ms landing
+    local landed = tasks[#tasks]
+
+    ok(#tasks >= 2,
+        'the knockdown lands and the crawl is re-tasked from where the body '
+        .. 'came to rest',
+        ('%d tasks'):format(#tasks))
+
+    local afterLanding = 0
+    for _, t in ipairs(hidden) do
+        if landed and t >= landed - 32 then afterLanding = afterLanding + 1 end
+    end
+    ok(afterLanding > 0,
+        'AND THAT RE-POSE IS COVERED -- BEFORE: the cover hung off '
+        .. 'floorTheBody, so a player who was SHOT rather than killed by the '
+        .. 'world had no cover at all over the getup between the ragdoll '
+        .. 'releasing and the crawl landing',
+        ('%d covered frames at or after the re-task'):format(afterLanding))
+
+    ok(duringRagdoll == 0,
+        'and the ragdoll itself is NOT covered: falling over is the knock, and '
+        .. 'it is the signal the whole state exists to send',
+        ('%d covered frames during the ragdoll'):format(duringRagdoll))
+
+    -- ...AND IT COMES DOWN AGAIN. Everything else about the cover is asserted
+    -- in dbno.cover; this is only that the second raise is not a leak. Run well
+    -- past the settle first -- the assertion is that it ENDS, not that it has
+    -- already ended at some arbitrary frame.
+    run(150)                             -- 2400ms: past settle and past the cap
+    local before = #hidden
+    run(200)
+    ok(#hidden == before,
+        'and the cover comes down after the settle, exactly like the other one',
+        ('%d more covered frames three seconds later'):format(#hidden - before))
+    ok(before > afterLanding,
+        'having actually held it for a while first, rather than for one frame',
+        ('%d covered frames in total'):format(before))
 end
 
 -- A BUILD WITHOUT THE NATIVE STILL PLAYS. client/dbno.lua guards the call, and
@@ -5216,6 +5967,262 @@ do
     local n = 0
     for _, e in ipairs(CLI.ui) do if e.kind == 'squadcue' then n = n + 1 end end
     ok(n == 3, 'an unrecognised phase plays nothing', ('%d cues'):format(n))
+end
+
+-- ==========================================================================
+-- COURTESY BLIPS AFTER A REVIVE, ROUND TWO.
+-- ==========================================================================
+--
+-- "Courtesy blips do still appear after revive yes" (owner, 2026-08-18), after
+-- a fix for exactly this shipped in 2a673ce.
+--
+-- WHY THE FIRST FIX MISSED, AND IT IS NOT A TYPO -- it is a whole case. That
+-- change stopped a knock CLEARING the once-per-life latch. It never SET one. So
+-- it closed the single path where the blips had already been offered and taken
+-- away, and left untouched every knock that happens with the latch still false,
+-- which is every knock before the courtesy window has been used.
+--
+-- AND THE GRACE PERIOD RUNS WHILE YOU ARE UNCONSCIOUS. The arming test is
+-- `now - landedAt >= afterMs` and `landedAt` keeps its stamp through DBNO -- so
+-- a bleed and a revive count towards it. A player knocked inside their first
+-- minute stands up into a window that expired while they were on the floor, and
+-- the map lights up and the toast fires on the frame they get their weapon back.
+--
+-- THE OLD SUITE COULD NOT SEE THIS, and the reason is worth writing down because
+-- it is the same reason four times over in this repo: tools/test_client.lua's
+-- block walks the player through a FULL grace period BEFORE knocking them, so
+-- `done` is already true when the knock lands and the only thing the assertion
+-- can observe is whether the knock cleared it. The case the owner is reporting
+-- was not in the fixture.
+--
+-- THE REAL CALLBACK, LIFTED OUT OF THE REAL FILE. `mercy` is a file-local and
+-- there is no accessor, so the only honest way to drive it is to load
+-- client/loot.lua into a sandbox and pull the registered SLOW callback back out
+-- of BR.Loop -- which also means a rename or a deletion of the band fails this
+-- block loudly rather than silently testing nothing.
+describe('loot.mercy.revive')
+do
+    --- One client with the real client/loot.lua in it, and nothing else.
+    local function newLootClient()
+        local env = newSandbox()
+        -- NOT ZERO, and it is not decoration. `mercy.landedAt == 0` is how the
+        -- band says "I have not stamped a landing yet", so a rig whose clock
+        -- starts at 0 re-stamps the landing on every pass and the grace period
+        -- can never expire -- a green run over a feature that does nothing.
+        -- GetGameTimer is milliseconds since the game started and is never 0 by
+        -- the time anybody has landed.
+        local C = { now = 5000, ui = {} }
+
+        env.GetGameTimer = function() return C.now end
+        env.print = function() end
+        env.GetCurrentResourceName = function() return 'br_core' end
+        env.GetHashKey = function(s) return #tostring(s) end
+        env.PlayerId = function() return 0 end
+        env.GetPlayerServerId = function() return 1 end
+
+        loadInto(env, SANDBOX_LIB)
+
+        local V = {}
+        V.__index = V
+        V.__sub = function(a, b)
+            return setmetatable({ x = a.x - b.x, y = a.y - b.y, z = a.z - b.z }, V)
+        end
+        V.__len = function(a) return math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z) end
+        local function vec(x, y, z) return setmetatable({ x = x, y = y, z = z }, V) end
+
+        env.PlayerPedId       = function() return 1 end
+        env.DoesEntityExist   = function() return true end
+        env.GetEntityCoords   = function() return vec(0.0, 0.0, 30.0) end
+        env.GetEntityHeading  = function() return 0.0 end
+        env.IsPedInAnyVehicle = function() return false end
+        env.GetFrameTime      = function() return 0.016 end
+        env.RegisterNetEvent  = function() end
+        env.RegisterCommand   = function() end
+        env.AddBlipForCoord   = function() return 1 end
+        env.DoesBlipExist     = function() return true end
+        env.RemoveBlip        = function() end
+        env.SetBlipSprite     = function() end
+        env.SetBlipScale      = function() end
+        env.SetBlipColour     = function() end
+        env.SetBlipAsShortRange = function() end
+
+        local handlers = {}
+        env.AddEventHandler = function(n, fn)
+            handlers[n] = handlers[n] or {}
+            handlers[n][#handlers[n] + 1] = fn
+        end
+        env.TriggerEvent = function(n, ...)
+            for _, fn in ipairs(handlers[n] or {}) do fn(...) end
+        end
+        env.TriggerServerEvent = function() end
+        env.Citizen = { CreateThread = function() end, Wait = function() end,
+                        SetTimeout = function() end }
+
+        loadInto(env, { 'br_core/client/main.lua' })
+
+        env.BR.State.me = { src = 1, state = env.BR.PlayerState.ALIVE,
+                            squadId = 'sq1' }
+        env.BR.State.roster = {}
+        env.BR.Inv    = { lastGainAt = 0, count = function() return 0 end }
+        env.BR.Sfx    = { play = function() end }
+        env.BR.Keys   = { isHeld = function() return false end,
+                          on = function() end }
+        env.BR.Dui    = { page = function(n) return { name = n } end,
+                          send = function() end, drawWorld = function() end,
+                          drawScreen = function() end,
+                          drawOnEntity = function() end,
+                          ready = function() return true end }
+        env.BR.Native = env.BR.Native or {}
+        env.BR.Native.keyLabelForCommand = function() return 'E' end
+        env.BR.Native.blipName = function() end
+        env.BR.Native.setDisplayHealth = function() end
+
+        env.AddEventHandler('br:ui:sendLocal', function(kind, payload)
+            C.ui[#C.ui + 1] = { kind = kind, d = payload }
+        end)
+
+        loadInto(env, { 'br_core/client/loot.lua' })
+
+        C.env = env
+        --- One SLOW pass, `ms` after the last one.
+        function C.slow(ms)
+            C.now = C.now + (ms or 1000)
+            env.BR.Loop.step(env.BR.Loop.SLOW)
+        end
+        --- How many "crates are marked on your map" toasts have been raised.
+        function C.toasts()
+            local n = 0
+            for _, e in ipairs(C.ui) do
+                if type(e.d) == 'table' and type(e.d.text) == 'string'
+                   and e.d.text:find('Crates are marked', 1, true) then
+                    n = n + 1
+                end
+            end
+            return n
+        end
+        return C
+    end
+
+    local cfg = BR.Config.Loot.mercyBlips
+    ok(cfg ~= nil and cfg.enabled,
+        'the courtesy blips are switched on, or none of this means anything',
+        cfg and tostring(cfg.enabled) or 'no mercyBlips config at all')
+    local AFTER = (cfg and cfg.afterMs) or 60000
+
+    -- 1. THE CONTROL AT THE TOP, not at the bottom: a player who is never
+    --    touched still gets the help, because a fix that simply disabled the
+    --    feature would pass every assertion below.
+    do
+        local C  = newLootClient()
+        local PS = C.env.BR.PlayerState
+        C.env.BR.State.me.state = PS.ALIVE
+        C.slow(0)
+        C.slow(AFTER + 1000)
+        ok(C.toasts() == 1,
+            'an empty-handed player who is never downed is still offered the '
+            .. 'courtesy blips',
+            ('%d toasts'):format(C.toasts()))
+    end
+
+    -- 2. THE OWNER'S CASE, AND THE ONE THE OLD FIXTURE DID NOT HAVE: knocked
+    --    BEFORE the window was ever used, and picked up after it would have
+    --    expired.
+    do
+        local C  = newLootClient()
+        local PS = C.env.BR.PlayerState
+        C.env.BR.State.me.state = PS.ALIVE
+        C.slow(0)
+        C.slow(20000)                       -- 20s in, nothing found yet
+
+        ok(C.toasts() == 0,
+            'nothing has been offered yet -- the grace period is still running',
+            ('%d toasts'):format(C.toasts()))
+
+        C.env.BR.State.me.state = PS.DBNO   -- shot, and on the floor
+        C.slow(1000)
+        C.slow(AFTER)                       -- a long bleed and a long revive
+        C.env.BR.State.me.state = PS.ALIVE  -- picked up
+
+        C.slow(1000)
+        C.slow(AFTER + 1000)
+        C.slow(AFTER + 1000)
+
+        ok(C.toasts() == 0,
+            'A KNOCK CLOSES THE COURTESY WINDOW FOR THAT LIFE -- BEFORE: the '
+            .. 'latch was still false when the knock landed, the grace period '
+            .. 'ran while they were unconscious, and the map lit up on the '
+            .. 'frame they were picked up',
+            ('%d toasts after a knock and revive'):format(C.toasts()))
+    end
+
+    -- 3. AND A KNOCK WHILE THE BLIPS ARE STILL ON SCREEN. The window has been
+    --    OPENED but not yet closed -- `mercy.done` is set by the expiry, not by
+    --    the arming -- so preserving the latch preserves a latch that is still
+    --    false, and this case failed the shipped fix as squarely as case 2 did.
+    do
+        local C  = newLootClient()
+        local PS = C.env.BR.PlayerState
+        C.env.BR.State.me.state = PS.ALIVE
+        C.slow(0)
+        C.slow(AFTER + 1000)
+        ok(C.toasts() == 1, 'the blips are offered once', ('%d'):format(C.toasts()))
+
+        C.env.BR.State.me.state = PS.DBNO
+        C.slow(1000)
+        C.env.BR.State.me.state = PS.ALIVE
+        C.slow(AFTER + 1000)
+        C.slow(AFTER + 1000)
+        ok(C.toasts() == 1,
+            'and a knock after they were used does not offer them again either',
+            ('%d toasts'):format(C.toasts()))
+    end
+
+    -- 4. THE CONTROL THAT KEEPS THE RULE HONEST, and it is the one a lazy fix
+    --    breaks: a real DEATH still resets, because a new life genuinely starts
+    --    empty-handed on a new drop. Latching `done` forever would pass every
+    --    assertion above and silently delete the feature from the second match
+    --    of every session.
+    do
+        local C  = newLootClient()
+        local PS = C.env.BR.PlayerState
+        C.env.BR.State.me.state = PS.ALIVE
+        C.slow(0)
+        C.slow(AFTER + 1000)
+        ok(C.toasts() == 1, 'offered once on the first life',
+            ('%d'):format(C.toasts()))
+
+        C.env.BR.State.me.state = PS.DEAD
+        C.slow(1000)
+        C.env.BR.State.me.state = PS.ALIVE
+        C.slow(1000)
+        C.slow(AFTER + 1000)
+        ok(C.toasts() == 2,
+            'but a real death DOES reset them, because that IS a new life',
+            ('%d toasts after a death and a respawn'):format(C.toasts()))
+    end
+
+    -- 5. ...AND A KNOCK IS NOT A DEATH EVEN WHEN A DEATH FOLLOWS IT. Bleeding
+    --    out goes DBNO -> DEAD, and the DEAD pass has to be the one that
+    --    reopens the window -- otherwise the latch a knock sets would follow a
+    --    player into their next life.
+    do
+        local C  = newLootClient()
+        local PS = C.env.BR.PlayerState
+        C.env.BR.State.me.state = PS.ALIVE
+        C.slow(0)
+        C.slow(20000)
+        C.env.BR.State.me.state = PS.DBNO
+        C.slow(1000)
+        C.env.BR.State.me.state = PS.DEAD      -- bled out
+        C.slow(1000)
+        C.env.BR.State.me.state = PS.ALIVE     -- next match, fresh drop
+        C.slow(1000)
+        C.slow(AFTER + 1000)
+        ok(C.toasts() == 1,
+            'and a knock that ends in a bleed-out does not follow the player '
+            .. 'into the next life',
+            ('%d toasts'):format(C.toasts()))
+    end
 end
 
 -- ----------------------------------------------------------------- result ---
