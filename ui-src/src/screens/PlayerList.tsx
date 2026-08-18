@@ -197,6 +197,36 @@ export default function PlayerList() {
     if (!focused) setQuery('')
   }, [focused])
 
+  /**
+   * AND IT CLEARS WHEN REPORT MODE ENDS, WHICH IS A SECOND LINE FOR THE SAME
+   * REASON RATHER THAN A DUPLICATE OF THE FIRST.
+   *
+   * The field is now drawn only while `reporting` (#167 -- see the row itself
+   * for the owner's wording and the argument). The dismiss clear above cannot
+   * cover that: leaving report mode is not leaving the panel, `focus` stays
+   * 'players' throughout, and so the effect above never runs. Without this the
+   * player types three letters, presses Cancel, and is handed back a list with
+   * eighteen of its twenty-one rows missing and NOTHING ON SCREEN SAYING A
+   * FILTER IS THE REASON -- because the field that would have said so is the
+   * thing that just unmounted. That is strictly worse than the stale filter the
+   * dismiss clear was written against, where at least the box was still there
+   * with the text in it.
+   *
+   * KEYED ON `reporting` GOING FALSE, not on the Cancel button, so it covers
+   * every exit from the mode and not just the one the player pressed: Escape's
+   * ladder, and the successful-report path below, which sets `reporting` false
+   * on its own and would otherwise leave the next open filtered.
+   *
+   * `picked` IS STILL NOT CLEARED HERE and the asymmetry is the same one the
+   * note above draws: leaveReport() empties the selection because leaving the
+   * mode is abandoning the report, while the SUCCESS path empties it because it
+   * was sent. Both already do it. This line is only about the filter, which is
+   * a way of looking at the list rather than part of what is being submitted.
+   */
+  useEffect(() => {
+    if (!reporting) setQuery('')
+  }, [reporting])
+
   // The screen envelope moves --hud-top and the radar rectangle, which moves
   // both of the boxes measured below without anything resizing. Subscribed to
   // rather than polled, so the band is recomputed exactly when it can change.
@@ -355,7 +385,14 @@ export default function PlayerList() {
       // stopPropagation on the field, which is how Settings' name field and the
       // chat composer keep their keystrokes to themselves, is powerless here.
       // It runs second. The check has to happen at this end, on `e.target`.
-      const typing = e.target === searchRef.current
+      //
+      // THE NULL IS CHECKED EXPLICITLY BECAUSE THE FIELD NOW UNMOUNTS. It is
+      // drawn only in report mode (#167), so `searchRef.current` is null for
+      // the whole of list mode -- and `x === null` is exactly the shape that
+      // starts answering true the day something hands this handler a synthetic
+      // event with no target. Nothing does today; the guard costs one comparison
+      // and removes the question.
+      const typing = searchRef.current !== null && e.target === searchRef.current
 
       if (e.key === 'Escape') {
         e.preventDefault()
@@ -465,11 +502,27 @@ export default function PlayerList() {
    * below reads it directly rather than reading the rows. Searching is a way of
    * looking at the list, not a way of editing a report.
    */
+  /**
+   * IS THE LIST BEING FILTERED RIGHT NOW? Asked as one fact and answered in one
+   * place, because two things downstream have to agree about it: the rows, and
+   * the empty state that has to say WHY there are none.
+   *
+   * `reporting &&` IS LOAD BEARING AND IS NOT THE SAME BELT AS THE EFFECT THAT
+   * CLEARS THE QUERY. The effect runs AFTER the render that turned report mode
+   * off, so for exactly one commit `reporting` is false while `query` still
+   * holds what was typed -- and that commit is the one that has already dropped
+   * the field. Without this the player presses Cancel and sees a single frame of
+   * a filtered list with no field on it, which is a flash of precisely the state
+   * this pair of guards exists to make impossible. Deriving it from `reporting`
+   * makes the invariant structural instead of dependent on effect ordering.
+   */
+  const filtering = reporting && query.trim() !== ''
+
   const rows = useMemo(() => {
+    if (!filtering) return list.players
     const q = query.trim().toLowerCase()
-    if (!q) return list.players
     return list.players.filter((p) => p.name.toLowerCase().includes(q))
-  }, [list.players, query])
+  }, [list.players, query, filtering])
 
   const selected = useMemo(() => Object.keys(picked).map(Number), [picked])
 
@@ -574,174 +627,255 @@ export default function PlayerList() {
               </h2>
             </div>
 
-            {/* THE SEARCH ROW, AND WHERE ITS HEIGHT COMES OUT OF.
+            {/* THE SEARCH ROW -- REPORT MODE ONLY, AND WHERE ITS HEIGHT COMES
+                OUT OF.
+
+                IT ARRIVES ON ENTERING REPORT MODE AND GOES ON LEAVING IT (#167,
+                owner, 2026-08-17: "I'd like to also only see the search function
+                available when reporting a player").
+
+                The two modes want different things from the same rows. Read as a
+                LIST it is scanned -- who is left, who has gone -- and at eight
+                visible rows scanning beats typing, so a field there spends a row
+                of roster to save nothing. Picking somebody to REPORT is the
+                opposite: the player already has a name in mind, usually one they
+                half-remember from a kill feed, and finding it is the whole of the
+                task. That is the case the field was built for and it is now the
+                only case it is drawn for.
+
+                THE FILTER GOES WITH THE FIELD, and that is `filtering` plus the
+                effect on `reporting` above rather than anything this gate does.
+                An unmounted field leaves its `query` behind, and a query with no
+                field on screen is the panel showing a shortened list with nothing
+                saying a filter is the reason -- the same "the panel is LYING"
+                failure the dismiss clear exists to prevent, reached through a
+                door that did not exist until this row started coming and going.
 
                 IT IS A `shrink-0` SIBLING OF THE ROSTER, WHICH IS THE ENTIRE
-                REASON IT DOES NOT RE-OPEN THE BUG THE BAND ABOVE JUST FIXED.
-                The card is `flex max-h-full flex-col` inside an anchor whose
-                height IS the free band, so the card cannot get taller than the
-                band no matter what is put in it. Its three existing children
-                divide that height: two `shrink-0` ends and a `min-h-0 flex-1`
-                middle. Adding a fourth `shrink-0` child therefore takes its
-                height OUT OF THE SCROLLING REGION -- flexbox does the
-                subtraction, there is no second measurement to keep in sync with
-                the band, and the card's outer box does not move by a pixel.
+                REASON IT CANNOT RE-OPEN THE BUG THE BAND ABOVE FIXED -- and that
+                argument now has to hold while the row APPEARS AND DISAPPEARS
+                rather than merely while it exists. The card is
+                `flex max-h-full flex-col` inside an anchor whose height IS the
+                free band, so the card cannot grow past the band whatever is put
+                in it; the roster is the only `min-h-0 flex-1` child, so it
+                absorbs this row's height when the row arrives and takes it back
+                when the row leaves. Flexbox does the subtraction, and there is no
+                second measurement to keep in sync with the band.
 
-                MEASURED IN THE HARNESS, not derived -- full four-plate squad,
-                chat column mounted, so both neighbours are present and the band
-                is at its tightest. Heights in CSS pixels:
+                MEASURED IN BOTH MODES rather than derived -- full four-plate
+                squad (two up, one downed on a bleed clock, one dead), chat column
+                mounted, 21 names so the roster overflows and the BAND is what
+                decides the height. Heights in CSS pixels:
 
-                                       card   header  SEARCH  roster  footer
-                   1920x1080 (rem 16)  374     62.4    46.3   209.8    53.5
-                   1280x720  (rem 11)  238     42.9    32.5   122.6    37.9
+                                        card  header  SEARCH  roster  footer  rows
+                  1920x1080  list        385    62.4      --   267.1    53.5  8.35
+                  (rem 16.0) report      385    62.4    46.3   221.8    52.5  6.94
+                  1280x720   list        245    42.9      --   162.1    37.9  7.37
+                  (rem 11.0) report      245    42.9    32.5   130.5    37.0  5.93
 
-                THE CARD'S OUTER RECT DID NOT MOVE: 284..658 at 1080p and
-                197..435 at 720p, both identical to the same measurement taken
-                before this row existed. The roster absorbed the whole cost --
-                256.1 -> 209.8 at 1080p and 155.1 -> 122.6 at 720p, each a drop
-                of exactly the search row's height. That equality is the
-                invariant to re-check if any of this is edited: the card's outer
-                rect must not move when this row is added or removed.
+                THE CARD'S OUTER RECT IS THE SAME IN BOTH MODES: 273..658 at
+                1080p and 190..435 at 720p, unchanged by the row arriving or
+                leaving. That equality is the invariant to re-check if any of this
+                is edited, and it is what makes "does the card push over the chat
+                or the squad panel" one question with one answer instead of two.
+                Measured clearances, card edge to neighbour, at the same moment:
 
-                What it costs the reader is rows, and only rows: 8.0 visible
-                became 6.6 at 1080p, and 7.0 became 5.6 at 720p.
+                  1920x1080   11.6px above to the squad panel, 12.1px below to
+                              the chat's reserved ceiling  (GAP_REM = 12.0px)
+                  1280x720     8.3px above,                    8.3px below
+                              (GAP_REM = 8.25px)
 
-                720p IS THE CASE THAT DECIDED THE SIZING, and not for the
-                obvious reason. The root font size is
-                `clamp(11px, calc(1.481vh * var(--ui-scale)), 28px)`, so 720p
-                does NOT scale to 11/16ths of 1080p -- it lands on the 11px
-                FLOOR, which leaves every rem here bigger, relative to the band,
-                than it is at 1080p. The band lost 36% of its height between the
-                two and the row only lost 30% of its own. So the row is kept to
-                the smallest thing that is still a legible text field rather
-                than taking the `py-2` the Settings name field uses, which would
-                have cost another row of roster at the size least able to spare
-                one.
+                -- the breathing room the band asks for and never less, in either
+                mode, at either size. The footer moves by about a pixel between
+                the modes because it holds different buttons; that comes out of
+                the roster like everything else and does not reach the card's
+                outer box.
 
-                BELOW THE 720p TARGET THE MIN_BAND_REM FLOOR TAKES OVER AND THIS
-                ROW IS EXPENSIVE, WHICH IS RECORDED RATHER THAN FIXED HERE. The
-                floor is not reached at 720p (card 238px against a 154px floor)
-                nor at 640px of viewport height (179px, 2.9 rows). It engages
-                below roughly 620px, and there the card is pinned at 14rem while
-                this row still takes its 32.5px -- 1280x600 measured a 153px card
-                with a 38px roster, 1.7 rows, where before it would have held
-                about three.
+                What the row costs the reader is rows, and only rows, and only
+                while a report is being written: 8.35 visible become 6.94 at 1080p
+                and 7.37 become 5.93 at 720p.
 
-                RAISING MIN_BAND_REM TO COMPENSATE WAS CONSIDERED AND NOT DONE.
-                The floor is taken out of the chat's side (see its note), so
-                buying those rows back means covering more of the chat -- which
-                is the exact regression the measured band was just introduced to
-                remove, and doing it silently for a viewport shorter than the
-                supported floor is a bad trade made in the dark. Flagged in the
-                hand-over instead; if a 600px-tall client turns out to be real,
-                the search row is the thing that should fold away there, not the
-                chat.
+                720p IS THE CASE THAT DECIDED THE SIZING, and not for the obvious
+                reason. The root font size is
+                `clamp(11px, calc(1.481vh * var(--ui-scale)), 28px)`, so 720p does
+                NOT scale to 11/16ths of 1080p -- it lands on the 11px FLOOR,
+                which leaves every rem here bigger, relative to the band, than it
+                is at 1080p. So the row is kept to the smallest thing that is
+                still a legible text field rather than taking the `py-2` the
+                Settings name field uses, which would cost another row of roster
+                at the size least able to spare one.
+
+                BELOW THE 720p TARGET THE MIN_BAND_REM FLOOR TAKES OVER, AND THE
+                MODE GATE IS MOST OF WHAT MAKES THAT SURVIVABLE. The floor is not
+                reached at 720p (245px card against a 154px floor); it engages
+                below roughly 620px of viewport height. Measured at 1280x600,
+                where the card is pinned at the floor in both modes -- 186..342,
+                156px, and still 8.0px clear of the squad panel and 8.5px clear of
+                the chat, so the floor is not bought out of a neighbour:
+
+                                        card  roster  rows
+                  1280x600   list        156    73.1  3.32
+                  (rem 11.0) report      156    41.5  1.89
+
+                Reading the list on a 600px screen was 1.89 rows before this
+                change, because the row was there whether or not it was wanted; it
+                is 3.32 now, and the 1.89 is paid only by somebody who has asked
+                to search. RAISING MIN_BAND_REM TO BUY THOSE ROWS BACK IS STILL
+                NOT DONE: the floor is taken out of the chat's side (see its
+                note), so raising it means covering more of the chat, which is the
+                exact regression the measured band exists to remove.
 
                 AND IT SITS ABOVE THE SCROLL, NOT INSIDE IT. A field inside
                 `overflow-y-auto` scrolls away from the player the moment they
                 use it -- they type, the list jumps, and the thing they are
                 typing into is off the top of its own container. */}
-            <div className="shrink-0 px-4 pb-3">
-              <div className="relative">
-                <input
-                  ref={searchRef}
-                  type="text"
-                  value={query}
-                  maxLength={24}
-                  spellCheck={false}
-                  autoComplete="off"
-                  aria-label="Search players by name"
-                  placeholder="Search names…"
-                  onChange={(e) => setQuery(e.target.value)}
-                  /* Belt to the capture-phase handler's braces. That handler
-                     already spares this element (see `typing` above) and is the
-                     one that actually decides, because capture beats bubble --
-                     but this is the line every other text field in the project
-                     carries (Settings' name field, the chat composer), and a
-                     field that is the ONE exception is a field somebody
-                     "fixes" later. It stops anything downstream of this element
-                     seeing the keystroke. */
-                  onKeyDown={(e) => e.stopPropagation()}
-                  className="plate ts w-full bg-transparent px-2.5 py-1.5 pr-7
-                             outline-none placeholder:text-white/25"
-                  style={{
-                    /* `.ts` AND `--fs`, NOT `text-[0.85rem] tscale`, AND THE
-                       DIFFERENCE IS NOT STYLISTIC. index.css opens with
-                       `@tailwind utilities`, so `.tscale` is declared after
-                       every utility at the same specificity and WINS -- and it
-                       resolves to `calc(1em * var(--text-scale))`, where `1em`
-                       is the PARENT's size. So `text-[0.85rem] tscale` silently
-                       throws the 0.85rem away and renders at the parent's size
-                       instead. index.css records that trap biting three times.
+            {reporting && (
+              <div className="shrink-0 px-4 pb-3">
+                <div className="relative">
+                  <input
+                    ref={searchRef}
+                    type="text"
+                    value={query}
+                    maxLength={24}
+                    spellCheck={false}
+                    autoComplete="off"
+                    aria-label="Search players by name"
+                    placeholder="Search names…"
+                    onChange={(e) => setQuery(e.target.value)}
+                    /* Belt to the capture-phase handler's braces. That handler
+                       already spares this element (see `typing` above) and is the
+                       one that actually decides, because capture beats bubble --
+                       but this is the line every other text field in the project
+                       carries (Settings' name field, the chat composer), and a
+                       field that is the ONE exception is a field somebody
+                       "fixes" later. It stops anything downstream of this element
+                       seeing the keystroke. */
+                    onKeyDown={(e) => e.stopPropagation()}
+                    className="plate ts w-full bg-transparent px-2.5 py-1.5 pr-7
+                               outline-none placeholder:text-white/25"
+                    style={{
+                      /* `.ts` AND `--fs`, NOT `text-[0.85rem] tscale`, AND THE
+                         DIFFERENCE IS NOT STYLISTIC. index.css opens with
+                         `@tailwind utilities`, so `.tscale` is declared after
+                         every utility at the same specificity and WINS -- and it
+                         resolves to `calc(1em * var(--text-scale))`, where `1em`
+                         is the PARENT's size. So `text-[0.85rem] tscale` silently
+                         throws the 0.85rem away and renders at the parent's size
+                         instead. index.css records that trap biting three times.
 
-                       `.ts` is the shape that survives it: the declared size
-                       arrives as `--fs` and the multiply happens inside the
-                       rule that owns the size. VERIFIED BY WHAT RENDERS rather
-                       than by what the class says -- measured in the harness at
-                       a 16px root, this field computes to 13.6px (0.85rem) with
-                       the text slider at 1.0, and tracks the slider from there;
-                       the roster rows beside it compute to 16px, because they
-                       are `text-[0.9rem] tscale` and are living examples of the
-                       trap. Matching their RENDERED size was not the goal -- the
-                       field is deliberately a step smaller than the names it
-                       filters, so the list stays the loudest thing on the
-                       card. */
-                    ['--fs' as string]: '0.85rem',
-                    ['--edgec' as string]: 'rgba(255,255,255,0.16)',
-                    ['--plate-fill' as string]: 'rgba(24,28,40,0.94)',
-                    ['--cut-max' as string]: '0.4rem',
-                  }}
-                />
-                {/* A CLEAR AFFORDANCE, BECAUSE THIS PANEL IS CURSOR-FIRST.
-                    It takes the mouse away from the game to be used (#135), so
-                    the player reading it has a cursor in their hand and no
-                    reason to assume Escape is wired to anything. Escape does
-                    clear the field and is the faster route; this is the one
-                    that is visible.
-
-                    Only present with something to clear -- an always-there ×
-                    over an empty field is a control whose only function is to
-                    do nothing.
-
-                    preventDefault ON MOUSEDOWN so the button never takes focus
-                    off the input. Without it the field blurs on the way to the
-                    click, which silently re-points Escape at "close the panel"
-                    -- the exact same trap the chat composer's channel button
-                    documents. The explicit focus() after is for the keyboard
-                    route, where the button legitimately has focus and the caret
-                    should come back to the field it just emptied. */}
-                {query !== '' && (
-                  <button
-                    type="button"
-                    aria-label="Clear search"
-                    className="btn absolute right-1 top-1/2 grid size-5 -translate-y-1/2
-                               place-items-center rounded-sm"
-                    style={{ color: 'rgba(255,255,255,0.45)' }}
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => {
-                      play('ui.back')
-                      setQuery('')
-                      searchRef.current?.focus()
+                         `.ts` is the shape that survives it: the declared size
+                         arrives as `--fs` and the multiply happens inside the
+                         rule that owns the size. VERIFIED BY WHAT RENDERS rather
+                         than by what the class says -- measured in the harness at
+                         a 16px root, this field computes to 13.6px (0.85rem) with
+                         the text slider at 1.0, and tracks the slider from there;
+                         the roster rows beside it compute to 16px, because they
+                         are `text-[0.9rem] tscale` and are living examples of the
+                         trap. Matching their RENDERED size was not the goal -- the
+                         field is deliberately a step smaller than the names it
+                         filters, so the list stays the loudest thing on the
+                         card. */
+                      ['--fs' as string]: '0.85rem',
+                      ['--edgec' as string]: 'rgba(255,255,255,0.16)',
+                      ['--plate-fill' as string]: 'rgba(24,28,40,0.94)',
+                      ['--cut-max' as string]: '0.4rem',
                     }}
-                  >
-                    {/* Drawn rather than a glyph, for the reason the tick above
-                        is: this interface ships two faces and neither is
-                        guaranteed to carry a multiplication sign. */}
-                    <svg
-                      viewBox="0 0 10 10"
-                      className="size-2.5"
-                      aria-hidden="true"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="1.6"
-                      strokeLinecap="round"
+                  />
+                  {/* A CLEAR AFFORDANCE, BECAUSE THIS PANEL IS CURSOR-FIRST.
+                      It takes the mouse away from the game to be used (#135), so
+                      the player reading it has a cursor in their hand and no
+                      reason to assume Escape is wired to anything. Escape does
+                      clear the field and is the faster route; this is the one
+                      that is visible.
+
+                      Only present with something to clear -- an always-there ×
+                      over an empty field is a control whose only function is to
+                      do nothing.
+
+                      preventDefault ON MOUSEDOWN so the button never takes focus
+                      off the input. Without it the field blurs on the way to the
+                      click, which silently re-points Escape at "close the panel"
+                      -- the exact same trap the chat composer's channel button
+                      documents. The explicit focus() after is for the keyboard
+                      route, where the button legitimately has focus and the caret
+                      should come back to the field it just emptied.
+
+                      CENTRED BY `inset-y-0 my-auto` AND NOT BY A TRANSFORM, AND
+                      THAT IS THE WHOLE OF #167's FIRST HALF (owner, 2026-08-17:
+                      "the X button on the search bar does nothing").
+
+                      It did nothing because it MOVED OUT FROM UNDER THE CURSOR
+                      WHILE THE BUTTON WAS HELD DOWN. `.btn` is the interface's
+                      press animation and it owns the transform property --
+                      `.btn:active { transform: translateY(1px) scale(0.975) }`,
+                      index.css -- while `-translate-y-1/2` was spending that same
+                      property on centring. `.btn:active` is (0,2,0) and Tailwind's
+                      utility is (0,1,0), so on mousedown the specificity fight is
+                      won by the press, the -50% centring offset is DISCARDED, and
+                      the button jumps down by half its own height plus the 1px of
+                      travel. Measured in the harness at a 16px root: the rect goes
+                      from 442.0..462.0 to 453.2..472.7, an 11.2px drop on a button
+                      only 20px tall.
+
+                      A click is then two events on two different elements, and the
+                      browser dispatches `click` on their nearest common ancestor
+                      rather than on either. Measured, clicking dead centre with the
+                      travel applied: mousedown on this button's <path>, mouseup on
+                      the INPUT, click on the wrapper <div> -- and the field's value
+                      unchanged. The handler below is never reached. Nothing is
+                      broken about it, which is why reading it proves nothing.
+
+                      IT IS NOT REPRODUCIBLE WITH A ZERO-LENGTH CLICK, which is
+                      worth writing down because it is how this survived review.
+                      `.btn` transitions transform over 90ms, so a synthetic click
+                      whose mousedown and mouseup land on the same frame sees the
+                      button still at rest and works perfectly. A human press is
+                      tens of milliseconds long and the travel is `--ease-out`
+                      (cubic-bezier(0.22, 1, 0.36, 1)), which is most of the way
+                      home almost immediately -- the ~10px needed to clear a centre
+                      click is reached about a third of the way through the 90ms.
+                      So it fails for every real press and passes for every scripted
+                      one.
+
+                      `inset-y-0 my-auto` centres an absolutely positioned box of
+                      known height through the margin resolution rules instead, so
+                      the transform property is left entirely to `.btn` and the
+                      press is the 1px it was always meant to be. No magic number
+                      -- nothing here has to be told half of `size-5` -- and no
+                      second rule to keep in sync if that size changes. */}
+                  {query !== '' && (
+                    <button
+                      type="button"
+                      aria-label="Clear search"
+                      className="btn absolute inset-y-0 right-1 my-auto grid size-5
+                                 place-items-center rounded-sm"
+                      style={{ color: 'rgba(255,255,255,0.45)' }}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        play('ui.back')
+                        setQuery('')
+                        searchRef.current?.focus()
+                      }}
                     >
-                      <path d="M1.8 1.8 L8.2 8.2 M8.2 1.8 L1.8 8.2" />
-                    </svg>
-                  </button>
-                )}
+                      {/* Drawn rather than a glyph, for the reason the tick above
+                          is: this interface ships two faces and neither is
+                          guaranteed to carry a multiplication sign. */}
+                      <svg
+                        viewBox="0 0 10 10"
+                        className="size-2.5"
+                        aria-hidden="true"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.6"
+                        strokeLinecap="round"
+                      >
+                        <path d="M1.8 1.8 L8.2 8.2 M8.2 1.8 L1.8 8.2" />
+                      </svg>
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
 
             <div className="min-h-0 flex-1 overflow-y-auto thin-scroll px-2">
               {/* THREE OUTCOMES, NOT TWO, AND THE NEW ONE IS A STATE RATHER
@@ -758,7 +892,7 @@ export default function PlayerList() {
                   a card with a header, a search box and a blank space under it
                   looks like a list that failed to load. */}
               {rows.length === 0 ? (
-                query.trim() !== '' ? (
+                filtering ? (
                   <p className="body-text px-2 pb-3">
                     No players match “{query.trim()}”.
                   </p>
