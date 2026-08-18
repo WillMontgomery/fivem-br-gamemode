@@ -518,6 +518,26 @@ end)
 -- player is looking at when they press the key is the box that is still there
 -- after they fall out of the plane, saying the next thing.
 
+--- THE BROWSER'S OWN CLOCK, AND IT IS WHAT ANSWERS THE NEXT ROUND IN ONE PASTE.
+---
+--- `sends`/`draws`/`fallbacks` below are LIFETIME counters -- across two matches
+--- a non-zero `draws` can belong entirely to the previous flight -- so they can
+--- say THAT the fallback ran and never WHY. These two stamps can, and they
+--- separate the only two answers there are:
+---
+---   created, then ready 900ms later  -- the browser works and was asked for too
+---                                       late. That is the fault fixed here, and
+---                                       warming it earlier is the whole cure.
+---
+---   created, still not ready at 40s  -- a third concurrent CEF instance is not
+---                                       being granted at all. No amount of
+---                                       warming helps and the next round is
+---                                       about SHARING a page, not timing one.
+---
+--- Never reset. A flight that never opened its doors has no stamp at all, which
+--- is its own third answer and is printed as such.
+local promptCreatedAt, promptReadyAt = nil, nil
+
 --- The jump prompt's page. Its own browser, NOT the descent prompt's.
 ---
 --- skydive.lua makes this argument for `descentprompt` and it holds here with
@@ -527,11 +547,56 @@ end)
 --- saying "open the glider", in an order neither file controls. One extra CEF
 --- instance is the price of never having to reason about that ordering.
 ---
---- Reached lazily, from the loop, so the browser is created the first time a
---- jump window actually opens rather than at resource start.
+--- WHEN THE BROWSER IS BUILT, WHICH IS THE WHOLE OF THIS ISSUE'S SECOND ROUND.
+---
+--- The first version reached this lazily, from the draw loop, "so the browser is
+--- created the first time a jump window actually opens". That is the one line of
+--- skydive.lua's descent prompt this file did not copy, and it is the line that
+--- makes the prompt appear:
+---
+---   a DUI is a whole CEF instance and IsDuiAvailable is FALSE for a beat after
+---   CreateDui -- messages sent before it answers are dropped and the sprite
+---   draws nothing (dui.lua). Asked for at the doors, the browser spends that
+---   beat inside the jump window, and the window is the only time this box has.
+---   A player who jumps in the first second of it -- which is most players, and
+---   every playtester -- sees the help-box fallback and NOTHING ELSE, which is
+---   verbatim the report: "why are we still using natives".
+---
+---   the descent prompt beside it looked fine from the same seat, and that is
+---   the evidence rather than a contradiction: skydive.lua warms `descentprompt`
+---   on the WARMUP/BUS edge, so by the time anyone falls out of the plane its
+---   browser has had the whole flight to come up. Same page, same size, same
+---   file it was copied from -- different creation time, opposite outcome.
+---
+--- So it is warmed on the same edge, from the handler below. BR.Dui.page
+--- memoises, so this costs one CEF instance moved EARLIER in the session rather
+--- than an extra one: nothing in dui.lua destroys a page short of the resource
+--- stopping, so `busprompt` was going to live from the first jump window to the
+--- end of the session either way. What changes is that its first ~90 seconds of
+--- life are the lobby and the climb instead of the ten seconds it is needed.
+--- Idle, it is a hidden page with no timer, no animation and no traffic
+--- (br_ui/dui/prompt.html only acts on a message), and it is not drawn: the
+--- draw call lives in the window and nowhere else.
 local function promptPage()
+    if not promptCreatedAt then promptCreatedAt = GetGameTimer() end
     return BR.Dui.page('busprompt', 'nui://br_ui/dui/prompt.html', 512, 256)
 end
+
+--- THE SAME EDGE skydive.lua WARMS ITS OWN PAGE ON, deliberately: the two boxes
+--- are one box to the player, they are the same document at the same size, and
+--- warming them together means they come up together or fail together rather
+--- than one of them silently lagging into the window it serves.
+---
+--- No edge-detection and no bookkeeping: BR.Dui.page memoises on the name, so
+--- every STATE broadcast after the first is a table lookup. Registered here
+--- rather than folded into the handler at the top of the file so the prompt's
+--- lifetime stays in the prompt's own section -- the top one owns the map line.
+AddEventHandler(BR.Net.STATE, function(d)
+    if type(d) ~= 'table' then return end
+    if d.state == BR.MatchState.WARMUP or d.state == BR.MatchState.BUS then
+        promptPage()
+    end
+end)
 
 --- What the box is currently saying: nil, 'open' or 'closing'.
 ---
@@ -645,6 +710,10 @@ BR.Loop.register(BR.Loop.FRAME, 'bus.prompt', function()
 
     local page = promptPage()
     if BR.Dui.ready(page) then
+        -- The far end of the stamp pair. Latched on the first true, so it is
+        -- the moment the browser ANSWERED rather than the moment it was last
+        -- seen up, which is the number /brbus needs.
+        if not promptReadyAt then promptReadyAt = GetGameTimer() end
         promptSeen.draws = promptSeen.draws + 1
         -- THE DESCENT PROMPT'S OWN POSITION, on purpose. These two boxes are
         -- one box as far as the player is concerned: press the key here, fall
@@ -847,6 +916,19 @@ RegisterCommand('brbus', function()
         promptSeen.kind and ('showing "' .. promptSeen.kind .. '"') or 'not showing',
         tostring(jumpKey() or '(UNBOUND -- Settings > Key Bindings)'),
         promptSeen.sends, promptSeen.draws, promptSeen.fallbacks))
+    -- THE LINE THAT SEPARATES "LATE" FROM "NEVER", which the counters above
+    -- cannot: they are lifetime totals, so a `draws` earned two matches ago
+    -- reads exactly like a browser that came up on this flight. See the stamps'
+    -- own note by promptPage for what each of the three answers means.
+    if not promptCreatedAt then
+        print('  browser not asked for yet (no warmup or bus state seen this session)')
+    elseif promptReadyAt then
+        print(('  browser ready %dms after it was created')
+            :format(promptReadyAt - promptCreatedAt))
+    else
+        print(('  browser NEVER READY -- %dms since it was created')
+            :format(GetGameTimer() - promptCreatedAt))
+    end
     if not route then print('  route  none') return end
     print(('  route  %d pts  %d crumbs  legs %s  timed %s')
         :format(#route.points, crumbCount,

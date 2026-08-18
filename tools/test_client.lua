@@ -74,6 +74,32 @@ function GetConvarInt(name, default)
     return v == nil and default or math.floor(v)
 end
 
+--- THIS CLIENT'S OWN STATE BAG, WHICH IS HOW WE LEARN WHICH pma-voice IS ON
+--- THE BOX.
+---
+--- Modelled for the same reason `convars` above is: #165 round three was not a
+--- rule this suite could have got wrong, it was a RESOURCE VERSION nothing in
+--- this repository could see. pma-voice's server half writes these keys onto
+--- every player's bag, and exactly one of them tells the two generations apart:
+---
+---   voiceIntent      written by v7.0.0 and by v7.0.1-rc2+ alike, in the same
+---                    function -- so it means "pma-voice has got to us".
+---   assignedChannel  written from v7.0.1-rc2 onwards ONLY. v7.0.0 assumed a
+---                    client's Mumble channel simply IS its server id, which is
+---                    the assumption behind the MUMBLE_ADD_VOICE_CHANNEL_LISTEN
+---                    spam, and it has no such key.
+---
+--- THE DEFAULT IS v7.0.0 -- initialised, no assignedChannel -- because that is
+--- the box the issue was reported from, the same reasoning that makes `convars`
+--- default to empty.
+--- Global rather than local so the voice block far below can rewrite it without
+--- spending one of this chunk's 200 local slots; the whole harness is a single
+--- Lua chunk and it is not far off that ceiling.
+pmaBag = { voiceIntent = 'speech' }
+LocalPlayer = setmetatable({}, { __index = function(_, k)
+    if k == 'state' then return pmaBag end
+end })
+
 local realPrint = print
 local logged = {}
 function print(s) logged[#logged + 1] = tostring(s) end
@@ -2548,6 +2574,138 @@ do
     logged = {}
 end
 
+describe('#165 round three -- br_core can tell which pma-voice is installed')
+do
+    -- WHY THIS BLOCK EXISTS, AND WHY IT IS NOT ABOUT A RULE.
+    --
+    -- The convar block above closed two of the three places pma-voice v7 calls
+    -- MumbleAddVoiceChannelListen, and the playtest came back with the same
+    -- warning, now on join and permanent. The third place is v7.0.0's
+    -- addNearbyPlayers():
+    --
+    --     MumbleAddVoiceChannelListen(playerServerId)
+    --
+    -- -- our OWN channel, unconditionally, every 200 ms, in a loop that waits
+    -- for MumbleIsConnected() and NOT for pma-voice's own handleInitialState()
+    -- to have joined that channel. NOTHING IN br_core CAN REACH IT: it takes no
+    -- convar, no export and no state bag we are willing to set. Upstream fixed
+    -- it after v7.0.0.
+    --
+    -- So the only thing this repository can do is REFUSE TO BE QUIET ABOUT THE
+    -- WRONG VERSION -- which matters more than it sounds, because the previous
+    -- two fixes for this issue were both correct and both landed in
+    -- server.cfg.example, a file no deploy copies to the box. This block is the
+    -- thing that makes the third fix visible from a chair.
+    convars = { voice_disableAutomaticListenerOnCamera = 1, voice_enableUi = 0 }
+
+    -- CALLED THROUGH SHIMS so that a build with no check at all reports this
+    -- block as a row of clean failures rather than aborting the whole suite on
+    -- a nil index. Same reasoning as the convar block above: "the check is
+    -- missing" has to be a readable test result, because that is the state
+    -- every previous round of #165 was in.
+    local genOf = BR.Voice.generationOf or function() return 'MISSING' end
+    local gen   = BR.Voice.generation   or function() return 'MISSING' end
+
+    -- THE PURE HALF FIRST, all four states, because the interesting one is the
+    -- one that is NOT a verdict.
+    ok(genOf(false, false, nil) == 'absent',
+       'no pma-voice at all reads as absent, not as an old one',
+       tostring(genOf(false, false, nil)))
+    ok(genOf(true, false, nil) == 'pending',
+       'a running pma-voice that has not initialised us yet is PENDING -- not '
+           .. 'a verdict, because a check that cries wolf on a healthy box is '
+           .. 'a check nobody reads on a sick one',
+       tostring(genOf(true, false, nil)))
+    ok(genOf(true, true, nil) == 'legacy',
+       'initialised with no assignedChannel is v7.0.0 -- the #165 build',
+       tostring(genOf(true, true, nil)))
+    ok(genOf(true, true, 7) == 'current',
+       'and an assignedChannel is v7.0.1-rc2 or later',
+       tostring(genOf(true, true, 7)))
+
+    -- AND THE READ, off the same state bag pma-voice actually writes.
+    pmaBag = { voiceIntent = 'speech' }
+    voiceApply('nearby', nil, nil, 1)
+    ok(gen() == 'legacy',
+       'and it reads the live bag: voiceIntent without assignedChannel is old',
+       tostring(gen()))
+
+    -- SAID OUT LOUD, ON THE 1 Hz BAND RATHER THAN AT START. The bag is
+    -- replicated and is not there on the frame br_core boots, so a start-time
+    -- check would print 'pending' on every healthy server and train everyone to
+    -- scroll past it. This asserts the delay does not swallow the message.
+    logged = {}
+    BR.Loop.step(BR.Loop.SLOW)
+    local said = table.concat(logged, '\n')
+    ok(said:find('v7.0.1%-rc2') ~= nil, 'the 1 Hz band names the version', said)
+    ok(said:find('MumbleAddVoiceChannelListen') ~= nil,
+       'and the exact call that is spamming the console', said)
+    ok(said:find('git clone') ~= nil and said:find('v7.0.2%-rc3') ~= nil,
+       'and the command that fixes it -- an operator should not have to go '
+           .. 'and find server.cfg.example', said)
+
+    -- ONCE. This console is where #150 hid for a week, and a line printed once
+    -- a second is a line that hides the next one.
+    logged = {}
+    BR.Loop.step(BR.Loop.SLOW)
+    BR.Loop.step(BR.Loop.SLOW)
+    ok(table.concat(logged, '\n'):find('pma%-voice') == nil,
+       'and says it exactly once, not once a second',
+       table.concat(logged, '\n'))
+
+    -- IN /brvoice TOO, which is the command a playtester is actually told to
+    -- run, and the one that has to survive the message above scrolling away.
+    logged = {}
+    pcall(commands['brvoice'])
+    local readout = table.concat(logged, '\n')
+    ok(readout:find('version') ~= nil and readout:find('#165') ~= nil,
+       '/brvoice leads with the version and names the issue', readout)
+
+    -- THE OTHER HALF, AND THE ONE THAT MAKES IT A TEST: a fixed box is silent.
+    pmaBag = { voiceIntent = 'speech', assignedChannel = 12 }
+    voiceApply('nearby', nil, nil, 1)
+    ok(gen() == 'current',
+       'a v7.0.1-rc2+ box reads as current', tostring(gen()))
+    logged = {}
+    BR.Loop.step(BR.Loop.SLOW)
+    BR.Loop.step(BR.Loop.SLOW)
+    ok(table.concat(logged, '\n'):find('MumbleAddVoiceChannelListen') == nil,
+       'and br_core says nothing at all about the version',
+       table.concat(logged, '\n'))
+
+    -- STILL ONE LINE, and it still names the issue -- deliberately. "This build
+    -- has the fix" is the answer somebody running /brvoice after an upgrade
+    -- needs; silence would be indistinguishable from an old readout. What must
+    -- be gone is the ALARM and the nine lines of upgrade instructions under it.
+    logged = {}
+    pcall(commands['brvoice'])
+    local fixed = table.concat(logged, '\n')
+    ok(fixed:find('PRE%-v7.0.1') == nil and fixed:find('git clone') == nil,
+       'and /brvoice drops the alarm and the upgrade command', fixed)
+    ok(fixed:find('has the #165 fix') ~= nil,
+       'while still saying, in one line, that this build is the fixed one',
+       fixed)
+
+    -- A pma-voice that has not written the bag yet must not be accused of
+    -- anything. This is the state every healthy client is in for its first
+    -- second, so getting it wrong would make the check useless by making it
+    -- constant.
+    pmaBag = {}
+    voiceApply('nearby', nil, nil, 1)
+    ok(gen() == 'pending',
+       'an uninitialised bag is pending, not legacy', tostring(gen()))
+    logged = {}
+    BR.Loop.step(BR.Loop.SLOW)
+    ok(table.concat(logged, '\n'):find('#165') == nil,
+       'and nothing is printed while the answer is still pending',
+       table.concat(logged, '\n'))
+
+    -- Left in the fixed state for everything after this block.
+    pmaBag = { voiceIntent = 'speech', assignedChannel = 12 }
+    convars = {}
+    logged = {}
+end
+
 describe('voice never crosses a match')
 do
     -- The property the whole system exists for. It is a different mechanism
@@ -3296,9 +3454,31 @@ do
     -- it writes to `descentprompt`. Recording every send regardless of page
     -- would let one file's payload be read as the other's -- which is precisely
     -- the confusion bus.lua refuses to risk by not sharing a browser.
-    local dui = { sends = {}, draws = 0, up = true, at = nil }
+    -- ...AND A BROWSER THAT TAKES TIME TO START, WHICH IS #174's SECOND ROUND
+    -- AND THE ONE THING THIS STUB PREVIOUSLY ASSUMED AWAY.
+    --
+    -- `ready` returned `dui.up`, true from the very first frame -- so the suite
+    -- measured a CEF instance that was up the instant it was asked for, which is
+    -- the one thing a CEF instance never is. dui.lua's own note: a message sent
+    -- to a browser that has not finished starting "is simply lost", and
+    -- IsDuiAvailable is false until it answers. The suite therefore passed
+    -- 386/386 against a prompt that, on a real client, showed the player nothing
+    -- but the help-box fallback for the whole of the window they had.
+    --
+    -- MODELLED AS A DELAY FROM CREATION, because creation time is the only
+    -- variable the caller gets a vote in: ask at warmup and the beat is spent in
+    -- the lobby, ask at the doors and it is spent inside the jump window. 900ms
+    -- is deliberately a fraction of the window and still longer than the gap
+    -- between the doors opening and a playtester pressing the key.
+    local CEF_MS = 900
+    local dui = { sends = {}, draws = 0, up = true, at = nil, createdAt = nil }
     BR.Dui = {
-        page = function(name) return { name = name } end,
+        page = function(name)
+            if name == 'busprompt' and not dui.createdAt then
+                dui.createdAt = GetGameTimer()
+            end
+            return { name = name }
+        end,
         send = function(page, msg)
             if page and page.name == 'busprompt' then
                 dui.sends[#dui.sends + 1] = msg
@@ -3311,7 +3491,15 @@ do
             end
         end,
         drawWorld = noop, drawOnEntity = noop,
-        ready = function() return dui.up end,
+        -- Only this file's page is modelled. skydive.lua is loaded and running
+        -- in this same process and warms its own browser on the same edge; its
+        -- readiness is that block's business, not this one's.
+        ready = function(page)
+            if not page or page.name ~= 'busprompt' then return true end
+            if not dui.up then return false end   -- the forced-down case, #11
+            return dui.createdAt ~= nil
+               and (GetGameTimer() - dui.createdAt) >= CEF_MS
+        end,
     }
     local function said() return dui.sends[#dui.sends] end
 
@@ -3373,6 +3561,38 @@ do
         for i = before + 1, #threads do threads[i]() end
     end
 
+    -- 0. THE BROWSER IS ASKED FOR AT WARMUP, NOT AT THE DOORS -- #174, REOPENED
+    --    BY PLAYTEST: "why are we still using natives to draw the jump text".
+    --
+    --    It was our box all along; what the owner saw was this file's OWN help-
+    --    box fallback, because the browser was created on the first frame of the
+    --    jump window and IsDuiAvailable is false for a beat after CreateDui. The
+    --    beat therefore landed inside the only seconds the prompt exists for --
+    --    and the owner's own observation is the proof: the descent prompt right
+    --    after the jump rendered perfectly, because skydive.lua warms the very
+    --    same document on the WARMUP/BUS edge and it had the whole flight to
+    --    come up. Same page, same size, different creation time.
+    --
+    --    Asserted on the STATE broadcast rather than on a frame count, because
+    --    "early enough" is not a number this suite can own -- what it can own is
+    --    that the ask happens on the same edge the working prompt uses.
+    fire(BR.Net.STATE, { state = BR.MatchState.WARMUP })
+    ok(dui.createdAt ~= nil,
+        'the jump prompt\'s browser is asked for at WARMUP, not at the doors',
+        'nothing asked BR.Dui.page for `busprompt` on the warmup state -- so the '
+            .. 'browser starts inside the jump window')
+
+    -- The lobby, measured in the only unit that matters to a browser: time to
+    -- start. Shorter than a real warmup by two orders of magnitude and still
+    -- twice the modelled startup.
+    frames(120, 16)
+
+    -- Counted from BEFORE the doors, so a fallback frame at the START of the
+    -- window is caught. The existing help-box assertion below resets this
+    -- counter after the window has already been open for 24 frames, which is
+    -- exactly the blind spot the reopened issue lived in.
+    helpFrame, helpFrames = nil, 0
+
     board()
     sent = {}
 
@@ -3392,6 +3612,14 @@ do
         'the doors-open box is a DUI payload, not a help string',
         open and tostring(open.label) or 'nothing was sent to the page at all')
     ok(dui.draws > 0, 'and it is actually drawn', ('draws %d'):format(dui.draws))
+    -- THE ASSERTION THE SHIPPED CODE CANNOT PASS, and the one the owner is
+    -- reporting. Not "a DUI eventually appeared" -- "the player never saw the
+    -- engine draw this prompt", counted from the frame the doors opened.
+    ok(helpFrames == 0,
+        'and the box covers the window from its FIRST frame -- the player never '
+            .. 'sees the native fallback while the browser starts (#174)',
+        ('the engine help box drew this prompt on %d frames of the window; '
+            .. 'last was %s'):format(helpFrames, tostring(helpFrame)))
     ok(open and open.key == 'Space',
         'naming the key `deploy` is actually bound to, read from BR.Keys',
         open and tostring(open.key) or 'nil')
@@ -3559,6 +3787,18 @@ do
     ok(dump:find('Space', 1, true) ~= nil,
         'reading the same BR.Keys answer the box prints, so it cannot agree '
             .. 'with a lie the box is telling', dump)
+    -- AND THE ONE LINE THAT SEPARATES "LATE" FROM "NEVER". `sends`/`draws`/
+    -- `fallbacks` are lifetime totals -- a `draws` earned two matches ago reads
+    -- exactly like a browser that came up on this flight -- so they cannot tell
+    -- a browser that started slowly from a third CEF instance that is never
+    -- granted at all. Those two faults have opposite fixes, and this is the line
+    -- a playtester pastes to choose between them.
+    ok(dump:find('browser ', 1, true) ~= nil,
+        'and says whether the browser came up, and how long it took', dump)
+    ok(dump:find('browser ready ', 1, true) ~= nil
+        and dump:find('NEVER READY', 1, true) == nil,
+        'reporting a warmed browser as ready rather than as never having come up',
+        dump)
     logged = {}
 
     -- 14. THE RIDE ENDING TAKES THE BOX DOWN. A DUI holds its last content
@@ -4951,6 +5191,462 @@ do
            'and as closed under a screen that owns it', shut)
         closeScreen('players')
     end
+end
+
+describe('a browser is not up until the engine says so -- client/dui.lua')
+do
+    -- THE FILE EVERY PROMPT IN THIS PROJECT ASKS THE SAME QUESTION OF, AND THE
+    -- ONE THIS SUITE HAD NEVER LOADED.
+    --
+    -- Every block above stubs BR.Dui wholesale, so `BR.Dui.ready` -- the single
+    -- gate between "our box, naming our key" and "the engine's help box" on the
+    -- bus, on the descent and over every crate -- has been decided by the
+    -- harness rather than measured. That is how #174's DUI shipped with 386
+    -- green assertions and no prompt on the owner's screen.
+    --
+    -- LOADED LAST, because loading it replaces the stub the blocks above need.
+    local avail = nil          -- what IsDuiAvailable hands back, VERBATIM
+    local sends = 0
+    function CreateDui() return 7 end
+    function CreateRuntimeTxd(n) return n end
+    function CreateRuntimeTextureFromDuiHandle() end
+    function GetDuiHandle() return 'h' end
+    function IsDuiAvailable() return avail end
+    function SendDuiMessage() sends = sends + 1 end
+    function DestroyDui() end
+
+    loadAll({ 'br_core/client/dui.lua' })
+
+    --- A page nobody else owns, rebuilt per case: BR.Dui.page memoises on the
+    --- name and `ready` latches, so a case that reused one would be reading the
+    --- previous case's answer.
+    local n = 0
+    local function fresh()
+        n = n + 1
+        return BR.Dui.page('probe' .. n, 'nui://br_ui/dui/prompt.html', 8, 8)
+    end
+
+    -- 1. A NATIVE'S ANSWER IS NOT A LUA BOOLEAN (3b42f0e). A FiveM native
+    --    declared BOOL may return `true`, `1`, `false`, `nil` -- or `0`, and in
+    --    Lua the number 0 is TRUTHY. Stored verbatim it latches a page that is
+    --    NOT up as ready forever: the scale push is fired at a browser that
+    --    cannot receive it, every draw puts a blank texture on screen, and the
+    --    CALLER'S FALLBACK NEVER RUNS -- so nothing anywhere says the browser is
+    --    missing. That is strictly worse than the bug this round is about,
+    --    because the bus at least said something.
+    --    ASSERTED THE WAY CALLERS ASK IT -- `if BR.Dui.ready(page) then` -- and
+    --    not as `== false`. Nothing stores this answer, so its truthiness is the
+    --    whole contract, and a shape assertion would have inflated the revert
+    --    proof with two cases (`nil`, `1`) that are already correct at every
+    --    call site. Exactly one of these five is a real behavioural fault, and
+    --    it is `0`.
+    for _, shape in ipairs({
+        { v = false, name = 'false' },
+        { v = nil,   name = 'nil' },
+        { v = 0,     name = '0 -- a number, and truthy in Lua' },
+    }) do
+        local page = fresh()
+        avail = shape.v
+        local answer = BR.Dui.ready(page)
+        ok(not answer,
+            ('a browser answering %s is not ready'):format(shape.name),
+            ('BR.Dui.ready answered %s, so the caller draws a blank plate and '
+                .. 'skips its fallback'):format(tostring(answer)))
+    end
+
+    -- 2. AND UP IS UP, in both shapes a true answer arrives in.
+    for _, shape in ipairs({
+        { v = true, name = 'true' },
+        { v = 1,    name = '1 -- a number' },
+    }) do
+        local page = fresh()
+        avail = shape.v
+        local answer = BR.Dui.ready(page)
+        ok(answer and true or false,
+            ('a browser answering %s is ready'):format(shape.name),
+            tostring(answer))
+    end
+
+    -- 3. THE EDGE IS WHERE THE SCALE LANDS, and it is the reason `ready` is
+    --    where that push lives at all: a message sent to a CEF instance that has
+    --    not finished starting is dropped without a word, so pushing from
+    --    BR.Dui.page would work on a warm reload and silently not on a cold one.
+    local page = fresh()
+    avail = false
+    sends = 0
+    BR.Dui.ready(page); BR.Dui.ready(page); BR.Dui.ready(page)
+    ok(sends == 0, 'nothing is sent to a browser that has not answered yet',
+        ('%d messages were sent into the void'):format(sends))
+
+    avail = true
+    ok(BR.Dui.ready(page), 'and the poll notices when it comes up')
+    ok(sends == 1, 'the scale is pushed exactly once, on the not-ready->ready edge',
+        ('%d pushes'):format(sends))
+    BR.Dui.ready(page); BR.Dui.ready(page)
+    ok(sends == 1, 'and not again on every frame after it',
+        ('%d pushes after three more polls'):format(sends))
+
+    -- 4. ONCE UP, STAYS UP. `ready` latches deliberately -- the natives are not
+    --    asked again -- and a prompt that flickered back to its help-box
+    --    fallback because one frame's answer came back odd would read as the
+    --    box fighting itself.
+    avail = false
+    ok(BR.Dui.ready(page),
+        'a browser that has come up is not un-readied by a later false',
+        tostring(BR.Dui.ready(page)))
+end
+
+-- ======================================================================== --
+-- 12. THE LOBBY REVEAL WAITS FOR THE CHARACTER STANDING IN THE SHOT
+-- ======================================================================== --
+--
+-- THE REPORT (owner, 2026-08-18): "on the lobby screen - can we wait to fade
+-- the screen in until after our target ped has fully spawned in?"
+--
+-- The lobby is a portrait. client/loading.lua waited for the session, for the
+-- interface and for collision under the vista, and then took the loading screen
+-- down and flipped worldReady -- which is what fades the lobby in -- WITHOUT
+-- ever asking whether the person the shot is composed around had arrived.
+-- client/locker.lua applies the stored character exactly once per session, on
+-- its own asynchronous RequestModel, so the two simply raced.
+--
+-- WHY THIS IS TESTED WITH A REAL SCHEDULER AND NOT WITH A NO-OP Citizen.
+--
+-- The harness's default `Citizen.Wait = function() end` would make every wait in
+-- loading.lua vanish, and a suite that erases the waits cannot say anything at
+-- all about a change that ADDS one -- the reverted file and the fixed file would
+-- both "pass" by running straight through. So this block installs coroutines:
+-- Citizen.Wait yields the number of milliseconds it wants and `pump` advances a
+-- fake clock and resumes the threads that are due. That is close enough to
+-- FiveM's scheduler for the only question being asked, which is WHAT HAD TO BE
+-- TRUE before the loading screen came down.
+--
+-- WHAT IS MEASURED IS THE CONSEQUENCE, NOT THE CALL. Nothing here asserts that
+-- some readiness helper was invoked; every assertion is about
+-- ShutdownLoadingScreen having happened or not happened, and about
+-- BR.State.worldReady, because those two ARE the reveal. A test that checked the
+-- helper ran would pass just as happily on a helper whose answer was ignored --
+-- the failure this file has already had twice (see the pma-voice and the raw-key
+-- notes above).
+do
+    describe('the lobby reveal waits for the ped')
+
+    -- ---------------------------------------------------------- the world ---
+
+    local prev = {
+        Citizen                     = Citizen,
+        DoesEntityExist             = DoesEntityExist,
+        GetEntityCoords             = GetEntityCoords,
+        GetHashKey                  = GetHashKey,
+        GetEntityModel              = GetEntityModel,
+    }
+
+    -- The character roster, which the rest of this suite has no use for and
+    -- therefore never loaded. BR.PedById is how the gate turns the stored
+    -- locker id into the model it is waiting to see on the player.
+    do
+        local chunk, err = loadfile(ROOT .. 'br_lib/config/peds.lua')
+        if not chunk then
+            realPrint('\27[31mload error\27[0m peds.lua: ' .. tostring(err))
+            os.exit(1)
+        end
+        chunk()
+    end
+
+    --- A hash that is a function of the NAME. The suite's own GetHashKey stub
+    --- returns 1 for everything, which would make every model equal to every
+    --- other model and the whole gate a tautology.
+    local function hashOf(s)
+        local h = 0
+        for i = 1, #tostring(s) do h = (h * 31 + tostring(s):byte(i)) % 2147483647 end
+        return h
+    end
+
+    local world = {}
+
+    GetHashKey       = function(s) return hashOf(s) end
+    DoesEntityExist  = function() return world.pedExists end
+    GetEntityModel   = function()
+        if world.modelThrows then error('GET_ENTITY_MODEL: no such entity', 0) end
+        return world.pedModel
+    end
+    GetEntityCoords  = function() return world.pos end
+
+    -- Recorded rather than stubbed away: these three ARE the reveal.
+    local shut = { nui = 0, screen = 0, fadeIn = 0 }
+    function ShutdownLoadingScreenNui() shut.nui = shut.nui + 1 end
+    function ShutdownLoadingScreen()    shut.screen = shut.screen + 1 end
+    function DoScreenFadeIn()           shut.fadeIn = shut.fadeIn + 1 end
+    function IsScreenFadedOut()         return world.fadedOut end
+    function GetIsLoadingScreenActive() return true end
+    function NetworkIsSessionStarted()  return world.session end
+    function HasCollisionLoadedAroundEntity() return world.collision end
+    function SendLoadingScreenMessage() return true end
+
+    -- ------------------------------------------------------- the scheduler ---
+
+    local threads = {}
+    Citizen = {
+        CreateThread = function(fn)
+            threads[#threads + 1] = { co = coroutine.create(fn), wake = fakeTime }
+        end,
+        Wait = function(ms) coroutine.yield(tonumber(ms) or 0) end,
+        SetTimeout = function() end,
+    }
+
+    --- Advance the fake clock and let every thread that is due run.
+    local function pump(ms)
+        local target = fakeTime + ms
+        while fakeTime < target do
+            fakeTime = fakeTime + 50
+            for _, t in ipairs(threads) do
+                if coroutine.status(t.co) == 'suspended' and fakeTime >= t.wake then
+                    local ran, waited = coroutine.resume(t.co)
+                    if not ran then
+                        realPrint('\27[31mthread error\27[0m ' .. tostring(waited))
+                    end
+                    t.wake = fakeTime + (tonumber(waited) or 0)
+                end
+            end
+        end
+    end
+
+    --- A fresh join, with the world in whatever shape the caller asked for.
+    ---
+    --- Every scenario reloads client/loading.lua rather than sharing one boot:
+    --- the file's thread runs ONCE and latches worldReady, so a second scenario
+    --- against the same chunk would be measuring nothing.
+    local function join(setup)
+        threads = {}
+        shut.nui, shut.screen, shut.fadeIn = 0, 0, 0
+        logged = {}
+
+        -- The finished state, which each scenario then breaks in exactly one
+        -- place. Stating it positively means a scenario cannot pass because it
+        -- happened to inherit a broken world from the one before it.
+        world = {
+            session   = true,
+            collision = true,
+            fadedOut  = false,
+            pedExists = true,
+            pos       = { x = BR.Config.Match.lobbyPos.x,
+                          y = BR.Config.Match.lobbyPos.y, z = 17.0 },
+            pedModel  = hashOf(BR.Config.Peds[1].model),
+            modelThrows = false,
+        }
+        BR.Locker = { chosen = function() return BR.Config.Peds[1].id end }
+        BR.Spawn  = { traveling = false }
+        BR.State.worldReady = nil
+        if setup then setup() end
+
+        local chunk = assert(loadfile(ROOT .. 'br_core/client/loading.lua'))
+        chunk()
+
+        -- The interface's own handshake, which the first gate in the file waits
+        -- on. Called one handler at a time so an unrelated module throwing
+        -- cannot swallow loading.lua's, which registers last.
+        for _, fn in ipairs(handlers['br:ui:ready'] or {}) do pcall(fn) end
+    end
+
+    local function said(word)
+        return table.concat(logged, '\n'):find(word, 1, true) ~= nil
+    end
+
+    -- ====================================================================== --
+    -- The race itself
+    -- ====================================================================== --
+
+    describe('the reveal holds while the chosen character is not on the player')
+    do
+        -- A FRESH JOIN HANDS YOU SOMEBODY ELSE'S PED. That is the whole
+        -- mechanism: GTA gives every player a default model, locker.lua swaps it
+        -- for the stored choice, and the reveal used to happen whenever it
+        -- happened to happen.
+        join(function() world.pedModel = hashOf('mp_m_freemode_01') end)
+
+        pump(4000)
+        ok(shut.screen == 0 and BR.State.worldReady ~= true,
+           'the loading screen stays up while the default ped is still standing there',
+           ('shutdowns=%d worldReady=%s after 4s'):format(
+               shut.screen, tostring(BR.State.worldReady)))
+
+        world.pedModel = hashOf(BR.Config.Peds[1].model)
+        pump(1500)
+        ok(shut.screen == 1 and shut.nui == 1,
+           'and comes down once the character is actually on the player',
+           ('shutdowns=%d nui=%d'):format(shut.screen, shut.nui))
+        ok(BR.State.worldReady == true,
+           'and only then does worldReady flip, which is what fades the lobby in',
+           tostring(BR.State.worldReady))
+        ok(said('lobby ped ready'),
+           'and the console says so, so a playtest can tell waiting from luck',
+           table.concat(logged, '\n'))
+    end
+
+    describe('the reveal holds while the ped is not on the lobby mark')
+    do
+        -- THE CAMERA IS AIMED AT COORDINATES, NOT AT THE ENTITY
+        -- (client/lobbycam.lua). A correct character standing somewhere else is
+        -- the "empty scene" half of the report: a menu over a hillside.
+        join(function() world.pos = { x = 0.0, y = 0.0, z = 30.0 } end)
+
+        pump(4000)
+        ok(shut.screen == 0,
+           'a character four kilometres from the mark is not a lobby shot',
+           ('shutdowns=%d'):format(shut.screen))
+
+        world.pos = { x = BR.Config.Match.lobbyPos.x,
+                      y = BR.Config.Match.lobbyPos.y, z = 17.0 }
+        pump(1500)
+        ok(shut.screen == 1, 'and the reveal follows the ped onto the mark',
+           ('shutdowns=%d'):format(shut.screen))
+    end
+
+    describe('the reveal does not lift a loading screen into a trip\'s own black')
+    do
+        -- BR.State.me.state DEFAULTS to LOBBY and the ped starts wherever GTA
+        -- put it, so spawn.lua's lobby watchdog fires during the BOOT and a join
+        -- routinely has a BR.Spawn.toLobby running under the loadscreen. That
+        -- trip is faded OUT from its teleport until its collision wait ends --
+        -- and it puts the ped on the mark BEFORE that. A gate that only asked
+        -- about the ped would therefore release the last cover the player has
+        -- straight into somebody else's black screen.
+        join(function() BR.Spawn.traveling = true end)
+
+        pump(4000)
+        ok(shut.screen == 0,
+           'a ped already on the mark is not enough while a trip still owns the screen',
+           ('shutdowns=%d'):format(shut.screen))
+
+        BR.Spawn.traveling = false
+        pump(1500)
+        ok(shut.screen == 1, 'and the screen is released once the trip lets go',
+           ('shutdowns=%d'):format(shut.screen))
+    end
+
+    describe('the collision wait it was added behind still runs')
+    do
+        -- The new gate sits AFTER the world gate, and adding it must not have
+        -- moved the reveal in front of the thing that was already correct.
+        join(function() world.collision = false end)
+
+        pump(20000)
+        ok(shut.screen == 0,
+           'a perfect ped on unstreamed ground is still not a lobby to reveal',
+           ('shutdowns=%d'):format(shut.screen))
+
+        world.collision = true
+        pump(2000)
+        ok(shut.screen == 1, 'and the reveal follows the ground in',
+           ('shutdowns=%d'):format(shut.screen))
+    end
+
+    -- ====================================================================== --
+    -- The ceiling, which is the half that matters more than the wait
+    -- ====================================================================== --
+
+    describe('a character that never arrives costs a pop, never a black screen')
+    do
+        -- TWO ROSTER MODELS ALREADY WERE NOT ON THE BUILD (locker.lua). A model
+        -- name with a typo in it never streams, locker.apply gives up after five
+        -- seconds and keeps the ped you had -- so this gate's condition can be
+        -- one that is NEVER satisfied, and an unbounded wait would park that
+        -- player on the gag reel for the rest of the session with nothing in any
+        -- log. The governing rule of both this file and spawn.lua is that a
+        -- visible cut always beats an unrecoverable screen.
+        join(function() world.pedModel = hashOf('a_m_y_typo_99') end)
+
+        pump(60000)
+        ok(shut.screen == 1 and BR.State.worldReady == true,
+           'the reveal gives up and happens anyway',
+           ('shutdowns=%d worldReady=%s'):format(
+               shut.screen, tostring(BR.State.worldReady)))
+        ok(said('never settled') and said('not on the player'),
+           'and the console names which half never came',
+           table.concat(logged, '\n'))
+    end
+
+    describe('the wait cannot outlive a predicate that throws')
+    do
+        -- This runs in a bare Citizen thread with no handler above it, one step
+        -- before the only code that takes the loading screen down. A readiness
+        -- check that raises would stop that thread dead and leave the player on
+        -- the loading screen forever -- a worse failure than the one being
+        -- fixed, introduced by the fix.
+        join(function() world.modelThrows = true end)
+
+        pump(3000)
+        ok(shut.screen == 1 and BR.State.worldReady == true,
+           'an error in the check reveals the lobby instead of holding it',
+           ('shutdowns=%d worldReady=%s'):format(
+               shut.screen, tostring(BR.State.worldReady)))
+        ok(said('errored'), 'and says so', table.concat(logged, '\n'))
+    end
+
+    describe('every half of the gate fails OPEN')
+    do
+        -- A br_core that loaded without the locker, or without the match config,
+        -- must boot to a working lobby. A gate that holds on a module it cannot
+        -- find is the orphaned-subsystem failure wearing a loading screen.
+        join(function()
+            BR.Locker = nil
+            world.pos = { x = 0.0, y = 0.0, z = 30.0 }
+            local keep = BR.Config.Match.lobbyPos
+            BR.Config.Match.lobbyPos = nil
+            -- Restored the moment the chunk has read it; the gate reads it every
+            -- poll, so this really does exercise the absent case.
+            BR.Spawn = nil
+            world.restore = function() BR.Config.Match.lobbyPos = keep end
+        end)
+
+        pump(3000)
+        ok(shut.screen == 1 and BR.State.worldReady == true,
+           'no locker, no config and no spawn module still reaches the lobby',
+           ('shutdowns=%d worldReady=%s'):format(
+               shut.screen, tostring(BR.State.worldReady)))
+        world.restore()
+    end
+
+    -- ====================================================================== --
+    -- The scar: a native declared BOOL that answers with a NUMBER
+    -- ====================================================================== --
+
+    describe('DoesEntityExist is read in both shapes, and 0 is not "yes"')
+    do
+        -- 0 IS TRUTHY IN LUA. `if not DoesEntityExist(ped) then` reads a build
+        -- that answers 0/1 as "the ped is there" on every single frame, which
+        -- turns this gate into a no-op on exactly the machines it is meant to
+        -- help. spawn.lua's /brblack footer already carries `== true or == 1`
+        -- for this reason, and keybinds.lua carries the same scar from the raw
+        -- key sample -- this is the third place it can bite.
+        for _, shape in ipairs({
+            { name = 'boolean false', absent = false },
+            { name = 'number 0',      absent = 0 },
+            { name = 'nil',           absent = nil },
+        }) do
+            join(function() world.pedExists = shape.absent end)
+
+            pump(4000)
+            ok(shut.screen == 0,
+               ('a ped reported absent as %s is not revealed'):format(shape.name),
+               ('shutdowns=%d'):format(shut.screen))
+
+            world.pedExists = (shape.absent == 0) and 1 or true
+            pump(1500)
+            ok(shut.screen == 1,
+               ('and it reveals when the same native says present -- %s')
+                   :format(shape.name),
+               ('shutdowns=%d'):format(shut.screen))
+        end
+    end
+
+    -- ------------------------------------------------------------ teardown ---
+
+    Citizen         = prev.Citizen
+    DoesEntityExist = prev.DoesEntityExist
+    GetEntityCoords = prev.GetEntityCoords
+    GetHashKey      = prev.GetHashKey
+    GetEntityModel  = prev.GetEntityModel
 end
 
 -- ------------------------------------------------------------------ report ---

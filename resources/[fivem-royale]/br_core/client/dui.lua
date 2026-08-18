@@ -136,7 +136,21 @@ end
 function BR.Dui.ready(page)
     if not page or not page.dui then return false end
     if page.ready then return true end
-    page.ready = IsDuiAvailable(page.dui)
+    -- A NATIVE'S ANSWER IS NOT A LUA BOOLEAN (3b42f0e, #129/#131's seventh
+    -- round). A FiveM native declared BOOL may hand Lua `true`, `1`, `false`,
+    -- `nil` -- or `0`, and IN LUA THE NUMBER 0 IS TRUTHY. Stored verbatim, a
+    -- `0` from a browser that is NOT up latches this page as ready forever on
+    -- the first poll: the scale push below is fired at a CEF instance that
+    -- cannot receive it, every draw puts a blank texture on the screen, and the
+    -- caller's fallback -- the whole reason bus.lua and skydive.lua ask this
+    -- question -- never runs, so nothing anywhere says the browser is missing.
+    --
+    -- Which is why this is an explicit three-way test and NOT `v and true or
+    -- false`: that one-liner maps 0 to true and is the worse bug, verbatim the
+    -- one 3b42f0e rejected. All four shapes the runtime is known to produce are
+    -- covered without this file having to know which one this build uses.
+    local up = IsDuiAvailable(page.dui)
+    page.ready = (up ~= nil and up ~= false and up ~= 0)
     -- THE ONE MOMENT A MESSAGE TO THIS PAGE IS GUARANTEED TO LAND, and so the
     -- one place the scale can be handed to a NEW browser. A DUI is a whole CEF
     -- instance and messages sent before it has finished starting are dropped
