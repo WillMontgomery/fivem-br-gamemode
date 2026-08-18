@@ -633,6 +633,112 @@ for _, n in ipairs({
     'SetPlayerCanDoDriveBy', 'SetPlayerMaxArmour', 'SetWeaponsNoAutoswap',
 }) do _G[n] = noop end
 
+-- ------------------------------------------------------------- pma-voice ---
+--
+-- THE VOICE RESOURCE, MODELLED FROM ITS SOURCE RATHER THAN FROM ITS README.
+--
+-- br_core no longer calls a single Mumble native. It hands its rules to
+-- pma-voice through that resource's exports, so THIS is now the surface the
+-- voice tests have to model, and modelling it wrong is exactly how the previous
+-- three rounds of voice shipped green. Everything below is taken from
+-- pma-voice v7 source, with the file it came from named, so the next person can
+-- check it in ten seconds instead of trusting this comment:
+--
+--   client/init/proximity.lua   addNearbyPlayers() runs every
+--                               `voice_refreshRate` ms (200 default). It clears
+--                               the target's CHANNELS, then walks the streamed
+--                               player list calling addProximityCheck(ply) --
+--                               ours, once we override it -- and adds the
+--                               channel of everyone it returns true for.
+--                               exports: overrideProximityCheck,
+--                               resetProximityCheck, setVoiceState.
+--   client/commands.lua         exports overrideProximityRange(range, noCycle),
+--                               which calls MumbleSetTalkerProximity.
+--   client/module/radio.lua     exports setRadioChannel(n); 0 leaves. The radio
+--                               lives in the target's PLAYERS, which the
+--                               proximity loop never touches -- that separation
+--                               is what makes the bus rule possible and it is
+--                               modelled as two separate fields below.
+--   client/init/main.lua        exports getMutedPlayers, toggleMutePlayer,
+--                               setVoiceProperty.
+--
+-- THE ONE PROPERTY WORTH STATING OUT LOUD, because every previous version of
+-- this suite got the direction wrong: PROXIMITY IS DECIDED BY THE SPEAKER. What
+-- a client computes is who IT will send to. Nothing a listener does can make an
+-- out-of-range speaker audible, and -- this is the half that matters -- nothing
+-- a listener does to its own transmit path can make itself deaf. hears() below
+-- is written so that a fix which gags a microphone cannot accidentally pass a
+-- test about ears.
+local pma = {}
+local function pmaReset()
+    pma = {
+        running = true,
+        check   = nil,   -- the proximity check br_core installed, if any
+        range   = nil,   -- overrideProximityRange, in metres
+        noCycle = nil,   -- whether it also disabled the F11 cycle
+        radio   = nil,   -- channel br_core asked to join; 0 = none, nil = never asked
+        muted   = {},    -- [serverId] = true, pma-voice's own mutedPlayers
+        sends   = {},    -- [serverId] = true; who our proximity reached last tick
+        calls   = {},    -- every export call, in order, for "was it even asked"
+    }
+end
+pmaReset()
+
+local function pmaLog(name) pma.calls[#pma.calls + 1] = name end
+
+--- pma-voice's export surface. Called as exports['pma-voice']:name(...), so
+--- every function takes the table itself as its first argument.
+local pmaAPI = {
+    overrideProximityCheck = function(_, fn)
+        pmaLog('overrideProximityCheck')
+        pma.check = fn
+    end,
+    resetProximityCheck = function(_) pma.check = nil end,
+    overrideProximityRange = function(_, range, noCycle)
+        pmaLog('overrideProximityRange')
+        pma.range, pma.noCycle = range, noCycle and true or false
+    end,
+    setRadioChannel = function(_, ch)
+        pmaLog('setRadioChannel')
+        pma.radio = ch
+    end,
+    getMutedPlayers = function(_)
+        pmaLog('getMutedPlayers')
+        local out = {}
+        for src in pairs(pma.muted) do out[src] = true end
+        return out
+    end,
+    -- A TOGGLE, not a setter -- which is what pma-voice actually exposes, and
+    -- the reason br_core reads getMutedPlayers before deciding. A model with a
+    -- setter here would hide a double-toggle bug completely.
+    toggleMutePlayer = function(_, src)
+        pmaLog('toggleMutePlayer')
+        if pma.muted[src] then pma.muted[src] = nil else pma.muted[src] = true end
+    end,
+}
+
+--- THE RESOURCE BEING ABSENT IS A FIRST-CLASS STATE, not an error case. br_core
+--- has to boot and keep running with no voice resource installed at all, and
+--- that is asserted rather than assumed.
+function GetResourceState(name)
+    if name == 'pma-voice' then
+        return pma.running and 'started' or 'missing'
+    end
+    return 'started'
+end
+
+exports = setmetatable({}, {
+    __index = function(_, res)
+        -- An export table for a resource that is not running is the shape
+        -- FiveM gives you: indexing works, calling raises. br_core guards with
+        -- GetResourceState first and pcalls anyway; both halves are exercised.
+        if res == 'pma-voice' and pma.running then return pmaAPI end
+        return setmetatable({}, { __index = function()
+            return function() error('resource ' .. tostring(res) .. ' is not running', 0) end
+        end })
+    end,
+})
+
 -- ---------------------------------------------------------------- modules ---
 
 local ROOT = 'resources/[fivem-royale]/'
@@ -1821,71 +1927,43 @@ end
 
 -- ------------------------------------------------------------------- voice ---
 --
--- WHY VOICE IS TESTED FROM THE CLIENT SIDE AT ALL.
+-- WHAT THESE TESTS CAN AND CANNOT PROVE, FIRST, BECAUSE SIX ROUNDS OF THIS
+-- ISSUE SHIPPED GREEN.
 --
--- tools/test_roster.lua has swept the channel arithmetic since the day voice
--- shipped -- 64 matches by 16 squads, no collisions, nothing in channel 0 --
--- and every one of those assertions was passing on the build where two solo
--- players stood next to each other in silence (#150). The arithmetic was never
--- the problem. What the server computes is only half a voice system; the other
--- half is what the client does with it, and until this section nothing tested
--- that half at all.
+-- br_core no longer produces audio. pma-voice does. So nothing here can prove
+-- that two players hear each other -- it never could, and pretending otherwise
+-- is what let 31 green voice assertions sit on top of a total outage (#150).
+--
+-- WHAT IS PROVABLE IS THE PART WE STILL OWN, and it is the part that was
+-- actually wrong every time: WHICH RULES WE HAND pma-voice. Every mode maps to
+-- a proximity answer and a radio channel; the bus rule is a branch in a pure
+-- function; the squad radio number is the server's. Those are decisions, they
+-- are ours, and they are testable to the same standard as combat_solve.
+--
+-- THE MODEL IS pma-voice'S DOCUMENTED SURFACE, read out of its source -- see
+-- the pmaAPI block near the top of this file for the file-by-file citation.
+-- The one thing this suite deliberately refuses to model is anything about how
+-- Mumble mixes audio, because that is precisely the class of assumption that
+-- has cost this project four playtests: every previous round wrote a stub that
+-- agreed with the code, and the stub and the code were wrong together.
 
---- Apply one server assignment to a FRESH engine, and freeze the result.
----
---- The settings event first, because that is the real order: br_ui pushes the
---- stored preference on br:ui:ready and the server pushes channels on every
---- state change. Whichever lands second re-applies.
---- @param mode string   'squad' | 'nearby' | 'off'
---- @param prox integer|nil
---- @param mates table|nil  squadmate server ids, as the server sends them
---- @param me integer|nil   this machine's own server id
---- @return table snapshot
---- The Mumble server answering, and the client noticing.
----
---- One turn is one round trip: everything asked for comes into existence, a
---- pending join completes, and the 10Hz band gets a step so voice.lua can
---- state the routing it deliberately withheld while the room was still on its
---- way. Both halves matter -- a client that states its routing once, in the
---- frame it was told the numbers, states it into a void and never finds out.
---- @param turns integer|nil  round trips to let pass; three by default
-local function mumbleSettle(turns)
-    for _ = 1, turns or 3 do
-        for ch in pairs(mumble.pending) do mumble.channels[ch] = true end
-        mumble.pending = {}
-        if mumble.want then
-            if mumble.channels[mumble.want] then
-                mumble.channel = mumble.want
-            else
-                -- The implicit create: asking to join a room that does not
-                -- exist is what brings it into being, one round trip later.
-                mumble.pending[mumble.want] = true
-            end
-        end
-        BR.Loop.step(BR.Loop.TICK)
-    end
-end
-
-local VR = BR.Config.Match.voice.range
-
---- Where this machine's own player is standing. Squad range is decided from
---- the squad position push against this, so a test that wants to separate two
---- squadmates moves one of them here and pushes the other's coordinates.
+--- Where this machine's own player is standing.
 local function standAt(x, y)
     pedPos = { x = x + 0.0, y = y + 0.0, z = 30.0 }
 end
 
---- Everybody ELSE in the match: on the roster, and where they are standing.
+--- Everybody ELSE, on the roster and in the world.
 ---
---- TWO SEPARATE FACTS AND THE TESTS NEED BOTH. The roster is a server broadcast
---- and carries every connected player; the ped is the game's, and only exists
---- while they are in scope. A player can be on the first list and not the
---- second, and that combination -- known, connected, unplaceable -- is what a
---- player on the far side of the map looks like to this client. It has to
---- resolve to "cannot hear them", so it is spelled here rather than assumed.
+--- TWO SEPARATE FACTS AND THE TESTS NEED BOTH, and the reason has inverted
+--- since the last round. The roster is a server broadcast and carries every
+--- connected player; the ped only exists while they are in scope. That
+--- combination -- known, connected, unplaceable -- used to be the case that
+--- deafened a match. Under pma-voice it is the ordinary case for almost
+--- everybody in a 48-player match, and it must resolve to "I do not transmit to
+--- them", which costs nothing and is what proximity means.
 ---
---- @param list table  [serverId] = { x =, y = } to place them in the world,
----                    or `false` for on-the-roster-but-out-of-scope
+--- @param list table  [serverId] = { x =, y = } for a player in scope,
+---                    or `false` for on-the-roster-but-not-streamed
 local function playersAt(list)
     others = {}
     BR.State.roster = { [BR.State.me.src] = { name = 'me' } }
@@ -1893,24 +1971,130 @@ local function playersAt(list)
         BR.State.roster[src] = { name = 'p' .. tostring(src) }
         if p then others[src] = { x = p.x + 0.0, y = p.y + 0.0 } end
     end
-    -- The 10Hz band is where voice re-decides who it can hear, so this is the
-    -- world changing and the client noticing, in the order it really happens.
-    BR.Loop.step(BR.Loop.TICK)
 end
 
---- Nobody else in the world at all. The state every block that predates the
---- receive-side gate ran in, and the reset the ones after it need so a roster
---- does not leak from one block into the next.
 local function nobodyElse()
     others = {}
     BR.State.roster = {}
 end
 
---- Who the "Currently Talking" indicator is naming right now.
+--- ONE pma-voice PROXIMITY TICK, which is the only thing that ever consults
+--- our rules.
 ---
---- Read out of the NUI push rather than off BR.Voice.talking, because the
---- indicator is what the owner is looking at and the push is what reaches it.
---- @return table array of names
+--- This is addNearbyPlayers() from client/init/proximity.lua: clear the
+--- channels, then ask the proximity check about every player in the streamed
+--- list and keep the ones it says yes to. Two details are load-bearing:
+---
+---   IT CLEARS FIRST. So a tick on which the check refuses everybody leaves an
+---   EMPTY transmit set -- that is the gag, and it is why the gag needs no
+---   teardown of its own.
+---   IT ONLY OFFERS PLAYERS IN SCOPE. `others` is the streamed list, so a
+---   player on the roster with no ped is never even asked about.
+local function pmaTick()
+    pma.sends = {}
+    if not pma.check then return end
+    -- The 100 ms position cache in voice.lua is keyed on the game timer, so a
+    -- tick that does not advance it would re-use the previous tick's
+    -- coordinates -- which is exactly the bug the cache could have introduced
+    -- and is worth stepping past rather than around.
+    fakeTime = fakeTime + 200
+    for src in pairs(others) do
+        if src ~= BR.State.me.src then
+            local add = pma.check(src)
+            if add then pma.sends[src] = true end
+        end
+    end
+end
+
+--- Everything about one machine's voice rules, frozen.
+local function pmaSnapshot()
+    local sends, muted = {}, {}
+    for src in pairs(pma.sends) do sends[src] = true end
+    for src in pairs(pma.muted) do muted[src] = true end
+    return { src = BR.State.me.src, sends = sends, muted = muted,
+             radio = pma.radio, range = pma.range, noCycle = pma.noCycle,
+             running = pma.running, calls = table.concat(pma.calls, ' ') }
+end
+
+--- CAN `speaker` BE HEARD BY `listener`?
+---
+--- THE DIRECTIONALITY IS THE WHOLE MODEL. Proximity is a fact about the
+--- SPEAKER's transmit set, full stop -- if they did not send to us, no amount
+--- of listening helps, and if they did, nothing on our side is filtering it.
+--- The only listener-side lever in pma-voice is the per-player mute, which is
+--- the one thing 'off' is allowed to use.
+---
+--- Note what is deliberately NOT here: any notion of the LISTENER's own
+--- proximity check. A previous round's model asked the listener about its own
+--- microphone state and so let a bug that gagged a player also "prove" they
+--- were deaf, which is how the bus gag passed while it was silencing a match.
+local function hears(speaker, listener)
+    if listener.muted[speaker.src] then return false end
+    if speaker.sends[listener.src] then return true end
+    -- The squad radio: a channel, ignoring distance entirely. Both ends have to
+    -- actually be on it -- being ASSIGNED one is not being on one.
+    if speaker.radio and speaker.radio ~= 0
+        and speaker.radio == listener.radio then return true end
+    return false
+end
+
+local VR = BR.Config.Match.voice.range
+
+--- Bring one machine up from nothing: a fresh pma-voice, a mode, and a server
+--- assignment. Returns the frozen rules.
+---
+--- @param mode  string 'squad' | 'nearby' | 'off'
+--- @param radio integer|nil  the squad radio the server assigned
+--- @param mates table|nil
+--- @param me    integer|nil  this machine's own server id
+--- @param state string|nil   this player's match state; BUS is the bus rule
+local function voiceApply(mode, radio, mates, me, state)
+    BR.State.me.src = me or 1
+    BR.State.me.state = state or BR.PlayerState.ALIVE
+    pmaReset()
+    -- A FRESH RESOURCE MEANS A FRESH VIEW OF IT. br_core diffs the radio
+    -- channel it has asked for, so leaving its bookkeeping populated across the
+    -- reset would have it skip the join as already-done and assert against a
+    -- resource nobody ever spoke to. The real game reaches this state when
+    -- pma-voice restarts, which is why the handler there clears exactly these.
+    BR.Voice.state.joined = nil
+    BR.Voice.state.muted = {}
+    BR.Voice._warned = {}
+    -- Force the preference through, even when it matches the last test's:
+    -- br:settings:changed early-returns on an unchanged mode, which is correct
+    -- in the game and would silently skip the setup here.
+    BR.Voice.pref.mode = nil
+    -- br_core starting is what installs the rules into pma-voice.
+    fire('onClientResourceStart', 'br_core')
+    fire('br:settings:changed', { voiceMode = mode })
+    fire(BR.Net.VOICE_SET, { radio = radio, mates = mates,
+                             nearbyRange = VR.nearby })
+    BR.Loop.step(BR.Loop.TICK)
+    pmaTick()
+    return pmaSnapshot()
+end
+
+--- Change the preference on a machine that already has an assignment -- the
+--- settings screen, mid-match -- and let one pma-voice tick pass.
+local function voiceMode(mode)
+    fire('br:settings:changed', { voiceMode = mode })
+    BR.Loop.step(BR.Loop.TICK)
+    pmaTick()
+    return pmaSnapshot()
+end
+
+--- Move this player between match states without touching anything else. The
+--- bus rule lives and dies on this being the ONLY thing that changed.
+local function beState(st)
+    BR.State.me.state = st
+    BR.Loop.step(BR.Loop.TICK)
+    pmaTick()
+    return pmaSnapshot()
+end
+
+--- Who the "Currently Talking" indicator is naming right now, read out of the
+--- NUI push rather than off BR.Voice.talking -- the push is what reaches the
+--- screen the owner is looking at.
 local function talkingNames()
     local out = {}
     for i = #events, 1, -1 do
@@ -1925,986 +2109,485 @@ local function talkingNames()
     return out
 end
 
---- The 1Hz squad position push, which is where voice learns how far away a
---- squadmate is. Coordinates only -- membership comes from VOICE_SET, because
---- this push stops entirely while a squad is on the bus and a squad that could
---- not talk on the drop would be a worse bug than the one being fixed.
---- @param list table  { { src = n, x = n, y = n }, ... }
-local function squadAt(list)
-    fire(BR.Net.SQUAD_POS, list)
-end
-
-local function voiceApply(mode, prox, mates, me)
-    BR.State.me.src = me or 1
-    mumbleReset()
-    -- A FRESH ENGINE MEANS A FRESH VIEW OF IT. mumbleReset() is a Mumble client
-    -- that has never been told anything, and voice.lua only sends the volume
-    -- overrides that DIFFER from what it believes is already set -- so leaving
-    -- its bookkeeping populated across the reset would have it skip every call
-    -- as already-done and assert against an engine nobody ever spoke to. The
-    -- real game reaches the same state on a Mumble reconnect, which is why
-    -- voice.watch clears exactly these three; see the block there. (There was a
-    -- fourth, `mic`, cleared here for the same reason -- it is gone with the bus
-    -- gag that introduced it. Nothing outside apply() states the microphone
-    -- switch any more, so nothing outside apply() caches it.)
-    BR.Voice.state.over = {}
-    BR.Voice.state.heard = {}
-    BR.Voice.state.audible = {}
-    fire('br:settings:changed', { voiceMode = mode })
-    -- THE SERVER MAKES THE ROOM FIRST. This is br_core/server/voice.lua's
-    -- makeChannel(), in the order it really happens. ONE room now: the squad
-    -- room is gone (#157), so there is no longer a second room on a second
-    -- clock for a listen to be stated against too early.
-    serverCreates(prox)
-    fire(BR.Net.VOICE_SET, { prox = prox, mates = mates,
-                             nearbyRange = VR.nearby, squadRange = VR.squad })
-    -- AND THEN A MOMENT PASSES, because it has to. See mumbleSettle.
-    mumbleSettle()
-    return mumbleSnapshot()
-end
-
---- Change the preference on a machine that already has an assignment, without
---- touching the engine model -- the settings screen mid-match.
-local function voiceMode(mode)
-    fire('br:settings:changed', { voiceMode = mode })
-    -- A PREFERENCE CHANGE COSTS A BEAT TOO. Applying one clears the room and
-    -- re-joins it, and re-joining is a round trip like any other -- so the
-    -- transmit path is withheld across it exactly as it is on a fresh
-    -- assignment. That is a real half-second of silence when a player flips
-    -- the setting mid-match, and it is the correct trade: the alternative is
-    -- re-stating a target against a room the engine has not confirmed, which
-    -- is the bug.
-    mumbleSettle()
-    return mumbleSnapshot()
-end
-
-describe('a room has to exist before anything can use it -- #150')
+describe('br_core hands its rules to pma-voice, and calls no Mumble native')
 do
-    -- THE ASSERTIONS THAT WOULD HAVE CAUGHT THIS, and did not exist.
-    --
-    -- Every other voice test in this file used to run against a model in which
-    -- naming a room was the same as there being one, which is why they were
-    -- all green while two players stood next to each other in silence. These
-    -- are the three facts that separate naming a room from having one.
-    local PROX = 2041
-
-    -- 1. THE ROUTING IS WITHHELD UNTIL THE ROOM IS REAL.
-    --
-    --    This is the assignment arriving and the client acting on it, with no
-    --    time allowed to pass -- which is exactly what the shipped build did,
-    --    all of it in one frame. The engine has not joined the room yet, so
-    --    the voice target must not be filled: every channel handed to
-    --    MumbleAddVoiceTargetChannel here would be discarded in silence and
-    --    never retried, leaving the microphone wired to nothing.
-    BR.State.me.src = 1
-    mumbleReset()
-    fire('br:settings:changed', { voiceMode = 'squad' })
-    serverCreates(PROX)
-    fire(BR.Net.VOICE_SET, { prox = PROX, mates = { 2 },
-                             nearbyRange = VR.nearby, squadRange = VR.squad })
-
-    local early = mumbleSnapshot()
-    ok(early.channel ~= PROX,
-        'the room is not joined in the frame it was asked for',
-        tostring(early.channel))
-    ok(#early.sends == 0,
-        'so nothing is transmitted into it yet -- and nothing is thrown away',
-        ('sends=%d'):format(#early.sends))
-    ok(early.refused == '',
-        'and the engine is asked to resolve nothing it cannot', early.refused)
-
-    -- 2. AND THEN IT IS STATED, WITHOUT A NEW ASSIGNMENT TO PROMPT IT. The
-    --    room turns up about half a second later and something has to notice.
-    --    Nothing did before this fix: the client spoke once, into a void.
-    mumbleSettle()
-    local settled = mumbleSnapshot()
-    ok(settled.channel == PROX,
-        'once the room exists the player is in it', tostring(settled.channel))
-    ok(#settled.sends == 1 and settled.sends[1] == PROX,
-        'and the transmit path is stated then, not before',
-        ('sends=%d refused=%s'):format(#settled.sends, settled.refused))
-
-    local other = voiceApply('squad', PROX, { 1 }, 2)
-    ok(hears(settled, other) and hears(other, settled),
-        'so two players in a room that exists can hear each other')
-
-    -- 3. AND NO ROOM IS NAMED THAT NOBODY MADE -- because there is only one
-    --    room left to name (#157).
-    --
-    --    This block used to assert the opposite: that a squad room the server
-    --    forgot to create produced the exact console line the owner pasted
-    --    into #150. It kept producing it, and the owner could never say when,
-    --    because it was a race -- the client waited for the PROXIMITY room and
-    --    then immediately named the SQUAD room, a different room on a
-    --    different clock, without ever asking whether that one had arrived.
-    --    Squad voice no longer uses a room, so the refusal has no way to
-    --    happen and this asserts it never does.
-    ok(settled.refused == '' and other.refused == '',
-        'nothing is refused by the engine, in either mode',
-        settled.refused .. ' ' .. other.refused)
-    ok(next(settled.listen) == nil and next(other.listen) == nil,
-        'and no channel listen is stated at all, which is what made the '
-        .. 'warning possible')
-end
-
-describe('solo proximity voice -- #150')
-do
-    -- Two players, one solo match, standing together. Both get the same
-    -- proximity room and no squad room, which is exactly the payload
-    -- tools/test_roster.lua asserts the server sends a solo.
-    local PROX = 2003
-
-    -- 'nearby' IS THE SHIPPED DEFAULT (br_ui/client/settings.lua), so this is
-    -- the configuration every player is in until they open the settings screen
-    -- and change it -- and it is the mode the owner named in the report.
-    local a = voiceApply('nearby', PROX, nil, 1)
-    local b = voiceApply('nearby', PROX, nil, 2)
-
-    ok(a.channel == PROX, 'a solo player is put in their match room',
-        tostring(a.channel))
-    ok(#a.sends > 0,
-        'AND is given somewhere to send audio -- the whole of #150',
-        ('sends=%d selected=%s'):format(#a.sends, tostring(a.selected)))
-    ok(a.sends[1] == PROX, 'and that somewhere is the match room',
-        tostring(a.sends[1]))
-    ok(hears(a, b) and hears(b, a),
-        'so two solos in one match, standing together, can hear each other')
-    ok(a.prox == VR.nearby, 'with the talker proximity the server sent',
-        tostring(a.prox))
-
-    -- The other half of the solo case: a player whose preference is 'squad'
-    -- but who has no squad. Before the fix this was silent too -- the branch
-    -- that set the target needed a squad channel to exist.
-    local c = voiceApply('squad', PROX, nil, 3)
-    ok(#c.sends > 0 and c.sends[1] == PROX,
-        'a solo who prefers squad voice still reaches the match room',
-        ('sends=%d'):format(#c.sends))
-    ok(hears(c, a), 'and is audible to a solo on the default preference')
-    ok(#c.people == 0,
-        'and opens a radio to nobody -- a solo has no squadmates to name',
-        ('people=%d'):format(#c.people))
-end
-
-describe('squad voice is a radio, not a room -- #157')
-do
-    -- THE TRADE THIS FIX MUST NOT MAKE. Repairing proximity by capping squads
-    -- at 25 m would be a worse bug than the one being fixed -- "squad voice
-    -- cutting out at 25 m is not squad voice" -- so the squad case is asserted
-    -- in the same breath, at a range that would fail under a naive cap.
-    local PROX = 2007
-    local FAR = 400.0
-
-    standAt(0, 0)
-    local a1 = voiceApply('squad', PROX, { 2 }, 1)
-    squadAt({ { src = 1, x = 0, y = 0 }, { src = 2, x = FAR, y = 0 } })
-    a1 = mumbleSnapshot()
-
-    standAt(FAR, 0)
-    local a2 = voiceApply('squad', PROX, { 1 }, 2)
-    squadAt({ { src = 1, x = 0, y = 0 }, { src = 2, x = FAR, y = 0 } })
-    a2 = mumbleSnapshot()
-
-    -- A rival squad in the same match, standing next to the first player. Two
-    -- snapshots of the same machine, because the rival's cutoff is decided on
-    -- HIS machine from where player 1 is actually standing -- so "next to" and
-    -- "walked away" are two different worlds, not two arguments to hears().
-    standAt(0, 0)
-    local b1 = voiceApply('squad', PROX, { 4 }, 3)
-    playersAt({ [1] = { x = 5.0, y = 0 }, [4] = false })
-    local b1near = mumbleSnapshot()
-    playersAt({ [1] = { x = FAR, y = 0 }, [4] = false })
-    local b1far = mumbleSnapshot()
     nobodyElse()
+    standAt(0, 0)
+    local a = voiceApply('nearby', nil, nil, 1)
 
-    ok(a1.channel == PROX, 'a squad player is still in the match room')
-    ok(#a1.sends == 1 and a1.sends[1] == PROX,
-        'and still sends into it', ('sends=%d'):format(#a1.sends))
-    ok(#a1.people == 1 and a1.people[1] == 2,
-        'and additionally straight to their squadmate, by server id',
-        ('people=%d'):format(#a1.people))
-    ok(a1.volume[2] ~= nil,
-        'with that squadmate exempted from the distance cutoff -- the only '
-        .. 'mechanism that can outreach proximity')
-    ok(a1.volume[3] == nil and a1.volume[4] == nil,
-        'and nobody else exempted')
+    -- 1. THE RULES ARE INSTALLED AT ALL. Everything else in this section is
+    --    downstream of this one call: if the override is not registered,
+    --    pma-voice quietly uses its own 7-metre roleplay default and every
+    --    assertion below would be testing a function nobody ever calls.
+    ok(a.calls:find('overrideProximityCheck') ~= nil,
+        'the proximity check is handed to pma-voice on start', a.calls)
 
-    ok(hears(a1, a2, FAR) and hears(a2, a1, FAR),
-        ('so squadmates %dm apart still hear each other'):format(FAR))
-    ok(hears(a1, b1near, 5.0),
-        'while a rival squad standing next to them hears them as proximity')
-    -- AND THE RIVAL WALKED AWAY STILL HEARS THEM, which is the capability this
-    -- round gives up and is asserted so that nobody gives it BACK by accident.
-    -- It used to say `not hears`, and buying that word cost the owner his squad.
-    ok(hears(a1, b1far, FAR),
-        'and the same rival, walked away, still does -- there is no cutoff')
-    ok(b1far.volume[1] == nil,
-        'because walking away writes no mute at all', tostring(b1far.volume[1]))
-    ok(#b1.people == 1 and b1.people[1] == 4,
-        'each squad having a radio only to its own', ('%d'):format(#b1.people))
+    -- 2. AND SO IS OUR RANGE, with the cycle key disabled. pma-voice ships
+    --    three cycleable ranges and an F11 binding; this gamemode has one
+    --    range and a player who found that key could otherwise put themselves
+    --    on a range the gamemode never sanctioned.
+    ok(a.range == VR.nearby,
+        'our configured range is the one in force, not pma-voice\'s default',
+        tostring(a.range))
+    ok(a.noCycle == true,
+        'and the proximity cycle key is disabled', tostring(a.noCycle))
+
+    -- 3. THE NEGATIVE THAT THE WHOLE CHANGE RESTS ON.
+    --
+    --    pma-voice's README asks other resources not to touch
+    --    NetworkSetTalkerProximity, MumbleSetTalkerProximity,
+    --    MumbleSetAudioInputDistance, MumbleSetAudioOutputDistance or
+    --    NetworkSetVoiceActive, "as there have been cases where it breaks
+    --    pma-voice" -- and every one of those is a native some round of this
+    --    file reached for. Two of them are what made 'nearby' silent.
+    --
+    --    This is asserted rather than left as a comment because it is the
+    --    single easiest thing for a later round to undo in good faith, while
+    --    "fixing" something else.
+    ok(mumble.inDist == nil and mumble.outDist == nil,
+        'the engine distance natives are never called', 'someone armed a cutoff')
+    ok(mumble.prox == nil,
+        'and neither is the GTA talker proximity -- pma-voice owns that now',
+        tostring(mumble.prox))
+    ok(mumble.gameVoice == true,
+        'and NETWORK_SET_VOICE_ACTIVE is left exactly as pma-voice left it',
+        tostring(mumble.gameVoice))
+    ok(mumble.active == true and mumble.channel == 0,
+        'and MUMBLE_SET_ACTIVE is never touched -- it is a disconnect, not a mic',
+        ('active=%s channel=%s'):format(tostring(mumble.active),
+                                        tostring(mumble.channel)))
+end
+
+describe('nearby is proximity WITH a range -- the capability #157 gave up')
+do
+    -- THE REGRESSION THIS WHOLE CHANGE EXISTS TO UNDO. The shipped build had no
+    -- proximity cutoff at all: "even when set to nearby (while in squads or
+    -- solos), the channel is global." Somebody 800 m away was as audible as
+    -- somebody standing next to you.
+    standAt(0, 0)
+    playersAt({ [2] = { x = 5, y = 0 },                  -- close
+                [3] = { x = VR.nearby + 25, y = 0 },     -- far, but streamed
+                [4] = false })                           -- on the roster, not streamed
+    local me = voiceApply('nearby', nil, nil, 1)
+
+    ok(me.sends[2] == true,
+        'a player inside the range is transmitted to')
+    ok(me.sends[3] == nil,
+        'and one outside it is NOT -- this is the line that was missing',
+        'a player past the cutoff is still being sent audio')
+    ok(me.sends[4] == nil,
+        'and one the game never streamed is not invented into range')
+
+    -- THE EDGE, from both sides, because "25 m" has to mean something exact.
+    playersAt({ [2] = { x = VR.nearby - 0.5, y = 0 } })
+    pmaTick()
+    ok(pma.sends[2] == true, 'just inside the range is inside it')
+    playersAt({ [2] = { x = VR.nearby + 0.5, y = 0 } })
+    pmaTick()
+    ok(pma.sends[2] == nil, 'just outside it is outside it')
+
+    -- AND IT IS RE-DECIDED AS PEOPLE WALK, which is the difference between a
+    -- range and a one-off assignment. The old design stated its routing once,
+    -- after the room was confirmed, and had no way to express this at all.
+    playersAt({ [2] = { x = 3, y = 0 } })
+    pmaTick()
+    local near = pma.sends[2]
+    playersAt({ [2] = { x = 400, y = 0 } })
+    pmaTick()
+    ok(near == true and pma.sends[2] == nil,
+        'walking out of range takes the audio with it, with no event to prompt it')
+end
+
+describe('squad voice is a radio and works at ANY distance')
+do
+    -- THE ONE THING THAT HAS EVER WORKED AND MUST NOT REGRESS. Two squadmates,
+    -- a kilometre apart, neither streamed to the other -- which is the ordinary
+    -- state of a squad in a battle royale and the exact case a proximity system
+    -- cannot serve.
+    local RADIO = 30503
+
+    BR.State.me.src = 1
+    nobodyElse()
+    standAt(0, 0)
+    local a = voiceApply('squad', RADIO, { 2 }, 1)
+
+    BR.State.me.src = 2
+    nobodyElse()
+    standAt(1000, 1000)
+    local b = voiceApply('squad', RADIO, { 1 }, 2)
+
+    ok(a.radio == RADIO and b.radio == RADIO,
+        'both squadmates joined the radio channel the server assigned',
+        ('a=%s b=%s'):format(tostring(a.radio), tostring(b.radio)))
+    ok(hears(a, b) and hears(b, a),
+        'and they hear each other a kilometre apart, out of scope, both ways')
+
+    -- AND IT IS NOT PROXIMITY DOING IT, which is the assertion that stops a
+    -- future round "simplifying" the radio away. Neither machine has the other
+    -- in its transmit set at all.
+    ok(a.sends[2] == nil and b.sends[1] == nil,
+        'proximity is not what carried it -- the radio is genuinely separate')
+
+    -- A SOLO GETS NO RADIO, and asks for none.
+    nobodyElse()
+    local solo = voiceApply('squad', nil, nil, 3)
+    ok(solo.radio == 0,
+        'a solo who prefers squad voice asks for no channel at all',
+        tostring(solo.radio))
+end
+
+describe('nearby declines the squad radio, and off declines everything')
+do
+    local RADIO = 30503
+    nobodyElse()
+    standAt(0, 0)
+
+    local sq = voiceApply('squad', RADIO, { 2 }, 1)
+    ok(sq.radio == RADIO, 'squad joins the assigned channel')
+
+    -- THE PREFERENCE CAN ONLY DECLINE. The server assigns the same channel
+    -- whatever the player picked -- it does not know and must not care -- so
+    -- 'nearby' has to be what leaves it.
+    local nb = voiceMode('nearby')
+    ok(nb.radio == 0,
+        'switching to nearby LEAVES the squad radio', tostring(nb.radio))
+
+    local off = voiceMode('off')
+    ok(off.radio == 0, 'and off is not on it either', tostring(off.radio))
+
+    -- AND BACK. A preference is not a one-way door, and the previous design's
+    -- overrides outlived the setting that created them: "a player who switched
+    -- from 'squad' to 'nearby' kept hearing their old squad at any range."
+    local back = voiceMode('squad')
+    ok(back.radio == RADIO,
+        'and going back re-joins it', tostring(back.radio))
+end
+
+describe('OFF means not transmitting AND not listening')
+do
+    -- Owner, on the version that only did the first half: "'off' does not work
+    -- -- it still leaves a player in what seems to be global... 'you are not
+    -- transmitting' should also mean 'you are not listening', but alas both are
+    -- false."
+    standAt(0, 0)
+    playersAt({ [2] = { x = 2, y = 0 }, [3] = { x = 4, y = 0 } })
+    local me = voiceApply('off', 30503, { 2 }, 1)
+
+    ok(next(me.sends) == nil,
+        'off transmits to nobody, however close they are standing')
+    ok(me.radio == 0, 'and holds no radio')
+
+    -- THE HALF THAT WAS NEVER BUILT. Muting is the only listener-side lever
+    -- pma-voice has, and it is used here and nowhere else in the whole file.
+    ok(me.muted[2] == true and me.muted[3] == true,
+        'and everybody on the roster is muted -- which is what "not listening" is')
+
+    -- INCLUDING SQUADMATES, whose radio would otherwise outlive the setting
+    -- exactly as it used to.
+    local speaker = { src = 2, sends = { [1] = true }, muted = {}, radio = 30503 }
+    ok(not hears(speaker, me),
+        'a squadmate on the radio cannot be heard through off either')
+end
+
+describe('OFF LIFTS -- the mute cannot outlive the setting that made it')
+do
+    -- THE FAILURE MODE THIS IS WRITTEN AGAINST is not "off does not mute". It
+    -- is "off muted and something did not unmute", which is a player who is
+    -- permanently deaf and has no idea why -- the shape of #157 round two,
+    -- where recovery depended on an engine behaviour nobody had ever watched.
+    standAt(0, 0)
+    playersAt({ [2] = { x = 2, y = 0 }, [3] = { x = 4, y = 0 } })
+    local off = voiceApply('off', 30503, { 2 }, 1)
+    ok(off.muted[2] and off.muted[3], 'muted, as asked')
+
+    local back = voiceMode('nearby')
+    ok(next(back.muted) == nil,
+        'and ONE tick after leaving off, nobody is muted at all',
+        'somebody is still muted outside off -- this is the deafness bug')
+
+    -- AND THE UNMUTE IS NOT CONDITIONAL ON HAVING SEEN THE TRANSITION. This is
+    -- the property that the bus gag lacked twice: recovery has to be driven by
+    -- the CURRENT state, not by an event somebody has to catch.
+    voiceMode('off')
+    BR.Loop.step(BR.Loop.TICK)
+    ok(next(pma.muted) ~= nil, 'muted again')
+    -- Reach past the event entirely: set the preference the way a reload or a
+    -- race would, with no settings event fired at all, and let the band run.
+    BR.Voice.pref.mode = 'squad'
+    BR.Loop.step(BR.Loop.TICK)
+    ok(next(pma.muted) == nil,
+        'and the mutes lift on the next tick with NO event to prompt it',
+        'the unmute needed an event -- that is exactly how this bug ships')
+end
+
+-- ==========================================================================
+describe('THE BUS RULE -- nearby cannot transmit from the seat')
+do
+    -- THE OWNER ASKED FOR THIS BACK: "please add the bus rule back in. we never
+    -- agreed to skip it."
+    --
+    -- IT HAS BEEN TRIED TWICE AND BOTH FAILED ON THE CLOCK, NOT THE RULE.
+    -- 58502b0 gagged with MumbleSetActive, which is a Mumble DISCONNECT rather
+    -- than a microphone switch, and nothing rebuilt what it tore down -- the
+    -- gag lasted the whole match: "while in the same squad and both set to
+    -- 'nearby' while standing nearby, players can no longer hear each other."
+    -- The variant before it gated inside apply(), which never re-runs on
+    -- BUS -> FREEFALL, so it never lifted either.
+    local RADIO = 30503
+    standAt(0, 0)
+    playersAt({ [2] = { x = 2, y = 0 } })
+
+    -- 1. ON THE BUS, ON NEARBY: SILENT. Two metres apart, which is the point --
+    --    this is not a range failure, it is a rule.
+    local bus = voiceApply('nearby', RADIO, { 2 }, 1, BR.PlayerState.BUS)
+    ok(next(bus.sends) == nil,
+        'a nearby rider transmits to nobody, standing right next to them')
+
+    -- 2. AND IT LIFTS THE INSTANT THEY LEAVE THE SEAT.
+    --
+    --    THE ONE ASSERTION THIS ENTIRE ROUND EXISTS FOR. Nothing is fired here
+    --    except the state changing and a tick passing: no VOICE_SET, no
+    --    settings event, no re-apply, no reconnect. If the gag needs any of
+    --    those to lift, this fails -- and on the code this replaces, it did.
+    local freefall = beState(BR.PlayerState.FREEFALL)
+    ok(freefall.sends[2] == true,
+        'and the match can hear them again the moment they are out of the seat',
+        'the gag did not lift on BUS -> FREEFALL -- this is the 58502b0 bug')
+
+    -- 3. AND IT COMES BACK if they are somehow put back in a seat, because it
+    --    is derived rather than remembered. A latch would pass 2 and fail this.
+    local again = beState(BR.PlayerState.BUS)
+    ok(next(again.sends) == nil, 'and it re-applies if they are back in the seat')
+
+    -- 4. SQUAD ON THE BUS IS UNAFFECTED. This is the half 58502b0 destroyed:
+    --    everybody rides the bus, so everybody was gagged, and the squad went
+    --    with them.
+    local sqBus = voiceApply('squad', RADIO, { 2 }, 1, BR.PlayerState.BUS)
+    ok(sqBus.radio == RADIO,
+        'a squad rider keeps the radio on the bus', tostring(sqBus.radio))
+    local mate = voiceApply('squad', RADIO, { 1 }, 2, BR.PlayerState.BUS)
+    ok(hears(sqBus, mate) and hears(mate, sqBus),
+        'and squadmates on the bus hear each other, which is the point of a bus')
+
+    -- 5. LISTENING IS UNAFFECTED, ON EVERY MODE. The gag is transmit-only, and
+    --    that is structural: it lives in a function pma-voice consults for its
+    --    own voice TARGET and nowhere else.
+    standAt(0, 0)
+    playersAt({ [2] = { x = 2, y = 0 } })
+    local rider = voiceApply('nearby', RADIO, { 2 }, 1, BR.PlayerState.BUS)
+    local other = { src = 2, sends = { [1] = true }, muted = {}, radio = 0 }
+    ok(hears(other, rider),
+        'a gagged rider can still HEAR the person next to them',
+        'the bus gag deafened the rider -- it must only take the microphone')
+    ok(next(rider.muted) == nil,
+        'and the gag holds no mutes -- only off is allowed to mute')
+
+    -- 6. AND IT IS NOT A GLOBAL MUTE MASQUERADING AS A RULE: a nearby player
+    --    who is NOT on the bus is unaffected by any of this.
+    local alive = voiceApply('nearby', RADIO, { 2 }, 1, BR.PlayerState.ALIVE)
+    ok(alive.sends[2] == true, 'and a nearby player on the ground is untouched')
+end
+
+describe('the bus rule is derived, not remembered')
+do
+    -- THE STRUCTURAL PROPERTY, ASSERTED DIRECTLY. Both previous attempts failed
+    -- because the gag was a stored decision that something had to come back and
+    -- undo. BR.Voice.gagged() is a pure function of the mode and the state, so
+    -- there is nothing to undo -- and this asserts that by driving it with
+    -- nothing but its two inputs.
+    BR.Voice.pref.mode = 'nearby'
+    BR.State.me.state = BR.PlayerState.BUS
+    local g1 = BR.Voice.gagged()
+    BR.State.me.state = BR.PlayerState.FREEFALL
+    local g2 = BR.Voice.gagged()
+    BR.State.me.state = BR.PlayerState.BUS
+    local g3 = BR.Voice.gagged()
+    ok(g1 == true and g2 == false and g3 == true,
+        'the gag follows the state with no tick, no event and no apply',
+        ('%s %s %s'):format(tostring(g1), tostring(g2), tostring(g3)))
+
+    BR.Voice.pref.mode = 'squad'
+    BR.State.me.state = BR.PlayerState.BUS
+    ok(BR.Voice.gagged() == false, 'and squad is never gagged by the bus')
+
+    BR.Voice.pref.mode = 'off'
+    BR.State.me.state = BR.PlayerState.ALIVE
+    ok(BR.Voice.gagged() == true, 'and off is gagged everywhere')
+
+    -- THE READOUT READS THE SAME FUNCTION, which is why /brvoice cannot drift
+    -- from the behaviour the way "prox channel 2003" did for a week.
+    BR.Voice.pref.mode = 'nearby'
+    BR.State.me.state = BR.PlayerState.BUS
+    local _, why = BR.Voice.gagged()
+    ok(type(why) == 'string' and why:find('bus') ~= nil,
+        'and it explains itself to /brvoice in words', tostring(why))
 end
 
 describe('voice never crosses a match')
 do
-    -- The property the whole voice system exists for, now checked on the side
-    -- that actually talks to Mumble. Two matches, two proximity rooms.
+    -- The property the whole system exists for. It is a different mechanism
+    -- now -- routing buckets rather than Mumble rooms -- so it is asserted at
+    -- the level that mechanism actually operates on: a player in another
+    -- match is not streamed, so they are never a candidate to transmit to.
     standAt(0, 0)
-    local a = voiceApply('nearby', 2003, nil, 1)
-    local b = voiceApply('nearby', 2004, nil, 2)
-    ok(not hears(a, b) and not hears(b, a),
-        'two different matches cannot hear each other')
+    -- Same coordinates, which is the whole difficulty: two matches stand on top
+    -- of each other. Player 9 is in the other match and therefore has no ped.
+    playersAt({ [2] = { x = 1, y = 0 }, [9] = false })
+    local a = voiceApply('nearby', nil, nil, 1)
+    ok(a.sends[2] == true, 'somebody in my match, one metre away, hears me')
+    ok(a.sends[9] == nil,
+        'and somebody in ANOTHER match on the same spot does not',
+        'a different match is being transmitted to')
 
-    -- And the lobby is a room too -- leaving somebody in channel 0 puts them
-    -- with everyone whose assignment has not landed yet.
-    local lobby = voiceApply('nearby', BR.Config.Match.voice.lobbyChannel, nil, 3)
-    ok(lobby.channel ~= 0 and #lobby.sends > 0,
-        'and a player in the lobby is in a real room with a real target')
-    ok(not hears(lobby, a) and not hears(a, lobby),
-        'which the match cannot hear and cannot be heard from')
-end
-
-describe('switching preference mid-match')
-do
-    local PROX = 2011
-
-    standAt(0, 0)
-    voiceApply('squad', PROX, { 2 }, 1)
-    local before = mumbleSnapshot()
-    ok(before.volume[2] ~= nil, 'squad mode opens the radio to a squadmate')
-    ok(#before.people == 1, 'and points the microphone at them')
-
-    -- AN OVERRIDE OUTLIVES EVERYTHING ELSE, exactly as a channel listen used
-    -- to: MumbleClearVoiceChannel takes us out of the room we are IN and says
-    -- nothing about a standing instruction to the mixer. Before this was
-    -- fixed the same shape of bug let a player who chose 'nearby' keep hearing
-    -- their squad at unlimited range while the interface told them they were
-    -- on proximity only.
-    local after = voiceMode('nearby')
-    ok(after.volume[2] == nil, 'and choosing nearby shuts it again')
-    ok(#after.people == 0, 'and stops sending to them directly',
-        ('people=%d'):format(#after.people))
-    ok(#after.sends == 1 and after.sends[1] == PROX,
-        'leaving the proximity room as the only destination',
-        ('sends=%d'):format(#after.sends))
-
-    local back = voiceMode('squad')
-    ok(back.volume[2] ~= nil and #back.people == 1,
-        'and choosing squad again restores both')
-
-    local off = voiceMode('off')
-    ok(not off.active, 'off stops transmitting')
-    local on = voiceMode('nearby')
-    ok(on.active and #on.sends > 0, 'and coming back off it re-establishes audio')
-end
-
-describe('leaving a match takes its rooms with it')
-do
-    local PROX = 2019
-
-    standAt(0, 0)
-    voiceApply('squad', PROX, { 2 }, 1)
-    -- Back to the lobby: the server pushes the lobby room and an empty squad.
-    fire(BR.Net.VOICE_SET, { prox = BR.Config.Match.voice.lobbyChannel,
-                             mates = {},
-                             nearbyRange = VR.nearby, squadRange = VR.squad })
-    -- The lobby is a room like any other and has to be created like any other
-    -- -- so there is a beat between leaving the match and arriving in it. That
-    -- beat is silent rather than leaky: the voice target is cleared before the
-    -- new one is built, so a player mid-transition is transmitting nowhere.
-    mumbleSettle()
-    local lobby = mumbleSnapshot()
-
-    ok(lobby.volume[2] == nil,
-        'the radio to the squad just left is shut')
-    ok(#lobby.sends == 1 and lobby.sends[1] == BR.Config.Match.voice.lobbyChannel,
-        'and nothing is still being sent into the match just left',
-        table.concat(lobby.sends, ','))
-    ok(#lobby.people == 0, 'nor to anybody who is still in it',
-        ('people=%d'):format(#lobby.people))
-
-    local stillIn = voiceApply('squad', PROX, { 3 }, 2)
-    ok(not hears(lobby, stillIn) and not hears(stillIn, lobby),
-        'so the lobby and the match are mutually inaudible')
-end
-
-describe('a Mumble reconnect re-establishes the routing')
-do
-    -- The Mumble client drops and comes back underneath us with no event. A
-    -- channel set while it was down never took, and the 1Hz watcher is the
-    -- only thing that notices -- so it has to restore the TARGET as well as
-    -- the channel, or the player comes back in the right room and mute.
-    local PROX = 2023
-    standAt(0, 0)
-    voiceApply('squad', PROX, { 2 }, 1)
-    -- A squadmate on the radio and a stranger muted for being too far: two
-    -- volume overrides open, which is the state a reconnect destroys.
-    playersAt({ [2] = false, [3] = { x = VR.nearby + 100.0, y = 0 } })
-    squadAt({ { src = 2, x = 900.0, y = 0 } })
-    ok(mumble.volume[2] == 1.0 and mumble.volume[3] == nil,
-        'before the drop, the squad radio is open and the distant stranger is '
-        .. 'left to the engine -- one override, not two')
-
-    -- THE DROP, MODELLED AS A DROP rather than by reaching in and clearing a
-    -- flag by hand. The engine forgets everything it knew, the connection goes
-    -- away, and the 1Hz watcher is the only thing in the game that can notice
-    -- either of those.
-    mumbleReset()
-    mumble.connected = false
-    BR.Loop.step(BR.Loop.SLOW)
-
-    mumble.connected = true      -- ...and it comes back
-    BR.Loop.step(BR.Loop.SLOW)
-
-    -- AND THE OVERRIDES COME BACK WITH IT. listen() sends only the differences
-    -- between what it wants and what it thinks is set, so a reconnect is the
-    -- one event that can make that bookkeeping a lie -- the engine holds
-    -- nothing and the table claims everything, and every call is skipped as
-    -- already-done. The symptom would be narrow and nasty: a player who
-    -- reconnects mid-match comes back to a silent squad and an unmuted map.
-    ok(mumble.volume[2] == 1.0,
-        'the squad radio is re-opened against the new engine, not assumed',
-        tostring(mumble.volume[2]))
-    ok(mumble.volume[3] == nil,
-        'and the distant stranger is left audible, not re-muted -- a reconnect '
-        .. 'is exactly the moment a whitelist would have gone deaf',
-        tostring(mumble.volume[3]))
-    nobodyElse()
-
-    -- NOTHING IS ASSUMED TO HAVE SURVIVED IT. A reconnected Mumble client
-    -- rebuilds its channel list from the server, so the room has to be joined
-    -- again and the routing has to wait for it again. A client that trusted
-    -- its own memory here would come back holding the right room number with
-    -- nothing behind it, for the rest of the match.
-    ok(mumble.want == PROX, 'the room is joined again from scratch',
-        tostring(mumble.want))
-    -- And the target stays empty until it is: re-stating routing into a room
-    -- the engine has not rejoined is the original bug, arriving by a new road.
-    ok(#(mumble.targets[1] or {}) == 0,
-        'and nothing is transmitted into it while that is pending')
-
-    mumbleSettle()
-    local healed = mumbleSnapshot()
-
-    ok(healed.channel == PROX, 'the room is re-joined', tostring(healed.channel))
-    ok(#healed.sends > 0 and healed.sends[1] == PROX,
-        'and the transmit path is re-established with it',
-        ('sends=%d'):format(#healed.sends))
-end
-
-describe('the engine cutoff is NOT armed -- second round of #157')
-do
-    -- A NEGATIVE ASSERTION, AND IT IS THE POINT OF THE WHOLE FIX.
+    -- AND THE SQUAD RADIO IS A SECOND, INDEPENDENT WALL, which is worth having
+    -- because it does not depend on scope at all: two squads handed different
+    -- channels cannot reach each other however close they stand.
     --
-    -- The round before this one called MumbleSetAudioInputDistance and
-    -- MumbleSetAudioOutputDistance with the nearby range, and this block used
-    -- to assert exactly that. It was the wrong thing to want. Owner:
-    --
-    --   "curiously, regardless of distance, 'nearby' doesn't output audio,
-    --    though it does show who's talking, even when they should be out of
-    --    range."
-    --
-    -- Silent at every distance including nose to nose, while the talking flag
-    -- -- which is set by frames ARRIVING -- kept lighting up. Audio reaching
-    -- the machine and being played at zero is not a routing fault, and the
-    -- engine says why in MumbleAudioOutput.cpp: stating a distance switches it
-    -- onto a position comparison, and a speaker whose position it does not have
-    -- is silenced outright rather than treated as near.
-    --
-    -- So the correct state for those two natives is UNSET, and the assertion
-    -- has to be inverted along with the code -- otherwise the next person to
-    -- read the file re-adds them in good faith and puts the silence back.
-    local PROX = 2031
-
+    -- THE ARITHMETIC THAT PRODUCES THOSE NUMBERS IS THE SERVER'S and it is NOT
+    -- swept here -- BR.Voice.radioChannel lives in br_core/server/voice.lua and
+    -- this suite loads only the client half. What is checked here is that the
+    -- client honours a difference it is handed. See the note at the end of this
+    -- section for what the server suite still owes.
     nobodyElse()
     standAt(0, 0)
-    local a = voiceApply('nearby', PROX, nil, 1)
+    local s1 = voiceApply('squad', 30703, { 2 }, 1)
+    local s2 = voiceApply('squad', 30803, { 4 }, 3)
+    ok(not hears(s1, s2) and not hears(s2, s1),
+        'two squads on different radios cannot hear each other at any range')
 
-    ok(a.inDist == nil,
-        'the client does not tell Mumble how far its own voice carries',
-        tostring(a.inDist))
-    ok(a.outDist == nil,
-        'nor how far away it can hear from -- both are what silenced it',
-        tostring(a.outDist))
+    local s3 = voiceApply('squad', 30703, { 1 }, 2)
+    ok(hears(s1, s3) and hears(s3, s1),
+        'and two players on the SAME radio can -- so the wall is the number, '
+            .. 'not an accident of the model')
 
-    -- AND THE ENGINE IS THEREFORE WIDE OPEN, which is the state this fix
-    -- deliberately leaves it in and the reason the mutes below are load-bearing
-    -- rather than belt-and-braces. If this ever stops being true the model has
-    -- been made too forgiving and the next silent build will pass green.
-    local deaf = { active = true, channel = PROX, sends = { PROX }, people = {},
-                   listen = {}, volume = {}, src = 9,
-                   inDist = nil, outDist = nil }
-    ok(hears(deaf, deaf, 5000.0),
-        'so a client with no mutes would be audible 5km away -- which is what '
-        .. 'makes the receive-side gate the only thing holding the range')
+    local noSquad = voiceApply('squad', nil, nil, 5)
+    ok(noSquad.radio == 0 and not hears(noSquad, s1) and not hears(s1, noSquad),
+        'and a player with no squad radio reaches nobody by radio at all')
 end
 
-describe('NOBODY IS MUTED BY DEFAULT -- the receive side FAILS OPEN -- #157')
+describe('br_core survives pma-voice being absent, and says so')
 do
-    -- THIS BLOCK USED TO ASSERT THE OPPOSITE, AND THAT IS THE WHOLE STORY.
-    --
-    -- It was called "THE RECEIVE SIDE IS GATED" and it pinned a proximity
-    -- cutoff built out of per-player mutes: 0.0 for anyone past range.nearby,
-    -- 0.0 for anyone the client could not place. Every assertion in it passed.
-    -- The owner then could not hear anybody, in any mode, including his own
-    -- squad, standing directly across from them:
-    --
-    --   "Confirmed in squads that the squad chat no longer works either. No
-    --    errors in the console, and it looks like I'm talking, but nobody can
-    --    hear me."
-    --
-    -- WHY THE TESTS COULD NOT SEE IT. The gate keyed on a distance read off
-    -- another player's PED, and a test can place a ped whenever it likes. A
-    -- real match cannot: for the first seconds nothing has streamed, every
-    -- distance is nil, and the rule that says "nil means too far" wrote a mute
-    -- over the entire roster before anyone had moved. The suite tested the rule
-    -- in a world where the rule's input was always available.
-    --
-    -- SO THE ASSERTIONS ARE INVERTED, AND THE THIRD ONE IS THE POINT: a player
-    -- this client cannot place must be AUDIBLE. It is the one assertion in this
-    -- file that fails on the code being replaced.
-    local PROX = 2051
-    local NEAR = VR.nearby - 5.0
-    local FAR  = VR.nearby + 5.0
-
-    -- 1. TWO PLAYERS STANDING TOGETHER HEAR EACH OTHER, which is the floor and
-    --    was already true.
+    -- THE HARD CONSTRAINT: a missing voice resource must not stop the gamemode.
+    -- It is now a TOTAL voice outage rather than a degraded one, so the second
+    -- half matters as much as the first -- the last outage was invisible for a
+    -- week.
+    pmaReset()
+    pma.running = false
     nobodyElse()
     standAt(0, 0)
-    local a = voiceApply('nearby', PROX, nil, 1)
-    playersAt({ [2] = { x = NEAR, y = 0 } })
-    a = mumbleSnapshot()
 
-    standAt(NEAR, 0)
-    local b = voiceApply('nearby', PROX, nil, 2)
-    playersAt({ [1] = { x = 0, y = 0 } })
-    b = mumbleSnapshot()
+    local okRun = pcall(function()
+        fire('onClientResourceStart', 'br_core')
+        fire('br:settings:changed', { voiceMode = 'squad' })
+        fire(BR.Net.VOICE_SET, { radio = 30503, mates = { 2 },
+                                 nearbyRange = VR.nearby })
+        BR.Loop.step(BR.Loop.TICK)
+    end)
+    ok(okRun, 'the whole voice path runs with no voice resource installed',
+        'br_core raised when pma-voice was missing')
+    ok(pma.check == nil, 'and nothing was installed into a resource that is gone')
 
-    ok(hears(a, b, NEAR) and hears(b, a, NEAR),
-        ('two solos %.0fm apart hear each other'):format(NEAR))
-    ok(a.volume[2] == nil and b.volume[1] == nil,
-        'and neither is overridden, so the engine mixes them positionally',
-        ('a=%s b=%s'):format(tostring(a.volume[2]), tostring(b.volume[1])))
+    local said = table.concat(logged, '\n')
+    ok(said:find('pma%-voice') ~= nil and said:upper():find('NOT RUNNING') ~= nil,
+        'and it says so, loudly, once', said)
 
-    -- 2. AND SO DO TWO PLAYERS WHO ARE FURTHER APART THAN range.nearby.
-    --
-    --    THIS IS THE CAPABILITY BEING KNOWINGLY GIVEN UP and it is asserted
-    --    rather than merely allowed, so that nobody re-adds a cutoff by
-    --    accident and calls the resulting silence a fix. If falloff comes back
-    --    it comes back on the transmit side, and this assertion changes with a
-    --    playtest attached to it.
-    standAt(0, 0)
-    a = voiceApply('nearby', PROX, nil, 1)
-    playersAt({ [2] = { x = FAR, y = 0 } })
-    a = mumbleSnapshot()
-
-    ok(a.volume[2] == nil,
-        ('a player %.0fm away is NOT muted -- there is no cutoff'):format(FAR),
-        tostring(a.volume[2]))
-    ok(hears(b, a, FAR),
-        ('so %.0fm apart they still hear each other: match-wide voice, '):format(FAR)
-        .. 'which is the trade this round makes on purpose')
-
-    -- 3. AND A PLAYER THIS CLIENT CANNOT PLACE AT ALL IS AUDIBLE.
-    --
-    --    THE ASSERTION THE LAST ROUND GOT BACKWARDS. It read: "a roster player
-    --    with no ped -- out of scope -- is muted, not assumed to be standing at
-    --    the origin", and it was defended as exact rather than approximate,
-    --    because out of scope really is hundreds of metres.
-    --
-    --    Out of scope is not the only way to have no ped. The first tick of a
-    --    match is another, and a squadmate on the far side of a hot drop is a
-    --    third, and both of those are people who must be heard. "I cannot place
-    --    you" is not a distance. It is an absence of information, and the only
-    --    safe answer to an absence of information in a voice system is SOUND.
-    playersAt({ [2] = false })
-    local unseen = mumbleSnapshot()
-    ok(unseen.volume[2] == nil,
-        'a roster player with no ped is NOT muted -- unplaceable is not a '
-        .. 'distance, and silence is not the safe default',
-        tostring(unseen.volume[2]))
-    ok(hears(b, unseen, 5000.0),
-        'so a player we cannot see is still one we can hear -- this is the '
-        .. 'assertion that fails on the code this replaces')
-
-    -- 4. AND NOTHING IS MUTED, FULL STOP. The count matters as much as any
-    --    individual entry: the failure mode was a whitelist that wrote silence
-    --    as its default answer, so the test that catches it is "how many mutes
-    --    exist", not "is this particular player muted".
-    playersAt({ [2] = false, [3] = { x = 5.0, y = 0 },
-                [4] = { x = 3000.0, y = 0 } })
-    local wide = mumbleSnapshot()
-    local muted = 0
-    for _, v in pairs(wide.volume) do if v == 0.0 then muted = muted + 1 end end
-    ok(muted == 0,
-        'and across a mixed roster -- unplaceable, near, and 3km away -- not '
-        .. 'one 0.0 is written outside off', ('muted=%d'):format(muted))
-    nobodyElse()
+    -- AND IT RECOVERS WHEN THE RESOURCE TURNS UP, which is not hypothetical: an
+    -- admin restarting pma-voice mid-match drops every rule br_core gave it,
+    -- because the override lives in that resource's Lua state.
+    pma.running = true
+    fire('onClientResourceStart', 'pma-voice')
+    ok(pma.check ~= nil,
+        'and the rules are re-installed when pma-voice starts later',
+        'br_core never noticed pma-voice appear -- proximity is on its default')
+    ok(pma.range == VR.nearby,
+        'including the range', tostring(pma.range))
 end
 
-describe('OFF MEANS NOT LISTENING, NOT JUST NOT TRANSMITTING -- #157')
+describe('the talking indicator names people we can actually hear')
 do
-    -- THE OWNER'S SENTENCE IS THE SPEC:
+    -- THE INDICATOR WAS LYING, AND THE LIE IS WHAT DIAGNOSED #157: "regardless
+    -- of distance, 'nearby' doesn't output audio, though it does show who's
+    -- talking, even when they should be out of range."
     --
-    --   "'off' does not work - it still leaves a player in what seems to be
-    --    global, and it always feeds audio through regardless of distance.
-    --    'you are not transmitting' should also mean 'you are not listening',
-    --    but alas both are false."
-    --
-    -- It was false because 'off' called MumbleSetActive(false) and stopped.
-    -- That is a microphone switch: the player stayed in the room, every stream
-    -- kept arriving, and with the engine wide open every one of them played.
-    -- Note that hears() does not consult listener.active for exactly this
-    -- reason -- if it did, this whole block would pass on the broken code.
-    local PROX = 2057
-
-    nobodyElse()
+    -- Under pma-voice that specific lie is gone by construction -- frames only
+    -- arrive if the speaker targeted us -- but the indicator has a NEW way to
+    -- be wrong, and it is the one this block is really about: it must be
+    -- match-wide, not scope-wide.
     standAt(0, 0)
-    voiceApply('squad', PROX, { 2 }, 1)
-    playersAt({ [2] = { x = 5.0, y = 0 }, [3] = { x = 5.0, y = 0 } })
-    local on = mumbleSnapshot()
-    ok(on.volume[2] ~= nil and on.volume[2] >= 0.005,
-        'with voice on, a squadmate is heard')
-    ok(on.volume[3] == nil, 'and a stranger standing next to us is heard too')
+    playersAt({ [2] = { x = 2, y = 0 }, [7] = false })
+    voiceApply('squad', 30503, { 7 }, 1)
 
-    voiceMode('off')
-    local off = mumbleSnapshot()
-
-    ok(not off.active, 'off stops transmitting -- the half that always worked')
-    ok(off.volume[2] == 0.0,
-        'AND it silences the squadmate', tostring(off.volume[2]))
-    ok(off.volume[3] == 0.0,
-        'AND the stranger standing right next to us', tostring(off.volume[3]))
-    ok(#off.sends == 0 and #off.people == 0,
-        'and nothing is left loaded in the voice target either',
-        ('sends=%d people=%d'):format(#off.sends, #off.people))
-
-    -- AND THE GAME'S OWN VOICE GOES WITH IT. Owner: "When set to 'off',
-    -- pressing the PTT button still shows that I'm talking." MumbleSetActive is
-    -- one switch and GTA's voice chat is another; `active` above was true for
-    -- the first and said nothing about the second, which is why 'off' could
-    -- pass every assertion in this block and still announce the player.
-    ok(off.gameVoice == false,
-        'and GTA\'s own voice chat is switched off too -- the other half of '
-        .. '"still shows that I\'m talking"', tostring(off.gameVoice))
-
-    -- THE ASSERTION IN THE OWNER'S OWN TERMS. A speaker who is right next to
-    -- this player, in the same room, with a perfectly good transmit path, and
-    -- who was audible one line ago.
-    local speaker = { active = true, channel = PROX, sends = { PROX },
-                      people = {}, listen = {}, volume = {}, src = 3,
-                      inDist = nil, outDist = nil }
-    ok(not hears(speaker, off, 1.0),
-        'so a player on off hears NOTHING from somebody standing on top of '
-        .. 'them -- "not transmitting" now also means "not listening"')
-
-    -- AND SOMEBODY WHO ARRIVES WHILE WE ARE OFF IS MUTED TOO. There is no
-    -- event for a roster delta reaching voice, so this is the 10Hz band doing
-    -- it rather than apply(), and it is the difference between 'off' and
-    -- 'off until the next player joins'.
-    playersAt({ [2] = { x = 5.0, y = 0 }, [3] = { x = 5.0, y = 0 },
-                [4] = { x = 2.0, y = 0 } })
-    local later = mumbleSnapshot()
-    ok(later.volume[4] == 0.0,
-        'including a player who joined the match after we chose off',
-        tostring(later.volume[4]))
-
-    -- AND COMING BACK RESTORES EVERYTHING, which is the other half of a switch.
-    --
-    -- THIS IS THE ONE PATH LEFT IN THE FILE THAT DEPENDS ON RELEASING AN
-    -- OVERRIDE, and therefore the one place a wrong guess about -1.0 could
-    -- still strand a player in silence. It is why listen() writes 1.0 before
-    -- it writes -1.0: whichever of the two the engine honours, the player is
-    -- audible. The model here treats -1.0 as removal, so it can only prove the
-    -- -1.0 branch -- the 1.0 belt is deliberately unprovable from Lua and is
-    -- named as such rather than asserted into a false confidence.
-    voiceMode('squad')
-    local back = mumbleSnapshot()
-    ok(back.active, 'coming off off transmits again')
-    -- THIS ASSERTION USED TO SAY `== true` AND IT ENCODED THE BUG. GTA's own
-    -- voice draws its own "currently talking" readout, so turning it on gave
-    -- the owner two of them. We speak over Mumble; the stock system is never
-    -- wanted on, only ever turned off.
-    ok(back.gameVoice == false,
-        'and GTA\'s own voice chat stays off, because it draws a SECOND '
-        .. '"currently talking" over ours',
-        tostring(back.gameVoice))
-    ok(back.volume[2] ~= nil and back.volume[2] >= 0.005,
-        'and hears the squad again', tostring(back.volume[2]))
-    ok(back.volume[4] == nil,
-        'and the nearby stranger is handed back to the engine, not left muted',
-        tostring(back.volume[4]))
-    ok(back.volume[3] == nil,
-        'and so is the one who was never near us -- coming off off leaves no '
-        .. 'mute anywhere', tostring(back.volume[3]))
-    ok(hears(speaker, back, 1.0) and hears(speaker, back, 4000.0),
-        'so the player who tried off once can hear the match again at any '
-        .. 'distance -- the trap this round was most at risk of setting')
-end
-
-describe('SQUAD STILL WORKS -- the thing a bad fix would trade away -- #157')
-do
-    -- THE ONE THING THE OWNER SAYS IS RIGHT: "squad chat definitely works. and
-    -- it works great." Every requirement above is a change to the receive side,
-    -- which is the same side squad voice runs on, so it is asserted here at a
-    -- range where the proximity gate would otherwise have silenced it.
-    local PROX = 2063
-    local ACROSS = 4000.0
-
-    nobodyElse()
-    standAt(0, 0)
-    voiceApply('squad', PROX, { 2 }, 1)
-    -- The squadmate is across the map: far outside nearby range, and out of
-    -- scope entirely, so the client cannot see their ped. Only the squad
-    -- position push knows where they are, which is why it exists.
-    playersAt({ [2] = false, [3] = { x = 10.0, y = 0 } })
-    squadAt({ { src = 2, x = ACROSS, y = 0 } })
-    local me = mumbleSnapshot()
-
-    ok(me.volume[2] == 1.0,
-        ('a squadmate %.0fm away is on the radio at full volume'):format(ACROSS),
-        tostring(me.volume[2]))
-    ok(#me.people == 1 and me.people[1] == 2,
-        'with the microphone still pointed straight at them')
-
-    local mate = { active = true, channel = PROX, sends = { PROX },
-                   people = { 1 }, listen = {}, volume = {}, src = 2,
-                   inDist = nil, outDist = nil }
-    ok(hears(mate, me, ACROSS),
-        'so squad voice still crosses the map -- if this fails, the fix has '
-        .. 'traded away the only thing that was working')
-
-    -- AND THE RIVAL STANDING NEXT TO US IS STILL ORDINARY PROXIMITY, which is
-    -- the check that the radio has not quietly become "hear everybody".
-    ok(me.volume[3] == nil,
-        'while a rival 10m away is heard as proximity, not as radio',
-        tostring(me.volume[3]))
-
-    -- AND A SQUADMATE BEYOND THE SQUAD RANGE LOSES THE RADIO AND KEEPS THEIR
-    -- VOICE. range.squad may DECLINE an upgrade; it may not take away ears.
-    --
-    -- This assertion said `== 0.0` one round ago, and the sentence defending it
-    -- read "because there is no proximity to fall back to at that distance".
-    -- There is now: there is no cutoff, so the fallback is simply being heard.
-    squadAt({ { src = 2, x = VR.squad + 500.0, y = 0 } })
-    local tooFar = mumbleSnapshot()
-    ok(tooFar.volume[2] == nil,
-        'a squadmate past the squad range loses the flat radio and falls back '
-        .. 'to being an ordinary audible player, NOT to silence',
-        tostring(tooFar.volume[2]))
-    ok(hears(mate, tooFar, VR.squad + 500.0),
-        'so even past range.squad a squadmate can still be heard')
-end
-
-describe('the talking indicator renders again, and matches the audio -- #157')
-do
-    -- THE INDICATOR IS TIED TO THE AUDIO DECISION, AND THAT IS WHY IT WENT
-    -- BLANK. Owner, after the round that muted everybody: "when using my PTT,
-    -- the fivem default prose shows up 'currently talking' but ours doesn't
-    -- anymore."
-    --
-    -- Nothing was wrong with the indicator. It reads BR.Voice.state.audible,
-    -- listen() had muted the whole roster, so the set was empty and there was
-    -- nobody to name. The tie is KEPT -- a name on screen must mean "you are
-    -- hearing this person" -- and this block asserts both directions of it:
-    -- with no cutoff, everybody talking in the match is named, and on 'off'
-    -- nobody is.
-    local PROX = 2069
-
-    nobodyElse()
-    standAt(0, 0)
-    voiceApply('squad', PROX, { 4 }, 1)
-    playersAt({ [2] = { x = 5.0, y = 0 },                 -- standing on us
-                [3] = { x = VR.nearby + 100.0, y = 0 },   -- well past 'nearby'
-                [4] = false })                            -- squadmate, no ped
-    squadAt({ { src = 4, x = 3000.0, y = 0 } })
-
-    mumble.talking = { [2] = true, [3] = true }
+    mumble.talking = { [2] = true }
     BR.Loop.step(BR.Loop.TICK)
-
     local names = talkingNames()
-    local seen = {}
-    for _, n in ipairs(names) do seen[n] = true end
+    ok(#names == 1 and names[1] == 'p2',
+        'somebody talking nearby is named', table.concat(names, ','))
 
-    ok(seen['p2'], 'somebody talking next to us is named',
-        table.concat(names, ', '))
-    ok(seen['p3'],
-        'AND so is somebody talking from the far side of the match -- they are '
-        .. 'audible now, so naming them is the truth and not the bug it was',
-        table.concat(names, ', '))
-
-    -- AND WALKING AWAY CHANGES NOTHING, which is the assertion that would have
-    -- caught this round's regression from the display side alone. It used to
-    -- read `#talkingNames() == 0` here, and an empty indicator was taken as
-    -- proof the cutoff worked rather than as the symptom it turned out to be.
-    mumble.talking = { [2] = true, [3] = true }
-    playersAt({ [2] = { x = VR.nearby + 100.0, y = 0 },
-                [3] = { x = VR.nearby + 100.0, y = 0 }, [4] = false })
+    -- THE ASSERTION THE SCOPE GATE IS ABOUT. Player 7 is a squadmate on the
+    -- radio, across the island, with no ped and no player index on this
+    -- machine -- so nothing local can see them talk. They are audible. If the
+    -- indicator were driven off the streamed player list they would be audible
+    -- and invisible, which is the exact complaint the panel exists to answer.
+    fire('pma-voice:setTalkingOnRadio', 7, true)
     BR.Loop.step(BR.Loop.TICK)
-    ok(#talkingNames() == 2,
-        'walking away from two talkers leaves both on the indicator, because '
-        .. 'it leaves both in the mix', table.concat(talkingNames(), ', '))
+    names = talkingNames()
+    local sawFar = false
+    for _, n in ipairs(names) do if n == 'p7' then sawFar = true end end
+    ok(sawFar,
+        'and so is an out-of-scope squadmate talking on the radio',
+        'the indicator can only see people standing next to you: ' ..
+            table.concat(names, ','))
 
-    -- AND A PLAYER WE CANNOT PLACE IS STILL COUNTED AS AUDIBLE, even though the
-    -- indicator cannot ask the engine whether they are talking -- there is no
-    -- player index for somebody out of scope. Audibility and presentation are
-    -- allowed to disagree in THAT direction: we may fail to name somebody we
-    -- can hear. We must never name somebody we cannot.
-    ok(BR.Voice.state.audible[4] == true,
-        'an unplaceable squadmate is in the audible set even though no name '
-        .. 'can be drawn for them')
+    -- AND THEY STOP BEING NAMED when they stop.
+    fire('pma-voice:setTalkingOnRadio', 7, false)
+    mumble.talking = {}
+    BR.Loop.step(BR.Loop.TICK)
+    ok(#talkingNames() == 0, 'and silence empties the panel',
+        table.concat(talkingNames(), ','))
 
-    -- AND ON 'off' IT IS EMPTY, whoever is shouting.
-    mumble.talking = { [2] = true, [3] = true }
-    playersAt({ [2] = { x = 2.0, y = 0 }, [3] = { x = 2.0, y = 0 } })
-    voiceMode('off')
+    -- ON 'off' THE PANEL IS EMPTY, and that is correct rather than a display
+    -- fault: it is read from the same set the audio decision is made from, so a
+    -- blank panel while muted is the truth.
+    playersAt({ [2] = { x = 2, y = 0 } })
+    voiceApply('off', nil, nil, 1)
+    mumble.talking = { [2] = true }
     BR.Loop.step(BR.Loop.TICK)
     ok(#talkingNames() == 0,
-        'and a player on off is told nobody is talking, because to them '
-        .. 'nobody is', table.concat(talkingNames(), ', '))
-
-    -- AND ON A BUILD WITH NO VOLUME-OVERRIDE NATIVE IT IS NOT EMPTY, which is
-    -- the exact inverse and is the case the indicator got wrong for free.
-    --
-    -- Without that native nothing can be muted, so EVERY player is audible --
-    -- it is the one configuration in which voice is guaranteed to work. The
-    -- receive logic used to bail out at the top on precisely that build and
-    -- leave the audible set untouched, so the build where everybody could hear
-    -- everybody was also the build that displayed nobody. A blank indicator is
-    -- meant to be an alarm now; it must not fire when the audio is fine.
-    local realOverride = MumbleSetVolumeOverrideByServerId
-    MumbleSetVolumeOverrideByServerId = nil
-    voiceMode('squad')
-    mumble.talking = { [2] = true, [3] = true }
-    playersAt({ [2] = { x = 2.0, y = 0 }, [3] = { x = 900.0, y = 0 } })
-    BR.Loop.step(BR.Loop.TICK)
-    ok(#talkingNames() == 2,
-        'a build that cannot mute anybody still names both talkers, because '
-        .. 'on that build it really can hear both',
-        table.concat(talkingNames(), ', '))
-    MumbleSetVolumeOverrideByServerId = realOverride
-
-    nobodyElse()
+        'off names nobody, because off hears nobody',
+        table.concat(talkingNames(), ','))
 end
 
-describe('squad range is enforced, not assumed -- #157')
+describe('the voice readout runs, and leads with the thing that matters')
 do
-    -- range.squad IS A REAL CUTOFF, not a synonym for infinity. It defaults
-    -- past the map diagonal so that squad comms never drop in play, but the
-    -- mechanism is a range like any other and an unenforced number in config
-    -- is a lie waiting to be found in a playtest.
-    local PROX = 2037
-
-    standAt(0, 0)
-    voiceApply('squad', PROX, { 2 }, 1)
-    squadAt({ { src = 2, x = VR.squad + 500.0, y = 0 } })
-    local tooFar = mumbleSnapshot()
-    ok(tooFar.volume[2] == nil,
-        ('a squadmate beyond the squad range (%.0fm) is not exempted')
-            :format(VR.squad))
-    ok(#tooFar.people == 1,
-        'though the microphone still points at them -- routing is membership, '
-        .. 'audibility is range')
-
-    squadAt({ { src = 2, x = 400.0, y = 0 } })
-    local back = mumbleSnapshot()
-    ok(back.volume[2] ~= nil,
-        'and walking back inside it opens the radio again without a new '
-        .. 'assignment from the server')
-
-    -- NO POSITION MEANS AUDIBLE. There is no squad position push while the
-    -- squad is on the bus, and a squad that could not talk on the drop would
-    -- be a worse bug than the one being fixed.
-    squadAt({})
-    local silentPush = mumbleSnapshot()
-    ok(silentPush.volume[2] ~= nil,
-        'a squadmate nobody has placed yet -- on the bus, or in the first '
-        .. 'second -- is audible rather than silent')
-end
-
-describe('THE BUS GAG IS GONE -- nearby keeps its microphone everywhere')
-do
-    -- THIS BLOCK USED TO ASSERT THE OPPOSITE OF EVERY LINE IN IT.
-    --
-    -- Owner, 2026-08-17: "can you make it so talking is not an option while in
-    -- the bus and set to 'nearby'? That would be chaos." 58502b0 built that: a
-    -- gate on the 10Hz band that called MumbleSetActive(false) while
-    -- BR.State.me.state said BUS. Nine assertions here went green.
-    --
-    -- Then the playtest, same day: "while in the same squad and both set to
-    -- 'nearby' while standing nearby, players can no longer hear each other. It
-    -- shows someone is talking, but no audio passes." Everybody rides the bus.
-    -- So everybody on 'nearby' was gagged once per match, and what came back
-    -- afterwards was the switch and NOT the routing.
-    --
-    -- WHAT THE NINE ASSERTIONS ACTUALLY PROVED: that a boolean in a stub went
-    -- false and then true again. MumbleSetActive is not a microphone -- it is
-    -- the Mumble CONNECTION (see the stub at the top of this file, and 475429f,
-    -- where this project wrote down Mumble_ShouldConnect's inputs itself). The
-    -- old assertion "the match can hear them again the moment they are out of
-    -- the seat" fails with sends=0 the moment the stub stops lying, because the
-    -- gag never cleared BR.Voice.state.applied and `applied` is what gates both
-    -- voice.settle's re-join and voice.watch's self-heal. Nothing rebuilt the
-    -- transmit path, all match.
-    --
-    -- SO THE REQUIREMENT HERE IS THE OWNER'S OTHER ONE, THE OLDER AND LOUDER
-    -- ONE: 'nearby' works. Everywhere, including the seat. The bus rule is
-    -- deliberately not implemented rather than implemented on a switch that
-    -- takes the room away -- if it returns it is a voice-target change plus
-    -- `applied = false`, and it earns its own playtest.
-    local PROX = 2087
-
-    --- Somebody out in the world with a working transmit path, who exists to be
-    --- talked at and to talk back. Built fresh per assertion because hears()
-    --- reads both directions off these tables.
-    local function outsider(src)
-        return { active = true, channel = PROX, sends = { PROX }, people = {},
-                 listen = {}, volume = {}, src = src,
-                 inDist = nil, outDist = nil }
-    end
-
-    nobodyElse()
-    standAt(0, 0)
-
-    -- 1. THE CONTROL, unchanged from the gagged version of this block: on the
-    --    ground, 'nearby' transmits and the person beside you hears it.
-    BR.State.me.state = BR.PlayerState.WARMUP
-    voiceApply('nearby', PROX, nil, 1)
-    playersAt({ [2] = { x = 5.0, y = 0 } })
-    local ground = mumbleSnapshot()
-    ok(ground.active, 'before boarding, nearby transmits',
-        tostring(ground.active))
-    ok(hears(ground, outsider(2), 5.0),
-        'and somebody standing next to us hears it')
-
-    -- 2. BOARDING CHANGES NOTHING. The whole of the fix, and the assertion that
-    --    the shipped gag fails: no state on the mirror may reach for the
-    --    microphone switch on a band.
-    BR.State.me.state = BR.PlayerState.BUS
-    BR.Loop.step(BR.Loop.TICK)
-    local aboard = mumbleSnapshot()
-    ok(aboard.active,
-        'BOARDING THE BUS LEAVES nearby TRANSMITTING -- the gag that took it '
-        .. 'away took the Mumble connection with it',
-        tostring(aboard.active))
-    ok(aboard.channel == PROX and #aboard.sends == 1 and aboard.sends[1] == PROX,
-        'and the room and the transmit path are both still there, which is what '
-        .. 'MumbleSetActive(false) was really throwing away',
-        ('channel=%s sends=%d'):format(tostring(aboard.channel),
-            #aboard.sends))
-    ok(hears(aboard, outsider(2), 5.0),
-        'so a rider calling a drop is heard, which is the noise the owner asked '
-        .. 'to be rid of and the price of not shipping silence for it')
-
-    -- 3. AND THE 10Hz BAND NEVER TOUCHES THE SWITCH AT ALL, in any state.
-    --
-    --    THE REGRESSION ASSERTION. Not "the microphone is on" -- the gagged
-    --    build passes that one tick later -- but "nothing on a band is allowed
-    --    to state this native at all". Driven by walking the state mirror
-    --    through every state a match has, five ticks each, and COUNTING.
-    --
-    --    COUNTED, NOT THROWN, AND THAT DISTINCTION IS ITSELF A SCAR. The
-    --    version of this block that shipped with the gag proved the same shape
-    --    of thing by replacing the natives with error() and wrapping
-    --    BR.Loop.step in pcall -- which can never fail, because BR.Loop.step
-    --    pcalls every callback itself (client/main.lua:363) precisely so one
-    --    broken subsystem cannot stop the storm. The throw was caught by the
-    --    loop, the loop returned normally, the pcall said true, and the
-    --    assertion passed no matter what voice.lua did. Restoring the gag
-    --    leaves that old assertion green; it fails this one.
-    local realActive, realGame = MumbleSetActive, NetworkSetVoiceActive
-    local stated = {}
-    MumbleSetActive = function(v)
-        stated[#stated + 1] = ('MumbleSetActive(%s)'):format(tostring(v))
-        realActive(v)
-    end
-    NetworkSetVoiceActive = function(v)
-        stated[#stated + 1] = ('NetworkSetVoiceActive(%s)'):format(tostring(v))
-        realGame(v)
-    end
-    for _, st in ipairs({ BR.PlayerState.BUS, BR.PlayerState.FREEFALL,
-                          BR.PlayerState.GLIDE, BR.PlayerState.ALIVE,
-                          BR.PlayerState.DBNO, BR.PlayerState.WARMUP }) do
-        BR.State.me.state = st
-        for _ = 1, 5 do BR.Loop.step(BR.Loop.TICK) end
-    end
-    MumbleSetActive, NetworkSetVoiceActive = realActive, realGame
-    ok(#stated == 0,
-        'NO BAND STATES THE MICROPHONE SWITCH, IN ANY PLAYER STATE -- apply() '
-        .. 'owns it, because apply() is the only thing that re-joins the room '
-        .. 'and refills the target afterwards',
-        #stated == 0 and 'none' or table.concat(stated, ' '))
-
-    -- 4. AND THE WHOLE FLIGHT LEAVES THE PLAYER AUDIBLE. The end state of the
-    --    report: bus, jump, land, still heard, without a reconnect or a new
-    --    assignment to prompt it.
-    BR.State.me.state = BR.PlayerState.FREEFALL
-    BR.Loop.step(BR.Loop.TICK)
-    BR.State.me.state = BR.PlayerState.ALIVE
-    BR.Loop.step(BR.Loop.TICK)
-    local landed = mumbleSnapshot()
-    ok(landed.active and #landed.sends == 1 and landed.sends[1] == PROX,
-        'AND LANDING LEAVES THEM TRANSMITTING INTO A REAL ROOM -- `active` '
-        .. 'alone was the old assertion here and it passed on the build the '
-        .. 'owner could not be heard on',
-        ('active=%s sends=%d'):format(tostring(landed.active), #landed.sends))
-    ok(hears(landed, outsider(2), 5.0)
-        and hears(outsider(2), landed, 5.0),
-        'so two players in one squad, both on nearby, standing together, hear '
-        .. 'each other -- the report, spelled out')
-
-    -- 5. 'off' STILL OWNS THE SWITCH, and this is the block that says why the
-    --    fix is a removal rather than a repair. 'off' calls the same native --
-    --    and pairs it with a cleared voice target and `applied = false`, so the
-    --    room and the routing are rebuilt when the player comes back. That
-    --    bookkeeping is the difference between a mode and a bug.
-    voiceMode('off')
-    local off = mumbleSnapshot()
-    ok(not off.active, 'off still stops the microphone', tostring(off.active))
-    ok(#off.sends == 0,
-        'and clears the transmit path with it, rather than leaving one loaded',
-        ('sends=%d'):format(#off.sends))
-
-    voiceMode('nearby')
-    local back = mumbleSnapshot()
-    ok(back.active and #back.sends == 1 and back.sends[1] == PROX,
-        'and coming back off off REBUILDS the room and the target -- through '
-        .. 'apply() and the settle band, which is the only road back and is '
-        .. 'exactly what the bus gag skipped',
-        ('active=%s sends=%d'):format(tostring(back.active), #back.sends))
-    ok(hears(back, outsider(2), 5.0),
-        'so the match hears them again')
-
-    nobodyElse()
-end
-
-describe('the voice readout runs')
-do
-    -- /brvoice is the one instrument a playtester has for this, and #150 is
-    -- being handed back to the owner with "run it and read the talking-into
-    -- line" -- so it must not throw and it must actually say something.
-    standAt(0, 0)
-    voiceApply('nearby', 2029, nil, 1)
+    -- #150 WAS A WEEK OF A READOUT THAT LOOKED RIGHT. The old one opened with a
+    -- proximity channel number that was correct, current, and had nothing to do
+    -- with whether audio was leaving the machine. The first line is now the
+    -- only question worth asking first.
     logged = {}
-    ok(pcall(commands['brvoice'], nil, {}, ''), '/brvoice does not throw')
+    nobodyElse()
+    standAt(0, 0)
+    voiceApply('nearby', 30503, { 2 }, 1, BR.PlayerState.BUS)
+    local okCmd = pcall(commands['brvoice'])
     local said = table.concat(logged, '\n')
-    ok(said:find('talking into', 1, true) ~= nil,
-        'and reports where audio is being sent, not just which room we are in')
-    ok(said:find('NOTHING', 1, true) == nil,
-        'and does not report silence on a healthy assignment', said)
-    -- The line the second attempt at #150 needed. "talking into" is what this
-    -- client ASKED the engine for, and on the reported build the engine
-    -- accepted none of it -- so the readout has to say whether the engine
-    -- agrees the player is in the room those numbers came from.
-    ok(said:find('in the room', 1, true) ~= nil,
-        'and says whether the engine has actually joined the room')
-    ok(said:find('NOT YET', 1, true) == nil,
-        'which on a settled assignment it has', said)
-    -- AND THE LINE #157 NEEDS. A playtester who cannot see the range in force
-    -- cannot tell a broken cutoff from a working one, which is how a map-wide
-    -- party line survived two rounds of diagnosis.
-    ok(said:find('nearby range', 1, true) ~= nil,
-        'and prints the range actually in force')
-    ok(said:find('GLOBAL', 1, true) == nil,
-        'and does not warn about a missing range on a build that has it', said)
+    ok(okCmd, 'the client readout runs', said)
+    ok(said:find('voice engine') ~= nil and said:find('pma%-voice') ~= nil,
+        'and leads with whether the voice engine is even running', said)
+
+    -- AND IT REPORTS THE GAG, which the previous version could not: a total
+    -- outage was invisible because the readout named a room instead of a
+    -- transmit path.
+    ok(said:find('transmitting') ~= nil and said:upper():find('NO %-%-') ~= nil,
+        'and says out loud that this player is not transmitting', said)
+    ok(said:lower():find('bus') ~= nil,
+        'and why -- the bus, in words a playtester can act on', said)
+
+    -- AND IT POINTS AT THE RIGHT MACHINE. This is the single biggest change in
+    -- how voice is diagnosed and it is the thing most likely to waste a
+    -- playtest if it is not said: proximity is enforced by the speaker.
+    ok(said:upper():find('SPEAKER') ~= nil,
+        'and tells the reader that proximity is the speaker\'s decision', said)
+
+    logged = {}
 end
 
 -- ----------------------------------------------------------- the descent ---
@@ -3061,8 +2744,20 @@ do
         'a bought trail arms on the way out of the door',
         ('armed %s source %s'):format(tostring(BR.Cosmetics.trailArmed),
                                       tostring(BR.Cosmetics.trailSource)))
-    ok(BR.Cosmetics.trailSource == 'purchase' and smoke.allowed == true,
-        'and it is the purchase that is painted, solo or not')
+    -- ARMED IS NOT ON, AND THAT IS THE OWNER'S RULE (2026-08-17): "Smoke trails
+    -- should always default to off, which requires the player to press the
+    -- button, which will then dismiss our DUI".
+    --
+    -- So the purchase is what gets PAINTED -- the colour and the entitlement are
+    -- resolved on the way out of the door -- while the engine permission stays
+    -- FALSE until a press. That matters beyond our own flag: leaving permission
+    -- granted lets the player's vanilla X emit smoke behind a prompt that says
+    -- the trail is off.
+    ok(BR.Cosmetics.trailSource == 'purchase' and smoke.allowed == false,
+        'and it is the purchase that is painted -- but armed is not ON, so the '
+        .. 'engine is not yet permitted to emit',
+        ('source %s allowed %s'):format(tostring(BR.Cosmetics.trailSource),
+                                        tostring(smoke.allowed)))
 
     -- Freefall: chute stowed, ped in the parachute task.
     dui.sends, dui.draws = {}, 0
@@ -3167,6 +2862,15 @@ do
     local heard = 0
     BR.Keys.on('trail', function(p) if p then heard = heard + 1 end end)
 
+    -- TURN IT ON FIRST, because a drop now starts with the trail OFF and this
+    -- whole block was written when it started on. Everything below is about
+    -- what a PRESS does; it needs the trail lit to have something to toggle off.
+    --
+    -- Counted deliberately outside `heard`, which is reset immediately after, so
+    -- the "fires exactly once" assertion still measures one press and not two.
+    press(0x42, 'B')
+    heard = 0
+
     local litUp = BR.Cosmetics.trailOn
     press(0x42, 'B')
     ok(heard == 1,
@@ -3264,10 +2968,15 @@ do
     logged = {}
     pcall(commands['brdropdbg'], nil, {}, '')
     local dbg = table.concat(logged, '\n')
-    ok(dbg:find('trail key: presses 3', 1, true) ~= nil,
+    -- FOUR, NOT THREE: a drop now starts with the trail OFF, so this block
+    -- opens with one extra press to light it before testing what a press does.
+    -- The count is of presses that REACHED THE TOGGLE, which is the fact worth
+    -- pinning -- a readout that under-reports would send the next round of this
+    -- issue after the binding when the binding is fine.
+    ok(dbg:find('trail key: presses 4', 1, true) ~= nil,
         'the readout counts the presses that actually reached the toggle',
         dbg:match('trail key:[^\n]*') or 'no trail key line')
-    ok(dbg:find('acted 3', 1, true) ~= nil,
+    ok(dbg:find('acted 4', 1, true) ~= nil,
         'and how many of them the toggle carried out',
         dbg:match('trail key:[^\n]*') or 'no trail key line')
 
@@ -3806,7 +3515,24 @@ do
         [2] = { src = 2, name = 'Bravo', squadId = 'sq1',
                 state = BR.PlayerState.DBNO },
     }
-    fire(BR.Net.SQUAD_POS, { { src = 2, name = 'Bravo', i = 2, x = 1.0, y = 0.0,
+    -- FOUR METRES, NOT ONE, AND THAT DISTANCE IS NOW LOAD-BEARING.
+    --
+    -- This block measures WHERE A NAME IS DRAWN. Within revive reach the name is
+    -- deliberately not drawn at all (owner, 2026-08-17: "when going in for the
+    -- revive, the playernames text is shown at the exact same position as the
+    -- DUI, resulting in an overlap effect") -- the revive prompt's own label IS
+    -- that player's name, so the overhead one is suppressed rather than nudged.
+    --
+    -- The old fixture stood the body at 1.0m, INSIDE the 1.5m reach, and then
+    -- asserted both that the name is drawn there and, forty lines later, that
+    -- the revive prompt is drawn there too. It pinned the overlap it was written
+    -- to catch. Geometry is measured out of reach; the suppression is asserted
+    -- separately below; the prompt assertions keep 1.0m.
+    -- THE BODY MOVES, NOT JUST THE BEACON. Suppression is decided from the real
+    -- ped distance, so a beacon that claims 4m over a ped still lying at 1m
+    -- would measure nothing. The two are kept in step deliberately.
+    bodies[MATE].x = 4.0
+    fire(BR.Net.SQUAD_POS, { { src = 2, name = 'Bravo', i = 2, x = 4.0, y = 0.0,
                               state = BR.PlayerState.DBNO } })
     tagsMade = 0
     tickBand()
@@ -3847,6 +3573,27 @@ do
                 :format(proneName.z, standName.z, standName.z - proneName.z)
             or 'one of the two frames drew nothing')
     bodies[MATE].prone = true
+
+    -- AND INSIDE REVIVE REACH THE NAME IS NOT DRAWN AT ALL.
+    --
+    -- The revive prompt is a SCREEN-SPACE sprite about 16% of screen height,
+    -- centred on the same head bone the name hangs off -- the two agree to
+    -- within 5cm, so the name lands inside the plate. Offsetting cannot fix
+    -- that: a world lift big enough to clear the sprite at arm's length puts the
+    -- name in the sky at 20m. Nothing is lost by suppressing it, because the
+    -- prompt's own label IS that player's name.
+    bodies[MATE].x = 1.0
+    fire(BR.Net.SQUAD_POS, { { src = 2, name = 'Bravo', i = 2, x = 1.0, y = 0.0,
+                              state = BR.PlayerState.DBNO } })
+    tickBand()
+    drawn = {}
+    frame(16)
+    local nearName = lastName()
+    ok(nearName == nil,
+        'AND A BODY WITHIN REVIVE REACH GETS NO OVERHEAD NAME, because the '
+        .. 'prompt already carries it and they would sit on top of each other',
+        nearName and ('a name was drawn at z %.2f'):format(nearName.z)
+            or 'nothing was drawn, which is the point')
 
     -- The upright states keep the ENGINE's tag. The common case is not being
     -- rewritten to fix the uncommon one, and a fix that silently moved every

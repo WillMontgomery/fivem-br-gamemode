@@ -78,6 +78,16 @@ add_ace group.admin command allow
 ensure sessionmanager    # connection handling -- required
 ensure hardcap           # enforces sv_maxclients
 
+# VOICE. THIRD-PARTY, NOT IN THIS REPOSITORY, AND YOU MUST INSTALL IT YOURSELF.
+# See the "Voice" block further down for the exact commands -- this one line is
+# the whole of the config, but the resource has to be on the box first.
+#
+# Started BEFORE br_core so the proximity rules land on a resource that is
+# already up. br_core does not require that -- it re-states them if pma-voice
+# starts later, and it boots without it -- but there is no reason to make it
+# work for a living.
+ensure pma-voice
+
 # NOT started, on purpose:
 #   chat            -- br_ui provides chat; two systems fight over the T key
 #   spawnmanager    -- br_core owns spawning and the warmup pad
@@ -135,75 +145,127 @@ ensure br_ringmaster     # optional -- the admin console's game-side half
 # set br_ddb_table_prefix "ringmaster-"
 
 # ---------------------------------------------------------------------------
-# Voice: NOTHING HERE IS REQUIRED. ONE LINE IS RECOMMENDED, AND IT IS OFF.
+# VOICE. THE RESOURCE IS NOT IN THIS REPOSITORY. INSTALL IT ON THE BOX.
 #
-# NOT REQUIRED, and this was checked twice. It was suggested during #150 that
-# some deployments need `setr voice_useNativeAudio true` before Mumble channels
-# exist; they do not. The channel system reads no convar anywhere -- rooms,
-# voice targets and listens are all unconfigurable -- and #157 confirmed the
-# same for range: the distance that decides who can hear whom is set by the
-# gamemode (br_lib/config/match.lua, Config.Match.voice.range), not here.
+# The gamemode no longer drives FiveM's Mumble natives itself. It drives
+# pma-voice (MIT, (c) Dillon Skaggs), which owns proximity and the squad radio;
+# br_core only tells it our rules. Six rounds of hand-rolled voice preceded that
+# decision and four of them shipped a silent 'nearby'.
 #
-# WHAT IT ACTUALLY CHANGES, which is worth having:
+# ---------------------------------------------------------------------------
+# INSTALL, ONCE, ON THE SERVER. This is an operator step by design -- see WHY
+# IT IS NOT VENDORED below. Run it as the user that owns the server directory:
 #
-#   OFF (default, what you are running now)
-#     Proximity is a HARD EDGE. Inside the range a player is at full volume;
-#     one step past it they are gone. There is no fade, and walking the
-#     boundary sounds like a switch being flicked.
+#     cd /path/to/server-data/resources
+#     mkdir -p '[voice]'
+#     git clone --branch v7.0.0 --depth 1 \
+#         https://github.com/AvarianKnight/pma-voice.git '[voice]/pma-voice'
+#
+# Then `ensure pma-voice` (already in the list above) and restart.
+#
+# THE PIN IS DELIBERATE. v7.0.0 is the latest tag that is not a release
+# candidate; v7.0.1-rc2 and v7.0.2-rc3 exist and are not recommended for a live
+# box. Every export br_core uses -- overrideProximityCheck,
+# overrideProximityRange, setRadioChannel, addChannelCheck, setPlayerRadio,
+# getMutedPlayers, toggleMutePlayer -- was verified present at v7.0.0. Upgrading
+# is fine; upgrading blind is what the pin exists to stop.
+#
+# THE DIRECTORY MATTERS AND IT IS NOT ARBITRARY. `[voice]` is a sibling of
+# `[gamemodes]`, and tools/deploy.sh rsyncs with --delete scoped to
+# resources/[gamemodes]/[fivem-royale]/ ONLY. So pma-voice installed at
+# resources/[voice]/pma-voice survives every deploy untouched. Install it
+# INSIDE the gamemode tree instead and the next deploy will delete it.
+#
+# WHY IT IS NOT VENDORED INTO THIS REPOSITORY:
+#   - It is ~400 KB of third-party Lua, JS and prebuilt UI that nobody on this
+#     project has audited. Committing it means our pre-commit hook and
+#     tools/check_secrets.sh sweep it forever, and it means we own its bugs.
+#   - It has its own security and patch cadence. An operator should be able to
+#     take a fix the day it lands without waiting for one of our releases.
+#   - Nothing about the gamemode needs it in-tree: br_core detects it at
+#     runtime with GetResourceState and boots without it.
+# The trade is that a fresh box needs the clone above. That is one command, and
+# a missing pma-voice announces itself in the server console on start and on the
+# first line of `brvoice`.
+#
+# ---------------------------------------------------------------------------
+# CONVARS. ONE IS REQUIRED. THE REST ARE OPTIONAL.
+#
+# REQUIRED -- turn pma-voice's own overlay off.
+#
+# This is the duplicate "currently talking" readout. The gamemode draws its own
+# indicator (bottom centre, driven by br_core/client/voice.lua), and running
+# both is the second contradicting voice this config already complains about
+# elsewhere.
+#
+# WRITTEN DOWN BECAUSE THIS FILE PREVIOUSLY GOT IT WRONG IN BOTH DIRECTIONS. It
+# was first recommended while no voice resource was installed, where it did
+# nothing at all, and this file then said it "DOES NOTHING ON THIS SERVER" --
+# true at the time, false the moment pma-voice is ensured. It is read in
+# pma-voice's own client Lua in two places (client/init/init.lua, which sends
+# `uiEnabled` to its NUI at start, and client/init/proximity.lua, which gates
+# the talking/radio updates it pushes to that NUI), so 0 stops both the overlay
+# and the traffic that feeds it.
+setr voice_enableUi 0
+#
+# RECOMMENDED -- stop F11 cycling the proximity range.
+#
+# pma-voice ships three cycleable ranges (whisper/normal/shout) and a key to
+# rotate them. This gamemode has ONE range, from Config.Match.voice.range.nearby.
+# br_core already disables the cycle through the overrideProximityRange export;
+# this is the belt to that braces, and it also removes the keybind from the
+# player's key list so nobody goes looking for it.
+setr voice_enableProximityCycle 0
+#
+# OPTIONAL -- native audio playback. STILL RECOMMENDED, STILL SECOND.
+#
+#   OFF (default, what you get if you leave this alone)
+#     Voices are mixed by Mumble. Proximity still fades with distance -- that
+#     is pma-voice's doing and it is the capability this whole change was made
+#     to get -- but the sound is not placed in the world by the game engine.
 #
 #   ON
-#     Playback is handed to the game's own audio engine, which applies its
-#     normal attenuation curves and occlusion. The same range still applies --
-#     it is still 25 m -- but a voice now FADES toward the edge instead of
-#     cutting, and sounds like it is coming from where the player is standing.
+#     Playback is handed to GTA's own audio engine: occlusion, reverb, and a
+#     voice that sounds like it is coming from where the player is standing.
 #
-#     ONE CAVEAT, ADDED AFTER THE SECOND ROUND OF #157. The cutoff itself is no
-#     longer the engine's: the client mutes players outside the range itself,
-#     because the engine's own distance cutoff silenced everybody on this build.
-#     A muted player is muted on either setting, so the range will not change --
-#     but the FADE is applied by the playback path to voices that are already
-#     allowed through, so what this changes is the edge, and the edge only.
+#     ONE THING TO KNOW BEFORE YOU TURN IT ON. pma-voice multiplies its own
+#     proximity range by three when this convar is set (client/init/proximity.lua).
+#     br_core does NOT apply that multiplier -- our range is stated in world
+#     metres and our proximity check compares metres -- so the CUTOFF does not
+#     move when you flip this. What moves is how the last few metres sound.
+#     (An earlier version of this note claimed the same outcome for the
+#      hand-rolled system, which was true then for a different reason. It is
+#      restated here because the reason changed and the conclusion did not.)
 #
-#     AND ONE THING TO WATCH, worth knowing before it costs a playtest. On the
-#     native-audio path the game's distance units are LARGER than Mumble's --
-#     pma-voice multiplies its range by three when this convar is on. Our 25 m
-#     is measured in Lua, in world metres, so the CUTOFF will not move. But if
-#     voices sound like they fade out well before the cutoff once this is on,
-#     that mismatch is why, and the answer is to tune
-#     Config.Match.voice.range.nearby rather than to touch this line.
-#
-# RECOMMENDED, BUT TURN IT ON SECOND. Verify the range works with the hard edge
-# first, because a hard edge is unambiguous: at 30 m you either hear somebody
-# or you do not, and there is nothing to argue about. A fade at 30 m and a
-# broken cutoff at 30 m can sound alike. Once the range test passes, uncomment
-# this, restart, and everything about voice should sound better and nothing
-# about who-hears-whom should change:
+# TURN IT ON SECOND, after you have confirmed the range works. A hard edge is
+# unambiguous; a fade and a broken cutoff can sound alike.
 #
 # setr voice_useNativeAudio true
 #
-# If voice is broken, it is still probably not this file. `brvoice` in the
-# server console shows the assignment; F8 `brvoice` on a client shows whether
-# audio is leaving the machine and what range is in force.
+# ---------------------------------------------------------------------------
+# WHAT DOES *NOT* GO HERE.
 #
-# `voice_enableUi` DOES NOTHING ON THIS SERVER. WRITTEN DOWN BECAUSE IT HAS NOW
-# BEEN TRIED, ON MY ADVICE, AND MY ADVICE WAS WRONG.
+# The proximity range itself. It is the gamemode's, from
+# br_lib/config/match.lua (Config.Match.voice.range.nearby), pushed to each
+# client and handed to pma-voice by br_core. Do not set voice_defaultVoiceMode
+# or add voice modes -- br_core overrides the range on every match assignment
+# and would overwrite you.
 #
-# It was suggested as the way to remove the duplicated "currently talking"
-# readout. It is not a FiveM convar at all -- it belongs to pma-voice, which
-# reads it as `GetConvarInt("voice_enableUi", 1)` in its own client Lua and
-# declares it in its own fxmanifest, to switch pma-voice's own NUI overlay
-# on and off. It gates that resource's interface and nothing else.
+# The squad radio channel numbers. Also the gamemode's, derived from matchId and
+# squadId in br_core/server/voice.lua, and gated by a pma-voice addChannelCheck
+# so a client cannot join a squad it is not on.
 #
-# WE DO NOT RUN pma-voice. There is no voice resource in the `ensure` list
-# above at all: br_core/client/voice.lua drives FiveM's built-in Mumble through
-# the natives directly, and pma-voice appears in this project only as a
-# reference that file was checked against. So setting this convar -- `set` or
-# `setr`, `0` or `false` -- writes a value that no running code ever reads.
+# ---------------------------------------------------------------------------
+# IF VOICE IS BROKEN, IN ORDER:
 #
-# The duplicate readout is a CODE question, not a config one. GTA's own voice
-# chat is switched by NETWORK_SET_VOICE_ACTIVE, which FiveM hooks to call the
-# real game function; br_core/client/voice.lua is the only thing in the project
-# that calls it. Look there, not here.
+#   1. `brvoice` in the SERVER console. First line says whether pma-voice is
+#      running at all. It lists squad radios only -- proximity is not assigned
+#      by the server any more and cannot be diagnosed from there.
+#   2. F8 `brvoice` on the affected CLIENT. First line, again, is the engine.
+#      Then the "transmitting" line.
+#   3. AND THIS IS THE PART THAT IS NEW: proximity is enforced by the SPEAKER.
+#      If A cannot hear B, the machine to run /brvoice on is B'S, not A's.
+#      There is nothing on A's client that can be refusing B.
 # ---------------------------------------------------------------------------
 
 # Our loading screen draws its own progress; the engine's busy spinner over
