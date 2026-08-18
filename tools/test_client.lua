@@ -4075,8 +4075,21 @@ do
     function SetPedCanRagdoll() end
     function ResetPedMovementClipset() end
     function SetPedMoveRateOverride() end
-    function SetPedRelationshipGroupHash() end
     function SetEntityLocallyInvisible() end
+
+    -- WHO THIS CLIENT HAS MARKED UNABLE TO BE DAMAGED, and what group it put
+    -- them in. Recorded rather than swallowed: #115 turns entirely on whether
+    -- a SQUADMATE's local clone carries the mark and an ENEMY's does not, and
+    -- a no-op stub can only ever agree with whatever the code happens to do.
+    --
+    -- nil is a THIRD answer here and it is load-bearing -- "never touched" is
+    -- not "touched with false", and the enemy assertion below is the one that
+    -- needs to tell them apart. (`0` is truthy in Lua and these natives take
+    -- booleans, so the values are stored raw and compared with == rather than
+    -- being coerced through `and true or false`.)
+    local shielded, grouped = {}, {}
+    function SetEntityCanBeDamaged(ped, toggle) shielded[ped] = toggle end
+    function SetPedRelationshipGroupHash(ped, g) grouped[ped] = g end
 
     -- The resurrection, and the reading that matters at the moment it happens.
     local resurrect = { count = 0, dictLoadedFirst = nil, posed = nil }
@@ -4617,6 +4630,101 @@ do
         ok(said:find(word, 1, true) ~= nil,
             ('the readout carries "%s"'):format(word), said)
     end
+
+    -- ====================================================================== --
+    -- FRIENDLY FIRE IS PREVENTED ON THE SHOOTER, NOT REPAIRED AFTERWARDS
+    -- ====================================================================== --
+    --
+    -- #115, the false corpse: the shooter's engine kills a teammate's clone
+    -- locally, the server refuses the damage with CancelEvent(), and
+    -- CancelEvent() sends no negative acknowledgement -- so there is no
+    -- message with which to correct the corpse. The only fix is for the
+    -- shooter's engine never to compute the hit, which means the clone must
+    -- carry the "unable to be damaged" mark BEFORE the trigger is pulled.
+    --
+    -- THE ASSERTIONS THAT MAKE THIS SUITE ABLE TO FAIL. Every previous round
+    -- of #115 was pinned by a stub that re-encoded the same assumption as the
+    -- production code, so the four below are deliberately split between the
+    -- two ways this change can be wrong:
+    --
+    --   REVERT-DETECTING  -- fail if the shield is removed  (1 and 4)
+    --   OVERREACH-DETECTING -- fail if the shield is applied too widely,
+    --                          which is the failure mode that would silently
+    --                          disable combat  (2 and 3)
+    --
+    -- A fix that shields everybody passes 1 and fails 2. A fix that shields
+    -- nobody passes 2 and fails 1. Neither can pass both.
+
+    describe('a squadmate cannot be shot by this client, an enemy still can -- #115')
+
+    -- A THIRD PLAYER WHO IS NOT IN THE SQUAD. The server never names them in
+    -- a SQUAD_POS push -- that push is squad-only by construction
+    -- (server/party.lua groups on squadId and skips any squad of one, pinned
+    -- in test_roster.lua) -- so this client learns of them only as another
+    -- body in the world, which is exactly what an enemy is.
+    local ENEMY = 5003
+    others[3] = { x = 2.0, y = 0.0 }
+    bodies[ENEMY] = { x = 2.0, y = 0.0, z = 30.0, h = 0.0, dead = false,
+                      prone = false }
+
+    BR.State.me = { src = 1, state = BR.PlayerState.ALIVE, squadId = 'sq1' }
+    BR.State.roster = {
+        [1] = { src = 1, name = 'Me',     squadId = 'sq1',
+                state = BR.PlayerState.ALIVE },
+        [2] = { src = 2, name = 'Bravo',  squadId = 'sq1',
+                state = BR.PlayerState.ALIVE },
+        [3] = { src = 3, name = 'Victor', squadId = 'sq9',
+                state = BR.PlayerState.ALIVE },
+    }
+
+    shielded[MATE], shielded[ENEMY] = nil, nil
+    fire(BR.Net.SQUAD_POS, { { src = 2, name = 'Bravo', i = 2, x = 1.0, y = 0.0,
+                              state = BR.PlayerState.ALIVE } })
+    tickBand()
+
+    -- 1. REVERT-DETECTING.
+    ok(shielded[MATE] == false,
+        'A SQUADMATE IS MARKED UNABLE TO BE DAMAGED ON THIS CLIENT -- #115',
+        ('SetEntityCanBeDamaged on the mate: %s'):format(tostring(shielded[MATE])))
+
+    ok(grouped[MATE] == BR.Native.ALLY_GROUP,
+        'and is still put in the ally group the AI and melee paths read',
+        ('group: %s'):format(tostring(grouped[MATE])))
+
+    -- 2. OVERREACH-DETECTING, and the whole reason this is not a one-line
+    --    change to a global switch: PvP against everybody else must survive.
+    ok(shielded[ENEMY] == nil,
+        'AND AN ENEMY IS NEVER TOUCHED, so shooting them still works -- #115',
+        ('SetEntityCanBeDamaged on the enemy: %s')
+            :format(tostring(shielded[ENEMY])))
+
+    -- 3. OVERREACH-DETECTING, solos. A solo player is in no squad, so the
+    --    server sends them no push at all and `mates` is empty -- if anything
+    --    in this path shielded a player without a push, a solo lobby would be
+    --    a pacifist lobby. Ticked twice: once is a loop that ran, twice is a
+    --    loop that kept its answer.
+    shielded[MATE], shielded[ENEMY] = nil, nil
+    fire(BR.Net.SQUAD_POS, {})
+    tickBand()
+    tickBand()
+    ok(shielded[ENEMY] == nil,
+        'A SOLO SHIELDS NOBODY, because with no squad push there is no ally',
+        ('enemy: %s'):format(tostring(shielded[ENEMY])))
+
+    -- 4. REVERT-DETECTING, and the regression this change could introduce if
+    --    the release path were forgotten: an EX-squadmate who kept the shield
+    --    would be invulnerable to this client for the rest of the match. The
+    --    empty push above is a squad that dissolved.
+    ok(shielded[MATE] == true,
+        'AND AN EX-SQUADMATE IS HANDED BACK, not left permanently bulletproof',
+        ('SetEntityCanBeDamaged on the ex-mate: %s')
+            :format(tostring(shielded[MATE])))
+
+    ok(select(1, loopHealth('squadmates.tags')) == 0,
+        'and the loop that does all of this has not thrown once',
+        ('errors %s'):format(tostring(select(1, loopHealth('squadmates.tags')))))
+
+    others[3] = nil
 end
 
 -- ======================================================================== --

@@ -155,14 +155,25 @@ local function dropTag(src)
     end
 end
 
---- Hand every allied ped back to the default group. Called when the squad
---- stops being a squad -- an EX-squadmate must not stay unshootable.
-local function disbandAllies()
-    for ped in pairs(allied) do
-        if DoesEntityExist(ped) then
-            SetPedRelationshipGroupHash(ped, PLAYER_GROUP)
-        end
+--- Hand ONE ped back: default relationship group, and damageable again.
+---
+--- BOTH HALVES, and the second one is the one that bites. A ped that keeps the
+--- damage shield after leaving the squad is invulnerable to this client for the
+--- rest of the match -- a strictly worse bug than the teamkill the shield
+--- exists to stop, because it is silent and it never self-corrects. Every path
+--- that stops considering a ped an ally goes through here.
+local function releaseAlly(ped)
+    if DoesEntityExist(ped) then
+        SetPedRelationshipGroupHash(ped, PLAYER_GROUP)
+        SetEntityCanBeDamaged(ped, true)
     end
+    allied[ped] = nil
+end
+
+--- Hand every allied ped back. Called when the squad stops being a squad --
+--- an EX-squadmate must not stay unshootable.
+local function disbandAllies()
+    for ped in pairs(allied) do releaseAlly(ped) end
     allied = {}
 end
 
@@ -265,6 +276,13 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
     -- flag means "not scoped", which is the safe default for a name.
     local scoped = (BR.Screen and BR.Screen.scoped) and true or false
 
+    -- Who is allied THIS tick. Anything in `allied` that is missing from this
+    -- set by the end of the loop has stopped being a squadmate -- left the
+    -- squad, left scope, or had their ped handle replaced -- and is released
+    -- below. Membership is rebuilt whole every tick rather than patched on the
+    -- edges, because dropMate() alone never covered a handle change.
+    local stillAllied = {}
+
     for src, m in pairs(mates) do
         -- Presentation-only use of scope: a name can only hang over a ped
         -- that is streamed in, and no game state is derived from whether it
@@ -284,9 +302,43 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
         -- reset) silently made a teammate shootable again ("in squads I
         -- can kill my own teammates", live report). Ten hash-writes a
         -- second is free; a teamkill is not.
+        --
+        -- SET_ENTITY_CAN_BE_DAMAGED IS THE HALF THAT ACTUALLY STOPS A BULLET,
+        -- AND IT IS THE WHOLE OF #115 (the false corpse).
+        --
+        -- The relationship group alone does NOT stop one player's bullets from
+        -- damaging another player's ped -- measured here three times over
+        -- (2026-08-05), which is why the undo-net further down this file
+        -- exists. The undo-net repairs health AFTER the fact, and that is
+        -- precisely what cannot fix a false corpse: the shooter's engine has
+        -- already applied a local death, the server answers a refused
+        -- weaponDamageEvent with CancelEvent(), and CancelEvent() suppresses
+        -- replication while sending NO negative acknowledgement back to the
+        -- firing client (citizenfx/fivem#2343, open and unimplemented). There
+        -- is no message to correct with. Six rounds of correction proved that
+        -- from the other end (#115).
+        --
+        -- So the damage must never be computed. nta (Cfx.re) on this exact
+        -- symptom: "the game will generally assume that any entity NOT MARKED
+        -- AS 'UNABLE TO BE DAMAGED' will have damage accepted by the remote
+        -- side". This is that mark, and it is the only lever in the quote we
+        -- can actually pull -- the other one, a synthesized damage reply, is
+        -- the unimplemented feature above.
+        --
+        -- LOCAL, LIKE EVERY OTHER HALF OF THIS SCHEME. This client shields
+        -- only the peds the server told it are ITS OWN squadmates. An enemy
+        -- shooting the same player computes that shot on THEIR machine, where
+        -- this player is nobody's teammate and carries no shield -- so enemy
+        -- PvP is untouched, and a downed mate can still be finished by the
+        -- people who downed them.
+        --
+        -- WHAT THIS DELIBERATELY DOES NOT TOUCH: NetworkSetFriendlyFireOption
+        -- in client/natives.lua. See the note there before flipping it.
         if ped ~= 0 then
             SetPedRelationshipGroupHash(ped, BR.Native.ALLY_GROUP)
-            allied[ped] = true
+            SetEntityCanBeDamaged(ped, false)
+            allied[ped]      = true
+            stillAllied[ped] = true
         end
 
         -- NO NAME UNTIL THEY HAVE JUMPED: everyone shares the plane during
@@ -381,6 +433,22 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
             dropTag(src)
             low[src] = nil
         end
+    end
+
+    -- ANYONE WHO STOPPED BEING AN ALLY GETS THEIR BODY BACK.
+    --
+    -- dropMate() cannot do this on its own: it fires on the src, and by then
+    -- the ped handle it would need may already have been replaced (respawn,
+    -- re-stream) -- so the shielded handle would be orphaned, still shielded,
+    -- with nothing left pointing at it. Reconciling handles against the set
+    -- built this tick catches all four exits: left the squad, squad dissolved,
+    -- left scope, handle changed.
+    --
+    -- The re-stream case costs one tick of a shootable teammate, which is the
+    -- same window the relationship group has always had and the reason this
+    -- loop is TICK rather than SLOW.
+    for ped in pairs(allied) do
+        if not stillAllied[ped] then releaseAlly(ped) end
     end
 end)
 

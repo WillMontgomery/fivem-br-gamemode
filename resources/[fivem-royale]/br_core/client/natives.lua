@@ -496,19 +496,49 @@ function BR.Native.applyGameRules()
     -- GTA computes bullet damage:
     --
     --   Squadmates: my ped and my squadmates' local peds share the BR_ALLY
-    --   relationship group (squadmates.lua assigns theirs as they stream in),
-    --   and canAttackFriendly = false means same-group damage is refused.
+    --   relationship group (squadmates.lua assigns theirs as they stream in).
     --   Everyone else stays in the engine's default PLAYER group, which
-    --   BR_ALLY hates -- so enemies take damage exactly as before. This is
-    --   the same lever that made PvP work in the first place (default no-PvP
-    --   IS "everyone in PLAYER + canAttackFriendly false"), pointed at a
-    --   group that now only contains my own squad.
+    --   BR_ALLY hates.
+    --
+    --   THE RELATIONSHIP GROUP IS NOT WHAT STOPS THE BULLET, and this comment
+    --   used to claim it was. Measured otherwise three times over
+    --   (2026-08-05): the group + canAttackFriendly pair governs AI aggression
+    --   and melee, and does not stop one PLAYER's bullets from damaging
+    --   another PLAYER's ped. What stops the bullet is
+    --   SetEntityCanBeDamaged(matePed, false), asserted per tick on each
+    --   squadmate's local clone in squadmates.lua (#115). The group is kept
+    --   because it is what the AI and melee paths read, and because handing a
+    --   ped back to PLAYER is how an ex-squadmate is un-shielded.
     --
     --   Warmup: my own ped is simply invincible. Everyone's client does the
     --   same, so nobody can be hurt by anything until the bus.
     --
     -- Per-frame like the rest: the ped handle changes on respawn, and the
     -- group assignment dies with the old handle.
+    --
+    -- =====================================================================
+    -- DO NOT FLIP NetworkSetFriendlyFireOption TO false. IT IS ALL OF PvP.
+    -- =====================================================================
+    --
+    -- It reads like the friendly-fire master switch, and #115 was twice
+    -- diagnosed as "the polarity is backwards" on exactly that reading -- the
+    -- relationship-group recipe documented on the Cfx forum does name
+    -- NetworkSetFriendlyFireOption(false) as its prerequisite.
+    --
+    -- It was set true by e1f9f98, deliberately, as the fix for a MEASURED
+    -- fault: "FiveM ships with players unable to damage each other, which
+    -- presented as peace mode on the first real fight". No player is ever put
+    -- on a team here (SetPlayerTeam is called nowhere in this codebase), so
+    -- every player is the engine's idea of friendly to every other, and this
+    -- flag gates all of it. Setting it false is the documented recipe's
+    -- prerequisite AND, on this configuration, the switch that turns off every
+    -- fight in the game.
+    --
+    -- The recipe's other half is already known not to hold here: see the
+    -- measurement above. So the trade would be a total loss of combat in
+    -- exchange for a carve-out that has never worked. Friendly fire is
+    -- prevented in squadmates.lua instead, per-ped, where a failure is a
+    -- no-op rather than a dead gamemode.
     local ped = PlayerPedId()
     NetworkSetFriendlyFireOption(true)
     SetPedRelationshipGroupHash(ped, BR.Native.ALLY_GROUP)
