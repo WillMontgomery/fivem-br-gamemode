@@ -4186,15 +4186,38 @@ local function newReviver(mySrc, mateSrc, peds)
 end
 
 --- Player 1 gets knocked; player 2 stands over them holding the key.
+---
+--- TWO SETS OF COORDINATES, AND THAT IS THE POINT OF THIS RIG AFTER #164.
+---
+--- `truth` is where the bodies actually are: the server samples it, because
+--- server/roster.lua reads GetEntityCoords on the machine that owns the ped.
+--- `peds` is the REVIVER'S OWN COPY -- what client/dbno.lua measures its 1.5m
+--- reach against, through BR.Squadmates.pedOf.
+---
+--- They used to be one table, which quietly asserted that every client sees the
+--- same body in the same place. #164 is the report that they do not: the downed
+--- ped is pinned on its owner's machine and the clone on everybody else's crawls
+--- away, because the two things that pin it (TaskPlayAnim's lock flags and
+--- SetEntityAnimSpeed) are both local-only. A rig with one table cannot express
+--- that, which is exactly why 57 green cycles sat on top of a revive nobody
+--- could perform.
 --- @param rtt integer  one-way latency, ms
 local function newReviveRig(rtt)
-    local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
-                   [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+    local truth = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                    [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+    local peds  = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                    [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
     local SRV = newServer()
     local CLI = newReviver(2, 1, peds)
     local PS  = SRV.env.BR.PlayerState
     local wire = {}
     local H = { srv = SRV, cli = CLI }
+
+    -- Metres per second the downed mate's CLONE walks away from where the body
+    -- really is, on the reviver's machine only. 0.0 is a build where #164 is
+    -- fixed; the clip's own mover is worth about a third of a metre a second
+    -- (client/dbno.lua's note, measured at 1.05m over three seconds).
+    H.ghostSpeed = 0.0
 
     function H.pump(ms, onFrame)
         local target = CLI.now + ms
@@ -4203,11 +4226,20 @@ local function newReviveRig(rtt)
             local now = CLI.now
             SRV.tick(now)
 
+            -- The clone crawls; the body does not. The reviver stands still and
+            -- watches a ped leave a circle it never actually left.
+            --
+            -- AWAY FROM THE REVIVER, who is at +x. A clone that wandered
+            -- TOWARDS them would be a rig that proves nothing -- which is worth
+            -- saying, because that is what the first cut of this did and it
+            -- passed against the broken build.
+            peds[5001].x = peds[5001].x - H.ghostSpeed * 0.016
+
             -- roster.positions, reduced to what it produces: reviveAllowed
             -- measures from the SERVER's own samples and from nothing a client
-            -- said, so the rig has to keep them fed.
+            -- said, so the rig has to keep them fed -- from the TRUTH.
             for _, s in ipairs({ 1, 2 }) do
-                local q = peds[5000 + s]
+                local q = truth[5000 + s]
                 SRV.roster[s].pos = { x = q.x, y = q.y, z = q.z }
             end
 
@@ -4238,9 +4270,15 @@ local function newReviveRig(rtt)
         end
     end
 
-    function H.knock() SRV.env.BR.Combat.knock(1, 3) end
+    function H.knock()
+        -- A fresh knock re-pins the clone: the crawl is tasked again, so
+        -- whatever the last one had wandered to is not inherited.
+        peds[5001].x = truth[5001].x
+        SRV.env.BR.Combat.knock(1, 3)
+    end
     function H.press(down) CLI.press(down) end
-    function H.moveTo(x) peds[5002].x = x end
+    --- The reviver really walks: both the truth and their own view move.
+    function H.moveTo(x) peds[5002].x, truth[5002].x = x, x end
     function H.up() return SRV.roster[1].state == PS.ALIVE end
 
     --- Pump up to `ms` waiting for player 1 to come back up.
@@ -4357,6 +4395,129 @@ do
     end
 end
 
+-- ==========================================================================
+-- #163, ROUND THREE: "the ring fills up when I hold the button, but nothing
+-- happens." STILL.
+-- ==========================================================================
+--
+-- WHAT THE 57 CYCLES ABOVE COULD NOT REACH. Every one of them measured its 1.5m
+-- reach against a ped that was exactly where the server said it was, because the
+-- rig had one coordinate table. The real reviver measures against the CLONE, and
+-- #164 is the report that the clone crawls away at about 0.35 m/s while the body
+-- lies still.
+--
+-- The arithmetic is the whole bug and it does not need a race:
+--
+--   the reviver stands 0.8m from the body and holds the key;
+--   the clone leaves the 1.5m circle after (1.5 - 0.8) / 0.35 = 2.0 SECONDS;
+--   a revive takes dbnoReviveTime = 2.8 SECONDS.
+--
+-- The old client turned that into REVIVE_STOP, which is a HARD cancel: the
+-- server throws `reviveFrom` away, there is no pause and no resume, and the next
+-- ask starts a fresh 2.8 seconds. So the hold is destroyed at 2.0s, forever,
+-- 0.8s short, at every latency, on every attempt.
+--
+-- AND THE RING SHOWS NONE OF IT, which is why three rounds died here.
+-- setPrompt() is a send-on-change keyed on (target, duration); a refuse-and-
+-- re-arm changes neither, so no message is sent, and the ONE-SHOT CSS fill
+-- started by the first arm runs to completion over an interaction that is
+-- failing four times a second. A full ring and a working revive are the same
+-- pixels. The counters in the client's ledger are what tell them apart.
+--
+-- THE SERVER WOULD HAVE ALLOWED IT ALL ALONG -- it measures 2.5m from its own
+-- samples of the real bodies, which never moved. The client was overruling the
+-- authority with a worse measurement of a ghost.
+
+describe('dbno.hold.ghost')
+do
+    local RTTS = { 20, 40, 120 }
+    -- The clip's own mover, as client/dbno.lua measured it: 1.05m in 3s.
+    local GHOST_MPS = 0.35
+
+    --- Stand over a downed mate and hold the key. Nothing else happens: no
+    --- walking away, no second reviver, no damage. The only moving part is the
+    --- clone.
+    local function holdThrough(rtt, ghost)
+        local H = newReviveRig(rtt)
+        H.ghostSpeed = ghost
+        H.knock()
+        H.pump(500)
+        H.press(true)
+        -- Twice the hold's own length. If it has not landed in 5.6s while the
+        -- player never let go and never moved, it is not going to.
+        local up = H.revived(6000)
+        H.press(false)
+        return up, H
+    end
+
+    local still, drifting = 0, 0
+    local firstFail = nil
+    for _, rtt in ipairs(RTTS) do
+        for _ = 1, 3 do
+            if holdThrough(rtt, 0.0) then still = still + 1 end
+            local up = holdThrough(rtt, GHOST_MPS)
+            if up then drifting = drifting + 1
+            elseif not firstFail then firstFail = ('%dms'):format(rtt) end
+        end
+    end
+
+    ok(still == 9,
+        'a hold over a body that stays put lands, every time (the case the '
+        .. 'old rig could express)',
+        ('%d of 9'):format(still))
+
+    -- THE HEADLINE. Before: 0 of 9 -- the clone crosses 1.5m at 2.0s and the
+    -- client hard-cancels a 2.8s hold, at all three round trips, which is a
+    -- rule and not a race. After: 9 of 9.
+    ok(drifting == 9,
+        'AND SO DOES ONE OVER A BODY THAT IS CRAWLING AWAY ON THIS CLIENT '
+        .. 'ONLY -- the server measures the real bodies and is the authority',
+        ('%d of 9, first failure at %s'):format(drifting,
+                                                tostring(firstFail)))
+
+    -- ...AND THE CLIENT NOTICED IT HAPPENING. The ledger is the deliverable:
+    -- "lost sight of the body for N frames while still holding" is the reading
+    -- that points at #164 instead of at the server.
+    local _, H = holdThrough(40, GHOST_MPS)
+    local led = H.cli.env.BR.Dbno and H.cli.env.BR.Dbno.ledger or nil
+    ok(led ~= nil, 'the revive ledger is reachable for /brdbno')
+    ok(led and led.asks > 0,
+        'the request did leave -- so "nothing happened" is not this',
+        led and tostring(led.asks) or nil)
+    ok(led and led.blind > 0,
+        'and the client counted the frames it could not see the body it was '
+        .. 'holding, which is the fingerprint of the drifting clone',
+        led and tostring(led.blind) or nil)
+    ok(led and led.dones == 1,
+        'and the server finished it anyway',
+        led and tostring(led.dones) or nil)
+end
+
+-- A LEGITIMATE WALK-OFF STILL CANCELS, and it has to: the point above is that
+-- the SERVER decides, not that nobody does.
+describe('dbno.hold.walkaway')
+do
+    local H = newReviveRig(40)
+    H.knock(); H.pump(500)
+    H.press(true); H.pump(600)
+    H.moveTo(40.0)
+    local up = H.revived(4000)
+    ok(not up,
+        'walking away from a body really does end the hold -- from the '
+        .. 'server\'s own samples',
+        up and 'they were revived from forty metres' or nil)
+    ok((H.srv.roster[1].reviveStops or 0) > 0
+       and tostring(H.srv.roster[1].reviveStopWhy):find('apart', 1, true),
+        'and the server says how far apart they were, not "notallowed"',
+        tostring(H.srv.roster[1].reviveStopWhy))
+
+    -- ...and walking back in picks it up again, with no re-press.
+    H.moveTo(0.8)
+    ok(H.revived(6000),
+        'and stepping back over them resumes it without letting go of the key')
+    H.press(false)
+end
+
 describe('dbno.refusal')
 do
     -- A REFUSAL THE CLIENT NEVER HEARS IS THE RING'S ALIBI. The prompt page runs
@@ -4405,13 +4566,135 @@ do
     S.roster[3] = { src = 3, name = 'P3', matchId = 1, squadId = 'sq1',
                     state = S.env.BR.PlayerState.ALIVE, hp = 100.0, armour = 0.0,
                     pos = { x = 0.5, y = 0.0, z = 30.0 } }
+    -- THE REASON CARRIES ITS WORKING NOW (#163). It is read back by /brdbno on
+    -- both ends, so what is pinned is the prefix -- the machine-readable half --
+    -- rather than the sentence, which is allowed to say more.
     local second = askAs(3, 1, 3)
-    ok(second ~= nil and second.cancelled == true and second.reason == 'taken',
+    ok(second ~= nil and second.cancelled == true
+       and tostring(second.reason):sub(1, 5) == 'taken',
         'and the mate who pressed second is told the body is taken',
         second and tostring(second.reason) or 'nothing was sent at all')
+    ok(second ~= nil and tostring(second.reason):find('2', 1, true) ~= nil,
+        'and told WHO has it -- a refusal that names nobody is a refusal '
+        .. 'nobody can act on',
+        second and tostring(second.reason) or nil)
+
+    -- ...AND THE SERVER WROTE IT DOWN. The client's ledger can say "the server
+    -- refused"; only this side can say which refusal, and /brdbno reads these.
+    ok(S.roster[1].reviveRefusals == 2,
+        'every refusal is counted on the body it was about',
+        tostring(S.roster[1].reviveRefusals))
+    ok(type(S.roster[1].reviveRefuseWhy) == 'string'
+       and S.roster[1].reviveRefuseWhy ~= 'notallowed',
+        'and the last one is kept in words rather than as one flat token',
+        tostring(S.roster[1].reviveRefuseWhy))
+
+    -- THE OUT-OF-REACH REFUSAL CARRIES THE NUMBER, which is the one refusal
+    -- that is a measurement rather than a state. "40.00m apart" ends an
+    -- argument that "notallowed" could only start.
+    ok(tostring(far.reason):find('m apart', 1, true) ~= nil,
+        'and being out of reach says HOW far, and what the reach was',
+        tostring(far.reason))
     ok(S.roster[1].reviverSrc == 2,
         'without disturbing the hold that was already running',
         tostring(S.roster[1].reviverSrc))
+end
+
+-- ==========================================================================
+-- #164: THE DOWNED PED DRIFTS ON EVERYONE ELSE'S SCREEN.
+-- ==========================================================================
+--
+-- "When DBNO - the ped is not moving on the DBNO player's screen, but on others'
+-- they are." (owner, 2026-08-18.)
+--
+-- WHAT CAN AND CANNOT BE ASSERTED FROM OUTSIDE THE GAME. Nothing here can watch
+-- a clone on a second machine -- there is no engine in this process. What CAN be
+-- asserted is the thing whose absence is the fault: whether this client ever
+-- does anything that CROSSES THE WIRE while a downed player lies still.
+--
+-- Before this change the answer was "nothing, ever". Both of the mechanisms
+-- that hold the body still are local-only -- TaskPlayAnim's lock flags and
+-- SetEntityAnimSpeed -- and stayPut() only writes a position when the LOCAL ped
+-- has drifted past a centimetre, which it never does, because the lock flags
+-- work. So a downed player is, to the network, an entity that has not moved
+-- since the knock, and a clone replaying a locomotion clip is left to walk off
+-- on its own.
+--
+-- The count below is therefore the honest measurement: position writes per
+-- second of lying still. 0.0 before, ~4 after.
+
+describe('dbno.clone.sync')
+do
+    local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                   [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+    -- This client IS the downed one, which is the machine the fix lives on.
+    local CLI = newReviver(1, 2, peds)
+    local env = CLI.env
+
+    local coordWrites, rateWrites = 0, 0
+    env.SetEntityCoordsNoOffset = function() coordWrites = coordWrites + 1 end
+    env.SetEntityAnimSpeed = function() rateWrites = rateWrites + 1 end
+
+    env.TriggerEvent(env.BR.Net.DBNO_SET,
+        { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
+
+    -- THE INPUT IS DEAD STILL FOR THE WHOLE WINDOW. GetDisabledControlNormal
+    -- already answers 0.0 in this sandbox, so every frame below is a frame in
+    -- which the player is touching nothing -- which is the case the report is
+    -- about, and the case in which the old code emitted nothing at all.
+    local SECONDS = 3
+    for _ = 1, SECONDS * 62 do
+        CLI.now = CLI.now + 16
+        CLI.frame()
+    end
+
+    ok(env.BR.Dbno.ledger ~= nil, 'the dbno readings are published')
+
+    -- 500ms beat over three seconds: six, give or take the frame the knock
+    -- lands on. Asserted as a band rather than a number, because the beat is
+    -- counted in whole frames.
+    local perSecond = coordWrites / SECONDS
+    ok(coordWrites >= 4,
+        'a downed player who is not moving still tells the network where they '
+        .. 'are -- BEFORE: 0 writes in three seconds, so nothing could ever '
+        .. 'correct a clone',
+        ('%d writes in %ds (%.1f/s)'):format(coordWrites, SECONDS, perSecond))
+    ok(coordWrites <= SECONDS * 20,
+        'and it is a beat, not a per-frame teleport -- the thing HOLD_SLACK '
+        .. 'exists to prevent',
+        ('%d writes in %d frames'):format(coordWrites, SECONDS * 62))
+
+    -- THE OWNER'S SEQUENCE, NOT AN INVENTION OF ONE. Their manual workaround is
+    -- a forward press and a release; controls 30-35 are disabled for a downed
+    -- player, so the ENGINE never sees that press -- the only thing that reads
+    -- it is dbno.controls, through GetDisabledControlNormal. Its whole
+    -- observable effect is the rate going 1.0 then 0.0 with a real position
+    -- step in between, and that is what the beat replays.
+    ok(rateWrites >= 4,
+        'and the clip rate is cycled, which is the other half of what the '
+        .. 'owner does by hand',
+        ('%d rate writes'):format(rateWrites))
+
+    -- IT MUST NOT COST THE PLAYER THEIR OWN CRAWL. One frame of dbnoCrawlSpeed
+    -- is under a centimetre and it is put straight back, so a watching player
+    -- sees nothing -- but the guard that matters is that a real input takes the
+    -- frame outright.
+    local M = env.BR.Config.Match
+    local step = (M.dbnoCrawlSpeed or 0.55) * 0.016
+    ok(step < 0.01,
+        'the beat moves the body less than a centimetre before putting it back',
+        ('%.4fm'):format(step))
+
+    -- ...AND IT STOPS DEAD WHEN THEY STAND UP.
+    local before = coordWrites
+    env.TriggerEvent(env.BR.Net.DBNO_SET, { downed = false })
+    for _ = 1, 120 do
+        CLI.now = CLI.now + 16
+        CLI.frame()
+    end
+    ok(coordWrites == before,
+        'and a player who is back on their feet is not being written at all',
+        ('%d more writes after standing up'):format(coordWrites - before))
 end
 
 -- ==========================================================================

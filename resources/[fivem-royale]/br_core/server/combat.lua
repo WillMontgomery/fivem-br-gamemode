@@ -703,24 +703,46 @@ end
 --- Re-checked EVERY tick rather than only when the hold starts, which is what
 --- makes the cancellation rules free: walking away, being knocked yourself,
 --- the target dying and the match ending are all just this returning false.
+---
+--- IT ANSWERS WHY, AND THAT IS THE SERVER HALF OF #163's INSTRUMENT. Six
+--- separate facts used to collapse into one word, `notallowed`, which is what a
+--- reviver was told four times a second while nobody could say which of the six
+--- it was. The reason is carried into refuseRevive and stopRevive, printed by
+--- /brdbno, and -- for the one that is a number -- carries the number.
 --- @param reviver table|nil
 --- @param target table|nil
---- @return boolean
+--- @return boolean allowed, string|nil why not
 local function reviveAllowed(reviver, target)
-    if not reviver or not target then return false end
-    if reviver.state ~= BR.PlayerState.ALIVE then return false end
-    if target.state ~= BR.PlayerState.DBNO then return false end
-    if not reviver.matchId or reviver.matchId ~= target.matchId then return false end
-    if not reviver.squadId or reviver.squadId ~= target.squadId then return false end
+    if not reviver or not target then return false, 'no such player' end
+    if reviver.state ~= BR.PlayerState.ALIVE then
+        return false, 'the reviver is ' .. tostring(reviver.state)
+    end
+    if target.state ~= BR.PlayerState.DBNO then
+        return false, 'the target is ' .. tostring(target.state) .. ', not down'
+    end
+    if not reviver.matchId or reviver.matchId ~= target.matchId then
+        return false, 'different matches'
+    end
+    if not reviver.squadId or reviver.squadId ~= target.squadId then
+        return false, 'different squads'
+    end
 
     -- MEASURED FROM THE SERVER'S OWN POSITION SAMPLES, never from anything a
     -- client said -- the rule the loot claim already follows, with the same
     -- slack for the same 250ms sampling skew.
     local a, b = reviver.pos, target.pos
-    if not a or not b then return false end
+    -- NAMED SEPARATELY, because "the server has never sampled this player"
+    -- looks nothing like "they walked away" and used to read as the same
+    -- refusal. It means OneSync or the position job, not the player.
+    if not a then return false, 'no position sampled for the reviver' end
+    if not b then return false, 'no position sampled for the target' end
 
     local reach = (M.dbnoReviveDist or 1.5) + (M.dbnoReviveSlack or 1.0)
-    return BR.Dist3(a.x, a.y, a.z, b.x, b.y, b.z) <= reach
+    local d = BR.Dist3(a.x, a.y, a.z, b.x, b.y, b.z)
+    if d > reach then
+        return false, ('%.2fm apart, server reach is %.2fm'):format(d, reach)
+    end
+    return true
 end
 
 --- Stop whatever revive is running on this player. Harmless if none is.
@@ -730,6 +752,16 @@ end
 local function stopRevive(src, entry, reason)
     local reviverSrc = entry.reviverSrc
     if not reviverSrc then return end
+
+    -- HOW FAR IT HAD GOT WHEN IT DIED, kept for /brdbno. A hold that is being
+    -- killed and restarted reads as a string of identical percentages here,
+    -- which is the signature of the client re-arming rather than of a player
+    -- who cannot hold a key -- and it is the number that was missing when the
+    -- last three rounds had to guess between the two.
+    entry.reviveLastPct = revivePctOf(entry) * 100.0
+    entry.reviveStopWhy = reason
+    entry.reviveStopAt  = GetGameTimer()
+    entry.reviveStops   = (entry.reviveStops or 0) + 1
 
     entry.reviverSrc, entry.reviveFrom = nil, nil
     entry.reviveBeat, entry.reviveTickAt = nil, nil
@@ -800,8 +832,9 @@ local function stepDowned(src, entry, now)
         -- full progress ring.
         local reviver = BR.Roster.get(reviverSrc)
 
-        if not reviveAllowed(reviver, entry) then
-            stopRevive(src, entry, 'interrupted')
+        local allowed, why = reviveAllowed(reviver, entry)
+        if not allowed then
+            stopRevive(src, entry, 'interrupted: ' .. tostring(why))
 
         elseif now - (entry.reviveBeat or 0) > (M.dbnoReviveBeatMs or 750) then
             -- THE HOLDER WENT QUIET. A revive is only alive while the client
@@ -809,14 +842,22 @@ local function stepDowned(src, entry, now)
             -- eight-second hold for a tap (owner, in game). Requiring evidence
             -- rather than trusting one message makes the failure cost a
             -- fraction of a second instead of the whole interaction.
-            stopRevive(src, entry, 'released')
+            stopRevive(src, entry, ('released: nothing heard for %dms')
+                :format(now - (entry.reviveBeat or 0)))
 
         elseif math.max(reviver.lastHitAt or 0, reviver.lastStormAt or 0)
                > (entry.reviveFrom or 0) then
             -- CANCELLED BY THE REVIVER'S DAMAGE, not the downed player's.
             -- Picking somebody up is the thing you cannot do while being shot,
             -- which is the entire reason it takes eight seconds in the open.
-            stopRevive(src, entry, 'hurt')
+            --
+            -- WHICH of the two, because they are different bugs if this turns
+            -- out to be firing when it should not: a storm tick lands on
+            -- everybody standing in the wall, a hit lands on one person.
+            stopRevive(src, entry,
+                ((reviver.lastStormAt or 0) > (reviver.lastHitAt or 0))
+                    and 'hurt: the reviver is taking storm damage'
+                    or  'hurt: the reviver was shot mid-hold')
 
         else
             local pct = revivePctOf(entry)
@@ -883,6 +924,17 @@ end)
 --- @param targetSrc integer
 --- @param reason string
 local function refuseRevive(src, targetSrc, reason)
+    -- RECORDED ON THE TARGET, because that is the row /brdbno prints and the
+    -- refusal is about this body. Kept as the LAST one plus a count: a refusal
+    -- that happens once is a race and the same refusal a hundred times is the
+    -- answer, and the pair fits on one line.
+    local t = BR.Roster.get(targetSrc)
+    if t then
+        t.reviveRefuseWhy = reason
+        t.reviveRefuseAt  = GetGameTimer()
+        t.reviveRefuseBy  = src
+        t.reviveRefusals  = (t.reviveRefusals or 0) + 1
+    end
     TriggerClientEvent(BR.Net.REVIVE_PROGRESS, src,
         { pct = 0.0, target = targetSrc, cancelled = true, reason = reason })
 end
@@ -897,8 +949,9 @@ AddEventHandler(BR.Net.REVIVE_START, function(data)
 
     local reviver = BR.Roster.get(src)
     local target  = BR.Roster.get(targetSrc)
-    if not reviveAllowed(reviver, target) then
-        refuseRevive(src, targetSrc, 'notallowed')
+    local allowed, why = reviveAllowed(reviver, target)
+    if not allowed then
+        refuseRevive(src, targetSrc, why or 'notallowed')
         return
     end
 
@@ -913,7 +966,8 @@ AddEventHandler(BR.Net.REVIVE_START, function(data)
     -- FIRST HAND ON WINS. Two mates holding the same body is not twice as fast
     -- and it must not restart the clock for whoever pressed second.
     if target.reviverSrc then
-        refuseRevive(src, targetSrc, 'taken')
+        refuseRevive(src, targetSrc,
+            ('taken: %d already has this body'):format(target.reviverSrc))
         return
     end
 
@@ -941,6 +995,14 @@ function BR.Combat.forget(src)
         entry.dbnoUntil, entry.dbnoCount = nil, nil
         entry.downedBy, entry.reviverSrc, entry.reviveFrom = nil, nil, nil
         entry.reviveBeat, entry.reviveTickAt = nil, nil
+        -- ...AND THE DIAGNOSTIC RECORD WITH THEM. /brdbno prints these as ages,
+        -- and an age is a lie if the row belongs to somebody else: server ids
+        -- are recycled within the minute, which is the whole reason this
+        -- function exists.
+        entry.reviveRefuseWhy, entry.reviveRefuseAt = nil, nil
+        entry.reviveRefuseBy, entry.reviveRefusals  = nil, nil
+        entry.reviveStopWhy, entry.reviveStopAt     = nil, nil
+        entry.reviveStops, entry.reviveLastPct      = nil, nil
     end
     -- ...and anything they were in the middle of picking up.
     BR.Roster.each(
@@ -1191,6 +1253,13 @@ end, true)
 RegisterCommand('brdbno', function()
     local now = GetGameTimer()
     local n = 0
+
+    --- "12.3s ago", or "never".
+    local function since(t)
+        if not t or t == 0 then return 'never' end
+        return ('%.1fs ago'):format((now - t) / 1000.0)
+    end
+
     print('=== downed ===')
     BR.Roster.each(
         function(e) return e.state == BR.PlayerState.DBNO end,
@@ -1205,6 +1274,24 @@ RegisterCommand('brdbno', function()
                             BR.Clamp((now - e.reviveFrom)
                                      / ((M.dbnoReviveTime or 8.0) * 1000.0),
                                      0.0, 1.0) * 100.0) or ''))
+
+            -- WHAT THIS SERVER LAST TOLD SOMEBODY WHO TRIED (#163).
+            --
+            -- The client's own /brdbno can say "the server refused"; only this
+            -- side knows WHICH refusal and with what numbers behind it. The
+            -- pair is the whole instrument: a filled ring plus these two lines
+            -- is an answerable report, and a filled ring on its own is not.
+            print(('       refused  : %s x%d, last %s (asked by %s)')
+                :format(tostring(e.reviveRefuseWhy or '-'),
+                        e.reviveRefusals or 0, since(e.reviveRefuseAt),
+                        tostring(e.reviveRefuseBy)))
+            print(('       stopped  : %s x%d, last %s at %.0f%%')
+                :format(tostring(e.reviveStopWhy or '-'), e.reviveStops or 0,
+                        since(e.reviveStopAt), e.reviveLastPct or 0.0))
+            print(('       position : self %s   reviver %s')
+                :format(e.pos and 'sampled' or 'NEVER SAMPLED -- no OneSync?',
+                        r and (r.pos and 'sampled'
+                                     or 'NEVER SAMPLED -- no OneSync?') or '-'))
         end)
     if n == 0 then print('  nobody is down') end
     print(('  bleed %ds/%d/%ds, %.2fs per damage point, revive %.1fs within %.1fm')

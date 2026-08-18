@@ -53,6 +53,57 @@ local lastAsk = 0
 --- about in dbnoReviveBeatMs (750), so three of these fit inside its patience.
 local ASK_EVERY_MS = 250
 
+-- WHAT THE INTERACTION ACTUALLY DID, WRITTEN DOWN AS IT HAPPENS.
+--
+-- THIS IS THE FIRST DELIVERABLE OF #163 AND IT OUTRANKS THE FIX. Three rounds
+-- have now been spent on "I hold the button, the ring fills, nothing happens",
+-- and the reason each one cost a round is that the sentence describes THREE
+-- different faults which look identical on screen:
+--
+--   1. THE HOLD NEVER COMPLETED -- this client dropped its own hold partway,
+--      so the server was told to stop and never got its 2.8 seconds.
+--   2. THE REQUEST NEVER LEFT -- nothing was ever sent, so there was nothing
+--      for the server to refuse.
+--   3. THE SERVER REFUSED -- it was asked, and it said no, every time.
+--
+-- The ring cannot tell them apart and never could: br_ui/dui/prompt.html runs a
+-- ONE-SHOT CSS fill from a single "a hold began, it lasts N ms" message, on the
+-- browser's own clock. Worse, `shownFor` below suppresses a re-send with the
+-- same key, so a hold that is refused and immediately re-armed sends NO new
+-- message at all -- the ring finishes the fill it started and then sits there
+-- full, forever, while the interaction is failing four times a second. That is
+-- pixel-identical to a working hold and it is the whole of the false signal.
+--
+-- So every ask, every stop, every refusal and every progress tick is counted
+-- here, with its reason and its age, and /brdbno reads them back as a verdict.
+-- Counters rather than a log: this runs in a frame band, and a paste has to fit
+-- in a console.
+local ledger = {
+    armed     = 0,  armedAt    = 0,  armedFor  = nil,
+    asks      = 0,  lastAskAt  = 0,
+    stops     = 0,  lastStopAt = 0,  lastStopWhy = nil,
+    ticks     = 0,  lastTickAt = 0,  lastPct   = 0.0,
+    refusals  = 0,  lastRefuseAt = 0, lastRefuseWhy = nil,
+    dones     = 0,  lastDoneAt = 0,
+    -- Frames in which a hold was live and nearestDowned() came back empty. See
+    -- the reach test in dbno.revive: this used to be a REVIVE_STOP.
+    blind     = 0,  lastBlindAt = 0,
+    -- Set by the REVIVE_PROGRESS handler, consumed by dbno.revive: a refusal
+    -- must be allowed to take the ring back down, or the next arm is silent.
+    ringStale = false,
+}
+
+--- Reasons, counted. A refusal that happens once is a race; the same refusal
+--- four times a second is the answer.
+local refusedBy = {}
+
+-- PUBLISHED, so the readings are reachable from outside this file: /brdbno is
+-- one reader and the suite that has to prove a fix bit is the other. Read-only
+-- by convention -- nothing outside writes these, and a test that had to reach
+-- into a local through a debug hook would be testing the hook.
+BR.Dbno.ledger   = ledger
+BR.Dbno.refusals = refusedBy
+
 -- --------------------------------------------------------------------------
 -- Being down
 -- --------------------------------------------------------------------------
@@ -747,9 +798,107 @@ local function stayPut(ped, c)
     end
 end
 
+-- ==========================================================================
+-- #164: THE BODY IS STILL ON ITS OWNER'S SCREEN AND CRAWLING ON EVERYBODY
+-- ELSE'S.
+-- ==========================================================================
+--
+-- "When DBNO - the ped is not moving on the DBNO player's screen, but on
+-- others' they are." (owner, 2026-08-18.)
+--
+-- EVERYTHING THAT PINS THE BODY IS LOCAL-ONLY, AND THAT IS THE WHOLE FAULT.
+-- There are two of them and neither crosses the wire:
+--
+--   * the lock flags in playCrawl are arguments to TaskPlayAnim on THIS
+--     machine;
+--   * crawlPlaying() is SetEntityAnimSpeed, which is a playback-rate override
+--     on this machine's copy of the ped.
+--
+-- A clone on another client replays the task at rate 1.0 with the clip's mover
+-- intact, and `move_injured_ground` is a LOCOMOTION dictionary -- so the body
+-- crawls away over there at roughly a third of a metre a second. The measurement
+-- that misled the last round (0.006m of local drift in three seconds) was
+-- perfectly accurate and answered the wrong question: it measured the ped this
+-- code owns, and the report is about the copies it does not.
+--
+-- AND NOTHING CORRECTS THE CLONE, BECAUSE NOTHING EVER MOVES THE ORIGINAL.
+-- stayPut() only writes when the local ped has drifted past HOLD_SLACK, and the
+-- local ped never drifts -- so from the network's point of view this ped is an
+-- entity that has not changed position since the knock, and a clone playing a
+-- clip with a mover is left to its own devices.
+--
+-- THE FIX IS THE OWNER'S OWN WORKAROUND, ON A BEAT. "You should quickly simulate
+-- a player pressing the move forward and move backward button or similar, which
+-- will cancel the animation and stop the ped from moving on everyone's screen.
+-- Me doing this manually works."
+--
+-- Worth being precise about what that press actually does, because it is not
+-- what it sounds like: controls 30-35 are DISABLED for a downed player
+-- (DOWNED_BLOCKED), so the ENGINE never sees it. The only thing that reads it is
+-- the loop below, through GetDisabledControlNormal. So the entire observable
+-- effect of the owner's manual press is this file's own crawl branch --
+-- crawlPlaying(true) and a real SetEntityCoordsNoOffset step -- followed by the
+-- idle branch putting the rate back to zero. That is a sequence this file can
+-- perform on its own, and it is exactly what is replayed here.
+--
+-- ON A BEAT RATHER THAN ONCE, and that is the half a one-shot at the knock
+-- would miss: a squadmate who streams in ten seconds later gets a fresh clone
+-- with a fresh mover, and the reviver walking up to a body is precisely that
+-- case. Two frames every half second is four natives a second.
+--
+-- IT CANNOT CANCEL THE CRAWL. It only runs on frames where the player is
+-- pressing nothing at all -- one touch of the movement axis and the real input
+-- owns the frame -- and the step it takes is one frame of dbnoCrawlSpeed
+-- (~9mm), put straight back on the following frame.
+local RESYNC_EVERY_MS = 500
+
+local resyncAt    = 0     -- when the next beat is due
+local resyncPhase = 0     -- 0 idle, 1 the step out, 2 the step back
+local resyncs     = 0     -- for /brdbno
+
+--- One beat of "this body is HERE", performed for the benefit of other clients.
+--- @param ped integer
+--- @param c table   the ped's coordinates this frame
+--- @return boolean  true if this frame belonged to the resync
+local function resyncBody(ped, c)
+    if not hold then return false end
+    local now = GetGameTimer()
+
+    if resyncPhase == 0 then
+        if now < resyncAt then return false end
+        resyncPhase = 1
+        resyncs = resyncs + 1
+    end
+
+    if resyncPhase == 1 then
+        -- OUT. The same two calls a real forward press makes: the clip is let
+        -- off its rate override for one frame, and the ped is genuinely moved,
+        -- so there is a position change for the network to carry.
+        crawlPlaying(true)
+        local step = (M.dbnoCrawlSpeed or 0.55) * GetFrameTime()
+        local h    = math.rad(GetEntityHeading(ped))
+        SetEntityCoordsNoOffset(ped,
+            c.x - math.sin(h) * step, c.y + math.cos(h) * step, c.z,
+            true, true, false)
+        -- `hold` is deliberately NOT moved: the anchor is where they were put
+        -- down, and phase 2 is what brings them back to it.
+        resyncPhase = 2
+        return true
+    end
+
+    -- BACK, and unconditionally -- not through stayPut, whose HOLD_SLACK (1cm)
+    -- is wider than one frame of crawl (~9mm). Left to the slack test the body
+    -- would creep 9mm per beat, which is two metres over a full bleed.
+    crawlPlaying(false)
+    SetEntityCoordsNoOffset(ped, hold.x, hold.y, c.z, true, true, false)
+    resyncPhase = 0
+    resyncAt    = now + RESYNC_EVERY_MS
+    return true
+end
+
 BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
     if not mine.downed then
-        hold = nil
+        hold, resyncPhase = nil, 0
         return
     end
 
@@ -791,10 +940,19 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
     -- -- the input was read, found to be nothing, and the frame was dropped on
     -- the assumption that nothing else could be moving the ped. Something was.
     if ud >= -0.1 then
+        -- ...AND NOT MOVING IS WHEN THE BODY HAS TO SAY SO OUT LOUD (#164).
+        -- Only on a frame with no input at all: a player who is turning is
+        -- already generating entity updates, and a player who is crawling owns
+        -- the frame outright.
+        if math.abs(lr) <= 0.1 and resyncBody(ped, c) then return end
         crawlPlaying(false)
         stayPut(ped, c)
         return
     end
+
+    -- A REAL INPUT ENDS ANY BEAT THAT WAS HALF DONE, rather than leaving the
+    -- rate override and the anchor disagreeing about which phase we are in.
+    resyncPhase = 0
 
     crawlPlaying(true)
 
@@ -929,6 +1087,33 @@ AddEventHandler(BR.Net.REVIVE_PROGRESS, function(d)
     end
 
     -- Otherwise we are the one holding, and this is our ring.
+    --
+    -- THE REPLY IS RECORDED BEFORE IT IS FILTERED. `holding` is nil for the
+    -- whole of a refuse-then-rearm cycle's first frame, and a refusal dropped
+    -- on the floor here is precisely the evidence #163 has been missing three
+    -- times running -- so the ledger is written from the envelope, and only the
+    -- ACTION below is conditional on the hold still being ours.
+    local now = GetGameTimer()
+    if d.cancelled then
+        ledger.refusals     = ledger.refusals + 1
+        ledger.lastRefuseAt = now
+        ledger.lastRefuseWhy = d.reason or 'no reason given'
+        refusedBy[ledger.lastRefuseWhy] = (refusedBy[ledger.lastRefuseWhy] or 0) + 1
+        -- AND THE RING IS ALLOWED TO FALL. Without this the next arm computes
+        -- the same setPrompt key, sends nothing, and the fill that is already
+        -- running finishes on schedule -- which is the lie. A refusal the
+        -- player is holding through now visibly restarts the ring four times a
+        -- second instead of completing once and stopping.
+        ledger.ringStale = true
+    elseif d.done then
+        ledger.dones     = ledger.dones + 1
+        ledger.lastDoneAt = now
+    else
+        ledger.ticks     = ledger.ticks + 1
+        ledger.lastTickAt = now
+        ledger.lastPct   = d.pct or 0.0
+    end
+
     if not holding or d.target ~= holding.target then return end
     if d.cancelled or d.done then
         holding = nil
@@ -1056,18 +1241,71 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
     -- KEY DOWN + A TARGET IN REACH IS THE WHOLE CONDITION. The server is the
     -- authority on whether that becomes a revive; this side's job is to keep
     -- telling it the truth about the key.
-    if holding and (target ~= holding.target
-                    or not BR.Keys.isHeld('interact')) then
-        -- The hold is only ours to keep while the reach still holds. The
-        -- SERVER makes the same judgement every 250ms off its own position
-        -- samples and is the one that counts; this is what keeps the ring
-        -- honest in between.
+    -- A TARGET WE CANNOT SEE THIS FRAME IS NOT A RELEASE, AND TREATING IT AS
+    -- ONE IS #163.
+    --
+    -- What used to be here dropped the hold -- and sent REVIVE_STOP -- whenever
+    -- `target ~= holding.target`, which includes `target == nil`. Every one of
+    -- those is a HARD CANCEL on the server: stopRevive() throws `reviveFrom`
+    -- away, so the next ask starts a fresh 2.8 seconds from zero. There is no
+    -- pause and no resume.
+    --
+    -- The reach test that produces `target` is the strictest thing in the whole
+    -- interaction and it is measured off the WRONG BODY:
+    --
+    --   * it uses dbnoReviveDist (1.5m) with NO SLACK, while the server allows
+    --     dbnoReviveDist + dbnoReviveSlack (2.5m) precisely because a position
+    --     is up to 250ms old;
+    --   * it measures to `BR.Squadmates.pedOf(src)`, which is OUR MACHINE'S
+    --     COPY of the mate's ped -- and #164 is the report that that copy
+    --     CRAWLS AWAY. The downed player is pinned on their own machine and
+    --     nothing anchors the clone here, so the body a reviver is standing
+    --     over walks out of a 1.5m circle in about two seconds. The hold is
+    --     killed at 2.0s, the revive needs 2.8s, and the player -- who sees a
+    --     ring that was started once and is finishing on the browser's own
+    --     clock -- sees nothing happen, forever.
+    --
+    -- So the authority goes back where the comment always said it was. The
+    -- SERVER re-checks reach every 250ms from its own samples and cancels for
+    -- real if the reviver has genuinely walked off; this side now only ends a
+    -- hold for the two things it is the sole witness to: the key coming up, and
+    -- the player deliberately switching to a DIFFERENT mate.
+    if holding and not BR.Keys.isHeld('interact') then
         TriggerServerEvent(BR.Net.REVIVE_STOP)
         holding = nil
+        ledger.stops       = ledger.stops + 1
+        ledger.lastStopAt  = GetGameTimer()
+        ledger.lastStopWhy = 'the key came up'
+    elseif holding and target and target ~= holding.target then
+        TriggerServerEvent(BR.Net.REVIVE_STOP)
+        holding = nil
+        ledger.stops       = ledger.stops + 1
+        ledger.lastStopAt  = GetGameTimer()
+        ledger.lastStopWhy = 'a nearer mate took the prompt'
+    elseif holding and not target then
+        -- COUNTED, NOT ACTED ON. If this number is large while a revive is
+        -- failing, the fault is the drifting clone in #164 and not the server.
+        ledger.blind       = ledger.blind + 1
+        ledger.lastBlindAt = GetGameTimer()
     end
 
     if not holding and target and BR.Keys.isHeld('interact') then
         holding = { target = target, from = GetGameTimer() }
+        ledger.armed    = ledger.armed + 1
+        ledger.armedAt  = holding.from
+        ledger.armedFor = target
+    end
+
+    -- A REFUSAL HAS TO BE ABLE TO TAKE THE RING DOWN. setPrompt is a
+    -- send-on-change, keyed on target and duration, and a refuse-then-re-arm
+    -- cycle changes neither -- so nothing was sent and the one-shot fill from
+    -- the FIRST arm ran to completion over a hold that was being declined four
+    -- times a second. Forgetting the key here forces the next arm to re-send,
+    -- which restarts the fill: a refused hold now reads as a ring that keeps
+    -- resetting, which is the truth.
+    if ledger.ringStale then
+        ledger.ringStale = false
+        setPrompt(nil)
     end
 
     if holding then
@@ -1092,16 +1330,22 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.revive', function()
         if now - lastAsk >= ASK_EVERY_MS then
             lastAsk = now
             TriggerServerEvent(BR.Net.REVIVE_START, { target = holding.target })
+            ledger.asks      = ledger.asks + 1
+            ledger.lastAskAt = now
         end
     else
         setPrompt(target, nil)
     end
 
-    if not target then return end
+    -- THE LABEL FOLLOWS THE HOLD, NOT THE REACH TEST. A hold that survives a
+    -- frame of not seeing the body must still draw over it, or the prompt
+    -- blinks every time the clone wanders past 1.5m.
+    local drawFor = holding and holding.target or target
+    if not drawFor then return end
 
     -- Drawn natively at the mate's own position, every frame, so the label is
     -- welded to the body however fast the camera moves.
-    local ped = BR.Squadmates.pedOf(holding and holding.target or target)
+    local ped = BR.Squadmates.pedOf(drawFor)
     if ped ~= 0 then
         -- Low over the body. The loot prompt's lift is written for something
         -- standing on the ground; this one is written for something lying on
@@ -1139,6 +1383,9 @@ BR.Keys.on('interact', function(pressed)
         if holding then
             TriggerServerEvent(BR.Net.REVIVE_STOP)
             holding = nil
+            ledger.stops       = ledger.stops + 1
+            ledger.lastStopAt  = GetGameTimer()
+            ledger.lastStopWhy = 'the key came up (edge)'
         end
         return
     end
@@ -1270,6 +1517,11 @@ RegisterCommand('brdbno', function()
             or (crawlMoving and 'running' or 'held still'),
         SetEntityAnimSpeed and 'SetEntityAnimSpeed present'
                             or 'NO SetEntityAnimSpeed on this build'))
+    -- BOTH OF THE ABOVE ARE LOCAL-ONLY. This is the line that says whether
+    -- anything is being done about the copies on other machines (#164).
+    print(('  clone sync : %d beats, every %dms, phase %d   (the pin above is '
+           .. 'local; this is what other clients see)')
+        :format(resyncs, RESYNC_EVERY_MS, resyncPhase))
     print(('  held at    : %s'):format(
         hold and ('%.2f, %.2f'):format(hold.x, hold.y)
               or '- (moving, or not downed)'))
@@ -1287,9 +1539,77 @@ RegisterCommand('brdbno', function()
                 or 'down -- the gameplay camera is rendering'))
     end
     local target, dist = nearestDowned()
-    print(('  in reach   : %s%s'):format(tostring(target),
-        dist and (' at %.2fm'):format(dist) or ''))
-    print(('  holding    : %s'):format(holding and tostring(holding.target) or '-'))
+    print(('  in reach   : %s%s   (client reach %.1fm, no slack)'):format(
+        tostring(target), dist and (' at %.2fm'):format(dist) or '',
+        M.dbnoReviveDist or 1.5))
+    print(('  holding    : %s   key %s'):format(
+        holding and tostring(holding.target) or '-',
+        BR.Keys.isHeld('interact') and 'DOWN' or 'up'))
+
+    -- ------------------------------------------------------------------ #163
+    -- THE THREE FACTS, SEPARATED. Read the verdict line first; the counters
+    -- under it are the working.
+    do
+        local now = GetGameTimer()
+        local function since(t)
+            if not t or t == 0 then return 'never' end
+            return ('%.1fs ago'):format((now - t) / 1000.0)
+        end
+
+        print('  --- revive ledger (this session) ---')
+        print(('  hold       : armed %d, last %s on %s; dropped %d, last %s (%s)')
+            :format(ledger.armed, since(ledger.armedAt),
+                    tostring(ledger.armedFor), ledger.stops,
+                    since(ledger.lastStopAt), tostring(ledger.lastStopWhy)))
+        print(('  requests   : %d REVIVE_START sent, last %s  (every %dms while held)')
+            :format(ledger.asks, since(ledger.lastAskAt), ASK_EVERY_MS))
+        print(('  progress   : %d ticks, last %s at %.0f%%; %d completed')
+            :format(ledger.ticks, since(ledger.lastTickAt), ledger.lastPct,
+                    ledger.dones))
+        print(('  refusals   : %d, last %s -- "%s"')
+            :format(ledger.refusals, since(ledger.lastRefuseAt),
+                    tostring(ledger.lastRefuseWhy)))
+        for why, n in pairs(refusedBy) do
+            print(('               %-14s x%d'):format(why, n))
+        end
+        print(('  lost sight : %d frames held a target this client could not '
+               .. 'see, last %s'):format(ledger.blind, since(ledger.lastBlindAt)))
+
+        -- THE VERDICT. Deliberately blunt, and deliberately about the LAST
+        -- attempt rather than the totals -- "which of the three is it" is the
+        -- question, and a paste has to answer it without arithmetic.
+        local verdict
+        if ledger.asks == 0 then
+            verdict = 'THE REQUEST NEVER LEFT. Nothing was ever sent, so the '
+                   .. 'server has nothing to answer for -- the hold never '
+                   .. 'armed. Read "in reach" and "key" above: both have to be '
+                   .. 'true on the same frame.'
+        elseif ledger.ticks == 0 and ledger.refusals == 0 then
+            verdict = 'ASKED, AND NEVER ANSWERED AT ALL. Neither progress nor '
+                   .. 'a refusal has ever come back, which is a server that is '
+                   .. 'not listening -- check REVIVE_START at BOTH ends.'
+        elseif ledger.dones > 0 and ledger.lastDoneAt >= ledger.lastRefuseAt
+                                and ledger.lastDoneAt >= ledger.lastStopAt then
+            verdict = 'the last thing that happened was a completed revive. '
+                   .. 'This path works.'
+        elseif ledger.lastRefuseAt >= ledger.lastStopAt then
+            verdict = ('THE SERVER REFUSED -- "%s". It was asked %d times and '
+                    .. 'said no %d of them; run brdbno on the SERVER console '
+                    .. 'for the numbers behind that sentence.')
+                    :format(tostring(ledger.lastRefuseWhy), ledger.asks,
+                            ledger.refusals)
+        else
+            verdict = ('THE HOLD NEVER COMPLETED -- this client ended it (%s) '
+                    .. 'with the server at %.0f%%. %d frames of it were spent '
+                    .. 'holding a body this client could not see.')
+                    :format(tostring(ledger.lastStopWhy), ledger.lastPct,
+                            ledger.blind)
+        end
+        print(('  VERDICT    : %s'):format(verdict))
+        print('  (the RING IS NOT EVIDENCE: prompt.html fills on the browser\'s')
+        print('   own clock from one message. These counters are.)')
+    end
+
     print('  downed squadmates the mirror knows about:')
     local n = 0
     for src, e in pairs(BR.State.roster) do
