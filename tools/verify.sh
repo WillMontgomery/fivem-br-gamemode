@@ -390,6 +390,14 @@ boundary=0
 # and nothing else in the file; the `*)` fallthrough and the quoted patterns
 # inside `case` blocks do not start with a lowercase letter.
 if [ -f tools/dispatch.sh ]; then
+    # ANY case arm, not a list of names somebody anticipated.
+    #
+    # This used to grep a fixed alternation -- (status|telemetry|deploy|...) --
+    # which made it a DENYLIST inside the gate built to prevent denylists, and
+    # it failed open for exactly the case it exists to catch: a new capability
+    # arrives under a new name by definition. `configreport)` did not match
+    # `config)`, so the verb was invisible here and the check passed green with
+    # a new channel from the console to the host already added.
     verbs=$(grep -oE '^[[:space:]]+[a-z_]+\)' tools/dispatch.sh \
             | tr -d ' )' | sort -u | tr '\n' ' ')
     if [ "$verbs" != "branches configreport deploy kick status switchref telemetry " ]; then
