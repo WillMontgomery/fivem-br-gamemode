@@ -599,6 +599,78 @@ do
         'a kick verdict pays, and the sentence says kicked', tostring(text))
 end
 
+describe('awards.sweep.twoClients')
+do
+    --[[
+        THE AWARD WAS PAID AND LOGGED AND THE PLAYER SAW NOTHING.
+
+        Owner, 2026-08-18: the incident was resolved with a kick, the console
+        printed `[br_stats] reward: 250 Volts to license:b6f5... (kicked)`, and
+        "no payout or notifications to player 1".
+
+        THE ACCOUNT WAS CONNECTED FROM TWO CLIENTS, which is how the owner
+        playtests. `srcFor` returned the FIRST src carrying the license and
+        stopped, so the sentence went to one of the two -- and which one was
+        whatever order GetPlayers answered in. Nothing was lost and nothing was
+        logged as missing: the Volts landed on the account, the console said so,
+        and the screen that was supposed to explain it belonged to the other
+        window.
+
+        THE KEYING IS NOT WHAT CHANGED, and it must not be. One license is one
+        person, deliberately -- it is what stops report slots being bought by
+        reconnecting -- and the CREDIT is still exactly one credit for the
+        account. Only the announcement fans out, which is what br_core's own
+        `br:market:credited` has always done with the balance that goes with it.
+    ]]
+    reset()
+    -- One account, two windows. A stranger is online too, so "tell everybody"
+    -- would be as wrong as "tell one".
+    online[3] = { 'license:alice' }
+    online[7] = { 'license:alice' }
+    online[8] = { 'license:bob' }
+    sweepWith(KICKED)
+    answerAll('br:ddb:awardPay', true, { paid = true })
+
+    local told = {}
+    for _, s in ipairs(sent) do
+        if s.name == BR.Net.NOTIFY then told[#told + 1] = s.src end
+    end
+    table.sort(told)
+    ok(#told == 2 and told[1] == 3 and told[2] == 7,
+        'both of an account\'s connected clients are told about its reward',
+        table.concat(told, ','))
+
+    -- ...AND NOBODY ELSE. The sentence names a reward for reporting somebody;
+    -- posting it to a stranger would tell them a case they have nothing to do
+    -- with has just been actioned.
+    local strangers = 0
+    for _, s in ipairs(sent) do
+        if s.name == BR.Net.NOTIFY and s.src == 8 then strangers = strangers + 1 end
+    end
+    ok(strangers == 0, 'and nobody else in the server hears it')
+
+    -- ONE CREDIT, NOT TWO. The fan-out is the announcement only; a second
+    -- awardPay would be the license keying quietly coming undone.
+    ok(#askedFor('br:ddb:awardPay') == 1,
+        'the account is paid once, however many clients it has open',
+        tostring(#askedFor('br:ddb:awardPay')))
+
+    -- AND THE LOG SAYS SO. "Paid and told nobody" and "paid and told" were one
+    -- line, which is why the owner could not tell from a console which had
+    -- happened.
+    local said = table.concat(printed, '\n')
+    ok(said:find('told 2 client(s)', 1, true) ~= nil,
+        'and the log line says how many screens it reached', said)
+
+    -- THE OFFLINE CASE STILL READS AS OFFLINE rather than as "told 0".
+    reset()
+    sweepWith(KICKED)
+    answerAll('br:ddb:awardPay', true, { paid = true })
+    local none = table.concat(printed, '\n')
+    ok(none:find('offline, credited anyway', 1, true) ~= nil,
+        'a reward for somebody who is not here still says so', none)
+end
+
 describe('awards.idempotence')
 do
     -- THE CASE THE WHOLE DESIGN IS FOR. DynamoDB refuses the second credit and

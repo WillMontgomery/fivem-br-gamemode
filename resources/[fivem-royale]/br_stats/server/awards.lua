@@ -174,24 +174,42 @@ end)
 -- Telling them
 -- ---------------------------------------------------------------------------
 
---- The server id of a connected account, or nil.
+--- EVERY connected server id on an account, in ascending order. Empty when
+--- nobody holding that license is here.
 ---
 --- WALKED RATHER THAN CACHED. This runs a handful of times a week, on a list of
 --- at most 48, and a cache of license -> src is a thing that goes stale exactly
 --- when a server id is recycled -- which would address the reward message to
 --- whoever connected into that slot.
+---
+--- EVERY ID, NOT THE FIRST ONE, AND THAT IS THE FIX FOR A SILENT AWARD (owner,
+--- 2026-08-18: the 250 Volts were paid and logged, and the player who filed the
+--- report saw nothing). This returned the first match and stopped, so an account
+--- connected from more than one client was told on exactly one of them -- and
+--- WHICH one was whatever order GetPlayers happened to answer in. The credit
+--- itself is per LICENSE and was always correct; only the sentence about it was
+--- being posted to a coin flip.
+---
+--- IT IS THE SHAPE br_core ALREADY USES FOR THE OTHER HALF OF THIS PAYMENT.
+--- `br:market:credited` in br_core/server/market.lua pushes the new balance to
+--- every src holding the license, for the same reason and with the same loop --
+--- so before this the balance on screen and the sentence explaining it could
+--- disagree about who they were for. One person is one license; a person with
+--- two clients open is still one person, and both of their screens are theirs.
 --- @param license string
---- @return integer|nil
-local function srcFor(license)
-    if not BR.Identity then return nil end
+--- @return integer[]
+local function srcsFor(license)
+    local out = {}
+    if not BR.Identity then return out end
     for _, id in ipairs(GetPlayers()) do
         local src = tonumber(id)
         local byKind = src and BR.Identity.ofPlayer(src)
         if byKind and BR.Identity.qualified('license', byKind.license) == license then
-            return src
+            out[#out + 1] = src
         end
     end
-    return nil
+    table.sort(out)
+    return out
 end
 
 --- The sentence, exactly as #168 words it.
@@ -270,12 +288,16 @@ local function settleCase(entry, word)
 
                 -- IN THE SERVER OR NOT, THE VOLTS LANDED. Being told is the
                 -- part that depends on being here; the write above does not.
-                local src = srcFor(license)
-                if src then tell(src, word) end
+                local srcs = srcsFor(license)
+                for _, src in ipairs(srcs) do tell(src, word) end
 
+                -- AND THE LOG SAYS HOW MANY SCREENS IT REACHED, because "paid
+                -- but nobody was told" and "paid and told" were one line until
+                -- now and the owner could not tell them apart from a console.
                 print(('[br_stats] reward: %d Volts to %s for %s (%s)%s')
                     :format(AWARD_VOLTS, license, entry.incidentId, word,
-                            src and '' or ' -- offline, credited anyway'))
+                            #srcs == 0 and ' -- offline, credited anyway'
+                            or (' -- told %d client(s)'):format(#srcs)))
             end
 
             left = left - 1

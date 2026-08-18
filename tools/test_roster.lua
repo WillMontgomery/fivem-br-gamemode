@@ -6935,6 +6935,320 @@ do
     ok(m4 ~= nil, 'the fixture built a match')
 end
 
+describe('report.matchBoundary')
+do
+    --[[
+        "YOU HAVE ALREADY REPORTED X IN THIS MATCH" -- IN A MATCH WHERE THEY HAD
+        REPORTED NOBODY.
+
+        Owner, 2026-08-18, verbatim: "Match 1 - player 1 reports player 2,
+        incident is resolved by kicking player 2 ... Next match - same 3 players
+        - player 1 reports player 2 again, and is told they've already reported
+        player 2 this match - but that's not possible."
+
+        WHAT ACTUALLY CARRIES IT ACROSS, because `usage` does not. `usageFor`
+        resets the moment the matchId it holds stops matching, and the first
+        assertion below pins that: with nothing else happening, a report in match
+        N+1 about somebody reported in match N is accepted. The carrier is the
+        KILL PROMPT. #177 made it fire for a case open in ANY match, and pressing
+        it wrote `usage.named` -- the per-(reporter, target, match) set the PANEL
+        refuses on -- so answering the prompt in match N+1 about match N's case
+        spent match N+1's panel slot, and the round's own cheating got no case.
+
+        WHAT THESE ASSERTIONS CAN CATCH, stated because the naive fix passes the
+        headline and breaks two rules on the way past:
+
+          the boundary        fails on the code as shipped. Corroborate from the
+                              prompt in the new match, then file from the panel:
+                              refused, and no case opened for the new match.
+          the same-match rule fails if the corroboration simply stops writing
+                              `named`. A case opened THIS match and then
+                              corroborated from the prompt must still refuse a
+                              panel report -- otherwise one reporter lands twice
+                              on one case, which is the half of #143 that the
+                              refusal exists for.
+          the one-action rule fails if the corroboration stops recording itself
+                              at all. #177 part 4 must survive: no second prompt,
+                              and the key dead, whichever match the case is from.
+
+        THE SHARED-LICENSE CASE IS ASSERTED TOO, AND NOT AS A CONCESSION. The
+        owner playtests with two clients on one license. `usage` is keyed by
+        license and stays that way -- one license is one person, and that is what
+        stops somebody buying report slots by reconnecting -- so the second
+        client's keypress really does spend the first client's allowance. The
+        block below pins which allowance: the prompt's, not the panel's.
+    ]]
+
+    local function lastResultFor(src)
+        for i = #sent, 1, -1 do
+            local s = sent[i]
+            if s.event == BR.Net.REPORT_RESULT and s.target == src then
+                return s.args[1]
+            end
+        end
+        return nil
+    end
+
+    local function hintTo(src)
+        for i = #sent, 1, -1 do
+            local s = sent[i]
+            if s.event == BR.Net.REPORT_HINT and s.target == src then
+                return s.args[1]
+            end
+        end
+        return nil
+    end
+
+    local function tokenFor(src, name)
+        sent = {}
+        fire(BR.Net.PLAYERS_ASK, src)
+        for i = #sent, 1, -1 do
+            if sent[i].event == BR.Net.PLAYERS_LIST then
+                for _, p in ipairs(sent[i].args[1].players or {}) do
+                    if p.name == name then return p.id end
+                end
+            end
+        end
+        return nil
+    end
+
+    local function killedBy(victimSrc, killerSrc)
+        local v = BR.Roster.get(victimSrc)
+        v.lastHitBy, v.lastHitAt = killerSrc, fakeTime
+        BR.Roster.setState(victimSrc, BR.PlayerState.DEAD)
+    end
+
+    --- Three solo players on the licenses named, in a live match.
+    ---
+    --- LICENSES PER CALL, because the shared-license half of this block needs
+    --- two SOURCES on one license -- and because `openBy` in server/incident.lua
+    --- is deliberately never freed, so every case any block in this file has
+    --- filed is still open. A fresh name per scenario is what stops these
+    --- passing on somebody else's leftovers.
+    local function three(a, b, c)
+        reset()
+        licenseOf[1], licenseOf[2], licenseOf[3] = a, b, c
+        queueUp(1, 'One',   BR.Mode.SOLO.key)
+        queueUp(2, 'Two',   BR.Mode.SOLO.key)
+        queueUp(3, 'Three', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for _, s in ipairs({ 1, 2, 3 }) do
+            BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        end
+        theMatch().state = BR.MatchState.PLAYING
+        return theMatch()
+    end
+
+    --- File a real report from the panel, then hand back the answer.
+    local function reportFromPanel(src, name)
+        local id = tokenFor(src, name)
+        fired, sent = {}, {}
+        fire(BR.Net.REPORT_SUBMIT, src, {
+            targets = { { id = id, category = 'cheating' } },
+        })
+        return lastResultFor(src), id
+    end
+
+    --- End a match the way the server does, including the free the report rules
+    --- hang off. `destroy` announces it; the harness records events rather than
+    --- dispatching them, so the announcement is driven by hand one line later --
+    --- the same pattern report.rules and report.departed already use.
+    local function endMatch(m)
+        BR.Match.destroy(m)
+        fire('br:match:destroyed', nil, { matchId = m.id })
+    end
+
+    -- ==================================================== the plain boundary ===
+    --
+    -- NOTHING BUT TWO MATCHES. If this ever fails, `usage` has stopped resetting
+    -- and everything below it is measuring the wrong thing.
+    local m1 = three('boundaryA', 'boundaryB', 'boundaryC')
+    local subject  = BR.Identity.qualified('license', BR.Identity.licenseOf(2))
+    local reporter = BR.Identity.qualified('license', BR.Identity.licenseOf(1))
+
+    local first = reportFromPanel(1, 'Two')
+    ok(first ~= nil and first.ok == true,
+        'a report in the first match is accepted',
+        first and tostring(first.refused) or 'no answer')
+    ok(#firedOf('br:ringmaster:incident') == 1,
+        'and opens a case', tostring(#firedOf('br:ringmaster:incident')))
+
+    -- The acknowledgement br_ringmaster sends once the row is durable. Fired by
+    -- hand because it is the console's, not br_core's; everything downstream of
+    -- it here is real.
+    fire('br:incident:filed', nil, {
+        incidentId      = 'inc-boundary',
+        matchId         = m1.id,
+        subjectLicense  = subject,
+        reporterLicense = reporter,
+    })
+    endMatch(m1)
+
+    local m2 = three('boundaryA', 'boundaryB', 'boundaryC')
+    ok(m2.id ~= m1.id, 'the next round is a different match',
+        ('%s vs %s'):format(tostring(m1.id), tostring(m2.id)))
+
+    local plain = reportFromPanel(1, 'Two')
+    ok(plain ~= nil and plain.ok == true,
+        'and the same reporter may report the same player again in it',
+        plain and tostring(plain.refused) or 'no answer')
+
+    -- ============================== the prompt, answered across the boundary ===
+    --
+    -- THE OWNER'S SEQUENCE. One case, one match apart, and the panel report that
+    -- comes after the keypress is the one that was refused.
+    local m3 = three('crossA', 'crossB', 'crossC')
+    local subj3 = BR.Identity.qualified('license', BR.Identity.licenseOf(2))
+    local rep3  = BR.Identity.qualified('license', BR.Identity.licenseOf(1))
+
+    ok((reportFromPanel(1, 'Two') or {}).ok == true, 'match N: the report lands')
+    fire('br:incident:filed', nil, {
+        incidentId      = 'inc-cross',
+        matchId         = m3.id,
+        subjectLicense  = subj3,
+        reporterLicense = rep3,
+    })
+    endMatch(m3)
+
+    local m4 = three('crossA', 'crossB', 'crossC')
+
+    -- THE PROMPT STILL FIRES ACROSS THE BOUNDARY, asserted on a DIFFERENT player
+    -- so that `nudged` stays empty for the one every assertion below is about.
+    -- That isolation is the whole reason this is player 3 and not player 1: with
+    -- `nudged` set, "the prompt is not offered again" would pass on the latch
+    -- rather than on the thing being tested.
+    killedBy(3, 2)
+    sent = {}
+    fire(BR.Net.REPORT_KILLED, 3)
+    ok((hintTo(3) or {}).kind == 'killer',
+        'match N+1: the case from last round still prompts the player it killed',
+        tostring((hintTo(3) or {}).kind))
+
+    killedBy(1, 2)
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_CORROBORATE, 1)
+    local across = firedOf('br:ringmaster:corroborate')[1]
+    ok(across ~= nil and across.incidentId == 'inc-cross',
+        'and the key still corroborates it, which is #177 part 1 and stays',
+        across and tostring(across.incidentId) or 'nothing sent')
+
+    -- ONE ACTION PER OFFENDER, ASKED BEFORE ANYTHING ELSE SPENDS A SLOT. Both of
+    -- these run while `named` is still empty for this reporter, so the only
+    -- thing that can suppress them is the corroboration's own record -- and
+    -- `nudged` is empty for player 1 in this match, so it cannot be that either.
+    fired = {}
+    fire(BR.Net.REPORT_CORROBORATE, 1)
+    ok(#firedOf('br:ringmaster:corroborate') == 0,
+        'the key does nothing the second time, whichever match the case is from',
+        tostring(#firedOf('br:ringmaster:corroborate')))
+    sent = {}
+    fire(BR.Net.REPORT_KILLED, 1)
+    ok(hintTo(1) == nil,
+        'and the prompt is not offered again for that offender (#177 part 4)')
+
+    -- ...AND HERE IS THE REGRESSION. The player goes to the panel to report what
+    -- happened TONIGHT, and until this fix was told they had already done it.
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    local tonight = reportFromPanel(1, 'Two')
+    ok(tonight ~= nil and tonight.ok == true,
+        'a panel report in the new match is ACCEPTED after answering the prompt',
+        tonight and tostring(tonight.refused) or 'no answer')
+    ok(#firedOf('br:ringmaster:incident') == 1,
+        'and opens a case for THIS round, which is the rule the refusal was eating',
+        tostring(#firedOf('br:ringmaster:incident')))
+
+    -- ============================ a case from THIS match keeps the refusal ===
+    --
+    -- THE OTHER DIRECTION, and the one that fails if the corroboration simply
+    -- stops writing `named`. The case belongs to this round, so a panel report
+    -- about the same player would land a SECOND time on a case already carrying
+    -- this reporter's name -- "the same opinion arriving twice", which #143
+    -- refuses and which this refusal is for.
+    local m5 = three('sameA', 'sameB', 'sameC')
+    local subj5 = BR.Identity.qualified('license', BR.Identity.licenseOf(2))
+
+    -- Opened by the ANTICHEAT rather than by this player, so the reporter has
+    -- not spent anything of their own before the keypress.
+    fire('br:incident:filed', nil, {
+        incidentId     = 'inc-same',
+        matchId        = m5.id,
+        subjectLicense = subj5,
+    })
+    killedBy(1, 2)
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_CORROBORATE, 1)
+    ok(#firedOf('br:ringmaster:corroborate') == 1,
+        'the prompt corroborates this round\'s own case',
+        tostring(#firedOf('br:ringmaster:corroborate')))
+
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    local twice = reportFromPanel(1, 'Two')
+    ok(twice ~= nil and twice.ok == false,
+        'and the panel then refuses the same player, because that case has their name on it',
+        twice and tostring(twice.ok) or 'no answer')
+    ok(twice ~= nil and tostring(twice.refused):find('already reported', 1, true) ~= nil,
+        'for the reason that actually applies',
+        twice and tostring(twice.refused) or 'nil')
+
+    -- ================================================= two clients, one license ===
+    --
+    -- THE OWNER'S RIG. Sources 1 and 3 are one account; source 2 is the
+    -- offender. Player 1 reports in match N; player 3 -- the same license -- is
+    -- killed by the offender in match N+1 and answers the prompt.
+    --
+    -- THE KEYING IS NOT WEAKENED TO MAKE THIS WORK, and that is the point of the
+    -- last two assertions: the account still holds ONE prompt action and ONE
+    -- panel slot per offender per match. What changed is only which of the two
+    -- the keypress spends.
+    local m6 = three('sharedA', 'sharedB', 'sharedA')
+    local subj6 = BR.Identity.qualified('license', BR.Identity.licenseOf(2))
+    local rep6  = BR.Identity.qualified('license', BR.Identity.licenseOf(1))
+    ok(rep6 == BR.Identity.qualified('license', BR.Identity.licenseOf(3)),
+        'the fixture really does put two sources on one license',
+        tostring(rep6))
+
+    ok((reportFromPanel(1, 'Two') or {}).ok == true,
+        'match N: the account files a report')
+    fire('br:incident:filed', nil, {
+        incidentId      = 'inc-shared',
+        matchId         = m6.id,
+        subjectLicense  = subj6,
+        reporterLicense = rep6,
+    })
+    endMatch(m6)
+
+    local m7 = three('sharedA', 'sharedB', 'sharedA')
+    killedBy(3, 2)
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_CORROBORATE, 3)
+    ok(#firedOf('br:ringmaster:corroborate') == 1,
+        'match N+1: the OTHER client on that license answers the prompt',
+        tostring(#firedOf('br:ringmaster:corroborate')))
+
+    local shared = reportFromPanel(1, 'Two')
+    ok(shared ~= nil and shared.ok == true,
+        'and the first client can still file this round\'s report from the panel',
+        shared and tostring(shared.refused) or 'no answer')
+
+    -- ONE ACCOUNT, ONE PROMPT ACTION. The second client gets no prompt of its
+    -- own, because the account has already answered for this offender -- which
+    -- is the license keying doing exactly what it is there for.
+    killedBy(1, 2)
+    sent = {}
+    fire(BR.Net.REPORT_KILLED, 1)
+    ok(hintTo(1) == nil,
+        'the account is not offered the prompt twice by using its second client')
+
+    -- ...AND ONE PANEL SLOT. The report above spent it; a second one is refused
+    -- from either client, which is the rule a shared license must not buy a way
+    -- around.
+    local again = reportFromPanel(3, 'Two')
+    ok(again ~= nil and again.ok == false,
+        'and the panel slot it spent is spent for the account, not for the client',
+        again and tostring(again.ok) or 'no answer')
+end
+
 describe('report.hintAudience')
 do
     --[[
@@ -7712,10 +8026,28 @@ do
         env.RegisterNetEvent = function() end
         local commands = {}
         env.RegisterCommand = function(n, fn) commands[n] = fn end
+        -- EVERY LOCAL EVENT IS RECORDED, and it has to be recorded HERE rather
+        -- than by subscribing: `br:ui:sendLocal` is answered by br_ui, which is
+        -- a different resource and is not in this state at all, so there is no
+        -- handler to hang a spy off. What this client says to the interface is
+        -- the only observable the verdict screen has.
+        C.said = {}
         env.TriggerEvent = function(n, ...)
+            C.said[#C.said + 1] = { name = n, args = { ... } }
             for _, fn in ipairs(handlers[n] or {}) do fn(...) end
         end
         env.TriggerServerEvent = function() end
+
+        --- The last `br:ui:sendLocal` of one kind, or nil.
+        function C.toUi(kind)
+            for i = #C.said, 1, -1 do
+                local e = C.said[i]
+                if e.name == 'br:ui:sendLocal' and e.args[1] == kind then
+                    return e.args[2]
+                end
+            end
+            return nil
+        end
 
         -- THREADS ARE MODELLED, NOT MOCKED, and that is the point of the file.
         -- Every client suite in this repo stubs Citizen.CreateThread to a
@@ -7723,13 +8055,24 @@ do
         -- ef501ef -- literally unrunnable. Coroutines are what turn "the loop
         -- exists" into "the loop was entered N times and wrote M values".
         local threads = {}
+        -- ...AND TIMERS, UNDER A FLAG. `SetTimeout` was a no-op here because
+        -- #115 had no timer in it; the verdict screen is raised inside one
+        -- (state.lua's 500ms wait for the placement deltas), so a block that
+        -- asks whether the verdict appeared cannot run against a stub that
+        -- swallows it. OFF BY DEFAULT so every block written before this one
+        -- keeps the runtime it was written against.
+        local timers = {}
         env.Citizen = {
             CreateThread = function(fn)
                 threads[#threads + 1] =
                     { co = coroutine.create(fn), wake = C.now }
             end,
             Wait = function(ms) coroutine.yield(ms or 0) end,
-            SetTimeout = function() end,
+            SetTimeout = opts.timeouts
+                and function(ms, fn)
+                    timers[#timers + 1] = { at = C.now + (tonumber(ms) or 0), fn = fn }
+                end
+                or function() end,
         }
 
         --- Advance the client by `ms`, one 16ms frame at a time.
@@ -7738,6 +8081,24 @@ do
             while C.now < target do
                 C.now = math.min(C.now + 16, target)
                 frame()
+                -- Timers first, and taken off the list BEFORE they run: a
+                -- callback that schedules another one must not be re-entered on
+                -- the same frame, which is how a self-rescheduling clock turns
+                -- into a hang rather than a test.
+                local due = nil
+                for i = #timers, 1, -1 do
+                    if C.now >= timers[i].at then
+                        due = due or {}
+                        due[#due + 1] = timers[i].fn
+                        table.remove(timers, i)
+                    end
+                end
+                for i = #(due or {}), 1, -1 do
+                    local okt, err = pcall(due[i])
+                    if not okt then
+                        realPrint('\27[31mclient timer error\27[0m ' .. tostring(err))
+                    end
+                end
                 for i = #threads, 1, -1 do
                     local t = threads[i]
                     if C.now >= t.wake and coroutine.status(t.co) == 'suspended' then
@@ -7764,6 +8125,12 @@ do
         C.threads = threads
         C.resync = handlers[env.BR.Net.HIT_RESYNC][1]
         C.feed   = handlers[env.BR.Net.DAMAGE_FEED][1]
+
+        --- Deliver a net event to this client, exactly as the wire would.
+        --- @param name string
+        function C.recv(name, ...)
+            for _, fn in ipairs(handlers[name] or {}) do fn(...) end
+        end
         -- THE MIRROR'S REAL FRONT DOOR. Every #115 test until now hand-seeded
         -- `BR.State.roster[n] = { state = ALIVE }`, which quietly assumes the
         -- shape the standing check reads is the shape the SERVER publishes. It
@@ -8766,6 +9133,150 @@ do
             .. '"nil" on the line that reads as the engine\'s verdict',
             table.concat(eout, '\n       '))
     end
+
+    -- ======================================================================
+    -- THE VERDICT SCREEN IS NOT ALLOWED TO DEPEND ON ONE MESSAGE.
+    -- ======================================================================
+    --
+    -- Owner, 2026-08-18, playtesting in solos: "player 2 kills player 3, then
+    -- player 3 goes to this weird state where the verdict screen was never shown
+    -- but they're not DBNO and effectively a real corpse but stuck unable to do
+    -- anything. No errors were logged."
+    --
+    -- WHAT THAT SENTENCE DESCRIBES, MECHANICALLY. Exactly two things in this
+    -- client hang off `state == ENDED` and nothing else raises either: the
+    -- SUMMARY envelope, which IS the verdict screen, and BR.Spawn.toLobby(true),
+    -- which is the trip home. A client that does not process that one event is
+    -- left standing in a finished match with neither -- and for a player who
+    -- died, "standing" is a corpse on the ground. Nothing errors, so nothing is
+    -- logged; a message simply did not arrive.
+    --
+    -- THE DIGEST WAS ALREADY THE SAFETY NET and covered every transition except
+    -- the one that ends the round. It replayed WAITING for precisely this class
+    -- of failure and refused ENDED on the grounds that "the real event always
+    -- arrives". The four assertions below are what that claim is worth.
+    --
+    -- WHAT THIS CANNOT CLAIM, said plainly: it does not reproduce the owner's
+    -- session. Nothing here shows WHY the event went missing -- the server sends
+    -- it to every entry in the match, corpses included, and the block above this
+    -- one is not about that. It pins the consequence: whichever channel notices
+    -- the round is over, the player who was in it gets their verdict.
+    describe('verdict.unconditional')
+
+    --- A client that is ALIVE in a running solo match.
+    local function inMatch()
+        local C = newClient(9, { timeouts = true, src = 9 })
+        local B = C.env.BR
+        C.snapshotHandler({
+            roster = { [1] = { src = 1, state = B.PlayerState.ALIVE,
+                               hp = 100.0, armour = 0.0 } },
+            match  = { state = B.MatchState.PLAYING, mode = B.Mode.SOLO.key,
+                       endsAt = 0 },
+            alive = 3, squadsAlive = 3, seq = 1, serverNow = 0,
+        })
+        return C, B
+    end
+
+    --- The roster delta that says I have been killed.
+    local function killMe(C, B, seq)
+        C.recv(B.Net.ROSTER_DELTA, {
+            seq = seq or 2,
+            deltas = { { op = 'update', src = 1,
+                         e = { state = B.PlayerState.DEAD, hp = 0.0 } } },
+        })
+    end
+
+    --- The digest, as broadcast.lua sends it.
+    local function digest(C, B, state)
+        C.recv(B.Net.DIGEST, {
+            alive = 1, squadsAlive = 1, state = state,
+            endsAt = 0, mode = B.Mode.SOLO.key, serverNow = C.now,
+        })
+    end
+
+    -- ------------------------------------------------ the ordinary path ---
+    do
+        local C, B = inMatch()
+        killMe(C, B)
+        C.said = {}
+        C.recv(B.Net.STATE, { state = B.MatchState.ENDED, endsAt = 0,
+                              mode = B.Mode.SOLO.key, serverNow = C.now })
+        C.pump(1000)
+        ok(C.toUi(B.Nui.SUMMARY) ~= nil,
+            'a player killed in solos gets a verdict screen when the round ends')
+    end
+
+    -- ------------------------------------- ...and when the event never came ---
+    --
+    -- FAILS BEFORE THE FIX. The digest corrected the mirror and raised nothing,
+    -- so this client sat as a corpse in a finished match for ever.
+    do
+        local C, B = inMatch()
+        killMe(C, B)
+        C.said = {}
+        digest(C, B, B.MatchState.ENDED)
+        C.pump(1000)
+        ok(C.toUi(B.Nui.SUMMARY) ~= nil,
+            'and still gets one when the ENDED broadcast never reached them',
+            'no summary was ever raised')
+    end
+
+    -- ------------------------------------- ...and when the sweep arrives first ---
+    --
+    -- THE ORDERING THE SERVER CALLS A CONTRACT, BROKEN. server/match.lua
+    -- broadcasts ENDED before the roster sweep for one stated reason: "processing
+    -- the flip first reads as a voluntary leave (roundParticipant drops) and the
+    -- verdict screen never shows". That is a contract about what the SERVER
+    -- sends; it is not a guarantee about what this client processed. Here the
+    -- flip to LOBBY lands with the mirror still reading `playing`, which is
+    -- exactly what a lost ENDED looks like from inside noteMyState.
+    --
+    -- FAILS BEFORE THE FIX, and for a different reason than the block above --
+    -- the digest replay alone does not rescue it, because participation has
+    -- already been withdrawn by the time the replay fires.
+    do
+        local C, B = inMatch()
+        killMe(C, B)
+        C.recv(B.Net.ROSTER_DELTA, {
+            seq = 3,
+            deltas = { { op = 'update', src = 1,
+                         e = { state = B.PlayerState.LOBBY } } },
+        })
+        C.said = {}
+        digest(C, B, B.MatchState.ENDED)
+        C.pump(1000)
+        ok(C.toUi(B.Nui.SUMMARY) ~= nil,
+            'a corpse swept home before the round\'s end was processed still gets one',
+            'no summary was ever raised')
+    end
+
+    -- ------------------------------------------------ and NOT for a bystander ---
+    --
+    -- THE ASSERTION THAT KEEPS THE THREE ABOVE HONEST. "Unconditional" must mean
+    -- "not conditional on which message noticed", never "shown to everybody": a
+    -- player sitting in the lobby while other people's match ends has no verdict
+    -- and gets their menu instead (live report, and the reason the participant
+    -- gate exists at all).
+    do
+        local C = newClient(10, { timeouts = true, src = 10 })
+        local B = C.env.BR
+        C.snapshotHandler({
+            roster = { [1] = { src = 1, state = B.PlayerState.LOBBY,
+                               hp = 100.0, armour = 0.0 } },
+            match  = { state = B.MatchState.PLAYING, mode = B.Mode.SOLO.key,
+                       endsAt = 0 },
+            alive = 3, squadsAlive = 3, seq = 1, serverNow = 0,
+        })
+        C.said = {}
+        C.recv(B.Net.STATE, { state = B.MatchState.ENDED, endsAt = 0,
+                              mode = B.Mode.SOLO.key, serverNow = C.now })
+        digest(C, B, B.MatchState.ENDED)
+        C.pump(1000)
+        ok(C.toUi(B.Nui.SUMMARY) == nil,
+            'somebody who was never in the round is shown no verdict at all')
+    end
+
+    describe('resync.client')
 end
 
 describe('dbno.bleed')

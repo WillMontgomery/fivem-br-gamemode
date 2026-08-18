@@ -403,6 +403,7 @@ local function noteMyState()
             pushMatchState()
         end
     elseif st == BR.PlayerState.LOBBY
+       and not diedThisMatch
        and S.match.state ~= BR.MatchState.ENDED
        and S.match.state ~= BR.MatchState.CLEANUP then
         -- Becoming LOBBY while the match is still running means I LEFT the
@@ -411,6 +412,22 @@ local function noteMyState()
         -- their lobby menu (live report, twice). The teardown flip to LOBBY
         -- is different: by then match.state already reads ended, so real
         -- participants keep their verdict.
+        --
+        -- ...AND A DEATH IS NOT A LEAVE, WHICH IS THE OTHER HALF OF THAT TEST
+        -- AND WAS MISSING. "By then match.state already reads ended" is true of
+        -- the SERVER and is an assumption about this client's mirror: the
+        -- teardown sweep is what flips a dead player to LOBBY, and if the ENDED
+        -- broadcast has not been processed here yet -- lost, or simply beaten by
+        -- the delta -- the mirror still reads `playing` and this branch reads a
+        -- corpse being swept home as a voluntary leave. It then withdraws the
+        -- one flag the verdict screen is gated on, permanently, and the player
+        -- who died gets no verdict at all (owner, 2026-08-18). `diedThisMatch`
+        -- tells the two apart with the fact that actually distinguishes them:
+        -- nobody who died in this round walked out of it. It is set by the
+        -- roster delta that made me DEAD and cleared by the next match, so a
+        -- player who dies and THEN uses Leave Match keeps the participation
+        -- they earned by dying in the round, which is the answer that matches
+        -- their placement.
         if roundParticipant then
             roundParticipant = false
             pushMatchState()
@@ -546,22 +563,44 @@ AddEventHandler(BR.Net.DIGEST, function(d)
         applyFocusForState(S.match.state)
     end
 
-    -- REPLAY THE ONE TRANSITION the broadcast can never deliver: WAITING.
-    -- Under parallel matches, STATE events are scoped to a match's audience
-    -- -- a player who LEAVES one stops hearing about it, and their digest
-    -- flipping to WAITING is the only signal the round is over for them.
+    -- REPLAY THE TWO TRANSITIONS whose absence strands the player: WAITING and
+    -- ENDED. Under parallel matches, STATE events are scoped to a match's
+    -- audience -- a player who LEAVES one stops hearing about it, and their
+    -- digest flipping to WAITING is the only signal the round is over for them.
     -- Every subsystem keyed on the STATE event (route line, markers, island,
     -- the skydive latch) must still run its teardown, so that transition is
     -- re-fired locally -- TriggerEvent reaches the same handlers.
     --
-    -- WAITING ONLY, deliberately: for any in-match state the real event
-    -- always arrives (the player is in the audience), and replaying those
-    -- races the wire into DOUBLED side effects -- an early digest re-firing
-    -- 'bus' was part of the duplicated-parachute report (2026-08-04).
-    if S.match.state ~= was and S.match.state == BR.MatchState.WAITING then
+    -- ENDED IS THE SECOND ONE, AND IT IS HERE BECAUSE IT IS THE TERMINAL ONE.
+    -- Two things in this whole client hang off `state == ENDED` and NOTHING
+    -- else raises either of them: the verdict screen (the SUMMARY below) and
+    -- BR.Spawn.toLobby(true), which is the trip home. A client that does not
+    -- process that one event is left standing in a finished match -- for a
+    -- player who died, a corpse on the ground with no verdict, no lobby and
+    -- nothing in any log, because nothing failed; a message simply did not
+    -- arrive. That is the owner's report of 2026-08-18 word for word ("the
+    -- verdict screen was never shown ... effectively a real corpse but stuck
+    -- unable to do anything. No errors were logged"), and it had no safety net
+    -- while every lesser transition did.
+    --
+    -- THE CHANGE GATE IS WHAT MAKES THIS SAFE, and it is why the two names
+    -- below are the only ones here. This fires only when the digest MOVED the
+    -- mirror, so the real event arriving first makes it a no-op -- and for
+    -- ENDED the real event always goes out first by construction:
+    -- BR.Match.transition broadcasts BEFORE onEnter (server/match.lua says the
+    -- ordering is a contract), so a digest carrying 'ended' cannot beat the
+    -- transition that produced it. BUS is the state where that is NOT true --
+    -- onEnter sends it, so a digest can arrive first -- and an early digest
+    -- re-firing 'bus' was part of the duplicated-parachute report (2026-08-04).
+    -- That is the reason for the allowlist, and BUS is why it is an allowlist
+    -- rather than "replay anything that changed".
+    if S.match.state ~= was
+       and (S.match.state == BR.MatchState.WAITING
+            or S.match.state == BR.MatchState.ENDED) then
         TriggerEvent(BR.Net.STATE, {
             state     = S.match.state,
             endsAt    = S.match.endsAt,
+            mode      = S.match.mode,
             serverNow = d.serverNow,
             meta      = { from = was, reason = 'digest' },
         })

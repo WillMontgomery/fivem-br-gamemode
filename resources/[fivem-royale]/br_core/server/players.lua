@@ -55,10 +55,37 @@ BR.Players = BR.Players or {}
 local usage = {}
 
 --- Reports counted for a license in a match, resetting when the match changes.
+---
+--- `corroborated` IS A SECOND SET BESIDE `named`, AND THE SPLIT IS #177's BUG
+--- (owner, 2026-08-18: "player 1 reports player 2 ... next match ... is told
+--- they've already reported player 2 this match - but that's not possible").
+---
+--- They answer two questions that were one question until the kill prompt
+--- learned to reach across matches:
+---
+---   named         targets this reporter has NAMED IN A CASE BELONGING TO THIS
+---                 MATCH. It is what the panel refuses on -- "you have already
+---                 reported X in this match" -- and what stops a second
+---                 accusation landing on a case that already carries this
+---                 reporter's name.
+---   corroborated  targets this reporter has answered the KILL PROMPT about
+---                 this match, whichever match the case itself belongs to. It
+---                 is what makes the prompt one action per offender (#177 part
+---                 4) and is read by nothing else.
+---
+--- WHY THEY CANNOT BE ONE SET. `corroborationFor` asks `BR.Incident.openFor`,
+--- which is deliberately NOT match-scoped, so the prompt fires tonight for a
+--- case filed yesterday -- that is #177 part 1 and it is right. Writing that
+--- keypress into `named` then spent TONIGHT's panel allowance for that player
+--- on YESTERDAY's case: the reporter was refused when they went to file what
+--- happened tonight, and tonight's round produced no case at all. That is the
+--- exact rule #177 went out of its way to protect on the report-submit path --
+--- three rounds of cheating are three things worth telling an admin about --
+--- undone through the back door by the prompt.
 local function usageFor(license, matchId)
     local u = usage[license]
     if not u or u.matchId ~= matchId then
-        u = { matchId = matchId, count = 0, named = {} }
+        u = { matchId = matchId, count = 0, named = {}, corroborated = {} }
         usage[license] = u
     end
     return u
@@ -861,12 +888,17 @@ end)
     does anything, so the two cannot drift apart. `nudged` stays for what it is
     actually good at: not nagging somebody who ignored the prompt the first time.
 
-    THE SLOT IT SPENDS IS `usage.named`, the same per-(reporter, target, match)
-    set the panel spends, so corroborating from the prompt and reporting from the
-    panel cost the same thing and cannot both be done to one player. It does NOT
-    spend a SUBMISSION (`usage.count`): one keypress is not one of the three trips
-    to the panel a player gets, and charging it would quietly take a third of the
-    allowance away from somebody who pressed a key they were told to press.
+    THE SLOT IT SPENDS IS `usage.corroborated`, per (reporter, target, match) --
+    and `usage.named` TOO, but only when the case it answered is one this match
+    opened. That distinction is the whole of the match-boundary fix; it is argued
+    at `usageFor` and at the write itself, and the short version is that the
+    prompt reaches across matches and the panel's refusal does not, so one set
+    could not honestly answer for both.
+
+    It does NOT spend a SUBMISSION (`usage.count`) either way: one keypress is
+    not one of the three trips to the panel a player gets, and charging it would
+    quietly take a third of the allowance away from somebody who pressed a key
+    they were told to press.
 ]]
 
 --- [matchId] = { [reporterLicense] = { [killerLicense] = true } }
@@ -940,8 +972,15 @@ local function corroborationFor(src)
     -- ALREADY NAMED THIS PLAYER THIS MATCH -- reported from the panel, or
     -- corroborated from this very prompt (#177 part 4). One action per offender:
     -- there is nothing left to offer and nothing left to press.
+    --
+    -- BOTH SETS, AND THE PROMPT IS THE ONLY THING THAT READS BOTH. That is what
+    -- keeps #177 part 4 exactly as strong as it was while the panel's own
+    -- refusal narrows back to the panel's own question -- see usageFor. Delete
+    -- either half and the prompt starts offering a second bite: `named` alone
+    -- misses somebody who answered the prompt about a case from an older match,
+    -- `corroborated` alone misses somebody who reported them from the panel.
     local u = usageFor(myLicense, me.matchId)
-    if u.named[kLicense] then return nil end
+    if u.named[kLicense] or u.corroborated[kLicense] then return nil end
 
     return {
         me = me, killer = killer,
@@ -1031,10 +1070,34 @@ AddEventHandler(BR.Net.REPORT_CORROBORATE, function()
     -- does not apply to a case that already exists.
     claimReward(incidentId, c.myLicense, c.me.matchId)
 
-    -- SPENT. This is what stops the prompt being offered a second time and what
-    -- makes a later panel report of the same player refuse, and it is one write
-    -- rather than a flag of its own -- see the block comment above.
-    c.usage.named[c.kLicense] = true
+    -- SPENT, AND WHICH SLOT IT SPENDS DEPENDS ON WHOSE MATCH THE CASE IS.
+    --
+    -- `corroborated` ALWAYS, because that is the prompt's own latch: one action
+    -- per offender per match, the offer withdrawn and the key dead, exactly as
+    -- #177 part 4 asks. Nothing else reads it.
+    --
+    -- `named` ONLY WHEN THE CASE BELONGS TO THIS MATCH, because that set is the
+    -- PANEL's refusal and the panel asks a per-match question. Both writes
+    -- happened here until now, and the cross-match half was wrong in a way the
+    -- owner walked into on the first playtest: a case filed in match N, answered
+    -- from the kill prompt in match N+1, spent match N+1's allowance -- so the
+    -- reporter was told "you have already reported X in this match" about a
+    -- match in which they had reported nobody, and the round's own cheating got
+    -- no case of its own. Filing policy is per match (see the report-submit path
+    -- above and the teardown note below); the prompt reaching across matches
+    -- must not quietly repeal it.
+    --
+    -- WHEN THE CASE IS THIS MATCH'S, BOTH ARE WRITTEN AND NOTHING CHANGES. That
+    -- is the case the panel would otherwise corroborate a second time under the
+    -- same reporter's name, which is the "same opinion arriving twice" #143
+    -- refuses -- so the refusal it produces is the correct one and stays.
+    c.usage.corroborated[c.kLicense] = true
+    for _, id in ipairs(BR.Incident and BR.Incident.priorFor(c.me.matchId, c.kLicense) or {}) do
+        if id == incidentId then
+            c.usage.named[c.kLicense] = true
+            break
+        end
+    end
 
     -- THE SAME ANSWER A PANEL REPORT GETS, WORD FOR WORD. "Your report was added
     -- to an existing case" would leak that the person they just named is already

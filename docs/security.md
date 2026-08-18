@@ -317,6 +317,18 @@ server-side, and is reached only by that resolver — there is no verb anywhere
 that accepts a license from a client, and br_ddb still has no Query or Scan, so
 nothing on the box can enumerate cases at all.
 
+**…but it did widen what the keypress spent, and that had to be split back
+apart.** Answering the prompt records itself in `usage.corroborated`, which is
+what makes it one action per offender per match. It also spends `usage.named` —
+the set the *panel* refuses on — but **only when the case it answered belongs to
+this match**. Both writes happened unconditionally until 2026-08-18, so a case
+filed in one round and corroborated from the prompt in the next spent the *next*
+round's panel allowance: the reporter was told "you have already reported X in
+this match" about a match in which they had reported nobody, and that round's own
+cheating opened no case. Filing policy is per match on purpose — three rounds of
+cheating are three things worth telling an admin about — and a prompt that reads
+across matches must not repeal it by the back door.
+
 **Both halves are decided by one function.** `corroborationFor` in
 `br_core/server/players.lua` decides whether the prompt is shown *and* whether
 the keypress does anything. A client that skips the prompt and sends
