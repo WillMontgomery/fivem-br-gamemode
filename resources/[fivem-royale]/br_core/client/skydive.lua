@@ -555,6 +555,20 @@ BR.Loop.register(BR.Loop.FRAME, 'skydive.prompt', function()
     -- on its own. See BR.Cosmetics.emitTrailThisFrame.
     DisableControlAction(0, 145, true)
 
+    -- AND 144 GOES TOO, ONCE WE OWN THE KEY. GTA's parachute task reads
+    -- INPUT_PARACHUTE_DEPLOY natively, so after the jump moved onto our binding
+    -- (bus.lua, #174) a player who rebinds gets a jump key that works and a
+    -- canopy that still opens on Space. Two keys for one action, one of them
+    -- invisible to the settings screen.
+    --
+    -- GUARDED, AND THE GUARD IS LOAD-BEARING: with no binding at all -- which
+    -- BR.Keys.set produces for the LOSER of a key conflict -- 144 is the last
+    -- way to open the canopy, and taking it away is a death rather than an
+    -- inconvenience.
+    if BR.Keys.labelFor('brdeploy') then
+        DisableControlAction(0, 144, true)
+    end
+
     local cs = GetPedParachuteState(ped)
 
     -- THE SMOKE ITSELF, AND IT IS A HELD KEY RATHER THAN A FLAG (#131).

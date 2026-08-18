@@ -11,8 +11,10 @@
 -- at the airstrip; a scripted camera rides the plane instead. The ped only
 -- moves when the jump actually happens.
 --
--- CONTROLS: one key. SPACE jumps once the doors are open (and deploys the
--- glider afterwards -- skydive.lua owns that half of the same binding).
+-- CONTROLS: one key, and it is OURS. `deploy` (keybinds.lua, default SPACE)
+-- jumps once the doors are open and deploys the glider afterwards -- skydive.lua
+-- owns that half of the same binding. Rebinding it in Settings moves both, and
+-- nothing here reads an engine control behind the player's back (#174).
 
 BR = BR or {}
 
@@ -80,11 +82,17 @@ end
 -- ------------------------------------------------------- the map drawing ---
 
 local routeDrawn = false
+--- How many points the last custom route was drawn from. /brbus prints it, and
+--- it used to print `#crumbs` -- a local that does not exist anywhere in this
+--- file, so the ONE command a playtester is asked to paste when the plane
+--- misbehaves raised on its own third line instead of answering.
+local crumbCount = 0
 
 local function clearCrumbs()
     if routeDrawn then
         ClearGpsCustomRoute()
         routeDrawn = false
+        crumbCount = 0
     end
 end
 
@@ -126,6 +134,7 @@ local function drawCrumbs()
     end
     SetGpsCustomRouteRender(true, 16, 16)   -- radar + map line thickness
     routeDrawn = true
+    crumbCount = #line
 end
 
 RegisterNetEvent(BR.Net.BUS_ROUTE)
@@ -302,7 +311,7 @@ BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
         end
     end
 
-    -- (The doors-open prompt is drawn per-frame in bus.jumpkey below, so it
+    -- (The doors-open prompt is drawn per-frame in bus.prompt below, so it
     -- PERSISTS for the whole jump window instead of fading on the engine's
     -- own schedule.)
 
@@ -323,8 +332,15 @@ BR.Loop.register(BR.Loop.TICK, 'bus.board', function()
 
     -- Last call: past the final authored waypoint the plane flies its
     -- overrun; whoever is still aboard when it runs out goes out anyway.
-    -- Native help with the beep, like every other door/chute message --
-    -- flight prompts live in the game's own scaleforms, not the NUI stack.
+    --
+    -- THE BEEP, AND ONLY THE BEEP. The persistent prompt is a DUI now (see
+    -- bus.prompt below) and it hardens into its own "doors closing" wording on
+    -- the same tick -- but a DUI cannot make a noise, and this moment is the
+    -- one in the whole flight that has to reach a player who is looking at the
+    -- map. BR.Native.help is the one-shot with the sound; it fades on the
+    -- engine's own clock while the box stays up. Deliberately names NO key: the
+    -- box beside it is the thing that names the key, and two places printing
+    -- one binding is how they come to disagree.
     if riding and not toldClosing and route and route.timed
        and BR.Clock.now() >= route.doorsClose then
         toldClosing = true
@@ -440,37 +456,223 @@ end)
 local function tryJump()
     if not riding or not route or not route.timed then return end
     -- No toast on an early press: the persistent doors-open prompt IS the
-    -- state display now -- its absence says the doors are still shut, and
-    -- door/chute messaging lives entirely in the native scaleforms.
+    -- state display -- its absence says the doors are still shut. (That box is
+    -- our own DUI now rather than the engine's help text; see the prompt
+    -- section below. The rule it enforces is unchanged.)
     if BR.Clock.now() < route.jumpFrom then return end
     TriggerServerEvent(BR.Net.BUS_JUMP)
 end
 
+-- ONE BINDING, BOTH JOBS, AND IT IS THE ONLY READER (#174).
+--
+-- Owner, 2026-08-18: "the jump and parachute keys should be the same." They
+-- already were, by name: `deploy` is registered once in keybinds.lua as
+-- "Royale: Jump / deploy glider", default SPACE, and skydive.lua listens on the
+-- same action for the canopy. What was not ours is what used to sit below this
+-- line -- a SECOND reader, in parallel with the first:
+--
+--     local INPUT_PARACHUTE_DEPLOY = 144
+--     if IsControlJustPressed(0, INPUT_PARACHUTE_DEPLOY) then tryJump() end
+--
+-- It was written when our own binding could not be drawn as a glyph, and it
+-- cost three separate things:
+--
+--   * A REBIND DID NOT MOVE THE JUMP, it only ADDED a key. Move `deploy` to J
+--     and J jumped -- and so did Space, forever, because nothing can move the
+--     engine's control 144 and nothing here stopped reading it. The settings
+--     screen said J. Both were true, which is worse than either.
+--
+--   * ONE PRESS SENT TWO BUS_JUMPs. On the default binding both readers see
+--     the same physical Space in the same frame -- keybinds.raw fires `deploy`,
+--     this loop polls 144 -- and `riding` is still true between them, because
+--     it only clears when the server answers. Two BUS_JUMP events per jump,
+--     every jump, on every client.
+--
+--   * AND THE PROMPT NAMED 144's KEY rather than the player's, which is the
+--     symptom that got reported. It could not have named ours: the prompt was
+--     GTA's help box, and `~INPUT_<hash>~` for one of our commands renders a
+--     hole (measured, /brpromptcheck; see dui.lua's drawScreen note).
+--
+-- So there is one reader, and it is BR.Keys. Everything the removed poll gave a
+-- player who never opens the settings screen, the default gives instead: SPACE
+-- is `deploy`'s default and 0x20 is in keybinds.lua's DEFAULT_VK, so the raw
+-- layer watches Space -- and on a client with no raw layer at all, the engine's
+-- own `brdeploy` keymapping delivers the very same press to the very same
+-- listener. Nothing changes for that player. For the player who DID rebind, the
+-- key they chose is now the only one that works, which is what a rebinder is.
 BR.Keys.on('deploy', function(pressed)
     if pressed then tryJump() end
 end)
 
--- The BASE GAME's parachute-deploy control works aboard too -- it is the key
--- the doors-open prompt displays (custom keymapping hashes refused to render
--- a glyph in help text; INPUT_PARACHUTE_DEPLOY always does, and one key for
--- the whole descent was the design anyway). Frame-polled because
--- IsControlJustPressed only lives for the frame it happened in.
-local INPUT_PARACHUTE_DEPLOY = 144
-BR.Loop.register(BR.Loop.FRAME, 'bus.jumpkey', function()
-    if not riding then return end
+-- ------------------------------------------------------------- the prompt ---
+--
+-- OUR BOX, DRAWN BY US, NAMING OUR KEY.
+--
+-- Owner: "'press [glyph] to jump' text when in the bus - we should apply our
+-- key layer and use a DUI for that instead." Both halves land here, and the
+-- second is only possible because of the first: a prompt cannot name our key
+-- unless our key is the one being read.
+--
+-- The precedent is skydive.lua's descent prompt, deliberately followed rather
+-- than reinvented -- same page, same position, same scale, so the box the
+-- player is looking at when they press the key is the box that is still there
+-- after they fall out of the plane, saying the next thing.
 
-    -- The prompt PERSISTS from doors-open until this player jumps --
-    -- redrawn per frame, gone the frame `riding` flips. Past the last
-    -- authored waypoint it hardens into the last call (the TICK block
-    -- above beeps once at that moment; this keeps the text on screen).
-    if route and route.timed and BR.Clock.now() >= route.jumpFrom then
-        BR.Native.helpThisFrame(BR.Clock.now() >= route.doorsClose
-            and 'Doors closing — press ~INPUT_PARACHUTE_DEPLOY~ NOW!'
-            or  'Doors open — press ~INPUT_PARACHUTE_DEPLOY~ to jump.')
+--- The jump prompt's page. Its own browser, NOT the descent prompt's.
+---
+--- skydive.lua makes this argument for `descentprompt` and it holds here with
+--- one edge added: the two boxes are CONSECUTIVE. On the frame the jump lands,
+--- this file's `riding` clears and skydive's `dropping` sets -- so a page owned
+--- by both would have two writers on that one frame, one saying "hide" and one
+--- saying "open the glider", in an order neither file controls. One extra CEF
+--- instance is the price of never having to reason about that ordering.
+---
+--- Reached lazily, from the loop, so the browser is created the first time a
+--- jump window actually opens rather than at resource start.
+local function promptPage()
+    return BR.Dui.page('busprompt', 'nui://br_ui/dui/prompt.html', 512, 256)
+end
+
+--- What the box is currently saying: nil, 'open' or 'closing'.
+---
+--- SENT ON CHANGE, DRAWN EVERY FRAME -- dui.lua's opening note is about exactly
+--- this split. Re-sending the same payload sixty times a second would put a
+--- JSON encode and a browser message on the frame path for no visible change.
+local promptKind = nil
+
+--- The jump key's label, cached for the length of a binding.
+---
+--- `checked` is separate from the label because NIL IS A REAL ANSWER: a player
+--- whose `brdeploy` binding is on no key -- cleared deliberately, or having
+--- lost a key conflict to another action, which BR.Keys.set resolves by
+--- clearing the loser -- has no jump key at all, and re-asking every frame for
+--- an answer that will not change is what the cache is avoiding.
+local keyLabel, keyChecked = nil, false
+
+--- NO VANILLA FALLBACK HERE, AND THAT IS THE POINT OF THE WHOLE CHANGE.
+---
+--- skydive.lua asks for this same command as `keyName('brdeploy', 144)`, with
+--- the vanilla control as a fallback, and it is right to: under a parachute
+--- task GTA's own INPUT_PARACHUTE_DEPLOY genuinely still opens the canopy, so
+--- naming it names a key that works. ABOARD THE PLANE IT DOES NOT. The poll
+--- that made 144 jump is what this change removed, and a ped attached to a
+--- Titan is in no parachute task to catch it. Passing a fallback here would
+--- print a key nothing is listening for, which is #131 and #129's third round
+--- verbatim -- the exact bug this issue was opened about.
+local function jumpKey()
+    if not keyChecked then
+        keyChecked = true
+        keyLabel = BR.Native.keyLabelForCommand('brdeploy')
+    end
+    return keyLabel
+end
+
+AddEventHandler('br:keys:changed', function()
+    keyLabel, keyChecked = nil, false
+    -- AND THE BOX IS TOLD TO FORGET WHAT IT WAS SAYING. The payload is only
+    -- re-sent when `promptKind` changes, so a rebind mid-flight would move the
+    -- cached label and never push it -- "kept saying the old key until they
+    -- walked away and back" (user, 2026-08-09), reintroduced by the cache that
+    -- exists to avoid it. Clearing the kind forces one re-send next frame.
+    promptKind = nil
+end)
+
+--- What the prompt has actually done, for /brbus.
+---
+--- "The prompt did not appear" and "the prompt appeared and the key did
+--- nothing" are the same sentence from a chair, and #131 cost five rounds
+--- partly because no readout could separate them.
+local promptSeen = { kind = nil, sends = 0, draws = 0, fallbacks = 0 }
+
+--- Put the jump window in the box, or take the box away.
+--- @param kind string|nil  'open', 'closing' or nil
+local function setPrompt(kind)
+    promptSeen.kind = kind
+    if kind == promptKind then return end
+    promptKind = kind
+    promptSeen.sends = promptSeen.sends + 1
+
+    local page = promptPage()
+    if not kind then
+        BR.Dui.send(page, { t = 'prompt', show = false })
+        return
     end
 
-    if IsControlJustPressed(0, INPUT_PARACHUTE_DEPLOY) then
-        tryJump()
+    -- AN UNBOUND JUMP GETS A DIFFERENT SENTENCE, NOT AN EMPTY CAP.
+    --
+    -- The trail prompt draws nothing at all when its key is gone, and for a
+    -- cosmetic that is right. Leaving the plane is not a cosmetic. A player can
+    -- reach this state without ever having touched the jump row -- bind
+    -- something else to Space and `deploy` is the loser that gets cleared -- and
+    -- a box that simply vanished would read as the prompt being broken. So it
+    -- says which screen fixes it. (They are not stranded either way: the server
+    -- force-ejects everyone still aboard at the end of the overrun.)
+    local key = jumpKey()
+    BR.Dui.send(page, {
+        t     = 'prompt',
+        show  = true,
+        label = (not key) and 'Jump is unbound'
+             or (kind == 'closing') and 'Doors closing!'
+             or 'Jump from the plane',
+        hint  = (not key) and 'Settings > Key Bindings'
+             or (kind == 'closing') and 'Press — last call'
+             or 'Press',
+        -- THE GLYPH. prompt.html draws whatever lands here inside the key cap,
+        -- and what lands here is the player's own binding read from BR.Keys.
+        key   = key,
+        -- No ring: the ring is for a hold, and this is a tap.
+        ring  = false,
+    })
+end
+
+BR.Loop.register(BR.Loop.FRAME, 'bus.prompt', function()
+    -- THE WINDOW: doors open until this player is out of the plane. Redrawn
+    -- per frame so it PERSISTS instead of fading on the engine's own schedule,
+    -- and taken down the frame `riding` clears -- which for a DUI has to be an
+    -- explicit instruction rather than an absence, because a DUI holds the last
+    -- thing it was told until it is told otherwise. The help box this replaces
+    -- expired on its own; a match torn down mid-flight would otherwise leave
+    -- "Jump from the plane" hanging over the lobby.
+    if not riding or not route or not route.timed
+       or BR.Clock.now() < route.jumpFrom then
+        setPrompt(nil)
+        return
+    end
+
+    -- Past the last authored waypoint it hardens into the last call. The TICK
+    -- block above beeps once at that moment; this is what keeps it on screen.
+    setPrompt(BR.Clock.now() >= route.doorsClose and 'closing' or 'open')
+
+    local page = promptPage()
+    if BR.Dui.ready(page) then
+        promptSeen.draws = promptSeen.draws + 1
+        -- THE DESCENT PROMPT'S OWN POSITION, on purpose. These two boxes are
+        -- one box as far as the player is concerned: press the key here, fall
+        -- out, and the same plate in the same place is now offering the glider.
+        -- Reading BR.Config.Drop rather than copying its numbers means they
+        -- cannot drift apart. Scale is dui.lua's business from there -- it
+        -- multiplies by the player's interface preference, which is the half of
+        -- this request the help box could never honour.
+        local D = BR.Config.Drop
+        BR.Dui.drawScreen(page, (D and D.promptX) or 0.5,
+                                (D and D.promptY) or 0.78,
+                                (D and D.promptScale) or 0.17)
+    else
+        -- A BROWSER THAT NEVER CAME UP MUST NOT MEAN SILENCE (#131's third
+        -- round), and here it would cost the whole match rather than a
+        -- cosmetic: a player who cannot see the jump prompt does not jump.
+        --
+        -- So the words fall back to the engine's help box and only the GLYPH is
+        -- lost. The letter is still the player's own binding read from BR.Keys,
+        -- and it is emphatically NOT an `~INPUT_~` token: the token for one of
+        -- our commands renders as a hole, which is the measurement that sent
+        -- this prompt to a DUI in the first place.
+        promptSeen.fallbacks = promptSeen.fallbacks + 1
+        local key = jumpKey()
+        BR.Native.helpThisFrame(key and (('%s — press %s to jump.'):format(
+                BR.Clock.now() >= route.doorsClose and 'Doors closing'
+                                                    or 'Doors open', key))
+            or 'Jump is unbound -- set a key in Settings > Key Bindings.')
     end
 end)
 
@@ -633,9 +835,21 @@ RegisterCommand('brbus', function()
         tostring(riding), tostring(bus), tostring(cam), tostring(BR.State.me.state)))
     print(('  clock  offset %.0fms  synced %s  now %d'):format(
         BR.Clock.offset, tostring(BR.Clock.synced), BR.Clock.now()))
+    -- THE PROMPT AND THE KEY, BEFORE THE ROUTE, because "there was no prompt"
+    -- and "the prompt named a key that did nothing" are the two reports this
+    -- subsystem has actually produced, and neither of them was answerable from
+    -- a paste. `key` is read through the same BR.Keys.labelFor the box itself
+    -- prints, so this line cannot agree with a lie the box is telling.
+    -- `fallbacks` rising means the DUI browser never came up and the words are
+    -- coming from the engine's help box -- a different fault from a prompt that
+    -- was never asked for, and indistinguishable from one on screen.
+    print(('  prompt %s   key %s   sends %d  draws %d  help-fallbacks %d'):format(
+        promptSeen.kind and ('showing "' .. promptSeen.kind .. '"') or 'not showing',
+        tostring(jumpKey() or '(UNBOUND -- Settings > Key Bindings)'),
+        promptSeen.sends, promptSeen.draws, promptSeen.fallbacks))
     if not route then print('  route  none') return end
     print(('  route  %d pts  %d crumbs  legs %s  timed %s')
-        :format(#route.points, #crumbs,
+        :format(#route.points, crumbCount,
                 route.legs and table.concat(route.legs, '-') or '?',
                 tostring(route.timed)))
     if not route.timed then print('  (preview only -- departs at BUS)') return end
