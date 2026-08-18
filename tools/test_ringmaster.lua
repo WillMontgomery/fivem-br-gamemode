@@ -958,7 +958,14 @@ do
     fire(BR.Net.LOOT_CLAIM, 101, { id = crate.id })
     ok(sameWorld(was, worldOf(theMatch)), 'a DEAD player cannot open a crate')
     ok(kindOf(theMatch, crate.id) == 'chest', 'it is still sealed')
-    ok(#notices(at, 101) == 1 and notices(at, 101)[1] == 'You cannot pick that up right now.',
+    -- THE SENTENCE IS ASKED FOR, NOT SPELLED OUT. This pinned the literal, and
+    -- when the owner reworded the refusals (2026-08-18) that made a copy of the
+    -- text in a fourth place -- the one place nobody greps. refusalText with no
+    -- reason IS the default sentence, so what this asserts is the property that
+    -- matters: the state refusal says the same thing the reason table falls
+    -- back to, whatever that happens to be.
+    ok(#notices(at, 101) == 1
+        and notices(at, 101)[1] == BR.Loot.refusalText(nil),
         'CAN_TAKE refuses AUDIBLY', table.concat(notices(at, 101), ' / '))
     BR.Roster.setState(101, BR.PlayerState.ALIVE)
 

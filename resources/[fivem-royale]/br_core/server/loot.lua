@@ -605,17 +605,29 @@ end
 -- only shape in which a reason added later cannot arrive silent.
 -- --------------------------------------------------------------------------
 
+--- "No, and the reason is not worth a sentence of its own."
+---
+--- ONE LITERAL, THREE READERS (owner, 2026-08-18: "These inventory messages are
+--- just wrong"). This sentence was written out three times -- the `noinv` entry
+--- below, the fallback at the end of refusalText, and the state check in the
+--- claim handler -- and three copies of one sentence is a wording change that
+--- half-lands: two of them move and the third keeps saying the old thing to
+--- whichever player happens to hit that branch.
+local REFUSED = 'You cannot pickup that item right now.'
+
 --- What a refused claim says, by reason.
 ---
---- `carrymax` is deliberately absent: it is the one that has to name the item
---- and its cap, so it is built in refusalText rather than looked up here.
+--- TWO REASONS ARE DELIBERATELY ABSENT. `carrymax` and `sameitem` both have to
+--- NAME THE ITEM -- and `carrymax` its cap as well -- so they are built in
+--- refusalText, where the config lookup lives. Everything that can be said
+--- without knowing what was picked up is said here.
 local REFUSAL = {
     ammofull = 'Already carrying the maximum.',
     -- BR.Inv.of could not find a roster entry. Not reachable from this handler
     -- today -- it checks the roster several lines earlier -- and listed anyway,
     -- because "unreachable" is a fact about the caller and this table is about
     -- the reason. It cost nothing and it was silent.
-    noinv    = 'You cannot pick that up right now.',
+    noinv    = REFUSED,
 }
 
 --- What to call this item when there is more than one of it.
@@ -663,7 +675,27 @@ function BR.Loot.refusalText(reason, stack)
         end
         return ('You cannot carry more than %d %s.'):format(cap, pluralOf(stack))
     end
-    return REFUSAL[reason] or 'You cannot pick that up right now.'
+
+    -- THE LIKE-FOR-LIKE REFUSAL, WHICH ALSO NAMES THE ITEM (owner, 2026-08-18:
+    -- "'You are already holding that' should say 'You cannot pickup any more
+    -- [item name]s'").
+    --
+    -- THE NAME IS pluralOf, NOT label .. 's'. The bracketed "[item name]s" in
+    -- the request is shorthand for the plural, not an instruction to build one
+    -- by concatenation -- `plural` exists in br_lib/config/loot.lua precisely
+    -- because the last refusal that assembled its own noun shipped as "You can
+    -- only carry 0 of thoses." pluralOf reads the authored plural first and
+    -- falls back twice, so this cannot render nil for any item, configured or
+    -- not.
+    --
+    -- FULL STOP ADDED. The request carries none; every other sentence in this
+    -- file and in BR.Server.notify does, and a toast that ends mid-air next to
+    -- one that does not is the wording bug this change is fixing.
+    if reason == 'sameitem' then
+        return ('You cannot pickup any more %s.'):format(pluralOf(stack))
+    end
+
+    return REFUSAL[reason] or REFUSED
 end
 
 RegisterNetEvent(BR.Net.LOOT_CLAIM)
@@ -680,7 +712,10 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
     if not m then return end
 
     if not CAN_TAKE[e.state] then
-        BR.Server.notify(src, 'You cannot pick that up right now.', 'warn')
+        -- The same literal the reason table falls back to. This one is not a
+        -- BR.Inv.give reason -- it never gets that far -- but the player is
+        -- being told the same thing, so it is told with the same words.
+        BR.Server.notify(src, REFUSED, 'warn')
         return
     end
 

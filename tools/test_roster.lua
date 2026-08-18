@@ -3832,6 +3832,215 @@ do
     ok(m.loot.items[bandE.id] ~= nil,
         'and the refused item stays in the world')
 
+    -- ----------------------------------------------------------------------
+    -- THE SHIELD, WHICH HAD NO REFUSAL TO HEAR AT ALL (owner, 2026-08-18:
+    -- "I don't want the swap, if both the item being picked up and the item in
+    -- my active slot are the same type").
+    --
+    -- This is the other half of #171 and it is not a carryMax case: neither
+    -- shield HAS a carryMax, so the toast the owner asked for could never fire
+    -- for the item he reported it against. What fired instead was the swap --
+    -- the loose shield took the active slot and the stack that was there hit
+    -- the floor.
+    --
+    -- The numbers are what make it a bug rather than a preference. A full
+    -- shield stack is three; a loose pickup is one. The swap therefore took
+    -- THREE out of the inventory and put ONE back, for a key the player
+    -- pressed wanting more shields.
+    -- ----------------------------------------------------------------------
+    local shieldCfg = BR.Config.ConsumableById['shield']
+    ok(shieldCfg.carryMax == nil,
+        'a shield has no carry ceiling, so carrymax can never be its reason')
+
+    --- A claim a full second after the last one.
+    ---
+    --- The handler's token bucket allows four claims a SECOND and refuses the
+    --- fifth SILENTLY -- deliberately, because at that rate it is a stuck key
+    --- or a script. Every assertion below reads what a refusal said, so a
+    --- shared clock would start returning the bucket's silence and each one
+    --- would pass or fail on its position in the file rather than on the rule
+    --- it names.
+    local function claimLater(src, stack)
+        fakeTime = fakeTime + 1100
+        return claim(src, stack)
+    end
+
+    --- Full inventory, `count` shields in the ACTIVE slot, guns everywhere else.
+    local function holdingShields(count)
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'shield', kind = BR.ItemKind.CONSUMABLE,
+                         rarity = shieldCfg.rarity, count = count })
+        for _ = 2, BR.Config.Loot.slots do
+            BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                             rarity = 1, count = 1, clip = 12 })
+        end
+        local inv = BR.Inv.of(1)
+        inv.active = 1
+        return inv
+    end
+
+    local inv = holdingShields(shieldCfg.maxStack)
+    local saidS, shieldE = claimLater(1, { item = 'shield',
+        kind = BR.ItemKind.CONSUMABLE, rarity = shieldCfg.rarity, count = 1 })
+    ok(inv.slots[1] and inv.slots[1].item == 'shield'
+        and inv.slots[1].count == shieldCfg.maxStack,
+        'a shield walked over with a shield in hand keeps the stack you had',
+        ('%s x%s'):format(tostring(inv.slots[1] and inv.slots[1].item),
+                          tostring(inv.slots[1] and inv.slots[1].count)))
+    ok(m.loot.items[shieldE.id] ~= nil,
+        'and leaves the loose one on the floor rather than trading for it')
+    ok((saidS[1] or '') ~= '', 'and it SAYS so -- a silent refusal is #171',
+        ('%q'):format(saidS[1] or ''))
+    -- THE OWNER'S WORDING, verbatim but for the full stop this file's other
+    -- sentences all carry (owner, 2026-08-18: "should say 'You cannot pickup
+    -- any more [item name]s'").
+    ok(saidS[1] == ('You cannot pickup any more %s.'):format(shieldCfg.plural),
+        'in the words the owner asked for, with the item named',
+        ('%q'):format(saidS[1] or ''))
+    -- The wording also has to be true of the reason. Nothing here was a
+    -- CEILING -- shields have none -- so the carrymax sentence, which quotes a
+    -- cap, would be a lie in both halves.
+    ok((saidS[1] or ''):find('carry', 1, true) == nil,
+        'and never in carrymax wording, which quotes a cap that does not exist',
+        ('%q'):format(saidS[1] or ''))
+
+    -- THE NAME COMES FROM THE CONFIG, NOT FROM label .. "s". Every plural in
+    -- the game today happens to be regular, so nothing else in this file can
+    -- tell the two implementations apart -- which is exactly how "of thoses"
+    -- got shipped. Bending one config plural out of shape for a single claim
+    -- separates them: the sentence either follows `plural` or it does not.
+    local realPlural = shieldCfg.plural
+    shieldCfg.plural = 'Shieldes'
+    holdingShields(shieldCfg.maxStack)
+    local saidIrreg = claimLater(1, { item = 'shield',
+        kind = BR.ItemKind.CONSUMABLE, rarity = shieldCfg.rarity, count = 1 })
+    shieldCfg.plural = realPlural
+    ok((saidIrreg[1] or ''):find('Shieldes', 1, true) ~= nil,
+        'an irregular plural is read from the config, never assembled',
+        ('%q'):format(saidIrreg[1] or ''))
+
+    -- AND AN ITEM WITH NO CONFIG AT ALL STILL RENDERS A SENTENCE. A refusal
+    -- that interpolates a nil is worse than the one it replaced.
+    local orphan = BR.Loot.refusalText('sameitem',
+        { item = 'no_such_item', kind = BR.ItemKind.CONSUMABLE })
+    ok(type(orphan) == 'string' and #orphan > 0
+        and orphan:find('nil', 1, true) == nil,
+        'and an unconfigured item falls back rather than printing a nil',
+        ('%q'):format(tostring(orphan)))
+
+    -- ...AND THE UNLIKE SWAP IS UNTOUCHED. Every assertion above is worthless
+    -- if it was bought by deleting the swap, so each refusal has its own
+    -- control, run from the identical inventory.
+    --
+    -- SAME KIND, DIFFERENT ITEM. This is the pair that would have broken under
+    -- the wider reading of "the same type": a Small Shield and a Shield are
+    -- both CONSUMABLE, and refusing on kind would have refused this too.
+    inv = holdingShields(shieldCfg.maxStack)
+    local mini = BR.Config.ConsumableById['minishield']
+    local saidM = claimLater(1, { item = 'minishield',
+        kind = BR.ItemKind.CONSUMABLE, rarity = mini.rarity, count = 1 })
+    ok(inv.slots[1] and inv.slots[1].item == 'minishield',
+        'a DIFFERENT consumable still swaps into the active slot',
+        tostring(inv.slots[1] and inv.slots[1].item))
+    ok(#saidM == 0, 'and an accepted swap says nothing, because nothing failed')
+
+    --- Full inventory of guns, `item` in the ACTIVE slot.
+    local function holding(item)
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = item, kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 12 })
+        for _ = 2, BR.Config.Loot.slots do
+            BR.Inv.give(1, { item = 'sawnoff', kind = BR.ItemKind.WEAPON,
+                             rarity = 1, count = 1, clip = 8 })
+        end
+        local i = BR.Inv.of(1)
+        i.active = 1
+        return i
+    end
+
+    -- THE SAME GUN FOR THE SAME GUN, which costs a loaded magazine.
+    inv = holding('pistol')
+    inv.slots[1].clip = 12
+    local saidP, pistolE = claimLater(1, { item = 'pistol',
+        kind = BR.ItemKind.WEAPON, rarity = 1, count = 1, clip = 1 })
+    ok(inv.slots[1] and inv.slots[1].item == 'pistol' and inv.slots[1].clip == 12,
+        'the same gun off the floor does not swap your loaded one for it',
+        ('clip %s'):format(tostring(inv.slots[1] and inv.slots[1].clip)))
+    ok(m.loot.items[pistolE.id] ~= nil, 'and the floor copy stays put')
+    ok((saidP[1] or '') ~= '', 'and that refusal talks too',
+        ('%q'):format(saidP[1] or ''))
+
+    -- THE CONTROL, and the reason the swap exists at all: a rifle over a
+    -- pistol with five full slots is a real choice made in one motion.
+    inv = holding('pistol')
+    local rifleCfg = BR.Config.WeaponById['carbinerifle']
+    local saidR = claimLater(1, { item = 'carbinerifle',
+        kind = BR.ItemKind.WEAPON, rarity = rifleCfg.rarity, count = 1,
+        clip = rifleCfg.clip })
+    ok(inv.slots[1] and inv.slots[1].item == 'carbinerifle',
+        'a DIFFERENT weapon still swaps into the active slot',
+        tostring(inv.slots[1] and inv.slots[1].item))
+    ok(#saidR == 0, 'and says nothing, because it was not refused')
+
+    -- HOLDING ONE ELSEWHERE IS NOT HOLDING ONE. The rule is about the ACTIVE
+    -- slot, because the active slot is the only thing a swap can throw away --
+    -- so a second pistol in slot 4 does not block a pistol taking slot 1 from
+    -- something else.
+    inv = holding('sawnoff')
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'sawnoff', kind = BR.ItemKind.WEAPON,
+                     rarity = 1, count = 1, clip = 8 })
+    for _ = 2, BR.Config.Loot.slots do
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 12 })
+    end
+    inv = BR.Inv.of(1)
+    inv.active = 1
+    claimLater(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                    rarity = 1, count = 1, clip = 12 })
+    ok(inv.slots[1] and inv.slots[1].item == 'pistol',
+        'a pistol already in another slot does not block the swap',
+        tostring(inv.slots[1] and inv.slots[1].item))
+
+    -- THE CRATE PATH CANNOT REACH THIS RULE, and that is worth pinning rather
+    -- than assuming: the container branch scatters and RETURNS, so a crate
+    -- claim never calls BR.Inv.give at all. A player with no room opens the
+    -- crate anyway and its contents land on the ground, where the loose-item
+    -- path -- and every refusal above -- is what they meet.
+    local crate = nil
+    for _, e in pairs(m.loot.items) do
+        if e.kind == 'chest' and e.contents and #e.contents > 0 then
+            crate = e break
+        end
+    end
+    if crate then
+        holdingShields(shieldCfg.maxStack)   -- not one free slot anywhere
+        BR.Roster.get(1).pos = { x = crate.x, y = crate.y, z = crate.z }
+        local ccx, ccy = BR.LootCellOf(crate.x, crate.y)
+        fire(BR.Net.LOOT_CELL, 1, { cx = ccx, cy = ccy })
+        sent = {}
+        local n = #crate.contents
+        fakeTime = fakeTime + 1100
+        fire(BR.Net.LOOT_CLAIM, 1, { id = crate.id })
+        local scattered = 0
+        for _, s in ipairs(eventsOf(BR.Net.LOOT_ADD)) do
+            for _, entry in ipairs(s.args[1]) do
+                if entry.fx and math.abs(entry.fx - crate.x) < 0.01 then
+                    scattered = scattered + 1
+                end
+            end
+        end
+        ok(scattered == n,
+            'a full inventory still opens a crate: the contents scatter',
+            ('%d of %d'):format(scattered, n))
+        ok(m.loot.items[crate.id] and m.loot.items[crate.id].kind == 'husk',
+            'and the crate becomes a husk, never having consulted BR.Inv.give')
+    else
+        ok(false, 'no chest with contents in the layout to test against')
+    end
+
+    BR.Inv.reset(1)
+
     -- THE CRATE PATH IS NOT TOUCHED HERE, AND THAT IS A DECISION.
     -- tools/test_ringmaster.lua (loot.chest.refusals, loot.chest.husk,
     -- loot.chest.race) already pins its four silences deliberately. #171 is
@@ -3848,7 +4057,7 @@ do
     -- exactly why nobody noticed they had no message. A branch chain could pass
     -- every test above and still answer nothing to the next reason somebody
     -- adds; a table with a default cannot.
-    for _, reason in ipairs({ 'carrymax', 'ammofull', 'noinv',
+    for _, reason in ipairs({ 'carrymax', 'ammofull', 'noinv', 'sameitem',
                               'full', 'somethingaddedlater' }) do
         -- Called through a guard rather than directly: a missing refusalText
         -- should REPORT as the silence it is, not crash the suite and take
@@ -3865,9 +4074,14 @@ do
     ok(BR.Inv.carryMax({ item = 'grenade', kind = BR.ItemKind.THROWABLE })
         == nade.maxStack,
         'a throwable carry cap is its own maxStack')
+    -- SHIELDS ARE UNCAPPED, so `carrymax` is not the reason a shield is ever
+    -- refused. It was once true that this meant no shield refusal existed at
+    -- all -- and that was the finding that sent #171 back to the owner, whose
+    -- answer became `sameitem` above. The carry cap is still nil; what changed
+    -- is that nil no longer implies silence.
     ok(BR.Inv.carryMax({ item = 'minishield',
                          kind = BR.ItemKind.CONSUMABLE }) == nil,
-        'and shields are uncapped, so no shield refusal exists to be heard')
+        'and shields are uncapped, so a shield refusal is never about a cap')
 end
 
 describe('loot.rateLimit')

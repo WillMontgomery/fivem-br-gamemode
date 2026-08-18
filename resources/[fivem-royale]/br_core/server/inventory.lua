@@ -230,6 +230,38 @@ end
 -- Giving
 -- --------------------------------------------------------------------------
 
+--- Would this swap trade the active slot for something exactly like it?
+---
+--- THE ONE SWAP THAT IS NEVER A CHOICE (owner, 2026-08-18: "I don't want the
+--- swap, if both the item being picked up and the item in my active slot are
+--- the same type").
+---
+--- The swap below exists so a full inventory can still take an UPGRADE in one
+--- motion -- a rifle over a pistol, a med kit over a bandage. Trading a Shield
+--- for a Shield is not an upgrade; it is a lateral move that costs the player
+--- real goods, because what leaves is a whole SLOT and what arrives is one
+--- pickup. Hold a full stack of three shields, walk over a loose one, and the
+--- swap hands you a stack of ONE and puts three on the floor. The player
+--- pressed a key and came away with less than they started with.
+---
+--- SAME ITEM ID, NOT SAME KIND. The wider reading -- refuse when the two are
+--- both WEAPON, or both CONSUMABLE -- would delete the swap outright, since
+--- WEAPON-for-WEAPON is precisely the case it was built for and the one the
+--- comment above still describes. Narrow is also what the report is about: two
+--- shields, one name.
+---
+--- Compared against what is IN THE ACTIVE SLOT rather than against the whole
+--- inventory, because the active slot is the only thing a swap can throw away.
+--- Holding the same gun in slot 4 while slot 2 is a pistol still swaps, and
+--- should: that trade loses nothing.
+--- @param displaced table|nil  what the swap would push out (false when empty)
+--- @param stack table          what is being picked up
+--- @return boolean
+local function isLikeForLike(displaced, stack)
+    if not displaced or not stack then return false end
+    return displaced.item == stack.item
+end
+
 --- Put a stack into a player's inventory.
 ---
 --- Returns what happened, because the caller (a claim, a chest, a death box)
@@ -327,6 +359,14 @@ function BR.Inv.give(src, stack)
             -- empty hand lands in slot 1.
             local at = math.max(inv.active, 1)
             local displaced = inv.slots[at] or nil
+
+            -- ...BUT NOT FOR AN IDENTICAL ITEM. See isLikeForLike: reaching a
+            -- full inventory with a shield in hand and a shield on the floor
+            -- would otherwise trade a full stack for a single pickup.
+            if isLikeForLike(displaced, stack) then
+                return false, nil, 'sameitem'
+            end
+
             inv.slots[at] = {
                 item = stack.item, kind = stack.kind,
                 rarity = stack.rarity, count = math.min(max, left),
@@ -377,6 +417,14 @@ function BR.Inv.give(src, stack)
     else
         at = math.max(inv.active, 1)   -- never slot 0: fists hold nothing
         displaced = inv.slots[at] or nil
+
+        -- THE SAME GUN FOR THE SAME GUN IS NOT A TRADE. Nothing has been
+        -- written to the inventory yet, so this returns clean -- and it must
+        -- return here rather than proceed, because the swap would hand the
+        -- player the floor copy's magazine and drop their own loaded one.
+        if isLikeForLike(displaced, stack) then
+            return false, nil, 'sameitem'
+        end
     end
     inv.slots[at] = placed
 
