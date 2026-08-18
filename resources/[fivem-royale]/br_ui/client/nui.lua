@@ -191,6 +191,28 @@ AddEventHandler('br:ui:pushFocus', pushFocus)
 AddEventHandler('br:ui:popFocus', popFocus)
 AddEventHandler('br:ui:clearFocus', clearFocus)
 
+--- SAY AGAIN, FOR SOMEBODY WHO HAS JUST STARTED LISTENING.
+---
+--- `br:ui:focusChanged` is an EDGE. applyFocus only emits it when the top of
+--- the stack changes, which is correct for a listener that has been running the
+--- whole time and useless to one that has not: br_core restarting under an open
+--- panel gets no event, because from this side nothing happened.
+---
+--- That was survivable while the event only reset a two-frame resync window --
+--- a missed one cost nothing. It stopped being survivable when br_core's key
+--- layer began GATING on it (see br_core/client/keybinds.lua): a listener that
+--- never hears "a screen owns the keyboard" is a listener that lets every
+--- keystroke through underneath one.
+---
+--- IT RE-ANNOUNCES THE CURRENT TOP, NOT A CHANGE, so it is safe to call at any
+--- time and safe to call twice. The other listeners are written against exactly
+--- this shape already -- players.lua and pause.lua both ask "is the top still
+--- mine?", and the answer to that has not changed, so re-stating it is a no-op
+--- for them by construction.
+AddEventHandler('br:ui:focusAsk', function()
+    TriggerEvent('br:ui:focusChanged', lastTop)
+end)
+
 -- Chat is opened by a keybind in br_core, but focus belongs to this resource,
 -- so br_core asks rather than calling SetNuiFocus itself. The channel rides
 -- along on the focus envelope instead of needing its own message kind.
@@ -505,6 +527,31 @@ AddEventHandler('onResourceStop', function(res)
     -- Never strand the player because the UI resource restarted.
     SetNuiFocus(false, false)
     SetNuiFocusKeepInput(false)
+
+    -- AND TELL THE OTHER RESOURCES, WHICH THIS DID NOT DO AND HAD TO.
+    --
+    -- THE ONE ROUTE OUT OF FOCUS THAT EMITTED NOTHING. Every other way a screen
+    -- goes away -- the panel's own dismiss, a report that succeeded, the bus
+    -- taking the panel off a player, `brfocus clear`, the watchdog below --
+    -- runs through applyFocus and announces itself. Stopping this resource
+    -- released the engine's focus directly and told nobody, because for years
+    -- the only listeners were screens inside br_ui that were going away too.
+    --
+    -- br_core is not going away, and its key layer now suppresses key actions
+    -- for as long as it believes a screen owns the keyboard. Left unannounced,
+    -- `ensure br_ui` mid-match would take the player's keyboard permanently:
+    -- no map, no chat, no slots, no interact, and no menu to close because the
+    -- screen that was open went with the resource. A gate that can stick is
+    -- worse than the leak it closes, and this is the only place it could stick.
+    --
+    -- The stack is emptied first so this file's own state agrees with what was
+    -- just announced: a listener that answers by popping a screen finds
+    -- applyFocus with nothing to do and the announcement cannot recur.
+    focusStack, focusHeld = {}, false
+    if lastTop ~= 'none' then
+        lastTop = 'none'
+        TriggerEvent('br:ui:focusChanged', 'none')
+    end
 end)
 
 AddEventHandler('onClientResourceStart', function(res)

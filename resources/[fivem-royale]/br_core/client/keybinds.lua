@@ -23,6 +23,25 @@ BR.Keys = {
     listeners = {},
 }
 
+--- IS A NUI SCREEN HOLDING THE KEYBOARD RIGHT NOW?
+---
+--- A FIELD RATHER THAN A LOCAL BECAUSE THREE SEPARATE PLACES ASK IT and two of
+--- them are above where a local would be declared: the tap() and hold()
+--- registrars a few lines down, the raw frame loop at the bottom, and /brkeys.
+--- A forward-declared local read from a closure built at load time is exactly
+--- the shape tools/check_forward_locals.lua exists to catch.
+---
+--- FALSE IS THE STARTING ANSWER AND IT IS THE SAFE ONE. A gate that is stuck
+--- OFF costs the bug this fixes -- a keystroke that also drives the game -- and
+--- corrects itself on the next focus change. A gate stuck ON costs the player
+--- their entire keyboard with no way to notice or recover. Every default,
+--- every reset and every unknown resolves to false for that reason.
+---
+--- The full note on what sets it, and why the signal is br_ui's rather than
+--- something read locally, is at the `br:ui:focusChanged` handler at the bottom
+--- of this file.
+BR.Keys.uiOwnsKeyboard = false
+
 --- Subscribe to a key action.
 --- @param action string   e.g. 'inventory', 'revive'
 --- @param fn function      receives (pressed: boolean)
@@ -88,6 +107,18 @@ local function tap(action, command, description, key, raw)
         -- double-tap every action for a player whose chosen key happens to
         -- match the engine's stored one.
         if BR.Keys.rawActive then return end
+        -- AND NOT WHILE A NUI SCREEN OWNS THE KEYBOARD.
+        --
+        -- Believed to be unreachable, and gated anyway. FiveM's own contract is
+        -- that a focused page with keep-input off means the GAME receives
+        -- nothing, so the engine should never deliver this command in the first
+        -- place -- App.tsx says so in as many words about the lobby's Escape,
+        -- and ui-src/src/screens/PlayerList.tsx repeats it. But "the engine
+        -- will not deliver it" is an assumption about a runtime, and this file
+        -- is the one that has already paid seven rounds for assumptions about
+        -- what the input layer does (#129). One comparison is cheaper than
+        -- finding out.
+        if BR.Keys.uiOwnsKeyboard then return end
         fire(action, true)
         fire(action, false)
     end, false)
@@ -149,10 +180,29 @@ end
 local function hold(action, command, description, key)
     RegisterCommand('+' .. command, function()
         if BR.Keys.rawHolds then return end
+        -- The press is gated for the same reason the tap above is.
+        if BR.Keys.uiOwnsKeyboard then return end
         fire(action, true)
     end, false)
     RegisterCommand('-' .. command, function()
         if BR.Keys.rawHolds then return end
+        -- AND THE RELEASE IS NOT, DELIBERATELY, WHICH IS THE ASYMMETRY THAT
+        -- MATTERS MOST IN THIS FILE.
+        --
+        -- On a client where the engine drives holds, this `-brinteract` is the
+        -- ONLY thing that ever writes BR.Keys.held.interact back to false --
+        -- the raw loop skips hold bindings entirely in that mode. Gate it and a
+        -- player who is holding E when a menu opens has a key that is down
+        -- forever: dbno.lua's revive re-arms from isHeld() alone (dbno.lua:1069
+        -- starts one with no press edge at all), so the latch is not a stale
+        -- flag, it is a revive that runs on its own. That is the scar the
+        -- resync window's own note is about, and #129's history is the receipt.
+        --
+        -- A release delivered late, or twice, or for a hold that was already
+        -- ended when the screen took the keyboard, costs nothing: every
+        -- listener treats `pressed = false` as "stop", and stopping something
+        -- that is already stopped is a no-op. A release never delivered costs
+        -- the round.
         fire(action, false)
     end, false)
     RegisterKeyMapping('+' .. command, description, 'keyboard', key)
@@ -921,13 +971,38 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
             -- is always IsRawKeyDown's answer -- never the edge fallback's,
             -- which would write "not held" on fifty-nine frames in every sixty
             -- and make a hold arithmetically impossible (#129, second round).
-            if b.hold then BR.Keys.held[b.action] = down end
+            --
+            -- AND IT IS FORCED FALSE WHILE A SCREEN OWNS THE KEYBOARD, which
+            -- is the half of the focus gate that no edge can deliver. dbno.lua
+            -- and loot.lua do not wait for a press: dbno.lua:1069 starts a
+            -- revive from `BR.Keys.isHeld('interact')` on any frame the target
+            -- is in range, and loot.lua:305 advances its accumulator the same
+            -- way. Suppressing only the EDGES would leave a player who opened a
+            -- panel mid-hold reviving a squadmate while they type. The state is
+            -- what those two read, so the state is what has to go quiet.
+            if b.hold then
+                BR.Keys.held[b.action] = down and not BR.Keys.uiOwnsKeyboard
+            end
 
             if down ~= was then
                 moved = true
                 rawDown[b.command] = down or nil
 
-                if b.hold then
+                if BR.Keys.uiOwnsKeyboard then
+                    -- ADOPTED, NOT ANNOUNCED -- the same move the resync window
+                    -- makes, for a longer reason. `rawDown` above has already
+                    -- taken the new state, so this layer never ends up
+                    -- disagreeing with the keyboard and no key can latch: when
+                    -- the screen lets go, a key that is still physically down
+                    -- reads as no edge at all and waits to be released and
+                    -- pressed again, which is what a player would expect after
+                    -- typing.
+                    --
+                    -- The release edge that ENDS a live hold is not lost by
+                    -- being swallowed here: it was already delivered, once, at
+                    -- the moment the screen took the keyboard. See endHolds()
+                    -- below the loop.
+                elseif b.hold then
                     -- Both edges, always, resync or not. See the note on
                     -- `resyncing`: a swallowed release leaves a revive or a
                     -- crate pickup running with nothing left to stop it.
@@ -974,9 +1049,89 @@ end)
 -- layer that only distrusted the keyboard for the screens it expected to be
 -- opened would be back to reasoning about a list somebody has to remember to
 -- update -- which is the mistake BR.FocusKeepsInput's allowlist note is about.
-AddEventHandler('br:ui:focusChanged', function()
+--
+-- ...AND THE GATE BELOW DOES CARE, WHICH IS NOT A CONTRADICTION. The resync
+-- window is about whether the READING can be trusted, and every focus change
+-- disturbs it equally. The gate is about whether the ANSWER should be acted on,
+-- and that is a property of the screen: see setUiKeyboard.
+
+--- End every hold that is live right now, cleanly, once.
+---
+--- THE RELEASE THAT NOBODY WILL EVER SEND. A player holding E to open a crate
+--- who then opens a panel is a player whose next release edge is not coming:
+--- with the raw layer suppressed the loop adopts it silently, and on a client
+--- where the ENGINE drives holds the `-brinteract` command is the only writer
+--- of that flag and the engine has stopped delivering keys at all. Either way
+--- BR.Keys.held stays true, and a true `held` is not a stale boolean -- it is a
+--- revive that keeps running (dbno.lua re-arms from isHeld with no press edge)
+--- and a crate that keeps counting.
+---
+--- So the moment a screen takes the keyboard, every live hold gets its release
+--- delivered here, through fire() -- the same function and the same listeners a
+--- real release would reach, so nothing downstream can tell the difference.
+--- Once, on the transition, and never again while the gate is closed.
+---
+--- THE OTHER DIRECTION IS DELIBERATELY NOT SYMMETRICAL. Nothing is re-pressed
+--- when the screen lets go, even if the key is still down. A hold wrongly
+--- cancelled costs one more press; a hold wrongly RESUMED, on a key the player
+--- has been resting on while typing, is the eight-second revive that dbno.lua
+--- already has a scar from.
+local function endHolds()
+    for _, b in ipairs(BR.Keys.bindings) do
+        if b.hold and BR.Keys.held[b.action] == true then
+            fire(b.action, false)
+        end
+    end
+end
+
+--- WHICH SCREENS TAKE THE KEYBOARD AWAY FROM THE GAME, AND WHY THE ANSWER IS
+--- NOT WRITTEN HERE.
+---
+--- THE SIGNAL IS BR.FocusResolve, IN br_lib, AND IT IS THE SAME CALL br_ui
+--- APPLIES. br_ui/client/nui.lua's applyFocus resolves the stack and hands the
+--- answer straight to the engine -- `SetNuiFocus(want.held, want.held)` and
+--- `SetNuiFocusKeepInput(want.keepInput)` -- and `keepInput` is exactly the
+--- question this gate asks: is the game still reading the keyboard underneath
+--- this screen. A screen in BR.FocusKeepsInput keeps it; every other screen
+--- takes it, and there is one entry in that table (`inventory`).
+---
+--- SO THIS RESOLVES THE SCREEN NAME THE EVENT ALREADY CARRIES, RATHER THAN
+--- BEING TOLD THE ANSWER. Two ways to learn it were available and this is the
+--- one that cannot drift:
+---
+---   * Reading BR.FocusKeepsInput directly would be a second copy of
+---     FocusResolve's rule, and the whole reason that function is pure and in
+---     br_lib is that this decision has been got wrong twice already (see the
+---     note above it).
+---   * Widening `br:ui:focusChanged` to carry keepInput would work until the
+---     two resources are on different versions -- restart br_core alone and
+---     br_ui is still sending one argument, so the field arrives nil, `nil ~=
+---     true` reads as "takes the keyboard", and the INVENTORY -- the one screen
+---     that must keep it -- is the screen that breaks. Deriving it locally from
+---     a table both resources load out of br_lib has no such window.
+---
+--- `keepInput` DEPENDS ONLY ON THE TOP OF THE STACK, which is why a
+--- one-element stack is a faithful question and not a trick: FocusResolve reads
+--- `stack[n]` and nothing else. 'none' is that function's own sentinel for an
+--- empty stack, and it means no screen holds anything.
+--- @param screen string|nil  the top of br_ui's focus stack, or 'none'
+local function setUiKeyboard(screen)
+    local want = false
+    if screen ~= nil and screen ~= 'none' then
+        want = not BR.FocusResolve({ screen }).keepInput
+    end
+    if want == BR.Keys.uiOwnsKeyboard then return end
+    BR.Keys.uiOwnsKeyboard = want
+    -- Only on the way IN. On the way out there is nothing to unwind: the loop
+    -- has been keeping `rawDown` honest the whole time, so it already agrees
+    -- with the keyboard.
+    if want then endHolds() end
+end
+
+AddEventHandler('br:ui:focusChanged', function(screen)
     resyncing = true
     resyncFrames = 0
+    setUiKeyboard(screen)
 end)
 
 -- UI actions arrive through br_ui's forwarder, the same road the locker and
@@ -1039,6 +1194,22 @@ AddEventHandler('onClientResourceStart', function(res)
             or ''))
     load()
     BR.Keys.push()
+
+    -- WHO HOLDS THE KEYBOARD RIGHT NOW? ASKED, BECAUSE br_core CAN RESTART
+    -- UNDER A SCREEN THAT IS ALREADY UP.
+    --
+    -- The gate is edge-driven -- it learns from `br:ui:focusChanged`, and that
+    -- event fires when the top of br_ui's stack CHANGES. A br_core restart
+    -- changes nothing over in br_ui, so no event is coming: this fresh state
+    -- would sit at its safe default and let every key through underneath an
+    -- open panel until the player next opened or closed something.
+    --
+    -- br_ui answers this by re-announcing the screen it last announced, so the
+    -- gate is recoverable rather than only reachable. Nothing answering -- a
+    -- br_core that started first, which is the ordinary case -- leaves the flag
+    -- at false, which is where it already was.
+    BR.Keys.uiOwnsKeyboard = false
+    TriggerEvent('br:ui:focusAsk')
 end)
 
 RegisterCommand('brkeys', function(_, args)
@@ -1065,6 +1236,14 @@ RegisterCommand('brkeys', function(_, args)
     -- two are indistinguishable from a chair.
     print(('  resync   : %s   frames since the last focus change: %d'):format(
         resyncing and 'OPEN (taps suppressed)' or 'closed', resyncFrames))
+    -- AND THE READING THAT SAYS WHETHER THE KEYBOARD IS OURS AT ALL. "My keys
+    -- do nothing" and "my keys do too much" are the same paste from a chair,
+    -- and this line separates them: CLOSED with no menu on screen is a gate
+    -- that stuck, which is the one failure mode of this fix that is worse than
+    -- the bug, and it is fixed from here with `brfocus clear`.
+    print(('  ui input : %s'):format(BR.Keys.uiOwnsKeyboard
+        and 'CLOSED -- a NUI screen owns the keyboard, key actions suppressed'
+        or  'open   -- key actions reach the game'))
     -- WHAT THE KEY ACTUALLY IS, WHO IS LISTENING FOR IT, AND WHETHER IT IS
     -- DOWN RIGHT NOW -- the three questions a stuck interaction raises.
     --

@@ -728,6 +728,11 @@ function GetResourceState(name)
 end
 
 exports = setmetatable({}, {
+    -- DECLARING one is a call on the table itself -- `exports('send', fn)` --
+    -- which is a different metamethod from reading somebody else's. Needed
+    -- because the focus block at the bottom loads the real br_ui bridge, and
+    -- that file declares three exports at load time.
+    __call = function(_, _name, _fn) end,
     __index = function(_, res)
         -- An export table for a resource that is not running is the shape
         -- FiveM gives you: indexing works, calling raises. br_core guards with
@@ -3899,6 +3904,580 @@ do
     for _, word in ipairs({ 'pose', 'clip', 'held at', 'head', 'camera' }) do
         ok(said:find(word, 1, true) ~= nil,
             ('the readout carries "%s"'):format(word), said)
+    end
+end
+
+-- ======================================================================== --
+-- 9. TYPING INTO A NUI SCREEN MUST NOT ALSO DRIVE THE GAME
+-- ======================================================================== --
+--
+-- THE REPORT. A search field was added to the in-game player list, and typing a
+-- name into it played the game underneath: E interacted, R used the held item,
+-- G dropped it, 1-5 swapped slots, and T pushed chat focus -- which replaces
+-- the top of the focus stack and therefore CLOSES THE PANEL BEING TYPED INTO.
+--
+-- IT IS NOT A BUG IN THE SEARCH FIELD. The chat composer has had it identically
+-- for as long as the raw key layer has existed. A text field is simply the
+-- first place in that panel where letters get typed.
+--
+-- ONLY THE RAW LAYER LEAKS, AND THAT IS WHY IT WAS NEVER SEEN. The engine's
+-- RegisterKeyMapping route needs the GAME to receive the key, and a focused
+-- page with keep-input off means it receives nothing -- ui-src/src/App.tsx and
+-- screens/PlayerList.tsx both record that finding, and it is why every screen
+-- in this interface answers its own Escape from the DOM. br_core's raw layer
+-- reads the keyboard directly, which is its entire purpose, so a focus change
+-- is invisible to it. The `resyncing` window covers the two frames of the
+-- TRANSITION and nothing after it.
+--
+-- THE BRIDGE BELOW IS THE REAL ONE. br_ui/client/nui.lua is loaded and driven
+-- rather than modelled, because the fault is a disagreement BETWEEN two
+-- resources -- br_ui has always known which screen owns the keyboard, and
+-- br_core was not asking. A model of the bridge written next to the fix would
+-- be a model that agrees with the fix, which is the failure #129's seventh
+-- round is a monument to.
+
+describe('the focus gate')
+do
+    -- THE REAL br_ui BRIDGE.
+    --
+    -- `RES` is captured out of GetCurrentResourceName at LOAD time, so the name
+    -- is swapped for exactly that call and put straight back: br_core's own
+    -- onClientResourceStart handlers call it at HANDLER time and have to keep
+    -- seeing 'br_core', or bootOn() would silently stop rebooting the key
+    -- layer and every assertion below would be measuring a stale build.
+    local nui = { held = false, cursor = false, keepInput = false, sent = 0 }
+    function SendNUIMessage() nui.sent = nui.sent + 1 end
+    function SetNuiFocus(held, cursor) nui.held, nui.cursor = held, cursor end
+    function SetNuiFocusKeepInput(keep) nui.keepInput = keep end
+    function RegisterNUICallback() end
+
+    -- The bridge opens a `while true` watchdog at load. It is RECORDED and
+    -- never run: Citizen.Wait is a no-op in this harness, so running it would
+    -- hang the suite. What the watchdog does when it fires is call applyFocus
+    -- on an empty stack, which is the same call `brfocus clear` makes and which
+    -- is exercised through clearFocus below.
+    local uiThreads = {}
+    Citizen.CreateThread = function(fn) uiThreads[#uiThreads + 1] = fn end
+
+    local coreName = GetCurrentResourceName
+    GetCurrentResourceName = function() return 'br_ui' end
+    loadAll({ 'br_ui/client/nui.lua' })
+    GetCurrentResourceName = coreName
+
+    -- chat.lua is what makes T dangerous rather than merely noisy: it asks
+    -- br_ui to open the chat composer, which pushes a NEW screen over whatever
+    -- was on top. That is the reported symptom -- the panel closing itself --
+    -- and it is only reproducible with this file in the room.
+    loadAll({ 'br_core/client/chat.lua' })
+
+    ok(#uiThreads == 1, 'the bridge loaded (its focus watchdog is registered)',
+       ('%d thread(s)'):format(#uiThreads))
+
+    -- ---------------------------------------------------------- the keyboard ---
+
+    --- Every key this block types, delivered to BOTH mechanisms exactly as
+    --- pressInteract() does -- the raw sample and the engine's command.
+    ---
+    --- The engine's half of the two "ways out" sits on a function key: the raw
+    --- layer's default for the pause menu is Escape, which RegisterKeyMapping
+    --- cannot be given, and the player list's is tilde, which is not in
+    --- DEFAULT_VK. Both carry a `raw` override in keybinds.lua and this table
+    --- states both halves so neither is assumed.
+    local TYPED = {
+        interact   = { vk = 0x45, key = 'E'   },
+        use        = { vk = 0x52, key = 'R'   },
+        drop       = { vk = 0x47, key = 'G'   },
+        chatGlobal = { vk = 0x54, key = 'T'   },
+        chatSquad  = { vk = 0x59, key = 'Y'   },
+        slot1      = { vk = 0x31, key = '1'   },
+        slot2      = { vk = 0x32, key = '2'   },
+        inventory  = { vk = 0x09, key = 'TAB' },
+        trail      = { vk = 0x42, key = 'B'   },
+        pause      = { vk = 0x1B, key = 'F1'  },
+        players    = { vk = 0xC0, key = 'F2'  },
+    }
+
+    local function keyDown(action, down)
+        local k = TYPED[action]
+        if down then
+            if not keys[k.vk] then keys[k.vk] = true; edge[k.vk] = true end
+        else
+            keys[k.vk] = nil
+        end
+        engineKey(k.key, down)
+    end
+
+    --- LET THE RESYNC WINDOW CLOSE.
+    ---
+    --- NOT A SLEEP, AND THE DISTINCTION IS THE WHOLE OF #90. `resyncing`
+    --- suppresses TAPS from the moment a focus change is announced until the
+    --- first frame on which no bound key changed state -- so it is ended by
+    --- QUIET, not by a clock, and a test that never goes quiet never leaves it.
+    --- The first draft of this block pressed and released on consecutive
+    --- frames, which is a keyboard moving on every single frame; the window
+    --- stayed open for the whole run and every tap read as suppressed no matter
+    --- what the gate did. That is a test that passes for the wrong reason,
+    --- which is the only kind this file exists to stop.
+    ---
+    --- Three frames is quiet. A human types at five to ten characters a second,
+    --- which is a bound key moving about once every eight frames.
+    local function settle() frames(3) end
+
+    --- Type one character, at a speed a person can actually type.
+    local function typeKey(action)
+        keyDown(action, true)
+        frame(16)
+        settle()
+        keyDown(action, false)
+        frame(16)
+        settle()
+    end
+
+    --- How many presses reached each action, counted at the key layer itself.
+    ---
+    --- MEASURED HERE AND NOT AT THE FAR END ON PURPOSE. Four of the registered
+    --- actions have no subscriber at all in this tree -- `map`, `ping`,
+    --- `specNext`, `specPrev` -- so asserting "the map did not open" would pass
+    --- on a totally unguarded key layer. What the gate promises is that the
+    --- ACTION does not fire; what any given action then does is somebody
+    --- else's file and somebody else's test.
+    local fired = {}
+    for action in pairs(TYPED) do
+        fired[action] = 0
+        BR.Keys.on(action, function(pressed)
+            if pressed then fired[action] = fired[action] + 1 end
+        end)
+    end
+    local function resetCount()
+        for a in pairs(fired) do fired[a] = 0 end
+    end
+    local function counted()
+        local n, names = 0, {}
+        for a, v in pairs(fired) do
+            n = n + v
+            if v > 0 then names[#names + 1] = ('%s x%d'):format(a, v) end
+        end
+        table.sort(names)
+        return n, table.concat(names, ', ')
+    end
+
+    --- What the bridge says is on top of the focus stack, read the way a human
+    --- reads it -- out of /brfocus, which is the diagnostic that exists for
+    --- exactly this question.
+    local function topScreen()
+        logged = {}
+        commands['brfocus'](nil, {}, '')
+        for _, line in ipairs(logged) do
+            local s = line:match('^%s*page was told%s*:%s*(%S+)')
+            if s then return s end
+        end
+        return nil
+    end
+
+    --- Put a screen up through the ordinary road: br_core asks br_ui, br_ui
+    --- resolves the stack and announces it. Nothing here shortcuts to the key
+    --- layer.
+    local function openScreen(s) fire('br:ui:pushFocus', s) end
+    local function closeScreen(s) fire('br:ui:popFocus', s) end
+
+    --- A player's name, as the nine bound keys its letters happen to be.
+    local NAME = { 'chatGlobal', 'interact', 'use', 'drop', 'chatSquad',
+                   'slot1', 'slot2', 'trail', 'inventory' }
+
+    local function typeAName()
+        resetCount()
+        for _, a in ipairs(NAME) do typeKey(a) end
+    end
+
+    --- The same name, with anything a key OPENED closed again between letters.
+    ---
+    --- THE UNGATED BASELINE NEEDS THIS AND THE GATED CASE DOES NOT, and that
+    --- asymmetry is the bug written out in one function. With nothing focused,
+    --- the first letter is T -- it reaches chat.lua, chat.lua asks br_ui for
+    --- the composer, and from that moment the remaining eight letters are
+    --- suppressed for entirely the right reason. Clearing between letters is
+    --- what makes "all nine reach the game" a measurable statement rather than
+    --- a measurement of the first one.
+    local function typeANameLoose()
+        resetCount()
+        for _, a in ipairs(NAME) do
+            typeKey(a)
+            fire('br:ui:clearFocus')
+            settle()
+        end
+    end
+
+    -- ==================================================================== --
+
+    -- ALL THREE MECHANISMS, BECAUSE THE GATE IS IN THREE PLACES AND ONLY ONE OF
+    -- THEM IS THE LEAK.
+    --
+    -- The raw frame loop is where the bug lives. The engine's own command
+    -- handlers are believed to be unreachable under a focused page -- FiveM's
+    -- contract is that keep-input off means the game receives nothing -- but
+    -- this harness delivers the engine's command on every physical press
+    -- REGARDLESS, deliberately, and has since #129 (see engineKey). So running
+    -- the block on a build with no raw layer is running it against the
+    -- pessimistic model: the one where the engine does deliver. If that is ever
+    -- true on a real client, the gate holds there too, and if it is not, this
+    -- costs three assertions.
+    for _, mech in ipairs({
+        { name = 'raw level sample', rawDown = true,  rawPressed = true  },
+        { name = 'edge fallback',    rawDown = false, rawPressed = true  },
+        { name = 'no raw layer',     rawDown = false, rawPressed = false },
+    }) do
+
+    describe('typing into a focused screen fires nothing -- ' .. mech.name)
+    do
+        bootOn(mech.rawDown, mech.rawPressed)
+        fire('br:ui:clearFocus')
+        clearWorld()
+        settle()
+        ok(topScreen() == 'none', 'the stack starts empty', topScreen())
+
+        -- The leak, first, on a screen that is NOT up. Same keys, same frames.
+        -- Without this the block cannot tell "the gate works" from "the
+        -- keyboard helper is broken", which is the shape of test that passes
+        -- for six rounds while the interaction is dead.
+        typeANameLoose()
+        local loose, looseWhich = counted()
+        ok(loose == 9, 'with nothing focused, all nine keys reach the game',
+           ('%d of 9 fired (%s) -- the harness is not delivering keys at all')
+               :format(loose, looseWhich))
+
+        openScreen('players')
+        settle()
+        ok(topScreen() == 'players', 'the player list holds focus', topScreen())
+        ok(nui.keepInput == false,
+           'and the engine was told the game does NOT keep input',
+           tostring(nui.keepInput))
+
+        typeAName()
+        local n, which = counted()
+        ok(n == 0, 'typing a name into it fires no key action at all',
+           ('%d press(es) got through: %s'):format(n, which))
+
+        -- THE REPORTED SYMPTOM, END TO END. T reaches chat.lua, chat.lua asks
+        -- br_ui to open the composer, and the composer goes on TOP -- so the
+        -- panel being typed into is the thing that closes.
+        ok(topScreen() == 'players',
+           'and the panel the player is typing into is still the one on screen',
+           ('the top is now %s -- a letter in a name closed the panel')
+               :format(tostring(topScreen())))
+
+        closeScreen('players')
+        settle()
+        ok(topScreen() == 'none', 'the panel closes', topScreen())
+
+        typeANameLoose()
+        local back, backWhich = counted()
+        ok(back == 9, 'and the keyboard comes straight back',
+           ('%d of 9 fired (%s) -- the gate stuck shut, which is worse than '
+            .. 'the leak'):format(back, backWhich))
+    end
+
+    end  -- mechanisms
+
+    describe('a screen that keeps input is untouched')
+    do
+        -- THE ALLOWLIST IS READ, NOT RESTATED. `inventory` is the single entry
+        -- in BR.FocusKeepsInput and this asserts the real table rather than the
+        -- name: add a second screen there tomorrow and this test starts
+        -- describing that too.
+        local keepers = {}
+        for s in pairs(BR.FocusKeepsInput) do keepers[#keepers + 1] = s end
+        table.sort(keepers)
+        ok(#keepers == 1 and keepers[1] == 'inventory',
+           'exactly one screen keeps game input, and it is the inventory',
+           table.concat(keepers, ', '))
+
+        bootOn(true, true)
+        fire('br:ui:clearFocus')
+        settle()
+        for _, screen in ipairs(keepers) do
+            openScreen(screen)
+            settle()
+            ok(nui.keepInput == true,
+               ('%s was given keep-input by the bridge'):format(screen),
+               tostring(nui.keepInput))
+
+            -- Keys that do not themselves move the focus stack, so what is
+            -- being measured stays the key layer. TAB would toggle the very
+            -- panel under test and T would push the chat composer over it.
+            resetCount()
+            typeKey('use')
+            typeKey('drop')
+            typeKey('slot1')
+            local n, which = counted()
+            ok(n == 3,
+               ('every key still reaches the game under %s'):format(screen),
+               ('%d of 3 fired (%s) -- the gate is suppressing a screen that '
+                .. 'deliberately keeps input'):format(n, which))
+            closeScreen(screen)
+            settle()
+        end
+    end
+
+    describe('the way out is never suppressed')
+    do
+        -- ESCAPE AND THE PANEL'S OWN KEY ARE THE PAGE'S, ON EVERY SCREEN THAT
+        -- TAKES THE KEYBOARD, AND THAT IS NOT A CONSEQUENCE OF THIS CHANGE --
+        -- it is the arrangement the interface already shipped, because the raw
+        -- layer was never a reliable way out of a focused screen. Every focus
+        -- screen answers Escape from a capture-phase window listener of its
+        -- own: PlayerList.tsx (which also answers the rebindable close key, and
+        -- deliberately does NOT when the caret is in the search field),
+        -- PauseMenu.tsx, Settings.tsx, Locker.tsx, Market.tsx, Help.tsx,
+        -- Chat.tsx, and App.tsx for the lobby.
+        --
+        -- WHAT LUA OWES THEM IS THAT THE ROUTE STILL WORKS, which is this: the
+        -- page asks for the pop, the pop reaches the bridge, and the keyboard
+        -- comes back. Asserted through the callback the page actually calls.
+        bootOn(true, true)
+        fire('br:ui:clearFocus')
+        settle()
+        openScreen('players')
+        settle()
+        resetCount()
+        typeKey('players')
+        typeKey('pause')
+        local n = counted()
+        ok(n == 0,
+           'the open/close key and Escape do not fire in Lua under a screen',
+           ('%d fired -- and PlayerList.tsx already answers both in the DOM, '
+            .. 'so this would be the second handler for one press'):format(n))
+
+        -- The page's own dismiss, which is the road #142 put every close on.
+        closeScreen('players')
+        settle()
+        resetCount()
+        typeKey('pause')
+        ok(fired.pause == 1, 'and Escape works again the moment the page lets go',
+           ('pause fired %d time(s)'):format(fired.pause))
+    end
+
+    describe('the gate lifts on every route out')
+    do
+        -- FOUR ROADS OUT OF A FOCUSED SCREEN, and the fourth had no event at
+        -- all until this change. A gate that sticks costs the player their
+        -- whole keyboard with no menu left to close, which is strictly worse
+        -- than the leak it was added to fix.
+        local function stuck()
+            settle()
+            resetCount()
+            typeKey('use')
+            return fired.use == 0
+        end
+
+        bootOn(true, true)
+        fire('br:ui:clearFocus')
+
+        -- 1. The panel's own dismiss, a successful report, and the bus taking
+        --    the panel away all end in the same popFocus.
+        openScreen('players')
+        ok(stuck(), 'suppressed while the panel is up')
+        closeScreen('players')
+        ok(not stuck(), 'lifts on the panel popping its own focus')
+
+        -- 2. clearFocus -- `brfocus clear`, and the same applyFocus call the
+        --    bridge's watchdog makes when it finds focus held over an empty
+        --    stack.
+        openScreen('players')
+        ok(stuck(), 'suppressed again')
+        fire('br:ui:clearFocus')
+        ok(not stuck(), 'lifts on the focus stack being cleared outright')
+
+        -- 3. A SCREEN REPLACING ANOTHER, which is the case that is not a route
+        --    out at all and must not be read as one.
+        openScreen('players')
+        openScreen('inventory')
+        ok(not stuck(), 'a keep-input screen opening OVER one lifts it')
+        closeScreen('inventory')
+        ok(stuck(), 'and closing it puts the panel underneath back in charge')
+        fire('br:ui:clearFocus')
+
+        -- 4. THE RESOURCE STOPPING. The route that emitted nothing: br_ui
+        --    released the engine's focus directly and told no one, because
+        --    until now its only listeners were screens inside br_ui that were
+        --    going away with it. `ensure br_ui` mid-match would have taken the
+        --    player's keyboard permanently -- and taken with it the screen
+        --    whose close key was the only way back.
+        openScreen('players')
+        ok(stuck(), 'suppressed under the panel')
+        fire('onResourceStop', 'br_ui')
+        ok(not stuck(), 'lifts when br_ui stops out from under the player',
+           'the keyboard is gone and there is no screen left to close')
+    end
+
+    describe('the gate recovers after br_core restarts under a screen')
+    do
+        -- THE OTHER DIRECTION, AND THE ONE AN EDGE-DRIVEN GATE CANNOT SEE.
+        -- Restarting br_core changes nothing in br_ui, so no focus event is
+        -- coming; a fresh key layer would sit at its safe default and let every
+        -- keystroke through underneath a panel that is still on screen.
+        bootOn(true, true)
+        fire('br:ui:clearFocus')
+        openScreen('players')
+
+        -- The restart. bootOn() fires onClientResourceStart for br_core, which
+        -- is where the ask lives.
+        bootOn(true, true)
+        settle()
+        ok(topScreen() == 'players',
+           'br_ui still has the panel up, because nothing over there restarted',
+           tostring(topScreen()))
+
+        resetCount()
+        typeKey('use')
+        ok(fired.use == 0,
+           'the restarted key layer asked who holds the keyboard and was told',
+           ('use fired %d time(s) -- br_core came back deaf to a panel that is '
+            .. 'still on screen'):format(fired.use))
+        fire('br:ui:clearFocus')
+    end
+
+    describe('a hold that is live when a screen opens ends cleanly')
+    do
+        -- THE LATCH THIS PROJECT HAS ALREADY SHIPPED ONCE. A suppressed key
+        -- that stays "down" is not a stale boolean: dbno.lua re-arms a revive
+        -- from BR.Keys.isHeld() with no press edge at all, and loot.lua's crate
+        -- accumulator advances on any frame the flag reads true. So a hold that
+        -- is not ENDED when the keyboard is taken away is a revive that runs
+        -- while the player types.
+        for _, mech in ipairs({
+            { name = 'raw level sample', rawDown = true,  rawPressed = true  },
+            { name = 'engine +/- pair',  rawDown = false, rawPressed = true  },
+            { name = 'no raw layer',     rawDown = false, rawPressed = false },
+        }) do
+            -- THE WORLD THIS CRATE NEEDS, STATED RATHER THAN INHERITED. The
+            -- blocks above this one leave the player downed, dead, in a
+            -- vehicle or with loot suppressed by a squadmate on the floor --
+            -- all legitimate ends to their own subjects, and all of them make
+            -- loot.render offer nothing. Inheriting any of them would give a
+            -- crate that never opens for a reason with nothing to do with the
+            -- key layer, which is a false red rather than a false green but is
+            -- still a test measuring the wrong thing.
+            BR.State.me.state = BR.PlayerState.ALIVE
+            BR.State.landed = true
+            BR.Loot.suppress(false)
+            inVehicle = false
+
+            bootOn(mech.rawDown, mech.rawPressed)
+            fire('br:ui:clearFocus')
+            clearWorld()
+            local id = addEntry('chest', nil, 1.0, 0.0)
+            frames(2)
+
+            local releases = 0
+            BR.Keys.on('interact', function(pressed)
+                if not pressed then releases = releases + 1 end
+            end)
+
+            pressInteract()
+            frames(10)
+            ok(BR.Keys.isHeld('interact') == true,
+               ('the hold is live before the screen opens -- %s'):format(mech.name))
+
+            local before = releases
+            openScreen('players')
+            frames(2)
+            ok(releases == before + 1,
+               ('the screen taking the keyboard delivers exactly one release -- %s')
+                   :format(mech.name),
+               ('%d release(s)'):format(releases - before))
+            ok(BR.Keys.isHeld('interact') == false,
+               ('and the key stops reading as held -- %s'):format(mech.name),
+               'a latched hold is a revive that runs while the player types')
+
+            -- ...AND IT STAYS ENDED. The finger is still on the key: a state
+            -- that is only cleared once, on the edge, comes straight back on
+            -- the next frame's sample.
+            frames(60)
+            ok(BR.Keys.isHeld('interact') == false,
+               ('it stays ended for as long as the key is held -- %s')
+                   :format(mech.name))
+            ok(#claims() == 0,
+               ('and the crate never opens while the panel is up -- %s')
+                   :format(mech.name),
+               ('claims=%d'):format(#claims()))
+
+            -- THE KEY IS STILL DOWN WHEN THE SCREEN LETS GO. Nothing may be
+            -- re-pressed on its behalf: a hold wrongly resumed on a key the
+            -- player has been resting on is the eight-second revive dbno.lua
+            -- carries a scar from.
+            closeScreen('players')
+            frames(math.ceil(CHEST_MS / 16) + 10)
+            ok(#claims() == 0,
+               ('a key still held when the screen closes does not resume -- %s')
+                   :format(mech.name),
+               ('claims=%d'):format(#claims()))
+
+            -- And a real press afterwards works, so the layer is not left deaf.
+            releaseInteract()
+            frames(4)
+            pressInteract()
+            frames(math.ceil(CHEST_MS / 16) + 10)
+            ok(#claims() == 1 and claims()[1] == id,
+               ('releasing and pressing again opens the crate -- %s')
+                   :format(mech.name),
+               ('claims=%d -- the key layer is deaf after a focus change')
+                   :format(#claims()))
+            releaseInteract()
+            frames(20)
+        end
+    end
+
+    describe('the gate survives every shape the native answers in')
+    do
+        -- #129'S SEVENTH ROUND, APPLIED TO THIS GATE. The suppression reads the
+        -- same `down` sample every other decision in the loop reads, so a shape
+        -- that breaks truth() breaks this too -- and 1/0 is the one that
+        -- punishes the obvious normalisation, because 0 is truthy in Lua.
+        for _, shape in ipairs(SHAPES) do
+            bootOn(true, true, shape)
+            fire('br:ui:clearFocus')
+
+            openScreen('players')
+            settle()
+            resetCount()
+            typeKey('use')
+            typeKey('drop')
+            local n, which = counted()
+            ok(n == 0, ('nothing fires under a screen -- %s'):format(shape.name),
+               ('%d fired: %s'):format(n, which))
+
+            closeScreen('players')
+            settle()
+            resetCount()
+            typeKey('use')
+            typeKey('drop')
+            local back = counted()
+            ok(back == 2, ('and both come back after it -- %s'):format(shape.name),
+               ('%d of 2 fired'):format(back))
+        end
+    end
+
+    describe('/brkeys says whether the gate is closed')
+    do
+        -- "MY KEYS DO NOTHING" AND "MY KEYS DO TOO MUCH" ARE THE SAME PASTE
+        -- from a chair. This line is the only thing that separates them, and a
+        -- gate reported CLOSED with no menu on screen is the one failure of
+        -- this change that is worse than the bug.
+        bootOn(true, true)
+        fire('br:ui:clearFocus')
+        logged = {}
+        commands['brkeys'](nil, {}, '')
+        local free = table.concat(logged, '\n')
+        ok(free:find('ui input', 1, true) and free:find('open', 1, true),
+           'it reports the keyboard as free with nothing focused', free)
+
+        openScreen('players')
+        logged = {}
+        commands['brkeys'](nil, {}, '')
+        local shut = table.concat(logged, '\n')
+        ok(shut:find('CLOSED', 1, true) ~= nil,
+           'and as closed under a screen that owns it', shut)
+        closeScreen('players')
     end
 end
 
