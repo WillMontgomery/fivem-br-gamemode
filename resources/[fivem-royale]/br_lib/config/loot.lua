@@ -12,12 +12,53 @@ BR.Config = BR.Config or {}
 
 local R = BR.Rarity
 
+--- `plural` IS THE NAME A REFUSAL USES, and it lives here rather than in the
+--- message so the sentence is written once (#171). The old refusal built its
+--- own by sticking an "s" on `label`, against the consumable table alone --
+--- which is why a player holding three grenades was told "You can only carry 0
+--- of thoses." Anything without this row falls back to `label .. 's'`, which is
+--- right for every name in the game today and wrong the moment one of them
+--- isn't. See BR.Loot.refusalText in br_core/server/loot.lua.
 BR.Config.Consumables = {
     {
-        id = 'minishield', label = 'Small Shield', rarity = R.COMMON,
+        -- THE SMALL ONE IS THIS ROW, AND THE CONFIG SAYS SO RATHER THAN THE
+        -- NAME (#166). `minishield` reads as the smaller tier, but the fields
+        -- are what decide it: 25 armour to a cap of 50, against the 50-to-100
+        -- of the row below. Anything keyed off "which shield is small" reads
+        -- armourCap, not the id.
+        id = 'minishield', label = 'Small Shield', plural = 'Small Shields',
+        rarity = R.COMMON,
         kind = BR.ItemKind.CONSUMABLE, prop = 'prop_bodyarmour_02',
         useMs = 3000, maxStack = 6,
         armour = 25, armourCap = 50,   -- small potions only take you to half shield
+
+        -- HALF SIZE ON THE GROUND (owner, 2026-08-17: "can we make small
+        -- shields literally spawn as a smaller prop? like same prop but
+        -- physically scaled to 50% the size?").
+        --
+        -- WHY IT MATTERS NOW: the Shield below moved RARE -> UNCOMMON on the
+        -- same day, taking it from a crate in 9 to a crate in 3.3, so both
+        -- tiers are on the floor far more often and telling them apart before
+        -- you walk over one is suddenly worth something.
+        --
+        -- HOW IT IS DONE, AND WHY IT IS A NUMBER RATHER THAN A MODEL: GTA V
+        -- has no entity-scale native (client/loot.lua has said so since the
+        -- take animation wanted one). The only lever is the transform matrix,
+        -- so the client normalises the prop's three axis vectors and rescales
+        -- them -- see applyPropScale in br_core/client/loot.lua. That scales
+        -- the RENDER only, never a collision box, which is free here because
+        -- loose floor items are spawned with collision switched off already.
+        --
+        -- THE TWO TIERS STILL USE DIFFERENT MODELS, DELIBERATELY. The owner
+        -- asked for one model at two sizes; leaving the models distinct means
+        -- that if the matrix scale turns out not to render on this build, the
+        -- tiers stay as distinguishable as they are today rather than becoming
+        -- identical. Merging them to prop_bodyarmour_06 is a one-line
+        -- follow-up once a playtest confirms the scale bites.
+        --
+        -- /brpropscale minishield <k> retunes this live, in game, and prints
+        -- the line to paste back here -- the same ruler /brlabel is.
+        propScale = 0.5,
     },
     {
         -- UNCOMMON, NOT RARE (owner, 2026-08-17: "seems shield is a very rare
@@ -56,13 +97,13 @@ BR.Config.Consumables = {
         -- means this is not a number bent to hit a target: Fortnite ships Small
         -- Shield Potion as Common and Shield Potion as Uncommon, and a 50-point
         -- shield is a staple you expect to find, not a prize.
-        id = 'shield', label = 'Shield', rarity = R.UNCOMMON,
+        id = 'shield', label = 'Shield', plural = 'Shields', rarity = R.UNCOMMON,
         kind = BR.ItemKind.CONSUMABLE, prop = 'prop_bodyarmour_06',
         useMs = 5000, maxStack = 3,
         armour = 50, armourCap = 100,
     },
     {
-        id = 'bandage', label = 'Bandage', rarity = R.COMMON,
+        id = 'bandage', label = 'Bandage', plural = 'Bandages', rarity = R.COMMON,
         -- The small medical crate: reads as "a bit of health" on the floor
         -- without being mistaken for the full kit (user-sourced, 2026-08-05).
         kind = BR.ItemKind.CONSUMABLE, prop = 'xm_prop_smug_crate_s_medical',
@@ -76,7 +117,7 @@ BR.Config.Consumables = {
         chestOnly = true,
     },
     {
-        id = 'medkit', label = 'Med Kit', rarity = R.EPIC,
+        id = 'medkit', label = 'Med Kit', plural = 'Med Kits', rarity = R.EPIC,
         -- The med bag: visibly the bigger of the two.
         kind = BR.ItemKind.CONSUMABLE, prop = 'xm_prop_x17_bag_med_01a',
         useMs = 8000, maxStack = 3, carryMax = 3,

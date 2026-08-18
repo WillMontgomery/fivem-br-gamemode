@@ -121,9 +121,18 @@ end
 --- Throwables reuse their own maxStack as the carry cap, so the two numbers
 --- cannot drift apart: one slot of three, and the fourth grenade stays on the
 --- floor.
+---
+--- PUBLIC, BECAUSE THE REFUSAL HAS TO NAME THIS NUMBER (#171) AND IT IS NOT
+--- ONE FIELD. A consumable's cap is `carryMax`; a throwable's is its own
+--- `maxStack`, in a different config table. server/loot.lua wrote the message
+--- by reading `BR.Config.ConsumableById[...].carryMax` directly, so a player
+--- holding three grenades -- which are THROWABLE, and therefore not in that
+--- table at all -- was told they could carry ZERO of them. There is one answer
+--- to "how many of these may I hold", and it is this function.
 --- @param stack table
 --- @return integer|nil  nil means uncapped
-local function carryMaxOf(stack)
+function BR.Inv.carryMax(stack)
+    if not stack then return nil end
     if stack.kind == BR.ItemKind.CONSUMABLE then
         local c = BR.Config.ConsumableById[stack.item]
         return c and c.carryMax or nil
@@ -134,6 +143,8 @@ local function carryMaxOf(stack)
     end
     return nil
 end
+
+local carryMaxOf = BR.Inv.carryMax
 
 --- The wire view of a player's inventory.
 --- @param src integer

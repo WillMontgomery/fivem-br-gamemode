@@ -3226,6 +3226,358 @@ do
         'so a dead key and an engine that ignores the flag are told apart', said)
 end
 
+-- ------------------------------------------------------------- the bus ---
+--
+-- #174, AND IT IS THE DESCENT PROMPT'S PROBLEM ONE PHASE EARLIER.
+--
+-- The owner asked for "our key layer and a DUI" on the jump prompt. What was
+-- there was GTA's help box naming `~INPUT_PARACHUTE_DEPLOY~`, plus a
+-- frame-polled `IsControlJustPressed(0, 144)` sitting in PARALLEL with the
+-- BR.Keys listener that was already there -- so the jump was on two readers at
+-- once, only one of which a player could move.
+--
+-- THAT SHAPE IS WHY THIS BLOCK DRIVES A KEYBOARD RATHER THAN CALLING tryJump.
+-- Every failure this subsystem can have is a failure of ROUTING: the box naming
+-- one key while another is listened for (#129's third round, #131), one press
+-- producing two server events, a rebind that adds a key instead of moving it.
+-- None of those are visible to a test that calls the handler directly, and all
+-- of them are visible to a test that presses a key and counts what left the
+-- client. So the press below runs the whole chain -- raw sample, fire('deploy'),
+-- bus.lua's listener, tryJump, TriggerServerEvent -- with nothing stubbed except
+-- the natives at the far end.
+--
+-- WHAT IT CANNOT DO is prove a browser drew the texture. Whether the plate is
+-- legible over a Titan's wing at 500m is a playtest fact and is called out as
+-- one in the issue.
+
+describe('the bus jump prompt is ours, and so is the key -- #174')
+do
+    local threads = {}
+    Citizen.CreateThread = function(fn) threads[#threads + 1] = fn end
+    Citizen.SetTimeout   = function() end
+
+    for _, n in ipairs({
+        'StartGpsCustomRoute', 'AddPointToGpsCustomRoute',
+        'SetGpsCustomRouteRender', 'ClearGpsCustomRoute', 'SetVehicleEngineOn',
+        'SetPedIntoVehicle', 'SetBlockingOfNonTemporaryEvents',
+        'AttachEntityToEntity', 'DetachEntity', 'SetCamActive',
+        'RenderScriptCams', 'DestroyCam', 'SetCamCoord', 'PointCamAtCoord',
+        'ControlLandingGear', 'SetEntityInvincible', 'SetEntityVisible',
+    }) do _G[n] = noop end
+    function CreateVehicle() return 258 end
+    function CreatePed() return 259 end
+    function CreateCamWithParams() return 7 end
+    function GetFrameTime() return 0.016 end
+    function GetControlNormal() return 0.0 end
+
+    --- GTA'S OWN CONTROLS, MODELLED RATHER THAN LEFT NIL -- AND THIS IS THE
+    --- LINE THE REVERT PROOF FOR THIS BLOCK STANDS ON.
+    ---
+    --- `IsControlJustPressed` is stubbed nowhere else in this file, because
+    --- until #174 the only caller in br_core/client was the very poll this
+    --- issue removed. Leave it nil and reverting the fix does not reinstate the
+    --- bug -- it makes the callback RAISE, and BR.Loop.step pcalls every
+    --- callback and suspends one that throws three times running. The old
+    --- prompt would then draw nothing and the old poll would jump nothing, and
+    --- a suite measuring the fix would come back green against the broken code
+    --- for reasons that have nothing to do with the fix. Measured: without this
+    --- stub the reverted file fails 14 assertions; with it, 17, and the three
+    --- extra are the ones that actually name the fault.
+    ---
+    --- Control 144 IS_PARACHUTE_DEPLOY sits on Space and NOTHING can move it --
+    --- not our rebinder, not anything from script, which is the whole reason a
+    --- rebind could never be reconciled with a second reader. So a physical
+    --- Space is a 144 edge whatever `deploy` has since been bound to.
+    local engineControl = {}
+    function IsControlJustPressed(_, control) return engineControl[control] == true end
+
+    -- THE PAGE, AS THE PROMPT USES IT, AND KEYED BY WHICH PAGE. skydive.lua's
+    -- box is loaded and running in this same process from the block above, and
+    -- it writes to `descentprompt`. Recording every send regardless of page
+    -- would let one file's payload be read as the other's -- which is precisely
+    -- the confusion bus.lua refuses to risk by not sharing a browser.
+    local dui = { sends = {}, draws = 0, up = true, at = nil }
+    BR.Dui = {
+        page = function(name) return { name = name } end,
+        send = function(page, msg)
+            if page and page.name == 'busprompt' then
+                dui.sends[#dui.sends + 1] = msg
+            end
+        end,
+        drawScreen = function(page, x, y, s)
+            if page and page.name == 'busprompt' then
+                dui.draws = dui.draws + 1
+                dui.at = { x = x, y = y, scale = s }
+            end
+        end,
+        drawWorld = noop, drawOnEntity = noop,
+        ready = function() return dui.up end,
+    }
+    local function said() return dui.sends[#dui.sends] end
+
+    -- The engine's help box, in both its forms: the per-frame fallback and the
+    -- one-shot with the beep.
+    local helpFrame, helpFrames, beeps = nil, 0, {}
+    BR.Native.helpThisFrame = function(t) helpFrame = t; helpFrames = helpFrames + 1 end
+    BR.Native.help = function(t) beeps[#beeps + 1] = t end
+
+    loadAll({ 'br_core/client/bus.lua' })
+
+    bootOn(true, true)   -- the raw key layer, on the build everyone plays
+
+    --- A press, delivered to BOTH readers exactly as a real client delivers it.
+    ---
+    --- The engine's own command handler is invoked alongside the raw sample --
+    --- so a regression that lets both paths act shows up as a DOUBLE COUNT
+    --- rather than passing quietly. That is not hypothetical here: it is what
+    --- the removed control-144 poll did on every jump.
+    local function press(vk, engineName)
+        keys[vk] = true; edge[vk] = true
+        if engineName then engineKey(engineName, true) end
+        -- ...and the third reader, the engine control, which is on Space and
+        -- stays on Space. See the IsControlJustPressed note above.
+        engineControl[144] = (vk == 0x20) or nil
+        frame(16)
+        engineControl[144] = nil
+        keys[vk] = nil
+        if engineName then engineKey(engineName, false) end
+        frame(16)
+    end
+
+    local function jumps()
+        local n = 0
+        for _, s in ipairs(sent) do
+            if s.name == BR.Net.BUS_JUMP then n = n + 1 end
+        end
+        return n
+    end
+
+    --- Put this client in the plane door, doors shut, with a live route.
+    local function board()
+        local t = GetGameTimer()
+        local pts = {}
+        for i = 0, 8 do
+            pts[#pts + 1] = { x = i * 400.0, y = 0.0, z = 500.0,
+                              t = t + i * 500 }
+        end
+        fire(BR.Net.BUS_ROUTE, {
+            points = pts, timed = true, heading = 0.0,
+            sx = 0.0, sy = 0.0, alt = 500.0, legs = { 'a', 'b' },
+            tStart = t, rotateAt = t,
+            jumpFrom = t + 300, doorsClose = t + 2000, tEnd = t + 4000,
+        })
+        BR.State.match = { state = BR.MatchState.BUS }
+        BR.State.me.state = BR.PlayerState.BUS
+        local before = #threads
+        BR.Loop.step(BR.Loop.TICK)
+        for i = before + 1, #threads do threads[i]() end
+    end
+
+    board()
+    sent = {}
+
+    -- 1. THE DOORS ARE SHUT AND THERE IS NO BOX. The prompt is bounded by
+    --    `jumpFrom`, and a DUI holds whatever it was last told -- so "nothing
+    --    sent, nothing drawn" is the only honest state before the window.
+    dui.sends, dui.draws = {}, 0
+    frame(16)
+    ok(#dui.sends == 0 and dui.draws == 0,
+        'nothing is drawn before the doors open',
+        ('%d sends, %d draws'):format(#dui.sends, dui.draws))
+
+    -- 2. THE WINDOW OPENS: OUR BOX, OUR KEY.
+    frames(24, 16)
+    local open = said()
+    ok(open and open.show == true and open.label == 'Jump from the plane',
+        'the doors-open box is a DUI payload, not a help string',
+        open and tostring(open.label) or 'nothing was sent to the page at all')
+    ok(dui.draws > 0, 'and it is actually drawn', ('draws %d'):format(dui.draws))
+    ok(open and open.key == 'Space',
+        'naming the key `deploy` is actually bound to, read from BR.Keys',
+        open and tostring(open.key) or 'nil')
+
+    -- 3. AND THE HELP BOX IS NOT ALSO RUNNING. This is the assertion the old
+    --    code cannot pass: it called helpThisFrame EVERY frame of the window,
+    --    with `~INPUT_PARACHUTE_DEPLOY~` in it. A DUI that draws while the
+    --    scaleform also draws is two prompts, and the second one is the liar.
+    helpFrame, helpFrames = nil, 0
+    frames(3, 16)
+    ok(helpFrames == 0,
+        'and GTA\'s help box is not drawing the prompt alongside it',
+        ('the scaleform was asked %d times: %s'):format(helpFrames,
+            tostring(helpFrame)))
+
+    -- 4. NO ENGINE GLYPH TOKEN ANYWHERE. `~INPUT_PARACHUTE_DEPLOY~` renders
+    --    control 144's key, which after this change is a key nothing aboard the
+    --    plane is listening for. Asserted as a string search because that is
+    --    how it would come back -- somebody restoring "just the wording".
+    local anyToken = false
+    for _, m in ipairs(dui.sends) do
+        for _, v in pairs(m) do
+            if type(v) == 'string' and v:find('~INPUT', 1, true) then
+                anyToken = true
+            end
+        end
+    end
+    ok(not anyToken,
+        'and no payload carries an ~INPUT_~ token -- the engine draws none of this')
+
+    -- 5. THE BOX SITS WHERE THE DESCENT BOX SITS. The two are one box to a
+    --    player: press here, fall out, and the same plate offers the glider.
+    local D = BR.Config.Drop
+    ok(dui.at and dui.at.x == D.promptX and dui.at.y == D.promptY
+        and dui.at.scale == D.promptScale,
+        'in the same place and at the same scale as the descent prompt',
+        dui.at and ('%s,%s @%s'):format(tostring(dui.at.x), tostring(dui.at.y),
+            tostring(dui.at.scale)) or 'never drawn')
+
+    -- 6. ONE PRESS, ONE BUS_JUMP.
+    --
+    --    THE NUMBER THAT BITES. With the control-144 poll in place both readers
+    --    saw the same physical Space in the same frame and `riding` was still
+    --    true between them, so every jump sent TWO BUS_JUMP events. Counting
+    --    what left the client is the only way to see that at all -- both paths
+    --    call the same tryJump, so any test that asserts "the jump happened"
+    --    passes on the broken code.
+    sent = {}
+    press(0x20, 'SPACE')
+    ok(jumps() == 1,
+        'ONE PRESS SENDS EXACTLY ONE BUS_JUMP -- not one per reader (#174)',
+        ('%d BUS_JUMP events left the client for one press of Space'):format(jumps()))
+
+    -- 7. THE REBIND MOVES THE LABEL **AND** THE LISTENER, TOGETHER.
+    --
+    --    Twice now this project has shipped a prompt naming a key nothing was
+    --    listening for -- #131 drew a key the code did not read, and #129's
+    --    third round drew R while the engine listened on E. Both halves are
+    --    asserted from one rebind, in one place, so they cannot pass apart.
+    BR.Keys.set('brdeploy', 0x4A)   -- J
+    frame(16)
+    local moved = said()
+    ok(moved and moved.key == 'J',
+        'a rebind moves the letter in the cap',
+        moved and tostring(moved.key) or 'nothing was re-sent after the rebind')
+
+    sent = {}
+    press(0x4A, nil)   -- no engine name: RegisterKeyMapping registered SPACE
+                       -- and nothing can move it, so J is the raw layer's alone
+    ok(jumps() == 1,
+        'AND THE KEY IN THE CAP IS THE KEY THAT JUMPS',
+        ('J sent %d BUS_JUMP events'):format(jumps()))
+
+    -- 8. AND THE KEY IT WAS MOVED OFF IS DEAD. A rebind that ADDS a key rather
+    --    than moving it is what the control-144 poll made every rebind do:
+    --    Space kept jumping forever, whatever the settings screen said.
+    sent = {}
+    press(0x20, 'SPACE')
+    ok(jumps() == 0,
+        'while the key it was rebound AWAY from no longer jumps at all',
+        ('Space still sent %d BUS_JUMP events after the move to J'):format(jumps()))
+
+    BR.Keys.reset('brdeploy')
+    frame(16)
+    ok(said() and said().key == 'Space', 'and a reset puts the cap back',
+        said() and tostring(said().key) or 'nothing re-sent')
+
+    -- 9. A SCREEN THAT OWNS THE KEYBOARD OWNS THIS KEY TOO (62491d6). The jump
+    --    is a `tap()` like every other action, so it inherits the NUI focus
+    --    gate -- asserted rather than assumed, because "inherits it" is exactly
+    --    the kind of claim this file exists to stop taking on trust.
+    sent = {}
+    fire('br:ui:focusChanged', 'players')
+    press(0x20, 'SPACE')
+    ok(jumps() == 0,
+        'typing under a NUI screen does not throw the player out of the plane',
+        ('%d BUS_JUMP events were sent while a screen held the keyboard'):format(jumps()))
+
+    fire('br:ui:focusChanged', 'none')
+    frames(3, 16)   -- the resync window closes on the first quiet frame
+    sent = {}
+    press(0x20, 'SPACE')
+    ok(jumps() == 1,
+        'and the key comes straight back when the screen lets go',
+        ('%d BUS_JUMP events after focus was released'):format(jumps()))
+
+    -- 10. THE DOORS CLOSING IS A SECOND STATE AND IT SURVIVED THE MOVE. The
+    --     help box had two strings; so does the page, and the beep still beeps.
+    dui.sends, beeps = {}, {}
+    frames(110, 16)          -- past doorsClose: the box is a FRAME callback...
+    BR.Loop.step(BR.Loop.TICK)   -- ...and the beep is a TICK one. Both bands
+                                 -- have to be stepped or the "it still beeps"
+                                 -- assertion below is testing the harness.
+    local closing = said()
+    ok(closing and closing.show == true and closing.label == 'Doors closing!',
+        'the box hardens into the last call',
+        closing and tostring(closing.label) or 'nothing was re-sent')
+    ok(closing and closing.key == 'Space',
+        'still naming the player\'s own key', closing and tostring(closing.key))
+    ok(#beeps == 1,
+        'and the one-shot beep still fires, exactly once',
+        ('%d beeps'):format(#beeps))
+
+    -- 11. A BROWSER THAT NEVER CAME UP MUST NOT MEAN SILENCE, and here that
+    --     costs the whole match rather than a cosmetic: a player who cannot see
+    --     the prompt does not jump. The words fall back; the glyph is what is
+    --     lost, and the letter is STILL the player's own binding.
+    dui.up = false
+    helpFrame = nil
+    frame(16)
+    ok(helpFrame ~= nil and helpFrame:find('Space', 1, true) ~= nil,
+        'a page that is not up falls back to words naming the bound key',
+        tostring(helpFrame))
+    ok(helpFrame ~= nil and helpFrame:find('~INPUT', 1, true) == nil,
+        'and never to an ~INPUT_~ token, which renders as a hole for our commands',
+        tostring(helpFrame))
+    dui.up = true
+
+    -- 12. AN UNBOUND JUMP SAYS SO. `BR.Keys.set` clears the LOSER of a key
+    --     conflict, so a player can lose the jump binding without ever having
+    --     touched that row -- and the trail prompt's answer (draw nothing) would
+    --     read as the prompt being broken for the one action you cannot skip.
+    BR.Keys.set('brdeploy', nil)
+    frame(16)
+    local unbound = said()
+    ok(unbound and unbound.show == true and unbound.label == 'Jump is unbound'
+        and unbound.key == nil,
+        'a cleared jump binding says so rather than drawing an empty cap',
+        unbound and ('label %s key %s'):format(tostring(unbound.label),
+            tostring(unbound.key)) or 'nothing sent')
+    BR.Keys.reset('brdeploy')
+    frame(16)
+
+    -- 13. /brbus IS THE ONLY INSTRUMENT THIS SUBSYSTEM HAS, and it used to
+    --     RAISE: it formatted `#crumbs`, a local that exists nowhere in the
+    --     file, so the command a playtester is asked to paste died on its own
+    --     third line. It now answers the two questions that are actually asked
+    --     -- was there a box, and what key did it name.
+    logged = {}
+    ok(pcall(commands['brbus'], nil, {}, ''), '/brbus does not throw',
+        table.concat(logged, '\n'))
+    local dump = table.concat(logged, '\n')
+    ok(dump:find('prompt', 1, true) ~= nil and dump:find('key ', 1, true) ~= nil,
+        'and reports whether the box is showing and which key it names', dump)
+    ok(dump:find('Space', 1, true) ~= nil,
+        'reading the same BR.Keys answer the box prints, so it cannot agree '
+            .. 'with a lie the box is telling', dump)
+    logged = {}
+
+    -- 14. THE RIDE ENDING TAKES THE BOX DOWN. A DUI holds its last content
+    --     forever; the help box expired on its own. Without the explicit
+    --     take-down a match torn down mid-flight leaves "Jump from the plane"
+    --     hanging over the lobby.
+    dui.sends = {}
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.Loop.step(BR.Loop.TICK)
+    frame(16)
+    local gone = said()
+    ok(gone and gone.show == false, 'and leaving the plane takes the box away',
+        gone and tostring(gone.show) or 'nothing was sent')
+
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    BR.Loop.step(BR.Loop.TICK)
+    sent = {}
+end
+
 describe('an inventory starts and returns to fists, not to slot 1 -- #155')
 do
     -- Owner, 2026-08-16: "The default inventory slot should be fists, not slot

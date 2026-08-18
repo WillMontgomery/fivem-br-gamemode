@@ -558,6 +558,90 @@ local function restPitchOf(e)
     return L.hoverPitch or 0.0
 end
 
+--- How big this entry's prop should be drawn, as a multiplier of its authored
+--- size. nil means "as authored" and costs nothing.
+---
+--- READ FROM THE CONFIG, NOT FROM THE WIRE, which is the same call modelOf
+--- makes about the model itself: the scale is a property of the ITEM, the
+--- client already has the item id, and br_lib/config/loot.lua is shared -- so
+--- putting it in wireEntry would grow every loot payload on the server to
+--- re-send something both ends already know.
+--- @param e table
+--- @return number|nil
+local function propScaleOf(e)
+    if e.kind == BR.ItemKind.CONSUMABLE then
+        local c = BR.Config.ConsumableById[e.item]
+        return c and c.propScale or nil
+    end
+    return nil
+end
+
+--- One axis vector, renormalised to length k.
+---
+--- Hoisted out of applyPropScale rather than nested in it: that function runs
+--- after every rotation write in the hover, which is per frame per item in
+--- range, and a closure built three times a frame per shield is a closure
+--- built for nothing.
+--- @param v table  a vector3 from GetEntityMatrix
+--- @param k number
+--- @return number x
+--- @return number y
+--- @return number z
+local function axisAt(v, k)
+    local len = math.sqrt(v.x * v.x + v.y * v.y + v.z * v.z)
+    if len < 0.000001 then return 0.0, 0.0, 0.0 end
+    local s = k / len
+    return v.x * s, v.y * s, v.z * s
+end
+
+--- Draw a prop at a fraction of its authored size (#166).
+---
+--- THERE IS NO ENTITY-SCALE NATIVE IN GTA V, and that is not a guess -- the
+--- take animation further down wanted one, could not find one, and settled for
+--- a spin. The only lever is the transform matrix: an entity's three axis
+--- vectors are unit length, their LENGTH is its scale, so renormalising them to
+--- k draws the model at k.
+---
+--- NORMALISED FIRST, AND THAT IS THE LOAD-BEARING WORD. GetEntityMatrix reads
+--- back whatever is there NOW, so multiplying the vectors as they arrive would
+--- compound -- a half, then a quarter, then an eighth, once per frame, until
+--- the prop disappeared into its own origin. Renormalising makes this
+--- IDEMPOTENT, which it has to be, because the hover rewrites the matrix every
+--- frame and this has to run after every one of those writes.
+---
+--- WHICH VECTOR IS WHICH DOES NOT MATTER. GetEntityMatrix is declared
+--- forward/right/up/position and is widely reported to hand back right/forward
+--- in the other order; a UNIFORM scale is invariant under that disagreement,
+--- because all three are multiplied by the same k and handed straight back in
+--- the order they arrived. SET_ENTITY_MATRIX takes "the same order as with
+--- GET_ENTITY_MATRIX", so the round trip cannot be wrong about it either.
+---
+--- IT SCALES THE RENDER AND NOT A COLLISION BOX, which costs nothing HERE and
+--- would cost a great deal anywhere else in this file: loose floor items are
+--- spawned with collision switched OFF (see `solid` in the spawn worker), and
+--- both reach tests measure from the REGISTRY POSITION rather than from the
+--- prop (reachOf here, inReach on the server). So there is no hitbox left to
+--- disagree with the picture, and shrinking a shield cannot put it out of
+--- reach.
+---
+--- GUARDED, so a build without the natives draws the prop at its authored size
+--- instead of erroring sixty times a second in the hottest pass in the client.
+--- @param obj integer|nil
+--- @param k number|nil
+local function applyPropScale(obj, k)
+    if not k or k == 1.0 then return end
+    if not obj or not DoesEntityExist(obj) then return end
+    if not GetEntityMatrix or not SetEntityMatrix then return end
+
+    local a, b, c, at = GetEntityMatrix(obj)
+    if not a or not b or not c or not at then return end
+
+    local ax, ay, az = axisAt(a, k)
+    local bx, by, bz = axisAt(b, k)
+    local cx, cy, cz = axisAt(c, k)
+    SetEntityMatrix(obj, ax, ay, az, bx, by, bz, cx, cy, cz, at.x, at.y, at.z)
+end
+
 -- --------------------------------------------------------------------------
 -- Models
 -- --------------------------------------------------------------------------
@@ -700,6 +784,13 @@ local function retireProp(e, toX, toY, toZ)
         fromX = c.x, fromY = c.y, fromZ = c.z,
         toX = toX or c.x, toY = toY or c.y, toZ = toZ or (c.z + 1.0),
         at = GetGameTimer(),
+        -- THE SIZE TRAVELS WITH IT (#166). The retiring list is deliberately
+        -- detached from the entry -- the entry dies the instant the server
+        -- confirms the claim -- so anything the animation needs has to be
+        -- copied here. Without this a half-size shield would snap to full
+        -- size on the frame it was picked up and fly to the player at the
+        -- wrong scale, which is a worse artefact than not scaling it at all.
+        scale = e.propScale,
     }
     byObject[e.obj] = nil
     e.obj = nil        -- despawn() must not delete it now
@@ -927,6 +1018,19 @@ local function drain()
                                     ActivatePhysics(obj)
                                 end
                                 SetEntityAsMissionEntity(obj, false, true)
+
+                                -- SIZE LAST, because everything above writes
+                                -- the matrix (#166). SetEntityRotation,
+                                -- SetEntityHeading and
+                                -- PlaceObjectOnGroundProperly all rebuild the
+                                -- axis vectors at unit length, so a scale
+                                -- applied before any of them is a scale that
+                                -- was silently thrown away. Cached on the
+                                -- entry so the hover does not re-read the
+                                -- config sixty times a second.
+                                e.propScale = propScaleOf(e)
+                                applyPropScale(obj, e.propScale)
+
                                 e.obj = obj
                                 byObject[obj] = id
                             end
@@ -1426,6 +1530,7 @@ local function animate(e, d2, dt, now)
         e.spin = ((e.spin or 0.0) + (L.spinDegPerSec or 55.0) * 3.0
                   * (dt / 1000.0)) % 360.0
         SetEntityRotation(e.obj, L.hoverPitch or 0.0, 0.0, e.spin, 2, true)
+        applyPropScale(e.obj, e.propScale)
         e.lift = 0.0
         e.settled = false
         return
@@ -1450,6 +1555,11 @@ local function animate(e, d2, dt, now)
         -- is frozen by now, so PlaceObjectOnGroundProperly would do nothing.
         SetEntityRotation(e.obj, rp, 0.0, e.spin or (e.heading or 0.0), 2, true)
         SetEntityCoordsNoOffset(e.obj, e.x, e.y, rest, false, false, false)
+        -- AND THE SIZE, which the rotation write above has just reset to 1.
+        -- This is the branch that matters most for #166: it is the resting
+        -- state, so it is what a player SEES from across the room, and it is
+        -- the one an early return could most easily have skipped.
+        applyPropScale(e.obj, e.propScale)
         return
     end
     e.settled = false
@@ -1462,6 +1572,7 @@ local function animate(e, d2, dt, now)
     e.spin = ((e.spin or 0.0) + (L.spinDegPerSec or 55.0) * k * (dt / 1000.0))
              % 360.0
     SetEntityRotation(e.obj, pitch, 0.0, e.spin, 2, true)
+    applyPropScale(e.obj, e.propScale)
 end
 
 --- Fly every retiring prop to its destination, then delete it.
@@ -1486,9 +1597,17 @@ local function stepRetiring(now)
                 r.fromZ + (r.toZ - r.fromZ) * p + math.sin(t * math.pi) * 0.25,
                 false, false, false)
             SetEntityHeading(r.obj, (t * 540.0) % 360.0)
-            -- Shrinking would be nicer than spinning, but there is no scale
-            -- native for a plain object -- SetEntityScale does not exist for
-            -- these. The spin plus the arc is what sells it.
+            -- ...and put the size back, because SetEntityHeading is a matrix
+            -- write and resets the axis vectors to unit length (#166).
+            applyPropScale(r.obj, r.scale)
+            -- Shrinking as it flies would be nicer than spinning, and #166 has
+            -- since found the lever for it -- there is no SetEntityScale, but
+            -- the transform matrix carries the size (see applyPropScale). It
+            -- is deliberately NOT done here: a taper on the take animation is
+            -- a separate presentational change nobody has asked for, and this
+            -- pass is where a per-frame matrix write would be paid for by
+            -- every item anyone ever picks up. The spin plus the arc still
+            -- sells it.
         end
     end
 end
@@ -2640,6 +2759,62 @@ RegisterCommand('brlabel', function(_, args)
     else
         print('  usage: brlabel <lift> [size]   (lift is metres, negative = down)')
     end
+end, false)
+
+--- Resize a consumable's ground prop WITHOUT a deploy -- the ruler /brlabel is,
+--- pointed at #166.
+---
+---   /brpropscale                     what every consumable is drawn at
+---   /brpropscale <itemId> <k>        set one, live, and rebuild its props
+---
+--- It exists because the number in br_lib/config/loot.lua is a guess and there
+--- is no way to evaluate it except by standing next to one. The owner asked for
+--- "50% the size"; whether 0.5 reads as a smaller shield or as a dropped pill
+--- is a question about a rendered model, and this project has already paid for
+--- guessing at those twice (the crate label lift, 0.02 then -0.10).
+---
+--- IT ALSO ANSWERS "DID ANYTHING HAPPEN AT ALL", which is the first thing to
+--- check: GTA V has no entity-scale native and applyPropScale drives the
+--- transform matrix instead, so if the props do not change size at any value
+--- the matrix route does not work on this build and the answer is a smaller
+--- MODEL rather than a smaller number.
+---
+--- Client-local and not persisted: a restart puts the configured value back.
+RegisterCommand('brpropscale', function(_, args)
+    local id = args[1] and tostring(args[1]) or nil
+    local k  = tonumber(args[2])
+
+    if id and k then
+        local c = BR.Config.ConsumableById[id]
+        if not c then
+            print(('[br_core] no such consumable: %s'):format(id))
+            return
+        end
+        -- Floored well above zero: a scale of 0 is an invisible item, which is
+        -- indistinguishable from loot that failed to spawn -- the exact
+        -- confusion this file has burned rounds on.
+        c.propScale = math.max(0.05, k)
+
+        -- REBUILT, NOT RETUNED IN PLACE. The scale is cached on the entry at
+        -- spawn, and loot.props re-queues anything in range that has no prop --
+        -- so dropping the object is the whole of the refresh.
+        local n = 0
+        for _, e in pairs(entries) do
+            if e.item == id and e.obj then despawn(e) n = n + 1 end
+        end
+        print(('[br_core] %s propScale = %.2f  (%d prop(s) rebuilding)')
+            :format(id, c.propScale, n))
+        print('  paste into br_lib/config/loot.lua:')
+        print(('    propScale = %.2f,'):format(c.propScale))
+        return
+    end
+
+    print('=== consumable prop scale ===')
+    for _, c in ipairs(BR.Config.Consumables) do
+        print(('  %-12s %-16s %s  x%.2f')
+            :format(c.id, c.label, tostring(c.prop), c.propScale or 1.0))
+    end
+    print('  usage: brpropscale <itemId> <scale>   (1.0 = as authored)')
 end, false)
 
 --- Which prompt glyph actually renders.
