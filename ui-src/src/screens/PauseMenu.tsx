@@ -86,7 +86,7 @@ const EXITS: {
   {
     id: 'server', label: 'Leave server', variant: 'danger',
     action: 'Disconnect',
-    sub: 'Disconnects you from FiveM Royale.',
+    sub: 'Disconnects you from Blitz Royale.',
     confirm: 'Disconnect from the server?',
     yes: 'Disconnect', no: 'Stay connected',
   },

@@ -1,9 +1,77 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useUi } from '../store'
 import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 import Btn from '../ui/Btn'
 import { play } from '../audio/cues'
+import { SQUAD_SLOT_ID } from '../hud/Hud'
+import { CHAT_COLUMN_ID, CHAT_LOG_MAX_REM } from '../chat/Chat'
+
+/** Breathing room between this card and whatever it is keeping clear of. */
+const GAP_REM = 0.75
+
+/**
+ * THE SHORTEST THIS CARD IS ALLOWED TO BE, whatever the band says.
+ *
+ * A band computed from two measured edges can close: a four-plate squad panel
+ * at a large interface scale, a generous safe zone and a 720p screen all push
+ * from the same direction, and an absolutely positioned box with `top` and
+ * `bottom` both set simply resolves to zero height rather than overflowing --
+ * so the card would vanish instead of scrolling, which is a worse failure than
+ * the overlap this whole mechanism exists to remove.
+ *
+ * THE FLOOR IS TAKEN OUT OF THE CHAT'S SIDE and never the squad panel's. The
+ * squad panel is live vitals -- health, shield and a bleed clock somebody is
+ * deciding on -- while the chat log is a fading transcript that is already
+ * mostly empty space; if one of the two has to be covered in a corner case, it
+ * is the one whose content is recoverable by scrolling it back.
+ */
+const MIN_BAND_REM = 14
+
+/**
+ * THE VERTICAL BAND THIS CARD IS ALLOWED TO OCCUPY, in viewport pixels.
+ *
+ * THE OWNER ASKED WHETHER IT ALREADY DID THIS AND THE HONEST ANSWER WAS NO
+ * (2026-08-17: "have you confirmed it resizes vertically when the list is
+ * larger, and scrolls once the vertical height would overlap with the chat and
+ * our squad panel").
+ *
+ * Half of it was already true and half was not. The card is a flex column with
+ * a `shrink-0` header, a `shrink-0` footer and a `min-h-0 flex-1 overflow-y-auto`
+ * roster, so it DOES grow with the list and it DOES scroll once it stops
+ * growing. What it stopped growing at was a hardcoded 74vh max-height, centred
+ * on the viewport -- a number with no relationship to anything else on screen.
+ * Measured in the harness at 1920x1080 with a four-person squad and a full chat
+ * log:
+ *
+ *     entries   card top..bottom      grows      scrolls
+ *        5      395 .. 685  (290px)   yes        no
+ *       20      148 .. 932  (784px)   yes        no
+ *       60      140 .. 940  (799px)   capped     yes   (the old 74vh cap = 799px)
+ *
+ * The chat log occupied 670..830 and the squad panel 35..305, both in the same
+ * left column and both fully inside this card's 42..378 horizontally. So the
+ * card was over the chat from FIVE entries and over the squad panel from about
+ * thirteen -- and it is near-opaque, so it was not overlapping them, it was
+ * hiding them. Sixty entries is not the failing case; five is.
+ *
+ * SO THE CAP IS THE NEIGHBOURS NOW, and it is MEASURED rather than derived:
+ *
+ *   the top     the squad panel's rendered bottom edge. Its height is data --
+ *               nothing between zero and four plates, and a plate loses its two
+ *               bars when its player is out -- so a rem constant would be wrong
+ *               for every squad except the one it was written against.
+ *   the bottom  the chat column's anchored bottom edge, less the most its log
+ *               can ever grow to (CHAT_LOG_MAX_REM). Its maximum rather than
+ *               its current height, or this card would resize itself every time
+ *               somebody spoke and again when the log faded.
+ *
+ * Either neighbour being absent -- solo, or chat unmounted between rounds --
+ * falls back to the safe zone, which is the edge of the usable screen and
+ * exactly the right answer when there is nothing to avoid.
+ */
+type Band = { top: string; bottom: string }
+const FULL_BAND: Band = { top: 'var(--hud-top)', bottom: 'var(--safe-y)' }
 
 /**
  * Who is in this match, and the way to report them.
@@ -74,6 +142,125 @@ export default function PlayerList() {
 
   const [reporting, setReporting] = useState(false)
   const [picked, setPicked] = useState<Record<number, string>>({})
+
+  /**
+   * WHAT THE PLAYER IS LOOKING FOR, AND THE FIELD THEY TYPED IT INTO.
+   *
+   * Owner, 2026-08-17: "can you have an agent add a search function in the
+   * in-game player menu? the list should truncate while typing and it should
+   * clear out the search when the page is dismissed."
+   *
+   * The ref is not decoration. This component's dismiss listener is on `window`
+   * in the CAPTURE phase (see below), so it sees every keystroke BEFORE the
+   * field does -- `e.target` against this ref is the only way that handler can
+   * tell "the player is typing" from "the player pressed the close key".
+   */
+  const [query, setQuery] = useState('')
+  const searchRef = useRef<HTMLInputElement>(null)
+
+  /**
+   * THE SEARCH CLEARS WHEN THE PANEL IS DISMISSED, AND IT NEEDS A LINE OF ITS
+   * OWN RATHER THAN THE UNMOUNT THAT ALREADY LOOKS LIKE ONE.
+   *
+   * The obvious reading is that this is free: `App.tsx` renders this inside
+   * `<Page show={focus === 'players'}>`, Page drops its child when the screen
+   * closes, and React state dies with the component -- which is exactly the
+   * argument br_ui/client/players.lua makes for report mode ("the mode is React
+   * state on a component that unmounts with the panel, so it cannot survive to
+   * be wrong the next time this opens").
+   *
+   * IT IS FREE ONLY IF THE UNMOUNT ACTUALLY HAPPENS, AND FOR 200ms IT DOES NOT.
+   * Page keeps its child MOUNTED for the length of the exit animation --
+   * `EXIT_MS = 200`, ui/Page.tsx -- so a close and a re-open inside that window
+   * clear the pending timer and hand back THE SAME COMPONENT INSTANCE, with all
+   * of its state. And the key that opens this panel is a LATCH on tilde, which
+   * is the one control shape where a player taps twice in well under 200ms as a
+   * matter of course. So the stale-filter case the owner named is not
+   * hypothetical, it is the fast double-tap.
+   *
+   * KEYED ON FOCUS, NOT ON THE CLOSE BUTTON, so it covers every way this panel
+   * goes away and not just the one the page initiates: the player's key, a
+   * successful report (Lua hides the panel behind it), the bus taking it away
+   * mid-descent, the focus watchdog, `brfocus clear`. All of them land as the
+   * same thing -- `focus` stops being 'players' -- which is the one fact worth
+   * listening to.
+   *
+   * ONLY THE QUERY IS CLEARED, and the asymmetry with `reporting`/`picked` is
+   * deliberate rather than an oversight. A surviving SELECTION is the panel
+   * being kind (the note on `result` below calls losing one "a small cruelty");
+   * a surviving FILTER is the panel LYING, because it comes back with rows
+   * missing and nothing on screen saying a filter is the reason. Same 200ms
+   * window, opposite right answers.
+   */
+  const focused = useUi((s) => s.focus === 'players')
+  useEffect(() => {
+    if (!focused) setQuery('')
+  }, [focused])
+
+  // The screen envelope moves --hud-top and the radar rectangle, which moves
+  // both of the boxes measured below without anything resizing. Subscribed to
+  // rather than polled, so the band is recomputed exactly when it can change.
+  const screen = useUi((s) => s.screen)
+  const [band, setBand] = useState<Band>(FULL_BAND)
+
+  useLayoutEffect(() => {
+    const compute = () => {
+      // The measured boxes are viewport coordinates and so is this card's
+      // containing block: `.hud-safe` is `position: fixed; top: 0; height: 100%`,
+      // so an absolute child's `top: Npx` IS N pixels down the viewport. Checked
+      // in the harness -- the old `top-1/2` card centred on exactly 540 at
+      // 1080p. No conversion, and nothing here has to know about the safe-zone
+      // padding.
+      const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+      const gap = GAP_REM * rem
+
+      const slot = document.getElementById(SQUAD_SLOT_ID)
+      const chat = document.getElementById(CHAT_COLUMN_ID)
+
+      // A zero-height slot is a solo player: the wrapper is still there, its
+      // bottom is its top, and the card simply starts where the column does.
+      const topPx = slot ? slot.getBoundingClientRect().bottom + gap : null
+      const chatCeiling = chat
+        ? chat.getBoundingClientRect().bottom - CHAT_LOG_MAX_REM * rem
+        : null
+      let bottomPx = chatCeiling != null
+        ? window.innerHeight - chatCeiling + gap
+        : null
+
+      // The band can close on a short screen with a full squad. See MIN_BAND_REM.
+      if (topPx != null && bottomPx != null) {
+        const floor = MIN_BAND_REM * rem
+        if (window.innerHeight - topPx - bottomPx < floor) {
+          bottomPx = Math.max(0, window.innerHeight - topPx - floor)
+        }
+      }
+
+      const next: Band = {
+        top: topPx != null && topPx > 0 ? `${Math.round(topPx)}px` : FULL_BAND.top,
+        bottom: bottomPx != null && bottomPx > 0
+          ? `${Math.round(bottomPx)}px` : FULL_BAND.bottom,
+      }
+      // Compared before setting: this runs from a ResizeObserver, and a state
+      // write per observation on a panel that is open during a firefight is a
+      // render loop waiting to happen.
+      setBand((prev) => (prev.top === next.top && prev.bottom === next.bottom)
+        ? prev : next)
+    }
+
+    compute()
+
+    // The squad panel is the only neighbour whose SIZE moves on its own -- a
+    // mate goes down, a mate is out, the row loses its bars. The chat column is
+    // anchored and reserved, so it needs no observer.
+    const slot = document.getElementById(SQUAD_SLOT_ID)
+    const ro = slot ? new ResizeObserver(compute) : null
+    if (ro && slot) ro.observe(slot)
+    window.addEventListener('resize', compute)
+    return () => {
+      ro?.disconnect()
+      window.removeEventListener('resize', compute)
+    }
+  }, [screen])
 
   /**
    * The only thing this panel asks Lua for. STATE, NOT A TOGGLE -- `open:
@@ -159,15 +346,69 @@ export default function PlayerList() {
   // already left.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // IS THE PLAYER TYPING? Asked first, because both branches below mean
+      // something different when they are.
+      //
+      // THE LISTENER IS ON `window` IN THE CAPTURE PHASE, WHICH IS WHY THIS
+      // CANNOT BE DONE THE USUAL WAY. Capture runs window -> target, so this
+      // handler fires BEFORE the input's own -- an `onKeyDown` with
+      // stopPropagation on the field, which is how Settings' name field and the
+      // chat composer keep their keystrokes to themselves, is powerless here.
+      // It runs second. The check has to happen at this end, on `e.target`.
+      const typing = e.target === searchRef.current
+
       if (e.key === 'Escape') {
         e.preventDefault()
         e.stopPropagation()
         play('ui.back')
+        // ESCAPE BACKS OUT ONE STEP, AND THE SEARCH IS NOW THE INNERMOST ONE.
+        //
+        // The ladder was report-mode-then-panel and the reasoning is directly
+        // below; a filter with something in it is another layer of exactly the
+        // same kind, so it goes on the same ladder rather than being given a
+        // rule of its own. Escape with a non-empty field CLEARS THE FIELD and
+        // leaves the panel up, with the caret still in it.
+        //
+        // WHY NOT "ESCAPE ALWAYS CLOSES": because the field is the one place on
+        // this panel where Escape is a reflex borrowed from somewhere else. A
+        // player who has typed four letters into a search box and wants the
+        // whole list back presses Escape -- every browser, every launcher and
+        // this project's own chat composer has taught them that. Closing the
+        // panel on them instead is the mis-hit this ladder exists to prevent,
+        // and it costs a re-open plus the tilde latch to undo.
+        //
+        // AND ONLY WHEN THERE IS SOMETHING TO CLEAR. An empty field is not a
+        // step, so Escape falls straight through to report mode and then to
+        // closing -- pressing Escape twice always leaves, which is the property
+        // that keeps this predictable. `query` and not `query.trim()` on
+        // purpose: a field holding nothing but spaces looks empty, matches
+        // everything, and would otherwise eat an Escape with no visible reason.
+        if (typing && query !== '') { setQuery(''); return }
         if (reporting) leaveReport()
         else close()
         return
       }
       if (!closeCodes.has(e.keyCode)) return
+
+      // THE CLOSE KEY IS A CHARACTER WHILE THE FIELD HAS FOCUS, AND THAT IS THE
+      // WHOLE REASON THIS BRANCH GREW A GUARD.
+      //
+      // `closeCodes` is virtual-key codes, because the key is rebindable -- and
+      // the DEFAULT is 0xC0, which is the backtick/tilde key. Without this,
+      // typing a backtick into the search box closed the panel. That much is a
+      // curiosity; the real damage is that br_core's binding table is the
+      // authority here, so a player who rebinds the player list onto a LETTER
+      // (the Settings screen lets them, and the raw layer's VK is whatever they
+      // picked) gets a search field that dismisses the panel every time that
+      // letter appears in a name they are trying to type.
+      //
+      // A key bound to "open/close this panel" means that while the panel has a
+      // text cursor in it. This does NOT weaken the fix it guards -- the panel
+      // is still closed by that key from anywhere else on the card, including
+      // the moment the field is blurred -- it just stops the latch firing on
+      // input the player intended as text.
+      if (typing) return
+
       e.preventDefault()
       e.stopPropagation()
       play('ui.back')
@@ -197,7 +438,39 @@ export default function PlayerList() {
    * REPORTABLE IS NOT THE SAME AS LISTED. You are in the list and cannot be
    * ticked; everyone else can, including players who have left.
    */
-  const rows = list.players
+  /**
+   * THE LIST, TRUNCATED BY WHAT IS IN THE FIELD.
+   *
+   * LIVE, NOT ON SUBMIT -- "the list should truncate while typing". There is no
+   * Enter key to press and no debounce: the roster is at most the server's
+   * player cap, the test is one `includes` per row, and a filter that lags
+   * behind the caret reads as a dropped keystroke on a panel that is already
+   * competing with a firefight for the player's attention.
+   *
+   * FORGIVING ON PURPOSE. Case-insensitive, and a SUBSTRING rather than a
+   * prefix -- the player is looking for somebody they half-remember seeing in a
+   * kill feed, so "kes" has to find "xX_Kestrel_Xx" and not just names that
+   * start with it. Nothing clever beyond that: no fuzzy matching, no ranking,
+   * no reordering. Rows staying in their original order is what lets somebody
+   * type two letters, recognise the name they wanted and stop.
+   *
+   * TRIMMED, because a trailing space is invisible and would otherwise be the
+   * difference between a name matching and the panel claiming nobody does. The
+   * trim is only for the TEST -- what the player typed stays in the field
+   * exactly as they typed it.
+   *
+   * FILTERING IS THE ONLY THING IT DOES. It does not touch `list.maxTargets`,
+   * it does not untick anybody, and a ticked row that scrolls out of the filter
+   * is still ticked and still sent -- `picked` is keyed by src and `selected`
+   * below reads it directly rather than reading the rows. Searching is a way of
+   * looking at the list, not a way of editing a report.
+   */
+  const rows = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return list.players
+    return list.players.filter((p) => p.name.toLowerCase().includes(q))
+  }, [list.players, query])
+
   const selected = useMemo(() => Object.keys(picked).map(Number), [picked])
 
   const toggle = (src: number) => {
@@ -269,12 +542,18 @@ export default function PlayerList() {
             same safe-zone inset, on the same box -- no negative margins, no
             second transform, and nothing that has to know how wide the card
             is in either mode. */}
+        {/* THE BAND, AND THE CARD CENTRED IN IT. `top-1/2 -translate-y-1/2` on
+            a card with a hardcoded 74vh max-height is what put this over the squad
+            panel -- see the note on Band above for the measurements. Giving the
+            anchor a top AND a bottom makes its height the free space itself, so
+            `items-center` still centres the card the way it always did, and
+            `max-h-full` is now a cap that means something. */}
         <div
-          className="absolute top-1/2 -translate-y-1/2"
-          style={{ left: 'var(--safe-x)' }}
+          className="absolute flex items-center"
+          style={{ left: 'var(--safe-x)', top: band.top, bottom: band.bottom }}
         >
           <div
-            className="interactive plate flex max-h-[74vh] flex-col"
+            className="interactive plate flex max-h-full flex-col"
             style={{
               width: reporting ? '27rem' : '21rem',
               transition: 'width 140ms ease-out',
@@ -295,9 +574,197 @@ export default function PlayerList() {
               </h2>
             </div>
 
+            {/* THE SEARCH ROW, AND WHERE ITS HEIGHT COMES OUT OF.
+
+                IT IS A `shrink-0` SIBLING OF THE ROSTER, WHICH IS THE ENTIRE
+                REASON IT DOES NOT RE-OPEN THE BUG THE BAND ABOVE JUST FIXED.
+                The card is `flex max-h-full flex-col` inside an anchor whose
+                height IS the free band, so the card cannot get taller than the
+                band no matter what is put in it. Its three existing children
+                divide that height: two `shrink-0` ends and a `min-h-0 flex-1`
+                middle. Adding a fourth `shrink-0` child therefore takes its
+                height OUT OF THE SCROLLING REGION -- flexbox does the
+                subtraction, there is no second measurement to keep in sync with
+                the band, and the card's outer box does not move by a pixel.
+
+                MEASURED IN THE HARNESS, not derived -- full four-plate squad,
+                chat column mounted, so both neighbours are present and the band
+                is at its tightest. Heights in CSS pixels:
+
+                                       card   header  SEARCH  roster  footer
+                   1920x1080 (rem 16)  374     62.4    46.3   209.8    53.5
+                   1280x720  (rem 11)  238     42.9    32.5   122.6    37.9
+
+                THE CARD'S OUTER RECT DID NOT MOVE: 284..658 at 1080p and
+                197..435 at 720p, both identical to the same measurement taken
+                before this row existed. The roster absorbed the whole cost --
+                256.1 -> 209.8 at 1080p and 155.1 -> 122.6 at 720p, each a drop
+                of exactly the search row's height. That equality is the
+                invariant to re-check if any of this is edited: the card's outer
+                rect must not move when this row is added or removed.
+
+                What it costs the reader is rows, and only rows: 8.0 visible
+                became 6.6 at 1080p, and 7.0 became 5.6 at 720p.
+
+                720p IS THE CASE THAT DECIDED THE SIZING, and not for the
+                obvious reason. The root font size is
+                `clamp(11px, calc(1.481vh * var(--ui-scale)), 28px)`, so 720p
+                does NOT scale to 11/16ths of 1080p -- it lands on the 11px
+                FLOOR, which leaves every rem here bigger, relative to the band,
+                than it is at 1080p. The band lost 36% of its height between the
+                two and the row only lost 30% of its own. So the row is kept to
+                the smallest thing that is still a legible text field rather
+                than taking the `py-2` the Settings name field uses, which would
+                have cost another row of roster at the size least able to spare
+                one.
+
+                BELOW THE 720p TARGET THE MIN_BAND_REM FLOOR TAKES OVER AND THIS
+                ROW IS EXPENSIVE, WHICH IS RECORDED RATHER THAN FIXED HERE. The
+                floor is not reached at 720p (card 238px against a 154px floor)
+                nor at 640px of viewport height (179px, 2.9 rows). It engages
+                below roughly 620px, and there the card is pinned at 14rem while
+                this row still takes its 32.5px -- 1280x600 measured a 153px card
+                with a 38px roster, 1.7 rows, where before it would have held
+                about three.
+
+                RAISING MIN_BAND_REM TO COMPENSATE WAS CONSIDERED AND NOT DONE.
+                The floor is taken out of the chat's side (see its note), so
+                buying those rows back means covering more of the chat -- which
+                is the exact regression the measured band was just introduced to
+                remove, and doing it silently for a viewport shorter than the
+                supported floor is a bad trade made in the dark. Flagged in the
+                hand-over instead; if a 600px-tall client turns out to be real,
+                the search row is the thing that should fold away there, not the
+                chat.
+
+                AND IT SITS ABOVE THE SCROLL, NOT INSIDE IT. A field inside
+                `overflow-y-auto` scrolls away from the player the moment they
+                use it -- they type, the list jumps, and the thing they are
+                typing into is off the top of its own container. */}
+            <div className="shrink-0 px-4 pb-3">
+              <div className="relative">
+                <input
+                  ref={searchRef}
+                  type="text"
+                  value={query}
+                  maxLength={24}
+                  spellCheck={false}
+                  autoComplete="off"
+                  aria-label="Search players by name"
+                  placeholder="Search names…"
+                  onChange={(e) => setQuery(e.target.value)}
+                  /* Belt to the capture-phase handler's braces. That handler
+                     already spares this element (see `typing` above) and is the
+                     one that actually decides, because capture beats bubble --
+                     but this is the line every other text field in the project
+                     carries (Settings' name field, the chat composer), and a
+                     field that is the ONE exception is a field somebody
+                     "fixes" later. It stops anything downstream of this element
+                     seeing the keystroke. */
+                  onKeyDown={(e) => e.stopPropagation()}
+                  className="plate ts w-full bg-transparent px-2.5 py-1.5 pr-7
+                             outline-none placeholder:text-white/25"
+                  style={{
+                    /* `.ts` AND `--fs`, NOT `text-[0.85rem] tscale`, AND THE
+                       DIFFERENCE IS NOT STYLISTIC. index.css opens with
+                       `@tailwind utilities`, so `.tscale` is declared after
+                       every utility at the same specificity and WINS -- and it
+                       resolves to `calc(1em * var(--text-scale))`, where `1em`
+                       is the PARENT's size. So `text-[0.85rem] tscale` silently
+                       throws the 0.85rem away and renders at the parent's size
+                       instead. index.css records that trap biting three times.
+
+                       `.ts` is the shape that survives it: the declared size
+                       arrives as `--fs` and the multiply happens inside the
+                       rule that owns the size. VERIFIED BY WHAT RENDERS rather
+                       than by what the class says -- measured in the harness at
+                       a 16px root, this field computes to 13.6px (0.85rem) with
+                       the text slider at 1.0, and tracks the slider from there;
+                       the roster rows beside it compute to 16px, because they
+                       are `text-[0.9rem] tscale` and are living examples of the
+                       trap. Matching their RENDERED size was not the goal -- the
+                       field is deliberately a step smaller than the names it
+                       filters, so the list stays the loudest thing on the
+                       card. */
+                    ['--fs' as string]: '0.85rem',
+                    ['--edgec' as string]: 'rgba(255,255,255,0.16)',
+                    ['--plate-fill' as string]: 'rgba(24,28,40,0.94)',
+                    ['--cut-max' as string]: '0.4rem',
+                  }}
+                />
+                {/* A CLEAR AFFORDANCE, BECAUSE THIS PANEL IS CURSOR-FIRST.
+                    It takes the mouse away from the game to be used (#135), so
+                    the player reading it has a cursor in their hand and no
+                    reason to assume Escape is wired to anything. Escape does
+                    clear the field and is the faster route; this is the one
+                    that is visible.
+
+                    Only present with something to clear -- an always-there ×
+                    over an empty field is a control whose only function is to
+                    do nothing.
+
+                    preventDefault ON MOUSEDOWN so the button never takes focus
+                    off the input. Without it the field blurs on the way to the
+                    click, which silently re-points Escape at "close the panel"
+                    -- the exact same trap the chat composer's channel button
+                    documents. The explicit focus() after is for the keyboard
+                    route, where the button legitimately has focus and the caret
+                    should come back to the field it just emptied. */}
+                {query !== '' && (
+                  <button
+                    type="button"
+                    aria-label="Clear search"
+                    className="btn absolute right-1 top-1/2 grid size-5 -translate-y-1/2
+                               place-items-center rounded-sm"
+                    style={{ color: 'rgba(255,255,255,0.45)' }}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                      play('ui.back')
+                      setQuery('')
+                      searchRef.current?.focus()
+                    }}
+                  >
+                    {/* Drawn rather than a glyph, for the reason the tick above
+                        is: this interface ships two faces and neither is
+                        guaranteed to carry a multiplication sign. */}
+                    <svg
+                      viewBox="0 0 10 10"
+                      className="size-2.5"
+                      aria-hidden="true"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.6"
+                      strokeLinecap="round"
+                    >
+                      <path d="M1.8 1.8 L8.2 8.2 M8.2 1.8 L1.8 8.2" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+            </div>
+
             <div className="min-h-0 flex-1 overflow-y-auto thin-scroll px-2">
+              {/* THREE OUTCOMES, NOT TWO, AND THE NEW ONE IS A STATE RATHER
+                  THAN AN ABSENCE.
+
+                  "Nobody else is here" is a fact about the MATCH. A filter that
+                  matches nothing is a fact about the FIELD, and telling the
+                  player the first when the second is true is the panel
+                  reporting an empty server because they typed a typo.
+
+                  So the searched-and-found-nothing case says so, names what it
+                  searched for, and offers the way back. Rendering nothing at all
+                  was the other option and it is the one that reads as broken:
+                  a card with a header, a search box and a blank space under it
+                  looks like a list that failed to load. */}
               {rows.length === 0 ? (
-                <p className="body-text px-2 pb-3">Nobody else is here.</p>
+                query.trim() !== '' ? (
+                  <p className="body-text px-2 pb-3">
+                    No players match “{query.trim()}”.
+                  </p>
+                ) : (
+                  <p className="body-text px-2 pb-3">Nobody else is here.</p>
+                )
               ) : (
                 <div className="flex flex-col gap-px pb-2">
                   {rows.map((p) => {
@@ -309,15 +776,41 @@ export default function PlayerList() {
                     const selectable = reporting && !p.you
                     const gone = p.left || p.state === 'dead'
 
+                    /* THE `squad` TAG IS GONE, AND IT IS AN INFORMATION
+                       DECISION RATHER THAN A WORDING ONE (owner, 2026-08-17:
+                       "I don't want players to be able to tell how many squads
+                       are left").
+
+                       WHAT IT MEANT, since it is being deleted: it was the last
+                       arm of this chain, so it read "alive, not downed, has not
+                       left -- and `squadId` is non-null", i.e. THIS PLAYER IS IN
+                       SOME SQUAD. Never "in MY squad" -- nothing here compared
+                       it to the reader's own -- which is precisely the ambiguity
+                       the owner could not resolve from the screen. And it was
+                       close to information-free on its own terms: in a squad
+                       match the server puts every participant in a squad, so it
+                       appeared beside every living name; in solo it appeared
+                       beside none. A tag that is either always or never on tells
+                       a reader nothing they did not already know from the mode.
+
+                       WHAT IT LEAKED is the reason it could not simply be
+                       reworded. The count of living tagged names IS the number
+                       of players still in squads, and paired with the alive
+                       counter in the corner it is one subtraction from "how many
+                       squads are left" -- the read the owner is closing. The
+                       label was only the visible half: `squadId` itself is a
+                       STABLE PER-SQUAD STRING, so a client that reads the
+                       envelope could count distinct values directly and get the
+                       exact figure. It is therefore dropped from the payload as
+                       well, in br_ui/client/players.lua, and nothing in this
+                       component reads it any more. */
                     const status = p.left
                       ? 'left'
                       : p.state === 'dead'
                         ? 'out'
                         : p.state === 'dbno'
                           ? 'down'
-                          : p.squadId
-                            ? 'squad'
-                            : ''
+                          : ''
 
                     const name = (
                       <span className="min-w-0 flex-1 truncate text-[0.9rem] tscale leading-tight">

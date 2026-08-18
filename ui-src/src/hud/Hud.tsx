@@ -14,6 +14,17 @@ import HitFeedback from './HitFeedback'
 import TalkingBar from './TalkingBar'
 
 /**
+ * WHERE THE SQUAD PANEL ENDS, for anything that has to sit below it.
+ *
+ * Exported as an id rather than a rem constant because the panel's height is
+ * data: solo renders nothing at all, a squad renders up to four plates, and a
+ * plate loses its two bars the moment that player is out. Anything that reasons
+ * about the free space in the left column has to measure the box, and this is
+ * the handle it measures. screens/PlayerList.tsx is the only caller today.
+ */
+export const SQUAD_SLOT_ID = 'br-squad-slot'
+
+/**
  * The in-match HUD.
  *
  * LAYOUT MODEL
@@ -132,8 +143,17 @@ export default function Hud({ visible }: { visible: boolean }) {
             ("Press SPACE to open the glider.") draw in exactly this corner,
             and the squad panel sat on top of them (user report, 2026-08-04).
             The bus ride already hides the whole HUD; this covers the descent. */}
+        {/* THE ID IS NOT DECORATION. screens/PlayerList.tsx measures this slot
+            to find out where the left column is free -- the squad panel is the
+            one thing in that column whose height is genuinely unknowable in
+            advance (0 rows solo, up to 4 in squads, and a row loses its bars
+            when its player dies), so the panel that has to sit under it reads
+            the rendered box rather than guessing at a rem constant. Removing or
+            renaming this leaves that panel falling back to the safe zone and
+            overlapping this one again. */}
         {!descending && (
           <div
+            id={SQUAD_SLOT_ID}
             className="absolute w-[13rem]"
             style={{ top: 'var(--hud-top)', left: 'var(--safe-x)' }}
           >

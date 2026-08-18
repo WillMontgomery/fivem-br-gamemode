@@ -485,7 +485,23 @@ export interface ListedPlayer {
   src: number
   name: string
   state: PlayerState
-  squadId: string | null
+  /**
+   * `squadId` USED TO BE HERE AND IS NOW STRIPPED BEFORE THE ENVELOPE IS SENT
+   * (owner, 2026-08-17: "I don't want players to be able to tell how many
+   * squads are left ... 38 players and 18 squads").
+   *
+   * It was a stable per-squad string, one per row, for every player in the
+   * match -- so counting distinct values is the squad count, exactly, with no
+   * inference needed. The `squad` tag PlayerList drew off it is gone for the
+   * same reason (see the long note there for what the tag actually meant), and
+   * removing only the tag would have left the number on the wire for anything
+   * that reads the envelope.
+   *
+   * Deleted rather than made optional: a field nothing sends and nothing reads
+   * is how a contract grows a member nobody can delete, which is the argument
+   * `remaining` below was removed under. br_ui/client/players.lua is where the
+   * strip happens.
+   */
   /** They disconnected mid-match. Still listed, and still reportable - somebody
    *  who ragequits after cheating is exactly who you want to report. */
   left: boolean

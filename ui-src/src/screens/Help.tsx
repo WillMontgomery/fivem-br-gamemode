@@ -25,7 +25,13 @@ import { play } from '../audio/cues'
  * a broken menu.
  */
 
-const SITE = 'https://willmontgomery.github.io/fivem-br-gamemode/'
+/* The manual's own domain, on the owner's instruction (2026-08-17). It replaces
+   the GitHub Pages address the site was published to while it had no domain of
+   its own; nothing else in the client pointed at that URL -- the remaining
+   `fivem-br-gamemode` strings in the repo are the git REPOSITORY and the ops
+   checkout path (tools/deploy.sh, tools/dispatch.sh, DEPLOY.md), which are a
+   different thing that happens to share a name. */
+const SITE = 'https://blitz-royale.com'
 
 /**
  * The same URL, with a cache-buster, for the FRAME only.
@@ -208,7 +214,7 @@ export default function Help({ inline = false, onDone }:
     >
       <div className="mx-auto py-8" style={{ width: '68rem', maxWidth: '92vw' }}>
         <div className="mb-5">
-          <div className="micro-label">FiveM Royale</div>
+          <div className="micro-label">Blitz Royale</div>
           <h2 className="font-display text-[3rem] uppercase tracking-[0.1em] leading-none mt-1">
             Help
           </h2>

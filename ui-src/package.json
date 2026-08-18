@@ -3,7 +3,7 @@
   "private": true,
   "version": "0.2.0",
   "type": "module",
-  "description": "NUI for FiveM Royale. Builds into resources/[fivem-royale]/br_ui/ui.",
+  "description": "NUI for Blitz Royale. Builds into resources/[fivem-royale]/br_ui/ui.",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build && npm run check:css && npm run check:ui",

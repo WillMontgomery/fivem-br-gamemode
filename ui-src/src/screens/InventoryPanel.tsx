@@ -238,9 +238,40 @@ export default function InventoryPanel() {
     // Pointer events on the panel only: the rest of the screen stays playable,
     // which is the entire reason this screen holds keep-input focus.
     <div className="fixed inset-0 z-40 flex items-center justify-center pointer-events-none">
+      {/* A PLATE, NOT A PANEL, AND THAT IS THE WHOLE OF THE OWNER'S REPORT --
+          twice: "non-rounded corners and a correct background to match our
+          current UI".
+
+          `.panel` is the RECEDING surface (index.css): borderless, translucent,
+          and `border-radius: var(--r-panel)` = 0.7rem. Every card INSIDE this
+          box is a `.plate`, and the file's own note forty lines down says why --
+          "A CARD IS A PLATE, same as the bar". So the container was the one
+          object in the inventory speaking the other language, with round
+          corners around five square ones.
+
+          THE INLINE backgroundColor WAS NOT REPLACING THE BACKGROUND EITHER,
+          which is the "wrong background color/gradient" half. `.panel` paints
+          `linear-gradient(180deg, rgba(255,255,255,0.05), transparent 42%)` OVER
+          `rgba(8,9,14,0.70)` -- two layers of the `background` shorthand.
+          `backgroundColor` only replaces the second one, so the panel kept
+          wearing the white top-lit wash the rest of the in-match chrome does
+          not, and the declared 0.90 was composited under it.
+
+          THE FILL AND THE EDGE ARE COPIED OFF PlayerList.tsx, not invented: that
+          is the other panel this interface draws over live gameplay, and being
+          the same object as it is what "match our current UI" means here. Its
+          `blur(6px)` is deliberately NOT copied -- index.css bans
+          backdrop-filter (CEF flicker, and it is expensive), and this box is
+          five times the area.
+
+          No --cut-max is set: `.plate` is perfectly square at rest and only
+          opens its bevels under `.is-active`, which nothing puts here. */}
       <div
-        className="panel pointer-events-auto px-8 py-7 w-[62rem] max-w-[95vw]"
-        style={{ backgroundColor: 'rgba(10,12,20,0.90)' }}
+        className="plate pointer-events-auto px-8 py-7 w-[62rem] max-w-[95vw]"
+        style={{
+          ['--plate-fill' as string]: 'rgba(10,12,18,0.90)',
+          ['--edgec' as string]: 'rgba(255,255,255,0.14)',
+        }}
       >
         {/* NO INSTRUCTIONS. The arrows are arrows, a card is a thing you
             click, and the key that opened this closes it -- a line of text
