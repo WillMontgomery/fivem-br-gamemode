@@ -449,7 +449,14 @@ function BR.Voice.push(src)
     if not e then return end
 
     local prox  = proxChannelFor(e)
-    local radio = BR.Voice.radioChannel(e.matchId, e.squadId)
+    -- ONE GUARD FOR BOTH HALVES. squadmatesOf() already honours squadIsGlobal;
+    -- the radio number did not, so `squadIsGlobal = false` produced a player
+    -- holding a radio channel with an empty squad list -- and now that the
+    -- client REFUSES everybody outside that list, that combination is a player
+    -- transmitting into a channel while muting every human being in the match.
+    -- The two answers come off the same switch.
+    local radio = (V.squadIsGlobal ~= false)
+        and BR.Voice.radioChannel(e.matchId, e.squadId) or nil
     local mates = squadmatesOf(src, e)
     local mk    = key(mates)
 

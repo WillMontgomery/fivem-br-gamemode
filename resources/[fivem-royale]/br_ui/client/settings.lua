@@ -47,11 +47,22 @@ local DEFAULTS = {
     -- slider can reach: PlaySoundFrontend has no per-cue volume.
     volUi       = 0.70,
     volMusic    = 0.50,
-    -- VOICE. 'squad' routes to a channel only your squad hears; 'nearby' is
-    -- proximity; 'off' stops transmitting entirely. Solo has no squad to
-    -- route to, so the client falls back to nearby -- see br_core voice.lua,
-    -- which owns everything the natives do with these.
-    voiceMode   = 'nearby',
+    -- VOICE, AND THE THREE MODES ARE EXCLUSIVE RATHER THAN LAYERED:
+    --   'nearby'  proximity only, out to the gamemode's range, in your own
+    --             match. Squadmates get no special treatment at all.
+    --   'squad'   the squad radio only, at any distance and with no falloff.
+    --             Nobody outside the squad is heard, however close they are --
+    --             and a player with NO squad therefore hears nobody, which is
+    --             why 'nearby' is the default and not this one.
+    --   'off'     neither transmitting nor listening.
+    --
+    -- THE VALUE IS READ, NOT RESTATED. br_core/client/voice.lua acts on this
+    -- setting and used to carry its own default -- 'squad', where this file
+    -- said 'nearby' -- so which one a player got depended on whether br_ui's
+    -- push on br:ui:ready had landed. One definition, in br_lib/shared/enums
+    -- .lua, and both sides read it. See BR.VoiceRouting there for what each
+    -- mode routes; br_core owns everything done with it.
+    voiceMode   = BR.VoiceModeDefault,
     -- Proposed to the server on join. Empty means "use my platform name".
     gamertag    = '',
 }
@@ -67,7 +78,10 @@ local COLOURBLIND = {
     off = true, deuter = true, protan = true, tritan = true,
 }
 
-local VOICE_MODE = { squad = true, nearby = true, off = true }
+-- NO LOCAL VOICE-MODE TABLE HERE ANY MORE, deliberately. The valid set and the
+-- fallback are br_lib's (BR.ToVoiceMode), for the same reason the default is: a
+-- mode this file accepted and br_core did not -- or the reverse -- is a setting
+-- that saves and then does nothing.
 
 local current = nil
 
@@ -98,7 +112,9 @@ local function sanitise(raw)
     end
 
     if not COLOURBLIND[out.colourblind] then out.colourblind = 'off' end
-    if not VOICE_MODE[out.voiceMode] then out.voiceMode = 'nearby' end
+    -- Coerced by br_lib, so the fallback is the same one br_core would apply to
+    -- the very same payload a moment later.
+    out.voiceMode = BR.ToVoiceMode(out.voiceMode)
 
     -- A gamertag is shown to other players, so the rules are the server's
     -- eventually -- but there is no reason to send it something obviously

@@ -2116,6 +2116,26 @@ local function voiceApply(mode, radio, mates, me, state)
     BR.Voice.pref.mode = nil
     -- br_core starting is what installs the rules into pma-voice.
     fire('onClientResourceStart', 'br_core')
+    -- AND IT IS WHAT UNDOES THE LINE AT THE TOP OF THIS FUNCTION, which is why
+    -- the id is stated AGAIN, here, after the fire rather than only before it.
+    --
+    -- client/main.lua's own onClientResourceStart does
+    --     BR.State.me.src = GetPlayerServerId(PlayerId())
+    -- and this harness stubs GetPlayerServerId to a constant 1. So every
+    -- machine this helper has ever built has come back believing it was player
+    -- 1, and the `me` argument -- which the squad blocks pass 2, 3 and 5 to --
+    -- has been INERT for the life of this suite.
+    --
+    -- IT WENT UNNOTICED BECAUSE NOTHING DEPENDED ON IT UNTIL NOW. Those blocks
+    -- assert through the radio channel, which does not involve a server id, and
+    -- their scenes are built with nobodyElse() so the transmit set is empty
+    -- either way. The exclusivity block below is the first one that needs two
+    -- machines with DIFFERENT ids and a populated scene -- and there it is not
+    -- a cosmetic flaw: pmaTick() skips `src == BR.State.me.src`, so a second
+    -- machine that thinks it is player 1 silently refuses to consider player 1
+    -- and reports an empty transmit set that looks exactly like the bug under
+    -- test.
+    BR.State.me.src = me or 1
     fire('br:settings:changed', { voiceMode = mode })
     fire(BR.Net.VOICE_SET, { radio = radio, mates = mates,
                              nearbyRange = VR.nearby })
@@ -2313,6 +2333,180 @@ do
         'and going back re-joins it', tostring(back.radio))
 end
 
+-- ==========================================================================
+describe('THE MODES ARE EXCLUSIVE -- squad is not proximity, nearby is not squad')
+do
+    -- THE OWNER'S SPEC, WHICH HAS NOW BEEN RESTATED THREE TIMES:
+    --
+    --   "Nearby should only be nearby, different from squads and not additional
+    --    to it... Squads should be set to no distance/fade/etc and only
+    --    talk/listen within a given squad."
+    --
+    -- WHY EVERY EXISTING BLOCK ABOVE PASSED ON THE BROKEN BUILD, which is the
+    -- part worth understanding before reading the assertions. The squad block
+    -- puts two squadmates a kilometre apart with NOBODY ELSE IN THE SCENE, so
+    -- "squad also routes proximity" costs nothing there -- there is no third
+    -- player standing close enough for proximity to reach. The nearby block has
+    -- no squad at all. Neither block could see the defect because neither block
+    -- contained the two kinds of player AT ONCE, and that is precisely what a
+    -- real match is.
+    --
+    -- SO THIS SCENE HAS BOTH, and it is the whole point of the block:
+    --
+    --   1  us
+    --   2  OUR SQUADMATE, a kilometre away, not streamed to this machine
+    --   3  A STRANGER, two metres away, streamed, on 'nearby' and talking
+    --
+    -- Under the old code, 'squad' answered yes to both of them.
+    --
+    -- NOTHING BELOW ASKS OUR CODE WHAT IT THINKS IT DID. Every assertion goes
+    -- through hears(), which is a model of pma-voice's documented surface --
+    -- a transmit set, a radio channel and a per-player mute -- and knows
+    -- nothing about BR.VoiceRouting. That separation is the thing seven false
+    -- passes on this issue lacked.
+    local RADIO = 30503
+
+    --- The stranger's machine: 'nearby', two metres from us, transmitting.
+    --- Built ONCE and reused, because their behaviour is not what is under test
+    --- -- they are the fixed fact that the modes below have to answer about.
+    BR.State.me.src = 3
+    standAt(2, 0)
+    playersAt({ [1] = { x = 0, y = 0 }, [2] = false })
+    local stranger = voiceApply('nearby', nil, nil, 3)
+    ok(stranger.sends[1] == true,
+        'the stranger two metres away really is transmitting to us -- so every '
+            .. 'silence below is a decision and not an empty scene',
+        'the scene is broken: nobody is talking, so nothing below proves '
+            .. 'anything')
+
+    --- Our squadmate's machine: 'squad', a kilometre away, out of scope.
+    BR.State.me.src = 2
+    standAt(1000, 1000)
+    playersAt({ [1] = false, [3] = false })
+    local mate = voiceApply('squad', RADIO, { 1 }, 2)
+
+    -- ---------------------------------------------------------------- squad --
+    BR.State.me.src = 1
+    standAt(0, 0)
+    playersAt({ [2] = false, [3] = { x = 2, y = 0 } })
+    local sq = voiceApply('squad', RADIO, { 2 }, 1)
+
+    ok(hears(sq, mate) and hears(mate, sq),
+        'squad still reaches a squadmate a kilometre away, both ways',
+        'squad voice at range is broken -- that is the one thing that worked')
+
+    -- THE ASSERTION THIS WHOLE ROUND EXISTS FOR, in both directions.
+    ok(not hears(sq, stranger),
+        'a squad player is NOT heard by the stranger standing next to them',
+        'squad is still transmitting on proximity -- this is the defect')
+    ok(not hears(stranger, sq),
+        'and does NOT hear that stranger either, though the stranger is '
+            .. 'transmitting to them',
+        'squad is still HEARING proximity -- refusing to send was never enough')
+
+    -- AND THE MECHANISM OF EACH HALF, separately, so a failure above says which
+    -- half broke rather than only that something did.
+    ok(next(sq.sends) == nil,
+        'squad adds nobody at all to its proximity transmit set',
+        'the proximity check is still answering yes for somebody on squad')
+    ok(sq.muted[3] == true,
+        'and it holds a mute on the non-squadmate -- the listen half',
+        'the stranger is not muted, so their audio arrives whatever we send')
+    ok(sq.muted[2] == nil,
+        'while the SQUADMATE is never muted, which is what makes it a squad '
+            .. 'and not silence',
+        'squad muted its own squadmate')
+
+    -- --------------------------------------------------------------- nearby --
+    BR.State.me.src = 1
+    standAt(0, 0)
+    playersAt({ [2] = false, [3] = { x = 2, y = 0 } })
+    -- THE SAME SERVER ASSIGNMENT. The server does not know or care which mode
+    -- the player picked -- it hands out the squad radio either way -- so the
+    -- radio being declined has to be this client's doing, and handing it the
+    -- channel here is what makes that a real test rather than an absent one.
+    local nb = voiceApply('nearby', RADIO, { 2 }, 1)
+
+    ok(hears(nb, stranger) and hears(stranger, nb),
+        'a nearby player hears the stranger next to them, and is heard',
+        'nearby is silent at two metres -- this is #150')
+
+    ok(not hears(nb, mate) and not hears(mate, nb),
+        'and does NOT reach their own squadmate across the island',
+        'nearby is still routing the squad -- nearby must be nearby only')
+    ok(nb.radio == 0,
+        'because nearby declines the radio the server assigned it',
+        tostring(nb.radio))
+    ok(next(nb.muted) == nil,
+        'and nearby refuses nobody -- it holds no mutes at all',
+        'nearby is muting somebody, which is how a receive-side gate gets back '
+            .. 'in and how nearby went silent four times')
+
+    -- ---------------------------------------- the mode is one channel, never two
+    --
+    -- STATED ON THE TABLE ITSELF, and this one IS a re-encoding of the code --
+    -- deliberately, and it is not doing the work above. Its job is the mode
+    -- nobody has added yet: a fourth row with both columns set would sail past
+    -- every behavioural assertion in this block, because none of them would
+    -- ever be run against it.
+    for mode, r in pairs(BR.VoiceRouting) do
+        ok(not (r.proximity and r.radio),
+            ('routing for %q opens one channel, not two'):format(mode),
+            'a mode routes proximity AND the radio -- that is the layering the '
+                .. 'owner rejected')
+    end
+end
+
+describe('the voice default has one definition, and br_core reads it')
+do
+    -- THE SIGNATURE FAILURE OF THIS PROJECT, on the smallest possible subject.
+    -- br_ui/client/settings.lua said 'nearby'; br_core/client/voice.lua said
+    -- 'squad'; both were spelled out by hand; nothing compared them. Settings
+    -- won in practice only because br_ui pushes on br:ui:ready, so the answer
+    -- to "what does a player who never opens the settings screen get" depended
+    -- on a race nobody had looked at.
+    ok(BR.VoiceModeDefault == 'nearby',
+        "the shipped default is 'nearby' -- the only mode that works for a solo",
+        tostring(BR.VoiceModeDefault))
+
+    -- THE FALLBACK IS THE DEFAULT, not a second opinion about it. Driven with
+    -- the payloads that actually reach this handler in the wild: a mode from an
+    -- older build, and no mode at all.
+    nobodyElse()
+    standAt(0, 0)
+    voiceApply('off', nil, nil, 1)
+
+    fire('br:settings:changed', { voiceMode = 'globalchat' })
+    ok(BR.Voice.pref.mode == BR.VoiceModeDefault,
+        'an unknown mode falls back to the shared default, not to a literal '
+            .. 'this file spelled out for itself',
+        tostring(BR.Voice.pref.mode))
+
+    voiceApply('off', nil, nil, 1)
+    fire('br:settings:changed', {})
+    ok(BR.Voice.pref.mode == BR.VoiceModeDefault,
+        'and so does a payload with no voiceMode in it at all',
+        tostring(BR.Voice.pref.mode))
+
+    -- AND EVERY VALID MODE SURVIVES THE COERCION UNCHANGED, which is the other
+    -- way a shared coercer goes wrong: one that returned the default for
+    -- everything would pass both assertions above.
+    local kept = true
+    for mode in pairs(BR.VoiceRouting) do
+        if BR.ToVoiceMode(mode) ~= mode then kept = false end
+    end
+    ok(kept, 'while every real mode passes through the coercion untouched',
+        'BR.ToVoiceMode is eating valid modes')
+
+    -- THE br_ui HALF IS NOT REACHABLE FROM THIS SUITE -- it loads br_core only,
+    -- and br_ui/client/settings.lua wants KVP natives this harness does not
+    -- stub. Nor is the TypeScript default in ui-src/src/settings/apply.ts,
+    -- which is a third spelling of the same value. Both are compared against
+    -- BR.VoiceModeDefault by tools/verify.sh's `voice defaults` gate, which
+    -- reads the three files as text. Named here so the next person looking for
+    -- that coverage finds it rather than concluding it does not exist.
+end
+
 describe('OFF means not transmitting AND not listening')
 do
     -- Owner, on the version that only did the first half: "'off' does not work
@@ -2363,11 +2557,36 @@ do
     ok(next(pma.muted) ~= nil, 'muted again')
     -- Reach past the event entirely: set the preference the way a reload or a
     -- race would, with no settings event fired at all, and let the band run.
-    BR.Voice.pref.mode = 'squad'
+    --
+    -- 'nearby' RATHER THAN 'squad', AND THE CHANGE IS DELIBERATE. This line
+    -- used to read 'squad' and passed because 'squad' held no mutes at all --
+    -- it was proximity plus a radio and refused nobody. 'squad' now refuses
+    -- every non-squadmate, so it is the wrong mode to prove "the mutes lift":
+    -- it would be asserting that a mode which is SUPPOSED to hold mutes does
+    -- not. 'nearby' is the mode that refuses nobody, so it is the one that
+    -- makes this a test of the unmute path rather than of the mode.
+    BR.Voice.pref.mode = 'nearby'
     BR.Loop.step(BR.Loop.TICK)
     ok(next(pma.muted) == nil,
         'and the mutes lift on the next tick with NO event to prompt it',
         'the unmute needed an event -- that is exactly how this bug ships')
+
+    -- AND THE SAME PROPERTY FOR THE OTHER MUTING MODE, which is new. Going
+    -- off -> squad must release the squadmates and keep everybody else, on a
+    -- tick, with no event -- because 'squad' reaches the same sweep 'off' does
+    -- and a release that only works for one of them is a permanently deaf
+    -- squad.
+    playersAt({ [2] = { x = 2, y = 0 }, [3] = { x = 4, y = 0 } })
+    voiceApply('off', 30503, { 2 }, 1)
+    ok(next(pma.muted) ~= nil, 'muted on off, once more')
+    BR.Voice.pref.mode = 'squad'
+    BR.Loop.step(BR.Loop.TICK)
+    ok(pma.muted[2] == nil,
+        'and off -> squad releases the SQUADMATE with no event to prompt it',
+        'the squad came back from off still muted')
+    ok(pma.muted[3] == true,
+        'while the non-squadmate stays muted, because that is what squad means',
+        'squad released somebody outside the squad')
 end
 
 -- ==========================================================================
@@ -2456,9 +2675,25 @@ do
         'the gag follows the state with no tick, no event and no apply',
         ('%s %s %s'):format(tostring(g1), tostring(g2), tostring(g3)))
 
+    -- SQUAD IS GAGGED EVERYWHERE NOW, AND THAT IS THE POINT RATHER THAN A
+    -- REGRESSION. This assertion used to read `== false` with the comment "and
+    -- squad is never gagged by the bus", and it was true because squad ALSO
+    -- routed proximity -- which is the defect the owner has restated three
+    -- times. gagged() answers about the PROXIMITY microphone only; squad does
+    -- not have one, so the honest answer is true at every position, on the bus
+    -- and off it. What must not change is that the bus does not touch the
+    -- RADIO, and the block above asserts that on behaviour rather than here.
     BR.Voice.pref.mode = 'squad'
     BR.State.me.state = BR.PlayerState.BUS
-    ok(BR.Voice.gagged() == false, 'and squad is never gagged by the bus')
+    local sqBusGag, sqBusWhy = BR.Voice.gagged()
+    BR.State.me.state = BR.PlayerState.ALIVE
+    local sqGroundGag = BR.Voice.gagged()
+    ok(sqBusGag == true and sqGroundGag == true,
+        'squad has no proximity microphone to gag, on the bus or off it',
+        ('bus=%s ground=%s'):format(tostring(sqBusGag), tostring(sqGroundGag)))
+    ok(type(sqBusWhy) == 'string' and sqBusWhy:find('bus') == nil,
+        'and it does not blame the bus for it -- the reason is the mode',
+        tostring(sqBusWhy))
 
     BR.Voice.pref.mode = 'off'
     BR.State.me.state = BR.PlayerState.ALIVE
@@ -2798,13 +3033,30 @@ do
     -- match-wide, not scope-wide.
     standAt(0, 0)
     playersAt({ [2] = { x = 2, y = 0 }, [7] = false })
-    voiceApply('squad', 30503, { 7 }, 1)
 
+    -- ON 'nearby', THE PERSON STANDING NEXT TO YOU IS NAMED. This used to be
+    -- asserted on 'squad' and passed, because squad was proximity plus a radio.
+    -- It is asserted on the mode that actually routes proximity now.
+    voiceApply('nearby', nil, nil, 1)
     mumble.talking = { [2] = true }
     BR.Loop.step(BR.Loop.TICK)
     local names = talkingNames()
     ok(#names == 1 and names[1] == 'p2',
         'somebody talking nearby is named', table.concat(names, ','))
+
+    -- AND ON 'squad' THE SAME PERSON IS NOT, because squad does not hear them.
+    -- THIS IS THE INDICATOR HALF OF THE EXCLUSIVITY RULE and it is the one that
+    -- would have caught the old behaviour from the screen rather than from the
+    -- code: the panel is built from the same set the mutes are, so a stranger
+    -- named here is a stranger being heard.
+    voiceApply('squad', 30503, { 7 }, 1)
+    mumble.talking = { [2] = true }
+    BR.Loop.step(BR.Loop.TICK)
+    names = talkingNames()
+    ok(#names == 0,
+        'and on squad that same nearby stranger is NOT named -- squad does not '
+            .. 'hear proximity',
+        table.concat(names, ','))
 
     -- THE ASSERTION THE SCOPE GATE IS ABOUT. Player 7 is a squadmate on the
     -- radio, across the island, with no ped and no player index on this
@@ -2859,8 +3111,17 @@ do
     -- AND IT REPORTS THE GAG, which the previous version could not: a total
     -- outage was invisible because the readout named a room instead of a
     -- transmit path.
-    ok(said:find('transmitting') ~= nil and said:upper():find('NO %-%-') ~= nil,
+    ok(said:find('prox mic') ~= nil and said:upper():find('NO %-%-') ~= nil,
         'and says out loud that this player is not transmitting', said)
+
+    -- AND IT NAMES WHAT THE MODE ROUTES, as two independent flags. The readout
+    -- is where the old "squad = proximity plus radio" belief was invisible:
+    -- there was one 'transmitting' line and no way to see that two channels
+    -- were open at once. This line cannot describe a mode the routing table
+    -- does not implement, because it is printed FROM the routing table.
+    ok(said:find('routes') ~= nil and said:find('NEVER BOTH') ~= nil,
+        'and prints proximity and radio as two flags that are never both on',
+        said)
     ok(said:lower():find('bus') ~= nil,
         'and why -- the bus, in words a playtester can act on', said)
 

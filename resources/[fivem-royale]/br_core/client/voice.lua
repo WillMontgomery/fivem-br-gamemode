@@ -47,23 +47,61 @@
 -- ==========================================================================
 -- THE THREE MODES, AND WHERE EACH ONE LANDS.
 --
+-- THEY ARE MUTUALLY EXCLUSIVE. NOT LAYERED. The owner has restated this more
+-- than once and this file is where it kept being lost:
+--
+--   "Nearby should only be nearby, different from squads and not additional to
+--    it. It means a player could hear anyone nearby within their bucket, and
+--    likewise others will hear them nearby. Squads should be set to no
+--    distance/fade/etc and only talk/listen within a given squad."
+--
+-- WHAT THIS FILE USED TO DO, AND IT IS WORTH NAMING BECAUSE THE COMMENT HERE
+-- ADVERTISED IT AS CORRECT: 'squad' was "proximity, plus the squad radio".
+-- BR.Voice.gagged() returned false on 'squad', so proximityCheck() fell
+-- through to its distance comparison and every player within 25 m -- squad or
+-- not, enemy or not -- was added to the voice target, with the radio layered
+-- on top. A squad player heard the stranger they were fighting.
+--
+-- NOTHING HERE DECIDES WHAT A MODE MEANS ANY MORE. BR.VoiceRouting
+-- (br_lib/shared/enums.lua) does, in two booleans per mode that are never both
+-- true, and everything below is derived from those two columns. See the block
+-- there for why it lives in br_lib and what stops it drifting.
+--
 --   off      transmit to nobody, and hear nobody.
 --            TRANSMIT: our proximity check (below) returns false for every
 --            player, so pma-voice adds no channel to the voice target. The
 --            radio is dropped by leaving the channel.
 --            LISTEN: pma-voice's own per-player mute, reconciled every tick.
---            This is the ONLY thing in this file that can make a player deaf,
---            it happens only because the player asked for it in the settings
---            screen, and the loop that applies it is driven by the mode alone
---            so it lifts the instant the mode changes. See muteSweep().
+--            See muteSweep().
 --
---   nearby   proximity only, WITH FALLOFF, out to Config.Match.voice.range
---            .nearby. This is the capability the hand-rolled version gave up
---            in #157 round three and it is the reason for the whole change.
---            No radio channel.
+--   nearby   PROXIMITY ONLY, with falloff, out to Config.Match.voice.range
+--            .nearby, and scoped to this player's routing bucket because
+--            pma-voice only ever offers us players the game streamed. No radio
+--            channel, and NO SPECIAL CASE FOR SQUADMATES: a squadmate across
+--            the island is exactly as inaudible as any other stranger, and a
+--            squadmate standing next to you is exactly as audible. This is the
+--            capability the hand-rolled version gave up in #157 round three.
 --
---   squad    proximity, plus the squad radio -- a pma-voice radio channel the
---            SERVER assigns, audible at any distance, on the radio key.
+--   squad    THE SQUAD RADIO ONLY -- a pma-voice radio channel the SERVER
+--            assigns, audible at any distance, no falloff, no fade.
+--            TRANSMIT: proximity is off entirely, so the only thing carrying
+--            our audio is the radio, and the only people on it are the squad.
+--            LISTEN: everybody who is not a squadmate is muted, by the same
+--            per-player mute 'off' uses -- because under pma-voice audibility
+--            is the SPEAKER's decision, so declining to transmit does not on
+--            its own stop a nearby stranger's audio arriving. Refusing it is
+--            the second half of "only talk/listen within a given squad" and
+--            without it 'squad' would still hear proximity.
+--
+--            A PLAYER WITH NO SQUAD THEREFORE HEARS NOBODY. That is the spec
+--            read honestly -- an empty squad is an empty conversation -- and
+--            it is why the DEFAULT is 'nearby' rather than this. /brvoice says
+--            so in as many words rather than letting it look like #150.
+--
+-- THE MUTE IS THE ONLY THING IN THIS FILE THAT CAN MAKE A PLAYER DEAF, and it
+-- is now reached by two modes rather than one, so muteSweep()'s rule matters
+-- more than it did: the mute branch needs a reason, the unmute branch needs
+-- none, and both are re-derived from the CURRENT mode every tick.
 --
 -- ==========================================================================
 -- THE BUS RULE, AND WHY THIS SHAPE CANNOT STICK.
@@ -233,16 +271,20 @@ BR.Voice.state = {
     mates  = {},        -- squadmate server ids, from the server
     nearby = NEARBY_M,  -- metres; the proximity range in force
 
-    -- WHO WE CAN HEAR. Under pma-voice this is no longer a set we compute --
+    -- WHO WE DO NOT REFUSE. Under pma-voice this is not "who can I hear" --
     -- audibility is decided by the SPEAKER, on their machine, and no native
-    -- reports it. So this is the set we do not REFUSE: everybody, unless the
-    -- player chose 'off'. The talking indicator is filtered through it, which
-    -- keeps the old property that a blank indicator on 'off' is correct and a
-    -- blank indicator anywhere else is an alarm.
+    -- reports it. It is the set this client declines to mute, and it is what
+    -- the mode's LISTEN half is made of: everybody on 'nearby', squadmates
+    -- only on 'squad', nobody on 'off'. See BR.Voice.audibleFor.
+    --
+    -- The talking indicator is filtered through the same table, in the same
+    -- tick, which keeps the property that a name on that line is somebody this
+    -- client is genuinely accepting audio from.
     audible = {},       -- [src] = true
 
-    -- Players we currently hold a pma-voice mute on. Only ever non-empty on
-    -- 'off'. See muteSweep().
+    -- Players we currently hold a pma-voice mute on. Non-empty on 'off' (all of
+    -- them) and on 'squad' (everybody who is not a squadmate). Always empty on
+    -- 'nearby', which refuses nobody. See muteSweep().
     muted  = {},        -- [src] = true
 }
 
@@ -252,7 +294,14 @@ BR.Voice.state = {
 --- CHANNEL NUMBER is the server's (see server/voice.lua, and the pma-voice
 --- addChannelCheck it registers), and this only decides whether we ask to be
 --- on it.
-BR.Voice.pref = { mode = 'squad' }
+---
+--- THE DEFAULT IS READ, NOT RESTATED. This line used to say 'squad' while
+--- br_ui/client/settings.lua said 'nearby', and the only reason the player got
+--- 'nearby' was that br_ui happens to push on br:ui:ready and overwrite this.
+--- Restart br_core on its own, or lose that push to a race, and the two
+--- disagreed with nothing to say which had won. There is one definition now
+--- and it is in br_lib/shared/enums.lua.
+BR.Voice.pref = { mode = BR.VoiceModeDefault }
 
 --- Server ids heard speaking on the last tick, and their names. The squad panel
 --- and the bottom-centre indicator read these.
@@ -318,25 +367,102 @@ local function onBus()
     return me ~= nil and me.state == BR.PlayerState.BUS
 end
 
+--- The routing row for the mode this player has chosen. Never nil.
+---
+--- EVERY DECISION IN THIS FILE COMES THROUGH HERE. Nothing below compares
+--- BR.Voice.pref.mode against a string literal, which is the property that
+--- makes the modes stay exclusive: there is no second place to teach 'squad'
+--- about proximity.
+--- @return table  { proximity = boolean, radio = boolean }
+function BR.Voice.routing()
+    return BR.VoiceRoutingFor(BR.Voice.pref.mode)
+end
+
 --- Is our proximity microphone gagged, and why?
 ---
 --- ONE FUNCTION, TWO CALLERS, AND THAT IS THE POINT. The proximity check uses
 --- it to decide, and /brvoice uses it to REPORT -- so the readout cannot drift
 --- from the behaviour the way "prox channel 2003" did for a week while no audio
 --- was leaving the machine.
+---
+--- IT ANSWERS ABOUT THE PROXIMITY MICROPHONE AND NOTHING ELSE. 'squad' is
+--- gagged here and that is not a malfunction -- squad routes through the radio,
+--- which this function has no opinion about. /brvoice prints the two
+--- separately for exactly that reason; do not read a `true` here as "this
+--- player is silent".
 --- @return boolean gagged
 --- @return string|nil reason  human-readable, for /brvoice
 function BR.Voice.gagged()
-    local mode = BR.Voice.pref.mode
-    if mode == 'off' then
+    local r = BR.Voice.routing()
+
+    -- MODES THAT DO NOT ROUTE PROXIMITY AT ALL. Derived from the routing table
+    -- rather than from a list of mode names, so a mode added there is handled
+    -- here without anybody remembering to come back.
+    if not r.proximity then
+        if r.radio then
+            return true, 'squad mode -- proximity is off; the squad radio '
+                .. 'carries instead, at any distance'
+        end
         return true, "the player chose 'off'"
     end
-    -- THE BUS RULE. 'nearby' only: a squad on the bus keeps its radio, which is
-    -- the whole point of having one on the way to the drop.
-    if mode == 'nearby' and onBus() then
+
+    -- THE BUS RULE. Proximity modes only: a squad on the bus keeps its radio,
+    -- which is the whole point of having one on the way to the drop.
+    if onBus() then
         return true, 'riding the bus on nearby -- switch to squad, or jump'
     end
     return false, nil
+end
+
+--- WHO WE DO NOT REFUSE -- the listen half, and the other half of exclusivity.
+---
+--- WHY THIS EXISTS AT ALL. Under pma-voice, audibility is decided by the
+--- SPEAKER: their proximity check put us in their voice target and the frames
+--- are on their way before this machine has any say. So declining to transmit
+--- does NOT make a mode exclusive on its own -- a 'squad' player who only
+--- refused to send would still hear every 'nearby' stranger who walked past
+--- them. "Only talk/listen within a given squad" needs both halves and this is
+--- the second one.
+---
+--- IT IS PURE, AND IT TAKES ITS INPUTS RATHER THAN READING THEM, so the suite
+--- can drive it through every combination without a game and without the
+--- stub agreeing with the code by construction.
+---
+---   proximity  everybody. NOT "everybody within 25 m" -- we deliberately do
+---              not re-implement the range on the receive side. Arrival IS
+---              audibility under pma-voice, and a receive-side distance gate is
+---              precisely what shipped a silent 'nearby' four times (#157).
+---   radio      squadmates only, from the SERVER's list. Everybody else is
+---              muted, which is what makes squad mode deaf to proximity.
+---   neither    nobody. 'off'.
+---
+--- @param mode string|nil
+--- @param roster table|nil  [src] = entry; the server broadcast, match-wide
+--- @param mates table|nil   array of squadmate server ids, from VOICE_SET
+--- @param me integer|nil    this player's own server id, never in the result
+--- @return table  [src] = true
+function BR.Voice.audibleFor(mode, roster, mates, me)
+    local r = BR.VoiceRoutingFor(mode)
+    local out = {}
+    if r.proximity then
+        for src in pairs(roster or {}) do
+            if src ~= me then out[src] = true end
+        end
+    elseif r.radio then
+        -- THE SQUAD LIST IS THE SERVER'S, and it is the same list the server
+        -- built the radio channel's membership from -- so "who I will listen
+        -- to" and "who is actually on my radio" have one origin and cannot
+        -- drift into a squadmate being muted while talking.
+        for _, src in ipairs(mates or {}) do
+            -- Still filtered through the roster: a mate who has disconnected
+            -- is not somebody to hold an exception open for, and a src that is
+            -- somehow ours must never be in here.
+            if src ~= me and (roster == nil or roster[src] ~= nil) then
+                out[src] = true
+            end
+        end
+    end
+    return out
 end
 
 -- --------------------------------------------------------------- proximity ---
@@ -703,7 +829,11 @@ end)
 --- refused. All this decides is whether to ask for the one we were given.
 local function applyRadio()
     local s = BR.Voice.state
-    local want = (BR.Voice.pref.mode == 'squad' and s.radio) and s.radio or 0
+    -- DERIVED FROM THE ROUTING TABLE, not from a mode name. This line used to
+    -- read `BR.Voice.pref.mode == 'squad'`, which is the second place a mode
+    -- meant something -- and the first place, the proximity check, disagreed
+    -- with it about whether 'squad' also meant proximity.
+    local want = (BR.Voice.routing().radio and s.radio) and s.radio or 0
     if s.joined == want then return end
     -- Nothing is recorded as done while there is nobody to have done it, so a
     -- pma-voice that starts later is not skipped as already-joined.
@@ -728,9 +858,9 @@ AddEventHandler('pma-voice:setTalkingOnRadio', function(src, talking)
     radioTalking[src] = talking and true or nil
 end)
 
--- ------------------------------------------------------------------- 'off' ---
+-- ------------------------------------------------------- refusing to listen ---
 
---- HOLD THE MUTES 'off' ASKS FOR, AND DROP THEM THE INSTANT IT DOES NOT.
+--- HOLD THE MUTES THIS MODE ASKS FOR, AND DROP THE ONES IT DOES NOT.
 ---
 --- 'off' has always had to mean both halves -- the owner, on the version that
 --- only did the first: "'you are not transmitting' should also mean 'you are
@@ -738,28 +868,50 @@ end)
 --- check above. Not listening can only be per-player, because under pma-voice
 --- the audio is already on its way before this client has any say.
 ---
---- THIS IS THE ONE THING IN THIS FILE THAT CAN MAKE A PLAYER DEAF, so it is
---- built so that it cannot do so by accident:
+--- 'squad' NOW REACHES THIS TOO, AND THAT IS THE CHANGE. "Only talk/listen
+--- within a given squad" is two halves in exactly the way 'off' was: proximity
+--- is off, so we send to nobody but the radio -- and every non-squadmate is
+--- muted, so the nearby stranger's audio, which THEY decided to send us and we
+--- have no say over, does not arrive either. Declining to transmit was never
+--- enough to make a mode exclusive; this is the half that makes it true.
 ---
----   THE MUTE BRANCH IS THE ONLY BRANCH THAT NEEDS A REASON. `mode == 'off'` is
----   re-read every tick; there is no cached "should be muted" anywhere.
----   THE UNMUTE BRANCH NEEDS NONE. Any tick on which the mode is not 'off'
----   unmutes everything we hold, whatever else is true, whatever transition was
----   or was not observed. That is the property #157 round two lacked: its
----   recovery depended on a native behaviour nobody had ever watched.
----   IT IS FREE WHEN THERE IS NOTHING TO DO. A player who has never chosen
----   'off' costs one table lookup per tick and makes no export call at all.
+--- THIS IS THE ONE THING IN THIS FILE THAT CAN MAKE A PLAYER DEAF, so it is
+--- built so it cannot do so by accident -- and the rule matters MORE now that
+--- a second mode reaches it:
+---
+---   THE MUTE BRANCH IS THE ONLY BRANCH THAT NEEDS A REASON. The audible set is
+---   recomputed from the CURRENT mode, roster and squad list on every tick by
+---   BR.Voice.audibleFor(); there is no cached "should be muted" anywhere.
+---   THE UNMUTE BRANCH NEEDS NONE. Anybody we hold a mute on who is audible on
+---   this tick is released on this tick, whatever else is true and whatever
+---   transition was or was not observed. That is the property #157 round two
+---   lacked: its recovery depended on a native behaviour nobody had watched.
+---   IT IS STILL FREE WHEN THERE IS NOTHING TO DO. 'nearby' refuses nobody, so
+---   the first loop finds no work, nothing is held, and no export is called.
+---
+--- IT IS HANDED THE SET RATHER THAN DERIVING ITS OWN. The tick above already
+--- computed `audible` for the talking indicator, and the two must agree: an
+--- indicator naming somebody this function is refusing audio from is exactly
+--- the lie that diagnosed #157, and two independent derivations is how you get
+--- one.
 ---
 --- pma-voice owns the mute itself (client/init/main.lua, mutedPlayers), which
 --- is deliberate: it also gates that resource's own radio and call volume
 --- restores, so a mute we applied behind its back would be undone by the next
 --- person who spoke on the radio.
-local function muteSweep()
+--- @param audible table  [src] = true, from BR.Voice.audibleFor
+local function muteSweep(audible)
     local s = BR.Voice.state
-    local wantOff = (BR.Voice.pref.mode == 'off')
+    local roster = BR.State.roster or {}
+    local me = BR.State.me and BR.State.me.src
 
-    -- The common case, and it must stay cheap: not muting, nothing held.
-    if not wantOff and next(s.muted) == nil then return end
+    -- The common case, and it must stay cheap: this mode refuses nobody on the
+    -- current roster, and we are holding nothing.
+    local refuses = false
+    for src in pairs(roster) do
+        if src ~= me and not audible[src] then refuses = true break end
+    end
+    if not refuses and next(s.muted) == nil then return end
     if not present() then s.muted = {} return end
 
     -- pma-voice's own table is the truth. Read once per tick rather than asked
@@ -768,16 +920,20 @@ local function muteSweep()
     -- issue keeps having.
     local held = call('getMutedPlayers') or {}
 
-    if wantOff then
-        local me = BR.State.me and BR.State.me.src
-        for src in pairs(BR.State.roster or {}) do
-            if src ~= me and not held[src] then
-                call('toggleMutePlayer', src)
-                s.muted[src] = true
-            end
+    -- MUTE everybody on the roster this mode will not listen to.
+    for src in pairs(roster) do
+        if src ~= me and not audible[src] then
+            if not held[src] then call('toggleMutePlayer', src) end
+            s.muted[src] = true
         end
-    else
-        for src in pairs(s.muted) do
+    end
+
+    -- RELEASE everything we hold that this mode WOULD listen to now, and
+    -- anybody who has left: a departed player is not somebody to keep a mute
+    -- open on, and a table keyed on gone server ids would grow for the life of
+    -- the session. Deleting the current key mid-pairs() is defined behaviour.
+    for src in pairs(s.muted) do
+        if audible[src] or roster[src] == nil then
             if held[src] then call('toggleMutePlayer', src) end
             s.muted[src] = nil
         end
@@ -807,10 +963,15 @@ AddEventHandler(BR.Net.VOICE_SET, function(d)
     s.radio  = math.tointeger(tonumber(d.radio))
 
     -- WHO COUNTS AS A SQUADMATE IS THE SERVER'S ANSWER. An empty list is a
-    -- solo, a squad that has not formed, or a player in the lobby -- all of
-    -- which mean proximity only. It is presentation and diagnostics now: the
-    -- radio's actual membership is pma-voice's, from the channel the server put
-    -- everybody on, so these two can only disagree while a push is in flight.
+    -- solo, a squad that has not formed, or a player in the lobby.
+    --
+    -- IT IS LOAD-BEARING NOW RATHER THAN DIAGNOSTIC. It used to be presentation
+    -- only -- the radio's membership is pma-voice's, from the channel the
+    -- server put everybody on -- but 'squad' also has to REFUSE everybody who
+    -- is not on it, and this list is what that refusal is built from
+    -- (BR.Voice.audibleFor -> muteSweep). Both halves therefore come from the
+    -- same server answer, which is what stops "on my radio" and "not muted by
+    -- me" from disagreeing; they can differ only while a push is in flight.
     s.mates = {}
     for _, v in ipairs(type(d.mates) == 'table' and d.mates or {}) do
         local src = math.tointeger(tonumber(v))
@@ -825,8 +986,12 @@ end)
 
 AddEventHandler('br:settings:changed', function(s)
     if type(s) ~= 'table' then return end
-    local mode = tostring(s.voiceMode or 'squad')
-    if mode ~= 'squad' and mode ~= 'nearby' and mode ~= 'off' then mode = 'squad' end
+    -- COERCED IN br_lib, NOT HERE. These four lines used to spell out the valid
+    -- set and the fallback by hand, and the fallback was 'squad' -- so an old
+    -- KVP blob, a hand-fired event or a typo'd payload put this client on a
+    -- mode the settings screen would never have stored and never displayed.
+    -- One definition, in BR.ToVoiceMode.
+    local mode = BR.ToVoiceMode(s.voiceMode)
     if mode == BR.Voice.pref.mode then return end
     BR.Voice.pref.mode = mode
     BR.Voice.apply()
@@ -860,20 +1025,20 @@ local lastKey = ''
 BR.Loop.register(BR.Loop.TICK, 'voice.hear', function()
     local s = BR.Voice.state
 
-    -- WHO WE DO NOT REFUSE. Everybody, unless the player chose 'off'. See the
-    -- note on state.audible: under pma-voice this is not a computed set any
-    -- more, and claiming otherwise is what a previous round did just before it
-    -- muted the roster.
-    local audible = {}
-    if BR.Voice.pref.mode ~= 'off' then
-        local me = BR.State.me and BR.State.me.src
-        for src in pairs(BR.State.roster or {}) do
-            if src ~= me then audible[src] = true end
-        end
-    end
+    -- WHO WE DO NOT REFUSE, from the one function that decides it. On 'nearby'
+    -- that is everybody -- proximity is the SPEAKER's decision and we do not
+    -- second-guess it, which is the rule that keeps a receive-side distance
+    -- gate out of this file. On 'squad' it is the squadmates the server named,
+    -- and on 'off' it is nobody.
+    local audible = BR.Voice.audibleFor(BR.Voice.pref.mode, BR.State.roster,
+                                        BR.Voice.state.mates,
+                                        BR.State.me and BR.State.me.src)
     s.audible = audible
 
-    muteSweep()
+    -- ONE SET, BOTH CONSUMERS, IN THAT ORDER. The mutes are applied from the
+    -- same table the indicator is about to be built from, so "named as talking"
+    -- and "not muted" cannot disagree.
+    muteSweep(audible)
 
     local talking = {}
     local seen = {}
@@ -977,7 +1142,8 @@ RegisterCommand('brvoice', function()
     if up then
         local gen = BR.Voice.generation()
         print(('  %-13s%s'):format('version', ({
-            current = 'v7.0.1-rc2 or later -- has the #165 fix',
+            current = 'v7.0.1-rc2 or later -- has the #165 fix, ON THE SERVER '
+                   .. 'HALF. Read the note below before trusting it',
             legacy  = 'PRE-v7.0.1-rc2 -- THIS IS #165, see below',
             pending = 'not answered yet (pma-voice has not set our state bag; '
                    .. 'run this again in a few seconds)',
@@ -986,6 +1152,22 @@ RegisterCommand('brvoice', function()
             for _, line in ipairs(BR.Voice.legacyLines()) do
                 print('    ' .. line)
             end
+        end
+        if gen == 'current' then
+            -- WHAT THIS VERDICT CANNOT SEE, said next to the verdict rather
+            -- than in a file nobody opens. assignedChannel is written by
+            -- pma-voice's SERVER half and replicated to us, so a 'current' here
+            -- proves the resource on the box is current. It does NOT prove the
+            -- scripts THIS client downloaded are, and the two can differ: an
+            -- FXServer serves clients out of its own file cache, and a stale
+            -- entry there hands old client code to every joiner while the
+            -- server half reports fine. That combination reproduces #165's
+            -- symptom exactly -- the warning on join, permanently -- with this
+            -- line still saying the version is right.
+            print('               Server half only. If the channel warning is')
+            print('               still in this console, suspect a stale')
+            print('               client download cache on the box rather than')
+            print('               the installed resource -- see #165.')
         end
     end
 
@@ -1005,15 +1187,24 @@ RegisterCommand('brvoice', function()
         print('    this client joined before that ran -- rejoin and re-check.')
     end
 
+    -- THE MODE, AND THEN WHAT IT ROUTES -- as TWO independent lines, because
+    -- "which mode am I on" and "which of the two channels is carrying" is
+    -- exactly the pair this issue keeps merging. The two flags are read out of
+    -- the routing table, so this cannot describe a mode the code does not
+    -- implement the way the old "squad = proximity plus radio" comment did.
+    local r = BR.Voice.routing()
     print(('  %-13s%s'):format('mode', BR.Voice.pref.mode))
+    print(('  %-13sproximity %s, squad radio %s -- NEVER BOTH'):format('routes',
+        r.proximity and 'ON' or 'off', r.radio and 'ON' or 'off'))
 
     -- TRANSMIT. One line, and it is the truth as the proximity check will
     -- answer it on its next call -- same function, not a description of it.
     local gag, why = BR.Voice.gagged()
-    print(('  %-13s%s'):format('transmitting',
+    print(('  %-13s%s'):format('prox mic',
         gag and ('NO -- ' .. tostring(why)) or 'yes, to players within range'))
-    print(('  %-13s%.0f m (falloff -- pma-voice, speaker-side)'):format(
-        'nearby range', s.nearby))
+    print(('  %-13s%.0f m (falloff -- pma-voice, speaker-side)%s'):format(
+        'nearby range', s.nearby,
+        r.proximity and '' or ' -- NOT IN USE on this mode'))
 
     -- THE BUS RULE, SHOWN AS ITS TWO INPUTS rather than as its answer, because
     -- the two failures it has had were both "the rule was right and the state
@@ -1031,18 +1222,33 @@ RegisterCommand('brvoice', function()
     print(('  %-13s%s'):format('squadmates',
         #s.mates > 0 and table.concat(s.mates, ', ') or 'none (solo)'))
 
+    -- THE ONE STATE THAT LOOKS LIKE A BUG AND IS NOT, SAID BEFORE ANYBODY HAS
+    -- TO ASK. Squad mode with no squad is total silence -- there is nobody in
+    -- the conversation -- and that is the spec rather than #150 coming back.
+    -- It is printed loudly because a player who set this and then queued a solo
+    -- has no other way to tell the two apart.
+    if r.radio and not s.radio then
+        print('               SQUAD MODE WITH NO SQUAD: you can hear nobody and')
+        print('               nobody can hear you. That is correct for this')
+        print('               mode -- squad voice is the squad and nothing')
+        print('               else. Switch to Nearby to hear the people around')
+        print('               you.')
+    end
+
     -- LISTEN.
     local hear = {}
     for src in pairs(s.audible) do hear[#hear + 1] = src end
     table.sort(hear)
     print(('  %-13s%s'):format('not refusing',
         #hear > 0 and table.concat(hear, ', ')
-            or 'nobody -- correct for off, and for standing alone'))
+            or 'nobody -- correct for off, for squad with no squad, and for '
+               .. 'standing alone'))
     local nmuted = 0
     for _ in pairs(s.muted) do nmuted = nmuted + 1 end
     print(('  %-13s%d player(s)%s'):format('muted', nmuted,
-        BR.Voice.pref.mode == 'off' and ' -- off, so all of them'
-            or ' -- MUST BE 0 outside off'))
+        r.proximity and ' -- MUST BE 0 on nearby'
+            or (r.radio and ' -- squad, so everybody who is not a squadmate'
+                or ' -- off, so all of them')))
     print(('  %-13s%s'):format('talking',
         #BR.Voice.talking > 0 and table.concat(BR.Voice.talking, ', ')
             or 'nobody'))
@@ -1052,9 +1258,15 @@ RegisterCommand('brvoice', function()
     -- the receive side, so "I cannot hear Bob" was a question about my machine.
     -- It is now a question about BOB'S.
     print('')
+    print('  THE TWO MODES ARE EXCLUSIVE, not layered. Nearby is proximity and')
+    print('  nothing else -- a squadmate across the map is as inaudible as any')
+    print('  stranger. Squad is the squad radio and nothing else -- the enemy')
+    print('  standing next to you is muted, at every distance.')
+    print('')
     print('  Proximity is enforced by the SPEAKER: you hear somebody because')
     print('  THEY decided you were in range. So if you cannot hear Bob, run')
-    print('  /brvoice on BOB\'s machine and read his "transmitting" line --')
-    print('  there is nothing on yours that can be refusing him.')
-    print('  Squad radio ignores range entirely and is on the radio key.')
+    print('  /brvoice on BOB\'s machine and read his "prox mic" line -- on')
+    print('  nearby there is nothing on yours that can be refusing him. On')
+    print('  SQUAD there is: this readout\'s "muted" line, and it is the mode')
+    print('  doing what it was asked.')
 end, false)

@@ -186,14 +186,21 @@ BR.Config.Match = {
         -- server.cfg changes how the edge sounds; see server.cfg.example, and
         -- do it after the range has been checked rather than with it.
         --
-        -- WHY THE TWO NUMBERS CANNOT BE ONE. Audibility belongs to a SPEAKER
-        -- and a LISTENER, never to a channel -- every stream a client receives
-        -- meets the same rule whichever room carried it. So "25 m for
-        -- strangers, the whole map for my squad" cannot be one number, and
-        -- squadmates get there by the volume override, whose documentation is
-        -- explicit that it "will also bypass 3D audio and distance
-        -- calculations". `squad` below is the range at which the client stops
-        -- opening that door. Radio, in other words, on top of proximity.
+        -- WHY THERE ARE STILL TWO NUMBERS, AND WHY ONLY ONE OF THEM IS LIVE.
+        --
+        -- THE MODES ARE EXCLUSIVE. 'nearby' is proximity and only proximity;
+        -- 'squad' is the pma-voice radio and only the radio. Not one on top of
+        -- the other -- see BR.VoiceRouting in br_lib/shared/enums.lua, which is
+        -- where a mode is defined, and the block at the top of
+        -- br_core/client/voice.lua for the rounds that were lost to layering
+        -- them.
+        --
+        -- SO `nearby` BELOW IS THE ONLY NUMBER THAT DOES ANYTHING. `squad` is
+        -- vestigial: a radio channel does not attenuate, so squad voice has no
+        -- range to configure and the client never reads this value. It is still
+        -- SENT (server/voice.lua's VOICE_SET payload) and still asserted on by
+        -- tools/test_roster.lua, which is the only reason it is still here --
+        -- see the marked follow-up beside `squadRange` in that file.
         range = {
             -- Ordinary speech, in metres. Deliberately short: being heard is
             -- a positional tell, and a wide radius turns every rooftop into a
@@ -223,11 +230,19 @@ BR.Config.Match = {
         warmupChannel    = 1001,
         matchBase        = 2000,   -- + matchId
 
-        -- Whether a squad hears each other beyond `range.nearby` at all. Off
-        -- means squads are proximity-only, which is a legitimate (harsher)
-        -- design and one edit away: no squad routing is stated and no volume
-        -- override is opened, so a squadmate is exactly as audible as any
-        -- other player standing where they stand.
+        -- WHETHER THERE IS A SQUAD RADIO AT ALL.
+        --
+        -- `false` means no squad is ever assigned a channel and no squadmate
+        -- list is ever sent, so the 'squad' setting has nothing to route and
+        -- becomes indistinguishable from 'off' for the player who picks it.
+        -- That is the honest reading now that the modes are exclusive: it used
+        -- to mean "squads are proximity-only", and there is no such thing any
+        -- more -- proximity-only IS 'nearby', and it is one click away in the
+        -- settings screen.
+        --
+        -- Turning this off is therefore a decision to ship a mode that does
+        -- nothing, and it should come with removing the option from the
+        -- settings screen (ui-src/src/screens/Settings.tsx, VOICE_MODES).
         squadIsGlobal    = true,
     },
 

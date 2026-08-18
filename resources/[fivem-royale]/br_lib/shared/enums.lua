@@ -125,3 +125,93 @@ BR.StormPhase = {
     SHRINKING = 'shrinking', -- interpolating toward the next circle
     FINISHED  = 'finished',  -- final circle collapsed
 }
+
+-- ==========================================================================
+-- VOICE: THE THREE MODES, WHAT EACH ONE ROUTES, AND THE DEFAULT.
+--
+-- THIS BLOCK IS HERE RATHER THAN IN br_core BECAUSE TWO RESOURCES OWN HALVES
+-- OF THE SAME DECISION AND THEY KEPT DISAGREEING. br_ui/client/settings.lua
+-- stores the player's choice; br_core/client/voice.lua acts on it. Both used
+-- to spell the vocabulary and the default out by hand, and they spelled the
+-- default DIFFERENTLY -- settings said 'nearby', voice.lua said 'squad' -- for
+-- long enough that "what happens to a player who never opens the settings
+-- screen" depended on which file you read. Settings won in practice, by the
+-- accident of firing a push on br:ui:ready. Nothing enforced it.
+--
+-- So there is now one definition and everybody READS it. enums.lua is the one
+-- br_lib file both resources already load (see both fxmanifests), which is why
+-- it lands here and not in config/match.lua -- br_ui deliberately does not
+-- pull the match config in.
+--
+-- ==========================================================================
+-- THE MODES ARE MUTUALLY EXCLUSIVE. THIS IS THE OWNER'S SPEC, VERBATIM:
+--
+--   "Nearby should only be nearby, different from squads and not additional to
+--    it. It means a player could hear anyone nearby within their bucket, and
+--    likewise others will hear them nearby. Squads should be set to no
+--    distance/fade/etc and only talk/listen within a given squad."
+--
+-- It has been restated more than once, so it is worth being blunt about what
+-- it rules out: SQUAD IS NOT PROXIMITY PLUS A RADIO. A squad player does not
+-- hear the stranger standing next to them, and a nearby player does not hear
+-- their squadmate across the island. Each mode is ONE channel of audio, never
+-- two layered.
+--
+-- THE SHAPE OF BR.VoiceRouting IS WHAT ENFORCES THAT, and it is deliberately
+-- the smallest thing that can: two booleans per mode, never both true. Every
+-- consumer -- the transmit gag, the radio join, the listen refusal, the
+-- talking indicator and the /brvoice readout -- is derived from these two
+-- columns rather than re-deciding from the mode string. So "make squad hear
+-- non-squad again" is not a change somebody can make in one place by accident:
+-- it means setting proximity = true on the squad row, which turns that row
+-- into a mode with both columns set, and both the suite and tools/verify.sh
+-- fail on exactly that.
+-- ==========================================================================
+
+--- The vocabulary. These strings cross the br_ui -> br_core boundary on
+--- `br:settings:changed` and are persisted in this machine's KVP, so they are
+--- a stored format and not merely an internal name.
+BR.VoiceMode = {
+    NEARBY = 'nearby',
+    SQUAD  = 'squad',
+    OFF    = 'off',
+}
+
+--- WHAT A PLAYER WHO HAS NEVER OPENED THE SETTINGS SCREEN GETS.
+---
+--- 'nearby', and the reason is that it is the only mode that works for
+--- everybody: a solo has no squad, so a default of 'squad' is a default of
+--- silence for every player in every solo match. That is #150's exact symptom
+--- and it must not be reachable by doing nothing.
+BR.VoiceModeDefault = BR.VoiceMode.NEARBY
+
+--- WHAT EACH MODE ROUTES. Two columns, and no row may have both.
+---
+---   proximity  our audio goes to players within Config.Match.voice.range
+---              .nearby, and we refuse nobody's audio. pma-voice enforces the
+---              distance on the SPEAKER's machine.
+---   radio      our audio goes to the squad radio channel the server assigned,
+---              at any distance and with no falloff, and we refuse everybody
+---              who is not a squadmate.
+---
+--- 'off' is both false: it transmits to nobody and refuses everybody.
+BR.VoiceRouting = {
+    [BR.VoiceMode.NEARBY] = { proximity = true,  radio = false },
+    [BR.VoiceMode.SQUAD]  = { proximity = false, radio = true  },
+    [BR.VoiceMode.OFF]    = { proximity = false, radio = false },
+}
+
+--- Coerce an untrusted mode string. Never returns nil: the value arrives from
+--- a KVP blob and from a NUI payload, either of which can be an old build's.
+--- @param mode string|nil
+--- @return string  one of BR.VoiceMode
+function BR.ToVoiceMode(mode)
+    return BR.VoiceRouting[mode] and mode or BR.VoiceModeDefault
+end
+
+--- The routing row for a mode, coerced. Never nil, so no caller needs a guard.
+--- @param mode string|nil
+--- @return table  { proximity = boolean, radio = boolean }
+function BR.VoiceRoutingFor(mode)
+    return BR.VoiceRouting[BR.ToVoiceMode(mode)]
+end

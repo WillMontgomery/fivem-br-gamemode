@@ -31,11 +31,22 @@ import Keybinds from './Keybinds'
  */
 
 type Draft = SettingsPayload
-/** Voice routing, in the order a player is most likely to want it. */
+/**
+ * Voice routing, in the order a player is most likely to want it.
+ *
+ * THE THREE ARE EXCLUSIVE, NOT LAYERED, and these sub-labels are the only
+ * place a player is ever told so. 'Squad' does not also give you proximity and
+ * 'Nearby' does not also give you your squad -- which is what the code did for
+ * several rounds while this label already described the intended behaviour.
+ * Keep them saying "only".
+ *
+ * NEARBY IS THE DEFAULT (BR.VoiceModeDefault, br_lib/shared/enums.lua) and is
+ * listed second only because Squad is what most players go looking for.
+ */
 const VOICE_MODES: { id: Draft['voiceMode']; label: string; sub: string }[] = [
   { id: 'squad',  label: 'Squad',  sub: 'Only your team, at any distance' },
-  { id: 'nearby', label: 'Nearby', sub: 'Anyone close enough to see' },
-  { id: 'off',    label: 'Off',    sub: 'You are not transmitting' },
+  { id: 'nearby', label: 'Nearby', sub: 'Only people near you, team or not' },
+  { id: 'off',    label: 'Off',    sub: 'You are not transmitting or hearing' },
 ]
 
 const CB_MODES: { id: Draft['colourblind']; label: string; sub: string }[] = [

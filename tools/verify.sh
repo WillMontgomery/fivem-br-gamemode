@@ -207,6 +207,123 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+# --- 3g. the voice modes have one definition ----------------------------------
+#
+# THE SIGNATURE FAILURE OF THIS PROJECT, ON THE SUBJECT IT HAS COST THE MOST.
+#
+# The voice default was written down in FOUR places -- br_lib's enums, br_ui's
+# settings schema, br_core's preference, and the TypeScript store -- and three
+# of them said 'squad' while one said 'nearby'. The player got 'nearby' only
+# because br_ui happens to push its copy over br_core's on br:ui:ready, so the
+# answer to "what does a player who never opens the settings screen get"
+# depended on a race. Nothing compared them, and nothing could: two of the four
+# are not Lua.
+#
+# tools/test_client.lua asserts the Lua half behaviourally -- an unknown mode
+# falls back to BR.VoiceModeDefault, and the modes route what they claim. What
+# it cannot reach is ui-src, which is TypeScript, and the BUILT BUNDLE, which is
+# what actually ships to the player. Both are checked here, as text, because
+# text is what they have in common.
+#
+# THE BUNDLE CHECK IS THE ONE THAT EARNS ITS PLACE. resources/*/br_ui/ui is
+# committed build output and tools/deploy.sh rsyncs it verbatim; editing
+# apply.ts without running `npm run build` in ui-src changes nothing that
+# reaches a player, and looks correct in every diff.
+
+echo "${DIM}== voice defaults ==${RST}"
+voice=0
+enums=$(echo resources/*/br_lib/shared/enums.lua)
+
+if [ ! -f "$enums" ]; then
+    echo "${RED}FAIL${RST} cannot find br_lib/shared/enums.lua"
+    voice=1
+else
+    # BR.VoiceModeDefault = BR.VoiceMode.NEARBY  ->  NEARBY  ->  'nearby'
+    key=$(grep -oE '^BR\.VoiceModeDefault[[:space:]]*=[[:space:]]*BR\.VoiceMode\.[A-Z]+' "$enums" \
+          | grep -oE '[A-Z]+$' || true)
+    want=$(grep -oE "^[[:space:]]+${key:-__none__}[[:space:]]*=[[:space:]]*'[a-z]+'" "$enums" \
+           | grep -oE "'[a-z]+'" | tr -d "'" || true)
+
+    if [ -z "$want" ]; then
+        echo "${RED}FAIL${RST} cannot read BR.VoiceModeDefault out of br_lib/shared/enums.lua"
+        echo "     This gate resolves 'BR.VoiceModeDefault = BR.VoiceMode.<KEY>'"
+        echo "     against the BR.VoiceMode table. If that shape changed, reshape"
+        echo "     this gate with it -- do not delete it."
+        voice=1
+    fi
+fi
+
+if [ "$voice" -eq 0 ]; then
+    # 1. NO ROUTING ROW MAY OPEN BOTH CHANNELS. The modes are exclusive: nearby
+    #    is proximity, squad is the radio, and a row with both is the layering
+    #    the owner has now rejected three times.
+    if grep -qE 'proximity[[:space:]]*=[[:space:]]*true[[:space:]]*,[[:space:]]*radio[[:space:]]*=[[:space:]]*true' "$enums"; then
+        echo "${RED}FAIL${RST} a BR.VoiceRouting row opens proximity AND the radio:"
+        grep -nE 'proximity[[:space:]]*=[[:space:]]*true[[:space:]]*,[[:space:]]*radio[[:space:]]*=[[:space:]]*true' "$enums" | sed 's/^/     /'
+        echo "     The modes are mutually exclusive. 'nearby' is proximity only;"
+        echo "     'squad' is the squad radio only. See the block above the table."
+        voice=1
+    fi
+
+    # 2. THE TWO LUA CONSUMERS MUST READ THE VALUE, NOT RESTATE IT. A literal
+    #    here is the exact shape of the bug: it compiles, it runs, and it
+    #    disagrees with the other file silently.
+    for pair in \
+        "resources/*/br_ui/client/settings.lua:voiceMode" \
+        "resources/*/br_core/client/voice.lua:mode"
+    do
+        # Unquoted on purpose: the left half is a glob that has to expand
+        # through the bracketed resource-group directory.
+        f=$(echo ${pair%%:*}); field="${pair##*:}"
+        [ -f "$f" ] || continue
+        if grep -qE "${field}[[:space:]]*=[[:space:]]*'(nearby|squad|off)'" "$f"; then
+            echo "${RED}FAIL${RST} ${f#resources/} spells a voice mode out as a literal:"
+            grep -nE "${field}[[:space:]]*=[[:space:]]*'(nearby|squad|off)'" "$f" | sed 's/^/     /'
+            echo "     Read BR.VoiceModeDefault / BR.ToVoiceMode from br_lib instead."
+            voice=1
+        fi
+    done
+
+    # 3. THE TYPESCRIPT DEFAULT, which no Lua test can see.
+    ts='ui-src/src/settings/apply.ts'
+    if [ -f "$ts" ]; then
+        got=$(grep -oE "voiceMode:[[:space:]]*'[a-z]+'" "$ts" | grep -oE "'[a-z]+'" | tr -d "'" || true)
+        if [ "$got" != "$want" ]; then
+            echo "${RED}FAIL${RST} $ts has voiceMode '${got:-<none>}', br_lib says '$want'"
+            echo "     This is the value the settings screen renders before Lua's"
+            echo "     push lands, so a disagreement shows the player a mode they"
+            echo "     are not on."
+            voice=1
+        fi
+    fi
+
+    # 4. AND THE BUILT BUNDLE, which is what a player actually runs.
+    bundle_seen=0
+    for js in resources/*/br_ui/ui/assets/*.js; do
+        [ -e "$js" ] || continue
+        while IFS= read -r got; do
+            bundle_seen=1
+            if [ "$got" != "$want" ]; then
+                echo "${RED}FAIL${RST} ${js#resources/} ships voiceMode '$got', br_lib says '$want'"
+                echo "     The bundle is stale. Run: cd ui-src && npm run build"
+                voice=1
+            fi
+        done < <(grep -oE 'voiceMode:"[a-z]+"' "$js" | grep -oE '"[a-z]+"' | tr -d '"' || true)
+    done
+    if [ "$bundle_seen" -eq 0 ]; then
+        echo "${YEL}warn${RST} no voiceMode default found in the built bundle --"
+        echo "     the minifier's output shape may have changed. This gate is the"
+        echo "     only thing that catches a source edit that was never built;"
+        echo "     re-point it rather than leaving it blind."
+    fi
+fi
+
+if [ "$voice" -eq 0 ]; then
+    echo "${GRN}ok${RST}   voice modes are exclusive and the default ('$want') agrees in Lua, TS and the bundle"
+else
+    rc=1
+fi
+
 # --- 4. manifest coverage -----------------------------------------------------
 #
 # Every .lua under a resource must be declared in its fxmanifest, or it simply
