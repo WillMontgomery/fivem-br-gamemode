@@ -99,7 +99,7 @@ function useDeathSequence(m: SquadMember) {
  * text is only written when it actually differs, so a tick that changes nothing
  * touches no DOM at all.
  */
-function BleedClock({ endsAt }: { endsAt: number }) {
+function BleedClock({ endsAt, big }: { endsAt: number; big?: boolean }) {
   const ref = useRef<HTMLSpanElement>(null)
   const offset = useUi((s) => s.clockOffset)
 
@@ -119,7 +119,12 @@ function BleedClock({ endsAt }: { endsAt: number }) {
   return (
     <span
       ref={ref}
-      className="font-display leading-none tabular-nums text-[0.72rem] shrink-0"
+      // `big` is the bars' slot, where this is the row's only number and
+      // should read as such. 0.72rem is the corner-stamp size it had when it
+      // shared a line with the state word.
+      className={`font-display leading-none tabular-nums shrink-0 ${
+        big ? 'text-[1.05rem]' : 'text-[0.72rem]'
+      }`}
       style={{ color: 'var(--color-danger)', textShadow: 'var(--shadow-text)' }}
     >
       --
@@ -276,18 +281,33 @@ function Row({ m, talking }: { m: SquadMember; talking: boolean }) {
                   on the wire", and the honest rendering of that is no timer --
                   not a zero, not a dash, and not a locally invented clock.
                   See SquadMember.bleedEndsAt in bridge/types.ts. */}
-              {downed && !!m.bleedEndsAt && <BleedClock endsAt={m.bleedEndsAt} />}
             </span>
           )}
         </div>
 
-        {!dead && (
+        {/* THE CLOCK TAKES THE BARS' PLACE, IT DOES NOT SIT BESIDE THEM.
+            Owner, 2026-08-17: "when in DBNO - the squad panel should not show
+            health or shield bars, but instead in their place it will show the
+            DBNO timer."
+
+            The bars were the wrong thing to draw anyway. A downed mate's health
+            is pinned at the downed floor and their shield is irrelevant while
+            they bleed -- two bars saying nothing, in the one row where the
+            single number that matters is how long you have to reach them.
+
+            The clock also used to render up in the stamp row. Two countdowns
+            for one deadline is what this component's own comment warns against,
+            so it moved rather than being duplicated.
+
+            THE FIXED HEIGHT IS LOAD-BEARING: without it the row changes height
+            the instant a mate goes down and the whole stack jumps. */}
+        {!dead && (downed ? (
+          <div className="mt-1 flex h-[1.2rem] items-center justify-center">
+            {!!m.bleedEndsAt && <BleedClock endsAt={m.bleedEndsAt} big />}
+          </div>
+        ) : (
           <div className="mt-1 flex flex-col gap-[0.2rem]">
-            <VitalBar
-              value={hp}
-              colour={downed ? 'var(--color-danger)' : 'var(--color-hp)'}
-              dying={dying}
-            />
+            <VitalBar value={hp} colour="var(--color-hp)" dying={dying} />
             {/* SHIELD SHOWS ITS ZERO. Vitals hides a zero because its numeral
                 sits INSIDE the bar, where a lone 0 floating in an empty track
                 reads as a glitch. Out here it is a column entry, and "this
@@ -296,7 +316,7 @@ function Row({ m, talking }: { m: SquadMember; talking: boolean }) {
                 the panel failing rather than as an answer. */}
             <VitalBar value={sh} colour="var(--color-shield)" dying={dying} />
           </div>
-        )}
+        ))}
       </div>
     </div>
   )
