@@ -711,10 +711,63 @@ AddEventHandler('playerDropped', function(reason)
     BR.Roster.remove(source)
 end)
 
--- 250ms: squad beacons are drawn straight from this, and at 2Hz a teammate's
--- dot visibly hopped rather than moved. It also halves the staleness the loot
--- claim check has to allow for.
-BR.Sched.every(250, 'roster.positions', samplePositions)
+--- The rate used when the configured one is unusable.
+---
+--- A LAST RESORT, NOT A SECOND COPY OF THE SETTING. It is only ever reached
+--- when `posSampleHz` is nil, zero or negative -- i.e. when somebody has
+--- already made a mistake -- and its job is to keep the server sampling rather
+--- than to express a policy. It is kept equal to the shipped config value so a
+--- broken config degrades to the behaviour everyone has played, and
+--- tools/test_roster.lua asserts that equality rather than leaving two numbers
+--- free to drift, which is the bug this whole change is about.
+local FALLBACK_POS_SAMPLE_HZ = 4
+
+--- How often positions are sampled, in milliseconds, FROM THE CONFIG.
+---
+--- THIS USED TO BE THE LITERAL 250 AND THE CONFIG USED TO SAY 2 Hz. Both
+--- statements were in the repository at once, describing the same thing,
+--- disagreeing by a factor of two, with nothing able to notice -- because
+--- `BR.Config.Match.posSampleHz` had no readers at all. The hardcoded number
+--- was the correct one and the documented one was the value that had been tried
+--- and reverted, which is the worst way round for that pair to be.
+---
+--- 4 Hz IS THE RATE AND THE REASON IT IS NOT 2 IS KEPT HERE DELIBERATELY: squad
+--- beacons are drawn straight from this sampling, and at 2 Hz a teammate's dot
+--- visibly HOPPED rather than moved. It also halves the staleness the loot claim
+--- check has to allow for. 2 Hz is a repeat of a rejected experiment, not a
+--- saving -- and the number now lives in the config where somebody looking to
+--- turn it down will meet that sentence before they do.
+---
+--- GUARDED, BECAUSE THE ALTERNATIVE IS DIVIDING BY IT BLINDLY. `1000 / 0` is
+--- `inf` in Lua and `math.floor(inf)` raises -- so a typo'd config would not
+--- misbehave, it would take the resource down at load, and the traceback would
+--- point here rather than at the line someone edited. nil and negatives are the
+--- same class of answer. A bad value falls back to the shipped rate and says so
+--- loudly; it does not silently pick something.
+---
+--- Exposed rather than local so the guard itself is testable with values no
+--- shipped config would ever hold.
+--- @param hz number|nil  defaults to BR.Config.Match.posSampleHz
+--- @return integer milliseconds
+function BR.Roster.sampleIntervalMs(hz)
+    if hz == nil then hz = BR.Config.Match.posSampleHz end
+    hz = tonumber(hz)
+
+    if not hz or hz <= 0 then
+        print(('^3[br_core] roster: posSampleHz is %s, which is not a rate -- '
+            .. 'sampling at %d Hz instead^7')
+            :format(tostring(hz), FALLBACK_POS_SAMPLE_HZ))
+        hz = FALLBACK_POS_SAMPLE_HZ
+    end
+
+    -- The same shape server/broadcast.lua uses for deltaFlushHz and digestHz,
+    -- so all three rates are derived one way. `math.max(1, ...)` because a
+    -- config above 1000 Hz would floor to zero and give the scheduler a job
+    -- with no interval.
+    return math.max(1, math.floor(1000 / hz))
+end
+
+BR.Sched.every(BR.Roster.sampleIntervalMs(), 'roster.positions', samplePositions)
 BR.Sched.every(5000, 'roster.reconcile', reconcile)
 
 -- Players already connected when the resource starts (a restart mid-session).

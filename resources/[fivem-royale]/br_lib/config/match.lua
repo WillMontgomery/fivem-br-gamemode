@@ -349,7 +349,24 @@ BR.Config.Match = {
 
     -- Server-side sampling and broadcast rates. These are the knobs to turn if
     -- the server tick starts running long at full player count.
-    posSampleHz     = 2,
+    --
+    -- posSampleHz SAID 2 AND THE SAMPLER RAN AT 4, for as long as both have
+    -- existed: roster.lua hardcoded `BR.Sched.every(250, ...)` and nothing read
+    -- this value at all. So the knob documented here was not a knob, and the
+    -- number it advertised was the one that had been TRIED AND REJECTED.
+    --
+    -- 4 Hz IS THE RATE, AND IT IS NOT NEGOTIABLE DOWNWARD (owner, confirmed).
+    -- Squad beacons are drawn straight from this sampling, and at 2 Hz a
+    -- teammate's dot visibly hopped rather than moved; it also halves the
+    -- staleness the loot claim check has to tolerate. Anyone reaching for this
+    -- to save server tick should read that sentence first -- 2 has already been
+    -- shipped, played and reverted, so lowering it is a repeat rather than an
+    -- experiment.
+    --
+    -- The value is now READ (br_core/server/roster.lua derives the scheduler
+    -- interval from it) and tools/test_roster.lua fails if the two ever
+    -- disagree again, which is what makes this line worth trusting.
+    posSampleHz     = 4,
     deltaFlushHz    = 4,
     digestHz        = 2,
 

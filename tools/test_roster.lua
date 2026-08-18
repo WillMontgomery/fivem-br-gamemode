@@ -9030,6 +9030,89 @@ end
 -- field that lands in neither -- or, worse, drifts into the wrong one -- fails
 -- the build rather than leaking in production.
 
+describe('roster.sampleRate')
+do
+    --[[
+        THE SAMPLER'S INTERVAL AND THE CONFIG VALUE MUST BE THE SAME NUMBER.
+
+        They were not, and neither of them was wrong in isolation, which is what
+        made it survive: `BR.Config.Match.posSampleHz` said 2 and had NO READERS
+        AT ALL, while roster.lua registered `BR.Sched.every(250, ...)` -- 4 Hz --
+        directly. So the repository contained two statements about one rate,
+        disagreeing by a factor of two, with the documented one being the value
+        that had been tried in play and reverted.
+
+        THIS BLOCK IS THE POINT OF THE CHANGE. Deriving the interval from the
+        config is only half a fix; without something asserting they agree, the
+        next person to hardcode a number here reintroduces exactly this bug and
+        nothing notices. Two representations of one thing with nothing checking
+        them is this project's signature failure.
+
+        THE INVARIANT IS STATED AS A PRODUCT, NOT AS A COPY OF THE FORMULA.
+        `interval * hz == 1000` is what "these agree" MEANS; re-writing
+        `math.floor(1000 / hz)` here would be the test re-encoding the
+        implementation, which is the other way this suite has produced false
+        passes.
+    ]]
+    local job
+    for _, s in ipairs(BR.Sched.stats()) do
+        if s.name == 'roster.positions' then job = s break end
+    end
+
+    ok(job ~= nil, 'the position sampler is registered with the scheduler')
+
+    local hz = BR.Config.Match.posSampleHz
+    ok(type(hz) == 'number' and hz > 0,
+        'and the config carries a usable rate', tostring(hz))
+
+    ok(job ~= nil and hz and job.intervalMs * hz == 1000,
+        'the interval it runs at IS the configured rate, not a number beside it',
+        job and ('%s ms x %s Hz = %s'):format(
+            tostring(job.intervalMs), tostring(hz),
+            tostring(job.intervalMs * hz)) or 'no job')
+
+    -- 4 Hz IS THE OWNER'S CALL AND IS PINNED HERE ON PURPOSE. At 2 Hz a
+    -- teammate's beacon visibly hopped rather than moved, and that was played
+    -- and reverted -- so a future edit down to 2 should have to delete this
+    -- line and read why it exists.
+    ok(hz == 4, 'and that rate is 4 Hz, which is the one that was kept',
+        tostring(hz))
+    ok(job ~= nil and job.intervalMs == 250,
+        'so the sampler still runs every 250ms, exactly as it did hardcoded',
+        job and tostring(job.intervalMs) or 'no job')
+
+    -- THE GUARD, with values no shipped config would hold. Dividing by these
+    -- blindly is not a wrong answer, it is `inf` and then a raise out of
+    -- math.floor -- so the resource would fail to load and the traceback would
+    -- point at the sampler rather than at the edited line.
+    for _, bad in ipairs({ 0, -1, -0.5 }) do
+        local ms = BR.Roster.sampleIntervalMs(bad)
+        ok(math.type(ms) == 'integer' and ms > 0,
+            ('a config of %s still yields a usable interval'):format(tostring(bad)),
+            tostring(ms))
+    end
+    do
+        local ms = BR.Roster.sampleIntervalMs(false)   -- nil-ish, not a number
+        ok(math.type(ms) == 'integer' and ms > 0,
+            'and so does one that is not a number at all', tostring(ms))
+    end
+
+    -- THE FALLBACK IS THE SHIPPED RATE, asserted rather than assumed -- the
+    -- constant in roster.lua is the one place a second copy of this number
+    -- lives, and this is what stops it drifting away from the config it is
+    -- standing in for.
+    ok(BR.Roster.sampleIntervalMs(0) == BR.Roster.sampleIntervalMs(),
+        'a broken config degrades to the rate everybody has played',
+        ('%s vs %s'):format(tostring(BR.Roster.sampleIntervalMs(0)),
+            tostring(BR.Roster.sampleIntervalMs())))
+
+    -- AND AN ABSURDLY HIGH RATE DOES NOT FLOOR TO ZERO, which would hand the
+    -- scheduler a job with no interval.
+    ok(BR.Roster.sampleIntervalMs(100000) >= 1,
+        'and an impossible rate still leaves the job an interval',
+        tostring(BR.Roster.sampleIntervalMs(100000)))
+end
+
 describe('roster.ringmaster')
 do
     reset()
