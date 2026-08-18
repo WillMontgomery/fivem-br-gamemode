@@ -2273,8 +2273,23 @@ BR.Loop.register(BR.Loop.SLOW, 'loot.mercy', function()
     if not cfg or not cfg.enabled then return end
 
     if BR.State.me.state ~= BR.PlayerState.ALIVE then
-        mercy.landedAt, mercy.armedAt, mercy.on = 0, 0, false
-        mercy.done = false
+        -- A KNOCK IS NOT A NEW LIFE. DBNO is the one non-ALIVE state a player
+        -- comes BACK from, and clearing `done` here is what let the courtesy
+        -- blips return after a revive (owner, 2026-08-18) -- a revived player
+        -- must be indistinguishable from one who was never downed.
+        --
+        -- The asymmetry is the bug in one line: a player who spent their whole
+        -- unused grace period can NEVER see these again, while one who was
+        -- knocked down gets a fresh 60 seconds and the "Crates are marked on
+        -- your map" toast a second time. Being shot was rewarding them.
+        --
+        -- The blips still go out while they are on the floor -- `on` is the
+        -- presentation and it clears either way. It is the LATCH that survives.
+        mercy.on = false
+        if BR.State.me.state ~= BR.PlayerState.DBNO then
+            mercy.landedAt, mercy.armedAt = 0, 0
+            mercy.done = false
+        end
         return
     end
 

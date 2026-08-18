@@ -5651,6 +5651,94 @@ end
 
 -- ------------------------------------------------------------------ report ---
 
+-- ======================================================================== --
+-- COURTESY BLIPS DO NOT COME BACK AFTER A REVIVE (#164, item 4)
+-- ======================================================================== --
+--
+-- Owner, 2026-08-18: "Courtesy blips can come on after revive - that should
+-- never happen."
+--
+-- The `loot.mercy` band cleared its once-per-life latch on EVERY pass where the
+-- player was not ALIVE. DBNO is not ALIVE, so a knock wiped `done` and
+-- `landedAt`, and sixty seconds after being revived an empty-handed player got
+-- the blips and the toast a second time -- while a player who was never downed,
+-- and whose grace had expired, could never get them again. Being shot was
+-- rewarding them.
+--
+-- DBNO IS THE ONE NON-ALIVE STATE A PLAYER COMES BACK FROM, which is why it is
+-- the only exception. The control below proves the exception is specific: a
+-- real death still resets, because that IS a new life.
+
+describe('courtesy blips survive a knock, not a death')
+
+local function mercyToasts()
+    local n = 0
+    for _, e in ipairs(events) do
+        if e.name == 'br:ui:sendLocal'
+            and type(e.args[2]) == 'table'
+            and type(e.args[2].text) == 'string'
+            and e.args[2].text:find('Crates are marked', 1, true) then
+            n = n + 1
+        end
+    end
+    return n
+end
+
+--- Sit ALIVE and empty-handed until the grace expires, then read the toast.
+local function waitOutGrace()
+    fakeTime = fakeTime + 61000
+    BR.Loop.step(BR.Loop.SLOW)
+end
+
+BR.State.me = BR.State.me or {}
+BR.Inv = BR.Inv or {}
+BR.Inv.lastGainAt = 0
+BR.Loot.openedCount = 0
+
+-- 1. THE BLIPS ARM ONCE for somebody who has found nothing.
+events = {}
+BR.State.me.state = BR.PlayerState.ALIVE
+BR.Loop.step(BR.Loop.SLOW)
+waitOutGrace()
+ok(mercyToasts() == 1,
+    'an empty-handed player is offered the courtesy blips once',
+    ('toasts: %d'):format(mercyToasts()))
+
+-- 2. AND NOT AGAIN, which is the latch that already worked.
+events = {}
+waitOutGrace()
+waitOutGrace()
+ok(mercyToasts() == 0,
+    'and never again on the same life -- the once-per-life latch',
+    ('toasts: %d'):format(mercyToasts()))
+
+-- 3. A KNOCK MUST NOT REARM THEM. This is the owner's report: go down, come
+--    back, wait out a fresh grace period, and hear nothing.
+events = {}
+BR.State.me.state = BR.PlayerState.DBNO
+BR.Loop.step(BR.Loop.SLOW)
+BR.Loop.step(BR.Loop.SLOW)
+BR.State.me.state = BR.PlayerState.ALIVE
+waitOutGrace()
+waitOutGrace()
+ok(mercyToasts() == 0,
+    'A REVIVED PLAYER IS NOT OFFERED THEM AGAIN -- a knock is not a new life',
+    ('toasts after a knock and revive: %d'):format(mercyToasts()))
+
+-- 4. THE CONTROL, and it is the half that keeps this honest: a real death DOES
+--    reset, because a new life genuinely starts empty-handed on a new drop. A
+--    fix that simply stopped clearing the latch would pass test 3 and break
+--    this one.
+events = {}
+BR.State.me.state = BR.PlayerState.DEAD
+BR.Loop.step(BR.Loop.SLOW)
+BR.State.me.state = BR.PlayerState.ALIVE
+BR.Loop.step(BR.Loop.SLOW)
+waitOutGrace()
+ok(mercyToasts() == 1,
+    'but a real death still resets them, because that IS a new life',
+    ('toasts after a death and respawn: %d'):format(mercyToasts()))
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)
