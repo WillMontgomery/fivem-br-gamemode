@@ -1080,8 +1080,24 @@ local function correctPed(netId, hp, src)
             --- empty by the time the player alt-tabs out to type a command, so
             --- without this the one moment worth inspecting is the one moment
             --- there is nothing to inspect.
+            ---
+            --- AND IT TAKES A LAST READING ON ITS WAY OUT (#115, round six).
+            --- /brcorpse samples the ped LIVE and prints that sample directly
+            --- beneath these counters. The counters describe the watch's
+            --- lifetime; the sample describes the moment somebody typed the
+            --- command, and those are not the same moment -- they were five
+            --- minutes apart in the owner's own paste. A reading taken HERE,
+            --- with the clock stamped, is what turns that block from a
+            --- contradiction into a diagnosis.
             local function stop(why)
                 watch.why, watch.netId = why, netId
+                watch.endedAt = GetGameTimer()
+                local q = NetworkDoesNetworkIdExist(netId)
+                          and NetworkGetEntityFromNetworkId(netId) or 0
+                if q ~= 0 and DoesEntityExist(q) then
+                    watch.endHealth = GetEntityHealth(q)
+                    watch.endDead   = IsEntityDead(q)
+                end
                 lastWatch = watch
                 watching[netId] = nil
             end
@@ -1145,6 +1161,133 @@ local function correctPed(netId, hp, src)
     end)
 end
 
+--- ROUND SIX: THE BUDGET IS THE LAST BET, AND #115's OWN INSTRUMENT IS WHAT
+--- CAUGHT IT (owner, 2026-08-17, sixth report).
+---
+--- The owner shot a squadmate to a false death and ran /brcorpse. The watch
+--- over that ped had run FIFTY passes, seen no corpse, and written nothing --
+--- next to a live reading of `health 0  dead 1  fatally injured 1`. Read as one
+--- moment that is a contradiction, and four of the five previous rounds would
+--- have gone looking for a broken predicate. It is not one moment. Fifty passes
+--- at one poll every WATCH_POLL_MS is seven and a half seconds of watching, and
+--- the ped was read three hundred and twenty-six SECONDS after that watch
+--- started. The detection was fine. The ped simply died with nothing looking at
+--- it, and everything above only looks while a bullet is recent.
+---
+--- SO THE BUDGET WAS THE BET ALL ALONG. Round four took the guess out of the
+--- predicate; round five took it out of the door; both left it in the clock.
+--- `WATCH_MS` is a number nobody has measured, exactly like the settle time
+--- that made rounds three and four wrong, and tools/test_roster.lua now sweeps
+--- it: a death that shows up at 4900ms is corrected and one at 5200ms is "down
+--- for good" forever. That is the same shape of failure with a bigger constant
+--- in it.
+---
+--- AND THERE IS A FACT HERE THAT NEEDS NO CLOCK AT ALL. A false corpse is not
+--- "a ped that was shot recently and then died". It is, exactly:
+---
+---     the server says this player is ALIVE, and their ped on this machine
+---     reads dead.
+---
+--- That is decidable from the mirror this very file maintains, at any moment,
+--- for every player -- with no netId on the wire, no bullet, and no budget. It
+--- is also the only form of the question that cannot be got wrong by being
+--- asked at the wrong time, because there is no window: ask it again in half a
+--- second and it is still true, and still true, until it is fixed.
+---
+--- ALIVE ONLY, AND DBNO IS DELIBERATELY EXCLUDED. A downed player's body is
+--- POSED by their own client -- client/dbno.lua resurrects them and lays them
+--- out with NetworkResurrectLocalPlayer -- and ClearPedTasksImmediately on a
+--- teammate mid-knock would strip that pose and T-pose them, which is the
+--- previous rounds' bug wearing a new hat. The server calls them DBNO rather
+--- than ALIVE precisely so this can tell the difference.
+---
+--- THE WATCH STAYS. It answers within a poll of the shot rather than within
+--- half a second, and forty-odd assertions pin it. This is the floor under it.
+local RECONCILE_MS = 500
+
+-- EVIDENCE, FOR /brcorpse -- AND COUNTED AS WHAT IT IS.
+--
+-- The first version of this counter said "corrected", which it could not know.
+-- With the writes being dropped it read 623 after five minutes on ONE corpse,
+-- because it was counting attempts and calling them repairs -- the same kind of
+-- over-claiming readout that made this issue take six rounds. So: how many
+-- sweeps found a false corpse, and how many of those were still dead on the
+-- very next line. `found` climbing while `stuck` climbs with it is the ownership
+-- answer the round-five note was reaching for, and it now arrives from a
+-- channel that runs all match instead of for five seconds after a bullet.
+local falseCorpses, falseCorpsesStuck = 0, 0
+
+--- Is a watch already arguing about this player's ped?
+---
+--- IT HAS THE BETTER NUMBER AND IT MUST NOT BE FOUGHT. A watch carries the
+--- health the SERVER put on the wire for this exact hit; the mirror carries the
+--- roster's copy, which is a tick or two behind and rounded through display
+--- units. Two writers on one ped means whichever polls first wins, and the
+--- answer to "what health is this player on" would depend on that. So the
+--- standing check is a FLOOR under the watch, not a second opinion beside it.
+--- @param src integer
+--- @return boolean
+local function watchOwns(src)
+    for _, w in pairs(watching) do
+        if w.src == src then return true end
+    end
+    return false
+end
+
+--- One sweep of the mirror. Split out so the suite can call it directly.
+local function reconcileFalseCorpses()
+    for src, e in pairs(S.roster) do
+        if src ~= S.me.src and e.state == BR.PlayerState.ALIVE
+           and not watchOwns(src) then
+            -- -1 IS "NOT ON THIS MACHINE", AND IT IS A TRAP RATHER THAN A
+            -- MISS: the ped native answers -1 with the LOCAL player's ped, so
+            -- a squadmate on the far side of the map resolves to us, and we
+            -- would resurrect ourselves in a fight with client/dbno.lua over a
+            -- body it owns. Both the index and the player id are checked.
+            --
+            -- ...AND SCOPE IS NOT BEING USED AS A ROSTER HERE, which is what
+            -- the gate in tools/verify.sh exists to stop. The set of players
+            -- and their states comes off the server broadcast above; scope only
+            -- answers "is there a copy of that ped on this machine to be
+            -- wrong", which is the one question it is actually authoritative
+            -- about. Out of scope there is no local corpse, so there is
+            -- nothing here to fix.
+            local ply = GetPlayerFromServerId(src)  -- scope-ok: a false corpse is a fact about the LOCAL copy of that ped; the roster comes from the server
+            if ply and ply ~= -1 and ply ~= PlayerId() then
+                local ped = GetPlayerPed(ply)  -- scope-ok: same call, same reason -- the ped handle for a player already known to be in scope
+                if ped and ped ~= 0 and DoesEntityExist(ped)
+                   and IsEntityDead(ped) then
+                    -- The mirror carries DISPLAY units; a ped takes engine
+                    -- ones. Never inline this arithmetic (config/match.lua).
+                    local target =
+                        math.floor(BR.ToEngineHp(e.hp or 100.0) + 0.5)
+                    -- A player the ledger has on the floor is not somebody to
+                    -- resurrect INTO a value that keeps them dead -- the same
+                    -- guard correctPed opens with, and for the same reason.
+                    if not BR.IsDeadHp(target) then
+                        falseCorpses = falseCorpses + 1
+                        ResurrectPed(ped)
+                        ClearPedTasksImmediately(ped)
+                        SetEntityHealth(ped, target)
+                        -- Whether that took is the engine's to say, and the
+                        -- next line is the only place it can be asked.
+                        if IsEntityDead(ped) then
+                            falseCorpsesStuck = falseCorpsesStuck + 1
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+Citizen.CreateThread(function()
+    while true do
+        Citizen.Wait(RECONCILE_MS)
+        reconcileFalseCorpses()
+    end
+end)
+
 RegisterNetEvent(BR.Net.DAMAGE_FEED)
 AddEventHandler(BR.Net.DAMAGE_FEED, function(d)
     if not d then return end
@@ -1206,31 +1349,96 @@ end)
 --   passes 0, or no watch at all        the correction never arrived, or the
 --                                       roster called it off. That is a logic
 --                                       fault, and this file's to fix.
+--- ...AND THE ONE THING THIS PRINTOUT MUST NEVER DO AGAIN IS PRINT TWO
+--- DIFFERENT MOMENTS AS THOUGH THEY WERE ONE (#115, round six).
+---
+--- The owner's paste was read as a contradiction inside our own instrument:
+---
+---     ENDED netId 3  target hp 200  src 3
+---       exists 1  health 0  dead 1  fatally injured 1
+---       started 326858ms ago  passes 50  writes 0  resurrects 0
+---       saw a corpse false  ended: deadline
+---
+--- A corpse, and a watch over it that saw nothing. It is not a contradiction
+--- and there is nothing wrong with the detection: `passes 50` at one poll every
+--- WATCH_POLL_MS is SEVEN AND A HALF SECONDS of watching, and the ped was read
+--- 326858ms after that watch began -- so the two lines are five minutes and
+--- eighteen seconds apart. The counters are the watch's life; the reading
+--- underneath them is right now. The ped died with nothing looking at it.
+---
+--- So the age of every number is printed next to it, the reading the watch took
+--- on its way out is printed beside the reading taken now, and a gap between
+--- the two is called what it is.
 local function printWatch(label, netId, w)
     local exists = NetworkDoesNetworkIdExist(netId)
     local p = exists and NetworkGetEntityFromNetworkId(netId) or 0
+    local now = GetGameTimer()
     print(('  %s netId %s  target hp %s  src %s')
         :format(label, tostring(netId), tostring(w.hp), tostring(w.src)))
-    print(('    exists %s  health %s  dead %s  fatally injured %s')
-        :format(tostring(exists),
-                tostring(p ~= 0 and GetEntityHealth(p) or '-'),
-                tostring(p ~= 0 and IsEntityDead(p) or '-'),
-                tostring(p ~= 0 and IsPedFatallyInjured
-                         and IsPedFatallyInjured(p) or '-')))
-    print(('    started %dms ago  passes %d  writes %d  resurrects %d  '
-           .. 'saw a corpse %s  ended: %s')
-        :format(GetGameTimer() - (w.startedAt or GetGameTimer()),
+
+    -- THE WATCH'S OWN LIFETIME. Every one of these is history.
+    print(('    started %dms ago  ran for %dms  passes %d  writes %d  '
+           .. 'resurrects %d  saw a corpse %s  ended: %s')
+        :format(now - (w.startedAt or now),
+                (w.endedAt or now) - (w.startedAt or now),
                 w.passes or 0, w.writes or 0, w.resurrects or 0,
                 tostring(w.sawDead), tostring(w.why or 'still running')))
     print(('    STILL DEAD ON THE LINE AFTER RESURRECTING: %s   <-- true here '
            .. 'means the engine refused the write, not that the logic missed it')
         :format(tostring(w.stillDeadAfterWrite)))
-    print(('    I control this ped: %s')
-        :format(tostring(p ~= 0 and NetworkHasControlOfEntity(p) or '-')))
+
+    -- WHAT THE WATCH SAW LAST, and how long ago that was.
+    if w.endedAt then
+        print(('    AT THE MOMENT IT ENDED (%dms ago): health %s  dead %s')
+            :format(now - w.endedAt,
+                    tostring(w.endHealth or '-'), tostring(w.endDead)))
+    end
+
+    -- ...AND WHAT THE PED IS DOING NOW, which is a different sentence.
+    --
+    -- `a and b or '-'` IS NOT A SAFE WAY TO PRINT A BOOLEAN, and this readout
+    -- was doing it on all four of the facts it exists to report. When the
+    -- native answers FALSE the idiom falls through to '-' -- so "I looked, and
+    -- the answer is no" printed identically to "there was no ped to ask". The
+    -- worst case is the last line: `I control this ped: -` is the single most
+    -- important fact in this issue, and it read as "unknown" when it meant
+    -- "no". Nothing above is worth trusting if the reader cannot tell a false
+    -- from a blank.
+    local function said(v)
+        if v == nil then return '-' end
+        return tostring(v)
+    end
+    if p ~= 0 then
+        print(('    RIGHT NOW: exists %s  health %s  dead %s  fatally injured %s')
+            :format(said(exists), said(GetEntityHealth(p)), said(IsEntityDead(p)),
+                    IsPedFatallyInjured and said(IsPedFatallyInjured(p))
+                        or 'native unavailable'))
+        print(('    I control this ped: %s')
+            :format(said(NetworkHasControlOfEntity(p))))
+    else
+        print(('    RIGHT NOW: exists %s -- there is no ped on this machine for '
+               .. 'that network id, so nothing below could be asked')
+            :format(said(exists)))
+    end
+
+    -- THE SENTENCE THE OWNER SHOULD NOT HAVE HAD TO WORK OUT BY HAND.
+    if w.endedAt and p ~= 0 and IsEntityDead(p) and not w.endDead then
+        print(('    >>> THIS PED DIED %dms AFTER THE WATCH LET GO OF IT. The '
+               .. 'watch is not wrong; nothing was watching.')
+            :format(now - w.endedAt))
+    end
 end
 
 RegisterCommand('brcorpse', function()
     print('=== corpse watch ===')
+    print(('  standing check: found a false corpse %d time(s) this session '
+           .. '(a ped the server calls ALIVE, reading dead here); %d of those '
+           .. 'were STILL dead on the line after the write')
+        :format(falseCorpses, falseCorpsesStuck))
+    print('    found high and stuck ~0  = the corpses are real and being fixed.')
+    print('    found and stuck climbing together = the ENGINE is refusing our')
+    print('      writes to a ped we do not own, and no Lua here can fix that --')
+    print('      the repair has to come from the ped\'s owner.')
     local any = false
     for netId, w in pairs(watching) do
         any = true

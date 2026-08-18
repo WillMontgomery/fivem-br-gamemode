@@ -3757,6 +3757,119 @@ do
     ok(m.loot.items[far.id] ~= nil, 'a corpse cannot pick things up')
 end
 
+-- A REFUSED PICKUP HAS TO SAY SO (#171).
+--
+-- Owner, 2026-08-17: "If I'm already holding the max amount of something and
+-- try to pickup another, show me a toast that says 'you cannot carry more
+-- shields' for example."
+--
+-- Two separate faults were in the way, and neither is visible from the claim
+-- handler reading top to bottom:
+--
+--   * the `carrymax` message read BR.Config.ConsumableById for both the cap and
+--     the name. A THROWABLE is in BR.Config.WeaponById, so three grenades
+--     produced "You can only carry 0 of thoses." -- the wrong number, and a
+--     plural formed by sticking an "s" on the literal fallback string.
+--   * the branch chain had a case for `full`, which BR.Inv.give has never
+--     returned, and none for `noinv`, which it can. A reason with no branch is
+--     a claim that answers with nothing at all.
+--
+-- The end-to-end claims below are what a player actually does. The refusalText
+-- block under them is the property that keeps this fixed: not "carrymax says
+-- the right thing" but "NOTHING can come back empty", which is only provable by
+-- handing it a reason nobody has written a branch for.
+describe('loot.refusal')
+do
+    local m = lootMatch()
+
+    --- Drop one stack on the floor under a player and claim it.
+    --- @return string[] every NOTIFY text that claim sent to `src`
+    --- @return table    the entry, so the caller can check it is still there
+    local function claim(src, stack)
+        local p = BR.Roster.get(src).pos
+        local e = BR.Loot.spawnStack(m, stack, p.x, p.y, p.z)
+        local cx, cy = BR.LootCellOf(e.x, e.y)
+        fire(BR.Net.LOOT_CELL, src, { cx = cx, cy = cy })
+        sent = {}
+        fire(BR.Net.LOOT_CLAIM, src, { id = e.id })
+        local said = {}
+        for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do
+            if s.target == src then said[#said + 1] = s.args[1].text end
+        end
+        return said, e
+    end
+
+    -- Away from the generated layout, so the only thing in reach is what the
+    -- test puts there.
+    standInCell(1, 400, 400)
+    BR.Inv.reset(1)
+
+    -- THE THROWABLE, which is the case that was actively lying. Three grenades
+    -- is the carry ceiling (weapons.lua maxStack), so the fourth is refused.
+    local nade = BR.Config.WeaponById['grenade']
+    BR.Inv.give(1, { item = 'grenade', kind = BR.ItemKind.THROWABLE,
+                     rarity = nade.rarity, count = nade.maxStack })
+    local said = claim(1, { item = 'grenade', kind = BR.ItemKind.THROWABLE,
+                            rarity = nade.rarity, count = 1 })
+    local nadeText = said[1] or ''
+    ok(nadeText:find('Grenades', 1, true) ~= nil,
+        'a refused throwable is named in the plural, not as "of thoses"',
+        ('%q'):format(nadeText))
+    ok(nadeText:find(tostring(nade.maxStack), 1, true) ~= nil,
+        'and the cap quoted is the throwable cap, not a consumable zero',
+        ('%q'):format(nadeText))
+
+    -- THE CONSUMABLE, which worked and had to keep working.
+    BR.Inv.reset(1)
+    local band = BR.Config.ConsumableById['bandage']
+    BR.Inv.give(1, { item = 'bandage', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = band.rarity, count = band.carryMax })
+    local saidB, bandE = claim(1, { item = 'bandage',
+        kind = BR.ItemKind.CONSUMABLE, rarity = band.rarity, count = 1 })
+    ok((saidB[1] or ''):find('Bandages', 1, true) ~= nil,
+        'a refused consumable is named from the config plural',
+        ('%q'):format(saidB[1] or ''))
+    ok(m.loot.items[bandE.id] ~= nil,
+        'and the refused item stays in the world')
+
+    -- THE CRATE PATH IS NOT TOUCHED HERE, AND THAT IS A DECISION.
+    -- tools/test_ringmaster.lua (loot.chest.refusals, loot.chest.husk,
+    -- loot.chest.race) already pins its four silences deliberately. #171 is
+    -- about the LOOSE-ITEM path -- the one the owner walks over -- so this
+    -- block asserts the two ends of that path and leaves the audit's pins
+    -- alone. The husk silence is reachable in play and is reported on the
+    -- issue; see the note in server/loot.lua's husk branch for why the fix
+    -- for it lives in the client and not here.
+
+    -- THE PROPERTY, tested where it can be: silence is unreachable.
+    --
+    -- Driven directly rather than through a claim, because the reasons that
+    -- were silent are the ones the handler cannot currently produce -- which is
+    -- exactly why nobody noticed they had no message. A branch chain could pass
+    -- every test above and still answer nothing to the next reason somebody
+    -- adds; a table with a default cannot.
+    for _, reason in ipairs({ 'carrymax', 'ammofull', 'noinv',
+                              'full', 'somethingaddedlater' }) do
+        -- Called through a guard rather than directly: a missing refusalText
+        -- should REPORT as the silence it is, not crash the suite and take
+        -- every block after this one down with it.
+        local text = BR.Loot.refusalText and BR.Loot.refusalText(reason,
+            { item = 'bandage', kind = BR.ItemKind.CONSUMABLE }) or nil
+        ok(type(text) == 'string' and #text > 0,
+            ('a "%s" refusal still says something'):format(reason),
+            ('%q'):format(tostring(text)))
+    end
+
+    -- The number in the sentence is the number that produced the refusal --
+    -- one function, so the message cannot drift from the rule.
+    ok(BR.Inv.carryMax({ item = 'grenade', kind = BR.ItemKind.THROWABLE })
+        == nade.maxStack,
+        'a throwable carry cap is its own maxStack')
+    ok(BR.Inv.carryMax({ item = 'minishield',
+                         kind = BR.ItemKind.CONSUMABLE }) == nil,
+        'and shields are uncapped, so no shield refusal exists to be heard')
+end
+
 describe('loot.rateLimit')
 do
     local m = lootMatch()
@@ -6260,8 +6373,12 @@ do
             calls = { set = 0, resurrect = 0, cleartasks = 0, request = 0 },
             log = {},
             -- The squadmate's ped, as the SHOOTER's machine sees it.
+            -- `scoped` is whether the NETWORK ID resolves at all on this
+            -- machine. A ped that streams out takes its handle with it and
+            -- comes back with a DIFFERENT one -- see C.restream below.
             mate = { handle = 9000 + netId, netId = netId, hp = MAXHP,
-                     dead = false, dying = false, since = 0, exists = true },
+                     dead = false, dying = false, since = 0, exists = true,
+                     scoped = true, src = opts.src or 2 },
         }
         local m = C.mate
 
@@ -6276,16 +6393,30 @@ do
             if not m.dead and (C.now - m.since) >= SETTLE then m.dead = true end
         end
 
-        env.NetworkDoesNetworkIdExist = function(id) return id == m.netId end
-        env.NetworkGetEntityFromNetworkId = function(id)
-            return id == m.netId and m.handle or 0
+        env.NetworkDoesNetworkIdExist = function(id)
+            return id == m.netId and m.scoped
         end
-        env.DoesEntityExist = function(h) return h == m.handle and m.exists end
+        env.NetworkGetEntityFromNetworkId = function(id)
+            return (id == m.netId and m.scoped) and m.handle or 0
+        end
+        -- Handle 1 is OUR OWN ped (PlayerPedId). It has to exist and be
+        -- readable, because the trap round six guards against is reaching for
+        -- a squadmate and getting ourselves.
+        env.DoesEntityExist = function(h)
+            return h == 1 or (h == m.handle and m.exists)
+        end
         env.GetEntityHealth = function(h)
+            if h == 1 then return C.meDead and 0 or MAXHP end
             if h ~= m.handle then return 0 end
             return m.dead and 0 or m.hp
         end
-        env.IsEntityDead = function(h) return h == m.handle and m.dead end
+        env.IsEntityDead = function(h)
+            if h == 1 then return C.meDead == true end
+            return h == m.handle and m.dead
+        end
+        -- The project's own gamerules.lua pairs this with IsEntityDead, and
+        -- /brcorpse prints it. A settled corpse answers both.
+        env.IsPedFatallyInjured = function(h) return h == m.handle and m.dead end
         --- WHO IS ALLOWED TO WRITE TO THIS PED.
         ---
         --- In network play the ped is owned by ONE machine and a player's ped is
@@ -6351,12 +6482,34 @@ do
         env.GetPlayerServerId = function() return 1 end
         env.PlayerId = function() return 0 end
         env.PlayerPedId = function() return 1 end
+
+        -- THE OTHER WAY TO REACH A PLAYER'S PED, and the one that needs no
+        -- netId on the wire. -1 is "that player is not on this machine", and
+        -- GetPlayerPed(-1) is the LOCAL player -- the trap the production code
+        -- guards against explicitly, so the model has to reproduce it.
+        env.GetPlayerFromServerId = function(src)
+            if src == m.src and m.scoped then return 7 end
+            if src == 1 then return 0 end
+            return -1
+        end
+        env.GetPlayerPed = function(ply)
+            if ply == 7 then return m.handle end
+            if ply == 0 or ply == -1 then return 1 end
+            return 0
+        end
         env.GetPedArmour = function() return 0 end
         env.SetPedArmour = function() end
         env.IsPauseMenuActive = function() return false end
         env.SetFrontendActive = function() end
         env.ExecuteCommand = function() end
-        env.print = function() end
+
+        -- THE CONSOLE, CAPTURED. `/brcorpse` is the instrument this issue is
+        -- now being read through, so the suite has to be able to run it and
+        -- read what it printed -- otherwise the readout is the one part of the
+        -- system nothing tests, which is how a readout comes to disagree with
+        -- itself in front of the owner.
+        C.out = {}
+        env.print = function(s) C.out[#C.out + 1] = tostring(s) end
 
         local handlers = {}
         env.AddEventHandler = function(n, fn)
@@ -6364,7 +6517,8 @@ do
             handlers[n][#handlers[n] + 1] = fn
         end
         env.RegisterNetEvent = function() end
-        env.RegisterCommand = function() end
+        local commands = {}
+        env.RegisterCommand = function(n, fn) commands[n] = fn end
         env.TriggerEvent = function(n, ...)
             for _, fn in ipairs(handlers[n] or {}) do fn(...) end
         end
@@ -6417,6 +6571,41 @@ do
         C.threads = threads
         C.resync = handlers[env.BR.Net.HIT_RESYNC][1]
         C.feed   = handlers[env.BR.Net.DAMAGE_FEED][1]
+
+        -- THREADS THE FILE OWNS FOR ITS WHOLE LIFE, counted once at load so the
+        -- assertions below can go on saying "one watch, not ten" without
+        -- accidentally counting round six's standing check as a watch.
+        C.baseThreads = #threads
+        function C.watches() return #threads - C.baseThreads end
+
+        --- Run `/brcorpse` and hand back exactly what it printed.
+        --- @return table lines
+        function C.brcorpse()
+            C.out = {}
+            commands['brcorpse']()
+            return C.out
+        end
+
+        --- The whole readout as one string, for an `ok()` detail line.
+        function C.corpseText()
+            return table.concat(C.brcorpse(), '\n       ')
+        end
+
+        --- THE PED GOES OUT OF SCOPE AND COMES BACK AS A DIFFERENT HANDLE.
+        ---
+        --- This is ordinary in a battle royale: a squadmate rounds a building,
+        --- the entity is destroyed on this machine, and when they come back
+        --- OneSync re-creates it -- same NETWORK id, new local handle. Anything
+        --- holding the old handle is now writing to nothing at all, silently.
+        --- @param gapMs integer  how long the network id fails to resolve
+        function C.restream(gapMs)
+            m.scoped = false
+            note('ped streamed OUT (network id stops resolving)')
+            C.pump(gapMs or 0)
+            m.handle = m.handle + 1000
+            m.scoped = true
+            note(('ped streamed back IN as handle %d'):format(m.handle))
+        end
 
         --- GTA applies the shooter's own bullet to their local copy, before the
         --- server has seen anything at all. This is the fact every comment in
@@ -6646,10 +6835,10 @@ do
         C.env.BR.State.roster[2] = { state = C.env.BR.PlayerState.ALIVE }
         C.lethal(0)
         C.resync({ netId = 1002, hp = 200, src = 2 })
-        ok(#C.threads == 1,
+        ok(C.watches() == 1,
             tag .. 'a fatal hit that leaves the health number ALONE still '
             .. 'gets a watch',
-            ('%d threads -- %s'):format(#C.threads, C.describe()))
+            ('%d threads -- %s'):format(C.watches(), C.describe()))
         C.pump(settle + 2500)
         ok(C.alive(),
             tag .. '...and the squadmate is still standing afterwards',
@@ -6660,10 +6849,10 @@ do
         D.env.BR.State.roster[2] = { state = D.env.BR.PlayerState.ALIVE }
         D.lethal(26)                                   -- clone 200 -> 174
         D.resync({ netId = 1002, hp = 160, src = 2 })  -- ledger says 60 display
-        ok(#D.threads == 1,
+        ok(D.watches() == 1,
             tag .. 'a clone standing ABOVE the ledger\'s number still gets a '
             .. 'watch when it is dying',
-            ('%d threads -- %s'):format(#D.threads, D.describe()))
+            ('%d threads -- %s'):format(D.watches(), D.describe()))
         D.pump(settle + 2500)
         ok(D.alive(),
             tag .. '...and that squadmate is still standing too',
@@ -6680,9 +6869,9 @@ do
         local C = newClient(1002, { settle = 800 })
         C.lethal(26)
         for _ = 1, 10 do C.resync({ netId = 1002, hp = 200, src = 2 }) end
-        ok(#C.threads == 1,
+        ok(C.watches() == 1,
             'a ten-round burst into one squadmate starts ONE watch, not ten',
-            ('%d threads'):format(#C.threads))
+            ('%d threads'):format(C.watches()))
         C.pump(4000)
         ok(C.alive(), '...and that one watch still stands them back up',
             C.describe())
@@ -6872,18 +7061,289 @@ do
         -- half: the watch that has nothing to do does nothing.
         local C = newClient(1002)
         C.resync({ netId = 1002, hp = 200 })
-        ok(#C.threads == 1,
+        ok(C.watches() == 1,
             'a correction for a ped that looks fine STILL watches -- looking '
             .. 'fine is what a dying ped does',
-            ('%d threads'):format(#C.threads))
+            ('%d threads'):format(C.watches()))
         C.pump(6000)
         ok(C.calls.set == 0 and C.calls.resurrect == 0,
             '...and having nothing to do, it writes nothing at all',
             ('SetEntityHealth x%d, ResurrectPed x%d')
                 :format(C.calls.set, C.calls.resurrect))
-        ok(#C.threads == 0,
+        ok(C.watches() == 0,
             '...and lets go of the thread at the deadline',
-            ('%d threads'):format(#C.threads))
+            ('%d threads'):format(C.watches()))
+    end
+
+    -- ------------------------------------------------------------------------
+    -- ROUND SIX: THE READOUT WAS PRINTING TWO MOMENTS AS ONE (#115).
+    -- ------------------------------------------------------------------------
+    --
+    -- The owner's paste, and it was read as a contradiction inside our own
+    -- instrument -- a corpse, and a watch over it that saw nothing:
+    --
+    --   ENDED   netId 3  target hp 200  src 3
+    --       exists 1  health 0  dead 1  fatally injured 1
+    --       started 326858ms ago  passes 50  writes 0  resurrects 0
+    --       saw a corpse false  ended: deadline
+    --
+    -- IT IS NOT A CONTRADICTION AND IT IS ARITHMETIC, NOT A THEORY. Every pass
+    -- ends in one `Citizen.Wait(WATCH_POLL_MS)`, so fifty passes is seven and a
+    -- half seconds of watching -- and the ped underneath was read 326858ms
+    -- after that watch STARTED. The counters are the watch's life; the reading
+    -- beneath them is the moment somebody typed the command, five minutes and
+    -- eighteen seconds later. Nothing was watching when the ped died.
+    --
+    -- This drives the real /brcorpse and reads what it printed, because a
+    -- readout nothing tests is how a readout comes to disagree with itself in
+    -- front of the owner.
+    do
+        --- Does any printed line contain this?
+        local function saidsomething(lines, needle)
+            for _, l in ipairs(lines) do
+                if l:find(needle, 1, true) then return true end
+            end
+            return false
+        end
+
+        -- Ownership enforced, so the corpse STAYS a corpse and the printout has
+        -- something to be wrong about. This is the owner's paste, reproduced.
+        local C = newClient(3, { settle = 800, src = 3, ownership = true })
+        C.env.BR.State.roster[3] = { state = C.env.BR.PlayerState.ALIVE }
+        C.resync({ netId = 3, hp = 200, src = 3 })
+        C.pump(6000)                      -- the watch lives its budget and ends
+        C.lethal(0)                       -- ...and only NOW does the ped die
+        C.pump(320000)                    -- ...and only then does he type it
+        local out = C.brcorpse()
+
+        ok(saidsomething(out, 'saw a corpse false')
+           and saidsomething(out, 'ended: deadline'),
+            'the owner\'s readout is reproduced: a watch that ended on its '
+            .. 'deadline having seen no corpse',
+            table.concat(out, '\n       '))
+        ok(saidsomething(out, 'RIGHT NOW:') and saidsomething(out, 'dead true'),
+            '...with a ped that is a corpse right now', table.concat(out, '\n       '))
+        ok(saidsomething(out, 'AT THE MOMENT IT ENDED')
+           and saidsomething(out, 'health 200  dead false'),
+            '...and the readout now says what the watch saw LAST -- a healthy, '
+            .. 'living ped -- instead of leaving the two moments to be read as one',
+            table.concat(out, '\n       '))
+        ok(saidsomething(out, 'AFTER THE WATCH LET GO OF IT'),
+            '...and names the gap outright, so the next reader does not have to '
+            .. 'multiply passes by the poll interval to find it',
+            table.concat(out, '\n       '))
+        ok(saidsomething(out, 'ran for '),
+            '...and prints how long the watch actually lived, next to how long '
+            .. 'ago it started', table.concat(out, '\n       '))
+
+        -- AND THE OWNERSHIP ANSWER, WHICH THIS READOUT WAS SWALLOWING. Every
+        -- live fact was printed through `native(p) or '-'`, so FALSE came out
+        -- as '-' and read as "could not ask". On the one line that decides
+        -- whether any of this is fixable from Lua at all, "no" was printing as
+        -- "unknown".
+        ok(saidsomething(out, 'I control this ped: false'),
+            'a native that answers FALSE now prints false -- it used to print '
+            .. '"-", which is what "there was no ped to ask" prints',
+            table.concat(out, '\n       '))
+        ok(saidsomething(out, 'found a false corpse')
+           and not saidsomething(out, 'corrected this session'),
+            'and the standing check counts what it FOUND rather than claiming '
+            .. 'it corrected anything -- under enforced ownership it finds the '
+            .. 'same corpse every sweep and repairs none of them',
+            table.concat(out, '\n       '))
+
+        -- The other half: a ped that is alive must say so, not '-'.
+        local L = newClient(3, { settle = 800, src = 3 })
+        L.resync({ netId = 3, hp = 200, src = 3 })
+        L.pump(6000)
+        ok(saidsomething(L.brcorpse(), 'dead false'),
+            '...and a LIVING ped reads "dead false" rather than "-"',
+            table.concat(L.brcorpse(), '\n       '))
+    end
+
+    -- ------------------------------------------------------------------------
+    -- ...AND THE THING THE READOUT WAS HIDING: THE BUDGET IS A BET (#115).
+    -- ------------------------------------------------------------------------
+    --
+    -- Round four took the guess out of the predicate, round five took it out of
+    -- the door, and both left it in the CLOCK. Before round six these two rows
+    -- straddled WATCH_MS exactly: a death that showed up at 4900ms was
+    -- corrected and one at 5200ms was down for good, permanently, with nothing
+    -- in the client ever looking at that ped again.
+    --
+    -- The standing check makes the number irrelevant, which is the only kind of
+    -- fix this issue has left: a false corpse is "the server says ALIVE and the
+    -- ped here reads dead", and that is answerable at any moment without a
+    -- bullet, a netId, or a deadline.
+    for _, settle in ipairs({ 3500, 4900, 5200, 8000 }) do
+        local C = newClient(3, { settle = settle, src = 3 })
+        C.env.BR.State.roster[3] =
+            { state = C.env.BR.PlayerState.ALIVE, hp = 100.0 }
+        C.lethal(0)
+        C.resync({ netId = 3, hp = 200, src = 3 })
+        C.pump(settle + 3000)
+        ok(C.alive(),
+            ('a death that surfaces %dms after the shot is corrected, whether '
+             .. 'that is inside the watch\'s budget or long outside it')
+                :format(settle),
+            C.describe() .. '\n       ' .. table.concat(C.log, '\n       '))
+    end
+
+    do
+        -- THE OWNER'S OWN GAP, TO SCALE. His readout has the ped dying with
+        -- nothing watching for at least five minutes. One bullet, a watch that
+        -- finds nothing to do, and a corpse a full minute later.
+        local C = newClient(3, { settle = 800, src = 3 })
+        C.env.BR.State.roster[3] =
+            { state = C.env.BR.PlayerState.ALIVE, hp = 100.0 }
+        C.resync({ netId = 3, hp = 200, src = 3 })
+        C.pump(6000)
+        ok(C.alive() and C.calls.resurrect == 0,
+            'a watch with nothing to do still ends having done nothing',
+            C.describe())
+        C.lethal(0)
+        C.pump(60000)
+        ok(C.alive(),
+            'and a false corpse that appears a MINUTE after the last bullet is '
+            .. 'still stood back up -- there is no longer a window to miss',
+            C.describe() .. '\n       ' .. table.concat(C.log, '\n       '))
+    end
+
+    -- ------------------------------------------------------------------------
+    -- CANDIDATE 1, EXECUTED: DOES THE WATCH HOLD A STALE PED HANDLE?
+    -- ------------------------------------------------------------------------
+    --
+    -- It does not, and this is the test that says so rather than a reading of
+    -- the source. A ped that leaves scope and comes back is a NEW local handle
+    -- on the same network id, and the watch re-resolves the id every pass -- so
+    -- it follows. What it does NOT survive is the gap itself: while the id
+    -- fails to resolve the watch stops with `netid gone`, on the comment's word
+    -- that "OneSync re-created it; the new copy is correct". The new copy is
+    -- not correct, and before round six nothing looked again.
+    do
+        local C = newClient(3, { settle = 200, src = 3 })
+        C.env.BR.State.roster[3] =
+            { state = C.env.BR.PlayerState.ALIVE, hp = 100.0 }
+        C.resync({ netId = 3, hp = 200, src = 3 })
+        C.pump(500)
+        local was = C.mate.handle
+        C.restream(0)                       -- new handle, id never stops resolving
+        ok(C.mate.handle ~= was, 'the ped came back as a different handle',
+            ('%d -> %d'):format(was, C.mate.handle))
+        C.lethal(0)
+        C.pump(2000)
+        ok(C.alive(),
+            'a watch follows its ped through a handle change -- it resolves the '
+            .. 'network id every pass, so candidate 1 is not the fault',
+            C.describe() .. '\n       ' .. table.concat(C.log, '\n       '))
+
+        -- ...and the same thing WITH a scope gap, which does kill the watch.
+        local D = newClient(3, { settle = 200, src = 3 })
+        D.env.BR.State.roster[3] =
+            { state = D.env.BR.PlayerState.ALIVE, hp = 100.0 }
+        D.resync({ netId = 3, hp = 200, src = 3 })
+        D.pump(500)
+        D.restream(300)
+        D.lethal(0)
+        D.pump(3000)
+        ok(D.watches() == 0,
+            'a scope gap DOES end the watch outright (`netid gone`)',
+            ('%d watches'):format(D.watches()))
+        ok(D.alive(),
+            '...and the ped that comes back dead is corrected anyway, because '
+            .. 'the standing check never needed the network id',
+            D.describe() .. '\n       ' .. table.concat(D.log, '\n       '))
+    end
+
+    -- ------------------------------------------------------------------------
+    -- AND THE THREE WAYS THE STANDING CHECK COULD BE #115 INVERTED.
+    -- ------------------------------------------------------------------------
+    --
+    -- Every previous round of this fix has been dangerous in the same direction:
+    -- something that stands a body up when the body was the truth. A check that
+    -- runs forever, on every player, is the most dangerous shape yet -- so the
+    -- three bodies it must never touch are pinned here.
+    do
+        -- 1. A DOWNED TEAMMATE IS POSED, NOT BROKEN. client/dbno.lua lays them
+        --    out with NetworkResurrectLocalPlayer and holds them there.
+        --    ClearPedTasksImmediately on that would strip the pose and T-pose a
+        --    player who is waiting to be revived -- rounds three and four's bug
+        --    with a new hat.
+        local C = newClient(3, { settle = 100, src = 3 })
+        C.env.BR.State.roster[3] =
+            { state = C.env.BR.PlayerState.DBNO, hp = 5.0 }
+        C.lethal(0)
+        C.pump(3000)
+        ok(C.calls.resurrect == 0 and C.calls.cleartasks == 0,
+            'a DBNO teammate is never stood up by the standing check -- the '
+            .. 'server says DBNO rather than ALIVE exactly so this can tell',
+            ('ResurrectPed x%d, ClearPedTasksImmediately x%d')
+                :format(C.calls.resurrect, C.calls.cleartasks))
+
+        -- 2. A REAL CORPSE STAYS A CORPSE.
+        local D = newClient(3, { settle = 100, src = 3 })
+        D.env.BR.State.roster[3] =
+            { state = D.env.BR.PlayerState.DEAD, hp = 0.0 }
+        D.lethal(0)
+        D.pump(3000)
+        ok(not D.alive() and D.calls.resurrect == 0,
+            'a player the server says is OUT is left where they fell',
+            D.describe())
+
+        -- 3. OUR OWN BODY IS NOT OURS TO TOUCH FROM HERE. GetPlayerPed(-1) is
+        --    the local player, so a squadmate who is not on this machine
+        --    resolves to US -- and our own corpse belongs to client/dbno.lua.
+        --    S.me.src is deliberately cleared: with it set, the src comparison
+        --    alone would carry this, and the guard that has to hold is the one
+        --    that survives an unseeded mirror early in a session.
+        local E = newClient(3, { settle = 100, src = 3 })
+        E.env.BR.State.me.src = nil
+        E.env.BR.State.roster[1] =
+            { state = E.env.BR.PlayerState.ALIVE, hp = 100.0 }
+        E.meDead = true
+        E.pump(3000)
+        ok(E.calls.resurrect == 0 and E.calls.set == 0,
+            'and our own dead ped is never resurrected from here, even with an '
+            .. 'unseeded mirror',
+            ('ResurrectPed x%d, SetEntityHealth x%d')
+                :format(E.calls.resurrect, E.calls.set))
+    end
+
+    -- ------------------------------------------------------------------------
+    -- THE SERVER IS NOT SWALLOWING BULLETS, AND THAT IS WORTH PINNING.
+    -- ------------------------------------------------------------------------
+    --
+    -- "The correction never arrived" is one of the readings /brcorpse invites,
+    -- and it is worth being able to rule out from the suite rather than from
+    -- the console. Every round of friendly fire produces exactly one HIT_RESYNC
+    -- to the shooter -- so a watch that saw nothing saw nothing because there
+    -- was nothing to see, not because it was never told.
+    do
+        squadMatch(2)
+        local pistol = BR.Config.WeaponById['pistol']
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                         count = 1, clip = pistol.clip })
+        BR.Inv.of(1).ammo[BR.AmmoType.LIGHT] = 200
+        BR.Inv.of(1).active = 1
+        local delivered, shots = 0, 12
+        for _ = 1, shots do
+            fakeTime = fakeTime + 120
+            sent = {}
+            fire('weaponDamageEvent', 1, 1, {
+                damageType = 3, weaponType = pistol.hash, hitComponent = 0,
+                weaponDamage = 26, hitGlobalIds = { 1002 },
+            })
+            for _, s in ipairs(sent) do
+                if s.event == BR.Net.HIT_RESYNC and s.target == 1 then
+                    delivered = delivered + 1
+                end
+            end
+        end
+        ok(delivered == shots,
+            'every round of a friendly-fire burst reaches the shooter as '
+            .. 'exactly one correction',
+            ('%d corrections for %d bullets'):format(delivered, shots))
     end
 end
 
