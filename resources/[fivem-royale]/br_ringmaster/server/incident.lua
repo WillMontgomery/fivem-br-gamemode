@@ -177,10 +177,27 @@ local function attemptWrite(payload, token, attempt)
 
             -- Back to br_core, so the next incident this match can point at this
             -- one. Its handler is guarded; br_core being absent is fine.
+            --
+            -- `reporterLicense` IS FORWARDED, NOT LOOKED UP (#180). It is a
+            -- field of the payload br_core built and handed us; echoing it back
+            -- costs nothing and is the only way the far end can know WHO filed
+            -- at the moment the courtesy notice goes out -- which is the moment
+            -- it has to skip them.
+            --
+            -- ABSENT ON AN ANTICHEAT FILING, and that is load bearing rather
+            -- than incidental. `BR.IncidentBuild.fromRefusal` sets no reporter,
+            -- so this key is nil, so it does not travel -- and br_core reads
+            -- "there is no reporter" rather than a sentinel that matches
+            -- nobody. Do not default it here.
+            --
+            -- IT DOES NOT GO ON THE OUTBOX COPY ABOVE. That envelope is the
+            -- console's, its field set is fixed, and the console already has
+            -- the reporter on the row it reads from DynamoDB.
             TriggerEvent('br:incident:filed', {
                 incidentId     = id,
                 matchId        = payload.matchId,
                 subjectLicense = payload.subjectLicense,
+                reporterLicense = payload.reporterLicense,
             })
 
             print(('[br_ringmaster] incident %s filed (%s, %s)%s')

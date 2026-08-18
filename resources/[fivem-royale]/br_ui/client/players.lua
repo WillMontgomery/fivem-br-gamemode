@@ -112,30 +112,15 @@ local NO_PANEL = {
 --- correct.
 local myState = nil
 
---- The key this panel is CURRENTLY on, as a readable label, or '' when it is
---- on none.
+--- HOW LONG THE KILL PROMPT STANDS, in milliseconds (#177).
 ---
---- MIRRORED FOR THE SAME REASON `myState` IS, off the same wire. The bindings
---- live in br_core/client/keybinds.lua and this is a different Lua state, so
---- BR.Keys.labelFor -- the authority every world prompt asks -- is not callable
---- from here. What IS available is the table that function feeds: BR.Keys.push
---- builds a row per binding with the key that actually works on this client and
---- sends it as BR.Nui.KEYBINDS, and it re-sends on `br:ui:ready`, on a rebind
---- and on a reset. So this follows a rebind by construction rather than by a
---- cache that has to be invalidated.
----
---- IT IS THE SAME SOURCE THE PANEL ALREADY USES. PlayerList.tsx reads the
---- `brplayers` row out of this exact envelope to know which key closes it. Two
---- readers of one table beats a second answer to the same question -- this
---- project has already shipped a prompt naming a key nothing was listening to
---- (#129), and the fix was to stop having two places that knew.
----
---- EMPTY MEANS UNBOUND AND IS NOT A GAP. `BR.Keys.push` sends '' for a binding
---- with no key, and the prompts below name the panel instead of naming a key.
---- A prompt that says "press F2" when nothing is listening on F2 turns "this
---- feature is unavailable" into "this feature is broken", and the player cannot
---- tell those apart from a chair.
-local myKey = ''
+--- ONE NUMBER FOR THE TOAST AND FOR THE KEY, and that is the entire reason it is
+--- a constant rather than two literals. The prompt tells the player to press
+--- TAB; br_core holds TAB for exactly as long as this says. Two numbers would
+--- eventually differ, and every way they can differ is bad: a key that stops
+--- working while the sentence offering it is still on screen, or a key that
+--- swallows an inventory press seconds after the reason for it has faded.
+local NUDGE_MS = 10000
 
 --- Reconcile the focus stack to the state the page asked for.
 ---
@@ -223,17 +208,20 @@ AddEventHandler('br:ui:sendLocal', function(kind, data)
         return
     end
 
-    -- The key this panel is on, so the two prompts below can name it. See
-    -- `myKey`: this is the same row PlayerList.tsx reads to know what closes it.
-    if kind == BR.Nui.KEYBINDS then
-        for _, row in ipairs(data.actions or {}) do
-            if row.command == 'brplayers' then
-                myKey = type(row.key) == 'string' and row.key or ''
-                break
-            end
-        end
-        return
-    end
+    -- BR.Nui.KEYBINDS IS NO LONGER READ HERE, AND ITS ABSENCE IS DELIBERATE
+    -- (#177, #180). This file mirrored the `brplayers` row so the two prompts
+    -- below could name whichever key the player had the panel bound to. Neither
+    -- prompt names a resolved key any more -- one says tilde outright and the
+    -- other says TAB, both fixed, for the reasons written at the prompts -- so
+    -- the mirror had no reader. It is DELETED rather than left updating a
+    -- variable nothing asks about: an unread field in the one part of this
+    -- interface that has already been got wrong twice is not a spare part, it is
+    -- a thing the next reader has to disprove.
+    --
+    -- THE ENVELOPE ITSELF IS UNTOUCHED and still arrives. PlayerList.tsx reads
+    -- the same `brplayers` row out of it to know which key CLOSES the panel,
+    -- which is a live question about a rebindable key and is answered where it
+    -- is asked.
 
     -- THE VERDICT SCREEN IS ARRIVING, SO THE PANEL GOES (#169).
     --
@@ -377,45 +365,77 @@ AddEventHandler(BR.Net.REPORT_RESULT, function(res)
 end)
 
 --[[
-    THE TWO PROMPTS, AND THE SENTENCES ARE WRITTEN HERE (#168, #169).
+    THE TWO PROMPTS, AND THE SENTENCES ARE WRITTEN HERE (#168, #169, #177, #180).
 
-    THE SERVER SENDS AN OCCASION, NEVER TEXT. Both lines name the key this panel
-    is on and only this side knows which key that is -- it is rebindable, the
-    engine and the raw layer can disagree about it, and a hint naming a key
-    nothing is listening to is worse than no hint at all. So the wire carries
-    `kind` (and, for the nudge, a display name the kill feed has already shown
-    this player) and the prose is assembled against `myKey`.
+    THE SERVER SENDS AN OCCASION, NEVER TEXT. The wire carries `kind` (and, for
+    the nudge, a display name the kill feed has already shown this player) and
+    the prose is assembled here.
 
     WHO GETS THEM IS NOT DECIDED HERE AND MUST NOT BE. The server withholds the
-    first from the player the incident is about, and answers the second only for
-    somebody who was actually killed by somebody with a case open. A client that
-    decided either for itself would be a client that knows who is under
+    first from the player the incident is about AND from the player who filed it
+    (#180), and answers the second only for somebody who was actually killed by
+    somebody with a case open and has not already named them (#177). A client
+    that decided either for itself would be a client that knows who is under
     suspicion, which is the whole thing this feature is not allowed to leak.
 
     THEY RENDER AS NOTICES, which is where every other server-originated line in
     this game appears, bottom of the screen beside the radar. Not the DUI prompt
     -- that is a world-anchored interaction ring for a key being HELD, and this
     is a piece of news.
-]]
 
---- "press F2", or a way to say it that names no key at all.
-local function pressPhrase()
-    if myKey ~= '' then return ('pressing %s'):format(myKey) end
-    -- No binding. Name the surface rather than a key, and the player can bind
-    -- one in Settings -- where the same table this reads is what the screen
-    -- lists.
-    return 'opening the player list'
-end
+    ═══ ONE SAYS TILDE, THE OTHER SAYS TAB, AND THAT IS NOT A BUG ═══
+
+    Read the two sentences below together and they look like a contradiction that
+    somebody forgot to reconcile. They are not. They are DIFFERENT ACTIONS that
+    happen to be offered by the same feature, and the owner specified both keys
+    explicitly, in #180 and #177 respectively:
+
+      tilde  opens the PLAYER LIST, so a new report can be filed against anybody
+             in the match. It is the panel's own latch (`brplayers`).
+      TAB    on the kill prompt, CORROBORATES the case that already exists
+             against the player who just killed you, in one press, with no panel
+             involved at all (BR.Net.REPORT_CORROBORATE).
+
+    Reconciling them would mean deleting one of the two actions. If a future
+    issue reads this as an inconsistency, it is reading two verbs as one.
+
+    ═══ AND NEITHER KEY IS RESOLVED FROM THE BINDING ANY MORE ═══
+
+    #168 argued -- correctly, for what it was solving -- that a prompt must name
+    the key the player actually has bound, because this project shipped a prompt
+    naming a key nothing was listening to (#129). A `pressPhrase()` helper read
+    the `brplayers` row off the keybinds envelope and fell back to naming the
+    panel when the binding was empty.
+
+    #180 OVERRIDES THAT FOR THE FIRST SENTENCE, ON THE OWNER'S CALL, and the
+    reason is in the sentence itself: it now teaches players WHERE the key is
+    ("above TAB on your keyboard"), which a resolved label cannot do -- a label
+    is a name, not a location. The trade is stated rather than hidden: a player
+    who rebinds the player list off tilde is told about a key they no longer
+    have. That is a worse sentence for a rare player and a better one for
+    everybody landing in their first match, which is who the notice is for.
+
+    #177 OVERRIDES IT FOR THE SECOND, for a different and stronger reason: TAB
+    here is not the player list under another name, it is a separate action that
+    lives on the kill prompt and nowhere else. There is no binding to resolve.
+
+    So `pressPhrase()` and the `myKey` mirror that fed it are both gone. Do not
+    reintroduce them for these two lines without reading #180 first.
+]]
 
 RegisterNetEvent(BR.Net.REPORT_HINT)
 AddEventHandler(BR.Net.REPORT_HINT, function(d)
     if type(d) ~= 'table' then return end
 
     if d.kind == 'exists' then
+        -- VERBATIM, AS #180 SPECIFIES IT. Punctuation included -- the full stop
+        -- inside the closing parenthesis is the owner's and is not a typo to be
+        -- tidied. tools/test_client.lua compares this against the issue's own
+        -- string, so a well-meant edit fails the build rather than the playtest.
         TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
-            text = ('See something suspicious? You can report players by %s. '
-                .. 'As a bonus, all accurate reports are rewarded with Volts.')
-                :format(pressPhrase()),
+            text = 'See something suspicious? You can report players by pressing '
+                .. 'tilde (above TAB on your keyboard.) As a bonus, all accurate '
+                .. 'reports are rewarded with Volts.',
             tone = 'info', key = 'report.exists', ms = 12000,
         })
         return
@@ -424,11 +444,23 @@ AddEventHandler(BR.Net.REPORT_HINT, function(d)
     if d.kind == 'killer' then
         local name = type(d.name) == 'string' and d.name ~= '' and d.name or 'them'
         TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
-            text = myKey ~= ''
-                and ('Suspect cheating? Press %s to report %s.'):format(myKey, name)
-                or ('Suspect cheating? Open the player list to report %s.'):format(name),
-            tone = 'warn', key = 'report.nudge', ms = 10000,
+            text = ('Suspect cheating? Press TAB to report %s.'):format(name),
+            tone = 'warn', key = 'report.nudge', ms = NUDGE_MS,
         })
+
+        -- AND THE KEY IS ARMED FOR EXACTLY AS LONG AS THE SENTENCE IS UP (#177).
+        --
+        -- br_core owns the keyboard -- this resource cannot see BR.Keys, and TAB
+        -- is the inventory key, so something on that side has to decide which of
+        -- the two a press means. `br:report:armCorroborate` is answered in
+        -- br_core/client/keybinds.lua, which borrows the press, sends
+        -- REPORT_CORROBORATE and hands the key straight back.
+        --
+        -- FIRED AFTER THE TOAST, so a client where the bridge is missing still
+        -- shows the prompt rather than dying before it. The prompt would then be
+        -- a lie, which is why the arming lives one line away from the sentence
+        -- and not in another file.
+        TriggerEvent('br:report:armCorroborate', NUDGE_MS)
     end
 end)
 

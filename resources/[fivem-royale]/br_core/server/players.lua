@@ -90,9 +90,19 @@ local subjects = {}
 ---
 --- WHY THIS EXISTS AT ALL: br_ddb mints the incident id, so at the moment a
 --- report is accepted there is nothing to pay AGAINST. The id comes back
---- seconds later on `br:incident:filed`, which carries the match and the
---- subject and -- correctly -- says nothing about who reported. This is the
---- one table that can join the two.
+--- seconds later on `br:incident:filed`, and this is the table that joins the
+--- two.
+---
+--- THAT ACKNOWLEDGEMENT NOW CARRIES `reporterLicense` TOO (#180), which makes
+--- this queue a SECOND route to a fact the envelope states directly -- and
+--- saying so is the point of this paragraph. The field was added for the
+--- courtesy notice's audience, in server/incident.lua, and the reward pairing
+--- was deliberately left on this queue rather than moved in the same change:
+--- collapsing them is a change to who gets paid, on the path a playtest of the
+--- Volts loop is about to walk, and it belongs in its own commit with its own
+--- assertions. Whoever does it deletes this table, `awaitAck`, `takeAck` and
+--- the FIFO approximation below -- the ack pairs exactly and the approximation
+--- stops being needed.
 ---
 --- A QUEUE PER SUBJECT, NOT A SINGLE SLOT. Two reporters submitting inside the
 --- acknowledgement window both see an empty `prior` and both open a case; that
@@ -803,7 +813,8 @@ AddEventHandler('br:incident:filed', function(ack)
 end)
 
 --[[
-    "SUSPECT CHEATING? PRESS <KEY> TO REPORT <NAME>." -- the answer half (#169).
+    "SUSPECT CHEATING? PRESS TAB TO REPORT <NAME>." -- the answer half (#169),
+    and the one-press action behind it (#177).
 
     ═══ THE CLIENT SENDS NOTHING, AND THAT IS THE DESIGN ═══
 
@@ -832,69 +843,208 @@ end)
     this match, held in `nudged` -- so a client that fires this every frame gets
     one answer, and a player killed twice by the same suspect is not nagged
     twice about the same case.
+
+    ═══ AND IT IS ONE ACTION, NOT AN INVITATION TO THE PANEL (#177) ═══
+
+    The prompt used to point at the player list, which is five steps to say "yes,
+    that one too" about a case the server had ALREADY resolved before deciding to
+    offer the prompt at all. The key now submits the corroboration outright, over
+    REPORT_CORROBORATE, and that event carries no fields for the same reason this
+    one does not.
+
+    ONE TIME PER OFFENDER, AND `nudged` WAS THE WRONG LATCH FOR IT. It suppresses
+    a second PROMPT within one match and knows nothing about the report `usage`
+    table -- so a player who reported somebody from the panel and was then killed
+    by them got the prompt anyway, inviting a second bite at a case already
+    carrying their name. `corroborationFor` below asks BOTH questions, and it is
+    the ONE function that decides whether the prompt is shown AND whether the key
+    does anything, so the two cannot drift apart. `nudged` stays for what it is
+    actually good at: not nagging somebody who ignored the prompt the first time.
+
+    THE SLOT IT SPENDS IS `usage.named`, the same per-(reporter, target, match)
+    set the panel spends, so corroborating from the prompt and reporting from the
+    panel cost the same thing and cannot both be done to one player. It does NOT
+    spend a SUBMISSION (`usage.count`): one keypress is not one of the three trips
+    to the panel a player gets, and charging it would quietly take a third of the
+    allowance away from somebody who pressed a key they were told to press.
 ]]
 
 --- [matchId] = { [reporterLicense] = { [killerLicense] = true } }
 local nudged = {}
 
-RegisterNetEvent(BR.Net.REPORT_KILLED)
-AddEventHandler(BR.Net.REPORT_KILLED, function()
-    local src = source
-
+--- Everything both halves of the prompt need, or nil if there is no prompt.
+---
+--- ONE RESOLVER FOR THE OFFER AND THE ACTION. These were going to be two
+--- handlers doing the same six lookups, which is the shape where an offer is
+--- made on one set of conditions and honoured on another -- and the failure that
+--- produces is a key the player was TOLD to press doing nothing at all, in
+--- silence. Asking once means the prompt is shown exactly when the keypress
+--- would work.
+---
+--- @param src number
+--- @return table|nil  { me, killer, kLicense, myLicense, open, usage }
+local function corroborationFor(src)
     local me = BR.Roster.get(src)
-    if not me or not me.matchId then return end
+    if not me or not me.matchId then return nil end
 
     -- ONLY THE DEAD ASK. A living player has not been killed by anybody, so
     -- there is no killer to resolve and no occasion for the prompt. DBNO is
     -- excluded too: being knocked is not being killed, and the player who
     -- knocked you may yet be the one who revives nobody.
-    if me.state ~= BR.PlayerState.DEAD then return end
+    if me.state ~= BR.PlayerState.DEAD then return nil end
 
     -- THE SERVER'S OWN ATTRIBUTION, not the client's claim -- the same function
     -- combat.lua uses to decide who gets the kill, so the player named here is
     -- exactly the player named in the kill feed. It already applies the assist
     -- window, refuses self-attribution and refuses a killer who has left.
     local killerSrc = BR.Combat and BR.Combat.attributedKiller(me)
-    if not killerSrc then return end
+    if not killerSrc then return nil end
 
     local killer = BR.Roster.get(killerSrc)
-    if not killer or killer.matchId ~= me.matchId then return end
+    if not killer or killer.matchId ~= me.matchId then return nil end
 
     local kBy = BR.Identity and BR.Identity.ofPlayer(killerSrc)
     local kLicense = kBy and BR.Identity.qualified('license', kBy.license)
-    if not kLicense then return end
-
-    -- THE ONE QUESTION, ASKED THE WAY EVERY OTHER PART OF THIS FILE ASKS IT.
-    -- `priorFor` is fed by `br:incident:filed`, so it answers for cases opened
-    -- by the anticheat as well as by a report -- which is the pairing worth
-    -- nudging toward: somebody the machine already flagged, named independently
-    -- by a human who just fought them.
-    local prior = BR.Incident and BR.Incident.priorFor(me.matchId, kLicense) or {}
-    if #prior == 0 then return end
+    if not kLicense then return nil end
 
     -- A player with no license cannot be rate limited, and cannot be paid
     -- either, so there is nothing to gain by prompting them.
     local myBy = BR.Identity and BR.Identity.ofPlayer(src)
     local myLicense = myBy and BR.Identity.qualified('license', myBy.license)
-    if not myLicense then return end
+    if not myLicense then return nil end
 
-    local m = nudged[me.matchId]
+    -- DOES THIS PLAYER HAVE A CASE OPEN AT ALL -- NOT "IN THIS ROUND" (#177).
+    --
+    -- This asked `priorFor(me.matchId, ...)` until now, and that map is dropped
+    -- at `br:match:destroyed`, so a case still sitting in `pending_review` from
+    -- a previous day was invisible and the prompt never fired (owner,
+    -- 2026-08-18). It is backwards from what the prompt is for: an OLDER open
+    -- case is the better corroboration target, because it has survived long
+    -- enough to still be under review.
+    --
+    -- `openFor` IS FED BY THE SAME `br:incident:filed` ACKNOWLEDGEMENT, so it
+    -- still answers for cases opened by the anticheat as well as by a report --
+    -- which is the pairing worth nudging toward: somebody the machine already
+    -- flagged, named independently by a human who just fought them.
+    --
+    -- THE REPORT-SUBMIT PATH ABOVE DELIBERATELY DID NOT MOVE WITH IT. It still
+    -- asks the match-scoped `priorFor`, because that question is about which
+    -- cases get OPENED and the answer there must stay per match -- three rounds
+    -- of cheating are three things worth telling an admin about (see the
+    -- teardown note below and the one in server/incident.lua). Widening both
+    -- with one edit would have changed filing policy as a side effect of fixing
+    -- a prompt.
+    local open = BR.Incident and BR.Incident.openFor(kLicense) or {}
+    if #open == 0 then return nil end
+
+    -- ALREADY NAMED THIS PLAYER THIS MATCH -- reported from the panel, or
+    -- corroborated from this very prompt (#177 part 4). One action per offender:
+    -- there is nothing left to offer and nothing left to press.
+    local u = usageFor(myLicense, me.matchId)
+    if u.named[kLicense] then return nil end
+
+    return {
+        me = me, killer = killer,
+        kLicense = kLicense, myLicense = myLicense,
+        open = open, usage = u,
+    }
+end
+
+RegisterNetEvent(BR.Net.REPORT_KILLED)
+AddEventHandler(BR.Net.REPORT_KILLED, function()
+    local src = source
+
+    local c = corroborationFor(src)
+    if not c then return end
+
+    local m = nudged[c.me.matchId]
     if not m then
         m = {}
-        nudged[me.matchId] = m
+        nudged[c.me.matchId] = m
     end
-    local mine = m[myLicense]
+    local mine = m[c.myLicense]
     if not mine then
         mine = {}
-        m[myLicense] = mine
+        m[c.myLicense] = mine
     end
-    if mine[kLicense] then return end
-    mine[kLicense] = true
+    if mine[c.kLicense] then return end
+    mine[c.kLicense] = true
 
     -- NO ID AND NO LICENSE ON THE WIRE, only the display name the kill feed has
-    -- already put on this player's screen. The panel resolves the target the
-    -- same way it always has, from the list the server sends it.
-    TriggerClientEvent(BR.Net.REPORT_HINT, src, { kind = 'killer', name = killer.name })
+    -- already put on this player's screen. The client writes the sentence; since
+    -- #177 the key in it is a FIXED "TAB", because the action is this file's
+    -- REPORT_CORROBORATE rather than the player-list binding.
+    TriggerClientEvent(BR.Net.REPORT_HINT, src, { kind = 'killer', name = c.killer.name })
+end)
+
+--- "Yes, that one too." One press, no panel (#177 part 3).
+RegisterNetEvent(BR.Net.REPORT_CORROBORATE)
+AddEventHandler(BR.Net.REPORT_CORROBORATE, function()
+    local src = source
+
+    -- SILENT WHEN IT DOES NOT APPLY, and that is deliberate rather than lazy.
+    -- Every refusal this could speak -- "they have no case", "you already named
+    -- them" -- is a fact about somebody else's standing, and an endpoint that
+    -- answered them differently would be the enumeration oracle the whole
+    -- no-payload design exists to prevent. An honest client only reaches this
+    -- having been shown the prompt, and the prompt was decided by this same
+    -- function, so the reachable path is the one that succeeds.
+    local c = corroborationFor(src)
+    if not c then return end
+
+    -- THE NEWEST CASE, which is what `openFor` orders for. An older case is
+    -- worth prompting about; a corroboration still belongs on the most recent
+    -- one, so an admin reading top-down sees the live thread.
+    local incidentId = c.open[#c.open]
+
+    local s = subjectIn(c.me.matchId, c.kLicense)
+    s.reports = s.reports + 1
+    s.seq = s.seq + 1
+
+    TriggerEvent('br:ringmaster:corroborate', {
+        incidentId = incidentId,
+        matchId    = c.me.matchId,
+        license    = c.kLicense,
+        name       = c.killer.name,
+        -- SEQ AND COUNT COME FROM THE SAME `subjects` RECORD THE PANEL'S
+        -- CORROBORATIONS USE, so one player's report and another's keypress are
+        -- numbered by one counter rather than two that could disagree.
+        --
+        -- AND THE ONE THING THAT IS NOW APPROXIMATE, said out loud: `subjects`
+        -- is per match and the case may not be. A day-old case corroborated in
+        -- tonight's round restarts at 2, so the console can see a repeated seq
+        -- where it previously could only see a gap. It is a triage hint on a
+        -- channel that is allowed to drop messages, the corroboration itself is
+        -- correct, and numbering it per incident would mean moving the anticheat
+        -- path (which numbers from damage.lua's doubling counter) at the same
+        -- time. Left as it is, on purpose, rather than half-moved.
+        seq        = s.seq,
+        count      = s.reports,
+        -- THE PROMPT ASKED "SUSPECT CHEATING?", so the category is the answer to
+        -- that question and not a menu the player never saw.
+        reason     = BR.Config.defaultReportCategory(),
+        -- NO SEVERITY, for the reason BR.IncidentBuild.fromReport gives.
+    })
+
+    -- PAID LIKE ANY OTHER CORROBORATOR (#168). The id is already in hand, so
+    -- the claim is immediate -- the acknowledgement dance the opening path needs
+    -- does not apply to a case that already exists.
+    claimReward(incidentId, c.myLicense, c.me.matchId)
+
+    -- SPENT. This is what stops the prompt being offered a second time and what
+    -- makes a later panel report of the same player refuse, and it is one write
+    -- rather than a flag of its own -- see the block comment above.
+    c.usage.named[c.kLicense] = true
+
+    -- THE SAME ANSWER A PANEL REPORT GETS, WORD FOR WORD. "Your report was added
+    -- to an existing case" would leak that the person they just named is already
+    -- under review, which is precisely what an offender's friend would go
+    -- looking for -- so the player is told a report was sent, because one was.
+    answer(src, true, 1, nil)
+
+    print(('[br_core] report: %s corroborates case %s about %s from the kill prompt (report %d, seq %d)')
+        :format(tostring(c.me.name), tostring(incidentId),
+                tostring(c.killer.name), s.reports, s.seq))
 end)
 
 --- Reports do not survive the match they were filed in.

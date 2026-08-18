@@ -294,19 +294,37 @@ can be double-counted.
   less than none: the console's "who reports everybody" signal depends on knowing
   who filed it.
 
-**"Suspect cheating? Press &lt;key&gt; to report &lt;name&gt;" carries no
-subject on the wire.** `BR.Net.REPORT_KILLED` takes **no payload at all**. The
-server resolves the asker's own killer from the roster and the damage records it
-already keeps — the same attribution the kill feed uses — and answers about that
-player or answers nothing. The obvious shape, "is player 14 under suspicion?", is
-a probe: a modified client would walk the roster and read back exactly the list
-this feature must never produce. Rate-limiting a probe does not stop it, it slows
-it. **The guard is the absence of a parameter, not a check on one.**
+**"Suspect cheating? Press TAB to report &lt;name&gt;" carries no subject on the
+wire, and neither does pressing it.** `BR.Net.REPORT_KILLED` and
+`BR.Net.REPORT_CORROBORATE` both take **no payload at all**. The server resolves
+the asker's own killer from the roster and the damage records it already keeps —
+the same attribution the kill feed uses — and answers about that player or
+answers nothing. The obvious shape, "is player 14 under suspicion?", is a probe:
+a modified client would walk the roster and read back exactly the list this
+feature must never produce. Rate-limiting a probe does not stop it, it slows it.
+**The guard is the absence of a parameter, not a check on one.**
 
 It requires state DEAD — being knocked down is not being killed — a killer the
-server itself attributed, and a case already open on that killer. What a player
-can still learn is one bit about one player they were already looking at, and
-only after being killed by them. The subject learns nothing, here or anywhere.
+server itself attributed, and a case open on that killer. What a player can still
+learn is one bit about one player they were already looking at, and only after
+being killed by them. The subject learns nothing, here or anywhere.
+
+**Widening the lookup did not widen the question (#177).** The prompt now fires
+for a case open against the killer in *any* match rather than only the current
+one, which is a larger set of cases and the same single bit about the same single
+player. The map it reads (`BR.Incident.openFor`) is license-keyed, lives entirely
+server-side, and is reached only by that resolver — there is no verb anywhere
+that accepts a license from a client, and br_ddb still has no Query or Scan, so
+nothing on the box can enumerate cases at all.
+
+**Both halves are decided by one function.** `corroborationFor` in
+`br_core/server/players.lua` decides whether the prompt is shown *and* whether
+the keypress does anything. A client that skips the prompt and sends
+`REPORT_CORROBORATE` on its own gets exactly what an honest one would: nothing,
+unless it was genuinely owed. The failed paths answer **silently** rather than
+explaining themselves — "they have no case" and "you already named them" are
+facts about somebody else's standing, and an endpoint that distinguished them
+would be the oracle the payload-free design exists to prevent.
 
 **One event, three answers, and `weaponType` gives all of them.**
 `weaponDamageEvent` fires for everything that hurts a player — gunfire, melee,

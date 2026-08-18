@@ -60,8 +60,84 @@ function BR.Keys.isHeld(action)
     return BR.Keys.held[action] == true
 end
 
+--- Actions whose next press has been BORROWED. [action] = { fn, expires }
+---
+--- Declared above fire() because fire() reads it -- a local read from a closure
+--- built earlier in the file is exactly what tools/check_forward_locals.lua
+--- exists to catch.
+local claims = {}
+
+--- Borrow one action's key for one press, for a short while.
+---
+--- WHY THE KEY LAYER AND NOT THE TWO PANELS (#177). The verdict screen's
+--- corroborate prompt sits on TAB, and TAB is the inventory key -- so something
+--- has to decide which of them a press means. Teaching the inventory panel about
+--- the report prompt (and, next time, about the thing after that) is the N²
+--- shape #149 and #179 both name as the trap; this is the one component that
+--- already sees every key listener, so the arbitration is one function here
+--- rather than a condition in each of them.
+---
+--- IT IS NOT #179's ARBITER AND MUST NOT BE MISTAKEN FOR ONE. #179 is about
+--- LATCHING SURFACES fighting over the screen -- which panel wins, and for how
+--- long -- and its answer belongs next to the focus stack, which is the thing
+--- that sees all of them. This borrows ONE press of ONE action for a bounded
+--- window and opens no surface at all. When #179 lands, this stays: "a prompt
+--- offered a key for ten seconds" is a different question from "two panels are
+--- both up".
+---
+--- SINGLE-SHOT AND SELF-EXPIRING, because the failure mode of getting this wrong
+--- is a key that silently stops working. The claim is dropped the instant it
+--- fires and again the instant it is out of time, both of them inside the same
+--- path that would honour it -- so there is no timer to leak and no way for a
+--- claim to outlive the prompt that made it. A second claim replaces the first;
+--- the most recent thing to ask is the thing that gets the key, which is the
+--- rule a player would predict.
+---
+--- @param action string    e.g. 'inventory'
+--- @param fn function      called once, on the next press inside the window
+--- @param ms number        how long the offer stands
+function BR.Keys.claim(action, fn, ms)
+    if type(action) ~= 'string' or type(fn) ~= 'function' then return end
+    local d = tonumber(ms) or 0
+    if d <= 0 then return end
+    claims[action] = { fn = fn, expires = GetGameTimer() + d }
+end
+
+-- THERE IS NO `BR.Keys.release`, AND ITS ABSENCE IS DELIBERATE. The obvious
+-- companion to claim() is a way to hand the key back early, and nothing in this
+-- project has a reason to call one: the claim dies on the press and on the
+-- clock, and both of those are checked inside fire(). Shipping the function
+-- anyway would be one more correct, untested, uncalled path in a codebase that
+-- has already paid for several. Add it when something needs it.
+
 local function fire(action, pressed)
     BR.Keys.held[action] = pressed
+
+    -- A BORROWED PRESS NEVER REACHES THE ORDINARY LISTENERS, which is the whole
+    -- point: without this, TAB would corroborate the report AND open the
+    -- inventory panel over the verdict screen.
+    --
+    -- ONLY THE PRESS IS TAKEN. The claim is cleared before the callback runs, so
+    -- the `pressed = false` half of a tap pair falls straight through -- and
+    -- every listener in this project treats a release as "stop", which is a
+    -- no-op for something it never started.
+    local c = claims[action]
+    if c then
+        if GetGameTimer() >= c.expires then
+            claims[action] = nil
+        elseif pressed then
+            claims[action] = nil
+            -- pcall for the same reason the listener loop below has one: a
+            -- claimant that throws must not leave the key layer half-run.
+            local okc, err = pcall(c.fn)
+            if not okc then
+                print(('[br_core] key claim for "%s" errored: %s')
+                    :format(action, tostring(err)))
+            end
+            return
+        end
+    end
+
     local l = BR.Keys.listeners[action]
     if not l then return end
     for i = 1, #l do
@@ -329,6 +405,32 @@ end)
 
 BR.Keys.on('settingsMenu', function(pressed)
     if pressed then TriggerEvent('br:ui:settingsToggle') end
+end)
+
+-- THE KILL PROMPT BORROWS TAB, AND THE BORROWING HAS TO HAPPEN HERE (#177).
+--
+-- br_ui shows the prompt -- it owns the toast and it writes the sentence -- but
+-- br_ui declares no dependency on br_core and cannot see BR.Keys at all
+-- (ringmaster.lua:66 records what happens to code that tries to read across
+-- resource states: "the first version of this read nil forever from over
+-- there"). So the prompt asks over the event channel, which is the same hop the
+-- three bridges above already use in the other direction.
+--
+-- THE SERVER EVENT IS SENT FROM THIS SIDE rather than handed back to br_ui to
+-- send, so the press and the message it produces are one step apart instead of
+-- three. REPORT_CORROBORATE carries nothing; the server resolves the asker's own
+-- killer from its own records, exactly as REPORT_KILLED does.
+--
+-- WHY TAB IS THE RIGHT KEY EVEN THOUGH THE INVENTORY OWNS IT: the prompt is on
+-- the verdict screen and the player is dead, which is the one moment the
+-- inventory panel is worth nothing -- and the alternative, a key of its own, is
+-- a fourth binding for one press a player makes once a round. The claim above is
+-- what stops the two fighting; see #179 for the panel-level version of that
+-- fight, which this does not attempt to answer.
+AddEventHandler('br:report:armCorroborate', function(ms)
+    BR.Keys.claim('inventory', function()
+        TriggerServerEvent(BR.Net.REPORT_CORROBORATE)
+    end, tonumber(ms) or 0)
 end)
 
 --- Names of every registered action, for the debug overlay.

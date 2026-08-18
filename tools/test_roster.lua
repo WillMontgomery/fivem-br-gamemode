@@ -6677,6 +6677,366 @@ do
         'a player with no match gets no list at all')
 end
 
+describe('report.killerPrompt')
+do
+    --[[
+        "SUSPECT CHEATING? PRESS TAB TO REPORT <NAME>." -- #169's prompt, with
+        #177's four corrections.
+
+        WHAT THESE ASSERTIONS ARE ABLE TO CATCH, stated because this suite's
+        named failure mode is a stub that re-encodes the assumption under test.
+        Every one of them drives the real net events against the real handlers;
+        the only things constructed by hand are a kill (two fields the damage
+        path writes) and the DynamoDB acknowledgement (`br:incident:filed`,
+        which is br_ringmaster's and cannot be produced without one).
+
+          the day-old case      fails on the code as shipped. The prompt asked
+                                `priorFor(matchId, ...)`, and the case is filed
+                                in a match that is then DESTROYED, so the map it
+                                read is empty by the time the second match asks.
+          the one-time rule     fails on the code as shipped. Today's latch is
+                                `nudged`, which only suppresses a second PROMPT
+                                -- so a player who has already named the killer
+                                is prompted again to name them twice.
+          the isolation         the two "no second offer" cases below are reached
+                                WITHOUT the player ever being prompted in that
+                                match, so `nudged` is empty and cannot be what
+                                suppresses them. If the usage check were deleted
+                                and `nudged` left in place, they fail.
+          the control          `no case, no prompt` runs FIRST, on licenses no
+                                other block has used -- see freshMatch. Without
+                                it every assertion here could be passing on a
+                                leftover, because the map that answers them is
+                                deliberately never freed.
+    ]]
+
+    --- The last REPORT_HINT addressed to one player, or nil.
+    local function hintTo(src)
+        for i = #sent, 1, -1 do
+            local s = sent[i]
+            if s.event == BR.Net.REPORT_HINT and s.target == src then
+                return s.args[1]
+            end
+        end
+        return nil
+    end
+
+    local function lastResultFor(src)
+        for i = #sent, 1, -1 do
+            local s = sent[i]
+            if s.event == BR.Net.REPORT_RESULT and s.target == src then
+                return s.args[1]
+            end
+        end
+        return nil
+    end
+
+    --- Three players in a live match, on licenses NOTHING ELSE IN THIS FILE HAS
+    --- TOUCHED.
+    ---
+    --- `openBy` in server/incident.lua is deliberately not freed at teardown --
+    --- that IS #177's first correction -- so it carries every case the blocks
+    --- above filed, for the life of the process. `license:test2` already has one
+    --- against it by the time this block runs, so a prompt test written on the
+    --- default licenses would pass on report.rules' leftovers no matter what the
+    --- handler did. These names are what make the control assertion mean
+    --- something.
+    local function freshMatch()
+        reset()
+        licenseOf[1] = 'promptVictim'
+        licenseOf[2] = 'promptKiller'
+        licenseOf[3] = 'promptWitness'
+        queueUp(1, 'Vic',  BR.Mode.SOLO.key)
+        queueUp(2, 'Karl', BR.Mode.SOLO.key)
+        queueUp(3, 'Wren', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for _, s in ipairs({ 1, 2, 3 }) do
+            BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        end
+        theMatch().state = BR.MatchState.PLAYING
+        return theMatch()
+    end
+
+    --- Kill somebody the way the validated damage path records it, so
+    --- BR.Combat.attributedKiller answers about a real hit rather than a field
+    --- this test invented for it.
+    local function killedBy(victimSrc, killerSrc)
+        local v = BR.Roster.get(victimSrc)
+        v.lastHitBy, v.lastHitAt = killerSrc, fakeTime
+        BR.Roster.setState(victimSrc, BR.PlayerState.DEAD)
+    end
+
+    local function tokenFor(src, name)
+        sent = {}
+        fire(BR.Net.PLAYERS_ASK, src)
+        for i = #sent, 1, -1 do
+            if sent[i].event == BR.Net.PLAYERS_LIST then
+                for _, p in ipairs(sent[i].args[1].players or {}) do
+                    if p.name == name then return p.id end
+                end
+            end
+        end
+        return nil
+    end
+
+    local m1 = freshMatch()
+    local kLic = BR.Identity.qualified('license', BR.Identity.licenseOf(2))
+    local vLic = BR.Identity.qualified('license', BR.Identity.licenseOf(1))
+
+    -- ---------------------------------------------------------- the control ---
+    ok(#BR.Incident.openFor(kLic) == 0,
+        'the fixture starts with no case open against the killer',
+        tostring(#BR.Incident.openFor(kLic)))
+
+    killedBy(1, 2)
+    sent = {}
+    fire(BR.Net.REPORT_KILLED, 1)
+    ok(hintTo(1) == nil,
+        'a player killed by somebody with no case open sees nothing at all')
+
+    -- ------------------------------------------ (1) a case from an older match ---
+    --
+    -- Filed in this match, and then the match is destroyed -- which is the shape
+    -- "a day-old case still in pending_review" has from the server's side. The
+    -- acknowledgement is br_ringmaster's, so it is fired by hand; everything
+    -- downstream of it is real.
+    fire('br:incident:filed', nil,
+        { incidentId = 'inc-yesterday', matchId = m1.id, subjectLicense = kLic })
+    fire('br:match:destroyed', nil, { matchId = m1.id })
+
+    ok(#BR.Incident.priorFor(m1.id, kLic) == 0,
+        'the match-scoped map is emptied with the round it belonged to',
+        tostring(#BR.Incident.priorFor(m1.id, kLic)))
+    ok(#BR.Incident.openFor(kLic) == 1,
+        'but the case is still open against the player',
+        tostring(#BR.Incident.openFor(kLic)))
+
+    local m2 = freshMatch()
+    ok(m2.id ~= m1.id, 'and the next round is a different match',
+        ('%s vs %s'):format(tostring(m1.id), tostring(m2.id)))
+
+    killedBy(1, 2)
+    sent = {}
+    fire(BR.Net.REPORT_KILLED, 1)
+    local hint = hintTo(1)
+    ok(hint ~= nil and hint.kind == 'killer',
+        'a case still open from a PREVIOUS match prompts the player it killed',
+        hint and tostring(hint.kind) or 'no hint at all')
+    ok(hint ~= nil and hint.name == 'Karl',
+        'naming the killer the kill feed has already named',
+        hint and tostring(hint.name) or 'nil')
+    -- NOTHING ELSE ON THE WIRE. One display name the recipient has already been
+    -- shown, and no license, no id and no list.
+    ok(hint ~= nil and hint.license == nil and hint.incidentId == nil,
+        'and carrying no license and no case id')
+
+    -- ----------------------------------------- (2) the key is the whole action ---
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_CORROBORATE, 1)
+
+    ok(#firedOf('br:ringmaster:incident') == 0,
+        'pressing it opens no second case about a player who already has one',
+        tostring(#firedOf('br:ringmaster:incident')))
+
+    local corr = firedOf('br:ringmaster:corroborate')[1]
+    ok(corr ~= nil, 'it corroborates, in one press, with no panel involved')
+    if corr then
+        ok(corr.incidentId == 'inc-yesterday',
+            'onto the case that was already open -- the one from the older match',
+            tostring(corr.incidentId))
+        ok(corr.license == kLic, 'about the killer', tostring(corr.license))
+        ok(corr.matchId == m2.id,
+            'stamped with the match it happened in, not the one the case opened in',
+            tostring(corr.matchId))
+        ok(corr.reason == BR.Config.defaultReportCategory(),
+            'under the category the prompt actually asked about',
+            tostring(corr.reason))
+    end
+
+    -- PAID, like any other corroborator (#168). The id is in hand, so the claim
+    -- does not wait for an acknowledgement.
+    local claim = firedOf('br:report:claim')[1]
+    ok(claim ~= nil and claim.incidentId == 'inc-yesterday' and claim.license == vLic,
+        'and the player who pressed it is owed for it',
+        claim and ('%s / %s'):format(tostring(claim.incidentId), tostring(claim.license))
+            or 'no claim')
+
+    -- TOLD, AND TOLD THE SAME THING A PANEL REPORT IS TOLD. "Added to an
+    -- existing case" would leak that the person they just named is already under
+    -- review, which is exactly what an offender's friend would go looking for.
+    local res = lastResultFor(1)
+    ok(res ~= nil and res.ok == true and res.filed == 1,
+        'the player is told a report was sent, because one was',
+        res and tostring(res.ok) or 'no answer at all')
+
+    -- ------------------------------ (3) one action per offender, per match ---
+    --
+    -- ISOLATED FROM `nudged` ON PURPOSE. Wren is killed by Karl and corroborates
+    -- WITHOUT EVER BEING PROMPTED -- so the "already nudged" latch is empty for
+    -- Wren, and the only thing that can suppress the prompt below is the report
+    -- usage check #177 part 4 asks for. Delete that check and this fails; delete
+    -- `nudged` and it still passes.
+    local m3 = freshMatch()
+    killedBy(3, 2)
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_CORROBORATE, 3)
+    ok(#firedOf('br:ringmaster:corroborate') == 1,
+        'a player can corroborate without having been prompted first',
+        tostring(#firedOf('br:ringmaster:corroborate')))
+
+    sent = {}
+    fire(BR.Net.REPORT_KILLED, 3)
+    ok(hintTo(3) == nil,
+        'and is never offered the prompt again for a player they have corroborated')
+
+    -- AND THE OTHER HALF OF PART 4: reported from the panel first, then killed.
+    -- This is the exact sequence the issue describes, and `nudged` is empty for
+    -- Vic in this match too.
+    local idKarl = tokenFor(1, 'Karl')
+    ok(idKarl ~= nil, 'the panel can still name the killer')
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 1, {
+        targets = { { id = idKarl, category = 'cheating' } },
+    })
+    -- THE FILING POLICY DID NOT MOVE WITH THE PROMPT, and this is where that is
+    -- pinned. The prompt asks "any case at all"; a REPORT still asks "a case in
+    -- THIS match", so a player with a day-old case who is reported tonight gets
+    -- a NEW case for tonight -- three rounds of cheating are three things worth
+    -- telling an admin about.
+    ok(#firedOf('br:ringmaster:incident') == 1,
+        'a panel report about them still opens a case for THIS match',
+        tostring(#firedOf('br:ringmaster:incident')))
+
+    killedBy(1, 2)
+    sent = {}
+    fire(BR.Net.REPORT_KILLED, 1)
+    ok(hintTo(1) == nil,
+        'and somebody who reported the killer from the panel is not prompted to name them twice')
+
+    -- AND THE KEY IS AS DEAD AS THE PROMPT. An offer that is withdrawn while the
+    -- action behind it still works is the same bug wearing a different shape --
+    -- a modified client would simply skip the prompt.
+    fired = {}
+    fire(BR.Net.REPORT_CORROBORATE, 1)
+    ok(#firedOf('br:ringmaster:corroborate') == 0,
+        'pressing the key anyway does nothing once the action is spent',
+        tostring(#firedOf('br:ringmaster:corroborate')))
+
+    -- ------------------------------------------------- (4) still only the dead ---
+    local m4 = freshMatch()
+    BR.Roster.get(1).lastHitBy, BR.Roster.get(1).lastHitAt = 2, fakeTime
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_KILLED, 1)
+    ok(hintTo(1) == nil, 'a living player is prompted about nobody')
+    fire(BR.Net.REPORT_CORROBORATE, 1)
+    ok(#firedOf('br:ringmaster:corroborate') == 0,
+        'and cannot corroborate their way to a reward without dying first')
+    ok(m4 ~= nil, 'the fixture built a match')
+end
+
+describe('report.hintAudience')
+do
+    --[[
+        THE COURTESY NOTICE GOES TO THE ROUND, NOT TO THE TWO PEOPLE IN IT WHO
+        ALREADY KNOW (#168 part 1, corrected by #180).
+
+        The subject has been excluded since #93 and stays excluded -- a player
+        who discovers they are under suspicion changes behaviour, which costs the
+        case the evidence it was going to be made of. The REPORTER is the half
+        #180 adds: being told how to report a player by the system you have just
+        reported them to reads as though the report did not register.
+
+        WHAT THIS CATCHES: the reporter exclusion is a new comparison against a
+        new, OPTIONAL field on the acknowledgement, and the two ways to get it
+        wrong are opposite and both silent. Skip nobody and the reporter is
+        nagged; default the field to a sentinel and an anticheat filing -- which
+        has no reporter at all -- excludes whoever the sentinel happens to match.
+        Both cases are asserted, on the same fixture.
+    ]]
+
+    local function hintKinds()
+        local out = {}
+        for _, s in ipairs(sent) do
+            if s.event == BR.Net.REPORT_HINT and (s.args[1] or {}).kind == 'exists' then
+                out[s.target] = true
+            end
+        end
+        return out
+    end
+
+    local function threeInAMatch()
+        reset()
+        licenseOf[1] = 'hintReporter'
+        licenseOf[2] = 'hintSubject'
+        licenseOf[3] = 'hintBystander'
+        queueUp(1, 'Rae',  BR.Mode.SOLO.key)
+        queueUp(2, 'Sid',  BR.Mode.SOLO.key)
+        queueUp(3, 'Tam',  BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for _, s in ipairs({ 1, 2, 3 }) do
+            BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        end
+        theMatch().state = BR.MatchState.PLAYING
+        return theMatch()
+    end
+
+    -- ------------------------------------------------- a player's report ---
+    local m = threeInAMatch()
+    local subject  = BR.Identity.qualified('license', BR.Identity.licenseOf(2))
+    local reporter = BR.Identity.qualified('license', BR.Identity.licenseOf(1))
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId      = 'inc-hint-1',
+        matchId         = m.id,
+        subjectLicense  = subject,
+        reporterLicense = reporter,
+    })
+
+    local told = hintKinds()
+    ok(told[3] == true, 'the rest of the match is told reporting exists')
+    ok(told[2] == nil,
+        'the offender is not -- #93, and it must stay that way')
+    ok(told[1] == nil,
+        'and neither is the player who just filed the report (#180)')
+
+    -- --------------------------------------------- and an anticheat filing ---
+    --
+    -- NO REPORTER AT ALL. The field is absent rather than empty, which is the
+    -- whole reason it may not be defaulted: a sentinel would be a value that
+    -- either matches nobody or, one day, matches somebody.
+    local m2 = threeInAMatch()
+    local subject2 = BR.Identity.qualified('license', BR.Identity.licenseOf(2))
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId     = 'inc-hint-2',
+        matchId        = m2.id,
+        subjectLicense = subject2,
+    })
+
+    local told2 = hintKinds()
+    ok(told2[1] == true and told2[3] == true,
+        'an anticheat filing tells everybody it should -- there is no reporter to skip',
+        ('1=%s 3=%s'):format(tostring(told2[1]), tostring(told2[3])))
+    ok(told2[2] == nil, 'and still withholds it from the subject')
+
+    -- ONCE PER MATCH. A second filing in the same round announces nothing, which
+    -- is `remember` deriving "first" from the map rather than tracking it beside
+    -- one.
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId     = 'inc-hint-3',
+        matchId        = m2.id,
+        subjectLicense = subject2,
+    })
+    local told3 = hintKinds()
+    ok(next(told3) == nil,
+        'and a second filing in the same round says nothing to anybody')
+end
+
 describe('combat.attribution')
 do
     -- WHO GETS THE KILL, and why it cannot come from the client any more.

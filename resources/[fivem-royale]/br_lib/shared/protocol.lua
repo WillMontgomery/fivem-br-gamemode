@@ -269,6 +269,19 @@ BR.Net = {
     -- attributed killer from its own damage records and answers about that
     -- player or says nothing.
     REPORT_KILLED   = 'br:report:killed',
+    -- C->S, NO PAYLOAD, FOR THE SAME REASON REPORT_KILLED CARRIES NONE (#177).
+    --
+    -- "Yes, that one too" -- the one-press answer to the prompt above. The
+    -- server resolves the asker's own attributed killer a second time, from the
+    -- same records, and corroborates the case it already found there. A client
+    -- cannot name the subject, so widening the lookup beyond the current match
+    -- (#177 part 1) did not widen what a client can ask ABOUT.
+    --
+    -- IT IS NOT A SECOND WAY TO REPORT. The subject must already have an open
+    -- case, this player must not already have named them this match, and both
+    -- of those are decided server-side by the same function that decides
+    -- whether the prompt is shown at all.
+    REPORT_CORROBORATE = 'br:report:corroborate',
 
     MARKET_STATE    = 'br:market:state',     -- S->C  { balance, owned, equipped }
     MARKET_BUY      = 'br:market:buy',       -- C->S  { id }

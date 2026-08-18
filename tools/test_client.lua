@@ -6108,6 +6108,203 @@ ok(mercyToasts() == 1,
     'but a real death still resets them, because that IS a new life',
     ('toasts after a death and respawn: %d'):format(mercyToasts()))
 
+-- ---------------------------------------------------------------------------
+-- THE TWO REPORT PROMPTS, AND THE KEY BEHIND ONE OF THEM (#177, #180)
+--
+-- WHY THIS IS A CLIENT TEST AND NOT A SERVER ONE. The server sends an OCCASION
+-- and never a sentence -- `{ kind = 'exists' }` and `{ kind = 'killer', name }`
+-- -- so tools/test_roster.lua can prove who gets a prompt and can never prove
+-- what it says. Both of #180's failures were in the sentence, and #177's second
+-- and third are a key name and what pressing it does. None of that is reachable
+-- from the server suite.
+--
+-- AND THE KEY IS THE PART THAT COULD ONLY BE FOUND HERE. TAB is the inventory
+-- key (#179). The prompt tells the player to press TAB, so a press has to reach
+-- ONE of the two things listening for it and not both -- and nothing in either
+-- file, read on its own, says which.
+-- ---------------------------------------------------------------------------
+
+describe('the report prompts say what they were told to say -- #177, #180')
+do
+    loadAll({ 'br_ui/client/players.lua' })
+
+    bootOn(true, true)
+    fire('br:ui:clearFocus')
+    frames(3)
+
+    -- THE PLAYER IS DEAD AND STILL LANDED, which is not a contrivance: the kill
+    -- prompt arrives when you die, `BR.State.landed` stays true for the whole
+    -- match (client/loot.lua says so in as many words), and canArm() in
+    -- client/inventory.lua admits a landed player. So the inventory panel really
+    -- does open over a corpse, and the control below asserts it -- which is what
+    -- makes the "did not open" assertion afterwards worth anything.
+    BR.State.me.state = BR.PlayerState.DEAD
+    BR.State.landed = true
+
+    --- The most recent toast with a given key.
+    local function toast(k)
+        for i = #events, 1, -1 do
+            local e = events[i]
+            if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.TOAST
+               and type(e.args[2]) == 'table' and e.args[2].key == k then
+                return e.args[2]
+            end
+        end
+        return nil
+    end
+
+    local function openedInventory()
+        for _, e in ipairs(events) do
+            if e.name == 'br:ui:pushFocus' and e.args[1] == 'inventory' then
+                return true
+            end
+        end
+        return false
+    end
+
+    --- How many presses reached the inventory ACTION.
+    ---
+    --- MEASURED AT THE KEY LAYER, NOT AT THE PANEL, for the reason the focus
+    --- block gives about the same question: what the panel DOES with a press is
+    --- its own business and its own state. `panelOpen` is a latch with no
+    --- `focusChanged` reconciler (that asymmetry IS #179), so a press can
+    --- legitimately produce a popFocus rather than a push -- and an assertion
+    --- written against pushFocus alone would then read "the key was swallowed"
+    --- when the key had arrived perfectly. This counts arrival.
+    local invPresses = 0
+    BR.Keys.on('inventory', function(pressed)
+        if pressed then invPresses = invPresses + 1 end
+    end)
+
+    --- Put the inventory panel away, whichever state earlier blocks left it in.
+    local function shutPanel()
+        fire('br:ui:action', BR.NuiCb.CLOSE)
+        fire('br:ui:clearFocus')
+        frames(3)
+        events, sent = {}, {}
+        invPresses = 0
+    end
+
+    local function corroborations()
+        local n = 0
+        for _, s in ipairs(sent) do
+            if s.name == BR.Net.REPORT_CORROBORATE then n = n + 1 end
+        end
+        return n
+    end
+
+    --- One TAB, through both mechanisms, then long enough for the inventory
+    --- panel's own 250ms double-fire guard to let go of it.
+    local function tapTab()
+        keys[0x09] = true
+        edge[0x09] = true
+        engineKey('TAB', true)
+        frame(16)
+        keys[0x09] = nil
+        engineKey('TAB', false)
+        frame(16)
+        frames(20)
+    end
+
+    -- ------------------------------------------------------- #180, verbatim ---
+    --
+    -- ONE LITERAL, COPIED WHOLE OUT OF THE ISSUE, and deliberately not built by
+    -- concatenation the way the source builds it. A test that assembled the
+    -- sentence the same way the code does would agree with the code about where
+    -- the spaces go, which is exactly the class of miss this compares against --
+    -- the punctuation here is unusual on purpose (the full stop lives INSIDE the
+    -- closing parenthesis) and is the owner's, not a typo to be tidied.
+    local WANT = 'See something suspicious? You can report players by pressing tilde (above TAB on your keyboard.) As a bonus, all accurate reports are rewarded with Volts.'
+
+    events = {}
+    fire(BR.Net.REPORT_HINT, { kind = 'exists' })
+    local t = toast('report.exists')
+    ok(t ~= nil, 'the courtesy notice is raised as a toast')
+    ok(t ~= nil and t.text == WANT,
+        'and its text is byte-for-byte what #180 specifies',
+        t and ('got: ' .. tostring(t.text)) or 'no toast')
+
+    -- IT NAMES TILDE WHATEVER THE PLAYER HAS BOUND, which is #180 overriding
+    -- #168 on the owner's call -- the sentence teaches WHERE the key is, which a
+    -- resolved label cannot do. Rebinding the panel and re-pushing the keybind
+    -- table must not move this sentence.
+    events = {}
+    fire('br:ui:sendLocal', BR.Nui.KEYBINDS, {
+        actions = { { command = 'brplayers', key = 'F7', vk = 0x76 } },
+    })
+    fire(BR.Net.REPORT_HINT, { kind = 'exists' })
+    ok((toast('report.exists') or {}).text == WANT,
+        'and it does not follow a rebind of the player-list key')
+
+    -- ------------------------------------------ #177 part 2: it says TAB ---
+    events = {}
+    fire(BR.Net.REPORT_HINT, { kind = 'killer', name = 'Karl' })
+    local nudge = toast('report.nudge')
+    ok(nudge ~= nil, 'the kill prompt is raised')
+    ok(nudge ~= nil and nudge.text == 'Suspect cheating? Press TAB to report Karl.',
+        'and it names TAB, not the player-list key',
+        nudge and ('got: ' .. tostring(nudge.text)) or 'no toast')
+
+    -- THAT PROMPT ARMED THE KEY, so let it time out before the key assertions
+    -- below start from a known state. Leaving it live is how the first draft of
+    -- this block had its own control corroborating a case.
+    frame(11000)
+
+    -- ------------------------- #177 part 3: the key IS the action ---
+    --
+    -- THE CONFLICT IS REAL, AND THIS IS WHERE IT IS WRITTEN DOWN. With no prompt
+    -- up, TAB over a corpse opens the inventory panel -- `canArm()` admits a
+    -- landed player whatever their state, so the comment in inventory.lua about
+    -- never opening "over a corpse" is describing an intention. That is not
+    -- fixed here (it is #179's ground), but it is the reason a corroborate
+    -- action on TAB needs an arbiter at all, and it is asserted rather than
+    -- assumed: without it, the next assertion could pass on a key nothing was
+    -- listening for.
+    shutPanel()
+    tapTab()
+    ok(invPresses == 1 and openedInventory(),
+        'TAB over a corpse reaches the inventory and opens its panel',
+        ('%d press(es), opened %s'):format(invPresses, tostring(openedInventory())))
+    ok(corroborations() == 0, 'and corroborates nothing, because nothing was offered')
+
+    -- NOW THE PROMPT, AND THE SAME PRESS.
+    shutPanel()
+    fire(BR.Net.REPORT_HINT, { kind = 'killer', name = 'Karl' })
+    events, sent, invPresses = {}, {}, 0
+    tapTab()
+    ok(corroborations() == 1,
+        'pressing TAB while the prompt is up submits the corroboration',
+        ('%d sent'):format(corroborations()))
+    ok(invPresses == 0 and not openedInventory(),
+        'and the inventory never sees the press -- one key, one meaning',
+        ('%d press(es), opened %s'):format(invPresses, tostring(openedInventory())))
+
+    -- ONE PRESS, NOT A MODE. The next press goes back to the inventory even
+    -- though the ten seconds have not elapsed. A claim that latched would be a
+    -- key the player has lost for the rest of the prompt.
+    shutPanel()
+    tapTab()
+    ok(corroborations() == 0 and invPresses == 1,
+        'the press after that is the inventory again -- the offer was for one press',
+        ('%d corroborations, %d inventory press(es)')
+            :format(corroborations(), invPresses))
+
+    -- AND IT EXPIRES WITH THE SENTENCE. A prompt nobody answered must hand the
+    -- key back on its own: an unanswered offer that held TAB for the rest of the
+    -- round would be a lost inventory in the next fight, with nothing on screen
+    -- explaining it.
+    shutPanel()
+    fire(BR.Net.REPORT_HINT, { kind = 'killer', name = 'Karl' })
+    frame(11000)      -- longer than the sentence is on screen
+    events, sent, invPresses = {}, {}, 0
+    tapTab()
+    ok(corroborations() == 0 and invPresses == 1,
+        'an unanswered prompt hands TAB back once its sentence has gone',
+        ('%d corroborations, %d inventory press(es)')
+            :format(corroborations(), invPresses))
+    shutPanel()
+end
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)

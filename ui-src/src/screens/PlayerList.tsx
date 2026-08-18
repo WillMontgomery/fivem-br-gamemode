@@ -225,9 +225,11 @@ export default function PlayerList() {
    * with the text in it.
    *
    * KEYED ON `reporting` GOING FALSE, not on the Cancel button, so it covers
-   * every exit from the mode and not just the one the player pressed: Escape's
-   * ladder, and the successful-report path below, which sets `reporting` false
-   * on its own and would otherwise leave the next open filtered.
+   * every exit from the mode and not just the one the player pressed: the
+   * successful-report path below, which sets `reporting` false on its own and
+   * would otherwise leave the next open filtered. (Escape used to be on that
+   * list and is not since #176 -- it closes the panel outright now, and the
+   * dismiss clear above is what covers that road.)
    *
    * `picked` IS STILL NOT CLEARED HERE and the asymmetry is the same one the
    * note above draws: leaveReport() empties the selection because leaving the
@@ -373,19 +375,50 @@ export default function PlayerList() {
     return codes
   }, [keybinds, rawKeys])
 
-  // Escape backs out one step -- report mode first, then the panel. Two steps
-  // because losing a five-name selection to a mis-hit Escape is the kind of
-  // small cruelty that stops people reporting at all.
+  // ESCAPE CLOSES THE PANEL, IN BOTH MODES (#176).
   //
-  // THE OPEN KEY DOES NOT DO THAT, and the asymmetry is deliberate. Tilde is a
-  // latch: it means "this panel, on or off", and a latch that only half
-  // released on the second press would be the same complaint this issue is
-  // about wearing a different shape. Escape is the careful way out; the key you
-  // opened with is the blunt one.
+  // Owner, 2026-08-18: "Escape only closes the player list if they haven't
+  // clicked report."
   //
-  // No dependency array on purpose -- the handler closes over `reporting`, and
-  // a stale closure here would make Escape back out of a mode the player has
-  // already left.
+  // WHAT WAS ACTUALLY WRONG, because the obvious reading is wrong. The ladder
+  // here was report-mode-then-panel, and its second rung DID fire: from report
+  // mode with an empty search box, Escape twice left the panel exactly as
+  // designed. What the comment on it claimed -- "pressing Escape twice always
+  // leaves" -- stopped being true when the search field arrived in #167 and got
+  // a rung of its own. With something typed in the box the ladder is THREE deep:
+  // clear the filter, leave report mode, close. And the field only exists in
+  // report mode, is the whole point of report mode (find the half-remembered
+  // name from the kill feed), and therefore usually has something in it. So the
+  // realistic path was three presses, from a panel that holds the cursor, with
+  // nothing on screen saying how many more were needed. A comment describing an
+  // intention as an implementation is this project's most common bug and this
+  // was one.
+  //
+  // THE REPORT-MODE RUNG IS GONE AND THE SEARCH RUNG STAYS, which restores the
+  // invariant the old comment asserted rather than merely re-asserting it:
+  //
+  //   Escape with something typed   clears the field, panel stays
+  //   Escape otherwise              closes the panel
+  //
+  // -- so Escape twice always leaves, from anywhere on this card, and one press
+  // does it from everywhere the owner was pressing it.
+  //
+  // THE SEARCH RUNG SURVIVES ON ITS OWN MERITS AND NOT AS HALF A LADDER. A
+  // player who has typed four letters and wants the whole list back presses
+  // Escape; every browser, every launcher and this project's own chat composer
+  // has taught them that. It is also the only rung the player can SEE -- the
+  // field is right there with text in it -- which is exactly what the report
+  // mode rung was not.
+  //
+  // AND THE SELECTION IS BETTER OFF, WHICH IS THE SURPRISE. The rung that was
+  // removed called leaveReport(), and leaveReport() EMPTIES `picked` -- so the
+  // old "careful way out" destroyed the five-name selection it was written to
+  // protect, immediately. close() touches neither `reporting` nor `picked`; they
+  // die with the component, 200ms later (ui/Page.tsx EXIT_MS), so a mis-hit
+  // Escape followed by a re-open now hands the selection back intact.
+  //
+  // No dependency array on purpose -- the handler closes over `query`, and a
+  // stale closure here would clear a field the player has already emptied.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // IS THE PLAYER TYPING? Asked first, because both branches below mean
@@ -410,31 +443,24 @@ export default function PlayerList() {
         e.preventDefault()
         e.stopPropagation()
         play('ui.back')
-        // ESCAPE BACKS OUT ONE STEP, AND THE SEARCH IS NOW THE INNERMOST ONE.
+        // THE ONE STEP THAT IS NOT "CLOSE": a search box with something in it.
         //
-        // The ladder was report-mode-then-panel and the reasoning is directly
-        // below; a filter with something in it is another layer of exactly the
-        // same kind, so it goes on the same ladder rather than being given a
-        // rule of its own. Escape with a non-empty field CLEARS THE FIELD and
-        // leaves the panel up, with the caret still in it.
-        //
-        // WHY NOT "ESCAPE ALWAYS CLOSES": because the field is the one place on
-        // this panel where Escape is a reflex borrowed from somewhere else. A
-        // player who has typed four letters into a search box and wants the
-        // whole list back presses Escape -- every browser, every launcher and
-        // this project's own chat composer has taught them that. Closing the
-        // panel on them instead is the mis-hit this ladder exists to prevent,
-        // and it costs a re-open plus the tilde latch to undo.
+        // WHY THIS ONE AND NOT REPORT MODE (see the block above for the whole
+        // argument): the player can SEE this rung. There is a field on screen
+        // with their text in it, so Escape emptying it is the thing they
+        // expected; report mode is a state with no "you are one Escape from the
+        // list" affordance anywhere, so an Escape spent leaving it read as an
+        // Escape that did nothing.
         //
         // AND ONLY WHEN THERE IS SOMETHING TO CLEAR. An empty field is not a
-        // step, so Escape falls straight through to report mode and then to
-        // closing -- pressing Escape twice always leaves, which is the property
-        // that keeps this predictable. `query` and not `query.trim()` on
-        // purpose: a field holding nothing but spaces looks empty, matches
-        // everything, and would otherwise eat an Escape with no visible reason.
+        // step, so Escape falls straight through and closes -- which makes
+        // "pressing Escape twice always leaves" true from every state this panel
+        // has, including the one that used to need three. `query` and not
+        // `query.trim()` on purpose: a field holding nothing but spaces looks
+        // empty, matches everything, and would otherwise eat an Escape with no
+        // visible reason.
         if (typing && query !== '') { setQuery(''); return }
-        if (reporting) leaveReport()
-        else close()
+        close()
         return
       }
       if (!closeCodes.has(e.keyCode)) return

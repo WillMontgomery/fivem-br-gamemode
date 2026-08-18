@@ -35,6 +35,58 @@ BR.Incident = {}
 --- [matchId] = { [license] = { incidentId, ... } }
 local filed = {}
 
+--- Cases filed against a player, by license, and NOT scoped to a match (#177).
+---
+--- [license] = { incidentId, ... }
+---
+--- WHY THE MATCH-SCOPED MAP ABOVE COULD NOT ANSWER THIS. `filed` is keyed by
+--- match and dropped on `br:match:destroyed`, which is exactly right for the
+--- two questions it is asked -- "does a case already exist to append to, in
+--- THIS round" and "is this the first filing of the round". It is exactly wrong
+--- for the killer prompt, which asks "does this player have a case open at
+--- all". Owner, 2026-08-18, playtesting #169: a case sitting in
+--- `pending_review` from a previous day produced no prompt, and an older case
+--- is the BETTER corroboration target -- it has survived long enough to still
+--- be under review.
+---
+--- SEPARATE RATHER THAN "STOP WIPING `filed`", and the distinction is the whole
+--- of why there are two tables instead of one. Filing policy is deliberately
+--- per match ("one case per player per match; everything after it
+--- corroborates", and the teardown note below on why three rounds of cheating
+--- are three things worth telling an admin about). Widening the map `filed`
+--- feeds would have changed which cases get OPENED, silently, as a side effect
+--- of fixing which prompts get SHOWN. Two questions, two tables, and the
+--- report-submit path in server/players.lua still asks the match-scoped one.
+---
+--- WHAT "OPEN" HONESTLY MEANS HERE: filed, and never seen resolved by THIS
+--- server process. Two limits fall out of that and neither is hidden:
+---
+---   * it does not survive a restart. There is no Query or Scan in br_ddb --
+---     deliberately, see its header -- so the game cannot enumerate cases by
+---     subject, and nothing else on the box remembers them. A case filed before
+---     the last restart is invisible again.
+---   * br_core has no resolution feed. An admin closing a case console-side is
+---     not announced to the game, so a resolved case keeps answering this until
+---     the process restarts. That over-triggers the prompt (an extra
+---     corroboration on a closed row) rather than under-triggering it, which is
+---     the safe side of the two: the bug being fixed is the prompt NOT
+---     appearing.
+---
+--- IT IS NOT AN ENUMERATION CHANNEL. Nothing reads this except the server-side
+--- resolver in server/players.lua, which answers only about the killer it
+--- attributed itself. There is no verb that takes a license from a client.
+local openBy = {}
+
+--- The most ids kept per player, newest last.
+---
+--- BOUNDED BECAUSE THIS ONE DOES NOT GET FREED. `filed` is emptied match by
+--- match; this is emptied only by a restart, so a player who draws a case in
+--- every round would otherwise grow a list for the server's uptime. Only the
+--- newest is ever read (the case a corroboration appends to), so the cap costs
+--- nothing that is used -- and the table is bounded by the number of PLAYERS
+--- WHO HAVE DRAWN A CASE, not by the number who have connected.
+local OPEN_MAX = 8
+
 --- The key a match's filings are stored under.
 ---
 --- NORMALISED, BECAUSE nil SILENTLY DISABLED THE WHOLE FEATURE. An anticheat
@@ -64,6 +116,21 @@ function BR.Incident.priorFor(matchId, license)
     local m = filed[key(matchId)]
     if not m or license == nil then return {} end
     return m[license] or {}
+end
+
+--- Ids filed against one player, in ANY match this server has run (#177).
+---
+--- THE SAME SHAPE AS `priorFor` AND DELIBERATELY NOT THE SAME FUNCTION WITH A
+--- nil MATCH. `priorFor(nil, lic)` already means something else -- it reads the
+--- `nomatch` sentinel bucket, which is where a `brrefuse` from a console files
+--- -- so overloading it would have made "outside a match" and "across all
+--- matches" the same call, and the caller could not have said which it meant.
+---
+--- @param license string
+--- @return string[]  oldest first; the LAST entry is the newest case
+function BR.Incident.openFor(license)
+    if license == nil then return {} end
+    return openBy[license] or {}
 end
 
 --- Note that an incident landed, so the next one this match can point at it.
@@ -96,6 +163,20 @@ function BR.Incident.remember(matchId, license, incidentId)
         m[license] = list
     end
     list[#list + 1] = incidentId
+
+    -- AND THE MATCH-FREE COPY (#177). Written here rather than from a second
+    -- listener on `br:incident:filed`, so the two maps cannot learn about
+    -- different sets of cases: there is exactly one place a filing becomes
+    -- known, and it writes both.
+    local open = openBy[license]
+    if not open then
+        open = {}
+        openBy[license] = open
+    end
+    open[#open + 1] = incidentId
+    -- Oldest out. See OPEN_MAX: only the newest is read.
+    while #open > OPEN_MAX do table.remove(open, 1) end
+
     return first
 end
 
@@ -106,7 +187,15 @@ function BR.Incident.stats()
         matches = matches + 1
         for _, list in pairs(m) do ids = ids + #list end
     end
-    return { matches = matches, filed = ids }
+    -- `subjects` is the number of players carrying an open case since this
+    -- process started, which is the one number that says whether the map
+    -- `openFor` reads is growing (#177).
+    local subjects, open = 0, 0
+    for _, list in pairs(openBy) do
+        subjects = subjects + 1
+        open = open + #list
+    end
+    return { matches = matches, filed = ids, subjects = subjects, open = open }
 end
 
 -- ---------------------------------------------------------------------------
@@ -211,22 +300,39 @@ end)
 --- and quietly telling the offender is the one failure this function must not
 --- have.
 ---
+--- AND NEITHER IS THE REPORTER, WHICH IS THE HALF #180 ADDS. Owner, 2026-08-18:
+--- being told how to report a player by the system you have just reported them
+--- to reads as though the report did not register -- the opposite of what this
+--- notice is for. The subject exclusion above is #93's rule and is untouched;
+--- this is a second, independent skip beside it.
+---
+--- `reporterLicense` IS GENUINELY OPTIONAL RATHER THAN DEFAULTED. Two sources
+--- reach this function through the same acknowledgement: a player's report,
+--- which has a reporter, and an anticheat filing, which has none. A default of
+--- '' or 'none' would be a value that silently matches nobody -- and the day a
+--- roster entry resolved to the same empty string, the notice would go quiet
+--- for a player nobody could name. nil means "there is no reporter", the
+--- comparison below is skipped entirely, and the anticheat path behaves exactly
+--- as it did.
+---
 --- THE TEXT IS NOT SENT. The envelope carries an occasion and the client writes
---- the sentence, because the sentence names the player-list key and only the
---- client knows which key that is. This project has already shipped a prompt
---- naming a key nothing was listening to (#129); the fix then was to resolve the
---- label where the binding lives, and that is why nothing here composes prose.
+--- the sentence. That was originally so the sentence could name whichever key
+--- the player has the panel bound to (#168); since #180 the sentence is FIXED
+--- and names tilde outright, and the reason it still is not composed here is
+--- narrower but unchanged -- the wire carries occasions, and a server that
+--- shipped prose would be a server that has to be redeployed to fix a typo.
 ---
 --- @param matchId any
 --- @param subjectLicense string
-local function announceReporting(matchId, subjectLicense)
+--- @param reporterLicense string|nil  nil for an anticheat filing
+local function announceReporting(matchId, subjectLicense, reporterLicense)
     -- NOT OUTSIDE A MATCH. `brrefuse` from a console, or an anticheat firing in
     -- the lobby, files under the `nomatch` sentinel -- there is no audience to
     -- address and no round for the nudge to be about.
     if matchId == nil then return end
     if not BR.Roster then return end
 
-    local told, skipped = 0, 0
+    local told, skipped, hushed = 0, 0, 0
 
     BR.Roster.each(
         function(e) return e.matchId == matchId end,
@@ -242,12 +348,22 @@ local function announceReporting(matchId, subjectLicense)
                 return
             end
 
+            -- THE REPORTER (#180). Counted apart from the subject because the
+            -- two withholdings are different facts: one is a moderation rule
+            -- that must never break, the other is a courtesy, and a log line
+            -- that added them together could not tell "the offender was
+            -- excluded" from "somebody was".
+            if lic ~= nil and reporterLicense ~= nil and lic == reporterLicense then
+                hushed = hushed + 1
+                return
+            end
+
             TriggerClientEvent(BR.Net.REPORT_HINT, src, { kind = 'exists' })
             told = told + 1
         end)
 
-    print(('[br_core] report hint: told %d player(s) in match %s, withheld from %d subject(s)')
-        :format(told, tostring(matchId), skipped))
+    print(('[br_core] report hint: told %d player(s) in match %s, withheld from %d subject(s) and %d reporter(s)')
+        :format(told, tostring(matchId), skipped, hushed))
 end
 
 -- The other half of the loop: br_ringmaster reports back what id the write got,
@@ -262,21 +378,39 @@ end
 -- also the one place both sources meet: the anticheat's filing and a player's
 -- report arrive here identically, which is what makes "the first incident filed
 -- against anyone" one condition rather than two that can disagree.
+--
+-- `reporterLicense` RIDES THIS ENVELOPE SINCE #180, and it is br_ringmaster
+-- that puts it there -- it is forwarding a field the payload it just wrote
+-- already carried, not looking anything up. It is absent on an anticheat
+-- filing, because `BR.IncidentBuild.fromRefusal` sets no reporter at all, and
+-- that absence is what makes the skip below correct without a sentinel.
 AddEventHandler('br:incident:filed', function(ack)
     if type(ack) ~= 'table' then return end
     local first = BR.Incident.remember(ack.matchId, ack.subjectLicense, ack.incidentId)
-    if first then announceReporting(ack.matchId, ack.subjectLicense) end
+    if first then
+        announceReporting(ack.matchId, ack.subjectLicense, ack.reporterLicense)
+    end
 end)
 
 -- Same teardown hook the evidence buffer uses, and for the same reason: `destroy`
 -- is the only way a match leaves the registry, whereas `br:match:results`
 -- returns early when nobody scored. Dropping the map here keeps it the size of
 -- the matches currently running rather than of the server's uptime.
+--
+-- `openBy` IS DELIBERATELY NOT DROPPED HERE, and that is the whole of #177's
+-- first correction. Everything above about keeping the map the size of the
+-- matches currently running is an argument about the CORROBORATION TARGET
+-- WITHIN a round; the killer prompt asks a question that outlives the round,
+-- and freeing its answer at teardown is precisely why a day-old case produced
+-- no prompt. See OPEN_MAX for what bounds it instead.
 AddEventHandler('br:match:destroyed', function(ev)
     if not ev or ev.matchId == nil then return end
     filed[ev.matchId] = nil
 end)
 
 AddEventHandler('onResourceStart', function(name)
-    if name == GetCurrentResourceName() then filed = {} end
+    if name == GetCurrentResourceName() then
+        filed = {}
+        openBy = {}
+    end
 end)
