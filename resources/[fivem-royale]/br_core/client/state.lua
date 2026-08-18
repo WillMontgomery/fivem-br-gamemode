@@ -997,6 +997,28 @@ local WATCH_POLL_MS = 150
 -- netId -> { hp, src, deadline, ... }. Presence IS "a watch is running".
 local watching = {}
 
+-- WHY A CORRECTION DID NOT BECOME A WATCH (#115, round seven).
+--
+-- "The message never arrived" and "the message arrived and this file declined
+-- it" are the first two of the four things that can be wrong with this issue,
+-- and until now /brcorpse could not tell them apart: both print as "no watch
+-- has finished this session". That is the same class of mistake round six
+-- fixed in the readout -- a blank standing in for an answer -- and it is on
+-- the line that decides whether the next round is the server's work or ours.
+--
+-- Every entry is a REASON a correction stopped short, counted where it stops.
+-- `arrived` counts frames off the wire before any judgement at all, so a zero
+-- there is the server's answer and a non-zero is this file's.
+local corrections = {
+    arrived      = 0,   -- HIT_RESYNC / DAMAGE_FEED frames that reached correctPed
+    noNetId      = 0,   -- ...with no network id on them
+    deadTarget   = 0,   -- ...whose target health is itself a dead number
+    refreshed    = 0,   -- ...answered by a watch that was already running
+    unknownNetId = 0,   -- ...for a network id that does not resolve here
+    noEntity     = 0,   -- ...for a network id with no entity behind it
+    watched      = 0,   -- ...that started a watch. This is the one that counts.
+}
+
 -- The last watch to finish, kept for /brcorpse. A finished watch is exactly
 -- the one worth reading and exactly the one `watching` no longer has.
 local lastWatch = nil
@@ -1011,7 +1033,15 @@ local function correctPed(netId, hp, src)
     -- resurrected once per retry into a value that keeps it dead. The server no
     -- longer sends one (BR.Damage.resync declines a victim who is out), and this
     -- is the half that cannot be reached by getting that wrong again.
-    if not netId or BR.IsDeadHp(hp) then return end
+    corrections.arrived = corrections.arrived + 1
+    if not netId then
+        corrections.noNetId = corrections.noNetId + 1
+        return
+    end
+    if BR.IsDeadHp(hp) then
+        corrections.deadTarget = corrections.deadTarget + 1
+        return
+    end
 
     -- A WATCH ALREADY RUNNING IS THE ANSWER TO THIS BULLET TOO. Refresh it and
     -- go: newest number, deadline pushed out. This is now the ONLY question
@@ -1034,14 +1064,21 @@ local function correctPed(netId, hp, src)
         w.hp = hp
         w.src = src or w.src
         w.deadline = GetGameTimer() + WATCH_MS
+        corrections.refreshed = corrections.refreshed + 1
         return
     end
     watching[netId] = nil
 
-    if not NetworkDoesNetworkIdExist(netId) then return end
+    if not NetworkDoesNetworkIdExist(netId) then
+        corrections.unknownNetId = corrections.unknownNetId + 1
+        return
+    end
 
     local ped = NetworkGetEntityFromNetworkId(netId)
-    if not ped or ped == 0 or not DoesEntityExist(ped) then return end
+    if not ped or ped == 0 or not DoesEntityExist(ped) then
+        corrections.noEntity = corrections.noEntity + 1
+        return
+    end
 
     -- ...AND THERE IS NO LONGER A TEST HERE AT ALL. See the round-five note
     -- above: the reading this used to take -- "not dead and already at the
@@ -1060,6 +1097,7 @@ local function correctPed(netId, hp, src)
     -- is not "was the logic right" but "did the writes land", and that is a
     -- question about the engine that only the engine can answer. See the
     -- command at the bottom of this section.
+    corrections.watched = corrections.watched + 1
     watching[netId] = { hp = hp, src = src,
                         deadline = GetGameTimer() + WATCH_MS,
                         startedAt = GetGameTimer(),
@@ -1217,6 +1255,32 @@ local RECONCILE_MS = 500
 -- channel that runs all match instead of for five seconds after a bullet.
 local falseCorpses, falseCorpsesStuck = 0, 0
 
+-- ...AND `stuck ~= 0` IS ONLY HALF THE OWNERSHIP QUESTION (#115, round seven).
+--
+-- `stuck` is read on the line AFTER the write, with no yield in between, so no
+-- packet from anybody can have arrived: it answers "did the native itself take
+-- effect on this machine, this frame". That is a real answer and it is the only
+-- one this file could give -- but it is blind to the other way a repair fails.
+-- A write that lands and is then reverted by the owner's next sync reads
+-- `stuck = 0` every single time, and the old readout called that case "the
+-- corpses are real and being fixed". It is the exact case where they are not.
+--
+-- So the sweep also remembers who it wrote to LAST time. A player written to on
+-- one sweep and found dead again on the next, half a second later, was not
+-- repaired -- whatever the line after the write said. That is a fact about
+-- whether the correction HOLDS, which is a different question from whether it
+-- lands, and between them the two counters separate the last two candidates:
+--
+--   stuck climbing      the native is refused outright -- we do not own the ped
+--   relapsed climbing   the native takes and the owner's sync puts it back
+--   neither             the repair works, and `repaired` is what it did
+local falseCorpsesRelapsed, falseCorpsesRepaired = 0, 0
+
+-- src -> true when the last sweep wrote to that player's ped. Cleared the
+-- moment they read alive again, so a player who is fixed and later dies for
+-- real does not count as a relapse.
+local wroteLastSweep = {}
+
 --- Is a watch already arguing about this player's ped?
 ---
 --- IT HAS THE BETTER NUMBER AND IT MUST NOT BE FOUGHT. A watch carries the
@@ -1237,6 +1301,13 @@ end
 --- One sweep of the mirror. Split out so the suite can call it directly.
 local function reconcileFalseCorpses()
     for src, e in pairs(S.roster) do
+        -- A PLAYER THIS SWEEP WILL NOT LOOK AT HAS NO HISTORY WORTH KEEPING.
+        -- Without this, somebody written to and then genuinely killed comes
+        -- back from the dead in the arithmetic: the next false corpse they
+        -- present, minutes later, would be counted as a relapse of a write
+        -- that has nothing to do with it.
+        if e.state ~= BR.PlayerState.ALIVE then wroteLastSweep[src] = nil end
+
         if src ~= S.me.src and e.state == BR.PlayerState.ALIVE
            and not watchOwns(src) then
             -- -1 IS "NOT ON THIS MACHINE", AND IT IS A TRAP RATHER THAN A
@@ -1255,8 +1326,8 @@ local function reconcileFalseCorpses()
             local ply = GetPlayerFromServerId(src)  -- scope-ok: a false corpse is a fact about the LOCAL copy of that ped; the roster comes from the server
             if ply and ply ~= -1 and ply ~= PlayerId() then
                 local ped = GetPlayerPed(ply)  -- scope-ok: same call, same reason -- the ped handle for a player already known to be in scope
-                if ped and ped ~= 0 and DoesEntityExist(ped)
-                   and IsEntityDead(ped) then
+                if ped and ped ~= 0 and DoesEntityExist(ped) then
+                  if IsEntityDead(ped) then
                     -- The mirror carries DISPLAY units; a ped takes engine
                     -- ones. Never inline this arithmetic (config/match.lua).
                     local target =
@@ -1265,16 +1336,31 @@ local function reconcileFalseCorpses()
                     -- resurrect INTO a value that keeps them dead -- the same
                     -- guard correctPed opens with, and for the same reason.
                     if not BR.IsDeadHp(target) then
+                        -- DEAD AGAIN, HALF A SECOND AFTER WE WROTE TO THEM.
+                        -- Counted BEFORE this sweep's write, so it describes
+                        -- the fate of the PREVIOUS one.
+                        if wroteLastSweep[src] then
+                            falseCorpsesRelapsed = falseCorpsesRelapsed + 1
+                        end
                         falseCorpses = falseCorpses + 1
                         ResurrectPed(ped)
                         ClearPedTasksImmediately(ped)
                         SetEntityHealth(ped, target)
+                        wroteLastSweep[src] = true
                         -- Whether that took is the engine's to say, and the
                         -- next line is the only place it can be asked.
                         if IsEntityDead(ped) then
                             falseCorpsesStuck = falseCorpsesStuck + 1
                         end
                     end
+                  elseif wroteLastSweep[src] then
+                    -- WRITTEN TO LAST SWEEP AND UPRIGHT NOW. This is the only
+                    -- evidence in the file that a repair ever actually held,
+                    -- and it is the number whose absence means the corpse is
+                    -- winning however healthy the other counters look.
+                    falseCorpsesRepaired = falseCorpsesRepaired + 1
+                    wroteLastSweep[src] = nil
+                  end
                 end
             end
         end
@@ -1383,9 +1469,19 @@ local function printWatch(label, netId, w)
                 (w.endedAt or now) - (w.startedAt or now),
                 w.passes or 0, w.writes or 0, w.resurrects or 0,
                 tostring(w.sawDead), tostring(w.why or 'still running')))
-    print(('    STILL DEAD ON THE LINE AFTER RESURRECTING: %s   <-- true here '
-           .. 'means the engine refused the write, not that the logic missed it')
-        :format(tostring(w.stillDeadAfterWrite)))
+    -- ...AND `nil` HERE IS NOT AN ANSWER EITHER (#115, round seven). This field
+    -- only exists once something has been resurrected, so on a watch that never
+    -- saw a corpse it printed "nil" -- which is round six's dash wearing a
+    -- different word. "Never resurrected" and "resurrected, and it did not
+    -- take" are opposite findings and they must not share a rendering.
+    if w.stillDeadAfterWrite == nil then
+        print('    STILL DEAD ON THE LINE AFTER RESURRECTING: never resurrected '
+              .. 'during this watch, so the engine was never asked')
+    else
+        print(('    STILL DEAD ON THE LINE AFTER RESURRECTING: %s   <-- true here '
+               .. 'means the engine refused the write, not that the logic missed it')
+            :format(tostring(w.stillDeadAfterWrite)))
+    end
 
     -- WHAT THE WATCH SAW LAST, and how long ago that was.
     if w.endedAt then
@@ -1431,14 +1527,47 @@ end
 
 RegisterCommand('brcorpse', function()
     print('=== corpse watch ===')
+
+    -- 1. DID THE SERVER'S CORRECTION ARRIVE AT ALL? Printed FIRST and on its
+    --    own line, because it is the only question here whose answer is not
+    --    this file's responsibility -- and until round seven it was invisible.
+    print(('  corrections off the wire: %d arrived  ->  %d started a watch, '
+           .. '%d refreshed a running one')
+        :format(corrections.arrived, corrections.watched, corrections.refreshed))
+    print(('    declined here: %d for a dead target number, %d with no netId, '
+           .. '%d for a netId that does not resolve, %d with no entity behind it')
+        :format(corrections.deadTarget, corrections.noNetId,
+                corrections.unknownNetId, corrections.noEntity))
+    print('    arrived 0 while squadmates are being shot = the SERVER is not')
+    print('      sending them, and nothing below can help.')
+
+    -- 2. THE STANDING CHECK, WHICH NEEDS NO BULLET AND HAS NO WINDOW.
     print(('  standing check: found a false corpse %d time(s) this session '
-           .. '(a ped the server calls ALIVE, reading dead here); %d of those '
-           .. 'were STILL dead on the line after the write')
-        :format(falseCorpses, falseCorpsesStuck))
-    print('    found high and stuck ~0  = the corpses are real and being fixed.')
-    print('    found and stuck climbing together = the ENGINE is refusing our')
-    print('      writes to a ped we do not own, and no Lua here can fix that --')
-    print('      the repair has to come from the ped\'s owner.')
+           .. '(a ped the server calls ALIVE, reading dead here)')
+        :format(falseCorpses))
+    print(('    of those: %d were STILL dead on the line after the write, and '
+           .. '%d were found dead AGAIN on the very next sweep')
+        :format(falseCorpsesStuck, falseCorpsesRelapsed))
+    print(('    and %d were upright again when the next sweep looked')
+        :format(falseCorpsesRepaired))
+
+    -- ...AND WHAT THOSE THREE NUMBERS MEAN, WHICH IS THE WHOLE POINT.
+    --
+    -- The line this replaces read "found high and stuck ~0 = the corpses are
+    -- real and being fixed", and that was wrong in the one case it most
+    -- mattered: a write that lands and is reverted by the owner's next sync
+    -- reads stuck 0 forever while nothing is fixed at all. `repaired` is what
+    -- "being fixed" actually looks like, and `relapsed` is what it looks like
+    -- when the engine takes the write and then takes it back.
+    print('    stuck climbing with found  = the engine REFUSES the write. We do')
+    print('      not own that ped and no Lua on this machine can stand it up.')
+    print('    stuck ~0 but relapsed climbing = the write LANDS and does not')
+    print('      HOLD -- the owner\'s next sync puts the corpse back. Same')
+    print('      conclusion: the repair has to run on the victim\'s machine.')
+    print('    repaired climbing and relapsed ~0 = the corrections are working.')
+    print('    found 0 while a corpse is on screen = the mirror never said')
+    print('      ALIVE for them, and the detection is what is broken.')
+
     local any = false
     for netId, w in pairs(watching) do
         any = true

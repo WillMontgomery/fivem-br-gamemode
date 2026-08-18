@@ -6762,6 +6762,18 @@ do
         -- true => this client does NOT own the mate's ped, and the engine
         -- silently drops every write to it.
         local OWNED = not opts.ownership
+        -- ...AND THE OTHER WAY A REPAIR FAILS, WHICH THIS FILE HAD NO MODEL FOR
+        -- (#115, round seven). `ownership` is the pessimistic reading where the
+        -- native is refused outright. There is a second pessimistic reading the
+        -- suite has never expressed: the native TAKES -- the ped is alive on the
+        -- line after the write, so every counter in state.lua reports success --
+        -- and the owner's next clone update puts the corpse straight back.
+        --
+        -- The two are indistinguishable from the write site and opposite in the
+        -- readout, which is exactly why both have to be runnable here. Under
+        -- this one `stuck` stays 0 forever while nothing whatsoever is fixed.
+        local OVERWRITTEN = opts.overwritten == true
+        local REVERT_MS = opts.revertMs or 100
 
         local env
         env = setmetatable({}, { __index = function(_, k) return STD[k] end })
@@ -6817,8 +6829,23 @@ do
 
         --- One engine frame of the death task: the flag catches up (rule 2).
         local function frame()
+            -- THE OWNER'S SYNC ARRIVING, and it disagrees with us. Applied
+            -- before the death task, because it is not a death task at all --
+            -- it is the authoritative copy of this ped being re-cloned over the
+            -- top of whatever this machine believes.
+            if m.revertAt and C.now >= m.revertAt then
+                m.revertAt = nil
+                m.dead, m.dying, m.hp = true, false, 0
+                note('the owner\'s sync arrives and puts the corpse back')
+            end
             if not m.dying then return end
             if not m.dead and (C.now - m.since) >= SETTLE then m.dead = true end
+        end
+
+        --- A write that landed. Under `opts.overwritten` the owner takes it
+        --- back a moment later; otherwise it stands.
+        local function scheduleRevert()
+            if OVERWRITTEN then m.revertAt = C.now + REVERT_MS end
         end
 
         env.NetworkDoesNetworkIdExist = function(id)
@@ -6864,6 +6891,7 @@ do
             C.calls.set = C.calls.set + 1
             if not mayWrite() then return end
             m.hp = v
+            scheduleRevert()
             note(('SetEntityHealth(%d)  dying=%s dead=%s')
                 :format(v, tostring(m.dying), tostring(m.dead)))
             if v <= FLOOR and not m.dying then m.dying, m.since = true, C.now end
@@ -6873,6 +6901,7 @@ do
             C.calls.resurrect = C.calls.resurrect + 1
             if not mayWrite() then return end
             m.dead, m.dying, m.hp = false, false, MAXHP
+            scheduleRevert()
             note('ResurrectPed')
         end
         env.ClearPedTasksImmediately = function(h)
@@ -6999,6 +7028,12 @@ do
         C.threads = threads
         C.resync = handlers[env.BR.Net.HIT_RESYNC][1]
         C.feed   = handlers[env.BR.Net.DAMAGE_FEED][1]
+        -- THE MIRROR'S REAL FRONT DOOR. Every #115 test until now hand-seeded
+        -- `BR.State.roster[n] = { state = ALIVE }`, which quietly assumes the
+        -- shape the standing check reads is the shape the SERVER publishes. It
+        -- is an assumption of exactly the kind this issue is made of, so the
+        -- handler is captured and driven with a real payload below.
+        C.snapshotHandler = (handlers[env.BR.Net.SNAPSHOT] or {})[1]
 
         -- THREADS THE FILE OWNS FOR ITS WHOLE LIFE, counted once at load so the
         -- assertions below can go on saying "one watch, not ten" without
@@ -7772,6 +7807,228 @@ do
             'every round of a friendly-fire burst reaches the shooter as '
             .. 'exactly one correction',
             ('%d corrections for %d bullets'):format(delivered, shots))
+    end
+
+    -- ------------------------------------------------------------------------
+    -- ROUND SEVEN: WHICH OF THE FOUR THINGS IS BROKEN? (#115)
+    -- ------------------------------------------------------------------------
+    --
+    -- The owner asked why the server cannot simply send the ledger's health to
+    -- the shooter on a refused friendly-fire hit. It already does -- that is
+    -- BR.Damage.resync -- so the honest answer is not "we do that" but "here is
+    -- the link that fails", and there are exactly four candidates:
+    --
+    --   1. the correction is not SENT on every friendly-fire refusal
+    --   2. it is sent and this client never WRITES
+    --   3. it is written and the engine DROPS it (we do not own that ped)
+    --   4. it is written, lands, and the owner's next sync OVERWRITES it
+    --
+    -- 1 and 2 are decidable here and are ours to fix. 3 and 4 are facts about a
+    -- running session that only the engine can answer -- but /brcorpse can be
+    -- made to ask them unambiguously, and that is what these pin. Before this
+    -- round the readout could not separate 1 from 2 (both print as "no watch")
+    -- and actively MISREAD 4 as success.
+
+    --- Does any printed line contain this?
+    local function said(lines, needle)
+        for _, l in ipairs(lines) do
+            if l:find(needle, 1, true) then return true end
+        end
+        return false
+    end
+
+    --- The first number captured by `pat` across the printed lines.
+    local function num(lines, pat)
+        for _, l in ipairs(lines) do
+            local n = l:match(pat)
+            if n then return tonumber(n) end
+        end
+        return nil
+    end
+
+    local FOUND    = '(%d+) time%(s%) this session'
+    local STUCK    = 'of those: (%d+) were STILL dead'
+    local RELAPSED = 'and (%d+) were found dead AGAIN'
+    local REPAIRED = 'and (%d+) were upright again'
+    local ARRIVED  = 'corrections off the wire: (%d+) arrived'
+    local WATCHED  = '(%d+) started a watch'
+
+    -- CANDIDATE 1: IS IT SENT? Every shape of friendly-fire refusal the server
+    -- can produce, driven through the real weaponDamageEvent handler, must
+    -- reach the shooter as exactly one correction. This is the answer the owner
+    -- is owed about his own proposal, and it is the server's half.
+    do
+        local pistol = BR.Config.WeaponById['pistol']
+        local function ffShot(setup)
+            squadMatch(2)
+            BR.Inv.reset(1)
+            BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON,
+                             rarity = 1, count = 1, clip = pistol.clip })
+            BR.Inv.of(1).ammo[BR.AmmoType.LIGHT] = 200
+            BR.Inv.of(1).active = 1
+            if setup then setup() end
+            sent = {}
+            fakeTime = fakeTime + 500
+            fire('weaponDamageEvent', 1, 1, {
+                damageType = 3, weaponType = pistol.hash, hitComponent = 0,
+                weaponDamage = 26, hitGlobalIds = { 1002 },
+            })
+            local n = 0
+            for _, s in ipairs(sent) do
+                if s.event == BR.Net.HIT_RESYNC and s.target == 1 then
+                    n = n + 1
+                end
+            end
+            return n
+        end
+
+        ok(ffShot() == 1,
+            'SENT? a plain friendly-fire shot at a healthy squadmate answers '
+            .. 'with exactly one correction')
+
+        ok(ffShot(function()
+               local v = BR.Roster.get(2)
+               v.hp = 43.0
+           end) == 1,
+            'SENT? ...and so does one at a squadmate the ledger has on 43hp, '
+            .. 'which is the case where the shooter\'s clone is ABOVE the '
+            .. 'server\'s number')
+
+        ok(ffShot(function() BR.Combat.defeat(2, 'gunshot', 3) end) == 1,
+            'SENT? ...and a DOWNED squadmate is still corrected, because a '
+            .. 'downed player is alive and their ped is not a corpse')
+
+        -- ...AND THE ONE THAT MUST NOT BE SENT.
+        ok(ffShot(function() BR.Combat.eliminate(2, 'admin', nil) end) == 0,
+            'SENT? ...but a squadmate the ledger has ELIMINATED gets no '
+            .. 'correction at all -- that corpse is the truth')
+    end
+
+    -- CANDIDATE 2: IS IT WRITTEN? And does the mirror the standing check reads
+    -- actually LOOK like the one the server publishes? Every previous test in
+    -- this file hand-seeded `roster[n] = { state = ALIVE }` and so proved
+    -- nothing about the real payload's keys or fields. This drives
+    -- BR.Roster.publicAll() -- the exact projection that goes on the wire --
+    -- into the client and then makes the ped a false corpse.
+    do
+        squadMatch(2)
+        local C = newClient(3, { settle = 200, src = 2 })
+        local published = BR.Roster.publicAll()
+        ok(published[2] ~= nil and published[2].state ~= nil,
+            'the roster the server PUBLISHES carries a state field for a '
+            .. 'squadmate, keyed by server id',
+            ('roster[2] = %s'):format(
+                published[2] and tostring(published[2].state) or 'nil'))
+
+        C.env.BR.State.roster = published
+        C.lethal(0)                       -- a false corpse, and no bullet sent
+        C.pump(3000)
+        ok(C.alive(),
+            'WRITTEN? the standing check repairs a false corpse off the '
+            .. 'SERVER\'S OWN published roster, with no hand-seeded mirror '
+            .. 'anywhere -- so candidates 1 and 2 are both excluded and the '
+            .. 'remaining question is entirely about the engine',
+            C.describe() .. '\n       ' .. table.concat(C.log, '\n       '))
+    end
+
+    -- CANDIDATES 3 AND 4: THE READOUT HAS TO TELL THEM APART.
+    --
+    -- Both leave the owner looking at the same corpse. They are opposite
+    -- findings about the engine and they have the same fix -- move the repair
+    -- to the victim's machine -- but only one of them can be true, and saying
+    -- which is the difference between a diagnosis and a sixth guess.
+    do
+        -- 3. THE ENGINE REFUSES THE WRITE. Dead on the line after resurrecting.
+        local C = newClient(3, { settle = 200, src = 3, ownership = true })
+        C.env.BR.State.roster[3] =
+            { state = C.env.BR.PlayerState.ALIVE, hp = 100.0 }
+        C.lethal(0)
+        C.pump(3000)
+        local out = C.brcorpse()
+        ok((num(out, FOUND) or 0) > 0 and (num(out, STUCK) or 0) > 0,
+            'REFUSED: found and stuck climb together when the engine drops '
+            .. 'every write',
+            ('found %s, stuck %s, relapsed %s, repaired %s')
+                :format(tostring(num(out, FOUND)), tostring(num(out, STUCK)),
+                        tostring(num(out, RELAPSED)),
+                        tostring(num(out, REPAIRED))))
+        ok((num(out, REPAIRED) or 0) == 0,
+            '...and NOTHING is ever reported as repaired', table.concat(out, '\n       '))
+
+        -- 4. THE WRITE LANDS AND THE OWNER TAKES IT BACK. This is the case the
+        --    old readout called "the corpses are real and being fixed".
+        local D = newClient(3, { settle = 200, src = 3, overwritten = true })
+        D.env.BR.State.roster[3] =
+            { state = D.env.BR.PlayerState.ALIVE, hp = 100.0 }
+        D.lethal(0)
+        D.pump(4000)
+        local dout = D.brcorpse()
+        ok((num(dout, STUCK) or -1) == 0,
+            'OVERWRITTEN: stuck stays ZERO -- the native took every time, and '
+            .. 'on the line after the write the ped was alive',
+            ('found %s, stuck %s, relapsed %s, repaired %s')
+                :format(tostring(num(dout, FOUND)), tostring(num(dout, STUCK)),
+                        tostring(num(dout, RELAPSED)),
+                        tostring(num(dout, REPAIRED))))
+        ok((num(dout, RELAPSED) or 0) > 0,
+            '...and RELAPSED is what catches it: the same player is a corpse '
+            .. 'again on the very next sweep. Without this counter this case '
+            .. 'is indistinguishable from success',
+            table.concat(dout, '\n       '))
+        ok(not D.alive(),
+            '...and the owner is indeed still looking at a corpse',
+            D.describe())
+
+        -- ...AND THE HEALTHY CASE, so the counters are not simply always loud.
+        local E = newClient(3, { settle = 200, src = 3 })
+        E.env.BR.State.roster[3] =
+            { state = E.env.BR.PlayerState.ALIVE, hp = 100.0 }
+        E.lethal(0)
+        E.pump(4000)
+        local eout = E.brcorpse()
+        ok((num(eout, REPAIRED) or 0) > 0 and (num(eout, RELAPSED) or 0) == 0,
+            'WORKING: when the writes hold, repaired climbs and relapsed stays '
+            .. 'at zero -- the three readings are a partition, not a mood',
+            ('found %s, stuck %s, relapsed %s, repaired %s')
+                :format(tostring(num(eout, FOUND)), tostring(num(eout, STUCK)),
+                        tostring(num(eout, RELAPSED)),
+                        tostring(num(eout, REPAIRED))))
+    end
+
+    -- ...AND "IT NEVER ARRIVED" MUST NOT PRINT AS "IT ARRIVED AND WE DECLINED".
+    do
+        local C = newClient(3, { settle = 200, src = 3 })
+        local out = C.brcorpse()
+        ok((num(out, ARRIVED) or -1) == 0,
+            'a client nobody has shot at reports ZERO corrections off the '
+            .. 'wire, which is the server\'s answer and not this file\'s',
+            table.concat(out, '\n       '))
+
+        -- One that arrives and is declined for a dead target number: the
+        -- counters must show it ARRIVED, which is the distinction round seven
+        -- exists to draw.
+        local D = newClient(3, { settle = 200, src = 3 })
+        D.resync({ netId = 3, hp = BR.Config.Match.healthFloor, src = 3 })
+        local dout = D.brcorpse()
+        ok((num(dout, ARRIVED) or 0) == 1 and (num(dout, WATCHED) or -1) == 0,
+            'a correction that arrives and is declined reads as ARRIVED 1 / '
+            .. 'watched 0 -- it used to be indistinguishable from one that was '
+            .. 'never sent',
+            table.concat(dout, '\n       '))
+        ok(said(dout, 'for a dead target number'),
+            '...and the reason it was declined is named',
+            table.concat(dout, '\n       '))
+
+        -- And a watch that never saw a corpse must not report "nil" on the one
+        -- line that decides whether the engine was ever asked.
+        local E = newClient(3, { settle = 200, src = 3 })
+        E.resync({ netId = 3, hp = 200, src = 3 })
+        E.pump(6000)
+        local eout = E.brcorpse()
+        ok(said(eout, 'never resurrected during this watch'),
+            'a watch that never resurrected says so, rather than printing '
+            .. '"nil" on the line that reads as the engine\'s verdict',
+            table.concat(eout, '\n       '))
     end
 end
 
