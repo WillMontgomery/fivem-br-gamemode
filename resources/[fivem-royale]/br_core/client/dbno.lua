@@ -160,13 +160,57 @@ local crawlMoving = nil
 -- it cannot say whether it is being met.
 local crawlTasks = 0
 
+-- THE SHORTEST INTERVAL BETWEEN TWO CRAWL TASKS, ms.
+--
+-- IT LIVES UP HERE NOW BECAUSE playCrawl NEEDS IT, and playCrawl not having it
+-- is the whole of the regression below. It used to be declared beside the turn
+-- watchdog, nine hundred lines down, and so it governed the ONE re-task path
+-- that had already been thought about and none of the others.
+--
+-- THE REGRESSION IT CLOSES (owner, 2026-08-19, playtested): "DBNO players move
+-- immediately after going DBNO when not being commanded to, and that translates
+-- to desync in their ped's location between screens."
+--
+-- They travelled at the full crawl speed with nothing pressed, and the loop is
+-- short enough to write out in four lines:
+--
+--   1. dbno.controls calls playCrawl(false) on the FRAME band. Before ab4bd7f
+--      that call could not do anything -- IsEntityPlayingAnim was read raw, `0`
+--      is truthy, so the watchdog returned every time. ab4bd7f fixed the read
+--      (correctly), which turned the watchdog on for the first time.
+--   2. TaskPlayAnim is not evaluated inside the tick that asks for it -- this
+--      file says so at length under holdCover, and budgets POSE_SETTLE_MS = 1000
+--      for the rest of the transition (citizenfx/fivem#2236). So the frame after
+--      a task, `playingCrawl` is still false.
+--   3. ...so the watchdog tasks again. And again. Each task RESTARTS the
+--      transition, so the clip can never finish landing, so the watchdog never
+--      stops: sixty TaskPlayAnims a second, forever, and sixty fresh movers a
+--      second on every clone.
+--   4. Every task calls resyncArm(), and every arm spent a one-frame step. The
+--      body crawled 21.8 metres over the shortest bleed the config can produce,
+--      with nobody touching the keyboard (tools/test_shared.lua,
+--      `dbno.quiet.body`).
+--
+-- 250ms is the file's own number and it is not being re-tuned here: it was
+-- already "a spin cannot re-task per frame" for the turn watchdog, and this is
+-- the same sentence applied to the watchdog that never had one. It is also
+-- comfortably longer than any frame, which is the property that matters --
+-- whatever the engine's answer is, it has arrived before the next ask.
+local RETASK_EVERY_MS = 250
+
 -- THE ORIENTATION THE CLONES WERE LAST HANDED, and the moment they were handed
 -- it. Written by playCrawl -- and ONLY by playCrawl, because the thing they
 -- describe is a task on the wire, not a number in this file. `turnedSince` is
 -- the arm: nothing re-tasks a crawl unless the PLAYER turned it. See the
 -- heading block below dbno.controls.
+--
+-- `taskAt` IS nil UNTIL THERE HAS BEEN A TASK, rather than 0. Zero is a real
+-- reading of GetGameTimer on a machine that has just started, and a throttle
+-- that compared against it would refuse the FIRST pose of the session for a
+-- quarter of a second -- which is a downed player lying in a standing idle for
+-- exactly as long as anybody is likely to look.
 local taskHeading = 0.0
-local taskAt      = 0
+local taskAt      = nil
 local turnedSince = false
 
 -- Where the player last asked to be, while they are not asking to move. See
@@ -362,6 +406,19 @@ local function playCrawl(force, snap)
 
     local ped = PlayerPedId()
     if not force and playingCrawl(ped) then return end
+
+    -- ...AND A WATCHDOG ASKS AT MOST FOUR TIMES A SECOND. See RETASK_EVERY_MS.
+    --
+    -- THE ORDER OF THESE TWO LINES IS THE FIX AND NOT A STYLE CHOICE. The test
+    -- above is "the clip is running, nothing to do"; this one is "the clip is
+    -- NOT running, but the last thing we asked for has not had time to arrive
+    -- yet". Only the second is new, and only the unforced path is throttled --
+    -- a knock, a resurrection and the beat the knockdown lands on all pass
+    -- `force` and must never wait, because each of those is a body that is
+    -- visibly in the wrong pose right now.
+    if not force and taskAt and GetGameTimer() - taskAt < RETASK_EVERY_MS then
+        return
+    end
 
     -- THE LAST THREE BOOLEANS ARE THE MOVER, AND ALL THREE USED TO BE FALSE.
     --
@@ -1180,14 +1237,26 @@ end
 --     under its own animation would re-task forever at four a second, and every
 --     one of those is a 9mm step. Nothing on the keyboard, nothing on the wire.
 --   * RETASK_EVERY_MS -- a spin cannot re-task per frame, which is the bug that
---     restarted the clip 59 times in 60 frames.
+--     restarted the clip 59 times in 60 frames. It is declared at the top of
+--     this file now rather than here, because the WATCHDOG needed it too and
+--     not having it there is what shipped the 2026-08-19 regression: this list
+--     was the only re-task path anybody had put a limit on.
 --   * TURN_RETASK_DEG vs TURN_SETTLE_DEG -- mid-turn the body is allowed to be
 --     20 degrees stale before it is worth a task; once the stick is back in the
 --     deadzone, anything worth seeing is corrected. So a long sweep costs one
 --     task per 20 degrees and a flick costs one, total.
+--
+-- AND WHAT THIS WATCHDOG IS NOT. It is NOT the thing that made downed bodies
+-- travel on 2026-08-19, and that was worth proving before deciding whether to
+-- keep it: the regression reproduces in a rig where BOTH control axes read 0.0
+-- for the whole run, so nothing here ever arms. Reverting it would have left
+-- the body crawling 21.8 metres and cost the heading fix for nothing. What is
+-- still TRUE of it is the sentence ab4bd7f wrote down and could not prove --
+-- that a fresh task is what lets a clone pick up a changed heading. Only a
+-- playtest can answer that; /brdbno's `heading` line against `clone sync` is
+-- the readout that answers it.
 local TURN_RETASK_DEG = 20.0
 local TURN_SETTLE_DEG = 2.0
-local RETASK_EVERY_MS = 250
 
 --- The shortest angle between two headings, in degrees. Never negative, never
 --- more than 180 -- 359 and 1 are two degrees apart, not three hundred and
@@ -1208,6 +1277,10 @@ end
 --- @return boolean
 local function turnedAway(ped, turning)
     if not crawl or not turnedSince then return false end
+    -- `taskAt` is nil until something has actually issued a task, and there is
+    -- nothing to be stale AGAINST until then -- taskHeading is still its
+    -- declared 0.0, which is a real heading and would read as a gap.
+    if not taskAt then return false end
     if GetGameTimer() - taskAt < RETASK_EVERY_MS then return false end
     local gap = headingGap(GetEntityHeading(ped), taskHeading)
     return gap >= (turning and TURN_RETASK_DEG or TURN_SETTLE_DEG)
@@ -1223,9 +1296,18 @@ local resyncs     = 0     -- for /brdbno
 --- so the binding has to exist up there (tools/check_forward_locals.lua).
 resyncArm = function()
     resyncArmed = true
-    -- A task issued while a pair was half done abandons that pair rather than
-    -- finishing it against an anchor the new task has already invalidated.
-    resyncPhase = 0
+    -- A HALF DONE PAIR IS FINISHED, NOT ABANDONED, and the line that used to do
+    -- the opposite -- `resyncPhase = 0` -- was the second half of the 2026-08-19
+    -- regression.
+    --
+    -- The reasoning it carried was "finishing it against an anchor the new task
+    -- has already invalidated", and the anchor is `hold`. But phase 2 writes
+    -- `hold`, whatever `hold` currently is: finishing the pair puts the body
+    -- exactly where this file believes it belongs, by definition, and there is
+    -- no version of that which is worse than not doing it. Zeroing the phase
+    -- threw the STEP BACK away and kept the step out -- so every arm that
+    -- landed on a pending pair was 9mm the body never gave back, and an arm
+    -- that landed every frame was a body crawling at full speed.
 end
 
 --- One "this body is HERE", performed for the benefit of other clients.
@@ -1251,11 +1333,30 @@ local function resyncBody(ped, c)
         crawlPlaying(true)
         local step = (M.dbnoCrawlSpeed or 0.55) * GetFrameTime()
         local h    = math.rad(GetEntityHeading(ped))
-        SetEntityCoordsNoOffset(ped,
-            c.x - math.sin(h) * step, c.y + math.cos(h) * step, c.z,
-            true, true, false)
+        -- FROM THE ANCHOR, NOT FROM WHERE THE PED CURRENTLY IS, and that one
+        -- word is the invariant this whole band is now built on:
+        --
+        --   while the player is pressing nothing, every position this file
+        --   writes is either `hold` or `hold` plus ONE step.
+        --
+        -- Stepping from `c` made the step RELATIVE, so two phase-1s in a row --
+        -- which is what an arm firing faster than the pair can finish produces
+        -- -- compounded into a walk. Nothing that reads `hold` can compound,
+        -- however often it runs, because `hold` is not something a step writes.
+        --
+        -- IT IS A BOUND AND NOT THE FIX, and the difference is measured rather
+        -- than argued (tools/test_shared.lua, `dbno.quiet.body`): with resyncArm
+        -- finishing its pair, this line is worth nothing on top of it -- one
+        -- step either way, which is the excursion the pair exists to make. What
+        -- it is worth is the day something re-introduces an arm that abandons a
+        -- pair: two steps instead of thirty-three metres. Cheap insurance
+        -- against the exact mistake this file has just made.
+        --
         -- `hold` is deliberately NOT moved: the anchor is where they were put
         -- down, and phase 2 is what brings them back to it.
+        SetEntityCoordsNoOffset(ped,
+            hold.x - math.sin(h) * step, hold.y + math.cos(h) * step, c.z,
+            true, true, false)
         resyncPhase = 2
         return true
     end
@@ -1275,7 +1376,14 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
         -- Not `hideBody` -- the cover is simply not asserted, and a flag that
         -- lasts one frame is already gone. Clearing the stamp is only so a
         -- later knock starts a fresh window.
-        hiddenFrom, posedAt, turnedSince = nil, nil, false
+        --
+        -- `taskAt` goes with them: it is the watchdog's throttle, and a body
+        -- that is not down owes the clones no task at all. Left standing, a
+        -- player knocked again within RETASK_EVERY_MS of the last pose of the
+        -- PREVIOUS knock would have their first pose held back a quarter of a
+        -- second -- which is the standing frame the cover exists to hide,
+        -- reintroduced by the fix for something else.
+        hiddenFrom, posedAt, turnedSince, taskAt = nil, nil, false, nil
         return
     end
 
@@ -1299,7 +1407,20 @@ BR.Loop.register(BR.Loop.FRAME, 'dbno.controls', function()
     -- Being thrown about is the one time the ped is allowed to travel without
     -- being asked to, so the hold is dropped rather than fought with -- and it
     -- is re-taken from wherever they land.
-    if IsPedRagdoll(ped) or IsEntityInAir(ped) then
+    --
+    -- THROUGH didHit, AND FOR THE FOURTH TIME IN THIS CODEBASE. Both of these
+    -- are declared BOOL, both were read RAW, and `0` IS TRUTHY IN LUA -- so on a
+    -- build that answers numbers this branch is taken on EVERY FRAME, `hold` is
+    -- nil forever, and the anchor that is the file's only real defence against
+    -- the clip's mover never exists. That is the reported bug wearing a
+    -- different costume: a downed ped moving with nobody driving it.
+    --
+    -- LATENT RATHER THAN LIVE, said plainly: the owner's build must be
+    -- answering booleans, because on their build downed players do crawl and a
+    -- ped that took this branch every frame could never reach the crawl at all.
+    -- It is fixed here anyway, with the comparison this file already owns,
+    -- because "the ped must not move without input" is exactly what it breaks.
+    if didHit(IsPedRagdoll(ped)) or didHit(IsEntityInAir(ped)) then
         hold = nil
         return
     end
@@ -1949,10 +2070,22 @@ RegisterCommand('brdbno', function()
     -- task is the contract; a step count climbing on its own is the beat that
     -- creeps coming back, and steps well under tasks is a re-task the resync
     -- never got a still frame to answer.
+    --
+    -- AND READ `tasks` AGAINST A HANDFUL. A quiet knock settles on TWO, and
+    -- that is the number the 2026-08-19 regression would have given away in one
+    -- paste if anybody had asked for it: the watchdog was issuing sixty a
+    -- second because nothing throttled it, and every one of them spent a step.
+    -- `last task` is the throttle's own reading -- if it is never more than a
+    -- frame old while the body lies still, the watchdog is storming again.
     print(('  clone sync : %d steps for %d crawl tasks, %s, phase %d   (the pin '
            .. 'above is local; this is what other clients see)')
         :format(resyncs, crawlTasks, resyncArmed and 'ARMED -- owed a step'
                                                  or 'settled', resyncPhase))
+    print(('  last task  : %s   (a quiet knock settles on 2 tasks total; the '
+           .. 'watchdog may not ask again for %dms)')
+        :format(taskAt and ('%dms ago'):format(GetGameTimer() - taskAt)
+                        or 'never -- nothing posed yet',
+                RETASK_EVERY_MS))
     -- READ `heading` AGAINST `clone sync` ABOVE. A turn that nothing re-tasked
     -- is the second half of #164: the gap is how far the body has turned since
     -- the last thing the clones were told, so a large gap sitting still while

@@ -5143,6 +5143,300 @@ do
 end
 
 -- ==========================================================================
+-- #164 REGRESSION: A KNOCKED BODY WALKS OFF WITH NOBODY DRIVING IT.
+-- ==========================================================================
+--
+-- "there's a bug again where DBNO players move immediately after going DBNO
+-- when not being commanded to, and that translates to desync in their ped's
+-- location between screens." (owner, 2026-08-19, playtested.)
+--
+-- WHY EVERY RIG ABOVE IS BLIND TO IT, which is the whole reason this is a new
+-- block and not another assertion inside dbno.clone.sync. All of them stub the
+-- engine like this:
+--
+--     env.TaskPlayAnim        = function(_, d, a) anim = d .. '/' .. a end
+--     env.IsEntityPlayingAnim = function() return anim ~= nil end
+--
+-- The clip is confirmed running ON THE SAME FRAME IT WAS TASKED. That is not a
+-- simplification, it is the one thing client/dbno.lua's own comments say cannot
+-- happen -- "A task issued this tick has not been evaluated yet, so
+-- IsEntityPlayingAnim on the same frame is answering about the pose we are
+-- trying to hide" -- and it is why that file budgets a FULL SECOND of cover for
+-- the transition (POSE_SETTLE_MS, citizenfx/fivem#2236). With the latency
+-- stubbed to zero the watchdog can never fire more than once, so the fault
+-- below is unreachable in every fixture that exists.
+--
+-- WHAT THE LATENCY BUYS. `playCrawl(false)` is called from dbno.controls on the
+-- FRAME band and has no rate limit of its own, so for as long as the engine has
+-- not admitted the clip, it issues a task per frame. Every task calls
+-- resyncArm(), and resyncArm sets `resyncPhase = 0` -- which does not just arm a
+-- new step, it ABANDONS the half of the pending pair that puts the body back.
+-- The next frame's `phase 1` then measures its step from `c`, the ped's CURRENT
+-- position, which already contains the step before it. So the body advances one
+-- frame of dbnoCrawlSpeed per frame -- the full crawl speed, in the direction it
+-- is facing, with nothing pressed -- for the whole of the transition window.
+-- Every one of those steps is a real SetEntityCoordsNoOffset on a networked
+-- entity, which is the second half of the owner's sentence.
+--
+-- THE ASSERTION IS AN INVARIANT AND NOT A BUDGET, because a budget is how this
+-- area has produced five rounds of green over a moving body: while the player
+-- presses nothing, EVERY position this file writes must be within one crawl
+-- step of the spot they were put down on. One step is what the clone resync is
+-- allowed to spend and there is nothing else in the file entitled to move them.
+-- It is measured off the ped the rig actually keeps, not off a call count.
+describe('dbno.quiet.body')
+do
+    -- HOW MANY FRAMES THE ENGINE TAKES TO ADMIT THE CLIP IS ON THE PED.
+    --
+    -- 1 is the floor and it is not a guess -- holdCover is built on the task not
+    -- being evaluated within its own tick. 62 is one POSE_SETTLE_MS at the
+    -- rig's frame rate, which is client/dbno.lua's own estimate of the far side
+    -- of the transition. `false` is the build where the pose never lands at all:
+    -- a downed ped with no clip is a real configuration this file handles
+    -- deliberately (`crawl == false`), and it must not be a moving one.
+    for _, LAT in ipairs({ 1, 8, 62, 'never' }) do
+        local label = tostring(LAT)
+        local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                       [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+        local CLI = newReviver(1, 2, peds)
+        local env = CLI.env
+
+        -- THE ENGINE'S ANSWER ARRIVES LATE. Nothing else about the stub
+        -- changes: the task is accepted, the dictionary loads, the ped poses.
+        local frames, taskedAt = 0, nil
+        env.TaskPlayAnim = function() taskedAt = frames end
+        env.IsEntityPlayingAnim = function()
+            if LAT == 'never' then return false end
+            return taskedAt ~= nil and (frames - taskedAt) >= LAT
+        end
+
+        -- A REAL PED. Writes land on it and the worst excursion is kept --
+        -- the FINAL position is not the measurement, because the pair puts the
+        -- body back and a test that only looked at the end would call a body
+        -- that crawled half a metre and returned "stationary".
+        local worst, writes = 0.0, 0
+        env.SetEntityCoordsNoOffset = function(_, x, y, z)
+            writes = writes + 1
+            peds[5001].x, peds[5001].y, peds[5001].z = x, y, z
+            local d = math.sqrt(x * x + y * y)
+            if d > worst then worst = d end
+        end
+
+        env.TriggerEvent(env.BR.Net.DBNO_SET,
+            { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
+
+        -- NOTHING IS TOUCHED FOR FORTY SECONDS. GetDisabledControlNormal is
+        -- the rig's own 0.0 on both axes throughout -- no forward, no turn --
+        -- and 40s is dbnoBleedMin, the shortest knock config/match.lua can
+        -- produce.
+        local SECONDS = 40
+        for _ = 1, SECONDS * 62 do
+            frames = frames + 1
+            CLI.now = CLI.now + 16
+            CLI.frame()
+        end
+
+        local M    = env.BR.Config.Match
+        local STEP = (M.dbnoCrawlSpeed or 0.55) * 0.016
+
+        ok(worst <= STEP * 1.5,
+            ('a knocked player who presses nothing does not travel, with the '
+             .. 'pose confirmed %s frame(s) late -- BEFORE: the watchdog tasked '
+             .. 'the crawl every frame of the transition, each task abandoned '
+             .. 'the step-back and re-armed a step measured from the stepped-out '
+             .. 'position, so the body crawled at full speed with nobody '
+             .. 'driving it'):format(label),
+            ('%.3fm from the anchor, one step is %.4fm (%d position writes)')
+                :format(worst, STEP, writes))
+
+        -- ...AND IT ENDS WHERE IT STARTED. The invariant above already implies
+        -- this, but the owner's report has two halves and this is the one they
+        -- can see on their own screen.
+        local restX, restY = peds[5001].x, peds[5001].y
+        ok(math.sqrt(restX * restX + restY * restY) <= STEP * 1.5,
+            ('and it comes to rest on the spot it was put down on (%s)')
+                :format(label),
+            ('%.3fm'):format(math.sqrt(restX * restX + restY * restY)))
+    end
+
+    -- AND THE TASK STORM ITSELF, counted rather than inferred. The body being
+    -- still is the report; sixty TaskPlayAnims a second is the cause, and it is
+    -- worth an assertion of its own because it is also sixty fresh movers a
+    -- second on every clone -- which is the "desync between screens" half.
+    do
+        local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                       [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+        local CLI = newReviver(1, 2, peds)
+        local env = CLI.env
+
+        local tasks = 0
+        env.TaskPlayAnim = function() tasks = tasks + 1 end
+        -- The pose never lands. This is the build client/dbno.lua's `crawl ==
+        -- false` branch exists for, arrived at from the other direction.
+        env.IsEntityPlayingAnim = function() return false end
+        env.SetEntityCoordsNoOffset = function(_, x, y, z)
+            peds[5001].x, peds[5001].y, peds[5001].z = x, y, z
+        end
+
+        env.TriggerEvent(env.BR.Net.DBNO_SET,
+            { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
+
+        local SECONDS = 10
+        for _ = 1, SECONDS * 62 do
+            CLI.now = CLI.now + 16
+            CLI.frame()
+        end
+
+        -- FOUR A SECOND IS THE CEILING, and the number is not invented here:
+        -- RETASK_EVERY_MS is already the file's own answer to "a spin cannot
+        -- re-task per frame" and this is the same limit applied to the watchdog,
+        -- which never had one. Read out of the file rather than copied, because
+        -- copying a constant is how this repo has produced green over broken
+        -- code before.
+        local f = io.open(RES .. 'br_core/client/dbno.lua', 'r')
+        local src = f and f:read('a') or ''
+        if f then f:close() end
+        local every = tonumber(src:match('local RETASK_EVERY_MS%s*=%s*(%d+)'))
+        ok(every ~= nil, 'RETASK_EVERY_MS is readable out of client/dbno.lua',
+            tostring(every))
+        local ceiling = math.ceil((SECONDS * 1000) / (every or 250)) + 2
+        ok(tasks <= ceiling,
+            'a clip that never confirms is re-posed on the file\'s own retask '
+            .. 'interval, not once per frame -- BEFORE: 620 tasks in 10s, one '
+            .. 'per frame, each one a fresh mover on every clone',
+            ('%d tasks in %ds, ceiling %d'):format(tasks, SECONDS, ceiling))
+    end
+
+    -- A RATE LIMIT IS NOT A BOUND, AND THIS IS THE HALF THAT ASSERTS THE BOUND.
+    --
+    -- RETASK_EVERY_MS stops the arm firing sixty times a second. It does NOT say
+    -- anything about what one arm is allowed to do to the body, and the reason
+    -- the regression was 21.8 metres rather than 9mm is that the step was
+    -- RELATIVE -- measured from wherever the ped had already been pushed to --
+    -- and that a fresh arm THREW AWAY the half of the pair that puts the body
+    -- back. Both of those are still wrong on a build where the throttle never
+    -- bites, and a suite that only owned the throttle would go green over them.
+    --
+    -- SO THE CLOCK IS TURNED UP UNTIL THE THROTTLE STOPS BITING. Every frame
+    -- here is longer than RETASK_EVERY_MS, so every frame is allowed to re-task
+    -- and every frame arms a step -- which is the exact per-frame arm the
+    -- regression had. This is not a contrivance for the sake of one: a FiveM
+    -- client hitching into single-digit frame rates while the streamer catches
+    -- up is ordinary, and a knock is one of the moments it happens.
+    --
+    -- On a build where the step is measured from the ANCHOR and a pending pair
+    -- is finished rather than abandoned, the body cannot travel however often
+    -- the arm fires. That is the claim, and it is the claim the owner's
+    -- sentence actually needs.
+    --
+    -- WHAT EACH OF THE TWO IS WORTH, priced against the real file one revert at
+    -- a time rather than asserted, because they are NOT worth the same and a
+    -- comment that implied they were would be the next round's wrong turn:
+    --
+    --   step from `c`,    pair abandoned   33.000 m   the regression, unbounded
+    --   step from `c`,    pair finished     0.165 m   one step -- the pair's own
+    --   step from `hold`, pair abandoned    0.330 m   two steps -- bounded
+    --   step from `hold`, pair finished     0.165 m   one step -- shipped
+    --
+    -- SO: FINISHING THE PAIR IS THE FIX. Measuring the step from the anchor
+    -- fixes nothing on top of it -- both bottom rows are one step, which is the
+    -- excursion the resync exists to make. What it buys is the THIRD row: if
+    -- anything ever re-introduces an arm that abandons a pair, the cost is two
+    -- steps instead of thirty-three metres. That is a bound, not a fix, and it
+    -- is written down as one. Only the assertion below is load-bearing on it,
+    -- and only in company with the abandon -- which is exactly why the
+    -- both-reverted row is the one this block is aimed at.
+    do
+        local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                       [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+        local CLI = newReviver(1, 2, peds)
+        local env = CLI.env
+
+        -- A HITCHING CLIENT: one frame every 300ms, and GetFrameTime says so.
+        -- Leaving the frame time at 0.016 would be a rig lying to the code
+        -- about its own clock, and the step length is computed from it.
+        local FRAME_MS = 300
+        env.GetFrameTime = function() return FRAME_MS / 1000.0 end
+
+        env.TaskPlayAnim = function() end
+        env.IsEntityPlayingAnim = function() return false end
+
+        local worst = 0.0
+        env.SetEntityCoordsNoOffset = function(_, x, y, z)
+            peds[5001].x, peds[5001].y, peds[5001].z = x, y, z
+            local d = math.sqrt(x * x + y * y)
+            if d > worst then worst = d end
+        end
+
+        env.TriggerEvent(env.BR.Net.DBNO_SET,
+            { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
+
+        for _ = 1, 200 do
+            CLI.now = CLI.now + FRAME_MS
+            CLI.frame()
+        end
+
+        local M    = env.BR.Config.Match
+        local STEP = (M.dbnoCrawlSpeed or 0.55) * (FRAME_MS / 1000.0)
+        ok(worst <= STEP * 1.5,
+            'and an arm that fires on EVERY frame still cannot walk the body: '
+            .. 'a pending pair is finished rather than abandoned, so the step '
+            .. 'back is never dropped, and the step out is measured from the '
+            .. 'anchor, so nothing it does can compound -- BEFORE: 33m in 60s',
+            ('%.3fm from the anchor over %d frames, one step is %.3fm')
+                :format(worst, 200, STEP))
+    end
+
+    -- AND THE ANCHOR ITSELF IS NOT DROPPED BY A NATIVE ANSWERING `0`.
+    --
+    -- dbno.controls drops `hold` and returns on any frame reading IsPedRagdoll
+    -- or IsEntityInAir, and both were read RAW. On a build that answers numbers
+    -- that branch is taken on EVERY frame -- `0` is truthy -- so `hold` never
+    -- exists, stayPut is never reached, and the one thing in this file that
+    -- measures the ped's position and puts it back is switched off for the whole
+    -- bleed. Same shape as the shape test, the screen fade and the crawl
+    -- watchdog before it; this is the fourth.
+    for _, shape in ipairs({ { name = 'true/false', yes = true, no = false },
+                             { name = '1/0',        yes = 1,    no = 0     } }) do
+        local peds = { [5001] = { x = 0.0, y = 0.0, z = 30.0 },
+                       [5002] = { x = 0.8, y = 0.0, z = 30.0 } }
+        local CLI = newReviver(1, 2, peds)
+        local env = CLI.env
+
+        env.IsPedRagdoll  = function() return shape.no end
+        env.IsEntityInAir = function() return shape.no end
+        env.SetEntityCoordsNoOffset = function(_, x, y, z)
+            peds[5001].x, peds[5001].y, peds[5001].z = x, y, z
+        end
+
+        -- THE CLIP'S OWN MOVER, WHICH IS WHAT THE ANCHOR IS FOR. client/dbno.lua
+        -- measured it at 1.05m over three seconds and says in as many words that
+        -- whether the lock flags suppress it "is the engine's answer". So the
+        -- rig gives the worst case -- flags that do nothing -- and the anchor has
+        -- to be what stops the body.
+        local drift = (0.35 * 0.016)
+        env.TriggerEvent(env.BR.Net.DBNO_SET,
+            { downed = true, bleedEndsAt = 120000, revivePct = 0.0 })
+
+        for _ = 1, 20 * 62 do
+            peds[5001].y = peds[5001].y + drift
+            CLI.now = CLI.now + 16
+            CLI.frame()
+        end
+
+        local M    = env.BR.Config.Match
+        local STEP = (M.dbnoCrawlSpeed or 0.55) * 0.016
+        local away = math.sqrt(peds[5001].x ^ 2 + peds[5001].y ^ 2)
+        ok(away <= STEP * 1.5 + drift,
+            ('the anchor holds a body the clip is dragging when the ragdoll '
+             .. 'natives answer %s -- BEFORE: `0` is truthy, so `hold` was '
+             .. 'cleared on every frame and nothing ever put the body back')
+                :format(shape.name),
+            ('%.3fm over 20s of a mover the lock flags did not stop'):format(away))
+    end
+end
+
+-- ==========================================================================
 -- #164, SECOND HALF: A CRAWLING BODY TURNS AND THE CLONES DO NOT.
 -- ==========================================================================
 --
