@@ -103,6 +103,10 @@ server_scripts {
     -- above), whose enum values it keys its severity table on.
     '@br_lib/shared/evidence_buf.lua',
     '@br_lib/shared/incident_build.lua',
+    -- SERVER-ONLY for the same reason as the two above: how many screenshots a
+    -- case gets, and when, is a moderation rule. server/artifacts.lua calls
+    -- BR.ArtifactPlan.new() at load time, so this must precede it.
+    '@br_lib/shared/artifact_plan.lua',
     'server/main.lua',      -- defines BR.Server and starts the scheduler
     'server/clock.lua',
     'server/broadcast.lua', -- BR.Broadcast, used by roster
@@ -132,6 +136,12 @@ server_scripts {
     'server/players.lua',   -- the in-game player list and player reports
     'server/ringmaster.lua', -- the admin-console snapshot feed; emits, never listens
     'server/incident.lua',  -- builds incident payloads from evidence; emits, never enforces
+    -- Screenshots of the offender, taken on their own client and uploaded to S3
+    -- through br_ddb. AFTER incident.lua and players.lua for a reader rather
+    -- than for the loader: it listens to `br:incident:filed` and
+    -- `br:ringmaster:corroborate`, which those two raise, and it is declared
+    -- below both so the order on the page is the order of the pipeline.
+    'server/artifacts.lua',
 }
 
 dependency 'br_lib'

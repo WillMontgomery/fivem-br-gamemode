@@ -237,6 +237,71 @@ unrecoverable because the evidence buffer behind it is discarded at match end. S
 the row is written by the game and the event carries only an id. What a
 compromised game box gains from this grant is the ability to file noise.
 
+## Artifacts: screenshots of the offender, and why they may not exist
+
+A filed case captures the **offending player's own screen** three times —
+immediately, at **+5s** and at **+10s** — plus one frame per corroboration
+arriving after that first ten seconds, to a maximum of **nine per case**. At the
+cap the capture stops; nothing already taken is ever discarded to make room.
+
+The capture runs on the **subject's own machine**, through the third-party Cfx
+resource `screenshot-basic`, and uploads to `royale-incidents-bucket` under
+`incidents/<incidentId>/NN.webp`. The game box holds `s3:PutObject` on that
+prefix and nothing else — it cannot read a frame back, list the bucket, or delete
+one. The console holds `GetObject` and serves frames to a browser through
+short-lived presigned GETs; the bucket is not public and objects expire after 180
+days.
+
+**EMPTY IS NORMAL AND IS NOT EVIDENCE OF ANYTHING.** This is the property that
+matters most and the easiest one to lose. The subject can disconnect, crash,
+alt-tab, sit on a loading screen, or be running a client where `screenshot-basic`
+was never installed — and every frame fails independently of the others. A case
+with two frames, or none, is a normal case and says nothing whatsoever about
+whether anything was happening. Nothing in the game logs a missing frame as an
+error, and nothing anywhere should present one as meaningful.
+
+**The timestamp is the server's.** This is an anti-cheat surface: the premise is
+that the subject may be running modified software, so their clock is not
+evidence. Each frame is stamped with `os.time()` on the game box at the moment
+the server decided to ask for it, and that value travels as S3 object metadata
+(`x-amz-meta-captured-at`, unix milliseconds) rather than in the key or on the
+DynamoDB row — the game's grant on `ringmaster-incidents` is append-only, so it
+cannot add to a case it has already filed.
+
+**The subject is told nothing, at any point.** Same rule as the rest of the
+pipeline: no notice, no hint, no sound. A player who learns they are under
+suspicion changes behaviour, which costs the case the evidence it was made of.
+
+### `screenshot-basic` is not vendored, unlike pma-voice
+
+pma-voice lives in this repository at `resources/[voice]/pma-voice` because three
+player-facing faults were unfixable from outside it, and a third-party resource
+we cannot patch is a resource we cannot fix. The same argument was weighed here
+and comes out the other way, for reasons that are about this particular resource
+rather than about the principle:
+
+* **It cannot be vendored the way pma-voice was.** pma-voice ships runnable Lua,
+  so `VENDOR.json` can assert that every byte outside a marked patch is
+  byte-identical to an upstream tag. `screenshot-basic` ships TypeScript with a
+  `package.json` and `webpack_config` lines, and **has no built output in the
+  repository at all** — FXServer builds it on the box with its own Node 16 and
+  yarn toolchain. Vendoring it would mean either shipping that toolchain
+  dependency (which `DEPLOY.md` documents as the thing that already took a
+  resource down once) or committing a build we produced ourselves, which
+  destroys the provenance property the vendoring gate exists to assert.
+* **Nothing in it needs patching for us.** The faults that justified vendoring
+  pma-voice were player-facing and unavoidable. This resource is called once per
+  frame from server code, is never touched by a player, and its one real defect —
+  it holds an upload token open forever, so a callback for a client that never
+  answers is never fired — is worked around cleanly from our side with a timeout
+  and a swept spool directory.
+
+So it is **installed, not vendored**, and the standing rule applies with full
+force: *do not assume it is installed*. `br_core/server/artifacts.lua` checks
+`GetResourceState` before every capture, opens no case state when it is absent,
+and produces no log line at all — a server without it files incidents exactly as
+before, carrying no frames.
+
 ## A case has two states, and a verdict is final
 
 `pending_review` and `resolved`. There is no third state, **a resolved case

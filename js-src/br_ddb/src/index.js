@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto'
+import { mkdir, readdir, readFile, rm, stat as fsStat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import {
   BatchWriteItemCommand,
@@ -7,8 +10,10 @@ import {
   PutItemCommand,
   UpdateItemCommand,
 } from '@aws-sdk/client-dynamodb'
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3'
 import { marshall, unmarshall } from '@aws-sdk/util-dynamodb'
 
+import { artifactNames, isSpoolFile } from './artifacts.js'
 import { isActive } from './ban.js'
 import { buildIncidentItem } from './incident.js'
 import { projectVerdict } from './verdict.js'
@@ -57,11 +62,19 @@ import { projectVerdict } from './verdict.js'
  * docs/aws-setup.md that it is worth saying so plainly rather than quietly
  * editing it out.
  *
- * WHAT A COMPROMISED GAME BOX CAN DO WITH THIS: file noise, and read the verdicts
- * on cases it filed. What it still cannot do: enumerate open cases (there is no
- * Query or Scan in this file), read who is an admin, discover who is banned,
- * alter a verdict, or overwrite an existing incident -- the write is conditional
- * on the id being absent.
+ * AND SINCE 2026-08-20 IT ALSO REACHES S3, which is the first thing in this file
+ * that is not a database at all. `s3:PutObject` on
+ * `royale-incidents-bucket/incidents/*` -- write only, one bucket, one prefix --
+ * carries the screenshots an incident is captured with. See the artifacts
+ * section near the bottom for why it lives in this resource and not another one,
+ * and src/artifacts.js for why the game cannot choose a key.
+ *
+ * WHAT A COMPROMISED GAME BOX CAN DO WITH THIS: file noise, read the verdicts on
+ * cases it filed, and write up to nine images per case it filed into a prefix it
+ * cannot leave. What it still cannot do: enumerate open cases (there is no Query
+ * or Scan in this file), read who is an admin, discover who is banned, alter a
+ * verdict, overwrite an existing incident -- the write is conditional on the id
+ * being absent -- or read back, list or delete a single object in that bucket.
  *
  * NO CREDENTIALS ANYWHERE. The SDK's default provider chain finds the EC2
  * instance role through IMDS on its own. Same rule as the Ringmaster box: if
@@ -991,6 +1004,329 @@ on('br:ddb:incidentVerdict', (req, incidentId) => {
     })
     .catch((e) => {
       console.log(`[br_ddb] verdict read failed for ${id}: ${e.message}`)
+      answer(false, { error: e.message })
+    })
+})
+
+/**
+ * ═══ ARTIFACTS -- THE ONLY THING IN THIS FILE THAT IS NOT DYNAMODB ═══
+ *
+ * WHY IT IS HERE AT ALL, since the resource is called br_ddb. Because the thing
+ * that makes this resource able to reach AWS is not the DynamoDB client, it is
+ * the EC2 instance role the SDK's provider chain finds through IMDS -- and a
+ * second resource holding a second copy of the SDK to use the same role would
+ * be a second bundle to keep current and a second place to audit. The owner's
+ * framing on 2026-08-20: adding `s3:PutObject` scoped to one bucket and one
+ * prefix "is the same pattern already in use, not a new class of trust."
+ *
+ * IT IS STILL TWO NAMED VERBS AND NOT A FILE BRIDGE. There is no verb here that
+ * takes a path, a bucket, a key or a body. The game passes an incident id, a
+ * frame number and an encoding; everything else is derived in artifacts.js and
+ * validated before it is used. A compromised game box can write nine objects
+ * per incident it filed, under names it cannot choose, into a prefix it cannot
+ * leave -- and cannot read one back, because the grant is PutObject alone.
+ *
+ * ═══ THE IMAGE BYTES DO NOT CROSS THE LUA BOUNDARY ═══
+ *
+ * `screenshot-basic`'s server export takes a `fileName`, and when it is set the
+ * client's upload is moved to that path on the game box instead of being handed
+ * back as a base64 data URI. So the frame lands on disk, this file reads it, and
+ * the only things that ever cross between Lua and JS are three short scalars.
+ * Its own README says of the data-URI form: "Please don't send this through
+ * _any_ server events."
+ *
+ * ═══ AND THE DISK IS BOUNDED, BECAUSE A FULL ONE IS WORSE THAN A LOST FRAME ═══
+ *
+ * The spool is swept on every request and wiped at start, only ever deletes
+ * names artifacts.js could have produced, and refuses to hand out a path once it
+ * is over its file or byte cap. Refusing costs a screenshot. Not refusing costs
+ * the game server.
+ */
+
+/**
+ * THE BUCKET, HARD-CODED, ON PURPOSE (operator, 2026-08-20): "Public access is
+ * disabled so you can hard-code that bucket in." It is not a secret -- the name
+ * grants nothing without credentials -- and the only thing that would make a
+ * rename expensive is a literal at every call site, so there is exactly one.
+ */
+const ARTIFACT_BUCKET = GetConvar('br_artifacts_bucket', 'royale-incidents-bucket')
+
+/**
+ * Where a frame waits between landing on disk and reaching the bucket.
+ *
+ * A DEDICATED DIRECTORY, NEVER THE RESOURCE'S OWN. Resources are rsynced by
+ * tools/deploy.sh and re-read on restart; a stray image inside one is a file the
+ * deploy will argue with. The default is under the OS temp directory, which is
+ * where a file whose whole life is measured in seconds belongs.
+ */
+const SPOOL_DIR = GetConvar('br_artifacts_dir', join(tmpdir(), 'br_artifacts'))
+
+/**
+ * The ceilings, and they are deliberately small.
+ *
+ * Nine frames per incident at a few hundred kilobytes each is a couple of
+ * megabytes for the worst case the design allows, and the spool holds a file for
+ * as long as one upload takes. Anything approaching these numbers means uploads
+ * are failing or clients are delivering late, and in both of those states the
+ * right answer is to stop taking pictures rather than to keep writing.
+ */
+const SPOOL_MAX_FILES = 32
+const SPOOL_MAX_BYTES = 32 * 1024 * 1024
+
+/**
+ * A frame nobody is waiting for any more.
+ *
+ * THIS EXISTS BECAUSE `screenshot-basic` HAS NO TIMEOUT. Its server half holds
+ * the upload token open forever, so a client that finally uploads three minutes
+ * after the game side stopped waiting still writes a file here -- with no
+ * callback left to consume it. Ninety seconds is comfortably past the game's own
+ * 15-second wait and comfortably short of anything that could accumulate.
+ */
+const SPOOL_STALE_MS = 90_000
+
+/** The largest frame we are willing to move. A webp screenshot is a fraction of
+ * this; the cap is here so a client that uploads something absurd costs one
+ * refused frame rather than the disk. */
+const ARTIFACT_MAX_BYTES = 8 * 1024 * 1024
+
+/**
+ * Longer than the 3 seconds a DynamoDB point lookup gets.
+ *
+ * An artifact is a few hundred kilobytes leaving the box, not a keyed read, and
+ * nothing is waiting on it -- no player is on a connecting screen and no match
+ * tick is blocked. The game side has already stopped caring by the time this
+ * matters.
+ */
+const ARTIFACT_TIMEOUT_MS = 15_000
+
+let s3 = null
+
+function s3client() {
+  if (!s3) {
+    // SAME REGION AND SAME CREDENTIAL CHAIN AS THE DYNAMODB CLIENT ABOVE.
+    // No keys, no profile, no config file -- the instance role, found by the
+    // provider chain, exactly as `ddb()` does it.
+    s3 = new S3Client({
+      region: REGION,
+      maxAttempts: 2,
+      requestHandler: { requestTimeout: ARTIFACT_TIMEOUT_MS },
+    })
+  }
+  return s3
+}
+
+/**
+ * Remove what nobody is coming back for, and report what is left.
+ *
+ * BY PATTERN, NOT BY DIRECTORY. `isSpoolFile` accepts only names this resource
+ * could have produced, so a `br_artifacts_dir` pointed somewhere real by mistake
+ * cannot delete anything that was not ours. That is the whole reason the check
+ * is a function in artifacts.js with tests on it.
+ *
+ * @param {number} olderThanMs  delete files last modified more than this ago;
+ *                              0 wipes every spool file, for a fresh start
+ * @returns {Promise<{files: number, bytes: number, removed: number}>}
+ *          `files` and `bytes` describe what SURVIVED
+ */
+async function sweepSpool(olderThanMs) {
+  await mkdir(SPOOL_DIR, { recursive: true })
+
+  let names = []
+  try {
+    names = await readdir(SPOOL_DIR)
+  } catch {
+    return { files: 0, bytes: 0, removed: 0 }
+  }
+
+  const cutoff = Date.now() - olderThanMs
+  let files = 0
+  let bytes = 0
+  let removed = 0
+
+  for (const name of names) {
+    if (!isSpoolFile(name)) continue
+    const path = join(SPOOL_DIR, name)
+    try {
+      const st = await fsStat(path)
+      if (st.mtimeMs <= cutoff) {
+        await rm(path, { force: true })
+        removed += 1
+        continue
+      }
+      files += 1
+      bytes += st.size
+    } catch {
+      // Raced with its own upload deleting it. Nothing to count and nothing
+      // to say.
+    }
+  }
+
+  return { files, bytes, removed }
+}
+
+/**
+ * NOTHING IN THE SPOOL SURVIVES A RESTART, and nothing should. Every file in
+ * there belongs to a capture whose Lua-side callback died with the previous
+ * process -- it will never be uploaded, and it will never be swept by age
+ * because the sweeper only runs when a capture is requested. So the first thing
+ * this resource does is empty it.
+ */
+sweepSpool(0)
+  .then(({ removed }) => {
+    if (removed > 0) {
+      console.log(`[br_ddb] artifacts: cleared ${removed} orphaned frame(s) at start`)
+    }
+  })
+  .catch((e) => {
+    console.log(`[br_ddb] artifacts: spool unavailable at ${SPOOL_DIR}: ${e.message}`)
+  })
+
+/**
+ * "Where do I put frame N of incident X?"
+ *
+ * ASKED BEFORE THE PICTURE IS TAKEN, so a spool that is full, missing or
+ * unwritable costs a screenshot that was never requested rather than a file
+ * with nowhere to go. The game treats a refusal here exactly as it treats a
+ * client that never answers: one frame missing, which is a normal outcome.
+ */
+on('br:ddb:artifactBegin', (req, incidentId, index, encoding) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:artifactResult', req, ok, extra ?? {})
+  }
+
+  const names = artifactNames(incidentId, index, encoding)
+  if (names.error) {
+    answer(false, { error: names.error })
+    return
+  }
+
+  sweepSpool(SPOOL_STALE_MS)
+    .then(({ files, bytes }) => {
+      if (files >= SPOOL_MAX_FILES || bytes >= SPOOL_MAX_BYTES) {
+        // LOUD, because this one IS a fault. Everything else in this feature
+        // fails quietly because it is somebody else's machine; a spool at its
+        // ceiling means uploads are not draining on OURS.
+        console.log(
+          `[br_ddb] artifacts: spool full (${files} files, ${bytes} bytes) -- refusing`,
+        )
+        answer(false, { error: 'spool full' })
+        return
+      }
+      answer(true, { key: names.key, path: join(SPOOL_DIR, names.file) })
+    })
+    .catch((e) => answer(false, { error: e.message }))
+})
+
+/**
+ * "It landed. Put it in the bucket."
+ *
+ * THE PATH IS RE-DERIVED, NOT RECEIVED. The game is told a path by
+ * `artifactBegin` so it can hand it to `screenshot-basic`, and it is never asked
+ * for it back -- this rebuilds it from the same id, index and encoding. So there
+ * is no way to name a file for this verb to read.
+ *
+ * THE LOCAL COPY IS DELETED EITHER WAY, and that is the decision worth stating.
+ * A failed upload could be retried instead, but retrying means keeping the file,
+ * and the case that accumulates silently is precisely the failing one -- a
+ * bucket that is unreachable for an hour would leave an hour of frames on the
+ * disk of a machine players are connected to. The frame is already the most
+ * disposable thing in the pipeline: the incident row is durable without it, a
+ * partial set is normal, and two more frames are scheduled behind this one. So
+ * the disk wins and the frame is dropped.
+ *
+ * WHAT IS NOT DROPPED: the SDK's own two attempts, which cover the blip that a
+ * retry loop would mostly be catching anyway.
+ */
+on('br:ddb:artifactPut', (req, incidentId, index, encoding, capturedAt) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:artifactResult', req, ok, extra ?? {})
+  }
+
+  const names = artifactNames(incidentId, index, encoding)
+  if (names.error) {
+    answer(false, { error: names.error })
+    return
+  }
+
+  const path = join(SPOOL_DIR, names.file)
+
+  /**
+   * SERVER TIME, AND IT IS NOT DEFAULTED TO `Date.now()`.
+   *
+   * The whole reason this timestamp exists is that the subject's clock is not
+   * evidence, and the game samples `os.time()` on this box at the moment it
+   * decides to ask for the frame. Falling back to the upload time would quietly
+   * replace "when the picture was asked for" with "when it finished arriving" --
+   * two different facts, in one field, telling nobody which they had. A value
+   * that did not survive the crossing is refused instead.
+   */
+  const at = Number(capturedAt)
+  if (!Number.isFinite(at) || at <= 0) {
+    rm(path, { force: true }).catch(() => {})
+    answer(false, { error: 'bad capturedAt' })
+    return
+  }
+
+  const cleanup = () => rm(path, { force: true }).catch(() => {})
+
+  fsStat(path)
+    .then((st) => {
+      if (!st.isFile() || st.size === 0) throw new Error('empty frame')
+      if (st.size > ARTIFACT_MAX_BYTES) throw new Error(`frame too large (${st.size})`)
+      return readFile(path)
+    })
+    .then((body) =>
+      withTimeout(
+        s3client().send(
+          new PutObjectCommand({
+            Bucket: ARTIFACT_BUCKET,
+            Key: names.key,
+            Body: body,
+            /**
+             * SET, NOT INFERRED. S3 defaults an object with no type to
+             * `application/octet-stream`, and the console renders these in an
+             * `<img>` through a presigned GET -- a browser handed that type
+             * offers a download instead of drawing the image, and the admin sees
+             * what looks exactly like a screenshot that was never taken.
+             */
+            ContentType: names.contentType,
+            /**
+             * THE TIME TRAVELS WITH THE OBJECT, and this is the whole answer to
+             * "where does the timestamp live".
+             *
+             * NOT IN DYNAMODB, because it cannot be: the game's grant on
+             * `ringmaster-incidents` is PutItem conditional on the id being
+             * absent, so it can file a case and cannot reach inside one. The
+             * row's `captureKeys` is written `[]` at filing time and the game
+             * has no way to add to it afterwards.
+             *
+             * NOT IN THE KEY, because a key carrying a timestamp is a key that
+             * cannot be guessed -- and the console holds GetObject with no
+             * ListBucket, so a key it cannot derive is a frame it cannot find.
+             *
+             * SO: METADATA. `s3:GetObject` covers HEAD as well as GET, so the
+             * console reads the capture time from the same request that fetches
+             * the image, with no second lookup and no second source of truth.
+             * Values are ASCII decimal strings because that is all object
+             * metadata carries.
+             */
+            Metadata: {
+              'incident-id': incidentId,
+              index: String(index),
+              'captured-at': String(Math.trunc(at)),
+            },
+          }),
+        ),
+        ARTIFACT_TIMEOUT_MS,
+      ).then(() => body.length),
+    )
+    .then((bytes) => {
+      cleanup()
+      answer(true, { key: names.key, bytes })
+    })
+    .catch((e) => {
+      cleanup()
+      console.log(`[br_ddb] artifact ${names.key} not stored: ${e.message}`)
       answer(false, { error: e.message })
     })
 })

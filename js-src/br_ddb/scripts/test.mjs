@@ -1,16 +1,19 @@
+import { artifactNames, ARTIFACT_PREFIX, isSpoolFile } from '../src/artifacts.js'
 import { isActive } from '../src/ban.js'
 import { buildIncidentItem, LIMITS } from '../src/incident.js'
 import { projectVerdict, verdictWord } from '../src/verdict.js'
 
 /**
- * Tests for the two decisions in br_ddb that are pure arithmetic on data, and
- * therefore the two that can be wrong for weeks without anybody noticing.
+ * Tests for the decisions in br_ddb that are pure arithmetic on data, and
+ * therefore the ones that can be wrong for weeks without anybody noticing.
  *
  *   the ban rule       decides whether a player gets into the server
  *   the incident item  decides what a moderation record says about a person
+ *   artifact names     decide which IAM statement applies and which files the
+ *                      sweeper may delete
  *
- * Neither needs a network, and neither should ever be changed without a case
- * here changing with it.
+ * None needs a network, and none should ever be changed without a case here
+ * changing with it.
  */
 
 let failed = 0
@@ -423,6 +426,104 @@ check('the word for a ban is past tense and lower case', verdictWord('ban'), 'ba
 check('the word for a kick is past tense and lower case', verdictWord('kick'), 'kicked')
 check('there is no word for no action', verdictWord('none'), null)
 check('there is no word for an absent verdict', verdictWord(null), null)
+
+// -------------------------------------------------------- artifact names ---
+
+/**
+ * EVERY CASE HERE IS A SECURITY CASE, not a formatting one. The key decides
+ * which IAM statement applies -- the grant is `PutObject` on
+ * `royale-incidents-bucket/incidents/*` and nothing else -- and the file name
+ * decides what the spool sweeper is willing to delete off the game box's disk.
+ * Both are built from values that arrived over an event boundary from Lua.
+ */
+console.log('\nartifact names')
+
+const AID = '0f9c1e2a-3b4c-4d5e-8f60-112233445566'
+
+check(
+  'the key is the prefix, the id, the two-digit frame and the extension',
+  artifactNames(AID, 1, 'webp').key,
+  `incidents/${AID}/01.webp`,
+)
+check('frame 9 pads to two digits like every other', artifactNames(AID, 9, 'webp').key,
+  `incidents/${AID}/09.webp`)
+check(
+  'the local file is flat, so the sweeper never leaves an empty directory',
+  artifactNames(AID, 3, 'webp').file,
+  `${AID}-03.webp`,
+)
+check('webp is stored as image/webp, so a browser draws it rather than downloading it',
+  artifactNames(AID, 1, 'webp').contentType, 'image/webp')
+check('jpg maps to image/jpeg, not image/jpg',
+  artifactNames(AID, 1, 'jpg').contentType, 'image/jpeg')
+
+// THE KEY CANNOT LEAVE THE PREFIX. This is the assertion that pins the grant:
+// a key outside `incidents/` is refused by IAM, which would present as every
+// upload failing at once with no clue why.
+check(
+  'every accepted key starts inside the granted prefix',
+  ['webp', 'jpg', 'png'].every((e) =>
+    artifactNames(AID, 5, e).key.startsWith(ARTIFACT_PREFIX),
+  ),
+  true,
+)
+
+// Rejections. Each of these is a value a compromised or merely broken game side
+// could send, and none of them may reach a path or a key.
+const bad = [
+  ['a traversal in the id', () => artifactNames('../../etc/passwd', 1, 'webp')],
+  ['a slash in the id', () => artifactNames(`${AID}/x`, 1, 'webp')],
+  ['an id that is not a UUID at all', () => artifactNames('hello', 1, 'webp')],
+  ['a v1 UUID -- this resource only ever mints v4', () =>
+    artifactNames('0f9c1e2a-3b4c-1d5e-8f60-112233445566', 1, 'webp')],
+  ['an empty id', () => artifactNames('', 1, 'webp')],
+  ['a non-string id', () => artifactNames(42, 1, 'webp')],
+  ['frame 0', () => artifactNames(AID, 0, 'webp')],
+  ['frame 10 -- nine is the cap and the namespace', () => artifactNames(AID, 10, 'webp')],
+  ['a negative frame', () => artifactNames(AID, -1, 'webp')],
+  ['a fractional frame', () => artifactNames(AID, 1.5, 'webp')],
+  ['a frame that is not a number', () => artifactNames(AID, 'one', 'webp')],
+  ['an encoding with a dot in it', () => artifactNames(AID, 1, '../sh')],
+  ['an encoding nobody asked for', () => artifactNames(AID, 1, 'gif')],
+  ['no encoding', () => artifactNames(AID, 1, undefined)],
+]
+for (const [label, fn] of bad) {
+  const got = fn()
+  check(`refused: ${label}`, typeof got.error === 'string' && !got.key, true)
+}
+
+// -------------------------------------------------------- the sweep guard ---
+
+/**
+ * `br_artifacts_dir` is a convar. A typo could point it at a directory that
+ * matters, so the sweeper deletes only names this module could have produced --
+ * which makes the worst case "the spool fills up" rather than "something else
+ * was emptied".
+ */
+console.log('\nspool sweep guard')
+
+check('a name this module produced is sweepable',
+  isSpoolFile(artifactNames(AID, 4, 'webp').file), true)
+check('and so is one with a jpg extension', isSpoolFile(`${AID}-04.jpg`), true)
+
+const notOurs = [
+  'server.cfg',
+  'cache',
+  '.env',
+  'id_rsa',
+  `${AID}.webp`,
+  `${AID}-4.webp`,
+  `${AID}-00.webp`,
+  `${AID}-10.webp`,
+  `${AID}-04.webp.bak`,
+  `../${AID}-04.webp`,
+  '0f9c1e2a-3b4c-1d5e-8f60-112233445566-04.webp',
+  '',
+]
+for (const name of notOurs) {
+  check(`not swept: ${JSON.stringify(name)}`, isSpoolFile(name), false)
+}
+check('not swept: a non-string', isSpoolFile(null), false)
 
 if (failed) {
   console.error(`\nbr_ddb: ${failed} of ${ran} case(s) failed`)

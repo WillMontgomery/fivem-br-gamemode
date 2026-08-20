@@ -117,7 +117,13 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # that shipped on 2026-08-16 landed on a CLIENT interaction that no gate
     # touched (#140). It stubs the FiveM natives and steps the frame band by
     # hand, the same shape test_roster.lua uses for the server.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_client.lua tools/test_config.lua; do
+    #
+    # test_artifacts.lua loads br_core/server/artifacts.lua itself, which makes
+    # it the second suite here to exercise a server file rather than a pure
+    # module. It is worth the stubs: the capture rules -- three frames, one per
+    # corroboration after ten seconds, nine and then stop -- can only be seen in
+    # the game by drawing nine corroborations on one case.
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_client.lua tools/test_config.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1

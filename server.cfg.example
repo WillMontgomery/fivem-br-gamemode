@@ -88,6 +88,22 @@ ensure hardcap           # enforces sv_maxclients
 # work for a living.
 ensure pma-voice
 
+# SCREENSHOTS ON AN INCIDENT (#34). THIRD-PARTY, NOT IN THIS REPOSITORY, AND
+# DELIBERATELY NOT VENDORED -- see docs/security.md for why this one is
+# installed rather than copied in, unlike pma-voice above.
+#
+# COMMENTED OUT BECAUSE IT IS GENUINELY OPTIONAL. Without it, incidents are
+# filed exactly as before and simply carry no frames -- a supported state, not a
+# degraded one. Uncomment after installing it:
+#
+#   cd resources/[local] && git clone https://github.com/citizenfx/screenshot-basic
+#
+# It builds itself on first start using FXServer's own yarn/webpack system
+# resources, so those must be present (they ship with cfx-server-data). Confirm
+# with `brartifacts` in the server console, which says outright whether it is
+# running.
+# ensure screenshot-basic
+
 # NOT started, on purpose:
 #   chat            -- br_ui provides chat; two systems fight over the T key
 #   spawnmanager    -- br_core owns spawning and the warmup pad
@@ -192,6 +208,32 @@ ensure br_ringmaster     # optional -- the admin console's game-side half
 # ---------------------------------------------------------------------------
 # set br_ddb_region       "us-east-2"
 # set br_ddb_table_prefix "ringmaster-"
+
+# ---------------------------------------------------------------------------
+# INCIDENT ARTIFACTS (M9, #34). The screenshots attached to a moderation case.
+#
+# THE BUCKET NAME IS HARD-CODED AND THAT IS DELIBERATE (operator, 2026-08-20):
+# "Public access is disabled so you can hard-code that bucket in." It is not a
+# credential -- the name grants nothing without one -- and the box reaches S3
+# with the same EC2 instance role it reaches DynamoDB with. Set this only if you
+# are pointing a test box at a different bucket. The IAM grant is PutObject on
+# the `incidents/` prefix and nothing else: the game cannot read a frame back,
+# list the bucket, or delete anything.
+#
+# `br_artifacts_dir` is where a frame waits for the few seconds between landing
+# on this box and reaching the bucket. The default is under the OS temp
+# directory. It is emptied when br_ddb starts and swept on every capture, and
+# br_ddb refuses to take a picture at all once it is over its ceiling -- a full
+# disk on the game box is a far worse outcome than a missing screenshot.
+#
+# NOTHING HERE INSTALLS screenshot-basic. It is a third-party Cfx resource and
+# it is NOT vendored into this repository (see docs/security.md). If it is not
+# running, incidents simply carry no frames -- which is a normal, supported
+# state and is not an error. `brartifacts` in the server console says which
+# state you are in.
+# ---------------------------------------------------------------------------
+# set br_artifacts_bucket "royale-incidents-bucket"
+# set br_artifacts_dir    "/tmp/br_artifacts"
 
 # ---------------------------------------------------------------------------
 # VOICE. THE RESOURCE IS VENDORED INTO THIS REPOSITORY AND DEPLOYS WITH IT.

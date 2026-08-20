@@ -114,6 +114,7 @@ RegisterCommand('brhelp', function()
     print('  brjob <on|off> <n>   enable or disable a scheduler job by name')
     print('  brconfig             the tunables that most often explain odd behaviour')
     print('  brwhy <id>           why is this player in the state they are in')
+    print('  brartifacts          incident screenshots: taken, stored, refused')
     print('  brloot [matchId]     world loot: counts by kind and rarity, subscriptions')
     print('  brlootsim [n] [tier] roll the crate table n times and print the')
     print('                       distribution -- including the share of crates')
@@ -973,7 +974,56 @@ RegisterCommand('brrefuse', function(src, args)
     for _ = 1, n do
         BR.Damage.noteRefusal(target, BR.ShotRefusal[why])
     end
+
+    -- WHERE TO LOOK NEXT. The frames are taken at +0, +5s and +10s AFTER the
+    -- DynamoDB acknowledgement, so there is nothing to show yet -- and a
+    -- playtester with no idea that a second command exists reads "no
+    -- screenshots" as "the feature does not work".
+    if BR.Artifacts then
+        print('  Then: brartifacts, ~15s from now, for what the capture did.')
+    end
 end, false)
+
+--- What the capture has actually done.
+---
+--- THE READER FOR BR.Artifacts.stats(), written at the same time as the thing it
+--- reads. Two stats functions in this resource already have no caller
+--- (BR.Evidence.stats, BR.Incident.stats) and a third would have been the same
+--- mistake for the third time.
+---
+--- IT IS THE ONLY WINDOW ONTO THIS FEATURE FROM THE BOX. Nothing about a
+--- screenshot is visible in the game: the subject is shown nothing, the frames
+--- go straight to a bucket the game cannot read back, and a partial set is the
+--- normal outcome -- so "did anything happen" has no other answer short of
+--- opening the case in Ringmaster.
+---
+--- `enabled` IS THE FIRST LINE ON PURPOSE. `screenshot-basic` not being
+--- installed is a supported state, and it is the explanation for every zero
+--- below it.
+RegisterCommand('brartifacts', function()
+    header('incident artifacts')
+    if not BR.Artifacts then
+        print('  server/artifacts.lua is not loaded.')
+        return
+    end
+    local s = BR.Artifacts.stats()
+    print(('  capture        %s'):format(
+        s.enabled and 'screenshot-basic is running'
+                  or 'screenshot-basic is NOT running -- no frames will be taken'))
+    print(('  cases          %d open, %d opened since start, %d evicted')
+        :format(s.open, s.opened, s.evicted))
+    print(('  frames         %d claimed, %d asked for, %d stored, %d lost')
+        :format(s.claimed, s.asked, s.stored, s.lost))
+    print(('  uploaded       %d bytes'):format(s.bytes))
+    -- REFUSALS ARE RULES, NOT FAULTS, and they are printed apart from `lost` so
+    -- that reading is not available only to somebody who has read the source.
+    print(('  not captured   %d at the cap of nine, %d inside the first ten')
+        :format(s.refusedCap, s.refusedCovered))
+    print(('                 %d for cases this process did not file')
+        :format(s.refusedUnknown))
+    print(('  skipped        %d (subject gone, or nothing to capture with)')
+        :format(s.skipped))
+end, RESTRICTED)
 
 --- Print the stored profile row for connected players.
 ---

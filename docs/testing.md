@@ -54,6 +54,7 @@ quietly stops running is visible rather than merely green.
 | `test_sched.lua` | 41 | The server scheduler: intervals, duplicate-name refusal, stepping. |
 | `test_stats.lua` | 156 | XP and placement arithmetic. |
 | `test_ringmaster.lua` | 143 | The Ringmaster surface: the incident envelope, the gate, kick and maintenance. |
+| `test_artifacts.lua` | 119 | Incident screenshots: three timed frames, the ten-second rule on corroborations, the cap of nine and the clean no-op past it, a subject who disconnects mid-schedule, `screenshot-basic` absent, a failed upload, and a client that never answers. Loads `br_core/server/artifacts.lua` itself. |
 | `test_client.lua` | 526 | The client interaction layer — keybinds, holds, prompts, loot pickup — with the FiveM natives stubbed and the frame band stepped by hand, the same shape `test_roster.lua` uses for the server. |
 | `test_config.lua` | 142 | The server-tunable overrides: strict convar parsing, ranges refused rather than clamped, a renamed config key as a hard failure, the load-time hook on a server / client / bare state, and the shipped `.cfg` examples run through the real parser. |
 
