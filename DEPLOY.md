@@ -296,6 +296,11 @@ exec "tunables.cfg"
 
 Swapping which example you copied and restarting is the whole mechanism.
 
+**Delete the `sv_devMode` / `br_devMode` lines from your `server.cfg`.** They sit
+*below* the exec line, and in a `.cfg` the last line wins — leave them and dev
+mode stops following the file that is supposed to decide it. Both examples set
+those two convars themselves: `true` in the dev one, `false` in the public one.
+
 **The order is load-bearing and getting it wrong fails silently.** These convars
 are read once, while `br_lib/config/*.lua` loads, and two of the values are
 copied into other tables at that same instant. An `exec` below the `ensure`

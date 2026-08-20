@@ -535,9 +535,10 @@ do
     for _, s in ipairs(Ov.SPEC) do byConvar[s.convar] = s end
 
     -- Convars the file may legitimately set that this layer does not own.
-    -- br_devMode predates it and is read by br_core/server/main.lua; it belongs
-    -- in the dev cfg for the same reason everything else there does.
-    local KNOWN_EXTRA = { br_devMode = true }
+    -- devMode predates it and is read by br_core/server/main.lua; it belongs in
+    -- these files for the same reason everything else there does -- it is the
+    -- other half of "which server is this".
+    local KNOWN_EXTRA = { br_devMode = true, sv_devMode = true }
 
     local unknown, invalid = {}, {}
     for _, name in ipairs(order) do
@@ -593,11 +594,32 @@ do
     local text = slurp('tunables.public.cfg.example')
     ok(text ~= nil, 'tunables.public.cfg.example exists')
 
-    local _, order = cfgConvars(text)
-    ok(#order == 0,
-        'it sets nothing at all -- copying it over tunables.cfg restores every '
+    local env = load(nil)
+    local set, order = cfgConvars(text)
+
+    local byConvar = {}
+    for _, s in ipairs(env.BR.Config.Overrides.SPEC) do byConvar[s.convar] = s end
+
+    -- IT MUST TOUCH NO GAMEPLAY VALUE. Copying this over tunables.cfg is how a
+    -- box is returned to the reviewed configuration, so a tunable that crept in
+    -- here would be a public server quietly running a dev number.
+    local tuned = {}
+    for _, name in ipairs(order) do
+        if byConvar[name] then tuned[#tuned + 1] = name end
+    end
+    ok(#tuned == 0,
+        'it overrides no tunable -- every gameplay value falls back to the '
         .. 'committed default',
-        #order > 0 and table.concat(order, ', ') or nil)
+        #tuned > 0 and table.concat(tuned, ', ') or nil)
+
+    -- AND IT MUST TURN DEV MODE OFF RATHER THAN LEAVE IT ALONE. Absent is not
+    -- enough: server.cfg.example sets both of these true further down the file,
+    -- and in a .cfg the last line wins. A public cfg that merely stays silent
+    -- would hand back a public server that starts a match with one player in it.
+    ok(set.sv_devMode == 'false' and set.br_devMode == 'false',
+        'and it sets both dev-mode convars false rather than leaving them unsaid',
+        ('sv_devMode=%s br_devMode=%s')
+            :format(tostring(set.sv_devMode), tostring(set.br_devMode)))
 end
 
 describe('server.cfg.example execs before it ensures')

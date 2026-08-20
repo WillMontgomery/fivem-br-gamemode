@@ -43,7 +43,19 @@
 # br_core/server/main.lua -- but it belongs in this file because it is the
 # other half of "this is the dev box": it drops the minimum players needed to
 # start a match from 16 to 1, and unlocks the dev-only debug commands.
+#
+# CHECK YOUR server.cfg FOR A SECOND COPY OF THESE TWO LINES, and delete it.
+#
+# server.cfg.example ships with `set sv_devMode true` and `set br_devMode true`
+# further down the file, BELOW the exec line -- and in a .cfg the last line
+# wins. Leave them there and dev mode stops following this file: copying
+# tunables.public.cfg.example over tunables.cfg would make every other setting
+# public while the box stayed in dev mode, which is the worst of both.
+#
+# So: in the real server.cfg on the box, comment out or delete the sv_devMode
+# and br_devMode lines, and let these two be the only ones.
 # ---------------------------------------------------------------------------
+set sv_devMode true
 set br_devMode true
 
 # ---------------------------------------------------------------------------

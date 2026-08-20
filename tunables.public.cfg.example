@@ -20,4 +20,21 @@
 ## tunables.dev.cfg.example. If you want one of them on a public server, put it
 ## here on purpose -- and expect the boot banner to say so on every start.
 
-# Nothing set on purpose. See above.
+# ---------------------------------------------------------------------------
+# THE ONE THING THIS FILE DOES SET, and it sets it to the value a public server
+# must have.
+#
+# Dev mode lowers the minimum players to start a match from 16 to 1 and unlocks
+# the dev-only debug commands. It is not one of the tunables -- it is an older
+# switch read by br_core/server/main.lua -- but it is the setting most likely to
+# be left on by accident, and the whole point of this file is that copying it
+# over tunables.cfg leaves you with a public server and nothing to remember.
+#
+# It is spelled out here rather than left absent BECAUSE ABSENT IS NOT ENOUGH:
+# server.cfg.example ships with both of these set to true further down the
+# file, and in a .cfg the last line wins. If your server.cfg still has them,
+# delete those two lines -- otherwise they will quietly override these, and this
+# file will have made a public server that starts matches with one player in it.
+# ---------------------------------------------------------------------------
+set sv_devMode false
+set br_devMode false
