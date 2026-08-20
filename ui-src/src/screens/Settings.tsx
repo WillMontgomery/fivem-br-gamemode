@@ -43,9 +43,44 @@ type Draft = SettingsPayload
  * NEARBY IS THE DEFAULT (BR.VoiceModeDefault, br_lib/shared/enums.lua) and is
  * listed second only because Squad is what most players go looking for.
  */
-const VOICE_MODES: { id: Draft['voiceMode']; label: string; sub: string }[] = [
+const VOICE_SQUAD_MODES: {
+  id: Draft['voiceModeSquad']; label: string; sub: string
+}[] = [
   { id: 'squad',  label: 'Squad',  sub: 'Only your team, at any distance' },
   { id: 'nearby', label: 'Nearby', sub: 'Only people near you, team or not' },
+  { id: 'off',    label: 'Off',    sub: 'You are not transmitting or hearing' },
+]
+
+/**
+ * THE SOLOS ROW HAS TWO BUTTONS, NOT THREE GREYED ONES, AND THAT IS THE
+ * DECISION RATHER THAN AN OVERSIGHT.
+ *
+ * Owner: "'squad' as a choice is meaningless in a solo match — decide sensibly
+ * (offer it disabled, or omit it from the solos row)."
+ *
+ * OMITTED. A squad radio in a solo match is not a worse option, it is an
+ * option with no referent: the server mints no channel for a player with no
+ * squad, so the mode resolves to silence. A disabled third button still has to
+ * be read, reasoned about and dismissed every time this screen is opened, and
+ * it would say the same thing on every one of those visits.
+ *
+ * AND THE ROW IT REPLACES IS WHY. This screen used to carry ONE mode row with
+ * a greyed 'Squad' whenever the current match was solo, and the comment
+ * defending that is still below -- the reasoning was that a persisted 'squad'
+ * with no button to show it left three modes on screen and none highlighted.
+ * That was a real bug and it had a real cause: ONE STORED SETTING SPANNING TWO
+ * KINDS OF MATCH. With a slot per kind there is nothing to strand. The solos
+ * row can simply not offer a mode that solos do not have, because choosing it
+ * for squads no longer costs you your solo setting.
+ *
+ * Lua enforces the same rule independently (BR.ToSoloVoiceMode, br_lib/shared/
+ * enums.lua), so a 'squad' arriving in this slot from an old KVP blob or a
+ * stale build becomes the default rather than silence.
+ */
+const VOICE_SOLO_MODES: {
+  id: Draft['voiceModeSolo']; label: string; sub: string
+}[] = [
+  { id: 'nearby', label: 'Nearby', sub: 'Only people near you' },
   { id: 'off',    label: 'Off',    sub: 'You are not transmitting or hearing' },
 ]
 
@@ -55,6 +90,90 @@ const CB_MODES: { id: Draft['colourblind']; label: string; sub: string }[] = [
   { id: 'protan', label: 'Protanopia',    sub: 'Red-weak' },
   { id: 'tritan', label: 'Tritanopia',    sub: 'Blue-yellow' },
 ]
+
+/**
+ * ONE ROW OF SIDE-BY-SIDE VOICE BUTTONS.
+ *
+ * FACTORED OUT BECAUSE THERE ARE TWO OF THEM AND THEY MUST NOT DRIFT. The
+ * solos row and the squads row differ in exactly three things -- their label,
+ * their option list, and which stored field they write -- and every other
+ * property of them is the same control. Copied markup is how one row would end
+ * up with a highlight rule or a text size the other does not have, on a screen
+ * whose whole job is letting somebody compare the two.
+ *
+ * `live` MARKS THE ROW THE GAME IS ACTUALLY READING. Neither row is ever
+ * disabled: setting your squad preference from inside a solo match is the
+ * normal case, not an edge one. But "which of these two is in force right now"
+ * is a real question and the player has no other way to answer it.
+ */
+function VoiceModeRow<T extends string>({
+  label, live, modes, value, onPick,
+}: {
+  label: string
+  live: boolean
+  modes: { id: T; label: string; sub: string }[]
+  value: T
+  onPick: (id: T) => void
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-baseline gap-2">
+        <div className="micro-label">{label}</div>
+        {live && (
+          // The accent, and no border or plate around it: this is an
+          // annotation on the label, not a third interactive thing in a row
+          // of buttons.
+          <span
+            className="micro-label"
+            style={{ color: 'var(--color-royale-accent)' }}
+          >
+            in this match
+          </span>
+        )}
+      </div>
+      <div className="flex gap-1.5">
+        {modes.map((m) => {
+          const on = value === m.id
+          return (
+            <button
+              key={m.id}
+              type="button"
+              className={`btn plate px-3 py-2 text-left flex-1${
+                on ? ' is-active' : ''}`}
+              style={{
+                ['--edgec' as string]: on
+                  ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.16)',
+                ['--plate-fill' as string]: on
+                  ? 'rgba(12,58,72,0.94)' : 'rgba(24,28,40,0.92)',
+                ['--cut-max' as string]: '0.4rem',
+              }}
+              onPointerEnter={() => play('ui.hover')}
+              onClick={() => { play('ui.select'); onPick(m.id) }}
+            >
+              <span
+                className="block text-[0.9rem] ts"
+                style={{
+                  ['--fs' as string]: '0.9rem',
+                  color: on ? 'var(--color-royale-accent)' : '#ffffff',
+                }}
+              >
+                {m.label}
+              </span>
+              {/* A description, not a caption: --fs holds it under the
+                  0.9rem label above it inside a narrow button. */}
+              <span
+                className="body-text block"
+                style={{ ['--fs' as string]: '0.72rem' }}
+              >
+                {m.sub}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
 
 /**
  * A slider that is legible at a glance.
@@ -528,73 +647,53 @@ export default function Settings({
                   given you actually use -- so it can decline a room, never
                   enter one. See br_core/client/voice.lua.
 
-                  SQUAD IS NO LONGER HIDDEN IN SOLO, AND HIDING IT WAS THE BUG.
-                  The reasoning was sound as far as it went -- there is no squad
-                  room to route to, and an option that silently behaves as
-                  another one is a lie. What it missed is that voiceMode is
-                  PERSISTED, in this machine's KVP. A player who picked Squad
-                  during a squad match and then queued a solo kept the setting
-                  and lost the button: three modes on screen, none of them
-                  highlighted, no explanation, and total silence in game. That
-                  is a worse lie than the one the filter was avoiding, and it is
-                  indistinguishable from the feature being broken -- which is
-                  exactly how it was reported (#157).
+                  TWO ROWS NOW, ONE PER KIND OF MATCH, AND THE ROW ABOVE THEM
+                  IS THE BUG THEY FIX. Owner, from the playtest: "make it so
+                  that a player can save a different preference (nearby/squad/
+                  off) for squads and solos. Perhaps a drop-down, but I don't
+                  think we have built one of those with our UI yet. So maybe an
+                  easier lift would be side by side selection buttons."
 
-                  So the button is always there, and when it cannot work it says
-                  so on its own face and refuses the click. */}
+                  SIDE-BY-SIDE BUTTONS, AND DELIBERATELY NOT A DROP-DOWN. There
+                  is no select component in this interface and building one for
+                  five options across two rows would be a new interaction
+                  vocabulary -- a focus model, a keyboard contract and an
+                  open-state z-index -- introduced for a control that fits on
+                  one line. These are the same plate buttons the colourblind
+                  row already uses.
+
+                  WHAT THE SINGLE ROW GOT WRONG, kept here because it is the
+                  reason for the shape. It stored ONE mode for every kind of
+                  match, so a player who chose Squad and then queued a solo
+                  carried Squad into a match with no squads: total silence, by
+                  design, and indistinguishable from a fault (#157). The fix
+                  attempted at the time was to grey the Squad button out in
+                  solo matches, which left three modes on screen with none
+                  highlighted and no way back. Neither was fixable while one
+                  value had to serve both. Two values, and neither row has to
+                  lie about the other.
+
+                  THE ROW THAT APPLIES RIGHT NOW IS MARKED. Both are always
+                  editable -- you should be able to set up your squad
+                  preference from a solo match -- but which one the game is
+                  reading this second is a fact the player would otherwise have
+                  to work out. */}
+              <VoiceModeRow
+                label="Voice chat in solos"
+                live={!squadMode}
+                modes={VOICE_SOLO_MODES}
+                value={draft.voiceModeSolo}
+                onPick={(id) => set('voiceModeSolo', id)}
+              />
+              <VoiceModeRow
+                label="Voice chat in squads"
+                live={squadMode}
+                modes={VOICE_SQUAD_MODES}
+                value={draft.voiceModeSquad}
+                onPick={(id) => set('voiceModeSquad', id)}
+              />
+
               <div className="flex flex-col gap-1.5">
-                <div className="micro-label">Who hears you</div>
-                <div className="flex gap-1.5">
-                  {VOICE_MODES.map((m) => {
-                    const dead = m.id === 'squad' && !squadMode
-                    const on = draft.voiceMode === m.id
-                    return (
-                    <button
-                      key={m.id}
-                      type="button"
-                      disabled={dead}
-                      className={`btn plate px-3 py-2 text-left flex-1${
-                        on ? ' is-active' : ''}`}
-                      style={{
-                        ['--edgec' as string]: on
-                          ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.16)',
-                        ['--plate-fill' as string]: on
-                          ? 'rgba(12,58,72,0.94)' : 'rgba(24,28,40,0.92)',
-                        ['--cut-max' as string]: '0.4rem',
-                        // Dimmed rather than removed. The player has to be able
-                        // to see that the mode exists and is not available,
-                        // which is the whole point of not hiding it.
-                        opacity: dead ? 0.45 : undefined,
-                        cursor: dead ? 'not-allowed' : undefined,
-                      }}
-                      onPointerEnter={() => !dead && play('ui.hover')}
-                      onClick={() => {
-                        if (dead) return
-                        play('ui.select'); set('voiceMode', m.id)
-                      }}
-                    >
-                      <span
-                        className="block text-[0.9rem] ts"
-                        style={{
-                          ['--fs' as string]: '0.9rem',
-                          color: on
-                            ? 'var(--color-royale-accent)' : '#ffffff',
-                        }}
-                      >
-                        {m.label}
-                      </span>
-                      {/* A description, not a caption: --fs holds it under the
-                          0.9rem label above it inside a narrow button. */}
-                      <span
-                        className="body-text block"
-                        style={{ ['--fs' as string]: '0.72rem' }}
-                      >
-                        {dead ? 'No squad in this match' : m.sub}
-                      </span>
-                    </button>
-                    )
-                  })}
-                </div>
 
                 {/* AND THE PART THE GAME NEVER SAID OUT LOUD. Two different
                     facts, both of which produced "squad voice is broken":
@@ -602,10 +701,19 @@ export default function Settings({
                       the mode is on and there is no squad -- total silence, by
                       design, and identical to a fault;
 
-                      the mode is on and working -- and it is a RADIO, with its
-                      own push-to-talk. The ordinary voice key carries
-                      proximity, which squad mode turns off, so pressing it
-                      does nothing at all.
+                      the mode is on and working -- and it is a RADIO, which
+                      transmits only while push-to-talk is held. That key is
+                      the gamemode's own now (`brptt`, default N, on the
+                      Controls tab of this very screen); it used to be
+                      pma-voice's "Talk over Radio" on Left Alt, which no
+                      screen of ours could name or move.
+
+                    THIS IS THE SURFACE THAT KEEPS THE SENTENCE. The HUD line
+                    that carried it was removed this round -- a permanent
+                    "hold this key" banner across the bottom of the screen is
+                    furniture (owner, from the playtest) -- and this screen is
+                    a page somebody opened on purpose, so there is no clutter
+                    cost to a sentence they went looking for.
 
                     THE SENTENCE IS LUA'S. It arrives on the voice envelope from
                     BR.Voice.statusFor, next to the code that decides which

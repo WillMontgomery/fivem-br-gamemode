@@ -116,12 +116,21 @@
 --            NOTHING. A squad that presses it hears silence in both
 --            directions and reports that squad voice does not work.
 --
---            WE DO NOT DRIVE THAT KEY FROM HERE. Synthesising +radiotalk off
---            a talking probe is exactly the class of untestable cleverness
---            that produced six rounds of this issue, and pma-voice's own
---            keybind is a thing the player can see and rebind. What was
---            missing was that anybody had ever TOLD them, so that is what
---            this file now does -- see BR.Voice.statusFor and radioKeyLabel.
+--            THE KEY IS OURS NOW, AND THIS PARAGRAPH USED TO SAY THE OPPOSITE.
+--            It read "WE DO NOT DRIVE THAT KEY FROM HERE", and the thing it
+--            was refusing was SYNTHESISING a press from a talking probe --
+--            inferring that the player meant to transmit and manufacturing an
+--            edge for it. That refusal stands and nothing below does it.
+--
+--            What changed is that there is now a real key to drive it with.
+--            `brptt` is a row in our own key layer (client/keybinds.lua),
+--            default N, rebindable on our settings screen like everything
+--            else, and its press and release reach +radiotalk / -radiotalk.
+--            The owner's call: "Why is left alt used for anything? That was a
+--            mistake - a default left in place." See the PUSH TO TALK block
+--            further down for why `voice_defaultRadio N` is not the same
+--            thing, and for what the key does on 'nearby', where there is no
+--            radio to key up at all.
 --
 -- THE MUTE IS THE ONLY THING IN THIS FILE THAT CAN MAKE A PLAYER DEAF, and it
 -- is now reached by two modes rather than one, so muteSweep()'s rule matters
@@ -230,6 +239,15 @@ BR.Voice = BR.Voice or {}
 --- The resource that now owns the engine. Named once.
 local VOICE_RES = 'pma-voice'
 
+--- OUR push-to-talk, as the key layer knows it. Named once, here, because four
+--- things ask about it -- the driver below, the label the notice prints, the
+--- settings-screen detail and /brvoice -- and a hand-typed command name in one
+--- of them is the exact failure keybinds.lua's own note records ("the marker
+--- command is `brping` not `brmarker`... binds were being written against
+--- commands that do not exist").
+local PTT_ACTION  = 'ptt'
+local PTT_COMMAND = 'brptt'
+
 local V = (BR.Config.Match or {}).voice or {}
 local R = V.range or {}
 
@@ -281,7 +299,19 @@ BR.Voice.state = {
 --- Restart br_core on its own, or lose that push to a race, and the two
 --- disagreed with nothing to say which had won. There is one definition now
 --- and it is in br_lib/shared/enums.lua.
-BR.Voice.pref = { mode = BR.VoiceModeDefault }
+---
+--- IT IS TWO SLOTS NOW, NOT ONE, AND THERE IS NO `mode` FIELD ANY MORE.
+--- The owner asked for a saved preference per kind of match; the argument for
+--- that, and the resolution rule, are in br_lib/shared/enums.lua next to the
+--- vocabulary. What matters here is the shape: nothing in this file may read a
+--- stored `mode`, because a stored mode is a THIRD input that can be stale
+--- when the match kind changes underneath it -- and a voice mode that is
+--- stale for one match is total silence for that match, which is #150's
+--- symptom and the one this file is least able to notice.
+BR.Voice.pref = {
+    solo  = BR.VoiceModeDefault,
+    squad = BR.VoiceModeDefault,
+}
 
 --- Server ids heard speaking on the last tick, and their names. The squad panel
 --- and the bottom-centre indicator read these.
@@ -347,15 +377,33 @@ local function onBus()
     return me ~= nil and me.state == BR.PlayerState.BUS
 end
 
+--- THE MODE IN FORCE RIGHT NOW, RE-DERIVED ON EVERY CALL.
+---
+--- Two saved preferences and the kind of match resolve to one mode
+--- (BR.VoiceModeFor, br_lib/shared/enums.lua). This does not cache the answer
+--- and it is deliberately not hung off a "the match mode changed" event, for
+--- exactly the reason onBus() is not: the two rounds this file lost were both
+--- a correct rule reading a stale copy of its input. A player whose match kind
+--- changes under a cached mode is a player on the wrong voice mode for a whole
+--- match, and there is nothing on their screen that would tell them.
+---
+--- THE LOBBY AND AN UNKNOWN MATCH BOTH RESOLVE TO THE SOLO PREFERENCE, which
+--- is BR.VoiceModeFor's rule rather than one invented here.
+--- @return string  one of BR.VoiceMode
+function BR.Voice.mode()
+    local m = BR.State and BR.State.match and BR.State.match.mode
+    return BR.VoiceModeFor(BR.Voice.pref, m)
+end
+
 --- The routing row for the mode this player has chosen. Never nil.
 ---
 --- EVERY DECISION IN THIS FILE COMES THROUGH HERE. Nothing below compares
---- BR.Voice.pref.mode against a string literal, which is the property that
+--- BR.Voice.mode() against a string literal, which is the property that
 --- makes the modes stay exclusive: there is no second place to teach 'squad'
 --- about proximity.
 --- @return table  { proximity = boolean, radio = boolean }
 function BR.Voice.routing()
-    return BR.VoiceRoutingFor(BR.Voice.pref.mode)
+    return BR.VoiceRoutingFor(BR.Voice.mode())
 end
 
 --- Is our proximity microphone gagged, and why?
@@ -556,6 +604,53 @@ local function install()
     -- player who found F11 could otherwise quietly put themselves on a range
     -- the gamemode never sanctioned.
     call('overrideProximityRange', BR.Voice.state.nearby + 0.0, true)
+
+    -- THE BUTTON CHIRP, KILLED AT THE ONE PLACE THAT CANNOT MISS.
+    --
+    -- Owner, from the playtest: "It still makes a radio chirp sound when
+    -- pressing and releasing the button, and it seems to have a sound effect
+    -- to sound like a wireless radio. I don't hate the radio sound effect, but
+    -- the button chirp needs to go."
+    --
+    -- THOSE ARE TWO DIFFERENT pma-voice FEATURES AND ONLY ONE IS GOING.
+    --
+    --   THE CHIRP is playMicClicks() -- two <audio> tags in pma-voice's own NUI
+    --   (voice-ui/src/App.vue: mic_click_on.ogg / mic_click_off.ogg), played
+    --   from client/module/radio.lua on the +radiotalk press and the
+    --   -radiotalk release. It is the thing being removed.
+    --
+    --   THE RADIO EFFECT is the SUBMIX -- SetAudioSubmixEffectRadioFx, applied
+    --   to a squadmate's voice in client/init/main.lua's toggleVoice, gated on
+    --   `voice_enableSubmix` (default 1). IT IS DELIBERATELY LEFT ALONE. The
+    --   owner asked to keep it, and nothing here touches that convar.
+    --
+    -- WHY AN EXPORT AND NOT ONLY A CONVAR, WHICH IS WHAT WAS ASKED FOR.
+    -- THE CHIRP HAS NO ON/OFF CONVAR AT ALL. pma-voice keeps it in a per-client
+    -- KVP (`pma-voice_enableMicClicks`, read once at its own resource start,
+    -- client/init/init.lua) and exposes exactly one lever over it: the
+    -- `setVoiceProperty` export. There are two VOLUME convars --
+    -- voice_onClickVolume / voice_offClickVolume -- and setting both to 0 does
+    -- silence it, because the volume goes straight to `click.volume` in that
+    -- Vue file. server.cfg.example documents both, and server/voice.lua sets
+    -- them, so a correctly configured box is silent by that route alone.
+    --
+    -- BUT THOSE TWO CONVARS ARE READ ONCE, INTO A LUA TABLE, AT pma-voice's
+    -- SCRIPT START (client/init/main.lua, the `volumes` table). That is the
+    -- SAME start-time read this file already refuses to claim anything about
+    -- for voice_enableUi -- "FOR voice_enableUi, NOTHING IS ESTABLISHED" a few
+    -- hundred lines up -- and #165 is what a convar that never arrives costs.
+    -- The export has no such window: it writes pma-voice's live `micClicks`
+    -- immediately, whenever this runs, and install() runs when EITHER resource
+    -- starts. Belt and braces, and the braces are the ones that cannot race.
+    --
+    -- THE ONE COST, STATED PLAINLY: setVoiceProperty also writes that KVP, and
+    -- a KVP is per-machine and per-resource rather than per-server. A player
+    -- who leaves for another pma-voice server has mic clicks off there too
+    -- until something turns them back on. That is pma-voice's own export doing
+    -- pma-voice's own documented thing, it is recoverable from any server that
+    -- sets it back, and it is a smaller price than a chirp the owner has now
+    -- asked twice to be rid of.
+    call('setVoiceProperty', 'micClicks', false)
 end
 
 -- ------------------------------------------------- the two convars ---
@@ -701,27 +796,33 @@ end
 -- readout that derives its own answer is a readout that can disagree with the
 -- behaviour, and this issue is four rounds of exactly that.
 
---- The KEY a player has to hold to be heard on the squad radio.
+--- The KEY a player has to hold to be heard, and it is OURS to answer for now.
 ---
---- READ OFF pma-voice's OWN CONVAR, which is the value it passed to
---- RegisterKeyMapping. That makes this the DEFAULT binding and not necessarily
+--- THIS USED TO READ pma-voice's `voice_defaultRadio` CONVAR, which was the
+--- honest answer while the binding was pma-voice's: the convar is the value it
+--- passed to RegisterKeyMapping, so it was the DEFAULT and never necessarily
 --- the live one -- FiveM stores a rebind in the player's own profile and
---- exposes no way to read it back -- so every string built from this says
---- "default" and points at the settings screen where the truth is. Naming a
---- key the player has rebound would be worse than naming none.
-local KEY_NAMES = {
-    LMENU = 'Left Alt', RMENU = 'Right Alt',
-    LCONTROL = 'Left Ctrl', RCONTROL = 'Right Ctrl',
-    LSHIFT = 'Left Shift', RSHIFT = 'Right Shift',
-    CAPITAL = 'Caps Lock', GRAVE = '`', SPACE = 'Space',
-    RETURN = 'Enter', TAB = 'Tab', BACK = 'Backspace',
-}
-
---- @return string  a human-readable key name, never empty
-function BR.Voice.radioKeyLabel()
-    local raw = GetConvar and GetConvar('voice_defaultRadio', 'LMENU') or 'LMENU'
-    if raw == nil or raw == '' then raw = 'LMENU' end
-    return KEY_NAMES[raw] or raw
+--- exposes no way to read it back. Every string built from it therefore had to
+--- hedge with "default", and the one it named was Left Alt.
+---
+--- The binding is `brptt` in our own key layer now (client/keybinds.lua), so
+--- the hedge is gone: BR.Keys.labelFor answers with THE KEY THAT WORKS -- the
+--- player's own rebind when the raw layer is reading the keyboard, and the
+--- engine's key when the engine is driving the row. That distinction is
+--- keybinds.lua's engineDrives(), and it exists precisely so a prompt cannot
+--- name a key nothing is listening to (#129's third round).
+---
+--- IT CAN RETURN nil, AND EVERY CALLER MUST HANDLE THAT. A player can clear
+--- the binding, or lose it to a conflict with another action -- both store
+--- `false`, both mean "this action is on no key at all". Naming a key in that
+--- state would be inventing one. The callers say the action is unbound and
+--- point at the screen that fixes it.
+--- @return string|nil  a human-readable key name, or nil when genuinely unbound
+function BR.Voice.pttKeyLabel()
+    if not (BR.Keys and BR.Keys.labelFor) then return nil end
+    local ok, name = pcall(BR.Keys.labelFor, PTT_COMMAND)
+    if not ok then return nil end
+    return name
 end
 
 --- WHAT THIS MODE IS ACTUALLY DOING, IN WORDS A PLAYER CAN ACT ON.
@@ -736,6 +837,32 @@ end
 --- which is the state that got reported as a bug). It is NOT true for a squad
 --- of two who have simply not found the radio key -- that one is a `hint`,
 --- because audio can flow the moment they hold it.
+---
+--- ==========================================================================
+--- A WORKING MODE NOW SENDS NO `headline`, AND THAT IS THE FIX RATHER THAN A
+--- REGRESSION. Owner, from the playtest: "don't give me text at the bottom of
+--- the screen saying to hold any key to talk."
+---
+--- The 'radio' row used to return `headline = 'Squad voice: hold Left Alt to
+--- talk'`, and the HUD (ui-src/src/hud/VoiceNotice.tsx) draws any headline it
+--- is sent. So a squad that had voice working correctly got a permanent line
+--- across the bottom of the screen for the whole match. That line was right to
+--- exist for one round -- it was the only thing telling anybody the radio had
+--- its own key -- and it is furniture now that the key is ours, defaults to
+--- the key the player already holds, and is named at the start of every match
+--- (see the notice at the bottom of this file).
+---
+--- The rule this leaves behind is the one VoiceNotice.tsx already states about
+--- itself: A HEADLINE MEANS SOMETHING IS WRONG. 'nearby' has never sent one;
+--- 'radio' now does not either. What still does is the pair that really is
+--- silence -- 'off' and squad-with-no-squad -- plus 'alone', which is a squad
+--- radio with nobody else on it. Those are worth interrupting somebody over;
+--- "your voice chat is working" is not.
+---
+--- `detail` IS UNAFFECTED AND STILL SET FOR EVERY ROW, because it goes to the
+--- SETTINGS SCREEN, which is a page the player opened on purpose. There is no
+--- clutter cost to a sentence somebody went looking for.
+--- ==========================================================================
 --- @param mode string|nil
 --- @param radio integer|nil  the channel the server granted, or nil
 --- @param mates integer|nil  how many squadmates the server named
@@ -772,27 +899,34 @@ function BR.Voice.statusFor(mode, radio, mates)
         }
     end
 
-    local key = BR.Voice.radioKeyLabel()
+    -- "Hold N" or, when the player has no push-to-talk key at all, a sentence
+    -- that says so instead of naming a key that does not exist. pttKeyLabel()
+    -- returning nil is a real state -- cleared, or lost to a conflict -- and
+    -- it is the one case where the honest answer is not a key name.
+    local key = BR.Voice.pttKeyLabel()
+    local holdIt = key and ('Hold %s'):format(key)
+        or 'Push to talk is not bound to any key -- bind it in Settings, '
+        .. 'Controls, and then hold it'
 
     if mates <= 0 then
         return {
             code = 'alone', silent = false, chosen = false,
             headline = 'Squad voice: nobody else on your squad radio yet',
             detail = ('You are on squad radio %d and you are the only one on '
-                  .. 'it. Hold %s (Talk over Radio) to speak once a squadmate '
-                  .. 'joins -- the ordinary voice key carries nothing in this '
-                  .. 'mode.'):format(radio, key),
+                  .. 'it. %s to speak once a squadmate joins.')
+                  :format(radio, holdIt),
         }
     end
 
     return {
+        -- NO HEADLINE. This is the WORKING row -- see the block above this
+        -- function. It still carries a detail, because that one is read on the
+        -- settings screen rather than painted over the game.
         code = 'radio', silent = false, chosen = false,
-        headline = ('Squad voice: hold %s to talk'):format(key),
-        detail = ('Squad voice is a RADIO with its own push-to-talk. Hold %s '
-              .. '-- "Talk over Radio", rebindable in the pause menu under '
-              .. 'Settings, Key Bindings, FiveM. The ordinary voice key does '
-              .. 'nothing in this mode, because squad mode turns proximity '
-              .. 'off.'):format(key),
+        detail = ('Squad voice is a radio: it reaches your squad at any '
+              .. 'distance and nobody else, however close they are. %s to '
+              .. 'talk. The key is this game\'s -- rebind it in Settings, '
+              .. 'Controls, under Comms.'):format(holdIt),
     }
 end
 
@@ -800,7 +934,7 @@ end
 --- @return table  see statusFor
 function BR.Voice.status()
     local s = BR.Voice.state
-    return BR.Voice.statusFor(BR.Voice.pref.mode, s.radio, #s.mates)
+    return BR.Voice.statusFor(BR.Voice.mode(), s.radio, #s.mates)
 end
 
 AddEventHandler('onClientResourceStart', function(res)
@@ -964,6 +1098,180 @@ function BR.Voice.apply()
     -- with an explicit re-apply by a later round.
 end
 
+-- ==========================================================================
+-- PUSH TO TALK, AND IT IS OUR KEY THAT DOES IT.
+--
+-- WHAT THIS REPLACES. Until this round the ONLY push-to-talk in squad mode was
+-- pma-voice's own `+radiotalk`, on LMENU, because that is what
+-- `voice_defaultRadio` defaults to and this project had never set it. The
+-- owner's verdict: "Why is left alt used for anything? That was a mistake - a
+-- default left in place." The block a few hundred lines up said "WE DO NOT
+-- DRIVE THAT KEY FROM HERE", and that sentence was written when the
+-- alternative on the table was SYNTHESISING a press from a talking probe --
+-- inferring intent from MumbleIsPlayerTalking and manufacturing an edge. That
+-- remains refused, and this is not that.
+--
+-- THE DIFFERENCE IS THE INPUT. This is a real key, pressed by a real player,
+-- delivered by the same fire() every other action in this game goes through
+-- (client/keybinds.lua, `brptt`). There is nothing to infer. One press in, one
+-- press out.
+--
+-- ==========================================================================
+-- WHY NOT JUST `setr voice_defaultRadio N`, WHICH IS THE OBVIOUS FIRST IDEA.
+--
+-- Because it is not a keybind of ours, it is pma-voice's keybind wearing a new
+-- default, and the four things the owner asked for are exactly the four things
+-- it cannot deliver:
+--
+--   A ROW IN OUR KEY LAYER. `voice_defaultRadio` feeds pma-voice's own
+--   RegisterKeyMapping. The binding is never in BR.Keys.bindings, so it is not
+--   on our settings screen, cannot be rebound there, and BR.Keys.labelFor --
+--   which is what every prompt and every notice in this game asks for a key
+--   name -- has never heard of it.
+--
+--   REBINDABLE LIKE EVERY OTHER ACTION. It would be rebindable only in GTA's
+--   pause menu, in a row called "Talk over Radio" filed under pma-voice. That
+--   is the split authority #131's note in keybinds.lua refuses by name.
+--
+--   IT WOULD NOT MOVE FOR THE PEOPLE IT MATTERS MOST FOR. A convar sets a
+--   DEFAULT. FiveM stores a rebind in the player's own profile, so anybody who
+--   had already touched that binding keeps Left Alt and nothing we ship
+--   changes it. The playtesters are precisely the population that has.
+--
+--   AND IT COVERS ONE MODE. `+radiotalk` is the RADIO's key. On 'nearby' there
+--   is no radio, so it does nothing at all -- proximity transmit is opened by
+--   GTA's INPUT_PUSH_TO_TALK and nothing else. One key for both modes has to
+--   drive both mechanisms, which means it has to be ours.
+--
+-- ==========================================================================
+-- SO WHAT THE KEY ACTUALLY DOES, WHICH IS TWO DIFFERENT THINGS.
+--
+--   SQUAD -> `+radiotalk` / `-radiotalk`, by ExecuteCommand. These are plain
+--   RegisterCommand entries in pma-voice (client/module/radio.lua, registered
+--   with `false` for restricted), and pma-voice calls ExecuteCommand on its own
+--   `-radiotalk` from inside that same file, so this route is the one the
+--   resource itself uses. The press adds the squad's voice targets and tells
+--   the server; the release clears them. NOTHING ELSE PUTS A SQUADMATE IN THE
+--   MUMBLE VOICE TARGET -- that is the sentence #157 round seven cost, and
+--   this is the round where it survives being moved to a different key rather
+--   than being neutralised. The owner has confirmed the routing works
+--   ("squads chat does work"); this changes which key reaches it and nothing
+--   about what it reaches.
+--
+--   NEARBY -> GTA's INPUT_PUSH_TO_TALK, control 249, forced on every frame the
+--   key is held. This is not our invention: it is verbatim what pma-voice's
+--   own radio loop does while `+radiotalk` is down (`SetControlNormal(0, 249,
+--   1.0)` over control groups 0, 1 and 2), and it is what opens the microphone
+--   at all -- FiveM's Mumble layer reads `IsControlKeyDown(249)`. 249's own
+--   default keyboard binding is N, which is why N is this row's default: on a
+--   fresh client our key and the engine's are the same key.
+--
+--   OFF, AND ON THE BUS -> nothing. Both are BR.Voice.gagged(), and gagged
+--   means the microphone does not open. Note that this is belt to the proximity
+--   check's braces rather than the enforcement: even with a mic wide open, a
+--   gagged player's voice target is empty and no frame leaves the machine.
+--
+-- ==========================================================================
+-- WHAT THIS DOES **NOT** CLAIM, because this file has a rule about that.
+--
+--   NOTHING HERE PROVES AUDIO MOVES. No Mumble native is executed by this
+--   section -- the one read this file is allowed, MumbleIsPlayerTalking, is in
+--   the talking indicator below and stays the only one. What the suite can
+--   assert is which mechanism a press reaches in which mode, and it does.
+--
+--   THE PLAYER'S OWN FiveM VOICE KEY IS STILL THEIRS. If they rebind our
+--   push-to-talk off N, the engine's 249 is still on N and holding N will still
+--   open their microphone for proximity. Nothing in script can move the
+--   engine's binding -- that is the same wall keybinds.lua's whole raw layer
+--   exists because of -- and the settings screen already says that push-to-talk
+--   versus voice activation lives in GTA's own menu. A player on VOICE
+--   ACTIVATION has an open microphone regardless of this key, which is their
+--   setting and their choice.
+-- ==========================================================================
+
+--- GTA's INPUT_PUSH_TO_TALK. Named, because a bare 249 three lines apart is
+--- how a control id gets "fixed" to the wrong one.
+local PTT_CONTROL = 249
+
+--- Is our push-to-talk key down right now?
+---
+--- Written by the key layer's edges and read by the frame loop. It is NOT
+--- BR.Keys.isHeld: that answers for the key, and this answers for the thing we
+--- started -- they differ for exactly the window where a release was delivered
+--- and the radio has not been told yet, which is the window a latch lives in.
+local pttHeld = false
+
+--- Drive pma-voice's radio push-to-talk. Guarded, never fatal.
+---
+--- ExecuteCommand rather than an export because pma-voice offers no export for
+--- this: `+radiotalk` and `-radiotalk` are the whole of its public surface for
+--- transmitting on a radio, and they are ordinary unrestricted commands.
+--- @param on boolean
+local function radioTalk(on)
+    if not present() then return end
+    if ExecuteCommand == nil then return end
+    -- pcall for the same reason call() has one: this runs inside a key
+    -- listener that keybinds.lua shares with every other action, and a raise
+    -- here would be a key press that took the layer down with it.
+    local ok, err = pcall(ExecuteCommand, on and '+radiotalk' or '-radiotalk')
+    if not ok and not BR.Voice._pttWarned then
+        BR.Voice._pttWarned = true
+        print(('[br_core] VOICE: could not drive %s\'s radio push-to-talk -- '
+            .. '%s. Squad voice will not transmit.')
+            :format(VOICE_RES, tostring(err)))
+    end
+end
+
+BR.Keys.on(PTT_ACTION, function(pressed)
+    if pressed then
+        -- `pttHeld` IS THE KEY'S STATE AND NOTHING ELSE. It is deliberately
+        -- NOT gated on the mode or on gagged(): a press taken while gagged
+        -- that recorded "not held" would be a key that does nothing until the
+        -- player lets go and presses again -- so a squad rider who holds the
+        -- key through the jump would land, still holding it, transmitting
+        -- nothing, with the readout insisting they were fine. The gag belongs
+        -- in the frame loop, where it is re-derived; see below.
+        pttHeld = true
+        -- THE RADIO IS AN EDGE AND SO IT IS GATED HERE, on the routing table
+        -- and never on a mode name. A press in 'nearby' or 'off' has no radio
+        -- to key up, and asking for one is how a mode learns about a channel
+        -- it must not have.
+        if BR.Voice.routing().radio then radioTalk(true) end
+        return
+    end
+
+    -- AND THE RELEASE IS NOT GATED, DELIBERATELY. This is the same asymmetry
+    -- keybinds.lua argues for at the `-brinteract` handler, for the same
+    -- reason and with worse consequences: a mode change, a squad dissolving or
+    -- a match ending between the press and the release would otherwise leave
+    -- `radioPressed` true inside pma-voice with nothing left to clear it --
+    -- an open microphone to the squad that the player cannot turn off, and
+    -- pma-voice's own thread spinning SetControlNormal on 249 forever.
+    --
+    -- A release delivered for a radio that was never keyed up costs nothing:
+    -- pma-voice's `-radiotalk` early-returns unless `radioChannel > 0 and
+    -- radioPressed`, so it is a no-op for something it never started.
+    pttHeld = false
+    radioTalk(false)
+end)
+
+--- THE PROXIMITY HALF. One comparison per frame when the key is up.
+BR.Loop.register(BR.Loop.FRAME, 'voice.ptt', function()
+    if not pttHeld then return end
+    -- RE-ASKED EVERY FRAME, never latched at the press. A player who boards
+    -- the bus, or whose match kind changes, while holding the key is gagged on
+    -- the very next frame -- the same property the proximity check has, and
+    -- for the same reason: a gag that is re-derived cannot fail to lift and a
+    -- gag that is cached cannot fail to stick.
+    if BR.Voice.gagged() then return end
+    if SetControlNormal == nil then return end
+    -- All three control groups, exactly as pma-voice does it. The mic is not
+    -- reliably opened from one alone.
+    SetControlNormal(0, PTT_CONTROL, 1.0)
+    SetControlNormal(1, PTT_CONTROL, 1.0)
+    SetControlNormal(2, PTT_CONTROL, 1.0)
+end)
+
 RegisterNetEvent(BR.Net.VOICE_SET)
 AddEventHandler(BR.Net.VOICE_SET, function(d)
     if type(d) ~= 'table' then return end
@@ -996,15 +1304,119 @@ end)
 
 AddEventHandler('br:settings:changed', function(s)
     if type(s) ~= 'table' then return end
-    -- COERCED IN br_lib, NOT HERE. These four lines used to spell out the valid
+    -- COERCED IN br_lib, NOT HERE. These lines used to spell out the valid
     -- set and the fallback by hand, and the fallback was 'squad' -- so an old
     -- KVP blob, a hand-fired event or a typo'd payload put this client on a
     -- mode the settings screen would never have stored and never displayed.
     -- One definition, in BR.ToVoiceMode.
-    local mode = BR.ToVoiceMode(s.voiceMode)
-    if mode == BR.Voice.pref.mode then return end
-    BR.Voice.pref.mode = mode
+    --
+    -- TWO SLOTS, AND THE SOLO ONE HAS ITS OWN COERCION. 'squad' in the solo
+    -- slot is not a preference, it is a match with no squads and therefore
+    -- silence -- see BR.ToSoloVoiceMode in br_lib/shared/enums.lua for why
+    -- that is refused rather than honoured, and why the refusal lives there
+    -- rather than in either of the two files that would otherwise each need
+    -- their own copy of it.
+    local solo  = BR.ToSoloVoiceMode(s.voiceModeSolo)
+    local squad = BR.ToVoiceMode(s.voiceModeSquad)
+    if solo == BR.Voice.pref.solo and squad == BR.Voice.pref.squad then return end
+    BR.Voice.pref.solo, BR.Voice.pref.squad = solo, squad
     BR.Voice.apply()
+end)
+
+-- ------------------------------------------------- the start-of-match notice ---
+--
+-- WHAT THE PLAYER IS TOLD, ONCE, AT THE START OF EVERY MATCH, IN THE OWNER'S
+-- OWN WORDS:
+--
+--   "Voice chat is set to [mode]. Hold [button] to speak. You can change your
+--    voice preference and keybinds in Settings."
+--
+-- IT IS A NOTICE AND NOT A HUD LINE, AND THAT IS THE WHOLE POINT OF IT. The
+-- thing it replaces was a permanent string across the bottom of the screen
+-- saying to hold a key -- furniture, which is not read, and which the owner
+-- asked to be rid of (see the block above BR.Voice.statusFor). This is said
+-- when it is news, at the moment a player has just been told which kind of
+-- match they are in, and then it goes away.
+--
+-- WHY WARMUP AND NOT THE BUS. WARMUP is the first state in which the match
+-- kind is known, which is the fact the mode is DERIVED from -- a notice fired
+-- earlier would be naming the lobby's answer. It is also the one moment in a
+-- round when nobody is being shot at.
+--
+-- IT IS NOT SHOWN ON 'off', by the owner's explicit instruction. A player who
+-- has turned voice off does not need it announced to them every match; that is
+-- the same rule pushVoice already applies to the toast (`st.chosen`).
+--
+-- AND IT NAMES THE REAL BINDING. BR.Voice.pttKeyLabel() reads our own key
+-- layer, so a player who moved push-to-talk to V is told V. When the action is
+-- on NO key -- cleared, or lost to a conflict -- there is no key to name and
+-- the sentence says so instead of inventing one.
+
+--- The sentence, as a pure function of the two facts it names.
+---
+--- PURE AND IT TAKES ITS INPUTS, so the suite can assert the owner's wording
+--- without a match, a key layer or a running game. Returns nil for the one
+--- case that must produce no notice at all.
+--- @param mode string|nil  the voice mode in force
+--- @param key string|nil   the push-to-talk key label, or nil when unbound
+--- @return string|nil
+function BR.Voice.noticeFor(mode, key)
+    mode = BR.ToVoiceMode(mode)
+    local r = BR.VoiceRouting[mode]
+    -- OFF SAYS NOTHING. Explicit owner instruction, and it agrees with the
+    -- toast rule above: a state the player chose is not news.
+    if not (r.proximity or r.radio) then return nil end
+
+    local label = (mode == BR.VoiceMode.SQUAD) and 'squad' or 'nearby'
+    local hold = key and ('Hold %s to speak.'):format(key)
+        -- NO KEY MEANS NO KEY. Naming one here would be the exact lie #129's
+        -- third round was: a prompt that names a key nothing is listening to
+        -- turns "unavailable" into "broken" for somebody who has no way to
+        -- tell those apart from a chair.
+        or 'Push to talk is not bound to any key.'
+    return ('Voice chat is set to %s. %s You can change your voice preference '
+        .. 'and keybinds in Settings.'):format(label, hold)
+end
+
+--- The kind of match this notice was last fired for, so it fires once per
+--- match rather than once per state broadcast. `nil` means "not yet", which is
+--- the state a fresh client and a finished match are both in.
+local noticedFor = nil
+
+RegisterNetEvent(BR.Net.STATE)
+AddEventHandler(BR.Net.STATE, function(d)
+    if type(d) ~= 'table' then return end
+
+    -- THE MODE IN FORCE IS DERIVED FROM THE MATCH KIND, so a state broadcast
+    -- that moves it moves the voice mode with it -- from the solo preference
+    -- to the squad one, or back. apply() is idempotent and cheap; calling it
+    -- on every transition costs one comparison inside applyRadio and removes
+    -- the entire class of "the mode was right and the match had changed".
+    BR.Voice.apply()
+
+    if d.state ~= BR.MatchState.WARMUP then
+        -- ARMED BY LEAVING, rather than by any particular state. Anything that
+        -- is not the start of a match re-arms the notice for the next one, so
+        -- a player who plays four rounds is told four times and a player who
+        -- sits in one warmup through two state broadcasts is told once.
+        if d.state ~= BR.MatchState.BUS then noticedFor = nil end
+        return
+    end
+
+    local kind = d.mode or (BR.State and BR.State.match and BR.State.match.mode)
+    if noticedFor == kind then return end
+    noticedFor = kind
+
+    local text = BR.Voice.noticeFor(BR.Voice.mode(), BR.Voice.pttKeyLabel())
+    if not text then return end
+    TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
+        text = text,
+        tone = 'info',
+        -- Long, because it is three sentences and it is read once. Keyed, so a
+        -- second one cannot stack under the first.
+        ms   = 12000,
+        key  = 'voice.start',
+    })
 end)
 
 -- ------------------------------------------------------ the talking indicator ---
@@ -1053,7 +1465,7 @@ local function pushVoice(talking, names, st)
         names    = names or {},
         -- The mode is sent so the settings screen can describe the mode the
         -- player is ACTUALLY on rather than the one it last drew a button for.
-        mode     = BR.Voice.pref.mode,
+        mode     = BR.Voice.mode(),
         radio    = BR.Voice.state.radio,
         joined   = BR.Voice.state.joined,
         mates    = #BR.Voice.state.mates,
@@ -1087,7 +1499,7 @@ BR.Loop.register(BR.Loop.TICK, 'voice.hear', function()
     -- second-guess it, which is the rule that keeps a receive-side distance
     -- gate out of this file. On 'squad' it is the squadmates the server named,
     -- and on 'off' it is nobody.
-    local audible = BR.Voice.audibleFor(BR.Voice.pref.mode, BR.State.roster,
+    local audible = BR.Voice.audibleFor(BR.Voice.mode(), BR.State.roster,
                                         BR.Voice.state.mates,
                                         BR.State.me and BR.State.me.src)
     s.audible = audible
@@ -1234,7 +1646,15 @@ RegisterCommand('brvoice', function()
     -- the routing table, so this cannot describe a mode the code does not
     -- implement the way the old "squad = proximity plus radio" comment did.
     local r = BR.Voice.routing()
-    print(('  %-14s%s'):format('mode', BR.Voice.pref.mode))
+    -- THE MODE IN FORCE, AND THEN THE TWO SAVED PREFERENCES IT WAS DERIVED
+    -- FROM. Both lines, always, because the mode is no longer something the
+    -- player set directly -- it is one of two saved answers picked by the kind
+    -- of match, and "I set it to nearby and it is on squad" is now a sentence
+    -- somebody can say truthfully. The inputs are what makes that readable.
+    print(('  %-14s%s'):format('mode', BR.Voice.mode()))
+    print(('  %-14ssolos %s / squads %s -- match kind is %s'):format('preference',
+        tostring(BR.Voice.pref.solo), tostring(BR.Voice.pref.squad),
+        tostring(BR.State and BR.State.match and BR.State.match.mode)))
     print(('  %-14sproximity %s, squad radio %s -- NEVER BOTH'):format('routes',
         r.proximity and 'ON' or 'off', r.radio and 'ON' or 'off'))
 
@@ -1283,16 +1703,24 @@ RegisterCommand('brvoice', function()
         #s.mates > 0 and table.concat(s.mates, ', ')
             or 'none -- the server named nobody else on this squad'))
 
-    -- AND THE KEY, WHICH IS THE ONE FACT NOBODY HAD EVER BEEN TOLD. The squad
-    -- radio is pma-voice's, and pma-voice's radio has its own push-to-talk;
-    -- the ordinary voice key carries proximity, which squad mode turns off.
-    -- Printed whenever the radio is the mode, granted or not, because "hold
-    -- this key" is useless information one match too late.
-    if r.radio then
-        print(('  %-14sHOLD "%s" (Talk over Radio, pma-voice). The ordinary')
-            :format('talk key', BR.Voice.radioKeyLabel()))
-        print('                voice key carries NOTHING in this mode. Rebind it')
-        print('                in the pause menu: Settings, Key Bindings, FiveM.')
+    -- AND THE KEY. IT IS OURS NOW, and this line is what says so -- the
+    -- version before it named pma-voice's "Talk over Radio" on Left Alt and
+    -- sent the reader to GTA's pause menu to change it.
+    --
+    -- PRINTED IN EVERY MODE THAT CARRIES, not only on the radio. Both halves
+    -- go through the same key now, and half a readout is how "the ordinary
+    -- voice key" became a phrase nobody could resolve.
+    if r.radio or r.proximity then
+        local key = BR.Voice.pttKeyLabel()
+        print(('  %-14s%s'):format('talk key', key
+            and ('HOLD "%s" -- our binding (%s), rebindable in Settings, '
+                 .. 'Controls'):format(key, PTT_COMMAND)
+            or ('UNBOUND. %s is on no key at all, so nothing opens the '
+                .. 'microphone. Bind it in Settings, Controls.')
+               :format(PTT_COMMAND)))
+        print(('  %-14s%s'):format('  drives', r.radio
+            and ('+radiotalk in ' .. VOICE_RES .. ' -- the squad radio')
+            or  'GTA INPUT_PUSH_TO_TALK (249) -- proximity'))
     end
 
     -- LISTEN.

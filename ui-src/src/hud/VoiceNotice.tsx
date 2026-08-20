@@ -7,11 +7,26 @@ import { useUi } from '../store'
  * voice worked -- the server minted a radio channel, every member of one squad
  * got the same one, the client joined it and pma-voice's own check let them on
  * -- and it passed no audio, because pma-voice's radio has a push-to-talk of
- * its own (Left Alt by default) and squad mode turns proximity off, so the
- * ordinary voice key carries nothing. Two players pressed the key the game had
- * taught them, heard silence, and reported the feature as broken. The other
- * half of the same trap: squad mode with NO squad is total silence by design,
- * and looks identical.
+ * its own (Left Alt by default, at the time) and squad mode turns proximity
+ * off, so the ordinary voice key carried nothing. Two players pressed the key
+ * the game had taught them, heard silence, and reported the feature as broken.
+ * The other half of the same trap: squad mode with NO squad is total silence by
+ * design, and looks identical.
+ *
+ * ONE OF THOSE TWO IS NO LONGER THIS COMPONENT'S JOB, AND THE OTHER STILL IS.
+ *
+ * The key half is fixed at the source: push-to-talk is the gamemode's own
+ * binding now (`brptt`, default N, rebindable on the settings screen), and it
+ * is named ONCE at the start of a match by a notice rather than drawn here for
+ * the whole of one. Lua stopped sending a `headline` for the WORKING radio
+ * state -- owner, from the playtest: "don't give me text at the bottom of the
+ * screen saying to hold any key to talk" -- so this renders nothing for it,
+ * with no change on this side at all. That is the point of the words being
+ * Lua's rather than this file's.
+ *
+ * What is left is the half that is genuinely wrong: squad mode with no squad,
+ * a radio with nobody else on it, and 'off'. Those still send a headline and
+ * this still draws it.
  *
  * SILENCE WITH NO EXPLANATION IS INDISTINGUISHABLE FROM A BROKEN FEATURE. That
  * is the whole argument for putting this on the HUD rather than leaving it in

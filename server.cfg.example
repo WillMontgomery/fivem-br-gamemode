@@ -353,32 +353,91 @@ setr voice_enableProximityCycle 0
 # br_core sets this; it is here so you know it exists.
 # setr voice_enableRadioAnim 0
 #
+# REQUIRED (4) -- no chirp when a player presses or releases push-to-talk.
+#
+# Owner, from the playtest: "It still makes a radio chirp sound when pressing
+# and releasing the button ... the button chirp needs to go."
+#
+# pma-voice plays mic_click_on.ogg / mic_click_off.ogg from its own NUI on the
+# radio press and release. THERE IS NO ON/OFF CONVAR FOR IT -- the switch is a
+# per-client KVP (`pma-voice_enableMicClicks`) reachable only through the
+# `setVoiceProperty` export, which br_core/client/voice.lua now calls. These two
+# are VOLUMES, and they are the belt to that: both feed `click.volume` on the
+# <audio> element directly (pma-voice voice-ui/src/App.vue), so zero is silence.
+#
+# br_core sets both; they are here so you know they exist. They are read ONCE,
+# at pma-voice's script start, into a table -- so if you set them at runtime,
+# `restart pma-voice` afterwards. The export does not have that limitation,
+# which is exactly why br_core uses it as well.
+# setr voice_onClickVolume 0
+# setr voice_offClickVolume 0
+#
+# DO NOT SET voice_enableSubmix 0. THAT IS A DIFFERENT FEATURE AND THE OWNER
+# ASKED TO KEEP IT: "I don't hate the radio sound effect". The submix is the
+# processed, over-the-air quality a squadmate's voice takes on while they are
+# on the radio (SetAudioSubmixEffectRadioFx, pma-voice client/init/main.lua).
+# It has nothing to do with the chirp. It defaults to 1 and nothing in the
+# gamemode touches it.
+#
 # ============================================================================
-# SQUAD VOICE IS A RADIO, AND A RADIO HAS ITS OWN KEY. READ THIS BEFORE
-# REPORTING THAT SQUAD VOICE DOES NOT WORK.
+# SQUAD VOICE IS A RADIO, AND A RADIO HAS ITS OWN KEY -- BUT THE KEY IS OURS
+# NOW. READ THIS BEFORE REPORTING THAT SQUAD VOICE DOES NOT WORK.
 #
 # The gamemode's `squad` voice mode IS a pma-voice radio channel, assigned by
 # br_core/server/voice.lua from matchId and squadId. pma-voice transmits on a
-# radio ONLY while its own push-to-talk is held:
+# radio ONLY while `+radiotalk` is held (client/module/radio.lua), and until
+# this round the only thing that held it was pma-voice's OWN keybind, "Talk
+# over Radio", on LEFT ALT -- a default this project had simply never set.
 #
-#     +radiotalk, "Talk over Radio", default LEFT ALT
-#     (pma-voice client/module/radio.lua, RegisterKeyMapping)
+# THAT IS NO LONGER THE PLAYER-FACING KEY. br_core registers its own binding,
 #
-# The ordinary voice key carries PROXIMITY, and squad mode turns proximity off,
-# so in squad mode the ordinary key carries nothing at all. A squad pressing it
-# hears silence in both directions with every channel number correct. That is
-# what "squads don't work" turned out to be (#157). Players are now told, on
-# the HUD and on the settings screen; this note is for whoever runs the box.
+#     brptt, "Royale: Push to talk", default N
+#     (br_core/client/keybinds.lua)
 #
-# DO NOT SET voice_enableRadios 0 AND DO NOT NEUTRALISE THAT KEYBIND. The key
-# is not a player-facing extra we happen to inherit -- it is the only thing
-# that ever puts a squadmate in the Mumble voice target. Suppressing it makes
-# squad voice silent by construction.
+# and drives BOTH transmit paths from it: `+radiotalk` in squad mode, and GTA's
+# INPUT_PUSH_TO_TALK (control 249) in nearby mode, which is what opens the
+# microphone for proximity. It is rebindable on the gamemode's own settings
+# screen under Controls, Comms, like every other key in this game, and every
+# surface that names a key -- the start-of-match notice, the settings screen,
+# /brvoice -- reads that binding rather than a convar.
 #
-# voice_defaultRadio changes WHICH key it is. It sets the DEFAULT binding only:
-# a player who has already rebound it keeps their own, and br_core reads this
-# convar so /brvoice and the settings screen name whatever you put here.
-# setr voice_defaultRadio LMENU
+# N because 249's own default keyboard binding is N, so on a fresh client the
+# gamemode's key and the engine's are the same key.
+#
+# DO NOT SET voice_enableRadios 0 AND DO NOT NEUTRALISE THE +radiotalk COMMAND.
+# The KEY moved; the command did not. It is still the only thing that ever puts
+# a squadmate in the Mumble voice target, and br_core calls it. Suppressing it
+# makes squad voice silent by construction -- that is #157 in one line.
+#
+# voice_defaultRadio IS NOW COSMETIC HERE and is deliberately left alone. It
+# only moves pma-voice's own "Talk over Radio" row, which nothing in the
+# gamemode reads any more and which most players will never press. Setting it
+# to N would put TWO bindings on N -- ours and pma-voice's -- and the second
+# one is not the one the settings screen can move.
+# (previously: setr voice_defaultRadio LMENU)
+#
+# ============================================================================
+# pma-voice PRINTS "0.6" IN THE CLIENT CONSOLE. THIS IS UPSTREAM'S BUG AND
+# THERE IS NO CONVAR FOR IT. Do not go looking for one.
+#
+#     client/init/main.lua, in toggleVoice():
+#         print(volumes[moduleType])
+#
+# A bare, unconditional debug print -- not behind logger.info, not behind
+# logger.verbose, and NOT behind voice_debugMode. It fires once every time a
+# squadmate's radio voice is activated, and the number it prints is
+# `voice_defaultRadioVolume / 100`, which is 60/100 = 0.6 at the default.
+#
+# CHECKED, SO NOBODY HAS TO CHECK AGAIN: the line is present in v7.0.0,
+# v7.0.1-rc2, v7.0.2-rc3 (the pinned version) AND on master as of 2026-08-19.
+# There is no newer tag to move to and no setting that silences it.
+#
+# The only levers are both wrong: voice_defaultRadioVolume changes WHICH number
+# is printed, not whether it prints, and lowering it makes squadmates quieter.
+# It is cosmetic, it is client-console only (F8), and it costs one line per
+# radio talk-start. Leave it. If it ever becomes intolerable, the fix is an
+# upstream patch or a fork, not a convar -- and NOT a local edit to pma-voice's
+# files, which are re-cloned on every install.
 #
 # ============================================================================
 # AND ENUMERATE WHAT ELSE ON THIS BOX DOES VOICE. THIS IS #185.

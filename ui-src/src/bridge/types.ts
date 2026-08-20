@@ -445,10 +445,26 @@ export interface SettingsPayload {
    *  slider CAN reach -- PlaySoundFrontend has no per-cue volume. */
   volUi: number
   volMusic: number
-  /** Voice routing: 'squad' uses the squad room the server granted, 'nearby'
-   *  declines it and stays on proximity, 'off' stops transmitting. It can only
-   *  ever DECLINE a room -- the server decides which exist. */
-  voiceMode: 'squad' | 'nearby' | 'off'
+  /**
+   * Voice routing, SAVED ONCE PER KIND OF MATCH: 'squad' uses the squad radio
+   * the server granted, 'nearby' declines it and stays on proximity, 'off'
+   * stops transmitting. It can only ever DECLINE a room -- the server decides
+   * which exist.
+   *
+   * TWO FIELDS BECAUSE ONE COULD NOT BE RIGHT FOR BOTH. A player who picks
+   * Squad and then queues a solo used to carry Squad into a match with no
+   * squads, which is total silence by design and identical to a fault (#157).
+   *
+   * WHICH ONE IS IN FORCE IS LUA'S ANSWER, not this page's -- br_core derives
+   * it from the match kind (BR.VoiceModeFor, br_lib/shared/enums.lua) and
+   * sends the result back on the voice envelope as `VoicePayload.mode`. This
+   * page renders the two SAVED preferences and never computes the live one.
+   *
+   * 'squad' IS NOT A LEGAL VALUE FOR THE SOLO SLOT -- the type says so, and
+   * Lua coerces it away regardless. See the solos row in Settings.tsx.
+   */
+  voiceModeSolo: 'nearby' | 'off'
+  voiceModeSquad: 'squad' | 'nearby' | 'off'
   /** Proposed to the server; empty means "use my platform name". */
   gamertag: string
 }

@@ -62,7 +62,21 @@ local DEFAULTS = {
     -- push on br:ui:ready had landed. One definition, in br_lib/shared/enums
     -- .lua, and both sides read it. See BR.VoiceRouting there for what each
     -- mode routes; br_core owns everything done with it.
-    voiceMode   = BR.VoiceModeDefault,
+    --
+    -- TWO SLOTS, ONE PER KIND OF MATCH (owner, from the playtest: "make it so
+    -- that a player can save a different preference (nearby/squad/off) for
+    -- squads and solos"). Which one is in force is BR.VoiceModeFor's answer,
+    -- in br_lib, and br_core re-derives it rather than storing a third value.
+    -- BOTH DEFAULT TO 'nearby' -- the argument for that default has not
+    -- changed and is written out above BR.VoiceModeDefault.
+    --
+    -- 'squad' IS NOT A LEGAL VALUE IN THE SOLO SLOT. It is coerced away below
+    -- by BR.ToSoloVoiceMode, which is also what makes the migration from the
+    -- single old setting safe: a player whose one stored mode was 'squad'
+    -- keeps it for squad matches and gets the default for solos, rather than
+    -- carrying silence into every solo match they queue.
+    voiceModeSolo  = BR.VoiceModeDefault,
+    voiceModeSquad = BR.VoiceModeDefault,
     -- Proposed to the server on join. Empty means "use my platform name".
     gamertag    = '',
 }
@@ -93,6 +107,24 @@ local function sanitise(raw)
     raw = type(raw) == 'table' and raw or {}
     local out = {}
 
+    -- THE MIGRATION, AND IT RUNS BEFORE THE WHITELIST FOR A REASON.
+    --
+    -- `voiceMode` was one setting and is now two. The loop below drops any key
+    -- the schema does not name, so by the time it has run the old value is
+    -- gone -- which would silently reset every existing player to the default
+    -- on the session this ships. Read here, applied only where the new keys
+    -- are ABSENT, so a payload from the current settings screen (which always
+    -- sends both) is untouched and this costs nothing after the first save.
+    --
+    -- The legacy value goes into BOTH slots and the solo one is coerced a few
+    -- lines down: somebody who chose 'squad' meant it for the matches that
+    -- have squads.
+    local legacy = raw.voiceMode
+    if legacy ~= nil then
+        if raw.voiceModeSolo  == nil then raw.voiceModeSolo  = legacy end
+        if raw.voiceModeSquad == nil then raw.voiceModeSquad = legacy end
+    end
+
     for key, fallback in pairs(DEFAULTS) do
         local v = raw[key]
         if type(fallback) == 'number' then
@@ -113,8 +145,11 @@ local function sanitise(raw)
 
     if not COLOURBLIND[out.colourblind] then out.colourblind = 'off' end
     -- Coerced by br_lib, so the fallback is the same one br_core would apply to
-    -- the very same payload a moment later.
-    out.voiceMode = BR.ToVoiceMode(out.voiceMode)
+    -- the very same payload a moment later. The solo slot gets the stricter of
+    -- the two: 'squad' there is a match with no squads, which is silence, and
+    -- br_lib is where that judgement lives so both resources inherit it.
+    out.voiceModeSolo  = BR.ToSoloVoiceMode(out.voiceModeSolo)
+    out.voiceModeSquad = BR.ToVoiceMode(out.voiceModeSquad)
 
     -- A gamertag is shown to other players, so the rules are the server's
     -- eventually -- but there is no reason to send it something obviously
@@ -302,7 +337,12 @@ RegisterCommand('brsettings', function(_, args)
     local s = BR.Settings.get()
     print('=== settings ===')
     for _, k in ipairs({ 'uiScale', 'textScale', 'colourblind',
-                         'volUi', 'volMusic', 'gamertag' }) do
+                         'volUi', 'volMusic',
+                         -- Both voice slots, because "which mode am I on" is
+                         -- now an answer this file does not have on its own --
+                         -- it stores the pair and br_core picks. /brvoice on
+                         -- the br_core side prints the one in force.
+                         'voiceModeSolo', 'voiceModeSquad', 'gamertag' }) do
         print(('  %-12s %s'):format(k, tostring(s[k])))
     end
     print('  usage: brsettings [reset]')

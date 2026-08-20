@@ -268,8 +268,13 @@ if [ "$voice" -eq 0 ]; then
     # 2. THE TWO LUA CONSUMERS MUST READ THE VALUE, NOT RESTATE IT. A literal
     #    here is the exact shape of the bug: it compiles, it runs, and it
     #    disagrees with the other file silently.
+    #
+    #    THE FIELD NAMES MOVED WHEN THE SETTING BECAME TWO -- voiceModeSolo and
+    #    voiceModeSquad, one per kind of match (see BR.VoiceModeFor in br_lib).
+    #    The pattern below matches the stem, so it covers the pair and would
+    #    still catch a plain `voiceMode` if one came back.
     for pair in \
-        "resources/*/br_ui/client/settings.lua:voiceMode" \
+        "resources/*/br_ui/client/settings.lua:voiceMode[A-Za-z]*" \
         "resources/*/br_core/client/voice.lua:mode"
     do
         # Unquoted on purpose: the left half is a glob that has to expand
@@ -284,17 +289,26 @@ if [ "$voice" -eq 0 ]; then
         fi
     done
 
-    # 3. THE TYPESCRIPT DEFAULT, which no Lua test can see.
+    # 3. THE TYPESCRIPT DEFAULTS, which no Lua test can see.
+    #
+    #    BOTH SLOTS ARE CHECKED, AND THE COUNT IS CHECKED TOO. A gate that
+    #    compares whatever it happens to find goes blind the moment a field is
+    #    renamed out from under it -- which is exactly what would have happened
+    #    here, silently, when voiceMode became a pair. So the names are named.
     ts='ui-src/src/settings/apply.ts'
     if [ -f "$ts" ]; then
-        got=$(grep -oE "voiceMode:[[:space:]]*'[a-z]+'" "$ts" | grep -oE "'[a-z]+'" | tr -d "'" || true)
-        if [ "$got" != "$want" ]; then
-            echo "${RED}FAIL${RST} $ts has voiceMode '${got:-<none>}', br_lib says '$want'"
-            echo "     This is the value the settings screen renders before Lua's"
-            echo "     push lands, so a disagreement shows the player a mode they"
-            echo "     are not on."
-            voice=1
-        fi
+        for field in voiceModeSolo voiceModeSquad; do
+            got=$(grep -oE "${field}:[[:space:]]*'[a-z]+'" "$ts" \
+                  | grep -oE "'[a-z]+'" | tr -d "'" || true)
+            if [ "$got" != "$want" ]; then
+                echo "${RED}FAIL${RST} $ts has $field '${got:-<none>}', br_lib says '$want'"
+                echo "     This is the value the settings screen renders before Lua's"
+                echo "     push lands, so a disagreement shows the player a mode they"
+                echo "     are not on. If the field was renamed, rename it HERE too --"
+                echo "     a gate that cannot find its field passes nothing."
+                voice=1
+            fi
+        done
     fi
 
     # 4. AND THE BUILT BUNDLE, which is what a player actually runs.
@@ -304,14 +318,15 @@ if [ "$voice" -eq 0 ]; then
         while IFS= read -r got; do
             bundle_seen=1
             if [ "$got" != "$want" ]; then
-                echo "${RED}FAIL${RST} ${js#resources/} ships voiceMode '$got', br_lib says '$want'"
+                echo "${RED}FAIL${RST} ${js#resources/} ships a voice default '$got', br_lib says '$want'"
                 echo "     The bundle is stale. Run: cd ui-src && npm run build"
                 voice=1
             fi
-        done < <(grep -oE 'voiceMode:"[a-z]+"' "$js" | grep -oE '"[a-z]+"' | tr -d '"' || true)
+        done < <(grep -oE 'voiceMode(Solo|Squad):"[a-z]+"' "$js" \
+                 | grep -oE '"[a-z]+"' | tr -d '"' || true)
     done
     if [ "$bundle_seen" -eq 0 ]; then
-        echo "${YEL}warn${RST} no voiceMode default found in the built bundle --"
+        echo "${YEL}warn${RST} no voice-mode default found in the built bundle --"
         echo "     the minifier's output shape may have changed. This gate is the"
         echo "     only thing that catches a source edit that was never built;"
         echo "     re-point it rather than leaving it blind."

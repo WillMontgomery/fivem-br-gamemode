@@ -337,6 +337,36 @@ group = 'Comms'
 -- Comms
 tap ('chatGlobal',  'brchat',      'Royale: Chat (global)',              'T')
 tap ('chatSquad',   'brchatsquad', 'Royale: Chat (squad)',               'Y')
+
+-- PUSH TO TALK, AND IT IS OURS NOW. THIS ROW IS THE WHOLE OF #157's EIGHTH
+-- ROUND, so it is worth being exact about what it replaces.
+--
+-- LEFT ALT WAS NEVER A DECISION. Owner, verbatim: "Why is left alt used for
+-- anything? That was a mistake - a default left in place." It was pma-voice's
+-- `voice_defaultRadio` default -- LMENU -- inherited by this project never
+-- setting it, and it reached the player as a row in the GTA pause menu called
+-- "Talk over Radio" that no screen of ours could list, name or move.
+--
+-- SETTING voice_defaultRadio TO 'N' WOULD NOT HAVE FIXED THAT, AND THAT IS THE
+-- POINT OF THIS ROW EXISTING AT ALL. It moves pma-voice's OWN binding's
+-- default and nothing else: the key would still be registered by pma-voice, it
+-- would still be absent from BR.Keys.bindings (so absent from our settings
+-- screen and from BR.Keys.labelFor, which is what every prompt and notice
+-- asks), it would still not move for a player who had already rebound it, and
+-- it would still be a second key layer with its own authority -- the exact
+-- split this file's #131 note refuses for the smoke trail: "I'd rather not
+-- re-use that since it means leaving our own keybinds authority yet again."
+--
+-- So the key is registered HERE, like every other key in this game, and
+-- br_core/client/voice.lua drives pma-voice's transmit path off it. The full
+-- argument for that direction, and what it must not break, is in voice.lua
+-- under `push to talk`.
+--
+-- N, because it is the key the player is already holding: 249 is GTA's own
+-- INPUT_PUSH_TO_TALK and its default keyboard binding is N, so this row starts
+-- life agreeing with the engine's voice key instead of fighting it. Rebindable
+-- from the settings screen like everything else.
+hold('ptt',         'brptt',       'Royale: Push to talk',               'N')
 -- THERE IS NO 'ping' BINDING ANY MORE, AND THAT IS THE FIX RATHER THAN AN
 -- OMISSION. It was `tap('ping', 'brping', 'Royale: Place a marker', 'Z')` and
 -- it had NO SUBSCRIBER: nothing anywhere called BR.Keys.on('ping', ...). The
@@ -462,7 +492,7 @@ BR.Keys.actions = {
     -- by dropping a map waypoint now (client/markers.lua). 'map', 'specNext'
     -- and 'specPrev' are in the same state and are NOT yet removed -- they are
     -- listed here so the debug overlay keeps naming them while they are.
-    'chatGlobal', 'chatSquad', 'map', 'specNext', 'specPrev',
+    'chatGlobal', 'chatSquad', 'ptt', 'map', 'specNext', 'specPrev',
     'clearWaypoint',
 }
 
@@ -541,7 +571,11 @@ local chosen = {}
 local DEFAULT_VK = {
     SPACE = 0x20, TAB = 0x09, E = 0x45, G = 0x47, R = 0x52, B = 0x42,
     ['1'] = 0x31, ['2'] = 0x32, ['3'] = 0x33, ['4'] = 0x34, ['5'] = 0x35,
-    T = 0x54, Y = 0x59, Z = 0x5A, M = 0x4D, BACK = 0x08,
+    -- N is push-to-talk (brptt) and it is also GTA's own INPUT_PUSH_TO_TALK
+    -- default, which is why it was chosen. It has to be HERE or the raw layer
+    -- skips the binding entirely and the row shows "Unbound" on a settings
+    -- screen the player never touched -- see the note above this table.
+    T = 0x54, Y = 0x59, Z = 0x5A, M = 0x4D, N = 0x4E, BACK = 0x08,
     LEFT = 0x25, RIGHT = 0x27, UP = 0x26, DOWN = 0x28,
     F1 = 0x70, F2 = 0x71, F3 = 0x72, F4 = 0x73, F5 = 0x74,
 }

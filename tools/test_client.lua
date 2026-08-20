@@ -2084,6 +2084,45 @@ end
 
 local VR = BR.Config.Match.voice.range
 
+--- PUT THIS MACHINE ON ONE VOICE MODE, WHICHEVER KIND OF MATCH IT IS IN.
+---
+--- The preference is TWO stored values now -- one for solos, one for squads --
+--- and which is in force is derived from BR.State.match.mode on every read
+--- (BR.VoiceModeFor, br_lib/shared/enums.lua). Almost every block below is
+--- about ROUTING rather than about that resolution, and each one would
+--- otherwise have to know which slot its scene's match kind was going to
+--- consult -- a fact none of them care about and all of them could get wrong.
+---
+--- So this writes BOTH slots. The mode in force is then `mode` whatever the
+--- match kind is, which is exactly the invariant those blocks were written
+--- against. The resolution itself is asserted on its own, deliberately, in the
+--- block that is about it -- with the two slots set to DIFFERENT values, which
+--- is the only way to observe which one won.
+---
+--- ...AND IT PUTS THE SCENE IN A SQUAD MATCH, which is not a convenience
+--- either. Every one of these blocks has squadmates, a server-granted radio
+--- channel and a mute sweep built from a squad list: they ARE squad matches,
+--- and a squad match is the only kind in which all three modes are reachable.
+--- Leaving the match kind unset would mean the SOLO slot decided every one of
+--- them -- where 'squad' is coerced away by design -- so the squad-routing
+--- blocks would silently be testing 'nearby' and passing for the wrong reason.
+--- That failure would look exactly like the bug: a suite agreeing with itself.
+--- @param mode string 'squad' | 'nearby' | 'off'
+local function setVoicePref(mode)
+    BR.State.match.mode = BR.Mode.SQUAD.key
+    fire('br:settings:changed', {
+        voiceModeSolo = mode, voiceModeSquad = mode,
+    })
+end
+
+--- The same, WITHOUT the event -- for blocks that drive BR.Voice's internals
+--- directly and would be disturbed by an apply() they did not ask for.
+--- @param mode string|nil
+local function forceVoiceMode(mode)
+    BR.State.match.mode = BR.Mode.SQUAD.key
+    BR.Voice.pref.solo, BR.Voice.pref.squad = mode, mode
+end
+
 --- Bring one machine up from nothing: a fresh pma-voice, a mode, and a server
 --- assignment. Returns the frozen rules.
 ---
@@ -2105,9 +2144,9 @@ local function voiceApply(mode, radio, mates, me, state)
     BR.Voice.state.muted = {}
     BR.Voice._warned = {}
     -- Force the preference through, even when it matches the last test's:
-    -- br:settings:changed early-returns on an unchanged mode, which is correct
+    -- br:settings:changed early-returns on an unchanged pair, which is correct
     -- in the game and would silently skip the setup here.
-    BR.Voice.pref.mode = nil
+    BR.Voice.pref.solo, BR.Voice.pref.squad = nil, nil
     -- br_core starting is what installs the rules into pma-voice.
     fire('onClientResourceStart', 'br_core')
     -- AND IT IS WHAT UNDOES THE LINE AT THE TOP OF THIS FUNCTION, which is why
@@ -2130,7 +2169,7 @@ local function voiceApply(mode, radio, mates, me, state)
     -- and reports an empty transmit set that looks exactly like the bug under
     -- test.
     BR.State.me.src = me or 1
-    fire('br:settings:changed', { voiceMode = mode })
+    setVoicePref(mode)
     fire(BR.Net.VOICE_SET, { radio = radio, mates = mates,
                              nearbyRange = VR.nearby })
     BR.Loop.step(BR.Loop.TICK)
@@ -2141,7 +2180,7 @@ end
 --- Change the preference on a machine that already has an assignment -- the
 --- settings screen, mid-match -- and let one pma-voice tick pass.
 local function voiceMode(mode)
-    fire('br:settings:changed', { voiceMode = mode })
+    setVoicePref(mode)
     BR.Loop.step(BR.Loop.TICK)
     pmaTick()
     return pmaSnapshot()
@@ -2470,17 +2509,64 @@ do
     standAt(0, 0)
     voiceApply('off', nil, nil, 1)
 
-    fire('br:settings:changed', { voiceMode = 'globalchat' })
-    ok(BR.Voice.pref.mode == BR.VoiceModeDefault,
+    fire('br:settings:changed',
+         { voiceModeSolo = 'globalchat', voiceModeSquad = 'globalchat' })
+    ok(BR.Voice.mode() == BR.VoiceModeDefault,
         'an unknown mode falls back to the shared default, not to a literal '
             .. 'this file spelled out for itself',
-        tostring(BR.Voice.pref.mode))
+        tostring(BR.Voice.mode()))
 
     voiceApply('off', nil, nil, 1)
     fire('br:settings:changed', {})
-    ok(BR.Voice.pref.mode == BR.VoiceModeDefault,
-        'and so does a payload with no voiceMode in it at all',
-        tostring(BR.Voice.pref.mode))
+    ok(BR.Voice.mode() == BR.VoiceModeDefault,
+        'and so does a payload with no voice mode in it at all',
+        tostring(BR.Voice.mode()))
+
+    -- ==================================================================== --
+    -- TWO SAVED PREFERENCES, AND THE MATCH KIND PICKS. This is the one place
+    -- the two slots are set to DIFFERENT values, which is the only way to
+    -- observe which one won -- everywhere else in this file setVoicePref()
+    -- writes both, deliberately, so that the routing blocks are about routing.
+    --
+    -- THE ROW THAT MATTERS IS THE THIRD ONE. A player who chose 'squad' and
+    -- then queued a solo used to carry 'squad' into a match with no squads,
+    -- which is total silence by design and identical to a fault (#157). The
+    -- solo slot cannot hold 'squad' at all, so there is no longer a stored
+    -- value that can produce it.
+    fire('br:settings:changed',
+         { voiceModeSolo = 'off', voiceModeSquad = 'nearby' })
+
+    BR.State.match.mode = BR.Mode.SOLO.key
+    ok(BR.Voice.mode() == 'off',
+        'a solo match reads the SOLO preference', tostring(BR.Voice.mode()))
+
+    BR.State.match.mode = BR.Mode.SQUAD.key
+    ok(BR.Voice.mode() == 'nearby',
+        'and a squad match reads the SQUAD one, from the same stored pair',
+        tostring(BR.Voice.mode()))
+
+    fire('br:settings:changed',
+         { voiceModeSolo = 'squad', voiceModeSquad = 'squad' })
+    BR.State.match.mode = BR.Mode.SOLO.key
+    ok(BR.Voice.mode() == BR.VoiceModeDefault,
+        "'squad' cannot be stored as a SOLO preference -- it is coerced to the "
+            .. 'default, because a solo match has no squad radio and honouring '
+            .. 'it would be silence',
+        tostring(BR.Voice.mode()))
+    BR.State.match.mode = BR.Mode.SQUAD.key
+    ok(BR.Voice.mode() == 'squad',
+        'while the squad slot keeps it', tostring(BR.Voice.mode()))
+
+    -- THE LOBBY, AND ANY CLIENT THAT HAS NOT BEEN TOLD YET, RESOLVE TO SOLO.
+    -- Not an accident of a nil compare: a player with no match around them has
+    -- no squad, and the solo slot is the one that cannot be silence.
+    fire('br:settings:changed',
+         { voiceModeSolo = 'nearby', voiceModeSquad = 'off' })
+    BR.State.match.mode = nil
+    ok(BR.Voice.mode() == 'nearby',
+        'an unknown match kind resolves to the solo preference',
+        tostring(BR.Voice.mode()))
+    BR.State.match.mode = BR.Mode.SQUAD.key
 
     -- AND EVERY VALID MODE SURVIVES THE COERCION UNCHANGED, which is the other
     -- way a shared coercer goes wrong: one that returned the default for
@@ -2559,7 +2645,7 @@ do
     -- it would be asserting that a mode which is SUPPOSED to hold mutes does
     -- not. 'nearby' is the mode that refuses nobody, so it is the one that
     -- makes this a test of the unmute path rather than of the mode.
-    BR.Voice.pref.mode = 'nearby'
+    forceVoiceMode('nearby')
     BR.Loop.step(BR.Loop.TICK)
     ok(next(pma.muted) == nil,
         'and the mutes lift on the next tick with NO event to prompt it',
@@ -2573,7 +2659,7 @@ do
     playersAt({ [2] = { x = 2, y = 0 }, [3] = { x = 4, y = 0 } })
     voiceApply('off', 30503, { 2 }, 1)
     ok(next(pma.muted) ~= nil, 'muted on off, once more')
-    BR.Voice.pref.mode = 'squad'
+    forceVoiceMode('squad')
     BR.Loop.step(BR.Loop.TICK)
     ok(pma.muted[2] == nil,
         'and off -> squad releases the SQUADMATE with no event to prompt it',
@@ -2658,7 +2744,7 @@ do
     -- undo. BR.Voice.gagged() is a pure function of the mode and the state, so
     -- there is nothing to undo -- and this asserts that by driving it with
     -- nothing but its two inputs.
-    BR.Voice.pref.mode = 'nearby'
+    forceVoiceMode('nearby')
     BR.State.me.state = BR.PlayerState.BUS
     local g1 = BR.Voice.gagged()
     BR.State.me.state = BR.PlayerState.FREEFALL
@@ -2677,7 +2763,7 @@ do
     -- not have one, so the honest answer is true at every position, on the bus
     -- and off it. What must not change is that the bus does not touch the
     -- RADIO, and the block above asserts that on behaviour rather than here.
-    BR.Voice.pref.mode = 'squad'
+    forceVoiceMode('squad')
     BR.State.me.state = BR.PlayerState.BUS
     local sqBusGag, sqBusWhy = BR.Voice.gagged()
     BR.State.me.state = BR.PlayerState.ALIVE
@@ -2689,13 +2775,13 @@ do
         'and it does not blame the bus for it -- the reason is the mode',
         tostring(sqBusWhy))
 
-    BR.Voice.pref.mode = 'off'
+    forceVoiceMode('off')
     BR.State.me.state = BR.PlayerState.ALIVE
     ok(BR.Voice.gagged() == true, 'and off is gagged everywhere')
 
     -- THE READOUT READS THE SAME FUNCTION, which is why /brvoice cannot drift
     -- from the behaviour the way "prox channel 2003" did for a week.
-    BR.Voice.pref.mode = 'nearby'
+    forceVoiceMode('nearby')
     BR.State.me.state = BR.PlayerState.BUS
     local _, why = BR.Voice.gagged()
     ok(type(why) == 'string' and why:find('bus') ~= nil,
@@ -2894,28 +2980,79 @@ do
     ok(radio.silent == false,
        'a squad with a radio is not silent -- it is a key press away',
        tostring(radio.code))
-    ok(type(radio.headline) == 'string' and radio.headline:find('hold') ~= nil,
-       'but the headline tells the player to HOLD something',
+
+    -- ...AND IT SAYS NOTHING ON THE HUD, WHICH IS THIS ROUND'S CHANGE.
+    --
+    -- This used to assert the OPPOSITE -- that the headline told the player to
+    -- HOLD something -- and that assertion was right for exactly one round. It
+    -- was the only thing telling anybody that squad voice had a key of its own
+    -- (Left Alt, pma-voice's). Owner, from the playtest after it shipped:
+    -- "don't give me text at the bottom of the screen saying to hold any key
+    -- to talk."
+    --
+    -- A `headline` IS DRAWN ACROSS THE BOTTOM OF THE SCREEN FOR AS LONG AS THE
+    -- STATE LASTS (ui-src/src/hud/VoiceNotice.tsx), so on this row -- the
+    -- WORKING one -- it was a permanent line saying voice worked. The rule now
+    -- matches what that component already claims about itself: a headline means
+    -- something is WRONG. The key is named once at the start of a match
+    -- instead (BR.Voice.noticeFor), and in Settings, which is where somebody
+    -- goes to look.
+    ok(radio.headline == nil,
+       'and the WORKING row draws no HUD line at all -- a permanent "voice is '
+           .. 'fine" banner is furniture, and furniture is not read',
        tostring(radio.headline))
+
+    -- THE DETAIL SURVIVES, because it goes to the settings screen rather than
+    -- over the game, and it now names OUR key rather than pma-voice's.
     ok(type(radio.detail) == 'string'
-       and radio.detail:find('Talk over Radio') ~= nil,
-       "and names pma-voice's own binding, which is what they will find in "
-           .. 'the pause menu',
+       and radio.detail:find('Settings, Controls') ~= nil,
+       'the settings-screen sentence points at OUR rebinder, not at GTA\'s '
+           .. 'pause menu under a pma-voice row called "Talk over Radio"',
        tostring(radio.detail))
-    ok(radio.detail:find('ordinary voice key') ~= nil,
-       'and says the ordinary voice key does nothing here -- the exact belief '
-           .. 'that produced the report',
+    ok(radio.detail:find('Talk over Radio') == nil,
+       'and no surface names pma-voice\'s own binding any more -- the key is '
+           .. 'ours (brptt), so naming theirs would send the player to a row '
+           .. 'that no longer does anything',
        tostring(radio.detail))
 
-    -- THE KEY NAME IS pma-voice's OWN CONVAR, so a server that rebinds the
-    -- default is described correctly rather than confidently wrongly.
-    convars = { voice_defaultRadio = 'CAPITAL' }
-    local rebound = statusFor(BR.VoiceMode.SQUAD, 30703, 3)
-    ok(type(rebound.headline) == 'string'
-       and rebound.headline:find('Caps Lock') ~= nil,
-       'the key named is read out of voice_defaultRadio, not hard-coded',
-       tostring(rebound.headline))
-    convars = {}
+    -- THE KEY NAME IS OUR KEY LAYER'S, so it follows the player rather than a
+    -- convar. This used to read pma-voice's voice_defaultRadio, which was only
+    -- ever the DEFAULT -- FiveM exposes no way to read a rebind of a
+    -- RegisterKeyMapping back, so every string built from it had to hedge and
+    -- the one it named was Left Alt. BR.Keys.labelFor has no such limit for a
+    -- binding this layer owns, and the sentence is derived from it rather than
+    -- describing it.
+    local key = BR.Voice.pttKeyLabel()
+    ok(type(key) == 'string' and radio.detail:find(key, 1, true) ~= nil,
+       'the key in the sentence is the one BR.Keys.labelFor reports, so it '
+           .. 'moves when the player moves it',
+       tostring(key) .. ' / ' .. tostring(radio.detail))
+
+    -- AND THE ROW ITSELF EXISTS, IN OUR TABLE, WITH THE OWNER'S DEFAULT.
+    --
+    -- THIS IS THE ASSERTION THAT SEPARATES THE FIX FROM THE NEAR-MISS. Setting
+    -- `voice_defaultRadio N` would have moved the key a player presses and
+    -- passed every other assertion in this block -- and it would still have
+    -- been pma-voice's binding, absent from BR.Keys.bindings, absent from our
+    -- settings screen, and unmoved for anybody who had already rebound it.
+    -- Membership of this table is what "in our key layer" MEANS: it is what
+    -- the settings screen lists, what BR.Keys.set can move, and what the raw
+    -- layer reads.
+    local pttRow = nil
+    for _, b in ipairs(BR.Keys.bindings) do
+        if b.command == 'brptt' then pttRow = b end
+    end
+    ok(pttRow ~= nil,
+       'push-to-talk is a row in OUR key layer -- not pma-voice\'s binding '
+           .. 'wearing a new default',
+       'no brptt in BR.Keys.bindings')
+    ok(pttRow ~= nil and pttRow.default == 'N',
+       "and its default is N, which the owner asked for and which is also "
+           .. "GTA's own INPUT_PUSH_TO_TALK default",
+       pttRow and tostring(pttRow.default) or '-')
+    ok(pttRow ~= nil and pttRow.hold == true,
+       'and it is a HOLD, because push-to-talk is held',
+       pttRow and tostring(pttRow.hold) or '-')
 
     -- A SQUAD OF ONE gets its own row: the channel exists, nobody else is on
     -- it, and "hold the key" would be advice that produces nothing.
@@ -2980,13 +3117,34 @@ do
        out)
 
     -- AND WITH A REAL SQUAD, the same command has to name the key -- the fact
-    -- whose absence cost the round.
+    -- whose absence cost the round -- and it has to name OURS. This used to
+    -- look for "Talk over Radio", pma-voice's own binding label, and sent the
+    -- reader to GTA's pause menu to change it. Both halves moved: the key is
+    -- `brptt` in our layer, and the readout says which mechanism it reaches.
     voiceApply(BR.VoiceMode.SQUAD, 30703, { 2, 3 }, 1)
     logged = {}
     pcall(commands['brvoice'])
     local live = table.concat(logged, '\n')
-    ok(live:find('talk key') ~= nil and live:find('Talk over Radio') ~= nil,
-       'and names the radio push-to-talk when the radio is the mode', live)
+    ok(live:find('talk key') ~= nil and live:find('brptt') ~= nil,
+       'and names OUR push-to-talk binding when the radio is the mode', live)
+    ok(live:find('+radiotalk') ~= nil,
+       'and says what that key actually drives, so a silent squad can be '
+           .. 'traced to a mechanism rather than guessed at', live)
+    ok(live:find('Talk over Radio') == nil,
+       'and never sends the reader to pma-voice\'s own binding again', live)
+
+    -- THE OTHER MODE'S KEY IS THE SAME KEY, AND IT IS PRINTED THERE TOO.
+    -- Half a readout is how "the ordinary voice key" became a phrase nobody
+    -- could resolve: on nearby, the key drives GTA's INPUT_PUSH_TO_TALK
+    -- instead, and a reader who sees no talk-key line at all concludes there
+    -- is no key.
+    voiceApply(BR.VoiceMode.NEARBY, nil, nil, 1)
+    logged = {}
+    pcall(commands['brvoice'])
+    local prox = table.concat(logged, '\n')
+    ok(prox:find('talk key') ~= nil and prox:find('249') ~= nil,
+       'and on nearby the same key is named against the control it drives',
+       prox)
     ok(live:find('agree') ~= nil,
        'and states outright whether granted and joined are the same channel',
        live)
@@ -3007,6 +3165,281 @@ do
        type(quiet) == 'table' and tostring(quiet.headline) or '-')
 
     logged = {}
+end
+
+describe('#157 round eight -- push to talk is OUR key, and it drives both modes')
+do
+    -- WHAT THIS BLOCK CAN AND CANNOT PROVE, STATED FIRST, because this file
+    -- has a rule about that and voice is the subject it has cost the most.
+    --
+    -- IT CANNOT PROVE A MICROPHONE OPENS. Nothing in this repository can run
+    -- pma-voice, execute a Mumble native or move a frame of audio, and six
+    -- rounds of this issue were lost to reasoning that could not be checked.
+    --
+    -- WHAT IT PROVES IS THE ROUTING OF THE PRESS: which mechanism our key
+    -- reaches, in which mode, and that the release always reaches the one that
+    -- can latch. Those are decisions this codebase makes, and every one of
+    -- them used to be made by pma-voice on a key we did not own.
+    --
+    -- THE TWO MECHANISMS ARE DELIBERATELY DIFFERENT AND BOTH ARE ASSERTED:
+    --   squad  -> ExecuteCommand('+radiotalk'), which is what puts a squadmate
+    --             in the Mumble voice target. Nothing else does.
+    --   nearby -> SetControlNormal on control 249, GTA's INPUT_PUSH_TO_TALK,
+    --             held every frame. There is no radio on nearby, so the radio
+    --             command would do nothing at all.
+    local ran, ptt249, groups = {}, 0, {}
+    local realExec, realControl = ExecuteCommand, SetControlNormal
+    function ExecuteCommand(c) ran[#ran + 1] = tostring(c) end
+    -- COUNTED ON GROUP 0 ONLY, and the other two are recorded rather than
+    -- counted. pma-voice forces this control over control groups 0, 1 and 2
+    -- and we do the same, so a naive count is three times the number of
+    -- frames -- which is a fine way to write an assertion that looks like it
+    -- passes for the wrong reason.
+    function SetControlNormal(group, control, amount)
+        if control ~= 249 or amount ~= 1.0 then return end
+        groups[group] = true
+        if group == 0 then ptt249 = ptt249 + 1 end
+    end
+
+    --- The key, through the same path a real press takes: the registered
+    --- command, into fire(), into every listener. Not a direct call to the
+    --- handler -- that would be a test of a function rather than of a binding.
+    local function ptt(down)
+        BR.Keys.rawHolds = false
+        BR.Keys.uiOwnsKeyboard = false
+        local fn = commands[(down and '+' or '-') .. 'brptt']
+        if fn then fn() end
+    end
+
+    local function heldFrames(n)
+        ptt249 = 0
+        for _ = 1, n do BR.Loop.step(BR.Loop.FRAME) end
+        return ptt249
+    end
+
+    ok(commands['+brptt'] ~= nil and commands['-brptt'] ~= nil,
+       'the push-to-talk command pair exists, which is what makes it a hold '
+           .. 'binding rather than a tap',
+       'no +brptt / -brptt')
+
+    -- SQUAD. The press keys the radio up; the release clears it.
+    nobodyElse()
+    standAt(0, 0)
+    voiceApply(BR.VoiceMode.SQUAD, 30703, { 2 }, 1)
+    ran = {}
+    ptt(true)
+    ok(table.concat(ran, ' '):find('+radiotalk', 1, true) ~= nil,
+       'a press in SQUAD mode drives pma-voice\'s radio push-to-talk -- the '
+           .. 'one thing that ever puts a squadmate in the voice target',
+       table.concat(ran, ' '))
+    ptt(false)
+    ok(table.concat(ran, ' '):find('-radiotalk', 1, true) ~= nil,
+       'and the release clears it', table.concat(ran, ' '))
+
+    -- NEARBY. No radio exists, so the radio command must NOT be sent -- and
+    -- the key has to open the microphone some other way or 'nearby' has no
+    -- push-to-talk at all.
+    voiceApply(BR.VoiceMode.NEARBY, nil, nil, 1)
+    ran = {}
+    ptt(true)
+    ok(table.concat(ran, ' '):find('+radiotalk', 1, true) == nil,
+       'a press in NEARBY mode does NOT key a radio up -- there is no radio '
+           .. 'in this mode and asking for one is how a mode learns about a '
+           .. 'channel it must not have',
+       table.concat(ran, ' '))
+    ok(heldFrames(3) == 3,
+       'it holds GTA\'s INPUT_PUSH_TO_TALK instead, on EVERY frame the key is '
+           .. 'down -- a control forced once is a control released next frame',
+       tostring(ptt249))
+    ok(groups[0] and groups[1] and groups[2],
+       'over all three control groups, exactly as pma-voice does it -- one '
+           .. 'group alone does not reliably open the microphone',
+       table.concat({ tostring(groups[0]), tostring(groups[1]),
+                      tostring(groups[2]) }, '/'))
+
+    -- THE BUS RULE REACHES THE KEY, AND IT REACHES IT MID-HOLD. This is the
+    -- property the whole file is built on: the gag is re-derived per frame, so
+    -- a player who boards while holding the key is gagged on the next frame
+    -- rather than at the next press.
+    BR.State.me.state = BR.PlayerState.BUS
+    ok(heldFrames(3) == 0,
+       'and boarding the bus stops it MID-HOLD -- the gag is re-asked every '
+           .. 'frame, never latched at the press',
+       tostring(ptt249))
+    BR.State.me.state = BR.PlayerState.ALIVE
+    ok(heldFrames(2) == 2,
+       'and jumping brings it straight back, with no press in between',
+       tostring(ptt249))
+    ptt(false)
+
+    -- THE OTHER DIRECTION OF THE SAME PROPERTY, AND IT IS THE ONE A PRESS-TIME
+    -- GATE WOULD HAVE BROKEN. A player who is ALREADY on the bus when they
+    -- take hold of the key, and who then jumps without letting go, has to
+    -- start transmitting -- so the press must record "the key is down" rather
+    -- than "the key is allowed", and the gag must live only in the frame loop.
+    voiceApply(BR.VoiceMode.NEARBY, nil, nil, 1, BR.PlayerState.BUS)
+    ptt(true)
+    ok(heldFrames(2) == 0, 'a press taken ON the bus transmits nothing',
+       tostring(ptt249))
+    BR.State.me.state = BR.PlayerState.FREEFALL
+    ok(heldFrames(2) == 2,
+       'and jumping while still holding it starts transmitting -- a press '
+           .. 'refused at the edge would need the player to let go first, '
+           .. 'which nobody would think to do',
+       tostring(ptt249))
+    ptt(false)
+    BR.State.me.state = BR.PlayerState.ALIVE
+
+    -- OFF. Neither mechanism. Note this is belt rather than the enforcement:
+    -- even with a microphone wide open, an 'off' player's voice target is
+    -- empty and the mute sweep has refused everybody.
+    voiceApply(BR.VoiceMode.OFF, nil, nil, 1)
+    ran = {}
+    ptt(true)
+    ok(table.concat(ran, ' '):find('+radiotalk', 1, true) == nil
+       and heldFrames(3) == 0,
+       "'off' means the key does nothing at all -- neither mechanism",
+       table.concat(ran, ' ') .. ' / ' .. tostring(ptt249))
+
+    -- THE RELEASE IS UNCONDITIONAL, AND THIS IS THE ASSERTION THAT MATTERS
+    -- MOST. keybinds.lua makes the same argument at its own `-brinteract`: a
+    -- mode change, a squad dissolving or a match ending between the press and
+    -- the release must not be able to leave `radioPressed` true inside
+    -- pma-voice, because nothing else would ever clear it -- an open
+    -- microphone to the squad that the player cannot turn off.
+    voiceApply(BR.VoiceMode.SQUAD, 30703, { 2 }, 1)
+    ptt(true)
+    voiceMode(BR.VoiceMode.OFF)          -- the settings screen, mid-hold
+    ran = {}
+    ptt(false)
+    ok(table.concat(ran, ' '):find('-radiotalk', 1, true) ~= nil,
+       'a release delivered after the mode changed still clears the radio -- '
+           .. 'a release never sent is a microphone latched open',
+       table.concat(ran, ' '))
+
+    -- AND THE KEY IS LEFT UP, so nothing after this block inherits a hold.
+    ok(heldFrames(2) == 0, 'and the key layer is left with nothing held',
+       tostring(ptt249))
+
+    ExecuteCommand, SetControlNormal = realExec, realControl
+end
+
+describe('the start-of-match voice notice says the mode and the real key')
+do
+    -- THE SENTENCE IS THE OWNER'S, VERBATIM:
+    --
+    --   "Voice chat is set to [mode]. Hold [button] to speak. You can change
+    --    your voice preference and keybinds in Settings."
+    --
+    -- IT REPLACES A PERMANENT HUD LINE. The thing removed this round was a
+    -- string across the bottom of the screen for the whole match telling the
+    -- player to hold a key. This is the same information said once, when it is
+    -- news, at the start of a match -- and then gone.
+    local noticeFor = BR.Voice.noticeFor
+        or function() return nil end
+
+    local nb = noticeFor(BR.VoiceMode.NEARBY, 'N')
+    ok(type(nb) == 'string' and nb:find('set to nearby', 1, true) ~= nil,
+       'it names the mode in force', tostring(nb))
+    ok(type(nb) == 'string' and nb:find('Hold N to speak.', 1, true) ~= nil,
+       'and the key, in the owner\'s words', tostring(nb))
+    ok(type(nb) == 'string'
+       and nb:find('voice preference and keybinds in Settings', 1, true) ~= nil,
+       'and where to change both', tostring(nb))
+
+    local sq = noticeFor(BR.VoiceMode.SQUAD, 'V')
+    ok(type(sq) == 'string' and sq:find('set to squad', 1, true) ~= nil
+       and sq:find('Hold V', 1, true) ~= nil,
+       'the mode and the key are both read rather than assumed -- a rebound '
+           .. 'key is named as the key it now is',
+       tostring(sq))
+
+    -- OFF SAYS NOTHING. Explicit owner instruction, and it is the same rule
+    -- the toast already applies: a state the player chose is not news.
+    ok(noticeFor(BR.VoiceMode.OFF, 'N') == nil,
+       "no notice at all when voice is off",
+       tostring(noticeFor(BR.VoiceMode.OFF, 'N')))
+
+    -- AND NO KEY MEANS NO KEY. An action cleared, or lost to a conflict with
+    -- another binding, is on nothing -- and naming one anyway is the exact lie
+    -- #129's third round was, where a prompt said R and the engine was
+    -- listening on E.
+    local unbound = noticeFor(BR.VoiceMode.NEARBY, nil)
+    ok(type(unbound) == 'string' and unbound:find('not bound', 1, true) ~= nil
+       and unbound:find('Hold', 1, true) == nil,
+       'an unbound push-to-talk says so rather than inventing a key',
+       tostring(unbound))
+
+    -- THE SURFACE. It has to actually reach the player, once per match, and
+    -- WARMUP is the first state in which the match kind -- which the mode is
+    -- derived from -- is known.
+    nobodyElse()
+    standAt(0, 0)
+    voiceApply(BR.VoiceMode.NEARBY, nil, nil, 1)
+
+    local function lastToastText()
+        for i = #events, 1, -1 do
+            local e = events[i]
+            if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.TOAST then
+                return type(e.args[2]) == 'table' and e.args[2].text or nil
+            end
+        end
+        return nil
+    end
+
+    events = {}
+    fire(BR.Net.STATE, { state = BR.MatchState.WARMUP,
+                         mode = BR.Mode.SQUAD.key })
+    local shown = lastToastText()
+    ok(type(shown) == 'string' and shown:find('Voice chat is set to', 1, true) ~= nil,
+       'the match starting is what says it', tostring(shown))
+
+    -- ONCE PER MATCH, NOT ONCE PER BROADCAST. The digest re-fires state on any
+    -- change, and a notice repeated every few seconds is the furniture this
+    -- was built to replace.
+    events = {}
+    fire(BR.Net.STATE, { state = BR.MatchState.WARMUP,
+                         mode = BR.Mode.SQUAD.key })
+    ok(lastToastText() == nil,
+       'and a second WARMUP broadcast for the same match says it again to '
+           .. 'nobody', tostring(lastToastText()))
+
+    -- AND IT RE-ARMS FOR THE NEXT ROUND.
+    fire(BR.Net.STATE, { state = BR.MatchState.ENDED,
+                         mode = BR.Mode.SQUAD.key })
+    events = {}
+    fire(BR.Net.STATE, { state = BR.MatchState.WARMUP,
+                         mode = BR.Mode.SQUAD.key })
+    ok(type(lastToastText()) == 'string',
+       'while the next match gets its own', tostring(lastToastText()))
+
+    -- OFF, ON THE SURFACE AS WELL AS IN THE FUNCTION.
+    voiceApply(BR.VoiceMode.OFF, nil, nil, 1)
+    fire(BR.Net.STATE, { state = BR.MatchState.ENDED,
+                         mode = BR.Mode.SQUAD.key })
+    events = {}
+    fire(BR.Net.STATE, { state = BR.MatchState.WARMUP,
+                         mode = BR.Mode.SQUAD.key })
+    local offText = lastToastText()
+    ok(offText == nil or offText:find('Voice chat is set to', 1, true) == nil,
+       'and a player who turned voice off is not told about it every match',
+       tostring(offText))
+
+    -- THE MATCH KIND CHANGING RE-DERIVES THE MODE, which is the whole reason
+    -- there are two saved preferences. A player whose solo preference is Off
+    -- and whose squad preference is Nearby must not carry one into the other.
+    fire('br:settings:changed',
+         { voiceModeSolo = 'off', voiceModeSquad = 'nearby' })
+    BR.State.match.mode = BR.Mode.SOLO.key
+    ok(BR.Voice.routing().proximity == false,
+       'a solo match reads the solo slot', tostring(BR.Voice.mode()))
+    fire(BR.Net.STATE, { state = BR.MatchState.WARMUP,
+                         mode = BR.Mode.SQUAD.key })
+    BR.State.match.mode = BR.Mode.SQUAD.key
+    ok(BR.Voice.routing().proximity == true,
+       'and the same client in a squad match reads the squad slot, with no '
+           .. 'settings change in between',
+       tostring(BR.Voice.mode()))
 end
 
 describe('voice never crosses a match')
@@ -3064,7 +3497,7 @@ do
 
     local okRun = pcall(function()
         fire('onClientResourceStart', 'br_core')
-        fire('br:settings:changed', { voiceMode = 'squad' })
+        setVoicePref('squad')
         fire(BR.Net.VOICE_SET, { radio = 30503, mates = { 2 },
                                  nearbyRange = VR.nearby })
         BR.Loop.step(BR.Loop.TICK)

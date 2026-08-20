@@ -315,14 +315,18 @@ export function startMockDriver(): void {
             + 'squad it carries nobody -- you cannot hear anyone and nobody '
             + 'can hear you. Solo matches have no squads. Switch to Nearby '
             + 'under Settings, Voice to hear the players around you.' },
+    // THE WORKING ROW CARRIES NO HEADLINE, and that is the shape being
+    // mocked rather than an omission -- VoiceNotice draws any headline it is
+    // given, so a working mode that sent one would sit across the bottom of
+    // the screen all match. Lua stopped sending it (BR.Voice.statusFor); this
+    // mock has to agree or the harness renders a line the game does not.
     { talking: [4], names: ['Nyx'],
       mode: 'squad' as const, radio: 30703, joined: 30703, mates: 3,
       status: 'radio', silent: false, chosen: false,
-      headline: 'Squad voice: hold Left Alt to talk',
-      detail: 'Squad voice is a RADIO with its own push-to-talk. Hold Left Alt '
-            + '-- "Talk over Radio", rebindable in the pause menu under '
-            + 'Settings, Key Bindings, FiveM. The ordinary voice key does '
-            + 'nothing in this mode, because squad mode turns proximity off.' },
+      detail: 'Squad voice is a radio: it reaches your squad at any distance '
+            + 'and nobody else, however close they are. Hold N to talk. The '
+            + "key is this game's -- rebind it in Settings, Controls, under "
+            + 'Comms.' },
   ]
   let voiceAt = 0
   window.setInterval(() => {

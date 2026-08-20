@@ -215,3 +215,62 @@ end
 function BR.VoiceRoutingFor(mode)
     return BR.VoiceRouting[BR.ToVoiceMode(mode)]
 end
+
+-- ==========================================================================
+-- TWO SAVED PREFERENCES, ONE MODE IN FORCE.
+--
+-- Owner, from the playtest: "make it so that a player can save a different
+-- preference (nearby/squad/off) for squads and solos."
+--
+-- WHY THIS IS A REAL PROBLEM AND NOT A CONVENIENCE. There is exactly one
+-- stored voice mode today, and it is the same one in both kinds of match. A
+-- player who picks Squad for a squad match and then queues a solo carries
+-- Squad into a match that has no squads -- which is total silence, by design,
+-- and indistinguishable from a fault. That is #157's second half, and the
+-- settings screen's own comment records the round that was spent on it. Two
+-- slots removes the state that cannot be right for both.
+--
+-- THE RESOLUTION LIVES HERE, NEXT TO THE VOCABULARY, for the same reason the
+-- default does: br_ui stores the pair and br_core acts on it, and every
+-- previous time those two answered the same question separately they answered
+-- it differently (see the block above BR.VoiceMode).
+--
+-- 'squad' IS NOT OFFERED IN THE SOLOS ROW AT ALL, and that is a decision worth
+-- writing down rather than a gap. A squad radio in a solo match is not a
+-- degraded choice, it is a choice with no referent -- the server mints no
+-- channel, so the mode is silence with extra steps. The settings screen
+-- therefore shows two buttons in that row rather than three greyed ones: a
+-- disabled control still has to be read, reasoned about and dismissed, and the
+-- existing three-button row already spent a round teaching players that a dim
+-- button means "your setting is broken". BR.ToSoloVoiceMode is the enforcement
+-- -- a 'squad' that reaches the solo slot by any route (an old KVP blob
+-- migrated from the single setting, a hand-fired event, a stale build's NUI
+-- payload) becomes the default rather than silence.
+-- ==========================================================================
+
+--- Coerce a mode for the SOLO slot, where 'squad' has no meaning.
+--- @param mode string|nil
+--- @return string  one of BR.VoiceMode, never BR.VoiceMode.SQUAD
+function BR.ToSoloVoiceMode(mode)
+    mode = BR.ToVoiceMode(mode)
+    if mode == BR.VoiceMode.SQUAD then return BR.VoiceModeDefault end
+    return mode
+end
+
+--- WHICH OF THE TWO SAVED PREFERENCES IS IN FORCE.
+---
+--- PURE, AND IT TAKES ITS INPUTS, so both resources and the suite can drive it
+--- without a match. The match mode is BR.Mode's `key` -- 'solo' or 'squad' --
+--- and ANYTHING ELSE RESOLVES TO THE SOLO PREFERENCE, deliberately: the lobby,
+--- a client that has not been told yet, and a nil all mean "no squad has been
+--- formed around me", and the solo slot is the one that cannot be silence.
+--- @param prefs table|nil  { solo = string|nil, squad = string|nil }
+--- @param matchMode string|nil  a BR.Mode key
+--- @return string  one of BR.VoiceMode
+function BR.VoiceModeFor(prefs, matchMode)
+    prefs = type(prefs) == 'table' and prefs or {}
+    if matchMode == BR.Mode.SQUAD.key then
+        return BR.ToVoiceMode(prefs.squad)
+    end
+    return BR.ToSoloVoiceMode(prefs.solo)
+end

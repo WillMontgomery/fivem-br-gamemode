@@ -337,6 +337,25 @@ local CONVARS = {
       cost = 'every player using squad voice visibly plays a hold-a-radio '
           .. 'animation while they talk -- through aiming, and in full view '
           .. 'of anyone watching them' },
+    -- THE BUTTON CHIRP. Owner, from the playtest: "It still makes a radio
+    -- chirp sound when pressing and releasing the button ... the button chirp
+    -- needs to go."
+    --
+    -- THESE ARE VOLUMES, NOT SWITCHES, BECAUSE THERE IS NO SWITCH. pma-voice
+    -- keeps the on/off for its mic clicks in a per-client KVP and exposes only
+    -- the `setVoiceProperty` export over it -- br_core/client/voice.lua calls
+    -- that, and this pair is the belt to it. Both go straight to `click.volume`
+    -- on an <audio> element in pma-voice's own NUI (voice-ui/src/App.vue), so
+    -- zero is silence.
+    --
+    -- WHAT IS DELIBERATELY NOT HERE: voice_enableSubmix. That is the RADIO
+    -- EFFECT -- the processed, over-the-air sound a squadmate's voice gets --
+    -- and the owner asked to keep it: "I don't hate the radio sound effect".
+    -- It is a different feature from the chirp and it stays at its default.
+    { name = 'voice_onClickVolume', want = '0',
+      cost = 'a radio chirp plays every time a player presses push-to-talk' },
+    { name = 'voice_offClickVolume', want = '0',
+      cost = 'a radio chirp plays every time a player releases push-to-talk' },
 }
 
 --- Put the convars in force, or say why they are not. Idempotent.
@@ -663,10 +682,13 @@ RegisterCommand('brvoice', function()
     -- it. Nothing on this server can see whether a player is holding it, so it
     -- is said here rather than measured.
     print('  A RADIO IS NOT A MICROPHONE. pma-voice\'s radio transmits only')
-    print('  while its own key is HELD -- "Talk over Radio", +radiotalk,')
-    print('  default Left Alt. The ordinary voice key carries proximity, which')
-    print('  squad mode turns off, so a squad pressing it hears nothing in')
-    print('  either direction with every column above correct. That is what')
-    print('  "squads don\'t work" turned out to be. This server cannot see the')
-    print('  key; /brvoice on the CLIENT names it.')
+    print('  while +radiotalk is HELD. THE KEY THAT HOLDS IT IS OURS NOW --')
+    print('  `brptt`, "Royale: Push to talk", default N, registered in')
+    print('  br_core/client/keybinds.lua and rebindable on the gamemode\'s own')
+    print('  settings screen. It was pma-voice\'s "Talk over Radio" on Left')
+    print('  Alt, which was a default nobody had ever chosen and which no')
+    print('  screen of ours could name or move. That, plus nobody being told')
+    print('  the radio had a key at all, is what "squads don\'t work" turned')
+    print('  out to be. This server cannot see whether anyone is holding it;')
+    print('  /brvoice on the CLIENT names the binding and what it drives.')
 end, true)
