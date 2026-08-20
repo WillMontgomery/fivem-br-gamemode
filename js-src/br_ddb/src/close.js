@@ -72,6 +72,30 @@ function tail(rows, n) {
  * Lua side, and storing it would put a row on a moderation record that no
  * console version can render.
  */
+/**
+ * `weaponIssued`, present only when the game actually made a claim.
+ *
+ * THREE STATES, AND THE ABSENT ONE IS NOT A DEFAULT -- IT IS AN ANSWER. The
+ * game sends `true` for a weapon it issues, `false` for one it does not, and
+ * NOTHING AT ALL for a death that is not a weapon claim: a fall, a drowning,
+ * the storm. A Lua key set to nil does not appear in the payload, and that
+ * absence has to survive into DynamoDB rather than being flattened to false.
+ *
+ * WHY IT MATTERS THAT ABSENT NEVER BECOMES FALSE. The console paints
+ * `weaponIssued === false` red and calls it high confidence of cheating. If
+ * this spread a default into every entry, every incident filed before the
+ * field existed -- and every storm death since -- would arrive as an
+ * accusation against a named player. So the key is omitted unless the value is
+ * exactly true or exactly false, and `=== ` is used rather than truthiness
+ * because a `0` across the Lua boundary is truthy on the other side.
+ */
+function weaponIssuedOf(e) {
+  const v = e?.weaponIssued
+  if (v === true) return { weaponIssued: true }
+  if (v === false) return { weaponIssued: false }
+  return {}
+}
+
 export function timelineEntry(e) {
   const at = int(e?.at)
   if (at === null) return null
@@ -103,10 +127,34 @@ export function timelineEntry(e) {
       killerName: str(e?.killerName),
       victimLicense: str(e?.victimLicense),
       victimName: str(e?.victimName),
-      weapon: str(e?.weapon, 64),
+      /**
+       * A STRING EVEN WHEN LUA SENT A NUMBER, AND THAT IS A FIX RATHER THAN A
+       * TIDY-UP. `lastHitWeapon` is not one type: the gunshot path stores
+       * `data.weaponType`, which is a HASH, and the explosive path stores an
+       * item id, which is a string. `str()` answers null for a number, so
+       * before this line every ordinary shooting stored `weapon: null` -- the
+       * single most common kill in the game, with nothing recorded about what
+       * did it.
+       *
+       * The raw hash is kept rather than dropped because on the one case that
+       * matters most -- a weapon we do not issue -- it is the only identifier
+       * anybody has. There is no label for a weapon the gamemode has never
+       * heard of, so an admin reading a flagged kill gets the number the cheat
+       * actually used, which is evidence. For everything else `weaponLabel`
+       * below carries the readable name and this field is not what gets shown.
+       */
+      weapon: str(e?.weapon, 64) ?? (Number.isFinite(e?.weapon) ? String(e.weapon) : null),
+      /**
+       * The display name, resolved on the game side against the weapon config
+       * -- 'Marksman Rifle', not 'marksmanrifle' and not a hash. Null when the
+       * weapon is not one we issue, because we have no name for something we
+       * do not hand out and inventing one would dress up the finding.
+       */
+      weaponLabel: str(e?.weaponLabel, 64),
       cause: str(e?.cause, 64),
       // STRICTLY BOOLEAN, never a truthy 0 from across the Lua boundary.
       headshot: e?.headshot === true,
+      ...weaponIssuedOf(e),
     }
   }
 

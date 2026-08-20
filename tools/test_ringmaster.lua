@@ -1638,6 +1638,12 @@ local function newTimelineWorld()
         'br_lib/shared/protocol.lua',
         'br_lib/shared/identity.lua',
         'br_lib/shared/combat_solve.lua',
+        -- THE REAL WEAPON TABLE, not a stub. weaponFacts() decides whether a kill
+        -- gets painted red as an unissued weapon, and a stub would let that
+        -- logic pass against a table shaped the way the test author imagined.
+        -- geo.lua comes first only because weapons.lua calls BR.NormHash.
+        'br_lib/shared/geo.lua',
+        'br_lib/config/weapons.lua',
         'br_lib/shared/evidence_buf.lua',
         'br_lib/shared/incident_build.lua',
     }) do
@@ -1666,11 +1672,17 @@ local function newTimelineWorld()
     }
     -- The match registry, which is where `startedAt` lives.
     BRs.Server = { matches = S.matches }
-    BRs.Config = {
-        Report = { maxPerMatch = 3, maxTargets = 5, categories = { 'cheating' } },
-        isReportCategory = function(c) return c == 'cheating' end,
-        defaultReportCategory = function() return 'cheating' end,
-    }
+    -- EXTENDED, NOT REPLACED, AND THAT IS LOAD-BEARING. A bare assignment here
+    -- threw away everything config/weapons.lua had just put on BR.Config --
+    -- the real weapon tables weaponFacts() classifies kills against. Every kill
+    -- in this world then produced no weapon claim at all, and the tests that
+    -- assert "an environmental death makes NO claim" passed for entirely the
+    -- wrong reason: nothing could make a claim, so nothing did. The tests that
+    -- assert a claim IS made are what caught it.
+    BRs.Config = BRs.Config or {}
+    BRs.Config.Report = { maxPerMatch = 3, maxTargets = 5, categories = { 'cheating' } }
+    BRs.Config.isReportCategory = function(c) return c == 'cheating' end
+    BRs.Config.defaultReportCategory = function() return 'cheating' end
     BRs.Combat = { attributedKiller = function() return nil end }
 
     -- IN MANIFEST ORDER. evidence.lua at br_core/fxmanifest.lua:114, incident.lua
@@ -1715,14 +1727,28 @@ local function newTimelineWorld()
 
     --- One elimination, through the REAL BR.Evidence.noteKill, in the shape
     --- server/combat.lua hands it over.
-    function W.kill(killerSrc, victimSrc)
+    --- @param weapon any|nil  hash, id or WEAPON_* name; see weaponFacts()
+    ---
+    --- THE DEFAULT IS A HASH BECAUSE THE GUNSHOT PATH STORES A HASH. This
+    --- fixture used to pass the string 'WEAPON_CARBINERIFLE', which is a form
+    --- the gunshot path never produces -- damage.lua sets `lastHitWeapon` from
+    --- `data.weaponType`, looked up as `WeaponByHash[NormHash(...)]`. Nothing
+    --- consumed the field then, so the mismatch cost nothing; it does now, and
+    --- a fixture that disagrees with the runtime is how a resolver ships
+    --- passing its tests and calling every real kill a conjured weapon.
+    function W.kill(killerSrc, victimSrc, weapon)
+        -- AN EXPLICIT nil TEST, NOT `weapon ~= nil and weapon or DEFAULT`. That
+        -- idiom returns the DEFAULT when weapon is `false`, because the `and`
+        -- yields false and the `or` then takes its right branch -- so the one
+        -- case the caller most wants to pass through is the one it swallows.
+        if weapon == nil then weapon = 0x83BF0278 end  -- WEAPON_CARBINERIFLE
         BRs.Evidence.noteKill({
             killer    = killerSrc and S.roster[killerSrc] and S.roster[killerSrc].name or nil,
             killerSrc = killerSrc,
             victim    = S.roster[victimSrc] and S.roster[victimSrc].name or 'V',
             victimSrc = victimSrc,
             cause     = 'gunshot',
-            weapon    = 'WEAPON_CARBINERIFLE',
+            weapon    = weapon,  -- nil is substituted by the caller guard above
             headshot  = nil,
         })
     end
@@ -1914,6 +1940,75 @@ do
     ok(p and p.matchEndsByMs == W.BR.IncidentBuild.TIMELINE_LIMITS.MATCH_ENDS_BY_MS,
         'but it does carry a deadline, so absent never means "running forever"')
     ok(p and p.matchEndsByMs > 0, 'and the deadline is a real duration')
+end
+
+describe('timeline.weapon')
+do
+    -- WHAT THIS IS PROTECTING. The console renders `weaponIssued == false` in
+    -- red and says it is high confidence of cheating. That is an accusation
+    -- against a named player, made automatically, so every branch that can
+    -- reach it is pinned here -- including the ones that must NOT reach it.
+
+    local function killWith(weapon)
+        local W = newTimelineWorld()
+        W.startMatch(7, 1000)
+        W.join(1, 7, 'license:cheat', 'Cheater')
+        W.join(2, 7, 'license:v1', 'Victim1')
+        W.at(2000); W.kill(1, 2, weapon)
+        W.at(3000); W.file(7, 'license:cheat', 'Cheater')
+        local p = W.lastIncident()
+        return ofKind(p and p.matchTimeline, 'kill')[1]
+    end
+
+    -- THE THREE IDENTIFIER FORMS, all of which reach lastHitWeapon in real
+    -- play and all of which name the same rifle.
+    local byHash = killWith(0x83BF0278)
+    ok(byHash and byHash.weaponIssued == true,
+        'a weapon known by hash is issued', byHash and tostring(byHash.weaponIssued))
+    ok(byHash and byHash.weaponLabel == 'Carbine Rifle',
+        'and carries its display label, not its id', byHash and tostring(byHash.weaponLabel))
+
+    local byId = killWith('carbinerifle')
+    ok(byId and byId.weaponIssued == true and byId.weaponLabel == 'Carbine Rifle',
+        'the same weapon by id resolves identically', byId and tostring(byId.weaponLabel))
+
+    local byName = killWith('WEAPON_CARBINERIFLE')
+    ok(byName and byName.weaponIssued == true and byName.weaponLabel == 'Carbine Rifle',
+        'and by WEAPON_* name', byName and tostring(byName.weaponLabel))
+
+    -- THE FINDING ITSELF.
+    local conjured = killWith('not_a_weapon_we_have')
+    ok(conjured and conjured.weaponIssued == false,
+        'a weapon the gamemode does not issue is flagged',
+        conjured and tostring(conjured.weaponIssued))
+    ok(conjured and conjured.weaponLabel == nil,
+        'and gets no label, because we have no name for what we do not hand out')
+
+    -- STRICTLY FALSE, NOT FALSY. The console keys red off `=== false`, and a
+    -- nil arriving where false was meant would silently stop flagging.
+    ok(conjured and type(conjured.weaponIssued) == 'boolean',
+        'the flag is a real boolean', conjured and type(conjured.weaponIssued))
+
+    -- THE FALSE-ACCUSATION GUARDS. Each of these must make NO claim at all.
+    local fell = killWith('fall')
+    ok(fell and fell.weaponIssued == nil,
+        'an environmental death makes no weapon claim', fell and tostring(fell.weaponIssued))
+
+    local fellByName = killWith('WEAPON_FALL')
+    ok(fellByName and fellByName.weaponIssued == nil,
+        'and the same by WEAPON_* name', fellByName and tostring(fellByName.weaponIssued))
+
+    local none = killWith({})  -- a type weaponFacts has no branch for
+    ok(none and none.weaponIssued == nil,
+        'an unexpected type makes no claim rather than a false one',
+        none and tostring(none.weaponIssued))
+
+    -- BACKWARDS COMPATIBILITY, stated as a test because it is a promise to
+    -- every case already in DynamoDB: they carry no weaponIssued, and the
+    -- console must not paint them red. Absence is the same shape as the
+    -- environmental answer above -- the key simply is not there.
+    ok(fell and rawget(fell, 'weaponIssued') == nil,
+        'absence is absence, not a stored nil')
 end
 
 describe('timeline.no-match')

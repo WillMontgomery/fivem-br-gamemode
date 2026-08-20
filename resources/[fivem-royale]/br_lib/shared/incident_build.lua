@@ -425,7 +425,107 @@ local MAX_TIMELINE_KILLS = 250
 --- THE LICENCES ARE THE PROFILE LINKS #30 ASKS FOR. `victimName` travels beside
 --- `victimLicense` so the console can render a row whose profile has not loaded,
 --- and so a case stays readable if the licence is later merged or renamed.
+--- Everything this gamemode issues, indexed by every name it answers to.
+---
+--- THREE IDENTIFIER FORMS REACH THIS FILE, AND THAT IS THE WHOLE REASON THIS
+--- TABLE EXISTS. `lastHitWeapon` is not one type:
+---
+---   * the gunshot path stores `data.weaponType`, which is a HASH -- see
+---     damage.lua, where it is looked up as `WeaponByHash[NormHash(...)]`;
+---   * the explosive path stores `f.item`, which is an ID string;
+---   * and a row built by hand may carry the `WEAPON_*` NAME.
+---
+--- A lookup that assumed any one of those would answer "not a weapon we issue"
+--- for the other two. That answer is not cosmetic here -- the console paints it
+--- red and calls it high confidence of cheating -- so the cost of guessing the
+--- form wrong is a false accusation against an innocent player. Accepting all
+--- three is deliberate: a weapon we recognise by ANY of its identifiers is one
+--- we issue, and there is no case where recognising it too easily does harm.
+---
+--- BUILT LAZILY AND CACHED ONLY ONCE POPULATED. br_lib's config and shared
+--- files load in an order this file must not assume, and an empty result means
+--- "the config is not up yet", never "there are no weapons". Caching the empty
+--- one would make every kill for the rest of the process look conjured.
+local known = nil
+local function knownWeapons()
+    if known then return known end
+
+    local cfg = BR.Config
+    if cfg == nil or cfg.WeaponById == nil or next(cfg.WeaponById) == nil then
+        return nil
+    end
+
+    local byId, byHash, byName, env = {}, {}, {}, {}
+    for id, w in pairs(cfg.WeaponById) do
+        byId[id] = w
+        if w.name then byName[w.name] = w end
+        if w.hash and BR.NormHash then byHash[BR.NormHash(w.hash)] = w end
+    end
+    for _, e in ipairs(cfg.Environmental or {}) do
+        env[e.id] = true
+        if e.name then env[e.name] = true end
+    end
+
+    known = { byId = byId, byHash = byHash, byName = byName, env = env }
+    return known
+end
+
+--- What killed them, and whether it is something this gamemode hands out.
+---
+--- THREE ANSWERS, NOT TWO, AND THE THIRD IS WHY THIS IS NOT A BOOLEAN.
+---
+---   * a weapon we issue           -> label, true
+---   * a weapon we do not issue    -> no label, FALSE. This is the finding the
+---                                    field exists to carry.
+---   * a fall, a drowning, a storm -> no label, NIL
+---
+--- The third case is the one that matters. An environmental death is not a
+--- weapon claim at all, and answering `false` would have the console accuse
+--- somebody of cheating because they walked off a cliff. `nil` does not
+--- travel: a Lua key set to nil simply does not appear in the row.
+---
+--- ABSENT MEANS "NO CLAIM", AND THE CONSOLE MUST READ IT THAT WAY. Every case
+--- filed before this field existed carries no `weaponIssued`, and none of them
+--- may light up red the day the console learns to look. Red requires an
+--- explicit `false`, never the absence of a `true`.
+---
+--- SILENCE ON DOUBT, IN EVERY DIRECTION. No config, an unexpected type, no
+--- weapon at all: all `nil`. The dangerous answer here is never silence, it is
+--- a confident wrong one.
+local function weaponFacts(w)
+    if w == nil then return nil, nil end
+
+    local K = knownWeapons()
+    if K == nil then return nil, nil end
+
+    if type(w) == 'number' then
+        local hit = BR.NormHash and K.byHash[BR.NormHash(w)] or nil
+        if hit then return hit.label, true end
+        if BR.Config.EnvironmentalFor and BR.Config.EnvironmentalFor(w) then
+            return nil, nil
+        end
+        return nil, false
+    end
+
+    if type(w) == 'string' then
+        local hit = K.byId[w] or K.byName[w]
+        if hit then return hit.label, true end
+        if K.env[w] then return nil, nil end
+        return nil, false
+    end
+
+    return nil, nil
+end
+
 local function killEntry(k)
+    -- Resolved HERE, on the server, at the moment the case is built, rather
+    -- than shipped to the console as an id for it to look up. The console has
+    -- no weapon list and must not grow one: a second copy of this table in
+    -- another repository is a copy that drifts, and the failure it produces is
+    -- an innocent player shown in red. The gamemode is the authority on what
+    -- the gamemode issues, so the gamemode answers.
+    local weaponLabel, weaponIssued = weaponFacts(k.weapon)
+
     return {
         at   = k.at,
         kind = 'kill',
@@ -436,6 +536,12 @@ local function killEntry(k)
         victimName    = k.victim,
 
         weapon   = k.weapon,
+        -- The display name, because `weapon` is an id: 'marksmanrifle' is not
+        -- what an admin reads on a case, 'Marksman Rifle' is. Absent when the
+        -- weapon is not one we issue -- we have no label for something we do
+        -- not have, and inventing one would dress up the thing being flagged.
+        weaponLabel  = weaponLabel,
+        weaponIssued = weaponIssued,
         cause    = k.cause,
         -- STRICTLY BOOLEAN. `headshot` is set as `(cause == 'headshot') or nil`
         -- upstream, so it arrives as true or as absent, and this pins it to a

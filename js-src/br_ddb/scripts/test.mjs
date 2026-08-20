@@ -666,6 +666,76 @@ check(
     false,
   )
 }
+
+// ---------------------------------------------------------------------------
+// weaponIssued -- the field the console turns into an accusation
+// ---------------------------------------------------------------------------
+//
+// WHAT IS AT STAKE. The console renders `weaponIssued === false` in red and
+// says it is high confidence of cheating, against a named player, with no
+// human in the loop. Every one of the three states is pinned here, and the two
+// that must NOT produce a claim get more attention than the one that must.
+
+const entryOf = (extra) =>
+  closeOk({
+    matchEndedAt: 2000,
+    matchTimeline: [killAt(1000, 'license:v1', extra)],
+    matchTimelineComplete: true,
+    matchKillsSeen: 1,
+  }).ExpressionAttributeValues[':entries'][0]
+
+{
+  const e = entryOf({ weaponIssued: true, weaponLabel: 'Carbine Rifle' })
+  check('an issued weapon is stored as issued', e.weaponIssued, true)
+  check('and carries its display label', e.weaponLabel, 'Carbine Rifle')
+}
+{
+  const e = entryOf({ weaponIssued: false })
+  check('a weapon we do not issue is stored as not issued', e.weaponIssued, false)
+  check('and has no label to show for it', e.weaponLabel, null)
+}
+
+// ABSENT MUST SURVIVE AS ABSENT. This is the one that would ship quietly: a
+// spread default, or an `e.weaponIssued === true` written straight into the
+// object, turns every storm death and every case filed before the field
+// existed into `false` -- which the console reads as cheating.
+{
+  const e = entryOf({})
+  check(
+    'a kill with no weapon claim stores no weaponIssued key at all',
+    Object.prototype.hasOwnProperty.call(e, 'weaponIssued'),
+    false,
+  )
+}
+
+// TRUTHINESS IS NOT ACCEPTED IN EITHER DIRECTION, the same discipline the
+// headshot check above applies, and for the same reason: `0` is truthy in Lua,
+// so a future producer sending one must not be read as an answer.
+{
+  const e = entryOf({ weaponIssued: 0 })
+  check('a weaponIssued of 0 is not an answer', Object.prototype.hasOwnProperty.call(e, 'weaponIssued'), false)
+}
+{
+  const e = entryOf({ weaponIssued: 1 })
+  check('a weaponIssued of 1 is not an answer either', Object.prototype.hasOwnProperty.call(e, 'weaponIssued'), false)
+}
+{
+  const e = entryOf({ weaponIssued: 'false' })
+  check('nor is the string "false"', Object.prototype.hasOwnProperty.call(e, 'weaponIssued'), false)
+}
+
+// THE HASH FORM. The gunshot path stores data.weaponType, a number, and str()
+// answers null for a number -- so before this was fixed the commonest kill in
+// the game recorded nothing about what did it.
+{
+  const e = entryOf({ weapon: -2084633992, weaponIssued: false })
+  check('a numeric weapon identifier is kept, not dropped', e.weapon, '-2084633992')
+}
+{
+  const e = entryOf({ weapon: 'carbinerifle' })
+  check('and a string identifier is untouched', e.weapon, 'carbinerifle')
+}
+
 {
   const p = closeOk({
     matchEndedAt: 2000,
