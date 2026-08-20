@@ -123,7 +123,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # module. It is worth the stubs: the capture rules -- three frames, one per
     # corroboration after ten seconds, nine and then stop -- can only be seen in
     # the game by drawing nine corroborations on one case.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_client.lua tools/test_config.lua; do
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_client.lua tools/test_config.lua tools/test_admin.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1

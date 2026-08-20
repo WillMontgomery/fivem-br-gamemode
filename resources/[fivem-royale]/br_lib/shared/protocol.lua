@@ -313,6 +313,37 @@ BR.Net = {
     -- -- leaving is something the server should know about rather than
     -- discover.
     LEAVE_SERVER    = 'br:leave:server',
+
+    -- C->S. "The console I am framing says nobody is signed in; please get me
+    -- a session." Answered with a BR.Nui.ADMIN envelope carrying either a URL
+    -- to point the frame at or a machine-readable failure code (#23).
+    --
+    -- THE CLIENT ASKS AND THE SERVER DECIDES, and the asymmetry is the whole
+    -- security design rather than a style choice. Minting is a shared-secret
+    -- call to Ringmaster that produces a working admin session for a named
+    -- Discord id: a client that could make that call could name somebody
+    -- else's. So this event carries NO ARGUMENTS AT ALL -- not a license, not
+    -- a Discord id, not a scope. Everything the mint needs is read on the
+    -- server from `source`, and br_core/server/admin.lua re-runs the full
+    -- eligibility check on every one of these rather than trusting that the
+    -- tab was only ever shown to somebody entitled to it.
+    ADMIN_MINT      = 'br:admin:mint',
+
+    -- S->C { origin?, mint? }. Whether this player has an Admin tab, where the
+    -- console is, and the answer to any mint they asked for.
+    --
+    -- SENT TO ONE PLAYER, NEVER BROADCAST. `origin` present IS the permission,
+    -- so this event is also the only thing that puts the console's address on a
+    -- machine -- which is half of why the server-side gate exists at all.
+    --
+    -- A br_lib EVENT FORWARDED BY br_ui, RATHER THAN A DIRECT `br:ui:send`.
+    -- br_ui/client/nui.lua does register `br:ui:send` as a net event and it
+    -- would work -- but nothing in this project has ever called it from a
+    -- server, and this repo has a documented habit of shipping correct code
+    -- with no callers. Every other server-to-page push in the game goes
+    -- server -> BR.Net.X -> a br_ui client handler -> br:ui:sendLocal, and that
+    -- is the path with production mileage on it.
+    ADMIN_STATE     = 'br:admin:state',
 }
 
 --- Chat channels. `squad` is routed server-side to squad members only -- the
@@ -428,6 +459,15 @@ BR.Nui = {
     -- to it, so the settings screen can list and rebind them without sending
     -- the player into GTA's own menus to find them.
     KEYBINDS  = 'keybinds',
+    -- The admin console (#23): { origin?, mint? }.
+    --
+    -- `origin` PRESENT IS THE WHOLE OF "SHOW THE ADMIN TAB". It is sent to one
+    -- player, only when the server has decided that player may have it, and it
+    -- is simply absent otherwise -- so the address of the console is never on
+    -- an ordinary player's machine at all. There is no boolean beside it to get
+    -- out of step: the tab needs a URL to be worth anything, so the URL IS the
+    -- permission.
+    ADMIN     = 'admin',
 }
 
 --- NUI -> Lua callback names, namespaced. Every one of these MUST resolve on
@@ -526,6 +566,14 @@ BR.NuiCb = {
     PAUSE_ACTION = 'br/pause/action',
     -- Rebind one command. { command, key } -- an empty key unbinds it.
     KEYBIND_SET  = 'br/settings/keybind',
+    -- The Admin tab is a DOOR, not a tab body (#23). Opening it pushes a focus
+    -- screen of its own so the console gets the full-page treatment `/help`
+    -- has, rather than the pause menu's tab well -- a board of bans, incidents
+    -- and a player table is unusable in a panel. Same shape as HELP_FOCUS.
+    ADMIN_FOCUS  = 'br/admin/focus',
+    -- "Ringmaster says I am signed out." Forwarded to the server, which is the
+    -- only side allowed to ask for a token. See BR.Net.ADMIN_MINT.
+    ADMIN_MINT   = 'br/admin/mint',
 }
 
 BR.NUI_ENVELOPE_VERSION = 1

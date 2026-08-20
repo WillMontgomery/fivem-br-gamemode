@@ -535,6 +535,77 @@ RegisterNUICallback(BR.NuiCb.HELP_FOCUS, function(data, cb)
     cb({ ok = true })
 end)
 
+-- THE ADMIN CONSOLE IS A SCREEN, NOT A TAB BODY (#23).
+--
+-- The owner's call: "the one in /help is much larger and would be most
+-- appropriate size-wise for Ringmaster". A board of bans, incidents and a player
+-- table does not fit the pause menu's tab well, and the difference between the
+-- two Help frames is not the `inline` prop -- both are non-inline -- it is the
+-- CONTAINER. One sits inside this menu and inherits its width; the other sits
+-- inside <Page>, which is the full-screen treatment.
+--
+-- So the Admin tab is a DOOR. Pressing it pushes a focus screen of its own, the
+-- same way the lobby's Help button does, and the console gets the whole screen.
+-- Nothing new was needed to make that work: BR.FocusResolve gives any screen not
+-- named in BR.FocusKeepsInput the cursor and takes game input, which is exactly
+-- what a console wants, so there is no fourth notion of who owns the keyboard.
+--
+-- ═══ CLOSING PUTS THE MENU BACK, AND THE ORDER IS THE WHOLE OF IT ═══
+--
+-- Pushing `admin` fires br:ui:focusChanged('admin'), and the handler at the
+-- bottom of this file answers that by closing the pause menu -- which POPS
+-- `pause` off the stack. Correct, and it means a plain popFocus('admin') on the
+-- way out would empty the stack entirely: focus 'none', no cursor, no menu, and
+-- the player standing in the world wondering what happened. That is the leaked-
+-- focus failure this file's header calls the worst non-crash bug the UI can
+-- produce.
+--
+-- So the menu is re-opened FIRST and `admin` popped SECOND. Push-then-pop moves
+-- the top of the stack straight from 'admin' to 'pause' in one transition;
+-- pop-then-push would pass through 'none' on the way, and the page would blank
+-- for a frame between two screens that are both meant to be up.
+RegisterNUICallback(BR.NuiCb.ADMIN_FOCUS, function(data, cb)
+    if data and data.open then
+        TriggerEvent('br:ui:pushFocus', 'admin')
+    else
+        BR.Pause.open()
+        TriggerEvent('br:ui:popFocus', 'admin')
+    end
+    cb({ ok = true })
+end)
+
+-- "THE CONSOLE SAYS I AM SIGNED OUT." Forwarded to the server and nowhere else.
+--
+-- NO ARGUMENTS ARE CARRIED, and that is the point rather than an economy. The
+-- server reads everything it needs from `source`; a payload naming a Discord id
+-- would be a payload a modified client could use to open a session as somebody
+-- else. The page has already checked that the message came from the console's
+-- exact origin before calling this, but that check protects the PAGE -- this
+-- hop is protected by having nothing to forge.
+RegisterNUICallback(BR.NuiCb.ADMIN_MINT, function(_, cb)
+    TriggerServerEvent(BR.Net.ADMIN_MINT)
+    cb({ ok = true })
+end)
+
+-- THE SERVER'S ANSWER, FORWARDED TO THE PAGE UNREAD.
+--
+-- This handler deliberately does not look inside the payload. The console's
+-- address is in there, and br_lib/config/overrides.lua's whole contract is that
+-- an overridable key is read on the SERVER and nowhere else -- tools/verify.sh
+-- greps every br_*/client/*.lua for the key names to make the alternative
+-- impossible to introduce. Forwarding the table whole means this file never
+-- learns a name it is not allowed to know, and there is exactly one reader of
+-- the convar in the project.
+--
+-- The type guard is the only inspection: a nil payload would cross the bridge as
+-- an empty envelope and leave the page unable to tell "no tab for you" from "the
+-- message was malformed".
+RegisterNetEvent(BR.Net.ADMIN_STATE)
+AddEventHandler(BR.Net.ADMIN_STATE, function(payload)
+    if type(payload) ~= 'table' then return end
+    TriggerEvent('br:ui:sendLocal', BR.Nui.ADMIN, payload)
+end)
+
 --- The verbs on the front page.
 ---
 --- EVERY ONE OF THEM IS br_core's TO PERFORM, not ours: leaving a match is a

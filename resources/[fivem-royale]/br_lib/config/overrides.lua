@@ -88,7 +88,7 @@ local Ov = BR.Config.Overrides
 --           that way
 --   key     the field inside it. It MUST already exist: a rename that leaves
 --           this behind is a hard boot failure, not a new orphan key.
---   kind    'int' or 'bool'. Both are parsed strictly; see parse() below.
+--   kind    'int', 'bool' or 'url'. All three are parsed strictly; see parse().
 --   min/max inclusive bounds for 'int'. OUT OF RANGE IS REFUSED, NEVER CLAMPED
 --           -- a clamp answers a question the operator did not ask and looks
 --           exactly like the setting not working.
@@ -198,6 +198,26 @@ Ov.SPEC = {
         floorNote = 'dbnoBleedMin, below which combat.lua silently floors it',
         note   = 'first-knock bleed-out',
     },
+    {
+        convar = 'br_adminConsoleUrl',
+        group  = 'Admin',
+        key    = 'consoleUrl',
+        kind   = 'url',
+        -- THE ADMIN TAB IN THE PAUSE MENU (#23). Unset is the default and the
+        -- default is OFF: no tab, no HTTP call, no mention anywhere except one
+        -- line in the boot banner. That is the whole licence for the feature --
+        -- the game must never depend on Ringmaster, so a server with no console
+        -- configured has to be a server that plays exactly as it did before.
+        --
+        -- IT IS THE ONE ENTRY HERE WITH NO REVIEWED DEFAULT TO OVERRIDE, and
+        -- that is worth noticing rather than smoothing over. Every other row is
+        -- a number br_lib/config/ committed and a dev box wants different; this
+        -- is an address that exists only per deployment. It lives here because
+        -- this is the only mechanism in the project that gives a convar a strict
+        -- parse, a hard boot failure, a boot banner line and a `brconfig` line,
+        -- and #23 asked for all four.
+        note   = 'admin console origin',
+    },
 }
 
 -- ---------------------------------------------------------------------------
@@ -256,6 +276,103 @@ local function parseBool(raw)
     return nil, ("is not true or false (got '%s')"):format(trim(raw))
 end
 
+--- Strict ORIGIN parse: scheme, host, optional port, and nothing else.
+---
+--- THIS IS STRICTER THAN "IS IT A URL" ON PURPOSE, AND EVERY REFUSAL BELOW IS A
+--- REAL FAILURE THIS PROJECT WOULD OTHERWISE SHIP SILENTLY.
+---
+--- A TRAILING SLASH IS THE ONE THAT MATTERS MOST. The value is not only fetched,
+--- it is COMPARED: the page refuses a postMessage whose `event.origin` is not
+--- exactly this string, and that handler's entire job is to trigger the minting
+--- of an admin session. `event.origin` is always bare -- browsers never put a
+--- path or a trailing slash in it -- so `https://ringmaster.example/` can never
+--- equal any origin any browser will ever produce. It would not error. The
+--- comparison would simply always be false, the mint would never be asked for,
+--- and the admin would look at a login page forever with nothing in any log.
+--- One character, and the only symptom is a feature that does not work.
+---
+--- HTTPS IS REQUIRED, AND THAT IS A FACT ABOUT THE CONSOLE RATHER THAN A
+--- PREFERENCE. A console framed by the NUI page is a third-party context, so its
+--- session cookie has to be `SameSite=None`, and `SameSite=None` is only honoured
+--- with `Secure`. The console derives both from its own AUTH_URL
+--- (`sessionSameSite(secureCookies(AUTH_URL))` in fivem-ringmaster's
+--- lib/handoff.ts): an http deployment gets `Lax` cookies, which are not sent
+--- inside a frame at all. So an http origin here does not degrade -- the handoff
+--- cannot work even once. Refusing it at boot beats debugging it at 2am.
+---
+--- @param raw string
+--- @return string|nil value
+--- @return string|nil why
+local function parseUrl(raw)
+    local s = trim(raw)
+    if s == '' then return nil, 'is empty' end
+
+    local scheme, rest = s:match('^(%a[%w+.-]*)://(.*)$')
+    if scheme == nil then
+        return nil, ("is not an origin -- it must look like "
+                     .. "https://console.example (got '%s')"):format(s)
+    end
+
+    if scheme:lower() ~= 'https' then
+        return nil, ("uses '%s://', but the console's session cookie is only "
+                     .. "sent inside a frame over https (got '%s')")
+                    :format(scheme:lower(), s)
+    end
+
+    -- Everything after the authority. A path, a query or a fragment all mean
+    -- the operator wrote a URL where an origin was asked for.
+    local stray = rest:match('[/?#]')
+    if stray ~= nil then
+        return nil, ("must be a bare origin with no path -- remove everything "
+                     .. "from the '%s' onwards (got '%s')"):format(stray, s)
+    end
+
+    -- user:password@host. Nothing legitimate puts credentials here, and a
+    -- browser's `event.origin` would not carry them anyway.
+    if rest:find('@', 1, true) ~= nil then
+        return nil, ("must not carry credentials (got '%s')"):format(s)
+    end
+
+    local host, port = rest:match('^(.-):(%d*)$')
+    if host == nil then host = rest end
+
+    if host == '' then
+        return nil, ("names no host (got '%s')"):format(s)
+    end
+    -- Letters, digits, hyphens and dots, starting and ending on a letter or
+    -- digit. Deliberately not a full IDN or IPv6 grammar: what goes here is the
+    -- name a TLS certificate was issued for, and those are all in this subset.
+    if host:match('^[A-Za-z0-9][A-Za-z0-9%-%.]*$') == nil
+       or host:match('[A-Za-z0-9]$') == nil
+       or host:find('..', 1, true) ~= nil then
+        return nil, ("is not a hostname: '%s'"):format(host)
+    end
+
+    if port ~= nil then
+        -- `port == ''` is a bare trailing colon, which is the shape of a typo
+        -- rather than of a default port.
+        local p = tonumber(port)
+        if p == nil or p < 1 or p > 65535 then
+            return nil, ("has a port of '%s', which is not 1..65535"):format(port)
+        end
+    end
+
+    -- Returned normalised on the scheme only. The HOST IS LEFT EXACTLY AS
+    -- TYPED: a browser lowercases the host when it builds `event.origin`, so
+    -- lowercasing here would agree -- but it would also mean the string in the
+    -- banner is not the string in the .cfg, and a value that quietly changes
+    -- shape between what an operator wrote and what a comparison uses is the
+    -- class of bug this parser exists to prevent. A capitalised host is refused
+    -- by the pattern above instead, where it can be read about.
+    if host:match('%u') ~= nil then
+        return nil, ("has a capital letter in the host: '%s'. A browser reports "
+                     .. "the origin lowercased, so the two would never match")
+                    :format(host)
+    end
+
+    return ('https://%s'):format(rest), nil
+end
+
 --- Resolve one spec entry's effective bounds, honouring `floor`.
 ---
 --- PUBLIC BECAUSE THE RANGE IS PUBLISHED IN THREE PLACES -- the rejection
@@ -294,6 +411,10 @@ function Ov.parse(spec, raw)
 
     if spec.kind == 'bool' then
         return parseBool(raw)
+    end
+
+    if spec.kind == 'url' then
+        return parseUrl(raw)
     end
 
     if spec.kind ~= 'int' then
@@ -416,6 +537,15 @@ end
 --- Format one value the way an operator wrote it.
 local function show(v)
     if type(v) == 'boolean' then return tostring(v) end
+    -- AN EMPTY STRING IS A SETTING, AND IT IS THE COMMONEST ONE. `consoleUrl`
+    -- defaults to '', so a report that printed it verbatim would leave a blank
+    -- column in the boot banner and in `brconfig` -- which reads as the report
+    -- being broken rather than as the feature being off. The words are the
+    -- product here, the same way they are in the rejection messages.
+    if type(v) == 'string' then
+        if trim(v) == '' then return '(unset)' end
+        return v
+    end
     if type(v) == 'number' then
         if math.type(v) == 'integer' or v == math.floor(v) then
             return ('%d'):format(math.floor(v))
@@ -433,6 +563,12 @@ end
 --- @return string
 function Ov.rangeText(spec)
     if spec.kind == 'bool' then return 'true or false' end
+    -- No bounds to state, so it states the SHAPE instead -- which is what the
+    -- operator gets wrong. Both halves of this sentence are refusals the parser
+    -- actually makes, not advice.
+    if spec.kind == 'url' then
+        return 'an https:// origin with no path or trailing slash'
+    end
 
     local lo, hi, why = Ov.bounds(spec)
     local text

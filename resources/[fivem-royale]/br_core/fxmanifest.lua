@@ -33,6 +33,11 @@ shared_scripts {
     -- you own, and the client has to resolve an equipped id into the natives
     -- that actually put it on you. Both sides need the same definitions.
     '@br_lib/config/market.lua',
+    -- Where the admin console lives. One key, no useful default, and it MUST
+    -- precede overrides.lua: that file refuses to boot if a convar names a
+    -- BR.Config key that does not exist yet, which is the anti-drift check
+    -- doing exactly its job on a load-order mistake.
+    '@br_lib/config/admin.lua',
     -- THE CONVAR OVERRIDES, AND THIS LINE'S POSITION IS THE FEATURE.
     --
     -- It must come after every config/*.lua above (it edits their tables) and
@@ -133,6 +138,10 @@ server_scripts {
     -- loader: the thing that answers the question is declared above the two
     -- files that ask it.
     'server/grants.lua',
+    -- The Admin tab in the pause menu. AFTER grants.lua for a reader rather
+    -- than for the loader: it asks BR.Grants.holds the question grants.lua
+    -- answers, and it is declared below the file that answers it.
+    'server/admin.lua',
     'server/players.lua',   -- the in-game player list and player reports
     'server/ringmaster.lua', -- the admin-console snapshot feed; emits, never listens
     'server/incident.lua',  -- builds incident payloads from evidence; emits, never enforces

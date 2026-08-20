@@ -34,6 +34,8 @@ server_scripts {
     'server/maintenance.lua', -- polls the window; drives the drain + notices
     'server/kick.lua',      -- brkick: the ONLY DropPlayer in the project
     'server/gate.lua',      -- the connect-time ban gate (fails open, own timeout)
+    'server/handoff.lua',   -- #23: mints a signed-in console URL for br_core.
+                            -- Answers an event; talks to no client, ever.
     'server/debug.lua',     -- brring: the read-only health dump
 }
 

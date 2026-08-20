@@ -739,6 +739,11 @@ export interface FocusPayload {
   screen: 'none' | 'lobby' | 'squad' | 'inventory' | 'summary' | 'chat'
         | 'settings' | 'locker' | 'market' | 'pause' | 'help'
         | 'players'
+        /** The admin console (#23). A screen of its own rather than a tab body:
+         *  the pause menu's tab well is too small for a board of bans and
+         *  incidents, and `/help` already establishes that a framed page gets
+         *  the full-screen treatment. */
+        | 'admin'
   /** Which channel a chat focus should open in. Rides along here rather than
    *  needing its own envelope kind. */
   channel?: ChatChannel
@@ -746,6 +751,51 @@ export interface FocusPayload {
    *  /help has to say both "open the pause menu" and "on Help", and two
    *  envelopes would be a race for which arrives first. */
   tab?: string
+}
+
+/**
+ * One answer to a mint request (#23).
+ *
+ * EXACTLY ONE OF `url` AND `error` IS SET, and the type does not try to express
+ * that as a union. Lua builds this table field by field and a payload that
+ * arrived with neither -- a shape nothing sends today -- would make a union
+ * unparseable at the point of use rather than merely uninteresting. The screen
+ * treats "no url" as a failure, which is the honest reading either way.
+ */
+export interface AdminMint {
+  /**
+   * Advances on every answer, and it is what makes a repeat mint visible.
+   *
+   * The screen holds one object for this feature, so two mints in a row would
+   * otherwise be indistinguishable from a re-render -- and the second one is
+   * exactly the case that matters, because it is the retry after a first frame
+   * came back to the login page.
+   */
+  seq: number
+  /** Where to point the frame. Already carries the token; never logged. */
+  url?: string
+  /**
+   * A machine code from Ringmaster, or from the game's own refusal.
+   *
+   * NOT A SENTENCE, AND DELIBERATELY NOT TURNED INTO ONE HERE. The console
+   * returns codes and says in as many words that what the admin is shown
+   * in-game is this side's decision. That decision is the owner's to make and
+   * the wording is not invented in this file -- the screen shows the code.
+   */
+  error?: string
+}
+
+/**
+ * The admin console's availability, and the answer to any mint it asked for.
+ *
+ * `origin` PRESENT IS THE WHOLE OF "SHOW THE ADMIN TAB". There is no boolean
+ * beside it that could disagree with it, and a player who is not entitled to the
+ * tab is never sent the console's address at all -- so the URL never reaches an
+ * ordinary player's machine, which is half of why the server-side gate exists.
+ */
+export interface AdminPayload {
+  origin?: string
+  mint?: AdminMint
 }
 
 export interface SnapshotPayload {
@@ -802,6 +852,7 @@ export type Envelope =
   | { k: 'earned';   d: EarnedPayload }
   | { k: 'players';  d: PlayersPayload }
   | { k: 'report';   d: ReportResult }
+  | { k: 'admin';    d: AdminPayload }
   /** A SQUADMATE changed phase, and this is the sound everybody else hears.
    *
    *  NOT IN BR.Nui, deliberately, and it is the one kind here that is not. The
@@ -863,6 +914,15 @@ export const CB = {
   XP_BUSY:        'br/xp/busy',
   PAUSE_ACTION:   'br/pause/action',
   KEYBIND_SET:    'br/settings/keybind',
+  /** Open or close the admin console's own screen (#23). Same shape as
+   *  HELP_FOCUS: the tab is a door, and what it opens is a full page. */
+  ADMIN_FOCUS:    'br/admin/focus',
+  /** "The console I am framing says nobody is signed in."
+   *
+   *  CARRIES NOTHING, AND THAT IS THE SECURITY DESIGN. The server reads who is
+   *  asking from the connection; a payload naming a Discord id would be one a
+   *  modified client could use to open a session as somebody else. */
+  ADMIN_MINT:     'br/admin/mint',
   /**
    * "I am now fully black."
    *

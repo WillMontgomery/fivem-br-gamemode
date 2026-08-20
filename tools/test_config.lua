@@ -64,7 +64,12 @@ local function load(natives)
     local env = setmetatable({}, { __index = _G })
     for k, v in pairs(natives or {}) do env[k] = v end
 
-    for _, f in ipairs({ 'config/match.lua', 'config/overrides.lua' }) do
+    -- EVERY FILE THE SPEC NAMES A GROUP IN, in the order br_core's manifest
+    -- loads them. overrides.lua is last because it edits the tables above it,
+    -- and admin.lua is here because the spec's `Admin` group lives in it -- a
+    -- sandbox missing it makes `BR.Config[s.group][s.key]` an index of nil, and
+    -- the whole suite dies on the first assertion rather than failing one.
+    for _, f in ipairs({ 'config/match.lua', 'config/admin.lua', 'config/overrides.lua' }) do
         local chunk, err = loadfile(ROOT .. f, 't', env)
         if not chunk then return env, f .. ': ' .. tostring(err) end
         local good, e = pcall(chunk)
@@ -97,7 +102,8 @@ do
     local dupes = nil
     for _, s in ipairs(Ov.SPEC) do
         if type(s.convar) ~= 'string' or type(s.group) ~= 'string'
-           or type(s.key) ~= 'string' or (s.kind ~= 'int' and s.kind ~= 'bool') then
+           or type(s.key) ~= 'string'
+           or (s.kind ~= 'int' and s.kind ~= 'bool' and s.kind ~= 'url') then
             shaped = false
         end
         if type(s.convar) == 'string' and not s.convar:match('^br_') then
@@ -233,6 +239,33 @@ do
         { convar = 'br_partyGraceSeconds', raw = '-1',   why = 'below a minimum that IS zero' },
         { convar = 'br_autofill',         raw = 'yes',   why = 'not a boolean this parser takes' },
         { convar = 'br_autofill',         raw = '2',     why = 'a number that is not 0 or 1' },
+        -- THE CONSOLE ORIGIN (#23). Every one of these is a value that would
+        -- look configured, boot cleanly, and produce a feature that silently
+        -- does nothing -- which is the entire reason the parser is this strict.
+        { convar = 'br_adminConsoleUrl', raw = 'https://ringmaster.example/',
+          why = 'a trailing slash -- event.origin never has one, so the compare could never match' },
+        { convar = 'br_adminConsoleUrl', raw = 'https://ringmaster.example/console',
+          why = 'a path, which an origin does not have' },
+        { convar = 'br_adminConsoleUrl', raw = 'https://ringmaster.example?a=b',
+          why = 'a query string' },
+        { convar = 'br_adminConsoleUrl', raw = 'http://ringmaster.example',
+          why = 'http -- the session cookie is SameSite=None, which needs Secure' },
+        { convar = 'br_adminConsoleUrl', raw = 'ringmaster.example',
+          why = 'no scheme at all' },
+        { convar = 'br_adminConsoleUrl', raw = 'https://',
+          why = 'a scheme naming no host' },
+        { convar = 'br_adminConsoleUrl', raw = 'https://user:pw@ringmaster.example',
+          why = 'credentials in the authority' },
+        { convar = 'br_adminConsoleUrl', raw = 'https://Ringmaster.example',
+          why = 'a capital in the host -- a browser reports the origin lowercased' },
+        { convar = 'br_adminConsoleUrl', raw = 'https://ringmaster.example:',
+          why = 'a bare trailing colon' },
+        { convar = 'br_adminConsoleUrl', raw = 'https://ringmaster.example:0',
+          why = 'port 0' },
+        { convar = 'br_adminConsoleUrl', raw = 'https://ringmaster.example:70000',
+          why = 'a port above 65535' },
+        { convar = 'br_adminConsoleUrl', raw = 'https://ringmaster..example',
+          why = 'an empty label in the hostname' },
     }
 
     for _, c in ipairs(cases) do
@@ -264,6 +297,35 @@ do
             ('the refusal names %s'):format(c.convar), msg)
         ok(errors[1] and tostring(errors[1].raw) == c.raw,
             ('the refusal quotes back what was typed for %s'):format(c.convar), msg)
+    end
+end
+
+describe('the console origin that IS accepted')
+do
+    -- The other half of the case above: strictness that also refused the
+    -- legitimate spellings would be a feature nobody could turn on.
+    local cases = {
+        { raw = 'https://ringmaster.example',        want = 'https://ringmaster.example' },
+        { raw = 'https://ringmaster.example:8443',   want = 'https://ringmaster.example:8443' },
+        { raw = 'https://rm-2.internal.example.com', want = 'https://rm-2.internal.example.com' },
+        -- Surrounding whitespace is forgiven, and ONLY that -- the same
+        -- allowance parseInt makes, for the same reason: a stray space either
+        -- side of a value in a .cfg is not a mistake anybody needs telling
+        -- about, and it is invisible in the file.
+        { raw = '  https://ringmaster.example  ',    want = 'https://ringmaster.example' },
+    }
+
+    local env = load(nil)
+    local Ov  = env.BR.Config.Overrides
+
+    local spec
+    for _, s in ipairs(Ov.SPEC) do if s.convar == 'br_adminConsoleUrl' then spec = s end end
+    ok(spec ~= nil, 'br_adminConsoleUrl is in the spec')
+
+    for _, c in ipairs(cases) do
+        local v, why = Ov.parse(spec, c.raw)
+        ok(v == c.want, ("'%s' is accepted"):format(c.raw),
+            why or ('got ' .. tostring(v)))
     end
 end
 

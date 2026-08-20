@@ -109,6 +109,39 @@ set br_partyGraceSeconds 10
 # set br_autofill false
 
 # ---------------------------------------------------------------------------
+# THE ADMIN CONSOLE, in the pause menu. Unset by default, and unset is OFF.
+#
+# Set this to the console's ORIGIN and admins get an "Admin" tab next to Help
+# that opens Ringmaster, already signed in. Leave it out and there is no tab, no
+# request to anywhere, and nothing in the log but one line saying it is not set.
+#
+# AN ORIGIN, NOT A URL. Scheme, host, optional port, and nothing else:
+#
+#     https://ringmaster.example          <- yes
+#     https://ringmaster.example:8443     <- yes
+#     https://ringmaster.example/         <- REFUSED, the trailing slash
+#     https://ringmaster.example/console  <- REFUSED, the path
+#     http://ringmaster.example           <- REFUSED, see below
+#
+# The trailing slash is refused because this string is COMPARED, not only
+# fetched: the page will not let the console ask for a login session unless the
+# message came from exactly this origin, and a browser never puts a slash in the
+# origin it reports. With one there, the comparison silently never matches and
+# the console shows a login page forever.
+#
+# http is refused because the console's session cookie has to be SameSite=None
+# to be sent inside a frame at all, and browsers only honour that on https. It
+# would not degrade; it would not work once.
+#
+# THIS IS NOT ENOUGH ON ITS OWN. The tab also needs br_ringmaster configured
+# (br_ringmaster_ingest_url and br_ringmaster_ingest_secret, which live in
+# server.cfg, not here -- the secret must never be in a tracked file), and the
+# admin needs a Discord id the game can see. Run `bradmin` in the server console
+# to see, per connected player, exactly which of those is missing.
+# ---------------------------------------------------------------------------
+# set br_adminConsoleUrl https://ringmaster.example
+
+# ---------------------------------------------------------------------------
 # BLEED-OUT ON THE FIRST KNOCK, in seconds. 40..600, default 120.
 #
 # Two minutes is right for a real match and is a long time to sit on the floor

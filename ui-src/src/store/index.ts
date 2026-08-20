@@ -17,6 +17,7 @@ import type {
   CurtainKind, KeybindAction, LockerPayload, MarketPayload, ProgressPayload,
   SettingsPayload,
   ToastPayload, VoicePayload, WireInvPayload, XpAward, EarnedPayload, PlayersPayload, ReportResult,
+  AdminPayload,
 } from '../bridge/types'
 import { applySettings, DEFAULT_SETTINGS } from '../settings/apply'
 
@@ -133,6 +134,10 @@ export interface UiState {
   market: MarketPayload
   /** The in-game player list, and the report rules that came with it. */
   players: PlayersPayload
+  /** The admin console (#23): where it is, and the last mint answer.
+   *  An absent `origin` means no Admin tab, and it is the default -- the tab
+   *  exists only because the server chose to send this player an address. */
+  admin: AdminPayload
   /** The answer to the last submitted report, or null. */
   reportResult: ReportResult | null
 
@@ -237,6 +242,7 @@ export interface UiState {
   stageEarned: () => EarnedPayload | null
   clearXpAward: () => void
   setPlayers: (p: PlayersPayload) => void
+  setAdmin: (a: AdminPayload) => void
   setReportResult: (r: ReportResult | null) => void
   setMarket: (m: MarketPayload) => void
   setKeybinds: (k: KeybindAction[], raw: boolean) => void
@@ -504,6 +510,7 @@ export const useUi = create<UiState>((set, get) => {
   earnedStaged: false,
   market: { balance: 0, items: [] },
   players: { players: [], categories: [], defaultCategory: 'cheating', maxTargets: 5 },
+  admin: {},
   reportResult: null,
   keybinds: [],
   keybindsRaw: false,
@@ -698,6 +705,7 @@ export const useUi = create<UiState>((set, get) => {
   clearXpAward: () => set({ xpAward: null }),
   setMarket: (market) => set({ market }),
   setPlayers: (players) => set({ players }),
+  setAdmin: (admin) => set({ admin }),
   setReportResult: (reportResult) => set({ reportResult }),
   setKeybinds: (keybinds, keybindsRaw) => set({ keybinds, keybindsRaw }),
 

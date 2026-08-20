@@ -38,3 +38,18 @@
 # ---------------------------------------------------------------------------
 set sv_devMode false
 set br_devMode false
+
+# ---------------------------------------------------------------------------
+# THE ADMIN CONSOLE is deliberately NOT set here, and this comment is the only
+# thing about it in this file.
+#
+# br_adminConsoleUrl turns on the Admin tab in the pause menu (#23). It is off
+# on a public server not because it would be unsafe -- the tab is shown only to
+# licenses holding the console scope in DynamoDB, and the console runs its own
+# live Discord role check before it will open a session -- but because a public
+# box has no reason to carry the console's address at all.
+#
+# If you do want it on a public server, put it here on purpose, spelled the way
+# tunables.dev.cfg.example documents, and expect the boot banner to say so on
+# every start.
+# ---------------------------------------------------------------------------

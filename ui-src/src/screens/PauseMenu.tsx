@@ -133,6 +133,13 @@ export default function PauseMenu() {
   const hudState = useUi((s) => s.hud.state)
   const inLobby = match.state === 'waiting' || hudState === 'lobby'
 
+  // THE ADMIN TAB EXISTS BECAUSE THIS IS SET, and for no other reason (#23).
+  // The server sends an origin only to a player it has decided may have the
+  // console, so there is nothing to compare it against and nothing local to get
+  // out of step with it. Narrow selector: this changes about twice a session and
+  // must not re-render the menu when anything else in the store moves.
+  const adminOrigin = useUi((s) => s.admin.origin)
+
   const close = () => { void fetchNui(CB.PAUSE_FOCUS, { open: false }) }
 
   // THE MATCH CAN START WHILE THIS MENU IS UP, and it must not come with us.
@@ -241,6 +248,43 @@ export default function PauseMenu() {
                 {tabLabel(t)}
               </button>
             ))}
+            {/* ADMIN (#23). NEXT TO HELP, WHICH IS WHERE THE OWNER ASKED FOR IT
+                -- and it sits outside the map above rather than joining `Tab`,
+                because it is not one.
+
+                IT IS A DOOR, NOT A TAB BODY. Pressing it asks Lua for a focus
+                screen of its own, so the console gets the full-page frame
+                `/help` has instead of this menu's tab well; a board of bans and
+                incidents is unusable in a panel. It therefore never becomes the
+                value of `tab`, is never `is-active`, and the menu it was
+                pressed from is put back when the console closes.
+
+                IT IS DRAWN ONLY IF THE SERVER SENT AN ORIGIN, which is the
+                entire permission check on this side. There is no local test of
+                who is an admin and there could not be a trustworthy one: this
+                is a page, and a page is whatever the machine running it says it
+                is. The server decides, sends the address only to the people it
+                decided for, and re-checks the whole thing again on every mint
+                (br_core/server/admin.lua). */}
+            {adminOrigin !== undefined && (
+              <button
+                type="button"
+                className="btn plate px-4 py-2 font-display uppercase tracking-[0.12em]
+                           text-[0.8rem]"
+                style={{
+                  ['--edgec' as string]: 'rgba(255,255,255,0.16)',
+                  ['--plate-fill' as string]: 'rgba(24,28,40,0.92)',
+                  ['--cut-max' as string]: '0.45rem',
+                }}
+                onPointerEnter={() => play('ui.hover')}
+                onClick={() => {
+                  play('ui.select')
+                  void fetchNui(CB.ADMIN_FOCUS, { open: true })
+                }}
+              >
+                Admin
+              </button>
+            )}
           </div>
           </div>
         </div>

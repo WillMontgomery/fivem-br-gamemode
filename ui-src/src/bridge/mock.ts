@@ -30,6 +30,20 @@ export function emit<E extends Envelope>(env: E): void {
  * prices, real level costs, all invented here and nowhere else, so deleting
  * this block is the entire act of switching to the real thing.
  */
+/**
+ * A console origin for the harness, and it is deliberately not reachable.
+ *
+ * The point of mocking this is the CHROME -- that the tab appears, opens a
+ * full-screen page, spins while it asks, shows a failure code and comes back to
+ * the pause menu. None of that needs a real console, and pointing the browser at
+ * somebody's actual deployment from a dev harness would be a worse default than
+ * a frame that fails to load.
+ */
+const MOCK_CONSOLE = 'https://ringmaster.invalid'
+
+/** Advances per mocked mint, so the screen sees a fresh answer each time. */
+let mockMintSeq = 0
+
 const MOCK_PROGRESS = { level: 14, xp: 2380, needed: 4000 }
 
 const MOCK_MARKET = {
@@ -87,15 +101,41 @@ export async function mockFetch<Res>(name: CallbackName, data?: unknown): Promis
   // this the browser's Settings button would open nothing at all -- and the
   // difference between "the button is broken" and "the mock does not answer"
   // is not visible from the screen.
-  const FOCUS_CB: Record<string, 'settings' | 'locker' | 'market' | 'pause'> = {
+  const FOCUS_CB: Record<string, 'settings' | 'locker' | 'market' | 'pause' | 'admin'> = {
     'br/settings/focus': 'settings',
     'br/locker/focus': 'locker',
     'br/market/focus': 'market',
     'br/pause/focus': 'pause',
+    'br/admin/focus': 'admin',
   }
   if (FOCUS_CB[name]) {
     const open = (data as { open?: boolean } | undefined)?.open === true
-    emit({ k: 'focus', d: { screen: open ? FOCUS_CB[name]! : 'lobby' } })
+    // CLOSING ADMIN GOES BACK TO THE PAUSE MENU, not to the lobby, because that
+    // is what Lua does: br_ui/client/pause.lua re-opens the menu before it pops
+    // `admin`, so the admin lands back where they pressed the tab. A harness
+    // that dropped them on the lobby instead would make the Back button look
+    // like it did the wrong thing in the browser and the right thing in game,
+    // which is worse than not mocking it at all.
+    const back = name === 'br/admin/focus' ? 'pause' : 'lobby'
+    emit({ k: 'focus', d: { screen: open ? FOCUS_CB[name]! : back } })
+    return { ok: true } as Res
+  }
+
+  // THE MINT. Answers the way the game server does -- asynchronously, on the
+  // `admin` envelope -- so the indicator, the seq handling and the failure
+  // branch are all reachable in a browser.
+  //
+  // IT ANSWERS WITH A FAILURE, DELIBERATELY. There is no console to mint
+  // against here, and a fake success would point the frame at a URL that does
+  // not exist -- a blank white rectangle, which is the one outcome that looks
+  // identical to every real bug this screen can have. A named code is honest
+  // and it is the branch worth being able to look at.
+  if (name === 'br/admin/mint') {
+    mockMintSeq += 1
+    const seq = mockMintSeq
+    window.setTimeout(() => {
+      emit({ k: 'admin', d: { origin: MOCK_CONSOLE, mint: { seq, error: 'store' } } })
+    }, 900)
     return { ok: true } as Res
   }
 
@@ -164,6 +204,11 @@ export function startMockDriver(): void {
   // the locker cannot be opened at all.
   emit({ k: 'locker', d: { peds: MOCK_PEDS, chosen: 'streetguy' } })
   emit({ k: 'progress', d: MOCK_PROGRESS })
+  // THE HARNESS IS ALWAYS AN ADMIN, which is the opposite of the in-game
+  // default and is right here: the browser is where the screen gets built, and
+  // a tab you cannot make appear is a screen you cannot work on. In game this
+  // envelope arrives only for a license the server has cleared.
+  emit({ k: 'admin', d: { origin: MOCK_CONSOLE } })
   // Mirrors br_ui/client/keybinds.lua's ACTIONS table. Without it the
   // controls tab renders its empty state, which is a different screen from
   // the one that ships.

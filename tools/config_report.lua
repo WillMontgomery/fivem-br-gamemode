@@ -49,6 +49,11 @@ local FILES = {
     'shared/enums.lua',
     'config/map.lua',
     'config/match.lua',
+    -- BEFORE overrides.lua, which names a key inside it. Without this the
+    -- tunables loop below reads BR.Config.Admin.consoleUrl off a table that does
+    -- not exist and every row it generates comes out `(unreadable)`, which is a
+    -- verify.sh failure rather than a quiet one -- by design.
+    'config/admin.lua',
     -- AFTER match.lua, because it names keys inside it. In this bare Lua state
     -- it applies nothing -- it only reads convars when IsDuplicityVersion and
     -- GetConvar both exist, which on a server they do and here they do not --
@@ -243,7 +248,19 @@ for _, spec in ipairs(BR.Config.Overrides.SPEC) do
     try('Tunables', OVR, spec.convar, function()
         local cfg = BR.Config[spec.group] or {}
         local v = cfg[spec.key]
-        local shown = (type(v) == 'boolean') and bool(v) or num(v)
+        -- THREE KINDS NOW, AND THE STRING ONE HAS AN EMPTY DEFAULT ON PURPOSE.
+        -- `str()` refuses an empty string, correctly -- for every OTHER row here
+        -- an empty value means the key has moved. For a 'url' tunable it means
+        -- the feature is off, which is the ordinary state of a server with no
+        -- admin console, so it is reported rather than raised.
+        local shown
+        if type(v) == 'boolean' then
+            shown = bool(v)
+        elseif type(v) == 'string' then
+            shown = (v == '') and '(unset)' or str(v)
+        else
+            shown = num(v)
+        end
         return ('%s.%s = %s by default; a .cfg may set %s')
             :format(str(spec.group), str(spec.key), shown,
                     str(BR.Config.Overrides.rangeText(spec)))

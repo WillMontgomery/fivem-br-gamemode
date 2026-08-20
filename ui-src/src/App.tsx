@@ -17,6 +17,7 @@ import Market from './screens/Market'
 import PlayerList from './screens/PlayerList'
 import PauseMenu from './screens/PauseMenu'
 import Help from './screens/Help'
+import Admin from './screens/Admin'
 import Page from './ui/Page'
 
 /**
@@ -28,8 +29,14 @@ import Page from './ui/Page'
  * it is full-screen, and the lobby carrying on at full strength underneath is
  * the "two screens stacked instead of one navigating" reading that put the
  * others here in the first place.
+ *
+ * `admin` JOINED WITH #23, for exactly the same three reasons -- and it belongs
+ * here rather than being in-match only because it is reached THROUGH the pause
+ * menu, which the lobby has had since #83. An admin wanting the console between
+ * rounds is the likeliest case there is: it is where you go to deal with the
+ * player you just saw.
  */
-const LOBBY_SUBSCREENS = new Set(['settings', 'locker', 'market', 'help', 'pause'])
+const LOBBY_SUBSCREENS = new Set(['settings', 'locker', 'market', 'help', 'pause', 'admin'])
 
 /**
  * Root.
@@ -91,6 +98,9 @@ export default function App() {
   useNuiEvent('market',   (d) => s.setMarket(d))
   useNuiEvent('players',  (d) => s.setPlayers(d))
   useNuiEvent('report',   (d) => s.setReportResult(d))
+  // The Admin tab's availability, and any mint answer. Sent to one player, only
+  // when the server has decided that player may have it.
+  useNuiEvent('admin',    (d) => s.setAdmin(d))
   // A SQUADMATE WENT DOWN, OUT, OR CAME BACK UP -- and nothing here was
   // listening. Lua has sent `squadcue` since the squad audio landed and this
   // handler did not exist, so all three sounds were dropped by the router with
@@ -346,6 +356,16 @@ export default function App() {
       {/* The manual, from the lobby. The same component the pause menu
           embeds, in its own frame. */}
       <Page show={s.focus === 'help'}><Help /></Page>
+      {/* THE ADMIN CONSOLE (#23), IN THE FRAME `/help` GETS AND NOT THE PAUSE
+          MENU'S TAB WELL -- which is the owner's call and the reason it is a
+          screen at all: "the one in /help is much larger and would be most
+          appropriate size-wise for Ringmaster".
+
+          ABOVE PauseMenu IN SOURCE ORDER SO IT SITS UNDER IT, which is what we
+          want: the two are never both up (pushing `admin` closes the menu, see
+          br_ui/client/pause.lua) and if a focus race ever put them together,
+          the menu is the screen with the way out. */}
+      <Page show={s.focus === 'admin'}><Admin /></Page>
       {/* The pause menu REPLACES GTA's, so it sits above everything our own
           screens draw and below only the curtain. */}
       <Page show={s.focus === 'pause'}><PauseMenu /></Page>

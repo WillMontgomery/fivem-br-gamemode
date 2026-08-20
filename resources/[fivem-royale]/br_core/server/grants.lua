@@ -74,6 +74,47 @@ BR.Grants = {}
 --- above are where to check.
 BR.Grants.RESOLVE_INCIDENTS = 'ban'
 
+--- The scope that means "offer this person the console".
+---
+--- IT IS `view`, AND THE REASON IT IS NOT A MORE POWERFUL SCOPE IS THAT THIS
+--- GATE DOES NOT GRANT ANYTHING. I checked what the console itself requires to
+--- open, rather than assuming, and the answer is: nothing.
+--- `fivem-ringmaster/src/app/page.tsx` -- the live players page the handoff
+--- lands on -- calls `currentAdmin()` and redirects to /login if there is no
+--- session, and its own comment says "Scope checks are per action ... holding a
+--- valid session is the whole requirement". Every scope test in that repo sits
+--- on a WRITE route (`authorize('ban', 'write')` and friends).
+---
+--- SO THE CONSOLE DECIDES WHO GETS IN AND THIS DECIDES WHO IS SHOWN A DOOR, and
+--- those are different questions. The real admission test is the one the mint
+--- endpoint runs and the game cannot: a live Discord role check, fail-closed,
+--- plus an Auth.js account that already exists. Nothing chosen here can widen
+--- that, and nothing chosen here can substitute for it.
+---
+--- WHAT THIS GATE IS ACTUALLY FOR, then, is twofold and both halves argue for
+--- the same scope:
+---
+---   * The tab must not appear for players, because a door that answers "no"
+---     is worse than no door -- and because showing it is how the CONSOLE'S
+---     ADDRESS reaches a machine. BR.Nui.ADMIN carries the origin, so the gate
+---     is what keeps that string off ordinary clients.
+---   * It must appear for the people who use the console, which is everyone the
+---     grants table names.
+---
+--- `view` is the console's own word for "may read player data, history and
+--- incidents" (SCOPES in fivem-ringmaster/src/lib/grants.ts). That is what the
+--- console is FOR; the write scopes are things done once inside it. NOTE THE
+--- SCOPES ARE FLAT, NOT HIERARCHICAL -- `can()` is a plain
+--- `grant.scopes.includes(scope)`, so `ban` does not imply `view` -- and the
+--- consequence is worth stating plainly rather than discovering: an admin whose
+--- row is `['ban']` and nothing else holds no `view` and gets no tab. That is
+--- the correct outcome and not a gap. Such a row cannot read the incident it
+--- would ban over; it is a data-entry mistake, and `bradmin` names it.
+---
+--- IF THE CONSOLE EVER GROWS A SCOPE FOR "MAY SIGN IN AT ALL", this constant is
+--- the one line that moves.
+BR.Grants.CONSOLE = 'view'
+
 --- How long an answer is trusted without asking again, in milliseconds.
 ---
 --- FIVE MINUTES IS A COMPROMISE BETWEEN TWO REAL COSTS and neither of them is
