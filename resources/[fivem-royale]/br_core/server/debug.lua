@@ -274,6 +274,22 @@ RegisterCommand('brsquads', function()
         print('  (no squads -- squadIds are stamped at WARMUP by BR.Party.formSquads,')
         print('   and solo matches never have any: every player is their own team)')
     end
+
+    -- AND THE SHAPE, PER MATCH, IN THE SAME WORDS THE FORMATION USED.
+    --
+    -- The listing above answers "who is on whose team" and says nothing about
+    -- the question that actually brings somebody here: three clients in one
+    -- squad, and is that the squad size or is it me. This is the command whose
+    -- name a person guesses for that, so it carries the live cap and the source
+    -- it came from -- the same two facts `brconfig` has, at the moment they are
+    -- being doubted. See BR.Party.formationReport.
+    if BR.Server.eachMatch then
+        BR.Server.eachMatch(function(m)
+            line('-')
+            print(('  match %d (%s)'):format(m.id, tostring(m.state)))
+            for _, l in ipairs(BR.Party.formationReport(m)) do print('  ' .. l) end
+        end)
+    end
 end, RESTRICTED)
 
 RegisterCommand('brstorm', function()

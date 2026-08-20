@@ -506,6 +506,126 @@ function BR.Party.squadTarget(players, units)
     return math.min(units, math.max(floorN, math.ceil(players / maxSize)))
 end
 
+--- The shape a match ended up with, and -- when that shape is useless -- why,
+--- and the one line that changes it.
+---
+--- THE SHAPE THAT COSTS AN AFTERNOON IS ONE SQUAD IN A SQUAD MATCH. Three dev
+--- clients at the committed cap of four are one team: there is no enemy
+--- anywhere on the map, so cross-squad damage and the nearby-versus-squad voice
+--- split cannot be produced at all, and the match has already met its own win
+--- condition at the starting gun.
+---
+--- `br_maxSquadSize 2` is the lever for exactly that, and the failure this
+--- function exists to name is that FROM INSIDE THE GAME, A LEVER THAT NEVER
+--- ARRIVED LOOKS IDENTICAL TO A LEVER THAT DOES NOT WORK. A convar that was
+--- never set, one set in a tunables.cfg the box does not have, and one exec'd
+--- below `ensure br_core` all produce the same three-in-one-squad round, and
+--- all three read as a formation bug. So the live cap is printed WITH THE
+--- SOURCE IT CAME FROM at the moment the squads are made -- the one moment
+--- somebody is looking at this -- rather than only in a boot banner that
+--- scrolled past twenty minutes earlier (user, 2026-08-19).
+---
+--- A PARTY IS THE OTHER ANSWER AND IT IS NOT THE SAME ANSWER. Formation never
+--- splits a party, so when every player in the match is in one, no squad size
+--- can separate them and telling the operator to lower the cap would send them
+--- to change a setting that cannot help. That case gets its own sentence.
+---
+--- Returns lines rather than printing them, so formSquads and `brsquads` say
+--- the same words and the wording is testable without a server.
+--- @param m table
+--- @return table lines
+function BR.Party.formationReport(m)
+    local lines = {}
+    if not m then return lines end
+
+    local inMatch = function(e)
+        return e.matchId == m.id and BR.Server.isInMatch(e.state)
+    end
+
+    -- Counted off the ROSTER rather than off formSquads' local array, so
+    -- `brsquads` an hour into the round reports the same thing the formation
+    -- did, and a squad that lost everyone to the storm is not still claimed.
+    local sizes, ids, players = {}, {}, 0
+    local units, seenParty = 0, {}
+    BR.Roster.each(inMatch, function(_, e)
+        players = players + 1
+        if e.squadId then
+            if not sizes[e.squadId] then
+                sizes[e.squadId] = 0
+                ids[#ids + 1] = e.squadId
+            end
+            sizes[e.squadId] = sizes[e.squadId] + 1
+        end
+        -- Units, the same way needsRebalance counts them: a party is one thing
+        -- that cannot be divided, every unpartied player is another.
+        if e.partyId then
+            if not seenParty[e.partyId] then
+                seenParty[e.partyId] = true
+                units = units + 1
+            end
+        else
+            units = units + 1
+        end
+    end)
+    table.sort(ids)
+
+    if m.mode == BR.Mode.SOLO.key then
+        lines[#lines + 1] = ('solo match -- no squads formed for %d player(s); '
+                             .. 'every player is their own team'):format(players)
+        return lines
+    end
+
+    local shape = {}
+    for _, id in ipairs(ids) do shape[#shape + 1] = tostring(sizes[id]) end
+    lines[#lines + 1] = ('formed %d squad(s) for %s -- %d player(s), sizes %s')
+        :format(#ids, tostring(m.mode), players,
+                #shape > 0 and table.concat(shape, '/') or '-')
+
+    -- WHICH OF THE TWO HOMES THIS NUMBER CAME FROM. Read out of the override
+    -- record rather than restated, so a spec change cannot leave this claiming
+    -- a source that is no longer true. Absent on a bare Lua state (the unit
+    -- suites, tools/config_report.lua), which is why it is guarded rather than
+    -- indexed.
+    local maxSize = BR.Config.Match.maxSquadSize
+    local Ov      = BR.Config.Overrides
+    local hit     = Ov and Ov.appliedFor and Ov.appliedFor('maxSquadSize') or nil
+    if hit then
+        lines[#lines + 1] = ('  maxSquadSize %d, set by br_maxSquadSize (default %s)')
+            :format(maxSize, tostring(hit.from))
+    else
+        lines[#lines + 1] = ('  maxSquadSize %d -- the committed default; '
+                             .. 'br_maxSquadSize is not set'):format(maxSize)
+    end
+
+    if #ids > 1 or players <= 1 then return lines end
+
+    lines[#lines + 1] = '  ONE SQUAD IS EVERY PLAYER ON ONE TEAM. Nobody has an enemy, the win'
+    lines[#lines + 1] = '  condition is already met, and cross-squad damage and the'
+    lines[#lines + 1] = '  nearby-versus-squad voice split cannot be produced at all.'
+
+    -- The cap that would split them. Two squads need a cap of at most half the
+    -- players, rounded up: 3 players at 2 is 2 + 1, which is the pair AND the
+    -- lone enemy on screen at once.
+    local want = math.max(1, math.ceil(players / 2))
+
+    if units <= 1 then
+        lines[#lines + 1] = ('  All %d are ONE PARTY, and a party is never split across squads -- so')
+            :format(players)
+        lines[#lines + 1] = '  no squad size separates them while they are grouped. Leave the party'
+        lines[#lines + 1] = ('  and queue again, or start the server with `set br_maxSquadSize %d`,')
+            :format(want)
+        lines[#lines + 1] = '  which stops the party reaching this size in the first place.'
+    else
+        lines[#lines + 1] = ('  %d player(s) at a cap of %d is one squad -- arithmetic, not a fault.')
+            :format(players, maxSize)
+        lines[#lines + 1] = ('  Put `set br_maxSquadSize %d` in tunables.cfg, ABOVE the `ensure br_lib`')
+            :format(want)
+        lines[#lines + 1] = '  line in server.cfg, and restart. Check `brconfig` says it is set.'
+    end
+
+    return lines
+end
+
 function BR.Party.formSquads(m)
     local mode = m.mode
 
@@ -527,7 +647,7 @@ function BR.Party.formSquads(m)
         function(src) BR.Roster.clearFields(src, { 'squadId', 'colour' }) end)
 
     if mode == BR.Mode.SOLO.key then
-        print('[br_core] solo match -- no squads formed')
+        for _, l in ipairs(BR.Party.formationReport(m)) do print('[br_core] ' .. l) end
         return
     end
 
@@ -681,10 +801,10 @@ function BR.Party.formSquads(m)
         end
     end
 
-    local sizes = {}
-    for _, sq in ipairs(squads) do sizes[#sizes + 1] = tostring(#sq.members) end
-    print(('[br_core] formed %d squad(s) for %s -- sizes %s')
-        :format(#squads, mode, table.concat(sizes, '/')))
+    -- The shape, and -- if it is the useless one -- why. See formationReport:
+    -- this line used to say "formed 1 squad(s)" and stop, which is the truth
+    -- and none of the answer.
+    for _, l in ipairs(BR.Party.formationReport(m)) do print('[br_core] ' .. l) end
 end
 
 --- Do the squads still make sense for the number of players in the match?

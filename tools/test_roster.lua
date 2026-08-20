@@ -143,6 +143,13 @@ for _, f in ipairs({
     'br_lib/shared/identity.lua',-- BR.Identity; BR.Roster.ringmaster resolves licenses
     'br_lib/config/match.lua', 'br_lib/config/storm.lua', 'br_lib/config/map.lua',
     'br_lib/config/weapons.lua', 'br_lib/config/loot.lua',
+    -- AFTER the config tables it edits, exactly as br_core's fxmanifest orders
+    -- it. Nothing here is overridden -- the load-time hook needs
+    -- IsDuplicityVersion and this state has none, so every value stays the
+    -- committed default -- but BR.Config.Overrides has to EXIST, because
+    -- party.lua's formation report asks it which of the two homes the live
+    -- maxSquadSize came from. A nil there would make that answer untestable.
+    'br_lib/config/overrides.lua',
     'br_lib/shared/storm_solve.lua',
     'br_lib/shared/loot_gen.lua',
     'br_lib/shared/combat_solve.lua',
@@ -10817,6 +10824,218 @@ do
 
     TriggerEvent = realTrigger
 end
+
+-- DOWN HERE BECAUSE IT RUNS MATCHES, per the note above match.reviveBeforePlaying.
+-- Written beside the other party blocks first, where its six extra instances
+-- moved the bus routes everything below them was written against and failed
+-- match.busDescent -- which is exactly the coupling that note describes.
+describe('party.threeClientsTwoSquads')
+do
+    -- THE PLAYTEST THIS WHOLE TUNABLE EXISTS FOR, PINNED AS ARITHMETIC.
+    --
+    -- Three dev clients are the entire playtest budget, and at the committed
+    -- cap of four they are ONE team: no enemy anywhere on the map, so
+    -- cross-squad damage and the nearby-versus-squad voice split cannot be
+    -- produced in game at all. config/match.lua and tunables.dev.cfg.example
+    -- both promise the same escape -- br_maxSquadSize 2, and three clients are
+    -- two squads (2 + 1).
+    --
+    -- On 2026-08-19 that promise was reported broken: "with 3 players they were
+    -- still placed into the same squad". IT IS NOT BROKEN, and this block is
+    -- the proof, because the alternative to proving it is re-deriving it by
+    -- hand every time somebody's cfg does not reach the box. What had not
+    -- happened was the convar arriving; the shape below is what a server that
+    -- DID receive it produces, on every path three clients can reach a match.
+    --
+    -- Including the path nothing covered: readying up ONE AT A TIME. Dev mode's
+    -- minimum is one player, so the first click opens the match and the other
+    -- two arrive through BR.Party.lateJoin, which does its own packing and
+    -- never calls formSquads unless the shape has drifted. A cap honoured in
+    -- formation and dropped on the late-join path would look exactly like the
+    -- report that started this.
+
+    --- Squad count and sorted sizes, off the roster.
+    local function shape()
+        local counts, ids = {}, {}
+        BR.Roster.each(nil, function(_, e)
+            if e.squadId then
+                if not counts[e.squadId] then
+                    counts[e.squadId] = 0
+                    ids[#ids + 1] = e.squadId
+                end
+                counts[e.squadId] = counts[e.squadId] + 1
+            end
+        end)
+        local sizes = {}
+        for _, id in ipairs(ids) do sizes[#sizes + 1] = counts[id] end
+        table.sort(sizes)
+        return #ids, sizes
+    end
+
+    local function describeShape(n, sizes)
+        local out = {}
+        for _, s in ipairs(sizes) do out[#out + 1] = tostring(s) end
+        return ('%d squad(s), sizes %s'):format(n, table.concat(out, '/'))
+    end
+
+    -- The committed default, restored at the end of the block. Every scenario
+    -- below sets the cap explicitly rather than assuming it.
+    local shipped = BR.Config.Match.maxSquadSize
+
+    -- (1) Three solos who queue together.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.autofill = true
+    BR.Config.Match.maxSquadSize = 2
+    for i = 1, 3 do join(i, 'P' .. i) end
+
+    -- THE ARITHMETIC ITSELF, not only the outcome. formSquads has a second
+    -- capacity pass that opens extra squads when the target falls short, and it
+    -- is generous enough to produce 2 + 1 even from a target of one -- so the
+    -- shape assertions below survive a broken target, and the target has to be
+    -- pinned directly or nothing here would notice it going wrong. Dev mode is
+    -- deliberately on: its one-squad floor is what makes the committed cap of
+    -- four collapse three clients into one team, and 2 has to beat that floor.
+    ok(BR.Party.squadTarget(3, 3) == 2,
+        'cap 2: the formation target for three unpartied players is two squads',
+        tostring(BR.Party.squadTarget(3, 3)))
+
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.WARMUP) end)
+    ok(BR.Party.prospectiveSquads({ 1, 2, 3 }, BR.Mode.SQUAD.key) == 2,
+        'and the start gate predicts the same two, so the queue cannot deadlock',
+        tostring(BR.Party.prospectiveSquads({ 1, 2, 3 }, BR.Mode.SQUAD.key)))
+    BR.Party.formSquads(fakeMatch(BR.Mode.SQUAD.key))
+    local n, sizes = shape()
+    ok(n == 2, 'cap 2: three solo clients form TWO squads', describeShape(n, sizes))
+    ok(sizes[1] == 1 and sizes[2] == 2,
+        'and the split is 2 + 1 -- a pair to test squad voice, and an enemy',
+        describeShape(n, sizes))
+
+    -- (2) The "they had already grouped up" explanation, ruled out BY THE SAME
+    -- NUMBER. A party is never split across squads, so a standing party of
+    -- three really would defeat any amount of formation arithmetic -- but the
+    -- cap that forms the squads is the cap that gates the invite, so at 2 that
+    -- party cannot exist to begin with. This is why br_maxSquadSize alone is
+    -- sufficient and no "unparty everybody" switch is needed.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.maxSquadSize = 2
+    for i = 1, 3 do join(i, 'P' .. i) end
+    ok(BR.Party.invite(1, 2) and BR.Party.respond(2, true), 'cap 2: a pair may party')
+    ok(not BR.Party.invite(1, 3), 'and the third invite is refused by the cap')
+    ok(#BR.Party.of(1).members == 2, 'so no party of three can exist at this cap')
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.WARMUP) end)
+    BR.Party.formSquads(fakeMatch(BR.Mode.SQUAD.key))
+    n, sizes = shape()
+    ok(n == 2 and sizes[1] == 1 and sizes[2] == 2,
+        'a partied pair plus a solo is still 2 + 1', describeShape(n, sizes))
+    ok(BR.Roster.get(1).squadId == BR.Roster.get(2).squadId,
+        'with the party kept whole')
+    ok(BR.Roster.get(3).squadId ~= BR.Roster.get(1).squadId,
+        'and the third client on the OTHER side of it')
+
+    -- (3) Readying up one at a time: formation sees one player, the other two
+    -- come through lateJoin. The cap has to survive that route too.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.autofill = true
+    BR.Config.Match.maxSquadSize = 2
+    for i = 1, 3 do join(i, 'P' .. i) end
+    local m = fakeMatch(BR.Mode.SQUAD.key)
+    BR.Roster.setState(1, BR.PlayerState.WARMUP)
+    BR.Party.formSquads(m)
+    BR.Party.lateJoin(2, m)
+    BR.Party.lateJoin(3, m)
+    n, sizes = shape()
+    ok(n == 2 and sizes[1] == 1 and sizes[2] == 2,
+        'cap 2: three clients readying up one at a time are still 2 + 1',
+        describeShape(n, sizes))
+
+    -- (4) THE REPORTED SHAPE, AND WHAT THE SERVER NOW SAYS ABOUT IT.
+    --
+    -- At the committed cap of four, three clients in dev mode ARE one squad --
+    -- and that is arithmetic, not a fault: ceil(3/4) is 1, and dev mode's
+    -- one-squad floor does not raise it. (In production the floor is two, so
+    -- the same three players would split -- which is why this only ever bites
+    -- on the box where it matters.) Nothing about that round announced itself,
+    -- so the console said "formed 1 squad(s)" and the operator went looking for
+    -- a formation bug. The report has to name the live cap, say where it came
+    -- from, and give the line that changes it.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.autofill = true
+    BR.Config.Match.maxSquadSize = 4
+    for i = 1, 3 do join(i, 'P' .. i) end
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.WARMUP) end)
+    local m4 = fakeMatch(BR.Mode.SQUAD.key)
+    BR.Party.formSquads(m4)
+    n, sizes = shape()
+    ok(n == 1 and sizes[1] == 3,
+        'cap 4 in dev mode: three clients are one squad -- the reported shape',
+        describeShape(n, sizes))
+
+    local said = table.concat(BR.Party.formationReport(m4), '\n')
+    ok(said:find('maxSquadSize 4', 1, true) ~= nil,
+        'the report names the cap that is actually live', said)
+    ok(said:find('br_maxSquadSize is not set', 1, true) ~= nil,
+        'and says the convar is NOT what set it -- the whole question', said)
+    ok(said:find('ONE SQUAD IS EVERY PLAYER ON ONE TEAM', 1, true) ~= nil,
+        'and says why one squad is useless rather than leaving it to be inferred',
+        said)
+    ok(said:find('set br_maxSquadSize 2', 1, true) ~= nil,
+        'and names the exact line that produces two squads from three clients',
+        said)
+
+    -- (5) And when the cap DID come from the convar, it says so instead -- a
+    -- report that blames the cfg either way is a report nobody can act on.
+    BR.Config.Overrides.applied = {
+        { convar = 'br_maxSquadSize', group = 'Match', key = 'maxSquadSize',
+          from = 4, to = 4 },
+    }
+    said = table.concat(BR.Party.formationReport(m4), '\n')
+    ok(said:find('set by br_maxSquadSize', 1, true) ~= nil,
+        'an applied override is reported as the source', said)
+    ok(said:find('br_maxSquadSize is not set', 1, true) == nil,
+        'and the "not set" line is gone', said)
+    BR.Config.Overrides.applied = {}
+
+    -- (6) The party case gets a DIFFERENT answer, because lowering the cap on a
+    -- running server would not separate a party that already exists -- nothing
+    -- splits a party, at any size. Sending somebody to edit a cfg that cannot
+    -- help them is worse than saying nothing.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.maxSquadSize = 4
+    for i = 1, 3 do join(i, 'P' .. i) end
+    for i = 2, 3 do BR.Party.invite(1, i); BR.Party.respond(i, true) end
+    ok(#BR.Party.of(1).members == 3, 'cap 4: a party of three can exist')
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.WARMUP) end)
+    local mp = fakeMatch(BR.Mode.SQUAD.key)
+    BR.Party.formSquads(mp)
+    n = shape()
+    ok(n == 1, 'and it is one squad, as a party always is')
+    said = table.concat(BR.Party.formationReport(mp), '\n')
+    ok(said:find('ONE PARTY', 1, true) ~= nil,
+        'the report says the party is the reason, not the squad size', said)
+    ok(said:find('never split across squads', 1, true) ~= nil,
+        'and that no squad size separates them while they are grouped', said)
+
+    -- (7) Solo mode has no squads to report on, and must not claim a shape.
+    reset()
+    BR.Server.devMode = true
+    for i = 1, 3 do join(i, 'P' .. i) end
+    BR.Roster.each(nil, function(src) BR.Roster.setState(src, BR.PlayerState.WARMUP) end)
+    local ms = fakeMatch(BR.Mode.SOLO.key)
+    BR.Party.formSquads(ms)
+    said = table.concat(BR.Party.formationReport(ms), '\n')
+    ok(said:find('solo match', 1, true) ~= nil,
+        'solo mode reports itself as having no squads', said)
+    ok(said:find('maxSquadSize', 1, true) == nil,
+        'and does not offer a squad-size fix for a mode that has no squads', said)
+
+    BR.Config.Match.maxSquadSize = shipped
+end
+
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then
