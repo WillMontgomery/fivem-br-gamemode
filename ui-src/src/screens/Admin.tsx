@@ -210,7 +210,14 @@ export default function Admin() {
       className="interactive fixed inset-0 z-[55] overflow-hidden"
       style={{ backgroundColor: 'rgba(6, 8, 14, 0.965)' }}
     >
-      <div className="mx-auto py-10" style={{ width: '68rem', maxWidth: '92vw' }}>
+      {/* WIDER THAN EVERY OTHER SCREEN, INCLUDING /help, WHICH THIS OTHERWISE
+          MIRRORS. 68rem is the shell width the prose screens use and it is
+          right for them -- a manual is easier to read at a column width than
+          across a monitor. This is not a manual. It is a moderation console
+          with a sidebar, a wide table and charts, laid out for a browser
+          window, and squeezing it into a reading column wastes the half of
+          the screen its own layout was designed to use. */}
+      <div className="mx-auto py-10" style={{ width: '90vw' }}>
         <div className="flex items-end justify-between mb-6">
           <div>
             <div className="micro-label">Ringmaster</div>
