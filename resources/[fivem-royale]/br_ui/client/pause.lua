@@ -567,6 +567,22 @@ end)
 RegisterNUICallback(BR.NuiCb.ADMIN_FOCUS, function(data, cb)
     if data and data.open then
         TriggerEvent('br:ui:pushFocus', 'admin')
+    elseif data and data.all then
+        -- ESCAPE FROM INSIDE THE CONSOLE, WHICH IS NOT THE BACK BUTTON.
+        --
+        -- Back steps up one screen and lands on the pause menu, because that is
+        -- where the Admin tab was pressed. Escape is the other exit: the owner
+        -- asked for "one button - overlay gone", and a player who wants out of
+        -- a menu does not want a different menu.
+        --
+        -- POP FIRST, THEN CLOSE, and that order is the opposite of the branch
+        -- below on purpose. That one re-opens the pause menu BEFORE popping so
+        -- the page never blanks between two screens that are both meant to be
+        -- up. Here nothing is meant to be up afterwards, so there is no gap to
+        -- cover -- and re-opening the menu on the way out would be a frame of
+        -- the very thing being dismissed.
+        TriggerEvent('br:ui:popFocus', 'admin')
+        BR.Pause.close()
     else
         BR.Pause.open()
         TriggerEvent('br:ui:popFocus', 'admin')

@@ -116,7 +116,12 @@ export async function mockFetch<Res>(name: CallbackName, data?: unknown): Promis
     // that dropped them on the lobby instead would make the Back button look
     // like it did the wrong thing in the browser and the right thing in game,
     // which is worse than not mocking it at all.
-    const back = name === 'br/admin/focus' ? 'pause' : 'lobby'
+    // ESCAPE TAKES EVERYTHING DOWN, and Lua agrees: ADMIN_FOCUS with `all`
+    // pops 'admin' and then closes the pause menu outright. Mocked here
+    // because a harness where Escape landed on the pause menu would make the
+    // browser and the game disagree about the one key this screen rebinds.
+    const all = (data as { all?: boolean } | undefined)?.all === true
+    const back = name === 'br/admin/focus' ? (all ? 'lobby' : 'pause') : 'lobby'
     emit({ k: 'focus', d: { screen: open ? FOCUS_CB[name]! : back } })
     return { ok: true } as Res
   }

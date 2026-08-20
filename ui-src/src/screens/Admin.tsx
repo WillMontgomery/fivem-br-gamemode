@@ -106,6 +106,19 @@ export default function Admin() {
   }
 
   /**
+   * Everything down, not one screen up.
+   *
+   * `close` is the Back button and lands on the pause menu, which is where the
+   * Admin tab was pressed. This is Escape, and the owner asked for "one button
+   * - overlay gone". Two exits doing two different things beats one exit that
+   * has to be pressed twice.
+   */
+  const dismiss = () => {
+    play('ui.back')
+    void fetchNui(CB.ADMIN_FOCUS, { open: false, all: true })
+  }
+
+  /**
    * The origin arriving late is normal, not exceptional.
    *
    * The tab cannot be pressed before the server has sent an origin -- it is not
@@ -133,9 +146,22 @@ export default function Admin() {
       // attacker-controlled until this line passes.
       if (e.origin !== origin) return
 
-      const d = e.data as { source?: unknown; state?: unknown } | null
+      const d = e.data as { source?: unknown; state?: unknown; action?: unknown } | null
       if (!d || typeof d !== 'object') return
       if (d.source !== 'ringmaster') return
+
+      /*
+        ESCAPE, FORWARDED BY THE PAGE BECAUSE THE KEY NEVER REACHES US.
+        The listener below this one only hears Escape while OUR document has
+        focus, and the moment somebody clicks into the console it does not --
+        a cross-origin frame does not forward key events. So the console sends
+        the word instead. It has already passed the origin check above.
+      */
+      if (d.action === 'dismiss') {
+        dismiss()
+        return
+      }
+
       if (d.state !== 'signed-out') return
 
       // Already asking. The console posts once per login-page render, but a
@@ -185,21 +211,29 @@ export default function Admin() {
   }, [minting])
 
   /**
-   * Escape closes, like every other full page here.
+   * Escape takes the whole overlay down.
    *
-   * IT ONLY WORKS WHILE OUR DOCUMENT HAS THE KEY, and that is a real limitation
-   * rather than an oversight: once the admin clicks inside the frame, the
-   * console's document has focus and its keystrokes never reach this listener.
-   * Nothing can change that from this side -- a cross-origin frame does not
-   * forward key events. The Back button below is the exit that always works,
-   * which is why it is a button and not a hint.
+   * THIS COMMENT USED TO END: "Nothing can change that from this side -- a
+   * cross-origin frame does not forward key events." Every word of that is
+   * still true, and it is still the reason this listener alone is not enough:
+   * once the admin clicks inside the console, its document has the key and
+   * this never sees it.
+   *
+   * WHAT CHANGED IS THAT THE OTHER SIDE NOW SPEAKS. `FrameEscape` in the
+   * console repository binds the same key and posts `action: 'dismiss'` to
+   * this window, which the listener above answers. So Escape works in both
+   * focus states, and the two paths deliberately call the SAME `dismiss` --
+   * a key that did different things depending on where the pointer last
+   * landed would be worse than one that only sometimes worked.
+   *
+   * The Back button is unchanged and still steps up one screen.
    */
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       e.preventDefault()
       e.stopPropagation()
-      close()
+      dismiss()
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
