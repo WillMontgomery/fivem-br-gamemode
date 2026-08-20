@@ -122,6 +122,13 @@ server_scripts {
     'server/voice.lua',    -- voice channel authority: one room per match, one per squad
     'server/debug.lua',
     'server/market.lua',    -- inventory, purchases and equipped slots
+    -- Admin scopes, read from the same DynamoDB grants table the console
+    -- authorises against, through br_ddb -- never from br_ringmaster, which the
+    -- game must not depend on. players.lua and incident.lua both read it, and
+    -- both nil-guard it, so the order is for a reader rather than for the
+    -- loader: the thing that answers the question is declared above the two
+    -- files that ask it.
+    'server/grants.lua',
     'server/players.lua',   -- the in-game player list and player reports
     'server/ringmaster.lua', -- the admin-console snapshot feed; emits, never listens
     'server/incident.lua',  -- builds incident payloads from evidence; emits, never enforces

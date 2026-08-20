@@ -172,6 +172,19 @@ for _, f in ipairs({
     -- AFTER combat_solve, whose enum values it keys its severity table on.
     'br_lib/shared/incident_build.lua',
     'br_core/server/incident.lua',     -- BR.Incident; listens to the refusal event
+    -- BR.Grants: admin scopes, read from the DynamoDB grants table through
+    -- br_ddb. Loaded BEFORE players.lua for the same reason the manifest
+    -- declares it there -- the file that answers "may this license file a
+    -- report" sits above the two that ask.
+    --
+    -- IT REGISTERS A `playerJoining` HANDLER, so every `join()` in this suite
+    -- now emits a `br:ddb:grantsFetch` into `fired`. That is deliberate and it
+    -- is what the block at the bottom of this file drives. Every OTHER block
+    -- leaves those questions unanswered, which is exactly the "we never got an
+    -- answer" state -- and every one of them still passes, which is the
+    -- fail-open decision being asserted by the whole suite rather than by one
+    -- assertion in it.
+    'br_core/server/grants.lua',
     -- AFTER incident.lua, because the report path asks BR.Incident whether a
     -- case about this player already exists before deciding to file one. It was
     -- loaded by nothing here until #143 put a rule in it worth pinning -- the
@@ -11036,6 +11049,721 @@ do
     BR.Config.Match.maxSquadSize = shipped
 end
 
+
+describe('report.adminReward')
+do
+    --[[
+        ADMINS REPORT NORMALLY AND ARE NEVER PAID FOR IT (#168 self-dealing).
+
+        OWNER: "hmmm maybe instead of blocking admins from reporting we should
+        just block them from getting paid. Can we do that instead?" And,
+        unprompted, about the second path: "also remember admins can
+        corroborate. they should still not be paid though."
+
+        SO EVERY ASSERTION HERE COMES IN A PAIR, and that pairing IS the test.
+        One half says the money did not move; the other says everything else
+        did. A change that refused the report outright -- which is what this
+        started as -- passes the first half of every pair in this block and
+        fails the second, which is the point of writing them together.
+
+        WHAT THESE ARE ABLE TO CATCH, stated because this suite's named failure
+        mode is a stub that re-encodes the assumption under test:
+
+          the unpaid claim    is asserted as the ABSENCE of `br:report:claim`,
+                              and every one of those absences is set beside a
+                              control that fires it -- the same case, the same
+                              match, the same tick, a different reporter. So an
+                              absence is the gate rather than a fixture that
+                              never pays.
+          the real case       the admin's own submission is checked for the
+                              `br:ringmaster:incident` it opens, its subject and
+                              its reporterLicense; the admin's corroboration for
+                              the `br:ringmaster:corroborate` it emits and the
+                              seq and count it moved. Gate the wrong thing --
+                              return early anywhere -- and these fail.
+          the spent slot      an admin who has reported somebody is refused when
+                              they name them again, and is not prompted about a
+                              killer they have already corroborated. The limits
+                              are anti-spam, not a payment meter.
+          the identical
+          reply               the admin's REPORT_RESULT is compared FIELD BY
+                              FIELD against an ordinary player's, key count
+                              included. A different answer would be a probe:
+                              any player able to compare two replies would learn
+                              which accounts hold moderation grants.
+          `ban`, NOT "STAFF"  the ordinary player in these fixtures holds five
+                              scopes -- view, kick, spectate, notify, moderate
+                              -- and is paid. A gate keyed on "has any grant"
+                              passes everything else here and fails that.
+          pay when unknown    a grants question that is never answered still
+                              pays. Asserted here, and implicitly by every OTHER
+                              block in this file: they all join players, all
+                              emit a grants question, and none answers one.
+
+        WHAT THIS BLOCK DELIBERATELY DOES NOT ASSERT is what br_stats does with
+        a claim. tools/test_stats.lua already pins both directions of that --
+        `br:report:claim` becomes a `br:ddb:awardClaim`, and a malformed or
+        absent one becomes nothing at all -- so "no claim means no 250 Volts"
+        is one chain covered in two files rather than a second copy here.
+
+        THE TIMERS ARE DRIVEN RATHER THAN STUBBED OUT. The suite's SetTimeout is
+        a no-op, which would make the give-up path untestable and would make
+        `inflight` look like it never needs clearing -- a question that is never
+        abandoned is also never asked twice. Replaced for the length of this
+        block, restored at the end.
+    ]]
+
+    local SCOPE = BR.Grants.RESOLVE_INCIDENTS
+
+    ok(SCOPE == 'ban',
+        'the scope keyed on is the one the console resolves incidents with',
+        tostring(SCOPE))
+
+    -- ------------------------------------------------------------- timers ---
+    local timers = {}
+    SetTimeout = function(_ms, fn) timers[#timers + 1] = fn end
+    local function runTimers()
+        local due = timers
+        timers = {}
+        for _, fn in ipairs(due) do fn() end
+    end
+
+    -- ------------------------------------------------------------ helpers ---
+    local function lic(name) return BR.Identity.qualified('license', name) end
+
+    --- Every grants question in `fired`, oldest first.
+    local function asks()
+        local out = {}
+        for _, f in ipairs(fired) do
+            if f.event == 'br:ddb:grantsFetch' then
+                out[#out + 1] = { req = f.args[1], license = f.args[2] }
+            end
+        end
+        return out
+    end
+
+    local function asksAbout(license)
+        local n = 0
+        for _, a in ipairs(asks()) do
+            if a.license == license then n = n + 1 end
+        end
+        return n
+    end
+
+    --- Answer the newest outstanding question about a license, as br_ddb does.
+    ---
+    --- THROUGH THE REAL EVENT, carrying the req the code chose, so the answer
+    --- has to find its way home the way a real one would -- including past
+    --- br_ringmaster's listener on this same event name, which is the collision
+    --- the namespaced req exists to avoid.
+    --- @return boolean  whether there was a question to answer
+    local function reply(license, scopes, info)
+        local all = asks()
+        for i = #all, 1, -1 do
+            if all[i].license == license then
+                fire('br:ddb:grantsResult', nil, all[i].req, scopes, info or {})
+                return true
+            end
+        end
+        return false
+    end
+
+    local function claims()
+        return firedOf('br:report:claim')
+    end
+
+    local function lastResultFor(src)
+        for i = #sent, 1, -1 do
+            local s = sent[i]
+            if s.event == BR.Net.REPORT_RESULT and s.target == src then
+                return s.args[1]
+            end
+        end
+        return nil
+    end
+
+    local function hintTo(src)
+        for i = #sent, 1, -1 do
+            local s = sent[i]
+            if s.event == BR.Net.REPORT_HINT and s.target == src then
+                return s.args[1]
+            end
+        end
+        return nil
+    end
+
+    local function listSeenBy(src)
+        sent = {}
+        fire(BR.Net.PLAYERS_ASK, src)
+        for i = #sent, 1, -1 do
+            if sent[i].event == BR.Net.PLAYERS_LIST then return sent[i].args[1] end
+        end
+        return nil
+    end
+
+    --- The token `src` would tick to report `name`, taken off the real list.
+    local function tokenFor(src, name)
+        local l = listSeenBy(src)
+        for _, p in ipairs((l or {}).players or {}) do
+            if p.name == name then return p.id end
+        end
+        return nil
+    end
+
+    --- Are two tables the same map of scalars, key count included?
+    ---
+    --- THE KEY COUNT IS THE HALF THAT MATTERS. Comparing only the fields this
+    --- test knows about would pass happily the day somebody adds an `unpaid`
+    --- or `admin` flag to the answer -- which is exactly the leak the
+    --- comparison exists to prevent.
+    local function sameShape(a, b)
+        if type(a) ~= 'table' or type(b) ~= 'table' then return false end
+        local n = 0
+        for k, v in pairs(a) do
+            n = n + 1
+            if b[k] ~= v then return false end
+        end
+        for _ in pairs(b) do n = n - 1 end
+        return n == 0
+    end
+
+    local function killedBy(victimSrc, killerSrc)
+        local v = BR.Roster.get(victimSrc)
+        v.lastHitBy, v.lastHitAt = killerSrc, fakeTime
+        BR.Roster.setState(victimSrc, BR.PlayerState.DEAD)
+    end
+
+    --- Four players in a live match, on licenses this block names itself.
+    ---
+    --- NEVER REUSED ACROSS SECTIONS, for the reason report.prompt's `freshMatch`
+    --- gives: the maps that answer these questions -- `openBy` in
+    --- server/incident.lua, and the grants cache -- are deliberately not freed
+    --- between matches, so a section written on a license an earlier one
+    --- touched could pass on a leftover.
+    ---
+    --- 1 Boss   holds the resolving scope
+    --- 2 Mark   the subject everybody reports
+    --- 3 Plain  an ordinary player -- who in these fixtures is a MODERATOR with
+    ---          five scopes and not the one that matters
+    --- 4 Extra  a second ordinary player, for the controls that need one
+    local function four(a, b, c, d)
+        reset()
+        licenseOf[1], licenseOf[2] = a, b
+        licenseOf[3], licenseOf[4] = c, d
+        -- CLEARED BEFORE THE JOINS, not after: joining is what emits the grants
+        -- questions this block answers, so wiping `fired` afterwards would
+        -- throw away the thing under test.
+        fired, sent = {}, {}
+        queueUp(1, 'Boss',  BR.Mode.SOLO.key)
+        queueUp(2, 'Mark',  BR.Mode.SOLO.key)
+        queueUp(3, 'Plain', BR.Mode.SOLO.key)
+        queueUp(4, 'Extra', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for _, s in ipairs({ 1, 2, 3, 4 }) do
+            BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        end
+        theMatch().state = BR.MatchState.PLAYING
+        return theMatch()
+    end
+
+    local MOD_SCOPES = { 'view', 'kick', 'spectate', 'notify', 'moderate' }
+
+    -- ===================================================================== --
+    -- (0) THE QUESTION IS ASKED AT CONNECT, NOT WHEN A REPORT ARRIVES
+    -- ===================================================================== --
+    --
+    -- Priming is not an optimisation. Both reward decisions read the cache
+    -- SYNCHRONOUSLY -- they have to, because the report rules beside them are
+    -- synchronous -- so a cold cache is the rule not being applied. The prime
+    -- has to happen, and it has to happen minutes before anybody can report.
+    local m0 = four('sdColdBoss', 'sdColdMark', 'sdColdPlain', 'sdColdExtra')
+    ok(asksAbout(lic('sdColdBoss')) == 1,
+        'connecting asks the grants table about the player once',
+        tostring(asksAbout(lic('sdColdBoss'))))
+    ok(asksAbout(lic('sdColdMark')) == 1 and asksAbout(lic('sdColdExtra')) == 1,
+        'and about every other player exactly once as well')
+
+    -- ===================================================================== --
+    -- (1) NO ANSWER MEANS PAY -- THE ASYMMETRY ARGUMENT
+    -- ===================================================================== --
+    --
+    -- Nothing has answered, so this is the DynamoDB-unreachable state. The two
+    -- failures are not symmetric: not paying wrongs an ORDINARY player, who is
+    -- nearly everybody, silently and with nothing to appeal to; paying wrongly
+    -- costs 250 Volts of soft currency to somebody who already holds moderation
+    -- powers and who still needs a colleague to write an audited verdict.
+    ok(BR.Grants.holds(lic('sdColdBoss'), SCOPE) == nil,
+        'an unanswered question reads as unknown, not as "not an admin"',
+        tostring(BR.Grants.holds(lic('sdColdBoss'), SCOPE)))
+
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 1, {
+        targets = { { id = tokenFor(1, 'Mark'), category = 'cheating' } },
+    })
+    ok(#firedOf('br:ringmaster:incident') == 1,
+        'a report filed while grants are unreadable opens its case')
+    ok((lastResultFor(1) or {}).ok == true, 'and the reporter is told it worked')
+
+    fired, sent = {}, {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'inc-sd-cold', matchId = m0.id,
+        subjectLicense = lic('sdColdMark'), reporterLicense = lic('sdColdBoss'),
+    })
+    ok((claims()[1] or {}).license == lic('sdColdBoss'),
+        'and IS paid, because refusing to pay would wrong an ordinary player',
+        (claims()[1] or {}).license or 'no claim')
+
+    -- AND THE ATTEMPT DID NOT ASK AGAIN. A question is already in flight for
+    -- this license, so a client hammering the submit event cannot turn itself
+    -- into a DynamoDB read loop.
+    ok(asksAbout(lic('sdColdBoss')) == 0,
+        'a report attempt with a question already in flight asks nothing more',
+        tostring(asksAbout(lic('sdColdBoss'))))
+
+    -- ===================================================================== --
+    -- (2) A FAILED READ IS NOT AN ANSWER
+    -- ===================================================================== --
+    --
+    -- br_ddb replies to every failure -- no credentials, no network, a throttle,
+    -- a timeout -- with an EMPTY scope list and an `error` field. Recording that
+    -- would cache "this person is not an admin" out of an outage: the same hole
+    -- as paying, except permanent and invisible, because nothing would ask
+    -- again.
+    fired = {}
+    runTimers()
+    ok(BR.Grants.holds(lic('sdColdBoss'), SCOPE) == nil,
+        'giving up on a question leaves the answer unknown')
+    ok(asksAbout(lic('sdColdBoss')) == 1,
+        'and frees the license to be asked about again',
+        tostring(asksAbout(lic('sdColdBoss'))))
+
+    ok(reply(lic('sdColdBoss'), {}, { error = 'timed out after 3000ms' }),
+        'br_ddb answers the retry')
+    ok(BR.Grants.holds(lic('sdColdBoss'), SCOPE) == nil,
+        'an error answer is still unknown -- an empty scope list that arrived '
+        .. 'with an error is not a grant row',
+        tostring(BR.Grants.holds(lic('sdColdBoss'), SCOPE)))
+
+    -- ===================================================================== --
+    -- (3) THE PANEL REPORT: A REAL CASE, NO REWARD
+    -- ===================================================================== --
+    local m1 = four('sdBoss', 'sdMark', 'sdPlain', 'sdExtra')
+    ok(reply(lic('sdBoss'), { 'view', 'kick', SCOPE }, {}), 'the admin is answered for')
+    reply(lic('sdMark'), {}, {})
+    -- FIVE SCOPES AND NOT THE ONE THAT MATTERS -- the assertion that separates
+    -- "keyed on the capability" from "keyed on being staff".
+    ok(reply(lic('sdPlain'), MOD_SCOPES, {}), 'and so is a five-scope moderator')
+    reply(lic('sdExtra'), {}, {})
+
+    ok(BR.Grants.holds(lic('sdBoss'), SCOPE) == true,
+        'the admin holds the resolving scope')
+    ok(BR.Grants.holds(lic('sdPlain'), SCOPE) == false,
+        'the moderator, with five other scopes, does not',
+        tostring(BR.Grants.holds(lic('sdPlain'), SCOPE)))
+
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 1, {
+        targets = { { id = tokenFor(1, 'Mark'), category = 'exploiting' } },
+    })
+
+    -- ------------------------------------------- the case is real in full ---
+    local bossInc = firedOf('br:ringmaster:incident')[1]
+    ok(bossInc ~= nil, "an admin's report opens a case like anybody else's")
+    if bossInc then
+        ok(bossInc.kind == 'report', 'as a report, not an anticheat case',
+            tostring(bossInc.kind))
+        ok(bossInc.subjectLicense == lic('sdMark'),
+            'about the player they named', tostring(bossInc.subjectLicense))
+        ok(bossInc.category == 'exploiting',
+            'carrying the category they picked', tostring(bossInc.category))
+        -- NAMED ON THE CASE. The console's "who reports everybody" signal is
+        -- worth exactly as much about an admin as about anybody else, and an
+        -- unattributed accusation is worth less than none.
+        ok(bossInc.reporterLicense == lic('sdBoss'),
+            'and naming them as the reporter', tostring(bossInc.reporterLicense))
+    end
+
+    local bossReply = lastResultFor(1)
+    ok(bossReply ~= nil and bossReply.ok == true and bossReply.filed == 1,
+        'and they are told a report was sent, because one was',
+        bossReply and tostring(bossReply.ok) or 'no answer at all')
+
+    -- ------------------------------------------------ and it earns nothing ---
+    fired, sent = {}, {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'inc-sd-boss', matchId = m1.id,
+        subjectLicense = lic('sdMark'), reporterLicense = lic('sdBoss'),
+    })
+    ok(#claims() == 0,
+        'the acknowledgement pays them nothing at all',
+        tostring(#claims()))
+
+    -- ------------------------------------------------------- THE CONTROL ---
+    -- Extra opens a case about a DIFFERENT subject, so the path is the same
+    -- one -- open, acknowledge, claim -- and the only thing that differs is
+    -- who filed it. If this fails, the assertion above was passing on a
+    -- fixture that never pays anybody.
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 4, {
+        targets = { { id = tokenFor(4, 'Plain'), category = 'cheating' } },
+    })
+    ok(#firedOf('br:ringmaster:incident') == 1, 'an ordinary player opens a case too')
+
+    fired, sent = {}, {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'inc-sd-extra', matchId = m1.id,
+        subjectLicense = lic('sdPlain'), reporterLicense = lic('sdExtra'),
+    })
+    local extraClaim = claims()[1]
+    ok(extraClaim ~= nil and extraClaim.incidentId == 'inc-sd-extra'
+       and extraClaim.license == lic('sdExtra'),
+        'and IS owed for it -- so the silence above is the gate, not the fixture',
+        extraClaim and tostring(extraClaim.license) or 'no claim')
+
+    -- ------------------------------------ the reply gives nothing away ---
+    -- Field by field, key count included. A different answer for an admin
+    -- would let any player who could compare two replies work out which
+    -- accounts hold moderation grants.
+    local extraReply
+    sent = {}
+    fire(BR.Net.REPORT_SUBMIT, 4, {
+        targets = { { id = tokenFor(4, 'Mark'), category = 'exploiting' } },
+    })
+    extraReply = lastResultFor(4)
+    ok(sameShape(bossReply, extraReply),
+        'the admin got exactly the answer an ordinary player gets, to the key',
+        ('%s vs %s'):format(
+            bossReply and tostring(bossReply.filed) or 'nil',
+            extraReply and tostring(extraReply.filed) or 'nil'))
+
+    -- ------------------------------------------- the slot really was spent ---
+    -- The limits are anti-spam, not a payment meter. An admin who has named
+    -- somebody is refused when they name them again, exactly as anybody is.
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 1, {
+        targets = { { id = tokenFor(1, 'Mark'), category = 'cheating' } },
+    })
+    local again = lastResultFor(1)
+    ok(again ~= nil and again.ok == false
+       and tostring(again.refused):find('Mark', 1, true) ~= nil,
+        'and their per-match slot was spent -- naming Mark twice is refused',
+        again and tostring(again.refused) or 'nil')
+
+    -- ===================================================================== --
+    -- (4) THE PANEL CORROBORATION: COUNTED IN FULL, NEVER PAID
+    -- ===================================================================== --
+    --
+    -- `inc-sd-boss` is open against Mark in this match, so Plain naming Mark
+    -- corroborates rather than opening a second case.
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 3, {
+        targets = { { id = tokenFor(3, 'Mark'), category = 'cheating' } },
+    })
+    local modCorr = firedOf('br:ringmaster:corroborate')[1]
+    ok(modCorr ~= nil and modCorr.incidentId == 'inc-sd-boss',
+        'a moderator corroborates the open case',
+        modCorr and tostring(modCorr.incidentId) or 'nothing')
+    ok((claims()[1] or {}).license == lic('sdPlain'),
+        'and is paid for it, holding five scopes but not the resolving one',
+        (claims()[1] or {}).license or 'no claim')
+
+    -- Now the admin corroborates the same case, from the panel. Boss already
+    -- named Mark above, so a fresh match is needed for the slot -- and a fresh
+    -- match is also the honest shape: the case is from an earlier round.
+    local m2 = four('sdCorrBoss', 'sdCorrMark', 'sdCorrPlain', 'sdCorrExtra')
+    reply(lic('sdCorrBoss'), { SCOPE }, {})
+    reply(lic('sdCorrMark'), {}, {})
+    reply(lic('sdCorrPlain'), MOD_SCOPES, {})
+    reply(lic('sdCorrExtra'), {}, {})
+
+    fire('br:incident:filed', nil, {
+        incidentId = 'inc-sd-corr', matchId = m2.id,
+        subjectLicense = lic('sdCorrMark'),
+    })
+
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 1, {
+        targets = { { id = tokenFor(1, 'Mark'), category = 'cheating' } },
+    })
+    local bossCorr = firedOf('br:ringmaster:corroborate')[1]
+    ok(bossCorr ~= nil and bossCorr.incidentId == 'inc-sd-corr',
+        "an admin's panel report corroborates the open case in full",
+        bossCorr and tostring(bossCorr.incidentId) or 'nothing')
+    ok(bossCorr ~= nil and bossCorr.seq == 2 and bossCorr.count == 1,
+        'moving the case counters the way any corroboration does',
+        bossCorr and ('seq %s count %s'):format(tostring(bossCorr.seq),
+                                                tostring(bossCorr.count)) or 'nil')
+    ok(#claims() == 0, 'and earns nothing', tostring(#claims()))
+
+    -- THE CONTROL, on the same case, one tick later.
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 4, {
+        targets = { { id = tokenFor(4, 'Mark'), category = 'cheating' } },
+    })
+    local extraCorr = firedOf('br:ringmaster:corroborate')[1]
+    ok(extraCorr ~= nil and extraCorr.seq == 3,
+        'the next corroboration is numbered 3 -- the admin\'s was counted',
+        extraCorr and tostring(extraCorr.seq) or 'nothing')
+    ok((claims()[1] or {}).license == lic('sdCorrExtra'),
+        'and that one IS paid',
+        (claims()[1] or {}).license or 'no claim')
+
+    -- ===================================================================== --
+    -- (5) THE KILL PROMPT: OFFERED, PRESSED, COUNTED, UNPAID
+    -- ===================================================================== --
+    --
+    -- OWNER, UNPROMPTED: "also remember admins can corroborate. they should
+    -- still not be paid though." One killer, one case, two victims -- one
+    -- holding the resolving scope and one not, and identical in every other
+    -- respect.
+    local m3 = four('sdKillBoss', 'sdKiller', 'sdKillPlain', 'sdKillExtra')
+    reply(lic('sdKillBoss'), { SCOPE }, {})
+    reply(lic('sdKiller'), {}, {})
+    reply(lic('sdKillPlain'), MOD_SCOPES, {})
+    reply(lic('sdKillExtra'), {}, {})
+
+    fire('br:incident:filed', nil, {
+        incidentId = 'inc-sd-killer', matchId = m3.id,
+        subjectLicense = lic('sdKiller'),
+    })
+
+    -- ------------------------------------------------------- the admin ---
+    killedBy(1, 2)
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_KILLED, 1)
+    local bossHint = hintTo(1)
+    -- OFFERED, WHICH IS THE HALF A REFUSAL WOULD HAVE BROKEN. Withholding the
+    -- prompt would also have told the admin, by silence, that the player who
+    -- killed them has no case open -- the enumeration leak the whole no-payload
+    -- design exists to prevent.
+    ok(bossHint ~= nil and bossHint.kind == 'killer' and bossHint.name == 'Mark',
+        'an admin killed by somebody with an open case IS prompted',
+        bossHint and tostring(bossHint.kind) or 'no hint at all')
+
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_CORROBORATE, 1)
+    local bossKeyCorr = firedOf('br:ringmaster:corroborate')[1]
+    ok(bossKeyCorr ~= nil and bossKeyCorr.incidentId == 'inc-sd-killer',
+        'their keypress corroborates the case for real',
+        bossKeyCorr and tostring(bossKeyCorr.incidentId) or 'nothing')
+    ok(bossKeyCorr ~= nil and bossKeyCorr.seq == 2,
+        'numbered like any other corroboration',
+        bossKeyCorr and tostring(bossKeyCorr.seq) or 'nil')
+    -- THE ONE DIFFERENCE, AND THE WHOLE OF IT.
+    ok(#claims() == 0,
+        'and it earns them nothing',
+        tostring(#claims()))
+
+    local bossKeyReply = lastResultFor(1)
+    ok(bossKeyReply ~= nil and bossKeyReply.ok == true and bossKeyReply.filed == 1,
+        'while the acknowledgement is the ordinary one',
+        bossKeyReply and tostring(bossKeyReply.ok) or 'no answer')
+
+    -- THE SLOT WAS SPENT. One action per offender per match applies to an admin
+    -- exactly as it applies to anybody: the offer is withdrawn and the key is
+    -- dead, because the limits are anti-spam rather than a payment meter.
+    sent = {}
+    fire(BR.Net.REPORT_KILLED, 1)
+    ok(hintTo(1) == nil,
+        'and they are never offered the prompt about that player again')
+
+    fired = {}
+    fire(BR.Net.REPORT_CORROBORATE, 1)
+    ok(#firedOf('br:ringmaster:corroborate') == 0,
+        'nor does pressing the key a second time do anything',
+        tostring(#firedOf('br:ringmaster:corroborate')))
+
+    -- AND `usage.named` WAS WRITTEN TOO, because the case belongs to this
+    -- match -- so the panel refuses the same player as well. That cross-write
+    -- is #177's match-boundary rule and it applies to an admin unchanged.
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 1, {
+        targets = { { id = tokenFor(1, 'Mark'), category = 'cheating' } },
+    })
+    ok((lastResultFor(1) or {}).ok == false,
+        'and the panel refuses the player they corroborated about',
+        tostring((lastResultFor(1) or {}).refused))
+
+    -- ------------------------------------------------------- the control ---
+    killedBy(3, 2)
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_KILLED, 3)
+    ok((hintTo(3) or {}).kind == 'killer',
+        'an ordinary player killed by the same person is prompted too')
+
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_CORROBORATE, 3)
+    ok(#firedOf('br:ringmaster:corroborate') == 1,
+        'their key corroborates the same case')
+    local paid = claims()[1]
+    ok(paid ~= nil and paid.incidentId == 'inc-sd-killer'
+       and paid.license == lic('sdKillPlain'),
+        'and they ARE paid -- so the admin earning nothing is the gate',
+        paid and ('%s / %s'):format(tostring(paid.incidentId), tostring(paid.license))
+            or 'no claim')
+
+    -- ===================================================================== --
+    -- (6) AN ADMIN IS STILL A SUBJECT, AND REPORTING THEM STILL PAYS
+    -- ===================================================================== --
+    --
+    -- Nothing on the reported side asks about grants. An admin who cheats is
+    -- exactly as reportable as anybody, and the player who reports them is owed
+    -- the same 250 Volts.
+    local m4 = four('sdSubjBoss', 'sdSubjMark', 'sdSubjPlain', 'sdSubjExtra')
+    reply(lic('sdSubjBoss'), { SCOPE }, {})
+    reply(lic('sdSubjPlain'), MOD_SCOPES, {})
+    reply(lic('sdSubjExtra'), {}, {})
+
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 4, {
+        targets = { { id = tokenFor(4, 'Boss'), category = 'cheating' } },
+    })
+    local aboutBoss = firedOf('br:ringmaster:incident')[1]
+    ok(aboutBoss ~= nil and aboutBoss.subjectLicense == lic('sdSubjBoss'),
+        'an admin can be reported by somebody else',
+        aboutBoss and tostring(aboutBoss.subjectLicense) or 'no case')
+
+    fired, sent = {}, {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'inc-sd-subject', matchId = m4.id,
+        subjectLicense = lic('sdSubjBoss'), reporterLicense = lic('sdSubjExtra'),
+    })
+    ok((claims()[1] or {}).license == lic('sdSubjExtra'),
+        'and their reporter is paid normally',
+        (claims()[1] or {}).license or 'no claim')
+
+    -- ===================================================================== --
+    -- (7) THE LIMITS ARE UNCHANGED FOR EVERYBODY
+    -- ===================================================================== --
+    ok(BR.Config.Report.maxPerMatch == 3 and BR.Config.Report.maxTargets == 5,
+        'the shipped limits are three submissions and five targets',
+        ('%s/%s'):format(tostring(BR.Config.Report.maxPerMatch),
+                         tostring(BR.Config.Report.maxTargets)))
+
+    fired, sent = {}, {}
+    local over = {}
+    for i = 1, 6 do over[i] = { id = tokenFor(1, 'Mark'), category = 'cheating' } end
+    fire(BR.Net.REPORT_SUBMIT, 1, { targets = over })
+    local overRes = lastResultFor(1)
+    ok(overRes ~= nil and overRes.ok == false
+       and tostring(overRes.refused):find('at most 5', 1, true) ~= nil,
+        'six targets in one submission is refused, for an admin as for anybody',
+        overRes and tostring(overRes.refused) or 'nil')
+
+    -- THREE SUBMISSIONS, THEN THE ALLOWANCE. The admin spends theirs on three
+    -- different players and is refused on the fourth -- by the count, which is
+    -- the rule the reward gate must not have touched.
+    for _, name in ipairs({ 'Mark', 'Plain', 'Extra' }) do
+        fired, sent = {}, {}
+        fire(BR.Net.REPORT_SUBMIT, 1, {
+            targets = { { id = tokenFor(1, name), category = 'cheating' } },
+        })
+        ok((lastResultFor(1) or {}).ok == true,
+            ('an admin may report %s, spending one of three submissions'):format(name),
+            tostring((lastResultFor(1) or {}).refused))
+    end
+
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 1, {
+        targets = { { id = tokenFor(1, 'Mark'), category = 'cheating' } },
+    })
+    local spent = lastResultFor(1)
+    ok(spent ~= nil and spent.ok == false
+       and tostring(spent.refused):find('all 3 reports', 1, true) ~= nil,
+        'and the fourth is refused by the allowance, exactly as anybody else is',
+        spent and tostring(spent.refused) or 'nil')
+
+    -- ===================================================================== --
+    -- (8) THE ANSWER IS CACHED, AND STALENESS SERVES RATHER THAN EXPIRES
+    -- ===================================================================== --
+    --
+    -- Two failures pull in opposite directions. A read per attempt puts
+    -- DynamoDB behind an unauthenticated net event; an answer that never
+    -- expires is a grant change that never lands.
+    local m5 = four('sdCacheBoss', 'sdCacheMark', 'sdCachePlain', 'sdCacheExtra')
+    reply(lic('sdCacheBoss'), { SCOPE }, {})
+    reply(lic('sdCacheMark'), {}, {})
+
+    fired, sent = {}, {}
+    for _, name in ipairs({ 'Mark', 'Plain', 'Extra' }) do
+        fire(BR.Net.REPORT_SUBMIT, 1, {
+            targets = { { id = tokenFor(1, name), category = 'cheating' } },
+        })
+        listSeenBy(1)
+    end
+    ok(asksAbout(lic('sdCacheBoss')) == 0,
+        'three reports and three panel refreshes ask DynamoDB nothing',
+        tostring(asksAbout(lic('sdCacheBoss'))))
+    ok(#firedOf('br:ringmaster:incident') == 3 and #claims() == 0,
+        'while filing all three cases and earning nothing for any of them',
+        ('%d cases, %d claims'):format(#firedOf('br:ringmaster:incident'), #claims()))
+
+    -- THE CLOCK MOVES PAST THE FRESHNESS WINDOW. Stale means "ask again AND go
+    -- on using what we have", never "forget" -- expiring would fail back to
+    -- unknown, which PAYS, handing an admin a rewarded report every five
+    -- minutes on a timer.
+    local m6 = four('sdStaleBoss', 'sdStaleMark', 'sdStalePlain', 'sdStaleExtra')
+    reply(lic('sdStaleBoss'), { SCOPE }, {})
+    fakeTime = fakeTime + (5 * 60 * 1000) + 1
+
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 1, {
+        targets = { { id = tokenFor(1, 'Mark'), category = 'cheating' } },
+    })
+    ok(#firedOf('br:ringmaster:incident') == 1 and #claims() == 0,
+        'a stale answer still withholds the reward rather than expiring into a payout',
+        ('%d cases, %d claims'):format(#firedOf('br:ringmaster:incident'), #claims()))
+    ok(asksAbout(lic('sdStaleBoss')) >= 1,
+        'and the staleness is what triggers the next read',
+        tostring(asksAbout(lic('sdStaleBoss'))))
+
+    -- AND A REVOKED GRANT LANDS. The same license, answered with an empty scope
+    -- list and NO error, is an ordinary player again -- which is the direction
+    -- the freshness window exists for.
+    ok(reply(lic('sdStaleBoss'), {}, {}), 'the refreshed read is answered')
+    ok(BR.Grants.holds(lic('sdStaleBoss'), SCOPE) == false,
+        'a revoked grant reads as revoked',
+        tostring(BR.Grants.holds(lic('sdStaleBoss'), SCOPE)))
+
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_SUBMIT, 1, {
+        targets = { { id = tokenFor(1, 'Plain'), category = 'cheating' } },
+    })
+    fire('br:incident:filed', nil, {
+        incidentId = 'inc-sd-stale', matchId = m6.id,
+        subjectLicense = lic('sdStalePlain'), reporterLicense = lic('sdStaleBoss'),
+    })
+    ok((claims()[1] or {}).license == lic('sdStaleBoss'),
+        'and they are paid again',
+        (claims()[1] or {}).license or 'no claim')
+
+    -- ===================================================================== --
+    -- (9) THE CACHE IS BOUNDED BY WHO IS CONNECTED
+    -- ===================================================================== --
+    --
+    -- Nothing asks about a license that is not connected -- a reporter has to be
+    -- in a match -- so a departed player's row is dead weight for the rest of
+    -- the server's uptime. This free is the only thing stopping the table
+    -- growing with everybody who has ever joined, and deleting it changes
+    -- nothing any other assertion could see.
+    local before = BR.Grants.stats().known
+    leave(1)
+    local after = BR.Grants.stats().known
+    ok(after == before - 1,
+        'a player who disconnects takes their cached grant with them',
+        ('%d -> %d'):format(before, after))
+
+    fired = {}
+    licenseOf[1] = 'sdStaleBoss'
+    join(1, 'Boss')
+    ok(asksAbout(lic('sdStaleBoss')) == 1,
+        'and is asked about afresh on the way back in',
+        tostring(asksAbout(lic('sdStaleBoss'))))
+
+    SetTimeout = function() end
+    ok(m5 ~= nil, 'the fixtures built their matches')
+end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then

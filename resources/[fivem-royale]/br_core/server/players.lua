@@ -178,6 +178,15 @@ end
 --- claim keyed on nobody would sit on the reward queue until its age cap
 --- expired it. Only the two call sites below emit this, and both are on the
 --- player-report path.
+---
+--- AND NEITHER DOES AN ADMIN WHO COULD RESOLVE THE CASE (#168 self-dealing).
+--- THE GATE IS NOT IN HERE, AND THAT IS DELIBERATE: this function takes an
+--- incident id and a license, and nothing in that pair says at what moment the
+--- reward was earned. The rule is about report time -- see the block above
+--- `earnsRewards` -- and the opening path calls this from the DynamoDB
+--- acknowledgement seconds later, so a check placed here would silently be a
+--- payment-time rule for one of the three paths and a report-time rule for the
+--- other two. Every caller decides before calling.
 local function claimReward(incidentId, license, matchId)
     if type(incidentId) ~= 'string' or incidentId == '' then return end
     if type(license) ~= 'string' or license == '' then return end
@@ -186,6 +195,158 @@ local function claimReward(incidentId, license, matchId)
         license    = license,
         matchId    = matchId,
     })
+end
+
+--[[
+    ADMINS REPORT LIKE ANYBODY ELSE AND ARE NEVER PAID FOR IT (#168 self-dealing).
+
+    OWNER, having first asked for the report itself to be blocked and then
+    changed their mind about it: "hmmm maybe instead of blocking admins from
+    reporting we should just block them from getting paid. Can we do that
+    instead?" And, unprompted, about the second path: "also remember admins can
+    corroborate. they should still not be paid though."
+
+    ═══ WHAT THE EXPLOIT IS, BECAUSE IT DECIDES WHO IS AFFECTED ═══
+
+    An accurate report pays 250 Volts (br_stats/server/awards.lua), and what
+    makes a report "accurate" is a VERDICT written in the console. So the loop
+    needs two halves: file the report, then resolve it with an action. Filing is
+    free -- anybody in a match can do it -- and resolving is the half that takes
+    a permission. Two admins can therefore report each other, close each other's
+    cases, and farm the reward. `claimReward` above is where the first half
+    turns into money, and it is the only thing this change touches.
+
+    THE TEST IS THE CAPABILITY, NOT THE STATUS: BR.Grants.RESOLVE_INCIDENTS,
+    argued at length where that constant is defined. A `spectate` or `notify`
+    account cannot write a verdict, cannot pay itself, and is an ordinary player
+    here -- which is right, because an admin who cannot resolve anything is
+    simply a witness with a badge.
+
+    ═══ WHAT DOES NOT CHANGE, WHICH IS EVERYTHING EXCEPT THE MONEY ═══
+
+    This is the half that is easy to get wrong by being helpful, so it is listed
+    rather than implied. An admin's report or corroboration still:
+
+      * opens a real case, or attaches to the one that exists, carrying the same
+        evidence and the same category
+      * moves `seq` and the corroborator count on that case, so the "how many
+        people have now said this" figure an admin reads in the queue counts
+        them like anybody else
+      * spends their own per-match slots -- `usage.count`, `usage.named`,
+        `usage.corroborated` -- because the limits exist to stop spam, not to
+        meter payment
+      * gets the same acknowledgement, word for word
+
+    THE LAST ONE IS A LEAK RULE AND NOT A COURTESY. A different answer for an
+    admin is a probe: any player who could compare two responses would learn
+    which accounts hold moderation grants. This file already refuses to let a
+    reporter tell "opened a case" from "corroborated one" for the same class of
+    reason, and the corroboration handler refuses to say why it declined. The
+    same property has to survive this change, and the way it survives is that
+    nothing on the wire moves at all.
+
+    NO HELPER TEXT EITHER (standing owner rule). Nobody is told they were not
+    paid. There is no new message anywhere in this change.
+
+    AND AN ADMIN IS STILL A SUBJECT. Nothing on the reported side asks this
+    question. An admin can be reported, corroborated against, flagged by the
+    anticheat, and the player who reported them is paid normally.
+
+    ═══ WHICH MOMENT COUNTS: REPORT TIME, NOT PAYMENT TIME ═══
+
+    The reward is not paid when the report is filed. Path 1 below queues the
+    reporter on `awaiting` and pays seconds later off the DynamoDB
+    acknowledgement; and even then br_stats only records a CLAIM, which is paid
+    days later when a human resolves the case. So there are two honest places to
+    ask "is this person an admin", and they disagree:
+
+      AT PAYMENT TIME  the sweep in br_stats already reads DynamoDB, so this is
+                       nearly free. But it re-judges a past act by a present
+                       fact. Somebody who reported a cheater as an ordinary
+                       player on Monday and was made a moderator on Wednesday
+                       loses a reward they fairly earned -- and somebody who
+                       filed as an admin and resigned gets paid for the exact
+                       act this rule exists to stop.
+
+      AT REPORT TIME   the conflict of interest is a fact about the moment of
+                       filing: could this person have arranged the verdict that
+                       pays them, when they chose to file? A later grant edit
+                       cannot make that answer wrong, in either direction.
+
+    REPORT TIME, and the implementation follows from it: the answer is resolved
+    once, up front, and RECORDED BY NOT CREATING A CLAIM AT ALL. There is no
+    stored field, which is the part worth noticing -- the absence of a
+    `br:report:claim` IS the record, it is durable because nothing downstream
+    ever existed to reconsider, and it needs no migration and no new column on
+    an incident. br_stats is not modified by this change and does not know the
+    rule exists.
+
+    IT ALSO KEEPS THE RULE IN ONE PLACE. Adding a second check in the sweep
+    would reintroduce the payment-time problem for anybody it caught, so it is
+    deliberately NOT defence in depth -- two checks at two moments would be two
+    different rules.
+
+    ═══ WHEN THE GRANTS READ IS UNAVAILABLE: PAY ═══
+
+    `BR.Grants.holds` answers nil when it has never managed to read a license's
+    row -- br_ddb absent, DynamoDB unreachable, or a report filed in the first
+    seconds after a br_core restart. The two failures are not symmetric and that
+    is what decides it:
+
+      DO NOT PAY  an ORDINARY player -- which is nearly everybody -- does the
+                  right thing, reports a cheater, and silently earns nothing.
+                  They are never told, there is nothing to appeal to, and the
+                  feature quietly stops working during exactly the outage nobody
+                  is watching for. The harm lands on somebody innocent.
+
+      PAY         an admin earns 250 Volts they should not have. That is a soft
+                  in-game currency, going to somebody who already holds
+                  moderation powers, and they still had to get a colleague to
+                  write a verdict in Ringmaster -- which is authorised
+                  console-side and lands in the audit log.
+
+    PAY. The cost of guessing wrong in one direction is a player wronged; in the
+    other it is 250 Volts and an audit trail. It is also rare by construction:
+    BR.Grants primes at connect, minutes before anybody can report.
+
+    NEVER SILENT, THOUGH. An unresolved check is this rule not being applied, so
+    it gets a log line naming the license -- otherwise the fail-open window is
+    invisible for exactly as long as it is open.
+]]
+
+--- Does a report filed by this license, right now, earn its 250 Volts?
+---
+--- @param license string|nil
+--- @param what string    which path is asking, for the log line
+--- @return boolean
+local function earnsRewards(license, what)
+    local holds = BR.Grants
+        and BR.Grants.holds(license, BR.Grants.RESOLVE_INCIDENTS)
+
+    -- COMPARED AGAINST `true` AND `nil` EXPLICITLY, never tested for
+    -- truthiness. There are three answers here and TWO OF THEM ARE FALSY:
+    -- `false` means "we read the row and they are an ordinary player", `nil`
+    -- means "we never got an answer at all", and they lead to the same outcome
+    -- for opposite reasons -- one is the rule applying, the other is the rule
+    -- failing open. Collapsing them would lose the log line that is the only
+    -- evidence the second ever happened. This project has shipped the
+    -- truthiness version of this mistake four times; see the `didHit` note in
+    -- br_core/client/dbno.lua.
+    if holds == true then
+        print(('[br_core] no reward: %s holds %s at the time of filing (%s)')
+            :format(tostring(license), BR.Grants.RESOLVE_INCIDENTS, what))
+        return false
+    end
+
+    if holds == nil then
+        -- LOUD, AND IT NAMES THE LICENSE, so a run of these can be matched
+        -- against a grants row by hand afterwards. This line is the fail-open
+        -- window standing open.
+        print(('^3[br_core] admin check unresolved for %s -- paying %s anyway^7')
+            :format(tostring(license), what))
+    end
+
+    return true
 end
 
 --- The running record for one subject in one match.
@@ -686,6 +847,26 @@ AddEventHandler(BR.Net.REPORT_SUBMIT, function(data)
         return
     end
 
+    -- WILL THIS SUBMISSION EARN ANYTHING (#168 self-dealing)?
+    --
+    -- ASKED ONCE, HERE, RATHER THAN AT EACH REWARD CALL SITE BELOW. This is
+    -- "report time" in the argument above `earnsRewards` about which moment
+    -- counts: it is settled before a single case is opened, against the
+    -- reporter the server itself identified, and it is one answer for the whole
+    -- press of Send. Asking per target would let one submission be half paid if
+    -- a grant landed between two rows of it.
+    --
+    -- AND ONLY WHEN SOMETHING IS ACTUALLY GOING TO BE FILED, so a submission
+    -- already refused above -- the allowance, a repeated target, nothing
+    -- resolvable -- does not put a line in the log about a reward that was
+    -- never in question.
+    --
+    -- IT CHANGES NOTHING ELSE. Not the limit, not the dedupe, not whether a
+    -- case opens, not the answer the player gets. The only two things it
+    -- reaches are `claimReward` and `awaitAck`.
+    local earns = false
+    if #resolved > 0 then earns = earnsRewards(reporter, 'panel report') end
+
     -- Reports that went through, whether they opened a case or appended to one.
     -- DELIBERATELY NOT CALLED `filed`: a corroboration files nothing, and the
     -- distinction is one the reporter must never be able to see.
@@ -750,11 +931,20 @@ AddEventHandler(BR.Net.REPORT_SUBMIT, function(data)
             -- whoever got there first teaches everybody to race the panel
             -- instead of watching the fight. The id is already in hand here,
             -- unlike the opening path below, so the claim is immediate.
-            claimReward(prior[#prior], reporter, me.matchId)
+            --
+            -- UNLESS THE REPORTER COULD RESOLVE THE CASE THEY ARE JOINING (#168
+            -- self-dealing). The corroboration itself has ALREADY HAPPENED --
+            -- it is emitted above, it moved `seq` and `s.reports`, and the
+            -- console will show it -- so this is the money and nothing but the
+            -- money. See the block above `earnsRewards`.
+            if earns then
+                claimReward(prior[#prior], reporter, me.matchId)
+            end
 
-            print(('[br_core] report: %s corroborates case %s about %s (report %d, seq %d)')
+            print(('[br_core] report: %s corroborates case %s about %s (report %d, seq %d)%s')
                 :format(tostring(me.name), tostring(prior[#prior]),
-                        tostring(t.name), s.reports, s.seq))
+                        tostring(t.name), s.reports, s.seq,
+                        earns and '' or ' -- unpaid'))
         else
             local payload, why = BR.IncidentBuild.fromReport({
                 license         = t.license,
@@ -777,7 +967,22 @@ AddEventHandler(BR.Net.REPORT_SUBMIT, function(data)
                 -- synchronously inside it -- only the DynamoDB round trip is
                 -- asynchronous -- so anything registered afterwards would be a
                 -- race against a write that is already in flight.
-                awaitAck(me.matchId, t.license, reporter)
+                --
+                -- AND NOT QUEUED AT ALL WHEN THE REPORTER CANNOT EARN (#168
+                -- self-dealing). This queue exists for one purpose -- to name
+                -- who is owed when the id comes back -- so the way to not pay
+                -- somebody is to never put them on it. `takeAck` then answers
+                -- nil for this case, which is the SAME state an anticheat
+                -- filing produces and which the acknowledgement handler already
+                -- handles correctly: "a machine-opened incident registers no
+                -- debt -- correct, because there is nobody to pay."
+                --
+                -- THE CASE IS FILED EITHER WAY, on the very next line. Nothing
+                -- about the incident, its evidence, its category or its
+                -- reporter field depends on this.
+                if earns then
+                    awaitAck(me.matchId, t.license, reporter)
+                end
                 TriggerEvent('br:ringmaster:incident', payload)
             else
                 -- LOUD, and the count is rolled back: `fromReport` refuses a
@@ -833,6 +1038,15 @@ end)
 -- opened this case, so a machine-opened incident registers no debt -- correct,
 -- because there is nobody to pay. A human who later corroborates it is claimed
 -- on the corroboration path above, against this same id.
+--
+-- AND NOTHING HAPPENS FOR A CASE AN ADMIN OPENED (#168 self-dealing), by the
+-- same mechanism and deliberately not by a second test here. The submit path
+-- decided at REPORT TIME not to queue them, so `takeAck` finds an empty queue
+-- and this handler cannot tell the two silences apart -- which is the point.
+-- Asking "is this reporter an admin" HERE would be asking seconds later, on the
+-- acknowledgement, and would quietly make one of the three reward paths a
+-- payment-time rule while the other two stayed report-time. See the block above
+-- `earnsRewards`.
 AddEventHandler('br:incident:filed', function(ack)
     if type(ack) ~= 'table' then return end
     local reporter = takeAck(ack.matchId, ack.subjectLicense)
@@ -944,6 +1158,22 @@ local function corroborationFor(src)
     local myBy = BR.Identity and BR.Identity.ofPlayer(src)
     local myLicense = myBy and BR.Identity.qualified('license', myBy.license)
     if not myLicense then return nil end
+
+    -- THERE IS DELIBERATELY NO GRANT CHECK HERE, AND THIS PARAGRAPH IS THE
+    -- REASON SOMEBODY WILL NOT ADD ONE (#168 self-dealing).
+    --
+    -- Owner, unprompted: "also remember admins can corroborate. they should
+    -- still not be paid though." An admin's corroboration is a real
+    -- corroboration in every respect except the money -- it attaches to the
+    -- case, it moves `seq` and the corroborator count, it spends their own
+    -- per-match slot, and it is evidence like anybody else's. Refusing it here
+    -- would throw all of that away to stop a payment, and this function is the
+    -- one that decides whether the PROMPT is even offered, so a check here
+    -- would also silently tell an admin that the person who killed them has no
+    -- case open.
+    --
+    -- The payment is gated at `claimReward` in the handler below, which is the
+    -- only line that has to change.
 
     -- DOES THIS PLAYER HAVE A CASE OPEN AT ALL -- NOT "IN THIS ROUND" (#177).
     --
@@ -1068,7 +1298,27 @@ AddEventHandler(BR.Net.REPORT_CORROBORATE, function()
     -- PAID LIKE ANY OTHER CORROBORATOR (#168). The id is already in hand, so
     -- the claim is immediate -- the acknowledgement dance the opening path needs
     -- does not apply to a case that already exists.
-    claimReward(incidentId, c.myLicense, c.me.matchId)
+    --
+    -- UNLESS THEY COULD RESOLVE IT THEMSELVES (#168 self-dealing). Owner: "also
+    -- remember admins can corroborate. they should still not be paid though."
+    --
+    -- AND THE ORDER OF THIS FILE IS THE POINT. Everything above this line has
+    -- already run for an admin exactly as it runs for anybody else: the
+    -- corroboration is emitted, `seq` and `s.reports` have moved, and the case
+    -- carries their answer. Everything below it runs too -- the slots are spent
+    -- and the acknowledgement is identical. This one `if` is the entire
+    -- difference between an admin and a player, and it is deliberately placed
+    -- where an early return could not have gone.
+    --
+    -- ASKED HERE RATHER THAN IN `corroborationFor`, which is where a check
+    -- WOULD have gone if this were about refusing the action. It is not:
+    -- `corroborationFor` also decides whether the PROMPT is shown, so a test
+    -- there would tell an admin -- by silence -- that the player who killed
+    -- them has no case open. That is the enumeration leak this handler's own
+    -- header spends a paragraph refusing to open.
+    if earnsRewards(c.myLicense, 'kill-prompt corroboration') then
+        claimReward(incidentId, c.myLicense, c.me.matchId)
+    end
 
     -- SPENT, AND WHICH SLOT IT SPENDS DEPENDS ON WHOSE MATCH THE CASE IS.
     --

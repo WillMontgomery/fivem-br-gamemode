@@ -358,6 +358,21 @@ local function announceReporting(matchId, subjectLicense, reporterLicense)
                 return
             end
 
+            -- AN ADMIN IS TOLD, LIKE EVERYBODY ELSE (#168 self-dealing).
+            --
+            -- This paragraph exists because the obvious reading of that issue
+            -- says otherwise, and somebody will come back here. Admins are no
+            -- longer PAID for a report (server/players.lua), but they still
+            -- file one, it still opens a real case, and that case still carries
+            -- evidence and still counts for everyone else -- so an admin who
+            -- spots a cheater mid-match is exactly the audience this nudge is
+            -- for. Withholding it would take away a genuine reporter to protect
+            -- a reward they are not being offered.
+            --
+            -- The one sentence that is now slightly wrong for them is the last
+            -- clause, "all accurate reports are rewarded with Volts". It is the
+            -- owner's text, verbatim, and rewording it for an audience of a
+            -- handful is not a call this file gets to make.
             TriggerClientEvent(BR.Net.REPORT_HINT, src, { kind = 'exists' })
             told = told + 1
         end)
