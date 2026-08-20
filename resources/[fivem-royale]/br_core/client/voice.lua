@@ -1346,10 +1346,9 @@ AddEventHandler('br:settings:changed', function(s)
     BR.Voice.apply()
 end)
 
--- ------------------------------------------------- the start-of-match notice ---
+-- ----------------------------------------------------- the once-a-session notice ---
 --
--- WHAT THE PLAYER IS TOLD, ONCE, AT THE START OF EVERY MATCH, IN THE OWNER'S
--- OWN WORDS:
+-- WHAT THE PLAYER IS TOLD, ONCE PER SESSION, IN THE OWNER'S OWN WORDS:
 --
 --   "Voice chat is set to [mode]. Hold [button] to speak. You can change your
 --    voice preference and keybinds in Settings."
@@ -1358,17 +1357,44 @@ end)
 -- thing it replaces was a permanent string across the bottom of the screen
 -- saying to hold a key -- furniture, which is not read, and which the owner
 -- asked to be rid of (see the block above BR.Voice.statusFor). This is said
--- when it is news, at the moment a player has just been told which kind of
--- match they are in, and then it goes away.
+-- when it is news, and then it goes away.
 --
--- WHY WARMUP AND NOT THE BUS. WARMUP is the first state in which the match
--- kind is known, which is the fact the mode is DERIVED from -- a notice fired
--- earlier would be naming the lobby's answer. It is also the one moment in a
--- round when nobody is being shot at.
+-- ONCE PER SESSION, NOT ONCE PER MATCH, AND THAT IS A CORRECTION. It shipped
+-- per-match and the owner's next word on it was: "let's make the 'your voice
+-- chat is set to ...' notification only happen once per session. Not per
+-- match." A sentence you have already read is furniture on its fourth
+-- appearance in exactly the way the HUD line was on its first.
+--
+-- WHY WARMUP IS STILL THE TRIGGER. It is the first state in which the match
+-- kind is known, and the match kind is what the mode is DERIVED from -- a
+-- notice fired earlier would be naming the lobby's answer to a question about
+-- a match. It is also the one moment in a round when nobody is being shot at.
+-- A player who connects INTO a match already past warmup therefore waits for
+-- the next one; that is one match late, once, and it is not worth a second
+-- trigger path to close.
 --
 -- IT IS NOT SHOWN ON 'off', by the owner's explicit instruction. A player who
--- has turned voice off does not need it announced to them every match; that is
--- the same rule pushVoice already applies to the toast (`st.chosen`).
+-- has turned voice off does not need it announced to them; that is the same
+-- rule pushVoice already applies to the toast (`st.chosen`).
+--
+-- ...AND 'off' DOES NOT SPEND THE SESSION'S ONE NOTICE. THIS IS THE ONE PLACE
+-- "once per session" NEEDS SAYING PRECISELY: the latch is spent when the
+-- notice is DELIVERED, never when it was merely due. A player who spends their
+-- first three matches on 'off' and then switches to nearby has not been told
+-- anything yet -- and the sentence they have not heard is the one naming the
+-- push-to-talk key, which is the whole reason the HUD line could be removed.
+-- Latching on the opportunity rather than on the delivery would silently cost
+-- exactly the players who most need it.
+--
+-- A PREFERENCE CHANGE DOES NOT RE-ARM IT, DELIBERATELY, and the reason is
+-- concrete rather than a preference about noise. The screen a player changes
+-- their voice mode on is ALREADY SHOWING the same information: Settings, Voice
+-- renders `voiceDetail` straight off BR.Voice.statusFor, which for the radio
+-- says "Hold N to talk. The key is this game's -- rebind it in Settings,
+-- Controls, under Comms." They are reading the sentence at the moment they
+-- make the change. Re-announcing it on the next match would be telling
+-- somebody what they just did, and it would quietly restore the per-match
+-- behaviour for anybody who touches Settings between rounds.
 --
 -- AND IT NAMES THE REAL BINDING. BR.Voice.pttKeyLabel() reads our own key
 -- layer, so a player who moved push-to-talk to V is told V. When the action is
@@ -1401,10 +1427,27 @@ function BR.Voice.noticeFor(mode, key)
         .. 'and keybinds in Settings.'):format(label, hold)
 end
 
---- The kind of match this notice was last fired for, so it fires once per
---- match rather than once per state broadcast. `nil` means "not yet", which is
---- the state a fresh client and a finished match are both in.
-local noticedFor = nil
+--- HAS THIS SESSION ALREADY BEEN TOLD?
+---
+--- A FILE-LOCAL BOOLEAN, AND ITS LIFETIME IS THE FEATURE RATHER THAN AN
+--- ACCIDENT. It lives as long as this client's Lua state does, which is exactly
+--- what "session" means to a player: it is false again when they reconnect, and
+--- never in between however many matches they play.
+---
+--- WHAT ELSE RESETS IT, SAID OUT LOUD: RESTARTING br_core. That is a resource
+--- reload, it re-runs this whole file, and the player is told once more. It is
+--- an admin or developer action, it already re-installs our rules into
+--- pma-voice and re-pushes settings, and the cost of getting it "wrong" is one
+--- twelve-second toast.
+---
+--- SURVIVING A RESTART WOULD COST REAL MACHINERY AND BUY NOTHING. KVP is the
+--- only client-side storage there is and its lifetime is the MACHINE, not the
+--- session -- so a stored flag would suppress the notice forever, on every
+--- future connection, which is a worse answer than showing it twice. Making it
+--- mean "this session" needs a session token to compare against, and nothing in
+--- this client has one; inventing one would be a new concept, persisted, for a
+--- case that only arises when somebody restarts a resource by hand.
+local noticed = false
 
 RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)
@@ -1415,28 +1458,32 @@ AddEventHandler(BR.Net.STATE, function(d)
     -- to the squad one, or back. apply() is idempotent and cheap; calling it
     -- on every transition costs one comparison inside applyRadio and removes
     -- the entire class of "the mode was right and the match had changed".
+    --
+    -- THIS HALF IS UNCONDITIONAL AND HAS NOTHING TO DO WITH THE NOTICE, which
+    -- is why it is above the return below rather than beside it. The notice is
+    -- said once a session; the routing has to be right in every match.
     BR.Voice.apply()
 
-    if d.state ~= BR.MatchState.WARMUP then
-        -- ARMED BY LEAVING, rather than by any particular state. Anything that
-        -- is not the start of a match re-arms the notice for the next one, so
-        -- a player who plays four rounds is told four times and a player who
-        -- sits in one warmup through two state broadcasts is told once.
-        if d.state ~= BR.MatchState.BUS then noticedFor = nil end
-        return
-    end
-
-    local kind = d.mode or (BR.State and BR.State.match and BR.State.match.mode)
-    if noticedFor == kind then return end
-    noticedFor = kind
+    -- NOTHING RE-ARMS IT. There is no `noticed = false` anywhere below, and its
+    -- absence is the whole of "once per session" -- the previous version reset
+    -- the latch on every state that was not the start of a match, which is what
+    -- made it once per MATCH.
+    if noticed or d.state ~= BR.MatchState.WARMUP then return end
 
     local text = BR.Voice.noticeFor(BR.Voice.mode(), BR.Voice.pttKeyLabel())
+    -- SPENT ON DELIVERY, NOT ON THE OPPORTUNITY. `text` is nil only for 'off',
+    -- and a player who was on 'off' has been told nothing -- so there is
+    -- nothing to have used up. Setting the latch before this line would mean a
+    -- player who starts their session muted never learns the push-to-talk key
+    -- at all. See the block above.
     if not text then return end
+    noticed = true
+
     TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
         text = text,
         tone = 'info',
-        -- Long, because it is three sentences and it is read once. Keyed, so a
-        -- second one cannot stack under the first.
+        -- Long, because it is three sentences and this is the only time this
+        -- session they will be offered. Keyed, so nothing can stack under it.
         ms   = 12000,
         key  = 'voice.start',
     })

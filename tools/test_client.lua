@@ -3370,12 +3370,25 @@ do
        'an unbound push-to-talk says so rather than inventing a key',
        tostring(unbound))
 
-    -- THE SURFACE. It has to actually reach the player, once per match, and
-    -- WARMUP is the first state in which the match kind -- which the mode is
-    -- derived from -- is known.
+    -- ==================================================================== --
+    -- THE SURFACE, AS ONE SESSION FROM START TO FINISH.
+    --
+    -- ONE SEQUENCE RATHER THAN SIX INDEPENDENT SCENARIOS, AND THAT IS FORCED
+    -- BY THE THING UNDER TEST. "Once per session" is a latch with no reset --
+    -- deliberately, that is the whole feature -- so there is no way to give
+    -- each assertion a fresh session short of reloading the file, and a
+    -- test-only reset would be a second mechanism that could disagree with the
+    -- real one. Read top to bottom: this is one player, connecting once, and
+    -- every later assertion depends on what the earlier ones did or did not
+    -- spend.
+    --
+    -- IT STARTS ON 'off' ON PURPOSE. That ordering is the only way to prove
+    -- the load-bearing half of the rule: a suppressed notice must not spend
+    -- the session's one delivery. Run the same assertions the other way round
+    -- and every one of them passes with the latch spent on the opportunity,
+    -- which is the bug.
     nobodyElse()
     standAt(0, 0)
-    voiceApply(BR.VoiceMode.NEARBY, nil, nil, 1)
 
     local function lastToastText()
         for i = #events, 1, -1 do
@@ -3387,43 +3400,85 @@ do
         return nil
     end
 
-    events = {}
-    fire(BR.Net.STATE, { state = BR.MatchState.WARMUP,
-                         mode = BR.Mode.SQUAD.key })
-    local shown = lastToastText()
-    ok(type(shown) == 'string' and shown:find('Voice chat is set to', 1, true) ~= nil,
-       'the match starting is what says it', tostring(shown))
+    --- One match start, and whatever it said. `mode` is the MATCH kind.
+    local function warmup()
+        events = {}
+        fire(BR.Net.STATE, { state = BR.MatchState.WARMUP,
+                             mode = BR.Mode.SQUAD.key })
+        local t = lastToastText()
+        if type(t) == 'string' and t:find('Voice chat is set to', 1, true) then
+            return t
+        end
+        return nil
+    end
 
-    -- ONCE PER MATCH, NOT ONCE PER BROADCAST. The digest re-fires state on any
-    -- change, and a notice repeated every few seconds is the furniture this
-    -- was built to replace.
-    events = {}
-    fire(BR.Net.STATE, { state = BR.MatchState.WARMUP,
-                         mode = BR.Mode.SQUAD.key })
-    ok(lastToastText() == nil,
-       'and a second WARMUP broadcast for the same match says it again to '
-           .. 'nobody', tostring(lastToastText()))
+    --- The round ends. Nothing about this may re-arm the notice; it is fired
+    --- between matches precisely because the previous version reset on it.
+    local function matchOver()
+        fire(BR.Net.STATE, { state = BR.MatchState.ENDED,
+                             mode = BR.Mode.SQUAD.key })
+    end
 
-    -- AND IT RE-ARMS FOR THE NEXT ROUND.
-    fire(BR.Net.STATE, { state = BR.MatchState.ENDED,
-                         mode = BR.Mode.SQUAD.key })
-    events = {}
-    fire(BR.Net.STATE, { state = BR.MatchState.WARMUP,
-                         mode = BR.Mode.SQUAD.key })
-    ok(type(lastToastText()) == 'string',
-       'while the next match gets its own', tostring(lastToastText()))
-
-    -- OFF, ON THE SURFACE AS WELL AS IN THE FUNCTION.
+    -- 1. A SESSION THAT BEGINS MUTED SAYS NOTHING, TWICE OVER.
     voiceApply(BR.VoiceMode.OFF, nil, nil, 1)
-    fire(BR.Net.STATE, { state = BR.MatchState.ENDED,
-                         mode = BR.Mode.SQUAD.key })
-    events = {}
-    fire(BR.Net.STATE, { state = BR.MatchState.WARMUP,
-                         mode = BR.Mode.SQUAD.key })
-    local offText = lastToastText()
-    ok(offText == nil or offText:find('Voice chat is set to', 1, true) == nil,
-       'and a player who turned voice off is not told about it every match',
-       tostring(offText))
+    ok(warmup() == nil,
+       "a player who has voice off is not told about it -- the owner's "
+           .. 'explicit instruction', 'a notice fired on off')
+    matchOver()
+    ok(warmup() == nil, 'and is still not told in their second match',
+       'a notice fired on off')
+
+    -- 2. ...AND HAS SPENT NOTHING. THIS IS THE ASSERTION THE WHOLE ORDERING
+    -- EXISTS FOR. The latch is spent on DELIVERY, never on the opportunity, so
+    -- switching voice on for the first time still earns the sentence -- and
+    -- the sentence names the push-to-talk key, which is the one fact the
+    -- removed HUD line used to carry.
+    matchOver()
+    voiceMode(BR.VoiceMode.NEARBY)
+    local shown = warmup()
+    ok(type(shown) == 'string',
+       'and turning voice ON later still earns the notice -- being suppressed '
+           .. 'is not the same as having been shown',
+       tostring(shown))
+
+    -- 3. ONCE PER BROADCAST IS NOT ENOUGH. The digest re-fires STATE on any
+    -- change, so the same warmup can arrive more than once.
+    ok(warmup() == nil,
+       'a second WARMUP broadcast inside the same match says it again to '
+           .. 'nobody', 'the notice repeated within one match')
+
+    -- 4. AND ONCE PER SESSION, NOT ONCE PER MATCH. THIS IS THIS ROUND'S
+    -- CHANGE, and the assertion here previously said the opposite -- "while
+    -- the next match gets its own" -- which was right until the owner played
+    -- four rounds with it. Verbatim: "let's make the 'your voice chat is set
+    -- to ...' notification only happen once per session. Not per match."
+    matchOver()
+    ok(warmup() == nil,
+       'and the NEXT match does not get its own -- once per session is the '
+           .. 'whole change, and nothing re-arms the latch',
+       'the notice fired again in a later match')
+    matchOver()
+    ok(warmup() == nil, 'nor the one after that',
+       'the notice fired again in a later match')
+
+    -- 5. A PREFERENCE CHANGE DOES NOT RE-ARM IT EITHER, and that is a decision
+    -- rather than a consequence. A player who changes their voice mode is
+    -- standing on the settings screen, which is already rendering the same
+    -- information (`voiceDetail`, off BR.Voice.statusFor). Re-announcing it
+    -- next match would tell them what they just did -- and would quietly
+    -- restore per-match behaviour for anybody who opens Settings between
+    -- rounds, which is the behaviour being removed.
+    matchOver()
+    voiceMode(BR.VoiceMode.SQUAD)
+    ok(warmup() == nil,
+       'changing the voice mode mid-session does not re-announce it -- the '
+           .. 'screen they changed it on was already saying it',
+       'a preference change re-armed the notice')
+    matchOver()
+    voiceMode(BR.VoiceMode.OFF)
+    voiceMode(BR.VoiceMode.NEARBY)
+    ok(warmup() == nil, 'and neither does turning it off and back on',
+       'a preference change re-armed the notice')
 
     -- THE MATCH KIND CHANGING RE-DERIVES THE MODE, which is the whole reason
     -- there are two saved preferences. A player whose solo preference is Off
