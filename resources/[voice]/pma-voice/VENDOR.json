@@ -1,0 +1,92 @@
+{
+  "_comment": [
+    "THIRD-PARTY VENDORED SOURCE. This directory is not ours. It is an upstream",
+    "release copied in whole, plus the local patches listed below and nothing",
+    "else -- no reformatting, no restructuring, no 'improvements'. Every byte",
+    "outside a BR-PATCH block is byte-identical to `git archive` of the tag named",
+    "in `commit`, so the next upstream bump is: re-extract the new tag over this",
+    "directory, then re-apply these patches. Keeping that true is the whole",
+    "reason this file exists.",
+    "",
+    "tools/verify.sh reads this file. The `vendored resources` gate checks that",
+    "the LICENSE is present, that every BR-PATCH marker in the tree is declared",
+    "here and every patch declared here is present in the tree, and that",
+    "tools/deploy.sh actually syncs this resource to the box -- because shipping",
+    "a resource that never reaches the server is a failure mode this project has",
+    "already had twice."
+  ],
+
+  "resource": "pma-voice",
+  "upstream": "https://github.com/AvarianKnight/pma-voice",
+  "version": "v7.0.2-rc3",
+  "commit": "dc099d3f599c1bb96ac4c9cf0ef6e40d91e2042d",
+  "commit_date": "2025-04-19",
+  "license": "MIT",
+  "license_file": "LICENSE",
+  "license_holder": "Dillon Skaggs",
+  "vendored_on": "2026-08-19",
+  "deploy_path": "resources/[voice]/pma-voice",
+
+  "provenance_check": {
+    "claim": "53 of the 56 files here have the SAME GIT BLOB ID as the upstream tag. The 3 that differ are exactly the 3 files named in `patches` below, and VENDOR.json is the only added file.",
+    "verified_on": "2026-08-19",
+    "how": [
+      "git clone --branch v7.0.2-rc3 --depth 1 https://github.com/AvarianKnight/pma-voice.git /tmp/pv",
+      "git -C /tmp/pv ls-tree -r --name-only v7.0.2-rc3 | while read -r f; do",
+      "  a=$(git rev-parse \":resources/[voice]/pma-voice/$f\")",
+      "  b=$(git -C /tmp/pv rev-parse \"v7.0.2-rc3:$f\")",
+      "  [ \"$a\" = \"$b\" ] || echo \"DIFFER $f\"",
+      "done"
+    ],
+    "note": "Compare BLOB IDS, not worktree files. Upstream's blobs are LF; on a Windows checkout `git archive` and `git checkout` both hand you CRLF, so a plain `diff` of two worktrees is about your core.autocrlf setting rather than about the code. This repository's .gitattributes normalises to LF, which is what the Linux game box wants and what makes the blob ids line up."
+  },
+
+  "why_vendored": [
+    "Three player-facing faults were unfixable from outside the resource: an",
+    "unconditional debug print, a mic-click chirp with no off switch, and two",
+    "key registrations outside our own key layer. Earlier rounds reported them",
+    "as 'no convar exists, cannot be fixed', which was accepting the wrong",
+    "constraint -- pma-voice is MIT and the source is the fix."
+  ],
+
+  "patches": [
+    {
+      "id": "BR-PATCH 1",
+      "file": "client/init/main.lua",
+      "symbol": "toggleVoice",
+      "what": "Replaced a bare `print(volumes[moduleType])` with logger.verbose.",
+      "why": "It printed a raw unlabelled number ('0.6') into every player's F8 console every time anybody nearby started talking, with no way to turn it off. logger.verbose is this resource's own logger and is gated on voice_debugMode.",
+      "upstream_fixable": "yes -- would be accepted upstream as a bug fix"
+    },
+    {
+      "id": "BR-PATCH 2",
+      "file": "client/init/main.lua",
+      "symbol": "playMicClicks",
+      "what": "Unconditional early return at the top of playMicClicks. The original body is left below it, unmodified.",
+      "why": "The press/release button chirp (ui/mic_click_on.ogg, ui/mic_click_off.ogg) had no on/off convar at all -- only a per-machine KVP and the setVoiceProperty export. Owner asked twice for it to go. The RADIO SUBMIX EFFECT is a different feature (SetAudioSubmixEffectRadioFx, client/init/submix.lua, voice_enableSubmix) and is deliberately untouched -- the owner likes it.",
+      "upstream_fixable": "no -- upstream wants the chirp; a convar for it would be the upstreamable change"
+    },
+    {
+      "id": "BR-PATCH 3a",
+      "file": "client/commands.lua",
+      "symbol": "cycleproximity",
+      "what": "Removed RegisterKeyMapping('cycleproximity', ..., 'F11'). The cycleproximity COMMAND is untouched.",
+      "why": "br_core pushes one sanctioned proximity range via overrideProximityRange(range, true), which already makes the command a no-op -- so the binding was a row in FiveM's keybinding menu, outside our key layer, that this server guarantees does nothing.",
+      "upstream_fixable": "partly -- voice_enableProximityCycle 0 disables the command but still registers the key"
+    },
+    {
+      "id": "BR-PATCH 3b",
+      "file": "client/module/radio.lua",
+      "symbol": "+radiotalk",
+      "what": "Removed RegisterKeyMapping('+radiotalk', ..., 'LMENU'). BOTH RegisterCommand('+radiotalk') AND RegisterCommand('-radiotalk') ARE UNTOUCHED AND MUST STAY THAT WAY.",
+      "why": "Push-to-talk is ours: `brptt`, default N, in br_core/client/keybinds.lua, and br_core/client/voice.lua drives this resource with ExecuteCommand('+radiotalk')/('-radiotalk'). Left Alt was never chosen -- it is voice_defaultRadio's default, inherited by never setting it. Setting that convar would only have moved a binding that is still outside our settings screen and still unmoved for anyone who had already rebound it. DELETING EITHER RegisterCommand MAKES SQUAD VOICE SILENT.",
+      "upstream_fixable": "no -- upstream has no convar to register the command without the key"
+    }
+  ],
+
+  "untouched_on_purpose": [
+    "client/init/submix.lua and the voice_enableSubmix path -- that is the radio VOICE EFFECT, which the owner asked to keep. Only the button click was removed.",
+    "The +radiotalk / -radiotalk COMMANDS -- the squad transmit path.",
+    "voice-ui/ -- the Vue source for ui/js/*. Vendored for provenance and never modified, so the committed bundle still matches the committed source exactly as upstream shipped them. Nothing here rebuilds it."
+  ]
+}

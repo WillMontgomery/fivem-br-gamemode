@@ -108,6 +108,13 @@
 --                    'keyboard', GetConvar('voice_defaultRadio', 'LMENU'))
 --                                    -- pma-voice client/module/radio.lua
 --
+--            THE SECOND LINE IS GONE NOW. pma-voice is vendored at
+--            resources/[voice]/pma-voice and BR-PATCH 3b deleted that
+--            RegisterKeyMapping, so there is no "Talk over Radio" row and no
+--            Left Alt binding. THE FIRST LINE IS UNTOUCHED AND MUST STAY THAT
+--            WAY -- RegisterCommand('+radiotalk') is what this file calls, and
+--            deleting it makes squad voice silent by construction.
+--
 --            pma-voice's radio adds its voice targets when +radiotalk goes
 --            DOWN and calls MumbleClearVoiceTargetPlayers when it comes up.
 --            Nothing else ever puts a squadmate in the target. So the game's
@@ -650,6 +657,19 @@ local function install()
     -- pma-voice's own documented thing, it is recoverable from any server that
     -- sets it back, and it is a smaller price than a chirp the owner has now
     -- asked twice to be rid of.
+    --
+    -- AND SINCE THIS WAS WRITTEN, THE CHIRP HAS BEEN FIXED AT SOURCE. pma-voice
+    -- is vendored at resources/[voice]/pma-voice, and BR-PATCH 2 makes
+    -- playMicClicks() return before it does anything -- so no call site can
+    -- play a click whatever the KVP, this export or those two convars say. The
+    -- whole argument above is now about the BACKSTOP rather than the fix.
+    --
+    -- THE CALL STAYS ANYWAY, and deliberately. It is the only one of the three
+    -- layers that works on a box still running an unvendored pma-voice -- which
+    -- is precisely the state of any box that has not taken the deploy carrying
+    -- the vendored copy. Removing it would also not undo the KVP cost above for
+    -- anybody who has already connected, so removal buys nothing and loses the
+    -- one layer that covers the transition.
     call('setVoiceProperty', 'micClicks', false)
 end
 
@@ -660,7 +680,8 @@ end
 --
 -- Both of them were "fixed" last round by adding a line to server.cfg.example.
 -- server.cfg.example is not a config file. tools/deploy.sh rsyncs
--- resources/[fivem-royale]/ and nothing else, and .gitignore line 33 keeps the
+-- resources/[fivem-royale]/ and the vendored resources in VENDORED_RESOURCES
+-- and nothing else, and .gitignore line 33 keeps the
 -- real server.cfg off this repository entirely -- so a convar added to the
 -- example reaches the box only when a human retypes it. That did not happen,
 -- and the two symptoms in #165 are exactly what their absence looks like.
@@ -784,10 +805,12 @@ end
 -- The squad radio was assigned, the number was right, every member of one
 -- squad had the same one and the server's guard let them all on. What nobody
 -- had ever been told is that pma-voice's radio has its OWN push-to-talk --
--- +radiotalk, 'Talk over Radio', default LMENU -- and that in squad mode the
--- ordinary voice key carries nothing at all, because squad mode turns
--- proximity off. Two people pressed the key the game had taught them, heard
--- silence, and correctly concluded the feature was broken.
+-- +radiotalk, which upstream also bound to a key of its own, 'Talk over Radio'
+-- on LMENU -- and that in squad mode the ordinary voice key carries nothing at
+-- all, because squad mode turns proximity off. Two people pressed the key the
+-- game had taught them, heard silence, and correctly concluded the feature was
+-- broken. (The competing binding is gone: BR-PATCH 3b in the vendored
+-- pma-voice. The +radiotalk COMMAND, which is what this file drives, is not.)
 --
 -- SO SILENCE NOW EXPLAINS ITSELF. This section is one pure function and one
 -- reader for it, and every surface that can tell the player -- the HUD line,

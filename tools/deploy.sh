@@ -58,6 +58,38 @@ PIN_FILE="${BR_PIN_FILE:-$SERVER_ROOT/.branch-pin}"
 # alone, so other gamemodes in [gamemodes] are never touched.
 RESOURCE_GROUP="[fivem-royale]"
 
+# --- vendored third-party resources -------------------------------------------
+#
+# THE SECOND THING THIS SCRIPT SYNCS, AND THE REASON IT HAS TO.
+#
+# Until this list existed, deploy.sh rsynced $RESOURCE_GROUP and nothing else,
+# because resources/ contained nothing else. So a third-party resource vendored
+# into this repository under any other group would have been committed,
+# reviewed, gated and then never reached the box -- source-only, which is a
+# failure mode this project has already had twice, and which produces no error
+# anywhere because the box simply keeps running whatever was already there.
+#
+# EACH ENTRY IS A RESOURCE DIRECTORY, NOT A GROUP, and that is deliberate. The
+# sync below runs one rsync per entry with --delete scoped INSIDE that one
+# resource directory. Syncing "[voice]" as a group instead would put --delete at
+# the category level, where it would remove any OTHER voice resource the
+# operator has installed there -- a sibling this repository has no business
+# deleting and no way to know about.
+#
+# The path is relative to resources/ at BOTH ends: resources/[voice]/pma-voice
+# here becomes $SERVER_ROOT/resources/[voice]/pma-voice there. That is the path
+# pma-voice already occupies on the game box, which is the point -- the deploy
+# REPLACES the operator's copy rather than adding a second one next to it. Two
+# directories both called pma-voice is the "two implementations, nothing
+# asserting only one is active" bug this project keeps shipping.
+#
+# ADDING A VENDORED RESOURCE MEANS ADDING IT HERE. tools/verify.sh fails the
+# build if resources/ contains a VENDOR.json this list does not name, so the
+# source-only failure above cannot recur silently.
+VENDORED_RESOURCES=(
+    "[voice]/pma-voice"
+)
+
 DRY_RUN=0
 STATUS_ONLY=0
 CHECK_PAYLOAD_DIR=""
@@ -392,6 +424,11 @@ if [ "$STATUS_ONLY" -eq 1 ]; then
     echo "  commit:   $COMMIT  $SUBJECT"
     echo "  target:   $TARGET_DIR/$RESOURCE_GROUP"
     [ -d "$TARGET_DIR/$RESOURCE_GROUP" ] && echo "  deployed: yes" || echo "  deployed: no"
+    for v in "${VENDORED_RESOURCES[@]}"; do
+        echo "  vendored: $SERVER_ROOT/resources/$v"
+        [ -d "$SERVER_ROOT/resources/$v" ] \
+            && echo "            deployed: yes" || echo "            deployed: no"
+    done
     exit 0
 fi
 
@@ -399,6 +436,21 @@ fi
 
 SRC_GROUP="$SRC_DIR/resources/$RESOURCE_GROUP"
 check_payload "$SRC_GROUP"
+
+# Vendored resources get the one structural check that matters for them: a
+# resource without a manifest is a directory FiveM will not load, and its
+# presence means a half-finished sync or a branch that predates the vendoring.
+# Deliberately NOT check_payload -- that function is about OUR payload (br_lib,
+# br_core, br_ui, the built bundle) and none of it is true of third-party code.
+for v in "${VENDORED_RESOURCES[@]}"; do
+    [ -d "$SRC_DIR/resources/$v" ] \
+        || die "vendored resource missing from the payload: resources/$v
+  Either this branch predates the vendoring, or the sync is half finished.
+  Nothing has been copied to the live server."
+    [ -f "$SRC_DIR/resources/$v/fxmanifest.lua" ] \
+        || die "vendored resource has no fxmanifest.lua: resources/$v
+  FiveM will not load it."
+done
 
 # --- sync --------------------------------------------------------------------
 
@@ -417,6 +469,47 @@ rsync "${RSYNC_OPTS[@]}" \
     "$SRC_GROUP/" "$TARGET_DIR/$RESOURCE_GROUP/" \
     | sed 's/^/     /' || die "rsync failed"
 
+# Vendored third-party resources, one rsync each.
+#
+# NOT UNDER $TARGET_DIR. These live directly under $SERVER_ROOT/resources/, in
+# the group the operator already installed them into, because the whole point is
+# to REPLACE the existing copy rather than create a second resource with the
+# same name somewhere else.
+#
+# --delete IS SCOPED TO THE RESOURCE DIRECTORY ITSELF -- source and destination
+# both end in the resource name with a trailing slash -- so it can remove a file
+# upstream dropped between versions and cannot touch a sibling resource in the
+# same group. See VENDORED_RESOURCES near the top for why the list is per
+# resource rather than per group.
+for v in "${VENDORED_RESOURCES[@]}"; do
+    vdst="$SERVER_ROOT/resources/$v"
+
+    # A leftover .git means this path used to be a clone, from back when the
+    # operator installed the resource by hand. rsync --delete does NOT remove
+    # excluded files, so the clone's .git survives every deploy while the files
+    # around it become ours: a directory that reports one version to `git
+    # describe` and runs another. Said out loud rather than deleted from under
+    # somebody, and rather than refusing to deploy over it.
+    if [ -d "$vdst/.git" ]; then
+        echo "${YEL}  NOTE: $vdst/.git exists.${RST}"
+        echo "${YEL}  This path was a hand-installed clone. Its files are being replaced by the${RST}"
+        echo "${YEL}  vendored copy, but the stale .git is left behind and will misreport the${RST}"
+        echo "${YEL}  version. Remove it:  rm -rf '$vdst/.git'${RST}"
+    fi
+
+    # NOT ON A DRY RUN. --dry-run is in RSYNC_OPTS already, so the sync itself
+    # is inert -- but this mkdir is not rsync, and on a box that has never had
+    # the vendored resource it would create the directory tree for real while
+    # the operator was being told nothing was changed.
+    [ "$DRY_RUN" -eq 1 ] || mkdir -p "$vdst"
+    say "syncing $v -> $SERVER_ROOT/resources/"
+    rsync "${RSYNC_OPTS[@]}" \
+        --exclude '.git' \
+        --exclude '*.md' \
+        "$SRC_DIR/resources/$v/" "$vdst/" \
+        | sed 's/^/     /' || die "rsync failed for vendored resource $v"
+done
+
 if [ "$DRY_RUN" -eq 1 ]; then
     echo
     echo "${YEL}dry run -- nothing was changed${RST}"
@@ -434,11 +527,19 @@ if [ "$BRANCH" != "main" ]; then
     echo "${YEL}  Every later deploy refreshes that branch until somebody switches back.${RST}"
 fi
 echo "  -> $TARGET_DIR/$RESOURCE_GROUP"
+for v in "${VENDORED_RESOURCES[@]}"; do
+    echo "  -> $SERVER_ROOT/resources/$v  ${DIM}(vendored)${RST}"
+done
 echo
 echo "The server does not pick this up on its own while running. Either restart"
 echo "it, or from the server console:"
 echo "     refresh"
 echo "     restart br_lib; restart br_core; restart br_ui; restart br_stats; restart br_ringmaster"
+for v in "${VENDORED_RESOURCES[@]}"; do
+    # basename, because a FiveM resource is named by its directory and the
+    # group it sits in is not part of that name.
+    echo "     restart $(basename "$v")"
+done
 echo
 echo "${DIM}Note: resources/$TARGET_CATEGORY is a FiveM category folder. If this is a"
 echo "new install, make sure server.cfg still ensures br_lib, br_core, br_ui and"

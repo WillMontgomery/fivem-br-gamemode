@@ -64,18 +64,45 @@ LUA="${LUAC%luac.exe}lua.exe"
 # --- 1. syntax ---------------------------------------------------------------
 
 echo "${DIM}== syntax ==${RST}"
-n=0; bad=0
+n=0; bad=0; hashlit=0
 while IFS= read -r f; do
     n=$((n+1))
-    if ! out=$("$LUAC" -p "$f" 2>&1); then
-        echo "${RED}FAIL${RST} $f"
-        echo "     $out"
-        bad=$((bad+1))
+    out=$("$LUAC" -p "$f" 2>&1) && continue
+
+    # CfxLua's HASH-STRING LITERAL. A failure here is not always a syntax error.
+    #
+    # FiveM's Lua compiles `speech` -- BACKTICKS, not quotes -- to the Jenkins
+    # hash of that string at parse time. Stock luac 5.4 has no such literal and
+    # stops dead at the first backtick, so a file the game loads perfectly well
+    # fails this gate. That is a gap between the gate's parser and the game's,
+    # not a fault in the file.
+    #
+    # ONLY ON THE RETRY PATH, which is the point: a file that parses as stock
+    # Lua 5.4 is checked exactly as it was before and never reaches here. Only a
+    # file that has ALREADY FAILED is re-parsed with `ident` rewritten to
+    # "ident", and a genuine syntax error still fails, because that rewrite
+    # cannot repair one. The gate gets more accurate rather than more permissive.
+    #
+    # It exists for VENDORED third-party code: pma-voice's client/commands.lua
+    # calls MumbleSetAudioInputIntent(`speech`). Nothing we write uses the
+    # literal -- the backticks all over our own files are prose inside comments,
+    # which luac never sees.
+    if sed -E 's/`([A-Za-z0-9_]*)`/"\1"/g' "$f" | "$LUAC" -p - >/dev/null 2>&1; then
+        hashlit=$((hashlit+1))
+        continue
     fi
+
+    echo "${RED}FAIL${RST} $f"
+    echo "     $out"
+    bad=$((bad+1))
 done < <(find resources -name '*.lua' 2>/dev/null | sort)
 
 if [ "$bad" -eq 0 ]; then
-    echo "${GRN}ok${RST}   $n files parsed"
+    if [ "$hashlit" -gt 0 ]; then
+        echo "${GRN}ok${RST}   $n files parsed ($hashlit via the CfxLua hash-string retry)"
+    else
+        echo "${GRN}ok${RST}   $n files parsed"
+    fi
 else
     echo "${RED}$bad of $n files failed to parse${RST}"
     rc=1
@@ -457,9 +484,33 @@ fi
 
 echo "${DIM}== manifest coverage ==${RST}"
 missing_total=0
+skipped_vendored=0
 
 while IFS= read -r manifest; do
     resdir="$(dirname "$manifest")"
+
+    # VENDORED THIRD-PARTY RESOURCES ARE SKIPPED, and this is the one gate where
+    # skipping them makes the build MORE correct rather than less.
+    #
+    # The rule below is a bash approximation of FiveM's manifest resolver, and
+    # the two disagree on `**`. In FiveM `server/**/*.lua` is RECURSIVE and
+    # matches server/main.lua; in `[[ str == pat ]]` the pattern needs a literal
+    # `/` after the `**`, so it does not. pma-voice's manifest uses exactly that
+    # spelling, and this gate would fail a file the game loads every single time
+    # it starts -- a red build about somebody else's correct code, which is how
+    # a gate gets an --exclude and then gets ignored.
+    #
+    # The reason to skip rather than to teach `**` is what the gate is FOR. It
+    # exists because client/screen.lua was written, committed and deployed by US
+    # and never added to client_scripts, and nothing errored. Third-party
+    # manifests are upstream's, they are not edited here, and a file undeclared
+    # in one is upstream's bug to have. What IS true of vendored code -- licence
+    # present, version recorded, patch log matching the patches, and the thing
+    # actually reaching the box -- is asserted in `vendored third-party` below.
+    if [ -f "$resdir/VENDOR.json" ]; then
+        skipped_vendored=$((skipped_vendored+1))
+        continue
+    fi
 
     # Declared entries: any quoted *.lua in the manifest. '@other_resource/...'
     # references point outside this resource, so they are not coverage for it.
@@ -485,7 +536,11 @@ while IFS= read -r manifest; do
 done < <(find resources -name 'fxmanifest.lua' | sort)
 
 if [ "$missing_total" -eq 0 ]; then
-    echo "${GRN}ok${RST}   every .lua is declared in its manifest"
+    if [ "$skipped_vendored" -gt 0 ]; then
+        echo "${GRN}ok${RST}   every .lua is declared in its manifest ($skipped_vendored vendored resource(s) skipped -- see 'vendored third-party')"
+    else
+        echo "${GRN}ok${RST}   every .lua is declared in its manifest"
+    fi
 else
     echo "     A file absent from the manifest never loads, and never errors."
     rc=1
@@ -551,6 +606,142 @@ fi
 
 echo "${DIM}== deploy payload ==${RST}"
 bash tools/deploy.sh --check-payload "resources/[fivem-royale]" || rc=1
+
+# --- 4c-bis. vendored third-party resources -----------------------------------
+#
+# WHAT A VENDORED DIRECTORY OWES, ASSERTED RATHER THAN REMEMBERED.
+#
+# resources/[voice]/pma-voice is not ours. It is an upstream MIT release copied
+# in whole so that three player-facing faults -- an unconditional debug print, a
+# mic-click chirp with no off switch, and two key registrations outside our own
+# key layer -- could be fixed at source instead of worked around from outside.
+# Earlier rounds reported all three as "no convar exists, cannot be fixed",
+# which was accepting the wrong constraint.
+#
+# Vendoring is cheap to do and expensive to keep, and it decays in four
+# specific ways. Each one is a check below.
+#
+#   1. THE LICENCE GOES MISSING. MIT requires the notice to travel with the
+#      code. This is the only item here that is a legal problem rather than an
+#      engineering one.
+#
+#   2. NOBODY RECORDS WHAT VERSION THIS IS. Then the next upgrade opens with
+#      archaeology -- diffing a directory against every tag until one nearly
+#      matches -- and the local patches are what gets lost in it.
+#
+#   3. THE PATCH LOG AND THE PATCHES DRIFT. A local change with no entry is
+#      invisible at the next bump and gets silently reverted; an entry with no
+#      change is a fix somebody believes is in place and is not. So the marker
+#      set in the tree and the id set in VENDOR.json must be EQUAL, both ways.
+#      This is why the patches carry a greppable BR-PATCH marker at all.
+#
+#   4. IT NEVER REACHES THE BOX. tools/deploy.sh used to rsync exactly one
+#      resource group because resources/ contained exactly one. A resource
+#      vendored anywhere else would have been committed, reviewed, gated and
+#      then never deployed -- source-only, which this project has shipped twice,
+#      and which raises no error anywhere because the server just keeps running
+#      whatever was already on disk. The check runs BOTH WAYS: every vendored
+#      resource must be in deploy.sh's list, and every entry in that list must
+#      be a real vendored resource.
+
+echo "${DIM}== vendored third-party ==${RST}"
+ven=0
+ven_n=0
+
+while IFS= read -r vjson; do
+    [ -n "$vjson" ] || continue
+    vdir="$(dirname "$vjson")"
+    vrel="${vdir#resources/}"
+    ven_n=$((ven_n+1))
+
+    # 1. the licence
+    if [ ! -f "$vdir/LICENSE" ]; then
+        echo "${RED}FAIL${RST} $vrel is vendored but ships no LICENSE"
+        echo "     MIT and everything like it requires the notice to travel with"
+        echo "     the code. Restore it from upstream."
+        ven=1
+    fi
+
+    # 2. the provenance
+    for k in upstream version commit; do
+        if ! grep -qE "\"$k\"[[:space:]]*:[[:space:]]*\"[^\"]+\"" "$vjson"; then
+            echo "${RED}FAIL${RST} $vrel/VENDOR.json does not record \"$k\""
+            ven=1
+        fi
+    done
+
+    # 3. the patch log, both directions.
+    #
+    # VENDOR.json is excluded from the TREE side -- it names every id itself, so
+    # including it would let the log satisfy itself and the check would pass
+    # over a tree with no patches left in it at all.
+    tree_ids=$(grep -rhoE 'BR-PATCH [0-9]+[a-z]?' "$vdir" \
+                    --exclude='VENDOR.json' 2>/dev/null | sort -u)
+    log_ids=$(grep -oE '"id"[[:space:]]*:[[:space:]]*"BR-PATCH [0-9]+[a-z]?"' "$vjson" \
+              | grep -oE 'BR-PATCH [0-9]+[a-z]?' | sort -u)
+
+    while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        echo "${RED}FAIL${RST} $vrel: '$id' is in the source but not in VENDOR.json"
+        echo "     An undeclared local change is invisible at the next upstream"
+        echo "     bump, which is how a fix gets silently reverted."
+        ven=1
+    done < <(comm -23 <(printf '%s\n' "$tree_ids") <(printf '%s\n' "$log_ids"))
+
+    while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        echo "${RED}FAIL${RST} $vrel: VENDOR.json declares '$id' but no source file carries the marker"
+        echo "     Either the patch was lost in an upstream bump, or the log is"
+        echo "     describing a fix that is not actually in place."
+        ven=1
+    done < <(comm -13 <(printf '%s\n' "$tree_ids") <(printf '%s\n' "$log_ids"))
+
+    # Every file the log names has to exist. A patch entry pointing at a path
+    # upstream renamed is the same lie in a different shape.
+    while IFS= read -r pf; do
+        [ -n "$pf" ] || continue
+        if [ ! -f "$vdir/$pf" ]; then
+            echo "${RED}FAIL${RST} $vrel/VENDOR.json names a patched file that does not exist: $pf"
+            ven=1
+        fi
+    done < <(grep -oE '"file"[[:space:]]*:[[:space:]]*"[^"]+"' "$vjson" \
+             | sed -E 's/.*"file"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+
+    # 4a. it has to deploy
+    if ! grep -qF "\"$vrel\"" tools/deploy.sh; then
+        echo "${RED}FAIL${RST} $vrel is vendored but tools/deploy.sh never syncs it"
+        echo "     deploy.sh rsyncs VENDORED_RESOURCES and \$RESOURCE_GROUP and"
+        echo "     nothing else, so this resource would be committed and gated"
+        echo "     and then never reach the server. Add \"$vrel\" to"
+        echo "     VENDORED_RESOURCES in tools/deploy.sh."
+        ven=1
+    fi
+done < <(find resources -name 'VENDOR.json' 2>/dev/null | sort)
+
+# 4b. and the list has to be real
+while IFS= read -r listed; do
+    [ -n "$listed" ] || continue
+    if [ ! -f "resources/$listed/VENDOR.json" ]; then
+        echo "${RED}FAIL${RST} tools/deploy.sh lists vendored resource '$listed', which has no resources/$listed/VENDOR.json"
+        echo "     Either it was removed and the list was not, or it is vendored"
+        echo "     without the provenance record this gate needs."
+        ven=1
+    fi
+done < <(sed -n '/^VENDORED_RESOURCES=(/,/^)/p' tools/deploy.sh \
+         | grep -oE '"[^"]+"' | tr -d '"')
+
+if [ "$ven" -eq 0 ]; then
+    if [ "$ven_n" -eq 0 ]; then
+        echo "${GRN}ok${RST}   no vendored third-party resources"
+    else
+        echo "${GRN}ok${RST}   $ven_n vendored resource(s): licence kept, version recorded, patch log matches the source, deploy.sh syncs it"
+    fi
+else
+    echo
+    echo "     A vendored dependency is only cheap while its provenance and its"
+    echo "     local patches are both written down. See resources/[voice]/pma-voice/VENDOR.json."
+    rc=1
+fi
 
 # --- 4d. slice-1 read-only boundary -------------------------------------------
 #

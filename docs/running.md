@@ -23,16 +23,22 @@ failure is completely silent. The server warns loudly at boot if it is off.
 A database is **optional**. Without one, `br_stats` disables itself and matches
 run normally; you just get no persistent stats.
 
-### Voice is pma-voice, and it is pinned
+### Voice is pma-voice, and it is vendored and pinned
 
 Voice runs on **[pma-voice](https://github.com/AvarianKnight/pma-voice)** (MIT,
 © Dillon Skaggs), which owns proximity and the squad radio. `br_core` sets the
 convars and the channels; it does not implement voice.
 
-```bash
-git clone --branch v7.0.2-rc3 --depth 1 \
-    https://github.com/AvarianKnight/pma-voice.git '[voice]/pma-voice'
-```
+**There is nothing to install.** pma-voice is vendored into this repository at
+`resources/[voice]/pma-voice` and `tools/deploy.sh` syncs it to
+`resources/[voice]/pma-voice` on the box — the same path a hand-installed clone
+used, so a deploy *replaces* that clone rather than adding a second resource
+beside it.
+
+> **Upgrading a box that predates the vendoring:** `rm -rf` the old
+> `resources/[voice]/pma-voice` **once**, before the first deploy that carries
+> the vendored copy. `rsync --delete` does not delete excluded paths, so the old
+> clone's `.git` would otherwise survive and misreport the version.
 
 - **The pin is `v7.0.2-rc3`, not `v7.0.0`,** and this is the one place in the
   setup where "the latest tag that is not a release candidate" is the wrong
@@ -40,9 +46,16 @@ git clone --branch v7.0.2-rc3 --depth 1 \
   onwards fixes it upstream, three ways. `server.cfg.example` argues the whole
   case at the `ensure` line and prints the upgrade command at runtime when it
   detects the old build.
-- **Install it *outside* `resources/[fivem-royale]/`.** The deploy syncs that
-  directory only, so pma-voice at `resources/[voice]/pma-voice` survives every
-  deploy untouched.
+- **The exact upstream commit is recorded** in
+  `resources/[voice]/pma-voice/VENDOR.json`, along with a log of every local
+  change. There are four such lines, each marked `BR-PATCH`: they remove an
+  unconditional debug `print`, silence the mic-click chirp at source, and delete
+  the two `RegisterKeyMapping` calls that put "Cycle Proximity" (F11) and "Talk
+  over Radio" (Left Alt) in FiveM's key list outside our own key layer. The
+  `+radiotalk` **command** is untouched — it is the squad transmit path.
+- **`tools/verify.sh` enforces the vendoring**: LICENSE present, version
+  recorded, patch log and source in agreement both ways, and `deploy.sh`
+  actually syncing the resource.
 - **A missing pma-voice announces itself** in the server console at start and on
   the first attempt to use voice, rather than failing silently.
 - The convars are set from `server.cfg.example`, which is **documentation and is

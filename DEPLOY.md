@@ -183,7 +183,29 @@ consumes it.
 
 ## 3. Resources
 
-Copy `resources/[fivem-royale]/` into the server's `resources/` directory.
+Copy **both** resource groups into the server's `resources/` directory:
+
+| From the repo | To on the box | What it is |
+|---|---|---|
+| `resources/[fivem-royale]/` | `resources/[gamemodes]/[fivem-royale]/` | the gamemode — ours |
+| `resources/[voice]/pma-voice/` | `resources/[voice]/pma-voice/` | vendored pma-voice, MIT © Dillon Skaggs, pinned at `v7.0.2-rc3` |
+
+`tools/deploy.sh` does both, in two rsyncs. The second one exists because the
+first is `--delete`-scoped to `[fivem-royale]` alone: before it, a resource
+vendored anywhere else would have been committed, gated and then never reached
+the box. Its `--delete` is scoped to the `pma-voice` directory itself, never to
+the `[voice]` category, so another voice resource installed alongside it is
+never removed by our deploy.
+
+**On a box that predates the vendoring**, `rm -rf` the old
+`resources/[voice]/pma-voice` once first. It was a hand-made `git clone`, and
+`rsync --delete` does not remove excluded paths — so its `.git` would survive
+and go on reporting a version the files no longer are.
+
+**`tools/deploy.sh` itself runs from the ops clone** (`/opt/misc/fivem-br-gamemode`),
+not from the deployed tree — so a change to it reaches the box only when that
+clone is pulled. A `deploy.sh` from before the vendoring will sync the gamemode
+and silently skip pma-voice.
 
 The NUI build output (`br_ui/ui/`) is committed, so **no build step is required
 on the server**, and no Node is needed on it either.

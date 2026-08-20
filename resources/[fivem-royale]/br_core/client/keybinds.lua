@@ -383,8 +383,12 @@ hold('ptt',         'brptt',       'Royale: Push to talk',               'N')
 -- RegisterKeyMapping does not suppress an engine control that shares its key,
 -- so the only thing pressing Z ever did on this server was whatever the engine
 -- does with it. That is the "pressing Z makes some radio noise" report: not
--- pma-voice, which binds exactly two keyboard keys (F11 cycleproximity, LMENU
--- +radiotalk) and neither is this one.
+-- pma-voice, which used to bind exactly two keyboard keys (F11 cycleproximity,
+-- LMENU +radiotalk) and neither was this one. IT NOW BINDS NONE: pma-voice is
+-- vendored at resources/[voice]/pma-voice and BR-PATCH 3a/3b removed both
+-- RegisterKeyMapping calls, so this file's rows are the only keyboard bindings
+-- any resource on this server registers. The +radiotalk COMMAND is untouched
+-- and is still what `ptt` drives -- see voice.lua.
 --
 -- STILL DEAD AND STILL BOUND, deliberately left for a round of their own
 -- rather than swept up here: 'map' (M), 'specNext' (RIGHT), 'specPrev' (LEFT).
