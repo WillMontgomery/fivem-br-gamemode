@@ -1297,8 +1297,8 @@ on('br:ddb:artifactPut', (req, incidentId, index, encoding, capturedAt) => {
              * NOT IN DYNAMODB, because it cannot be: the game's grant on
              * `ringmaster-incidents` is PutItem conditional on the id being
              * absent, so it can file a case and cannot reach inside one. The
-             * row's `captureKeys` is written `[]` at filing time and the game
-             * has no way to add to it afterwards.
+             * row carried a `captureKeys` list that was written `[]` at filing
+             * time and could never be added to -- so it was deleted outright.
              *
              * NOT IN THE KEY, because a key carrying a timestamp is a key that
              * cannot be guessed -- and the console holds GetObject with no

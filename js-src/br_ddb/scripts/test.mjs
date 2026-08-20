@@ -154,7 +154,6 @@ check('matchId is carried', it.matchId, 7)
 check('reporterLicense is an explicit null', it.reporterLicense, null)
 check('reporterName is an explicit null', it.reporterName, null)
 check('note is null -- no free text ever reaches this row', it.note, null)
-check('captureKeys is an array, not an empty object', it.captureKeys, [])
 
 check('the opened event is stamped at openedAt', it.events[0].at, NOW)
 check('the opened event names the anticheat', it.events[0].byName, 'Anticheat')

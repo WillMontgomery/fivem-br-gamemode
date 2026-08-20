@@ -246,13 +246,6 @@ export function buildIncidentItem(incidentId, payload, now) {
       .map((v) => str(v, 64))
       .filter(Boolean),
 
-    /**
-     * EMPTY IS NORMAL AND IS NOT EVIDENCE OF ANYTHING -- the console's own note
-     * on this field. The capture uploads from the subject's machine, so it can
-     * fail, be blocked, or never start because they had already left.
-     */
-    captureKeys: [],
-
     events: [
       {
         at: openedAt,
