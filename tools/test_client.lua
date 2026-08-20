@@ -74,28 +74,22 @@ function GetConvarInt(name, default)
     return v == nil and default or math.floor(v)
 end
 
---- THIS CLIENT'S OWN STATE BAG, WHICH IS HOW WE LEARN WHICH pma-voice IS ON
---- THE BOX.
+--- THIS CLIENT'S OWN STATE BAG.
 ---
---- Modelled for the same reason `convars` above is: #165 round three was not a
---- rule this suite could have got wrong, it was a RESOURCE VERSION nothing in
---- this repository could see. pma-voice's server half writes these keys onto
---- every player's bag, and exactly one of them tells the two generations apart:
+--- AN EMPTY ONE, AND IT IS SCAFFOLDING RATHER THAN A MODEL. It used to be
+--- `{ voiceIntent = 'speech' }` under twenty lines explaining how those keys
+--- tell one pma-voice version from another, because this suite carried a block
+--- asserting br_core could detect a pre-v7.0.1-rc2 install. That detector is
+--- gone -- the warning it existed to blame on an old pma-voice was vMenu's own
+--- voice chat (#185) -- and the fixture went with it.
 ---
----   voiceIntent      written by v7.0.0 and by v7.0.1-rc2+ alike, in the same
----                    function -- so it means "pma-voice has got to us".
----   assignedChannel  written from v7.0.1-rc2 onwards ONLY. v7.0.0 assumed a
----                    client's Mumble channel simply IS its server id, which is
----                    the assumption behind the MUMBLE_ADD_VOICE_CHANNEL_LISTEN
----                    spam, and it has no such key.
----
---- THE DEFAULT IS v7.0.0 -- initialised, no assignedChannel -- because that is
---- the box the issue was reported from, the same reasoning that makes `convars`
---- default to empty.
---- Global rather than local so the voice block far below can rewrite it without
---- spending one of this chunk's 200 local slots; the whole harness is a single
---- Lua chunk and it is not far off that ceiling.
-pmaBag = { voiceIntent = 'speech' }
+--- WHAT IS LEFT IS HERE ON PURPOSE, WHICH IS THE ONLY REASON TO KEEP A STUB
+--- NOTHING CURRENTLY READS. LocalPlayer.state is a real FiveM global that any
+--- client file may legitimately touch -- pma-voice's own disableProximity and
+--- disableRadio live on it -- and a harness that raises on the first read of a
+--- runtime global fails in a way that looks like a bug in the code under test.
+--- An empty table answers "no key set", which is the honest default.
+pmaBag = {}
 LocalPlayer = setmetatable({}, { __index = function(_, k)
     if k == 'state' then return pmaBag end
 end })
