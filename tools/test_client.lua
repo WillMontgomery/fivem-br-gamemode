@@ -4352,6 +4352,13 @@ do
     function SetEntityCanBeDamaged(ped, toggle) shielded[ped] = toggle end
     function SetPedRelationshipGroupHash(ped, g) grouped[ped] = g end
 
+    -- TWO DISTINGUISHABLE GROUPS. The file-wide stub answers every GetHashKey
+    -- with 1, which would make BR_ALLY and PLAYER the same number and the
+    -- release assertion below unable to fail. squadmates.lua captures
+    -- PLAYER_GROUP at LOAD time, so this has to be in place before loadAll.
+    local PLAYER_HASH = 9001
+    function GetHashKey(s) return s == 'PLAYER' and PLAYER_HASH or 1 end
+
     -- The resurrection, and the reading that matters at the moment it happens.
     local resurrect = { count = 0, dictLoadedFirst = nil, posed = nil }
     function NetworkResurrectLocalPlayer()
@@ -4893,30 +4900,34 @@ do
     end
 
     -- ====================================================================== --
-    -- FRIENDLY FIRE IS PREVENTED ON THE SHOOTER, NOT REPAIRED AFTERWARDS
+    -- NOTHING IN THIS FILE MAY WRITE DAMAGE STATE ONTO A CLONE IT DOES NOT OWN
     -- ====================================================================== --
     --
     -- #115, the false corpse: the shooter's engine kills a teammate's clone
     -- locally, the server refuses the damage with CancelEvent(), and
     -- CancelEvent() sends no negative acknowledgement -- so there is no
-    -- message with which to correct the corpse. The only fix is for the
-    -- shooter's engine never to compute the hit, which means the clone must
-    -- carry the "unable to be damaged" mark BEFORE the trigger is pulled.
+    -- message with which to correct the corpse.
     --
-    -- THE ASSERTIONS THAT MAKE THIS SUITE ABLE TO FAIL. Every previous round
-    -- of #115 was pinned by a stub that re-encoded the same assumption as the
-    -- production code, so the four below are deliberately split between the
-    -- two ways this change can be wrong:
+    -- THIS BLOCK USED TO ASSERT THE OPPOSITE OF WHAT IT ASSERTS NOW, and the
+    -- reversal is the point. Round eight put SetEntityCanBeDamaged(matePed,
+    -- false) on the mate's clone and these assertions pinned it. The playtest
+    -- on 2026-08-19 disproved it -- "their ped fell over, then popped back up",
+    -- i.e. the damage landed and the repair net caught it, and the next shot
+    -- killed outright. A player's ped is owned by their own machine, control
+    -- can never be taken, and script writes to it are not honoured here.
     --
-    --   REVERT-DETECTING  -- fail if the shield is removed  (1 and 4)
-    --   OVERREACH-DETECTING -- fail if the shield is applied too widely,
-    --                          which is the failure mode that would silently
-    --                          disable combat  (2 and 3)
+    -- So the shield is gone, prevention moved to the engine team gate in
+    -- client/natives.lua (asserted in its own suite, further down), and what
+    -- is left here has to hold the LINE: this file may put a mate in the ally
+    -- group, and may not pretend to control their damage.
     --
-    -- A fix that shields everybody passes 1 and fails 2. A fix that shields
-    -- nobody passes 2 and fails 1. Neither can pass both.
+    --   REVERT-DETECTING   -- fail if the disproven mark comes back (1), or if
+    --                         the ally group stops being applied (2) or
+    --                         released (4)
+    --   OVERREACH-DETECTING -- fail if this file starts touching players who
+    --                         are not squadmates at all (3)
 
-    describe('a squadmate cannot be shot by this client, an enemy still can -- #115')
+    describe('this client stops writing to a squadmate clone it does not own -- #115')
 
     -- A THIRD PLAYER WHO IS NOT IN THE SQUAD. The server never names them in
     -- a SQUAD_POS push -- that push is squad-only by construction
@@ -4943,43 +4954,44 @@ do
                               state = BR.PlayerState.ALIVE } })
     tickBand()
 
-    -- 1. REVERT-DETECTING.
-    ok(shielded[MATE] == false,
-        'A SQUADMATE IS MARKED UNABLE TO BE DAMAGED ON THIS CLIENT -- #115',
+    -- 1. REVERT-DETECTING, and the whole reason this suite was rewritten. nil
+    --    is a THIRD answer to "was the clone marked" and it is the only
+    --    passing one: `false` here means somebody put the disproven native
+    --    back, and `true` means they put back its release as well.
+    ok(shielded[MATE] == nil,
+        'A SQUADMATE CLONE IS NEVER MARKED UNDAMAGEABLE -- disproven, #115',
         ('SetEntityCanBeDamaged on the mate: %s'):format(tostring(shielded[MATE])))
 
+    -- 2. REVERT-DETECTING. The group is not what stops a bullet and must not be
+    --    described as though it is, but the AI and melee paths do read it.
     ok(grouped[MATE] == BR.Native.ALLY_GROUP,
-        'and is still put in the ally group the AI and melee paths read',
+        'and IS still put in the ally group the AI and melee paths read',
         ('group: %s'):format(tostring(grouped[MATE])))
 
-    -- 2. OVERREACH-DETECTING, and the whole reason this is not a one-line
-    --    change to a global switch: PvP against everybody else must survive.
-    ok(shielded[ENEMY] == nil,
-        'AND AN ENEMY IS NEVER TOUCHED, so shooting them still works -- #115',
-        ('SetEntityCanBeDamaged on the enemy: %s')
-            :format(tostring(shielded[ENEMY])))
+    -- 3. OVERREACH-DETECTING. Whatever this file does, it does to squadmates
+    --    the server named and to nobody else -- an enemy is never touched at
+    --    all, not even into a group.
+    ok(shielded[ENEMY] == nil and grouped[ENEMY] == nil,
+        'AND AN ENEMY IS NEVER TOUCHED BY THIS FILE AT ALL -- #115',
+        ('shield %s, group %s')
+            :format(tostring(shielded[ENEMY]), tostring(grouped[ENEMY])))
 
-    -- 3. OVERREACH-DETECTING, solos. A solo player is in no squad, so the
-    --    server sends them no push at all and `mates` is empty -- if anything
-    --    in this path shielded a player without a push, a solo lobby would be
-    --    a pacifist lobby. Ticked twice: once is a loop that ran, twice is a
-    --    loop that kept its answer.
+    -- 4. REVERT-DETECTING, on the release path. The empty push is a squad that
+    --    dissolved; an ex-mate must be handed back to the default group rather
+    --    than left carrying this client's private idea of an ally. Ticked
+    --    twice: once is a loop that ran, twice is a loop that kept its answer.
     shielded[MATE], shielded[ENEMY] = nil, nil
     fire(BR.Net.SQUAD_POS, {})
     tickBand()
     tickBand()
-    ok(shielded[ENEMY] == nil,
-        'A SOLO SHIELDS NOBODY, because with no squad push there is no ally',
-        ('enemy: %s'):format(tostring(shielded[ENEMY])))
+    ok(grouped[MATE] == PLAYER_HASH,
+        'AND AN EX-SQUADMATE IS HANDED BACK to the default relationship group',
+        ('group on the ex-mate: %s'):format(tostring(grouped[MATE])))
 
-    -- 4. REVERT-DETECTING, and the regression this change could introduce if
-    --    the release path were forgotten: an EX-squadmate who kept the shield
-    --    would be invulnerable to this client for the rest of the match. The
-    --    empty push above is a squad that dissolved.
-    ok(shielded[MATE] == true,
-        'AND AN EX-SQUADMATE IS HANDED BACK, not left permanently bulletproof',
-        ('SetEntityCanBeDamaged on the ex-mate: %s')
-            :format(tostring(shielded[MATE])))
+    ok(shielded[MATE] == nil and shielded[ENEMY] == nil,
+        'and no damage state was written to anybody, before or after',
+        ('mate %s, enemy %s')
+            :format(tostring(shielded[MATE]), tostring(shielded[ENEMY])))
 
     ok(select(1, loopHealth('squadmates.tags')) == 0,
         'and the loop that does all of this has not thrown once',
@@ -6316,6 +6328,462 @@ do
         ('%d corroborations, %d inventory press(es)')
             :format(corroborations(), invPresses))
     shutPanel()
+end
+
+-- ======================================================================== --
+-- 12. THE ENGINE'S OWN FRIENDLY-FIRE GATE  (#115, round nine)
+-- ======================================================================== --
+--
+-- WHY THIS SUITE CARRIES MORE WEIGHT THAN USUAL, stated at the top because it
+-- changes what the assertions have to be:
+--
+--   THE OWNER CANNOT PLAYTEST THE HALF THAT MATTERS. Three clients against
+--   BR.Config.Match.maxSquadSize = 4 puts all three in ONE squad, so
+--   cross-squad damage -- the thing the entire game rests on and the thing
+--   this change could break -- cannot be produced in game at all. (Set
+--   maxSquadSize = 2 and it can: three clients become 2 + 1.) Everything
+--   below the first divider exists because of that sentence.
+--
+--   AND EIGHT ROUNDS OF #115 WERE PINNED BY STUBS THAT AGREED WITH THE CODE.
+--   So the rule the engine is believed to follow is written out HERE, once,
+--   from the external record -- and every damage question is asked through it
+--   rather than through natives.lua's own arithmetic. If teamFor's idea of a
+--   team is wrong, `engineBlocks` gives the wrong answer and these fail; if
+--   the two merely agree with each other, they still have to agree with a rule
+--   nobody in this file is free to change quietly.
+--
+-- THE MECHANISM, so a reader knows what is being asserted. A player's ped is
+-- owned by their own machine and script writes to their clone are not honoured
+-- -- which is why the relationship group (2026-08-05, three times) and
+-- SetEntityCanBeDamaged (2026-08-19, playtest) both failed. What DOES replicate
+-- is what a client authors about ITSELF: CPlayerGameStateDataNode carries
+-- `playerTeam` (six bits) and `isFriendlyFireAllowed` (one bit) alongside
+-- isInvincible and the damage proofs (citizenfx/fivem, SyncTrees_Five.h). And
+-- the friendly-fire setting is read inside the damage path, not the AI one --
+-- GTA V has a ped config flag literally named
+-- CPED_CONFIG_FLAG_IgnoreNetSessionFriendlyFireCheckForAllowDamage (442).
+--
+-- WHAT IS INFERRED: that the check is "same team AND the gate closed => refuse".
+-- No source states it in words. Only a playtest closes that, and the shape of
+-- the fix below is chosen so that a wrong inference costs solo play NOTHING.
+
+do
+    describe('the engine team gate -- #115')
+
+    -- ----------------------------------------------------------- the engine ---
+
+    local team = { writes = {}, last = nil }
+    local gate = { writes = {}, last = nil, kind = nil }
+    local invincible = nil
+
+    function SetPlayerTeam(_, t)
+        team.writes[#team.writes + 1] = t
+        team.last = t
+    end
+
+    -- RECORDED WITH ITS TYPE, not coerced. These are BOOL natives and this
+    -- codebase has shipped the 1-versus-true confusion four times; a stub that
+    -- normalised the value would be the fifth, and would hide a gate handed a
+    -- number the engine reads as "on" whichever way it was meant.
+    function NetworkSetFriendlyFireOption(v)
+        gate.writes[#gate.writes + 1] = v
+        gate.last, gate.kind = v, type(v)
+    end
+
+    function SetPlayerInvincible(_, v) invincible = v end
+
+    local function noop2() end
+    SetCanAttackFriendly = noop2
+    SetPedRelationshipGroupHash = noop2
+    SetMaxWantedLevel = noop2
+    SetPlayerWantedLevel = noop2
+    SetPlayerWantedLevelNow = noop2
+    SetCreateRandomCops = noop2
+    SetCreateRandomCopsNotOnScenarios = noop2
+    SetCreateRandomCopsOnScenarios = noop2
+    SetEntityVisible = noop2
+    FreezeEntityPosition = noop2
+    DisplayRadar = noop2
+    DisableFrontendThisFrame = noop2
+    SetFrontendActive = noop2
+    ThefeedHideThisFrame = noop2
+    HideHudComponentThisFrame = noop2
+    BusyspinnerIsOn = function() return false end
+    BusyspinnerOff = noop2
+    SetVehicleDensityMultiplierThisFrame = noop2
+    SetPedDensityMultiplierThisFrame = noop2
+    SetScenarioPedDensityMultiplierThisFrame = noop2
+    SetRandomVehicleDensityMultiplierThisFrame = noop2
+    SetParkedVehicleDensityMultiplierThisFrame = noop2
+    NetworkOverrideClockTime = noop2
+    PauseDeathArrestRestart = noop2
+    SetFadeOutAfterDeath = noop2
+    IgnoreNextRestart = noop2
+
+    -- THE REAL natives.lua, replacing the stub table for the rest of the file.
+    -- This is the last suite, so nothing downstream is measuring the stub.
+    loadAll({ 'br_core/client/natives.lua' })
+    local N = BR.Native
+
+    ok(type(N.teamFor) == 'function' and type(N.SOLO_TEAM) == 'number',
+        'natives.lua exposes the team decision as something testable at all',
+        ('teamFor %s, SOLO_TEAM %s')
+            :format(type(N.teamFor), tostring(N.SOLO_TEAM)))
+
+    -- A STAND-IN, SO A MISSING IMPLEMENTATION FAILS RATHER THAN ABORTS. Revert
+    -- the production change and every assertion below should report; a suite
+    -- that dies on the first nil call reports ONE number, and the revert table
+    -- in the issue needs the real one.
+    -- The stand-in answers with NUMBERS a real implementation can never
+    -- produce, rather than nil: nil propagates into a comparison and takes the
+    -- suite down with it, which is the abort this block exists to avoid.
+    if type(N.teamFor) ~= 'function' then N.teamFor = function() return -999, false end end
+    if type(N.SOLO_TEAM) ~= 'number' then N.SOLO_TEAM = -998 end
+    if type(N.forgetTeam) ~= 'function' then N.forgetTeam = function() end end
+
+    -- ------------------------------------------------------------ the world ---
+
+    --- A roster mirror in the shape client/state.lua maintains: keyed by server
+    --- id, entries carrying the PUBLIC fields only. `src` is NOT one of them
+    --- (see PUBLIC_FIELDS in server/roster.lua), which is exactly why teamFor
+    --- has to identify "me" by the KEY and not by a field on the entry -- an
+    --- earlier draft that read e.src counted itself as its own squadmate and
+    --- closed the gate on a solo.
+    --- @param rows table  array of { src, squadId or false, state or nil }
+    local function world(rows)
+        local r = {}
+        for _, row in ipairs(rows) do
+            r[row[1]] = { name = 'P' .. row[1],
+                          state = row[3] or BR.PlayerState.ALIVE }
+            if row[2] then r[row[1]].squadId = row[2] end
+        end
+        return r
+    end
+
+    local function seat(src, r)
+        local e = r[src] or {}
+        return N.teamFor({ src = src, squadId = e.squadId }, r)
+    end
+
+    --- CAN A DAMAGE B, under the engine rule this change bets on.
+    ---
+    --- Written from the external record, not from natives.lua: same team AND a
+    --- closed gate => the engine refuses to compute the hit. The gate term is
+    --- `sa or sb` rather than one side's, because nothing found says WHOSE
+    --- setting is read -- `isFriendlyFireAllowed` replicates per player, so it
+    --- could be the shooter's or the victim's. Taking "either" is the
+    --- conservative model: a fix that is correct under it is correct under
+    --- both readings, and a fix that needs a particular one fails here.
+    local function engineBlocks(a, b, r)
+        local ta, sa = seat(a, r)
+        local tb, sb = seat(b, r)
+        return (ta == tb) and (sa or sb)
+    end
+
+    local function pairDetail(a, b, r)
+        local ta, sa = seat(a, r)
+        local tb, sb = seat(b, r)
+        return ('%d: team %s gate %s   |   %d: team %s gate %s')
+            :format(a, tostring(ta), sa and 'CLOSED' or 'open',
+                    b, tostring(tb), sb and 'CLOSED' or 'open')
+    end
+
+    -- ==================================================================== --
+    -- 1. CROSS-SQUAD PvP -- THE CASE THE OWNER CANNOT PUT ON A SCREEN
+    -- ==================================================================== --
+
+    local twoSquads = world({
+        { 1, 'm7sq1' }, { 2, 'm7sq1' },
+        { 3, 'm7sq2' }, { 4, 'm7sq2' },
+    })
+
+    ok(engineBlocks(1, 2, twoSquads) == true,
+        'A SQUADMATE CANNOT BE SHOT: same team, gate closed -- #115',
+        pairDetail(1, 2, twoSquads))
+
+    ok(engineBlocks(1, 3, twoSquads) == false,
+        'AND THE OTHER SQUAD CAN BE, which is the whole game and cannot be playtested',
+        pairDetail(1, 3, twoSquads))
+
+    ok(engineBlocks(3, 4, twoSquads) == true,
+        'the rule is not about being squad 1 -- squad 2 protects its own too',
+        pairDetail(3, 4, twoSquads))
+
+    ok(engineBlocks(2, 4, twoSquads) == false,
+        'and every cross-squad pair, not just the one through the squad leader',
+        pairDetail(2, 4, twoSquads))
+
+    -- OVERREACH-DETECTING, and the exact failure mode a global flag flip has:
+    -- two squads that shared a team would pass every same-squad assertion above
+    -- and silently end PvP.
+    ok(select(1, seat(1, twoSquads)) ~= select(1, seat(3, twoSquads)),
+        'TWO SQUADS ARE NEVER ON THE SAME TEAM',
+        pairDetail(1, 3, twoSquads))
+
+    -- ==================================================================== --
+    -- 2. SOLOS -- TWO INDEPENDENT GUARANTEES, BECAUSE ONE IS A SINGLE POINT
+    -- ==================================================================== --
+    --
+    -- A solo must be able to damage every player in the game. That is held up
+    -- twice over on purpose: a solo shares a team with no SQUAD, and a solo
+    -- also leaves the gate OPEN. Either one alone would do it; both means the
+    -- default game mode survives even if the team inference is wrong.
+
+    local mixed = world({
+        { 1, false }, { 2, false },
+        { 3, 'm7sq1' }, { 4, 'm7sq1' },
+    })
+
+    ok(engineBlocks(1, 2, mixed) == false,
+        'TWO SOLOS CAN ALWAYS FIGHT -- they share team 0 and both gates are open',
+        pairDetail(1, 2, mixed))
+
+    ok(engineBlocks(1, 3, mixed) == false and engineBlocks(3, 1, mixed) == false,
+        'A SOLO AND A SQUAD MEMBER CAN FIGHT, in both directions',
+        pairDetail(1, 3, mixed))
+
+    ok(select(1, seat(1, mixed)) == N.SOLO_TEAM
+       and select(2, seat(1, mixed)) == false,
+        'a solo is on the reserved solo team with the gate OPEN',
+        pairDetail(1, 2, mixed))
+
+    ok(select(1, seat(3, mixed)) ~= N.SOLO_TEAM,
+        'AND NO SQUAD IS EVER GIVEN THE SOLO TEAM',
+        ('squad team %s, solo team %s')
+            :format(tostring(select(1, seat(3, mixed))), tostring(N.SOLO_TEAM)))
+
+    ok(engineBlocks(3, 4, mixed) == true,
+        'while the squad in the same match is still protected',
+        pairDetail(3, 4, mixed))
+
+    -- ==================================================================== --
+    -- 3. A SQUAD OF ONE HAS NOBODY TO PROTECT, SO IT PROTECTS NOBODY
+    -- ==================================================================== --
+
+    local lone = world({
+        { 1, 'm7sq1' },                    -- squad id, no squadmates
+        { 2, false },
+        { 3, 'm7sq2' }, { 4, 'm7sq2' },
+    })
+
+    ok(select(2, seat(1, lone)) == false,
+        'A SQUAD OF ONE LEAVES THE GATE OPEN -- nothing to protect',
+        pairDetail(1, 2, lone))
+
+    ok(engineBlocks(1, 2, lone) == false and engineBlocks(1, 3, lone) == false,
+        'so a lone squad member can be shot by a solo and by another squad',
+        pairDetail(1, 3, lone))
+
+    ok(select(1, seat(1, lone)) ~= N.SOLO_TEAM
+       and select(1, seat(1, lone)) ~= select(1, seat(3, lone)),
+        'and still holds a team of its own, shared with nobody',
+        pairDetail(1, 3, lone))
+
+    -- ==================================================================== --
+    -- 4. THE SQUAD CHANGES UNDER THE PLAYER, MID-MATCH
+    -- ==================================================================== --
+
+    local dwindling = world({
+        { 1, 'm7sq1' }, { 2, 'm7sq1' },
+        { 3, 'm7sq2' },
+    })
+    ok(select(2, seat(1, dwindling)) == true,
+        'with a live squadmate the gate is closed',
+        pairDetail(1, 2, dwindling))
+
+    -- A MATE WHO DIED IS STILL A MATE. Their entry stays in the roster with
+    -- state DEAD until the match ends, and the gate stays shut over them: a
+    -- corpse does not need shooting, and a gate that opened and closed as
+    -- teammates died would be a gate that is wrong for a frame every time.
+    dwindling[2].state = BR.PlayerState.DEAD
+    ok(select(2, seat(1, dwindling)) == true,
+        'a DEAD squadmate does not reopen the gate -- no flapping mid-fight',
+        pairDetail(1, 2, dwindling))
+
+    -- ...but a mate who LEFT the server is gone from the roster entirely.
+    dwindling[2] = nil
+    ok(select(2, seat(1, dwindling)) == false
+       and engineBlocks(1, 3, dwindling) == false,
+        'AND A SQUAD THAT EMPTIED OPENS THE GATE AGAIN',
+        pairDetail(1, 3, dwindling))
+
+    -- End of match: server/roster.lua clears squadId, which is a `clear` list
+    -- on the delta rather than a value -- the client mirror deletes the key.
+    dwindling[1].squadId = nil
+    ok(select(1, seat(1, dwindling)) == N.SOLO_TEAM
+       and select(2, seat(1, dwindling)) == false,
+        'and a cleared squadId returns the player to the solo team, gate open',
+        pairDetail(1, 3, dwindling))
+
+    -- ==================================================================== --
+    -- 5. THE WIRE IS SIX BITS WIDE
+    -- ==================================================================== --
+    --
+    -- CPlayerGameStateDataNode reads playerTeam as a 6-bit field, so 0..63 is
+    -- what replicates and a wider number would be truncated INTO SOMEBODY
+    -- ELSE'S TEAM -- two strangers unable to hurt each other, silently.
+
+    local widest, sawSolo = 0, false
+    for i = 1, 70 do
+        local r = world({ { 1, ('m2sq%d'):format(i) }, { 2, ('m2sq%d'):format(i) } })
+        local t = seat(1, r)
+        if t > widest then widest = t end
+        if t == N.SOLO_TEAM then sawSolo = true end
+    end
+    ok(widest <= 63 and not sawSolo,
+        'every squad index lands in 1..63 and never on the solo team',
+        ('widest %d, hit the solo team: %s'):format(widest, tostring(sawSolo)))
+
+    -- THE GUARD THAT WILL FIRE ON SOMEBODY ELSE'S CHANGE. Distinct teams are
+    -- only needed up to the number of squads, and the worst case is every
+    -- player solo-squadded. Raise maxPlayers past 63 and two squads start
+    -- sharing a team; this is the line that says so.
+    ok(BR.Config.Match.maxPlayers <= 63,
+        'and the slot ceiling still fits inside the six-bit team field',
+        ('maxPlayers %s'):format(tostring(BR.Config.Match.maxPlayers)))
+
+    -- ==================================================================== --
+    -- 6. EVERY UNKNOWN FAILS OPEN
+    -- ==================================================================== --
+    --
+    -- The direction of the failure is the point. A wrong guess that gives two
+    -- players the same team is a peace treaty nobody can see; a wrong guess
+    -- that gives nobody a team is the game exactly as it shipped in e1f9f98.
+
+    for _, bad in ipairs({ 'sq1', 'm7squad1', '', 'm7sqX', 42, true }) do
+        local t, s = N.teamFor({ src = 1, squadId = bad }, {})
+        ok(t == N.SOLO_TEAM and s == false,
+            ('an unrecognised squad id (%s) leaves the player unteamed and armed')
+                :format(tostring(bad)),
+            ('team %s, gate %s'):format(tostring(t), tostring(s)))
+    end
+
+    do
+        local t, s = N.teamFor(nil, nil)
+        ok(t == N.SOLO_TEAM and s == false,
+            'and so does having no state at all -- a cold client can still shoot',
+            ('team %s, gate %s'):format(tostring(t), tostring(s)))
+    end
+
+    do
+        -- A roster the client has not received yet. The team is still known
+        -- from my own squad id; the gate cannot be, so it stays open.
+        local t, s = N.teamFor({ src = 1, squadId = 'm7sq3' }, {})
+        ok(t == 3 and s == false,
+            'an empty roster mirror gives a team but never closes the gate',
+            ('team %s, gate %s'):format(tostring(t), tostring(s)))
+    end
+
+    -- ==================================================================== --
+    -- 7. WHAT applyGameRules ACTUALLY HANDS THE ENGINE
+    -- ==================================================================== --
+
+    local function rules(src, r, state)
+        BR.State.me = { src = src, squadId = r[src] and r[src].squadId,
+                        state = state or BR.PlayerState.ALIVE }
+        BR.State.roster = r
+        BR.State.match = { state = BR.MatchState.PLAYING }
+        N.applyGameRules()
+    end
+
+    local function reset()
+        team.writes, team.last = {}, nil
+        gate.writes, gate.last, gate.kind = {}, nil, nil
+        N.forgetTeam()
+    end
+
+    reset()
+    rules(1, twoSquads)
+    ok(team.last == select(1, seat(1, twoSquads)) and team.last ~= nil,
+        'IN A SQUAD, THE FRAME LOOP WRITES THE SQUAD TEAM',
+        ('SetPlayerTeam(%s), expected %s')
+            :format(tostring(team.last), tostring(select(1, seat(1, twoSquads)))))
+
+    ok(gate.last == false and gate.kind == 'boolean',
+        'and CLOSES the gate, with a real boolean and not a 1',
+        ('NetworkSetFriendlyFireOption(%s) :: %s')
+            :format(tostring(gate.last), tostring(gate.kind)))
+
+    -- THE ASSERTION THAT FAILS ON A GLOBAL FLIP, and the reason round seven's
+    -- recommendation was refused twice. A solo lobby with the gate closed is a
+    -- pacifist lobby, and solo is the DEFAULT MODE.
+    reset()
+    rules(1, mixed)
+    ok(gate.last == true and gate.kind == 'boolean',
+        'A SOLO LEAVES THE GATE OPEN -- PvP IS NOT SWITCHED OFF FOR THEM',
+        ('NetworkSetFriendlyFireOption(%s) :: %s')
+            :format(tostring(gate.last), tostring(gate.kind)))
+
+    ok(team.last == N.SOLO_TEAM,
+        'and is put on the reserved solo team rather than left wherever it was',
+        ('SetPlayerTeam(%s)'):format(tostring(team.last)))
+
+    -- The memo: the team is a synced node, so it is written on change and on a
+    -- slow refresh, not sixty times a second.
+    reset()
+    rules(1, twoSquads)
+    rules(1, twoSquads)
+    rules(1, twoSquads)
+    ok(#team.writes == 1,
+        'the team is written once, not once a frame -- it dirties a sync node',
+        ('%d write(s)'):format(#team.writes))
+
+    fakeTime = fakeTime + 5000
+    rules(1, twoSquads)
+    ok(#team.writes == 2,
+        'and is re-asserted on a slow refresh, because a memo is only a belief',
+        ('%d write(s)'):format(#team.writes))
+
+    reset()
+    rules(1, twoSquads)
+    rules(3, twoSquads)
+    ok(#team.writes == 2 and team.last == select(1, seat(3, twoSquads)),
+        'a change of squad is written immediately, not at the refresh',
+        ('%d write(s), last %s'):format(#team.writes, tostring(team.last)))
+
+    -- WARMUP PEACE IS A SEPARATE LEVER AND STAYS ONE. It is invincibility on
+    -- the player's OWN ped -- owner-authored, which is why it has always
+    -- worked -- and nothing about teams may be load-bearing for it.
+    reset()
+    rules(1, twoSquads, BR.PlayerState.WARMUP)
+    ok(invincible == true,
+        'WARMUP IS STILL GLOBAL PEACE, on its own invincibility lever',
+        ('SetPlayerInvincible(%s)'):format(tostring(invincible)))
+
+    reset()
+    rules(1, mixed, BR.PlayerState.WARMUP)
+    ok(invincible == true and gate.last == true,
+        'including for a solo, whose gate is open the whole time',
+        ('invincible %s, gate %s')
+            :format(tostring(invincible), tostring(gate.last)))
+
+    -- ==================================================================== --
+    -- 8. THE ONE-LINE WAY BACK
+    -- ==================================================================== --
+    --
+    -- The load-bearing inference cannot be settled from a desk, so the config
+    -- switch is the difference between a wrong guess costing one line and a
+    -- wrong guess costing a round. Pinned, because a kill switch nothing tests
+    -- is a kill switch that has stopped working by the time it is needed.
+
+    local was = BR.Config.Match.engineTeams
+    BR.Config.Match.engineTeams = false
+    reset()
+    rules(1, twoSquads)
+    ok(#team.writes == 0,
+        'engineTeams = false NEVER TOUCHES SET_PLAYER_TEAM',
+        ('%d write(s)'):format(#team.writes))
+    ok(gate.last == true and gate.kind == 'boolean',
+        'and holds the gate open exactly as e1f9f98 left it',
+        ('NetworkSetFriendlyFireOption(%s)'):format(tostring(gate.last)))
+    BR.Config.Match.engineTeams = was
+
+    reset()
+    rules(1, twoSquads)
+    ok(gate.last == false and #team.writes == 1,
+        'and turning it back on restores the gate on the next frame',
+        ('gate %s, %d team write(s)')
+            :format(tostring(gate.last), #team.writes))
 end
 
 realPrint(('%s%d passed, %d failed\27[0m')

@@ -54,7 +54,33 @@ BR.Config.Match = {
 
     -- Squads
     autofill        = true,   -- fill partial squads with solo queuers
+
+    -- FOUR IS THE GAME; TWO IS HOW YOU TEST IT.
+    --
+    -- With three dev clients and a maximum of four, every client lands in the
+    -- SAME squad -- which makes cross-squad damage impossible to produce in
+    -- game, and cross-squad damage is the half of #115's fix that nothing in a
+    -- playtest can otherwise reach. Set this to 2 and three clients become two
+    -- squads (2 + 1), which puts the enemy case on the screen.
     maxSquadSize    = 4,
+
+    -- THE ENGINE'S OWN FRIENDLY-FIRE GATE (#115), and the one-line way back.
+    --
+    -- true  each squad gets a GTA team (SET_PLAYER_TEAM) and a player with a
+    --       live squadmate closes the engine's friendly-fire gate, so the
+    --       shooter's engine never computes a hit on a teammate and the false
+    --       corpse cannot be created. Solos keep team 0 and an OPEN gate, so
+    --       solo play behaves exactly as it did before this existed.
+    -- false no team is ever set and the gate is always open -- byte-for-byte
+    --       the pre-#115 behaviour from e1f9f98.
+    --
+    -- The load-bearing inference is that GTA's damage path refuses a hit when
+    -- shooter and victim share a team and the gate is closed. Everything in
+    -- the record supports it (see the note above BR.Native.teamFor in
+    -- br_core/client/natives.lua) and no source states it in words, so this
+    -- switch exists to make a wrong guess cost one line rather than a round.
+    -- If squad matches suddenly have no combat at all, set this false.
+    engineTeams     = true,
 
     -- A squad match needs somebody to fight. One squad means the win condition
     -- is already satisfied at the starting gun, which reads as "the match ended

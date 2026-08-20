@@ -155,17 +155,19 @@ local function dropTag(src)
     end
 end
 
---- Hand ONE ped back: default relationship group, and damageable again.
+--- Hand ONE ped back to the default relationship group.
 ---
---- BOTH HALVES, and the second one is the one that bites. A ped that keeps the
---- damage shield after leaving the squad is invulnerable to this client for the
---- rest of the match -- a strictly worse bug than the teamkill the shield
---- exists to stop, because it is silent and it never self-corrects. Every path
---- that stops considering a ped an ally goes through here.
+--- IT USED TO RESTORE A DAMAGE SHIELD TOO, and both halves of that are gone --
+--- see the note in the tick loop below. Nothing here now writes anything to
+--- another player's clone that could outlive the squad, which is the property
+--- this function existed to guarantee and is now simply true.
+---
+--- Every path that stops considering a ped an ally still goes through here,
+--- because the relationship group is real and does drive the AI and melee
+--- paths.
 local function releaseAlly(ped)
     if DoesEntityExist(ped) then
         SetPedRelationshipGroupHash(ped, PLAYER_GROUP)
-        SetEntityCanBeDamaged(ped, true)
     end
     allied[ped] = nil
 end
@@ -251,8 +253,10 @@ end)
 -- indefinitely.
 --
 -- TICK, not SLOW: this loop is also what moves a freshly streamed-in
--- squadmate into the BR_ALLY group, and until that happens they are
--- shootable -- at 10Hz that window is a bullet or two, at 1Hz a burst.
+-- squadmate into the BR_ALLY group. That no longer decides whether they can
+-- be shot -- the engine team gate in client/natives.lua does, and it needs no
+-- ped at all -- but the AI and melee paths read the group, and a name that
+-- appears a whole second after a mate does reads as a bug.
 BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
     if next(mates) and (GetGameTimer() - lastPush) > 3500 then
         clearAll()
@@ -303,40 +307,44 @@ BR.Loop.register(BR.Loop.TICK, 'squadmates.tags', function()
         -- can kill my own teammates", live report). Ten hash-writes a
         -- second is free; a teamkill is not.
         --
-        -- SET_ENTITY_CAN_BE_DAMAGED IS THE HALF THAT ACTUALLY STOPS A BULLET,
-        -- AND IT IS THE WHOLE OF #115 (the false corpse).
+        -- ...AND "SQUAD-LEVEL PEACE" IS NO LONGER DONE FROM HERE AT ALL.
         --
-        -- The relationship group alone does NOT stop one player's bullets from
-        -- damaging another player's ped -- measured here three times over
-        -- (2026-08-05), which is why the undo-net further down this file
-        -- exists. The undo-net repairs health AFTER the fact, and that is
-        -- precisely what cannot fix a false corpse: the shooter's engine has
-        -- already applied a local death, the server answers a refused
-        -- weaponDamageEvent with CancelEvent(), and CancelEvent() suppresses
-        -- replication while sending NO negative acknowledgement back to the
-        -- firing client (citizenfx/fivem#2343, open and unimplemented). There
-        -- is no message to correct with. Six rounds of correction proved that
-        -- from the other end (#115).
+        -- SetEntityCanBeDamaged(matePed, false) used to sit on the next line
+        -- (f1ab8fa) and was described as the half that actually stops a
+        -- bullet. IT IS GONE, and it is not coming back:
         --
-        -- So the damage must never be computed. nta (Cfx.re) on this exact
-        -- symptom: "the game will generally assume that any entity NOT MARKED
-        -- AS 'UNABLE TO BE DAMAGED' will have damage accepted by the remote
-        -- side". This is that mark, and it is the only lever in the quote we
-        -- can actually pull -- the other one, a synthesized damage reply, is
-        -- the unimplemented feature above.
+        --   PLAYTEST, 2026-08-19 -- "Friendly fire ... I shot them, their ped
+        --   fell over, then popped back up ... it failed immediately after a
+        --   second attempt and they bled out, but only on my screen."
         --
-        -- LOCAL, LIKE EVERY OTHER HALF OF THIS SCHEME. This client shields
-        -- only the peds the server told it are ITS OWN squadmates. An enemy
-        -- shooting the same player computes that shot on THEIR machine, where
-        -- this player is nobody's teammate and carries no shield -- so enemy
-        -- PvP is untouched, and a downed mate can still be finished by the
-        -- people who downed them.
+        -- A ped that falls over TOOK the damage; the standing back up is the
+        -- health-repair net working after the fact. The mark did not stop the
+        -- hit being computed, and the second shot produced the very false
+        -- corpse it was shipped to prevent. It shipped with the assumption
+        -- flagged -- that the engine honours the mark on a clone this client
+        -- does not own -- and the assumption is now disproven.
         --
-        -- WHAT THIS DELIBERATELY DOES NOT TOUCH: NetworkSetFriendlyFireOption
-        -- in client/natives.lua. See the note there before flipping it.
+        -- IT COULD NEVER HAVE WORKED, AND NEITHER CAN THE GROUP BELOW. A
+        -- player's ped is owned by that player's machine and control of it can
+        -- never be taken, so script writes to their clone are not honoured
+        -- here. That is one mechanism behind all three failures: the
+        -- relationship group (measured three times, 2026-08-05), the damage
+        -- mark (2026-08-19), and the Cfx forum's own report of the same recipe
+        -- -- "all players were 'PLAYER' relationship whatever you do with
+        -- them".
+        --
+        -- WHERE THE FIX LIVES NOW: client/natives.lua, on the only channel
+        -- that replicates -- facts a client authors ABOUT ITSELF. Each squad
+        -- gets a GTA team, and a player with a live squadmate closes the
+        -- engine's friendly-fire gate, so the shooter's engine refuses to
+        -- compute the hit. Read the note above BR.Native.teamFor before
+        -- reaching for a per-clone native again.
+        --
+        -- THE GROUP STAYS because it is what the AI and melee paths read, and
+        -- because releaseAlly is the path that hands an ex-mate back. It is
+        -- not load-bearing for #115 and must not be described as though it is.
         if ped ~= 0 then
             SetPedRelationshipGroupHash(ped, BR.Native.ALLY_GROUP)
-            SetEntityCanBeDamaged(ped, false)
             allied[ped]      = true
             stillAllied[ped] = true
         end
@@ -585,19 +593,25 @@ BR.Loop.register(BR.Loop.FRAME, 'squadmates.lownames', function()
     end
 end)
 
--- FRIENDLY FIRE IS UNDONE, BECAUSE IT CANNOT BE PREVENTED HERE.
+-- FRIENDLY FIRE IS UNDONE HERE, AS A BACKSTOP. PREVENTION MOVED.
 --
--- The relationship-group scheme (BR_ALLY + SetCanAttackFriendly) governs AI
--- aggression and melee, and it does NOT stop one player's bullets from
--- damaging another's ped -- which is why teamkilling survived being "fixed"
--- twice (user, 2026-08-05, third report). GTA's own answer is the team system,
--- which this gamemode does not use, so the honest fix at this stage is to
--- notice the damage and put the health back.
+-- This comment used to end "GTA's own answer is the team system, which this
+-- gamemode does not use, so the honest fix at this stage is to notice the
+-- damage and put the health back." It named the right answer and then went
+-- around it, and five further rounds of #115 were spent going around it again.
+-- The gamemode uses the team system now: client/natives.lua puts each squad on
+-- a GTA team and closes the engine's friendly-fire gate for anyone with a live
+-- squadmate, which is the only lever that stops the hit being COMPUTED and
+-- therefore the only one that can stop a false corpse.
 --
--- This is a CLIENT-SIDE net and it is temporary: M6 moves damage behind
--- server-side validation, where a shot at a squadmate is simply never applied.
--- Until then, restoring is the difference between a squad that works and one
--- that does not.
+-- WHAT IS LEFT HERE IS DELIBERATELY NOT REMOVED. Restoring health is the wrong
+-- fix for a corpse and the right fix for everything that gets through: the
+-- window before a team assignment lands, a build where SET_PLAYER_TEAM does not
+-- take, and BR.Config.Match.engineTeams = false. It repairs a ped that was
+-- HURT, which is precisely the case the owner is willing to live with
+-- ("even if our health repair net catches that's fine ... it just needs to work
+-- consistently", 2026-08-19). It cannot repair one that was KILLED, and that is
+-- why prevention had to move rather than improve.
 --
 -- FRAME, not TICK: at 10Hz an automatic weapon lands several rounds between
 -- samples, and restoring to a health value that was already three bullets old
