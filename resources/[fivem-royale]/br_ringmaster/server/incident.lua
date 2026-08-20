@@ -59,6 +59,10 @@ local stat = {
     -- persistent cheater produces one case and a handful of these, so reading them
     -- as filings would make the numbers describe the opposite of what happened.
     corroborated = 0,
+    -- Match-timeline closures (#30). `closeFailed` is the one to watch: a
+    -- non-zero value means cases are sitting in the console reading "end never
+    -- reported" on matches that did in fact end.
+    closed = 0, closeFailed = 0,
 }
 
 function BR.Ring.incidentStats()
@@ -66,6 +70,7 @@ function BR.Ring.incidentStats()
         filed = stat.filed, failed = stat.failed,
         duplicate = stat.duplicate, inflight = stat.inflight,
         corroborated = stat.corroborated,
+        closed = stat.closed, closeFailed = stat.closeFailed,
     }
 end
 
@@ -141,7 +146,37 @@ local function realise(payload)
         for _, k in ipairs(r.kills or {}) do k.at = real(k.at) end
     end
 
+    -- The match timeline (#30). Same conversion, same reason: every `at` on it
+    -- is a game-clock reading and the console renders wall-clock times.
+    payload.matchStartedAt = real(payload.matchStartedAt)
+    for _, e in ipairs(payload.matchTimeline or {}) do e.at = real(e.at) end
+
+    -- A DURATION BECOMES AN ABSOLUTE DEADLINE, HERE AND ONLY HERE.
+    -- br_lib hands over "a match is expected to be over this long after it
+    -- started" because it has no wall clock; the row needs a timestamp the
+    -- console can compare against `Date.now()` without knowing anything about
+    -- the game's uptime. Computed from the ALREADY-REALISED start above, so the
+    -- deadline and the start are the same clock rather than two samples of it.
+    if payload.matchStartedAt and payload.matchEndsByMs then
+        payload.matchEndsBy = payload.matchStartedAt + payload.matchEndsByMs
+    end
+    payload.matchEndsByMs = nil
+
     return payload
+end
+
+--- Rewrite the game-clock readings on a close payload.
+---
+--- Its own function rather than a branch in `realise`: a close carries no
+--- evidence, no `atGameMs` and no deadline, and sharing the walk would mean
+--- guarding every line of it against a shape it never sees.
+local function realiseClose(ev)
+    local real = realiser()
+
+    ev.matchEndedAt = real(ev.matchEndedAt)
+    for _, e in ipairs(ev.matchTimeline or {}) do e.at = real(e.at) end
+
+    return ev
 end
 
 --- Try the write, and keep trying for a while if the database is unhappy.
@@ -299,4 +334,67 @@ AddEventHandler('br:ringmaster:corroborate', function(ev)
         reason         = ev.reason,
         severity       = ev.severity,
     }, GetGameTimer())
+end)
+
+-- ---------------------------------------------------------------------------
+-- Closing a case's match timeline (#30)
+-- ---------------------------------------------------------------------------
+--
+-- THE ONE WRITE THAT CANNOT RIDE THE FILING. Everything else an incident says
+-- about its match -- when the match started, every kill the subject had landed
+-- so far -- is already true when the case is filed and travels on the PutItem
+-- that was going to happen anyway. That the match ENDED is not, and neither are
+-- the kills after the report, so they need a write of their own.
+--
+-- ONE PER INCIDENT, AND NONE FOR A QUIET MATCH. br_core only emits this for
+-- cases it actually filed, so a match nobody was reported in produces no write
+-- at all -- which is the overwhelmingly common case and the whole reason the
+-- evidence behind this lives in a RAM buffer rather than in a table.
+--
+-- WHY IT RETRIES LESS HARD THAN A FILING. Losing a case loses the record and is
+-- unrecoverable; losing a close costs an end timestamp on a row that is already
+-- durable and already readable. The console degrades honestly on its own --
+-- `matchEndsBy` is on the row from filing time, so an end that never arrives
+-- reads as "end never reported" rather than as "still in progress forever". So
+-- this tries a few times and gives up quietly rather than spending thirty
+-- seconds of a match teardown on it.
+local CLOSE_RETRY_MAX = 3
+
+AddEventHandler('br:ddb:incidentCloseResult', function(req, ok, extra)
+    reply(req, ok, extra or {})
+end)
+
+local function attemptClose(ev, attempt)
+    stat.inflight = stat.inflight + 1
+
+    ask('br:ddb:incidentClose', function(ok, extra)
+        stat.inflight = stat.inflight - 1
+        extra = extra or {}
+
+        if ok then
+            stat.closed = stat.closed + 1
+            return
+        end
+
+        -- A SHAPE br_ddb REFUSED WILL NOT BECOME VALID ON THE THIRD TRY, and a
+        -- case whose row is not there has nothing to close -- br_ddb answers
+        -- `retryable = false` for both. Same distinction the filing path draws.
+        if extra.retryable == false or attempt >= CLOSE_RETRY_MAX then
+            stat.closeFailed = stat.closeFailed + 1
+            print(('^3[br_ringmaster] incident %s not closed -- %s^7')
+                :format(tostring(ev.incidentId), tostring(extra.error)))
+            return
+        end
+
+        SetTimeout(RETRY_BASE_MS * attempt, function()
+            attemptClose(ev, attempt + 1)
+        end)
+    end, ev)
+end
+
+AddEventHandler('br:ringmaster:incidentClose', function(ev)
+    if type(ev) ~= 'table' then return end
+    if type(ev.incidentId) ~= 'string' or ev.incidentId == '' then return end
+
+    attemptClose(realiseClose(ev), 1)
 end)

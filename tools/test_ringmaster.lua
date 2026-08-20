@@ -1563,6 +1563,547 @@ do
         'dying to the storm prompts nothing -- there is no killer to report')
 end
 
+
+-- ======================================================================== --
+-- THE MATCH TIMELINE ON AN INCIDENT  (#30)
+-- ======================================================================== --
+--
+-- An incident should show the match around it: when the match started, every
+-- kill by the offender before AND after the report, the corroborations, and
+-- when the match ended.
+--
+-- WHAT MAKES THESE CASES WORTH WRITING RATHER THAN ASSUMING. Two of them are
+-- about ORDER, and order bugs in this project have shipped as features that look
+-- correct and record nothing:
+--
+--   * server/evidence.lua discards the buffer on `br:match:destroyed`, and
+--     br_core's manifest loads it at line 114 -- twenty-four lines BEFORE
+--     server/incident.lua, which is where the close is built. FiveM runs handlers
+--     in registration order. So a close that listened to `br:match:destroyed`
+--     would read an empty buffer, write a timeline with no kills on it, and pass
+--     any test that only checked "a close was emitted".
+--
+--   * the filing instant is stamped when the payload is BUILT, not when the
+--     acknowledgement returns -- that round trip retries for up to thirty
+--     seconds, and kills inside that window would otherwise be classified as
+--     "before the report" by one function and "after" by the other.
+--
+-- These load the REAL br_lib/shared/evidence_buf.lua, br_lib/shared/
+-- incident_build.lua, br_core/server/evidence.lua and br_core/server/
+-- incident.lua, IN MANIFEST ORDER, and drive them through the real events. The
+-- only stubs are FiveM natives and the roster.
+
+--- A world with the evidence buffer and the incident writer, wired as br_core
+--- wires them.
+---
+--- SEPARATE FROM newIncidentWorld ABOVE, which deliberately loads the smallest
+--- surface that holds up the announcement tests. This one needs the evidence
+--- half as well, and loading it into that world would change what those cases
+--- run against.
+local function newTimelineWorld()
+    local env = setmetatable({}, { __index = function(_, k) return SANDBOX_STD[k] end })
+    env._G = env
+
+    local S = {
+        roster = {},
+        licenses = {},
+        now = 0,
+        matches = {},
+        incidents = {},   -- br:ringmaster:incident payloads
+        closes = {},      -- br:ringmaster:incidentClose payloads
+        corroborations = {},
+    }
+
+    local h = {}
+    env.AddEventHandler = function(name, fn)
+        h[name] = h[name] or {}
+        table.insert(h[name], fn)
+    end
+    env.TriggerEvent = function(name, ...)
+        for _, fn in ipairs(h[name] or {}) do fn(...) end
+    end
+    env.TriggerClientEvent = function() end
+    env.RegisterNetEvent = function() end
+    env.RegisterCommand  = function() end
+    -- CONTROLLABLE, because every assertion below is about WHEN something was
+    -- recorded relative to something else.
+    env.GetGameTimer = function() return S.now end
+    env.GetCurrentResourceName = function() return 'br_core' end
+    env.print = function() end
+    env.GetNumPlayerIdentifiers = function(src) return S.licenses[src] and 1 or 0 end
+    env.GetPlayerIdentifier = function(src) return S.licenses[src] end
+
+    for _, f in ipairs({
+        'br_lib/shared/enums.lua',
+        'br_lib/shared/protocol.lua',
+        'br_lib/shared/identity.lua',
+        'br_lib/shared/combat_solve.lua',
+        'br_lib/shared/evidence_buf.lua',
+        'br_lib/shared/incident_build.lua',
+    }) do
+        local chunk, err = loadfile(ROOT .. f, 't', env)
+        if not chunk then
+            realPrint('\27[31msandbox load error\27[0m ' .. f .. ': ' .. tostring(err))
+            os.exit(1)
+        end
+        chunk()
+    end
+
+    local BRs = env.BR
+
+    BRs.Roster = {
+        get = function(src) return S.roster[src] end,
+        licenseOf = function(src) return S.licenses[src] end,
+        each = function(pred, fn)
+            local ids = {}
+            for src in pairs(S.roster) do ids[#ids + 1] = src end
+            table.sort(ids)
+            for _, src in ipairs(ids) do
+                local e = S.roster[src]
+                if pred(e) then fn(src, e) end
+            end
+        end,
+    }
+    -- The match registry, which is where `startedAt` lives.
+    BRs.Server = { matches = S.matches }
+    BRs.Config = {
+        Report = { maxPerMatch = 3, maxTargets = 5, categories = { 'cheating' } },
+        isReportCategory = function(c) return c == 'cheating' end,
+        defaultReportCategory = function() return 'cheating' end,
+    }
+    BRs.Combat = { attributedKiller = function() return nil end }
+
+    -- IN MANIFEST ORDER. evidence.lua at br_core/fxmanifest.lua:114, incident.lua
+    -- at :138 -- the same order the server loads them, which is the order that
+    -- decides whether the close reads a full buffer or an empty one.
+    for _, f in ipairs({
+        'br_core/server/evidence.lua',
+        'br_core/server/incident.lua',
+    }) do
+        local chunk, err = loadfile(ROOT .. f, 't', env)
+        if not chunk then
+            realPrint('\27[31msandbox load error\27[0m ' .. f .. ': ' .. tostring(err))
+            os.exit(1)
+        end
+        chunk()
+    end
+
+    env.AddEventHandler('br:ringmaster:incident', function(p)
+        S.incidents[#S.incidents + 1] = p
+    end)
+    env.AddEventHandler('br:ringmaster:incidentClose', function(p)
+        S.closes[#S.closes + 1] = p
+    end)
+    env.AddEventHandler('br:ringmaster:corroborate', function(p)
+        S.corroborations[#S.corroborations + 1] = p
+    end)
+
+    local W = { env = env, BR = BRs, S = S }
+
+    function W.at(t) S.now = t end
+
+    function W.startMatch(matchId, startedAt)
+        S.matches[matchId] = { id = matchId, startedAt = startedAt }
+    end
+
+    function W.join(src, matchId, license, name)
+        S.roster[src] = {
+            src = src, name = name or ('P' .. src), matchId = matchId, squadId = nil,
+        }
+        S.licenses[src] = license
+    end
+
+    --- One elimination, through the REAL BR.Evidence.noteKill, in the shape
+    --- server/combat.lua hands it over.
+    function W.kill(killerSrc, victimSrc)
+        BRs.Evidence.noteKill({
+            killer    = killerSrc and S.roster[killerSrc] and S.roster[killerSrc].name or nil,
+            killerSrc = killerSrc,
+            victim    = S.roster[victimSrc] and S.roster[victimSrc].name or 'V',
+            victimSrc = victimSrc,
+            cause     = 'gunshot',
+            weapon    = 'WEAPON_CARBINERIFLE',
+            headshot  = nil,
+        })
+    end
+
+    --- File a case the way the anticheat does, then acknowledge it.
+    function W.file(matchId, license, name, incidentId)
+        env.TriggerEvent('br:ringmaster:refusal', {
+            matchId = matchId, license = license, name = name,
+            count = 8, windowMs = 4000,
+            reason  = BRs.ShotRefusal.NO_WEAPON,
+            reasons = { [BRs.ShotRefusal.NO_WEAPON] = 8 },
+            severity = 'high', seq = 1, at = S.now,
+        })
+        if incidentId then
+            env.TriggerEvent('br:incident:filed', {
+                incidentId = incidentId, matchId = matchId,
+                subjectLicense = license,
+            })
+        end
+    end
+
+    --- The teardown br_core runs: `br:match:destroyed` is the only path out of
+    --- the registry, and server/evidence.lua answers it.
+    function W.endMatch(matchId)
+        env.TriggerEvent('br:match:destroyed', { matchId = matchId })
+    end
+
+    function W.lastClose() return S.closes[#S.closes] end
+    function W.lastIncident() return S.incidents[#S.incidents] end
+
+    return W
+end
+
+--- Entries of one kind on a timeline.
+local function ofKind(timeline, kind)
+    local out = {}
+    for _, e in ipairs(timeline or {}) do
+        if e.kind == kind then out[#out + 1] = e end
+    end
+    return out
+end
+
+describe('timeline.filing')
+do
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+    W.join(2, 7, 'license:v1', 'Victim1')
+    W.join(3, 7, 'license:v2', 'Victim2')
+
+    W.at(2000); W.kill(1, 2)
+    W.at(3000); W.kill(1, 3)
+
+    W.at(4000)
+    W.file(7, 'license:cheat', 'Cheater')
+
+    local p = W.lastIncident()
+    ok(p ~= nil, 'a refusal files a case')
+    ok(p and p.matchStartedAt == 1000, 'the case records when the match started',
+        p and tostring(p.matchStartedAt))
+
+    -- THE ZERO POINT IS THE CASE'S OWN openedAt, and the console subtracts. The
+    -- game stores absolute times so a corrected timestamp re-renders the whole
+    -- timeline rather than leaving baked-in offsets behind.
+    ok(p and p.atGameMs == 4000, 'and stamps the filing instant from the payload',
+        p and tostring(p.atGameMs))
+
+    local starts = ofKind(p and p.matchTimeline, 'match_start')
+    ok(#starts == 1 and starts[1].at == 1000, 'match start is on the timeline')
+
+    -- THE KILLS BEFORE THE REPORT, which is the half the buffer already had.
+    local kills = ofKind(p and p.matchTimeline, 'kill')
+    ok(#kills == 2, 'both kills before the report are on the timeline', #kills)
+    ok(kills[1] and kills[1].at == 2000 and kills[2] and kills[2].at == 3000,
+        'oldest first')
+
+    -- THE PROFILE LINK. A display name is not what the console can look up.
+    ok(kills[1] and kills[1].victimLicense == 'license:v1',
+        'a kill names the victim by licence', kills[1] and tostring(kills[1].victimLicense))
+    ok(kills[1] and kills[1].killerLicense == 'license:cheat',
+        'and the killer by licence')
+
+    -- NOT ENDED YET, and the row says so by carrying a deadline instead.
+    ok(p and p.matchEndsByMs ~= nil, 'the case carries when the match should be over by')
+    ok(p and p.matchEndedAt == nil, 'and does not claim the match has ended')
+end
+
+describe('timeline.close')
+do
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+    W.join(2, 7, 'license:v1', 'Victim1')
+    W.join(3, 7, 'license:v2', 'Victim2')
+    W.join(4, 7, 'license:v3', 'Victim3')
+
+    W.at(2000); W.kill(1, 2)          -- before the report
+    W.at(4000); W.file(7, 'license:cheat', 'Cheater', 'inc-1')
+    W.at(6000); W.kill(1, 3)          -- AFTER the report
+    W.at(7000); W.kill(1, 4)          -- and again
+
+    W.at(9000)
+    W.endMatch(7)
+
+    local c = W.lastClose()
+    ok(c ~= nil, 'the match ending closes the case it produced')
+    ok(c and c.incidentId == 'inc-1', 'against the id the write came back with')
+    ok(c and c.matchEndedAt == 9000, 'and records when the match ended',
+        c and tostring(c.matchEndedAt))
+
+    local ends = ofKind(c and c.matchTimeline, 'match_end')
+    ok(#ends == 1 and ends[1].at == 9000, 'match end is an entry on the timeline')
+
+    -- THE HALF THAT ONLY EXISTS BECAUSE THE BUFFER OUTLIVED THE MATCH BY ONE
+    -- EVENT. If server/evidence.lua discarded before announcing, this is 0 --
+    -- and the whole feature would be silently dead.
+    local kills = ofKind(c and c.matchTimeline, 'kill')
+    ok(#kills == 2, 'the kills AFTER the report are on the close', #kills)
+    ok(kills[1] and kills[1].at == 6000 and kills[2] and kills[2].at == 7000,
+        'and they are the ones that happened after it',
+        kills[1] and tostring(kills[1].at))
+
+    -- AND NOT THE ONES ALREADY ON THE ROW. A timeline that lists an elimination
+    -- twice is a claim about a person that is false.
+    local dup = false
+    for _, k in ipairs(kills) do if k.at == 2000 then dup = true end end
+    ok(not dup, 'the kill from before the report is not sent twice')
+
+    ok(c and c.matchTimelineComplete == true,
+        'and nothing was dropped, so it says so')
+end
+
+describe('timeline.ordering')
+do
+    -- THE HAZARD, ASSERTED DIRECTLY. server/evidence.lua must announce the
+    -- closing BEFORE it discards the buffer. This drives the real
+    -- `br:match:destroyed` and reads what the buffer held at the moment the
+    -- close was built -- so moving `clearMatch` above the emit fails here.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+    W.join(2, 7, 'license:v1', 'Victim1')
+
+    W.at(4000); W.file(7, 'license:cheat', 'Cheater', 'inc-1')
+    W.at(6000); W.kill(1, 2)
+
+    -- The buffer has the kill right up until the match is torn down.
+    ok(#W.BR.Evidence.forLicense('license:cheat') > 0,
+        'the buffer holds the subject while the match runs')
+
+    W.at(9000)
+    W.endMatch(7)
+
+    local c = W.lastClose()
+    ok(c ~= nil, 'a close is emitted')
+    ok(c and #ofKind(c.matchTimeline, 'kill') == 1,
+        'and it was built while the evidence still existed',
+        c and #ofKind(c.matchTimeline, 'kill'))
+
+    -- AND THE DISCARD STILL HAPPENS. The announcement must not have replaced
+    -- the teardown -- a buffer that is never freed is the leak the caps exist
+    -- to prevent.
+    ok(#W.BR.Evidence.forLicense('license:cheat') == 0,
+        'and the buffer is discarded afterwards anyway')
+end
+
+describe('timeline.never-ends')
+do
+    -- A CRASH, A RESTART, A LOST WRITE. The match end is the one part of this
+    -- that happens later, so it is the one part that can fail to happen at all.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000)
+    W.file(7, 'license:cheat', 'Cheater', 'inc-1')
+
+    local p = W.lastIncident()
+
+    -- NO CLOSE, EVER. Nothing tears the match down.
+    ok(W.lastClose() == nil, 'a match that never ends closes nothing')
+
+    -- SO THE ROW MUST CARRY THE ANSWER ITSELF, written at filing time, when the
+    -- game was still alive to write it. Absent `matchEndedAt` plus a deadline in
+    -- the past is "the end was never reported"; absent plus a deadline in the
+    -- future is "still in progress". Without the deadline both are just absent,
+    -- and an admin cannot tell a live match from a dead server.
+    ok(p and p.matchEndedAt == nil, 'the case has no end timestamp')
+    ok(p and p.matchEndsByMs == W.BR.IncidentBuild.TIMELINE_LIMITS.MATCH_ENDS_BY_MS,
+        'but it does carry a deadline, so absent never means "running forever"')
+    ok(p and p.matchEndsByMs > 0, 'and the deadline is a real duration')
+end
+
+describe('timeline.no-match')
+do
+    -- `brrefuse` from a console, or an anticheat trip in the lobby. Inventing a
+    -- timeline for these would put a match on the record that never happened.
+    local W = newTimelineWorld()
+    W.join(1, nil, 'license:cheat', 'Cheater')
+
+    W.at(4000)
+    W.file(nil, 'license:cheat', 'Cheater', 'inc-1')
+
+    local p = W.lastIncident()
+    ok(p ~= nil, 'a case filed outside a match is still filed')
+    ok(p and p.matchStartedAt == nil, 'with no match start')
+    ok(p and p.matchEndsByMs == nil, 'and no deadline to expire')
+    ok(p and #(p.matchTimeline or {}) == 0, 'and an empty timeline')
+end
+
+describe('timeline.corroboration')
+do
+    -- CORROBORATIONS ARE NOT ON THIS TIMELINE AND MUST NOT BE. They land in the
+    -- console's own `events` list, appended by Ringmaster's `corroborate()`,
+    -- because appending to a case that exists is an UpdateItem the game
+    -- deliberately does not hold on that attribute. The game emits the fact; the
+    -- console records it. This asserts the split rather than assuming it.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.file(7, 'license:cheat', 'Cheater', 'inc-1')
+
+    -- The second refusal doubling corroborates rather than filing again.
+    W.at(6000)
+    W.env.TriggerEvent('br:ringmaster:refusal', {
+        matchId = 7, license = 'license:cheat', name = 'Cheater',
+        count = 16, windowMs = 4000,
+        reason  = W.BR.ShotRefusal.NO_WEAPON,
+        reasons = { [W.BR.ShotRefusal.NO_WEAPON] = 16 },
+        severity = 'high', seq = 2, at = 6000,
+    })
+
+    ok(#W.S.incidents == 1, 'a second refusal does not file a second case',
+        #W.S.incidents)
+    ok(#W.S.corroborations == 1, 'it corroborates the first', #W.S.corroborations)
+    ok(W.S.corroborations[1].incidentId == 'inc-1',
+        'against the case that already exists')
+
+    W.at(9000)
+    W.endMatch(7)
+
+    local c = W.lastClose()
+    ok(c ~= nil, 'and the match still closes that one case')
+    ok(#ofKind(c and c.matchTimeline, 'match_end') == 1, 'with a match end on it')
+    -- The corroboration is the console's to place on the timeline; the game
+    -- never writes one into `matchTimeline`.
+    ok(#ofKind(c and c.matchTimeline, 'note') == 0,
+        'and the game writes no corroboration entry of its own')
+end
+
+describe('timeline.volume')
+do
+    -- A PROLIFIC OFFENDER IN A LONG MATCH. The buffer's default cap is 30 kills
+    -- per player session, which is right for an evidence snippet and wrong for
+    -- "every kill by the offender" -- so filing PROMOTES the subject's records.
+    -- The cost is paid per incident, not per player: a match with no incident
+    -- promotes nobody.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+    W.join(2, 7, 'license:v1', 'Victim1')
+
+    local DEFAULT_KILL_MAX = W.BR.EvidenceBuf.DEFAULTS.killMax
+    ok(DEFAULT_KILL_MAX == 30, 'the default cap is what this case assumes',
+        DEFAULT_KILL_MAX)
+
+    -- File EARLY, which is the real shape: the anticheat fires on a doubling and
+    -- a report comes in mid-match.
+    W.at(2000)
+    W.file(7, 'license:cheat', 'Cheater', 'inc-1')
+
+    -- Now far more kills than the DEFAULT cap would have held.
+    for i = 1, 100 do
+        W.at(3000 + i)
+        W.kill(1, 2)
+    end
+
+    W.at(200000)
+    W.endMatch(7)
+
+    local c = W.lastClose()
+    local kills = ofKind(c and c.matchTimeline, 'kill')
+
+    -- THE POINT: without the promotion this is 30, and the timeline would
+    -- silently be "the last thirty kills" while claiming to be every kill.
+    ok(#kills == 100, 'every kill after the report survives the default cap', #kills)
+    ok(c and c.matchTimelineComplete == true,
+        'and the timeline reports itself complete')
+
+    -- AND IT IS STILL BOUNDED. A DynamoDB item is 400KB.
+    ok(#kills <= W.BR.IncidentBuild.TIMELINE_LIMITS.MAX_TIMELINE_KILLS,
+        'while staying under the hard cap')
+end
+
+describe('timeline.volume.truncated')
+do
+    -- BEYOND EVEN THE PROMOTED CAP, the timeline truncates -- and says so. A
+    -- kill list that stops early and reports itself complete tells an admin
+    -- "this is everything they did" when it is not.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+    W.join(2, 7, 'license:v1', 'Victim1')
+
+    W.at(2000)
+    W.file(7, 'license:cheat', 'Cheater', 'inc-1')
+
+    local PROMOTED = W.BR.EvidenceBuf.PROMOTED.killMax
+    for i = 1, PROMOTED + 50 do
+        W.at(3000 + i)
+        W.kill(1, 2)
+    end
+
+    W.at(500000)
+    W.endMatch(7)
+
+    local c = W.lastClose()
+    local kills = ofKind(c and c.matchTimeline, 'kill')
+
+    ok(#kills <= PROMOTED, 'a runaway kill count is bounded', #kills)
+    ok(c and c.matchTimelineComplete == false,
+        'and a truncated timeline never claims to be complete')
+    ok(c and c.matchKillsSeen >= PROMOTED + 50,
+        'and it reports how many kills there really were',
+        c and tostring(c.matchKillsSeen))
+end
+
+describe('timeline.no-incident')
+do
+    -- THE COST RULE. A match nobody was reported in must produce NOTHING: no
+    -- close, no write, no DynamoDB traffic at all. This is the case that makes
+    -- the whole design affordable, and it is the one that would silently regress
+    -- if the close were ever hung off the match rather than off the incident.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:clean', 'Clean')
+    W.join(2, 7, 'license:v1', 'Victim1')
+
+    W.at(2000); W.kill(1, 2)
+    W.at(3000); W.kill(1, 2)
+
+    W.at(9000)
+    W.endMatch(7)
+
+    ok(#W.S.incidents == 0, 'a quiet match files nothing', #W.S.incidents)
+    ok(#W.S.closes == 0, 'and closes nothing -- zero writes', #W.S.closes)
+end
+
+describe('timeline.filing-window')
+do
+    -- THE ACKNOWLEDGEMENT ARRIVES LATE. br_ringmaster retries a failed write for
+    -- up to thirty seconds, so `br:incident:filed` can come back long after the
+    -- payload was built. A kill inside that window belongs AFTER the report --
+    -- and would be lost entirely if the filing instant were read from the
+    -- acknowledgement instead of from the payload.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+    W.join(2, 7, 'license:v1', 'Victim1')
+
+    W.at(4000)
+    W.file(7, 'license:cheat', 'Cheater')   -- filed, NOT yet acknowledged
+
+    W.at(6000); W.kill(1, 2)                -- during the write's retry window
+
+    W.at(30000)
+    W.env.TriggerEvent('br:incident:filed', {
+        incidentId = 'inc-1', matchId = 7, subjectLicense = 'license:cheat',
+    })
+
+    W.at(40000)
+    W.endMatch(7)
+
+    local c = W.lastClose()
+    local kills = ofKind(c and c.matchTimeline, 'kill')
+    ok(#kills == 1, 'a kill during the write window is still on the timeline', #kills)
+    ok(kills[1] and kills[1].at == 6000, 'at the moment it actually happened',
+        kills[1] and tostring(kills[1].at))
+end
+
 -- ----------------------------------------------------------------- result ---
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

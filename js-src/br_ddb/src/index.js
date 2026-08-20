@@ -15,6 +15,7 @@ import { marshall, unmarshall } from '@aws-sdk/util-dynamodb'
 
 import { artifactNames, isSpoolFile } from './artifacts.js'
 import { isActive } from './ban.js'
+import { buildIncidentClose } from './close.js'
 import { buildIncidentItem } from './incident.js'
 import { projectVerdict } from './verdict.js'
 
@@ -910,6 +911,107 @@ on('br:ddb:putIncident', (req, token, payload) => {
         return
       }
       console.log(`[br_ddb] incident write failed for ${incidentId}: ${e.message}`)
+      answer(false, { error: e.message, retryable: true })
+    })
+})
+
+
+/**
+ * ═══ CLOSING A CASE'S MATCH TIMELINE (#30) ═══
+ *
+ * THE FIRST AND ONLY UpdateItem THIS RESOURCE MAKES AGAINST A `ringmaster-*`
+ * TABLE, and it needs a grant that does not exist yet. Read this before
+ * deploying it: without the IAM statement below, every call here fails with
+ * AccessDeniedException, and the visible symptom is incidents that never stop
+ * saying "match still in progress".
+ *
+ * WHAT IT WRITES, AND WHAT IT DELIBERATELY CANNOT. Five attributes, all of them
+ * the game's own: `matchEndedAt`, `matchTimeline`, `matchTimelineComplete`,
+ * `matchKillsSeen`, keyed on `incidentId`. It does NOT touch `events` -- the
+ * console's timeline, where notes, corroborations and resolutions live -- and it
+ * does not touch `state`, `verdict`, `resolvedAt`, `resolvedBy*`, `resolution`
+ * or `closedByBan`. That is not a convention this file follows; it is the shape
+ * the grant should be written to enforce:
+ *
+ *     {
+ *       "Sid": "GameServerCloseIncidentTimeline",
+ *       "Effect": "Allow",
+ *       "Action": ["dynamodb:UpdateItem"],
+ *       "Resource": ["arn:aws:dynamodb:us-east-2:ACCOUNT_ID:table/ringmaster-incidents"],
+ *       "Condition": {
+ *         "ForAllValues:StringEquals": {
+ *           "dynamodb:Attributes": [
+ *             "incidentId", "matchEndedAt", "matchTimeline",
+ *             "matchTimelineComplete", "matchKillsSeen"
+ *           ]
+ *         },
+ *         "StringEquals": { "dynamodb:ReturnValues": "NONE" }
+ *       }
+ *     }
+ *
+ * THE `ReturnValues` CLAUSE IS NOT DECORATION. An attribute allowlist restricts
+ * what an update may WRITE; `ReturnValues` is how the same request could still
+ * READ the rest of the row back. The game box has no business reading a verdict
+ * off a case it is closing, and this function never asks for one.
+ *
+ * WHY AN UpdateItem AT ALL, when this resource's whole posture on
+ * `ringmaster-incidents` is PutItem-conditional-on-absent. Because the
+ * alternative -- a second row per closure, which the existing PutItem grant
+ * would already permit -- puts a non-incident row in a table the console
+ * SCANS and reads every row of as an incident (`scanAll` in
+ * src/lib/incidents.ts, with no discriminator). A phantom entry in a moderation
+ * queue is a worse failure than a narrow, attribute-scoped update.
+ *
+ * See docs/aws-setup.md. The write is bounded, one per incident, and never
+ * happens at all for a match that produced no incident.
+ */
+on('br:ddb:incidentClose', (req, payload) => {
+  const answer = (ok, extra) => {
+    emit('br:ddb:incidentCloseResult', req, ok, extra ?? {})
+  }
+
+  const incidentId = payload && payload.incidentId
+  const built = buildIncidentClose(
+    incidentId,
+    payload,
+    `${TABLE_PREFIX}incidents`,
+  )
+
+  if (built.error) {
+    // NOT RETRYABLE. A malformed close will not become well-formed on the third
+    // attempt, and br_ringmaster spends its retries on throttles rather than on
+    // bugs. Same distinction `putIncident` draws.
+    console.log(`[br_ddb] incident close refused: ${built.error}`)
+    answer(false, { error: built.error, retryable: false })
+    return
+  }
+
+  withTimeout(
+    ddb().send(
+      new UpdateItemCommand({
+        ...built.params,
+        Key: marshall(built.params.Key),
+        ExpressionAttributeValues: marshall(built.params.ExpressionAttributeValues, {
+          removeUndefinedValues: true,
+        }),
+      }),
+    ),
+    TIMEOUT_MS,
+  )
+    .then(() => answer(true, { incidentId }))
+    .catch((e) => {
+      if (e.name === 'ConditionalCheckFailedException') {
+        // THE CASE IS NOT THERE. Its PutItem was lost, or it was filed by a
+        // server whose write failed. There is nothing to close and nothing a
+        // retry can do -- and creating the row here would produce an incident
+        // naming nobody. Reported as a non-retryable failure rather than as
+        // success, because a close that closed nothing is worth a log line.
+        answer(false, { error: 'no such incident', retryable: false })
+        return
+      }
+      console.log(
+        `[br_ddb] incident close failed for ${incidentId}: ${e.message}`,
+      )
       answer(false, { error: e.message, retryable: true })
     })
 })

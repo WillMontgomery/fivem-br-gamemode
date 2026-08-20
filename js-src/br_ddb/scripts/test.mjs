@@ -1,5 +1,6 @@
 import { artifactNames, ARTIFACT_PREFIX, isSpoolFile } from '../src/artifacts.js'
 import { isActive } from '../src/ban.js'
+import { buildIncidentClose, CLOSE_LIMITS } from '../src/close.js'
 import { buildIncidentItem, LIMITS } from '../src/incident.js'
 import { projectVerdict, verdictWord } from '../src/verdict.js'
 
@@ -523,6 +524,325 @@ for (const name of notOurs) {
   check(`not swept: ${JSON.stringify(name)}`, isSpoolFile(name), false)
 }
 check('not swept: a non-string', isSpoolFile(null), false)
+
+
+// ------------------------------------------------------- the match timeline ---
+//
+// #30. An incident should show the match around it. These cases are about the
+// two things that are expensive to get wrong and invisible when they are:
+//
+//   * WHICH ATTRIBUTES THE CLOSE TOUCHES. The IAM statement this write needs is
+//     an attribute allowlist, so a new attribute appearing in the
+//     UpdateExpression is a write that will start failing with
+//     AccessDeniedException in production and passing in every test that does
+//     not look. The assertions below read the expression itself.
+//
+//   * WHETHER A TRUNCATED TIMELINE ADMITS IT. A kill list that stops early and
+//     reports itself complete tells an admin "this is everything they did" when
+//     it is not.
+
+const CLOSE_TABLE = 'ringmaster-incidents'
+
+const killAt = (at, victimLicense, extra = {}) => ({
+  at,
+  kind: 'kill',
+  killerLicense: 'license:subject',
+  killerName: 'Subject',
+  victimLicense,
+  victimName: 'V',
+  weapon: 'WEAPON_CARBINERIFLE',
+  cause: 'gunshot',
+  ...extra,
+})
+
+const closeOk = (payload) => {
+  const r = buildIncidentClose('inc-1', payload, CLOSE_TABLE)
+  if (r.error) throw new Error(`expected a close, got ${r.error}`)
+  return r.params
+}
+
+// --- the attributes it may touch, which is the IAM contract -----------------
+
+{
+  const p = closeOk({
+    matchEndedAt: 1_700_000_500_000,
+    matchTimeline: [killAt(1_700_000_400_000, 'license:v1'), { at: 1_700_000_500_000, kind: 'match_end' }],
+    matchTimelineComplete: true,
+    matchKillsSeen: 1,
+  })
+
+  const expr = p.UpdateExpression
+
+  // THE ALLOWLIST, ASSERTED AS A SET. Sorted so a reordering of the expression
+  // is not a failure but an ADDITION is.
+  const touched = [...expr.matchAll(/\b(match[A-Za-z]+)\s*=/g)].map((m) => m[1]).sort()
+  check('close touches exactly the four game-owned attributes', touched, [
+    'matchEndedAt',
+    'matchKillsSeen',
+    'matchTimeline',
+    'matchTimelineComplete',
+  ])
+
+  // THE LINE THAT MUST NOT MOVE. `events` is the console's timeline and
+  // `verdict`/`state` are an admin's decision. A close that could write any of
+  // them would make the game box able to edit a moderation record.
+  for (const forbidden of [
+    'events',
+    'state',
+    'verdict',
+    'resolvedAt',
+    'resolvedByLicense',
+    'resolvedByName',
+    'resolution',
+    'closedByBan',
+    'subjectLicense',
+    'reporterLicense',
+  ]) {
+    check(`close cannot write ${forbidden}`, expr.includes(forbidden), false)
+  }
+
+  check(
+    'close refuses to create a row that is not there',
+    p.ConditionExpression,
+    'attribute_exists(incidentId)',
+  )
+  check('close reads nothing back', p.ReturnValues, 'NONE')
+  check('close is keyed on the incident id alone', p.Key, { incidentId: 'inc-1' })
+  check('close targets the incidents table', p.TableName, CLOSE_TABLE)
+
+  // `if_not_exists` is what makes a row filed by an older game version closable
+  // rather than a failed update.
+  check(
+    'close appends rather than replacing the timeline',
+    expr.includes('list_append(if_not_exists(matchTimeline, :empty), :entries)'),
+    true,
+  )
+}
+
+// --- an incident whose match never ends -------------------------------------
+
+check(
+  'a close with no end timestamp is refused',
+  buildIncidentClose('inc-1', { matchTimeline: [] }, CLOSE_TABLE).error,
+  'no matchEndedAt',
+)
+check(
+  'and refusing it is not worth retrying',
+  buildIncidentClose('inc-1', { matchTimeline: [] }, CLOSE_TABLE).retryable,
+  undefined,
+)
+check(
+  'a close with no id is refused',
+  buildIncidentClose('', { matchEndedAt: 1 }, CLOSE_TABLE).error,
+  'no incidentId',
+)
+
+// --- a Lua boolean that arrived as a NUMBER ---------------------------------
+//
+// The `0` half of this hazard is a Lua problem and is tested on the Lua side,
+// where `0` is truthy. THE JS HALF IS THE OPPOSITE VALUE: a runtime that hands
+// a BOOL back as `1` produces a number that is truthy here, so `=== true` and a
+// bare truthy test agree about `0` and disagree about `1`.
+//
+// These cases therefore assert on `1`, which is the only value that can tell
+// the two implementations apart -- asserting on `0` passes under both and
+// proves nothing, which is how a test re-encodes the code's own assumption and
+// reports a green tick for it.
+//
+// STRICT IS THE SAFE DIRECTION HERE. Reading `1` as "not a headshot" and "not
+// complete" understates the record; reading it as "complete" would put "this is
+// everything they did" on a case where it is false.
+
+{
+  const p = closeOk({
+    matchEndedAt: 2000,
+    matchTimeline: [killAt(1000, 'license:v1', { headshot: 1 })],
+    matchTimelineComplete: true,
+    matchKillsSeen: 1,
+  })
+  check(
+    'a headshot of 1 is not accepted as a boolean true',
+    p.ExpressionAttributeValues[':entries'][0].headshot,
+    false,
+  )
+}
+{
+  const p = closeOk({
+    matchEndedAt: 2000,
+    matchTimeline: [{ at: 2000, kind: 'match_end' }],
+    matchTimelineComplete: 1,
+    matchKillsSeen: 0,
+  })
+  check(
+    'a complete flag of 1 is not accepted as complete',
+    p.ExpressionAttributeValues[':complete'],
+    false,
+  )
+}
+{
+  const p = closeOk({
+    matchEndedAt: 2000,
+    matchTimeline: [{ at: 2000, kind: 'match_end' }],
+    matchTimelineComplete: 0,
+    matchKillsSeen: 0,
+  })
+  check(
+    'and a complete flag of 0 certainly does not',
+    p.ExpressionAttributeValues[':complete'],
+    false,
+  )
+}
+{
+  const p = closeOk({
+    matchEndedAt: 2000,
+    matchTimeline: [{ at: 2000, kind: 'match_end' }],
+    matchTimelineComplete: true,
+    matchKillsSeen: 0,
+  })
+  check(
+    'and a real true still means complete',
+    p.ExpressionAttributeValues[':complete'],
+    true,
+  )
+}
+
+// --- truncation is reported, never silent -----------------------------------
+
+{
+  // The Lua side already dropped rows: it saw 40 kills and is sending 3.
+  const p = closeOk({
+    matchEndedAt: 9000,
+    matchTimeline: [killAt(1, 'license:a'), killAt(2, 'license:b'), { at: 9000, kind: 'match_end' }],
+    matchTimelineComplete: false,
+    matchKillsSeen: 40,
+  })
+  check(
+    'a timeline the game already truncated stays truncated',
+    p.ExpressionAttributeValues[':complete'],
+    false,
+  )
+  check(
+    'and it carries how many kills really happened',
+    p.ExpressionAttributeValues[':seen'],
+    40,
+  )
+}
+
+// --- the volume bound -------------------------------------------------------
+
+{
+  const many = []
+  for (let i = 0; i < 400; i++) many.push(killAt(1000 + i, `license:v${i}`))
+  many.push({ at: 99_000, kind: 'match_end' })
+
+  const p = closeOk({
+    matchEndedAt: 99_000,
+    matchTimeline: many,
+    matchTimelineComplete: true,
+    matchKillsSeen: 400,
+  })
+
+  const entries = p.ExpressionAttributeValues[':entries']
+  check('a close is bounded', entries.length, CLOSE_LIMITS.MAX_CLOSE_ENTRIES)
+  check(
+    'and keeps the RECENT end of the match',
+    entries[entries.length - 1],
+    { at: 99_000, kind: 'match_end' },
+  )
+  // Dropping 141 rows and still claiming completeness is the exact failure the
+  // flag exists to prevent.
+  check(
+    'a bounded close does not claim to be complete',
+    p.ExpressionAttributeValues[':complete'],
+    false,
+  )
+}
+
+// --- the shape the console reads --------------------------------------------
+
+{
+  const p = closeOk({
+    matchEndedAt: 5000,
+    matchTimeline: [
+      killAt(4000, 'license:victim'),
+      { at: 4500, kind: 'thing-from-the-future' },
+      { at: 5000, kind: 'match_end' },
+    ],
+    matchTimelineComplete: true,
+    matchKillsSeen: 1,
+  })
+  const entries = p.ExpressionAttributeValues[':entries']
+
+  // A KIND NOBODY CAN RENDER IS NOT STORED. Heterogeneous-by-`kind` is what
+  // makes #34's artifact entry free later; it is not a licence to store
+  // anything a caller sends onto a moderation record.
+  check('an unknown entry kind is dropped', entries.length, 2)
+  check(
+    'a dropped entry means the timeline is not complete',
+    p.ExpressionAttributeValues[':complete'],
+    false,
+  )
+
+  // THE PROFILE LINK #30 ASKS FOR. A display name is neither unique nor stable;
+  // the console keys profiles by licence.
+  check('a kill carries the victim licence', entries[0].victimLicense, 'license:victim')
+  check('and the killer licence', entries[0].killerLicense, 'license:subject')
+  check('and a name to render before the profile loads', entries[0].victimName, 'V')
+}
+
+// --- what the FILING writes, which costs no extra write ---------------------
+
+{
+  const item = buildIncidentItem(
+    'inc-2',
+    {
+      subjectLicense: 'license:subject',
+      subjectName: 'Subject',
+      matchId: 7,
+      matchStartedAt: 1_700_000_000_000,
+      matchEndsBy: 1_700_003_600_000,
+      matchTimeline: [
+        { at: 1_700_000_000_000, kind: 'match_start' },
+        killAt(1_700_000_100_000, 'license:v1'),
+      ],
+      matchTimelineComplete: true,
+      matchKillsSeen: 1,
+      atGameMs: 1_700_000_200_000,
+      openedAt: 1_700_000_200_000,
+    },
+    NOW,
+  ).item
+
+  check('the filing records when the match started', item.matchStartedAt, 1_700_000_000_000)
+  // THE WHOLE OF "STILL IN PROGRESS". Written at filing time so it survives the
+  // game box never coming back.
+  check('and when it is expected to be over by', item.matchEndsBy, 1_700_003_600_000)
+  // ABSENT MEANS UNKNOWN, NOT ENDED. The close write is the only thing that
+  // fills this in.
+  check('and does not claim the match has ended', item.matchEndedAt, null)
+  check('the seed timeline is on the row', item.matchTimeline.length, 2)
+  check('starting with the match start', item.matchTimeline[0].kind, 'match_start')
+  check('then the kill', item.matchTimeline[1].kind, 'kill')
+  check(
+    'with the licence the profile link needs',
+    item.matchTimeline[1].victimLicense,
+    'license:v1',
+  )
+}
+
+{
+  // NO MATCH, NO TIMELINE. A `brrefuse` from a console carries none, and
+  // inventing one would put a match on the record that never happened.
+  const item = buildIncidentItem(
+    'inc-3',
+    { subjectLicense: 'license:subject', openedAt: 1 },
+    NOW,
+  ).item
+  check('a case filed outside a match has no match start', item.matchStartedAt, null)
+  check('and no deadline', item.matchEndsBy, null)
+  check('and an empty timeline', item.matchTimeline, [])
+  check('and does not claim completeness it cannot have', item.matchTimelineComplete, false)
+}
 
 if (failed) {
   console.error(`\nbr_ddb: ${failed} of ${ran} case(s) failed`)

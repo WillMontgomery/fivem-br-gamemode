@@ -275,6 +275,11 @@ AddEventHandler('br:ringmaster:refusal', function(ev)
     -- with cases from a DIFFERENT kind already present.
     payload.priorIncidentIds = prior
 
+    -- THE MATCH AROUND THE CASE (#30). Match start and every kill so far, from
+    -- the same `records` the evidence was built from -- so this reads the buffer
+    -- once and costs no extra write.
+    BR.Incident.attachTimeline(payload, records)
+
     TriggerEvent('br:ringmaster:incident', payload)
 end)
 
@@ -429,3 +434,212 @@ AddEventHandler('onResourceStart', function(name)
         openBy = {}
     end
 end)
+
+-- ---------------------------------------------------------------------------
+-- The match timeline (#30)
+-- ---------------------------------------------------------------------------
+--
+-- An incident should show the match around it, not just the report. Two halves,
+-- and the split between them is a cost decision rather than a structural one:
+--
+--   AT FILING      match start, and every kill by the subject so far. Both are
+--                  already in hand -- the match registry knows when it started
+--                  and the evidence buffer has been holding the kills in RAM all
+--                  along -- so they ride the PutItem that was already happening
+--                  and cost NOTHING extra.
+--
+--   AT MATCH END   the fact that the match ended, plus the kills that happened
+--                  after the case was filed. This is the only part that cannot
+--                  be known at filing time, and it is therefore the only extra
+--                  write: ONE per incident, and none at all for a match that
+--                  produced no incident.
+--
+-- NOTHING IS LOGGED SPECULATIVELY. A quiet match still writes nothing, which is
+-- the rule the evidence buffer already existed to enforce and the reason the
+-- timeline is built on it instead of on a second stream of events.
+
+--- Filing instants, waiting for the id that will name them.
+---
+--- WHY THIS IS NOT JUST READ AT ACKNOWLEDGEMENT TIME. `br:incident:filed` comes
+--- back from br_ringmaster only once the row is durable, and that path retries
+--- for up to thirty seconds. Timestamping the filing from the acknowledgement
+--- would put the case's zero point up to half a minute after the thing it is
+--- about -- and every kill in that window would be classified as "before the
+--- report" by one function and "after" by another.
+---
+--- [matchId] = { [license] = { at, killsWritten } }
+local pendingTimeline = {}
+
+--- Incidents to close when this match ends.
+---
+--- [matchId] = { { incidentId, license, filedAt, killsWritten }, ... }
+local closing = {}
+
+--- Fold the match context onto an outgoing incident payload.
+---
+--- Called by BOTH producers -- the anticheat path above and the player-report
+--- path in server/players.lua -- because there is no single choke point on this
+--- side: each builds its payload with a different BR.IncidentBuild function and
+--- emits it directly. One helper called twice beats two copies of the same
+--- merge, which is how the two would drift.
+---
+--- SAFE WHEN THERE IS NO MATCH. `brrefuse` from a console and an anticheat trip
+--- in the lobby both carry a nil matchId; timelineOpen answers with an empty
+--- timeline and the console shows no match context, which is the truth rather
+--- than an invented one.
+---
+--- @param payload table  the incident payload, mutated in place
+--- @param records table|nil  BR.Evidence.forLicense(subject)
+--- @return table payload
+function BR.Incident.attachTimeline(payload, records)
+    if type(payload) ~= 'table' then return payload end
+
+    local m = nil
+    if payload.matchId ~= nil and BR.Server and BR.Server.matches then
+        m = BR.Server.matches[payload.matchId]
+    end
+
+    -- `startedAt` IS STAMPED ON ENTERING PLAYING AND NOTHING CLEARS IT
+    -- (server/match.lua), and BR.Match.wasPlayed is the same test. A case filed
+    -- during warmup therefore carries no match timeline rather than one that
+    -- begins at nil.
+    local t = BR.IncidentBuild.timelineOpen({
+        matchId        = payload.matchId,
+        matchStartedAt = m and m.startedAt or nil,
+        records        = records,
+    })
+
+    payload.matchStartedAt        = t.matchStartedAt
+    payload.matchEndsByMs         = t.matchEndsByMs
+    payload.matchTimeline         = t.matchTimeline
+    payload.matchTimelineComplete = t.matchTimelineComplete
+    payload.matchKillsSeen        = t.matchKillsSeen
+
+    -- KEEP MORE ABOUT THIS PLAYER FROM NOW ON. The buffer's default caps are
+    -- sized for an evidence snippet; #30 wants every kill. Promoting here rather
+    -- than at acknowledgement puts the larger cap in place at the earliest
+    -- possible moment -- before the DynamoDB round trip, not after it.
+    if BR.Evidence and BR.Evidence.retain then
+        BR.Evidence.retain(payload.subjectLicense)
+    end
+
+    if payload.matchId ~= nil and t.matchStartedAt ~= nil
+        and payload.subjectLicense ~= nil then
+        local byLicense = pendingTimeline[payload.matchId]
+        if not byLicense then
+            byLicense = {}
+            pendingTimeline[payload.matchId] = byLicense
+        end
+        byLicense[payload.subjectLicense] = {
+            at           = payload.atGameMs,
+            killsWritten = t.matchKillsWritten or 0,
+        }
+    end
+
+    return payload
+end
+
+-- A SECOND LISTENER ON THE SAME ACKNOWLEDGEMENT, rather than a line added to the
+-- handler above. server/players.lua, server/grants.lua and server/artifacts.lua
+-- all already listen to `br:incident:filed` alongside this file's own handler --
+-- the event is explicitly a broadcast with several independent readers, and one
+-- more of them is the established shape here rather than a new coupling.
+AddEventHandler('br:incident:filed', function(ack)
+    if type(ack) ~= 'table' then return end
+    if ack.matchId == nil or ack.subjectLicense == nil then return end
+    if ack.incidentId == nil then return end
+
+    local byLicense = pendingTimeline[ack.matchId]
+    local pend = byLicense and byLicense[ack.subjectLicense]
+    if not pend then return end
+    byLicense[ack.subjectLicense] = nil
+
+    local list = closing[ack.matchId]
+    if not list then
+        list = {}
+        closing[ack.matchId] = list
+    end
+    list[#list + 1] = {
+        incidentId   = ack.incidentId,
+        license      = ack.subjectLicense,
+        filedAt      = pend.at,
+        killsWritten = pend.killsWritten,
+    }
+end)
+
+-- THE MATCH IS OVER AND THE EVIDENCE IS STILL HERE, WHICH IS TRUE FOR EXACTLY
+-- ONE MOMENT. server/evidence.lua emits this from inside its own
+-- `br:match:destroyed` handler, immediately before it discards the buffer.
+--
+-- IT IS NOT `br:match:destroyed`, AND THAT IS THE WHOLE POINT. Listening to that
+-- event here would read an EMPTY buffer: FiveM runs handlers in registration
+-- order, registration order is manifest order, and br_core's manifest loads
+-- server/evidence.lua at line 114 and this file at line 138 -- so the discard
+-- would already have happened. The feature would have shipped looking correct
+-- and recording nothing, which this project has done before.
+AddEventHandler('br:evidence:closing', function(ev)
+    if not ev or ev.matchId == nil then return end
+
+    local list = closing[ev.matchId]
+    closing[ev.matchId] = nil
+    -- A filing whose id never came back has no row to close against.
+    pendingTimeline[ev.matchId] = nil
+    if not list then return end
+
+    local endedAt = GetGameTimer()
+
+    for _, c in ipairs(list) do
+        local records = BR.Evidence and BR.Evidence.forLicense(c.license) or {}
+
+        local close = BR.IncidentBuild.timelineClose({
+            matchEndedAt  = endedAt,
+            filedAtGameMs = c.filedAt,
+            records       = records,
+            priorKills    = c.killsWritten,
+        })
+
+        -- EMITTED, NOT CALLED. br_ringmaster listens; if it is not running,
+        -- nothing happens and br_core carries on. The game never depends on
+        -- Ringmaster -- it writes and moves on -- and that rule applies to the
+        -- match-end write exactly as it does to the filing.
+        TriggerEvent('br:ringmaster:incidentClose', {
+            incidentId            = c.incidentId,
+            matchId               = ev.matchId,
+            subjectLicense        = c.license,
+            matchEndedAt          = close.matchEndedAt,
+            matchTimeline         = close.matchTimeline,
+            matchTimelineComplete = close.matchTimelineComplete,
+            matchKillsSeen        = close.matchKillsSeen,
+        })
+    end
+end)
+
+-- BELT AND BRACES ON THE MAPS ABOVE. `br:evidence:closing` normally clears both,
+-- but it is emitted by another file -- so a br_core built without
+-- server/evidence.lua, or one whose emit is ever moved, must not accumulate a
+-- match's worth of closures per round for the life of the process.
+AddEventHandler('br:match:destroyed', function(ev)
+    if not ev or ev.matchId == nil then return end
+    closing[ev.matchId] = nil
+    pendingTimeline[ev.matchId] = nil
+end)
+
+AddEventHandler('onResourceStart', function(name)
+    if name == GetCurrentResourceName() then
+        closing = {}
+        pendingTimeline = {}
+    end
+end)
+
+--- Counters for the close path, for brdebug-style introspection.
+function BR.Incident.closeStats()
+    local matches, cases, pending = 0, 0, 0
+    for _, list in pairs(closing) do
+        matches = matches + 1
+        cases = cases + #list
+    end
+    for _, byLicense in pairs(pendingTimeline) do
+        for _ in pairs(byLicense) do pending = pending + 1 end
+    end
+    return { matches = matches, cases = cases, pending = pending }
+end

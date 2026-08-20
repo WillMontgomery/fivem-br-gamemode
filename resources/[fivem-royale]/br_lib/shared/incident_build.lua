@@ -319,3 +319,273 @@ function BR.IncidentBuild.fromReport(ev, records)
         atGameMs = ev.at,
     }
 end
+
+-- ---------------------------------------------------------------------------
+-- The match timeline (#30)
+-- ---------------------------------------------------------------------------
+--
+-- WHAT THIS IS. An incident today records the moment it was filed and almost
+-- nothing around it, so an admin deciding a verdict sees the accusation without
+-- the match it came out of. These functions build the two halves of the match
+-- context that goes on the row: what was already true when the case was filed,
+-- and the one fact that only becomes true later -- that the match ended.
+--
+-- === THE COST RULE, WHICH SHAPES EVERYTHING BELOW ===
+--
+-- A MATCH THAT PRODUCES NO INCIDENT MUST WRITE NOTHING. That is the owner's
+-- constraint and it is also the rule the evidence buffer was already built on:
+-- kills and chat are held in RAM, bounded, and thrown away at match end unless
+-- an incident turned them into a record. The timeline rides that same buffer
+-- rather than adding a second stream of writes.
+--
+-- So the write budget is:
+--
+--   * a match with no incident   ZERO writes. Nothing here runs.
+--   * filing an incident         the PutItem that already happens, carrying
+--                                more fields. NO extra write.
+--   * that match ending          ONE UpdateItem per incident filed in it -- in
+--                                practice one, since the filing rule is one
+--                                case per player per match.
+--
+-- Cost is therefore proportional to INCIDENTS, not to matches, kills or players.
+--
+-- === ABSOLUTE TIMES, NOT OFFSETS ===
+--
+-- Every `at` here is a game-clock reading that br_ringmaster converts to
+-- wall-clock ms on the way out, exactly as it already does for chat and kill
+-- rows. The console renders "3m before the report" by subtracting `openedAt`
+-- itself. Storing offsets instead would bake the zero point into the data and
+-- make every entry unreadable the moment anything about the incident's own
+-- timestamp were corrected.
+--
+-- === SERVER-AUTHORITATIVE ===
+--
+-- Nothing on this timeline comes from a client. The kills are the server's own
+-- attribution out of damage.lua, the licences are resolved from identifiers
+-- server-side, and the two match timestamps come from the match registry. This
+-- is a moderation record on an anti-cheat surface; a client-supplied timestamp
+-- on it would be evidence a cheater writes about themselves.
+--
+-- === ROOM FOR #34 WITHOUT A MIGRATION ===
+--
+-- `matchTimeline` is a heterogeneous list discriminated by `kind`, and the
+-- console switches on that field. An artifact frame becomes an entry by adding
+-- `{ at, kind = 'artifact', ... }` -- no new attribute, no reshaping of what is
+-- already stored, and rows written before that day simply do not contain one.
+-- That is the whole reason this is a list of tagged entries rather than a set of
+-- parallel typed arrays.
+
+--- How long after a match starts its end is still plausibly pending.
+---
+--- THIS IS WHAT STOPS AN ABSENT END READING AS "STILL RUNNING" FOREVER. The
+--- match-end write is the one part of this that happens later, which means it is
+--- the one part that can never happen: a crash, a restart, a lost DynamoDB
+--- write. The console cannot distinguish those from a match still in progress by
+--- looking at a missing field -- both are simply an absent `matchEndedAt`.
+---
+--- So the game states its own expectation at FILING time, when it is already
+--- writing anyway and therefore at no extra cost, and the console compares it to
+--- the clock:
+---
+---   matchEndedAt present          -> ended, at that time
+---   absent, now <  matchEndsBy    -> STILL IN PROGRESS
+---   absent, now >= matchEndsBy    -> end never reported
+---
+--- The third case is the one that matters and it is deliberately NOT the same
+--- answer as the second. "This match is still going, more evidence may arrive"
+--- and "this server never told us how this match finished" are different facts,
+--- and an admin banning on partial evidence needs to tell them apart.
+---
+--- SIXTY MINUTES AGAINST A MATCH THAT RUNS ROUGHLY TWENTY (config/storm.lua's
+--- phase table totals about that). Three times the expected length: long enough
+--- that a slow round, a long warmup or a paused server is never mislabelled as a
+--- crash, short enough that a real crash stops claiming to be live within the
+--- hour rather than at the heat death of the queue.
+local MATCH_ENDS_BY_MS = 60 * 60 * 1000
+
+--- The most kill entries one incident's timeline may carry.
+---
+--- BOUNDED BECAUSE A DYNAMODB ITEM IS 400KB AND A PLAYER INFLUENCES THIS ONE.
+--- The buffer's own promoted cap (250 rows) is the real limiter and this is the
+--- backstop for a caller that promoted differently -- two caps that disagree
+--- should fail towards the smaller, not towards a rejected write. A kill entry
+--- marshals to roughly 200 bytes, so 250 of them is about 50KB against a ceiling
+--- the evidence log is also spending from.
+local MAX_TIMELINE_KILLS = 250
+
+--- Turn one buffered kill row into a timeline entry.
+---
+--- BOTH SIDES OF THE KILL, NOT JUST THE SUBJECT'S HALF. The buffer records a kill
+--- against the killer AND the victim on purpose -- "reported for teaming" reads
+--- very differently when the record shows the accused dying to the person they
+--- are accused of helping -- and the timeline keeps that. The console decides
+--- which way round to render it by comparing against the incident's own
+--- `subjectLicense`, which it already has; the game does not pre-judge it.
+---
+--- THE LICENCES ARE THE PROFILE LINKS #30 ASKS FOR. `victimName` travels beside
+--- `victimLicense` so the console can render a row whose profile has not loaded,
+--- and so a case stays readable if the licence is later merged or renamed.
+local function killEntry(k)
+    return {
+        at   = k.at,
+        kind = 'kill',
+
+        killerLicense = k.killerLicense,
+        killerName    = k.killer,
+        victimLicense = k.victimLicense,
+        victimName    = k.victim,
+
+        weapon   = k.weapon,
+        cause    = k.cause,
+        -- STRICTLY BOOLEAN. `headshot` is set as `(cause == 'headshot') or nil`
+        -- upstream, so it arrives as true or as absent, and this pins it to a
+        -- real boolean before it crosses into JS. IN LUA `0` IS TRUTHY: a bare
+        -- `if k.headshot` would call a `0` from any future producer a headshot.
+        headshot = k.headshot == true,
+    }
+end
+
+--- Every kill in `records`, oldest first, deduplicated, optionally windowed.
+---
+--- @param records table|nil  BR.Evidence.forLicense(license)
+--- @param afterGameMs number|nil  keep only kills strictly later than this
+--- @param cap integer|nil
+--- @return table[] entries, integer offered, integer seen
+local function killEntries(records, afterGameMs, cap)
+    cap = cap or MAX_TIMELINE_KILLS
+
+    local rows, seen = {}, 0
+    -- Identity of a kill, for the reconnect case: `forLicense` returns one
+    -- record per SESSION, and a row could in principle be noted against two of
+    -- them. A timeline that lists the same elimination twice reads as two
+    -- kills, which is a claim about a person that is simply false.
+    local sawRow = {}
+
+    for _, r in ipairs(records or {}) do
+        seen = seen + (r.killsSeen or #(r.kills or {}))
+        for _, k in ipairs(r.kills or {}) do
+            local at = tonumber(k.at)
+            -- `afterGameMs` NIL MEANS EVERYTHING, and that is not the same as 0.
+            -- A game-clock reading of 0 is a legitimate instant, so this compares
+            -- against nil explicitly rather than letting a falsy test decide.
+            if at ~= nil and (afterGameMs == nil or at > afterGameMs) then
+                local id = ('%d|%s|%s'):format(
+                    at, tostring(k.killerLicense or k.killer),
+                    tostring(k.victimLicense or k.victim))
+                if not sawRow[id] then
+                    sawRow[id] = true
+                    rows[#rows + 1] = k
+                end
+            end
+        end
+    end
+
+    table.sort(rows, function(a, b)
+        if a.at == b.at then
+            return tostring(a.victim or '') < tostring(b.victim or '')
+        end
+        return a.at < b.at
+    end)
+
+    local offered = #rows
+    -- OVERFLOW DROPS THE OLDEST, matching the buffer and the outbox: when a
+    -- record is full the rows describing what is happening now are worth more.
+    -- The caller reports the drop rather than hiding it.
+    while #rows > cap do table.remove(rows, 1) end
+
+    local out = {}
+    for _, k in ipairs(rows) do out[#out + 1] = killEntry(k) end
+    return out, offered, seen
+end
+
+--- The match context known at FILING time. Costs no extra write.
+---
+--- Folded into the incident payload by the caller, so these fields ride the
+--- PutItem that was already going to happen.
+---
+--- @param opts table {
+---     matchId, matchStartedAt (game ms), records }
+--- @return table  fields to merge onto the incident payload
+function BR.IncidentBuild.timelineOpen(opts)
+    opts = opts or {}
+
+    -- NO MATCH, NO TIMELINE. An anticheat firing from the lobby or a `brrefuse`
+    -- from the console carries no matchId and no start -- and inventing a
+    -- timeline for it would put a match on the record that never happened. The
+    -- console shows no match context at all in that case, which is the truth.
+    if opts.matchId == nil or opts.matchStartedAt == nil then
+        return {
+            matchStartedAt        = nil,
+            matchEndsByMs         = nil,
+            matchTimeline         = {},
+            matchTimelineComplete = true,
+            matchKillsSeen        = 0,
+            matchKillsWritten     = 0,
+        }
+    end
+
+    local entries = { { at = opts.matchStartedAt, kind = 'match_start' } }
+
+    local kills, offered, seen = killEntries(opts.records, nil, MAX_TIMELINE_KILLS)
+    for _, e in ipairs(kills) do entries[#entries + 1] = e end
+
+    return {
+        matchStartedAt = opts.matchStartedAt,
+        -- A DURATION HERE, AN ABSOLUTE TIME ON THE ROW. br_ringmaster owns the
+        -- clock pair and turns this into wall-clock `matchEndsBy` on the way
+        -- out, the same conversion every other timestamp in the payload gets.
+        matchEndsByMs  = MATCH_ENDS_BY_MS,
+        matchTimeline  = entries,
+        matchTimelineComplete = (#kills == offered) and (offered == seen),
+        matchKillsSeen = seen,
+        -- What the close write must not double-count.
+        matchKillsWritten = #kills,
+    }
+end
+
+--- The one fact that only becomes true later: the match ended.
+---
+--- @param opts table {
+---     matchEndedAt (game ms), filedAtGameMs, records, priorKills, complete }
+--- @return table  the close payload
+function BR.IncidentBuild.timelineClose(opts)
+    opts = opts or {}
+
+    local priorKills = tonumber(opts.priorKills) or 0
+    local budget = MAX_TIMELINE_KILLS - priorKills
+    if budget < 0 then budget = 0 end
+
+    -- STRICTLY AFTER THE FILING INSTANT. The kills up to that moment are already
+    -- on the row, written by timelineOpen; re-sending them would show an admin
+    -- the same elimination twice.
+    local kills, offered, seen =
+        killEntries(opts.records, opts.filedAtGameMs, budget)
+
+    local entries = {}
+    for _, e in ipairs(kills) do entries[#entries + 1] = e end
+    entries[#entries + 1] = { at = opts.matchEndedAt, kind = 'match_end' }
+
+    -- COMPLETE MEANS COMPLETE END TO END. The filing may already have truncated,
+    -- in which case nothing this write does can make the timeline whole again --
+    -- so the flag carries that forward rather than reporting only on its own
+    -- half. `seen` counts every kill the buffer was ever offered for this
+    -- player, including ones its caps dropped, which is what makes the
+    -- comparison honest.
+    local wrote = priorKills + #kills
+    local complete =
+        (opts.complete ~= false)
+        and (#kills == offered)
+        and (seen <= wrote)
+
+    return {
+        matchEndedAt          = opts.matchEndedAt,
+        matchTimeline         = entries,
+        matchTimelineComplete = complete,
+        matchKillsSeen        = seen,
+    }
+end
+
+BR.IncidentBuild.TIMELINE_LIMITS = {
+    MAX_TIMELINE_KILLS = MAX_TIMELINE_KILLS,
+    MATCH_ENDS_BY_MS   = MATCH_ENDS_BY_MS,
+}

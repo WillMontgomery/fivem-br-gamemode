@@ -946,6 +946,12 @@ AddEventHandler(BR.Net.REPORT_SUBMIT, function(data)
                         tostring(t.name), s.reports, s.seq,
                         earns and '' or ' -- unpaid'))
         else
+            -- HOISTED so the timeline can be built from the SAME records the
+            -- evidence was (#30). Reading the buffer twice would be two answers
+            -- to one question -- a kill landing between the calls would be in
+            -- one and not the other.
+            local records = BR.Evidence and BR.Evidence.forLicense(t.license) or {}
+
             local payload, why = BR.IncidentBuild.fromReport({
                 license         = t.license,
                 name            = t.name,
@@ -954,9 +960,17 @@ AddEventHandler(BR.Net.REPORT_SUBMIT, function(data)
                 category        = t.category,
                 matchId         = me.matchId,
                 at              = GetGameTimer(),
-            }, BR.Evidence and BR.Evidence.forLicense(t.license) or {})
+            }, records)
 
             if payload then
+                -- THE MATCH AROUND THE CASE (#30): match start and every kill by
+                -- the subject so far, folded onto the write that was already
+                -- going to happen. Guarded because server/incident.lua loads
+                -- AFTER this file -- at call time it is always there, but the
+                -- guard is what makes that a fact rather than an assumption.
+                if BR.Incident and BR.Incident.attachTimeline then
+                    BR.Incident.attachTimeline(payload, records)
+                end
                 -- Empty here by construction -- a non-empty `prior` took the
                 -- branch above -- and set anyway, because the console reads the
                 -- field and the anticheat's own filing path sets it for exactly
