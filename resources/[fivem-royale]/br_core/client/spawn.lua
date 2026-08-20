@@ -694,7 +694,8 @@ AddEventHandler(BR.Net.TO_LOBBY, function()
     -- leaver rode the roster-delta path and at least once never landed --
     -- lobby menu up, no cursor, game still eating input (live report,
     -- 2026-08-04). This event IS the server saying "you are a lobby
-    -- player now", so assert the focus here too; pushFocus is idempotent.
+    -- player now", so assert the focus here too. pushFocus is a no-op if the
+    -- lobby is already the top of the stack, and raises it if it is not.
     Citizen.SetTimeout(600, function()
         if BR.State.me.state == BR.PlayerState.LOBBY then
             TriggerEvent('br:ui:pushFocus', 'lobby')

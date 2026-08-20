@@ -77,7 +77,10 @@ end)
 --- visible, correct, and completely unclickable, with no cursor. It looked like
 --- the UI was drawn wrong rather than simply not focused.
 ---
---- Both paths are idempotent: pushFocus ignores a screen already on the stack.
+--- Both paths are safe to repeat: pushFocus is a no-op when the screen is
+--- already on top, and RAISES it when it is buried. It used to ignore a screen
+--- anywhere on the stack, which is what left the admin console unopenable for
+--- a whole session after a match ended over it -- see the note on pushFocus.
 --- @param state string
 
 --- Screens that only make sense while standing in the lobby.

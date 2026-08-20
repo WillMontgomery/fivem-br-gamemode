@@ -5758,6 +5758,90 @@ do
 
     -- ==================================================================== --
 
+    -- ==================================================================== --
+    -- Raising a screen that is already on the stack                          --
+    -- ==================================================================== --
+
+    describe('a buried screen can be raised again')
+    do
+        fire('br:ui:clearFocus')
+        settle()
+        ok(topScreen() == 'none', 'the stack starts empty', topScreen())
+
+        -- THE SEQUENCE THE OWNER HIT, 2026-08-20. They had the admin console
+        -- open in the pause menu when the match ended. br_core pushes 'lobby'
+        -- on that transition (client/state.lua), which lands ON TOP of a stack
+        -- that still has 'admin' in it -- nothing pops the console, because
+        -- nothing knows it is there.
+        openScreen('pause')
+        openScreen('admin')
+        settle()
+        ok(topScreen() == 'admin', 'the console holds focus while it is open', topScreen())
+
+        openScreen('lobby')
+        settle()
+        ok(topScreen() == 'lobby', 'the match ending puts the lobby over it', topScreen())
+
+        -- AND NOW THE TAB IS PRESSED AGAIN. This is the whole bug: 'admin' is
+        -- still in the stack, so a push that merely checks membership decides
+        -- there is nothing to do and returns WITHOUT announcing anything. The
+        -- console could not be opened again for the rest of the session, with
+        -- no error anywhere -- the owner reported exactly that.
+        openScreen('admin')
+        settle()
+        ok(topScreen() == 'admin',
+           'pressing the tab again raises it rather than doing nothing',
+           topScreen())
+
+        -- THE SAME MECHANISM, AND THEREFORE THE SAME BUG, FOR /help.
+        -- pause.lua pushes 'help' through this identical path, so it was never
+        -- an admin-console problem -- it was a focus-stack problem that the
+        -- admin console happened to reach first.
+        fire('br:ui:clearFocus')
+        settle()
+        openScreen('pause')
+        openScreen('help')
+        openScreen('lobby')
+        settle()
+        ok(topScreen() == 'lobby', 'help buried the same way', topScreen())
+        openScreen('help')
+        settle()
+        ok(topScreen() == 'help', 'and help can be raised again too', topScreen())
+
+        -- ALREADY ON TOP IS STILL A NO-OP, and that half must not regress.
+        -- spawn.lua and state.lua both push a screen they believe is already up
+        -- purely to assert it; re-announcing an unchanged top would send the
+        -- page a FOCUS it did not need on every state tick.
+        fire('br:ui:clearFocus')
+        settle()
+        openScreen('lobby')
+        settle()
+        local before = topScreen()
+        openScreen('lobby')
+        settle()
+        ok(topScreen() == before and before == 'lobby',
+           'asserting the screen already on top changes nothing', topScreen())
+
+        -- POPPING STILL REMOVES IT ONCE AND FOR ALL. A raise that re-seated by
+        -- appending without removing would leave two entries, and the first pop
+        -- would look like it had failed.
+        fire('br:ui:clearFocus')
+        settle()
+        openScreen('pause')
+        openScreen('admin')
+        openScreen('lobby')
+        openScreen('admin')
+        settle()
+        closeScreen('admin')
+        settle()
+        ok(topScreen() ~= 'admin',
+           'one pop is enough after a raise, not two', topScreen())
+
+        fire('br:ui:clearFocus')
+        clearWorld()
+        settle()
+    end
+
     -- ALL THREE MECHANISMS, BECAUSE THE GATE IS IN THREE PLACES AND ONLY ONE OF
     -- THEM IS THE LEAK.
     --

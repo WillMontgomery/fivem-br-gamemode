@@ -113,12 +113,45 @@ local function applyFocus()
     TriggerEvent('br:ui:focusChanged', want.screen)
 end
 
---- Take focus for a screen. Idempotent per screen.
+--- Take focus for a screen, raising it if it is already down there.
+---
+--- THIS USED TO BE "idempotent per screen" AND THAT IS WHAT BROKE IT. The old
+--- body walked the stack, and on finding the screen anywhere in it returned --
+--- without appending, and crucially WITHOUT CALLING applyFocus. That reads as
+--- a safe no-op and is one only while the screen is on TOP. Buried, it means
+--- the screen can never be raised again.
+---
+--- HOW IT WAS REACHED, so nobody restores the early return: the owner had the
+--- admin console open in the pause menu when the match ended. br_core pushes
+--- 'lobby' on that transition (client/state.lua), landing on top of a stack
+--- that still held 'admin' -- nothing pops the console, because nothing knows
+--- it is there. Every later press of the Admin tab found 'admin' in the stack
+--- and did nothing at all, with no error, for the rest of the session.
+---
+--- /help pushes through this same function and had the identical bug. It was
+--- never an admin-console problem.
+---
+--- THIS FILE HAS NOW SHIPPED THE SAME MISTAKE TWICE. applyFocus carries the
+--- other one in its own comment: an early return that left the engine and the
+--- page unnotified because a value it compared had not changed. A push is a
+--- request to be seen, and the only state that makes it a no-op is already
+--- being the thing on top.
+---
+--- ALREADY ON TOP IS STILL A NO-OP, and deliberately so. spawn.lua and
+--- state.lua both push a screen they believe is up purely to assert it;
+--- re-announcing an unchanged top would send the page a FOCUS it does not need
+--- on every state tick.
 --- @param screen string
 local function pushFocus(screen)
-    for _, s in ipairs(focusStack) do
-        if s == screen then return end
+    if focusStack[#focusStack] == screen then return end
+
+    -- Remove every copy before re-seating. Appending without removing would
+    -- leave two entries, and popFocus removing only one would look like a pop
+    -- that failed.
+    for i = #focusStack, 1, -1 do
+        if focusStack[i] == screen then table.remove(focusStack, i) end
     end
+
     focusStack[#focusStack + 1] = screen
     applyFocus()
 end
