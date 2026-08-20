@@ -337,7 +337,28 @@ group = 'Comms'
 -- Comms
 tap ('chatGlobal',  'brchat',      'Royale: Chat (global)',              'T')
 tap ('chatSquad',   'brchatsquad', 'Royale: Chat (squad)',               'Y')
-tap ('ping',        'brping',      'Royale: Place a marker',             'Z')
+-- THERE IS NO 'ping' BINDING ANY MORE, AND THAT IS THE FIX RATHER THAN AN
+-- OMISSION. It was `tap('ping', 'brping', 'Royale: Place a marker', 'Z')` and
+-- it had NO SUBSCRIBER: nothing anywhere called BR.Keys.on('ping', ...). The
+-- feature it was for still exists and is better than it was -- client/markers
+-- .lua watches for a fresh MAP WAYPOINT and turns that into the squad marker,
+-- so the ping is placed the way a player already knows how to place one -- and
+-- when it moved there, the key was left behind.
+--
+-- A BOUND KEY WITH NO LISTENER IS WORSE THAN AN UNBOUND ONE. It occupies a row
+-- in the GTA pause menu and in our own rebinder, it claims the key against
+-- every other resource's default, and pressing it does nothing -- which is
+-- indistinguishable from the action being broken. Z is also GTA's own
+-- INPUT_MULTIPLAYER_INFO (20) and INPUT_HUD_SPECIAL (48), and
+-- RegisterKeyMapping does not suppress an engine control that shares its key,
+-- so the only thing pressing Z ever did on this server was whatever the engine
+-- does with it. That is the "pressing Z makes some radio noise" report: not
+-- pma-voice, which binds exactly two keyboard keys (F11 cycleproximity, LMENU
+-- +radiotalk) and neither is this one.
+--
+-- STILL DEAD AND STILL BOUND, deliberately left for a round of their own
+-- rather than swept up here: 'map' (M), 'specNext' (RIGHT), 'specPrev' (LEFT).
+-- Same shape, same absence of any BR.Keys.on for them.
 
 group = 'Map'
 -- Map and spectating
@@ -437,7 +458,11 @@ end)
 BR.Keys.actions = {
     'deploy', 'trail', 'inventory', 'interact', 'drop', 'use',
     'slot1', 'slot2', 'slot3', 'slot4', 'slot5',
-    'chatGlobal', 'chatSquad', 'ping', 'map', 'specNext', 'specPrev',
+    -- 'ping' is gone: it had no listener and the marker it was for is placed
+    -- by dropping a map waypoint now (client/markers.lua). 'map', 'specNext'
+    -- and 'specPrev' are in the same state and are NOT yet removed -- they are
+    -- listed here so the debug overlay keeps naming them while they are.
+    'chatGlobal', 'chatSquad', 'map', 'specNext', 'specPrev',
     'clearWaypoint',
 }
 

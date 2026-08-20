@@ -454,6 +454,48 @@ export interface SettingsPayload {
 }
 
 /**
+ * WHO IS SPEAKING, AND WHY YOU MIGHT BE HEARING NOBODY.
+ *
+ * `talking`/`names` are the bottom-centre indicator: ids for the squad panel's
+ * markers and names in the SAME ORDER for the bar. The names have to be on the
+ * wire because proximity voice carries anyone in the match and the interface
+ * has no other way to name a player who is not a squadmate.
+ *
+ * EVERYTHING ELSE IS THE STATUS, AND IT IS THE HALF THIS CHANNEL WAS MISSING.
+ * Squad voice is a pma-voice RADIO with its own push-to-talk, and a player in
+ * squad mode with no squad hears nothing at all -- both correct, both
+ * completely invisible, and between them they produced a week of "squad voice
+ * is broken" (#157). Lua computes the sentence and sends it; the page renders
+ * it and does not compose its own, so there is exactly one place the wording
+ * lives and it is next to the code that decides it (br_core/client/voice.lua,
+ * BR.Voice.statusFor).
+ */
+export interface VoicePayload {
+  talking: number[]
+  names?: string[]
+  /** The mode actually in force on this client, which is not necessarily the
+   *  one the settings screen last drew a button for. */
+  mode?: 'squad' | 'nearby' | 'off'
+  /** The squad radio channel the SERVER granted, or null for none. */
+  radio?: number | null
+  /** What this client last asked pma-voice to join. 0 means "no radio". */
+  joined?: number | null
+  /** How many squadmates the server named. */
+  mates?: number
+  /** A short machine-readable verdict: 'nearby' | 'silenced' | 'nosquad' |
+   *  'alone' | 'radio'. Style on this, never parse the prose. */
+  status?: string
+  /** Nothing can reach this player and nothing they say can leave. */
+  silent?: boolean
+  /** They ASKED for the silence ('off'). Do not alarm them about it. */
+  chosen?: boolean
+  /** One short line for the HUD. Absent when there is nothing to say. */
+  headline?: string | null
+  /** The longer version, for the settings screen. */
+  detail?: string | null
+}
+
+/**
  * The character roster.
  *
  * NAMES ONLY, NO ARTWORK. This project is vanilla-assets-only, so there is no
@@ -716,7 +758,7 @@ export type Envelope =
   // names in the SAME ORDER for the bottom-centre indicator. The names have to
   // be on the wire because proximity voice carries anyone in the match, and
   // the interface has no other way to name a player who is not a squadmate.
-  | { k: 'voice';    d: { talking: number[]; names?: string[] } }
+  | { k: 'voice';    d: VoicePayload }
   | { k: 'inv';      d: WireInvPayload }
   | { k: 'feed';     d: FeedEntry }
   | { k: 'hit';      d: HitPayload }

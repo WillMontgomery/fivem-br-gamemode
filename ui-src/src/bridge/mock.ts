@@ -302,6 +302,27 @@ export function startMockDriver(): void {
     // 46% cap is only ever exercised by a line long enough to hit it.
     { talking: [4, 2, 3, 9, 11, 12, 13],
       names: ['Nyx', 'Kestrel', 'Vandal', 'Halcyon', 'Rook', 'Marrow', 'Quillon'] },
+    // AND THE TWO STATES THAT ARE WHY VoiceNotice EXISTS. Both were invisible
+    // in the game and both read as "voice is broken" (#157). They are in the
+    // rotation rather than behind a flag because a component that renders
+    // nothing 95% of the time is a component nobody sees in the harness --
+    // which is how the bottom-centre bar itself went unreviewed.
+    { talking: [], names: [],
+      mode: 'squad' as const, radio: null, joined: 0, mates: 0,
+      status: 'nosquad', silent: true, chosen: false,
+      headline: 'Squad voice: you have no squad',
+      detail: 'Squad voice carries your squad and nobody else, so with no '
+            + 'squad it carries nobody -- you cannot hear anyone and nobody '
+            + 'can hear you. Solo matches have no squads. Switch to Nearby '
+            + 'under Settings, Voice to hear the players around you.' },
+    { talking: [4], names: ['Nyx'],
+      mode: 'squad' as const, radio: 30703, joined: 30703, mates: 3,
+      status: 'radio', silent: false, chosen: false,
+      headline: 'Squad voice: hold Left Alt to talk',
+      detail: 'Squad voice is a RADIO with its own push-to-talk. Hold Left Alt '
+            + '-- "Talk over Radio", rebindable in the pause menu under '
+            + 'Settings, Key Bindings, FiveM. The ordinary voice key does '
+            + 'nothing in this mode, because squad mode turns proximity off.' },
   ]
   let voiceAt = 0
   window.setInterval(() => {

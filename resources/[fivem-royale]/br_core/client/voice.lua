@@ -95,8 +95,33 @@
 --
 --            A PLAYER WITH NO SQUAD THEREFORE HEARS NOBODY. That is the spec
 --            read honestly -- an empty squad is an empty conversation -- and
---            it is why the DEFAULT is 'nearby' rather than this. /brvoice says
---            so in as many words rather than letting it look like #150.
+--            it is why the DEFAULT is 'nearby' rather than this. It is now
+--            said on the HUD and on the settings screen as well as in
+--            /brvoice: silence with no explanation is indistinguishable from
+--            a broken feature, which is exactly how it was reported.
+--
+--            AND THE RADIO IS A SEPARATE PUSH-TO-TALK. THIS IS THE ONE THAT
+--            COST #157 ITS SEVENTH ROUND, and it is not our code at all:
+--
+--                RegisterCommand('+radiotalk', ...)
+--                RegisterKeyMapping('+radiotalk', 'Talk over Radio',
+--                    'keyboard', GetConvar('voice_defaultRadio', 'LMENU'))
+--                                    -- pma-voice client/module/radio.lua
+--
+--            pma-voice's radio adds its voice targets when +radiotalk goes
+--            DOWN and calls MumbleClearVoiceTargetPlayers when it comes up.
+--            Nothing else ever puts a squadmate in the target. So the game's
+--            ordinary voice key carries PROXIMITY and only proximity -- and
+--            in squad mode proximity is off, so the ordinary key carries
+--            NOTHING. A squad that presses it hears silence in both
+--            directions and reports that squad voice does not work.
+--
+--            WE DO NOT DRIVE THAT KEY FROM HERE. Synthesising +radiotalk off
+--            a talking probe is exactly the class of untestable cleverness
+--            that produced six rounds of this issue, and pma-voice's own
+--            keybind is a thing the player can see and rebind. What was
+--            missing was that anybody had ever TOLD them, so that is what
+--            this file now does -- see BR.Voice.statusFor and radioKeyLabel.
 --
 -- THE MUTE IS THE ONLY THING IN THIS FILE THAT CAN MAKE A PLAYER DEAF, and it
 -- is now reached by two modes rather than one, so muteSweep()'s rule matters
@@ -153,95 +178,50 @@
 --     care in the way we used to -- we do our own distance comparison -- but
 --     it is not a settled question and it is not settled here.
 --
--- SETTLED SINCE, AND KEPT HERE BECAUSE IT WAS ONCE ON THIS LIST: whether
--- `voice_enableUi 0` removes the readout the owner is looking at. It does. All
--- three lines of pma-voice's overlay -- "Custom [Range]", "[Call]" and
--- "N Mhz [Radio]" -- are inside one `v-if="voice.uiEnabled"` in its
--- voice-ui/src/App.vue, positioned bottom-right, and `uiEnabled` is that
--- convar. What was NOT true is that writing the line into server.cfg.example
--- would put it on the box; see the convar block further down.
+-- #185, AND WHY EVERY MEASUREMENT BEFORE 2026-08-18 IS WORTHLESS.
 --
--- ==========================================================================
--- #165: WHAT THE BUS ACTUALLY BROKE, AND WHY IT IS NOT THE GAG BELOW.
+-- A SECOND VOICE IMPLEMENTATION WAS RUNNING THE WHOLE TIME. vMenu ships its
+-- own voice chat, it is ON BY DEFAULT, and nobody on this project had ever
+-- enumerated what else on the box touches voice -- the audit that proved OUR
+-- resources were clean was run over br_* only, so it answered "are we doing
+-- this" and never "who is doing this".
 --
--- "Nearby voice worked in solo before the bus, then after I get
---  MUMBLE_ADD_VOICE_CHANNEL_LISTEN: Tried to call native on a channel that
---  didn't exist."
+-- IT WAS vMenu THAT PRODUCED THE SYMPTOMS THIS FILE SPENT THREE ROUNDS ON:
+-- the "currently talking" overlay we could not find a setting for, channel
+-- behaviour nobody could account for, and the
 --
--- THE GAG CANNOT RAISE THAT WARNING, and that is structural rather than
--- fortunate. pma-voice's addNearbyPlayers() issues its channel listen and its
--- own-channel target ABOVE the loop that consults our check, and unconditionally
--- (client/init/proximity.lua). A check that returns false skips ONE
--- MumbleAddVoiceTargetChannel call for that player and nothing else. pma-voice
--- neither tears down nor rebuilds any channel in response to a proximity check,
--- and it has no BUS -> FREEFALL edge to react to: it never learns the state
--- changed.
+--     MUMBLE_ADD_VOICE_CHANNEL_LISTEN: Tried to call native on a channel that
+--     didn't exist
 --
--- THE CAMERA WAS ONE OF THREE, AND IT WAS THE WRONG TWO. Round two of this
--- issue found MumbleAddVoiceChannelListen in three places in pma-voice v7.0.0
--- and named two of them: both inside setSpectatorMode(), entered when
---     NetworkIsInSpectatorMode() or GetRenderingCam() ~= -1
--- -- ANY rendering scripted camera, which client/bus.lua puts up as the last
--- step of boarding. voice_disableAutomaticListenerOnCamera 1 closes that, the
--- server now sets it, and IT WORKED: the overlay went with it, and the two
--- setSpectatorMode sites are now unreachable on this server (the proof is in
--- the CONVARS block below). The warning came back anyway, on join, permanently.
+-- spam that #165 was opened for. With vMenu's voice turned off the console is
+-- clean, and pma-voice v7.0.2-rc3's own channel-listen sites all resolve the
+-- channel first (client/init/proximity.lua, addChannelListener) so none of
+-- them can raise it.
 --
--- THE THIRD SITE IS THE ONE THAT IS ACTUALLY FIRING, and it is nothing to do
--- with cameras, spectating, the bus or us. pma-voice v7.0.0,
--- client/init/proximity.lua line 32, seven lines into addNearbyPlayers():
+-- WHAT WENT WITH IT. The pma-voice VERSION DETECTOR that used to live in this
+-- file -- BR.Voice.generation, generationOf, legacyLines, the state-bag probe
+-- on the slow band and the #165 essay in /brvoice -- existed for exactly one
+-- purpose: to blame that warning on a pre-v7.0.1-rc2 pma-voice. The warning
+-- was never pma-voice's, so the detector is gone. server.cfg.example still
+-- pins the version, which is the right place for a version to be pinned.
 --
---     MumbleClearVoiceTargetChannels(voiceTarget)
---     if LocalPlayer.state.disableProximity then return end
---     MumbleAddVoiceChannelListen(playerServerId)      <-- line 32
---     MumbleAddVoiceTargetChannel(voiceTarget, playerServerId)
+-- WHAT DID NOT GO WITH IT, and the distinction is the point: the two convars
+-- below. Neither is a workaround for vMenu. voice_disableAutomaticListener-
+-- OnCamera guards against pma-voice's OWN setSpectatorMode, which is still
+-- there in v7.0.1/v7.0.2 (proximity.lua: `GetRenderingCam()` feeds
+-- `isSpectating`, and this gamemode renders a scripted camera in the lobby,
+-- on the bus and while downed); voice_enableUi turns off pma-voice's OWN
+-- bottom-right overlay, which is a real `v-if="voice.uiEnabled"` in its
+-- voice-ui/src/App.vue and which we duplicate. Both are read out of the
+-- running client by BR.Voice.convarProblems rather than assumed.
 --
--- That is this client listening to ITS OWN channel, unconditionally, on every
--- turn of pma-voice's main loop -- five times a second. It sits ABOVE the loop
--- that consults our proximity check and is gated by nothing except
--- LocalPlayer.state.disableProximity, the blunt lever we decline to pull
--- (see the note further up: it would also skip line 33 and make us mute).
---
--- IT WARNS WHENEVER WE ARE NOT IN THAT CHANNEL YET. FiveM's native
--- (code/components/gta-net-five/src/MumbleVoice.cpp, MUMBLE_ADD_VOICE_CHANNEL_
--- LISTEN) resolves "Game Channel <n>" and warns on exactly one condition:
--- DoesChannelExist is false. Nothing but pma-voice's own handleInitialState()
--- (client/events.lua) ever calls MumbleSetVoiceChannel to create it -- and in
--- v7.0.0 the proximity loop does not wait for it:
---
---     while not MumbleIsConnected() do Wait(100) end     -- v7.0.0, line 116
---
--- So the loop starts hammering line 32 the moment Mumble connects, while
--- handleInitialState is still in its own `Wait(250)` retry loop, and it has no
--- way to stop: there is no state, no backoff and no second attempt at anything.
--- On join, immediately, and for as long as the join has not landed. THAT IS THE
--- REPORT, word for word.
---
--- UPSTREAM FIXED ALL OF IT AFTER v7.0.0, which is the part that decides what we
--- do about it. v7.0.1-rc2 / v7.0.2-rc3 rewrote every one of the three sites:
---
---   * the loop gained the missing gate --
---         while not MumbleIsConnected() or not isInitialized do Wait(100) end
---     where isInitialized is set by handleInitialState AFTER its channel join
---     converges, and cleared on mumbleDisconnected;
---   * our own channel is no longer assumed to be our server id. The server
---     hands out LocalPlayer.state.assignedChannel (server/main.lua,
---     firstFreeChannel()) and the client listens to THAT;
---   * the other two sites became addChannelListener(serverId), which resolves
---     MumbleGetVoiceChannelFromServerId first and DOES NOTHING when it is -1,
---     recording the miss for tryListeningToFailedListeners() to retry. The
---     upstream comment on that table names our exact symptom: the value is
---     false "in situations where their channel didn't exist".
---
--- WHICH MEANS THERE IS NO CONVAR FOR THIS, AND THERE CANNOT BE. Line 32 takes
--- no convar, no export and no state bag we are willing to set. Two rounds of
--- this issue were closed with a convar because two of the three sites happened
--- to have one; the third does not, and the fix is the VERSION. server.cfg
--- .example now pins v7.0.2-rc3.
---
--- AND BECAUSE A PIN IN A FILE NO DEPLOY COPIES IS EXACTLY HOW THIS ISSUE GOT
--- TO ROUND THREE, br_core detects the old resource itself and says so on both
--- consoles. See BR.Voice.generation() below.
+-- ONE CLAIM THIS FILE USED TO MAKE AND MUST NOT MAKE AGAIN: that the overlay
+-- disappearing PROVED a replicated convar had reached the client before
+-- pma-voice's scripts ran. The overlay that disappeared was vMenu's. The
+-- convars may well arrive in time -- the camera one is re-read inside
+-- pma-voice's own loop every 200 ms, which is a structural argument and still
+-- stands -- but nothing here has EMPIRICALLY established it, and pretending
+-- otherwise is how this file got to round six.
 -- ==========================================================================
 
 BR = BR or {}
@@ -597,21 +577,25 @@ end
 -- #150 was a week of confusing exactly that kind of pair.
 --
 -- ==========================================================================
--- AND THEY DO ARRIVE. ESTABLISHED, NOT ASSUMED -- round three of #165 opened by
--- doubting exactly this, and it is worth writing the answer down once so the
--- next round does not spend a day on it again.
+-- DO THEY ARRIVE? ONE HALF OF THIS IS SETTLED AND THE OTHER HALF IS NOT, AND
+-- THE DIFFERENCE IS WORTH KEEPING STRAIGHT -- the version of this comment that
+-- did not keep it straight cited a vMenu symptom as proof (#185).
 --
---   STRUCTURALLY, for the camera one: pma-voice re-reads it INSIDE its loop
---   body, every 200 ms (client/init/proximity.lua, the `local cam = ...` line).
---   There is no start-time read to lose a race against. A convar that lands
---   late takes effect on the next tick, and one that lands early is simply
---   already there. Start order cannot break it.
+--   STRUCTURALLY, FOR THE CAMERA ONE, AND THIS STILL STANDS: pma-voice re-reads
+--   it INSIDE its loop body, every 200 ms (client/init/proximity.lua, the
+--   `local cam = ...` line). There is no start-time read to lose a race
+--   against. A convar that lands late takes effect on the next tick, and one
+--   that lands early is simply already there. Start order cannot break it.
 --
---   EMPIRICALLY, for both: voice_enableUi is the harder case -- it IS read
---   once, at pma-voice's own onClientResourceStart (client/init/init.lua),
---   to decide whether its overlay draws at all. The overlay is gone. So the
---   replicated value was present on the client BEFORE pma-voice's client
---   scripts ran, which is strictly earlier than the camera convar needs.
+--   FOR voice_enableUi, NOTHING IS ESTABLISHED. It IS read once, at pma-voice's
+--   own onClientResourceStart (client/init/init.lua), so a replicated value
+--   that arrives after that is a value pma-voice never sees. This comment used
+--   to argue that the value must have arrived in time because "the overlay is
+--   gone" -- and the overlay that went was vMenu's, turned off by hand on
+--   2026-08-18. That is not evidence of anything about our convar. What we
+--   have instead is convarProblems(), which READS the value out of the running
+--   client and prints it in /brvoice; that is a measurement rather than an
+--   argument, and it is the thing to look at.
 --
 -- AND WITH THE CAMERA ONE IN FORCE, pma-voice's spectator listening is not
 -- merely off, it is UNREACHABLE HERE. `cam` is pinned to -1, so
@@ -622,9 +606,12 @@ end
 -- never calls. isListenerEnabled therefore cannot become true, setSpectatorMode
 -- cannot run, and the two listen sites inside it cannot fire.
 --
--- WHICH IS HOW WE KNOW WHICH SITE IS LEFT. There are three in v7.0.0; two are
--- proven unreachable above; the warning is still being printed. It is line 32.
--- See the #165 block at the top of this file.
+-- THAT IS WORTH HAVING ON ITS OWN MERITS and it is not a workaround for
+-- anybody: the listens setSpectatorMode takes are unlimited-range and are
+-- added over one routing bucket's player list and removed over another's, so
+-- what is left behind is a hole through the match isolation server/voice.lua
+-- spends forty lines arguing for. The convar closes it whether or not anything
+-- was ever printing a warning about it.
 -- ==========================================================================
 --
 --   voice_disableAutomaticListenerOnCamera 1
@@ -638,10 +625,9 @@ end
 --     gamemode renders a scripted camera in the lobby (client/lobbycam.lua),
 --     ON THE BUS (client/bus.lua, RenderScriptCams at the end of boarding) and
 --     while downed (client/dbno.lua). So the bus silently turns every rider
---     into a spectator of everybody in scope: unlimited-range listening, the
---     MUMBLE_ADD_VOICE_CHANNEL_LISTEN warnings in #165, and -- because the
---     listens are added over the WARMUP bucket's player list and removed over
---     the MATCH bucket's one flight later -- a residue of listens on players
+--     into a spectator of everybody in scope: unlimited-range listening, and --
+--     because the listens are added over the WARMUP bucket's player list and
+--     removed over the MATCH bucket's one flight later -- a residue on players
 --     this client can no longer see and will never remove. That residue is a
 --     hole straight through the match isolation server/voice.lua argues for.
 --
@@ -662,6 +648,19 @@ local CONVARS = {
       want    = 0,
       default = 1,
       why     = 'pma-voice draws its own bottom-right overlay on top of ours' },
+    -- THE RADIO'S COSTUME, NOT THE RADIO. +radiotalk plays
+    -- 'random@arrests'/'generic_radio_enter' on the talker's ped for as long as
+    -- the key is held: it re-poses somebody who is aiming a rifle, and it tells
+    -- every enemy who can see them that they are on comms. The KEY itself and
+    -- voice_enableRadios are deliberately left alone -- that key is the only
+    -- thing that ever puts a squadmate in the voice target, so turning it off
+    -- is turning squad voice off. See the mode block at the top of this file.
+    { name    = 'voice_enableRadioAnim',
+      want    = 0,
+      default = 1,
+      why     = 'pma-voice re-poses your ped into a hold-a-radio animation '
+             .. 'while you talk to your squad, through aiming and in plain '
+             .. 'sight of anyone watching' },
 }
 
 --- WHICH OF THEM ARE WRONG ON THIS CLIENT, RIGHT NOW.
@@ -682,112 +681,127 @@ function BR.Voice.convarProblems()
     return out
 end
 
--- ------------------------------------------ WHICH pma-voice IS INSTALLED ---
+-- ------------------------------------------------ WHY YOU CANNOT HEAR ANYONE ---
 --
--- THE VERSION IS NOW A RUNTIME FACT, NOT A LINE IN A DOCUMENT.
+-- THE FEATURE THIS FILE WAS MISSING, AND IT IS NOT A ROUTING FEATURE.
 --
--- #165 has been closed twice by writing something true into server.cfg.example
--- and twice been reopened because server.cfg.example is documentation:
--- .gitignore keeps the real server.cfg out of the repository and
--- tools/deploy.sh rsyncs the resource group and nothing else. The convars
--- escaped that trap by being settable from code. THE VERSION CANNOT BE -- no
--- resource can re-clone another one -- so the only thing left is to make the
--- wrong version impossible to run quietly. This is that.
+-- The playtest that produced #157 round seven reported "squads don't work".
+-- The squad radio was assigned, the number was right, every member of one
+-- squad had the same one and the server's guard let them all on. What nobody
+-- had ever been told is that pma-voice's radio has its OWN push-to-talk --
+-- +radiotalk, 'Talk over Radio', default LMENU -- and that in squad mode the
+-- ordinary voice key carries nothing at all, because squad mode turns
+-- proximity off. Two people pressed the key the game had taught them, heard
+-- silence, and correctly concluded the feature was broken.
 --
--- THE PROBE IS pma-voice's OWN STATE BAG, and it needs no natives, no Mumble
--- and no guessing:
---
---   assignedChannel   set by the SERVER half of pma-voice, replicated, from
---                     v7.0.1-rc2 onwards (server/main.lua, firstFreeChannel()).
---                     It does not exist in v7.0.0, which assumed a client's
---                     channel number IS its server id -- the assumption that
---                     produces the MUMBLE_ADD_VOICE_CHANNEL_LISTEN spam.
---   voiceIntent       set by both versions, replicated, in the same function.
---
--- TWO KEYS RATHER THAN ONE, because one key cannot tell "old pma-voice" from
--- "pma-voice has not got to this player yet", and reporting the first when the
--- truth is the second is how a diagnostic becomes noise a playtester learns to
--- scroll past. voiceIntent present means pma-voice HAS initialised us; from
--- there, assignedChannel absent is a verdict rather than a timing artefact.
-local INIT_KEY, CHANNEL_KEY = 'voiceIntent', 'assignedChannel'
+-- SO SILENCE NOW EXPLAINS ITSELF. This section is one pure function and one
+-- reader for it, and every surface that can tell the player -- the HUD line,
+-- the settings screen, the toast on the edge, and /brvoice -- is derived from
+-- the same call. That is the same rule BR.Voice.gagged() is built on: a
+-- readout that derives its own answer is a readout that can disagree with the
+-- behaviour, and this issue is four rounds of exactly that.
 
---- The verdict, as a pure function of the two reads. Split out so the suite can
---- put it through all four states without a game.
---- @param up boolean       is pma-voice running
---- @param inited boolean   has pma-voice initialised this player's state bag
---- @param assigned any     the assignedChannel value, or nil
---- @return string  'absent' | 'pending' | 'legacy' | 'current'
-function BR.Voice.generationOf(up, inited, assigned)
-    if not up then return 'absent' end
-    if assigned ~= nil then return 'current' end
-    if not inited then return 'pending' end
-    return 'legacy'
-end
-
---- @return string  see generationOf
+--- The KEY a player has to hold to be heard on the squad radio.
 ---
---- ONE pcall AROUND BOTH READS, and it answers 'pending' rather than guessing.
---- A state bag is engine-backed and this runs on a shared loop band; a read
---- that raises must not become an accusation, because "we could not ask" and
---- "the answer is the bad one" are the two claims this project keeps merging.
-function BR.Voice.generation()
-    if not present() then return 'absent' end
-    local ok, inited, assigned = pcall(function()
-        local st = LocalPlayer and LocalPlayer.state
-        if not st then return nil end
-        return st[INIT_KEY] ~= nil, st[CHANNEL_KEY]
-    end)
-    if not ok or inited == nil then return 'pending' end
-    return BR.Voice.generationOf(true, inited, assigned)
+--- READ OFF pma-voice's OWN CONVAR, which is the value it passed to
+--- RegisterKeyMapping. That makes this the DEFAULT binding and not necessarily
+--- the live one -- FiveM stores a rebind in the player's own profile and
+--- exposes no way to read it back -- so every string built from this says
+--- "default" and points at the settings screen where the truth is. Naming a
+--- key the player has rebound would be worse than naming none.
+local KEY_NAMES = {
+    LMENU = 'Left Alt', RMENU = 'Right Alt',
+    LCONTROL = 'Left Ctrl', RCONTROL = 'Right Ctrl',
+    LSHIFT = 'Left Shift', RSHIFT = 'Right Shift',
+    CAPITAL = 'Caps Lock', GRAVE = '`', SPACE = 'Space',
+    RETURN = 'Enter', TAB = 'Tab', BACK = 'Backspace',
+}
+
+--- @return string  a human-readable key name, never empty
+function BR.Voice.radioKeyLabel()
+    local raw = GetConvar and GetConvar('voice_defaultRadio', 'LMENU') or 'LMENU'
+    if raw == nil or raw == '' then raw = 'LMENU' end
+    return KEY_NAMES[raw] or raw
 end
 
---- What to print about a 'legacy' pma-voice. One string, two callers -- the
---- start-up warning and /brvoice -- for the same reason gagged() is one
---- function: they must not be able to disagree.
---- @return table array of lines
-function BR.Voice.legacyLines()
+--- WHAT THIS MODE IS ACTUALLY DOING, IN WORDS A PLAYER CAN ACT ON.
+---
+--- PURE, AND IT TAKES ITS INPUTS, for the same reason BR.Voice.audibleFor does:
+--- the suite drives it through every combination without a game, and a version
+--- that read the globals would agree with the code by construction.
+---
+--- `silent` is the load-bearing field and it means something narrow: NOTHING
+--- CAN REACH THIS PLAYER AND NOTHING THEY SAY CAN LEAVE. It is true for 'off'
+--- (which they asked for) and for squad-with-no-squad (which they did not, and
+--- which is the state that got reported as a bug). It is NOT true for a squad
+--- of two who have simply not found the radio key -- that one is a `hint`,
+--- because audio can flow the moment they hold it.
+--- @param mode string|nil
+--- @param radio integer|nil  the channel the server granted, or nil
+--- @param mates integer|nil  how many squadmates the server named
+--- @return table  { code, silent, chosen, headline, detail }
+function BR.Voice.statusFor(mode, radio, mates)
+    local r = BR.VoiceRoutingFor(mode)
+    mates = mates or 0
+
+    if r.proximity then
+        return { code = 'nearby', silent = false, chosen = false }
+    end
+
+    if not r.radio then
+        -- The player asked for this one. Said, but never as an alarm.
+        return {
+            code = 'silenced', silent = true, chosen = true,
+            headline = 'Voice is off',
+            detail = 'You are not transmitting and not listening. Change it '
+                  .. 'under Settings, Voice.',
+        }
+    end
+
+    if not radio then
+        -- THE STATE THIS WHOLE CHANGE EXISTS FOR. Squad mode, no squad: the
+        -- server had no channel to grant, so there is no conversation to be in.
+        return {
+            code = 'nosquad', silent = true, chosen = false,
+            headline = 'Squad voice: you have no squad',
+            detail = 'Squad voice carries your squad and nobody else, so with '
+                  .. 'no squad it carries nobody -- you cannot hear anyone and '
+                  .. 'nobody can hear you. Solo matches have no squads. Switch '
+                  .. 'to Nearby under Settings, Voice to hear the players '
+                  .. 'around you.',
+        }
+    end
+
+    local key = BR.Voice.radioKeyLabel()
+
+    if mates <= 0 then
+        return {
+            code = 'alone', silent = false, chosen = false,
+            headline = 'Squad voice: nobody else on your squad radio yet',
+            detail = ('You are on squad radio %d and you are the only one on '
+                  .. 'it. Hold %s (Talk over Radio) to speak once a squadmate '
+                  .. 'joins -- the ordinary voice key carries nothing in this '
+                  .. 'mode.'):format(radio, key),
+        }
+    end
+
     return {
-        'pma-voice is older than v7.0.1-rc2 (no assignedChannel).',
-        'THIS IS #165. Its proximity loop listens to a channel it has not '
-            .. 'joined yet, five times a second, from the moment you connect:',
-        '  client/init/proximity.lua  MumbleAddVoiceChannelListen(playerServerId)',
-        'which is the "MUMBLE_ADD_VOICE_CHANNEL_LISTEN: Tried to call native '
-            .. 'on a channel that didn\'t exist" spam in this console.',
-        'NO CONVAR FIXES IT -- that call takes none. Upgrade the resource:',
-        '  cd <server-data>/resources/[voice] && rm -rf pma-voice && \\',
-        '    git clone --branch v7.0.2-rc3 --depth 1 \\',
-        '      https://github.com/AvarianKnight/pma-voice.git pma-voice',
-        'then restart. See server.cfg.example, Voice section.',
+        code = 'radio', silent = false, chosen = false,
+        headline = ('Squad voice: hold %s to talk'):format(key),
+        detail = ('Squad voice is a RADIO with its own push-to-talk. Hold %s '
+              .. '-- "Talk over Radio", rebindable in the pause menu under '
+              .. 'Settings, Key Bindings, FiveM. The ordinary voice key does '
+              .. 'nothing in this mode, because squad mode turns proximity '
+              .. 'off.'):format(key),
     }
 end
 
---- SAID ONCE, AND NOT BEFORE THERE IS AN ANSWER TO SAY.
----
---- On the 1 Hz band rather than at start-up, because the state bag this reads
---- is replicated and is not there on the frame br_core boots -- a check that
---- ran at onClientResourceStart would report 'pending' on a healthy server and
---- teach everyone to ignore it. It stops asking the moment it has a verdict,
---- and gives up quietly after a minute rather than polling for the session.
-local versionSaid, versionSince = false, nil
-BR.Loop.register(BR.Loop.SLOW, 'voice.version', function()
-    if versionSaid then return end
-    versionSince = versionSince or GetGameTimer()
-
-    local gen = BR.Voice.generation()
-    if gen == 'pending' or gen == 'absent' then
-        -- 'absent' is already shouted about at start-up; 'pending' is not a
-        -- finding. Either way, keep waiting -- but not forever.
-        if GetGameTimer() - versionSince > 60000 then versionSaid = true end
-        return
-    end
-
-    versionSaid = true
-    if gen == 'legacy' then
-        for _, line in ipairs(BR.Voice.legacyLines()) do
-            print('[br_core] VOICE: ' .. line)
-        end
-    end
-end)
+--- The same verdict, taken off the live state. One caller per surface.
+--- @return table  see statusFor
+function BR.Voice.status()
+    local s = BR.Voice.state
+    return BR.Voice.statusFor(BR.Voice.pref.mode, s.radio, #s.mates)
+end
 
 AddEventHandler('onClientResourceStart', function(res)
     if res == GetCurrentResourceName() then
@@ -808,10 +822,6 @@ AddEventHandler('onClientResourceStart', function(res)
         -- pma-voice came up (or came back). Everything we told it is gone.
         BR.Voice.state.joined = nil
         BR.Voice.state.muted = {}
-        -- AND IT MAY BE A DIFFERENT ONE. An admin swapping the resource and
-        -- restarting it is exactly how the fix for this issue will land on a
-        -- live box, so the verdict is re-taken rather than kept.
-        versionSaid, versionSince = false, nil
         install()
         BR.Voice.apply()
     end
@@ -1020,6 +1030,53 @@ end)
 ---   RADIO      pma-voice's own setTalkingOnRadio event, which is the only
 ---              thing that can report a squadmate the game has not streamed.
 ---
+--- ONE ENVELOPE CARRIES BOTH HALVES OF THE VOICE HUD.
+---
+--- `talking`/`names` are the bottom-centre indicator and have been on this
+--- channel since it existed. The rest is the STATUS -- what this mode is doing
+--- and, when the answer is "nothing", why. It rides the same envelope rather
+--- than a new one because the page needs them together: a "Currently Talking"
+--- line that never lists anybody and a screen that never says why are the two
+--- halves of the report this round came from.
+---
+--- THE TOAST IS EDGE-TRIGGERED AND LIVES HERE, next to the thing it is about,
+--- so there is one place that decides what the player is told. It fires when
+--- the VERDICT changes -- squad formed, mode picked, squad dissolved -- and
+--- never on a tick, because this function is called from the 10 Hz band.
+--- @param talking table
+--- @param names table
+--- @param st table  from BR.Voice.status
+local lastToast = nil
+local function pushVoice(talking, names, st)
+    TriggerEvent('br:ui:sendLocal', BR.Nui.VOICE, {
+        talking  = talking or {},
+        names    = names or {},
+        -- The mode is sent so the settings screen can describe the mode the
+        -- player is ACTUALLY on rather than the one it last drew a button for.
+        mode     = BR.Voice.pref.mode,
+        radio    = BR.Voice.state.radio,
+        joined   = BR.Voice.state.joined,
+        mates    = #BR.Voice.state.mates,
+        status   = st.code,
+        silent   = st.silent and true or false,
+        chosen   = st.chosen and true or false,
+        headline = st.headline,
+        detail   = st.detail,
+    })
+
+    if st.code ~= lastToast then
+        lastToast = st.code
+        -- 'off' is the player's own choice and they made it two seconds ago;
+        -- toasting it back at them is noise. Everything else is news.
+        if st.headline and not st.chosen then
+            TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
+                text = st.headline,
+                tone = st.silent and 'danger' or 'info',
+            })
+        end
+    end
+end
+
 --- Sent on CHANGE, never on the tick.
 local lastKey = ''
 BR.Loop.register(BR.Loop.TICK, 'voice.hear', function()
@@ -1095,7 +1152,17 @@ BR.Loop.register(BR.Loop.TICK, 'voice.hear', function()
     end
 
     table.sort(talking)
-    local key = table.concat(talking, ',')
+
+    -- TWO FACTS ON ONE CHANNEL, AND BOTH OF THEM CHANGE ON THEIR OWN CLOCK.
+    --
+    -- Who is talking changes several times a second; whether this mode can
+    -- carry audio at all changes when the player picks a mode or their squad
+    -- forms, which may be once a match. The dedup key therefore covers BOTH --
+    -- keying it on the talking list alone is how the status line would have
+    -- sat stale on the HUD for as long as nobody spoke, which is precisely the
+    -- moment it is worth reading.
+    local st  = BR.Voice.status()
+    local key = table.concat(talking, ',') .. '|' .. tostring(st.headline)
     if key == lastKey then return end
     lastKey = key
     BR.Voice.talking = talking
@@ -1108,13 +1175,11 @@ BR.Loop.register(BR.Loop.TICK, 'voice.hear', function()
         BR.Voice.names[i] = (e and e.name) or ('#' .. tostring(src))
     end
 
-    TriggerEvent('br:ui:sendLocal', BR.Nui.VOICE,
-        { talking = talking, names = BR.Voice.names })
+    pushVoice(talking, BR.Voice.names, st)
 end)
 
 AddEventHandler('br:ui:ready', function()
-    TriggerEvent('br:ui:sendLocal', BR.Nui.VOICE,
-        { talking = BR.Voice.talking, names = BR.Voice.names })
+    pushVoice(BR.Voice.talking, BR.Voice.names, BR.Voice.status())
 end)
 
 -- ------------------------------------------------------------------ readout ---
@@ -1130,45 +1195,21 @@ RegisterCommand('brvoice', function()
     -- had been torn down, and read as healthy through a total outage. There is
     -- exactly one question to ask before any other: is the thing that makes
     -- audio actually here.
-    print(('  %-13s%s'):format('voice engine',
+    print(('  %-14s%s'):format('voice engine',
         up and (VOICE_RES .. ' -- running')
             or (VOICE_RES .. ' IS NOT RUNNING. There is no voice at all. '
                 .. 'Nothing below this line does anything.')))
 
-    -- THE SECOND LINE IS THE VERSION, AND IT IS SECOND BECAUSE ROUND THREE OF
-    -- #165 WAS THE VERSION. A pma-voice that is running, correctly configured
-    -- and simply too old is indistinguishable from a healthy one everywhere
-    -- else on this readout -- and it is the state the box was actually in.
-    if up then
-        local gen = BR.Voice.generation()
-        print(('  %-13s%s'):format('version', ({
-            current = 'v7.0.1-rc2 or later -- has the #165 fix, ON THE SERVER '
-                   .. 'HALF. Read the note below before trusting it',
-            legacy  = 'PRE-v7.0.1-rc2 -- THIS IS #165, see below',
-            pending = 'not answered yet (pma-voice has not set our state bag; '
-                   .. 'run this again in a few seconds)',
-        })[gen] or gen))
-        if gen == 'legacy' then
-            for _, line in ipairs(BR.Voice.legacyLines()) do
-                print('    ' .. line)
-            end
-        end
-        if gen == 'current' then
-            -- WHAT THIS VERDICT CANNOT SEE, said next to the verdict rather
-            -- than in a file nobody opens. assignedChannel is written by
-            -- pma-voice's SERVER half and replicated to us, so a 'current' here
-            -- proves the resource on the box is current. It does NOT prove the
-            -- scripts THIS client downloaded are, and the two can differ: an
-            -- FXServer serves clients out of its own file cache, and a stale
-            -- entry there hands old client code to every joiner while the
-            -- server half reports fine. That combination reproduces #165's
-            -- symptom exactly -- the warning on join, permanently -- with this
-            -- line still saying the version is right.
-            print('               Server half only. If the channel warning is')
-            print('               still in this console, suspect a stale')
-            print('               client download cache on the box rather than')
-            print('               the installed resource -- see #165.')
-        end
+    -- THE SECOND LINE IS THE VERDICT: is this player in a conversation at all,
+    -- and if not, why not. It is second because it is the question the player
+    -- actually has, and because every previous version of this readout made
+    -- them derive it from six lines further down.
+    do
+        local st = BR.Voice.status()
+        print(('  %-14s%s'):format('verdict',
+            st.silent and ('SILENT -- ' .. tostring(st.headline))
+                or (st.headline or 'carrying')))
+        if st.detail then print('                ' .. st.detail) end
     end
 
     -- THE CONVARS, THIRD. A running pma-voice with these two unset is a running
@@ -1177,7 +1218,7 @@ RegisterCommand('brvoice', function()
     -- else on this readout. Silence here means both are correct.
     local probs = BR.Voice.convarProblems()
     if #probs > 0 then
-        print(('  %-13s%d WRONG on this client:'):format('convars', #probs))
+        print(('  %-14s%d WRONG on this client:'):format('convars', #probs))
         for _, p in ipairs(probs) do
             print(('    %s is %d, must be %d'):format(p.name, p.have, p.want))
             print(('      %s'):format(p.why))
@@ -1193,16 +1234,16 @@ RegisterCommand('brvoice', function()
     -- the routing table, so this cannot describe a mode the code does not
     -- implement the way the old "squad = proximity plus radio" comment did.
     local r = BR.Voice.routing()
-    print(('  %-13s%s'):format('mode', BR.Voice.pref.mode))
-    print(('  %-13sproximity %s, squad radio %s -- NEVER BOTH'):format('routes',
+    print(('  %-14s%s'):format('mode', BR.Voice.pref.mode))
+    print(('  %-14sproximity %s, squad radio %s -- NEVER BOTH'):format('routes',
         r.proximity and 'ON' or 'off', r.radio and 'ON' or 'off'))
 
     -- TRANSMIT. One line, and it is the truth as the proximity check will
     -- answer it on its next call -- same function, not a description of it.
     local gag, why = BR.Voice.gagged()
-    print(('  %-13s%s'):format('prox mic',
+    print(('  %-14s%s'):format('prox mic',
         gag and ('NO -- ' .. tostring(why)) or 'yes, to players within range'))
-    print(('  %-13s%.0f m (falloff -- pma-voice, speaker-side)%s'):format(
+    print(('  %-14s%.0f m (falloff -- pma-voice, speaker-side)%s'):format(
         'nearby range', s.nearby,
         r.proximity and '' or ' -- NOT IN USE on this mode'))
 
@@ -1210,46 +1251,65 @@ RegisterCommand('brvoice', function()
     -- the two failures it has had were both "the rule was right and the state
     -- was stale". If `in bus seat` says yes after the player has jumped, that
     -- is the bug, and it is visible here without reading any other file.
-    print(('  %-13s%s'):format('in bus seat', tostring(onBus())))
+    print(('  %-14s%s'):format('in bus seat', tostring(onBus())))
 
-    -- RADIO. Assigned and joined are separate claims; see state.radio.
-    print(('  %-13s%s'):format('squad radio',
-        s.radio and tostring(s.radio) or 'none assigned (solo, or in the lobby)'))
-    print(('  %-13s%s'):format('  joined',
-        s.joined == nil and 'nothing asked for yet'
-            or (s.joined == 0 and 'no -- correct for off and nearby'
-                or tostring(s.joined))))
-    print(('  %-13s%s'):format('squadmates',
-        #s.mates > 0 and table.concat(s.mates, ', ') or 'none (solo)'))
+    -- RADIO, AS THREE SEPARATE CLAIMS, EACH ANSWERED YES OR NO.
+    --
+    -- "the server gave me a channel", "I asked pma-voice for it" and "those are
+    -- the same number" are three different facts, and #150 was a week of a
+    -- readout that merged them. They are printed as an explicit verdict rather
+    -- than as two numbers the reader has to compare, because the reader is a
+    -- playtester mid-match and the comparison is the whole point of the line.
+    print(('  %-14s%s'):format('radio granted',
+        s.radio and ('YES -- channel ' .. tostring(s.radio))
+            or 'NO -- the server assigned no squad radio (solo match, no '
+               .. 'squad, or in the lobby)'))
+    print(('  %-14s%s'):format('radio joined',
+        s.joined == nil and 'NOT YET -- nothing has been asked of pma-voice'
+            or (s.joined == 0
+                and 'NO -- channel 0, which is correct for nearby and off'
+                or ('YES -- channel ' .. tostring(s.joined)))))
+    if r.radio then
+        local want = s.radio or 0
+        print(('  %-14s%s'):format('  agree',
+            s.joined == want
+                and 'YES -- granted and joined are the same channel'
+                or ('NO -- this client is on ' .. tostring(s.joined)
+                    .. ' and was granted ' .. tostring(s.radio)
+                    .. '. A join in flight looks like this for one tick; '
+                    .. 'anything longer is the bug.')))
+    end
+    print(('  %-14s%s'):format('squadmates',
+        #s.mates > 0 and table.concat(s.mates, ', ')
+            or 'none -- the server named nobody else on this squad'))
 
-    -- THE ONE STATE THAT LOOKS LIKE A BUG AND IS NOT, SAID BEFORE ANYBODY HAS
-    -- TO ASK. Squad mode with no squad is total silence -- there is nobody in
-    -- the conversation -- and that is the spec rather than #150 coming back.
-    -- It is printed loudly because a player who set this and then queued a solo
-    -- has no other way to tell the two apart.
-    if r.radio and not s.radio then
-        print('               SQUAD MODE WITH NO SQUAD: you can hear nobody and')
-        print('               nobody can hear you. That is correct for this')
-        print('               mode -- squad voice is the squad and nothing')
-        print('               else. Switch to Nearby to hear the people around')
-        print('               you.')
+    -- AND THE KEY, WHICH IS THE ONE FACT NOBODY HAD EVER BEEN TOLD. The squad
+    -- radio is pma-voice's, and pma-voice's radio has its own push-to-talk;
+    -- the ordinary voice key carries proximity, which squad mode turns off.
+    -- Printed whenever the radio is the mode, granted or not, because "hold
+    -- this key" is useless information one match too late.
+    if r.radio then
+        print(('  %-14sHOLD "%s" (Talk over Radio, pma-voice). The ordinary')
+            :format('talk key', BR.Voice.radioKeyLabel()))
+        print('                voice key carries NOTHING in this mode. Rebind it')
+        print('                in the pause menu: Settings, Key Bindings, FiveM.')
     end
 
     -- LISTEN.
     local hear = {}
     for src in pairs(s.audible) do hear[#hear + 1] = src end
     table.sort(hear)
-    print(('  %-13s%s'):format('not refusing',
+    print(('  %-14s%s'):format('not refusing',
         #hear > 0 and table.concat(hear, ', ')
             or 'nobody -- correct for off, for squad with no squad, and for '
                .. 'standing alone'))
     local nmuted = 0
     for _ in pairs(s.muted) do nmuted = nmuted + 1 end
-    print(('  %-13s%d player(s)%s'):format('muted', nmuted,
+    print(('  %-14s%d player(s)%s'):format('muted', nmuted,
         r.proximity and ' -- MUST BE 0 on nearby'
             or (r.radio and ' -- squad, so everybody who is not a squadmate'
                 or ' -- off, so all of them')))
-    print(('  %-13s%s'):format('talking',
+    print(('  %-14s%s'):format('talking',
         #BR.Voice.talking > 0 and table.concat(BR.Voice.talking, ', ')
             or 'nobody'))
 

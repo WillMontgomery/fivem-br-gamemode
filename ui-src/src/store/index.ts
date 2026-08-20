@@ -16,7 +16,7 @@ import type {
   SpectatePayload, SquadPayload, StormPayload, SummaryPayload,
   CurtainKind, KeybindAction, LockerPayload, MarketPayload, ProgressPayload,
   SettingsPayload,
-  ToastPayload, WireInvPayload, XpAward, EarnedPayload, PlayersPayload, ReportResult,
+  ToastPayload, VoicePayload, WireInvPayload, XpAward, EarnedPayload, PlayersPayload, ReportResult,
 } from '../bridge/types'
 import { applySettings, DEFAULT_SETTINGS } from '../settings/apply'
 
@@ -38,6 +38,16 @@ export interface UiState {
   talking: number[]
   /** Their names, in the same order as `talking`. */
   talkingNames: string[]
+  /**
+   * WHY THIS PLAYER MAY BE HEARING NOBODY, in Lua's words.
+   *
+   * Squad voice is a pma-voice RADIO with its own push-to-talk, and squad mode
+   * with no squad is total silence. Both are correct and both were invisible,
+   * which is the whole of #157 round seven. `headline` is null when there is
+   * nothing worth saying -- which is the common case, and is why the HUD line
+   * is not permanently on screen.
+   */
+  voice: VoicePayload
   inv: InvPayload
   storm: StormPayload | null
   dbno: DbnoPayload
@@ -200,6 +210,7 @@ export interface UiState {
   setSquad: (s: SquadPayload) => void
   setParty: (p: SquadPayload) => void
   setTalking: (ids: number[], names?: string[]) => void
+  setVoice: (v: VoicePayload) => void
   setInv: (i: WireInvPayload) => void
   setStorm: (s: StormPayload | null) => void
   setDbno: (d: DbnoPayload) => void
@@ -473,6 +484,7 @@ export const useUi = create<UiState>((set, get) => {
   party: { id: null, members: [] },
   talking: [],
   talkingNames: [],
+  voice: { talking: [] },
   inv: emptyInv,
   storm: null,
   dbno: emptyDbno,
@@ -556,6 +568,15 @@ export const useUi = create<UiState>((set, get) => {
   // roster has not caught up with a speaker yet.
   setTalking:  (talking, talkingNames) =>
     set({ talking, talkingNames: talkingNames ?? [] }),
+  // ONE ENVELOPE, TWO SLICES, AND THE SPLIT IS DELIBERATE. `talking` changes
+  // several times a second and is read by two hot components; the status
+  // changes when a squad forms or a mode is picked. Keeping them apart means a
+  // speaker starting mid-sentence does not re-render the status line.
+  setVoice:    (voice) => set({
+    voice,
+    talking: voice.talking ?? [],
+    talkingNames: voice.names ?? [],
+  }),
   setInv:      (inv) => set({ inv: normaliseInv(inv) }),
   // Normalised at the boundary: an empty or shapeless payload (a nil that
   // crossed the Lua bridge becomes {}) must read as "no storm", never as a

@@ -2708,7 +2708,7 @@ do
         'and it explains itself to /brvoice in words', tostring(why))
 end
 
-describe('#165 -- the two pma-voice convars are checked, not just documented')
+describe('the pma-voice convars are checked from code, not just documented')
 do
     -- THE FAILURE THIS BLOCK EXISTS FOR IS NOT A CODE PATH. It is that both of
     -- these convars were "fixed" last round by adding a line to
@@ -2745,6 +2745,27 @@ do
             .. 'listening and nothing says so')
     ok(byName['voice_enableUi'] ~= nil,
         'and so is an unset voice_enableUi -- the bottom-right overlay')
+
+    -- AND THE RADIO ANIMATION, WHICH IS THE THIRD OF THESE AND THE ONE THAT
+    -- NAMES A BOUNDARY RATHER THAN A SYMPTOM.
+    --
+    -- pma-voice's +radiotalk poses the talker's ped with TaskPlayAnim for as
+    -- long as the key is held. That is cosmetic, it is wrong for a shooter --
+    -- it re-poses somebody who is aiming, and it advertises to every enemy in
+    -- sight that they are on comms -- and turning it off costs no audio.
+    --
+    -- WHAT MUST NEVER JOIN THIS LIST is voice_enableRadios, or anything that
+    -- neutralises the +radiotalk KEY. That key is the only thing that ever
+    -- puts a squadmate in the Mumble voice target; suppressing it makes squad
+    -- voice silent by construction, which is #157 round seven arriving by a
+    -- different door. The distinction is COSTUME versus MECHANISM and this
+    -- assertion is where it is written down.
+    ok(byName['voice_enableRadioAnim'] ~= nil,
+        'and an unset voice_enableRadioAnim -- the hold-a-radio pose',
+        'squad voice re-poses the player mid-fight and nothing says so')
+    ok(byName['voice_enableRadios'] == nil,
+        'but voice_enableRadios is NOT one of ours -- turning the radio module '
+            .. 'off would take squad voice with it')
 
     -- IT IS THE ENGINE'S DEFAULT THAT IS WRONG, not merely "not ours". Asserted
     -- on the numbers so a later round cannot quietly flip which value we want.
@@ -2787,6 +2808,7 @@ do
     convars = {
         voice_disableAutomaticListenerOnCamera = 1,
         voice_enableUi = 0,
+        voice_enableRadioAnim = 0,
     }
     ok(#BR.Voice.convarProblems() == 0,
         'a configured box reports no convar problems at all',
@@ -2809,135 +2831,187 @@ do
     logged = {}
 end
 
-describe('#165 round three -- br_core can tell which pma-voice is installed')
+describe('#157 round seven -- silence explains itself, and names the radio key')
 do
-    -- WHY THIS BLOCK EXISTS, AND WHY IT IS NOT ABOUT A RULE.
+    -- WHY THIS BLOCK EXISTS, AND WHY IT IS NOT ABOUT ROUTING.
     --
-    -- The convar block above closed two of the three places pma-voice v7 calls
-    -- MumbleAddVoiceChannelListen, and the playtest came back with the same
-    -- warning, now on join and permanent. The third place is v7.0.0's
-    -- addNearbyPlayers():
+    -- The playtest that opened this round said "squads don't work". Every
+    -- routing fact was correct: the server minted a channel, both members of
+    -- one squad got the SAME channel, the client asked pma-voice for it and
+    -- pma-voice's own addChannelCheck let them on. No audio moved anyway.
     --
-    --     MumbleAddVoiceChannelListen(playerServerId)
+    -- pma-voice's RADIO HAS ITS OWN PUSH-TO-TALK. client/module/radio.lua:
     --
-    -- -- our OWN channel, unconditionally, every 200 ms, in a loop that waits
-    -- for MumbleIsConnected() and NOT for pma-voice's own handleInitialState()
-    -- to have joined that channel. NOTHING IN br_core CAN REACH IT: it takes no
-    -- convar, no export and no state bag we are willing to set. Upstream fixed
-    -- it after v7.0.0.
+    --     RegisterCommand('+radiotalk', ...)          -- adds the voice targets
+    --     RegisterKeyMapping('+radiotalk', 'Talk over Radio', 'keyboard',
+    --                        GetConvar('voice_defaultRadio', 'LMENU'))
     --
-    -- So the only thing this repository can do is REFUSE TO BE QUIET ABOUT THE
-    -- WRONG VERSION -- which matters more than it sounds, because the previous
-    -- two fixes for this issue were both correct and both landed in
-    -- server.cfg.example, a file no deploy copies to the box. This block is the
-    -- thing that makes the third fix visible from a chair.
-    convars = { voice_disableAutomaticListenerOnCamera = 1, voice_enableUi = 0 }
+    -- and nothing else ever puts a squadmate in the target. The ordinary voice
+    -- key carries PROXIMITY, and squad mode turns proximity off -- so in squad
+    -- mode the ordinary key carries nothing at all. Two players pressed the
+    -- key the game had taught them and heard silence.
+    --
+    -- NOTHING IN THIS REPOSITORY CAN PRESS A KEY OR MOVE A FRAME OF AUDIO. What
+    -- it can assert is that the player is TOLD -- which is the whole fix, and
+    -- the thing whose absence made a working radio indistinguishable from a
+    -- broken one for a week. Every surface reads BR.Voice.statusFor, so these
+    -- assertions are about the one function all of them derive from.
+    --
+    -- CALLED THROUGH A SHIM so a build with no status function at all reports
+    -- this block as a row of clean failures rather than aborting the suite on
+    -- a nil call.
+    local statusFor = BR.Voice.statusFor
+        or function() return { code = 'MISSING' } end
 
-    -- CALLED THROUGH SHIMS so that a build with no check at all reports this
-    -- block as a row of clean failures rather than aborting the whole suite on
-    -- a nil index. Same reasoning as the convar block above: "the check is
-    -- missing" has to be a readable test result, because that is the state
-    -- every previous round of #165 was in.
-    local genOf = BR.Voice.generationOf or function() return 'MISSING' end
-    local gen   = BR.Voice.generation   or function() return 'MISSING' end
+    -- THE PURE HALF FIRST, every combination, because the interesting rows are
+    -- the two that look identical from a chair and are not.
+    local nearby = statusFor(BR.VoiceMode.NEARBY, nil, 0)
+    ok(nearby.silent == false,
+       'nearby is never silent -- it is the mode that always has somebody in it',
+       tostring(nearby.code))
 
-    -- THE PURE HALF FIRST, all four states, because the interesting one is the
-    -- one that is NOT a verdict.
-    ok(genOf(false, false, nil) == 'absent',
-       'no pma-voice at all reads as absent, not as an old one',
-       tostring(genOf(false, false, nil)))
-    ok(genOf(true, false, nil) == 'pending',
-       'a running pma-voice that has not initialised us yet is PENDING -- not '
-           .. 'a verdict, because a check that cries wolf on a healthy box is '
-           .. 'a check nobody reads on a sick one',
-       tostring(genOf(true, false, nil)))
-    ok(genOf(true, true, nil) == 'legacy',
-       'initialised with no assignedChannel is v7.0.0 -- the #165 build',
-       tostring(genOf(true, true, nil)))
-    ok(genOf(true, true, 7) == 'current',
-       'and an assignedChannel is v7.0.1-rc2 or later',
-       tostring(genOf(true, true, 7)))
+    local off = statusFor(BR.VoiceMode.OFF, nil, 0)
+    ok(off.silent == true and off.chosen == true,
+       "'off' is silent BY REQUEST, and the flag says so -- a player who just "
+           .. 'chose it does not need it explained back at them',
+       tostring(off.code) .. '/' .. tostring(off.chosen))
 
-    -- AND THE READ, off the same state bag pma-voice actually writes.
-    pmaBag = { voiceIntent = 'speech' }
-    voiceApply('nearby', nil, nil, 1)
-    ok(gen() == 'legacy',
-       'and it reads the live bag: voiceIntent without assignedChannel is old',
-       tostring(gen()))
+    -- THE ROW THIS ROUND IS FOR.
+    local nosquad = statusFor(BR.VoiceMode.SQUAD, nil, 0)
+    ok(nosquad.silent == true and nosquad.chosen == false,
+       'squad mode with NO squad is silent and was NOT asked for -- which is '
+           .. 'the pair that makes it worth interrupting somebody over',
+       tostring(nosquad.code) .. '/' .. tostring(nosquad.chosen))
+    ok(type(nosquad.headline) == 'string'
+       and nosquad.headline:lower():find('no squad') ~= nil,
+       'and it says the words "no squad" rather than describing a channel',
+       tostring(nosquad.headline))
+    ok(type(nosquad.detail) == 'string'
+       and nosquad.detail:find('Nearby') ~= nil,
+       'and it names the way OUT -- an explanation with no action is a nicer '
+           .. 'way of saying nothing',
+       tostring(nosquad.detail))
 
-    -- SAID OUT LOUD, ON THE 1 Hz BAND RATHER THAN AT START. The bag is
-    -- replicated and is not there on the frame br_core boots, so a start-time
-    -- check would print 'pending' on every healthy server and train everyone to
-    -- scroll past it. This asserts the delay does not swallow the message.
-    logged = {}
-    BR.Loop.step(BR.Loop.SLOW)
-    local said = table.concat(logged, '\n')
-    ok(said:find('v7.0.1%-rc2') ~= nil, 'the 1 Hz band names the version', said)
-    ok(said:find('MumbleAddVoiceChannelListen') ~= nil,
-       'and the exact call that is spamming the console', said)
-    ok(said:find('git clone') ~= nil and said:find('v7.0.2%-rc3') ~= nil,
-       'and the command that fixes it -- an operator should not have to go '
-           .. 'and find server.cfg.example', said)
+    -- A GRANTED RADIO IS NOT A WORKING MICROPHONE, and this is the row that
+    -- says so. It must NOT be `silent`: audio flows the moment the key is
+    -- held, and calling that silence would train the player to ignore the
+    -- state that really is.
+    local radio = statusFor(BR.VoiceMode.SQUAD, 30703, 3)
+    ok(radio.silent == false,
+       'a squad with a radio is not silent -- it is a key press away',
+       tostring(radio.code))
+    ok(type(radio.headline) == 'string' and radio.headline:find('hold') ~= nil,
+       'but the headline tells the player to HOLD something',
+       tostring(radio.headline))
+    ok(type(radio.detail) == 'string'
+       and radio.detail:find('Talk over Radio') ~= nil,
+       "and names pma-voice's own binding, which is what they will find in "
+           .. 'the pause menu',
+       tostring(radio.detail))
+    ok(radio.detail:find('ordinary voice key') ~= nil,
+       'and says the ordinary voice key does nothing here -- the exact belief '
+           .. 'that produced the report',
+       tostring(radio.detail))
 
-    -- ONCE. This console is where #150 hid for a week, and a line printed once
-    -- a second is a line that hides the next one.
-    logged = {}
-    BR.Loop.step(BR.Loop.SLOW)
-    BR.Loop.step(BR.Loop.SLOW)
-    ok(table.concat(logged, '\n'):find('pma%-voice') == nil,
-       'and says it exactly once, not once a second',
-       table.concat(logged, '\n'))
-
-    -- IN /brvoice TOO, which is the command a playtester is actually told to
-    -- run, and the one that has to survive the message above scrolling away.
-    logged = {}
-    pcall(commands['brvoice'])
-    local readout = table.concat(logged, '\n')
-    ok(readout:find('version') ~= nil and readout:find('#165') ~= nil,
-       '/brvoice leads with the version and names the issue', readout)
-
-    -- THE OTHER HALF, AND THE ONE THAT MAKES IT A TEST: a fixed box is silent.
-    pmaBag = { voiceIntent = 'speech', assignedChannel = 12 }
-    voiceApply('nearby', nil, nil, 1)
-    ok(gen() == 'current',
-       'a v7.0.1-rc2+ box reads as current', tostring(gen()))
-    logged = {}
-    BR.Loop.step(BR.Loop.SLOW)
-    BR.Loop.step(BR.Loop.SLOW)
-    ok(table.concat(logged, '\n'):find('MumbleAddVoiceChannelListen') == nil,
-       'and br_core says nothing at all about the version',
-       table.concat(logged, '\n'))
-
-    -- STILL ONE LINE, and it still names the issue -- deliberately. "This build
-    -- has the fix" is the answer somebody running /brvoice after an upgrade
-    -- needs; silence would be indistinguishable from an old readout. What must
-    -- be gone is the ALARM and the nine lines of upgrade instructions under it.
-    logged = {}
-    pcall(commands['brvoice'])
-    local fixed = table.concat(logged, '\n')
-    ok(fixed:find('PRE%-v7.0.1') == nil and fixed:find('git clone') == nil,
-       'and /brvoice drops the alarm and the upgrade command', fixed)
-    ok(fixed:find('has the #165 fix') ~= nil,
-       'while still saying, in one line, that this build is the fixed one',
-       fixed)
-
-    -- A pma-voice that has not written the bag yet must not be accused of
-    -- anything. This is the state every healthy client is in for its first
-    -- second, so getting it wrong would make the check useless by making it
-    -- constant.
-    pmaBag = {}
-    voiceApply('nearby', nil, nil, 1)
-    ok(gen() == 'pending',
-       'an uninitialised bag is pending, not legacy', tostring(gen()))
-    logged = {}
-    BR.Loop.step(BR.Loop.SLOW)
-    ok(table.concat(logged, '\n'):find('#165') == nil,
-       'and nothing is printed while the answer is still pending',
-       table.concat(logged, '\n'))
-
-    -- Left in the fixed state for everything after this block.
-    pmaBag = { voiceIntent = 'speech', assignedChannel = 12 }
+    -- THE KEY NAME IS pma-voice's OWN CONVAR, so a server that rebinds the
+    -- default is described correctly rather than confidently wrongly.
+    convars = { voice_defaultRadio = 'CAPITAL' }
+    local rebound = statusFor(BR.VoiceMode.SQUAD, 30703, 3)
+    ok(type(rebound.headline) == 'string'
+       and rebound.headline:find('Caps Lock') ~= nil,
+       'the key named is read out of voice_defaultRadio, not hard-coded',
+       tostring(rebound.headline))
     convars = {}
+
+    -- A SQUAD OF ONE gets its own row: the channel exists, nobody else is on
+    -- it, and "hold the key" would be advice that produces nothing.
+    local alone = statusFor(BR.VoiceMode.SQUAD, 30703, 0)
+    ok(alone.code ~= radio.code,
+       'a radio with nobody else on it is a different state from a live one',
+       tostring(alone.code))
+
+    -- AND NOW THE SURFACES, which is the half that failed. All three derive
+    -- from the function above; the point of asserting them separately is that
+    -- a surface that stops asking is a surface that goes quietly stale, and
+    -- this file has shipped exactly that twice.
+    nobodyElse()
+    standAt(0, 0)
+    voiceApply(BR.VoiceMode.SQUAD, nil, nil, 1)
+
+    -- THE HUD. The envelope the page draws from has to carry the WORDS, not
+    -- just a flag -- the page is a separate build, and a boolean it has to
+    -- write its own sentence for is a second place for the sentence to be
+    -- wrong.
+    local env = nil
+    for i = #events, 1, -1 do
+        local e = events[i]
+        if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.VOICE then
+            env = e.args[2]; break
+        end
+    end
+    ok(type(env) == 'table' and env.silent == true,
+       'the HUD envelope says this player is silent',
+       type(env) == 'table' and tostring(env.silent) or 'no voice envelope')
+    ok(type(env) == 'table' and type(env.headline) == 'string'
+       and env.headline:lower():find('no squad') ~= nil,
+       'and carries the sentence rather than leaving the page to invent one',
+       type(env) == 'table' and tostring(env.headline) or '-')
+
+    -- THE TOAST, because a HUD line at the bottom of a screen during a fight
+    -- is a line nobody reads. Edge-triggered: it fires when the verdict
+    -- CHANGES, which is when it is news.
+    local toasted = nil
+    for i = #events, 1, -1 do
+        local e = events[i]
+        if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.TOAST then
+            toasted = e.args[2]; break
+        end
+    end
+    ok(type(toasted) == 'table' and type(toasted.text) == 'string'
+       and toasted.text:lower():find('no squad') ~= nil,
+       'and the player is interrupted once, in words, rather than left to '
+           .. 'work silence out for themselves',
+       type(toasted) == 'table' and tostring(toasted.text) or 'no toast')
+
+    -- /brvoice, WHICH IS THE COMMAND A PLAYTESTER IS ACTUALLY TOLD TO RUN.
+    -- Three separate claims, each ANSWERED rather than left as two numbers to
+    -- compare: granted, joined, and whether they agree.
+    logged = {}
+    pcall(commands['brvoice'])
+    local out = table.concat(logged, '\n')
+    ok(out:find('radio granted') ~= nil and out:find('radio joined') ~= nil,
+       '/brvoice separates "the server gave me one" from "I am on it"', out)
+    ok(out:find('verdict') ~= nil and out:upper():find('SILENT') ~= nil,
+       'and leads with the verdict rather than making the reader derive it',
+       out)
+
+    -- AND WITH A REAL SQUAD, the same command has to name the key -- the fact
+    -- whose absence cost the round.
+    voiceApply(BR.VoiceMode.SQUAD, 30703, { 2, 3 }, 1)
+    logged = {}
+    pcall(commands['brvoice'])
+    local live = table.concat(logged, '\n')
+    ok(live:find('talk key') ~= nil and live:find('Talk over Radio') ~= nil,
+       'and names the radio push-to-talk when the radio is the mode', live)
+    ok(live:find('agree') ~= nil,
+       'and states outright whether granted and joined are the same channel',
+       live)
+
+    -- THE OTHER HALF, AND THE ONE THAT MAKES THIS A TEST: nearby says nothing.
+    -- A status line that is always up is a status line nobody reads.
+    voiceApply(BR.VoiceMode.NEARBY, nil, nil, 1)
+    local quiet = nil
+    for i = #events, 1, -1 do
+        local e = events[i]
+        if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.VOICE then
+            quiet = e.args[2]; break
+        end
+    end
+    ok(type(quiet) == 'table' and quiet.headline == nil
+       and quiet.silent == false,
+       'nearby carries no status line at all -- there is nothing wrong with it',
+       type(quiet) == 'table' and tostring(quiet.headline) or '-')
+
     logged = {}
 end
 

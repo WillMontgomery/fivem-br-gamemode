@@ -252,9 +252,16 @@ export default function Settings({
   // this stays a mirror rather than a second opinion.
   const nameLocked = useUi((s) => s.hud.state !== 'lobby')
   // SQUAD VOICE ONLY EXISTS IN SQUADS. In solo there is no squad room to
-  // route to, and an option that silently behaves as another one is a lie
-  // the settings screen would be telling.
+  // route to. The Squad button is still DRAWN in that case -- see the Voice
+  // section for why hiding it was worse than showing it disabled -- and this
+  // is what decides whether it can be pressed.
   const squadMode = useUi((s) => s.match.mode === 'squad')
+  // WHAT THE CURRENT MODE IS ACTUALLY DOING, in Lua's words rather than in a
+  // sentence this screen invents from a flag. Null on nearby, which is the
+  // common case and correctly shows nothing.
+  const voiceDetail = useUi((s) => s.voice.detail)
+  const voiceSilent = useUi((s) => s.voice.silent === true
+                                   && s.voice.chosen !== true)
   // The handover confirm. Local, not a store field: it is a question this
   // screen is asking, and nothing else in the interface needs to know it was
   // asked.
@@ -521,33 +528,56 @@ export default function Settings({
                   given you actually use -- so it can decline a room, never
                   enter one. See br_core/client/voice.lua.
 
-                  SQUAD IS ABSENT IN SOLO, because there is no squad room to
-                  route to and an option that silently behaves as another one
-                  is a lie the settings screen would be telling. */}
+                  SQUAD IS NO LONGER HIDDEN IN SOLO, AND HIDING IT WAS THE BUG.
+                  The reasoning was sound as far as it went -- there is no squad
+                  room to route to, and an option that silently behaves as
+                  another one is a lie. What it missed is that voiceMode is
+                  PERSISTED, in this machine's KVP. A player who picked Squad
+                  during a squad match and then queued a solo kept the setting
+                  and lost the button: three modes on screen, none of them
+                  highlighted, no explanation, and total silence in game. That
+                  is a worse lie than the one the filter was avoiding, and it is
+                  indistinguishable from the feature being broken -- which is
+                  exactly how it was reported (#157).
+
+                  So the button is always there, and when it cannot work it says
+                  so on its own face and refuses the click. */}
               <div className="flex flex-col gap-1.5">
                 <div className="micro-label">Who hears you</div>
                 <div className="flex gap-1.5">
-                  {VOICE_MODES.filter((m) => m.id !== 'squad' || squadMode).map((m) => (
+                  {VOICE_MODES.map((m) => {
+                    const dead = m.id === 'squad' && !squadMode
+                    const on = draft.voiceMode === m.id
+                    return (
                     <button
                       key={m.id}
                       type="button"
+                      disabled={dead}
                       className={`btn plate px-3 py-2 text-left flex-1${
-                        draft.voiceMode === m.id ? ' is-active' : ''}`}
+                        on ? ' is-active' : ''}`}
                       style={{
-                        ['--edgec' as string]: draft.voiceMode === m.id
+                        ['--edgec' as string]: on
                           ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.16)',
-                        ['--plate-fill' as string]: draft.voiceMode === m.id
+                        ['--plate-fill' as string]: on
                           ? 'rgba(12,58,72,0.94)' : 'rgba(24,28,40,0.92)',
                         ['--cut-max' as string]: '0.4rem',
+                        // Dimmed rather than removed. The player has to be able
+                        // to see that the mode exists and is not available,
+                        // which is the whole point of not hiding it.
+                        opacity: dead ? 0.45 : undefined,
+                        cursor: dead ? 'not-allowed' : undefined,
                       }}
-                      onPointerEnter={() => play('ui.hover')}
-                      onClick={() => { play('ui.select'); set('voiceMode', m.id) }}
+                      onPointerEnter={() => !dead && play('ui.hover')}
+                      onClick={() => {
+                        if (dead) return
+                        play('ui.select'); set('voiceMode', m.id)
+                      }}
                     >
                       <span
                         className="block text-[0.9rem] ts"
                         style={{
                           ['--fs' as string]: '0.9rem',
-                          color: draft.voiceMode === m.id
+                          color: on
                             ? 'var(--color-royale-accent)' : '#ffffff',
                         }}
                       >
@@ -559,11 +589,43 @@ export default function Settings({
                         className="body-text block"
                         style={{ ['--fs' as string]: '0.72rem' }}
                       >
-                        {m.sub}
+                        {dead ? 'No squad in this match' : m.sub}
                       </span>
                     </button>
-                  ))}
+                    )
+                  })}
                 </div>
+
+                {/* AND THE PART THE GAME NEVER SAID OUT LOUD. Two different
+                    facts, both of which produced "squad voice is broken":
+
+                      the mode is on and there is no squad -- total silence, by
+                      design, and identical to a fault;
+
+                      the mode is on and working -- and it is a RADIO, with its
+                      own push-to-talk. The ordinary voice key carries
+                      proximity, which squad mode turns off, so pressing it
+                      does nothing at all.
+
+                    THE SENTENCE IS LUA'S. It arrives on the voice envelope from
+                    BR.Voice.statusFor, next to the code that decides which
+                    state we are in, so there is one place the wording lives.
+                    Composing it here from `status` would be a second place for
+                    it to be wrong, and two representations of one fact drifting
+                    apart is this project's signature failure. */}
+                {voiceDetail && (
+                  <div
+                    className="body-text"
+                    style={{
+                      ['--fs' as string]: '0.76rem',
+                      color: voiceSilent
+                        ? 'var(--color-danger)'
+                        : undefined,
+                    }}
+                  >
+                    {voiceDetail}
+                  </div>
+                )}
               </div>
 
               {/* NO VOICE VOLUME SLIDER, and the reason is stronger than "it

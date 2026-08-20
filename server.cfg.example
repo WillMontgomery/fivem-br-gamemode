@@ -95,6 +95,50 @@ ensure pma-voice
 #   mapmanager      -- nothing to load; we use the vanilla map as-is
 
 # ---------------------------------------------------------------------------
+# TUNABLES -- THE DEV/PUBLIC SPLIT, AND THE LINE THAT MUST STAY ABOVE `ensure`.
+#
+# tunables.cfg is a small file of `set br_*` lines holding the handful of
+# values a dev server wants different from the public one: squad size, warmup
+# length, the summary screen, autofill, bleed-out. It is gitignored, per host,
+# and copied from one of two tracked examples in the repo root:
+#
+#     cp tunables.dev.cfg.example    tunables.cfg     # dev box
+#     cp tunables.public.cfg.example tunables.cfg     # public box
+#
+# Swapping which one you copied and restarting is the whole feature. Nothing
+# else in this file changes between the two servers.
+#
+# THIS LINE MUST STAY ABOVE THE `ensure br_*` BLOCK BELOW, AND THE FAILURE IF
+# IT DOES NOT IS SILENT. The gamemode reads these convars once, while
+# br_lib/config/*.lua loads -- and br_core/server/match.lua copies two of them
+# (warmupSeconds, endedSeconds) into its own table at that same instant. A
+# convar set AFTER the resources have started is set, shows up in the admin
+# console's config report, and changes nothing whatsoever about the game.
+#
+# HOW YOU FIND OUT: br_core prints a `tunables` block on start, one line per
+# setting, saying for each whether the live value came from a convar or from
+# the default in br_lib/config/match.lua. If you set something and that block
+# says "default", this exec line is in the wrong place. br_core also re-reads
+# the convars ten seconds after start and prints a loud warning if any of them
+# appeared in the meantime, which is exactly what an exec below this block
+# looks like.
+#
+# A MISSING OR EMPTY tunables.cfg IS HARMLESS. Every setting falls back to the
+# committed default; FXServer says once that it could not exec the file and
+# carries on. Leaving this line out entirely is also fine -- it is what a
+# public server that never wants to think about this looks like.
+#
+# A BAD VALUE IS NOT HARMLESS, ON PURPOSE. `set br_maxSquadSize two` stops the
+# server at boot with a banner naming the setting, what you typed and what is
+# allowed, rather than starting a server with a squad size of nothing.
+#
+# Unlike everything under resources/, this file is NOT deployed by
+# tools/deploy.sh -- see the CONVARS note further down. tunables.cfg reaches
+# the box only when a human copies it there.
+# ---------------------------------------------------------------------------
+exec "tunables.cfg"
+
+# ---------------------------------------------------------------------------
 # Gamemode
 #
 # ORDER MATTERS.
@@ -258,15 +302,17 @@ ensure br_ringmaster     # optional -- the admin console's game-side half
 # and not the second is never removed -- an unlimited-range listen on players
 # in other matches, for the rest of the session.
 #
-# WHAT THIS BLOCK USED TO CLAIM AND SHOULD NOT HAVE. It said this convar was
-# where #165's
+# WHAT THIS BLOCK USED TO CLAIM AND SHOULD NOT HAVE, TWICE OVER. It said this
+# convar was where #165's
 #     MUMBLE_ADD_VOICE_CHANNEL_LISTEN: Tried to call native on a channel that
 #     didn't exist
-# came from. It is where SOME of it came from: pma-voice v7 reaches that native
-# from three places, two of them inside the spectator path this convar closes.
-# The third is in addNearbyPlayers() and takes no convar at all -- that one is
-# the version, and it is why the pin above moved. Setting this convar is still
-# required, and on its own it is not enough on v7.0.0.
+# came from, and then that the remainder was pma-voice's version. Neither was
+# right. THE WARNING WAS vMENU'S OWN VOICE CHAT (#185) -- a second voice
+# implementation, on by default, that ran alongside pma-voice through the whole
+# of #150, #157 and #165 while nobody had enumerated what else on this box
+# touches voice. Turn vMenu's voice off; the console is clean with it off.
+# Setting this convar is still required, for the leak described above and not
+# for any warning.
 # setr voice_disableAutomaticListenerOnCamera 1
 #
 # REQUIRED (2) -- turn pma-voice's own overlay off.
@@ -296,6 +342,57 @@ ensure br_ringmaster     # optional -- the admin console's game-side half
 # this is the belt to that braces, and it also removes the keybind from the
 # player's key list so nobody goes looking for it.
 setr voice_enableProximityCycle 0
+#
+# REQUIRED (3) -- no hold-a-radio animation while squadmates talk.
+#
+# pma-voice's radio push-to-talk plays 'random@arrests'/'generic_radio_enter'
+# on the talker's ped for as long as the key is held. That is the right default
+# for a roleplay server and wrong twice here: it re-poses a player who is
+# aiming a rifle, and it is a visible tell to every enemy who can see them that
+# they are on comms. It is purely cosmetic -- no audio goes with it.
+# br_core sets this; it is here so you know it exists.
+# setr voice_enableRadioAnim 0
+#
+# ============================================================================
+# SQUAD VOICE IS A RADIO, AND A RADIO HAS ITS OWN KEY. READ THIS BEFORE
+# REPORTING THAT SQUAD VOICE DOES NOT WORK.
+#
+# The gamemode's `squad` voice mode IS a pma-voice radio channel, assigned by
+# br_core/server/voice.lua from matchId and squadId. pma-voice transmits on a
+# radio ONLY while its own push-to-talk is held:
+#
+#     +radiotalk, "Talk over Radio", default LEFT ALT
+#     (pma-voice client/module/radio.lua, RegisterKeyMapping)
+#
+# The ordinary voice key carries PROXIMITY, and squad mode turns proximity off,
+# so in squad mode the ordinary key carries nothing at all. A squad pressing it
+# hears silence in both directions with every channel number correct. That is
+# what "squads don't work" turned out to be (#157). Players are now told, on
+# the HUD and on the settings screen; this note is for whoever runs the box.
+#
+# DO NOT SET voice_enableRadios 0 AND DO NOT NEUTRALISE THAT KEYBIND. The key
+# is not a player-facing extra we happen to inherit -- it is the only thing
+# that ever puts a squadmate in the Mumble voice target. Suppressing it makes
+# squad voice silent by construction.
+#
+# voice_defaultRadio changes WHICH key it is. It sets the DEFAULT binding only:
+# a player who has already rebound it keeps their own, and br_core reads this
+# convar so /brvoice and the settings screen name whatever you put here.
+# setr voice_defaultRadio LMENU
+#
+# ============================================================================
+# AND ENUMERATE WHAT ELSE ON THIS BOX DOES VOICE. THIS IS #185.
+#
+# vMenu ships its own voice chat, ON BY DEFAULT, and it ran alongside pma-voice
+# for the whole of #150, #157 and #165. Every measurement taken in that time
+# describes the pair. TURN vMENU'S VOICE OFF and leave it off.
+#
+# br_core now reports this itself: it names any other started resource it
+# recognises as a voice implementation, in the server console at start and on
+# the `others` line of `brvoice`. If a fourth one turns up, add it to
+# VOICE_SUSPECTS in br_core/server/voice.lua rather than finding out in a
+# playtest.
+# ============================================================================
 #
 # OPTIONAL -- native audio playback. STILL RECOMMENDED, STILL SECOND.
 #

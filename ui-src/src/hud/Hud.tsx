@@ -12,6 +12,7 @@ import DbnoOverlay from './DbnoOverlay'
 import InventoryBar from './InventoryBar'
 import HitFeedback from './HitFeedback'
 import TalkingBar from './TalkingBar'
+import VoiceNotice from './VoiceNotice'
 
 /**
  * WHERE THE SQUAD PANEL ENDS, for anything that has to sit below it.
@@ -205,6 +206,10 @@ export default function Hud({ visible }: { visible: boolean }) {
             boxes take over, and this is not one of them. Squad comms during
             the drop is exactly when knowing who is talking matters. */}
         <TalkingBar />
+
+        {/* AND, JUST ABOVE IT, WHY YOU MIGHT BE HEARING NONE OF THEM. Renders
+            nothing on nearby, which is almost always -- see VoiceNotice. */}
+        <VoiceNotice />
 
         {dbno.downed && <DbnoOverlay dbno={dbno} />}
 

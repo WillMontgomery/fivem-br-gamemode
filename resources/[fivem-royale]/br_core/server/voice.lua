@@ -287,12 +287,16 @@ end
 --     spends forty lines arguing for, so this convar is load-bearing HERE, not
 --     just on the client.
 --
---     IT IS NOT, HOWEVER, THE WHOLE OF #165, and this comment used to say it
---     was. Setting it closed two of pma-voice's three MumbleAddVoiceChannel-
---     Listen sites and the warnings carried on, because the third one is in
---     addNearbyPlayers() and takes no convar at all. That one is a VERSION
---     problem -- see the generation check further down, and the long block at
---     the top of client/voice.lua.
+--     IT WAS NEVER THE WHOLE OF #165, and two versions of this comment have now
+--     been wrong about what the rest was. The MumbleAddVoiceChannelListen spam
+--     that #165 was opened for was vMenu's own voice chat, which ships enabled
+--     and which nobody had enumerated (#185); pma-voice v7.0.1+ resolves every
+--     channel before listening to it and cannot raise that warning. The
+--     version-detection code that used to sit further down this file existed
+--     only to blame pma-voice for it, and is gone. THIS CONVAR IS NOT PART OF
+--     THAT and stays: the unlimited-range listens it prevents are pma-voice's
+--     own setSpectatorMode, they are real in the version we run, and they leak
+--     across the drop whether or not anything was warning about them.
 --
 --   voice_enableUi 0
 --     pma-voice's own bottom-right overlay ("Custom [Range]", "[Call]",
@@ -311,6 +315,28 @@ local CONVARS = {
     { name = 'voice_enableUi', want = '0',
       cost = 'pma-voice draws its own talking/range overlay bottom-right, on '
           .. 'top of the one br_ui draws' },
+    -- THE MECHANISM, NOT THE COSTUME. This is the only pma-voice radio control
+    -- we are able to turn off without turning the radio off, and it is worth
+    -- knowing exactly which is which.
+    --
+    -- The radio ANIMATION is cosmetic: +radiotalk does TaskPlayAnim(ped,
+    -- 'random@arrests', 'generic_radio_enter') on the talker for as long as
+    -- the key is held. That is a fine default for a roleplay server and it is
+    -- wrong here twice over -- it re-poses a player who is aiming a rifle, and
+    -- it is a visible tell to every enemy in sight that this person is on
+    -- comms. Nothing about audio goes with it.
+    --
+    -- WHAT WE DELIBERATELY DO NOT TOUCH, because it would take squad voice
+    -- with it: voice_enableRadios (0 makes setPlayerRadio a no-op on both
+    -- halves) and the +radiotalk KEY itself. The key is not a player-facing
+    -- extra we happen to inherit -- it is the ONLY thing that ever puts a
+    -- squadmate in the Mumble voice target (pma-voice client/module/radio.lua,
+    -- addVoiceTargets on press, MumbleClearVoiceTargetPlayers on release).
+    -- Suppress it and squad voice is silent by construction. See #157.
+    { name = 'voice_enableRadioAnim', want = '0',
+      cost = 'every player using squad voice visibly plays a hold-a-radio '
+          .. 'animation while they talk -- through aiming, and in full view '
+          .. 'of anyone watching them' },
 }
 
 --- Put the convars in force, or say why they are not. Idempotent.
@@ -335,95 +361,97 @@ local function applyConvars()
     end
 end
 
--- --------------------------------------- which pma-voice is on this box ---
+-- --------------------------------------------- WHO ELSE IS DOING VOICE HERE ---
 --
--- ROUND THREE OF #165 WAS NOT A CONVAR. It was the version.
+-- THE ASSERTION THIS PROJECT DID NOT HAVE, AND THE ONE THAT WOULD HAVE SAVED
+-- THREE ISSUES.
 --
--- pma-voice v7.0.0's proximity loop listens to a Mumble channel it has not
--- joined yet, unconditionally, five times a second, from the moment a client
--- connects -- client/init/proximity.lua, MumbleAddVoiceChannelListen(player-
--- ServerId), above everything br_core can influence. That is the
--- "MUMBLE_ADD_VOICE_CHANNEL_LISTEN: Tried to call native on a channel that
--- didn't exist" spam in the playtest report, and no convar reaches it. Upstream
--- fixed it after v7.0.0: v7.0.1-rc2 and v7.0.2-rc3 gate that loop on an
--- isInitialized flag, resolve the channel through MumbleGetVoiceChannelFrom-
--- ServerId first, and hand each client an explicit assignedChannel.
+-- #185: vMenu ships its own voice chat, enabled by default, and it ran
+-- alongside pma-voice for the entire life of #150, #157 and #165. Every
+-- measurement taken in that time describes the COMBINATION. The audit that
+-- eventually proved our own resources were clean was run over br_* only -- it
+-- answered "are we doing this" and never "who is doing this", which is a
+-- different question and the only one that mattered.
 --
--- SO THE CHECK IS FOR THAT LAST ONE. pma-voice's own server half sets
--- `assignedChannel` on every player's state bag from v7.0.1-rc2 onwards, and
--- `voiceIntent` on every version. Two keys, because one cannot distinguish an
--- OLD pma-voice from one that simply has not reached this player yet, and a
--- diagnostic that cries wolf on a healthy box gets ignored on a sick one.
+-- IT KEEPS HAPPENING. Three times in one day: vMenu's voice chat, pma-voice's
+-- proximity cycle key, pma-voice's radio controls. The shape is always the
+-- same -- two implementations of one subsystem with nothing anywhere asserting
+-- that only one is live -- and the reason it keeps happening is that finding
+-- out has always required somebody to think of looking.
 --
--- WHY THE SERVER SAYS IT AS WELL AS THE CLIENT: the operator lives here, the
--- fix is a git clone on this box, and #165 has now twice been "fixed" in a
--- document nobody on the box reads.
-local VERSION_KEYS = { init = 'voiceIntent', channel = 'assignedChannel' }
+-- SO THE BOX SAYS WHAT IS ON IT, AT BOOT, WITHOUT BEING ASKED. This is not
+-- clever and it does not need to be: a name match over the started resource
+-- list would have printed "vMenu" on day one of #150, and one line in a
+-- console beats a week of playtests. It is deliberately a REPORT rather than a
+-- refusal -- br_core has no business stopping somebody's server because it
+-- recognised a resource name -- and it names what it found rather than
+-- claiming a conflict, because "this also does voice" and "this is breaking
+-- voice" are different claims and merging them is how this project got here.
+--
+-- ADDING A NAME IS THE WHOLE MAINTENANCE STORY. If a fourth voice resource
+-- turns up, it goes in this table.
+local VOICE_SUSPECTS = {
+    ['vMenu'] = 'ships its own voice chat, ON BY DEFAULT -- this is #185. '
+             .. 'Turn it off in vMenu\'s permissions/config',
+    ['mumble-voip'] = 'a second Mumble voice implementation',
+    ['saltychat'] = 'a second voice implementation',
+    ['tokovoip_script'] = 'a second voice implementation',
+    ['pma-voice'] = nil,   -- ours; named here so the intent is explicit
+}
 
---- @param up boolean      is pma-voice running
---- @param inited boolean  has pma-voice initialised this player's state bag
---- @param assigned any    assignedChannel, or nil
---- @return string  'absent' | 'pending' | 'legacy' | 'current'
-function BR.Voice.generationOf(up, inited, assigned)
-    if not up then return 'absent' end
-    if assigned ~= nil then return 'current' end
-    if not inited then return 'pending' end
-    return 'legacy'
-end
-
---- The verdict as read off one connected player.
+--- Every started resource that is known to touch voice, ours excluded.
 ---
---- GUARDED ON `Player`, which is an FXServer global the unit suites do not
---- have. This function is on the 1 Hz sweep's path and a nil global here would
---- take the roster's own bookkeeping down with it -- the same reason present()
---- is guarded twenty lines above.
---- @param src integer
---- @return string
-function BR.Voice.generation(src)
-    if not present() then return 'absent' end
-    if not Player then return 'pending' end
-    -- A read that raises answers 'pending', never 'legacy': "we could not ask"
-    -- and "the answer is the bad one" are different claims and this file's
-    -- whole history is them being merged.
-    local ok, gen = pcall(function()
-        local st = Player(src).state
-        return BR.Voice.generationOf(true,
-            st[VERSION_KEYS.init] ~= nil, st[VERSION_KEYS.channel])
-    end)
-    if not ok or type(gen) ~= 'string' then return 'pending' end
-    return gen
+--- SPLIT OUT AND PURE-ISH so the report and /brvoice read the same answer, and
+--- so a name-matching rule can be tested without a running server.
+--- @return table array of { name, why }
+function BR.Voice.otherVoiceResources()
+    local out = {}
+    if not GetNumResources or not GetResourceByFindIndex then return out end
+    local n = GetNumResources()
+    for i = 0, (tonumber(n) or 0) - 1 do
+        local res = GetResourceByFindIndex(i)
+        if res and res ~= VOICE_RES and res ~= GetCurrentResourceName() then
+            local why = VOICE_SUSPECTS[res]
+            -- The name match is a SUPERSET of the table: anything calling
+            -- itself voice is worth naming even if nobody has met it before,
+            -- which is the half that catches the next one rather than the last.
+            if not why and res:lower():find('voice') then
+                why = 'name suggests a voice resource'
+            end
+            if why and GetResourceState and GetResourceState(res) == 'started' then
+                out[#out + 1] = { name = res, why = why }
+            end
+        end
+    end
+    return out
 end
 
---- SAID ONCE PER BOX, and only once there is something to say.
-local versionSaid = false
-local function reportGeneration(src)
-    if versionSaid then return end
-    local gen = BR.Voice.generation(src)
-    if gen == 'pending' or gen == 'absent' then return end
-    versionSaid = true
-    if gen ~= 'legacy' then return end
-    print('[br_core] VOICE: THE INSTALLED pma-voice IS OLDER THAN v7.0.1-rc2.')
-    print('[br_core] VOICE: This is #165. Every client on this server is being')
-    print('[br_core] VOICE: spammed with MUMBLE_ADD_VOICE_CHANNEL_LISTEN from')
-    print('[br_core] VOICE: the moment it connects, and no convar fixes it --')
-    print('[br_core] VOICE: the call that raises it takes none. Upgrade:')
-    print('[br_core] VOICE:   cd <server-data>/resources/[voice]')
-    print('[br_core] VOICE:   rm -rf pma-voice && git clone --branch v7.0.2-rc3 \\')
-    print('[br_core] VOICE:     --depth 1 https://github.com/AvarianKnight/pma-voice.git')
-    print('[br_core] VOICE: then restart. See server.cfg.example, Voice section.')
+--- Said once, at boot, on the console the operator actually reads.
+local function reportOtherVoice()
+    local others = BR.Voice.otherVoiceResources()
+    if #others == 0 then return end
+    print('[br_core] VOICE: ANOTHER RESOURCE ON THIS BOX ALSO DOES VOICE.')
+    for _, o in ipairs(others) do
+        print(('[br_core] VOICE:   %s -- %s'):format(o.name, o.why))
+    end
+    print('[br_core] VOICE: br_core drives pma-voice and nothing else. Two')
+    print('[br_core] VOICE: voice implementations running at once is #185, and')
+    print('[br_core] VOICE: every voice measurement taken while both are up')
+    print('[br_core] VOICE: describes the pair rather than either one.')
 end
+
 
 AddEventHandler('onResourceStart', function(name)
-    if name == GetCurrentResourceName() then applyConvars() end
+    if name == GetCurrentResourceName() then
+        applyConvars()
+        reportOtherVoice()
+    end
     if name == VOICE_RES then
         -- pma-voice came back holding nothing of ours. Every guard has to be
         -- re-registered, and forgetting each player's cached assignment is what
         -- makes the sweep below re-push -- and therefore re-guard -- within the
         -- second.
         checked = {}
-        -- A restart of pma-voice is how the upgrade for #165 actually lands on
-        -- a live box, so the version verdict is taken again rather than kept.
-        versionSaid = false
         BR.Roster.each(
             function(e) return e.state ~= BR.PlayerState.LEFT end,
             function(src) BR.Voice.forget(src) end)
@@ -542,17 +570,9 @@ end
 -- radio. It sends nothing when nothing has changed.
 BR.Sched.every(1000, 'voice.sweep', function()
     if V.enabled == false then return end
-    -- The version verdict rides along here rather than on a timer of its own:
-    -- it needs one connected player and it needs pma-voice to have got to them,
-    -- and this is already the loop that runs once a second over exactly those.
-    -- It costs one boolean test per sweep once it has answered.
-    local probed = false
     BR.Roster.each(
         function(e) return e.state ~= BR.PlayerState.LEFT end,
-        function(src)
-            if not probed then probed = true; reportGeneration(src) end
-            BR.Voice.push(src)
-        end)
+        function(src) BR.Voice.push(src) end)
 end)
 
 -- ------------------------------------------------------------------ readout ---
@@ -569,26 +589,7 @@ RegisterCommand('brvoice', function()
         and (VOICE_RES .. ' -- running')
         or (VOICE_RES .. ' IS NOT RUNNING. There is no voice chat on this '
             .. 'server at all.')))
-    -- THE VERSION, SECOND, because a correctly configured pma-voice that is
-    -- simply too old is the shape #165 arrived in on its THIRD report, and it
-    -- is invisible everywhere else on this readout. Taken off the first player
-    -- in the roster: pma-voice's state bag is the only thing that carries it.
-    do
-        local gen, from = 'pending', nil
-        BR.Roster.each(
-            function(e) return e.state ~= BR.PlayerState.LEFT end,
-            function(src) if not from then from, gen = src, BR.Voice.generation(src) end end)
-        print(('  version      %s'):format(
-            from == nil and 'nobody connected -- join and run this again'
-            or ({
-                current = 'v7.0.1-rc2 or later -- has the #165 fix',
-                legacy  = 'PRE-v7.0.1-rc2. THIS IS #165 -- see the server '
-                       .. 'console at start for the upgrade command',
-                absent  = 'no pma-voice',
-                pending = 'pma-voice has not initialised that player yet',
-            })[gen] or gen))
-    end
-    -- THE CONVARS, THIRD. A pma-voice that is running and misconfigured is the
+    -- THE CONVARS, SECOND. A pma-voice that is running and misconfigured is the
     -- shape #165 arrived in the first two times, and nothing else on this
     -- readout can show it.
     if GetConvar then
@@ -597,6 +598,21 @@ RegisterCommand('brvoice', function()
             print(('  convar       %s = %s%s'):format(c.name,
                 cur == '' and '(unset)' or cur,
                 cur == c.want and '' or ('   <-- MUST BE ' .. c.want)))
+        end
+    end
+
+    -- WHO ELSE IS DOING VOICE, THIRD, because it is the question nobody asked
+    -- for three issues and it is invisible from every other line here.
+    do
+        local others = BR.Voice.otherVoiceResources()
+        if #others == 0 then
+            print('  others       none -- pma-voice is the only voice resource '
+                .. 'started')
+        else
+            for _, o in ipairs(others) do
+                print(('  others       %s IS ALSO RUNNING -- %s'):format(
+                    o.name, o.why))
+            end
         end
     end
 
@@ -639,4 +655,18 @@ RegisterCommand('brvoice', function()
     print('  can confirm or deny it. Run /brvoice in a player\'s F8 console.')
     print('  A squad player showing "radio none" is a BUG; a solo showing it is')
     print('  correct. Two squads that must not hear each other differ on radio.')
+    print('')
+    -- AND THE THING A CORRECT COLUMN ON THIS PAGE STILL DOES NOT BUY YOU. #157
+    -- round seven was every number here being right while no audio moved,
+    -- because a granted radio is not a radio anybody is TALKING on: pma-voice's
+    -- radio has its own push-to-talk and the ordinary voice key does not reach
+    -- it. Nothing on this server can see whether a player is holding it, so it
+    -- is said here rather than measured.
+    print('  A RADIO IS NOT A MICROPHONE. pma-voice\'s radio transmits only')
+    print('  while its own key is HELD -- "Talk over Radio", +radiotalk,')
+    print('  default Left Alt. The ordinary voice key carries proximity, which')
+    print('  squad mode turns off, so a squad pressing it hears nothing in')
+    print('  either direction with every column above correct. That is what')
+    print('  "squads don\'t work" turned out to be. This server cannot see the')
+    print('  key; /brvoice on the CLIENT names it.')
 end, true)
