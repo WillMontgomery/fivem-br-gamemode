@@ -267,8 +267,37 @@ AddEventHandler('onResourceStart', function(res)
     --
     -- So: ten seconds after start, read the convars again. Anything now set
     -- that was not set at load arrived late, and late means never.
+    --
+    -- BUT LATENESS IS A CONCLUSION, NOT AN OBSERVATION, and this block used to
+    -- assert it without checking. "The convar is set and it did not apply" has
+    -- a second cause -- br_lib/config/overrides.lua never read a convar at all,
+    -- because its server-state guard did not recognise the server -- and the
+    -- two are indistinguishable from the symptom. Blaming the ordering for both
+    -- is not a harmless guess: it names a file the operator must then re-audit,
+    -- and it is the wrong file, so the round ends with server.cfg proven
+    -- correct and the bug untouched. That is exactly how this shipped. So the
+    -- flag is asked FIRST, and only when the convars really were read does the
+    -- ordering explanation get to speak.
     if type(SetTimeout) == 'function' then
         SetTimeout(10000, function()
+            if not BR.Config.Overrides.consulted then
+                print('[br_core] ')
+                print('[br_core] ############################################################')
+                print('[br_core]   THE TUNABLE CONVARS WERE NEVER READ ON THIS SERVER.')
+                print('[br_core] ')
+                print('[br_core]   br_lib/config/overrides.lua applies overrides only in the')
+                print('[br_core]   server Lua state, and it did not recognise this one -- so')
+                print('[br_core]   every setting is on its committed default no matter what')
+                print('[br_core]   any .cfg says, and `brconfig` cannot tell you otherwise.')
+                print('[br_core] ')
+                print('[br_core]   THIS IS OUR BUG, NOT YOUR CONFIGURATION. Do not move the')
+                print('[br_core]   exec line and do not edit tunables.cfg; neither is the')
+                print('[br_core]   cause. Report this banner verbatim.')
+                print('[br_core] ############################################################')
+                print('[br_core] ')
+                return
+            end
+
             local late = {}
             for _, spec in ipairs(BR.Config.Overrides.SPEC) do
                 local raw = GetConvar(spec.convar, '')

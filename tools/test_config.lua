@@ -478,16 +478,30 @@ do
     -- The path that actually runs on a server, exercised end to end: the file
     -- is loaded exactly as br_core's manifest loads it, with stubbed natives.
 
-    local function serverEnv(convars, sink)
+    --- A Lua state whose IsDuplicityVersion answers `dup`.
+    ---
+    --- THE SHAPE IS A PARAMETER BECAUSE HARDCODING IT IS THE BUG THIS SUITE
+    --- MISSED. `IsDuplicityVersion` is declared BOOL, and a FiveM native
+    --- declared BOOL may hand Lua a number instead; the old stub returned a
+    --- strict Lua `true`, which is one of the shapes the runtime produces and
+    --- not the one the live box produced. The suite therefore agreed with the
+    --- code, passed 143/143, and the feature was dead on the server -- the same
+    --- way test_client.lua's `keys[vk] == true` stub once agreed with a broken
+    --- keybind layer while a single press registered 545 times.
+    local function stateEnv(dup, convars, sink)
         return {
-            IsDuplicityVersion = function() return true end,
+            IsDuplicityVersion = function() return dup end,
             GetConvar = function(name, default)
-                local v = convars[name]
+                local v = (convars or {})[name]
                 if v == nil then return default end
                 return v
             end,
             print = function(s) if sink then sink[#sink + 1] = tostring(s) end end,
         }
+    end
+
+    local function serverEnv(convars, sink)
+        return stateEnv(true, convars, sink)
     end
 
     local env, err = load(serverEnv({ br_maxSquadSize = '2' }))
@@ -525,6 +539,81 @@ do
     local benv, berr = load(nil)
     ok(berr == nil, 'a bare Lua state with no natives loads', berr)
     ok(benv.BR.Config.Match.maxSquadSize == 4, 'and gets the committed default')
+
+    -- ------------------------------------------------------------------
+    -- WHAT A `BOOL` NATIVE IS ALLOWED TO ANSWER.
+    --
+    -- This is the seam the whole feature died in. The state guard used to be
+    -- `dup == true`; the live server's IsDuplicityVersion answered `1`; the
+    -- guard said "not a server"; nothing read a convar; and `brconfig`
+    -- reported six settings unset while the convar was demonstrably set in the
+    -- FXServer console.
+    --
+    -- Both halves below are load-bearing and they pull in OPPOSITE directions,
+    -- which is why neither alone is enough:
+    --
+    --   the truthy half fails on the shipped `== true` guard;
+    --   the falsy half fails on the tempting one-line fix, `dup and true or
+    --   false`, because IN LUA 0 IS TRUTHY -- that spelling would read a
+    --   CLIENT answering 0 as the server and apply server overrides in the
+    --   client's state, which is a worse bug wearing the same clothes.
+    --
+    -- A fix has to pass both rows or it has only moved the fault.
+    -- ------------------------------------------------------------------
+
+    for _, shape in ipairs({ { what = 'true', v = true }, { what = '1', v = 1 } }) do
+        local senv, serr = load(stateEnv(shape.v, { br_maxSquadSize = '2' }))
+        ok(serr == nil,
+            ('a server whose IsDuplicityVersion answers %s loads'):format(shape.what), serr)
+        ok(senv.BR.Config.Match.maxSquadSize == 2,
+            ('and the override lands when the native answers %s'):format(shape.what),
+            tostring(senv.BR.Config.Match.maxSquadSize))
+        ok(senv.BR.Config.Overrides.consulted == true,
+            ('and the state records that it read the convars (%s)'):format(shape.what),
+            tostring(senv.BR.Config.Overrides.consulted))
+    end
+
+    -- `nil` is the native present but answering nothing; the absent-native case
+    -- is the bare state above. All three must keep the committed default even
+    -- though the convar is right there to be read.
+    for _, shape in ipairs({ { what = 'false', v = false }, { what = '0', v = 0 },
+                             { what = 'nil' } }) do
+        local nenv, nerr = load(stateEnv(shape.v, { br_maxSquadSize = '2' }))
+        ok(nerr == nil,
+            ('a non-server state answering %s loads'):format(shape.what), nerr)
+        ok(nenv.BR.Config.Match.maxSquadSize == 4,
+            ('and refuses the convar it can plainly read when the native '
+             .. 'answers %s'):format(shape.what),
+            tostring(nenv.BR.Config.Match.maxSquadSize))
+        ok(nenv.BR.Config.Overrides.consulted == false,
+            ('and does not claim to have read anything (%s)'):format(shape.what),
+            tostring(nenv.BR.Config.Overrides.consulted))
+    end
+
+    -- ------------------------------------------------------------------
+    -- "NOT SET" IS A CLAIM ABOUT THE OPERATOR'S .cfg, AND ONLY A STATE THAT
+    -- ACTUALLY READ A CONVAR MAY MAKE IT.
+    --
+    -- The old report printed "br_maxSquadSize is not set" whether the convars
+    -- had been read and found empty or never read at all. On the live box it
+    -- printed the first while the truth was the second, so the one instrument
+    -- pointed at the operator's configuration and away from this file. The
+    -- report is the only thing anybody debugs this feature with; a report that
+    -- cannot tell the two apart is worse than no report.
+    -- ------------------------------------------------------------------
+
+    local unread = table.concat(benv.BR.Config.Overrides.report(), '\n')
+    ok(unread:find('not read', 1, true) ~= nil,
+        'a state that never read a convar says so', unread)
+    ok(unread:find('is not set', 1, true) == nil,
+        'and does NOT claim the operator left it unset -- it cannot know that',
+        unread)
+
+    local quiet = load(serverEnv({}))
+    local said  = table.concat(quiet.BR.Config.Overrides.report(), '\n')
+    ok(said:find('br_maxSquadSize is not set', 1, true) ~= nil,
+        'a server that read the convars and found none still names each one',
+        said)
 
     -- The failure. A bad value must stop the resource rather than start a
     -- server nobody asked for, and it must say so in words first.

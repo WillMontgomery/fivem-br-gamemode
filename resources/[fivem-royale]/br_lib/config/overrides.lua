@@ -453,6 +453,19 @@ end
 Ov.applied = {}
 Ov.errors  = {}
 
+--- Did anything in this Lua state ever ASK for the convars?
+---
+--- `applied` being empty has two completely unrelated causes -- "we read every
+--- convar and none were set" and "nothing in this state has ever read a
+--- convar" -- and until this flag existed, report() printed the first for
+--- both. That is not a wording nicety. One is a fact about the operator's
+--- .cfg; the other is a fact about our own code, and printing the wrong one is
+--- what sent a live server's owner to audit a server.cfg that was already
+--- correct while the actual fault sat in isServerState() at the bottom of this
+--- file. A report that cannot tell "not set" from "not read" is not
+--- observability, it is a second thing to debug.
+Ov.consulted = false
+
 --- Apply every override the reader can supply.
 ---
 --- `read(name)` returns the raw convar string, or nil / '' for "not set". BOTH
@@ -510,6 +523,9 @@ function Ov.apply(read)
         end
     end
 
+    -- Set even when nothing applied and even when everything was refused: the
+    -- claim is "a reader was asked", not "a reader produced something".
+    Ov.consulted = true
     Ov.applied, Ov.errors = applied, errors
     return applied, errors
 end
@@ -603,6 +619,15 @@ function Ov.report()
             n = n + 1
             lines[#lines + 1] = ('  %-22s %-26s %-8s <- %s (default %s)')
                 :format(spec.key, spec.note or '', show(live), spec.convar, show(hit.from))
+        elseif not Ov.consulted then
+            -- "NOT READ", NEVER "NOT SET". This state has not looked at a
+            -- single convar, so it knows nothing whatsoever about what the
+            -- operator typed, and must not report on it. On the client and in
+            -- a bare Lua state that is the correct and permanent answer; on a
+            -- server it means the load-time hook did not run, which is a fault
+            -- in this file and is what server/main.lua says out loud.
+            lines[#lines + 1] = ('  %-22s %-26s %-8s    default (convars not read in this state)')
+                :format(spec.key, spec.note or '', show(live))
         else
             lines[#lines + 1] = ('  %-22s %-26s %-8s    default (%s is not set)')
                 :format(spec.key, spec.note or '', show(live), spec.convar)
@@ -647,11 +672,41 @@ end
 -- ---------------------------------------------------------------------------
 
 --- Is this the server's Lua state?
+---
+--- `dup == true` IS THE BUG THIS FILE SHIPPED WITH, and it cost a live server
+--- every one of these settings at once. A FiveM native declared BOOL DOES NOT
+--- HAVE TO HAND LUA A BOOLEAN: on a build that answers with numbers,
+--- IsDuplicityVersion returns 1, `1 == true` is false, and the block below --
+--- the only thing in this file that ever reads a convar -- was skipped on the
+--- one Lua state it exists for. The convar was set, the exec line was above
+--- `ensure br_lib`, and `brconfig` still reported all six settings unset,
+--- because nothing had ever looked.
+---
+--- THIS CODEBASE ALREADY KNEW. client/natives.lua and client/dbno.lua compare
+--- `== 1 or == true` on the shape test, client/loading.lua does the same on
+--- DoesEntityExist, and client/keybinds.lua's truth() is this exact
+--- normalisation -- written after one key press registered 545 times (owner,
+--- #131) and a crate hold earned 0 of 1000ms (owner, #129). This file was
+--- written afterwards and repeated the mistake, so the normalisation is
+--- restated here rather than shared: config/*.lua loads into a bare Lua state
+--- with nothing else present, and cannot reach into br_core.
+---
+--- ZERO IS FALSE, AND THAT IS WHY THIS IS NOT `dup and true or false`. In Lua
+--- the number 0 is TRUTHY, so the tempting one-liner would read a CLIENT
+--- answering 0 as the server and apply the operator's overrides in the
+--- client's state -- giving the two sides different numbers for the same
+--- setting with nothing comparing them, which is the precise failure the
+--- server-only guard exists to prevent, and a worse bug than the one being
+--- fixed. Only nil, false and 0 are false here; every other answer is the
+--- server. That covers all four shapes this runtime is known to produce
+--- (true/false, 1/0, 1/false, 1/nil) without needing to know which one the box
+--- is running.
 --- @return boolean
 local function isServerState()
     if type(IsDuplicityVersion) ~= 'function' then return false end
     local ok, dup = pcall(IsDuplicityVersion)
-    return ok and dup == true
+    if not ok then return false end
+    return dup ~= nil and dup ~= false and dup ~= 0
 end
 
 if isServerState() and type(GetConvar) == 'function' then
