@@ -239,6 +239,62 @@ AddEventHandler('onResourceStart', function(res)
     print(('[br_core]   match length ~%.0f min planned')
         :format(BR.Config.Storm.TotalSeconds() / 60.0))
 
+    -- THE TUNABLES BLOCK, and it prints EVERY setting rather than only the
+    -- overridden ones.
+    --
+    -- Each of these values now has two places it could have been written down
+    -- -- br_lib/config/match.lua and whatever .cfg the server exec'd -- and the
+    -- only question anybody will ever ask about that is "which one am I
+    -- running". Printing the live number beside the source it came from answers
+    -- it in the console the operator is already looking at, without a round
+    -- trip through the admin console. See br_lib/config/overrides.lua.
+    local tune, overridden = BR.Config.Overrides.report()
+    print(('[br_core]   tunables     %d of %d set by convar')
+        :format(overridden, #BR.Config.Overrides.SPEC))
+    for _, l in ipairs(tune) do
+        print('[br_core]  ' .. l)
+    end
+
+    -- THE LATE-EXEC TRAP, made audible.
+    --
+    -- The overrides are read while br_lib/config/*.lua loads, so a server.cfg
+    -- whose `exec "tunables.cfg"` sits BELOW `ensure br_core` sets every convar
+    -- correctly and changes nothing at all: the config tables were already
+    -- built, and server/match.lua's DURATION table already holds copies of two
+    -- of the values. Everything downstream then looks right -- the convar is
+    -- set, the admin console reports it set -- while the game plays the
+    -- defaults, which is the most expensive shape a configuration bug has.
+    --
+    -- So: ten seconds after start, read the convars again. Anything now set
+    -- that was not set at load arrived late, and late means never.
+    if type(SetTimeout) == 'function' then
+        SetTimeout(10000, function()
+            local late = {}
+            for _, spec in ipairs(BR.Config.Overrides.SPEC) do
+                local raw = GetConvar(spec.convar, '')
+                if raw ~= '' and not BR.Config.Overrides.appliedFor(spec.key) then
+                    late[#late + 1] = ('%s = %s'):format(spec.convar, raw)
+                end
+            end
+            if #late == 0 then return end
+
+            print('[br_core] ')
+            print('[br_core] ############################################################')
+            print('[br_core]   TUNABLE CONVARS ARRIVED TOO LATE TO DO ANYTHING:')
+            for _, l in ipairs(late) do print('[br_core]     ' .. l) end
+            print('[br_core] ')
+            print('[br_core]   They are set, and the game is running the defaults.')
+            print('[br_core]   These are read once, while br_lib/config loads.')
+            print('[br_core] ')
+            print('[br_core]   In server.cfg, the line')
+            print('[br_core]       exec "tunables.cfg"')
+            print('[br_core]   must come ABOVE `ensure br_lib` and `ensure br_core`.')
+            print('[br_core]   Move it up and restart the server.')
+            print('[br_core] ############################################################')
+            print('[br_core] ')
+        end)
+    end
+
     if BR.Server.onesync == 'off' or BR.Server.onesync == '' then
         print('[br_core] ')
         print('[br_core] ############################################################')

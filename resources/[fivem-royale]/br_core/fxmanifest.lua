@@ -33,6 +33,18 @@ shared_scripts {
     -- you own, and the client has to resolve an equipped id into the natives
     -- that actually put it on you. Both sides need the same definitions.
     '@br_lib/config/market.lua',
+    -- THE CONVAR OVERRIDES, AND THIS LINE'S POSITION IS THE FEATURE.
+    --
+    -- It must come after every config/*.lua above (it edits their tables) and
+    -- before every file below and in server_scripts (several of which COPY
+    -- those values at load -- server/match.lua's DURATION table is built from
+    -- warmupSeconds and endedSeconds the moment it loads, so an override
+    -- arriving later would be read by nothing).
+    --
+    -- On the client and in a bare Lua state this file is inert; it only reads
+    -- convars on the server. tools/test_config.lua fails the build if any
+    -- manifest loads config/match.lua without this line after it.
+    '@br_lib/config/overrides.lua',
     -- BR.Xp. server/market.lua evaluates the curve to send the lobby a real
     -- level -- and without this it is nil, so every player was told they were
     -- level 1 with 0/1 XP regardless of what they had actually earned.

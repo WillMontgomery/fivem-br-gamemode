@@ -1,0 +1,107 @@
+## FiveM Royale -- DEV SERVER tunables
+##
+## Copy this file onto the game box as  tunables.cfg  next to server.cfg, and
+## make sure server.cfg has this line ABOVE its `ensure br_*` block:
+##
+##     exec "tunables.cfg"
+##
+## To turn this box back into a public one, copy tunables.public.cfg.example
+## over tunables.cfg instead and restart. The exec line in server.cfg never
+## changes; which server you have depends on which example was copied there.
+##
+## -------------------------------------------------------------------------
+## ORDER IS THE WHOLE POINT, AND GETTING IT WRONG FAILS SILENTLY.
+##
+## `exec` has to run BEFORE `ensure br_lib` / `ensure br_core`. The gamemode
+## reads these convars once, while its config files load, and some of the
+## values are copied into other tables at that same moment -- so a convar that
+## arrives after the resources have started is set, is visible to the admin
+## console, and changes nothing at all.
+##
+## HOW TO TELL: the server console prints a `tunables` block on start, one line
+## per setting, saying whether the live value came from a convar or from the
+## default. If you set something here and that block says "default", the exec
+## line is in the wrong place. br_core also re-reads the convars ten seconds
+## after start and prints a loud warning if they turned up late.
+##
+## -------------------------------------------------------------------------
+## RULES OF THIS FILE
+##
+##   * Every line is OPTIONAL. Delete or comment out anything you do not want
+##     and the gamemode uses the value in br_lib/config/match.lua, unchanged.
+##     An empty file, or no file at all, is a perfectly normal server.
+##   * A bad value STOPS THE SERVER at boot with a message naming the setting.
+##     It is never rounded, never clamped, and never quietly ignored.
+##   * `set`, not `setr`. These are read only by the server. Nothing here is
+##     sent to players, and nothing here should be.
+##   * Numbers are whole numbers. `2` is fine; `2.5`, `two` and `2 players`
+##     are all refused by name.
+## -------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Dev mode. NOT one of the tunables below -- it is an older switch, read by
+# br_core/server/main.lua -- but it belongs in this file because it is the
+# other half of "this is the dev box": it drops the minimum players needed to
+# start a match from 16 to 1, and unlocks the dev-only debug commands.
+# ---------------------------------------------------------------------------
+set br_devMode true
+
+# ---------------------------------------------------------------------------
+# SQUAD SIZE. 1..16, default 4.
+#
+# THIS IS THE ONE THAT MATTERS WITH THREE CLIENTS. At the default of 4 all
+# three land in the same squad, so there is no enemy on the map: cross-squad
+# friendly fire and the difference between "nearby" and "squad" voice cannot be
+# produced at all. At 2, three clients are two squads -- a pair and a solo --
+# and both cases are on screen.
+# ---------------------------------------------------------------------------
+set br_maxSquadSize 2
+
+# ---------------------------------------------------------------------------
+# LOBBY WARMUP, in seconds. 5..600, default 45.
+#
+# The biggest fixed cost in a test loop: 45 seconds of standing on the airstrip
+# before every single match.
+# ---------------------------------------------------------------------------
+set br_warmupSeconds 15
+
+# ---------------------------------------------------------------------------
+# SUMMARY SCREEN, in seconds. 8..300, default 20.
+#
+# How long the end-of-match summary sits there before everyone is returned to
+# the lobby. The lower bound is not 5: the server also uses this window to sweep
+# players home if their screen never reports back, and that deadline is 8
+# seconds. Ask for less and the server says so and stops.
+# ---------------------------------------------------------------------------
+set br_endedSeconds 10
+
+# ---------------------------------------------------------------------------
+# WAIT FOR A PARTYMATE, in seconds. 0..300, default 45.
+#
+# How long the queue holds a match open for the rest of somebody's party before
+# starting without them. 0 means "never wait" and is a legitimate setting.
+# ---------------------------------------------------------------------------
+set br_partyGraceSeconds 10
+
+# ---------------------------------------------------------------------------
+# AUTOFILL. true or false, default true.
+#
+# true   partial squads are topped up with solo queuers.
+# false  a squad is exactly the people who queued together -- which is how you
+#        get two one-player squads out of two clients.
+#
+# Left at the default here because with br_maxSquadSize 2 three clients already
+# split into two squads. Uncomment it when you want each client in a squad of
+# their own.
+# ---------------------------------------------------------------------------
+# set br_autofill false
+
+# ---------------------------------------------------------------------------
+# BLEED-OUT ON THE FIRST KNOCK, in seconds. 40..600, default 120.
+#
+# Two minutes is right for a real match and is a long time to sit on the floor
+# when what you are checking is the revive prompt. The lower bound is 40 rather
+# than 5 because the gamemode floors every knock at 40 seconds anyway; asking
+# for less would be silently ignored, so it is refused instead.
+# ---------------------------------------------------------------------------
+set br_dbnoBleedBase 45

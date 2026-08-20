@@ -25,7 +25,7 @@ it at `$LOCALAPPDATA/Programs/Lua/bin/`.
 | Stage | What it proves |
 |---|---|
 | **Syntax** | `luac -p` on every `.lua`. FiveM runs Lua 5.4 and so does this, so a pass means the resource will at least load. The floor, not the ceiling. |
-| **Unit tests** | 7 suites, ~2,700 assertions, over the pure shared modules, the server model and the client interaction layer. |
+| **Unit tests** | 8 suites, ~3,100 assertions, over the pure shared modules, the server model and the client interaction layer. |
 | **Scope gate** | Bans OneSync scope-limited natives from client gameplay code. |
 | **Weapon table** | Re-derives every weapon hash from its name. |
 | **POI siting** | Spacing, water, no-loot zones, distance to roads. |
@@ -48,13 +48,14 @@ quietly stops running is visible rather than merely green.
 
 | Suite | Assertions | Covers |
 |---|---|---|
-| `test_shared.lua` | 743 | The pure modules: RNG determinism, geometry, storm solving, loot generation, combat validation, descent classification, bus doors, the DBNO rig. No FiveM dependency at all. |
-| `test_roster.lua` | 1,159 | The server model end to end — roster, parties, squads, match state machine, bus, storm, loot streaming, inventory. The big one. |
+| `test_shared.lua` | 817 | The pure modules: RNG determinism, geometry, storm solving, loot generation, combat validation, descent classification, bus doors, the DBNO rig. No FiveM dependency at all. |
+| `test_roster.lua` | 1,264 | The server model end to end — roster, parties, squads, match state machine, bus, storm, loot streaming, inventory. The big one. |
 | `test_loop.lua` | 42 | The client loop registry: bands, suspension after repeated errors, enable/disable. |
 | `test_sched.lua` | 41 | The server scheduler: intervals, duplicate-name refusal, stepping. |
-| `test_stats.lua` | 151 | XP and placement arithmetic. |
+| `test_stats.lua` | 156 | XP and placement arithmetic. |
 | `test_ringmaster.lua` | 143 | The Ringmaster surface: the incident envelope, the gate, kick and maintenance. |
-| `test_client.lua` | 441 | The client interaction layer — keybinds, holds, prompts, loot pickup — with the FiveM natives stubbed and the frame band stepped by hand, the same shape `test_roster.lua` uses for the server. |
+| `test_client.lua` | 526 | The client interaction layer — keybinds, holds, prompts, loot pickup — with the FiveM natives stubbed and the frame band stepped by hand, the same shape `test_roster.lua` uses for the server. |
+| `test_config.lua` | 142 | The server-tunable overrides: strict convar parsing, ranges refused rather than clamped, a renamed config key as a hard failure, the load-time hook on a server / client / bare state, and the shipped `.cfg` examples run through the real parser. |
 
 `test_client.lua` is the odd one out and deliberately so: every other suite here
 is server-side or pure arithmetic, and all three of the regressions that shipped
@@ -234,3 +235,12 @@ New coverage goes into the **existing** suites — no new suite file, so no
 `verify.sh` edit. Open a bare `do … end` block after a `describe(...)`, call
 `reset()` first, and remember the load-bearing rule: revert the fix, watch it
 fail, restore.
+
+The one reason to break that rule is a suite that needs **its own harness**, and
+`test_config.lua` is why the exception is written down. Every other suite loads
+`br_lib/config/*.lua` once into the global state and reads it; that one has to
+load it repeatedly, into fresh sandboxes, with FiveM natives stubbed differently
+each time — because what it tests is the config tables being *rewritten* at load.
+Dropping that into `test_shared.lua` would mutate the config out from under 817
+assertions that read it. A new suite costs one line in `verify.sh`'s loop and a
+row in the table above; skip either and it stops running with nothing to say so.

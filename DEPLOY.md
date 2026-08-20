@@ -271,6 +271,46 @@ Edit `server.cfg`:
 | `sv_devMode` / `br_devMode` | **Set both to `false` for production.** They lower the minimum players to start and enable client dev tools. |
 | `sv_maxclients` | 48 is the free OneSync ceiling — see the note in `server.cfg` before raising it. |
 
+### The dev/public split: `tunables.cfg`
+
+A handful of gameplay values — squad size, warmup length, the summary screen,
+autofill, bleed-out — can differ between a dev box and the public one without
+changing a line of tracked Lua. They live in a small file `server.cfg` execs.
+
+**This file is not deployed by `tools/deploy.sh`.** Like `server.cfg` itself it
+is gitignored and per-host, so it reaches the box only when a human puts it
+there. On the game box, in the same directory as `server.cfg`
+(`/opt/fivem-server-classic`):
+
+```bash
+# from the checkout at /opt/misc/fivem-br-gamemode
+cp tunables.dev.cfg.example    /opt/fivem-server-classic/tunables.cfg   # dev box
+cp tunables.public.cfg.example /opt/fivem-server-classic/tunables.cfg   # public box
+```
+
+Then, **above** the `ensure br_*` block in `server.cfg`:
+
+```
+exec "tunables.cfg"
+```
+
+Swapping which example you copied and restarting is the whole mechanism.
+
+**The order is load-bearing and getting it wrong fails silently.** These convars
+are read once, while `br_lib/config/*.lua` loads, and two of the values are
+copied into other tables at that same instant. An `exec` below the `ensure`
+block sets every convar correctly and changes nothing about the game.
+
+How you find out: `br_core` prints a `tunables` block on start, one line per
+setting, saying whether the live value came from a convar or from the committed
+default — and it prints a loud warning ten seconds in if a convar turned up
+after the resources had already read them. `brconfig` shows the same list at any
+time.
+
+A missing or empty `tunables.cfg` is harmless: every value falls back to
+`br_lib/config/match.lua`. A *bad* value is not — the server refuses to start,
+with a banner naming the setting, what you typed and what is allowed.
+
 ---
 
 ## 5. First boot checklist

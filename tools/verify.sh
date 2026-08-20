@@ -90,7 +90,7 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # that shipped on 2026-08-16 landed on a CLIENT interaction that no gate
     # touched (#140). It stubs the FiveM natives and steps the frame band by
     # hand, the same shape test_roster.lua uses for the server.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_client.lua; do
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_client.lua tools/test_config.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1
@@ -322,6 +322,111 @@ if [ "$voice" -eq 0 ]; then
     echo "${GRN}ok${RST}   voice modes are exclusive and the default ('$want') agrees in Lua, TS and the bundle"
 else
     rc=1
+fi
+
+# --- 3h. the tunable overrides stay server-side and stay in order --------------
+#
+# br_lib/config/overrides.lua lets a .cfg on one box change values that are
+# otherwise committed constants, which creates -- for the handful of settings it
+# names -- a SECOND place each value can come from. Two homes for one setting
+# with nothing comparing them is the failure this project keeps paying for, so
+# the two properties that keep it honest are mechanical.
+#
+# BOTH OF THESE NEED A DIRECTORY WALK, which is why they are here and not in
+# tools/test_config.lua: Lua cannot list a directory without io.popen, and
+# io.popen on the Windows checkout this repo is developed on spawns cmd.exe,
+# where `ls` does not exist. That gate would scan zero files and pass forever.
+# The behavioural half of this feature -- parsing, ranges, refusals, the boot
+# banner -- is unit-tested and needs none of this.
+
+echo "${DIM}== tunable overrides ==${RST}"
+tun=0
+OVR="resources/*/br_lib/config/overrides.lua"
+
+if ! compgen -G "$OVR" >/dev/null 2>&1; then
+    echo "${YEL}skip${RST} no br_lib/config/overrides.lua in this checkout"
+else
+    # The spec is the list of keys a convar may write. Pulled out of the file
+    # rather than restated here, so adding a tunable extends this gate for free
+    # and a gate that names its own subjects cannot go stale against them.
+    keys=$(grep -oE "^\s+key\s+=\s+'[A-Za-z_]+'" $OVR | grep -oE "'[A-Za-z_]+'" | tr -d "'" | sort -u)
+
+    if [ -z "$keys" ]; then
+        echo "${RED}FAIL${RST} could not read the override spec out of br_lib/config/overrides.lua"
+        echo "     The two checks below would silently examine nothing. If the"
+        echo "     spec was reshaped, reshape this gate with it."
+        tun=1
+    fi
+
+    # (1) NO OVERRIDABLE KEY MAY BE READ ON THE CLIENT.
+    #
+    # config/*.lua is loaded into the client's Lua state as well, and
+    # overrides.lua deliberately applies nothing there -- it reads convars only
+    # when IsDuplicityVersion says this is the server. So a client that READS
+    # one of these keys is holding the committed default while the server holds
+    # the operator's value, for the same named setting, with nothing comparing
+    # them. That is not a bug this gate makes convenient to find; it is one it
+    # makes impossible to introduce.
+    #
+    # Comment lines are dropped first. config/match.lua's prose and
+    # br_core/client/natives.lua both DISCUSS maxSquadSize in comments, and a
+    # gate that trips over the explanation of the thing it guards gets deleted
+    # within the week.
+    for k in $keys; do
+        while IFS= read -r hit; do
+            [ -n "$hit" ] || continue
+            echo "${RED}FAIL${RST} a client file reads the overridable key '$k':"
+            echo "     ${hit}"
+            echo "     Overrides are applied on the SERVER only. A client read means"
+            echo "     the two sides disagree the moment an operator sets the convar."
+            echo "     Either send the value over the wire, or drop it from the spec"
+            echo "     in br_lib/config/overrides.lua."
+            tun=1
+        # \b at BOTH ends, not a bracket expression. `[^A-Za-z_]${k}[^A-Za-z_]`
+        # was the first spelling and it needs a character after the key, so a
+        # read at the end of a line -- `local n = BR.Config.Match.maxSquadSize`,
+        # the single likeliest way this is written -- matched nothing at all.
+        done < <(grep -rnE "\\b${k}\\b" resources/*/br_*/client/*.lua 2>/dev/null \
+                 | grep -vE '^[^:]+:[0-9]+:[[:space:]]*--' || true)
+    done
+
+    # (2) EVERY CONSUMER OF config/match.lua MUST LOAD overrides.lua AFTER IT.
+    #
+    # The override has to land before anything copies the value: br_core's
+    # server/match.lua builds its DURATION table from warmupSeconds and
+    # endedSeconds at file load. A resource that pulls in match.lua and not
+    # overrides.lua runs the committed defaults while the rest of the server
+    # runs the convars, and nothing at runtime says a word.
+    # COMMENTED LINES DO NOT COUNT, and the first draft of this let them.
+    # `-- '@br_lib/config/overrides.lua',` satisfied a plain grep perfectly
+    # while loading nothing -- the gate went green on the exact edit it exists
+    # to catch. These manifests are half prose, so this is not a hypothetical
+    # spelling.
+    uncommented() {
+        grep -n "$1" "$2" | grep -vE '^[0-9]+:[[:space:]]*--' | head -1 | cut -d: -f1
+    }
+
+    while IFS= read -r manifest; do
+        m=$(uncommented '@br_lib/config/match.lua' "$manifest")
+        [ -n "$m" ] || continue
+        o=$(uncommented '@br_lib/config/overrides.lua' "$manifest")
+        if [ -z "$o" ]; then
+            echo "${RED}FAIL${RST} ${manifest#resources/} loads config/match.lua but never config/overrides.lua"
+            echo "     It would run the committed defaults while the rest of the"
+            echo "     server runs whatever the .cfg set."
+            tun=1
+        elif [ "$o" -lt "$m" ]; then
+            echo "${RED}FAIL${RST} ${manifest#resources/} loads config/overrides.lua BEFORE config/match.lua"
+            echo "     The overrides edit that table; loading them first edits nothing."
+            tun=1
+        fi
+    done < <(find resources -name 'fxmanifest.lua' | sort)
+
+    if [ "$tun" -eq 0 ]; then
+        echo "${GRN}ok${RST}   overridable keys are server-only and every consumer loads them in order"
+    else
+        rc=1
+    fi
 fi
 
 # --- 4. manifest coverage -----------------------------------------------------

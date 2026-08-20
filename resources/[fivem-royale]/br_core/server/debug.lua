@@ -391,6 +391,22 @@ RegisterCommand('brconfig', function()
     print(('  inventory         %d slots, %d clip(s) of reserve per weapon found')
         :format(L.slots, L.weaponReserveClips))
     print(('  render ceiling    424 units -- entities beyond this are not drawn'))
+
+    -- THE TUNABLES, AND WHICH SIDE OF THE SPLIT EACH VALUE CAME FROM.
+    --
+    -- Everything above is one number with one home. These have two -- the
+    -- committed default and whatever .cfg this box exec'd -- so the report is
+    -- worthless unless it says which one is live. It reads the values out of
+    -- BR.Config itself, so it cannot report an override that did not land.
+    --
+    -- CHANGING ONE NEEDS A RESTART. They are read while br_lib/config loads;
+    -- `set br_maxSquadSize 2` typed here does nothing until then, which the
+    -- late-arrival warning in server/main.lua will say out loud.
+    line('-')
+    local tune, overridden = BR.Config.Overrides.report()
+    print(('  tunables          %d of %d set by convar (see tunables.cfg; restart to change)')
+        :format(overridden, #BR.Config.Overrides.SPEC))
+    for _, l in ipairs(tune) do print(l) end
 end, RESTRICTED)
 
 RegisterCommand('brloot', function(_, args)

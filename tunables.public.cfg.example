@@ -1,0 +1,23 @@
+## FiveM Royale -- PUBLIC SERVER tunables
+##
+## This file deliberately sets nothing.
+##
+## Copy it onto the game box as  tunables.cfg  next to server.cfg. Every value
+## then comes from br_lib/config/match.lua exactly as it is committed, which is
+## what a public server should be running: the values that were reviewed, not
+## the values somebody typed on a box once.
+##
+## It exists so that "make this the public server again" is one copy and a
+## restart -- the same operation as "make this the dev server", in the other
+## direction -- rather than a hunt through a file for lines to comment out.
+##
+## Not having a tunables.cfg on the box at all produces the same GAME. FXServer
+## will complain once on start that it could not execute the file it was told
+## to, and then carry on with every default in place. Shipping this file is how
+## you get the silence as well.
+##
+## The dev settings, and what each one does, are documented in
+## tunables.dev.cfg.example. If you want one of them on a public server, put it
+## here on purpose -- and expect the boot banner to say so on every start.
+
+# Nothing set on purpose. See above.

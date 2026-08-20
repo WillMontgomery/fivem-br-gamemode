@@ -49,6 +49,12 @@ local FILES = {
     'shared/enums.lua',
     'config/map.lua',
     'config/match.lua',
+    -- AFTER match.lua, because it names keys inside it. In this bare Lua state
+    -- it applies nothing -- it only reads convars when IsDuplicityVersion and
+    -- GetConvar both exist, which on a server they do and here they do not --
+    -- so what it contributes is its SPEC: the list of which values a .cfg is
+    -- allowed to override, and under what name.
+    'config/overrides.lua',
     'config/storm.lua',
     'config/loot.lua',
     'config/market.lua',
@@ -85,6 +91,8 @@ BR.Config.Match = BR.Config.Match or {}
 BR.Config.Storm = BR.Config.Storm or {}
 BR.Config.Loot = BR.Config.Loot or {}
 BR.Config.Market = BR.Config.Market or {}
+BR.Config.Overrides = BR.Config.Overrides or {}
+BR.Config.Overrides.SPEC = BR.Config.Overrides.SPEC or {}
 
 -- --------------------------------------------------------------- formatting --
 
@@ -194,6 +202,53 @@ try('Match', MATCH, 'dbno', function()
         :format(num(M.dbnoBleedBase), num(M.dbnoReviveTime),
                 num(M.dbnoReviveDist), num(M.dbnoReviveHp))
 end)
+
+-- ---------------------------------------------------------------- tunables --
+--
+-- THE ONE GROUP ON THIS PAGE WHERE THE NUMBER SHOWN MAY NOT BE THE NUMBER
+-- RUNNING, and saying so is the entire reason the group exists.
+--
+-- Everything else here is a value with exactly one home, read out of the file
+-- on disk. These six have two: the committed default in config/match.lua, and
+-- whatever `.cfg` that particular box's server.cfg exec'd. This script cannot
+-- see the second one -- it loads the files in a bare Lua state and never
+-- touches the running process, which is the property that lets it exist at all
+-- (see the header). So it reports the default and NAMES THE CONVAR that can
+-- displace it, rather than presenting a number that might be a lie.
+--
+-- The live answer is one line in the server console: `brconfig` prints the same
+-- list with the value that is actually loaded and the source it came from, and
+-- br_core prints it at boot as well.
+--
+-- ITERATING THE SPEC IS NOT THE WALKER THE ALLOWLIST FORBIDS. The rule at the
+-- top of this file is that nothing publishes whatever somebody adds to
+-- BR.Config next. Ov.SPEC is not BR.Config: it is a short, hand-written,
+-- reviewed list of tuning knobs, and adding a row to it is exactly the
+-- deliberate act the allowlist asks for. A credential could not appear there
+-- without somebody making it overridable by a convar first.
+
+local OVR = 'br_lib/config/overrides.lua'
+
+-- Fails the verify.sh gate if the spec is missing or empty, which is what makes
+-- the generated rows below trustworthy: no spec, no rows, and nothing would
+-- otherwise say a word.
+try('Tunables', OVR, 'overridable settings', function()
+    local n = #BR.Config.Overrides.SPEC
+    if n == 0 then error('the override spec is empty or has moved', 2) end
+    return ('%s. Values below are the COMMITTED DEFAULTS -- run `brconfig` on '
+            .. 'the server for what is actually loaded'):format(num(n))
+end)
+
+for _, spec in ipairs(BR.Config.Overrides.SPEC) do
+    try('Tunables', OVR, spec.convar, function()
+        local cfg = BR.Config[spec.group] or {}
+        local v = cfg[spec.key]
+        local shown = (type(v) == 'boolean') and bool(v) or num(v)
+        return ('%s.%s = %s by default; a .cfg may set %s')
+            :format(str(spec.group), str(spec.key), shown,
+                    str(BR.Config.Overrides.rangeText(spec)))
+    end)
+end
 
 -- Voice, the GAMEMODE's half. The engine convars with the same word in them are
 -- reported separately by dispatch.sh, and the pairing is the point: #150 was a

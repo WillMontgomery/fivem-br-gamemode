@@ -57,23 +57,24 @@ hear; `brvoice` in the server console says whether pma-voice is even present.
 ## Development
 
 ```bash
-./tools/verify.sh          # syntax, tests, and 14 further gates
+./tools/verify.sh          # syntax, tests, and 15 further gates
 cd ui-src && npm run dev   # the UI in a browser, no game required
 cd ui-src && npm run build # typecheck, build, and CSS compatibility check
 ```
 
-`verify.sh` runs **16 gates**, in increasing order of strictness, exiting
+`verify.sh` runs **17 gates**, in increasing order of strictness, exiting
 non-zero on any failure:
 
 | | |
 |---|---|
 | `syntax` | Lua 5.4 on every file |
-| `tests` | ~2,700 assertions across 7 suites |
+| `tests` | ~3,100 assertions across 8 suites |
 | `scope gate` | OneSync scope-limited natives banned from client gameplay code |
 | `weapon table` | every weapon hash re-derived from its name |
 | `POI siting` | spacing, water, no-loot zones, distance to roads |
 | `forward locals` | a `local function` called above its own declaration |
 | `config report` | the convar allowlist stays free of credentials |
+| `tunable overrides` | overridable keys are server-only; every manifest loads them in order |
 | `manifest coverage` | every `.lua` is declared in an fxmanifest |
 | `shared coverage` | everything dropped in `br_lib` is actually loaded |
 | `deploy payload` | the deploy's own payload check still works |
