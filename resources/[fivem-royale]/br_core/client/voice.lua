@@ -877,14 +877,32 @@ end
 ---
 --- The rule this leaves behind is the one VoiceNotice.tsx already states about
 --- itself: A HEADLINE MEANS SOMETHING IS WRONG. 'nearby' has never sent one;
---- 'radio' now does not either. What still does is the pair that really is
---- silence -- 'off' and squad-with-no-squad -- plus 'alone', which is a squad
---- radio with nobody else on it. Those are worth interrupting somebody over;
---- "your voice chat is working" is not.
+--- 'radio' now does not either.
 ---
---- `detail` IS UNAFFECTED AND STILL SET FOR EVERY ROW, because it goes to the
---- SETTINGS SCREEN, which is a page the player opened on purpose. There is no
---- clutter cost to a sentence somebody went looking for.
+--- AND NEITHER DOES 'off', WHICH IS THE SECOND HALF OF THE SAME RULE AND TOOK A
+--- SECOND PLAYTEST TO SEE. Owner, 2026-08-20: "when voice is off, we shouldn't
+--- have anything print in the bottom of the screen saying 'Voice is off' - just
+--- simply say nothing at all. It's off because they turned it off - the default
+--- was Nearby."
+---
+--- That row was the one exception the rule had, and it was argued as "said, but
+--- never as an alarm" -- a quiet line rather than a red one. The distinction is
+--- real and it is not the point: 'off' is not something WRONG. It is a
+--- preference, chosen deliberately, in a screen that offers three buttons and
+--- comes up on `nearby`. A permanent line naming a setting the player picked is
+--- furniture in exactly the way the "hold a key to talk" line was, and it is on
+--- screen for longer -- it lasts as long as the preference does, which is
+--- potentially every match they ever play.
+---
+--- So the only rows that still send one are squad-with-no-squad and 'alone': a
+--- silence nobody asked for, and a radio with nobody else on it. Both are
+--- states a player would want to be interrupted about. Neither is a choice they
+--- just made.
+---
+--- `detail` IS UNAFFECTED AND STILL SET FOR EVERY ROW, INCLUDING 'off', because
+--- it goes to the SETTINGS SCREEN, which is a page the player opened on purpose.
+--- There is no clutter cost to a sentence somebody went looking for, and the
+--- owner's instruction is about the bottom of the screen.
 --- ==========================================================================
 --- @param mode string|nil
 --- @param radio integer|nil  the channel the server granted, or nil
@@ -899,10 +917,12 @@ function BR.Voice.statusFor(mode, radio, mates)
     end
 
     if not r.radio then
-        -- The player asked for this one. Said, but never as an alarm.
+        -- NO HEADLINE. The player turned this on themselves, and the HUD says
+        -- nothing at all about it -- see the block above this function. The
+        -- flags still travel: `chosen` is what keeps the settings screen from
+        -- painting a chosen silence as a fault (Settings.tsx, `voiceSilent`).
         return {
             code = 'silenced', silent = true, chosen = true,
-            headline = 'Voice is off',
             detail = 'You are not transmitting and not listening. Change it '
                   .. 'under Settings, Voice.',
         }
@@ -1548,9 +1568,15 @@ local function pushVoice(talking, names, st)
 
     if st.code ~= lastToast then
         lastToast = st.code
-        -- 'off' is the player's own choice and they made it two seconds ago;
-        -- toasting it back at them is noise. Everything else is news.
-        if st.headline and not st.chosen then
+        -- A HEADLINE IS THE WHOLE CONDITION NOW. This used to read
+        -- `st.headline and not st.chosen`, because 'off' was the one row that
+        -- carried a headline the player had asked for and did not need toasted
+        -- back at them. 'off' carries no headline at all since the owner's
+        -- 2026-08-20 note (see statusFor), so the second half of that test can
+        -- no longer be false while the first is true -- it was a guard against a
+        -- state that no longer exists, which is the kind of line that reads as a
+        -- rule and is really a fossil.
+        if st.headline then
             TriggerEvent('br:ui:sendLocal', BR.Nui.TOAST, {
                 text = st.headline,
                 tone = st.silent and 'danger' or 'info',
@@ -1643,8 +1669,19 @@ BR.Loop.register(BR.Loop.TICK, 'voice.hear', function()
     -- keying it on the talking list alone is how the status line would have
     -- sat stale on the HUD for as long as nobody spoke, which is precisely the
     -- moment it is worth reading.
+    --
+    -- THE VERDICT, NOT THE SENTENCE. This was keyed on `st.headline`, which is
+    -- the RENDERING of the verdict rather than the verdict -- so any two states
+    -- that draw no HUD line were indistinguishable to it, and a change between
+    -- them sent nothing. That was already wrong for nearby -> radio, both of
+    -- which are silent on the HUD and carry different `detail`, `status` and
+    -- `mates` to the settings screen; it became wrong for nearby -> off the
+    -- moment 'off' stopped sending a headline, which would have left Settings,
+    -- Voice describing the mode the player had just left. `st.code` is the
+    -- envelope's own machine-readable verdict and is exactly one per row, so it
+    -- is strictly finer than the string it replaces and never coarser.
     local st  = BR.Voice.status()
-    local key = table.concat(talking, ',') .. '|' .. tostring(st.headline)
+    local key = table.concat(talking, ',') .. '|' .. tostring(st.code)
     if key == lastKey then return end
     lastKey = key
     BR.Voice.talking = talking

@@ -25,8 +25,16 @@ import { useUi } from '../store'
  * Lua's rather than this file's.
  *
  * What is left is the half that is genuinely wrong: squad mode with no squad,
- * a radio with nobody else on it, and 'off'. Those still send a headline and
- * this still draws it.
+ * and a radio with nobody else on it. Those still send a headline and this
+ * still draws it.
+ *
+ * 'off' USED TO BE ON THAT LIST AND IS NOT ANY MORE. Owner, 2026-08-20: "when
+ * voice is off, we shouldn't have anything print in the bottom of the screen
+ * saying 'Voice is off' - just simply say nothing at all. It's off because they
+ * turned it off - the default was Nearby." Lua stopped sending the headline for
+ * it, so this renders nothing for it, with no condition on this side -- the same
+ * way the working radio row went quiet. That is the point of the words being
+ * Lua's rather than this file's.
  *
  * SILENCE WITH NO EXPLANATION IS INDISTINGUISHABLE FROM A BROKEN FEATURE. That
  * is the whole argument for putting this on the HUD rather than leaving it in
@@ -51,16 +59,20 @@ import { useUi } from '../store'
 export default function VoiceNotice() {
   const headline = useUi((s) => s.voice.headline)
   const silent = useUi((s) => s.voice.silent)
-  const chosen = useUi((s) => s.voice.chosen)
 
   // Nothing to say is the common case and it renders nothing at all -- not an
   // empty plate holding the bottom of the screen for a whole match.
   if (!headline) return null
 
-  // SILENT AND NOT ASKED FOR is the only state that gets the alarm colour.
-  // 'off' is silent too and the player chose it two seconds ago; painting that
-  // red would teach them the colour means nothing.
-  const alarm = silent === true && chosen !== true
+  // SILENT IS THE ALARM, and it no longer needs qualifying. This read
+  // `silent === true && chosen !== true`, because 'off' was silent AND chosen
+  // and painting a chosen silence red would have taught the player that the
+  // colour means nothing. 'off' sends no headline now, so nothing that reaches
+  // this line is ever `chosen` -- the qualifier could not change the answer, and
+  // a condition that cannot change the answer is a claim about the data that
+  // stopped being true. `chosen` is still on the payload and still read by the
+  // settings screen, which is the surface that does draw the 'off' row.
+  const alarm = silent === true
 
   return (
     <div

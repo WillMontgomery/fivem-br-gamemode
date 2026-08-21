@@ -2980,6 +2980,33 @@ do
            .. 'chose it does not need it explained back at them',
        tostring(off.code) .. '/' .. tostring(off.chosen))
 
+    -- AND IT DRAWS NOTHING AT ALL, WHICH IS THIS ROUND'S CHANGE.
+    --
+    -- This row used to send `headline = 'Voice is off'`, and a headline is a
+    -- line across the bottom of the screen for as long as the state lasts
+    -- (ui-src/src/hud/VoiceNotice.tsx) -- which for a preference is every match
+    -- the player ever plays. Owner, 2026-08-20: "when voice is off, we shouldn't
+    -- have anything print in the bottom of the screen saying 'Voice is off' -
+    -- just simply say nothing at all. It's off because they turned it off - the
+    -- default was Nearby."
+    --
+    -- NOT A SHORTER STRING, NOT AN ICON, NOTHING. The assertion is `== nil`
+    -- rather than a comparison against a quieter sentence for exactly that
+    -- reason: an empty string, a dash or a single word would all pass a test
+    -- written the other way round and all still put something on the screen.
+    ok(off.headline == nil,
+       "and 'off' says nothing at all on the HUD -- it is a setting the player "
+           .. 'chose, not a fault they need telling about',
+       tostring(off.headline))
+
+    -- THE SETTINGS SENTENCE SURVIVES, because that surface is a page somebody
+    -- opened on purpose. The owner's instruction is about the bottom of the
+    -- screen; deleting the detail with the headline would take away the one
+    -- place that says how to turn voice back on.
+    ok(type(off.detail) == 'string' and off.detail:find('Settings, Voice') ~= nil,
+       'while the settings screen still explains it and names the way out',
+       tostring(off.detail))
+
     -- THE ROW THIS ROUND IS FOR.
     local nosquad = statusFor(BR.VoiceMode.SQUAD, nil, 0)
     ok(nosquad.silent == true and nosquad.chosen == false,
@@ -3187,6 +3214,48 @@ do
        and quiet.silent == false,
        'nearby carries no status line at all -- there is nothing wrong with it',
        type(quiet) == 'table' and tostring(quiet.headline) or '-')
+
+    -- AND SO DOES 'off', SINCE 2026-08-20, WHICH IS THE SAME RULE FOR THE
+    -- OPPOSITE REASON. nearby says nothing because nothing is wrong; 'off' says
+    -- nothing because the player did it on purpose. Owner: "when voice is off,
+    -- we shouldn't have anything print in the bottom of the screen saying 'Voice
+    -- is off' - just simply say nothing at all."
+    --
+    -- DRIVEN THROUGH voiceApply RATHER THAN statusFor, because the pure function
+    -- is asserted above and this is the half that failed in the game: the
+    -- ENVELOPE the page draws from, and the edge-triggered toast beside it.
+    -- `silent` is still true and still travels -- the settings screen reads it
+    -- -- so an assertion on the flag would pass while the line stayed on screen.
+    events = {}
+    voiceApply(BR.VoiceMode.OFF, nil, nil, 1)
+    local silenced, offToast = nil, nil
+    for i = #events, 1, -1 do
+        local e = events[i]
+        if e.name == 'br:ui:sendLocal' then
+            if e.args[1] == BR.Nui.VOICE and silenced == nil then
+                silenced = e.args[2]
+            elseif e.args[1] == BR.Nui.TOAST and offToast == nil then
+                offToast = e.args[2]
+            end
+        end
+    end
+    ok(type(silenced) == 'table' and silenced.status == 'silenced',
+       "turning voice off really does reach the 'silenced' row",
+       type(silenced) == 'table' and tostring(silenced.status) or 'no envelope')
+    ok(type(silenced) == 'table' and silenced.headline == nil,
+       'and the HUD envelope carries no line for it, so nothing is drawn at the '
+           .. 'bottom of the screen for as long as the preference lasts',
+       type(silenced) == 'table' and tostring(silenced.headline) or '-')
+    ok(type(silenced) == 'table' and silenced.silent == true
+       and silenced.chosen == true,
+       'while the flags still travel -- the settings screen draws this row and '
+           .. 'needs to know the silence was asked for',
+       type(silenced) == 'table'
+           and (tostring(silenced.silent) .. '/' .. tostring(silenced.chosen))
+           or '-')
+    ok(offToast == nil,
+       'and nothing is toasted at the moment they turn it off either',
+       offToast and tostring(offToast.text) or 'nothing')
 
     logged = {}
 end
