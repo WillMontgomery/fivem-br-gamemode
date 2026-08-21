@@ -101,7 +101,7 @@ is classed once:
 | `TOO_FAR` | beyond the weapon's range, plus slack | **yes** |
 | `TOO_FAST` | faster than the weapon can cycle, plus slack | **yes** |
 | `NOT_THROWN` | an explosion from something you never threw | **yes** |
-| `SELF` | hurting yourself *repeatedly* — 3+ times in 5s | **yes** |
+| `SELF` | hurting yourself *repeatedly* — 3+ times in 5s | **recorded, bars nothing** — see below |
 
 The split is the difference between *rules* and *means*. An honest client
 produces the top group constantly — and since fists are a real weapon, every
@@ -109,10 +109,17 @@ player has the means to at any moment, so counting them would trip an
 anticheat built for trainers on the first warmup scrap. There is no honest
 input that produces the bottom group.
 
+**"Counted" in that column means "worth writing down", which is a different
+question from "opens a case".** They are two tables in `combat_solve.lua` on
+purpose: `BR.ShotSuspicious` gates the per-shot console line and the event, and
+`BR.ShotTier` decides what files a case and how loudly. Every row marked **yes**
+is in both. `SELF` is in the first and deliberately not the second — see the tier
+table further down, which is where the bar actually lives.
+
 **Self-damage is allowed.** You can stand in your own grenade and it hurts
-you, like anyone else's would. What is refused and counted is *repetition* —
+you, like anyone else's would. What is refused and recorded is *repetition* —
 three self-inflicted hits inside five seconds is somebody exercising a path
-rather than playing badly.
+rather than playing badly. It grades nothing.
 
 **`OTHER_MATCH` is not counted, and the reason is worth stating.** Matches run
 in parallel in separate routing buckets, so two players in different matches
