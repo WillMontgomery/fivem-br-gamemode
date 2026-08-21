@@ -63,27 +63,46 @@ local STATE = { balance = 0, owned = {}, equipped = {} }
 ---
 --- Defaults are marked owned rather than hidden: the free item is the thing you
 --- go back to, so it has to be visible and selectable in the same grid as the
---- ones you paid for.
+--- ones you paid for. Rainbow and Standard are real looks a player might choose
+--- on their merits, and both read as items.
+---
+--- `hidden` IS THE ONE EXCEPTION AND IT IS DECLARED IN THE CONFIG, NOT HERE.
+--- A default that paints NOTHING is not a look, and a tile called "None" in a
+--- row of smoke trails reads as a product (owner, 2026-08-20: "'None' smoke
+--- trail should not exist"). The flag lives on the item in
+--- br_lib/config/market.lua so that "what is in the catalogue" and "what is on
+--- the shelf" stay one decision made in one place -- this file renders what it
+--- is sent and decides nothing, which is the rule the header states.
+---
+--- IT IS A DISPLAY FILTER AND NOTHING MORE. The item is still in
+--- BR.Config.MarketIndex, so BR.Config.defaultItem('trail') still answers it,
+--- server/market.lua still fills an empty slot with it, and MARKET_EQUIP still
+--- accepts it by id -- the server resolves ids against the config rather than
+--- against whatever this file happened to render, which is what makes hiding a
+--- tile safe. It also cannot open a purchase hole: BR.Config.buyable() refuses
+--- every `default` item outright.
 local function catalogue()
     local out = {}
 
     for _, season in ipairs(BR.Config.Market.seasons) do
         for _, item in ipairs(season.items) do
-            local owned = item.default == true or STATE.owned[item.id] == true
-            out[#out + 1] = {
-                id       = item.id,
-                name     = item.name,
-                sub      = item.sub,
-                kind     = item.kind,
-                price    = item.price,
-                rarity   = item.rarity,
-                season   = item.seasonName,
-                owned    = owned,
-                equipped = STATE.equipped[item.kind] == item.id,
-                -- Inactive seasons render for the people who own their items
-                -- but cannot be bought from.
-                locked   = not item.purchasable and not item.default,
-            }
+            if item.hidden ~= true then
+                local owned = item.default == true or STATE.owned[item.id] == true
+                out[#out + 1] = {
+                    id       = item.id,
+                    name     = item.name,
+                    sub      = item.sub,
+                    kind     = item.kind,
+                    price    = item.price,
+                    rarity   = item.rarity,
+                    season   = item.seasonName,
+                    owned    = owned,
+                    equipped = STATE.equipped[item.kind] == item.id,
+                    -- Inactive seasons render for the people who own their items
+                    -- but cannot be bought from.
+                    locked   = not item.purchasable and not item.default,
+                }
+            end
         end
     end
 

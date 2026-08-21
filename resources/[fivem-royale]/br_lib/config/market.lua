@@ -280,10 +280,39 @@ BR.Config.Market = {
                     -- so a table with no trailRgb and no trailCycle leaves
                     -- `trailArmed` false -- no smoke, and no descent prompt
                     -- offering a key for a trail that is not there (#131).
+                    --
+                    -- ...AND IT IS NOT A CARD IN THE SHOP (owner, 2026-08-20:
+                    -- "'None' smoke trail should not exist - and btw this means
+                    -- the default (new player, new profile) should be no smoke
+                    -- trails at all"). `hidden` is the whole of that change: the
+                    -- item stays in the index, stays the answer to
+                    -- BR.Config.defaultItem('trail'), stays what server/market.lua
+                    -- fills an empty slot with, and simply is not offered a tile
+                    -- in the grid br_ui/client/market.lua builds.
+                    --
+                    -- WHY HIDE RATHER THAN DELETE, RESTATED because the reason
+                    -- has now been rediscovered twice. Deleting the row makes
+                    -- defaultItem('trail') answer nil, and every player who buys
+                    -- Ember then has nothing to go back to. The paragraph above
+                    -- is the record of the first time that argument was made.
+                    --
+                    -- WHAT HIDING COSTS, AND IT IS NOT NOTHING. This tile was
+                    -- the ONLY un-equip control the storefront has -- Market.tsx
+                    -- renders an equipped item as inert text and there is no
+                    -- other affordance anywhere -- so a player who buys Ember can
+                    -- no longer take it back off. What they keep is the part that
+                    -- reaches the sky: a trail starts OFF on every drop (owner,
+                    -- 2026-08-17) and only paints if they press the trail key, so
+                    -- what an un-equip would actually buy them now is silencing
+                    -- the once-per-drop prompt. Reported to the owner rather than
+                    -- solved here, because every fix is either new UI copy nobody
+                    -- asked for or a rule about WHEN this tile appears, and both
+                    -- are the owner's call.
                     id = 'trail_none', name = 'None', sub = 'Smoke trail',
                     kind = BR.Config.ItemKind.TRAIL,
                     price = 0, rarity = BR.Config.Rarity.COMMON,
                     default = true,
+                    hidden = true,
                     apply = {},
                 },
                 {

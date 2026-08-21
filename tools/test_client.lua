@@ -7653,6 +7653,114 @@ do
             :format(tostring(gate.last), #team.writes))
 end
 
+-- ---------------------------------------------------------------------------
+-- 'None' IS NOT A PRODUCT (owner, 2026-08-20)
+--
+-- "'None' smoke trail should not exist - and btw this means the default (new
+-- player, new profile) should be no smoke trails at all."
+--
+-- THE HALF THAT IS EASY TO GET WRONG IS THE HALF THAT IS NOT A DELETION. The
+-- item has to stay in BR.Config.MarketIndex -- it is what
+-- BR.Config.defaultItem('trail') answers, what server/market.lua fills an empty
+-- slot with, and what an un-equip resolves to -- while not being offered a tile
+-- in the grid. So this pins both directions at once: gone from the shelf,
+-- present in the catalogue.
+-- ---------------------------------------------------------------------------
+
+describe("'None' is not a tile in the Market, and is still the trail default")
+do
+    loadAll({ 'br_ui/client/market.lua' })
+
+    --- The most recent grid pushed to the page.
+    local function grid()
+        for i = #events, 1, -1 do
+            local e = events[i]
+            if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.MARKET then
+                return e.args[2]
+            end
+        end
+        return nil
+    end
+
+    --- Every id of one kind on that grid, sorted so a failure prints readably.
+    local function idsOf(g, kind)
+        local out = {}
+        for _, it in ipairs(g and g.items or {}) do
+            if it.kind == kind then out[#out + 1] = it.id end
+        end
+        table.sort(out)
+        return out
+    end
+
+    local function has(list, id)
+        for _, v in ipairs(list) do if v == id then return true end end
+        return false
+    end
+
+    -- A NEW PROFILE, WHICH IS THE CASE THE OWNER NAMED: nothing bought, and the
+    -- server has filled the empty trail slot with the catalogue default, which
+    -- is exactly what server/market.lua does on a first connect.
+    fire(BR.Net.MARKET_STATE, {
+        balance = 0, owned = {}, equipped = { trail = 'trail_none' },
+    })
+
+    local g = grid()
+    ok(g ~= nil, 'the page is sent a grid')
+
+    local trails = idsOf(g, BR.Config.ItemKind.TRAIL)
+    ok(not has(trails, 'trail_none'),
+        "a new profile is shown no 'None' tile in the smoke trail row",
+        table.concat(trails, ','))
+    ok(#trails == 6, 'while every trail that actually paints is still on the shelf',
+        table.concat(trails, ','))
+
+    -- THE OTHER TWO DEFAULTS ARE UNTOUCHED, and that is why the flag is per-item
+    -- rather than a rule about defaults. Rainbow is the loud canopy every player
+    -- already flies and Standard is a real weapon finish; both are looks somebody
+    -- might choose on their merits, and hiding them would leave the canopy and
+    -- finish slots with no way back from a purchase.
+    ok(has(idsOf(g, BR.Config.ItemKind.CHUTE), 'chute_rainbow'),
+        'the free canopy is still a tile',
+        table.concat(idsOf(g, BR.Config.ItemKind.CHUTE), ','))
+    ok(has(idsOf(g, BR.Config.ItemKind.WEAPON), 'wtint_normal'),
+        'and so is the free weapon finish',
+        table.concat(idsOf(g, BR.Config.ItemKind.WEAPON), ','))
+
+    -- BUYING A TRAIL DOES NOT BRING IT BACK, which is the assertion that
+    -- separates "hidden" from "hidden until you need it". It is stated rather
+    -- than assumed because it is the behaviour with a cost: this tile was the
+    -- storefront's ONLY un-equip control, so with it gone a player who buys
+    -- Ember has nothing in the Market that takes it off again.
+    fire(BR.Net.MARKET_STATE, {
+        balance = 0, owned = { 'trail_ember' }, equipped = { trail = 'trail_ember' },
+    })
+    ok(not has(idsOf(grid(), BR.Config.ItemKind.TRAIL), 'trail_none'),
+        'and buying Ember does not bring the tile back',
+        table.concat(idsOf(grid(), BR.Config.ItemKind.TRAIL), ','))
+
+    -- ═══ AND THE ITEM IS STILL THERE, WHICH IS THE HALF THAT IS NOT A DELETE ═══
+    --
+    -- Deleting the row makes defaultItem('trail') answer nil, and the trail slot
+    -- then has no value to fall back to at all. br_lib/config/market.lua has the
+    -- long-form record of that argument; these three lines are the mechanical
+    -- version of it.
+    ok(BR.Config.MarketIndex['trail_none'] ~= nil,
+        'the item is still in the catalogue index')
+    ok(BR.Config.defaultItem('trail') ~= nil
+       and BR.Config.defaultItem('trail').id == 'trail_none',
+        'and is still what the trail slot defaults to',
+        tostring(BR.Config.defaultItem('trail') and BR.Config.defaultItem('trail').id))
+
+    -- HIDING A TILE CANNOT OPEN A PURCHASE HOLE. The server resolves ids against
+    -- the config rather than against whatever the client rendered, and refuses
+    -- every default outright -- so an id nobody can see is not an id nobody
+    -- checks.
+    local item, why = BR.Config.buyable('trail_none')
+    ok(item == nil and why == 'already owned by everyone',
+        'and it is still refused as a purchase, tile or no tile',
+        tostring(why))
+end
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)
