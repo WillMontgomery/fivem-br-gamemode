@@ -1975,8 +1975,31 @@ local function newTimelineWorld()
 
     function W.at(t) S.now = t end
 
-    function W.startMatch(matchId, startedAt)
-        S.matches[matchId] = { id = matchId, startedAt = startedAt }
+    --- A match that has GONE LIVE. `createdAt` defaults to the start because
+    --- almost every case here is about a match already running and the exact
+    --- formation time is not what those are testing -- the warmup cases below
+    --- use `W.formMatch` and set the two apart deliberately.
+    function W.startMatch(matchId, startedAt, createdAt)
+        S.matches[matchId] = {
+            id = matchId,
+            startedAt = startedAt,
+            createdAt = createdAt or startedAt,
+        }
+    end
+
+    --- A match that has been FORMED and is still on the warmup pad.
+    ---
+    --- `startedAt` IS ABSENT, WHICH IS THE WHOLE POINT. br_core/server/match.lua
+    --- stamps it on entering PLAYING and nothing else does, so this is what the
+    --- registry really holds for every second of warmup.
+    function W.formMatch(matchId, createdAt)
+        S.matches[matchId] = { id = matchId, createdAt = createdAt }
+    end
+
+    --- The warmup ends and the match goes live.
+    function W.beginPlaying(matchId, startedAt)
+        local m = S.matches[matchId]
+        if m then m.startedAt = startedAt end
     end
 
     function W.join(src, matchId, license, name)
@@ -2074,8 +2097,21 @@ local function newTimelineWorld()
 
     --- The teardown br_core runs: `br:match:destroyed` is the only path out of
     --- the registry, and server/evidence.lua answers it.
+    ---
+    --- THE REGISTRY ENTRY IS CLEARED BEFORE THE EVENT IS FIRED, exactly as
+    --- BR.Match.destroy does it, and that ordering is load-bearing rather than
+    --- decorative. The close needs the match's `startedAt` and there is nothing
+    --- left to read it off by then -- so it rides the event, and a close that
+    --- went back to the registry for it would read nil for EVERY match and null
+    --- out a start that was correct on the row. Mirroring the order here is what
+    --- makes that a test failure instead of a production one.
     function W.endMatch(matchId)
-        env.TriggerEvent('br:match:destroyed', { matchId = matchId })
+        local m = S.matches[matchId]
+        S.matches[matchId] = nil
+        env.TriggerEvent('br:match:destroyed', {
+            matchId = matchId,
+            startedAt = m and m.startedAt or nil,
+        })
     end
 
     function W.lastClose() return S.closes[#S.closes] end
@@ -2327,7 +2363,174 @@ do
     ok(p ~= nil, 'a case filed outside a match is still filed')
     ok(p and p.matchStartedAt == nil, 'with no match start')
     ok(p and p.matchEndsByMs == nil, 'and no deadline to expire')
+    ok(p and p.matchCreatedAt == nil, 'and no formation time either')
     ok(p and #(p.matchTimeline or {}) == 0, 'and an empty timeline')
+end
+
+-- ======================================================================== --
+-- A CASE FILED DURING WARMUP
+-- ======================================================================== --
+--
+-- WHY THIS IS THE CASE THAT MATTERED MOST AND WAS RECORDED LEAST. vMenu is a
+-- development tool that is not going to production, so there is no benign route
+-- to a weapon this gamemode never issued -- every strip is a cheat signal, and
+-- one on the warmup pad is the EARLIEST signal available: it happens before the
+-- offender has touched a real player.
+--
+-- WHAT IT USED TO PRODUCE. `startedAt` is stamped on entering PLAYING, so
+-- `timelineOpen` answered with the empty shape and `attachTimeline` -- which
+-- keyed its close registration on that same start -- never queued the case at
+-- all. The row was written with no start, no deadline, an empty timeline, and
+-- then never received a match-end write, ever. The console reads that shape as
+-- "filed outside a match", which is false about a row carrying a matchId.
+--
+-- These drive the REAL server/strip.lua, server/evidence.lua and
+-- server/incident.lua through the real events, because the two halves of the
+-- bug were in different files and either fix alone still loses the case.
+
+describe('timeline.warmup-filing')
+do
+    local W = newTimelineWorld()
+    -- FORMED, NOT STARTED. The registry entry a warmup match really has.
+    W.formMatch(7, 500)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    -- A weapon this gamemode has never heard of -- nothing in
+    -- br_lib/config/weapons carries this hash. The same value the strip cases
+    -- further down the file use, for the same reason.
+    local CONJURED = 0x11111111
+
+    -- TWO STRIPS: the first is recorded and announced to nobody, the second
+    -- opens the case. Both on the pad.
+    W.at(1000); W.strip(1, CONJURED)
+    W.at(2000); W.strip(1, CONJURED)
+
+    local p = W.lastIncident()
+    ok(p ~= nil, 'a strip during warmup files a case')
+    ok(p and p.matchId == 7, 'about the match it happened in', p and tostring(p.matchId))
+
+    -- THE TRUTHFUL FIELD STAYS TRUTHFUL.
+    ok(p and p.matchStartedAt == nil,
+        'the case does not claim the match had started',
+        p and tostring(p.matchStartedAt))
+    ok(p and p.matchCreatedAt == 500,
+        'it records when the match was FORMED instead',
+        p and tostring(p.matchCreatedAt))
+
+    -- AND NO DEADLINE, because a deadline means "this long after the match
+    -- STARTED" and measuring it from the formation would fire early on any long
+    -- warmup -- `brwarmup hold` holds one for a day -- telling an admin the end
+    -- was never reported about a match still sitting on the pad.
+    ok(p and p.matchEndsByMs == nil,
+        'and no deadline derived from a start it does not have',
+        p and tostring(p.matchEndsByMs))
+
+    -- AND THE TIMELINE HAS A BEGINNING, under a kind that says which beginning.
+    local formed = ofKind(p and p.matchTimeline, W.BR.IncidentBuild.MATCH_CREATED_KIND)
+    ok(#formed == 1 and formed[1].at == 500,
+        'the timeline is anchored on the formation', #formed)
+    ok(#ofKind(p and p.matchTimeline, 'match_start') == 0,
+        'and carries no match_start, because the match had not started')
+
+    -- THE EVIDENCE ITSELF, which the empty shape used to throw away entirely --
+    -- an evidence record carries chat and kills, and a strip is neither, so
+    -- `matchTimeline` was the only place either strip could have been recorded.
+    local strips = ofKind(p and p.matchTimeline, W.BR.IncidentBuild.STRIP_KIND)
+    ok(#strips == 2, 'both strips are on it, including the quiet first one', #strips)
+end
+
+describe('timeline.warmup-close')
+do
+    -- THE SECOND HALF: the case must receive the match-end write like any other,
+    -- and the start and deadline that did not exist at filing must arrive on it.
+    local W = newTimelineWorld()
+    W.formMatch(7, 500)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+    W.join(2, 7, 'license:v1', 'Victim1')
+
+    local CONJURED = 0x11111111
+    W.at(1000); W.strip(1, CONJURED)
+    W.at(2000); W.strip(1, CONJURED)
+    W.ack(7, 'license:cheat', 'inc-1')
+
+    -- THE MATCH THEN ACTUALLY STARTS, which is what makes the start knowable.
+    W.at(3000); W.beginPlaying(7, 3000)
+    W.at(5000); W.kill(1, 2)
+
+    W.at(9000); W.endMatch(7)
+
+    local c = W.lastClose()
+    ok(c ~= nil, 'a case filed during warmup is closed at match end')
+    ok(c and c.incidentId == 'inc-1', 'against the id it was filed under')
+    ok(c and c.matchEndedAt == 9000, 'and records when the match ended',
+        c and tostring(c.matchEndedAt))
+
+    -- THE REPAIR. Neither of these was on the row at filing time.
+    ok(c and c.matchStartedAt == 3000,
+        'the close carries the start the filing could not know',
+        c and tostring(c.matchStartedAt))
+    ok(c and c.matchEndsByMs == W.BR.IncidentBuild.TIMELINE_LIMITS.MATCH_ENDS_BY_MS,
+        'and the deadline that goes with it',
+        c and tostring(c.matchEndsByMs))
+
+    -- AND THE REST OF THE MATCH IS ON IT TOO.
+    ok(#ofKind(c and c.matchTimeline, 'kill') == 1,
+        'with the kill that happened after the case was filed',
+        c and #ofKind(c.matchTimeline, 'kill'))
+end
+
+describe('timeline.warmup-dissolved')
+do
+    -- A MATCH NOBODY STAYED FOR. It is destroyed off the pad without ever
+    -- entering PLAYING, so there is no start and there never will be -- and the
+    -- close must say nothing about one rather than write the end time into it or
+    -- null out the row's own answer.
+    local W = newTimelineWorld()
+    W.formMatch(7, 500)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    local CONJURED = 0x11111111
+    W.at(1000); W.strip(1, CONJURED)
+    W.at(2000); W.strip(1, CONJURED)
+    W.ack(7, 'license:cheat', 'inc-1')
+
+    W.at(4000); W.endMatch(7)
+
+    local c = W.lastClose()
+    ok(c ~= nil, 'a match that dissolves on the pad still closes its case')
+    ok(c and c.matchEndedAt == 4000, 'and says when it was torn down')
+    ok(c and c.matchStartedAt == nil,
+        'without claiming a start it never had', c and tostring(c.matchStartedAt))
+    ok(c and c.matchEndsByMs == nil,
+        'and without a deadline measured from one', c and tostring(c.matchEndsByMs))
+end
+
+describe('timeline.close-reads-the-event-not-the-registry')
+do
+    -- ═══ THE ORDERING HAZARD, ASSERTED DIRECTLY ═══
+    --
+    -- BR.Match.destroy clears `BR.Server.matches[id]` and THEN announces the
+    -- destruction, so by the time any handler runs there is no instance left to
+    -- read `startedAt` off. A close that looked it up there would find nil for
+    -- EVERY match -- including one that ran for twenty minutes -- and would then
+    -- write a null over a start that was correct on the row.
+    --
+    -- This is an ordinary mid-match case, so the registry lookup and the event
+    -- field disagree in the one direction that matters: nil versus 1000.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.file(7, 'license:cheat', 'Cheater', 'inc-1')
+    W.at(9000); W.endMatch(7)
+
+    ok(W.S.matches[7] == nil,
+        'the registry entry is gone by the time the close is built')
+
+    local c = W.lastClose()
+    ok(c and c.matchStartedAt == 1000,
+        'and the close still knows when the match started, from the event',
+        c and tostring(c.matchStartedAt))
 end
 
 describe('timeline.corroboration')
@@ -3019,6 +3222,197 @@ do
 
     ok(#W.S.incidents == 0, 'a match with no strips files nothing')
     ok(#W.S.closes == 0, 'and closes nothing -- zero writes', #W.S.closes)
+end
+
+-- ======================================================================== --
+-- br_ringmaster's OWN half of the close  (#30, #B, #C)
+-- ======================================================================== --
+--
+-- WHAT IS UNDER TEST HERE THAT IS NOWHERE ELSE. br_ringmaster/server/incident.lua
+-- was loaded by no suite at all, which meant `realiseClose` -- the function that
+-- turns the game clock into wall clock and a DURATION into a DEADLINE on its way
+-- to DynamoDB -- had no coverage of any kind. A mistake in it does not throw:
+-- it writes a plausible number into a real attribute, and the console renders a
+-- moderation record dated 1970 or a deadline an hour in the wrong direction.
+--
+-- IT IS LOADED HERE, AT THE BOTTOM, ON PURPOSE. This file's harness is one
+-- global Lua state shared by every case above it, and this file registers
+-- handlers for events those cases do not use. Loading it last keeps that
+-- one-directional.
+
+loadAll({ 'br_ringmaster/server/incident.lua' })
+
+--- The last payload br_ddb was asked to write, and a way to answer for it.
+local ddbClose = { req = nil, payload = nil }
+AddEventHandler('br:ddb:incidentClose', function(req, payload)
+    ddbClose.req, ddbClose.payload = req, payload
+end)
+local function answerClose(ok, extra)
+    TriggerEvent('br:ddb:incidentCloseResult', ddbClose.req, ok, extra or {})
+end
+
+--- Everything brring printed this call.
+local function brringOutput()
+    local from = #printed + 1
+    commands['brring'].fn(0, {}, '')
+    return table.concat(printed, '\n', from, #printed)
+end
+
+--- The last payload br_ddb was asked to file.
+local ddbPut = { req = nil, payload = nil }
+AddEventHandler('br:ddb:putIncident', function(req, _, payload)
+    ddbPut.req, ddbPut.payload = req, payload
+end)
+
+describe('filing.realise')
+do
+    -- THE CONVERSION IS EXHAUSTIVE OR IT IS WORSE THAN NOTHING. Every timestamp
+    -- on an incident is a GetGameTimer() reading on the way in, and one field
+    -- missed here renders as January 1970 beside fields that render correctly --
+    -- which reads as corrupt data rather than as a bug in one line of Lua.
+    --
+    -- `matchCreatedAt` IS THE NEWEST OF THEM and, for a case filed during
+    -- warmup, the ONLY match timestamp on the row -- so a missed conversion here
+    -- is the whole of what that case says about its match, wrong.
+    fakeTime = 5000000
+
+    TriggerEvent('br:ringmaster:incident', {
+        kind           = 'anticheat',
+        severity       = 'high',
+        subjectLicense = 'license:cheat',
+        matchId        = 7,
+        atGameMs       = 2000000,
+        matchCreatedAt = 1000000,
+        matchTimeline  = { { at = 1000000, kind = 'match_created' } },
+    })
+
+    local p = ddbPut.payload
+    ok(p ~= nil, 'the filing reaches br_ddb')
+    ok(p and p.matchCreatedAt and p.matchCreatedAt > 1700000000000,
+        'the formation time is converted to a real unix millisecond',
+        p and tostring(p.matchCreatedAt))
+    ok(p and p.openedAt and p.openedAt - p.matchCreatedAt == 1000000,
+        'and the gap between it and the filing survives the conversion',
+        p and tostring(p.openedAt and p.matchCreatedAt
+            and (p.openedAt - p.matchCreatedAt)))
+    ok(p and p.matchTimeline[1].at == p.matchCreatedAt,
+        'and the timeline entry at that moment realises to exactly it')
+end
+
+describe('close.realise')
+do
+    fakeTime = 5000000
+
+    -- The shape br_core emits: game-clock readings and a DURATION, because
+    -- br_lib has no wall clock and br_ringmaster owns the pair.
+    TriggerEvent('br:ringmaster:incidentClose', {
+        incidentId            = 'inc-real',
+        matchId               = 7,
+        subjectLicense        = 'license:cheat',
+        matchEndedAt          = 4000000,
+        matchStartedAt        = 1000000,
+        matchEndsByMs         = 60 * 60 * 1000,
+        matchTimeline         = { { at = 1000000, kind = 'match_created' } },
+        matchTimelineComplete = true,
+        matchKillsSeen        = 0,
+    })
+
+    local p = ddbClose.payload
+    ok(p ~= nil, 'the close reaches br_ddb')
+
+    -- REAL TIME, NOT GAME TIME. `os.time()` is seconds, so the absolute value
+    -- cannot be pinned without making the suite depend on when it runs -- but
+    -- the DIFFERENCES are exact arithmetic and are what a missed conversion
+    -- destroys. A `matchStartedAt` left as 1000000 fails the first of these.
+    ok(p and p.matchStartedAt and p.matchStartedAt > 1700000000000,
+        'the start is converted to a real unix millisecond',
+        p and tostring(p.matchStartedAt))
+    ok(p and p.matchEndedAt and p.matchEndedAt - p.matchStartedAt == 3000000,
+        'and the gap between start and end survives the conversion',
+        p and tostring(p.matchEndedAt and p.matchStartedAt
+            and (p.matchEndedAt - p.matchStartedAt)))
+
+    -- THE DURATION BECOMES AN ABSOLUTE DEADLINE, HERE AND ONLY HERE. The console
+    -- compares it against Date.now() and knows nothing about the game's uptime.
+    ok(p and p.matchEndsBy and p.matchEndsBy - p.matchStartedAt == 60 * 60 * 1000,
+        'the duration becomes a deadline measured from the realised start',
+        p and tostring(p.matchEndsBy))
+    ok(p and p.matchEndsByMs == nil,
+        'and the duration itself does not travel on to DynamoDB',
+        p and tostring(p.matchEndsByMs))
+
+    -- COMPUTED FROM THE SAME SAMPLE AS THE START. Two clock reads would drift,
+    -- and a deadline sampled apart from the start it is measured from is the one
+    -- thing this pair must never be.
+    ok(p and p.matchTimeline[1].at == p.matchStartedAt,
+        'a timeline entry at the start realises to exactly the start')
+end
+
+describe('close.no-start')
+do
+    -- A MATCH THAT DISSOLVED ON THE PAD. `real()` answers nil for nil, so
+    -- nothing is invented -- and close.js omits the attribute entirely rather
+    -- than writing a null over whatever the row already says.
+    TriggerEvent('br:ringmaster:incidentClose', {
+        incidentId    = 'inc-nostart',
+        matchEndedAt  = 4000000,
+        matchTimeline = {},
+    })
+
+    local p = ddbClose.payload
+    ok(p and p.incidentId == 'inc-nostart', 'a startless close still goes out')
+    ok(p and p.matchStartedAt == nil,
+        'with no start invented for it', p and tostring(p.matchStartedAt))
+    ok(p and p.matchEndsBy == nil,
+        'and no deadline derived from one', p and tostring(p.matchEndsBy))
+end
+
+describe('brring.closes')
+do
+    -- ═══ #C: THE COUNTER THAT NOTHING PRINTED ═══
+    --
+    -- `closeFailed` has been counted since #30 and surfaced nowhere. The failure
+    -- it counts is the quietest in the pipeline: the case is filed, the row is
+    -- durable, the console lists it, and the write that would say how the match
+    -- finished never lands. Every symptom is on the CONSOLE -- cases reading
+    -- "end never reported" -- so the obvious diagnosis is a console bug and the
+    -- actual cause is an IAM allowlist missing an attribute this write touches.
+    -- That has now happened three times.
+
+    -- The two closes above were never answered, so nothing has resolved yet.
+    ok(BR.Ring.incidentStats().closeFailed == 0,
+        'nothing has failed yet', BR.Ring.incidentStats().closeFailed)
+
+    local idle = brringOutput()
+    ok(idle:find('closes 0, failed 0', 1, true) ~= nil,
+        'brring reports the close counters even when they are zero', idle)
+
+    -- ONE THAT SUCCEEDS.
+    answerClose(true, {})
+    ok(BR.Ring.incidentStats().closed == 1,
+        'a successful close is counted', BR.Ring.incidentStats().closed)
+
+    -- AND ONE THAT DOES NOT, with the answer an un-widened attribute allowlist
+    -- actually produces.
+    TriggerEvent('br:ringmaster:incidentClose', {
+        incidentId    = 'inc-denied',
+        matchEndedAt  = 4000000,
+        matchTimeline = {},
+    })
+    answerClose(false, { error = 'AccessDeniedException', retryable = false })
+
+    ok(BR.Ring.incidentStats().closeFailed == 1,
+        'a refused close is counted', BR.Ring.incidentStats().closeFailed)
+
+    local after = brringOutput()
+    ok(after:find('closes 1, failed 1', 1, true) ~= nil,
+        'and brring prints both numbers', after)
+
+    -- THE DIAGNOSIS, NOT JUST THE COUNT. The allowlist is the one cause a reader
+    -- cannot guess from the console's symptom, and it has been the cause every
+    -- time.
+    ok(after:find('dynamodb:Attributes', 1, true) ~= nil,
+        'along with where to look when it is not zero', after)
 end
 
 -- ----------------------------------------------------------------- result ---

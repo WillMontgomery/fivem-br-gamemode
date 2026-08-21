@@ -663,6 +663,20 @@ do
         'players move to warmup with the match')
     ok(mendsAt() > fakeTime, 'warmup has a deadline')
 
+    -- ═══ THE TWO TIMESTAMPS, WHICH ARE NOT THE SAME TIMESTAMP ═══
+    --
+    -- A match on the pad has been FORMED and has not STARTED, and until #A only
+    -- the second of those was written down. That is why a weapon-strip case
+    -- opened during warmup had no match context at all: `startedAt` is stamped
+    -- on entering PLAYING, so the case was filed against a match whose only
+    -- recorded fact about itself did not exist yet.
+    ok(theMatch().createdAt ~= nil,
+        'a match records when it was formed',
+        tostring(theMatch().createdAt))
+    ok(theMatch().startedAt == nil,
+        'and does not claim to have started while it is on the pad',
+        tostring(theMatch().startedAt))
+
     -- Countdowns are derived from endsAt, never ticked over the network.
     fakeTime = mendsAt() + 1
     BR.Sched.step(fakeTime)
@@ -672,6 +686,16 @@ do
     fakeTime = mendsAt() + 1
     BR.Sched.step(fakeTime)
     ok(mstate() == BR.MatchState.PLAYING, 'the bus route ends in play')
+
+    -- AND ONLY NOW DOES IT HAVE A START, later than the formation it has carried
+    -- since the pad. A case filed anywhere in between belongs to this match and
+    -- has only the earlier of these two to say so.
+    ok(theMatch().startedAt ~= nil, 'the match records when it went live',
+        tostring(theMatch().startedAt))
+    ok(theMatch().createdAt ~= nil and theMatch().startedAt > theMatch().createdAt,
+        'strictly after it was formed',
+        tostring(theMatch().createdAt) .. ' -> ' .. tostring(theMatch().startedAt))
+
     -- Since M3, the transition does not make anyone alive -- riders were
     -- force-ejected at the end of the chord and are falling; LANDING is what
     -- makes a player alive (pinned in match.bus).
@@ -6163,11 +6187,31 @@ do
     -- that the handler ACTS on the announcement. Testing only one would leave
     -- either a signal nobody hears or a listener nothing calls.
     fired = {}
+    -- STAMPED BY HAND BECAUSE `lootMatch` BYPASSES transition(). It writes
+    -- `state = PLAYING` directly -- see the note there -- so onEnter(PLAYING),
+    -- which is what really sets `startedAt`, never runs. A nil here would let
+    -- the assertion below pass against an event that carried nothing.
+    m2.startedAt = fakeTime
+    local wasStartedAt = m2.startedAt
     BR.Match.destroy(m2)
     local announced = firedOf('br:match:destroyed')[1]
     ok(announced ~= nil and announced.matchId == m2.id,
         'destroying a match announces it, with the id',
         announced and tostring(announced.matchId) or 'nothing announced')
+
+    -- AND WITH `startedAt`, WHICH IS THE ONLY WAY ANYBODY CAN STILL LEARN IT.
+    -- destroy clears `BR.Server.matches[id]` BEFORE it announces, so every
+    -- handler runs against a registry that no longer holds the instance. The
+    -- incident close needs the value -- a case filed during warmup has no start
+    -- on its row and this is when the real one becomes final -- and a close that
+    -- looked it up instead would read nil for every match on the server and null
+    -- out a start that was correct.
+    ok(BR.Server.matches[m2.id] == nil,
+        'and the registry entry is already gone when it announces')
+    ok(announced ~= nil and announced.startedAt == wasStartedAt
+        and wasStartedAt ~= nil,
+        'so when the match started rides the announcement',
+        announced and tostring(announced.startedAt) or 'nothing announced')
 
     fire('br:match:destroyed', nil, { matchId = m2.id })
     local after = BR.Evidence.stats()

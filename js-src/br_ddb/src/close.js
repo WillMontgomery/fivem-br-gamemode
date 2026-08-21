@@ -8,11 +8,12 @@
  *
  * ═══ WHAT THIS WRITE IS, AND WHY IT IS THE ONLY DEFERRED ONE ═══
  *
- * An incident carries the match around it: when the match started, every kill
- * the subject landed, when it ended. All but the last two of those are already
- * true at filing time and ride the PutItem in incident.js at no extra cost.
- * That the match ENDED is not knowable then, and neither are the kills after the
- * report -- so they need a write of their own, and this is it.
+ * An incident carries the match around it: when the match was formed, when it
+ * started, every kill the subject landed, when it ended. Most of that is already
+ * true at filing time and rides the PutItem in incident.js at no extra cost.
+ * That the match ENDED is not knowable then, neither are the kills after the
+ * report, and neither is when the match STARTED for a case filed during warmup
+ * -- so they need a write of their own, and this is it.
  *
  * ONE PER INCIDENT. A match that produced no incident produces no call to this
  * function at all: br_core only emits a close for cases it actually filed. Cost
@@ -27,10 +28,12 @@
  * beside it, and nothing the console does writes those.
  *
  * That split is what lets the game's IAM grant be stated as an attribute
- * allowlist: this update names five attributes and an admin's timeline is not
- * among them, so a policy that permits exactly these five permits nothing about
- * a moderation decision. See docs/aws-setup.md -- the same reasoning the
- * handoff table was split out for.
+ * allowlist: every attribute this update names is one the game owns and an
+ * admin's timeline is not among them, so a policy that permits exactly this list
+ * permits nothing about a moderation decision. See docs/aws-setup.md -- the same
+ * reasoning the handoff table was split out for. The list is spelled out at the
+ * UpdateExpression below, together with the order the policy and this code have
+ * to be deployed in.
  *
  * The console renders one timeline by merging the two lists on `at`. Two
  * writers, two attributes, one view.
@@ -111,6 +114,31 @@ export function timelineEntry(e) {
   const kind = str(e?.kind, 32)
 
   if (kind === 'match_start' || kind === 'match_end') {
+    return { at, kind }
+  }
+
+  /**
+   * THE MATCH WAS FORMED. NOT THE SAME FACT AS `match_start`, AND THAT IS THE
+   * ENTIRE REASON IT IS A THIRD KIND RATHER THAN A `match_start` WITH AN EARLIER
+   * `at`.
+   *
+   * A match is minted into WARMUP and only stamps `startedAt` on entering
+   * PLAYING (br_core/server/match.lua). Anything filed on the warmup pad -- a
+   * weapon this gamemode never issued, taken out of a hand before the offender
+   * has touched a real player -- therefore has no start to anchor its timeline
+   * on. The obvious fix is to put the creation time in `matchStartedAt`, and it
+   * is wrong: `match_start` would then mean "the lobby opened" on some rows and
+   * "the match began" on others, with nothing on either row saying which. The
+   * console cannot render an ambiguous field honestly, so it gets an unambiguous
+   * one instead and can say "formed" where that is what happened.
+   *
+   * THE SPELLING IS LOAD-BEARING ACROSS TWO LANGUAGES, exactly as `weapon_strip`
+   * is. The Lua side names it once, as MATCH_CREATED_KIND in
+   * br_lib/shared/incident_build.lua, and the `return null` at the bottom of this
+   * function drops what it does not recognise -- so a typo here fails nothing and
+   * simply means the entries never arrive. tools/verify.sh compares the literals.
+   */
+  if (kind === 'match_created') {
     return { at, kind }
   }
 
@@ -234,6 +262,27 @@ export function buildIncidentClose(incidentId, payload, tableName) {
   const seen = int(payload.matchKillsSeen) ?? 0
 
   /**
+   * ═══ THE TWO ATTRIBUTES A WARMUP-FILED CASE IS MISSING ═══
+   *
+   * A case filed during WARMUP is filed before its match has a `startedAt` --
+   * that is stamped on entering PLAYING -- so its row is written with a null
+   * start and, because the deadline is derived from the start, a null
+   * `matchEndsBy` too. Both are known by the time this write happens, and this
+   * write was already happening, so they ride it.
+   *
+   * OMITTED RATHER THAN NULLED WHEN THEY ARE NOT KNOWN, and that is a guard
+   * rather than a tidy-up. A match that dissolved on the pad ends without ever
+   * having started, and a close that unconditionally SET these would write NULL
+   * over whatever the row already said -- including, if a caller ever failed to
+   * pass the start for a match that DID run, a correct value on an ordinary
+   * case. The narrow update is also exactly the update this file made before
+   * these two existed, so a close that has nothing to add is byte-for-byte the
+   * write the old IAM policy already permitted.
+   */
+  const startedAt = int(payload.matchStartedAt)
+  const endsBy = int(payload.matchEndsBy)
+
+  /**
    * TRUNCATION IS REPORTED, NEVER SILENT -- the house rule the evidence log's
    * `truncated` flag already sets. A timeline that stops early and looks
    * complete tells an admin "this is everything they did" when it is not, which
@@ -246,6 +295,34 @@ export function buildIncidentClose(incidentId, payload, tableName) {
   const complete =
     payload.matchTimelineComplete === true &&
     entries.length === list(payload.matchTimeline).length
+
+  /**
+   * BUILT AS A LIST BECAUSE TWO OF THE SIX ARE CONDITIONAL. Order within a SET
+   * is meaningless to DynamoDB; it is kept in the reading order a person would
+   * want -- when it ended, when it started, when it was due to end, then the
+   * three about the timeline.
+   */
+  const sets = ['matchEndedAt = :end']
+  const values = {
+    ':end': matchEndedAt,
+    ':complete': complete,
+    ':seen': seen,
+    ':entries': entries,
+    ':empty': [],
+  }
+
+  if (startedAt !== null) {
+    sets.push('matchStartedAt = :start')
+    values[':start'] = startedAt
+  }
+  if (endsBy !== null) {
+    sets.push('matchEndsBy = :endsBy')
+    values[':endsBy'] = endsBy
+  }
+
+  sets.push('matchTimelineComplete = :complete')
+  sets.push('matchKillsSeen = :seen')
+  sets.push('matchTimeline = list_append(if_not_exists(matchTimeline, :empty), :entries)')
 
   return {
     params: {
@@ -264,12 +341,33 @@ export function buildIncidentClose(incidentId, payload, tableName) {
        * facts to a case, and it must not be able to express an opinion about
        * one. The attribute list here is exactly the allowlist the IAM statement
        * in docs/aws-setup.md should name.
+       *
+       * ═══ THAT LIST GREW, AND THE POLICY MUST GROW FIRST ═══
+       *
+       * `matchStartedAt` and `matchEndsBy` joined it so that a case filed during
+       * WARMUP -- which has neither on its row, because neither existed when the
+       * row was written -- receives them when the match actually starts and
+       * ends. The seven the statement must now name:
+       *
+       *     incidentId, matchEndedAt, matchStartedAt, matchEndsBy,
+       *     matchTimeline, matchTimelineComplete, matchKillsSeen
+       *
+       * WIDEN THE POLICY BEFORE DEPLOYING THIS CODE, NEVER AFTER. The two
+       * orderings are not symmetrical:
+       *
+       *   policy first   harmless. The old code writes five attributes and a
+       *                  seven-attribute allowlist permits all five.
+       *   code first     every close fails. `dynamodb:Attributes` is enforced
+       *                  per REQUEST, not per attribute, so DynamoDB refuses the
+       *                  WHOLE UpdateItem -- the end timestamp and the
+       *                  post-filing timeline are lost along with the two new
+       *                  fields, on every case, for as long as the window lasts.
+       *
+       * `matchCreatedAt` IS DELIBERATELY NOT ON THIS LIST. It is written once,
+       * by the PutItem in incident.js, which is not attribute-constrained. A
+       * close has nothing to say about when a match was formed.
        */
-      UpdateExpression:
-        'SET matchEndedAt = :end, ' +
-        'matchTimelineComplete = :complete, ' +
-        'matchKillsSeen = :seen, ' +
-        'matchTimeline = list_append(if_not_exists(matchTimeline, :empty), :entries)',
+      UpdateExpression: 'SET ' + sets.join(', '),
 
       /**
        * THE ROW MUST ALREADY EXIST. A close for a case whose PutItem was lost
@@ -280,13 +378,7 @@ export function buildIncidentClose(incidentId, payload, tableName) {
        */
       ConditionExpression: 'attribute_exists(incidentId)',
 
-      ExpressionAttributeValues: {
-        ':end': matchEndedAt,
-        ':complete': complete,
-        ':seen': seen,
-        ':entries': entries,
-        ':empty': [],
-      },
+      ExpressionAttributeValues: values,
 
       /**
        * NONE, AND THE IAM POLICY SHOULD REQUIRE IT. An attribute allowlist on

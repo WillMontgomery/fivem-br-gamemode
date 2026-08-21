@@ -309,9 +309,9 @@ end)
 --                since the case is opened by the SECOND strip that includes the
 --                first one, which was recorded and announced to nobody.
 --   every one    is on the timeline the match-end close appends. That write was
---   after them   already happening for this case and touches only the five
---                attributes the game's IAM grant allows; strips cost it nothing
---                extra and add no attribute to it.
+--   after them   already happening for this case and touches only the attributes
+--                the game's IAM grant allows; strips cost it nothing extra and
+--                add no attribute to it.
 --
 -- SO A RECURSIVE CHEATER COSTS THE SAME TWO WRITES AS A SINGLE ONE. That is the
 -- cost rule this whole subsystem is built on -- see the note further down --
@@ -518,17 +518,25 @@ end)
 -- An incident should show the match around it, not just the report. Two halves,
 -- and the split between them is a cost decision rather than a structural one:
 --
---   AT FILING      match start, and every kill by the subject so far. Both are
---                  already in hand -- the match registry knows when it started
---                  and the evidence buffer has been holding the kills in RAM all
+--   AT FILING      when the match was formed, when it started if it has, and
+--                  every kill and strip by the subject so far. All of it is
+--                  already in hand -- the match registry knows both timestamps
+--                  and the evidence buffer has been holding the rest in RAM all
 --                  along -- so they ride the PutItem that was already happening
 --                  and cost NOTHING extra.
 --
---   AT MATCH END   the fact that the match ended, plus the kills that happened
---                  after the case was filed. This is the only part that cannot
---                  be known at filing time, and it is therefore the only extra
---                  write: ONE per incident, and none at all for a match that
---                  produced no incident.
+--   AT MATCH END   the fact that the match ended, plus the kills and strips that
+--                  happened after the case was filed -- and, for a case filed
+--                  during WARMUP, the start and deadline that did not exist yet
+--                  when its row was written. None of that can be known at filing
+--                  time, and it is therefore the only extra write: ONE per
+--                  incident, and none at all for a match that produced no
+--                  incident.
+--
+-- A CASE FILED DURING WARMUP GETS BOTH HALVES, which it did not before #B. The
+-- registration below used to require a match START, so a warmup case was never
+-- queued for the close and its row never received an end -- the one shape the
+-- console cannot distinguish from "this was not about a match at all".
 --
 -- NOTHING IS LOGGED SPECULATIVELY. A quiet match still writes nothing, which is
 -- the rule the evidence buffer already existed to enforce and the reason the
@@ -576,16 +584,25 @@ function BR.Incident.attachTimeline(payload, records)
     end
 
     -- `startedAt` IS STAMPED ON ENTERING PLAYING AND NOTHING CLEARS IT
-    -- (server/match.lua), and BR.Match.wasPlayed is the same test. A case filed
-    -- during warmup therefore carries no match timeline rather than one that
-    -- begins at nil.
+    -- (server/match.lua), and BR.Match.wasPlayed is the same test. So it is nil
+    -- for every case filed on the warmup pad -- and `createdAt` is what those
+    -- cases are anchored on instead.
+    --
+    -- BOTH ARE SENT AND NEITHER IS SUBSTITUTED FOR THE OTHER. The tempting
+    -- one-liner is `matchStartedAt = m.startedAt or m.createdAt`, and it is
+    -- wrong: `matchStartedAt` would then mean "the match began" on some rows and
+    -- "the lobby opened" on others, with nothing on either row saying which, and
+    -- every consumer of it -- the console's header, the `matchEndsBy` deadline,
+    -- the `match_start` timeline entry -- would inherit the ambiguity silently.
     local t = BR.IncidentBuild.timelineOpen({
         matchId        = payload.matchId,
         matchStartedAt = m and m.startedAt or nil,
+        matchCreatedAt = m and m.createdAt or nil,
         records        = records,
     })
 
     payload.matchStartedAt        = t.matchStartedAt
+    payload.matchCreatedAt        = t.matchCreatedAt
     payload.matchEndsByMs         = t.matchEndsByMs
     payload.matchTimeline         = t.matchTimeline
     payload.matchTimelineComplete = t.matchTimelineComplete
@@ -599,8 +616,23 @@ function BR.Incident.attachTimeline(payload, records)
         BR.Evidence.retain(payload.subjectLicense)
     end
 
-    if payload.matchId ~= nil and t.matchStartedAt ~= nil
-        and payload.subjectLicense ~= nil then
+    -- ═══ A WARMUP CASE IS REGISTERED FOR THE CLOSE LIKE ANY OTHER ═══
+    --
+    -- THIS GUARD USED TO READ `t.matchStartedAt ~= nil` AND THAT WAS THE BUG. A
+    -- case filed on the warmup pad never entered this map, so it never moved to
+    -- `closing` on the acknowledgement, so it never received a match-end write
+    -- -- not later, not ever. Its row sat in the console with no start, no
+    -- deadline and no end, which the console reads as "filed outside a match":
+    -- false about a row that carries a matchId, and false about the earliest
+    -- cheat signal this server can produce.
+    --
+    -- WHAT REPLACES IT IS "DO WE KNOW OF THIS MATCH AT ALL", not "did it start".
+    -- Either timestamp answers that. A payload whose matchId names a match the
+    -- registry has never heard of -- a stale id, a restarted resource -- still
+    -- registers nothing, because the match-end event that would clear it is
+    -- never coming and the entry would sit here for the life of the process.
+    if payload.matchId ~= nil and payload.subjectLicense ~= nil
+        and (t.matchStartedAt ~= nil or t.matchCreatedAt ~= nil) then
         local byLicense = pendingTimeline[payload.matchId]
         if not byLicense then
             byLicense = {}
@@ -671,6 +703,13 @@ AddEventHandler('br:evidence:closing', function(ev)
 
         local close = BR.IncidentBuild.timelineClose({
             matchEndedAt  = endedAt,
+            -- FROM THE EVENT, NOT FROM THE REGISTRY. server/match.lua clears
+            -- `BR.Server.matches[id]` before it announces the destruction, so a
+            -- lookup here reads nil for EVERY match -- including the ones that
+            -- ran for twenty minutes -- and the close would then null out a
+            -- start that was correct on the row. It travels on the event
+            -- instead; see the note at the TriggerEvent in server/match.lua.
+            matchStartedAt = ev.startedAt,
             filedAtGameMs = c.filedAt,
             records       = records,
             priorKills    = c.killsWritten,
@@ -686,6 +725,18 @@ AddEventHandler('br:evidence:closing', function(ev)
             matchId               = ev.matchId,
             subjectLicense        = c.license,
             matchEndedAt          = close.matchEndedAt,
+            -- THE TWO THAT REPAIR A WARMUP-FILED ROW. Both are nil for a match
+            -- that dissolved without going live, and a nil key does not travel
+            -- -- so the close writes nothing about a start that never happened
+            -- rather than writing a null over the row's own answer.
+            --
+            -- THE IAM POLICY MUST NAME `matchStartedAt` AND `matchEndsBy`
+            -- BEFORE THIS SHIPS. DynamoDB refuses the whole UpdateItem when an
+            -- attribute is outside the grant's allowlist, so an un-widened
+            -- policy costs the end timestamp and the post-filing timeline too,
+            -- not just these two. `brring` reports the failures.
+            matchStartedAt        = close.matchStartedAt,
+            matchEndsByMs         = close.matchEndsByMs,
             matchTimeline         = close.matchTimeline,
             matchTimelineComplete = close.matchTimelineComplete,
             matchKillsSeen        = close.matchKillsSeen,

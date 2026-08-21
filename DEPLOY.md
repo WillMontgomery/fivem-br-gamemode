@@ -137,6 +137,28 @@ never contained anything (see below).
 Two tables in **us-east-2**, and the IAM policy in the Ringmaster repo's
 `docs/aws-setup.md`:
 
+> **The incident-close statement must be widened before this code is deployed.**
+> `GameServerCloseIncidentTimeline` in that policy is an attribute allowlist, and
+> the game's match-end write now names two more attributes than it used to:
+>
+> ```
+> "dynamodb:Attributes": [
+>   "incidentId", "matchEndedAt", "matchStartedAt", "matchEndsBy",
+>   "matchTimeline", "matchTimelineComplete", "matchKillsSeen"
+> ]
+> ```
+>
+> The two orderings are not symmetrical. **Policy first is harmless** — the old
+> code writes five of those seven and a wider allowlist permits them. **Code
+> first fails every close**: `dynamodb:Attributes` is evaluated against the whole
+> request, so DynamoDB refuses the entire `UpdateItem` and the end timestamp and
+> post-filing timeline are lost along with the two new fields.
+>
+> The symptom appears on the *console* — cases stuck reading "end never reported"
+> — and nothing on the game box says a word about it unless you ask. **`brring`
+> now prints `closes N, failed N`**; a non-zero failure count after a policy
+> change is the first place to look.
+
 | Table | Partition key | Sort key | Holds |
 |---|---|---|---|
 | `br-players` | `pk` (String) | `sk` (String) | `sk = profile` — matches, wins, kills, XP, level.<br>`sk = purchases` — market items, granted back on join.<br>`sk = match#<endedAt>#<matchId>` — one row per match played. |

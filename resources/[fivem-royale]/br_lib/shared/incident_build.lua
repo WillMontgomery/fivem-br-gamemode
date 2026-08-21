@@ -541,6 +541,27 @@ local MAX_TIMELINE_KILLS = 250
 --- can be made to agree mechanically.
 local STRIP_KIND = 'weapon_strip'
 
+--- The `kind` an entry carries when the match had been FORMED but not STARTED.
+---
+--- A DIFFERENT WORD BECAUSE IT IS A DIFFERENT FACT, and that is the whole reason
+--- this constant exists rather than a `match_start` entry carrying the creation
+--- time. `startedAt` is stamped on entering PLAYING and nothing else sets it
+--- (br_core/server/match.lua), so a case filed during warmup has no start -- and
+--- the tempting fix, writing the creation time into `matchStartedAt`, would make
+--- `match_start` mean "the lobby opened" on some rows and "the match began" on
+--- others with nothing on either row saying which. Two facts sharing one field is
+--- how a moderation record starts lying quietly.
+---
+--- SO THE CONSOLE GETS ITS OWN WORD FOR IT. An entry of this kind says "this is
+--- when the match this case belongs to was formed", which is the truth, and the
+--- console can render "formed" rather than "started".
+---
+--- ONE SPELLING, NAMED ONCE, FOR THE SAME REASON STRIP_KIND IS: close.js
+--- discriminates on this exact string and drops what it does not recognise.
+--- tools/verify.sh reads every `*_KIND` constant in this file and checks close.js
+--- names it, which is the only mechanical agreement two languages can have.
+local MATCH_CREATED_KIND = 'match_created'
+
 --- The most strip entries one incident's timeline may carry.
 ---
 --- SIXTY, AND IT IS THE BUFFER'S PROMOTED CAP RESTATED AS A BACKSTOP -- exactly
@@ -827,18 +848,40 @@ end
 --- PutItem that was already going to happen.
 ---
 --- @param opts table {
----     matchId, matchStartedAt (game ms), records }
+---     matchId, matchStartedAt (game ms), matchCreatedAt (game ms), records }
 --- @return table  fields to merge onto the incident payload
 function BR.IncidentBuild.timelineOpen(opts)
     opts = opts or {}
 
+    -- ═══ THE FIRST ENTRY IS THE ZERO POINT, AND WARMUP HAS ONE TOO ═══
+    --
+    -- A match that has STARTED anchors its timeline on the start, which is what
+    -- this has always done. A match that has only been FORMED anchors on its
+    -- creation, which is new and is the whole of #A: `startedAt` is stamped on
+    -- entering PLAYING, so a weapon-strip case filed on the warmup pad used to
+    -- fall through to the empty shape below and lose everything -- no zero
+    -- point, no strips, and (because the caller keyed its close registration on
+    -- the start) no match-end write for the rest of time. A strip during warmup
+    -- is the EARLIEST cheat signal there is; it must not be the least recorded.
+    --
+    -- THE START WINS WHEN BOTH ARE KNOWN, and the creation time still rides the
+    -- row as `matchCreatedAt`. One list, one beginning, and the console never
+    -- has to decide which of two entries meant "the match began".
+    local anchorAt, anchorKind = nil, nil
+    if opts.matchStartedAt ~= nil then
+        anchorAt, anchorKind = opts.matchStartedAt, 'match_start'
+    elseif opts.matchCreatedAt ~= nil then
+        anchorAt, anchorKind = opts.matchCreatedAt, MATCH_CREATED_KIND
+    end
+
     -- NO MATCH, NO TIMELINE. An anticheat firing from the lobby or a `brrefuse`
-    -- from the console carries no matchId and no start -- and inventing a
+    -- from the console carries no matchId and no times at all -- and inventing a
     -- timeline for it would put a match on the record that never happened. The
     -- console shows no match context at all in that case, which is the truth.
-    if opts.matchId == nil or opts.matchStartedAt == nil then
+    if opts.matchId == nil or anchorAt == nil then
         return {
             matchStartedAt        = nil,
+            matchCreatedAt        = nil,
             matchEndsByMs         = nil,
             matchTimeline         = {},
             matchTimelineComplete = true,
@@ -848,7 +891,7 @@ function BR.IncidentBuild.timelineOpen(opts)
         }
     end
 
-    local entries = { { at = opts.matchStartedAt, kind = 'match_start' } }
+    local entries = { { at = anchorAt, kind = anchorKind } }
 
     local kills, offered, seen = killEntries(opts.records, nil, MAX_TIMELINE_KILLS)
     local strips, stripsOffered, stripsSeen =
@@ -856,11 +899,21 @@ function BR.IncidentBuild.timelineOpen(opts)
     for _, e in ipairs(mergeByTime(kills, strips)) do entries[#entries + 1] = e end
 
     return {
+        -- STILL ABSENT UNTIL THE MATCH ACTUALLY STARTS. Nothing here invents one
+        -- from the creation time; the close writes the real value when it comes.
         matchStartedAt = opts.matchStartedAt,
+        matchCreatedAt = opts.matchCreatedAt,
         -- A DURATION HERE, AN ABSOLUTE TIME ON THE ROW. br_ringmaster owns the
         -- clock pair and turns this into wall-clock `matchEndsBy` on the way
         -- out, the same conversion every other timestamp in the payload gets.
-        matchEndsByMs  = MATCH_ENDS_BY_MS,
+        --
+        -- ONLY WHEN THERE IS A START TO MEASURE IT FROM. The deadline means "this
+        -- long after the match STARTED", and deriving it from the creation time
+        -- instead would be a different promise wearing the same name -- badly, on
+        -- a warmup that can be held open for a day (`brwarmup hold`), where
+        -- created + 60 minutes would tell an admin the end was never reported
+        -- about a match still sitting on the pad. The close carries the real one.
+        matchEndsByMs  = opts.matchStartedAt ~= nil and MATCH_ENDS_BY_MS or nil,
         matchTimeline  = entries,
         -- COMPLETENESS IS ABOUT THE WHOLE LIST, NOT ABOUT THE KILLS. A timeline
         -- whose kills are all present and whose strips were truncated is not
@@ -869,10 +922,12 @@ function BR.IncidentBuild.timelineOpen(opts)
         -- not produce.
         --
         -- THERE IS NO `matchStripsSeen` BESIDE `matchKillsSeen`, DELIBERATELY.
-        -- The close write may only touch five attributes -- that allowlist IS
-        -- the game's IAM grant on `ringmaster-incidents` -- and a sixth would
-        -- need the policy widened for a counter. The flag below already carries
-        -- the fact that something was dropped, which is what the reader needs.
+        -- The close write may only touch the attributes named in the game's IAM
+        -- grant on `ringmaster-incidents` -- seven of them since #B, and every
+        -- one had to be added to a policy before the code that writes it could
+        -- run. A counter would be an eighth round of that, for a number the flag
+        -- below already carries: something was dropped, which is what a reader
+        -- needs to know.
         matchTimelineComplete = (#kills == offered) and (offered == seen)
             and (#strips == stripsOffered) and (stripsOffered == stripsSeen),
         matchKillsSeen = seen,
@@ -882,11 +937,24 @@ function BR.IncidentBuild.timelineOpen(opts)
     }
 end
 
---- The one fact that only becomes true later: the match ended.
+--- The facts that only become true later: the match ended, and (for a case filed
+--- before it started) when it started.
+---
+--- WHY A START TRAVELS ON A CLOSE AT ALL. A case filed during WARMUP is filed
+--- before `startedAt` exists, so its row is written with no start and no
+--- deadline. Both become known while the case is already durable, and this is the
+--- write that was going to happen anyway -- so they ride it rather than costing
+--- one of their own. For a case filed during PLAYING the row already carries both
+--- and this restates them, which is a no-op rather than a correction.
+---
+--- ABSENT WHEN THE MATCH NEVER STARTED, and that absence has to survive. A match
+--- that dissolves on the pad ends without ever having begun; `matchStartedAt`
+--- stays nil here, the close omits it entirely, and the row keeps saying the
+--- honest thing rather than being overwritten with a null or with the end time.
 ---
 --- @param opts table {
----     matchEndedAt (game ms), filedAtGameMs, records, priorKills, priorStrips,
----     complete }
+---     matchEndedAt (game ms), matchStartedAt (game ms|nil), filedAtGameMs,
+---     records, priorKills, priorStrips, complete }
 --- @return table  the close payload
 function BR.IncidentBuild.timelineClose(opts)
     opts = opts or {}
@@ -933,6 +1001,13 @@ function BR.IncidentBuild.timelineClose(opts)
 
     return {
         matchEndedAt          = opts.matchEndedAt,
+        matchStartedAt        = opts.matchStartedAt,
+        -- THE SAME DURATION-TO-DEADLINE HANDOFF THE FILING USES, and it is here
+        -- for exactly one reason: a case filed during warmup has no deadline on
+        -- its row, so an end that later fails to arrive would leave it with
+        -- neither an end nor an expectation of one. Paired with the start above,
+        -- so the two are never written from different clocks.
+        matchEndsByMs         = opts.matchStartedAt ~= nil and MATCH_ENDS_BY_MS or nil,
         matchTimeline         = entries,
         matchTimelineComplete = complete,
         matchKillsSeen        = seen,
@@ -947,3 +1022,6 @@ BR.IncidentBuild.TIMELINE_LIMITS = {
 
 --- The `kind` a strip entry carries, for the tests and for verify.sh.
 BR.IncidentBuild.STRIP_KIND = STRIP_KIND
+
+--- The `kind` a formed-but-not-started match carries, for the same two readers.
+BR.IncidentBuild.MATCH_CREATED_KIND = MATCH_CREATED_KIND

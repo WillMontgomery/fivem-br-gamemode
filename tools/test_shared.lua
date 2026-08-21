@@ -1071,9 +1071,10 @@ do
     -- A truncated KILL list says so twice: `matchTimelineComplete` goes false
     -- and `matchKillsSeen` states the real number. Strips have only the flag,
     -- and deliberately never will have a counter of their own -- the close write
-    -- may touch exactly five attributes and that list IS the game's IAM grant on
-    -- `ringmaster-incidents`, so a sixth would mean widening a policy to carry a
-    -- number.
+    -- may touch only the attributes named in the game's IAM grant on
+    -- `ringmaster-incidents`, and every one of them had to be added to a policy
+    -- before the code writing it could run, so a counter would mean another
+    -- round of that for a number the flag already carries.
     --
     -- SO THE FLAG IS THE WHOLE GUARANTEE, and there are two ways to lose it: the
     -- CAP dropping rows on the way onto the timeline, and the BUFFER having
@@ -1174,6 +1175,133 @@ do
         if e.kind == BR.IncidentBuild.STRIP_KIND then m = m + 1 end
     end
     ok(m == 0, 'a close whose filing already spent the whole budget adds none', m)
+end
+
+describe('timeline.warmup-anchor')
+do
+    -- ═══ A CASE FILED BEFORE THE MATCH STARTED ═══
+    --
+    -- `startedAt` is stamped on entering PLAYING and nothing else sets it, so a
+    -- weapon-strip case opened on the warmup pad is built with no start at all.
+    -- Everything below is about that shape, and the one thing every assertion
+    -- guards together is that the creation time NEVER becomes the start: two
+    -- facts sharing one field is how a moderation record starts lying quietly.
+
+    local function records(n)
+        local strips = {}
+        for i = 1, n do strips[i] = { at = i * 10, weapon = 0x11111111 } end
+        return { { license = 'l:x', strips = strips, stripsSeen = n,
+                   kills = {}, killsSeen = 0 } }
+    end
+
+    -- (1) THE WARMUP CASE. Formed, not started.
+    local warm = BR.IncidentBuild.timelineOpen({
+        matchId = 7, matchCreatedAt = 500, records = records(2),
+    })
+
+    ok(warm.matchStartedAt == nil,
+        'a case filed during warmup still says the match has not started',
+        tostring(warm.matchStartedAt))
+    ok(warm.matchCreatedAt == 500,
+        'and carries when the match was formed instead',
+        tostring(warm.matchCreatedAt))
+
+    -- THE DEADLINE IS NOT DERIVED FROM THE CREATION TIME, and that is a decision
+    -- rather than an omission. `matchEndsBy` means "this long after the match
+    -- STARTED"; measured from the formation it would fire early on any long
+    -- warmup -- `brwarmup hold` holds one for a DAY -- and tell an admin the end
+    -- was never reported about a match still sitting on the pad.
+    ok(warm.matchEndsByMs == nil,
+        'and no deadline, because there is no start to measure one from',
+        tostring(warm.matchEndsByMs))
+
+    ok(#warm.matchTimeline > 0,
+        'the timeline is not empty, which is what it used to be', #warm.matchTimeline)
+    ok(warm.matchTimeline[1] and
+        warm.matchTimeline[1].kind == BR.IncidentBuild.MATCH_CREATED_KIND,
+        'it is anchored on the formation, under its own kind',
+        warm.matchTimeline[1] and tostring(warm.matchTimeline[1].kind))
+    ok(warm.matchTimeline[1] and warm.matchTimeline[1].at == 500,
+        'at the moment the match was formed',
+        warm.matchTimeline[1] and tostring(warm.matchTimeline[1].at))
+
+    -- THE EVIDENCE THE CASE IS ABOUT. A warmup filing used to return the empty
+    -- shape, so the strips that opened the case reached the row NOWHERE -- the
+    -- evidence records carry chat and kills, and a strip is neither.
+    local strips = 0
+    for _, e in ipairs(warm.matchTimeline) do
+        if e.kind == BR.IncidentBuild.STRIP_KIND then strips = strips + 1 end
+    end
+    ok(strips == 2, 'and the strips ride it, which they never used to', strips)
+
+    -- (2) THE STARTED CASE IS UNCHANGED. The start wins the anchor when both are
+    --     known, so there is exactly one beginning on the list and the console
+    --     never has to choose between two entries claiming to be it.
+    local live = BR.IncidentBuild.timelineOpen({
+        matchId = 7, matchStartedAt = 1000, matchCreatedAt = 500,
+        records = records(1),
+    })
+    ok(live.matchTimeline[1] and live.matchTimeline[1].kind == 'match_start',
+        'a case filed after the match started is anchored on the start',
+        live.matchTimeline[1] and tostring(live.matchTimeline[1].kind))
+    ok(live.matchTimeline[1] and live.matchTimeline[1].at == 1000,
+        'at the start time, not the formation time',
+        live.matchTimeline[1] and tostring(live.matchTimeline[1].at))
+    local formed = 0
+    for _, e in ipairs(live.matchTimeline) do
+        if e.kind == BR.IncidentBuild.MATCH_CREATED_KIND then formed = formed + 1 end
+    end
+    ok(formed == 0, 'and carries no second beginning beside it', formed)
+    ok(live.matchCreatedAt == 500,
+        'the formation time is still on the row as its own field',
+        tostring(live.matchCreatedAt))
+    ok(live.matchEndsByMs == BR.IncidentBuild.TIMELINE_LIMITS.MATCH_ENDS_BY_MS,
+        'and a started match still states its deadline')
+
+    -- (3) NO MATCH AT ALL. `brrefuse` from a console: neither timestamp, so
+    --     there is nothing to anchor and inventing one would put a match on the
+    --     record that never happened.
+    local none = BR.IncidentBuild.timelineOpen({ matchId = 7, records = records(2) })
+    ok(#none.matchTimeline == 0,
+        'a case whose match the registry has never heard of gets no timeline',
+        #none.matchTimeline)
+    ok(none.matchCreatedAt == nil, 'and no formation time either')
+
+    -- (4) AND NO matchId. The same empty answer, from the other direction.
+    local lobby = BR.IncidentBuild.timelineOpen({ matchCreatedAt = 500, records = records(2) })
+    ok(#lobby.matchTimeline == 0, 'nor does one filed with no match id at all',
+        #lobby.matchTimeline)
+end
+
+describe('timeline.close-carries-the-start')
+do
+    -- THE OTHER HALF OF THE WARMUP CASE. Its row is written with a null start
+    -- and a null deadline; both become known while the case is already durable,
+    -- and the close is the write that was going to happen anyway.
+
+    local closed = BR.IncidentBuild.timelineClose({
+        matchEndedAt = 9000, matchStartedAt = 1000, filedAtGameMs = 0,
+        records = {},
+    })
+    ok(closed.matchStartedAt == 1000,
+        'a close reports when the match started', tostring(closed.matchStartedAt))
+    ok(closed.matchEndsByMs == BR.IncidentBuild.TIMELINE_LIMITS.MATCH_ENDS_BY_MS,
+        'and the deadline that goes with it, as a duration for br_ringmaster',
+        tostring(closed.matchEndsByMs))
+
+    -- A MATCH THAT DISSOLVED ON THE PAD. It ended without ever having begun, and
+    -- the close must say nothing about a start rather than invent one from the
+    -- end -- a nil key does not travel, so the row keeps its own answer.
+    local never = BR.IncidentBuild.timelineClose({
+        matchEndedAt = 9000, filedAtGameMs = 0, records = {},
+    })
+    ok(never.matchStartedAt == nil,
+        'a match that never started closes without claiming one',
+        tostring(never.matchStartedAt))
+    ok(never.matchEndsByMs == nil,
+        'and without a deadline it has no start to measure from',
+        tostring(never.matchEndsByMs))
+    ok(never.matchEndedAt == 9000, 'but it does record that the match ended')
 end
 
 describe('bus.doors')

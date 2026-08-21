@@ -233,7 +233,16 @@ AddEventHandler('br:match:destroyed', function(ev)
     -- of code here rather than a comment in a manifest: moving `clearMatch` above
     -- this emit breaks a test, whereas reordering the manifest breaks nothing
     -- visible until somebody reads a real case.
-    TriggerEvent('br:evidence:closing', { matchId = ev.matchId })
+    --
+    -- `startedAt` IS FORWARDED RATHER THAN LOOKED UP, and it is forwarded rather
+    -- than left for the reader to fetch because there is nothing left to fetch
+    -- it from: server/match.lua clears the registry entry before it announces
+    -- the destruction. It is nil for a match that never went live, and the
+    -- incident close treats that as "never started" rather than as "unknown".
+    TriggerEvent('br:evidence:closing', {
+        matchId   = ev.matchId,
+        startedAt = ev.startedAt,
+    })
 
     buf:clearMatch(ev.matchId)
 end)
