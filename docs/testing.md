@@ -25,38 +25,46 @@ it at `$LOCALAPPDATA/Programs/Lua/bin/`.
 | Stage | What it proves |
 |---|---|
 | **Syntax** | `luac -p` on every `.lua`. FiveM runs Lua 5.4 and so does this, so a pass means the resource will at least load. The floor, not the ceiling. |
-| **Unit tests** | 8 suites, ~3,100 assertions, over the pure shared modules, the server model and the client interaction layer. |
+| **Unit tests** | 10 suites, ~3,900 assertions, over the pure shared modules, the server model, the client interaction layer, and the two subsystems that reach AWS. |
 | **Scope gate** | Bans OneSync scope-limited natives from client gameplay code. |
 | **Weapon table** | Re-derives every weapon hash from its name. |
 | **POI siting** | Spacing, water, no-loot zones, distance to roads. |
 | **Forward locals** | Catches a `local function` called above its own declaration. |
 | **Config report** | The convar allowlist may not name a credential. |
+| **Voice defaults** | Voice modes are mutually exclusive, and the default agrees in Lua, in TypeScript and in the built bundle — three copies of one constant, compared as text. |
+| **Tunable overrides** | Overridable keys are server-only, and every consumer loads them in order. |
 | **Manifest coverage** | Every `.lua` is declared in an fxmanifest. |
 | **Shared coverage** | Anything dropped into `br_lib` is actually loaded. |
 | **Deploy payload** | The deploy's own payload check still works. |
+| **Vendored third-party** | For every vendored resource: the licence is kept, the upstream version is recorded, the patch log and the source agree **in both directions**, and `deploy.sh` still syncs it. |
 | **Console capability boundary** | `dispatch.sh`'s SSH verb set, exactly — matched on the *shape* of a case arm, so a verb with a new name cannot be invisible to it. |
 | **Branch-switch invariant** | No path to a hard reset that skips the dispatch blob check. |
 | **Incident surface** | Only `BR.ShotSuspicious` can reach the Ringmaster. |
+| **Timeline entry kinds** | Every match-timeline `kind` the Lua side writes is one `close.js` stores. The two live in different languages in different directories, and a kind added on one side alone is a timeline entry that silently never arrives. |
 | **Secrets** | The only gate that scans the whole repo rather than `resources/`. |
 | **br_ddb bundle** | The committed bundle still matches `js-src/br_ddb`, and the ban rule passes its cases. Drift presents as "my change did nothing" with nothing wrong in any log. Skipped, not failed, without Node. |
 | **Duplicate console commands** | One name, one registration — three collided at once in #137. |
 
 ### The suites
 
-Counts are what `verify.sh` prints today, and they are here so a suite that
-quietly stops running is visible rather than merely green.
+Counts are what `verify.sh` printed on **2026-08-20**, and they are here so a
+suite that quietly stops running is visible rather than merely green. They drift
+upward constantly and are meant to; what matters is that no row drops or
+flatlines. The previous set in this table was a month old and understated the
+total by roughly 800 assertions, which is a suite and a half.
 
 | Suite | Assertions | Covers |
 |---|---|---|
-| `test_shared.lua` | 817 | The pure modules: RNG determinism, geometry, storm solving, loot generation, combat validation, descent classification, bus doors, the DBNO rig. No FiveM dependency at all. |
-| `test_roster.lua` | 1,264 | The server model end to end — roster, parties, squads, match state machine, bus, storm, loot streaming, inventory. The big one. |
+| `test_shared.lua` | 836 | The pure modules: RNG determinism, geometry, storm solving, loot generation, combat validation, descent classification, bus doors, the DBNO rig. No FiveM dependency at all. |
+| `test_roster.lua` | 1,397 | The server model end to end — roster, parties, squads, match state machine, bus, storm, loot streaming, inventory. The big one, and since 2026-08-20 the only one that can reach an admin console command: its `RegisterCommand` shim was `function() end`, so every one of them loaded into nothing and could never be run. |
 | `test_loop.lua` | 42 | The client loop registry: bands, suspension after repeated errors, enable/disable. |
 | `test_sched.lua` | 41 | The server scheduler: intervals, duplicate-name refusal, stepping. |
-| `test_stats.lua` | 156 | XP and placement arithmetic. |
-| `test_ringmaster.lua` | 143 | The Ringmaster surface: the incident envelope, the gate, kick and maintenance. |
+| `test_stats.lua` | 164 | XP and placement arithmetic. It compares payout terms **against each other** and pins none of them, which is what let the 50% Volts cut land green while a *partial* rescale — the plausible mistake — would have failed. |
+| `test_ringmaster.lua` | 281 | The Ringmaster surface: the incident envelope, the gate, kick and maintenance. |
 | `test_artifacts.lua` | 119 | Incident screenshots: three timed frames, the ten-second rule on corroborations, the cap of nine and the clean no-op past it, a subject who disconnects mid-schedule, `screenshot-basic` absent, a failed upload, and a client that never answers. Loads `br_core/server/artifacts.lua` itself. |
-| `test_client.lua` | 526 | The client interaction layer — keybinds, holds, prompts, loot pickup — with the FiveM natives stubbed and the frame band stepped by hand, the same shape `test_roster.lua` uses for the server. |
-| `test_config.lua` | 142 | The server-tunable overrides: strict convar parsing, ranges refused rather than clamped, a renamed config key as a hard failure, the load-time hook on a server / client / bare state, and the shipped `.cfg` examples run through the real parser. |
+| `test_client.lua` | 607 | The client interaction layer — keybinds, holds, prompts, loot pickup — with the FiveM natives stubbed and the frame band stepped by hand, the same shape `test_roster.lua` uses for the server. It also carries the engine friendly-fire rule (#115), written out once from the external record so that a fix which merely agrees with itself still has to agree with that. |
+| `test_config.lua` | 286 | The server-tunable overrides: strict convar parsing, ranges refused rather than clamped, a renamed config key as a hard failure, the load-time hook on a server / client / bare state, and the shipped `.cfg` examples run through the real parser. |
+| `test_admin.lua` | 128 | The in-game admin console (#23): who is offered the Admin tab and when the answer is settled, the handoff mint and its timeout, and the cost of the common case — an ordinary player with no grant must pay nothing at connect. |
 
 `test_client.lua` is the odd one out and deliberately so: every other suite here
 is server-side or pure arithmetic, and all three of the regressions that shipped
@@ -242,6 +250,12 @@ The one reason to break that rule is a suite that needs **its own harness**, and
 `br_lib/config/*.lua` once into the global state and reads it; that one has to
 load it repeatedly, into fresh sandboxes, with FiveM natives stubbed differently
 each time — because what it tests is the config tables being *rewritten* at load.
-Dropping that into `test_shared.lua` would mutate the config out from under 817
+Dropping that into `test_shared.lua` would mutate the config out from under 836
 assertions that read it. A new suite costs one line in `verify.sh`'s loop and a
 row in the table above; skip either and it stops running with nothing to say so.
+
+`test_artifacts.lua` and `test_admin.lua` are the two that have since taken that
+exception, and both took it for the same reason `test_config.lua` did: each loads
+a server file into a harness shaped for it — `br_core/server/artifacts.lua` with
+`screenshot-basic` present and absent, and `br_core` plus `br_ringmaster` in one
+Lua state so the request/response seam between them is the thing under test.
