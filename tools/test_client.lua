@@ -3866,8 +3866,7 @@ do
 
     ok(BR.Cosmetics.trailArmed == true,
         'a bought trail arms on the way out of the door',
-        ('armed %s source %s'):format(tostring(BR.Cosmetics.trailArmed),
-                                      tostring(BR.Cosmetics.trailSource)))
+        ('armed %s'):format(tostring(BR.Cosmetics.trailArmed)))
     -- ARMED IS NOT ON, AND THAT IS THE OWNER'S RULE (2026-08-17): "Smoke trails
     -- should always default to off, which requires the player to press the
     -- button, which will then dismiss our DUI".
@@ -3877,11 +3876,20 @@ do
     -- FALSE until a press. That matters beyond our own flag: leaving permission
     -- granted lets the player's vanilla X emit smoke behind a prompt that says
     -- the trail is off.
-    ok(BR.Cosmetics.trailSource == 'purchase' and smoke.allowed == false,
-        'and it is the purchase that is painted -- but armed is not ON, so the '
-        .. 'engine is not yet permitted to emit',
-        ('source %s allowed %s'):format(tostring(BR.Cosmetics.trailSource),
-                                        tostring(smoke.allowed)))
+    --
+    -- THE COLOUR IS THE ASSERTION NOW, WHERE `trailSource == 'purchase'` USED TO
+    -- BE. That field existed to tell a purchase from a squad colour and went
+    -- with the squad colour (owner, 2026-08-20); what is left of the claim is
+    -- that the EQUIPPED item's rgb reached the native, which is the stronger
+    -- half and the one the engine can disagree with.
+    local ember = BR.Config.MarketIndex['trail_ember'].apply.trailRgb
+    ok(smoke.rgb ~= nil and smoke.rgb[1] == ember[1] and smoke.rgb[2] == ember[2]
+       and smoke.rgb[3] == ember[3] and smoke.allowed == false,
+        "and it is the bought item's colour that is painted -- but armed is not "
+        .. 'ON, so the engine is not yet permitted to emit',
+        ('rgb %s allowed %s'):format(
+            smoke.rgb and table.concat(smoke.rgb, ',') or 'nil',
+            tostring(smoke.allowed)))
 
     -- Freefall: chute stowed, ped in the parachute task.
     dui.sends, dui.draws = {}, 0
@@ -4129,7 +4137,7 @@ do
     -- should see no prompt at all rather than a prompt for a thing they do not
     -- have". Which makes an ABSENT prompt correct in one case and the bug in
     -- another, and those two are indistinguishable from a chair -- the whole
-    -- reason /brdropdbg prints the four readings.
+    -- reason /brdropdbg prints the readings it does.
     local threads = {}
     Citizen.CreateThread = function(fn) threads[#threads + 1] = fn end
 
@@ -4145,9 +4153,19 @@ do
         for i = before + 1, #threads do threads[i]() end
     end
 
-    -- Squad Colour is the free default -- `trailRgb = nil` -- so solo it paints
-    -- nothing, and a slot test would have offered a prompt anyway.
-    drop('trail_squad', nil)
+    -- THE FREE DEFAULT PAINTS NOTHING, and `trail_none` is what it is called
+    -- since the owner removed the squad colour from the catalogue. A slot test
+    -- would have offered a prompt anyway, which is the bug this describe() is
+    -- named after.
+    ok(BR.Config.MarketIndex['trail_squad'] == nil,
+        'the Squad Colour item is gone from the catalogue',
+        'trail_squad still resolves')
+    ok(BR.Config.defaultItem('trail') ~= nil
+       and BR.Config.defaultItem('trail').id == 'trail_none',
+        'and the trail slot still has a default to un-equip back to',
+        tostring(BR.Config.defaultItem('trail') and BR.Config.defaultItem('trail').id))
+
+    drop('trail_none', nil)
     ok(BR.Cosmetics.trailArmed == false,
         'the default item paints nothing on a solo drop',
         ('armed %s'):format(tostring(BR.Cosmetics.trailArmed)))
@@ -4161,20 +4179,36 @@ do
         'and no trail prompt is offered under the canopy',
         last and tostring(last.label) or 'nothing sent')
 
-    -- Equipped Squad Colour IN a squad does paint, and that player owns the
-    -- choice, so they get the key like anyone else (#131 removed the override).
-    drop('trail_squad', '#3B9BFF')
-    ok(BR.Cosmetics.trailArmed == true and BR.Cosmetics.trailSource == 'squad',
-        'in a squad the same item paints the squad colour',
-        ('armed %s source %s'):format(tostring(BR.Cosmetics.trailArmed),
-                                      tostring(BR.Cosmetics.trailSource)))
+    -- AND IT PAINTS NOTHING IN A SQUAD EITHER, WHICH IS THE INSTRUCTION (owner,
+    -- 2026-08-20: "'Squad color' trails should not be a thing"). This case used
+    -- to assert the opposite -- the same item painting the squad's colour -- so
+    -- it is the one line that proves the fallback went with the item rather than
+    -- surviving it unnamed, which would have left every unspent player flying a
+    -- squad colour with nothing in the storefront to turn it off.
+    drop('trail_none', '#3B9BFF')
+    ok(BR.Cosmetics.trailArmed == false,
+        'and nothing paints in a squad either -- there is no squad colour left',
+        ('armed %s'):format(tostring(BR.Cosmetics.trailArmed)))
 
-    -- A BOUGHT TRAIL IN A SQUAD IS THE REVERSAL THE OWNER ASKED FOR. `source
-    -- purchase` while squadded is the single line that proves it.
+    -- THE BOX IS ONLY TOLD WHEN THE PROMPT CHANGES, so "nothing was sent" would
+    -- otherwise mean "nothing changed since the case above" rather than "nothing
+    -- is offered" -- and that is the difference this whole describe() is about.
+    -- br:keys:changed clears the cached kind, which is the codebase's own way of
+    -- forcing one re-send, so the next frame states the answer from scratch.
+    fire('br:keys:changed')
+    sends = {}
+    frame(16)
+    local squadded = sends[#sends]
+    ok(squadded == nil or squadded.show == false,
+        'so a squadded player who has bought nothing is offered no key either',
+        squadded and tostring(squadded.label) or 'nothing sent')
+
+    -- A BOUGHT TRAIL STILL FLIES IN A SQUAD, which is what #131 asked for and
+    -- is now the only thing that flies at all.
     drop('trail_ember', '#3B9BFF')
-    ok(BR.Cosmetics.trailSource == 'purchase',
-        'and a bought trail outranks it -- the player earned that trail',
-        tostring(BR.Cosmetics.trailSource))
+    ok(BR.Cosmetics.trailArmed == true,
+        'and a bought trail flies in a squad -- the player earned that trail',
+        ('armed %s'):format(tostring(BR.Cosmetics.trailArmed)))
 
     -- A CLEARED BINDING DRAWS NOTHING, because the cap would be empty and the
     -- sentence would be an instruction to press nothing.
@@ -4204,7 +4238,12 @@ do
     local said = table.concat(logged, '\n')
     ok(said:find('trail: armed', 1, true) ~= nil,
         'and prints the trail line the issue asks for', said)
-    for _, word in ipairs({ 'armed', 'source', 'on ', 'key ' }) do
+    -- 'source' IS NOT IN THIS LIST ANY MORE. It said which of the purchase and
+    -- the squad colour was painted, and the squad colour is gone (owner,
+    -- 2026-08-20), so it could only ever have printed 'purchase' -- `armed` in a
+    -- second spelling, in a readout whose whole job is that each column answers
+    -- something different.
+    for _, word in ipairs({ 'armed', 'on ', 'key ' }) do
         ok(said:find(word, 1, true) ~= nil,
             ('the readout carries "%s"'):format(word), said)
     end

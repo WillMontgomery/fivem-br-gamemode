@@ -261,14 +261,6 @@ local function hasChute(ped)
         or GetAmmoInPedWeapon(ped, CHUTE) > 0
 end
 
---- Parse '#RRGGBB' (the squad colour the server assigned) into rgb.
-local function hexToRgb(hex)
-    if type(hex) ~= 'string' then return 255, 255, 255 end
-    local r, g, b = hex:match('^#(%x%x)(%x%x)(%x%x)$')
-    if not r then return 255, 255, 255 end
-    return tonumber(r, 16), tonumber(g, 16), tonumber(b, 16)
-end
-
 AddEventHandler('br:drop:begin', function(d)
     -- One-shot thread: the give-verify-task sequence needs real frames
     -- between steps, and the first flight ended with a player falling
@@ -338,24 +330,16 @@ AddEventHandler('br:drop:begin', function(d)
         -- like the item the player bought not working.
         BR.Cosmetics.applyChute()
 
-        -- THE TRAIL, AND THE SQUAD COLOUR IS NOW THE FALLBACK RATHER THAN THE
-        -- WINNER (#131). This used to read "it still outranks a bought trail,
-        -- because finding your squadmate's smoke is a gameplay read and the
-        -- purchase is decoration". The owner reversed it -- "Squad colors should
-        -- not override the bought trail - the player earned that trail" -- so
-        -- the colour is still passed and applyTrail still uses it, just last:
-        -- for the player who has not bought one, which is everybody until they
-        -- spend Volts. The ORDER lives in cosmetics.lua, not here; this end only
-        -- answers "am I in a squad, and what colour is it".
+        -- THE TRAIL, AND IT NO LONGER ASKS ANYTHING ABOUT THE SQUAD (owner,
+        -- 2026-08-20: "'Squad color' trails should not be a thing"). This used
+        -- to read the roster for the player's squad colour and hand it to
+        -- applyTrail as the fallback for anyone who had not bought a trail --
+        -- itself the reversal of an earlier version where the squad colour won
+        -- outright (#131). Both are gone: a trail is a purchase or it is
+        -- nothing, so there is no colour for this end to look up and the hex
+        -- parser that did it has gone with the argument.
         if BR.Config.Drop.smokeTrail then
-            local me = BR.State.roster[BR.State.me.src]
-            -- SQUADDED, not merely coloured. Every roster entry carries a
-            -- colour whether or not the player is in a squad, so testing
-            -- `me.colour` would hand the squad colour to solo players too and
-            -- no bought trail would ever appear. `squadId` is the question
-            -- actually being asked, and roster.lua is careful to clear it.
-            local squadColour = (me and me.squadId) and me.colour or nil
-            BR.Cosmetics.applyTrail(squadColour, hexToRgb)
+            BR.Cosmetics.applyTrail()
         end
 
         -- TASKED, VERIFIED, RETRIED. TaskParachute issued in the same frame
@@ -618,24 +602,22 @@ BR.Loop.register(BR.Loop.FRAME, 'skydive.prompt', function()
         -- otherwise be shown for nothing.
         --
         -- ARMED: there is a trail flying. Every player has a trail EQUIPPED --
-        -- the catalogue default is 'Squad Colour', which paints nothing of its
-        -- own when you are dropping alone -- so the slot is not the question,
-        -- and only the branches that actually paint set this flag (cosmetics.lua
-        -- argues it beside trailArmed). #131 is explicit that "somebody with
-        -- nothing equipped should see no prompt at all rather than a prompt for
-        -- a thing they do not have".
+        -- the catalogue default is 'None', which paints nothing -- so the slot
+        -- is not the question, and only the branches that actually paint set
+        -- this flag (cosmetics.lua argues it beside trailArmed). #131 is
+        -- explicit that "somebody with nothing equipped should see no prompt at
+        -- all rather than a prompt for a thing they do not have", and with the
+        -- free default painting nothing that is now the commonest case rather
+        -- than the solo one.
         --
-        -- THERE IS NO LONGER A SQUAD TEST HERE, and its absence is the point.
-        -- This branch used to also require `not BR.Cosmetics.trailSquad`,
-        -- because a squad colour overrode a bought trail and offering to switch
-        -- that off would have been deleting three other people's position
-        -- marker. The owner reversed the override -- "Squad colors should not
-        -- override the bought trail - the player earned that trail" -- so what
-        -- flies in a squad is now either the purchase (theirs to switch off,
-        -- like anyone else's) or the Squad Colour item they chose to equip
-        -- (still theirs). Neither case is somebody else's decision any more, and
-        -- a suppression left standing would have been hiding the key from the
-        -- players most likely to have bought the thing it controls.
+        -- THERE IS NO SQUAD TEST HERE, and two rules have come and gone to leave
+        -- it that way. It used to require `not BR.Cosmetics.trailSquad`, because
+        -- a squad colour overrode a bought trail and offering to switch that off
+        -- would have been deleting three other people's position marker. #131
+        -- reversed the override; the owner has since removed the squad colour
+        -- from the sky altogether. Whatever is armed here was bought by the
+        -- player looking at the prompt, so there is nobody else's decision left
+        -- to protect.
         --
         -- THERE IS NO ON-FOOT TEST HERE ANY MORE, AND ITS REMOVAL IS #131's
         -- THIRD ROUND.
@@ -727,13 +709,12 @@ end)
 -- that key.
 --
 -- IT ONLY EVER FLIPS A SWITCH THE DROP ALREADY THREW. showTrail does not
--- re-decide the colour, and this does not call applyTrail -- the whole
--- squad-versus-purchase decision is made once at br:drop:begin, in the window
--- between the parachute model override and TaskParachute where the engine
--- actually reads it. Re-running that decision from a key press would move it
--- outside its window, and a trail set outside its window "looks exactly like
--- the item the player bought not working" -- which is the report this issue
--- opened with.
+-- re-decide the colour, and this does not call applyTrail -- the colour is
+-- chosen once at br:drop:begin, in the window between the parachute model
+-- override and TaskParachute where the engine actually reads it. Re-running
+-- that choice from a key press would move it outside its window, and a trail
+-- set outside its window "looks exactly like the item the player bought not
+-- working" -- which is the report this issue opened with.
 BR.Keys.on('trail', function(pressed)
     if not pressed or not dropping then return end
     -- Counted HERE -- after the drop test, before the armed one -- so the number
@@ -750,7 +731,8 @@ BR.Keys.on('trail', function(pressed)
     -- that trail." With nothing overriding anything, that reply would now be a
     -- refusal with no rule behind it -- the key would decline to switch off a
     -- trail the player bought, and tell them a story about a colour that is not
-    -- in the sky. The branch went with the override rather than being reworded.
+    -- in the sky. The branch went with the override rather than being reworded,
+    -- and there is no squad colour left anywhere to reword it back for.
 
     -- Nothing equipped, or the trail system switched off in config: no prompt
     -- was drawn and there is nothing to flip. Silent, because this is a market
@@ -1106,24 +1088,23 @@ RegisterCommand('brdropdbg', function()
     -- Each is a different fix and they are indistinguishable in the air, which
     -- is exactly how #131 came back a second time.
     --
-    -- `squad true` USED TO BE THE THIRD ANSWER AND IT IS NOT AN ANSWER ANY MORE.
-    -- It meant "the squad override took your trail, and that is correct" -- and
-    -- the override is gone, so printing it would be reporting a rule that no
-    -- longer runs. What replaces it is `source`, which is not a reason for
-    -- anything: it says which of the two paints won, and it is here because
-    -- "my bought trail did not fly in a squad" is the report this issue has
-    -- outlived twice. `source purchase` while squadded is the one line that
-    -- settles it.
+    -- TWO ANSWERS HAVE LEFT THIS LINE, EACH WITH THE RULE IT REPORTED ON.
+    -- `squad true` meant "the squad override took your trail, and that is
+    -- correct"; #131 removed the override. `source purchase|squad` replaced it
+    -- and said which of the two paints won -- and the owner has now removed the
+    -- squad paint entirely ("'Squad color' trails should not be a thing"), so
+    -- there is one paint, `source` could only ever say 'purchase', and it was
+    -- `armed` in a second spelling. A readout with a column that cannot vary is
+    -- a column somebody reads as evidence.
     --
     -- AND `engine` IS THE ONLY ONE OF THESE THE GAME SAID RATHER THAN US. The
-    -- other three are our own variables agreeing with one another, which is
-    -- exactly what they did through all three of the owner's prints while
-    -- nothing rendered. A colour here that is not the one the equipped item
-    -- names means the write never reached the engine; the right colour with an
-    -- empty sky means it did, and the emit count below is the next question.
-    print(('  trail: armed %s   source %s   on %s   key %s   engine rgb %s'):format(
+    -- others are our own variables agreeing with one another, which is exactly
+    -- what they did through all three of the owner's prints while nothing
+    -- rendered. A colour here that is not the one the equipped item names means
+    -- the write never reached the engine; the right colour with an empty sky
+    -- means it did, and the emit count below is the next question.
+    print(('  trail: armed %s   on %s   key %s   engine rgb %s'):format(
         tostring(BR.Cosmetics.trailArmed),
-        tostring(BR.Cosmetics.trailSource or '(none)'),
         tostring(BR.Cosmetics.trailOn),
         tostring(BR.Native.keyLabelForCommand('brtrail') or '(none)'),
         BR.Cosmetics.engineTrailColour()))

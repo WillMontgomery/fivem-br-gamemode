@@ -501,8 +501,9 @@ BR.Config.Drop = {
     autoDeployAGL   = 120.0,  -- metres above ground where the glider force-opens
     landedGraceMs   = 500,    -- invincibility after touchdown, absorbs landing edge cases
     parachuteModel  = 'p_parachute1_mp_s',
-    -- The equipped trail flies, whoever you are dropping with. This switch is
-    -- the whole feature, not the squad half of it -- see cosmetics.applyTrail.
+    -- The equipped trail flies, whoever you are dropping with. There is no
+    -- longer a squad half to this: a trail is a purchase or it is nothing --
+    -- see cosmetics.applyTrail.
     smokeTrail      = true,
 
     -- WHERE THE DESCENT PROMPT SITS, in screen fractions (#131).

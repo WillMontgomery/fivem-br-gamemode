@@ -100,43 +100,32 @@ end
 --- comes out of the canopy until the key is pressed -- and `/brdropdbg` reading
 --- `armed true  on false  emit frames 0` mid-glide is the CORRECT readout now,
 --- not the symptom it was during #131.
----   source  'purchase' or 'squad', for /brdrop only. It decides NOTHING; see
----           the note on it below.
 ---
 --- ARMED IS SET BY THE BRANCH THAT PAINTS, NEVER BY THE EQUIPPED SLOT, and that
 --- distinction is the whole of #131's fourth requirement. `worn['trail']` is
---- always present: the catalogue's default item is 'Squad Colour', whose apply
---- table is literally `{ trailRgb = nil }`, so it resolves to a
---- present-but-EMPTY table and a slot test would answer "yes" for a player who
---- owns nothing and is dropping alone. They would then be offered a key for a
---- trail that does not exist -- "a prompt for a thing they do not have", which
---- is the failure the issue names. Only the branches that actually call
---- SetPlayerParachuteSmokeTrailColor set this, so it cannot drift from what is
---- in the sky.
+--- always present: the catalogue's default item is 'None', whose apply table is
+--- literally `{}`, so it resolves to a present-but-EMPTY table and a slot test
+--- would answer "yes" for a player who owns nothing. They would then be offered
+--- a key for a trail that does not exist -- "a prompt for a thing they do not
+--- have", which is the failure the issue names. Only the branches that actually
+--- call SetPlayerParachuteSmokeTrailColor set this, so it cannot drift from what
+--- is in the sky.
 ---
---- THERE USED TO BE A `trailSquad` FLAG HERE AND IT IS GONE (#131, 2026-08-16).
---- It existed to say "the colour up there is the squad's, not the purchase", and
---- everything that read it was a consequence of the squad OVERRIDE: the descent
---- prompt was suppressed on it and the key refused with an explanation. The
---- owner reversed the override -- "Squad colors should not override the bought
---- trail - the player earned that trail" -- so the flag now has nothing to
---- distinguish. A squad colour only flies for a player who has EQUIPPED Squad
---- Colour, which is a choice, not a thing done to them; suppressing their prompt
---- would be hiding a key for a trail they picked. The flag went with the branch
---- rather than being left true-but-ignored.
+--- TWO FLAGS HAVE NOW GONE FROM HERE, AND BOTH WENT WITH A BRANCH.
+---
+--- `trailSquad` (#131, 2026-08-16) said "the colour up there is the squad's,
+--- not the purchase", and everything that read it was a consequence of the squad
+--- OVERRIDE the owner reversed.
+---
+--- `trailSource` ('purchase' | 'squad' | nil) outlived it and has gone with the
+--- squad FALLBACK (owner, 2026-08-20: "'Squad color' trails should not be a
+--- thing"). It was a receipt for one question -- "did my bought trail fly, or
+--- did the squad colour take it" -- and there is no longer a squad colour to
+--- take anything. With one possible non-nil value it was `armed and 'purchase'`
+--- spelled out at three call sites and printed as a fourth fact in
+--- `/brdropdbg`, which is a field its only writer could no longer fill.
 BR.Cosmetics.trailArmed = false
 BR.Cosmetics.trailOn = false
-
---- Which of the two paints won, for the debug print and nothing else.
----
---- NOT A DECISION, A RECEIPT. Nothing branches on it -- the whole point of this
---- change is that nothing branches on it any more -- but "my bought trail did
---- not fly in a squad" is the exact report this issue is on its third life for,
---- and `/brdrop` printing `source purchase` while the player is in a squad is a
---- one-line answer to it. `armed`/`on` cannot tell those apart, which is how the
---- override went unnoticed for two rounds of playtesting.
---- @type string|nil  'purchase' | 'squad' | nil
-BR.Cosmetics.trailSource = nil
 
 --- The colour currently painted, so turning the trail back ON can re-assert it.
 ---
@@ -153,39 +142,32 @@ BR.Cosmetics.trailSource = nil
 --- every 350ms regardless, so there is nothing here worth remembering.
 local liveRgb = nil
 
---- Paint the trail this drop will fly. The purchase wins; the squad is the
---- fallback for a player who has not bought one.
+--- Paint the trail this drop will fly. A purchase, or nothing.
 ---
---- THIS ORDER IS THE REVERSAL OF A DELIBERATE DECISION (#131, owner 2026-08-16).
+--- THE SQUAD BRANCH IS GONE (owner, 2026-08-20: "'Squad color' trails should not
+--- be a thing"), AND THIS FUNCTION HAS NOW ARGUED IT BOTH WAYS BEFORE LOSING IT.
+--- First the squad colour OVERRODE a purchase, because finding your team in the
+--- air is a gameplay read; #131 reversed that and left it as the fallback for
+--- anyone who had not bought a trail. It is now neither, and this file takes no
+--- squad argument at all.
 ---
---- It used to be the other way round, and the reasoning was written down at
---- length in br_lib/config/market.lua: trail colour is how you find your team in
---- the air, that is a gameplay read, decoration should lose to it. The owner
---- disagreed with the conclusion rather than the reasoning -- "Squad colors
---- should not override the bought trail - the player earned that trail" -- and
---- the practical case is hard to argue with: a squad player who buys Void sees
---- their squad colour, concludes the item does not work, and files the issue this
---- file is on its third pass through.
+--- REMOVING THE ITEM WITHOUT REMOVING THIS BRANCH WOULD HAVE BEEN THE WRONG HALF
+--- OF THE INSTRUCTION. `trail_squad` was what an unspent player wore; delete it
+--- and leave the fallback and every unspent player flies their squad's colour
+--- with nothing in the storefront to un-equip -- strictly more squad-coloured
+--- smoke than before, and no way out. The free default is `trail_none` and it
+--- paints nothing, so the two halves agree.
 ---
---- WHAT KEEPS THE TEAM READ IS THE ITEM CALLED SQUAD COLOUR. It is the free
---- catalogue default (`trail_squad`, `apply = { trailRgb = nil }`), so it is what
---- every player has equipped until they spend Volts, and the squad branch below
---- is exactly what it means. Nobody loses the position marker by accident: they
---- lose it by buying something else and putting it on, which is the whole
---- transaction. That is the paragraph to argue with if this ever feels wrong --
---- and the one in market.lua, which now says the same thing.
----
---- `squadColour` is still passed and still used; it is simply the LAST answer
---- now instead of the first.
---- @param squadColour string|nil  the squad's hex colour, if in a squad
---- @param hexToRgb function
-function BR.Cosmetics.applyTrail(squadColour, hexToRgb)
+--- WHAT THE TEAM LOSES IS ONE OPT-IN READ. Trails start OFF on every drop
+--- (owner, 2026-08-17), so the squad colour only ever reached the sky when a
+--- squadmate pressed the key for it. Markers, nameplates and the squad list are
+--- untouched.
+function BR.Cosmetics.applyTrail()
     local pid = PlayerId()
     local apply = BR.Cosmetics.get('trail')
 
     BR.Cosmetics.trailArmed = false
     BR.Cosmetics.trailOn = false
-    BR.Cosmetics.trailSource = nil
     liveRgb = nil
 
     -- THE PERMISSION STARTS OFF IN EVERY BRANCH BELOW, and it is the permission
@@ -199,7 +181,6 @@ function BR.Cosmetics.applyTrail(squadColour, hexToRgb)
         SetPlayerCanLeaveParachuteSmokeTrail(pid, false)
         BR.Cosmetics.trailArmed = true
         BR.Cosmetics.trailOn = false
-        BR.Cosmetics.trailSource = 'purchase'
         local gen = trailGen
         local colours = apply.trailCycle
         local ms = math.max(100, tonumber(apply.trailCycleMs) or 350)
@@ -228,35 +209,18 @@ function BR.Cosmetics.applyTrail(squadColour, hexToRgb)
         liveRgb = apply.trailRgb
         BR.Cosmetics.trailArmed = true
         BR.Cosmetics.trailOn = false
-        BR.Cosmetics.trailSource = 'purchase'
         return
     end
 
-    -- NOTHING BOUGHT, SO THE TEAM GETS THE SKY. This is what the free default
-    -- item, 'Squad Colour', means -- and reaching it means the player is still
-    -- wearing it, because every paid trail returns above. Solo, there is no
-    -- colour to use and the trail stays off.
-    if squadColour then
-        -- OFF LIKE THE OTHER TWO, and the squad case is the one where that is
-        -- worth arguing rather than asserting: a squad colour is a POSITION
-        -- MARKER, so defaulting it off costs the team a read they used to get
-        -- for free. The owner's instruction is unconditional -- "smoke trails
-        -- should always default to off" -- and the read is one keypress away for
-        -- anyone who wants it, with the prompt naming that key for the whole
-        -- canopy phase. A rule with a carve-out for the commonest case would
-        -- also mean the prompt lied to exactly the players most likely to see
-        -- it: it would say "toggle" over a trail already flying.
-        SetPlayerCanLeaveParachuteSmokeTrail(pid, false)
-        local r, g, b = hexToRgb(squadColour)
-        SetPlayerParachuteSmokeTrailColor(pid, r, g, b)
-        liveRgb = { r, g, b }
-        BR.Cosmetics.trailArmed = true
-        BR.Cosmetics.trailOn = false
-        BR.Cosmetics.trailSource = 'squad'
-        return
-    end
-
-    -- No squad, no bought trail: leave it off rather than picking something.
+    -- NOTHING BOUGHT, SO NOTHING FLIES. This is what the free default item,
+    -- 'None', means, and reaching it means the player is still wearing it,
+    -- because every paid trail returns above.
+    --
+    -- THE PERMISSION IS STILL WITHDRAWN RATHER THAN LEFT ALONE. It is not our
+    -- flag that emits smoke -- the player's own vanilla X does, if the engine is
+    -- still permitting it from a previous drop -- so the one native here is what
+    -- makes "no trail equipped" mean no trail on screen. `trailArmed` stays
+    -- false, so the descent offers no prompt and the key does nothing.
     SetPlayerCanLeaveParachuteSmokeTrail(pid, false)
 end
 
@@ -354,7 +318,6 @@ function BR.Cosmetics.clearTrail()
     SetPlayerCanLeaveParachuteSmokeTrail(PlayerId(), false)
     BR.Cosmetics.trailArmed = false
     BR.Cosmetics.trailOn = false
-    BR.Cosmetics.trailSource = nil
     liveRgb = nil
 end
 

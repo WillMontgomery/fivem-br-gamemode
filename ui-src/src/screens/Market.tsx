@@ -25,8 +25,8 @@ import { play } from '../audio/cues'
  *                the roster is curated rather than "every ped in GTA".
  *   CANOPIES     the parachute design. Seen for ninety seconds at the start of
  *                a match, by everybody, which is exactly why they sell.
- *   TRAILS       the parachute smoke colour, which the squad system already
- *                draws. Announces your position, if anything.
+ *   TRAILS       the parachute smoke colour. Announces your position, if
+ *                anything.
  *   FINISHES     the weapon tint.
  *   BANNERS      the card shown beside your name in the kill feed and on the
  *                verdict screen. Seen by other people, never by you mid-fight.
@@ -159,10 +159,14 @@ export default function Market() {
         {/* THE ONLY SCROLLING REGION. min-h-0 is load-bearing: a flex child
             defaults to min-height:auto and refuses to shrink below its content,
             so without it this grows past the viewport and takes Done with it. */}
+        {/* THE TRAILS TAB HAD AN EXPLAINER BOX ABOVE ITS GRID AND IT IS GONE
+            (owner, 2026-08-20: "Please remove the explainer box at the top of
+            the trails page in Market"). It was three paragraphs on how a trail
+            lights itself, which key toggles it, and what Squad Colour was for --
+            written across #131's several lives, and never asked for. Nothing
+            replaces it: the descent already names the key on screen, at the
+            moment the key is worth pressing. */}
         <div className="min-h-0 flex-1 overflow-y-auto thin-scroll pr-1">
-          {/* Inside the scroller on purpose: it belongs to the trail grid, and
-              pinning it above would cost every other tab the vertical space. */}
-          {tab === 'trail' && <TrailHelp />}
           {items.length === 0 ? (
             <p className="body-text">Nothing here yet.</p>
           ) : (
@@ -180,100 +184,6 @@ export default function Market() {
           </Btn>
         </div>
       </div>
-    </div>
-  )
-}
-
-/**
- * What a trail actually does, said where trails are bought.
- *
- * THIS PANEL USED TO SAY "NO KEY NEEDED", AND THAT IS THE HISTORY WORTH KEEPING
- * (#131). It was true when it was written: a trail was a colour applied once
- * per drop and cleared on landing, and nothing in that path read an input. The
- * owner playtested it and said "I can't tell anything was even changed", then
- * changed the requirement rather than the reading -- there was to BE a key,
- * ours rather than the engine's, with the descent saying so. So the panel is
- * reworded rather than deleted: the question it answers ("how do I use this?")
- * did not go away, only the answer did.
- *
- * IT LEADS WITH THE AUTOMATIC PART ANYWAY, and that ordering is deliberate. The
- * trail still lights itself; the key only takes it away and gives it back.
- * Leading with the key would tell a player they have to do something to get
- * what they paid for, which is the same wrong idea as before pointing the other
- * way -- and would have them hunting for a button during the one part of a
- * match where looking away from the ground costs them.
- *
- * THE KEY COMES FROM THE LIVE BINDING, never a hard-coded 'B'. Keys are
- * rebindable from Settings > Controls, and the raw layer can hold a different
- * default from the engine's -- so a literal letter here would be wrong for
- * exactly the player who cared enough to change it. That is the bug that had
- * every world prompt still saying E long after interact moved to R, and it is
- * the one thing #131 has asked to be able to check in both of its lives.
- *
- * THE SQUAD LINE USED TO BE A WARNING AND IS NOW A DESCRIPTION (#131). It read
- * "in a squad your squad's colour replaces it, and the key does nothing" --
- * true, deliberate, and the reason a player who bought Void and dropped with
- * their team concluded the item was broken. The owner removed the override:
- * "Squad colors should not override the bought trail - the player earned that
- * trail." So the warning has nothing left to warn about, and deleting it
- * outright would leave the panel silent about the free item sitting at the top
- * of the same list. What it says instead is what Squad Colour now IS -- the
- * default, and the only way to fly your team's colour -- which is the same
- * question ("what happens in a squad?") with the answer it has today.
- */
-function TrailHelp() {
-  // The trail key, from the table Lua pushes on br:ui:ready. Two absences are
-  // possible and they are different: the envelope has not arrived yet (no row
-  // at all), or the player has deliberately cleared the binding (a row with an
-  // empty key). Neither may render as a gap in the middle of a sentence.
-  const trail = useUi((s) => s.keybinds.find((k) => k.command === 'brtrail'))
-
-  return (
-    <div
-      className="plate px-4 py-3 mb-3 flex flex-col gap-1.5"
-      style={{
-        ['--edgec' as string]: 'var(--color-royale-accent)',
-        ['--plate-fill' as string]: 'rgba(12,40,50,0.94)',
-        ['--cut-max' as string]: '0.5rem',
-      }}
-    >
-      <div className="micro-label">Automatic, and yours to switch off</div>
-      <p className="ts" style={{ ['--fs' as string]: '0.85rem', lineHeight: 1.5 }}>
-        Your trail lights itself when you jump from the bus and burns until you
-        land. You do not have to press anything to get it.
-      </p>
-      {trail && (
-        <p className="ts" style={{ ['--fs' as string]: '0.85rem', lineHeight: 1.5 }}>
-          {/* AN UNBOUND ROW IS ITS OWN SENTENCE, not a blank in the middle of
-              this one. '' is what Lua sends for an action the player has
-              deliberately cleared, and dropping it into "turn it off with ___"
-              reads as a missing word rather than as a choice they made. */}
-          {trail.key ? (
-            <>
-              Once your glider is open you can turn it off and on again with{' '}
-              <span className="font-semibold">{trail.key}</span> — the game
-              reminds you of the key on the way down.
-            </>
-          ) : (
-            <>
-              You have left the toggle unbound, so there is nothing to press in
-              the air and no reminder on the way down.
-            </>
-          )}{' '}
-          Change it in the pause menu under{' '}
-          <span className="font-semibold">Settings › Controls</span>, on the{' '}
-          <span className="font-semibold">{trail.label}</span> row.
-        </p>
-      )}
-      <p
-        className="ts"
-        style={{ ['--fs' as string]: '0.85rem', lineHeight: 1.5, opacity: 0.75 }}
-      >
-        What you buy is what flies, solo or in a squad. Equip{' '}
-        <span className="font-semibold">Squad Colour</span> — the free one, and
-        what you start with — to fly your team&apos;s colour instead, so you can
-        find each other in the air.
-      </p>
     </div>
   )
 }

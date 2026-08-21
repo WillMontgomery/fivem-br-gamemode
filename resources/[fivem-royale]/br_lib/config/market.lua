@@ -91,34 +91,44 @@ BR.Config.ItemKind = {
 
     Two consequences worth stating plainly:
       * "Crew" has no meaning here. It is a GTA Online crew colour, and this
-        game has squads instead -- which already colour the trail, for free,
-        automatically. We do not need to sell it.
+        game has squads instead. We do not need to sell it.
       * "Patriot" is multi-colour, which one RGB value cannot be. So it is
         rebuilt rather than imitated: a CYCLING trail that steps colours while
         you fall. That is more expensive than a solid because it is strictly
         more work to look at, and it is the only thing in the catalogue that
         animates.
 
-    THE BOUGHT TRAIL WINS, IN A SQUAD OR OUT OF ONE (#131, owner 2026-08-16).
+    A TRAIL IS A PURCHASE OR IT IS NOTHING (owner, 2026-08-20).
 
-    THIS PARAGRAPH USED TO SAY THE OPPOSITE, and the argument it made was not a
-    bad one: trail colour is how you find your team in the air, that is a
-    gameplay read, and decoration should lose to a gameplay read. It was invited
-    to be argued with. It was: "Squad colors should not override the bought
-    trail - the player earned that trail."
+    THIS BLOCK HAS ARGUED THE SQUAD COLOUR BOTH WAYS AND NOW SELLS IT NEITHER.
+    First it said the squad colour OVERRODE a bought trail, because finding your
+    team in the air is a gameplay read and decoration should lose to one. #131
+    reversed that -- "Squad colors should not override the bought trail - the
+    player earned that trail" -- leaving the squad colour as the free catalogue
+    default, `trail_squad`, which is what every player wore until they spent
+    Volts. The owner has now removed the idea entirely: "'Squad color' trails
+    should not be a thing."
 
-    What decided it is what the override cost in practice. A player buys Void,
-    drops with their squad, sees the squad colour, and concludes the item does
-    not work -- which is not a misunderstanding to be explained away in help
-    text, it is the item genuinely not appearing at the only moment it exists to
-    appear. The team read survives anyway, because the free catalogue default IS
-    the squad colour: `trail_squad` below is what every player wears until they
-    spend Volts, so nobody loses their squadmates' smoke by accident. They lose
-    it by buying something else and equipping it, which is a choice, made once,
-    by the person it affects.
+    SO THE FREE DEFAULT IS `trail_none`, AND IT PAINTS NOTHING. That is the
+    deliberate answer to the question deleting `trail_squad` asks, and it is
+    deliberate in both halves: the slot still HAS a default -- a player who buys
+    Ember needs somewhere to go back to, and BR.Config.defaultItem('trail')
+    returning nil would have left them unable to take it off -- and that default
+    is no smoke rather than the squad's.
 
-    cosmetics.applyTrail is where the order lives now: purchase first, squad
-    colour as the fallback for anyone who has not bought one.
+    KEEPING THE SQUAD COLOUR AS AN UNNAMED FALLBACK WOULD HAVE BEEN WORSE THAN
+    THE ITEM WAS. With the item gone, every player who has not bought a trail
+    would fly their squad's colour with nothing in the storefront to un-equip --
+    more squad-coloured smoke than before the instruction, and no way out of it.
+    So cosmetics.applyTrail lost its squad branch too, and `trailSource` can no
+    longer answer 'squad'.
+
+    WHAT THE TEAM ACTUALLY LOSES IS SMALL, AND IT IS WORTH SAYING WHY RATHER
+    THAN HOPING. Trails already start OFF on every drop (owner, 2026-08-17) and
+    only appear when the player presses the trail key -- so the squad colour has
+    not been a passive position marker for some time; it was an opt-in one, per
+    drop, per player. The markers, the nameplates and the squad list are
+    untouched and are where the team read lives.
 
     ========================== WEAPON TINTS ==========================
 
@@ -234,51 +244,76 @@ BR.Config.Market = {
                 -- the drop sequence tasks and retries against.
 
                 -- --------------------------------------------------- trails ---
+                -- TRAIL PRICES ARE THEIR OWN RANGE, TOPPING OUT AT 1500 (owner,
+                -- 2026-08-20: "the top price for trails should be like 1500
+                -- volts"). They used to run 800/800/1400/1400/2000/5000, which
+                -- put the legendary trail within 1000 of the legendary canopy.
+                --
+                -- RE-PRICED RATHER THAN CLAMPED. Squashing everything above the
+                -- new ceiling down onto it would have made Void, Toxic, Rose and
+                -- Patriot cost the same, and a rarity that costs what the tier
+                -- below it costs is decoration on a price tag. The five paid
+                -- steps are 400 / 700 / 1000 / 1500 with the gap widening as the
+                -- tier climbs, which is the shape the canopies already use.
+                --
+                -- THEY ARE NOW MUCH CHEAPER THAN A CANOPY OF THE SAME RARITY,
+                -- and that is the instruction rather than an oversight: a
+                -- legendary canopy is 6000 and a legendary trail is 1500. A
+                -- canopy is ninety seconds of everybody looking at it; a trail
+                -- is a keypress on the way down.
                 {
-                    -- The default trail is the squad colour, which is what
-                    -- happens today and costs nothing. `trailRgb = nil` means
-                    -- "leave the squad system alone".
+                    -- THE FREE DEFAULT, AND IT PAINTS NOTHING. `trail_squad`
+                    -- used to sit here and be the squad colour; the owner
+                    -- removed the idea ("'Squad color' trails should not be a
+                    -- thing"), so what a player wears before they spend Volts is
+                    -- no smoke at all.
                     --
-                    -- AND SINCE THE OVERRIDE WENT, THIS ITEM IS THE WHOLE SQUAD
-                    -- RULE (#131). It used to be a placeholder for a slot that
-                    -- was going to be overruled in a squad anyway; now equipping
-                    -- it is the only way a squad colour reaches the sky. It is
-                    -- also still the default, so the behaviour every player who
-                    -- has never opened the market sees is unchanged.
-                    id = 'trail_squad', name = 'Squad Colour', sub = 'Smoke trail',
+                    -- THE SLOT STILL NEEDS A DEFAULT even though that default
+                    -- does nothing, and that is why this is an item rather than
+                    -- an absence: BR.Config.defaultItem('trail') is what
+                    -- server/market.lua fills an empty slot with and what
+                    -- "un-equip" resolves to, so deleting the row outright would
+                    -- have left anybody who bought Ember unable to take it off.
+                    --
+                    -- AN EMPTY `apply` IS THE WHOLE MECHANISM. cosmetics.lua
+                    -- arms a trail only in the branches that actually paint one,
+                    -- so a table with no trailRgb and no trailCycle leaves
+                    -- `trailArmed` false -- no smoke, and no descent prompt
+                    -- offering a key for a trail that is not there (#131).
+                    id = 'trail_none', name = 'None', sub = 'Smoke trail',
                     kind = BR.Config.ItemKind.TRAIL,
                     price = 0, rarity = BR.Config.Rarity.COMMON,
                     default = true,
-                    apply = { trailRgb = nil },
+                    apply = {},
                 },
                 {
                     id = 'trail_ember', name = 'Ember', sub = 'Smoke trail',
                     kind = BR.Config.ItemKind.TRAIL,
-                    price = 800, rarity = BR.Config.Rarity.UNCOMMON,
+                    price = 400, rarity = BR.Config.Rarity.UNCOMMON,
                     apply = { trailRgb = TRAIL.EMBER },
                 },
                 {
                     id = 'trail_ice', name = 'Ice', sub = 'Smoke trail',
                     kind = BR.Config.ItemKind.TRAIL,
-                    price = 800, rarity = BR.Config.Rarity.UNCOMMON,
+                    price = 400, rarity = BR.Config.Rarity.UNCOMMON,
                     apply = { trailRgb = TRAIL.ICE },
                 },
                 {
                     id = 'trail_toxic', name = 'Toxic', sub = 'Smoke trail',
                     kind = BR.Config.ItemKind.TRAIL,
-                    price = 1400, rarity = BR.Config.Rarity.RARE,
+                    price = 700, rarity = BR.Config.Rarity.RARE,
                     apply = { trailRgb = TRAIL.TOXIC },
                 },
                 {
                     id = 'trail_rose', name = 'Rose', sub = 'Smoke trail',
                     kind = BR.Config.ItemKind.TRAIL,
-                    price = 1400, rarity = BR.Config.Rarity.RARE,
+                    price = 700, rarity = BR.Config.Rarity.RARE,
                     apply = { trailRgb = TRAIL.ROSE },
                 },
                 {
                     id = 'trail_void', name = 'Void', sub = 'Smoke trail',
                     kind = BR.Config.ItemKind.TRAIL,
-                    price = 2000, rarity = BR.Config.Rarity.EPIC,
+                    price = 1000, rarity = BR.Config.Rarity.EPIC,
                     apply = { trailRgb = TRAIL.VOID },
                 },
                 {
@@ -287,9 +322,11 @@ BR.Config.Market = {
                     -- so this steps between them while you fall. It is the
                     -- rebuild of the multi-colour canister trail we cannot
                     -- reach without issuing a reserve chute.
+                    --
+                    -- IT IS THE CEILING, which is what 1500 buys.
                     id = 'trail_patriot', name = 'Patriot', sub = 'Smoke trail',
                     kind = BR.Config.ItemKind.TRAIL,
-                    price = 5000, rarity = BR.Config.Rarity.LEGENDARY,
+                    price = 1500, rarity = BR.Config.Rarity.LEGENDARY,
                     apply = {
                         trailCycle = { { 235, 235, 240 }, { 200, 25, 45 }, { 30, 60, 190 } },
                         trailCycleMs = 350,
