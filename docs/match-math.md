@@ -315,13 +315,23 @@ inward always terminates, because a POI centre is on land by definition.
 Crates and the floor roll on **different tables**:
 
 ```
-crate kind ~ weighted(weapon 34, ammo 30, consumable 28, throwable 8)
-floor kind ~ weighted(ammo 74, weapon 16, consumable 6, throwable 4)
+crate kind ~ weighted(weapon 55, ammo 18, consumable 21, throwable 6)
+floor kind ~ weighted(ammo 74, weapon 16, consumable  6, throwable 4)
 ```
 
 Bandages and med kits are `chestOnly` and cannot spawn loose at all. A crate
 holds **2–4 items weighted 1:2:1**, so three is typical and it is never empty.
-Crate weapon rolls have an 18% chance of producing melee instead of a firearm.
+Crate weapon rolls have a **12%** chance of producing melee instead of a firearm
+(`meleeChance`), and melee is crate-only — a machete on the roadside is a
+consolation prize.
+
+> **Both of the crate numbers above were the pre-#127 ones: `weapon 34 … 8` and
+> an 18% melee chance.** They are one change, not two, and that is why they were
+> wrong together. `meleeChance` is a fraction of the *weapon* rolls, so it is
+> coupled to the kind weights: leaving it at 0.18 while weapon went 34 → 55 would
+> have taken melee from 6.1% of crate items to 9.9% — a 62% increase in machetes
+> arriving inside a change whose entire purpose was "more guns". 0.12 of the new
+> weight lands it back at 6.6%.
 
 ### Rarity
 
