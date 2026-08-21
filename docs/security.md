@@ -101,7 +101,7 @@ is classed once:
 | `TOO_FAR` | beyond the weapon's range, plus slack | **yes** |
 | `TOO_FAST` | faster than the weapon can cycle, plus slack | **yes** |
 | `NOT_THROWN` | an explosion from something you never threw | **yes** |
-| `SELF` | hurting yourself *repeatedly* — 3+ times in 5s | **yes** |
+| `SELF` | hurting yourself *repeatedly* — 3+ times in 5s | **recorded, bars nothing** — see below |
 
 The split is the difference between *rules* and *means*. An honest client
 produces the top group constantly — and since fists are a real weapon, every
@@ -109,10 +109,17 @@ player has the means to at any moment, so counting them would trip an
 anticheat built for trainers on the first warmup scrap. There is no honest
 input that produces the bottom group.
 
+**"Counted" in that column means "worth writing down", which is a different
+question from "opens a case".** They are two tables in `combat_solve.lua` on
+purpose: `BR.ShotSuspicious` gates the per-shot console line and the event, and
+`BR.ShotTier` decides what files a case and how loudly. Every row marked **yes**
+is in both. `SELF` is in the first and deliberately not the second — see the tier
+table further down, which is where the bar actually lives.
+
 **Self-damage is allowed.** You can stand in your own grenade and it hurts
-you, like anyone else's would. What is refused and counted is *repetition* —
+you, like anyone else's would. What is refused and recorded is *repetition* —
 three self-inflicted hits inside five seconds is somebody exercising a path
-rather than playing badly.
+rather than playing badly. It grades nothing.
 
 **`OTHER_MATCH` is not counted, and the reason is worth stating.** Matches run
 in parallel in separate routing buckets, so two players in different matches
@@ -156,12 +163,17 @@ a gap in it from a match where nothing more happened. One case per player per ma
 so DynamoDB write volume is flat and no single player can bury a queue that is meant
 to be a shrinking worklist.
 
-The console does that append, not the game. Corroboration is an `UpdateItem` on an
-existing row, and the game's grant is deliberately append-only so that a compromised
-game box can file noise but can never overwrite a case or erase a verdict and the
-admin who made it. Widening it for a redundant note would be a bad trade — so
-corroboration rides the event channel and is allowed to be lost, precisely because
-the case it attaches to is already durable.
+The console does that append, not the game. Corroboration is an `UpdateItem` on
+`events` — the console's own half of the row — and nothing the game holds can reach
+it. So corroboration rides the event channel and is allowed to be lost, precisely
+because the case it attaches to is already durable.
+
+> **This paragraph used to say the game's grant on `ringmaster-incidents` is
+> "append-only", and that stopped being true when the match timeline shipped.** The
+> game now holds an `UpdateItem` of its own on that table. It is not a widening of
+> what the game can *decide* — see the grant list below — but "append-only" was the
+> sentence somebody would have quoted to argue the game cannot write to an existing
+> row, and it can.
 
 **The game no longer decides what happens to the player** (owner call,
 2026-08-14). `refusalAction` — which read `log` | `notify` | `kick` — is gone,
@@ -214,20 +226,62 @@ grenade at your own feet lands several ticks well inside that. A pure-self clust
 of eight is two grenades, not somebody exercising something.
 
 **The game files the row itself, and that is a deliberate widening of `br_ddb`.**
-`ringmaster-incidents` is the one console-owned table the game may write. The
-write is conditional on the id being absent, so a repeat can only be refused — it
-cannot overwrite a case, or erase a verdict and the admin who made it. The game
-holds **no access at all** to `ringmaster-audit`, and read-only single-key access
-to `ringmaster-bans` and `ringmaster-grants`.
+`ringmaster-incidents` is the one console-owned table the game may write, and it
+may write it three ways and no others:
 
-**This table was write-only until 2026-08-17 and is not any more.** Report
-rewards (#168) added `incidentVerdict`, a `GetItem` by an id the game minted
-itself, projected to four attributes — `incidentId`, `state`, `verdict`,
-`resolvedAt`. Nothing else on the row crosses into the game server: not the
-evidence, not the chat log, not the reporter, not the subject, not the
-moderator's written resolution. A compromised game box can now learn whether a
-case it filed was decided and whether an action followed. It still cannot
-enumerate cases — there is no `Query` and no `Scan` anywhere in `br_ddb` — and it
+| verb | on | scope |
+|---|---|---|
+| `PutItem` | `ringmaster-incidents` | conditional on the id being **absent**, so a repeat can only be refused |
+| `UpdateItem` | `ringmaster-incidents` | an **attribute allowlist** — `incidentId`, `matchEndedAt`, `matchTimeline`, `matchTimelineComplete`, `matchKillsSeen` — with `ReturnValues: NONE` |
+| `GetItem` | `ringmaster-*` | broad in the policy; four tables in the code (below) |
+
+The `UpdateItem` is the match-timeline close, and it is the one verb here that
+touches a case that already exists. What makes it safe is the allowlist rather than
+the code: `events` is the console's timeline, where an admin's notes,
+corroborations and resolution live, and `state`, `verdict`, `resolvedAt`,
+`resolvedBy*`, `resolution` and `closedByBan` are the decision itself. **None of
+those is in the five attributes the policy permits**, so a compromised game box
+cannot express an opinion about a moderation outcome even by writing the field
+directly. `ReturnValues: NONE` is the other half and is not decoration — an
+attribute allowlist restricts what an update may *write*, and `ReturnValues` is how
+the same request could still read the rest of the row back.
+
+> **This section used to say the game "holds no access at all to
+> `ringmaster-audit`, and read-only single-key access to `ringmaster-bans` and
+> `ringmaster-grants`."** That was the policy until 2026-08-17, when the owner
+> widened the read to `dynamodb:GetItem` on the whole `ringmaster-*` prefix, with
+> the words *"this is deliberately broad, I know"*. That prefix covers `audit`,
+> `bans`, `grants`, `incidents`, `sessions`, `telemetry` and `to-gameserver`. The
+> sentence is corrected rather than deleted because a security document that
+> understates a grant is the one nobody re-reads.
+
+**So the grant is broad and the code is not**, and the difference is worth stating
+as the gap it is. `js-src/br_ddb/src/index.js` names four tables and names each
+once:
+
+| table | verb | what for |
+|---|---|---|
+| `ringmaster-bans` | `GetItem` | the connect gate |
+| `ringmaster-grants` | `GetItem` | in-game admin scopes |
+| `ringmaster-maintenance` | `GetItem` | the drain gate |
+| `ringmaster-incidents` | `GetItem` | the verdict read, plus the two writes above |
+
+Nothing in that file reads `audit`, and nothing should. When somebody comes to
+narrow the policy back to a list of ARNs, that table is the answer.
+
+**The incidents read is narrower than the grant in three further ways, all of them
+enforced in code rather than promised.** It is a `GetItem` keyed on `incidentId` —
+there is no `Query` and no `Scan` anywhere in `br_ddb`, which is the property that
+stops a compromised box enumerating cases at all. Every id it is ever called with
+came back from this box's own `PutItem`, so "read back cases whose ids it knows"
+means "read back its own". And it is a `ProjectionExpression`, not the row: four
+attributes — `incidentId`, `state`, `verdict`, `resolvedAt`. The evidence, the
+chat log, the kill log, the reporter, the subject and the moderator's written
+resolution are all on that item and **none** of them crosses into the game server.
+
+What #168 cost, stated plainly because the owner paid it knowingly: the property
+"there is no read of any kind on this table" is gone. A compromised game box can
+now learn whether a case it filed was decided and whether an action followed. It
 still cannot alter a verdict. See [the ban contract](ban-contract.md).
 
 The alternative was posting the case over the event channel and letting the
@@ -271,11 +325,33 @@ refusal path files.
 
 **Cost is unchanged by volume.** The strips known at filing time ride the `PutItem`
 that was already happening; the rest ride the match-end `UpdateItem` that was
-already happening. That close write touches only the five attributes the game's
-grant on `ringmaster-incidents` allows, and strips add none — which is also why
-there is no `matchStripsSeen` counter beside `matchKillsSeen`. A truncated strip
-list is reported by `matchTimelineComplete` going false, and that is the whole of
-it.
+already happening. That close write touches only the attributes the game's grant
+on `ringmaster-incidents` allows, and strips add none — which is also why there is
+no `matchStripsSeen` counter beside `matchKillsSeen`. A truncated strip list is
+reported by `matchTimelineComplete` going false, and that is the whole of it.
+
+**A strip during WARMUP is the earliest signal there is, and it used to be the
+least recorded.** `startedAt` is stamped on entering PLAYING, so a case opened on
+the warmup pad was filed with no match start, no deadline and an empty timeline —
+and, because the game keyed its match-end write on that same start, it never
+received an end either. The console reads that shape as "filed outside a match",
+which is false about a row carrying a `matchId`. Three things changed:
+
+- the row carries **`matchCreatedAt`**, when the match was *formed*, written by
+  the `PutItem` at filing. It is a separate field from `matchStartedAt` rather
+  than an early value for it, because one field holding two facts is unreadable;
+- the timeline is anchored on a **`match_created`** entry when there is no start
+  to anchor it on, so the strips that opened the case are on the record at all;
+- the case is queued for the match-end write like any other, and that write now
+  carries **`matchStartedAt`** and **`matchEndsBy`** so the real values arrive
+  when the match actually starts and ends.
+
+> The close's attribute list **is** the game's IAM grant, and it grew from five to
+> seven. **Widen the policy before deploying the code, never after.** DynamoDB
+> evaluates `dynamodb:Attributes` against the whole request, so an un-widened
+> policy does not drop the two new fields — it refuses the entire `UpdateItem`,
+> taking the end timestamp and the post-filing timeline with it, on every case.
+> `brring` prints the failed-close count for exactly this reason.
 
 **Two guards stop this accusing innocent players, and they exist because the strip
 is deliberately broader than the report.** The strip compares against the *active*
@@ -336,13 +412,32 @@ with two frames, or none, is a normal case and says nothing whatsoever about
 whether anything was happening. Nothing in the game logs a missing frame as an
 error, and nothing anywhere should present one as meaningful.
 
+**A frame is the game's 3D render and nothing else.** `screenshot-basic` captures
+off the game's own render target; NUI and the HUD are composited afterwards, so
+**they never appear in a frame**. What an admin gets is the world, the ped, the
+weapon in its hands and where it is pointing — not the inventory, not the map, not
+a menu, and not whatever the cheat's own overlay is drawing. Reading a case as
+though the picture were the subject's monitor is the misreading this pipeline
+invites, and the frames cannot support it.
+
 **The timestamp is the server's.** This is an anti-cheat surface: the premise is
 that the subject may be running modified software, so their clock is not
 evidence. Each frame is stamped with `os.time()` on the game box at the moment
 the server decided to ask for it, and that value travels as S3 object metadata
 (`x-amz-meta-captured-at`, unix milliseconds) rather than in the key or on the
-DynamoDB row — the game's grant on `ringmaster-incidents` is append-only, so it
-cannot add to a case it has already filed.
+DynamoDB row.
+
+Both of those exclusions are decisions rather than accidents. **Not the row**,
+because the game's `UpdateItem` on `ringmaster-incidents` is scoped to an
+attribute allowlist that holds the match timeline and its counters and nothing
+else — there is no per-frame attribute it is permitted to write, so a case it has
+already filed cannot grow a capture list. (One existed: `captureKeys` was written
+`[]` at filing time, could never be added to by its only writer, and was deleted
+outright.) **Not the key**, because a key carrying a timestamp is a key that
+cannot be guessed, and the console holds `GetObject` with no `ListBucket` — a key
+it cannot derive is a frame it cannot find. Metadata is what is left, and it costs
+nothing: `s3:GetObject` covers `HEAD` as well as `GET`, so the capture time
+arrives on the same request that fetches the image.
 
 **The subject is told nothing, at any point.** Same rule as the rest of the
 pipeline: no notice, no hint, no sound. A player who learns they are under

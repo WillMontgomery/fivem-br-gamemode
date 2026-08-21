@@ -73,6 +73,18 @@ function BR.Match.create(mode, participants)
         mode      = mode or BR.Mode.SOLO.key,
         endsAt    = 0,
         shortened = false,
+        -- WHEN THE LOBBY OPENED, WHICH IS NOT WHEN THE MATCH BEGAN. `startedAt`
+        -- is stamped on entering PLAYING and stays nil until then, so anything
+        -- that happens on the warmup pad -- a weapon this gamemode never issued
+        -- being taken out of a hand, for instance -- has no match timestamp of
+        -- any kind to be filed against. This is that timestamp, and it is
+        -- deliberately a SECOND field rather than an early `startedAt`: the two
+        -- mean different things and `BR.Match.wasPlayed` asks the second one.
+        --
+        -- Read by server/incident.lua, which puts it on a case as
+        -- `matchCreatedAt` so a warmup case says which match it belongs to and
+        -- when that match was formed.
+        createdAt = GetGameTimer(),
     }
     BR.Server.matches[m.id] = m
 
@@ -219,7 +231,16 @@ function BR.Match.destroy(m)
     -- returns early on `#rows == 0`, so a match that ends empty announces
     -- nothing and would leak whatever was keyed to it. This line runs on the
     -- only path out of the registry, which is what makes it safe to free on.
-    TriggerEvent('br:match:destroyed', { matchId = m.id })
+    --
+    -- `startedAt` RIDES THE EVENT BECAUSE THE REGISTRY IS ALREADY GONE. The line
+    -- above this comment block cleared `BR.Server.matches[m.id]`, so by the time
+    -- any handler runs there is no instance left to look the value up on -- and
+    -- the incident close (server/incident.lua, via `br:evidence:closing`) needs
+    -- it: a case filed during warmup has no start on its row and this is the
+    -- moment the real one becomes both known and final. nil for a match that
+    -- dissolved without ever going live, which is a fact the close preserves
+    -- rather than papers over.
+    TriggerEvent('br:match:destroyed', { matchId = m.id, startedAt = m.startedAt })
 
     -- Re-seed everyone (the old CLEANUP->WAITING snapshot, kept): the
     -- destroyed match's players just changed view, and any client that

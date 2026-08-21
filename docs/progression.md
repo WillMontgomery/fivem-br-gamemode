@@ -324,10 +324,26 @@ relative to each other — a 1200 canopy is cheap or extortionate depending
 entirely on what a match returns — so changing one should force you to look at
 the other.
 
-**Payout moved in #89 and prices did not**, which is stated here rather than
-quietly absorbed. At ~70 for a middling match an uncommon canopy at 1200 is
-around **17 matches** where it used to be 8, and a legendary at 6000 is **60–80**
-where it used to be 40. The owner asked for a third of the payout and said
-nothing about prices, so prices are untouched — but the older intent that "an
-uncommon is a handful of matches" is **no longer strictly true**. If that is the
-half that should have moved, it is the price table at the top of `market.lua`.
+**Payout has moved twice and prices have moved once**, which is stated here
+rather than quietly absorbed, because the gap is no longer small. At **~36** for a
+middling match an uncommon canopy at 1200 is around **33 matches** and a legendary
+at 6000 is about **165**. The owner asked for a third of the payout in #89 and for
+half of what was left on 2026-08-20, and said nothing about the canopy or finish
+prices either time, so those are untouched. If prices are the half that should
+move, it is the table at the top of `market.lua`.
+
+> **This section used to read "At ~70 for a middling match an uncommon canopy at
+> 1200 is around 17 matches … and a legendary at 6000 is 60–80."** Those were the
+> post-#89 figures and the halving on 2026-08-20 left them describing a payout
+> that no longer exists — in a document that gets the arithmetic right two
+> sections earlier. Both halves of the file now quote the same numbers.
+
+The one price instruction that did land is the **trail** range, re-scaled the same
+day under its own instruction to a ceiling of **1500**: 400 for Ember and Ice, 700
+for Toxic and Rose, 1000 for Void, 1500 for Patriot. The squad-colour trail is
+gone entirely, and **"None" is no longer shown as a product** — it stays in the
+index as a hidden default so an equipped slot has somewhere to go back to, but it
+is not a card in the storefront and it never was a thing anybody bought.
+
+The older intent that "an uncommon is a handful of matches" has not been true for
+two retunes. Saying so is the point of this section.

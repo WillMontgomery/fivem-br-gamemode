@@ -1075,8 +1075,9 @@ fi
 # the row. The feature ships dead, which this project has done before; see the
 # shared-coverage gate's note about outbox.lua.
 #
-# It reads the Lua constant rather than restating it, so adding a kind extends
-# this gate for free.
+# It reads the Lua constants rather than restating them, so adding a kind
+# extends this gate for free -- provided it is declared as a `*_KIND` local,
+# which is what the resolver below matches on.
 
 echo "${DIM}== timeline entry kinds ==${RST}"
 kinds=0
@@ -1086,21 +1087,30 @@ cj_="js-src/br_ddb/src/close.js"
 if [ ! -f "$ib_" ] || [ ! -f "$cj_" ]; then
     echo "${YEL}skip${RST} incident_build.lua or close.js absent from this checkout"
 else
-    strip_kind=$(grep -oE "^local STRIP_KIND[[:space:]]*=[[:space:]]*'[a-z_]+'" "$ib_" \
-                 | grep -oE "'[a-z_]+'" | tr -d "'" || true)
-    if [ -z "$strip_kind" ]; then
-        echo "${RED}FAIL${RST} cannot read STRIP_KIND out of br_lib/shared/incident_build.lua"
-        echo "     This gate resolves \"local STRIP_KIND = '<kind>'\". If that"
+    # EVERY `*_KIND` CONSTANT, NOT ONE NAMED ONE. This gate used to resolve
+    # STRIP_KIND alone, which made its own promise -- "adding a kind extends this
+    # gate for free" -- false: MATCH_CREATED_KIND was added beside it and would
+    # have been checked by nothing. The pattern is the contract now, so the next
+    # kind is covered the moment it is declared.
+    declared=$(grep -oE "^local [A-Z_]+_KIND[[:space:]]*=[[:space:]]*'[a-z_]+'" "$ib_" \
+               | grep -oE "'[a-z_]+'" | tr -d "'" || true)
+    if [ -z "$declared" ]; then
+        echo "${RED}FAIL${RST} cannot read any *_KIND out of br_lib/shared/incident_build.lua"
+        echo "     This gate resolves \"local <SOMETHING>_KIND = '<kind>'\". If that"
         echo "     shape changed, reshape this gate with it -- do not delete it:"
         echo "     a kind close.js does not know is dropped in silence."
         kinds=1
-    elif ! grep -qF "kind === '$strip_kind'" "$cj_"; then
-        echo "${RED}FAIL${RST} close.js does not handle the timeline kind '$strip_kind'"
-        echo "     br_lib/shared/incident_build.lua builds entries of that kind and"
-        echo "     timelineEntry() drops every kind it does not name, so those"
-        echo "     entries would never reach a single incident row -- and nothing"
-        echo "     would error while they were being dropped."
-        kinds=1
+    else
+        for k in $declared; do
+            if ! grep -qF "kind === '$k'" "$cj_"; then
+                echo "${RED}FAIL${RST} close.js does not handle the timeline kind '$k'"
+                echo "     br_lib/shared/incident_build.lua builds entries of that kind and"
+                echo "     timelineEntry() drops every kind it does not name, so those"
+                echo "     entries would never reach a single incident row -- and nothing"
+                echo "     would error while they were being dropped."
+                kinds=1
+            fi
+        done
     fi
 
     # AND THE THREE THAT WERE ALREADY THERE, so this gate covers the whole

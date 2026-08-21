@@ -575,6 +575,12 @@ const closeOk = (payload) => {
 
   // THE ALLOWLIST, ASSERTED AS A SET. Sorted so a reordering of the expression
   // is not a failure but an ADDITION is.
+  //
+  // FOUR, BECAUSE THIS PAYLOAD CARRIES NO START. That is the narrow form -- the
+  // one a match that dissolved on the warmup pad produces, and byte for byte the
+  // update this file made before `matchStartedAt` and `matchEndsBy` joined it,
+  // so it is still permitted by an IAM policy nobody has widened yet. The wide
+  // form is pinned separately below.
   const touched = [...expr.matchAll(/\b(match[A-Za-z]+)\s*=/g)].map((m) => m[1]).sort()
   check('close touches exactly the four game-owned attributes', touched, [
     'matchEndedAt',
@@ -616,6 +622,114 @@ const closeOk = (payload) => {
     'close appends rather than replacing the timeline',
     expr.includes('list_append(if_not_exists(matchTimeline, :empty), :entries)'),
     true,
+  )
+}
+
+// --- the two attributes a WARMUP-filed case is still missing ----------------
+//
+// A case filed on the warmup pad is filed before its match has a `startedAt`, so
+// its row carries a null start and -- since the deadline is derived from the
+// start -- a null `matchEndsBy` too. Both are known by the time the close
+// happens, and the close was happening anyway.
+//
+// THIS IS THE HALF THAT NEEDS A WIDER IAM POLICY THAN THE ONE IN PRODUCTION
+// TODAY, which is why the expression is asserted as a SET rather than by
+// substring: `dynamodb:Attributes` is evaluated against the whole request, so an
+// attribute appearing here that the policy does not name does not lose itself --
+// it loses the entire UpdateItem, end timestamp and timeline included.
+
+{
+  const p = closeOk({
+    matchEndedAt: 1_700_000_500_000,
+    matchStartedAt: 1_700_000_100_000,
+    matchEndsBy: 1_700_003_700_000,
+    matchTimeline: [{ at: 1_700_000_500_000, kind: 'match_end' }],
+    matchTimelineComplete: true,
+    matchKillsSeen: 0,
+  })
+
+  const touched = [...p.UpdateExpression.matchAll(/\b(match[A-Za-z]+)\s*=/g)]
+    .map((m) => m[1])
+    .sort()
+  check('a close that knows the start writes exactly six attributes', touched, [
+    'matchEndedAt',
+    'matchEndsBy',
+    'matchKillsSeen',
+    'matchStartedAt',
+    'matchTimeline',
+    'matchTimelineComplete',
+  ])
+
+  check(
+    'and the start it writes is the one it was given',
+    p.ExpressionAttributeValues[':start'],
+    1_700_000_100_000,
+  )
+  check(
+    'and the deadline likewise',
+    p.ExpressionAttributeValues[':endsBy'],
+    1_700_003_700_000,
+  )
+
+  // NOT `matchCreatedAt`. When the match was FORMED is written once, by the
+  // PutItem, onto a row that has it from the first moment. A close restating it
+  // would be an eighth attribute on an allowlist for a fact that cannot change.
+  check(
+    'a close says nothing about when the match was formed',
+    p.UpdateExpression.includes('matchCreatedAt'),
+    false,
+  )
+}
+
+// OMITTED, NEVER NULLED. A match that dissolved on the pad ended without ever
+// starting. Writing a null would be the same shape as writing a value the row
+// does not have -- and if a caller ever failed to pass the start for a match
+// that DID run, an unconditional SET would erase a correct value on an ordinary
+// case. So a missing start is a smaller update, not a destructive one.
+{
+  const p = closeOk({
+    matchEndedAt: 1_700_000_500_000,
+    matchTimeline: [{ at: 1_700_000_500_000, kind: 'match_end' }],
+    matchTimelineComplete: true,
+    matchKillsSeen: 0,
+  })
+  check(
+    'a match that never started has no start written over its row',
+    p.UpdateExpression.includes('matchStartedAt'),
+    false,
+  )
+  check(
+    'and no deadline either',
+    p.UpdateExpression.includes('matchEndsBy'),
+    false,
+  )
+  check(
+    'and no dangling value for either',
+    [':start', ':endsBy'].filter((k) => k in p.ExpressionAttributeValues),
+    [],
+  )
+}
+
+// A START WITHOUT A DEADLINE, which is the shape a br_ringmaster that failed to
+// convert the duration would send. Each attribute is decided on its own value,
+// so a half-filled payload writes the half it has rather than all or nothing.
+{
+  const p = closeOk({
+    matchEndedAt: 1_700_000_500_000,
+    matchStartedAt: 1_700_000_100_000,
+    matchTimeline: [],
+    matchTimelineComplete: true,
+    matchKillsSeen: 0,
+  })
+  check(
+    'a start with no deadline still writes the start',
+    p.UpdateExpression.includes('matchStartedAt = :start'),
+    true,
+  )
+  check(
+    'and does not invent a deadline for it',
+    p.UpdateExpression.includes('matchEndsBy'),
+    false,
   )
 }
 
@@ -883,6 +997,44 @@ const entryOf = (extra) =>
   )
 }
 
+// --- a match that was formed but had not started ----------------------------
+//
+// THE SAME SILENT-DROP HAZARD AS THE STRIP KIND, AND THE REASON THIS ENTRY
+// EXISTS AT ALL. `startedAt` is stamped on entering PLAYING, so a case filed on
+// the warmup pad has no `match_start` to anchor its timeline on. The rejected
+// alternative was to put the creation time in `matchStartedAt`, which would have
+// made `match_start` mean "the lobby opened" on some rows and "the match began"
+// on others -- one field, two facts, no way for a reader to tell them apart.
+
+{
+  const p = closeOk({
+    matchEndedAt: 9000,
+    matchTimeline: [
+      { at: 500, kind: 'match_created' },
+      { at: 6000, kind: 'weapon_strip', weapon: 2210333304 },
+      { at: 9000, kind: 'match_end' },
+    ],
+    matchTimelineComplete: true,
+    matchKillsSeen: 0,
+  })
+  const entries = p.ExpressionAttributeValues[':entries']
+
+  check('a match_created entry survives the projection', entries.length, 3)
+  check('and keeps its kind', entries[0].kind, 'match_created')
+  check('and its time', entries[0].at, 500)
+
+  // A BOOKEND, NOT A KILL. It carries the two fields every entry carries and
+  // nothing else -- there is no subject, no weapon and no second party in "a
+  // lobby opened".
+  check('and carries nothing else', Object.keys(entries[0]).sort(), ['at', 'kind'])
+
+  check(
+    'a timeline anchored on a formed match is still complete',
+    p.ExpressionAttributeValues[':complete'],
+    true,
+  )
+}
+
 // --- the shape the console reads --------------------------------------------
 
 {
@@ -965,8 +1117,59 @@ const entryOf = (extra) =>
   ).item
   check('a case filed outside a match has no match start', item.matchStartedAt, null)
   check('and no deadline', item.matchEndsBy, null)
+  check('nor any hint of a match having been formed', item.matchCreatedAt, null)
   check('and an empty timeline', item.matchTimeline, [])
   check('and does not claim completeness it cannot have', item.matchTimelineComplete, false)
+}
+
+// --- what a case filed during WARMUP writes ---------------------------------
+//
+// THE SHAPE THIS WHOLE CHANGE IS ABOUT. A weapon this gamemode never issued,
+// taken out of a hand on the warmup pad: filed before the match has a
+// `startedAt`, and until now filed with no match context of any kind. The row
+// carries a matchId, so "filed outside a match" -- which is what the console
+// reads from a null start -- is false about it.
+
+{
+  const item = buildIncidentItem(
+    'inc-4',
+    {
+      subjectLicense: 'license:subject',
+      subjectName: 'Subject',
+      matchId: 7,
+      // NO matchStartedAt AND NO matchEndsBy. The match has not begun.
+      matchCreatedAt: 1_700_000_000_000,
+      matchTimeline: [
+        { at: 1_700_000_000_000, kind: 'match_created' },
+        { at: 1_700_000_050_000, kind: 'weapon_strip', weapon: 2210333304 },
+      ],
+      matchTimelineComplete: true,
+      matchKillsSeen: 0,
+      openedAt: 1_700_000_050_000,
+    },
+    NOW,
+  ).item
+
+  check('a warmup case records when its match was formed', item.matchCreatedAt, 1_700_000_000_000)
+
+  // THE LINE THAT MUST NOT MOVE. The creation time is a different fact from the
+  // start, and the moment one is allowed to stand in for the other, every reader
+  // of `matchStartedAt` -- the console header, `matchEndsBy`, the `match_start`
+  // entry -- inherits an ambiguity nothing on the row can resolve.
+  check('and still says the match has not started', item.matchStartedAt, null)
+  check('and offers no deadline derived from a start it does not have', item.matchEndsBy, null)
+  check('and does not claim the match has ended', item.matchEndedAt, null)
+
+  // AND THE CASE IS ABOUT A MATCH, which is the fact the old shape lost.
+  check('the row still names the match it belongs to', item.matchId, 7)
+
+  check('the timeline is anchored on the formation', item.matchTimeline[0].kind, 'match_created')
+  check('at the time the match was formed', item.matchTimeline[0].at, 1_700_000_000_000)
+  // THE EVIDENCE ITSELF. A warmup filing used to send an EMPTY timeline, so the
+  // strip that opened the case reached the row nowhere at all -- the evidence
+  // records carry chat and kills, and a strip is neither.
+  check('and the strip that opened the case is on it', item.matchTimeline[1].kind, 'weapon_strip')
+  check('with the hash the client reported', item.matchTimeline[1].weapon, '2210333304')
 }
 
 if (failed) {

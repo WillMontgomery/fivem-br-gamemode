@@ -925,13 +925,14 @@ on('br:ddb:putIncident', (req, token, payload) => {
  * AccessDeniedException, and the visible symptom is incidents that never stop
  * saying "match still in progress".
  *
- * WHAT IT WRITES, AND WHAT IT DELIBERATELY CANNOT. Five attributes, all of them
- * the game's own: `matchEndedAt`, `matchTimeline`, `matchTimelineComplete`,
- * `matchKillsSeen`, keyed on `incidentId`. It does NOT touch `events` -- the
- * console's timeline, where notes, corroborations and resolutions live -- and it
- * does not touch `state`, `verdict`, `resolvedAt`, `resolvedBy*`, `resolution`
- * or `closedByBan`. That is not a convention this file follows; it is the shape
- * the grant should be written to enforce:
+ * WHAT IT WRITES, AND WHAT IT DELIBERATELY CANNOT. Six attributes, all of them
+ * the game's own: `matchEndedAt`, `matchStartedAt`, `matchEndsBy`,
+ * `matchTimeline`, `matchTimelineComplete`, `matchKillsSeen`, keyed on
+ * `incidentId`. It does NOT touch `events` -- the console's timeline, where
+ * notes, corroborations and resolutions live -- and it does not touch `state`,
+ * `verdict`, `resolvedAt`, `resolvedBy*`, `resolution` or `closedByBan`. That is
+ * not a convention this file follows; it is the shape the grant should be
+ * written to enforce:
  *
  *     {
  *       "Sid": "GameServerCloseIncidentTimeline",
@@ -941,13 +942,35 @@ on('br:ddb:putIncident', (req, token, payload) => {
  *       "Condition": {
  *         "ForAllValues:StringEquals": {
  *           "dynamodb:Attributes": [
- *             "incidentId", "matchEndedAt", "matchTimeline",
- *             "matchTimelineComplete", "matchKillsSeen"
+ *             "incidentId", "matchEndedAt", "matchStartedAt", "matchEndsBy",
+ *             "matchTimeline", "matchTimelineComplete", "matchKillsSeen"
  *           ]
  *         },
  *         "StringEquals": { "dynamodb:ReturnValues": "NONE" }
  *       }
  *     }
+ *
+ * ═══ WIDEN THAT LIST BEFORE THIS CODE REACHES A BOX, NOT AFTER ═══
+ *
+ * `matchStartedAt` and `matchEndsBy` are new to it. They are here so that a case
+ * filed during WARMUP -- which is filed before its match has a start, and whose
+ * row therefore carries neither -- receives both once the match has actually
+ * started and ended.
+ *
+ * The two deploy orderings are not symmetrical, and only one of them is safe:
+ *
+ *   POLICY FIRST   harmless. A seven-attribute allowlist permits the five the
+ *                  old code writes; nothing changes until the code lands.
+ *   CODE FIRST     every close fails with AccessDeniedException.
+ *                  `dynamodb:Attributes` is evaluated against the WHOLE request,
+ *                  so DynamoDB refuses the entire UpdateItem -- the end
+ *                  timestamp and the post-filing timeline go down with the two
+ *                  new fields, on every case, for the length of the window.
+ *
+ * THE SYMPTOM IS ON THE CONSOLE AND THE CAUSE IS HERE, which is what makes this
+ * worth spelling out: cases read "end never reported", nothing about them looks
+ * broken, and the game box says nothing unless somebody runs `brring` -- which
+ * now prints the failed-close count for exactly this reason.
  *
  * THE `ReturnValues` CLAUSE IS NOT DECORATION. An attribute allowlist restricts
  * what an update may WRITE; `ReturnValues` is how the same request could still

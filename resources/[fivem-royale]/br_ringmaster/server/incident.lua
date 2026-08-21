@@ -149,6 +149,11 @@ local function realise(payload)
     -- The match timeline (#30). Same conversion, same reason: every `at` on it
     -- is a game-clock reading and the console renders wall-clock times.
     payload.matchStartedAt = real(payload.matchStartedAt)
+    -- WHEN THE MATCH WAS FORMED, WHICH IS NOT WHEN IT STARTED. It is the only
+    -- match timestamp a case filed during warmup has, and a missed conversion
+    -- here would render it as January 1970 beside a correct `openedAt` -- which
+    -- reads as corrupt data rather than as a bug in one line of Lua.
+    payload.matchCreatedAt = real(payload.matchCreatedAt)
     for _, e in ipairs(payload.matchTimeline or {}) do e.at = real(e.at) end
 
     -- A DURATION BECOMES AN ABSOLUTE DEADLINE, HERE AND ONLY HERE.
@@ -168,13 +173,27 @@ end
 --- Rewrite the game-clock readings on a close payload.
 ---
 --- Its own function rather than a branch in `realise`: a close carries no
---- evidence, no `atGameMs` and no deadline, and sharing the walk would mean
---- guarding every line of it against a shape it never sees.
+--- evidence and no `atGameMs`, and sharing the walk would mean guarding every
+--- line of it against a shape it never sees.
 local function realiseClose(ev)
     local real = realiser()
 
     ev.matchEndedAt = real(ev.matchEndedAt)
     for _, e in ipairs(ev.matchTimeline or {}) do e.at = real(e.at) end
+
+    -- THE START, WHICH A CLOSE CARRIES ONLY BECAUSE A WARMUP CASE'S ROW HAS NONE.
+    -- `real()` answers nil for a nil reading, so a match that dissolved before it
+    -- ever went live stays nil here and the write omits the attribute entirely
+    -- rather than nulling out what the row already says.
+    ev.matchStartedAt = real(ev.matchStartedAt)
+
+    -- THE SAME DURATION-TO-DEADLINE CONVERSION `realise` DOES, HERE AND ONLY
+    -- HERE, and computed from the ALREADY-REALISED start above so the pair comes
+    -- from one clock sample rather than two.
+    if ev.matchStartedAt and ev.matchEndsByMs then
+        ev.matchEndsBy = ev.matchStartedAt + ev.matchEndsByMs
+    end
+    ev.matchEndsByMs = nil
 
     return ev
 end
@@ -340,24 +359,42 @@ end)
 -- Closing a case's match timeline (#30)
 -- ---------------------------------------------------------------------------
 --
--- THE ONE WRITE THAT CANNOT RIDE THE FILING. Everything else an incident says
--- about its match -- when the match started, every kill the subject had landed
--- so far -- is already true when the case is filed and travels on the PutItem
--- that was going to happen anyway. That the match ENDED is not, and neither are
--- the kills after the report, so they need a write of their own.
+-- THE ONE WRITE THAT CANNOT RIDE THE FILING. Almost everything an incident says
+-- about its match -- when the match was formed, every kill the subject had
+-- landed so far -- is already true when the case is filed and travels on the
+-- PutItem that was going to happen anyway. That the match ENDED is not, neither
+-- are the kills after the report, and neither is when the match STARTED if the
+-- case was filed before it did. So they need a write of their own.
 --
 -- ONE PER INCIDENT, AND NONE FOR A QUIET MATCH. br_core only emits this for
 -- cases it actually filed, so a match nobody was reported in produces no write
 -- at all -- which is the overwhelmingly common case and the whole reason the
 -- evidence behind this lives in a RAM buffer rather than in a table.
 --
+-- ═══ THE IAM POLICY HAS TO BE WIDENED BEFORE THIS CODE RUNS ═══
+--
+-- This UpdateItem now names `matchStartedAt` and `matchEndsBy` alongside the
+-- five attributes it always wrote. The game's grant on `ringmaster-incidents`
+-- is an ATTRIBUTE ALLOWLIST, and DynamoDB refuses the WHOLE UpdateItem when a
+-- request touches an attribute outside it -- so shipping this against the old
+-- policy does not cost the two new fields, it costs the end timestamp and the
+-- post-filing timeline as well, on every case, silently. Widening first is
+-- harmless in the other direction: the old code writes five attributes and a
+-- seven-attribute policy permits them. See js-src/br_ddb/src/close.js.
+--
 -- WHY IT RETRIES LESS HARD THAN A FILING. Losing a case loses the record and is
 -- unrecoverable; losing a close costs an end timestamp on a row that is already
--- durable and already readable. The console degrades honestly on its own --
--- `matchEndsBy` is on the row from filing time, so an end that never arrives
--- reads as "end never reported" rather than as "still in progress forever". So
--- this tries a few times and gives up quietly rather than spending thirty
--- seconds of a match teardown on it.
+-- durable and already readable. For a case filed mid-match the console degrades
+-- honestly on its own -- `matchEndsBy` is on the row from filing time, so an end
+-- that never arrives reads as "end never reported" rather than as "still in
+-- progress forever". So this tries a few times and gives up quietly rather than
+-- spending thirty seconds of a match teardown on it.
+--
+-- WHAT GIVING UP COSTS A WARMUP CASE IS MORE, AND `brring` IS WHERE IT SHOWS.
+-- Such a row has no start and no deadline until this write lands, so a lost
+-- close leaves it with no match context at all. `closeFailed` in the health dump
+-- is the number that says this is happening; a non-zero one after a policy
+-- change is the first thing to look at.
 local CLOSE_RETRY_MAX = 3
 
 AddEventHandler('br:ddb:incidentCloseResult', function(req, ok, extra)

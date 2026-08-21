@@ -23,6 +23,30 @@ failure is completely silent. The server warns loudly at boot if it is off.
 A database is **optional**. Without one, `br_stats` disables itself and matches
 run normally; you just get no persistent stats.
 
+### Two convars a deployment has to answer for itself
+
+Everything else in `br_lib/config/overrides.lua` overrides a reviewed default.
+These two have no default to override — they are addresses that exist only per
+deployment — and both are **unset by default, where unset means the feature is
+simply absent**:
+
+| convar | kind | unset means |
+|---|---|---|
+| `br_adminConsoleUrl` | `url` | No Admin tab in the pause menu, no HTTP call, and one line in the boot banner. The game never depends on Ringmaster, so a server with no console configured plays exactly as it did before the feature existed. |
+| `br_discordUrl` | `link` | A kicked or banned player is told why and nothing more — **no line at all**, not an empty URL and not a bare "contact an admin". |
+
+**They are parsed differently on purpose, and that is why there are two kinds.**
+`br_adminConsoleUrl` is *compared* against a browser's `event.origin`, so it must
+be bare and a trailing slash is fatal. `br_discordUrl` is *opened* by a person,
+and a Discord invite is nothing without its path — `https://discord.gg/<code>` is
+entirely code. Kind `url` would have refused the only value anybody will ever put
+in it.
+
+Both get what the overrides mechanism gives everything else: a strict parse, a
+hard boot failure on a malformed value, a boot banner line and a `brconfig` line.
+A **third** address arriving in that file is the signal to ask whether it is still
+the tunables or has quietly become the deployment addresses as well.
+
 ### Voice is pma-voice, and it is vendored and pinned
 
 Voice runs on **[pma-voice](https://github.com/AvarianKnight/pma-voice)** (MIT,
@@ -70,33 +94,44 @@ hear; `brvoice` in the server console says whether pma-voice is even present.
 ## Development
 
 ```bash
-./tools/verify.sh          # syntax, tests, and 15 further gates
+./tools/verify.sh          # syntax, tests, and 18 further gates
 cd ui-src && npm run dev   # the UI in a browser, no game required
 cd ui-src && npm run build # typecheck, build, and CSS compatibility check
 ```
 
-`verify.sh` runs **17 gates**, in increasing order of strictness, exiting
+`verify.sh` runs **20 gates**, in increasing order of strictness, exiting
 non-zero on any failure:
 
 | | |
 |---|---|
 | `syntax` | Lua 5.4 on every file |
-| `tests` | ~3,100 assertions across 8 suites |
+| `tests` | ~3,900 assertions across 10 suites |
 | `scope gate` | OneSync scope-limited natives banned from client gameplay code |
 | `weapon table` | every weapon hash re-derived from its name |
 | `POI siting` | spacing, water, no-loot zones, distance to roads |
 | `forward locals` | a `local function` called above its own declaration |
 | `config report` | the convar allowlist stays free of credentials |
+| `voice defaults` | voice modes are exclusive and the default agrees in Lua, TS and the bundle |
 | `tunable overrides` | overridable keys are server-only; every manifest loads them in order |
 | `manifest coverage` | every `.lua` is declared in an fxmanifest |
 | `shared coverage` | everything dropped in `br_lib` is actually loaded |
 | `deploy payload` | the deploy's own payload check still works |
+| `vendored third-party` | licence kept, version recorded, patch log matches the source, `deploy.sh` syncs it |
 | `console capability boundary` | `dispatch.sh`'s SSH verb set, exactly |
 | `branch-switch invariant` | no path to a hard reset that skips the dispatch blob check |
 | `incident surface` | only `BR.ShotSuspicious` can reach the Ringmaster |
+| `timeline entry kinds` | every match-timeline kind Lua writes is one `close.js` stores |
 | `secrets` | scans the whole repo, not just `resources/` |
 | `br_ddb bundle` | the committed bundle matches `js-src/br_ddb` |
 | `duplicate console commands` | one name, one registration |
+
+> **This table said 17 gates and "~3,100 assertions across 8 suites".** Neither
+> survived the month. Three gates landed after it — `voice defaults`,
+> `vendored third-party` and `timeline entry kinds` — and three suites came with
+> them: `test_config` (2026-08-19), then `test_artifacts` and `test_admin`
+> (2026-08-20). A gate list that quietly runs short is the failure mode this
+> table exists to prevent, so the count is stated as well as the rows: if they
+> disagree, the table is the stale one.
 
 The unit tests cover the pure logic and the server model: geometry, storm solver
 and anchor picker, seeded RNG, loot layout generation, loop registry, roster,
@@ -139,6 +174,11 @@ Install the pre-commit hook with `./tools/install-hooks.sh`.
 | `brphase <n>` | server | Jump the storm to phase n, seamlessly from the live circle |
 | `brstormscale <0.05–1>` | server | Compress storm pacing for testing (0.1 ≈ a 2-minute cycle) |
 | `brdown <id>`, `brrevive <id>`, `brbleed <id> [damage]` | server | Knock, pick up, or take damage off a downed player's clock as an enemy shot would. `brdown` refuses and says why when the rules say it should — solo, or no standing squadmate |
+| `brartifacts` | server | Incident screenshots: whether `screenshot-basic` is even running, cases open, frames claimed / asked for / stored / lost, and the refusals told apart from the losses — at the cap of nine, inside the first ten seconds, or for a case this process did not file. The only window onto this feature from the box, because nothing about a capture is visible in the game. Restricted |
+| `brstrips` | server | The unissued-weapon detector: reports received and counted, throttled, and refused because the weapon turned out to be in the player's own server-side inventory. That last counter is what the command exists for — it is the one false positive this feature can produce, and on a healthy server it is zero. Restricted |
+| `bradmin` | server | Why a given player has no Admin tab. The tab is binary and its preconditions are not, so this names which of six reasons applies to each connected player — convar unset, no license, grant row without the scope, no answer from DynamoDB yet, no `discord:` identifier, or an answer this process already settled. Restricted, because it names who holds admin scope |
+| `brwarmupfreeze [off]` | server | Hold the warmup pad open indefinitely; the next match inherits the hold. Dev mode plus restricted, modelled on `brstormfreeze` down to `off` as the way back. Implemented as a deadline a day out rather than a flag, because clients count down by subtracting it and an infinity poisons every one of those subtractions. It does **not** lift itself at match end, unlike the storm freeze — a held warmup never reaches the end of a match to hang a release on |
+| `brstormfreeze [off]` | server | The same for the storm wall. Dev mode plus restricted; drops at the end of the match it was holding, because a next round with no storm never ends |
 | `brawards` | server | The report-reward pipeline: claimed, swept, paid, already paid, settled, expired — then forces a sweep. Restricted, because it names licenses |
 | `brxpsim <id> [xp]` | server | Drive a real XP award and level-up at a lobby player without playing a match. Server console only; Volts report as 0 on purpose, because claiming a payout nothing paid is the bug this exists to avoid |
 | `brlootsim [crates] [tier] [seed]` | server | Roll the loot tables offline and print the distribution. Reads nothing about any player, changes nothing, spawns nothing |

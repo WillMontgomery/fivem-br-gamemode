@@ -33,7 +33,7 @@ Everything uses stock GTA V assets — no custom models, maps, or streamed files
 | M7 | DBNO, revives, spectating, match summary, stats | **DONE** |
 | M7b | Persistence off the game host — DynamoDB / AWS serverless | **DONE** |
 | M8 | Vehicles, aerial supply drops, fuel, rescue | **SCOPING** |
-| M9 | Moderation console, in-game reports, admin ACEs, incident logging | **WIP** |
+| M9 | Moderation: incidents, in-game reports, artifacts, admin ACEs, the in-game console | **WIP** |
 
 **Working now:** the loop, end to end. Players queue from a lobby above Cayo
 Perico, form persistent parties, and warm up on the island airstrip while the
@@ -57,28 +57,77 @@ and XP and Volts written to DynamoDB.
 computes the damage itself from our own weapon table, including per-body-part
 multipliers, and an evidence and incident layer sits on top of it — the server
 keeps a rolling buffer of what it saw and files a case when the numbers do not
-add up. See [Cheat resistance](docs/security.md).
+add up. **One** high-severity refusal opens a case, or **two** normal ones; the
+count is per match and does not lapse. A second source feeds the same pipeline: a
+weapon the gamemode never issued is taken out of the ped's hand *and recorded*,
+and nobody is exempt from that, admins included. See
+[Cheat resistance](docs/security.md).
 
 **Progression is live.** Matches pay XP and Volts, Volts buy cosmetics from a
 market, and the whole economy is config rather than code. See
 [XP and Volts](docs/progression.md).
 
-**Proximity voice** runs over Mumble/pma-voice, scoped so that squadmates hear
-each other and nearby strangers are audible at range.
+**Proximity voice** runs on pma-voice, vendored whole under `resources/[voice]/`.
+The three modes are **exclusive, not layered**: `nearby` is proximity and only
+proximity, out to 25 m; `squad` is the radio and only the radio, at any distance;
+`off` is neither. Push-to-talk is one of our own keybinds, rebindable on our own
+settings screen like every other key.
 
-**In flight (M9):** moderation. The game-side half is built — an in-game player
-list with reports, admin ACEs, incident filing, a maintenance and drain gate, and
-branch switching from the console. The console itself is a separate repository
-(`fivem-ringmaster`); neither side is deployed yet. The two talk over one
-versioned contract, pinned by fixtures both repos test against, so each can be
-built and verified with the other absent.
+> **This paragraph used to read "scoped so that squadmates hear each other and
+> nearby strangers are audible at range".** That was the layered reading, and it
+> is corrected rather than quietly edited because it is the sentence somebody
+> would quote to conclude that picking `squad` keeps proximity. It does not: #157
+> made the modes exclusive on the owner's instruction — "Nearby should only be
+> nearby, different from squads and not additional to it" — so a squad player no
+> longer hears the stranger they are fighting, and a `nearby` player gets no
+> special case for a squadmate across the island.
+
+**In flight (M9):** moderation, and the game's half of it now runs end to end.
+The anticheat and the in-game player list both file real rows in DynamoDB rather
+than logging and forgetting, and a case carries three things beyond the finding
+itself:
+
+* **Artifacts** — screenshots of the subject's own screen, taken through
+  `screenshot-basic` and uploaded straight to S3 under the game box's own
+  instance role, where they expire after 180 days. Three timed frames at 0, +5s
+  and +10s from the filing, then one more per corroboration arriving after that
+  window, to a cap of nine. **They are the game's 3D render only** — NUI and the
+  HUD are composited afterwards and never appear in a frame. An empty or partial
+  set is the normal outcome and is not evidence of anything: the capture happens
+  on the subject's machine, which can disconnect, crash or alt-tab.
+* **A match timeline** — the match around the case. Start, every kill the subject
+  landed with the weapon that did it *and whether it is a weapon this gamemode
+  issues*, every weapon strip, end. The issued/not-issued call is resolved here,
+  on the server, because a second copy of that table in another repository is a
+  copy that drifts.
+* **An admin console nobody leaves the game for** — Ringmaster opens in the pause
+  menu, already signed in, over a one-use handoff token, so an admin never types
+  a password into the game. The origin is the `br_adminConsoleUrl` convar, and
+  unset is the default: no tab, no HTTP call, no mention anywhere but one line in
+  the boot banner.
+
+The rest of the game-side half is as it was: admin ACEs, a maintenance and drain
+gate, and branch switching from the console. The console itself is a separate
+repository (`fivem-ringmaster`). The two talk over one versioned contract, pinned
+by fixtures both repos test against, so each can be built and verified with the
+other absent — and the handoff above is the only place the game asks the console
+for anything and waits, licensed by the fact that failure there costs an iframe
+and nothing else.
 
 **Accurate reports are paid for.** When a case a player filed is resolved by an
-admin and an action follows, that player and every corroborator are credited 250
+admin and an action follows, that player and every corroborator are credited 125
 Volts — hours or days later, across any number of restarts, because the debt is
 queued in DynamoDB rather than in memory, and exactly once, because the credit
 and its receipt are the same conditional write. See
 [XP and Volts](docs/progression.md).
+
+> **This said 250 Volts, which is what the owner originally asked for and what
+> the bounty paid until 2026-08-20.** It is half that now. The instruction was
+> "cut all Volts earnings by 50%", said about a playtest and so about the match
+> payout — but this is still a Volts earning paid out of the same balance, and
+> exempting it would have doubled what a report is worth relative to a match
+> without anyone deciding to. Every match-payout number moved the same day, so
+> nothing else in this file quotes a Volts figure that predates it.
 
 **Not working yet:** vehicles are ambient traffic only — no supply drops, fuel or
 rescue (M8).
@@ -97,7 +146,7 @@ Eight resources under `resources/[fivem-royale]/`, started in this order by
 | `br_environment` | Yes | World state: IPL loading and the Cayo Perico lobby island (home of the pre-match lobby; released back to the streamer once a match is live). Will grow into the streamed-asset container. |
 | `br_ui` | Yes | The NUI page and the only file that touches `SetNuiFocus`. |
 | `br_loadscreen` | Yes | The loading screen. Shuts down manually rather than on a timer: `br_core` holds it open until the world is genuinely ready and choreographs the handoff onto the lobby's identical backdrop. |
-| `br_ddb` | Yes | The only path to DynamoDB — ban checks at connect, grants, profiles, stats, and filing incidents. Runs on Node 22 rather than FXServer's bundled Node, which the AWS SDK bundle requires. |
+| `br_ddb` | Yes | The only path to AWS — ban checks at connect, grants, profiles, stats and filing incidents in DynamoDB, and putting artifact frames in S3. Runs on Node 22 rather than FXServer's bundled Node, which the AWS SDK bundle requires. |
 | `br_stats` | Yes | Match results, XP and Volts, persisted to DynamoDB through `br_ddb`. Degrades to "no stats" rather than taking the match down. |
 | `br_ringmaster` | Yes | The game-side half of the moderation console: pushes state out and executes admin verbs. Server-only by design — nothing here ever puts a pixel on a player's screen. |
 
@@ -109,6 +158,17 @@ that every deploy ends with would take the moderation channel with it.
 with no database should play perfectly well, and `persist.lua` checks the
 resource state and says so once per match instead. Both degrade to "no live
 state" rather than to "not running".
+
+**One more resource is started, and it is not ours.**
+`resources/[voice]/pma-voice` is
+[pma-voice](https://github.com/AvarianKnight/pma-voice) v7.0.2-rc3 (MIT,
+© Dillon Skaggs), vendored whole rather than installed: every byte outside a
+declared `BR-PATCH` block is identical to the upstream tag, `VENDOR.json` records
+the provenance, and `tools/verify.sh` gates that the licence is present, that
+every patch marker in the tree is declared and every declared patch is in the
+tree, and that `tools/deploy.sh` actually syncs it. It owns the voice engine.
+`br_core/client/voice.lua` expresses our rules through it and calls exactly one
+Mumble native — a read, driving the talking indicator. Every setter is gone.
 
 The UI build project lives in `ui-src/`, **outside** `resources/`, because
 FXServer auto-builds any resource containing a `package.json` using bundled Node

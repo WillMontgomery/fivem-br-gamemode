@@ -132,6 +132,32 @@ RegisterCommand('brring', function()
             print(('^1              %d LOST -- no queue, no retry left, no record^7')
                 :format(i.failed))
         end
+
+        -- ═══ THE MATCH-END CLOSE, WHICH HAD NO VOICE ANYWHERE UNTIL NOW ═══
+        --
+        -- `closeFailed` has been counted since #30 and printed by nothing. The
+        -- failure it counts is the quietest one this pipeline has: the case is
+        -- filed, the row is durable, the console lists it, and the match-end
+        -- write that would say how the match finished never lands. Every symptom
+        -- appears on the CONSOLE -- cases reading "end never reported" -- and
+        -- nothing on the game box says a word, so the obvious diagnosis is a
+        -- console bug and the actual cause is an IAM policy that does not name
+        -- an attribute this write touches. That has now come up three times.
+        --
+        -- ALWAYS PRINTED, INCLUDING THE ZERO, unlike the conditional lines above.
+        -- Those are exceptions worth pointing at; this pair is the health of a
+        -- write path, and "closes 0, failed 0" on a server that has been running
+        -- matches is itself an answer -- it says no case has reached a match end
+        -- yet, which is different from every close succeeding.
+        print(('              closes %d, failed %d')
+            :format(i.closed or 0, i.closeFailed or 0))
+        if (i.closeFailed or 0) > 0 then
+            -- THE DIAGNOSIS, NOT JUST THE COUNT. The attribute allowlist is the
+            -- one cause a reader cannot guess from the console's symptom, and it
+            -- is the cause every time this has happened.
+            print(('^1              %d will read "end never reported" -- check dynamodb:Attributes^7')
+                :format(i.closeFailed))
+        end
     else
         print('incidents     not wired yet')
     end

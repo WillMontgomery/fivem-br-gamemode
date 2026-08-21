@@ -60,9 +60,16 @@ There is a test asserting no water rectangle may contain one.
 **a crate rolls on a different table from the floor**:
 
 ```
-crate kind ~ weighted(weapon 34, ammo 30, consumable 28, throwable 8)
-floor kind ~ weighted(ammo 74, weapon 16, consumable 6, throwable 4)
+crate kind ~ weighted(weapon 55, ammo 18, consumable 21, throwable 6)
+floor kind ~ weighted(ammo 74, weapon 16, consumable  6, throwable 4)
 ```
+
+> **The crate row read `weapon 34, ammo 30, consumable 28, throwable 8` here and
+> in [match-math.md](match-math.md).** That is the pre-#127 table. #127 raised
+> weapon 34 → 55 so that a crate item is a firearm **48.4%** of the time and 85%
+> of crates hold at least one; ammo paid for it (22 → 18, since the floor table
+> is already an ammo firehose and is untouched), and consumable was widened to
+> 21 so that the healing share did not fall out as a side effect.
 
 Loose ground loot is deliberately almost all ammo, and **bandages and med kits
 cannot spawn on the floor at all** (`chestOnly` on the consumable, with a

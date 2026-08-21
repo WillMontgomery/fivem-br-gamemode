@@ -276,8 +276,36 @@ export function buildIncidentItem(incidentId, payload, now) {
      * NULL WHEN THERE WAS NO MATCH. An anticheat trip in the lobby or a
      * `brrefuse` from a console carries no match, and the console shows no match
      * context rather than an invented one.
+     *
+     * ═══ `matchCreatedAt` IS WHEN THE MATCH WAS FORMED, WHICH IS A THIRD THING ═══
+     *
+     * A match is minted into WARMUP and stamps `matchStartedAt` only on entering
+     * PLAYING. A case filed on the warmup pad -- a weapon this gamemode never
+     * issued, taken out of a hand before the offender has met a live opponent --
+     * is therefore filed with a null start, and used to be filed with no match
+     * context whatsoever: no start, no deadline, an empty timeline, and (because
+     * the game keyed its match-end write on the start) no end, ever. The console
+     * reads that shape as "filed outside a match", which is false about a row
+     * carrying a `matchId`.
+     *
+     * SO THE CREATION TIME IS ITS OWN ATTRIBUTE AND NOT AN EARLY START. Writing
+     * it into `matchStartedAt` would make that field -- and the `match_start`
+     * timeline entry, and the `matchEndsBy` derived from it -- mean two different
+     * things on two rows that look identical. Three fields, three facts:
+     *
+     *   matchCreatedAt   the lobby opened. Present for every case with a match.
+     *   matchStartedAt   the match went live. ABSENT until it does, including on
+     *                    a row whose case was filed before it did; close.js
+     *                    fills it in at match end.
+     *   matchEndedAt     the match finished. close.js, always.
+     *
+     * IT RIDES THIS PutItem AND NEEDS NO POLICY CHANGE. The game's PutItem grant
+     * on `ringmaster-incidents` is conditional on the id being absent and is not
+     * attribute-scoped -- unlike the UpdateItem in close.js, whose allowlist is
+     * enumerated -- so a new attribute on a new row costs nothing but the bytes.
      */
     matchStartedAt: int(payload.matchStartedAt),
+    matchCreatedAt: int(payload.matchCreatedAt),
     matchEndedAt: null,
     matchEndsBy: int(payload.matchEndsBy),
 
