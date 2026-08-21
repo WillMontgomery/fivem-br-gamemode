@@ -286,14 +286,24 @@ its own slots, and the server declines again against **its own** inventory, whic
 the copy a compromised client does not control. `brstrips` prints how often that
 second guard fired; on a healthy server it is zero.
 
-**Admins are exempt, and that was not the owner's decision.** Weapons granted
-through vMenu while testing are strips, and without an exemption the first thing
-this feature produces is a queue full of cases about the person who reads the queue.
-The test is the console grant (`BR.Grants.CONSOLE`), read from the same DynamoDB
-grants table the console authorises against. It exempts on anything that is not an
-explicit `false` — including a grant row nobody has managed to read yet — because an
-accusation against a named person should not be built on an unanswered question, and
-because the behaviour repeats: the next strip a second later has the answer.
+**Nobody is exempt.** An admin exemption shipped here for one commit, testing the
+console grant so that weapons granted through vMenu while testing would not open
+cases about the person who reads the queue. The owner removed it the same day: *"I
+don't want admins to be exempt from any incidents please."*
+
+They were right, and the reasoning is worth keeping rather than the exemption. The
+noise it avoided is a queue the owner can close; the hole it opened was shaped
+exactly like the accounts with the most power, and nobody would have seen it. The
+grant is no longer consulted at all — an admin, a player known not to be staff, and
+a player whose grant row was never read all file identically, so a slow or failed
+DynamoDB read cannot decide whether an accusation gets made. Restoring the
+exemption fails six tests by name.
+
+The premise was wrong as well as the policy: **vMenu is a development tool and is
+not going to production**, so there is no benign route to a weapon this gamemode
+never issued. In production every strip is a cheat signal, and one during warmup is
+the earliest one available — it happens before the offender has touched a real
+player.
 
 **This catches one tier and it is not the serious one.** The report is sent by our
 own resource running on the offender's machine. A cheat that stops `br_core` — or
