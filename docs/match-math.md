@@ -114,10 +114,6 @@ themselves. One layout alone draws roughly:
 The binding constraint is therefore the seed, not the outcome space — which is
 exactly the right way round. Widening the seed widens everything downstream.
 
-**The seed never leaves the server.** `brlootseed <n>` pins a layout for
-debugging, server-side only. A client that could derive it would know where
-every item on the map is.
-
 **The seed never leaves the server.** A client that could derive the loot
 layout would know where every item on the map is; a client that could derive
 the storm sequence would know every circle in advance. `brlootseed <n>` pins a
@@ -447,6 +443,47 @@ player at all. Tune it against the round count.
 **The clock stops while a revive is genuinely progressing**, and that is the only
 thing that moves the deadline forward. Damage moves it back; letting go simply
 stops it.
+
+### When a refused shot becomes a case
+
+A refused shot is arithmetic too, and the numbers are small enough that getting
+them wrong in a document is worse than omitting them. The bar is **per reason and
+per match**, and the count does not lapse — it resets when the match does:
+
+| Tier | Bar | Reasons |
+|---|---|---|
+| `high` | **1** | `NOT_HELD`, `NO_AMMO`, `NOT_THROWN` |
+| `high` | **2** | `NO_WEAPON` — same severity, higher bar, via `BR.ShotBarOverride` |
+| `normal` | **2** | `TOO_FAR`, `TOO_FAST` |
+| — | — | `SELF` — refused, logged, and counted toward nothing |
+
+```lua
+BR.Config.Combat.refusalBar      = { high = 1, normal = 2 }
+BR.Config.Combat.refusalWindowMs = 10000
+```
+
+**`refusalWindowMs` is not a threshold input and decides nothing.** The summary
+line on an incident reads "N shots refused in Ms" and this is the M. It is the
+only thing left of the rolling window the bar used to live in.
+
+> **Several places still describe this as "a dozen refusals in thirty seconds",
+> and every one of them is wrong.** That was the first calibration, chosen before
+> anything had been measured. It became 8-in-10s on 2026-08-08 and then stopped
+> being a window at all on 2026-08-14, when the owner's verdict was that "we don't
+> want a system that virtually never creates incidents" — eight of anything inside
+> ten seconds describes somebody spraying with a trainer and misses somebody
+> patient. The stalest copy is the comment above `BR.ShotSuspicious` in
+> `br_lib/shared/combat_solve.lua`, which is a *code* comment sitting directly on
+> top of the table the live rule is keyed against.
+
+`selfLimit` is **2** over `selfWindowMs` **5000**, so the third self-inflicted hit
+inside five seconds is refused. It is graded by nothing: at a bar of one or two,
+counting it would let one self-hit beside one marginal out-of-range shot open a
+case, and a player could manufacture that against themselves.
+
+The reasoning behind all of this — which refusals are *rules* and which are
+*means*, and why only the second kind counts — is in
+[Cheat resistance](security.md). This section is only the numbers.
 
 ### Health units
 

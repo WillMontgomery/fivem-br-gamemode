@@ -136,33 +136,67 @@ seventh correction, because the previous one could not tell "never sent" from
 "arrived and declined", and misread a write that lands and is reverted 100 ms
 later as success.
 
-**The friendly-fire pair in `applyGameRules` currently contradicts itself, and it
-is not fixed.** `br_core/client/natives.lua` calls, on the same ped, every frame:
+**A squad is a GTA team, which is how the false corpse is prevented rather than
+repaired** (#115, `36581b2`). The section above is the general problem; this is
+the one case that was solved, and it was solved by giving up on correcting the
+shooter after the fact.
 
-```lua
-NetworkSetFriendlyFireOption(true)      -- friendly fire ON
-SetPedRelationshipGroupHash(ped, BR.Native.ALLY_GROUP)
-SetCanAttackFriendly(ped, false, false) -- same-group damage refused
-```
+> **This section used to open "The friendly-fire pair in `applyGameRules`
+> currently contradicts itself, and it is not fixed", and closed with "Do not
+> write, in this repo or on the site, that teammates cannot damage each other."**
+> Both were true when written and neither is now. The instruction in particular
+> is the kind a later reader obeys without checking, so it is quoted here rather
+> than deleted — the current answer is that a squadmate's shot is refused by the
+> shooter's own engine before anything is computed.
 
-The scheme is real and the reasoning around it is right: squadmates share
-`BR_ALLY` (assigned to their local peds by `squadmates.lua` as they stream in),
-everyone else stays in the engine's default `PLAYER` group, which `BR_ALLY`
-hates, so enemies take damage as before. **But the lever it leans on is the
-engine's no-PvP default — "everyone in `PLAYER` + `canAttackFriendly` false" —
-and that default has the friendly-fire option *off*.** Setting it `true` on the
-line above is the opposite of what the carve-out below it needs. The code's own
-comment states the premise; the call breaks it.
+**What replicates is what a client authors about *itself*.** That is the whole
+lesson of the eight rounds before it. `BR_ALLY` was measured three times not to
+stop player bullets, and `SetEntityCanBeDamaged(matePed, false)` was disproven by
+playtest on 2026-08-19 — *"their ped fell over, then popped back up … it failed
+immediately after a second attempt and they bled out, but only on my screen"*. A
+ped that falls over **took** the damage. Both failed for one reason: a player's
+ped is owned by their own machine, control of it can never be taken, and script
+writes to their clone are not honoured.
 
-**Nothing about a squad's health depends on this**, because the server refuses
-the shot regardless: same-squad damage resolves to the `SAME_SQUAD` refusal in
-`combat_solve.lua`, is cancelled, and is deliberately not counted toward anything
-(see [security.md](security.md)). What the contradiction buys is the shooter's
-engine computing and applying the hit locally first — which is the false corpse
-above, pointed at a teammate. **Do not write, in this repo or on the site, that
-teammates cannot damage each other.** The honest statement is that the server
-never lets squad damage land, and that the client-side half of the arrangement is
-currently misconfigured.
+FiveM's sync tree carries `playerTeam` (six bits) and `isFriendlyFireAllowed` in
+`CPlayerGameStateDataNode`, beside `isInvincible` and the damage proofs. Those are
+things a client says about itself, so they replicate. So:
+
+- each squad takes a **team** — `1 + ((index − 1) % 63)`, derived from the squad
+  id, never 0;
+- a player **with a live squadmate closes the friendly-fire gate**
+  (`NetworkSetFriendlyFireOption(false)`), which is no longer a constant;
+- a **solo takes the reserved team 0 and leaves the gate open**, so solo play —
+  the default mode — behaves exactly as it did before any of this existed.
+
+**The load-bearing step is inferred and the file says so.** No source states in
+words that GTA's damage path refuses a hit when shooter and victim share a team
+*and* the gate is closed. Everything in the record supports it — `SET_PLAYER_TEAM`
+is documented for "deathmatch and last team standing", the forum recipe names
+`NetworkSetFriendlyFireOption(false)` as its prerequisite, and
+`CPED_CONFIG_FLAG_IgnoreNetSessionFriendlyFireCheckForAllowDamage` exists to
+*skip* that check inside the can-be-damaged path, which is proof the check is in
+that path. Only a playtest closes it, and the owner cannot run the one that
+matters: three clients against `maxSquadSize` 4 is one squad, so cross-squad
+damage cannot be produced in game at all. Set `maxSquadSize = 2` and it can.
+
+**So the blast radius is bounded rather than trusted.** Every unrecognised squad
+id fails **open** — no team, gate open — because a pair of enemies who cannot hurt
+each other is a worse bug than the one being fixed: it is invisible until somebody
+loses a fight they should have won. A squad of one keeps its own team and an open
+gate, read off the roster mirror rather than `squadmates.lua`'s `mates`, which the
+server stops pushing to a squad of one — silence there is indistinguishable from a
+dropped packet and must not close a gate on a guess.
+`BR.Config.Match.engineTeams = false` reverts the lot in one line, byte-for-byte
+to the pre-#115 behaviour. If squad matches suddenly have no combat at all, that
+is the switch.
+
+**The server half is unchanged and is still the authority.** Same-squad damage
+that reaches the server anyway resolves to the `SAME_SQUAD` refusal in
+`combat_solve.lua`, is cancelled, and is deliberately counted toward nothing (see
+[security.md](security.md)). What the engine gate buys is that the shooter's
+machine never computes the hit in the first place, so there is no local corpse to
+correct — which is the only thing that was ever wrong with the server-side answer.
 
 ---
 
