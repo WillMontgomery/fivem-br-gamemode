@@ -105,7 +105,24 @@ local function firedOf(name)
     return out
 end
 function RegisterNetEvent() end
-function RegisterCommand() end
+
+--- Console commands, kept rather than discarded.
+---
+--- This shim was `function RegisterCommand() end`, which meant every admin
+--- command in the server files loaded into nothing and could never be run -- so
+--- a command's own logic was the one class of server code this suite could not
+--- reach at all. Keeping the function costs a table and makes `brwarmupfreeze`
+--- (and anything after it) testable the way an admin actually uses it.
+local commands = {}
+function RegisterCommand(name, fn) commands[name] = fn end
+
+--- Run one, the way FiveM calls it: (source, args, rawCommand).
+local function runCommand(name, ...)
+    local fn = commands[name]
+    if not fn then return false end
+    fn(0, { ... }, name)
+    return true
+end
 
 -- br_stats asks whether br_ddb is running before it records anything, and
 -- answers 'not started' by doing nothing at all. Saying 'started' here is what
@@ -2968,6 +2985,187 @@ do
     ok(mstorm() == nil, 'CLEANUP clears the storm record')
     ok(e1.stormHp == nil and e1.lastStormAt == nil,
         'and the per-player storm ledger with it')
+end
+
+describe('match.warmupFreeze')
+do
+    --[[
+        brwarmupfreeze -- HOLD THE MATCH ON THE PAD.
+
+        Owner, 2026-08-20: "can you make me a server command that will stop the
+        match in the warmup phase? Kinda like brstormfreeze but maybe
+        brwarmupfreeze?" -- so it is asserted the way the storm freeze is: the
+        restriction, the hold, the inheritance by the next match, and the thaw.
+
+        WHAT THESE ASSERTIONS CATCH THAT READING THE FILE DOES NOT. The hold is a
+        DEADLINE, so every other rule that moves a warmup deadline is a way for
+        the freeze to be quietly undone -- and one of them, the full-lobby cut,
+        moves it in exactly the wrong direction and would shorten a frozen warmup
+        to ten seconds. It is pinned in both directions here: refused during the
+        hold, and still available after the thaw, because refusing it by spending
+        `shortened` would trade one silent bug for another.
+    ]]
+
+    local function lastStateTo(src)
+        for i = #sent, 1, -1 do
+            local s = sent[i]
+            if s.event == BR.Net.STATE and s.target == src then return s.args[1] end
+        end
+        return nil
+    end
+
+    local savedDev, savedMax = BR.Server.devMode, BR.Config.Match.maxPlayers
+    local warmupMs = BR.Config.Match.warmupSeconds * 1000
+
+    -- ------------------------------------------------- the restriction ---
+    reset()
+    BR.Server.devMode = true
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    ok(mstate() == BR.MatchState.WARMUP, 'a warmup is open')
+    BR.Server.devMode = false
+
+    local before = mendsAt()
+    ok(runCommand('brwarmupfreeze'), 'brwarmupfreeze is registered')
+    ok(mendsAt() == before,
+        'and does nothing at all outside dev mode, exactly like brstormfreeze',
+        ('%d vs %d'):format(mendsAt(), before))
+    ok(BR.Match.warmupFrozen() == false,
+        'and does not arm itself on a refused call')
+
+    -- --------------------------------------------------------- the hold ---
+    BR.Server.devMode = true
+    sent = {}
+    runCommand('brwarmupfreeze')
+    ok(BR.Match.warmupFrozen() == true, 'in dev mode it takes')
+    ok(mendsAt() > fakeTime + warmupMs,
+        'and pushes the departure past any warmup anybody will sit through',
+        ('endsAt %d, now %d'):format(mendsAt(), fakeTime))
+
+    -- REBROADCAST, for the reason shortenWarmupIfFull rebroadcasts: the HUD
+    -- countdown is derived from endsAt, so a deadline that moved in silence
+    -- leaves every client counting to a departure that is not coming.
+    local said = lastStateTo(1)
+    ok(said ~= nil and said.endsAt == mendsAt(),
+        'and tells the players in it, so no HUD counts down to the old moment',
+        said and tostring(said.endsAt) or 'nothing sent')
+
+    -- THE POINT OF THE WHOLE COMMAND: the tick does not depart it.
+    fakeTime = fakeTime + warmupMs + 60000
+    BR.Sched.step(fakeTime)
+    ok(mstate() == BR.MatchState.WARMUP,
+        'a minute past its own departure the match is still on the pad',
+        tostring(mstate()))
+
+    -- ------------------------------------- a full lobby cannot thaw it ---
+    --
+    -- THE ONE RULE THAT MOVES A WARMUP DEADLINE THE WRONG WAY. Two players is a
+    -- full lobby for the length of this block, so the tick below is the real
+    -- shortenWarmupIfFull running against a real full match.
+    BR.Config.Match.maxPlayers = 2
+    local held = mendsAt()
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(mendsAt() == held,
+        'a FULL warmup is not cut short while the hold is on',
+        ('%d vs %d'):format(mendsAt(), held))
+    ok(theMatch().shortened ~= true,
+        'and the cut is refused rather than spent, so the thaw gets it back')
+
+    -- ------------------------------------------------------ the thaw ---
+    sent = {}
+    runCommand('brwarmupfreeze', 'off')
+    ok(BR.Match.warmupFrozen() == false, "'off' thaws it")
+    ok(mendsAt() == fakeTime + warmupMs,
+        'and re-enters warmup from now -- a whole ordinary countdown, not the '
+            .. 'remains of one from an hour ago',
+        ('endsAt %d, now %d'):format(mendsAt(), fakeTime))
+    local thawed = lastStateTo(1)
+    ok(thawed ~= nil and thawed.endsAt == mendsAt(),
+        'and that deadline is announced too')
+
+    -- ...AND THE ORDINARY RULES ARE BACK. The lobby is still full, so the cut
+    -- the hold refused now happens.
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(mendsAt() == fakeTime + BR.Config.Match.warmupShortened * 1000,
+        'a full lobby is cut short again the moment the hold is off',
+        ('endsAt %d, now %d'):format(mendsAt(), fakeTime))
+    BR.Config.Match.maxPlayers = savedMax
+
+    fakeTime = fakeTime + warmupMs
+    BR.Sched.step(fakeTime)
+    ok(mstate() ~= BR.MatchState.WARMUP,
+        'and a thawed warmup departs like any other', tostring(mstate()))
+
+    -- ...AND SO IS ONE THAT HAD ALREADY BEEN CUT BEFORE THE FREEZE. `shortened`
+    -- is spent once per warmup, so a hold placed on a lobby that had ALREADY
+    -- filled would otherwise thaw into a whole 45 seconds -- the opposite of the
+    -- "back to the ordinary rules" the thaw promises, and invisible unless the
+    -- cut is made to happen on the near side of the freeze.
+    reset()
+    BR.Server.devMode = true
+    BR.Config.Match.maxPlayers = 2
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(theMatch().shortened == true and mendsAt() == fakeTime + 15000,
+        'a full lobby is cut short before anybody freezes anything',
+        ('shortened %s, endsAt %d, now %d')
+            :format(tostring(theMatch().shortened), mendsAt(), fakeTime))
+
+    runCommand('brwarmupfreeze')
+    runCommand('brwarmupfreeze', 'off')
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(mendsAt() == fakeTime + BR.Config.Match.warmupShortened * 1000,
+        'and after a freeze and a thaw it is cut short again, not left on a '
+            .. 'full-length warmup nobody asked for',
+        ('endsAt %d, now %d'):format(mendsAt(), fakeTime))
+    BR.Config.Match.maxPlayers = savedMax
+
+    -- --------------------------------- the NEXT match inherits the hold ---
+    --
+    -- The same inheritance BR.Storm.begin applies: a hold that only caught the
+    -- matches running when it was typed would stop applying to the very next
+    -- round, which is the round somebody is usually waiting for.
+    reset()
+    BR.Server.devMode = true
+    runCommand('brwarmupfreeze')
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    sent = {}
+    BR.Sched.step(fakeTime)
+    ok(mstate() == BR.MatchState.WARMUP, 'a match forms under the freeze')
+    ok(mendsAt() > fakeTime + warmupMs,
+        'and it is born held rather than departing on its own',
+        ('endsAt %d, now %d'):format(mendsAt(), fakeTime))
+    local born = lastStateTo(1)
+    ok(born ~= nil and born.endsAt == mendsAt(),
+        'and the state event that announced it carries the held deadline, so '
+            .. 'no client is ever told the wrong one')
+
+    -- ------------------------------- it does not lift itself, on purpose ---
+    --
+    -- brstormfreeze drops at the end of the match it was holding. This one does
+    -- not, and the divergence is argued at the command: a held warmup never
+    -- reaches the end of a match to hang a release on, so the only paths that
+    -- would fire it are the dissolves -- which is a switch disarming itself
+    -- while the tester who set it is still working.
+    BR.Match.destroy(theMatch())
+    ok(BR.Match.warmupFrozen() == true,
+        'a match dissolving under the hold does not lift it')
+
+    runCommand('brwarmupfreeze', 'off')
+    ok(BR.Match.warmupFrozen() == false, 'only "off" does')
+    ok(runCommand('brwarmupfreeze', 'thaw') and BR.Match.warmupFrozen() == false,
+        "and 'thaw' is the same word, as it is for the storm")
+
+    BR.Server.devMode = savedDev
+    BR.Config.Match.maxPlayers = savedMax
 end
 
 describe('match.busSafetyNets')

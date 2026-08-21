@@ -42,6 +42,19 @@ local DURATION = {
     [BR.MatchState.CLEANUP] = M.cleanupSeconds,
 }
 
+--- How long a frozen warmup is held for: a day.
+---
+--- LONG ENOUGH THAT NO SESSION OUTLIVES IT, AND STILL A REAL NUMBER. The same
+--- choice, for the same reason, as the storm freeze's hold (server/storm.lua):
+--- clients derive their countdown by subtracting endsAt, and an infinity poisons
+--- every one of those subtractions. A day is not a duration anybody will sit
+--- through; it is a number that behaves.
+---
+--- Declared here rather than beside the command that uses it because
+--- BR.Match.transition reads it, and a local called above its declaration is
+--- what tools/check_forward_locals.lua exists to refuse.
+local WARMUP_HOLD_MS = 24 * 60 * 60 * 1000
+
 --- Mint a new match instance and start its warmup.
 ---
 --- The participants are ATTACHED FIRST, then flipped to WARMUP: the state
@@ -231,6 +244,21 @@ function BR.Match.transition(m, state, durationSec)
     m.state  = state
     m.endsAt = secs and (GetGameTimer() + secs * 1000) or 0
     m.shortened = false
+
+    -- A WARMUP THAT OPENS UNDER A FREEZE IS BORN HELD (brwarmupfreeze, at the
+    -- bottom of this file). The same inheritance BR.Storm.begin already applies
+    -- to a match that starts while brstormfreeze is on: a debug hold that only
+    -- caught the matches running when it was typed would silently stop applying
+    -- to the very next round, which is the round the tester is usually waiting
+    -- for.
+    --
+    -- HERE RATHER THAN IN onEnter, because the broadcast below carries endsAt.
+    -- A warmup that announced 45 seconds and then quietly extended would leave
+    -- every HUD counting down to a departure that is not coming, which is the
+    -- exact failure shortenWarmupIfFull rebroadcasts to avoid.
+    if state == BR.MatchState.WARMUP and BR.Match.warmupFrozen() then
+        m.endsAt = GetGameTimer() + WARMUP_HOLD_MS
+    end
 
     print(('[br_core] match %d: %s -> %s%s'):format(
         m.id, from, state, secs and (' (%ds)'):format(secs) or ''))
@@ -775,6 +803,15 @@ end
 --- @param m table
 function BR.Match.shortenWarmupIfFull(m)
     if m.shortened then return end
+
+    -- A FROZEN WARMUP IS NOT CUT SHORT. brwarmupfreeze exists to hold the pad
+    -- open, and a full lobby is the one thing that would otherwise thaw it by
+    -- the back door -- silently, and down to ten seconds. Returning WITHOUT
+    -- setting `shortened` is deliberate: the cut is refused for now rather than
+    -- spent, so a lobby that fills during the hold is still cut short the moment
+    -- somebody thaws it.
+    if BR.Match.warmupFrozen() then return end
+
     if BR.Server.countIn(m) < M.maxPlayers then return end
 
     local cap = GetGameTimer() + M.warmupShortened * 1000
@@ -1436,5 +1473,108 @@ RegisterCommand('brskip', function()
         print(('[br_core] admin skipped to the end of match %d\'s %s'):format(m.id, m.state))
     else
         print(('  %s has no timer to skip'):format(m.state))
+    end
+end, true)
+
+--- HOLD THE MATCH IN WARMUP. Dev mode only.
+---
+---   brwarmupfreeze          hold every open warmup on the pad: the departure
+---                           timer stops, the bus does not come
+---   brwarmupfreeze off      thaw -- re-enter warmup from now, so the pad runs
+---                           its ordinary countdown and departs normally
+---
+--- MODELLED ON brstormfreeze (server/storm.lua) DELIBERATELY, down to the
+--- restriction, the wording of the report and the `off` argument. They are the
+--- same kind of control -- a debug hold on a clock that would otherwise decide
+--- the session -- and giving the second one a different idiom would mean
+--- learning the same command twice.
+---
+--- ═══ WHAT IT IS FOR ═══
+---
+--- Owner, 2026-08-20: "can you make me a server command that will stop the match
+--- in the warmup phase?"
+---
+--- AND THE CASE THAT MAKES IT MORE THAN A CONVENIENCE: an incident filed during
+--- WARMUP gets no match context. Warmup is invincible, the flight has not left,
+--- and a case opened on the pad never enters the match timeline's pending map,
+--- so it never receives the match-end close that gives every other case its
+--- surroundings (server/incident.lua). That is an open design question rather
+--- than a decided one -- but it could only be looked at when a warmup happened
+--- to run long enough to strip a weapon in, which is to say by luck. Holding the
+--- pad open turns "reproduce it if the timing is kind" into "type this, then
+--- take as long as you need".
+---
+--- ═══ IMPLEMENTED AS A DEADLINE, AND BROADCAST LIKE ANY OTHER ═══
+---
+--- The state machine advances a warmup when `endsAt` passes (matchTick), so the
+--- hold is a deadline a day out rather than a flag the tick has to learn about.
+--- Nothing else in the file needs to know: `brskip` still ends it, `brforce bus`
+--- still departs, and a match that dissolves for being underpopulated still
+--- dissolves -- all of those are already written against endsAt or against the
+--- state, not against a clock this command owns.
+---
+--- Every change of endsAt is rebroadcast, for the reason shortenWarmupIfFull
+--- gives: clients derive their countdown from it, so an endsAt that moved in
+--- silence leaves every HUD counting to the wrong moment.
+---
+--- ═══ IT DOES NOT LIFT ITSELF, AND THAT IS THE ONE PLACE IT DIVERGES ═══
+---
+--- brstormfreeze drops at the end of the match it was holding, because carrying
+--- a storm freeze into the next round leaves that round with no storm and a
+--- battle royale with no storm never ends -- an invisible failure.
+---
+--- THE SAME RULE HERE WOULD BE BOTH UNREACHABLE AND WRONG. Unreachable, because
+--- a warmup that is being held never reaches the end of a match to hang the
+--- release on; the only paths that do get there are the dissolves -- everybody
+--- steps off the pad, or the warmup was underpopulated -- so the hook would fire
+--- exactly when a tester walked away for a moment and would disarm a switch they
+--- set thirty seconds ago. And wrong, because the failure it would be protecting
+--- against is not invisible: a held warmup is a departure timer that has stopped
+--- on the screen of everybody standing on the pad. It stays on until somebody
+--- says `off`. Do not "fix" this to match the storm without reading this note.
+local warmupFrozen = false
+
+--- Is warmup currently held by brwarmupfreeze?
+--- Read by BR.Match.transition, so a match opening AFTER the freeze inherits it,
+--- and by shortenWarmupIfFull, so a full lobby cannot cut the hold short.
+--- @return boolean
+function BR.Match.warmupFrozen() return warmupFrozen end
+
+RegisterCommand('brwarmupfreeze', function(_, args)
+    if not BR.Server.devMode then
+        print('  brwarmupfreeze is dev-mode only (br_devMode true)')
+        return
+    end
+
+    local thaw = (args[1] == 'off' or args[1] == 'thaw')
+    local now = GetGameTimer()
+    local touched = 0
+
+    BR.Server.eachMatch(function(m)
+        if m.state ~= BR.MatchState.WARMUP then return end
+
+        if thaw then
+            -- RE-ENTER WARMUP FROM NOW, which is this command's version of the
+            -- storm thaw resuming the phase from wherever the wall is. The pad
+            -- gets a whole ordinary warmup rather than whatever was left of one
+            -- an hour ago, and `shortened` is re-armed so a full lobby is cut
+            -- short again by the rule that was suppressed during the hold.
+            m.endsAt = now + M.warmupSeconds * 1000
+            m.shortened = false
+        else
+            m.endsAt = now + WARMUP_HOLD_MS
+        end
+        BR.Broadcast.state(m, m.state, m.endsAt,
+            { reason = thaw and 'warmupThaw' or 'warmupFreeze' })
+        touched = touched + 1
+    end)
+
+    warmupFrozen = not thaw
+    print(('[br_core] warmup %s (%d match%s)'):format(
+        thaw and 'THAWED -- the pad counts down and the bus comes'
+             or 'FROZEN -- the pad stays open, no departure',
+        touched, touched == 1 and '' or 'es'))
+    if not thaw and touched == 0 then
+        print('  (no warmup open yet -- the next one will start frozen)')
     end
 end, true)
