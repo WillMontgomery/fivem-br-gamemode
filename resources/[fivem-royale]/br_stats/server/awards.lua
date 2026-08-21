@@ -60,7 +60,15 @@ BR.Awards = {}
 --- bounty on a moderation action, it is not part of the earn-per-hour curve the
 --- market is tuned against, and putting it in that table would invite somebody
 --- to retune it alongside numbers it has nothing to do with.
-local AWARD_VOLTS = 250
+---
+--- 125 SINCE 2026-08-20, AND THE SEPARATION ABOVE IS EXACTLY WHY THIS LINE
+--- NEEDED WRITING. The owner asked to "cut all Volts earnings by 50%" -- said
+--- about a playtest, which is the match payout -- and the paragraph above is an
+--- argument that this bounty is NOT part of that curve. It is still a Volts
+--- earning, it is still paid out of the same balance, and leaving it whole
+--- would have doubled what a report is worth relative to a match without
+--- anybody deciding to. "All" was taken at its word.
+local AWARD_VOLTS = 125
 
 --- How often to ask whether anything has been decided.
 ---

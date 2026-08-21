@@ -400,37 +400,60 @@ BR.Config.Market = {
         Called out so the next reader does not conclude these weights produced
         60.
 
-    CALIBRATED SO PLACEMENT DOMINATES. Worked examples on a 16-player field:
+    CALIBRATED SO PLACEMENT DOMINATES, AND THE SHAPE SURVIVED THE HALVING
+    BELOW. Worked examples on a 16-player field:
 
-      won it, no kills                 15 + 120                    = 135
-      2nd, 1 kill, levelled to 3       15 +  65 + 10 + 35          = 125
-      2nd, 4 kills                     15 +  65 + 40               = 120
-      8th, 2 kills                     15 +  37 + 20               =  72
-      last, nothing                    15                          =  15
+      won it, no kills                  8 +  60                    =  68
+      2nd, 1 kill, levelled to 3        8 +  32 +  5 + 17          =  62
+      2nd, 4 kills                      8 +  32 + 20               =  60
+      8th, 2 kills                      8 +  18 + 10               =  36
+      last, nothing                     8                          =   8
 
     The win is the biggest single line in a winning match; placement is the
     biggest in every other one; kills are worth chasing without being the
     strategy; and the level-up is a punctuation mark you notice rather than the
     reason the number moved.
 
-    WHAT THIS DOES TO THE PRICES ABOVE, stated rather than quietly absorbed: at
-    ~70 for a middling match an uncommon canopy at 1200 is around 17 matches
-    where it used to be 8, and a legendary at 6000 is 60-80 where it used to be
-    40. The owner asked for a third of the payout and said nothing about
-    prices, so prices are untouched -- but "a handful of matches" for an
-    uncommon is no longer strictly true, and if that is the half that should
-    have moved, it is the table at the top of this file.
+    ================== HALVED 2026-08-20, AND WHY ==================
+
+    Owner, after a playtest: "Please cut all Volts earnings by 50%". So every
+    weight below is exactly half what it was, and so is BR.Config.levelBonus --
+    the level-up is an earning like any other and exempting it would have made
+    it the largest line again, which is the failure #89 was about.
+
+    NOTHING ABOUT THE SHAPE MOVED. Halving every term of a sum scales the sum;
+    it does not reorder it. The win is still the biggest line in a won match,
+    placement is still the biggest everywhere else, and the level-up is still
+    roughly a quarter of a win. That is the property the suite in
+    tools/test_stats.lua asserts -- it compares payouts against each other and
+    pins none of them, so a retune that broke the ORDER would fail there while
+    this one passes.
+
+    `completion` IS 8 RATHER THAN 7. 15 does not halve into a whole number, and
+    the round is up on purpose: this is the term that carries "every match pays
+    something", and it is the one number here a player can actually recognise
+    when they finish last with nothing.
+
+    WHAT THIS DOES TO THE PRICES ABOVE, stated rather than quietly absorbed,
+    because it is now the second time this has moved and the gap is no longer
+    small. At ~36 for a middling match an uncommon canopy at 1200 is around 33
+    matches, and a legendary at 6000 is 165. The owner asked for the payout and
+    said nothing about the canopy or finish prices, so those are untouched --
+    but "a handful of matches" for an uncommon has not been true for two
+    retunes now, and if prices are the half that should move, it is the table
+    at the top of this file. (The TRAIL prices did move, on the same day and by
+    a separate instruction: the ceiling is 1500.)
 
     EVERY NUMBER BELOW IS MEANT TO BE ARGUED WITH. They are in one table, next
     to the prices, on purpose: retuning is editing five integers and re-reading
     the worked examples above, not tracing a formula through three files.
 ]]
 BR.Config.Market.payout = {
-    completion   = 15,    -- for turning up and finishing
-    win          = 120,
-    placementTop = 70,    -- scaled linearly by how far up you finished
-    perKill      = 10,
-    perRevive    = 8,     -- paid because it is the least selfish thing you can do
+    completion   = 8,     -- for turning up and finishing
+    win          = 60,
+    placementTop = 35,    -- scaled linearly by how far up you finished
+    perKill      = 5,
+    perRevive    = 4,     -- paid because it is the least selfish thing you can do
 }
 
 --- What the currency is called, in ONE place.
@@ -462,6 +485,20 @@ BR.Config.Market.currency = 'Volts'
 --- a win and keeps it there -- still growing with the curve, no longer racing
 --- it.
 ---
+--- HALVED WITH EVERYTHING ELSE (owner, 2026-08-20: "cut all Volts earnings by
+--- 50%"). The 25 + 5/level curve is kept and the RESULT is halved, rather than
+--- the two constants being halved in place, for one reason: 5/2 is 2.5 and a
+--- constant of 2 would flatten the growth the paragraph above argues for --
+--- level 20 would pay 50 instead of 60, so the bonus would fall further behind
+--- the win the longer somebody played, which is the exact shape #89 fixed in
+--- the other direction. Halving at the end keeps the ratio to a win at a
+--- quarter at every level and costs one floor.
+---
+--- WHOLE NUMBERS, FLOORED. Alternate levels land on a half; a balance is an
+--- integer in DynamoDB and on the verdict screen, so the half is dropped
+--- rather than rendered. 12, 15, 17, 20, 22 -- still monotonic, still
+--- accelerating at 2.5 a level on average.
+---
 --- THE INPUT THIS DEPENDS ON is `levelBefore`, which br_stats derives from a
 --- lifetime total br_core publishes to it. When that total is missing the
 --- damage is NOT an unbounded payout -- br_stats computes `after` as
@@ -474,7 +511,7 @@ BR.Config.Market.currency = 'Volts'
 --- @return integer
 function BR.Config.levelBonus(level)
     local n = math.max(1, math.floor(tonumber(level) or 1))
-    return 25 + (n - 1) * 5
+    return math.floor((25 + (n - 1) * 5) / 2)
 end
 
 --- What one match earned, in currency.

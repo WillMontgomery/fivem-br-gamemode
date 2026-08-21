@@ -282,6 +282,68 @@ do
         ('got %s'):format(tostring(missing)))
 end
 
+-- ---------------------------------------------------------------------------
+-- THE PAYOUT'S SHAPE, WHICH IS THE ONLY THING A RESCALE MAY NOT CHANGE.
+--
+-- WRITTEN FOR 2026-08-20 AND FOR THE NEXT ONE. The owner asked to "cut all
+-- Volts earnings by 50%", and the whole risk in a request like that is that
+-- "all" is applied to four of the five places and the fifth is left standing --
+-- which does not fail anything above, because every assertion up there compares
+-- a payout against another payout from the SAME table and both moved together.
+-- BR.Config.levelBonus is the one that lives outside that table, and it is
+-- exactly the term #89 had to fix for competing with a win.
+--
+-- SO NOTHING BELOW PINS AN AMOUNT. Pinning would make the next retune a red
+-- build to be edited green, which teaches nobody anything. What is pinned is
+-- the ORDER of the terms and the level bonus's position against the win --
+-- properties a uniform rescale preserves exactly and a partial one breaks.
+-- ---------------------------------------------------------------------------
+describe('volts.payout shape')
+do
+    local p = BR.Config.Market.payout
+
+    ok(p.completion > 0, 'every match pays something -- last with nothing is not zero',
+        tostring(p.completion))
+    ok(BR.Config.marketPayout({ placement = 16, total = 16 }) == p.completion,
+        'and finishing last with nothing pays exactly that and no more',
+        tostring(BR.Config.marketPayout({ placement = 16, total = 16 })))
+
+    ok(p.win > p.placementTop,
+        'a win is worth more than the best placement scale',
+        ('win %d, placementTop %d'):format(p.win, p.placementTop))
+    ok(p.placementTop > p.perKill * 4,
+        'placement outweighs a good gunfight -- kills are chased, not farmed',
+        ('placementTop %d, four kills %d'):format(p.placementTop, p.perKill * 4))
+    ok(p.perKill > p.perRevive,
+        'a kill pays more than a revive, and a revive pays',
+        ('perKill %d, perRevive %d'):format(p.perKill, p.perRevive))
+
+    -- #89 IN ONE LINE. The level-up used to exceed the win bonus outright, so
+    -- the largest term in a session went to whoever crossed a boundary. Both
+    -- numbers halved on 2026-08-20, which leaves this ratio untouched -- and
+    -- that is the point: halve one and not the other and this fails.
+    -- %s, NOT %d, ON EVERY BONUS BELOW. `%d` raises on a float in Lua 5.4, and
+    -- the mutation this whole block is aimed at -- halving without flooring --
+    -- produces exactly that. The suite would have died inside its own detail
+    -- string, exiting non-zero with a stack trace instead of naming the check.
+    local lvl3 = BR.Config.levelBonus(3)
+    ok(lvl3 * 3 < p.win,
+        'a level-up is a punctuation mark on a win, not a substitute for one',
+        ('levelBonus(3) %s against a win of %d'):format(tostring(lvl3), p.win))
+    ok(BR.Config.levelBonus(4) > lvl3,
+        'and later levels still pay more, because the XP between them grows',
+        ('%s then %s'):format(tostring(lvl3), tostring(BR.Config.levelBonus(4))))
+
+    -- Whole numbers, at every level. A balance is an integer in DynamoDB and on
+    -- the verdict screen, and the halving put a .5 on every other level.
+    local fractional = nil
+    for lvl = 1, BR.Xp.Config.maxLevel do
+        local v = BR.Config.levelBonus(lvl)
+        if v ~= math.floor(v) then fractional = ('level %d pays %s'):format(lvl, tostring(v)) end
+    end
+    ok(fractional == nil, 'and every level bonus is a whole number of Volts', fractional)
+end
+
 -- THE SUMMARY USED TO BE HERE, WHICH DISARMED EVERYTHING BELOW IT.
 --
 -- It printed the totals and called `os.exit(1)` on failure -- and the curve
@@ -555,11 +617,21 @@ do
         amounts[#amounts + 1] = p.args[4]
         ids[p.args[2]] = p.args[3]
     end
-    ok(amounts[1] == 250 and amounts[2] == 250, 'each is worth 250 Volts')
+    -- THE AMOUNT IS PINNED, AND THE SENTENCE IS TIED TO IT RATHER THAN PINNED
+    -- SEPARATELY. Both used to be the literal 250, which is two copies of one
+    -- constant in one test: halving the bounty (2026-08-20, "cut all Volts
+    -- earnings by 50%") would have failed both lines and invited whoever
+    -- retuned it to edit the number in two places and call it done. The pin
+    -- below is the deliberate one -- a silent retune must still fail here --
+    -- and everything downstream reads what was actually paid, so a payment and
+    -- a sentence that disagree is its own failure rather than a second pin.
+    local AWARD = amounts[1]
+    ok(AWARD == 125 and amounts[2] == AWARD, 'each is worth 125 Volts',
+        ('%s / %s'):format(tostring(amounts[1]), tostring(amounts[2])))
     ok(ids[ALICE] == INC and ids[BOB] == INC,
         'and each payment is keyed on the incident, which is what makes it idempotent')
 
-    answerAll('br:ddb:awardPay', true, { paid = true, balance = 250 })
+    answerAll('br:ddb:awardPay', true, { paid = true, balance = AWARD })
 
     local told = {}
     for _, s in ipairs(sent) do
@@ -567,10 +639,11 @@ do
     end
     ok(#told == 1, 'only the player who is actually in the server is told', tostring(#told))
     ok(told[1] and told[1].src == 3, 'and it goes to their server id')
-    ok(told[1] and told[1].payload.text:find('250 Volts', 1, true) ~= nil
+    ok(told[1] and told[1].payload.text:find(('%d Volts'):format(AWARD), 1, true) ~= nil
         and told[1].payload.text:find('has now been banned', 1, true) ~= nil
         and told[1].payload.text:find('Thanks for your help', 1, true) ~= nil,
-        'the sentence names the amount and the verdict, in past tense',
+        'the sentence names the amount that was actually paid, and the verdict, '
+        .. 'in past tense',
         told[1] and told[1].payload.text)
 
     local credited = 0

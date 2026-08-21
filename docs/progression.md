@@ -32,7 +32,7 @@ any more, so it is corrected here rather than left to be discovered:
 | verb | when | how much |
 |---|---|---|
 | `br:ddb:statsApply` | end of match, from `br_stats/server/persist.lua` | whatever the match earned |
-| `br:ddb:awardPay` | an incident the player reported resolves with an action taken | a flat 250 |
+| `br:ddb:awardPay` | an incident the player reported resolves with an action taken | a flat 125 |
 
 Both are **earned by what you did in a match** — playing it, or reporting
 somebody in it who turned out to be worth reporting. That is the property that
@@ -55,24 +55,24 @@ feel like a decision — see [the ban contract](ban-contract.md).
 
 | source | amount |
 |---|---|
-| finishing the match | 15 |
-| winning | +120 |
-| placement | up to +70, scaled linearly by how far up you finished |
-| each elimination | +10 |
-| each revive | +8 |
+| finishing the match | 8 |
+| winning | +60 |
+| placement | up to +35, scaled linearly by how far up you finished |
+| each elimination | +5 |
+| each revive | +4 |
 
-Placement scales as `70 × (1 − (placement − 1) / (total − 1))` — so second place
+Placement scales as `35 × (1 − (placement − 1) / (total − 1))` — so second place
 in a full lobby is worth nearly the full bonus and last place is worth nothing
-extra. A win takes the flat 120 **instead of** the placement scale, not on top
+extra. A win takes the flat 60 **instead of** the placement scale, not on top
 of it. Placement 1 with `died` set — the last squad standing taken by the storm
 — places first and still died, so it falls through to the placement scale (the
-full 70) and does not get the win.
+full 35) and does not get the win.
 
 **Every match pays something.** A player who drops, loses immediately and
-finishes last still earns 15. Zero-payout matches teach people that playing was
+finishes last still earns 8. Zero-payout matches teach people that playing was
 a waste of time, which is the opposite of what a progression system is for.
 
-Roughly: a middling match pays ~70, a strong one ~135.
+Roughly: a middling match pays ~36, a strong one ~68.
 
 ### Retuned 2026-08-16 (#89)
 
@@ -83,7 +83,7 @@ placement was not the headline term — the **level-up bonus** was, at
 `100 + 25/level` it could exceed the win bonus outright. The whole table came
 down by roughly a third and the level bonus came down to a quarter of a win.
 
-Worked examples on a 16-player field, from `market.lua`:
+Worked examples on a 16-player field, at the weights that retune produced:
 
 ```
 won it, no kills                 15 + 120                    = 135
@@ -100,11 +100,48 @@ zero kills *and* zero revives on the same row — the shape of a row published b
 `matchId` intact. That is a defect upstream of the payout table, and retuning a
 formula whose inputs are blank only changes which wrong number comes out.
 
+### Halved 2026-08-20
+
+Owner, after a playtest: *"Please cut all Volts earnings by 50%"*. Every weight
+in the table above is now exactly half what #89 left it at, and so are the level
+bonus and the report reward — the level bonus because exempting it would have
+made it the largest single term again, which is the failure #89 existed to fix,
+and the report reward because "all" was taken at its word.
+
+`completion` rounds **up**, to 8: 15 does not halve evenly, and this is the term
+that carries "every match pays something".
+
+The same worked examples afterwards:
+
+```
+won it, no kills                  8 +  60                    =  68
+2nd, 1 kill, levelled to 3        8 +  32 +  5 + 17          =  62
+2nd, 4 kills                      8 +  32 + 20               =  60
+8th, 2 kills                      8 +  18 + 10               =  36
+last, nothing                     8                          =   8
+```
+
+**Prices did not move with it**, other than the trail range, which was re-priced
+the same day under its own instruction (ceiling 1500). So at ~36 for a middling
+match an uncommon canopy at 1200 is around 33 matches and a legendary at 6000 is
+about 165. That is stated here rather than absorbed quietly, because it is the
+second retune in a row to widen the gap.
+
+The shape is unchanged, and `tools/test_stats.lua` is what says so: it compares
+the terms against each other rather than pinning any of them, so a *partial*
+rescale — the plausible mistake — fails there while a uniform one passes.
+
 ### Per level
 
-`25 + (level − 1) × 5` Volts, paid **per level crossed** rather than per
+`⌊(25 + (level − 1) × 5) ÷ 2⌋` Volts, paid **per level crossed** rather than per
 level-up event — a match big enough to cross two levels pays for both. Paying
 once would quietly punish the best match somebody ever had.
+
+The 25 + 5/level curve is kept and the *result* is halved rather than the two
+constants being halved in place: 5 ÷ 2 is 2.5, and a constant of 2 would flatten
+the growth, so the bonus would fall further behind a win the longer somebody
+played. Halving at the end holds the ratio at every level and costs one floor,
+which is why alternate levels land on 12, 15, 17, 20, 22.
 
 Later levels pay more because the XP between them grows. A flat bonus would make
 the twentieth level-up feel worse than the second despite taking four times as
@@ -130,7 +167,7 @@ happened to cross a boundary regardless of how they placed.
 
 ## Report rewards (#168, `e4f211d`)
 
-**250 Volts to the reporter, and to every corroborator, when an incident they
+**125 Volts to the reporter, and to every corroborator, when an incident they
 filed resolves and an action was taken.** The number lives in
 `br_stats/server/awards.lua` as `AWARD_VOLTS` rather than in `market.lua`,
 deliberately: `market.lua` holds what a *match* pays next to what things cost so
@@ -208,7 +245,7 @@ are logged as different facts.
 permanent one. A reader that reaches for it without narrowing on `action` gets
 `undefined` where a permanent ban gives `null` — two falsy values meaning
 entirely different things. Nothing here decides on it: a temporary ban and a
-permanent one are the same 250 Volts.
+permanent one are the same 125 Volts.
 
 ### The edges that are written down rather than discovered
 
@@ -262,7 +299,7 @@ the client never derives a level — it renders what the server sends.
 | Lobby | level, bar, balance | `MARKET_STATE`, from the profile row |
 | Verdict | XP gained, level-up, Volts earned | `MATCH_EARNED`, from br_stats |
 | Market | balance | `MARKET_STATE` |
-| A toast, whenever a sweep pays | "gifted 250 Volts… who has now been banned" | `br_stats/server/awards.lua`, keyed `report.reward` |
+| A toast, whenever a sweep pays | "gifted 125 Volts… who has now been banned" | `br_stats/server/awards.lua`, keyed `report.reward` |
 | Ringmaster profile | level, total XP, balance | `br-players` directly |
 
 The reward toast names the **action** and nothing else. The admin's written
