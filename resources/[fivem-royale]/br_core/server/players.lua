@@ -1129,8 +1129,74 @@ end)
     they were told to press.
 ]]
 
---- [matchId] = { [reporterLicense] = { [killerLicense] = true } }
+--- Prompts this match has OFFERED, and the record a press is honoured against.
+---
+---   [matchId] = { [reporterLicense] = { [killerLicense] = { name, at } } }
+---
+--- IT WAS A SET OF `true`, AND WIDENING IT IS THE WHOLE OF THE VERDICT-SCREEN
+--- FIX. Owner, 2026-08-20: "incident corroboration on the match verdict screen
+--- in-game doesn't seem to work." It did not, and the case being system-filed
+--- and a match old -- which is what the report was about -- turned out to have
+--- nothing to do with it: `openBy` held the case perfectly and `openFor`
+--- answered for it. What failed is that `corroborationFor` RE-DERIVED the
+--- offender when the key was pressed, from two facts that both stop being true
+--- while the prompt is still on the screen:
+---
+---   THE ROSTER STATE. The prompt fires on the death; the verdict screen is what
+---   the player is looking at a second later; and at ENDED the server sweeps
+---   every participant to LOBBY the moment their own screen reports black
+---   (BR.Net.MATCH_COVERED -> BR.Match.sweepHome), which is a couple of seconds
+---   into the verdict slam. `me.state ~= DEAD` from then on. In a small playtest
+---   -- where the death that prompts you is also the death that ends the round
+---   -- that is EVERY prompt.
+---
+---   THE ASSIST WINDOW. BR.Combat.attributedKiller refuses an attribution older
+---   than assistWindowMs, which is 10 000ms. The client's key claim is
+---   NUDGE_MS, also 10 000ms, but measured from the PROMPT -- which is sent
+---   after the death, which is at or after the last hit. So the key is armed for
+---   strictly longer than the server will answer for it, always, by an amount
+---   nobody can see.
+---
+--- Both refusals are silent by design, so the player presses a key they were
+--- told to press and nothing happens at all.
+---
+--- THE OFFER IS THEREFORE THE RECORD. The server made the offer; it knows who it
+--- was about; and it keeps that until the match is destroyed, which is the
+--- lifetime this table already had. Nothing new is trusted -- the press still
+--- carries no fields, and there is still no verb that takes a license from a
+--- client.
+---
+--- ITS LIFETIME MUST OUTLIVE THE CLIENT'S, NEVER THE REVERSE, and that is the
+--- invariant this bug was the violation of. So there is deliberately no clock on
+--- it beyond the match: an expiry here would be a second deadline to disagree
+--- with the one on the screen, which is exactly what produced the failure.
+--- `usage.corroborated` still makes it one action per offender per match.
 local nudged = {}
+
+--- The newest prompt this match offered this reporter, or nil.
+---
+--- NEWEST, BECAUSE THAT IS THE RULE THE CLIENT ALREADY KEEPS. BR.Keys.claim
+--- documents it in as many words -- "a second claim replaces the first; the most
+--- recent thing to ask is the thing that gets the key" -- and the press carries
+--- nothing, so the server has to pick the same one the keyboard did. In practice
+--- there is at most one: DEAD is terminal within a match, so a player is
+--- prompted once. The comparison costs nothing and means the two sides cannot
+--- disagree if that ever stops being true.
+---
+--- @param matchId any
+--- @param myLicense string
+--- @return string|nil license, string|nil name
+local function standingOffer(matchId, myLicense)
+    local mine = (nudged[matchId] or {})[myLicense]
+    if not mine then return nil end
+    local bestLic, bestName, bestAt = nil, nil, nil
+    for lic, offer in pairs(mine) do
+        if bestAt == nil or (offer.at or 0) > bestAt then
+            bestLic, bestName, bestAt = lic, offer.name, (offer.at or 0)
+        end
+    end
+    return bestLic, bestName
+end
 
 --- Everything both halves of the prompt need, or nil if there is no prompt.
 ---
@@ -1141,37 +1207,56 @@ local nudged = {}
 --- silence. Asking once means the prompt is shown exactly when the keypress
 --- would work.
 ---
+--- ONE FUNCTION WAS NOT ENOUGH, AND THE REASON IS TIME. The two callers ask at
+--- different MOMENTS -- the offer at the death, the action up to ten seconds
+--- later -- and half of what this function read had decayed in between. See the
+--- note on `nudged` above for the two facts and how each of them expires. The
+--- resolution below is therefore live attribution FIRST, and the offer the
+--- server already made as the answer when the live one has run out.
+---
 --- @param src number
---- @return table|nil  { me, killer, kLicense, myLicense, open, usage }
+--- @return table|nil  { me, kName, kLicense, myLicense, open, usage }
 local function corroborationFor(src)
     local me = BR.Roster.get(src)
     if not me or not me.matchId then return nil end
-
-    -- ONLY THE DEAD ASK. A living player has not been killed by anybody, so
-    -- there is no killer to resolve and no occasion for the prompt. DBNO is
-    -- excluded too: being knocked is not being killed, and the player who
-    -- knocked you may yet be the one who revives nobody.
-    if me.state ~= BR.PlayerState.DEAD then return nil end
-
-    -- THE SERVER'S OWN ATTRIBUTION, not the client's claim -- the same function
-    -- combat.lua uses to decide who gets the kill, so the player named here is
-    -- exactly the player named in the kill feed. It already applies the assist
-    -- window, refuses self-attribution and refuses a killer who has left.
-    local killerSrc = BR.Combat and BR.Combat.attributedKiller(me)
-    if not killerSrc then return nil end
-
-    local killer = BR.Roster.get(killerSrc)
-    if not killer or killer.matchId ~= me.matchId then return nil end
-
-    local kBy = BR.Identity and BR.Identity.ofPlayer(killerSrc)
-    local kLicense = kBy and BR.Identity.qualified('license', kBy.license)
-    if not kLicense then return nil end
 
     -- A player with no license cannot be rate limited, and cannot be paid
     -- either, so there is nothing to gain by prompting them.
     local myBy = BR.Identity and BR.Identity.ofPlayer(src)
     local myLicense = myBy and BR.Identity.qualified('license', myBy.license)
     if not myLicense then return nil end
+
+    local kLicense, kName
+
+    -- ONLY THE DEAD ASK. A living player has not been killed by anybody, so
+    -- there is no killer to resolve and no occasion for the prompt. DBNO is
+    -- excluded too: being knocked is not being killed, and the player who
+    -- knocked you may yet be the one who revives nobody.
+    if me.state == BR.PlayerState.DEAD then
+        -- THE SERVER'S OWN ATTRIBUTION, not the client's claim -- the same
+        -- function combat.lua uses to decide who gets the kill, so the player
+        -- named here is exactly the player named in the kill feed. It already
+        -- applies the assist window, refuses self-attribution and refuses a
+        -- killer who has left.
+        local killerSrc = BR.Combat and BR.Combat.attributedKiller(me)
+        local killer = killerSrc and BR.Roster.get(killerSrc)
+        if killer and killer.matchId == me.matchId then
+            local kBy = BR.Identity and BR.Identity.ofPlayer(killerSrc)
+            kLicense = kBy and BR.Identity.qualified('license', kBy.license)
+            kName = killer.name
+        end
+    end
+
+    -- AND THE OFFER THIS MATCH ALREADY MADE, when the live answer has run out.
+    -- This is what makes the prompt survive as long as its own sentence does:
+    -- past the assist window, past the sweep home, and onto the verdict screen
+    -- the prompt was designed to live on (br_core/client/keybinds.lua says so in
+    -- as many words). It resolves nothing the server did not already decide and
+    -- announce -- it REMEMBERS it.
+    if not kLicense then
+        kLicense, kName = standingOffer(me.matchId, myLicense)
+    end
+    if not kLicense then return nil end
 
     -- THERE IS DELIBERATELY NO GRANT CHECK HERE, AND THIS PARAGRAPH IS THE
     -- REASON SOMEBODY WILL NOT ADD ONE (#168 self-dealing).
@@ -1226,8 +1311,13 @@ local function corroborationFor(src)
     local u = usageFor(myLicense, me.matchId)
     if u.named[kLicense] or u.corroborated[kLicense] then return nil end
 
+    -- `kName` RATHER THAN THE KILLER'S ROSTER ENTRY, because there may not be
+    -- one to hand any more: on the offer path it is the live entry's name, and
+    -- on the standing-offer path it is the name the prompt itself was written
+    -- with -- which is the honest answer, since it is the name the player read
+    -- on their own screen before pressing the key.
     return {
-        me = me, killer = killer,
+        me = me, kName = kName,
         kLicense = kLicense, myLicense = myLicense,
         open = open, usage = u,
     }
@@ -1251,13 +1341,22 @@ AddEventHandler(BR.Net.REPORT_KILLED, function()
         m[c.myLicense] = mine
     end
     if mine[c.kLicense] then return end
-    mine[c.kLicense] = true
+
+    -- THE OFFER IS WRITTEN DOWN, NOT MERELY TICKED OFF. `true` here used to mean
+    -- only "do not nag them again"; it now carries what the press will need when
+    -- the live attribution has expired -- the name this sentence is about, and
+    -- when the offer was made. See the note on `nudged`.
+    --
+    -- WRITTEN BEFORE THE EVENT GOES OUT, so there is no window in which the
+    -- player has the prompt on screen and the server has no record of having
+    -- offered it. That ordering is the whole point of the table.
+    mine[c.kLicense] = { name = c.kName, at = GetGameTimer() }
 
     -- NO ID AND NO LICENSE ON THE WIRE, only the display name the kill feed has
     -- already put on this player's screen. The client writes the sentence; since
     -- #177 the key in it is a FIXED "TAB", because the action is this file's
     -- REPORT_CORROBORATE rather than the player-list binding.
-    TriggerClientEvent(BR.Net.REPORT_HINT, src, { kind = 'killer', name = c.killer.name })
+    TriggerClientEvent(BR.Net.REPORT_HINT, src, { kind = 'killer', name = c.kName })
 end)
 
 --- "Yes, that one too." One press, no panel (#177 part 3).
@@ -1288,7 +1387,7 @@ AddEventHandler(BR.Net.REPORT_CORROBORATE, function()
         incidentId = incidentId,
         matchId    = c.me.matchId,
         license    = c.kLicense,
-        name       = c.killer.name,
+        name       = c.kName,
         -- SEQ AND COUNT COME FROM THE SAME `subjects` RECORD THE PANEL'S
         -- CORROBORATIONS USE, so one player's report and another's keypress are
         -- numbered by one counter rather than two that could disagree.
@@ -1371,7 +1470,7 @@ AddEventHandler(BR.Net.REPORT_CORROBORATE, function()
 
     print(('[br_core] report: %s corroborates case %s about %s from the kill prompt (report %d, seq %d)')
         :format(tostring(c.me.name), tostring(incidentId),
-                tostring(c.killer.name), s.reports, s.seq))
+                tostring(c.kName), s.reports, s.seq))
 end)
 
 --- Reports do not survive the match they were filed in.

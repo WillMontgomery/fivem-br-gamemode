@@ -7467,6 +7467,313 @@ do
         again and tostring(again.ok) or 'no answer')
 end
 
+describe('report.verdictScreen')
+do
+    --[[
+        THE PROMPT HAS TO OUTLIVE ITS OWN SENTENCE, AND IT DID NOT.
+
+        Owner, 2026-08-20: "incident corroboration on the match verdict screen
+        in-game doesn't seem to work. For context I was trying to corroborate an
+        incident filed by system which was from a different match but within the
+        same server restart window so the server cached it."
+
+        THE CACHING WAS NOT THE PROBLEM AND IS ASSERTED HERE ANYWAY. `openBy`
+        does span matches, is not dropped at teardown, and answers for a
+        system-filed case exactly as it does for a reported one -- the first
+        block below drives that whole chain, from the strip through the
+        acknowledgement into the next round, so the report's own framing is
+        pinned rather than argued about.
+
+        WHAT ACTUALLY FAILED IS TIME. `corroborationFor` re-derived the offender
+        when the key was pressed, and both facts it derived from expire while the
+        prompt is still on screen:
+
+          the roster state   at ENDED the server sweeps every participant to
+                             LOBBY the moment their screen reports black under
+                             the verdict slam. `me.state ~= DEAD` from then on,
+                             and the verdict screen is where the prompt was
+                             designed to live.
+          the assist window  attributedKiller refuses anything older than
+                             assistWindowMs (10s). The client's key claim is also
+                             10s, but measured from the PROMPT rather than from
+                             the last hit -- so it is armed for strictly longer
+                             than the server will answer for it, always.
+
+        Both refusals are silent, which is why this reads as "nothing happens".
+
+        WHAT THESE ASSERTIONS CATCH THAT THE OLD ONES COULD NOT: every existing
+        corroboration test presses the key in the same instant as the death, with
+        the clock stopped and the match still running. That is the one moment
+        both derivations agree -- so the whole feature could be, and was, broken
+        for every real press while the suite stayed green. Each block below moves
+        exactly one of the two: the clock, or the state.
+    ]]
+
+    local function hintTo(src)
+        for i = #sent, 1, -1 do
+            local s = sent[i]
+            if s.event == BR.Net.REPORT_HINT and s.target == src then return s.args[1] end
+        end
+        return nil
+    end
+
+    local function killedBy(victimSrc, killerSrc)
+        local v = BR.Roster.get(victimSrc)
+        v.lastHitBy, v.lastHitAt = killerSrc, fakeTime
+        BR.Roster.setState(victimSrc, BR.PlayerState.DEAD)
+    end
+
+    local function three(a, b, c)
+        reset()
+        licenseOf[1], licenseOf[2], licenseOf[3] = a, b, c
+        queueUp(1, 'One',   BR.Mode.SOLO.key)
+        queueUp(2, 'Two',   BR.Mode.SOLO.key)
+        queueUp(3, 'Three', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for _, s in ipairs({ 1, 2, 3 }) do
+            BR.Roster.setState(s, BR.PlayerState.ALIVE)
+        end
+        theMatch().state = BR.MatchState.PLAYING
+        return theMatch()
+    end
+
+    local function endMatch(m)
+        BR.Match.destroy(m)
+        fire('br:match:destroyed', nil, { matchId = m.id })
+    end
+
+    --- Everything the server does between the death and the verdict screen.
+    ---
+    --- THE REAL SEQUENCE, NOT A SHORTCUT. `transition` to ENDED is what a
+    --- last-kill death does, and `sweepHome` is what BR.Net.MATCH_COVERED calls
+    --- when the client reports its screen has gone black under the slam. The
+    --- player is left holding their matchId, which is the state the summary is
+    --- rendered in.
+    local function toVerdictScreen(m)
+        BR.Match.transition(m, BR.MatchState.ENDED)
+        BR.Match.sweepHome(m)
+    end
+
+    -- ============================= the owner's report, from end to end ===
+    --
+    -- A SYSTEM filing, in match N, corroborated from the verdict screen of match
+    -- N+1. The case is opened by the real strip handler and made corroboratable
+    -- by the real acknowledgement, because the whole claim under investigation
+    -- was that the cross-match cache was at fault.
+    local m1 = three('vsOwner', 'vsCheat', 'vsThird')
+    local subj = BR.Identity.qualified('license', BR.Identity.licenseOf(2))
+
+    fired, sent = {}, {}
+    fire('br:core:stripped', nil, {
+        src = 2, name = 'Two', license = subj, matchId = m1.id,
+        count = 2, seq = 1, at = fakeTime,
+    })
+    local inc = firedOf('br:ringmaster:incident')[1]
+    ok(inc ~= nil and inc.category == 'system',
+        'the anticheat files a case nobody reported',
+        inc and tostring(inc.category) or 'nothing filed')
+
+    fire('br:incident:filed', nil, {
+        incidentId     = 'inc-verdict',
+        matchId        = inc and inc.matchId,
+        subjectLicense = inc and inc.subjectLicense,
+    })
+    endMatch(m1)
+    ok(#BR.Incident.openFor(subj) == 1,
+        'and it survives the match it was filed in -- the owner is right about '
+            .. 'the cache, and this is not where the bug is',
+        tostring(#BR.Incident.openFor(subj)))
+
+    local m2 = three('vsOwner', 'vsCheat', 'vsThird')
+    killedBy(1, 2)
+    sent = {}
+    fire(BR.Net.REPORT_KILLED, 1)
+    ok((hintTo(1) or {}).kind == 'killer',
+        'the next round, the player it killed is prompted about it',
+        tostring((hintTo(1) or {}).kind))
+
+    -- ...AND NOW THE MATCH ENDS UNDER THEM, WHICH IS WHAT A LAST KILL DOES.
+    toVerdictScreen(m2)
+    ok(BR.Roster.get(1).state == BR.PlayerState.LOBBY,
+        'the verdict screen is drawn over a player the server has already sent '
+            .. 'home -- which is the state the old code refused in',
+        tostring(BR.Roster.get(1).state))
+    ok(BR.Roster.get(1).matchId == m2.id,
+        'while they still hold the match, because the summary needs its traffic')
+
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_CORROBORATE, 1)
+    local corr = firedOf('br:ringmaster:corroborate')[1]
+    ok(corr ~= nil,
+        'and TAB on that screen corroborates -- the owner\'s report, fixed',
+        tostring(#firedOf('br:ringmaster:corroborate')))
+    ok(corr ~= nil and corr.incidentId == 'inc-verdict',
+        'onto the system-filed case from the previous match',
+        corr and tostring(corr.incidentId) or 'nothing sent')
+    ok(corr ~= nil and corr.name == 'Two',
+        'naming the offender the prompt named, from the offer rather than from '
+            .. 'a roster lookup that may no longer resolve',
+        corr and tostring(corr.name) or '-')
+
+    -- ONE ACTION PER OFFENDER SURVIVES THE FIX (#177 part 4). The standing offer
+    -- must not become a second bite for somebody who already took theirs.
+    fired = {}
+    fire(BR.Net.REPORT_CORROBORATE, 1)
+    ok(#firedOf('br:ringmaster:corroborate') == 0,
+        'and the key is dead afterwards, exactly as it was before',
+        tostring(#firedOf('br:ringmaster:corroborate')))
+
+    -- ================================== the other expiry: the assist window ===
+    --
+    -- Same shape, one variable moved. The match is STILL RUNNING and the player
+    -- is STILL DEAD -- only the clock has passed assistWindowMs, which the key
+    -- claim on the client outlasts by construction.
+    local m3 = three('awOwner', 'awCheat', 'awThird')
+    fire('br:incident:filed', nil, {
+        incidentId     = 'inc-window',
+        matchId        = m3.id,
+        subjectLicense = BR.Identity.qualified('license', BR.Identity.licenseOf(2)),
+    })
+    killedBy(1, 2)
+    sent = {}
+    fire(BR.Net.REPORT_KILLED, 1)
+    ok((hintTo(1) or {}).kind == 'killer', 'the prompt goes out at the death')
+
+    fakeTime = fakeTime + (BR.Config.Match.assistWindowMs or 10000) + 1000
+    ok(BR.Combat.attributedKiller(BR.Roster.get(1)) == nil,
+        'a second past the assist window the server can no longer say who '
+            .. 'killed them -- the fact the old code re-derived',
+        tostring(BR.Combat.attributedKiller(BR.Roster.get(1))))
+
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_CORROBORATE, 1)
+    local late = firedOf('br:ringmaster:corroborate')[1]
+    ok(late ~= nil and late.incidentId == 'inc-window',
+        'and the key still works, because the offer the server MADE is what it '
+            .. 'is honouring rather than a fact that has since decayed',
+        late and tostring(late.incidentId) or 'nothing sent')
+
+    -- ============================== and it is an OFFER, not a free pass ===
+    --
+    -- THE ASSERTION THAT STOPS THIS BEING A HOLE. Everything above widens what
+    -- the server will accept, and the widening is bounded by "the server offered
+    -- this, to this player, about this player, in this match". Somebody who was
+    -- never prompted and is no longer dead gets nothing at all -- otherwise the
+    -- fix would hand every lobby player a corroboration against anybody with a
+    -- case, which is the enumeration surface this whole design refuses.
+    local m4 = three('fpOwner', 'fpCheat', 'fpThird')
+    fire('br:incident:filed', nil, {
+        incidentId     = 'inc-freepass',
+        matchId        = m4.id,
+        subjectLicense = BR.Identity.qualified('license', BR.Identity.licenseOf(2)),
+    })
+    killedBy(3, 2)          -- killed, but never asks, so never offered
+    toVerdictScreen(m4)
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_CORROBORATE, 3)
+    ok(#firedOf('br:ringmaster:corroborate') == 0,
+        'a player who was never prompted cannot corroborate from the verdict '
+            .. 'screen -- the record honoured is the one the server WROTE',
+        tostring(#firedOf('br:ringmaster:corroborate')))
+
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_CORROBORATE, 1)
+    ok(#firedOf('br:ringmaster:corroborate') == 0,
+        'and neither can somebody that player never killed')
+
+    -- AN OFFER IS NOT LENT TO THE ROUND. The record is per (match, reporter,
+    -- offender), and the press carries nothing -- so the one thing that must not
+    -- happen is the server answering a press with somebody ELSE's offer. Asserted
+    -- with a real offer standing in the same match, past the assist window, so
+    -- neither the live path nor an empty table can be what refuses it.
+    local m4b = three('lnOwner', 'lnCheat', 'lnThird')
+    fire('br:incident:filed', nil, {
+        incidentId     = 'inc-lent',
+        matchId        = m4b.id,
+        subjectLicense = BR.Identity.qualified('license', BR.Identity.licenseOf(2)),
+    })
+    killedBy(1, 2)
+    sent = {}
+    fire(BR.Net.REPORT_KILLED, 1)
+    ok((hintTo(1) or {}).kind == 'killer', 'one player in the round is offered it')
+
+    killedBy(3, 2)          -- also killed by them, and never asks
+    fakeTime = fakeTime + (BR.Config.Match.assistWindowMs or 10000) + 1000
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_CORROBORATE, 3)
+    ok(#firedOf('br:ringmaster:corroborate') == 0,
+        'and the player beside them cannot press it -- an offer belongs to the '
+            .. 'reporter it was made to, not to the match',
+        tostring(#firedOf('br:ringmaster:corroborate')))
+
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_CORROBORATE, 1)
+    ok(#firedOf('br:ringmaster:corroborate') == 1,
+        'while the player it WAS made to still presses it',
+        tostring(#firedOf('br:ringmaster:corroborate')))
+
+    -- ===================== an offer is worth nothing once the round is over ===
+    --
+    -- AND THIS ASSERTION IS NARROWER THAN IT LOOKS, WHICH IS WORTH SAYING RATHER
+    -- THAN LETTING SOMEBODY ASSUME. `destroy` detaches every player's matchId
+    -- before anything else, so the press below is refused by the FIRST line of
+    -- corroborationFor -- "no match" -- and would be refused there even if
+    -- `nudged` were never freed at all. The free is a memory bound, not a rule:
+    -- the table is keyed by matchId, so a leaked entry belongs to a round nobody
+    -- can be in any more and no behaviour could ever see it. Nothing here claims
+    -- otherwise, and nothing should be written that does.
+    local m5 = three('exOwner', 'exCheat', 'exThird')
+    fire('br:incident:filed', nil, {
+        incidentId     = 'inc-expire',
+        matchId        = m5.id,
+        subjectLicense = BR.Identity.qualified('license', BR.Identity.licenseOf(2)),
+    })
+    killedBy(1, 2)
+    sent = {}
+    fire(BR.Net.REPORT_KILLED, 1)
+    ok((hintTo(1) or {}).kind == 'killer', 'prompted in the match that made it')
+
+    endMatch(m5)
+    ok(BR.Roster.get(1).matchId == nil,
+        'destroying the match detaches its players from it first of all',
+        tostring(BR.Roster.get(1).matchId))
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_CORROBORATE, 1)
+    ok(#firedOf('br:ringmaster:corroborate') == 0,
+        'so a press once the round is gone reaches nothing -- there is no match '
+            .. 'left to have been offered anything in',
+        tostring(#firedOf('br:ringmaster:corroborate')))
+
+    -- ================================== the offender left before the press ===
+    --
+    -- WHY THE NAME IS STORED RATHER THAN LOOKED UP. Leaving is the most common
+    -- thing a cheater does after being noticed, and the corroboration payload
+    -- carries a display name. Read off the roster at press time it would be nil
+    -- on exactly the case worth filing.
+    local m6 = three('gnOwner', 'gnCheat', 'gnThird')
+    fire('br:incident:filed', nil, {
+        incidentId     = 'inc-gone',
+        matchId        = m6.id,
+        subjectLicense = BR.Identity.qualified('license', BR.Identity.licenseOf(2)),
+    })
+    killedBy(1, 2)
+    sent = {}
+    fire(BR.Net.REPORT_KILLED, 1)
+    ok((hintTo(1) or {}).name == 'Two', 'the prompt named them')
+
+    leave(2)
+    fired, sent = {}, {}
+    fire(BR.Net.REPORT_CORROBORATE, 1)
+    local gone = firedOf('br:ringmaster:corroborate')[1]
+    ok(gone ~= nil and gone.incidentId == 'inc-gone',
+        'the corroboration lands after the offender has disconnected',
+        gone and tostring(gone.incidentId) or 'nothing sent')
+    ok(gone ~= nil and gone.name == 'Two',
+        'and still names them, from the sentence the player actually read',
+        gone and tostring(gone.name) or '-')
+end
+
 describe('report.hintAudience')
 do
     --[[
