@@ -57,6 +57,9 @@ server_scripts {
     'server/appeal.lua',    -- the appeal sentence, shared by the two files below
                             -- so a kick and a ban cannot word it differently
     'server/kick.lua',      -- brkick: the ONLY DropPlayer in the project
+    'server/spectate.lua',  -- brspectate: resolves two licenses and hands them
+                            -- to br_core, which owns the session (after
+                            -- push.lua: reports outcomes through BR.Ring)
     'server/gate.lua',      -- the connect-time ban gate (fails open, own timeout)
     'server/handoff.lua',   -- #23: mints a signed-in console URL for br_core.
                             -- Answers an event; talks to no client, ever.

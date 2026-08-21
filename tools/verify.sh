@@ -834,8 +834,8 @@ if [ -f tools/dispatch.sh ]; then
     # a new channel from the console to the host already added.
     verbs=$(grep -oE '^[[:space:]]+[a-z_]+\)' tools/dispatch.sh \
             | tr -d ' )' | sort -u | tr '\n' ' ')
-    if [ "$verbs" != "branches configreport deploy kick status switchref telemetry " ]; then
-        echo "${RED}FAIL${RST} dispatch.sh verb set is '${verbs}', expected 'branches configreport deploy kick status switchref telemetry '"
+    if [ "$verbs" != "branches configreport deploy kick spectate status switchref telemetry " ]; then
+        echo "${RED}FAIL${RST} dispatch.sh verb set is '${verbs}', expected 'branches configreport deploy kick spectate status switchref telemetry '"
         echo "     A new verb is a new capability from the console to the host."
         echo "     Process control (stop/restart) is not a verb and never has been."
         echo "     If you are adding one on purpose, update THIS gate."
@@ -875,13 +875,21 @@ if [ -f tools/dispatch.sh ]; then
 fi
 
 # br_ringmaster: the commands it registers ARE its surface, so the list is
-# pinned. brkick is the kick; the other two are read-only dumps.
+# pinned. brkick is the kick, brspectate points a moderator's camera at somebody;
+# the other two are read-only dumps.
+#
+# brspectate JOINED THE LIST WITH SPECTATING (#192), AND THAT IS THIS GATE
+# WORKING RATHER THAN BEING WORKED AROUND. It is the lightest write verb here --
+# it removes nobody, changes no state a player can feel, and takes no free text
+# -- but it does something to a player who has not been told, which is precisely
+# the boundary this list guards. It resolves two licenses and hands them to
+# br_core; the session, the camera and the audit rows are all over there.
 rmdir_="resources/*/br_ringmaster"
 if compgen -G "$rmdir_" >/dev/null 2>&1; then
     cmds=$(grep -rhoE "RegisterCommand\('[a-z]+'" $rmdir_ 2>/dev/null \
            | grep -oE "'[a-z]+'" | tr -d "'" | sort -u | tr '\n' ' ')
-    if [ -n "$cmds" ] && [ "$cmds" != "bridents brkick brring " ]; then
-        echo "${RED}FAIL${RST} br_ringmaster registers '${cmds}', expected 'bridents brkick brring '"
+    if [ -n "$cmds" ] && [ "$cmds" != "bridents brkick brring brspectate " ]; then
+        echo "${RED}FAIL${RST} br_ringmaster registers '${cmds}', expected 'bridents brkick brring brspectate '"
         boundary=1
     fi
 

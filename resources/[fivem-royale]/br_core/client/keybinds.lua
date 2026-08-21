@@ -390,9 +390,16 @@ hold('ptt',         'brptt',       'Royale: Push to talk',               'N')
 -- any resource on this server registers. The +radiotalk COMMAND is untouched
 -- and is still what `ptt` drives -- see voice.lua.
 --
--- STILL DEAD AND STILL BOUND, deliberately left for a round of their own
--- rather than swept up here: 'map' (M), 'specNext' (RIGHT), 'specPrev' (LEFT).
--- Same shape, same absence of any BR.Keys.on for them.
+-- STILL DEAD AND STILL BOUND, deliberately left for a round of its own rather
+-- than swept up here: 'map' (M). Same shape, same absence of any BR.Keys.on.
+--
+-- THE SPECTATE ARROWS ARE NO LONGER ON THAT LIST (#192). 'specNext' (RIGHT) and
+-- 'specPrev' (LEFT) stood in this paragraph from M3 until the round that built
+-- spectating, and client/spectate.lua is the subscriber they never had. Nothing
+-- about the two rows below moved: same actions, same commands, same defaults --
+-- so a player who had already rebound a key they had no way to know was dead
+-- keeps the key they chose. The public site was corrected on 2026-08-21 to stop
+-- claiming they worked; it now says so again because they do.
 
 group = 'Map'
 -- Map and spectating

@@ -26,6 +26,9 @@ for _, f in ipairs({
     'shared/storm_solve.lua',
     'shared/loot_gen.lua',
     'shared/combat_solve.lua',
+    -- AFTER enums.lua, which it does not read at load time but whose
+    -- BR.PlayerState the tests below build their views from.
+    'shared/spectate_solve.lua',
     'shared/evidence_buf.lua',
     -- AFTER combat_solve, not before: it builds its severity table from
     -- BR.ShotRefusal's values at load time, so loading it first would leave every
@@ -6951,6 +6954,183 @@ do
             .. 'was touched between the two offers',
             ('%d toasts'):format(C.toasts()))
     end
+end
+
+-- -------------------------------------------------------- spectate policy ---
+--
+-- THE INFORMATION LEAK, ASSERTED (#192). A dead player with a working voice
+-- channel who can see an enemy is a spotter, so the target set is their own
+-- squad for as long as any of that squad is standing. These are the tests that
+-- have to fail if that ever stops being true -- which is why the rule lives in a
+-- pure function rather than in a server file that can only be exercised by
+-- playing a match.
+
+describe('spectate.squadRule')
+do
+    local S = BR.SpectateSolve
+
+    --- Four players, two squads of two. Everyone alive unless named in `dead`.
+    local function world(dead)
+        dead = dead or {}
+        local out = {}
+        for _, r in ipairs({
+            { src = 1, squadId = 'sq1', name = 'Me' },
+            { src = 2, squadId = 'sq1', name = 'Mate' },
+            { src = 3, squadId = 'sq2', name = 'Enemy1' },
+            { src = 4, squadId = 'sq2', name = 'Enemy2' },
+        }) do
+            r.living = not dead[r.src]
+            out[#out + 1] = r
+        end
+        return out
+    end
+
+    local function names(list)
+        local out = {}
+        for _, p in ipairs(list) do out[#out + 1] = p.name end
+        return table.concat(out, ',')
+    end
+
+    -- 1. THE WHOLE POINT. Dead, one squadmate alive, two enemies alive -- and
+    --    `free` ON, which is the strongest form of the claim: even with the
+    --    widening explicitly allowed, it must not be reachable.
+    local t, policy = S.playerTargets({
+        mySrc = 1, squadId = 'sq1', free = true, players = world({ [1] = true }),
+    })
+    ok(#t == 1 and t[1].src == 2,
+        'a dead player sees ONLY their living squadmate, even with free spectate on',
+        names(t))
+    ok(policy == 'squad', 'and the policy says so', policy)
+
+    -- 2. The same with free OFF, which must be identical -- the flag has no say
+    --    while a squadmate lives, and a test that only covered the off case
+    --    could not tell the two apart.
+    t = S.playerTargets({
+        mySrc = 1, squadId = 'sq1', free = false, players = world({ [1] = true }),
+    })
+    ok(#t == 1 and t[1].src == 2, 'the free flag changes nothing while a mate lives',
+        names(t))
+
+    -- 3. A DEAD SQUADMATE IS NOT A TARGET. The wheel is living squadmates, not
+    --    squad membership -- otherwise the first thing a dead player sees is
+    --    another corpse.
+    t = S.playerTargets({
+        mySrc = 1, squadId = 'sq1', free = true,
+        players = world({ [1] = true, [2] = true }),
+    })
+    ok(#t == 2, 'once the whole squad is out, the set widens', names(t))
+    ok(t[1].src == 3 and t[2].src == 4, 'to the living players outside it', names(t))
+
+    -- 4. AND ONLY IF IT IS ALLOWED TO. Same wiped squad, free off: nothing.
+    local none
+    t, none = S.playerTargets({
+        mySrc = 1, squadId = 'sq1', free = false,
+        players = world({ [1] = true, [2] = true }),
+    })
+    ok(#t == 0, 'refusing free spectate leaves a wiped squad with nobody to watch',
+        names(t))
+    ok(none == 'none', 'and says none rather than pretending it is a squad', none)
+
+    -- 5. NEVER MYSELF, on either branch.
+    t = S.playerTargets({
+        mySrc = 1, squadId = 'sq1', free = true,
+        players = world({ [1] = true, [2] = true }),
+    })
+    for _, p in ipairs(t) do
+        ok(p.src ~= 1, 'the spectator is never on their own list')
+    end
+
+    -- 6. SOLOS FALL OUT FOR FREE. No squadId means the squad list is empty on
+    --    the first pass, so a solo lands on the wider branch with no mode check
+    --    anywhere -- #192: "in solos this is moot".
+    t, policy = S.playerTargets({
+        mySrc = 1, squadId = nil, free = true,
+        players = {
+            { src = 1, living = false, name = 'Me' },
+            { src = 2, living = true,  name = 'Other' },
+        },
+    })
+    ok(#t == 1 and t[1].src == 2 and policy == 'free',
+        'a solo player reaches the wider set with no squad check to satisfy',
+        policy)
+
+    -- 7. A SQUAD OF ONE IS STILL A SQUAD, and it is empty the moment its only
+    --    member dies. This is the case a `squadId ~= nil` guard alone would get
+    --    wrong -- the id is set, and there is still nobody to watch.
+    t, policy = S.playerTargets({
+        mySrc = 1, squadId = 'sq1', free = false,
+        players = { { src = 1, squadId = 'sq1', living = false, name = 'Me' } },
+    })
+    ok(#t == 0 and policy == 'none', 'a one-player squad wiped has no targets', policy)
+
+    -- 8. AN EMPTY WORLD IS NOT AN ERROR.
+    t = S.playerTargets({ mySrc = 1, squadId = 'sq1', free = true, players = {} })
+    ok(#t == 0, 'no players at all is an empty list, not a crash')
+    ok(#S.playerTargets({}) == 0, 'and neither is an empty view')
+end
+
+describe('spectate.adminPolicy')
+do
+    local S = BR.SpectateSolve
+    local everyone = {
+        { src = 1, name = 'Admin' },
+        { src = 5, name = 'Suspect' },
+    }
+
+    -- AN ADMIN IS NOT SUBJECT TO THE SQUAD RULE, and that is the whole reason
+    -- this is a second function rather than a flag on the first: the rule
+    -- protects players from each other, not players from moderation.
+    local t, policy = S.adminTargets({ want = 5, players = everyone })
+    ok(#t == 1 and t[1].src == 5 and policy == 'admin',
+        'an admin gets the person they named', policy)
+
+    -- ...BUT ONLY IF THAT PERSON IS HERE. A server id nobody is holding is the
+    -- recycled-id hazard, and the answer is nothing rather than a guess.
+    local miss
+    t, miss = S.adminTargets({ want = 9, players = everyone })
+    ok(#t == 0 and miss == 'none', 'and nobody at all when they are not connected',
+        miss)
+    ok(#S.adminTargets({}) == 0, 'an empty view is empty, not an error')
+
+    -- THE TWO POLICIES CANNOT BE CONFUSED FOR ONE ANOTHER. Handing the admin
+    -- view to the player policy is not a way to widen anything: it has no
+    -- squadId and no `living`, so it comes back empty rather than permissive.
+    ok(#S.playerTargets({ want = 5, players = everyone }) == 0,
+        'the player policy refuses an admin-shaped view rather than opening up')
+end
+
+describe('spectate.step')
+do
+    local S = BR.SpectateSolve
+    local list = {
+        { src = 2, name = 'B' }, { src = 4, name = 'D' }, { src = 7, name = 'G' },
+    }
+
+    ok(S.step(list, 2, 1).src == 4, 'next walks forward')
+    ok(S.step(list, 7, 1).src == 2, 'and wraps at the end')
+    ok(S.step(list, 2, -1).src == 7, 'previous wraps at the start')
+    ok(S.step(list, 4, -1).src == 2, 'and walks back otherwise')
+
+    -- 0 IS HOLD. In Lua `0` is truthy, so a careless `if dir then` would move on
+    -- a re-resolve -- and this is the direction the 4 Hz feed sends on every
+    -- single push. Getting it wrong is a camera that cycles targets four times
+    -- a second.
+    ok(S.step(list, 4, 0).src == 4, 'dir 0 holds the current target')
+    ok(S.step(list, 4).src == 4, 'and so does no direction at all')
+
+    -- A TARGET THAT IS NO LONGER ON THE LIST LANDS SOMEWHERE, rather than
+    -- ending the session. This is the path every death of a watched player
+    -- takes.
+    ok(S.step(list, 99, 1).src == 2, 'a lost target falls to the first candidate')
+    ok(S.step(list, 99, -1).src == 7, 'or the last one, going the other way')
+    ok(S.step(list, 99, 0).src == 2, 'and holding nothing lands on the first')
+
+    ok(S.step({}, 2, 1) == nil, 'an empty list has no next')
+    ok(S.step(nil, 2, 1) == nil, 'and neither does no list')
+
+    local one = { { src = 3, name = 'C' } }
+    ok(S.step(one, 3, 1).src == 3, 'a single candidate is its own next')
+    ok(S.step(one, 3, -1).src == 3, 'and its own previous')
 end
 
 -- ----------------------------------------------------------------- result ---

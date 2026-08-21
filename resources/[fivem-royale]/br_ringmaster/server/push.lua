@@ -85,6 +85,25 @@ AddEventHandler('br:ringmaster:refusal', function(data)
     outbox:emit('refusal', data, GetGameTimer())
 end)
 
+--- An admin spectate session opening or closing (#192).
+---
+--- EVIDENCE, NOT STATE, and it is the reason this event exists alongside the
+--- `outcome` the command already reports. The outcome closes the console's own
+--- intent row and answers "did the button work"; this answers "who was watched,
+--- by whom, and for how long" -- and the STOP has no command behind it at all.
+--- An admin ends a session from the pause menu, or the target disconnects and it
+--- ends itself, and neither of those is anything the console asked for. Without
+--- this the log would record every start and no end.
+---
+--- ON THE EVENT CHANNEL for the same reason the outcome is: a snapshot is
+--- latest-wins and may be dropped, and a moderation record that may be dropped
+--- is not a record. Nothing else in the console acts on a player without leaving
+--- a row, and an admin watching somebody who does not know they are being
+--- watched is exactly that class of action.
+AddEventHandler('br:ringmaster:spectate', function(data)
+    outbox:emit('admin_spectate', data, GetGameTimer())
+end)
+
 -- Identity capture -> player_seen. main.lua calls this hook for every NEW
 -- license record (reconnects update the record without re-announcing).
 function BR.Ring.emitSeen(license, rec)

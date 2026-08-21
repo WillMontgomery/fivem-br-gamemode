@@ -366,6 +366,29 @@ end
 
 -- ----------------------------------------------------------------- spectate ---
 
+--- The local ped handle for a spectate target, or 0 when they are not streamed.
+---
+--- THE ONE PLACE THIS LOOKUP HAPPENS, and the one exception tools/verify.sh's
+--- scope gate names by hand: "resolving a ped handle for the spectator camera,
+--- after the server has supplied coordinates and the client has moved into
+--- range". Concentrating it here is what keeps that exception one reviewable
+--- function rather than a habit that spreads.
+---
+--- 0 IS NOT AN ANSWER ABOUT THE MATCH. Under OneSync big mode a player across
+--- the map is simply not in this client's scope; they are alive, they are in the
+--- round, and the server knows exactly where they are. Anything that reads a 0
+--- here as "gone" is deriving game state from scope, which is the whole reason
+--- the gate exists.
+--- @param targetSrc integer
+--- @return integer ped  0 when out of scope
+function BR.Native.spectatePed(targetSrc)
+    if not targetSrc then return 0 end
+    local plyIdx = GetPlayerFromServerId(targetSrc)  -- scope-ok: spectator camera
+    if plyIdx == -1 then return 0 end
+    local ped = GetPlayerPed(plyIdx)                 -- scope-ok: spectator camera
+    return ped or 0
+end
+
 --- Attach the spectator camera to a target.
 ---
 --- NETWORK_SET_IN_SPECTATOR_MODE requires the target ped to EXIST LOCALLY. Under
@@ -384,20 +407,30 @@ end
 ---                           discover this itself for an out-of-scope player
 --- @return boolean attached
 function BR.Native.spectate(targetSrc, pos)
-    if BR.Native.use.spectatorNative then
-        -- scope-ok: resolving a ped handle for the spectator camera only. The
-        -- server supplied the position and the client has already been moved
-        -- into range, so this is a scope LOOKUP, not a source of game state.
-        -- A -1 here means "not streamed yet", never "not in the match".
-        local plyIdx = GetPlayerFromServerId(targetSrc)          -- scope-ok: spectator camera
-        if plyIdx ~= -1 then
-            local ped = GetPlayerPed(plyIdx)                     -- scope-ok: spectator camera
-            if ped and ped ~= 0 then
-                NetworkSetInSpectatorMode(true, ped)
-                return true
-            end
-        end
-        -- fall through to the free-cam path rather than leaving a black screen
+    local ped = BR.Native.spectatePed(targetSrc)
+
+    if BR.Native.use.spectatorNative and ped ~= 0 then
+        NetworkSetInSpectatorMode(true, ped)
+        return true
+    end
+
+    -- FOCUS FOLLOWS THE TARGET, NOT A POSITION, whenever there is a target to
+    -- follow (#192, and the same sentence as the camera's).
+    --
+    -- THE COMMENT ON BR.Native.use SAID "SetFocusEntity" AND THE CODE HAD NEVER
+    -- CALLED IT. What was here was SET_FOCUS_POS_AND_VEL alone -- a fixed point,
+    -- re-sent at whatever rate the caller managed, so the streaming volume
+    -- lagged the subject by up to one push and a sprinting target repeatedly ran
+    -- out of their own loaded world. SET_FOCUS_ENTITY moves with them for free.
+    --
+    -- IT NEEDS A LOCAL HANDLE, WHICH IS WHY THE POSITION PATH IS NOT REMOVED. A
+    -- target across the map has no ped here, so the coordinate is the ONLY thing
+    -- that can pull the world in around them -- and the moment it does, the ped
+    -- appears and this switches to it on the next call. The two are the same
+    -- mechanism at two ranges, not a preference and a fallback.
+    if ped ~= 0 and SetFocusEntity then
+        SetFocusEntity(ped)
+        return true
     end
 
     if pos then

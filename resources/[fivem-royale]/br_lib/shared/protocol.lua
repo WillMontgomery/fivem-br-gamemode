@@ -198,8 +198,29 @@ BR.Net = {
     REVIVED         = 'br:revive:atstart',
 
     -- Spectate / end
-    SPECTATE_SET    = 'br:spectate:set',     -- S->C  { targetSrc, x, y, z }
-    SPECTATE_CYCLE  = 'br:spectate:cycle',   -- C->S  { dir }
+    --
+    -- THE SERVER PICKS THE TARGET AND THE CLIENT DRAWS IT, and the split is a
+    -- privacy boundary rather than a preference. Who a dead player may look at
+    -- is the whole of #192 (shared/spectate_solve.lua), and a client-side
+    -- filter is not a boundary -- the same sentence BR.ChatChannel's `squad`
+    -- carries. The client never learns a candidate list; it is told one target
+    -- at a time, and told it BY THE SERVER, which is also the only side that can
+    -- see the position of a player who is out of scope.
+    --
+    -- S->C. `{ targetSrc, name, admin, x, y, z }` while a session is running,
+    -- re-sent at BR.Config.Spectate.feedMs so the camera has somewhere to be;
+    -- `{ stop = true, reason = <string> }` when it ends, for whatever reason.
+    -- ONE EVENT FOR BOTH so a stop can never be lost behind a position push
+    -- that arrives after it.
+    SPECTATE_SET    = 'br:spectate:set',
+    -- C->S  { dir } -- +1 next, -1 previous, 0 "start, or re-resolve what I
+    -- have". 0 is what a client sends on being eliminated: it asks the server
+    -- to open a session under the rules, and the rules may answer "nobody".
+    SPECTATE_CYCLE  = 'br:spectate:cycle',
+    -- C->S. The pause-menu exit the owner asked for, and the only way a
+    -- spectator can end their own session. No payload: the server knows who
+    -- asked and a spectator has exactly one session.
+    SPECTATE_STOP   = 'br:spectate:stop',
     SUMMARY         = 'br:summary',          -- S->C  end-of-match payload
 
     -- Death. The client reports; the server decides. See server/combat.lua.

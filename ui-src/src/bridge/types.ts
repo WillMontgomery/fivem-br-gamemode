@@ -253,10 +253,23 @@ export interface DbnoPayload {
   revivePct: number
 }
 
+/**
+ * A spectate session, as far as any SCREEN needs to know about it (#192).
+ *
+ * TWO BOOLEANS, AND THE TARGET'S NAME IS DELIBERATELY NOT ONE OF THEM. This
+ * used to carry `targetName`, `targetSrc` and `remaining`, and Lua never sent
+ * any of the three -- nothing had a use for them, because the camera is drawn by
+ * the engine and not by this page. The only thing the interface decides from
+ * this is whether the pause menu offers the exit the owner asked for, so that is
+ * the only thing on it.
+ *
+ * `admin` IS NOT DERIVABLE FROM `active`. A dead player watching their squad is
+ * spectating too, and their pause menu does not offer a way out of it -- there
+ * is nowhere for it to go but back to their own corpse.
+ */
 export interface SpectatePayload {
-  targetName: string
-  targetSrc: number
-  remaining: number
+  active: boolean
+  admin: boolean
 }
 
 /**

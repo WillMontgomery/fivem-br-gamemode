@@ -127,6 +127,24 @@ BR.Loop.register(BR.Loop.TICK, 'lobbycam.follow', function()
     -- not race it.
     if BR.Spawn.traveling then return end
 
+    -- AND A SPECTATE CAMERA OWNS THE VIEW WHILE IT IS UP (#192).
+    --
+    -- This tick asserts the lobby shot ten times a second precisely so no path
+    -- can miss it -- which makes it the thing that would quietly take the screen
+    -- back from an admin spectating from the lobby. There is only ever one
+    -- rendered camera: whichever called RenderScriptCams last wins, and at 10 Hz
+    -- against a per-frame loop that is this one. So the answer is not to race
+    -- it, it is to stand down: an admin standing on the lobby pad watching
+    -- somebody else's match is in the lobby AND is not looking at it.
+    --
+    -- Guarded rather than assumed, because client/spectate.lua loads after this
+    -- file -- the field is read at call time, so the guard only matters for the
+    -- ticks between the two resources' load.
+    if BR.Spectate and BR.Spectate.active() then
+        if BR.LobbyCam.active() then BR.LobbyCam.stop() end
+        return
+    end
+
     local want = BR.State.me.state == BR.PlayerState.LOBBY
 
     if want and not BR.LobbyCam.active() then

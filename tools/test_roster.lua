@@ -23,8 +23,16 @@ function GetPlayerName(src) return playerNames[src] or ('Player' .. tostring(src
 -- src-derived stub they share one, which would make a report misattributed to
 -- them look correct. Tests that care set `licenseOf[src]`; everything else keeps
 -- the stable per-src default it was written against.
+--
+-- AND A CONNECTION CAN HAVE NO LICENSE AT ALL, which `noLicense` expresses. It
+-- is rare and it is real -- BR.Roster.licenseOf is written to return nil rather
+-- than invent a key, "a ban against the wrong human waiting to happen" -- and
+-- anything that compares two licenses has to decide what nil means. The spectate
+-- feed's answer is "not a match", and that answer is only testable with a player
+-- who has none.
 local licenseOf = {}
-function GetNumPlayerIdentifiers(src) return 1 end
+local noLicense = {}
+function GetNumPlayerIdentifiers(src) return noLicense[src] and 0 or 1 end
 function GetPlayerIdentifier(src, i)
     return 'license:' .. (licenseOf[src] or ('test' .. tostring(src)))
 end
@@ -170,6 +178,7 @@ for _, f in ipairs({
     'br_lib/shared/storm_solve.lua',
     'br_lib/shared/loot_gen.lua',
     'br_lib/shared/combat_solve.lua',
+    'br_lib/shared/spectate_solve.lua', -- the squad rule; server/spectate.lua asks it
     'br_lib/shared/evidence_buf.lua', -- BR.EvidenceBuf; server/evidence.lua wraps it
     'br_core/server/main.lua',
     'br_core/server/broadcast.lua',
@@ -208,6 +217,17 @@ for _, f in ipairs({
     -- report handler had no coverage at all, which is how "one report per
     -- target" could be wrong in a way only a playtest would find.
     'br_core/server/players.lua',      -- BR.Players; the list and the reports
+
+    -- BR.Spectate. LOADED HERE RATHER THAN IN A SUITE OF ITS OWN, because the
+    -- thing worth testing is the policy running against a REAL roster: who is
+    -- still in the fight, who shares a squad, and what a disconnect does to
+    -- both. Every one of those already exists in this file, and a hand-built
+    -- fixture of them is the fixture that stops matching the game.
+    --
+    -- It registers a `playerDropped` handler, so every leave() in this suite now
+    -- runs it -- harmlessly, since it returns immediately when nobody is
+    -- watching, which is every block but one.
+    'br_core/server/spectate.lua',
 
     -- br_stats, LOADED INTO THE ROSTER SUITE ON PURPOSE (#153).
     --
@@ -279,6 +299,18 @@ local function reset()
     -- opinion lying around: the next block asserts on `license:test<src>` and
     -- would fail somewhere with no visible connection to the cause.
     for k in pairs(licenseOf) do licenseOf[k] = nil end
+    for k in pairs(noLicense) do noLicense[k] = nil end
+
+    -- SPECTATE SESSIONS DO NOT LIVE ON THE ROSTER, so wiping it above does not
+    -- take them with it -- and a session left pointing at an id the next block
+    -- reuses would make that block's first resolve find a target it never set.
+    -- Cheap and total; no block in this suite uses an id anywhere near 64.
+    for src = 1, 64 do BR.Spectate.stop(src) end
+
+    -- And the flag the spectate blocks move. Committed default, restated here,
+    -- so a block that turns free spectate on cannot decide what a later one is
+    -- testing.
+    BR.Config.Spectate.freeAfterSquadOut = false
 end
 
 -- ------------------------------------------------ parallel-match helpers ---
@@ -12312,6 +12344,368 @@ do
 
     SetTimeout = function() end
     ok(m5 ~= nil, 'the fixtures built their matches')
+end
+
+-- ------------------------------------------------------------- spectating ---
+--
+-- THE POLICY AGAINST A REAL ROSTER (#192). br_lib's spectate_solve tests pin the
+-- rule itself; these pin that the server ASKS it -- with the right view, on every
+-- path, and that no path exists which skips it. The two halves are different
+-- failures: a correct solver nobody consults is the shape this project has
+-- shipped before.
+
+--- Set up one squad match: 1+2 on sq1, 3+4 on sq2, everybody alive.
+local function squadMatch()
+    reset()
+    join(1, 'Me'); join(2, 'Mate'); join(3, 'Enemy1'); join(4, 'Enemy2')
+    fakeMatch(BR.Mode.SQUAD and BR.Mode.SQUAD.key or 'squad')
+    for _, r in ipairs({ { 1, 'sq1' }, { 2, 'sq1' }, { 3, 'sq2' }, { 4, 'sq2' } }) do
+        BR.Roster.update(r[1], { squadId = r[2] })
+        BR.Roster.setState(r[1], BR.PlayerState.ALIVE)
+    end
+    sent = {}
+end
+
+--- The last target this player was told to watch, or nil if they were stopped.
+local function watching(src)
+    local last = nil
+    for _, s in ipairs(eventsOf(BR.Net.SPECTATE_SET)) do
+        if s.target == src then
+            last = s.args[1].stop and nil or s.args[1].targetSrc
+        end
+    end
+    return last
+end
+
+--- Was this player actually TOLD to stop?
+---
+--- NOT THE SAME QUESTION AS `watching(src) == nil`, and the difference is the
+--- one that makes several assertions below worth having. "No target" and "never
+--- heard anything at all" both read as nil, so a mutation that simply stops
+--- sending would pass a test written the lazy way -- which is exactly what
+--- happened the first time the disconnect fast path was mutated out.
+local function stopped(src)
+    local last = false
+    for _, s in ipairs(eventsOf(BR.Net.SPECTATE_SET)) do
+        if s.target == src then last = s.args[1].stop == true end
+    end
+    return last
+end
+
+--- The last stop reason this player was sent, if any.
+local function stopReason(src)
+    local last = nil
+    for _, s in ipairs(eventsOf(BR.Net.SPECTATE_SET)) do
+        if s.target == src then
+            last = s.args[1].stop and s.args[1].reason or nil
+        end
+    end
+    return last
+end
+
+describe('spectate.squadOnly')
+do
+    squadMatch()
+    BR.Roster.setState(1, BR.PlayerState.DEAD)
+
+    -- THE HEADLINE. A dead player asks for a camera and is given their
+    -- squadmate. Asking repeatedly must never walk off the squad, because there
+    -- is nowhere off it to walk to.
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == 2, 'a dead player is given their living squadmate',
+        tostring(watching(1)))
+
+    for _ = 1, 6 do fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 1 }) end
+    ok(watching(1) == 2, 'and cycling forward six times never reaches an enemy',
+        tostring(watching(1)))
+    for _ = 1, 6 do fire(BR.Net.SPECTATE_CYCLE, 1, { dir = -1 }) end
+    ok(watching(1) == 2, 'nor does cycling backwards', tostring(watching(1)))
+
+    -- AND THE FLAG THAT WIDENS IT HAS NO SAY WHILE A MATE LIVES. This is the
+    -- assertion that catches a check bolted on somewhere it can be bypassed.
+    BR.Config.Spectate.freeAfterSquadOut = true
+    sent = {}
+    for _ = 1, 6 do fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 1 }) end
+    ok(watching(1) == 2,
+        'turning free spectate ON does not widen the set while a squadmate lives',
+        tostring(watching(1)))
+end
+
+describe('spectate.widensOnlyWhenTheSquadIsGone')
+do
+    squadMatch()
+    BR.Roster.setState(1, BR.PlayerState.DEAD)
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == 2, 'watching the mate to begin with')
+
+    -- The mate dies. With the widening REFUSED, the session ends rather than
+    -- silently becoming a view of the enemy team.
+    sent = {}
+    BR.Roster.setState(2, BR.PlayerState.DEAD)
+    fakeTime = fakeTime + BR.Config.Spectate.feedMs
+    BR.Sched.step(fakeTime)
+    ok(stopped(1), 'the squad is gone and the camera stops', tostring(watching(1)))
+    ok(stopReason(1) == 'no-targets', 'saying why', tostring(stopReason(1)))
+
+    -- With it ALLOWED, the same moment opens the wider set -- and not before.
+    squadMatch()
+    BR.Config.Spectate.freeAfterSquadOut = true
+    BR.Roster.setState(1, BR.PlayerState.DEAD)
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == 2, 'still the mate while the mate is alive')
+
+    sent = {}
+    BR.Roster.setState(2, BR.PlayerState.DEAD)
+    fakeTime = fakeTime + BR.Config.Spectate.feedMs
+    BR.Sched.step(fakeTime)
+    local now = watching(1)
+    ok(now == 3 or now == 4, 'and only once they die does an enemy become visible',
+        tostring(now))
+end
+
+describe('spectate.whoMayAsk')
+do
+    squadMatch()
+
+    -- A LIVING PLAYER GETS NOTHING. "Still in the match" is the same test that
+    -- decides whether they count toward the alive number, so being able to play
+    -- and being able to watch cannot come apart.
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == nil, 'an ALIVE player asking for a camera is refused')
+
+    BR.Roster.setState(1, BR.PlayerState.DBNO)
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == nil, 'and so is a downed one -- they are still in the fight')
+
+    BR.Roster.setState(1, BR.PlayerState.DEAD)
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == 2, 'only once they are out')
+
+    -- A LOBBY PLAYER HAS NO MATCH TO WATCH. They are out of the fight by the
+    -- same test, so the match check is the only thing standing between them and
+    -- somebody else's round.
+    reset()
+    join(1, 'Bystander'); join(2, 'Player')
+    fakeMatch()
+    BR.Roster.setMatch(1, nil)
+    BR.Roster.setState(2, BR.PlayerState.ALIVE)
+    sent = {}
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    ok(watching(1) == nil, 'a lobby player cannot spectate a match they are not in')
+end
+
+describe('spectate.admin')
+do
+    squadMatch()
+    -- The admin is a bystander in the lobby; the target is mid-match on the
+    -- other squad. Neither the squad rule nor the liveness rule applies.
+    BR.Roster.setMatch(1, nil)
+    BR.Roster.setState(1, BR.PlayerState.LOBBY)
+    sent = {}
+    fired = {}
+
+    local okStart, detail = BR.Spectate.adminStart({
+        admin = 1, target = 3,
+        adminLicense = 'license:testadmin', targetLicense = 'license:test3',
+        commandId = 'cmd-1',
+    })
+    ok(okStart, 'an admin may be pointed at anyone', tostring(detail))
+    ok(watching(1) == 3, 'at the person the console named', tostring(watching(1)))
+
+    -- THE AUDIT ROW. The game emits the fact; the console writes it.
+    local rows = firedOf('br:ringmaster:spectate')
+    ok(#rows == 1 and rows[1] and rows[1].phase == 'start',
+        'a start is announced for the log', ('%d row(s)'):format(#rows))
+    ok(rows[1] and rows[1].commandId == 'cmd-1'
+       and rows[1].targetLicense == 'license:test3',
+        'carrying the join key and who was watched')
+
+    -- THE ARROWS DO NOT MOVE IT. The console named one person; the keys belong
+    -- to the player policy, and refusing here rather than in the client is the
+    -- same rule as everywhere else -- the client is not where this is decided.
+    for _ = 1, 4 do fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 1 }) end
+    ok(watching(1) == 3, 'and the spectate keys cannot walk it off that person',
+        tostring(watching(1)))
+
+    -- A DEAD TARGET IS STILL A TARGET for a moderator.
+    BR.Roster.setState(3, BR.PlayerState.DEAD)
+    fakeTime = fakeTime + BR.Config.Spectate.feedMs
+    BR.Sched.step(fakeTime)
+    ok(watching(1) == 3, 'a target who dies is still watched', tostring(watching(1)))
+
+    -- THE PAUSE-MENU EXIT, and its audit row.
+    fired = {}
+    fakeTime = fakeTime + 5000
+    fire(BR.Net.SPECTATE_STOP, 1)
+    ok(stopped(1), 'the in-game stop ends the session')
+    ok(stopReason(1) == 'stopped', 'with the reason it was stopped for',
+        tostring(stopReason(1)))
+    rows = firedOf('br:ringmaster:spectate')
+    ok(#rows == 1 and rows[1] and rows[1].phase == 'stop',
+        'and the log hears the end too', ('%d row(s)'):format(#rows))
+    -- Guarded rather than indexed straight: a mutation that files NO row must
+    -- report a named failure, not take the suite down two assertions later with
+    -- a nil index that says nothing about what broke.
+    ok(((rows[1] or {}).durationMs or 0) >= 5000, 'carrying how long it ran',
+        tostring(rows[1] and rows[1].durationMs))
+
+    -- WATCHING YOURSELF IS NOT A MODERATION TOOL.
+    ok(not BR.Spectate.adminStart({ admin = 1, target = 1, commandId = 'c' }),
+        'an admin cannot spectate themselves')
+    ok(not BR.Spectate.adminStart({ admin = 1, target = 77, commandId = 'c' }),
+        'nor an id nobody is holding')
+end
+
+describe('spectate.theTargetLeaves')
+do
+    -- "IF THE PLAYER BEING SPECTATED LEAVES WHILE BEING SPECTATED, THE 'STOP
+    -- SPECTATING' FUNCTION RUNS AUTOMATICALLY" -- the owner, verbatim. This is
+    -- the case #192 says will be got wrong.
+    squadMatch()
+    BR.Roster.setMatch(1, nil)
+    BR.Roster.setState(1, BR.PlayerState.LOBBY)
+    sent = {}
+    BR.Spectate.adminStart({ admin = 1, target = 3, commandId = 'cmd-2',
+                             targetLicense = 'license:test3' })
+    ok(watching(1) == 3, 'admin is watching')
+
+    sent = {}
+    leave(3)
+    ok(stopped(1), 'the target disconnecting stops the camera by itself')
+    ok(stopReason(1) == 'target-left', 'and says which of the endings it was',
+        tostring(stopReason(1)))
+
+    -- A PLAYER'S WHEEL LOSES A SPOKE RATHER THAN THE WHOLE SESSION. Two living
+    -- squadmates, one leaves: the dead player keeps watching the other.
+    reset()
+    join(1, 'Me'); join(2, 'MateA'); join(3, 'MateB')
+    fakeMatch('squad')
+    for _, s in ipairs({ 1, 2, 3 }) do
+        BR.Roster.update(s, { squadId = 'sq1' })
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+    end
+    BR.Roster.setState(1, BR.PlayerState.DEAD)
+    sent = {}
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    local first = watching(1)
+    ok(first == 2, 'watching the first mate', tostring(first))
+
+    sent = {}
+    leave(2)
+    ok(watching(1) == 3, 'when they leave, the camera moves to the other mate',
+        tostring(watching(1)))
+end
+
+describe('spectate.recycledServerId')
+do
+    -- THE ONE THAT MATTERS MOST, AND THE ONE A DISCONNECT HANDLER ALONE CANNOT
+    -- COVER. FiveM recycles server ids within the minute. If the drop event is
+    -- ever missed -- a resource restart mid-session is the realistic way --
+    -- then the id the camera is pointed at is still a valid, connected player,
+    -- and it is a DIFFERENT HUMAN. Nothing about the session looks wrong; the
+    -- admin is simply watching somebody nobody authorised them to watch.
+    --
+    -- So the session remembers the licence and the feed re-checks the pair. This
+    -- block reproduces the missed event exactly: the roster entry goes and comes
+    -- back under a new licence, WITHOUT playerDropped ever firing.
+    squadMatch()
+    BR.Roster.setMatch(1, nil)
+    BR.Roster.setState(1, BR.PlayerState.LOBBY)
+    sent = {}
+    BR.Spectate.adminStart({ admin = 1, target = 3, commandId = 'cmd-3' })
+    ok(watching(1) == 3, 'admin is watching server id 3')
+
+    -- The same person, still here: the check must not stop a healthy session.
+    sent = {}
+    fakeTime = fakeTime + BR.Config.Spectate.feedMs
+    BR.Sched.step(fakeTime)
+    ok(watching(1) == 3, 'an unchanged licence keeps the session running')
+
+    -- Now somebody else inherits the slot, with no drop event.
+    BR.Roster.remove(3)
+    licenseOf[3] = 'somebodyelse'
+    BR.Roster.add(3)
+    BR.Roster.setState(3, BR.PlayerState.ALIVE)
+
+    sent = {}
+    fakeTime = fakeTime + BR.Config.Spectate.feedMs
+    BR.Sched.step(fakeTime)
+    ok(stopped(1), 'a recycled id is not the person the session opened on')
+    ok(stopReason(1) == 'target-left', 'so the camera stops rather than changing subject',
+        tostring(stopReason(1)))
+end
+
+describe('spectate.licencelessTarget')
+do
+    -- AND nil IS NOT A MATCH FOR nil. A connection with no licence has one
+    -- forever, so `stored == current` would be true for every recycled id in
+    -- that state -- the hole the check exists to close, reopened by the one
+    -- comparison that looks obviously correct.
+    squadMatch()
+    BR.Roster.setMatch(1, nil)
+    BR.Roster.setState(1, BR.PlayerState.LOBBY)
+    noLicense[3] = true
+    BR.Roster.get(3).license = nil
+    sent = {}
+
+    BR.Spectate.adminStart({ admin = 1, target = 3, commandId = 'cmd-4' })
+    ok(watching(1) == 3, 'the session opens -- nothing here refuses at the start')
+
+    sent = {}
+    fakeTime = fakeTime + BR.Config.Spectate.feedMs
+    BR.Sched.step(fakeTime)
+    ok(stopped(1),
+        'but a target with no licence cannot be re-identified, so it stops')
+end
+
+describe('spectate.thePolicyRunsOnEveryPush')
+do
+    -- A PLAYER'S TARGET IS RE-RESOLVED ON EVERY FEED TICK, not only when
+    -- something obvious happens: the squad rule depends on who is still
+    -- standing, and a squadmate dying on the far side of the map raises no event
+    -- this file listens for.
+    --
+    -- A SQUAD OF FOUR, DELIBERATELY, so there are THREE candidates on the wheel.
+    -- With only one, a re-resolve that wrongly ADVANCED would wrap straight back
+    -- to the same person and this block would pass while the camera cycled
+    -- targets four times a second in a real match.
+    reset()
+    join(1, 'Me'); join(2, 'MateA'); join(3, 'MateB'); join(4, 'MateC')
+    fakeMatch('squad')
+    for _, s in ipairs({ 1, 2, 3, 4 }) do
+        BR.Roster.update(s, { squadId = 'sq1' })
+        BR.Roster.setState(s, BR.PlayerState.ALIVE)
+    end
+    BR.Roster.setState(1, BR.PlayerState.DEAD)
+    sent = {}
+
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 0 })
+    local held = watching(1)
+    ok(held == 2, 'watching the first mate', tostring(held))
+
+    -- Nothing is asked for; time simply passes, and the shot must not jump.
+    sent = {}
+    for _ = 1, 5 do
+        fakeTime = fakeTime + BR.Config.Spectate.feedMs
+        BR.Sched.step(fakeTime)
+    end
+    ok(watching(1) == held, 'five pushes later it is still the same person',
+        tostring(watching(1)))
+    ok(#eventsOf(BR.Net.SPECTATE_SET) == 5, 'and each one carried a position',
+        ('%d push(es)'):format(#eventsOf(BR.Net.SPECTATE_SET)))
+
+    -- AND THE ARROWS STILL WALK IT, over all three. A re-resolve that holds and
+    -- a wheel that cannot be turned look identical from a single assertion.
+    sent = {}
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 1 })
+    ok(watching(1) == 3, 'next moves to the second mate', tostring(watching(1)))
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 1 })
+    ok(watching(1) == 4, 'and on to the third', tostring(watching(1)))
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = 1 })
+    ok(watching(1) == 2, 'wrapping back to the first', tostring(watching(1)))
+    fire(BR.Net.SPECTATE_CYCLE, 1, { dir = -1 })
+    ok(watching(1) == 4, 'and the other arrow walks the other way',
+        tostring(watching(1)))
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

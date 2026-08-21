@@ -1005,3 +1005,36 @@ end
 --- was the CANOPY the old per-tick test could not see.
 BR.Config.Match.descendRate  = 0.7      -- m/s; below this is not descending
 BR.Config.Match.stuckLanderMs = 5000    -- held at one altitude this long -> ALIVE
+
+--- Spectating (#192).
+BR.Config.Spectate = {
+    -- WHAT A DEAD PLAYER MAY SEE ONCE THEIR WHOLE SQUAD IS OUT.
+    --
+    -- False is the conservative answer and #192 argues for it directly: "free
+    -- spectate of living players is the mode where a stream-sniping or ghosting
+    -- accusation becomes possible, and refusing it costs little". True widens
+    -- the set to every living player in that match -- never before the squad is
+    -- gone, which is not this value's business: shared/spectate_solve.lua cannot
+    -- reach the widening branch while a squadmate is standing, whatever this
+    -- says.
+    --
+    -- SOLOS READ THIS ON THE FIRST PASS, because a solo player's squad is empty
+    -- from the start. So this is also the answer to "may a dead solo player
+    -- watch the rest of the match", and it is the same answer.
+    freeAfterSquadOut = false,
+
+    -- How often the server pushes the target's position to a spectator.
+    --
+    -- 250ms, MATCHING roster.lua's own position sampling and party.lua's squad
+    -- beacons. Pushing faster than the server samples would re-send identical
+    -- coordinates; the camera interpolates between samples, so the cadence is
+    -- not the frame rate of the shot.
+    feedMs = 250,
+
+    -- The shot. Same three numbers the bus camera takes (BR.Config.Bus), for
+    -- the same orbit: how far behind, how high above the subject's feet the
+    -- camera looks, and the field of view.
+    camDistance = 4.5,
+    camHeight   = 1.0,
+    fov         = 55.0,
+}

@@ -738,6 +738,65 @@ do_kick() {
     printf '{"ok":true,"accepted":true,"commandId":"%s"}\n' "$cmdid"
 }
 
+# --- spectate -----------------------------------------------------------------
+#
+#   spectate <admin-license> <target-license> <command-id>
+#
+# THE SECOND WRITE VERB, AND IT CARRIES NO UNTRUSTED TEXT AT ALL. That is the
+# whole difference from the kick above: there is no reason string, so there is
+# nothing to base64, nothing to decode and nothing that could become a second
+# line on FXServer's stdin. All three arguments are shapes we generate -- two
+# hex licenses and a UUID -- so anything not matching exactly is a bug or an
+# attack and gets neither a best effort nor a partial send.
+#
+# TWO LICENSES BECAUSE BOTH ENDS MATTER. The admin has to be in-game to have a
+# screen to put the camera on, and licenses rather than server ids because
+# FiveM recycles ids within the minute -- a console rendered thirty seconds ago
+# would otherwise point a moderator at whoever inherited the slot.
+#
+# ACCEPTED, NOT DONE, exactly like the kick: this proves keystrokes reached the
+# console. Whether a session opened comes back as an outcome event carrying this
+# command id, and the session's END comes back later still, on its own row.
+do_spectate() {
+    local admin target cmdid
+    # shellcheck disable=SC2086
+    read -r admin target cmdid <<< "$args_raw"
+
+    if ! printf '%s' "$admin" | grep -qE '^license2?:[0-9a-fA-F]{6,64}$'; then
+        echo '{"ok":false,"error":"bad admin license"}'
+        exit 3
+    fi
+    if ! printf '%s' "$target" | grep -qE '^license2?:[0-9a-fA-F]{6,64}$'; then
+        echo '{"ok":false,"error":"bad target license"}'
+        exit 3
+    fi
+    if ! printf '%s' "$cmdid" | grep -qE '^[0-9a-fA-F-]{8,64}$'; then
+        echo '{"ok":false,"error":"bad command id"}'
+        exit 3
+    fi
+
+    if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+        echo '{"ok":false,"error":"no tmux session -- is the server running?"}'
+        exit 4
+    fi
+
+    # -l IS LOAD-BEARING here for the same reason it is on the kick: without it
+    # tmux reads its argument as KEY NAMES. Every byte of this payload has
+    # already been shape-checked, so there is nothing crafted left to type --
+    # but the flag is not what makes it safe and dropping it would make the next
+    # verb somebody copies from this one unsafe.
+    tmux send-keys -t "$SESSION" -l "brspectate $admin $target $cmdid" || {
+        echo '{"ok":false,"error":"send-keys failed"}'
+        exit 5
+    }
+    tmux send-keys -t "$SESSION" Enter || {
+        echo '{"ok":false,"error":"send-keys Enter failed"}'
+        exit 5
+    }
+
+    printf '{"ok":true,"accepted":true,"commandId":"%s"}\n' "$cmdid"
+}
+
 # --- deploy -------------------------------------------------------------------
 #
 # Runs the SAME `systemctl start royale-deploy` an operator would type: pull
@@ -995,6 +1054,7 @@ case "$verb" in
     telemetry) do_telemetry ;;
     configreport) do_configreport ;;
     kick)      do_kick ;;
+    spectate)  do_spectate ;;
     deploy)    do_deploy ;;
     branches)  do_branches ;;
     switchref) do_switchref ;;

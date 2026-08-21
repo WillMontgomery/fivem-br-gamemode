@@ -62,6 +62,10 @@ shared_scripts {
     '@br_lib/shared/storm_solve.lua',
     '@br_lib/shared/combat_solve.lua',
     '@br_lib/shared/loot_gen.lua',  -- reads the loot/weapon/map config at call time
+    -- Who a spectator may look at. Pure, so the squad rule is testable without
+    -- a server; read by server/spectate.lua only, but SHARED because a solver
+    -- that only the server can load is a solver only the server can test.
+    '@br_lib/shared/spectate_solve.lua',
 }
 
 -- main.lua must load first on both sides: it defines the loop registry (client)
@@ -92,6 +96,11 @@ client_scripts {
     'client/inventory.lua', -- the inventory mirror; owns every weapon grant
     'client/loot.lua',      -- world props + pickup; needs BR.Inv (inventory.lua)
     'client/dbno.lua',      -- downed + revive; yields the interact key from loot.lua
+    -- The spectator camera. Needs BR.Keys (keybinds.lua) for the arrows and
+    -- BR.Native (natives.lua) for the scoped ped lookup; client/lobbycam.lua
+    -- reads BR.Spectate.active() at call time, so load order between the two
+    -- does not matter.
+    'client/spectate.lua',
     'client/chat.lua',
     'client/voice.lua',   -- Mumble channels; server/voice.lua decides them
     'client/probe.lua',    -- /brprobe: what the natives ACTUALLY do on this build
@@ -147,6 +156,10 @@ server_scripts {
     -- than for the loader: it asks BR.Grants.holds the question grants.lua
     -- answers, and it is declared below the file that answers it.
     'server/admin.lua',
+    -- Spectate sessions and the squad rule. AFTER combat.lua and party.lua for
+    -- a reader rather than for the loader: it asks the roster who is still in
+    -- the fight, and both of those are what make that answer true.
+    'server/spectate.lua',
     'server/players.lua',   -- the in-game player list and player reports
     'server/ringmaster.lua', -- the admin-console snapshot feed; emits, never listens
     'server/incident.lua',  -- builds incident payloads from evidence; emits, never enforces

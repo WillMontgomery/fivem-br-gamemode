@@ -53,9 +53,18 @@ const TAB_LABEL: Record<Tab, string> = {
 
 /** Actions that end something. `confirm` gates the ones you cannot undo. */
 const EXITS: {
-  id: 'lobby' | 'squad' | 'server' | 'quit'
+  id: 'lobby' | 'squad' | 'server' | 'quit' | 'spectate'
   label: string
-  sub: string
+  /**
+   * The line under the label.
+   *
+   * OPTIONAL SINCE #192, AND THE ONE ROW WITHOUT IT WANTS IT THAT WAY. Every
+   * other exit here costs you something a sentence has to warn you about -- a
+   * forfeited match, a dropped connection. Stopping a spectate camera costs
+   * nothing and needs no warning, and inventing a sentence to fill the slot
+   * would be prose written for the shape of the card rather than for a reader.
+   */
+  sub?: string
   variant: 'default' | 'danger'
   /** What the button says. Falls back to the card's own title. */
   action?: string
@@ -64,7 +73,22 @@ const EXITS: {
   yes?: string
   no?: string
   squadOnly?: boolean
+  /** Drawn only while an ADMIN spectate session is running. */
+  spectatingOnly?: boolean
 }[] = [
+  // "WHILE ADMIN SPECTATING, THERE SHOULD BE AN IN-GAME OPTION (PERHAPS PAUSE
+  // MENU) TO STOP SPECTATING" -- the owner, and this is it. First in the list
+  // because it is the one row here that is about the screen you are looking at
+  // RIGHT NOW rather than about the match; an admin who opened this menu while a
+  // camera is running opened it for this.
+  //
+  // NO CONFIRM. The list below is ordered by what an action costs you and every
+  // other row on it is irreversible enough to ask twice. This one is a camera
+  // going away, and pressing it again puts it back.
+  {
+    id: 'spectate', label: 'Stop spectating', variant: 'default',
+    spectatingOnly: true,
+  },
   // THE BUTTON SAYS WHAT IT DOES, at every step. Both of the confirmed rows
   // used to open with a button reading "Continue", which is a word that
   // commits you to something without naming it (user, 2026-08-09). The first
@@ -139,6 +163,17 @@ export default function PauseMenu() {
   // out of step with it. Narrow selector: this changes about twice a session and
   // must not re-render the menu when anything else in the store moves.
   const adminOrigin = useUi((s) => s.admin.origin)
+
+  // AM I WATCHING SOMEBODY RIGHT NOW, ON THE CONSOLE'S ORDERS? (#192)
+  //
+  // Narrow selector for the same reason `adminOrigin` above is one: this changes
+  // twice a session and must not re-render the menu when anything else moves.
+  //
+  // `admin`, NOT `active`. A dead player spectating their squad is also a live
+  // session, and offering them a Stop button would take their camera away and
+  // leave them looking at their own body until the match ends. The exit exists
+  // because an admin has somewhere to go back to.
+  const adminSpectating = useUi((s) => s.spectate?.admin === true)
 
   const close = () => { void fetchNui(CB.PAUSE_FOCUS, { open: false }) }
 
@@ -390,7 +425,15 @@ export default function PauseMenu() {
                   The list is filtered rather than the row being hidden inside
                   the map, so `i === 0` still picks out the genuinely first row
                   and the card does not open with a divider above nothing. */}
-              {EXITS.filter((e) => !(inLobby && e.id === 'lobby')).map((e, i) => (
+              {EXITS
+                .filter((e) => !(inLobby && e.id === 'lobby'))
+                // AND THE SPECTATE EXIT IS ABSENT UNLESS THERE IS A CAMERA TO
+                // STOP. Hidden, not disabled -- the standing rule, and the same
+                // treatment the Admin tab above and the console's own Kick
+                // button get. A greyed control invites a press and then explains
+                // itself; an absent one asks nothing of anybody.
+                .filter((e) => !e.spectatingOnly || adminSpectating)
+                .map((e, i) => (
                 <div
                   key={e.id}
                   className="flex items-center gap-6 py-3"
@@ -415,19 +458,27 @@ export default function PauseMenu() {
                     </div>
                     {/* The confirm REPLACES the description rather than
                         appearing under it: the row keeps its height, so
-                        answering a confirm never shoves the rows below it. */}
-                    <div
-                      className="body-text mt-0.5"
-                      style={{
-                        color: confirming === e.id ? 'var(--color-danger)' : undefined,
-                      }}
-                    >
-                      {confirming === e.id
-                      ? (e.id === 'lobby' && inParty
-                          ? `${e.confirm} You will also leave your party.`
-                          : e.confirm)
-                      : e.sub}
-                    </div>
+                        answering a confirm never shoves the rows below it.
+
+                        AND A ROW WITH NEITHER DRAWS NEITHER. Rendering the
+                        element empty would leave its margin behind -- a gap
+                        under the label where a sentence used to be, which reads
+                        as text that failed to load rather than as a row that
+                        never had any. */}
+                    {(confirming === e.id || e.sub) && (
+                      <div
+                        className="body-text mt-0.5"
+                        style={{
+                          color: confirming === e.id ? 'var(--color-danger)' : undefined,
+                        }}
+                      >
+                        {confirming === e.id
+                        ? (e.id === 'lobby' && inParty
+                            ? `${e.confirm} You will also leave your party.`
+                            : e.confirm)
+                        : e.sub}
+                      </div>
+                    )}
                   </div>
 
                   {confirming === e.id ? (
