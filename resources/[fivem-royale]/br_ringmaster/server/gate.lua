@@ -82,6 +82,15 @@ end
 --- whether it ends. The reason text comes from the console and was stripped of
 --- control characters at that boundary (see the console's lib/actions.ts) --
 --- it is displayed, never executed, and never interpolated into a command.
+---
+--- AND SINCE 2026-08-20 IT ALSO SAYS WHERE TO ASK. The fourth thing they will
+--- otherwise do is find the Discord on their own, or not; the owner asked for
+--- the invitation to be on the message. It is appended HERE rather than at the
+--- two places this string is used, because both of them -- the deferral and the
+--- late-answer removal -- would otherwise need to remember to, and one of them
+--- forgetting is a ban notice that differs from every other ban notice for no
+--- reason anybody could see. With `br_discordUrl` unset the text is returned
+--- exactly as composed above.
 --- @param info table
 local function rejection(info)
     local reason = info.reason
@@ -103,7 +112,14 @@ local function rejection(info)
         end
     end
 
-    return ('You are banned from this server.\n\nReason: %s\n%s'):format(reason, when)
+    local text = ('You are banned from this server.\n\nReason: %s\n%s')
+        :format(reason, when)
+
+    -- GUARDED FOR THE SAME REASON kick.lua GUARDS IT: a missing appeal.lua must
+    -- cost the sentence, never the refusal. A nil call inside a deferral is the
+    -- one failure this file is written around -- it would leave the player on
+    -- the connecting screen forever, banned and never told so.
+    return BR.Ring.withAppeal and BR.Ring.withAppeal(text) or text
 end
 
 --- req -> license, for requests that timed out and were admitted anyway.

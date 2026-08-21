@@ -107,8 +107,17 @@ loadAll({
     'br_lib/shared/sched.lua',
     'br_lib/shared/identity.lua',
     'br_lib/shared/outbox.lua',
+    -- BR.Config.Community.discordUrl, which appeal.lua reads at call time. The
+    -- REST of the config chain the manifest loads (match, admin, overrides) is
+    -- deliberately absent: what turns a convar into that value is tested in
+    -- tools/test_config.lua against the real parser, and loading overrides.lua
+    -- into a harness that stubs GetConvar would test the stub.
+    'br_lib/config/community.lua',
     'br_ringmaster/server/config.lua',
     'br_ringmaster/server/main.lua',
+    -- Before gate.lua, as the manifest has it: the gate's rejection message
+    -- goes through this on its way to the player.
+    'br_ringmaster/server/appeal.lua',
     'br_ringmaster/server/gate.lua',
     'br_ringmaster/server/debug.lua',
 })
@@ -609,6 +618,230 @@ do
     identifiers[71] = { 'discord:901' }
     d = connect(71)
     ok(d.doneCount == 1 and d.doneArg == nil, 'no license means admitted, not refused')
+
+    -- ----------------------------------------------------- the appeal line ---
+    --
+    -- THE OWNER'S SENTENCE, WORD FOR WORD, ON THE END OF A BAN NOTICE. Every
+    -- case above ran with br_discordUrl unset, which is the default and is the
+    -- state the whole block was written in -- so those assertions are also the
+    -- proof that an unconfigured server's ban message is byte-for-byte what it
+    -- was before this existed.
+    local APPEAL = 'Please join our Discord to discuss or appeal: '
+
+    d = connect(70)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), true, { reason = 'Aimbot' })
+    ok(d.doneArg and d.doneArg:find('Discord', 1, true) == nil,
+        'with no br_discordUrl set, a ban notice says nothing about Discord',
+        d.doneArg)
+
+    BR.Config.Community.discordUrl = 'https://discord.gg/PggjJ7hDSg'
+
+    d = connect(70)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), true, { reason = 'Aimbot' })
+    ok(d.doneArg and d.doneArg:find(
+        APPEAL .. 'https://discord.gg/PggjJ7hDSg', 1, true) ~= nil,
+        'and with it set the sentence is on the end, verbatim, with the address',
+        d.doneArg)
+    ok(d.doneArg and d.doneArg:find('Aimbot', 1, true) ~= nil
+       and d.doneArg:find('does not expire', 1, true) ~= nil,
+        'without displacing the reason or the expiry it already carried',
+        d.doneArg)
+    ok(d.doneArg and d.doneArg:sub(-#'https://discord.gg/PggjJ7hDSg')
+       == 'https://discord.gg/PggjJ7hDSg',
+        'and it is the LAST thing on the message, which is what "append" means',
+        d.doneArg)
+
+    -- ONCE. rejection() is used by the deferral AND by the late-answer removal,
+    -- and dropByLicense deliberately does not append -- so a message that
+    -- carried it twice would mean the append had migrated into the drop.
+    local n, at = 0, 1
+    while true do
+        local i = d.doneArg:find(APPEAL, at, true)
+        if not i then break end
+        n, at = n + 1, i + 1
+    end
+    ok(n == 1, 'exactly once, however many composers the path went through',
+        ('found %d times'):format(n))
+
+    -- A BAN WITH NOTHING ELSE TO SAY STILL SAYS IT.
+    d = connect(70)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), true, {})
+    ok(d.doneArg and d.doneArg:find('No reason recorded', 1, true) ~= nil
+       and d.doneArg:find(APPEAL, 1, true) ~= nil,
+        'a reasonless ban gets the line too -- "always" was the instruction',
+        d.doneArg)
+
+    -- AN EMPTY CONVAR IS UNSET, NOT SET-TO-NOTHING. `set br_discordUrl ""` is a
+    -- convar that IS set, so it never reaches its default, and a naive test
+    -- would put a dangling colon on the end of a ban notice.
+    BR.Config.Community.discordUrl = '   '
+    d = connect(70)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), true, { reason = 'Aimbot' })
+    ok(d.doneArg and d.doneArg:find('appeal', 1, true) == nil,
+        'a blank br_discordUrl prints no line at all, rather than a dangling one',
+        d.doneArg)
+
+    BR.Config.Community.discordUrl = ''
+end
+
+-- --------------------------------------------------------------- brkick ---
+
+describe('kick carries the appeal line')
+do
+    -- kick.lua IS LOADED HERE RATHER THAN AT THE TOP, and the reason is one file
+    -- above: slice1.read-only asserts this resource registers exactly two
+    -- commands, and `brkick` is a third. Loading it late keeps that gate meaning
+    -- what it says while still exercising the real command.
+    local dropped = {}
+    function DropPlayer(src, reason) dropped[#dropped + 1] = { src = src, reason = reason } end
+
+    -- GetPlayers answers STRINGS, which is what FiveM does and what
+    -- findByLicense passes straight into the identifier natives -- so the
+    -- identifier table is keyed the same way rather than by number. A stub that
+    -- were tidier than the engine would test the tidiness.
+    local KICKED = 'license:2222222222222222222222222222222222222222'
+    identifiers['80'] = { KICKED, 'discord:800' }
+    GetPlayers = function() return { '80' } end
+
+    loadAll({ 'br_ringmaster/server/kick.lua' })
+    ok(commands['brkick'] ~= nil and commands['brkick'].restricted == true,
+        'brkick is registered, and restricted like every other br* command')
+
+    --- Run brkick the way dispatch.sh types it: license, reason words, command id.
+    local function kick(reason)
+        dropped = {}
+        local args = { KICKED }
+        for w in reason:gmatch('%S+') do args[#args + 1] = w end
+        args[#args + 1] = 'cmd-1'
+        commands['brkick'].fn(0, args, '')
+        return dropped[#dropped]
+    end
+
+    BR.Config.Community.discordUrl = ''
+    local d = kick('Aimbot in match 3')
+    ok(d and d.reason == 'Aimbot in match 3',
+        'with no br_discordUrl the player is told the reason and nothing else',
+        d and d.reason)
+
+    BR.Config.Community.discordUrl = 'https://discord.gg/PggjJ7hDSg'
+    d = kick('Aimbot in match 3')
+    ok(d and d.reason == 'Aimbot in match 3\n\n'
+       .. 'Please join our Discord to discuss or appeal: https://discord.gg/PggjJ7hDSg',
+        'and with it set the whole message is the reason, then the sentence',
+        d and d.reason)
+
+    -- THE REASON IS STILL THE REASON. The console writes an audit row against
+    -- what the admin typed, and a kick that quietly filed "Aimbot ... appeal:
+    -- https://..." as the reason would put our own URL in the moderation log.
+    d = kick('No reason given')
+    ok(d and d.reason:sub(1, #'No reason given') == 'No reason given',
+        'the admin-written reason still leads the message', d and d.reason)
+
+    -- PUT THE BENCH BACK. Both of these are globals and the br_core block far
+    -- below runs in the same Lua state; a roster left believing there is a
+    -- player 80 in it is the kind of cross-test coupling that gets blamed on
+    -- whichever suite happens to fail first.
+    BR.Config.Community.discordUrl = ''
+    GetPlayers = function() return {} end
+end
+
+-- ------------------------------------------------------- the config chain ---
+
+describe('br_ringmaster loads the config chain the appeal line needs')
+do
+    -- THE ONE PART OF THIS FEATURE NOTHING ELSE CAN SEE. Every assertion above
+    -- sets BR.Config.Community.discordUrl by hand, because what turns a convar
+    -- into that value is tested against the real parser in tools/test_config.lua
+    -- -- which leaves exactly one link untested: whether THIS resource's Lua
+    -- state ever loads the file that defines it, and the override file that
+    -- fills it in.
+    --
+    -- BOTH FAILURES ARE SILENT AND ONE IS WORSE THAN THE OTHER.
+    --
+    -- Drop config/community.lua and the key is nil in this state, appeal.lua
+    -- reads nil, and no kick ever carries the line however carefully the convar
+    -- was set. Drop config/overrides.lua and the key is the committed default,
+    -- '', forever -- the same symptom with a different cause. Neither errors.
+    --
+    -- Drop config/match.lua and keep overrides.lua and it is the reverse: this
+    -- resource REFUSES TO START, on any box where br_maxSquadSize is set, which
+    -- is every dev box. overrides.lua raises on a set convar naming a BR.Config
+    -- group its state has not loaded -- correctly; that check is what stops a
+    -- renamed key becoming a value nothing reads. A state that reads the spec
+    -- has to carry every group in it.
+    local function slurp(path)
+        local f = io.open(path, 'r')
+        if not f then return nil end
+        local s = f:read('*a')
+        f:close()
+        return s
+    end
+
+    local manifest = slurp(ROOT .. 'br_ringmaster/fxmanifest.lua')
+    ok(manifest ~= nil, 'br_ringmaster/fxmanifest.lua is readable')
+    manifest = manifest or ''
+
+    --- Where an UNCOMMENTED declaration of `rel` appears, or nil.
+    ---
+    --- Commented lines do not count, and that is not hypothetical: these
+    --- manifests are half prose, and verify.sh's own ordering gate was written
+    --- after `-- '@br_lib/config/overrides.lua',` satisfied a plain grep while
+    --- loading nothing.
+    local function declaredAt(rel)
+        local n = 0
+        for line in (manifest .. '\n'):gmatch('([^\n]*)\n') do
+            n = n + 1
+            local trimmed = line:gsub('^%s+', '')
+            if not trimmed:match('^%-%-') and trimmed:find(rel, 1, true) then
+                return n
+            end
+        end
+        return nil
+    end
+
+    local community = declaredAt("'@br_lib/config/community.lua'")
+    local overrides = declaredAt("'@br_lib/config/overrides.lua'")
+
+    ok(community ~= nil,
+        'it loads config/community.lua, which is where discordUrl is defined')
+    ok(overrides ~= nil,
+        'and config/overrides.lua, which is what puts the convar into it')
+    ok(community ~= nil and overrides ~= nil and overrides > community,
+        'in that order -- overrides.lua edits the tables above it, so loading '
+        .. 'it first edits nothing',
+        ('community at %s, overrides at %s'):format(tostring(community),
+                                                    tostring(overrides)))
+
+    -- EVERY GROUP THE SPEC NAMES, read out of the spec rather than listed here,
+    -- so adding a tunable extends this check for free.
+    local spec = slurp(ROOT .. 'br_lib/config/overrides.lua') or ''
+    local groups = {}
+    for g in spec:gmatch("group%s*=%s*'([%w_]+)'") do groups[g] = true end
+
+    local found = false
+    for _ in pairs(groups) do found = true break end
+    ok(found, 'the override spec names at least one config group')
+
+    -- The one hand-written mapping, and it is deliberately a mapping rather
+    -- than a lowercase() of the group name: a new group with no line here is a
+    -- red build, which is the moment to decide whether this resource needs it.
+    local GROUP_FILE = { Match = 'match', Admin = 'admin', Community = 'community' }
+
+    for group in pairs(groups) do
+        local file = GROUP_FILE[group]
+        ok(file ~= nil,
+            ("the override spec's '%s' group has a file named in this test")
+                :format(group),
+            'add it to GROUP_FILE, then decide whether br_ringmaster loads it')
+        if file then
+            local where = declaredAt(("'@br_lib/config/%s.lua'"):format(file))
+            ok(where ~= nil and overrides ~= nil and where < overrides,
+                ("and br_ringmaster loads config/%s.lua before overrides.lua, "
+                 .. "or a set convar in the '%s' group stops this resource dead")
+                    :format(file, group),
+                ('%s at %s'):format(file, tostring(where)))
+        end
+    end
 end
 
 -- ======================================================================== --

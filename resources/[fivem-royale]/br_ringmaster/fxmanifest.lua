@@ -26,12 +26,36 @@ server_scripts {
     '@br_lib/shared/identity.lua',  -- the allowlisted identifier scan
     '@br_lib/shared/outbox.lua',    -- the retrying queue for EVENTS (not snapshots)
 
+    -- THE CONFIG CHAIN, AND IT IS HERE FOR ONE KEY: BR.Config.Community.
+    -- discordUrl, which server/appeal.lua puts on the end of a kick or a ban.
+    --
+    -- ALL FOUR LINES ARE REQUIRED, AND THREE OF THEM LOOK LIKE DEAD WEIGHT.
+    -- config/overrides.lua is where a convar becomes a config value, and it runs
+    -- once per Lua STATE -- this resource is its own, so without it here the
+    -- committed default ('') is all this side would ever see, however carefully
+    -- an operator set the convar. And overrides.lua refuses to boot on a set
+    -- convar naming a BR.Config table this state has not loaded, which is its
+    -- anti-drift check working exactly as designed: a state that reads the
+    -- override spec has to carry every group the spec names. On a dev box, where
+    -- br_maxSquadSize IS set, omitting match.lua would stop this resource dead.
+    --
+    -- THIS IS NOT A DEPENDENCY ON br_core. br_lib is a file container -- these
+    -- load into this resource's own state and call nothing -- and the deliberate
+    -- absence of `dependency 'br_core'` below is untouched: restarting the
+    -- gamemode still cannot take the moderation channel with it.
+    '@br_lib/config/match.lua',
+    '@br_lib/config/admin.lua',
+    '@br_lib/config/community.lua',
+    '@br_lib/config/overrides.lua',   -- must be last; it edits the three above
+
     'server/config.lua',    -- must load first; everything else reads BR.Ring.Config
     'server/main.lua',      -- boot banner, boot epoch, identity capture
     'server/push.lua',      -- the wire: snapshots latest-wins, events via outbox
     'server/incident.lua',  -- files incidents in DynamoDB, then rings the doorbell
                             -- (after push.lua: reads BR.Ring.outbox)
     'server/maintenance.lua', -- polls the window; drives the drain + notices
+    'server/appeal.lua',    -- the appeal sentence, shared by the two files below
+                            -- so a kick and a ban cannot word it differently
     'server/kick.lua',      -- brkick: the ONLY DropPlayer in the project
     'server/gate.lua',      -- the connect-time ban gate (fails open, own timeout)
     'server/handoff.lua',   -- #23: mints a signed-in console URL for br_core.
