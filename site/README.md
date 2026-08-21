@@ -76,9 +76,12 @@ manual. What is currently baked in, and where it comes from:
 | What crossing a level pays | `br_lib/config/market.lua` → `BR.Config.levelBonus` |
 | Bleed timer and its escalation, revive hold, revive health | `br_lib/config/match.lua` → the `dbno*` values |
 | "About four rifle rounds to finish a knock" | `br_lib/config/match.lua` → `dbnoBleedPerDamage`, whose own note states the design as a round count |
-| Voice range, and the three voice modes | `br_lib/config/match.lua` → `Config.Match.voice`; `br_ui/client/settings.lua` |
+| Voice range, and the three voice modes | `br_lib/config/match.lua` → `Config.Match.voice`; the modes themselves are `BR.VoiceRouting` in `br_lib/shared/enums.lua`, two booleans per mode that are never both true |
+| Which mode is offered in solos, and that the two preferences are separate | `ui-src/src/screens/Settings.tsx` → `SOLO_MODES` / `SQUAD_MODES`; `BR.ToSoloVoiceMode` in `br_lib/shared/enums.lua` enforces the same rule in Lua |
+| Every key in the Controls section, including push-to-talk | `br_core/client/keybinds.lua` — the `tap()` / `hold()` rows, **and `BR.Keys.on` for the same action**. A row with no subscriber is a key that does nothing |
 | Report rules — five at a time, three submissions a match, one per player per match | `br_lib/config/match.lua` → `BR.Config.Report` |
 | What an accurate report pays | `br_stats/server/awards.lua` → `AWARD_VOLTS`. **Not** in `market.lua`: it is a bounty on a moderation outcome, not part of the earn-per-hour curve |
+| That a trail slot has no visible default, and canopies and finishes do | `br_lib/config/market.lua` → the `hidden` flag on `trail_none`, filtered in `br_ui/client/market.lua` |
 
 **This table is the only thing standing between the manual and quiet drift, so
 it has to grow whenever the manual does.** It has already failed twice exactly
@@ -90,6 +93,24 @@ get a row here, and the manual still went stale anyway: it was written against a
 changed. **A row is a pointer, not a check.** Until the generator below exists,
 adding a number without a row is one failure mode and trusting a row you have not
 re-read is the other.
+
+**Third failure, 2026-08-21, and it is the one that proves the sentence above.**
+Every Volts figure in the manual — the whole payout table, "a clean win is 135",
+"a middling match is worth around 70", and the report bounty in both of the
+places it appears — was double the live number, because the halving on 2026-08-20
+moved five integers in `market.lua` and one in `awards.lua` and touched nothing
+here. Both of those already had rows in this table. The rows were correct, nobody
+re-read them, and the site kept promising players twice what the game pays.
+
+**The same audit found four keys the manual named that do nothing**, which is a
+failure this table could not have caught in the shape it had, because a keybind is
+not a number: `Z` for a squad marker (removed — the marker rides the map-waypoint
+gesture now), `M` for the map (the map is on the pause menu), and the two spectate
+arrows. All four still have `RegisterKeyMapping` rows, so they look live in the
+config and in the rebinder; what they do not have is a `BR.Keys.on` subscriber.
+That is why the keybind row above names both halves. **A bound key with no
+listener is indistinguishable, to a player, from a broken feature** — and printing
+one in the manual is worse, because it tells them to expect it.
 
 **It should be generated, not typed** — a script in `tools/` emitting these
 tables into `index.html`, gated so the build fails when the committed output

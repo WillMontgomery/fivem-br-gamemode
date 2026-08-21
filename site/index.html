@@ -262,7 +262,7 @@
   <table class="storm">
     <thead><tr><th>Phase</th><th>Damage/sec</th><th>Time to kill you from full</th></tr></thead>
     <tbody>
-      <tr><td>1</td><td>0.5</td><td>free — this one is a nudge, not a threat</td></tr>
+      <tr><td>1</td><td>0.5</td><td>200s</td></tr>
       <tr><td>2</td><td>1.25</td><td>80s</td></tr>
       <tr><td>3</td><td>1.7</td><td>60s</td></tr>
       <tr><td>4</td><td>2.2</td><td>45s</td></tr>
@@ -273,11 +273,14 @@
     </tbody>
   </table>
 
-  <p class="note"><strong>The first circle will not kill you</strong>, so use it.
-     Phase 1 is your loot time — half a point a second is a rounding error, and
-     the far side of the map is often emptier and richer than the middle.
-     By phase 5 the storm is deciding fights, and by phase 8 standing still
-     outside it is fifteen seconds of life.</p>
+  <p class="note"><strong>The first circle is a bite, not a sentence — but it is
+     not free either.</strong> Half a point a second is slow enough that phase 1
+     is your loot time, and the far side of the map is often emptier and richer
+     than the middle. It is also slow enough to ignore for too long: that first
+     sweep can run longer than the 200 seconds it takes to finish you, so being
+     caught out there costs a real piece of your health rather than a rounding
+     error. By phase 5 the storm is deciding fights, and by phase 8 standing
+     still outside it is fifteen seconds of life.</p>
 
   <p>The wall is generous at its edge: if you can see the curtain and you are
      inside it, you are safe. You will not be chipped by a circle you are
@@ -338,21 +341,21 @@
   <table class="items">
     <thead><tr><th>For</th><th>Volts</th></tr></thead>
     <tbody>
-      <tr><td>Finishing the match</td><td>15</td></tr>
-      <tr><td>Winning</td><td>+120</td></tr>
-      <tr><td>Placement</td><td>up to +70, more the further you get</td></tr>
-      <tr><td>Each elimination</td><td>+10</td></tr>
-      <tr><td>Each revive</td><td>+8</td></tr>
-      <tr><td>Each level you cross</td><td>+30 early on, more as you climb</td></tr>
+      <tr><td>Finishing the match</td><td>8</td></tr>
+      <tr><td>Winning</td><td>+60</td></tr>
+      <tr><td>Placement</td><td>up to +35, more the further you get</td></tr>
+      <tr><td>Each elimination</td><td>+5</td></tr>
+      <tr><td>Each revive</td><td>+4</td></tr>
+      <tr><td>Each level you cross</td><td>+15 early on, more as you climb</td></tr>
     </tbody>
   </table>
 
   <p><strong>Winning pays the win bonus instead of the placement bonus</strong>,
-     not on top of it — so a clean win is 135 before eliminations, and the
+     not on top of it — so a clean win is 68 before eliminations, and the
      placement scale is what pays everybody else.</p>
 
-  <p>A middling match is worth around 70. A win with a few eliminations on it is
-     around 175.</p>
+  <p>A middling match is worth around 35. A win with a few eliminations on it is
+     around 85.</p>
 
   <p class="note"><strong>Every match pays something.</strong> Drop badly, lose
      the first fight, finish last — you still get paid for turning up. Reviving
@@ -369,7 +372,7 @@
   <h3>The one thing that pays outside a match</h3>
 
   <p>Report somebody, and if a human reviews the case and acts on it, you are
-     paid <strong>250 Volts</strong> — whenever that decision happens, whether or
+     paid <strong>125 Volts</strong> — whenever that decision happens, whether or
      not you are online. It is the only Volts that do not come from playing a
      match. <a href="#fairplay">How reporting works</a>.</p>
 
@@ -401,8 +404,9 @@
     </div>
     <div class="card">
       <h3>Smoke trails</h3>
-      <p>The smoke behind you on the way down. In a squad your team colour wins,
-         so your trail shows when you drop alone.</p>
+      <p>The smoke behind you on the way down. It starts off on every drop and
+         the trail key turns it on, and what flies is whatever you have equipped
+         — in a squad exactly as much as alone.</p>
     </div>
     <div class="card">
       <h3>Weapon finishes</h3>
@@ -414,8 +418,10 @@
   <h3>Buying and equipping</h3>
 
   <p>Open the market from the lobby. Owned items say <strong>Equip</strong>;
-     the one you are wearing says <strong>Equipped</strong>. You always own a
-     free default in every slot, so you can always go back.</p>
+     the one you are wearing says <strong>Equipped</strong>. Canopies and weapon
+     finishes each have a free default you own from the start, so you can always
+     go back to one. Smoke trails have no such tile — if you would rather not
+     paint the sky, leave the trail key alone on the way down.</p>
 
   <p>What you buy is yours permanently. Seasons end and their items stop being
      for sale, but nothing you own is ever taken away or stops working.</p>
@@ -452,51 +458,66 @@
     <div>
       <h3>Comms</h3>
       <dl>
+        <dt><kbd>N</kbd> <span class="hold">hold</span></dt><dd>Push to talk</dd>
         <dt><kbd>T</kbd></dt><dd>Chat — everyone in your match</dd>
         <dt><kbd>Y</kbd></dt><dd>Chat — squad only</dd>
-        <dt><kbd>Z</kbd></dt><dd>Place a marker for your squad</dd>
       </dl>
 
       <h3>Map &amp; interface</h3>
       <dl>
-        <dt><kbd>M</kbd></dt><dd>Map</dd>
-        <dt><kbd>Backspace</kbd></dt><dd>Clear your map waypoint</dd>
-        <dt><kbd>&larr;</kbd> <kbd>&rarr;</kbd></dt><dd>Spectate previous / next</dd>
+        <dt><kbd>Esc</kbd></dt><dd>Pause menu — the full-screen map is on it</dd>
+        <dt><kbd>Backspace</kbd></dt><dd>Clear your waypoint, or your squad marker</dd>
         <dt><kbd>~</kbd></dt><dd>Player list — and reporting, from the same panel</dd>
-        <dt><kbd>Esc</kbd></dt><dd>Pause menu</dd>
       </dl>
     </div>
   </div>
 
+  <p class="note"><strong>Marking something for your squad is the map, not a
+     key.</strong> Open the map and set a waypoint where you want them to look:
+     the flag turns into a marker they can see, as a blip and as a coloured beam
+     in the world. Set another one on top of it to take it down, or use the clear
+     key above from anywhere.</p>
+
   <h3>Voice</h3>
 
-  <p>Voice is on out of the box and it is <strong>positional</strong>: anyone
-     within about <strong>25 metres</strong> hears you, on your squad or not.
-     Talking inside a building is the same kind of tell as sprinting through
-     one. Push-to-talk is FiveM's own key rather than one of ours: press
-     <kbd>Esc</kbd> twice to get past our pause menu to GTA's, then
-     <em>Settings</em> &rarr; <em>Key Bindings</em>.</p>
+  <p>Voice is on out of the box and the default is <strong>positional</strong>:
+     anyone within about <strong>25 metres</strong> hears you, on your squad or
+     not. Talking inside a building is the same kind of tell as sprinting through
+     one. <strong>Push to talk is <kbd>N</kbd></strong>, and it is one of our
+     keys like any other — rebind it under <em>Settings</em> &rarr;
+     <em>Controls</em>.</p>
 
-  <p>Three settings, under <em>Settings</em> &rarr; <em>Voice</em>:</p>
+  <p>Three settings, under <em>Settings</em> &rarr; <em>Voice</em>. They are
+     <strong>alternatives, not layers</strong> — whichever one you pick is the
+     only thing you are on:</p>
 
   <ul>
-    <li><strong>Nearby</strong> — the default. Anyone close enough, and nobody
-        else, your squad included once they are further away than that.</li>
-    <li><strong>Squad</strong> — the same 25 metres, <em>plus</em> your squad
-        wherever they are on the map, on the radio key. Pick this one if you want
-        to talk to your team across the island. It is not offered in solo,
-        because there is no squad to route to.</li>
+    <li><strong>Nearby</strong> — the default. Anyone close enough, team or not,
+        and nobody else. There is no special case for a squadmate: one standing
+        next to you is exactly as audible as a stranger, and one across the
+        island is exactly as inaudible.</li>
+    <li><strong>Squad</strong> — your squad, at any distance, and
+        <em>only</em> your squad. No proximity at all: you will not hear the
+        person you are fighting, and they will not hear you. Pick this one if you
+        want to talk to your team across the island.</li>
     <li><strong>Off</strong> — you are not transmitting, and you are not hearing
         anyone either.</li>
   </ul>
+
+  <p class="note"><strong>You get two of these, not one.</strong> Your choice for
+     squad matches and your choice for solos are saved separately, so setting up
+     how you want to talk to your team does not decide anything about the next
+     solo you play. Squad is not offered for solos, because there is no squad to
+     route to — and if you are in a squad match on your own, Squad is silence in
+     both directions.</p>
 
   <p class="note"><strong>On the bus, Nearby does not transmit.</strong> Everyone
      is packed into one plane and proximity would be forty people in a room.
      Squad still works up there, so if you want to talk on the ride, use it.</p>
 
   <p>A name appears on screen when somebody is talking, and it only ever lists
-     people you can actually hear — if you cannot see a name, they are out of
-     range.</p>
+     people you can actually hear. If you cannot see a name, whatever they are
+     talking on is not something you are on.</p>
 </section>
 
 <!-- ──────────────────────────────────────────────────────────── fair play -->
@@ -523,8 +544,13 @@
         leaves the server. You are only ever sent the items near you.</li>
   </ul>
 
-  <p>If someone is repeatedly trying something the server did not issue them
-     the means to do, we hear about it. Their shots were not landing anyway.</p>
+  <p><strong>A weapon we never gave you does not stay in your hands.</strong> It
+     is taken straight back out, and it is written down as well as removed.
+     Nobody is exempt from that — admins included.</p>
+
+  <p>More generally: if someone is trying something the server did not issue them
+     the means to do, we hear about it, and a case goes to a human with the
+     match around it attached. Their shots were not landing anyway.</p>
 
   <h3>Reporting someone</h3>
 
@@ -543,9 +569,11 @@
         does not use up one of your three.</li>
     <li>The list keeps people who have already died, because the player you want
         to report is often the one who just killed you.</li>
-    <li>If you are killed by somebody already under review, the game will offer
-        you a one-key report on the spot. You will never be told anything about
-        anyone else's case, and nobody is ever told they have been reported.</li>
+    <li>If you are killed by somebody already under review, the game offers you
+        a report on the spot — one press of <kbd>Tab</kbd>, no panel, and it does
+        <em>not</em> spend one of your three. You will never be told anything
+        about anyone else's case, and nobody is ever told they have been
+        reported.</li>
   </ul>
 
   <p class="note"><strong>Reporting somebody is not an accusation you have to
@@ -556,7 +584,7 @@
   <h3>Getting paid for a good report</h3>
 
   <p>If a report you filed is looked at by a human and something is actually
-     done about it, you are paid <strong>250 Volts</strong>. Everybody who
+     done about it, you are paid <strong>125 Volts</strong>. Everybody who
      reported that player gets it, not just whoever was first.</p>
 
   <ul>
