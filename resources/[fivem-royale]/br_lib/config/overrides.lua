@@ -88,7 +88,10 @@ local Ov = BR.Config.Overrides
 --           that way
 --   key     the field inside it. It MUST already exist: a rename that leaves
 --           this behind is a hard boot failure, not a new orphan key.
---   kind    'int', 'bool' or 'url'. All three are parsed strictly; see parse().
+--   kind    'int', 'bool', 'url' or 'link'. All four are parsed strictly; see
+--           parse(). 'url' is a bare ORIGIN, because the one value that uses it
+--           is compared against a browser's; 'link' keeps its path, because the
+--           one value that uses it is opened by a person.
 --   min/max inclusive bounds for 'int'. OUT OF RANGE IS REFUSED, NEVER CLAMPED
 --           -- a clamp answers a question the operator did not ask and looks
 --           exactly like the setting not working.
@@ -209,14 +212,42 @@ Ov.SPEC = {
         -- the game must never depend on Ringmaster, so a server with no console
         -- configured has to be a server that plays exactly as it did before.
         --
-        -- IT IS THE ONE ENTRY HERE WITH NO REVIEWED DEFAULT TO OVERRIDE, and
+        -- IT WAS THE ONE ENTRY HERE WITH NO REVIEWED DEFAULT TO OVERRIDE, and
         -- that is worth noticing rather than smoothing over. Every other row is
         -- a number br_lib/config/ committed and a dev box wants different; this
         -- is an address that exists only per deployment. It lives here because
         -- this is the only mechanism in the project that gives a convar a strict
         -- parse, a hard boot failure, a boot banner line and a `brconfig` line,
         -- and #23 asked for all four.
+        --
+        -- IT IS NOW ONE OF TWO. See br_discordUrl below.
         note   = 'admin console origin',
+    },
+    {
+        convar = 'br_discordUrl',
+        group  = 'Community',
+        key    = 'discordUrl',
+        kind   = 'link',
+        -- THE APPEAL LINE ON A KICK OR A BAN (owner, 2026-08-20). Unset is the
+        -- default and unset means the line is not printed at all: a kicked
+        -- player is told why and nothing more, exactly as before it existed.
+        --
+        -- THE SECOND ROW WITH NO REVIEWED DEFAULT, AND THE POINT OF SAYING SO IS
+        -- THAT AN EXCEPTION IS QUIETLY BECOMING A CATEGORY. The bar stated at
+        -- the top of this file -- "a dev server genuinely wants it different" --
+        -- is not what either of these clears. What they clear is the other half
+        -- of it: a single scalar, read only on the server, that wants a strict
+        -- parse and a refusal loud enough to be read at boot. A third address
+        -- arriving here should make somebody ask whether this file is still the
+        -- tunables or has become the deployment addresses as well.
+        --
+        -- NOT THE SAME PARSE AS br_adminConsoleUrl, THOUGH BOTH ARE URLS, AND
+        -- THIS IS THE WHOLE REASON 'link' EXISTS. That value is COMPARED against
+        -- a browser's `event.origin`, so it must be bare and a trailing slash is
+        -- fatal. This one is OPENED by a person, and a Discord invite is nothing
+        -- without its path -- `https://discord.gg/<code>` is entirely code. Kind
+        -- 'url' would have refused the only value anybody will ever put here.
+        note   = 'discord invite',
     },
 }
 
@@ -373,6 +404,101 @@ local function parseUrl(raw)
     return ('https://%s'):format(rest), nil
 end
 
+--- Strict LINK parse: an https address a person is meant to open.
+---
+--- THE OTHER HALF OF parseUrl, AND THE TWO ARE STRICT ABOUT DIFFERENT THINGS
+--- BECAUSE THEY ARE USED FOR DIFFERENT THINGS. `br_adminConsoleUrl` is compared
+--- against `event.origin` and so must carry no path; `br_discordUrl` is printed
+--- to a player as something to click and is nothing WITHOUT its path. Sharing
+--- one parser between them would mean picking which of those two failures to
+--- ship, so the rules that differ are separated and the rules that agree --
+--- https, a real hostname, a sane port, no credentials -- are restated rather
+--- than factored out. This file loads into a bare Lua state and cannot reach a
+--- helper anywhere else; the restatement is the same trade isServerState()
+--- makes at the bottom.
+---
+--- WHAT IT REFUSES, AND WHY EACH ONE IS A REAL FAILURE:
+---
+--- A CONTROL CHARACTER, FIRST AND LOUDEST. This value is concatenated into the
+--- string handed to DropPlayer and to `deferrals.done`, which is the last thing
+--- a refused player ever sees. A newline in it does not error; it silently
+--- reshapes the message, and the half of the sentence after it may not be
+--- displayed at all. Everything else in this project that reaches that message
+--- is stripped of control characters at three separate boundaries
+--- (br_ringmaster/server/kick.lua's header says why); a value from a .cfg
+--- deserves the same treatment at the one boundary it has.
+---
+--- A SPACE, for the same reason and one more: a URL with a space in it is a
+--- truncated paste, and every client that renders the message will end the link
+--- there.
+---
+--- http, because this is an address published to strangers, and because nothing
+--- that would legitimately go here is served over it.
+---
+--- AN UPPERCASE HOST IS ACCEPTED HERE AND REFUSED BY parseUrl, WHICH IS NOT AN
+--- INCONSISTENCY. parseUrl refuses it because a browser lowercases the host when
+--- it builds an origin, so `https://Ringmaster.example` could never match a
+--- comparison. Nothing compares this one -- it is opened, and every client
+--- resolves the host case-insensitively -- so refusing it would be an error
+--- message about a rule that does not apply.
+--- @param raw string
+--- @return string|nil value
+--- @return string|nil why
+local function parseLink(raw)
+    local s = trim(raw)
+    if s == '' then return nil, 'is empty' end
+
+    if s:find('%c') ~= nil then
+        return nil, 'contains a control character, and this value is printed '
+                    .. 'into the message a kicked player reads'
+    end
+    if s:find('%s') ~= nil then
+        return nil, ("must not contain a space (got '%s')"):format(s)
+    end
+
+    local scheme, rest = s:match('^(%a[%w+.-]*)://(.*)$')
+    if scheme == nil then
+        return nil, ("is not a link -- it must look like "
+                     .. "https://discord.gg/abcdefg (got '%s')"):format(s)
+    end
+
+    if scheme:lower() ~= 'https' then
+        return nil, ("uses '%s://', and this is an address handed to players "
+                     .. "to open (got '%s')"):format(scheme:lower(), s)
+    end
+
+    -- The authority is everything before the path, query or fragment. Unlike
+    -- parseUrl, what follows it is KEPT: it is the invite code.
+    local authority = rest:match('^([^/?#]*)') or ''
+
+    if authority:find('@', 1, true) ~= nil then
+        return nil, ("must not carry credentials (got '%s')"):format(s)
+    end
+
+    local host, port = authority:match('^(.-):(%d*)$')
+    if host == nil then host = authority end
+
+    if host == '' then
+        return nil, ("names no host (got '%s')"):format(s)
+    end
+    if host:match('^[A-Za-z0-9][A-Za-z0-9%-%.]*$') == nil
+       or host:match('[A-Za-z0-9]$') == nil
+       or host:find('..', 1, true) ~= nil then
+        return nil, ("is not a hostname: '%s'"):format(host)
+    end
+
+    if port ~= nil then
+        local p = tonumber(port)
+        if p == nil or p < 1 or p > 65535 then
+            return nil, ("has a port of '%s', which is not 1..65535"):format(port)
+        end
+    end
+
+    -- Normalised on the scheme only, exactly as parseUrl does: the rest is what
+    -- the operator typed, because the rest is the address.
+    return ('https://%s'):format(rest), nil
+end
+
 --- Resolve one spec entry's effective bounds, honouring `floor`.
 ---
 --- PUBLIC BECAUSE THE RANGE IS PUBLISHED IN THREE PLACES -- the rejection
@@ -415,6 +541,10 @@ function Ov.parse(spec, raw)
 
     if spec.kind == 'url' then
         return parseUrl(raw)
+    end
+
+    if spec.kind == 'link' then
+        return parseLink(raw)
     end
 
     if spec.kind ~= 'int' then
@@ -584,6 +714,13 @@ function Ov.rangeText(spec)
     -- actually makes, not advice.
     if spec.kind == 'url' then
         return 'an https:// origin with no path or trailing slash'
+    end
+    -- AND THIS ONE SAYS THE OPPOSITE, ON PURPOSE. The two url-ish kinds sit next
+    -- to each other in the boot banner and on the console's config page, and an
+    -- operator reading "no path" one line above "path and all" is the only thing
+    -- that will stop them pasting an invite into the wrong one.
+    if spec.kind == 'link' then
+        return 'an https:// link, path and all, with no spaces'
     end
 
     local lo, hi, why = Ov.bounds(spec)

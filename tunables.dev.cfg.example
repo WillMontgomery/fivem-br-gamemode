@@ -142,6 +142,37 @@ set br_partyGraceSeconds 10
 # set br_adminConsoleUrl https://ringmaster.example
 
 # ---------------------------------------------------------------------------
+# OUR DISCORD. Unset by default, and unset means the line is not printed.
+#
+# Set this and a player who is kicked or refused at the door is told, on the end
+# of the same message:
+#
+#     Please join our Discord to discuss or appeal: <this>
+#
+# Leave it out and they see the reason and nothing else, exactly as before.
+# There is no half-way: an appeal sentence with a blank where the address should
+# be would send somebody looking for a link that is not there.
+#
+# A LINK, NOT AN ORIGIN, WHICH IS THE OPPOSITE OF THE SETTING ABOVE. Paste the
+# invite whole -- the code after the slash is the entire point of it:
+#
+#     https://discord.gg/abcdefg          <- yes
+#     https://discord.com/invite/abcdefg  <- yes
+#     discord.gg/abcdefg                  <- REFUSED, no scheme
+#     http://discord.gg/abcdefg           <- REFUSED, this is handed to players
+#     https://discord.gg/abc defg         <- REFUSED, the space ends the link
+#
+# THIS IS NOT A DEV-VERSUS-PUBLIC SETTING, AND THE LINE BELOW IS COMMENTED OUT
+# FOR THAT REASON RATHER THAN AS A DEFAULT. It is the same address on every box,
+# so setting it in this file means losing it the moment somebody makes the box
+# public -- which is the box the kicks actually happen on. server.cfg.example
+# puts it below the `exec "tunables.cfg"` line and above `ensure br_lib`, which
+# is the one place the swap cannot reach. It is documented here because this is
+# the file that documents the convars.
+# ---------------------------------------------------------------------------
+# set br_discordUrl https://discord.gg/abcdefg
+
+# ---------------------------------------------------------------------------
 # BLEED-OUT ON THE FIRST KNOCK, in seconds. 40..600, default 120.
 #
 # Two minutes is right for a real match and is a long time to sit on the floor

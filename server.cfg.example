@@ -155,6 +155,26 @@ ensure pma-voice
 exec "tunables.cfg"
 
 # ---------------------------------------------------------------------------
+# OUR DISCORD, AND IT IS HERE RATHER THAN IN tunables.cfg ON PURPOSE.
+#
+# Set it and a player who is kicked or refused at the door is told, on the end
+# of the same message, where to come and talk to us about it. Leave it out and
+# they see the reason and nothing else -- there is no half-line and no empty
+# link.
+#
+# THE POSITION IS THE POINT. It is the same address on a dev box and a public
+# one, so it does not belong in either tunables example: copying one of those
+# over tunables.cfg is how a box changes character, and an address that has
+# nothing to do with which box this is should not be swept away by that. Below
+# the exec and above `ensure br_lib` is the one place that is true of.
+#
+# It is a full link, path and all -- the code after the slash is the invite. A
+# value that is not one stops the server at boot with a banner naming it, the
+# same as any other setting in the block above.
+# ---------------------------------------------------------------------------
+# set br_discordUrl "https://discord.gg/abcdefg"
+
+# ---------------------------------------------------------------------------
 # Gamemode
 #
 # ORDER MATTERS.

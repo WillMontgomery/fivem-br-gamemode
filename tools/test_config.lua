@@ -66,10 +66,12 @@ local function load(natives)
 
     -- EVERY FILE THE SPEC NAMES A GROUP IN, in the order br_core's manifest
     -- loads them. overrides.lua is last because it edits the tables above it,
-    -- and admin.lua is here because the spec's `Admin` group lives in it -- a
-    -- sandbox missing it makes `BR.Config[s.group][s.key]` an index of nil, and
-    -- the whole suite dies on the first assertion rather than failing one.
-    for _, f in ipairs({ 'config/match.lua', 'config/admin.lua', 'config/overrides.lua' }) do
+    -- and admin.lua and community.lua are here because the spec's `Admin` and
+    -- `Community` groups live in them -- a sandbox missing one makes
+    -- `BR.Config[s.group][s.key]` an index of nil, and the whole suite dies on
+    -- the first assertion rather than failing one.
+    for _, f in ipairs({ 'config/match.lua', 'config/admin.lua',
+                         'config/community.lua', 'config/overrides.lua' }) do
         local chunk, err = loadfile(ROOT .. f, 't', env)
         if not chunk then return env, f .. ': ' .. tostring(err) end
         local good, e = pcall(chunk)
@@ -103,7 +105,8 @@ do
     for _, s in ipairs(Ov.SPEC) do
         if type(s.convar) ~= 'string' or type(s.group) ~= 'string'
            or type(s.key) ~= 'string'
-           or (s.kind ~= 'int' and s.kind ~= 'bool' and s.kind ~= 'url') then
+           or (s.kind ~= 'int' and s.kind ~= 'bool' and s.kind ~= 'url'
+               and s.kind ~= 'link') then
             shaped = false
         end
         if type(s.convar) == 'string' and not s.convar:match('^br_') then
@@ -266,6 +269,34 @@ do
           why = 'a port above 65535' },
         { convar = 'br_adminConsoleUrl', raw = 'https://ringmaster..example',
           why = 'an empty label in the hostname' },
+        -- THE DISCORD LINK. A different parser from the row above, on purpose,
+        -- and these are the shapes that would reach a kicked player's screen as
+        -- something broken rather than being refused at boot.
+        { convar = 'br_discordUrl', raw = 'https://discord.gg/abc def',
+          why = 'a space -- every renderer ends the link there' },
+        { convar = 'br_discordUrl', raw = 'https://discord.gg/abc\ndef',
+          why = 'a newline, which reshapes the message it is printed into' },
+        -- A CONTROL CHARACTER THAT IS NOT WHITESPACE, because the newline above
+        -- is caught by the space rule as well and would leave the control-
+        -- character rule untested -- which is how a check that guards the worse
+        -- case gets deleted as redundant. An ESC reaches a server console log
+        -- as well as a player's screen.
+        { convar = 'br_discordUrl', raw = 'https://discord.gg/abc\27[31mdef',
+          why = 'an escape sequence, which no whitespace rule would catch' },
+        { convar = 'br_discordUrl', raw = 'http://discord.gg/abcdefg',
+          why = 'http, for an address published to strangers' },
+        { convar = 'br_discordUrl', raw = 'discord.gg/abcdefg',
+          why = 'no scheme at all' },
+        { convar = 'br_discordUrl', raw = 'https:///abcdefg',
+          why = 'a path but no host' },
+        { convar = 'br_discordUrl', raw = 'https://user:pw@discord.gg/abcdefg',
+          why = 'credentials in the authority' },
+        { convar = 'br_discordUrl', raw = 'https://discord..gg/abcdefg',
+          why = 'an empty label in the hostname' },
+        { convar = 'br_discordUrl', raw = 'https://discord.gg:0/abcdefg',
+          why = 'port 0' },
+        { convar = 'br_discordUrl', raw = 'https://discord.gg:70000/abcdefg',
+          why = 'a port above 65535' },
     }
 
     for _, c in ipairs(cases) do
@@ -327,6 +358,66 @@ do
         ok(v == c.want, ("'%s' is accepted"):format(c.raw),
             why or ('got ' .. tostring(v)))
     end
+end
+
+describe('the discord link that IS accepted')
+do
+    -- THE OTHER SIDE OF THE SAME COIN, AND THE ONE THAT MATTERS MOST HERE: the
+    -- kind exists because 'url' would have refused the only value anybody will
+    -- ever set. A parser that took the invite's host and dropped its code would
+    -- publish a link to Discord's front page.
+    local cases = {
+        { raw = 'https://discord.gg/PggjJ7hDSg',
+          want = 'https://discord.gg/PggjJ7hDSg' },
+        -- The path is kept EXACTLY, case included: an invite code is
+        -- case-sensitive, and a parser that normalised it would hand out a
+        -- link that resolves to nothing.
+        { raw = 'https://discord.com/invite/AbCdEfG',
+          want = 'https://discord.com/invite/AbCdEfG' },
+        -- A query and a port are ordinary parts of a link, and are refused by
+        -- the ORIGIN parser one describe() above. Both kinds are in the spec at
+        -- once, so this is what stops the two being collapsed later.
+        { raw = 'https://example.com/appeal?from=game',
+          want = 'https://example.com/appeal?from=game' },
+        { raw = 'https://example.com:8443/appeal',
+          want = 'https://example.com:8443/appeal' },
+        -- An uppercase host is accepted here and refused by 'url'. Nothing
+        -- compares this value, so the rule that refuses it there does not apply.
+        { raw = 'https://Discord.GG/PggjJ7hDSg',
+          want = 'https://Discord.GG/PggjJ7hDSg' },
+        -- Surrounding whitespace is forgiven and only that, the same allowance
+        -- every other parser in the file makes.
+        { raw = '  https://discord.gg/PggjJ7hDSg  ',
+          want = 'https://discord.gg/PggjJ7hDSg' },
+    }
+
+    local env = load(nil)
+    local Ov  = env.BR.Config.Overrides
+
+    local spec
+    for _, s in ipairs(Ov.SPEC) do if s.convar == 'br_discordUrl' then spec = s end end
+    ok(spec ~= nil, 'br_discordUrl is in the spec')
+    ok(spec ~= nil and spec.kind == 'link',
+        "and it is a 'link', not the 'url' kind that would strip its invite code",
+        spec and tostring(spec.kind))
+
+    for _, c in ipairs(cases) do
+        local v, why = Ov.parse(spec, c.raw)
+        ok(v == c.want, ("'%s' is accepted whole"):format(c.raw),
+            why or ('got ' .. tostring(v)))
+    end
+
+    -- AND THE TWO KINDS DISAGREE, WHICH IS THE POINT OF THERE BEING TWO. The
+    -- same string cannot be valid for both, in either direction -- so a future
+    -- edit that quietly points one spec row at the other's parser fails here
+    -- rather than at 2am on somebody's kick message.
+    local origin
+    for _, s in ipairs(Ov.SPEC) do if s.convar == 'br_adminConsoleUrl' then origin = s end end
+    ok(Ov.parse(origin, 'https://discord.gg/PggjJ7hDSg') == nil,
+        'the origin parser refuses an invite, because of the path')
+    ok(Ov.parse(spec, 'https://ringmaster.example') == 'https://ringmaster.example',
+        'and the link parser takes a bare origin -- a link with no path is '
+        .. 'still a link somebody can open')
 end
 
 describe('a bad value does not take the good ones with it')

@@ -54,6 +54,11 @@ local FILES = {
     -- not exist and every row it generates comes out `(unreadable)`, which is a
     -- verify.sh failure rather than a quiet one -- by design.
     'config/admin.lua',
+    -- AND FOR THE SAME REASON: the spec's `Community` group lives in here, and
+    -- without it the br_discordUrl row below reads a key off a table that does
+    -- not exist and comes out `(unreadable)` -- a verify.sh failure rather than
+    -- a quiet one, by design.
+    'config/community.lua',
     -- AFTER match.lua, because it names keys inside it. In this bare Lua state
     -- it applies nothing -- it only reads convars when IsDuplicityVersion and
     -- GetConvar both exist, which on a server they do and here they do not --

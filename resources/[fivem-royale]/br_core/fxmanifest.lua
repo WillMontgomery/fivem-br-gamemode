@@ -38,6 +38,11 @@ shared_scripts {
     -- BR.Config key that does not exist yet, which is the anti-drift check
     -- doing exactly its job on a load-order mistake.
     '@br_lib/config/admin.lua',
+    -- Where our Discord is. Same shape as admin.lua -- one key, no useful
+    -- committed default -- and the same load-order requirement: it must precede
+    -- overrides.lua, whose anti-drift check refuses to boot on a convar naming a
+    -- BR.Config key that does not exist yet.
+    '@br_lib/config/community.lua',
     -- THE CONVAR OVERRIDES, AND THIS LINE'S POSITION IS THE FEATURE.
     --
     -- It must come after every config/*.lua above (it edits their tables) and

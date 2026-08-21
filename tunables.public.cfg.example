@@ -53,3 +53,24 @@ set br_devMode false
 # tunables.dev.cfg.example documents, and expect the boot banner to say so on
 # every start.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# OUR DISCORD is not set here either, and this one is worth a second look before
+# you accept that.
+#
+# br_discordUrl is the address appended to the message a kicked or banned player
+# sees ("Please join our Discord to discuss or appeal: ..."). Unlike everything
+# else named in these two files it is NOT a dev-versus-public difference -- it
+# is the same address on every box, and a public server is where the kicks
+# actually happen.
+#
+# It stays unset here because this file's whole promise is that copying it over
+# tunables.cfg leaves you with the reviewed configuration and nothing typed on a
+# box. Put the invite in server.cfg instead -- below the `exec "tunables.cfg"`
+# line and above `ensure br_lib`, which is where server.cfg.example shows it --
+# and it survives every swap between this file and the dev one. Put it here and
+# you will lose it the next time somebody makes this box a dev box and back.
+#
+# Unset is not broken: the player is told why they were removed, and no appeal
+# line is printed at all.
+# ---------------------------------------------------------------------------
