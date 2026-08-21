@@ -360,9 +360,13 @@ end
 --- or carried by an ambient NPC lands there, and asking for two costs nothing.
 --- A STRIP IS NOT THAT. It is not a lookup failing, it is the ped observably
 --- holding something the inventory did not put there, cross-checked against the
---- inventory the server itself holds -- and the owner's instruction is that the
---- first one opens a case. So the count that reaches here is 1 and this function
---- files on it.
+--- inventory the server itself holds. The bar for it is nevertheless two, and it
+--- is server/strip.lua that holds it rather than this function: the owner set it
+--- there on 2026-08-20 ("this should fire an incident on the 2nd offense"), and
+--- the lowest count that can reach this function is therefore 2. This function
+--- still files on whatever it is given -- deciding when to announce is the
+--- detector's job in both anticheat paths, and duplicating the bar here would be
+--- a second copy of it to disagree with.
 ---
 --- NO `refusal` BLOCK. That field carries `count` and `windowMs` from the shot
 --- validator and the console renders it as refused shots; a strip has neither

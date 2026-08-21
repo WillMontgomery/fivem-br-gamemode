@@ -2525,17 +2525,32 @@ local CONJURED = 0x11111111
 -- ...and one it issues, by the hash the engine reports for it.
 local CARBINE = 0x83BF0278
 
-describe('strip.opens-a-case')
+describe('strip.the-second-opens-a-case')
 do
+    -- THE OWNER'S BAR, 2026-08-20: "'4 or 5 more times' is too many. This should
+    -- fire an incident on the 2nd offense, and each subsequent should show as
+    -- corroboration from system."
+    --
+    -- ONE IS RECORDED AND ANNOUNCED TO NOBODY. A single weapon in a hand for a
+    -- single tick is the shape our own two inventory mirrors disagreeing has,
+    -- and `ourWeapon` cannot catch every ordering of that. A second one a
+    -- second later is not that shape.
     local W = newTimelineWorld()
     W.startMatch(7, 1000)
     W.join(1, 7, 'license:cheat', 'Cheater')
 
     W.at(4000)
     W.strip(1, CONJURED)
+    ok(#W.S.incidents == 0, 'the FIRST strip opens no case', #W.S.incidents)
+    ok(#W.S.corroborations == 0, 'and corroborates nothing either',
+        #W.S.corroborations)
+
+    W.at(5000)
+    W.strip(1, CONJURED)
 
     local p = W.lastIncident()
-    ok(p ~= nil, 'the FIRST strip opens a case')
+    ok(p ~= nil, 'the SECOND strip opens the case')
+    ok(#W.S.incidents == 1, 'exactly one of them', #W.S.incidents)
     ok(p and p.kind == 'anticheat', 'as an anticheat case, not a new record type',
         p and tostring(p.kind))
     ok(p and p.subjectLicense == 'license:cheat', 'about the player it happened to')
@@ -2553,15 +2568,27 @@ do
     ok(p and type(p.summary) == 'string' and p.summary:find('unissued') ~= nil,
         'the queue line says what actually happened', p and tostring(p.summary))
 
-    -- THE EVENT ITSELF IS ON THE TIMELINE, at the moment the server stamped it.
+    -- BOTH EVENTS ARE ON THE TIMELINE, at the moments the server stamped them.
+    -- The strip that stayed quiet was written into the evidence buffer anyway --
+    -- that write happens before the announcement gate -- so the case is created
+    -- knowing about the offence that did not open it. Losing it would be the
+    -- worst of both rules: a bar of two that shows an admin one.
     local strips = ofKind(p and p.matchTimeline, 'weapon_strip')
-    ok(#strips == 1, 'the strip that opened the case is on its timeline', #strips)
+    ok(#strips == 2, 'BOTH strips are on the timeline the case is created with',
+        #strips)
     ok(strips[1] and strips[1].at == 4000,
-        'stamped by the SERVER clock, never by the client',
+        'including the silent first one, stamped by the SERVER clock',
         strips[1] and tostring(strips[1].at))
+    ok(strips[2] and strips[2].at == 5000, 'and the one that filed it, second',
+        strips[2] and tostring(strips[2].at))
     ok(strips[1] and strips[1].weapon == CONJURED,
         'and carries the hash, which is the only name a conjured weapon has',
         strips[1] and tostring(strips[1].weapon))
+
+    -- THE QUEUE LINE COUNTS BOTH, because the summary is built from `count` and
+    -- `count` is offences rather than announcements.
+    ok(p and type(p.summary) == 'string' and p.summary:find('2 unissued') ~= nil,
+        'and the queue line says two, not one', p and tostring(p.summary))
 end
 
 describe('strip.repeats-append')
@@ -2573,21 +2600,60 @@ do
     W.startMatch(7, 1000)
     W.join(1, 7, 'license:cheat', 'Cheater')
 
-    W.at(4000); W.strip(1, CONJURED)
+    W.at(4000); W.strip(1, CONJURED)   -- recorded, announced to nobody
+    W.at(5000); W.strip(1, CONJURED)   -- opens the case
     W.ack(7, 'license:cheat', 'inc-1')
 
     -- Recursively, exactly as described. Spaced past the server's own throttle
     -- so every one of them counts.
     for i = 1, 5 do
-        W.at(4000 + i * 1000)
+        W.at(5000 + i * 1000)
         W.strip(1, CONJURED)
     end
 
     ok(#W.S.incidents == 1, 'five more strips file no second case', #W.S.incidents)
-    ok(#W.S.corroborations > 0, 'they corroborate the one that exists',
+
+    -- ONE CORROBORATION EACH, WHICH IS THE HALF THE OWNER CHANGED. Under the old
+    -- doubling rule these five produced two (at counts 4 and 8 -- and only
+    -- eventually); the instruction is that "each subsequent should show as
+    -- corroboration", so five offences are five.
+    ok(#W.S.corroborations == 5,
+        'and every single one of them corroborates -- five, not two',
         #W.S.corroborations)
-    ok(W.S.corroborations[1] and W.S.corroborations[1].incidentId == 'inc-1',
-        'against the case the write came back with')
+    local allSame = true
+    for _, c in ipairs(W.S.corroborations) do
+        if c.incidentId ~= 'inc-1' then allSame = false end
+    end
+    ok(allSame, 'every one against the case the write came back with')
+
+    -- THE TWO WIRE COUNTERS, PINNED TOGETHER. `count` is offences and now climbs
+    -- by one; `seq` is announcements and starts at 2 for the first
+    -- corroboration, because announcement 1 opened the case. A gap in either now
+    -- means a LOST message rather than quiet offences in between, and that is
+    -- the meaning change this cadence carries onto the wire.
+    local seqs, counts = {}, {}
+    for i, c in ipairs(W.S.corroborations) do
+        seqs[i] = tostring(c.seq)
+        counts[i] = tostring(c.count)
+    end
+    ok(table.concat(seqs, ',') == '2,3,4,5,6',
+        'seq counts the announcements, from 2', table.concat(seqs, ','))
+    ok(table.concat(counts, ',') == '3,4,5,6,7',
+        'and count counts the offences, one at a time',
+        table.concat(counts, ','))
+
+    -- ATTRIBUTION IS THE EXISTING ONE AND NOT A SECOND SPELLING. The game sends
+    -- a fact with no actor on it; br_ringmaster forwards a fixed field set; and
+    -- the console's `incidents.corroborate()` writes the note as
+    -- `byLicense: null, byName: 'System'` -- the same pair it uses for an
+    -- automatic resolution. So "corroboration from system" is what this channel
+    -- already produces, and a reporter field invented here would be a second
+    -- answer to a question already answered.
+    local noActor = true
+    for _, c in ipairs(W.S.corroborations) do
+        if c.reporterLicense ~= nil or c.reporterName ~= nil then noActor = false end
+    end
+    ok(noActor, 'and none of them names a player as the source')
 
     -- ...AND EVERY ONE OF THEM REACHES THE TIMELINE, which is the half the
     -- corroboration channel cannot do: corroborations land in the console's own
@@ -2601,49 +2667,70 @@ do
 
     local strips = ofKind(c and c.matchTimeline, 'weapon_strip')
     ok(#strips == 5, 'every strip after the filing is on the close', #strips)
-    ok(strips[1] and strips[1].at == 5000, 'oldest first',
+    ok(strips[1] and strips[1].at == 6000, 'oldest first',
         strips[1] and tostring(strips[1].at))
 
-    -- AND THE FIRST ONE IS NOT SENT TWICE. It rode the PutItem; a timeline that
-    -- lists the same event twice is a claim about a person that is false.
+    -- AND THE FIRST TWO ARE NOT SENT TWICE. They rode the PutItem; a timeline
+    -- that lists the same event twice is a claim about a person that is false.
     local dup = false
-    for _, s in ipairs(strips) do if s.at == 4000 then dup = true end end
-    ok(not dup, 'the strip already on the row is not repeated')
+    for _, s in ipairs(strips) do
+        if s.at == 4000 or s.at == 5000 then dup = true end
+    end
+    ok(not dup, 'the strips already on the row are not repeated')
 
     ok(c and c.matchTimelineComplete == true,
         'and nothing was dropped, so the record says so')
 end
 
-describe('strip.announcements-are-throttled-but-the-record-is-not')
+describe('strip.the-doubling-rule-is-gone')
 do
-    -- REPORT AT THE FIRST, THEN ON EVERY DOUBLING -- the rule server/damage.lua
-    -- already lands on, because the corroboration channel is a 512-deep
-    -- drop-oldest outbox and an offender chooses how often this fires. What is
-    -- throttled is how often the CONSOLE is told; the timeline still gets all of
-    -- them, and that distinction is the whole reason this case exists.
+    -- ═══ THE CADENCE THE OWNER REPLACED, PINNED SO IT DOES NOT COME BACK ═══
+    --
+    -- This case used to assert the opposite number and was described as
+    -- "sixteen strips produce four corroborations, not fifteen". The rule it
+    -- pinned was server/damage.lua's -- announce at the bar, then at every
+    -- doubling (1, 2, 4, 8, 16) -- copied to bound a 512-deep drop-oldest outbox
+    -- an offender chooses the fill rate of.
+    --
+    -- THE OWNER OVERRULED IT ON 2026-08-20: "'4 or 5 more times' is too many."
+    -- Four announcements for sixteen offences is not a moderation record. The
+    -- bound that remains is MIN_INTERVAL_MS -- one countable strip per 900ms per
+    -- player -- and the artifact planner's per-case frame cap, and the fact that
+    -- no volume of strips adds a DynamoDB write to the two a case always cost.
+    --
+    -- THE HALF THAT DID NOT CHANGE is that the timeline still gets every one of
+    -- them, which was always the distinction this case existed to draw.
     local W = newTimelineWorld()
     W.startMatch(7, 1000)
     W.join(1, 7, 'license:cheat', 'Cheater')
 
-    W.at(4000); W.strip(1, CONJURED)
+    W.at(4000); W.strip(1, CONJURED)   -- 1: recorded, silent
+    W.at(5000); W.strip(1, CONJURED)   -- 2: opens the case
     W.ack(7, 'license:cheat', 'inc-1')
 
-    for i = 1, 15 do
-        W.at(4000 + i * 1000)
+    for i = 1, 14 do
+        W.at(5000 + i * 1000)
         W.strip(1, CONJURED)
     end
 
-    -- 16 strips announce at 1, 2, 4, 8, 16 -- five, of which the first opened
-    -- the case and four corroborated it.
-    ok(#W.S.corroborations == 4,
-        'sixteen strips produce four corroborations, not fifteen',
+    ok(#W.S.incidents == 1, 'sixteen strips are still ONE case', #W.S.incidents)
+    ok(#W.S.corroborations == 14,
+        'sixteen strips produce FOURTEEN corroborations, not four',
         #W.S.corroborations)
+
+    -- NO GAPS, which is what makes a gap mean something on the wire now.
+    local gapless = true
+    for i, c in ipairs(W.S.corroborations) do
+        if c.seq ~= i + 1 or c.count ~= i + 2 then gapless = false end
+    end
+    ok(gapless, 'numbered 2..15 by announcement and 3..16 by offence, with no gap',
+        W.S.corroborations[14] and tostring(W.S.corroborations[14].count))
 
     W.at(30000)
     W.endMatch(7)
 
     local strips = ofKind(W.lastClose() and W.lastClose().matchTimeline, 'weapon_strip')
-    ok(#strips == 15, 'while all fifteen later strips are on the timeline', #strips)
+    ok(#strips == 14, 'while all fourteen later strips are on the timeline', #strips)
 end
 
 describe('strip.nobody-is-exempt')
@@ -2664,19 +2751,19 @@ do
     W.join(1, 7, 'license:owner', 'Owner')
     W.admin('license:owner')
 
-    W.at(4000)
-    W.strip(1, CONJURED)
+    W.at(4000); W.strip(1, CONJURED)
+    W.at(5000); W.strip(1, CONJURED)
 
     ok(#W.S.incidents == 1, 'an admin who conjures a weapon gets a case like anyone else',
         #W.S.incidents)
     ok(W.lastIncident() and W.lastIncident().subjectLicense == 'license:owner',
         'and it is about them', W.lastIncident() and W.lastIncident().subjectLicense)
 
-    -- AND IT IS BUFFERED. The old exemption sat BELOW the evidence note so an
+    -- AND THEY ARE BUFFERED. The old exemption sat BELOW the evidence note so an
     -- exempt player's strips were recorded nowhere at all. Nothing is skipped
-    -- now, so the strip that opened the case is on its timeline.
+    -- now, so both strips are on the timeline the case is created with.
     local strips = ofKind(W.lastIncident() and W.lastIncident().matchTimeline, 'weapon_strip')
-    ok(#strips == 1, 'with the strip on its timeline', #strips)
+    ok(#strips == 2, 'with both strips on its timeline', #strips)
 
     -- REPEATS STILL APPEND RATHER THAN RE-FILE, for staff as for anyone. The
     -- rule that matters is one case per offender per match, not who they are.
@@ -2688,7 +2775,7 @@ do
     -- it -- and it is why this assertion read 3 before the ack was added.
     W.ack(7, 'license:owner', 'inc-admin-1')
     for i = 2, 6 do
-        W.at(4000 + i * 1000)
+        W.at(5000 + i * 1000)
         W.strip(1, CONJURED)
     end
     ok(#W.S.incidents == 1, 'and five more strips open no second case', #W.S.incidents)
@@ -2713,8 +2800,8 @@ do
         if case.setup == 'admin' then W.admin('license:subject')
         elseif case.setup == 'unread' then W.unread('license:subject') end
 
-        W.at(4000)
-        W.strip(1, CONJURED)
+        W.at(4000); W.strip(1, CONJURED)
+        W.at(5000); W.strip(1, CONJURED)
         ok(#W.S.incidents == 1, case.label .. ' files a case', #W.S.incidents)
     end
 end
@@ -2738,14 +2825,27 @@ do
     W.carrying(1, { 'carbinerifle' })
 
     W.at(4000); W.strip(1, CARBINE)
+    W.at(5000); W.strip(1, CARBINE)
     ok(#W.S.incidents == 0, 'a weapon the server DID issue them opens no case',
         #W.S.incidents)
 
     -- And the guard is not simply "never file": the same player, holding the
-    -- same inventory, conjuring something else still files.
+    -- same inventory, conjuring something else still files -- on the second one.
     W.at(6000); W.strip(1, CONJURED)
-    ok(#W.S.incidents == 1, 'while a weapon it did not issue still does',
+    ok(#W.S.incidents == 0, 'one conjured weapon is still only one', #W.S.incidents)
+    W.at(7000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 1, 'while two weapons it did not issue still do',
         #W.S.incidents)
+
+    -- AND THE RACED REPORTS DID NOT COUNT TOWARDS THE BAR. Two carbine strips
+    -- plus two conjured ones is a case about TWO offences, not four -- the
+    -- refusal returns before `rec.count` is touched. A version that counted
+    -- them would file on the first genuine strip and put our own tick ordering
+    -- in the summary.
+    local p = W.lastIncident()
+    ok(p and type(p.summary) == 'string' and p.summary:find('2 unissued') ~= nil,
+        'and the queue line counts two offences, not four',
+        p and tostring(p.summary))
 end
 
 describe('strip.flood-is-bounded')
@@ -2760,15 +2860,26 @@ do
     W.at(4000)
     for _ = 1, 50 do W.strip(1, CONJURED) end   -- all in the same millisecond
 
-    ok(#W.S.incidents == 1, 'a flood still opens exactly one case', #W.S.incidents)
-
-    local strips = ofKind(W.lastIncident() and W.lastIncident().matchTimeline,
-        'weapon_strip')
-    ok(#strips == 1, 'and puts one entry on the timeline, not fifty', #strips)
+    -- FIFTY MESSAGES ARE ONE OFFENCE, so under the owner's bar of two they open
+    -- nothing at all. That is the throttle doing the only job it was ever the
+    -- control for: a client cannot buy itself a case by flooding, and it cannot
+    -- buy somebody else one either.
+    ok(#W.S.incidents == 0, 'a flood inside one window opens NO case',
+        #W.S.incidents)
 
     local st = W.BR.Strip.stats()
     ok(st.throttled == 49, 'the rest are refused and counted as refused',
         st.throttled)
+
+    -- A SECOND WINDOW IS A SECOND OFFENCE, and that is what files.
+    W.at(5000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 1, 'a strip in the next window opens exactly one case',
+        #W.S.incidents)
+
+    local strips = ofKind(W.lastIncident() and W.lastIncident().matchTimeline,
+        'weapon_strip')
+    ok(#strips == 2, 'and puts two entries on the timeline, not fifty-one',
+        #strips)
 end
 
 describe('strip.truncation-is-never-silent')
@@ -2789,13 +2900,13 @@ do
     W.startMatch(7, 1000)
     W.join(1, 7, 'license:cheat', 'Cheater')
 
-    W.at(2000)
-    W.strip(1, CONJURED)
+    W.at(2000); W.strip(1, CONJURED)
+    W.at(3000); W.strip(1, CONJURED)
     W.ack(7, 'license:cheat', 'inc-1')
 
     local CAP = W.BR.IncidentBuild.TIMELINE_LIMITS.MAX_TIMELINE_STRIPS
     for i = 1, CAP + 20 do
-        W.at(2000 + i * 1000)
+        W.at(3000 + i * 1000)
         W.strip(1, CONJURED)
     end
 
@@ -2823,7 +2934,8 @@ do
     W.join(2, 7, 'license:v1', 'Victim1')
     W.join(3, 7, 'license:v2', 'Victim2')
 
-    W.at(2000); W.strip(1, CONJURED)     -- opens the case
+    W.at(2000); W.strip(1, CONJURED)     -- recorded, silent
+    W.at(2900); W.strip(1, CONJURED)     -- opens the case
     W.ack(7, 'license:cheat', 'inc-1')
 
     W.at(3000); W.kill(1, 2)
@@ -2853,12 +2965,19 @@ describe('strip.needs-a-live-match')
 do
     -- NO MATCH, NOTHING TO PUT IT ON. A report from the lobby has no round to be
     -- about, and the evidence buffer would refuse the note anyway.
+    --
+    -- TWO OF THEM, DELIBERATELY. The bar is two strips (owner, 2026-08-20), so
+    -- a single one files nothing anywhere and this case would pass without
+    -- exercising the match guard at all.
     local W = newTimelineWorld()
     W.join(1, nil, 'license:cheat', 'Cheater')
 
     W.at(4000); W.strip(1, CONJURED)
-    ok(#W.S.incidents == 0, 'a strip reported outside a match files nothing',
+    W.at(5000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 0, 'strips reported outside a match file nothing',
         #W.S.incidents)
+    ok(W.BR.Strip.stats().counted == 0, 'and are not even counted',
+        W.BR.Strip.stats().counted)
 end
 
 describe('strip.rubbish-is-not-a-weapon')
@@ -2871,12 +2990,13 @@ do
     W.join(1, 7, 'license:cheat', 'Cheater')
 
     W.at(4000); W.strip(1, 'not a hash')
+    W.at(5000); W.strip(1, 'not a hash')
 
     local p = W.lastIncident()
     ok(p ~= nil, 'a strip with a nonsense weapon is still a strip')
 
     local strips = ofKind(p and p.matchTimeline, 'weapon_strip')
-    ok(#strips == 1, 'and reaches the timeline', #strips)
+    ok(#strips == 2, 'and reaches the timeline', #strips)
     -- IN LUA `0` IS TRUTHY, so a hash of zero would sail through a bare check
     -- and land on a moderation record as though it named a weapon.
     ok(strips[1] and strips[1].weapon == nil,

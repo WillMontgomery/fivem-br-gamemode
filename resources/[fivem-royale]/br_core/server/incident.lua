@@ -304,10 +304,12 @@ end)
 -- WHERE THE REPEATS ACTUALLY LAND. Every accepted strip is written into the
 -- evidence buffer by server/strip.lua BEFORE it gets here, so:
 --
---   the first    rides the PutItem this handler triggers -- the strips known at
---                filing time are on the timeline the case is created with.
+--   the first    ride the PutItem this handler triggers -- the strips known at
+--   two          filing time are on the timeline the case is created with, and
+--                since the case is opened by the SECOND strip that includes the
+--                first one, which was recorded and announced to nobody.
 --   every one    is on the timeline the match-end close appends. That write was
---   after it     already happening for this case and touches only the five
+--   after them   already happening for this case and touches only the five
 --                attributes the game's IAM grant allows; strips cost it nothing
 --                extra and add no attribute to it.
 --

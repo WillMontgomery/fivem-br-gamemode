@@ -398,8 +398,14 @@ at 2, because report 1 opened the case. Its only job is to let a receiver tell 1
 batch after four attempts and neither envelope says so. Treat a gap as "at least this
 many", never as an exact count.
 
-`count` is the running per-match total of counted refusals at the moment of the
-report, so it roughly doubles between consecutive corroborations.
+`count` is the running per-match total at the moment of the report, and **how it
+climbs depends on which detector sent it**. From the refusal path it roughly doubles
+between consecutive corroborations, because `damage.lua` reports at the doublings.
+From the unissued-weapon path it climbs **by one** — `strip.lua` announces every
+strip from the second onward (owner, 2026-08-20) — so consecutive values there are
+2, 3, 4, 5 and a gap means a *lost* corroboration rather than offences that happened
+quietly in between. Treat it as "at least this many" in both cases; never as an
+exact count.
 
 ---
 

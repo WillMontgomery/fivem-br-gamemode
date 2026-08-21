@@ -68,7 +68,7 @@ local LIVE = {
 --- gets recorded rather than bounding what an attacker can force.
 local MIN_INTERVAL_MS = 900
 
---- Per-source counters. [src] = { matchId, count, reportedAt, at }
+--- Per-source counters. [src] = { matchId, count, reports, at }
 ---
 --- BOUNDED BY WHO IS CONNECTED. Cleared on disconnect and rebuilt when the
 --- player's match changes, exactly as server/damage.lua's refusal record is.
@@ -170,7 +170,7 @@ AddEventHandler(BR.Net.INV_STRIPPED, function(weapon)
     -- a flood is exactly the shape a client can choose to send.
     local rec = seenBy[src]
     if not rec or rec.matchId ~= e.matchId then
-        rec = { matchId = e.matchId, count = 0, reportedAt = 0, at = 0 }
+        rec = { matchId = e.matchId, count = 0, reports = 0, at = 0 }
         seenBy[src] = rec
     end
     if rec.at ~= 0 and now - rec.at < MIN_INTERVAL_MS then
@@ -231,21 +231,42 @@ AddEventHandler(BR.Net.INV_STRIPPED, function(weapon)
         BR.Evidence.noteStrip(src, h)
     end
 
-    -- REPORT AT THE FIRST, THEN ON EVERY DOUBLING -- the rule
-    -- server/damage.lua already lands on, copied because the problem is
-    -- identical and worse here. Announcing every strip would put one event per
-    -- second per offender onto a 512-deep drop-oldest outbox for as long as they
-    -- kept going, destroying the player_seen stream behind it in order to say
-    -- the same thing sixty times. About seven announcements for a hundred
-    -- strips, no timer needed, and each one means something an admin would want
-    -- to know: it doubled.
+    -- SILENT ON THE FIRST, THEN ON EVERY SINGLE ONE AFTER IT. The owner's rule,
+    -- 2026-08-20: "'4 or 5 more times' is too many. This should fire an incident
+    -- on the 2nd offense, and each subsequent should show as corroboration from
+    -- system."
     --
-    -- THIS BOUNDS THE ANNOUNCEMENTS AND NOT THE RECORD. The timeline above still
-    -- gets every one of them; what is throttled is how often the console is
-    -- told.
-    if rec.count < (rec.reportedAt == 0 and 1 or rec.reportedAt * 2) then return end
-    rec.reportedAt = rec.count
-    rec.reports = (rec.reports or 0) + 1
+    --   strip 1   recorded in the evidence buffer above and announced to
+    --             nobody. One weapon appearing in one hand is the shape a race
+    --             between our own two inventory mirrors has, and `ourWeapon`
+    --             cannot catch the whole of it; a second one a second later is
+    --             not that.
+    --   strip 2   the announcement that opens the case. Both strips are already
+    --             in the buffer, so the timeline the case is created with has
+    --             the one that stayed quiet on it.
+    --   strip 3+  one announcement each, every time, which server/incident.lua
+    --             turns into a corroboration on the case opened at 2. The
+    --             console records those as `System` -- `incidents.corroborate()`
+    --             writes `byLicense: null, byName: 'System'` for every one -- so
+    --             the attribution the owner asked for is the existing one and
+    --             not a second spelling of it.
+    --
+    -- THIS DELIBERATELY GIVES UP A BOUND, AND THE COST IS WORTH NAMING because
+    -- the code it replaces existed to hold it. The old rule announced at the
+    -- doublings -- 1, 2, 4, 8 -- so a hundred strips cost about seven events;
+    -- this one costs ninety-nine, at up to one every MIN_INTERVAL_MS, onto a
+    -- 512-deep drop-oldest outbox with the player_seen stream behind it. The
+    -- owner's answer is that four or five announcements for a hundred offences
+    -- is not a moderation record, and a queue an offender can flood is a
+    -- problem the offender pays for by being in it.
+    --
+    -- WHAT STILL BOUNDS IT. MIN_INTERVAL_MS above is the real ceiling on this
+    -- path and is unchanged; the artifact planner caps a case at six
+    -- corroboration frames and nine total; and the timeline is RAM either way,
+    -- so no volume of strips adds a DynamoDB write to the two this case was
+    -- always going to cost.
+    if rec.count < 2 then return end
+    rec.reports = rec.reports + 1
 
     local name = e.name or ('src ' .. src)
     print(('[br_core] ANTICHEAT: %s (%d) -- %d unissued weapon(s) taken out of the hand this match')
@@ -265,11 +286,24 @@ AddEventHandler(BR.Net.INV_STRIPPED, function(weapon)
         -- about whoever holds this server id next.
         license  = license,
         matchId  = e.matchId,
+        -- HOW MANY STRIPS THIS PLAYER HAS DRAWN THIS MATCH, and since the rule
+        -- above announces every one from the second, this now counts UP BY ONE
+        -- each time: 2, 3, 4, 5. It used to arrive as 1, 2, 4, 8 -- the
+        -- doublings -- and a reader that still expects a gap between
+        -- consecutive values to mean "strips happened quietly in between" would
+        -- be reading a field that no longer says that. A gap here now means a
+        -- LOST announcement, exactly as a gap in `seq` does.
         count    = rec.count,
         -- WHICH ANNOUNCEMENT THIS IS for this player, this match: 1 opens the
-        -- case, 2+ are doublings that corroborate it. It rides the wire so the
-        -- console can tell 1, 2, 4 with a gap in it -- a dropped corroboration
-        -- -- from a match where nothing more happened.
+        -- case, 2+ corroborate it. It rides the wire so the console can tell a
+        -- dropped corroboration from a match where nothing more happened -- the
+        -- event channel discards a batch after four attempts and never says so.
+        --
+        -- IT IS NOW `count - 1` BY CONSTRUCTION and is kept anyway. The two
+        -- fields answer different questions -- "how many offences" and "how many
+        -- times were you told" -- and the day this cadence changes again they
+        -- part company; a receiver that had inferred one from the other would
+        -- part company with it silently.
         seq      = rec.reports,
         weapon   = h,
         at       = now,

@@ -257,12 +257,17 @@ ended with an empty record. The strip now reports, and
 `br_core/server/strip.lua` turns those reports into the same kind of case the
 refusal path files.
 
-> The **first** countable strip in a match opens one incident. Every strip after it
-> appends a `weapon_strip` entry to **that** incident's `matchTimeline` — never a
-> second case. Announcements to the console follow the same doubling rule
-> `damage.lua` uses (1, 2, 4, 8…), so an offender cannot flood the corroboration
-> queue; the timeline still receives all of them, because it is RAM until the case's
-> own writes carry it.
+> The **second** countable strip in a match opens one incident. The first is recorded
+> and announced to nobody — one weapon in one hand for one tick is the shape our own
+> two inventory mirrors disagreeing has, and a second one a second later is not. Every
+> strip after the second announces, **each one**, and appends a `weapon_strip` entry to
+> **that** incident's `matchTimeline` — never a second case. Announcements no longer
+> follow `damage.lua`'s doubling rule: the owner's call on 2026-08-20 was that "'4 or 5
+> more times' is too many", so `count` on the wire now climbs 2, 3, 4, 5 and a gap in it
+> means a **lost** announcement rather than quiet strips in between. What bounds the
+> channel is `MIN_INTERVAL_MS` (one countable strip per 900 ms per player) and the
+> artifact planner's per-case frame cap; the timeline still receives all of them,
+> because it is RAM until the case's own writes carry it.
 
 **Cost is unchanged by volume.** The strips known at filing time ride the `PutItem`
 that was already happening; the rest ride the match-end `UpdateItem` that was
