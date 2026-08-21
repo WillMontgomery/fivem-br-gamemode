@@ -103,6 +103,18 @@ end
 --- The mint's own deadline. br_ringmaster/server/handoff.lua's TIMEOUT_MS.
 local MINT_TIMEOUT_MS = 3000
 
+--- The tab's retry interval. br_core/server/admin.lua's RETRY_MS.
+---
+--- SPELLED OUT HERE RATHER THAN IMPORTED, like MINT_TIMEOUT_MS above, because
+--- these are file-locals on the other side and a test that could read them could
+--- not tell a deliberate change from an accidental one. This number is the whole
+--- subject of the timing block at the bottom: it is what a DynamoDB read costs
+--- an admin when it lands one millisecond after br:ready.
+local RETRY_MS = 5000
+
+--- The connect-time warm's interval. br_core/server/admin.lua's WARM_MS.
+local WARM_MS = 500
+
 -- json. encode stashes the table and returns a marker, so assertions are made
 -- against the TABLE rather than against a hand-rolled JSON string -- which would
 -- be testing the stub. decode answers from a registry, so a body the test did
@@ -237,18 +249,50 @@ end
 --- `error` field on every failure path -- is what grants.lua is written against.
 local ddbScopes = {}      -- [license] = { 'view', ... }
 local ddbError = nil
+
+--- How long DynamoDB takes to answer, in milliseconds. ZERO EVERYWHERE BUT THE
+--- TIMING BLOCK, where it is the independent variable.
+---
+--- Zero still is not instant, and that is the contract rather than the stub
+--- being lazy: `BR.Grants.holds` returns nil and STARTS the read, so the ask
+--- that repairs the cache is never the ask that gets an answer. Every caller in
+--- this project has to come back and look again, which is what both ladders in
+--- admin.lua exist to do.
+local ddbDelayMs = 0
+
 AddEventHandler('br:ddb:grantsFetch', function(req, license)
-    if ddbError then
-        TriggerEvent('br:ddb:grantsResult', req, {}, { error = ddbError })
-        return
+    local reply = function()
+        if ddbError then
+            TriggerEvent('br:ddb:grantsResult', req, {}, { error = ddbError })
+            return
+        end
+        TriggerEvent('br:ddb:grantsResult', req, ddbScopes[license] or {}, {})
     end
-    TriggerEvent('br:ddb:grantsResult', req, ddbScopes[license] or {}, {})
+    if ddbDelayMs > 0 then SetTimeout(ddbDelayMs, reply) else reply() end
 end)
 
 --- Bring a player to the point where the server has decided about their tab.
 --- Returns the envelope payload the client was sent, or nil if none was.
+---
+--- IT WALKS THE REAL CONNECT ORDER -- connecting, joining, ready -- because
+--- br_core/server/admin.lua now decides the tab on the FIRST of those and the
+--- other two only find out. A helper that skipped straight to `playerJoining`
+--- would be testing a connection that cannot happen, and every assertion below
+--- about the common case would be measuring the fallback path instead.
+---
+--- ONE fireTimers() BETWEEN CONNECT AND JOIN, and it stands in for the whole
+--- resource download: it is where the warm ladder's first rung lands and where
+--- the answer that `holds` started is finally collected. On the real server that
+--- gap is seconds; here it is one rung, because one rung is all the stub needs.
+---
+--- LICENSES MUST BE UNIQUE PER BLOCK. `reset()` cannot reach admin.lua's
+--- connect-time table -- it is a file-local -- so a license reused after a reset
+--- would carry the previous block's decision into the next one. Every block here
+--- names its own.
 local function readyUp(src)
     local before = sentCount()
+    fire('playerConnecting', src)   -- admin.lua warms the grant here
+    fireTimers()
     fire('playerJoining', src)      -- grants.lua primes the cache here
     fire(BR.Net.READY, src)
     if sentCount() == before then return nil end
@@ -710,6 +754,435 @@ do
     ok(said:find('activity integration', 1, true) ~= nil,
         'and it names the reason a legitimate admin has no tab',
         said)
+end
+
+-- ------------------------------------------------ the connect-time warm ---
+
+describe('the warm never delays a connection')
+do
+    -- THE ONE WAY THIS CHANGE COULD BE WORSE THAN THE BUG IT FIXES.
+    -- `playerConnecting` is the event that can DEFER a join: a handler that
+    -- called deferrals.defer() and then waited on DynamoDB would hold every
+    -- player on "connecting" for as long as the read took, and hold them
+    -- forever if it never answered. An admin convenience would have become an
+    -- outage for everybody.
+    reset()
+    ddbScopes['license:warmDefer'] = { 'view' }
+    join(90, { license = 'warmDefer', discord = '901111111111111111' })
+
+    local touched = {}
+    local deferrals = {
+        defer       = function() touched[#touched + 1] = 'defer' end,
+        update      = function() touched[#touched + 1] = 'update' end,
+        done        = function() touched[#touched + 1] = 'done' end,
+        presentCard = function() touched[#touched + 1] = 'presentCard' end,
+    }
+    local kicked = false
+    local askedBefore = BR.Grants.stats().asked
+
+    fire('playerConnecting', 90, 'Player90',
+        function() kicked = true end, deferrals)
+
+    ok(#touched == 0, 'no method on the deferrals object is called',
+        table.concat(touched, ','))
+    ok(kicked == false, 'and nobody is refused a connection')
+    ok(requestCount() == 0, 'and Ringmaster is not consulted either')
+    ok(BR.Grants.stats().asked > askedBefore,
+        'while the grants read has nonetheless started',
+        ('%d -> %d'):format(askedBefore, BR.Grants.stats().asked))
+end
+
+describe('the tab is decided before the client asks for it')
+do
+    reset()
+    ddbScopes['license:warmAdmin'] = { 'view' }
+    join(91, { license = 'warmAdmin', discord = '911111111111111112' })
+
+    fire('playerConnecting', 91)
+    fireTimers()                       -- the read answers during the download
+    fire('playerJoining', 91)
+
+    local before = sentCount()
+    fire(BR.Net.READY, 91)
+
+    ok(sentCount() == before + 1,
+        'the envelope goes out on the same tick as br:ready')
+    ok(lastSent().data.origin == CONSOLE,
+        'carrying the origin', tostring(lastSent().data.origin))
+    ok(timersOf(RETRY_MS) == 0,
+        'and no retry is armed, because nothing was unknown',
+        ('%d armed'):format(timersOf(RETRY_MS)))
+end
+
+do
+    -- THE ORDINARY PLAYER IS THE MUTATION TARGET, not the admin. A cache written
+    -- or read with `if grant then` instead of `grant ~= nil` looks perfect for
+    -- everyone who holds the scope and sends nearly everybody else back down the
+    -- slow path -- and nothing about the tab would look wrong, because they were
+    -- never getting one.
+    reset()
+    ddbScopes['license:warmPleb'] = {}
+    join(92, { license = 'warmPleb', discord = '921111111111111111' })
+
+    fire('playerConnecting', 92)
+    fireTimers()
+    fire('playerJoining', 92)
+
+    local before = sentCount()
+    fire(BR.Net.READY, 92)
+
+    ok(sentCount() == before + 1, 'an ordinary player is answered immediately too')
+    ok(lastSent().data.origin == nil, 'with no origin')
+    ok(timersOf(RETRY_MS) == 0, 'and no retry armed for them either')
+    ok(BR.Admin.tabVerdict(92).why == 'not-admin-at-connect',
+        'and the reason names the connect-time answer rather than a live one',
+        tostring(BR.Admin.tabVerdict(92).why))
+    ok(BR.Admin.tabVerdict(92).cached == true, 'and says it was cached')
+end
+
+describe('a read that never answered is not a refusal')
+do
+    -- THE SAFETY PROPERTY, AND THE ONLY ONE THAT COULD SILENTLY DENY A REAL
+    -- ADMIN. BR.Grants.holds answers nil for "never successfully read", which is
+    -- NOT "not an admin" -- and a warm that wrote nil down as false would file a
+    -- DynamoDB outage as a fact about a person, for the length of their session,
+    -- with a `bradmin` line that agreed with it.
+    reset()
+    ddbError = 'DynamoDB timeout'
+    join(93, { license = 'warmDown', discord = '931111111111111111' })
+
+    -- DELTAS, NOT ABSOLUTES, on both counters. Ladders from earlier blocks are
+    -- still recorded -- `reset()` cannot reach admin.lua's file-locals, and
+    -- their timers were thrown away with the rest -- so an absolute count here
+    -- would be reporting on this suite's history rather than on this block.
+    local climbing = BR.Admin.stats().warming
+    local gaveUp   = BR.Admin.stats().gaveUp
+
+    fire('playerConnecting', 93)
+    ok(BR.Admin.stats().warming == climbing + 1, 'a ladder starts')
+
+    for _ = 1, 20 do fireTimers() end      -- and climbs to its last rung
+
+    ok(BR.Admin.stats().warming == climbing,
+        'then gives up rather than climbing forever')
+    ok(BR.Admin.stats().gaveUp == gaveUp + 1, 'and says so')
+    ok(BR.Admin.tabVerdict(93).why == 'grant-unknown',
+        'and the answer is still UNKNOWN, not "not an admin"',
+        tostring(BR.Admin.tabVerdict(93).why))
+    ok(BR.Admin.tabVerdict(93).cached == false,
+        'because nothing was written down at all')
+
+    fire('playerJoining', 93)
+    -- COUNTED EITHER SIDE OF br:ready RATHER THAN AFTER IT. server/grants.lua
+    -- arms its own 5s deadline every time a read starts, and RETRY_MS is 5s too
+    -- -- so `timersOf(RETRY_MS)` cannot tell one file's timer from the other's,
+    -- and only the change across this one event belongs to `offer`.
+    local armed  = timersOf(RETRY_MS)
+    local before = sentCount()
+    fire(BR.Net.READY, 93)
+
+    ok(sentCount() == before, 'nothing is sent, exactly as before the warm existed')
+    ok(timersOf(RETRY_MS) > armed, 'and the existing retry ladder is armed instead',
+        ('%d -> %d'):format(armed, timersOf(RETRY_MS)))
+
+    -- DynamoDB comes back while they are in the world. The retry still needs two
+    -- goes -- see the note on RETRY_MAX -- but it gets there.
+    ddbError = nil
+    ddbScopes['license:warmDown'] = { 'view' }
+    fireTimers()
+    fireTimers()
+
+    ok(lastSent() and lastSent().data.origin == CONSOLE,
+        'and an admin the warm could not decide still gets their tab',
+        lastSent() and tostring(lastSent().data.origin))
+end
+
+describe('relaunching is what re-decides it')
+do
+    -- THE OWNER'S OWN REMEDY, PINNED. "For the case of not having the role when
+    -- joining the game and then receiving admin perms, we'll simply make them
+    -- relaunch the game." That sentence is only true if the drop forgets the
+    -- decision, and nothing else in this suite would notice if it stopped.
+    reset()
+    ddbScopes['license:warmLate'] = {}
+    join(94, { license = 'warmLate', discord = '941111111111111111' })
+    readyUp(94)
+
+    ok(lastSent().data.origin == nil, 'not an admin at connect, so no tab')
+
+    -- The grant is added while they are in the world, and the live cache goes
+    -- stale so a live read would pick it up.
+    ddbScopes['license:warmLate'] = { 'view' }
+    fakeTime = fakeTime + (6 * 60 * 1000)
+    fire(BR.Net.READY, 94)
+
+    ok(lastSent().data.origin == nil,
+        'a grant added mid-session does not conjure the tab',
+        tostring(lastSent().data.origin))
+    ok(BR.Admin.tabVerdict(94).why == 'not-admin-at-connect',
+        'and the reason tells the admin what to do about it',
+        tostring(BR.Admin.tabVerdict(94).why))
+
+    -- AND AGAIN, NOW THAT THE LIVE ROW HAS ACTUALLY BEEN RE-READ. This second
+    -- ask is the only one that can tell the two verdicts apart, and without it
+    -- the whole point of the change goes untested: `holds` SERVES A STALE ANSWER
+    -- while it refreshes, so the ask above returns `false` whichever function
+    -- `offer` calls. The one after it returns `true` live -- so an `offer` that
+    -- had been left asking `evaluate` would hand out the origin here, and every
+    -- other assertion in this suite would still pass.
+    fire(BR.Net.READY, 94)
+    ok(lastSent().data.origin == nil,
+        'not even once DynamoDB has confirmed the new grant',
+        tostring(lastSent().data.origin))
+    -- TWICE, AND NOT AS ONE EXPRESSION. `holds` serves the stale row and starts
+    -- the re-read on the same ask, so the first call is the one that repairs the
+    -- cache and the second is the one with an answer in it. Written as
+    -- `evaluate(94).grant == true` with the detail argument alongside it, the
+    -- two calls straddle that repair and the assertion reports on itself.
+    BR.Admin.evaluate(94)
+    local live = BR.Admin.evaluate(94)
+    ok(live.grant == true,
+        'while a live read plainly says they hold the scope now',
+        tostring(live.grant))
+
+    -- They relaunch. `playerDropped` delivers `source` as a STRING while the
+    -- connect delivered a NUMBER, and in Lua those are different table keys --
+    -- the bug br_ringmaster/server/main.lua shipped twice.
+    local keptBefore = BR.Admin.stats().decided
+    fire('playerDropped', tostring(94))
+    ok(BR.Admin.stats().decided == keptBefore - 1,
+        'the drop forgets the decision, string source and all',
+        ('%d -> %d'):format(keptBefore, BR.Admin.stats().decided))
+
+    -- THE SAME EVENT AGAIN, AS A NUMBER, AND IT IS A PROP RATHER THAN A SECOND
+    -- ASSERTION. On a real server one `playerDropped` frees both tables:
+    -- server/grants.lua's row and admin.lua's decision. Here grants.lua reads
+    -- identifiers back out of the harness, whose fixture is keyed by number, so
+    -- it needs the number spelling to let go -- and the relaunch below is only
+    -- honest if its cache is genuinely cold. admin.lua's own handler is already
+    -- past its guard and does nothing the second time.
+    fire('playerDropped', 94)
+
+    readyUp(94)
+    ok(lastSent().data.origin == CONSOLE,
+        'and the relaunch the owner promised actually works',
+        tostring(lastSent().data.origin))
+end
+
+describe('the temporary connect id is re-keyed onto the real one')
+do
+    -- `playerConnecting` hands out a TEMPORARY source id; `playerDropped`
+    -- arrives with the real one. Without the handoff at `playerJoining` the
+    -- decision is filed under a number that never appears again, every eviction
+    -- quietly does nothing, and the owner's "relaunch the game" stops working
+    -- for everybody -- with no symptom until somebody says so out loud.
+    --
+    -- THIS IS THE BUG br_ringmaster/server/main.lua SHIPPED, in a second file:
+    -- "the emitter, the event kind, the console handler and the key type were
+    -- all correct. The key VALUE was wrong."
+    --
+    -- Every other block here connects and joins under one id, because that is
+    -- all they need; this one is the only place the two numbers differ, so it is
+    -- the only place the handoff can be seen at all.
+    reset()
+    ddbScopes['license:warmTemp'] = {}
+    local TEMP, REAL = 65535, 98
+    join(TEMP, { license = 'warmTemp', discord = '981111111111111111' })
+    join(REAL, { license = 'warmTemp', discord = '981111111111111111' })
+
+    fire('playerConnecting', TEMP)
+    fireTimers()
+
+    ok(BR.Admin.tabVerdict(REAL).why == 'not-admin-at-connect',
+        'the connect-time answer follows the license, not the id it arrived on',
+        tostring(BR.Admin.tabVerdict(REAL).why))
+
+    fire('playerJoining', REAL, TEMP)
+
+    local kept = BR.Admin.stats().decided
+    fire('playerDropped', tostring(REAL))
+    ok(BR.Admin.stats().decided == kept - 1,
+        'and a drop on the REAL id still finds it',
+        ('%d -> %d'):format(kept, BR.Admin.stats().decided))
+end
+
+describe('a ladder stops when the player gives up on the connection')
+do
+    -- A ladder climbing for somebody who has gone is not merely wasted: `holds`
+    -- STARTS a DynamoDB read as a side effect of being asked, so it would refill
+    -- server/grants.lua's cache one row after that file freed it -- on a timer,
+    -- per abandoned connection.
+    reset()
+    ddbError = 'still down'
+    join(95, { license = 'warmGone', discord = '951111111111111111' })
+
+    local climbing = BR.Admin.stats().warming
+
+    fire('playerConnecting', 95)
+    ok(BR.Admin.stats().warming == climbing + 1, 'a ladder is climbing')
+
+    fire('playerDropped', tostring(95))
+    ok(BR.Admin.stats().warming == climbing, 'and the drop stops it')
+
+    local askedBefore = BR.Grants.stats().asked
+    for _ = 1, 20 do fireTimers() end
+    ok(BR.Grants.stats().asked == askedBefore,
+        'no further DynamoDB read is started for a license nobody is holding',
+        ('%d -> %d'):format(askedBefore, BR.Grants.stats().asked))
+end
+
+describe('the mint still asks DynamoDB, not the cache')
+do
+    -- THE HALF OF THIS FILE THAT MUST NOT BE MADE FASTER. The tab is a door and
+    -- may be drawn from a frozen answer; the mint hands out a CREDENTIAL and may
+    -- not. A `tabVerdict` here would keep minting for an admin whose grant row
+    -- had been emptied, until they happened to reconnect.
+    reset()
+    ddbScopes['license:warmRevoked'] = { 'view' }
+    join(96, { license = 'warmRevoked', discord = '961111111111111111' })
+    readyUp(96)
+    ok(lastSent().data.origin == CONSOLE, 'the tab is drawn from the connect answer')
+
+    ddbScopes['license:warmRevoked'] = {}       -- revoked for real
+    fakeTime = fakeTime + (6 * 60 * 1000)
+    fire(BR.Net.ADMIN_MINT, 96)                 -- refreshes, still serves stale
+    fire(BR.Net.ADMIN_MINT, 96)                 -- now reads the new, empty row
+
+    ok(mint().error == 'not-admin',
+        'a revoked grant is refused a token even though connect said otherwise',
+        tostring(mint().error))
+    ok(lastSent().data.origin == nil,
+        'and the door goes with it', tostring(lastSent().data.origin))
+end
+
+describe('bradmin names the connect-time answer')
+do
+    reset()
+    ddbScopes['license:warmSaid'] = {}
+    join(97, { license = 'warmSaid', discord = '971111111111111111' })
+    readyUp(97)
+
+    printed = {}
+    commands['bradmin'].fn()
+    local said = table.concat(printed, '\n')
+
+    ok(said:find('they must relaunch', 1, true) ~= nil,
+        'the diagnostic tells them the fix is a relaunch, not a grants edit',
+        said)
+    ok(said:find('connect%-time answers %d') ~= nil,
+        'and the warm reports how many answers it collected')
+end
+
+-- ---------------------------------------------------------------- timing ---
+
+describe('timing: what the first pause menu waits for')
+do
+    -- THIS BLOCK MEASURES RATHER THAN DESCRIBES, and the number it produces is
+    -- the only reason the warm exists.
+    --
+    -- THE BUG WAS NEVER THE ROUND TRIP. server/grants.lua asked DynamoDB at
+    -- `playerJoining` and admin.lua decided the tab at `br:ready`, so the read's
+    -- entire budget was the gap between those two -- the tail of a connection,
+    -- a few hundred milliseconds. Land outside it and `holds` answers nil,
+    -- nothing is sent, and the next look is RETRY_MS later. A 900ms read
+    -- therefore cost five seconds, not 900ms.
+    --
+    -- A CLOCK THAT ACTUALLY ADVANCES, for this block only. `fireTimers()`
+    -- everywhere above fires every armed timer at once, which is exactly right
+    -- for asking WHETHER something happens and useless for asking WHEN.
+    local realSetTimeout = SetTimeout
+    local due = {}
+    SetTimeout = function(ms, fn) due[#due + 1] = { at = fakeTime + ms, fn = fn } end
+
+    --- Walk the clock forward, firing what falls due, in due order.
+    local function advance(ms)
+        local target = fakeTime + ms
+        while true do
+            local soonest, idx = nil, nil
+            for i, t in ipairs(due) do
+                if t.at <= target and (soonest == nil or t.at < soonest.at) then
+                    soonest, idx = t, i
+                end
+            end
+            if soonest == nil then break end
+            table.remove(due, idx)
+            fakeTime = soonest.at
+            soonest.fn()
+        end
+        fakeTime = target
+    end
+
+    --- The next armed deadline, or nil.
+    local function nextDue()
+        local soonest = nil
+        for _, t in ipairs(due) do
+            if soonest == nil or t.at < soonest then soonest = t.at end
+        end
+        return soonest
+    end
+
+    -- The connection this models. The two gaps are what the read has to land in.
+    local DOWNLOAD_MS = 9000    -- playerConnecting -> playerJoining
+    local BOOT_MS     = 400     -- playerJoining -> br:ready
+
+    --- Run one whole connection and return the milliseconds between `br:ready`
+    --- and the envelope that carries the console origin. nil if it never came.
+    --- @param src number
+    --- @param license string
+    --- @param warm boolean   whether admin.lua gets its playerConnecting
+    --- @param ddbMs number   how long DynamoDB takes to answer
+    local function waitAfterReady(src, license, warm, ddbMs)
+        reset()
+        due = {}
+        ddbDelayMs = ddbMs
+        ddbScopes['license:' .. license] = { 'view' }
+        join(src, { license = license, discord = '999999999999999999' })
+
+        if warm then fire('playerConnecting', src) end
+        advance(DOWNLOAD_MS)
+        fire('playerJoining', src)
+        advance(BOOT_MS)
+
+        local readyAt = fakeTime
+        local before = sentCount()
+        fire(BR.Net.READY, src)
+
+        while sentCount() == before and (fakeTime - readyAt) < 60000 do
+            local soonest = nextDue()
+            if soonest == nil then break end
+            advance(math.max(soonest - fakeTime, 1))
+        end
+
+        if sentCount() == before then return nil end
+        if lastSent().data.origin == nil then return nil end
+        return fakeTime - readyAt
+    end
+
+    local slowBefore = waitAfterReady(100, 'tFastNoWarm', false, 900)
+    local slowAfter  = waitAfterReady(101, 'tFastWarm',   true,  900)
+    local fastBefore = waitAfterReady(102, 'tSlowNoWarm', false, 150)
+    local fastAfter  = waitAfterReady(103, 'tSlowWarm',   true,  150)
+
+    ok(slowBefore ~= nil and slowBefore >= RETRY_MS,
+        'a 900ms read used to cost the retry interval, not 900ms',
+        tostring(slowBefore))
+    ok(slowAfter == 0,
+        'and now costs nothing, because it landed during the download',
+        tostring(slowAfter))
+    ok(fastBefore == 0, 'a 150ms read always did fit in the boot gap',
+        tostring(fastBefore))
+    ok(fastAfter == 0, 'and still does', tostring(fastAfter))
+
+    -- THE BUDGET IS THE STORY, more than any one latency: the read used to have
+    -- the boot gap and now has the whole download as well.
+    realPrint(('       first tab after br:ready -- 900ms read: %sms -> %sms;' ..
+               ' 150ms read: %sms -> %sms  (budget %dms -> %dms)')
+        :format(tostring(slowBefore), tostring(slowAfter),
+                tostring(fastBefore), tostring(fastAfter),
+                BOOT_MS, DOWNLOAD_MS + BOOT_MS))
+
+    ddbDelayMs = 0
+    SetTimeout = realSetTimeout
 end
 
 -- ------------------------------------------------------------------ done ---
