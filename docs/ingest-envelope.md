@@ -244,7 +244,7 @@ See [`tools/fixtures/ingest-events.json`](../tools/fixtures/ingest-events.json).
         "count": 8,
         "windowMs": 10000,
         "reason": "TOO_FAR",
-        "action": "log"
+        "action": "incident"
       }
     }
   ]
@@ -255,6 +255,13 @@ See [`tools/fixtures/ingest-events.json`](../tools/fixtures/ingest-events.json).
 `GetGameTimer()` — convert it with the formula above.
 
 ### Event kinds in Slice 1
+
+**Four kinds cross this wire and no others**: `player_seen`, `refusal`,
+`incident_filed` and `incident_corroborated`. Nothing the incident, artifact or
+weapon-strip work added is a new kind — artifacts never touch this channel at all
+(frames go straight to S3, and the case row is written by `br_ddb`), and strips
+reuse `incident_filed` and `incident_corroborated`. A receiver that handles these
+four handles everything the game sends.
 
 **`player_seen`** — emitted once per connect, carrying the allowlisted
 identifiers. This is how a Discord id ever becomes associated with a license,
@@ -331,6 +338,16 @@ Emitted by `br_ringmaster` **after** the incident row is durably in DynamoDB.
 }
 ```
 
+**`data.kind` is `anticheat` or `report`, and there is no third value** — but
+there are **three producers**. Refused shots and **weapon strips** both file
+`anticheat` with no reporter; the panel files `report`. The strip path
+deliberately reuses the anticheat record shape rather than adding a kind, because
+a receiver triages it identically and the console has two record types that
+should not become three. The one visible difference on the row is that a
+strip-filed case carries **no `refusal` block**: that block holds `count` and
+`windowMs` from the shot validator, a strip has neither number, and inventing
+them would dress up the finding. Its evidence is the match timeline instead.
+
 **THE WRITE IS THE SOURCE OF TRUTH; THIS EVENT IS ONLY A DOORBELL.** That is the
 load-bearing property of the whole incident pipeline and the reason the game
 writes to DynamoDB itself rather than posting the case here.
@@ -382,11 +399,22 @@ queue that is meant to be a strictly shrinking worklist. Appending to the case t
 already have says the thing a second row cannot: it is still happening, and nobody
 has acted.
 
-**The receiver does the write, and that is the point.** Appending is an `UpdateItem`
-on an existing row; the game's grant on `ringmaster-incidents` is deliberately
-append-only (`PutItem` conditional on the id being absent) so that a compromised game
-box can file noise but can never overwrite a case or erase a verdict and the admin
-who made it. `src/lib/incidents.ts`'s `note()` is already exactly this write.
+**The receiver does the write, and that is the point.** Appending a corroboration is
+an `UpdateItem` on `events` — the console's own half of the row, where an admin's
+notes and the resolution also live — and `src/lib/incidents.ts`'s `note()` is
+already exactly that write. Nothing the game holds can reach `events`.
+
+> **This paragraph used to say the game's grant on that table is "append-only
+> (`PutItem` conditional on the id being absent)". That has not been true since
+> the match timeline shipped**, and it is corrected rather than quietly edited
+> because it is the sentence a reader would quote to conclude the game cannot
+> touch a row that already exists. It can: `incidentClose` is an `UpdateItem`
+> scoped by an IAM **attribute allowlist** — `incidentId`, `matchEndedAt`,
+> `matchTimeline`, `matchTimelineComplete`, `matchKillsSeen` — with
+> `ReturnValues: NONE`. `events`, `state`, `verdict` and every `resolved*` field
+> are outside it, so the conclusion still holds; the reason changed from "it is
+> refused the verb" to "it is refused the attributes", which is a narrower and
+> more checkable claim. [security.md](security.md) carries the full grant list.
 
 **Unlike a case, this event is allowed to be lost.** That asymmetry is deliberate: a
 corroboration is redundant by definition, and the case it attaches to is already
