@@ -1045,11 +1045,16 @@ end, RESTRICTED)
 --- is missing a case and the guard behind it is doing work it should not have
 --- to.
 ---
---- `exempt` IS THE OTHER ONE TO READ, because the exemption is deliberately
---- generous: it withholds a case from anybody whose console grant is not a
---- definite `false`, which includes a grant nobody has managed to read yet. A
---- large number here on a server with no admins online means grant reads are
---- failing, not that admins are cheating.
+--- THERE IS NO `exempt` COUNTER AND NO EXEMPTION. This paragraph used to
+--- describe an admin exemption as the other number worth reading. The owner
+--- removed the exemption in `f562945` -- "I don't want admins to be exempt
+--- from any incidents please" -- and the counter went with it.
+---
+--- IT LEFT THIS COMMAND THROWING RATHER THAN PRINTING, because the format
+--- string still asked `stats()` for a field that had stopped existing. Nothing
+--- caught it: a `%d` against nil is a runtime error on a console command no
+--- test drives. Worth remembering next time a field is deleted -- grep for its
+--- readers, not just its writers.
 RegisterCommand('brstrips', function()
     header('unissued weapons taken out of hands')
     if not BR.Strip then
@@ -1059,8 +1064,8 @@ RegisterCommand('brstrips', function()
     local s = BR.Strip.stats()
     print(('  reports        %d received from clients, %d counted')
         :format(s.reports, s.counted))
-    print(('  refused        %d throttled, %d admin-exempt, %d our own weapon')
-        :format(s.throttled, s.exempt, s.races))
+    print(('  refused        %d throttled, %d our own weapon')
+        :format(s.throttled, s.races))
     print(('  tracking       %d player(s) with a count this match')
         :format(s.tracked))
     -- THE LIMIT, PRINTED WHERE SOMEBODY READING THE NUMBERS WILL SEE IT. A zero
