@@ -124,6 +124,17 @@ BR.Net = {
     -- validation exists. Reports are accepted ONLY when they LOWER the stored
     -- value, so the worst a liar can do is disarm themselves.
     INV_AMMO        = 'br:inv:ammo',         -- C->S  { pool = { light = n, ... }, clip, slot }
+    -- C->S <weapon hash>. The client took a weapon out of its own ped's hand
+    -- because the inventory never issued it. Client-observed by necessity, in
+    -- the same way NPC_DROP above is: the ped's hand is a client-side fact and
+    -- the server has no native that can read it.
+    --
+    -- IT IS EVIDENCE, NOT AN INSTRUCTION. Nothing on the server changes because
+    -- of this message -- no inventory is touched, no player is told anything.
+    -- It opens a moderation case, so the far end rate-limits it, cross-checks
+    -- the hash against the inventory the SERVER holds, and exempts admins. See
+    -- br_core/server/strip.lua for all three.
+    INV_STRIPPED    = 'br:inv:stripped',     -- C->S  <hash>
 
     -- Combat / DBNO
     -- S->C { hp, armour } in DISPLAY units, an authoritative correction.

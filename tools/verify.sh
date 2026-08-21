@@ -1056,6 +1056,69 @@ if [ -f "$cs_" ]; then
     fi
 fi
 
+# --- 4c. the timeline entry kinds agree across the language boundary ----------
+#
+# THE SAME SHAPE AS THE VOICE DEFAULT ABOVE, WHICH IS THIS PROJECT'S SIGNATURE
+# FAILURE: one value written down in two languages, with nothing comparing them.
+#
+# `matchTimeline` is a heterogeneous list discriminated on `kind`. The Lua side
+# builds the entries; js-src/br_ddb/src/close.js projects them onto the DynamoDB
+# update and DELIBERATELY DROPS a kind it does not recognise, so that a bug on
+# the Lua side cannot put an unrenderable row on a moderation record.
+#
+# THAT DESIGN MAKES A DISAGREEMENT SILENT, WHICH IS EXACTLY WHY THIS GATE
+# EXISTS. Both suites pin the kinds they already know about, so the case they
+# cover is a kind being RENAMED. The case they cannot cover is the one that
+# actually happens: a kind ADDED on the Lua side and never taught to close.js.
+# Nothing fails then -- there is no test for a kind nobody has written a test
+# for -- the build is green, and every entry of it is discarded on the way to
+# the row. The feature ships dead, which this project has done before; see the
+# shared-coverage gate's note about outbox.lua.
+#
+# It reads the Lua constant rather than restating it, so adding a kind extends
+# this gate for free.
+
+echo "${DIM}== timeline entry kinds ==${RST}"
+kinds=0
+ib_="resources/[fivem-royale]/br_lib/shared/incident_build.lua"
+cj_="js-src/br_ddb/src/close.js"
+
+if [ ! -f "$ib_" ] || [ ! -f "$cj_" ]; then
+    echo "${YEL}skip${RST} incident_build.lua or close.js absent from this checkout"
+else
+    strip_kind=$(grep -oE "^local STRIP_KIND[[:space:]]*=[[:space:]]*'[a-z_]+'" "$ib_" \
+                 | grep -oE "'[a-z_]+'" | tr -d "'" || true)
+    if [ -z "$strip_kind" ]; then
+        echo "${RED}FAIL${RST} cannot read STRIP_KIND out of br_lib/shared/incident_build.lua"
+        echo "     This gate resolves \"local STRIP_KIND = '<kind>'\". If that"
+        echo "     shape changed, reshape this gate with it -- do not delete it:"
+        echo "     a kind close.js does not know is dropped in silence."
+        kinds=1
+    elif ! grep -qF "kind === '$strip_kind'" "$cj_"; then
+        echo "${RED}FAIL${RST} close.js does not handle the timeline kind '$strip_kind'"
+        echo "     br_lib/shared/incident_build.lua builds entries of that kind and"
+        echo "     timelineEntry() drops every kind it does not name, so those"
+        echo "     entries would never reach a single incident row -- and nothing"
+        echo "     would error while they were being dropped."
+        kinds=1
+    fi
+
+    # AND THE THREE THAT WERE ALREADY THERE, so this gate covers the whole
+    # vocabulary rather than only the newest member of it.
+    for k in match_start match_end kill; do
+        if ! grep -qF "'$k'" "$cj_"; then
+            echo "${RED}FAIL${RST} close.js no longer handles the timeline kind '$k'"
+            kinds=1
+        fi
+    done
+fi
+
+if [ "$kinds" -eq 0 ]; then
+    echo "${GRN}ok${RST}   every timeline kind Lua writes is one close.js stores"
+else
+    rc=1
+fi
+
 # --- 5. secrets ---------------------------------------------------------------
 #
 # The only gate here that scans the WHOLE repo rather than resources/. A

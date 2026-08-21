@@ -145,6 +145,14 @@ server_scripts {
     'server/players.lua',   -- the in-game player list and player reports
     'server/ringmaster.lua', -- the admin-console snapshot feed; emits, never listens
     'server/incident.lua',  -- builds incident payloads from evidence; emits, never enforces
+    -- The second anticheat detector, beside server/damage.lua's: a weapon the
+    -- inventory never issued, taken out of a ped's hand by client/inventory.lua
+    -- and reported here. AFTER incident.lua for a reader rather than for the
+    -- loader -- it raises `br:core:stripped`, which that file answers, and the
+    -- order on the page is the order of the pipeline. It reads BR.Grants,
+    -- BR.Evidence and BR.Inv at call time only, so nothing above it is needed at
+    -- load.
+    'server/strip.lua',
     -- Screenshots of the offender, taken on their own client and uploaded to S3
     -- through br_ddb. AFTER incident.lua and players.lua for a reader rather
     -- than for the loader: it listens to `br:incident:filed` and

@@ -578,6 +578,83 @@ AddEventHandler('br:ui:action', function(name, data)
 end)
 
 -- --------------------------------------------------------------------------
+-- Reporting a strip
+-- --------------------------------------------------------------------------
+
+--- The last strip we told the server about.
+local lastStripAt = 0
+
+--- How often one client may report a strip, in milliseconds.
+---
+--- THE TICK BAND IS 10Hz AND A RECURSIVE CHEAT RE-GRANTS ON EVERY ONE OF THEM.
+--- The owner's description of the behaviour is the reason this constant exists:
+--- "a cheater is likely to do this several times recursively". Unthrottled that
+--- is ten net events a second, per offender, for as long as they keep going --
+--- and the thing on the far end of them is an evidence buffer and a moderation
+--- record, neither of which is improved by the ninth entry in one second.
+---
+--- ONE A SECOND IS ENOUGH TO SHOW THE PATTERN and cheap enough to be free. It
+--- is not a security control and must not be mistaken for one: the far end
+--- throttles again, because a modified client can send whatever it likes at
+--- whatever rate it likes and this line is inside the resource it has already
+--- decided to ignore.
+local STRIP_REPORT_MS = 1000
+
+--- Is this hash something the inventory holds SOMEWHERE, just not in hand?
+---
+--- THE ONE FALSE POSITIVE THIS FEATURE COULD ACTUALLY PRODUCE, and it is worth
+--- spelling out because the answer is not obvious from the strip check above.
+--- That check compares against the ACTIVE slot only, so any window in which the
+--- ped holds a weapon from a DIFFERENT slot of the player's own inventory --
+--- a mirror that has adopted a new active slot before `applyActive` has put the
+--- new weapon in the hand, a grant that has not landed, `suspendAmmo` holding
+--- our writes off the ped during /brprobe raw -- reads as "not the active slot"
+--- and is stripped. Stripping it is harmless: `applyActive` puts the right
+--- weapon back on the same tick.
+---
+--- OPENING A CASE ABOUT IT WOULD NOT BE. "You were holding your own shotgun a
+--- tenth of a second after switching to your rifle" is a race between two
+--- pieces of our own code, and filing it as evidence of a trainer would put an
+--- innocent player in a moderation queue. So the strip stays unconditional and
+--- the REPORT is withheld for a weapon we did in fact issue them.
+---
+--- The server checks this again against ITS inventory, which is the
+--- authoritative one -- see br_core/server/strip.lua. This half exists so the
+--- common race costs no net event at all.
+--- @param h integer|nil  a normalised hash
+--- @return boolean
+local function inAnySlot(h)
+    if h == nil then return false end
+    for i = 1, SLOTS do
+        local want = BR.NormHash(hashOf(inv.slots[i]))
+        if want ~= nil and want == h then return true end
+    end
+    return false
+end
+
+--- Tell the server a weapon it never issued was taken out of this ped's hand.
+---
+--- WHAT THIS IS AND IS NOT. It is a report of something that already happened;
+--- the weapon is gone by the time this runs and nothing the server says can
+--- change that. It catches the vMenu tier -- somebody granting themselves a
+--- gun in a menu -- which is exactly the behaviour that produced the
+--- corpse-that-is-alive desync, and it catches nothing above that tier: a cheat
+--- that stops this resource stops this report along with it. The unforgeable
+--- half is still the server-side damage validation in br_core/server/damage.lua,
+--- which does not need the client's cooperation and cannot be turned off from a
+--- client. Nobody should read this as the defence.
+--- @param h integer|nil  the normalised hash that was in the hand
+local function reportStrip(h)
+    if h == nil or inAnySlot(h) then return end
+
+    local now = GetGameTimer()
+    if now - lastStripAt < STRIP_REPORT_MS then return end
+    lastStripAt = now
+
+    TriggerServerEvent(BR.Net.INV_STRIPPED, h)
+end
+
+-- --------------------------------------------------------------------------
 -- Loops
 -- --------------------------------------------------------------------------
 
@@ -612,6 +689,12 @@ BR.Loop.register(BR.Loop.TICK, 'inv.apply', function()
     -- than correcting it a round trip later. This is defence in depth and not
     -- the defence: a cheat that disables this file entirely is still refused
     -- server-side, which is the half that actually matters.
+    --
+    -- AND IT IS NO LONGER SILENT. The strip is unchanged -- it still happens on
+    -- the same tick, for the same reason -- but it now also REPORTS, because a
+    -- cheater taking this route used to trip no alarm anywhere at all: the
+    -- weapon vanished, they granted themselves another, and nothing was ever
+    -- written down. `reportStrip` below is the whole of that addition.
     do
         local ped = PlayerPedId()
         local ok, held = GetCurrentPedWeapon(ped, true)
@@ -626,6 +709,7 @@ BR.Loop.register(BR.Loop.TICK, 'inv.apply', function()
             if not allowed then
                 RemoveWeaponFromPed(ped, held)
                 applied = nil          -- force the active slot back on
+                reportStrip(h)
             end
         end
     end

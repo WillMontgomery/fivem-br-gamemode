@@ -1612,6 +1612,15 @@ local function newTimelineWorld()
         incidents = {},   -- br:ringmaster:incident payloads
         closes = {},      -- br:ringmaster:incidentClose payloads
         corroborations = {},
+        -- The SERVER's inventories, which server/strip.lua cross-checks a
+        -- reported hash against. [src] = { slots = { { item = 'id' }, ... } }
+        invs = {},
+        -- BR.Grants.holds answers, by license. THREE-VALUED ON PURPOSE: true is
+        -- an admin, false is an ordinary player whose row has been read, and nil
+        -- is a row nobody has read yet -- which is the state every player is in
+        -- for the first moments of a session and is a different answer from
+        -- "they are not an admin".
+        grants = {},
     }
 
     local h = {}
@@ -1685,12 +1694,31 @@ local function newTimelineWorld()
     BRs.Config.defaultReportCategory = function() return 'cheating' end
     BRs.Combat = { attributedKiller = function() return nil end }
 
+    -- THE AUTHORITATIVE INVENTORY, which is what makes server/strip.lua's
+    -- false-positive guard a SERVER decision rather than a client one. The real
+    -- BR.Inv.of returns the roster entry's inventory; nothing else about
+    -- server/inventory.lua is needed to answer "is this weapon theirs".
+    BRs.Inv = { of = function(src) return S.invs[src] end }
+
+    -- THE ADMIN GRANT. `holds` is genuinely three-valued in server/grants.lua
+    -- and server/strip.lua's exemption turns on that, so a stub that collapsed
+    -- it to a boolean would test a rule this project does not have.
+    BRs.Grants = {
+        CONSOLE = 'view',
+        holds = function(license, scope)
+            if scope ~= 'view' then return false end
+            return S.grants[license]
+        end,
+    }
+
     -- IN MANIFEST ORDER. evidence.lua at br_core/fxmanifest.lua:114, incident.lua
-    -- at :138 -- the same order the server loads them, which is the order that
-    -- decides whether the close reads a full buffer or an empty one.
+    -- at :138, strip.lua below it -- the same order the server loads them, which
+    -- is the order that decides whether the close reads a full buffer or an
+    -- empty one.
     for _, f in ipairs({
         'br_core/server/evidence.lua',
         'br_core/server/incident.lua',
+        'br_core/server/strip.lua',
     }) do
         local chunk, err = loadfile(ROOT .. f, 't', env)
         if not chunk then
@@ -1721,8 +1749,42 @@ local function newTimelineWorld()
     function W.join(src, matchId, license, name)
         S.roster[src] = {
             src = src, name = name or ('P' .. src), matchId = matchId, squadId = nil,
+            -- ALIVE, because server/strip.lua will not count a report from a
+            -- lobby ped or a corpse -- the hand it is about is not one this
+            -- gamemode fills in either state.
+            state = BRs.PlayerState.ALIVE,
         }
         S.licenses[src] = license
+        -- READ, AND NOT AN ADMIN. The default for a joined player, because the
+        -- grants cache is primed at playerJoining and a match starts minutes
+        -- later. `W.unread` below is the other case.
+        if license ~= nil then S.grants[license] = false end
+    end
+
+    --- Nobody has successfully read this license's grant row.
+    function W.unread(license) S.grants[license] = nil end
+
+    --- This license holds the console grant.
+    function W.admin(license) S.grants[license] = true end
+
+    --- What the SERVER believes is in this player's five slots.
+    function W.carrying(src, items)
+        local slots = {}
+        for i, id in ipairs(items or {}) do slots[i] = { item = id } end
+        S.invs[src] = { slots = slots }
+    end
+
+    --- One strip report, as client/inventory.lua sends it.
+    ---
+    --- `source` IS SET RATHER THAN PASSED, because that is how FiveM delivers it
+    --- and because the whole point of reading it there is that a client cannot
+    --- name somebody else. A helper that passed the src as an argument would be
+    --- testing a function this project does not have.
+    --- @param weapon any  a hash, or deliberate rubbish
+    function W.strip(src, weapon)
+        env.source = src
+        env.TriggerEvent(BRs.Net.INV_STRIPPED, weapon)
+        env.source = nil
     end
 
     --- One elimination, through the REAL BR.Evidence.noteKill, in the shape
@@ -1768,6 +1830,13 @@ local function newTimelineWorld()
                 subjectLicense = license,
             })
         end
+    end
+
+    --- The acknowledgement br_ringmaster sends once a row is durable.
+    function W.ack(matchId, license, incidentId)
+        env.TriggerEvent('br:incident:filed', {
+            incidentId = incidentId, matchId = matchId, subjectLicense = license,
+        })
     end
 
     --- The teardown br_core runs: `br:match:destroyed` is the only path out of
@@ -2197,6 +2266,398 @@ do
     ok(#kills == 1, 'a kill during the write window is still on the timeline', #kills)
     ok(kills[1] and kills[1].at == 6000, 'at the moment it actually happened',
         kills[1] and tostring(kills[1].at))
+end
+
+-- ======================================================================== --
+-- AN UNISSUED WEAPON IN THE HAND
+-- ======================================================================== --
+--
+-- client/inventory.lua has always taken a weapon the inventory did not issue
+-- out of the ped's hand, and it did it in silence: a player granting themselves
+-- a rifle in a menu left no trace anywhere at all. These cases are about what
+-- that silence was replaced with.
+--
+-- THE OWNER'S INSTRUCTION IS ONE SENTENCE AND TWO OF THESE CASES ARE IT:
+-- "that triggers an incident. Remember a cheater is likely to do this several
+-- times recursively, so we need to log that in the incident timeline rather
+-- than creating a new incident each time."
+--
+-- The rest are about the ways it could be WRONG, which is where the cost is:
+-- an anticheat that files a case about an innocent player is worse than one
+-- that files nothing, and two of the four paths below exist only to stop that.
+
+-- A weapon this gamemode has never heard of. Nothing in br_lib/config/weapons
+-- carries this hash, which is the whole point of it.
+local CONJURED = 0x11111111
+-- ...and one it issues, by the hash the engine reports for it.
+local CARBINE = 0x83BF0278
+
+describe('strip.opens-a-case')
+do
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000)
+    W.strip(1, CONJURED)
+
+    local p = W.lastIncident()
+    ok(p ~= nil, 'the FIRST strip opens a case')
+    ok(p and p.kind == 'anticheat', 'as an anticheat case, not a new record type',
+        p and tostring(p.kind))
+    ok(p and p.subjectLicense == 'license:cheat', 'about the player it happened to')
+    ok(p and p.reporterLicense == nil,
+        'with no reporter, so the console reads it as system-filed')
+
+    -- SEVERITY IS READ FROM THE TAXONOMY, not restated. NO_WEAPON is graded
+    -- `high` in combat_solve.lua and this must agree with it by construction.
+    ok(p and p.severity == W.BR.ShotTier[W.BR.ShotRefusal.NO_WEAPON],
+        'graded by the same table that grades a conjured-weapon refusal',
+        p and tostring(p.severity))
+
+    -- AND IT DOES NOT CLAIM SHOTS WERE REFUSED. Nothing was fired.
+    ok(p and p.refusal == nil, 'and carries no refusal block, because none happened')
+    ok(p and type(p.summary) == 'string' and p.summary:find('unissued') ~= nil,
+        'the queue line says what actually happened', p and tostring(p.summary))
+
+    -- THE EVENT ITSELF IS ON THE TIMELINE, at the moment the server stamped it.
+    local strips = ofKind(p and p.matchTimeline, 'weapon_strip')
+    ok(#strips == 1, 'the strip that opened the case is on its timeline', #strips)
+    ok(strips[1] and strips[1].at == 4000,
+        'stamped by the SERVER clock, never by the client',
+        strips[1] and tostring(strips[1].at))
+    ok(strips[1] and strips[1].weapon == CONJURED,
+        'and carries the hash, which is the only name a conjured weapon has',
+        strips[1] and tostring(strips[1].weapon))
+end
+
+describe('strip.repeats-append')
+do
+    -- THE OWNER'S SENTENCE, ASSERTED. Several strips in one match are ONE case
+    -- with several timeline entries -- not one case each, which would let a
+    -- persistent cheater bury the queue the case is meant to be read from.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.strip(1, CONJURED)
+    W.ack(7, 'license:cheat', 'inc-1')
+
+    -- Recursively, exactly as described. Spaced past the server's own throttle
+    -- so every one of them counts.
+    for i = 1, 5 do
+        W.at(4000 + i * 1000)
+        W.strip(1, CONJURED)
+    end
+
+    ok(#W.S.incidents == 1, 'five more strips file no second case', #W.S.incidents)
+    ok(#W.S.corroborations > 0, 'they corroborate the one that exists',
+        #W.S.corroborations)
+    ok(W.S.corroborations[1] and W.S.corroborations[1].incidentId == 'inc-1',
+        'against the case the write came back with')
+
+    -- ...AND EVERY ONE OF THEM REACHES THE TIMELINE, which is the half the
+    -- corroboration channel cannot do: corroborations land in the console's own
+    -- `events` list, and the owner asked for the incident's timeline.
+    W.at(20000)
+    W.endMatch(7)
+
+    local c = W.lastClose()
+    ok(c ~= nil, 'the match ending closes that one case')
+    ok(c and c.incidentId == 'inc-1', 'the same one, not a new row')
+
+    local strips = ofKind(c and c.matchTimeline, 'weapon_strip')
+    ok(#strips == 5, 'every strip after the filing is on the close', #strips)
+    ok(strips[1] and strips[1].at == 5000, 'oldest first',
+        strips[1] and tostring(strips[1].at))
+
+    -- AND THE FIRST ONE IS NOT SENT TWICE. It rode the PutItem; a timeline that
+    -- lists the same event twice is a claim about a person that is false.
+    local dup = false
+    for _, s in ipairs(strips) do if s.at == 4000 then dup = true end end
+    ok(not dup, 'the strip already on the row is not repeated')
+
+    ok(c and c.matchTimelineComplete == true,
+        'and nothing was dropped, so the record says so')
+end
+
+describe('strip.announcements-are-throttled-but-the-record-is-not')
+do
+    -- REPORT AT THE FIRST, THEN ON EVERY DOUBLING -- the rule server/damage.lua
+    -- already lands on, because the corroboration channel is a 512-deep
+    -- drop-oldest outbox and an offender chooses how often this fires. What is
+    -- throttled is how often the CONSOLE is told; the timeline still gets all of
+    -- them, and that distinction is the whole reason this case exists.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.strip(1, CONJURED)
+    W.ack(7, 'license:cheat', 'inc-1')
+
+    for i = 1, 15 do
+        W.at(4000 + i * 1000)
+        W.strip(1, CONJURED)
+    end
+
+    -- 16 strips announce at 1, 2, 4, 8, 16 -- five, of which the first opened
+    -- the case and four corroborated it.
+    ok(#W.S.corroborations == 4,
+        'sixteen strips produce four corroborations, not fifteen',
+        #W.S.corroborations)
+
+    W.at(30000)
+    W.endMatch(7)
+
+    local strips = ofKind(W.lastClose() and W.lastClose().matchTimeline, 'weapon_strip')
+    ok(#strips == 15, 'while all fifteen later strips are on the timeline', #strips)
+end
+
+describe('strip.admin-exempt')
+do
+    -- ═══ A DECISION TAKEN WITHOUT THE OWNER, AND PINNED SO IT CANNOT DRIFT ═══
+    --
+    -- The owner grants themselves weapons through vMenu constantly while
+    -- testing. Every one of those is a strip, so without this the first thing
+    -- this feature ships is a queue full of cases about the person who reads the
+    -- queue -- and an anticheat known to be noise is one nobody opens again.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:owner', 'Owner')
+    W.admin('license:owner')
+
+    for i = 1, 5 do
+        W.at(4000 + i * 1000)
+        W.strip(1, CONJURED)
+    end
+
+    ok(#W.S.incidents == 0, 'an admin testing with vMenu opens no case',
+        #W.S.incidents)
+    ok(#W.S.corroborations == 0, 'and corroborates nothing')
+
+    -- NOT EVEN IN THE BUFFER. An exempt player's strips are not recorded
+    -- anywhere at all, so there is no quiet log of admin activity sitting in
+    -- memory waiting for some later feature to read it.
+    local recs = W.BR.Evidence.forLicense('license:owner')
+    local held = 0
+    for _, r in ipairs(recs) do held = held + #(r.strips or {}) end
+    ok(held == 0, 'and nothing about them is buffered either', held)
+
+    -- THE STRIP ITSELF IS NOT WHAT IS EXEMPT. This suite cannot see the client,
+    -- but the exemption is on the REPORT and the weapon still comes out of the
+    -- hand -- see the strip block in client/inventory.lua, which has no notion
+    -- of a grant.
+end
+
+describe('strip.unknown-grant')
+do
+    -- SILENCE ON DOUBT. BR.Grants.holds answers nil for "we have never
+    -- successfully read this license's row", which is not the same as "they are
+    -- not an admin" -- and an accusation against a named person must not be
+    -- built on a question nobody answered.
+    --
+    -- THE COST OF THAT IS NEARLY NOTHING, WHICH IS WHY IT IS THE RIGHT WAY
+    -- ROUND, and this case proves it rather than asserting it in a comment: the
+    -- behaviour repeats by definition, so the next strip files.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+    W.unread('license:cheat')
+
+    W.at(4000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 0, 'a strip by a player whose grant is unread files nothing',
+        #W.S.incidents)
+
+    -- The row is read a moment later, as it always is: the cache is primed at
+    -- playerJoining and `holds` re-asks on every miss.
+    W.join(1, 7, 'license:cheat', 'Cheater')
+    W.at(6000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 1, 'and the next one opens the case', #W.S.incidents)
+
+    local strips = ofKind(W.lastIncident() and W.lastIncident().matchTimeline,
+        'weapon_strip')
+    ok(#strips == 1, 'carrying only the strip that was actually countable', #strips)
+end
+
+describe('strip.our-own-weapon-is-not-evidence')
+do
+    -- THE ONLY FALSE POSITIVE THIS FEATURE CAN PRODUCE. The client strips
+    -- anything that is not the ACTIVE slot, so a weapon from another slot of the
+    -- player's own inventory -- held for the tick between a slot change and the
+    -- grant landing -- is stripped too. Stripping it is harmless. Opening a case
+    -- about it would put an innocent player in a moderation queue over a tenth
+    -- of a second of tick ordering.
+    --
+    -- CHECKED AGAINST THE INVENTORY THE SERVER HOLDS, not the one the client
+    -- reported, because the client's copy is exactly what a compromised client
+    -- controls.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:honest', 'Honest')
+    W.carrying(1, { 'carbinerifle' })
+
+    W.at(4000); W.strip(1, CARBINE)
+    ok(#W.S.incidents == 0, 'a weapon the server DID issue them opens no case',
+        #W.S.incidents)
+
+    -- And the guard is not simply "never file": the same player, holding the
+    -- same inventory, conjuring something else still files.
+    W.at(6000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 1, 'while a weapon it did not issue still does',
+        #W.S.incidents)
+end
+
+describe('strip.flood-is-bounded')
+do
+    -- A CLIENT CHOOSES HOW OFTEN IT SENDS THIS, so the number that bounds it has
+    -- to be on the server. The client throttles too, but it is code the offender
+    -- has already decided to modify.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000)
+    for _ = 1, 50 do W.strip(1, CONJURED) end   -- all in the same millisecond
+
+    ok(#W.S.incidents == 1, 'a flood still opens exactly one case', #W.S.incidents)
+
+    local strips = ofKind(W.lastIncident() and W.lastIncident().matchTimeline,
+        'weapon_strip')
+    ok(#strips == 1, 'and puts one entry on the timeline, not fifty', #strips)
+
+    local st = W.BR.Strip.stats()
+    ok(st.throttled == 49, 'the rest are refused and counted as refused',
+        st.throttled)
+end
+
+describe('strip.truncation-is-never-silent')
+do
+    -- THE HONESTY GUARANTEE, AND FOR STRIPS IT IS CARRIED BY ONE FLAG ALONE.
+    --
+    -- A truncated kill list says so twice: `matchTimelineComplete` goes false
+    -- AND `matchKillsSeen` states the real number. Strips have no equivalent
+    -- counter and deliberately never will -- the close write may touch exactly
+    -- five attributes, and that list IS the game's IAM grant on
+    -- `ringmaster-incidents`, so a sixth would mean widening a policy to carry a
+    -- number. So the flag is the whole of it, and it has to be right.
+    --
+    -- WHAT IT PREVENTS is the one failure a moderation record must not produce:
+    -- a list that stops early and looks complete, telling an admin "this is
+    -- everything they did" when it is not.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(2000)
+    W.strip(1, CONJURED)
+    W.ack(7, 'license:cheat', 'inc-1')
+
+    local CAP = W.BR.IncidentBuild.TIMELINE_LIMITS.MAX_TIMELINE_STRIPS
+    for i = 1, CAP + 20 do
+        W.at(2000 + i * 1000)
+        W.strip(1, CONJURED)
+    end
+
+    W.at(500000)
+    W.endMatch(7)
+
+    local c = W.lastClose()
+    local strips = ofKind(c and c.matchTimeline, 'weapon_strip')
+    ok(#strips <= CAP, 'a runaway strip count is bounded', #strips)
+    ok(c and c.matchTimelineComplete == false,
+        'and a truncated timeline never claims to be complete',
+        c and tostring(c.matchTimelineComplete))
+end
+
+describe('strip.timeline-stays-chronological')
+do
+    -- THE ORDER OF THIS LIST IS NOT COSMETIC. js-src/br_ddb/src/close.js takes
+    -- the LAST n entries when a close overflows, so a timeline that appended
+    -- every strip after every kill would truncate by KIND rather than by age --
+    -- and an offender who kept stripping would push their own kills off the
+    -- record, which is the opposite of what the evidence is for.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+    W.join(2, 7, 'license:v1', 'Victim1')
+    W.join(3, 7, 'license:v2', 'Victim2')
+
+    W.at(2000); W.strip(1, CONJURED)     -- opens the case
+    W.ack(7, 'license:cheat', 'inc-1')
+
+    W.at(3000); W.kill(1, 2)
+    W.at(4000); W.strip(1, CONJURED)
+    W.at(5000); W.kill(1, 3)
+    W.at(6000); W.strip(1, CONJURED)
+
+    W.at(9000); W.endMatch(7)
+
+    local c = W.lastClose()
+    ok(c ~= nil, 'the case closes')
+
+    local last, sorted, kinds = -1, true, {}
+    for _, e in ipairs(c and c.matchTimeline or {}) do
+        if e.at < last then sorted = false end
+        last = e.at
+        kinds[#kinds + 1] = e.kind
+    end
+    ok(sorted, 'kills and strips interleave in the order they happened',
+        table.concat(kinds, ','))
+    ok(table.concat(kinds, ',') == 'kill,weapon_strip,kill,weapon_strip,match_end',
+        'and that order is the one the match actually had',
+        table.concat(kinds, ','))
+end
+
+describe('strip.needs-a-live-match')
+do
+    -- NO MATCH, NOTHING TO PUT IT ON. A report from the lobby has no round to be
+    -- about, and the evidence buffer would refuse the note anyway.
+    local W = newTimelineWorld()
+    W.join(1, nil, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 0, 'a strip reported outside a match files nothing',
+        #W.S.incidents)
+end
+
+describe('strip.rubbish-is-not-a-weapon')
+do
+    -- A CLIENT SENDS WHATEVER IT LIKES. The only record it can write to is its
+    -- own -- `source` decides who the entry is about -- so the failure to guard
+    -- against is a malformed value being STORED as though it named something.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.strip(1, 'not a hash')
+
+    local p = W.lastIncident()
+    ok(p ~= nil, 'a strip with a nonsense weapon is still a strip')
+
+    local strips = ofKind(p and p.matchTimeline, 'weapon_strip')
+    ok(#strips == 1, 'and reaches the timeline', #strips)
+    -- IN LUA `0` IS TRUTHY, so a hash of zero would sail through a bare check
+    -- and land on a moderation record as though it named a weapon.
+    ok(strips[1] and strips[1].weapon == nil,
+        'with no weapon on it rather than a stored zero',
+        strips[1] and tostring(strips[1].weapon))
+end
+
+describe('strip.quiet-match-still-costs-nothing')
+do
+    -- THE COST RULE, RESTATED FOR THE NEW SOURCE. Adding a second way to open a
+    -- case must not add a write to a match that produces none -- and this is the
+    -- source whose volume an offender chooses, so it is the one worth pinning.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:clean', 'Clean')
+    W.join(2, 7, 'license:v1', 'Victim1')
+
+    W.at(2000); W.kill(1, 2)
+    W.at(9000); W.endMatch(7)
+
+    ok(#W.S.incidents == 0, 'a match with no strips files nothing')
+    ok(#W.S.closes == 0, 'and closes nothing -- zero writes', #W.S.closes)
 end
 
 -- ----------------------------------------------------------------- result ---

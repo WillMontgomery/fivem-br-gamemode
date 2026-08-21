@@ -996,6 +996,186 @@ do
     ok(buf3:seal(999, 1) == nil, 'sealing an unknown key is a no-op, not a crash')
 end
 
+describe('evidence.strips')
+do
+    -- A WEAPON THE GAMEMODE NEVER ISSUED, TAKEN OUT OF A HAND. It rides the same
+    -- buffer as chat and kills for the same reason -- so a match that produces
+    -- no incident still writes nothing anywhere -- but it is capped separately,
+    -- because the thing it is evidence of is repetition and repetition is
+    -- exactly what an offender controls the volume of.
+
+    local buf = BR.EvidenceBuf.new({ stripMax = 3 })
+    local meta = { license = 'license:cheat', name = 'Cheater', matchId = 41 }
+
+    for i = 1, 5 do
+        buf:noteStrip(7, { at = i * 100, weapon = 0x1B06D571 }, meta)
+    end
+
+    local r = buf:get(7)
+    ok(r ~= nil, 'a strip starts tracking the player')
+    ok(#r.strips == 3, 'strips are capped', r and #r.strips)
+    ok(r.strips[1].at == 300 and r.strips[3].at == 500,
+        'and the cap drops the OLDEST, which are the ones already on the row',
+        r and tostring(r.strips[1].at))
+
+    -- THE COUNT THAT WAS REALLY SEEN SURVIVES THE CAP. A timeline that stops
+    -- early and looks complete tells an admin "this is everything they did"
+    -- when it is not.
+    ok(r.stripsSeen == 5, 'and the buffer still knows how many there were',
+        r and tostring(r.stripsSeen))
+
+    local s = buf:stats()
+    ok(s.stripRows == 3 and s.stripsSeen == 5 and s.stripsDropped == 2,
+        'the counters report the gap the caps produced',
+        s.stripRows .. '/' .. s.stripsSeen .. '/' .. s.stripsDropped)
+
+    -- ONE SIDE ONLY, unlike a kill. There is no second participant in a strip.
+    local other = BR.EvidenceBuf.new()
+    other:noteStrip(1, { at = 1 }, { license = 'l:a', matchId = 41 })
+    ok(#other:forLicense('l:a') == 1 and #other:forLicense('l:b') == 0,
+        'a strip is recorded against one player and nobody else')
+
+    -- PROMOTION RAISES IT WITH THE REST. Filing a case is what buys the larger
+    -- caps, and a strip cap left at the default would quietly become "the last
+    -- twenty" for exactly the prolific offender the timeline exists to document.
+    local buf2 = BR.EvidenceBuf.new()
+    ok(BR.EvidenceBuf.PROMOTED.stripMax > BR.EvidenceBuf.DEFAULTS.stripMax,
+        'the promoted strip cap is larger than the default')
+    buf2:promote('license:cheat')
+    for i = 1, BR.EvidenceBuf.DEFAULTS.stripMax + 10 do
+        buf2:noteStrip(3, { at = i }, { license = 'license:cheat', matchId = 41 })
+    end
+    ok(#buf2:get(3).strips == BR.EvidenceBuf.DEFAULTS.stripMax + 10,
+        'a promoted record keeps more strips than the default cap',
+        #buf2:get(3).strips)
+
+    -- TWO CAPS FOR ONE NUMBER, PINNED TOGETHER. incident_build.lua carries its
+    -- own ceiling as a backstop for a caller that promoted differently -- the
+    -- same relationship MAX_TIMELINE_KILLS has with killMax -- and the two
+    -- disagreeing means either the buffer holds rows the timeline silently
+    -- truncates, or the timeline claims room the buffer never fills.
+    ok(BR.IncidentBuild.TIMELINE_LIMITS.MAX_TIMELINE_STRIPS
+        == BR.EvidenceBuf.PROMOTED.stripMax,
+        'the timeline cap and the promoted buffer cap are the same number',
+        BR.IncidentBuild.TIMELINE_LIMITS.MAX_TIMELINE_STRIPS .. ' vs ' ..
+        BR.EvidenceBuf.PROMOTED.stripMax)
+    ok(BR.IncidentBuild.TIMELINE_LIMITS.MAX_TIMELINE_KILLS
+        == BR.EvidenceBuf.PROMOTED.killMax,
+        'and so are the kill pair, which is where that rule came from')
+end
+
+describe('timeline.strip-truncation')
+do
+    -- ═══ THE HONESTY FLAG, PINNED ON BOTH HALVES SEPARATELY ═══
+    --
+    -- A truncated KILL list says so twice: `matchTimelineComplete` goes false
+    -- and `matchKillsSeen` states the real number. Strips have only the flag,
+    -- and deliberately never will have a counter of their own -- the close write
+    -- may touch exactly five attributes and that list IS the game's IAM grant on
+    -- `ringmaster-incidents`, so a sixth would mean widening a policy to carry a
+    -- number.
+    --
+    -- SO THE FLAG IS THE WHOLE GUARANTEE, and there are two ways to lose it: the
+    -- CAP dropping rows on the way onto the timeline, and the BUFFER having
+    -- dropped them before the timeline ever saw them. Those are separate
+    -- comparisons in separate expressions, and a case that trips both together
+    -- passes with either one deleted -- which is exactly what the end-to-end
+    -- suite does. These drive the pure functions directly so each is alone.
+    local CAP = BR.IncidentBuild.TIMELINE_LIMITS.MAX_TIMELINE_STRIPS
+
+    --- One evidence record holding `n` strips, with `seen` claimed as offered.
+    local function records(n, seen)
+        local strips = {}
+        for i = 1, n do strips[i] = { at = i * 10, weapon = 0x11111111 } end
+        return { { license = 'l:x', strips = strips, stripsSeen = seen or n,
+                   kills = {}, killsSeen = 0 } }
+    end
+
+    -- (1) THE CAP DROPS ROWS. The buffer offered everything it had -- nothing
+    --     was lost before this point -- and the timeline's own ceiling is what
+    --     truncates.
+    local over = BR.IncidentBuild.timelineOpen({
+        matchId = 7, matchStartedAt = 0, records = records(CAP + 5),
+    })
+    local n = 0
+    for _, e in ipairs(over.matchTimeline) do
+        if e.kind == BR.IncidentBuild.STRIP_KIND then n = n + 1 end
+    end
+    ok(n == CAP, 'a filing truncates the strips at the timeline cap', n)
+    ok(over.matchTimelineComplete == false,
+        'and never claims to be complete when its own cap dropped rows',
+        tostring(over.matchTimelineComplete))
+
+    -- (2) THE BUFFER DROPPED ROWS FIRST. Everything the timeline was offered
+    --     fits, so the cap truncates nothing -- and the record is still not
+    --     complete, because rows were lost upstream of it.
+    local lost = BR.IncidentBuild.timelineOpen({
+        matchId = 7, matchStartedAt = 0, records = records(3, 40),
+    })
+    ok(lost.matchTimelineComplete == false,
+        'and neither when the BUFFER dropped them before the timeline saw them',
+        tostring(lost.matchTimelineComplete))
+
+    -- (3) AND IT SAYS TRUE WHEN IT IS TRUE, which is the half that makes the
+    --     flag worth reading at all.
+    local whole = BR.IncidentBuild.timelineOpen({
+        matchId = 7, matchStartedAt = 0, records = records(3),
+    })
+    ok(whole.matchTimelineComplete == true,
+        'a timeline that lost nothing reports itself complete',
+        tostring(whole.matchTimelineComplete))
+
+    -- ...AND THE SAME TWO, ON THE CLOSE. It computes its own answer rather than
+    -- inheriting the filing's, so the two have to be pinned apart.
+    local closeCapped = BR.IncidentBuild.timelineClose({
+        matchEndedAt = 9000, filedAtGameMs = 0, records = records(CAP + 5),
+    })
+    ok(closeCapped.matchTimelineComplete == false,
+        'a close truncated by the cap says so too',
+        tostring(closeCapped.matchTimelineComplete))
+
+    local closeLost = BR.IncidentBuild.timelineClose({
+        matchEndedAt = 9000, filedAtGameMs = 0, records = records(3, 40),
+    })
+    ok(closeLost.matchTimelineComplete == false,
+        'and so does one whose buffer dropped rows',
+        tostring(closeLost.matchTimelineComplete))
+
+    local closeWhole = BR.IncidentBuild.timelineClose({
+        matchEndedAt = 9000, filedAtGameMs = 0, records = records(3),
+    })
+    ok(closeWhole.matchTimelineComplete == true,
+        'while an intact one still reports itself complete',
+        tostring(closeWhole.matchTimelineComplete))
+
+    -- (4) THE CLOSE'S TWO CLAUSES, PRISED APART. With nothing already written
+    --     they move together -- rows dropped by the cap are by definition rows
+    --     the buffer offered and the write did not take -- so either clause
+    --     alone answers `false` and a mutation to one of them survives. A
+    --     filing that has already spent part of the budget separates them: the
+    --     close's own ceiling truncates while every row the buffer ever held is
+    --     still accounted for across the two writes.
+    local spentSome = BR.IncidentBuild.timelineClose({
+        matchEndedAt = 9000, filedAtGameMs = 0, records = records(CAP),
+        priorStrips = 5,
+    })
+    ok(spentSome.matchTimelineComplete == false,
+        'a close whose own cap truncated says so even when nothing was lost upstream',
+        tostring(spentSome.matchTimelineComplete))
+
+    -- THE BUDGET THE FILING ALREADY SPENT. A close that ignored `priorStrips`
+    -- would let one match write CAP strips twice over.
+    local spent = BR.IncidentBuild.timelineClose({
+        matchEndedAt = 9000, filedAtGameMs = 0, records = records(CAP),
+        priorStrips = CAP,
+    })
+    local m = 0
+    for _, e in ipairs(spent.matchTimeline) do
+        if e.kind == BR.IncidentBuild.STRIP_KIND then m = m + 1 end
+    end
+    ok(m == 0, 'a close whose filing already spent the whole budget adds none', m)
+end
+
 describe('bus.doors')
 do
     -- THE DOOR WINDOW IS THE UNION, never a replacement. A tour that crosses

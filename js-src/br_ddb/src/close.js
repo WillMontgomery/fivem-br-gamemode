@@ -46,11 +46,19 @@ const int = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : null)
  * The most entries one close may append.
  *
  * A DYNAMODB ITEM IS 400KB AND THIS IS THE HALF A PLAYER INFLUENCES. The Lua
- * side caps the timeline at 250 kills before it ever gets here; this is the
- * backstop for a caller that did not, and it fails towards the smaller number
- * rather than towards a rejected write. An entry marshals to roughly 200 bytes.
+ * side caps the timeline before it ever gets here; this is the backstop for a
+ * caller that did not, and it fails towards the smaller number rather than
+ * towards a rejected write. A kill entry marshals to roughly 200 bytes.
+ *
+ * IT HAS TO SIT ABOVE THE LUA SIDE'S OWN CEILING, NOT BELOW IT, and that is why
+ * this number moved when strips joined the timeline. A close now carries up to
+ * MAX_TIMELINE_KILLS (250) plus MAX_TIMELINE_STRIPS (60) plus the match_end, and
+ * `tail()` below keeps the LAST n -- so a backstop set under 311 would not be a
+ * backstop at all, it would be this file quietly deleting the oldest rows of
+ * every large close and marking the result incomplete. 320 is that ceiling with
+ * the same ten rows of slack the old 260 carried over 250.
  */
-const MAX_CLOSE_ENTRIES = 260
+const MAX_CLOSE_ENTRIES = 320
 
 /**
  * Take the LAST n, because the recent ones explain the incident -- the same
@@ -104,6 +112,40 @@ export function timelineEntry(e) {
 
   if (kind === 'match_start' || kind === 'match_end') {
     return { at, kind }
+  }
+
+  /**
+   * A WEAPON THE GAMEMODE NEVER ISSUED, TAKEN OUT OF THE OFFENDER'S HAND.
+   *
+   * THE SPELLING OF THIS STRING IS LOAD-BEARING ACROSS TWO LANGUAGES. The Lua
+   * side names it once, as STRIP_KIND in br_lib/shared/incident_build.lua, and
+   * an entry whose kind this function does not recognise is DROPPED by the
+   * `return null` at the bottom -- silently and on purpose. So a typo here does
+   * not fail anything: both sides pass their own tests, and the entries simply
+   * never arrive on any record. tools/verify.sh compares the two literals,
+   * because that is the only place the two languages can be made to agree
+   * mechanically.
+   *
+   * NO LICENCES, NO NAMES. Unlike a kill there is no second party -- a strip is
+   * a fact about the subject's own ped, and the row already carries
+   * `subjectLicense`.
+   *
+   * `weapon` IS THE SAME COERCION THE KILL PATH USES and for the same reason:
+   * Lua sends a HASH, `str()` answers null for a number, and the raw hash is the
+   * only identifier anybody has for a weapon this gamemode has never heard of.
+   * There is deliberately no `weaponLabel` beside it -- we have no name for what
+   * we do not hand out, and inventing one would dress up the finding.
+   *
+   * AND NO `weaponIssued`. The kind IS the claim: an entry of this kind exists
+   * precisely because the weapon was not one we issue, so a flag repeating that
+   * would be a second place for the same fact to be stored and to rot.
+   */
+  if (kind === 'weapon_strip') {
+    return {
+      at,
+      kind,
+      weapon: str(e?.weapon, 64) ?? (Number.isFinite(e?.weapon) ? String(e.weapon) : null),
+    }
   }
 
   if (kind === 'kill') {

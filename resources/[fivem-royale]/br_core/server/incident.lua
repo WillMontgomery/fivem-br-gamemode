@@ -284,6 +284,80 @@ AddEventHandler('br:ringmaster:refusal', function(ev)
 end)
 
 -- ---------------------------------------------------------------------------
+-- An unissued weapon in the hand
+-- ---------------------------------------------------------------------------
+--
+-- THE SECOND ANTICHEAT SOURCE, AND IT REACHES THIS FILE THE SAME WAY THE FIRST
+-- ONE DOES. server/strip.lua counts and decides, exactly as damage.lua counts
+-- and decides; this file turns the announcement into a case or into a
+-- corroboration. Neither detector knows this file exists, which is what lets
+-- either of them be restarted, replaced or absent without the other caring.
+--
+-- ONE CASE PER PLAYER PER MATCH IS UNCHANGED AND IS THE POINT. The owner:
+-- "a cheater is likely to do this several times recursively, so we need to log
+-- that in the incident timeline rather than creating a new incident each time."
+-- The rule that already produced that behaviour for refusals is `priorFor`, and
+-- reusing it means a strip after a refusal case appends to the refusal case, and
+-- a refusal after a strip case appends to the strip case. One player, one round,
+-- one record -- whichever thing they did first opened it.
+--
+-- WHERE THE REPEATS ACTUALLY LAND. Every accepted strip is written into the
+-- evidence buffer by server/strip.lua BEFORE it gets here, so:
+--
+--   the first    rides the PutItem this handler triggers -- the strips known at
+--                filing time are on the timeline the case is created with.
+--   every one    is on the timeline the match-end close appends. That write was
+--   after it     already happening for this case and touches only the five
+--                attributes the game's IAM grant allows; strips cost it nothing
+--                extra and add no attribute to it.
+--
+-- SO A RECURSIVE CHEATER COSTS THE SAME TWO WRITES AS A SINGLE ONE. That is the
+-- cost rule this whole subsystem is built on -- see the note further down --
+-- and it matters more here than anywhere else in the file, because the volume is
+-- chosen by the offender rather than by the game.
+AddEventHandler('br:core:stripped', function(ev)
+    if type(ev) ~= 'table' then return end
+
+    local prior = BR.Incident.priorFor(ev.matchId, ev.license)
+    if #prior > 0 then
+        -- SAME CHANNEL, SAME REASONING as the refusal doubling above: the case
+        -- is already durable, so "it is still happening" may ride the lossy
+        -- event channel, and `seq` travels so the console can tell a dropped
+        -- corroboration from a quiet match.
+        TriggerEvent('br:ringmaster:corroborate', {
+            incidentId = prior[#prior],
+            matchId    = ev.matchId,
+            license    = ev.license,
+            name       = ev.name,
+            seq        = ev.seq,
+            count      = ev.count,
+            -- THE TAXONOMY'S OWN SENTENCE, which reads "weapon is not one this
+            -- gamemode issues" -- true of a strip word for word. It is not
+            -- claiming a shot was refused: `count` is the number of strips and
+            -- the case's summary says so.
+            reason     = BR.ShotRefusal.NO_WEAPON,
+            severity   = BR.ShotTier[BR.ShotRefusal.NO_WEAPON],
+            at         = ev.at,
+        })
+        return
+    end
+
+    local records = BR.Evidence and BR.Evidence.forLicense(ev.license) or {}
+
+    local payload, why = BR.IncidentBuild.fromStrip(ev, records)
+    if not payload then
+        print(('^3[br_core] strip incident NOT filed for %s: %s^7')
+            :format(tostring(ev.name), tostring(why)))
+        return
+    end
+
+    payload.priorIncidentIds = prior
+    BR.Incident.attachTimeline(payload, records)
+
+    TriggerEvent('br:ringmaster:incident', payload)
+end)
+
+-- ---------------------------------------------------------------------------
 -- Telling the rest of the match that reporting exists (#168)
 -- ---------------------------------------------------------------------------
 
@@ -531,8 +605,9 @@ function BR.Incident.attachTimeline(payload, records)
             pendingTimeline[payload.matchId] = byLicense
         end
         byLicense[payload.subjectLicense] = {
-            at           = payload.atGameMs,
-            killsWritten = t.matchKillsWritten or 0,
+            at            = payload.atGameMs,
+            killsWritten  = t.matchKillsWritten or 0,
+            stripsWritten = t.matchStripsWritten or 0,
         }
     end
 
@@ -560,10 +635,11 @@ AddEventHandler('br:incident:filed', function(ack)
         closing[ack.matchId] = list
     end
     list[#list + 1] = {
-        incidentId   = ack.incidentId,
-        license      = ack.subjectLicense,
-        filedAt      = pend.at,
-        killsWritten = pend.killsWritten,
+        incidentId    = ack.incidentId,
+        license       = ack.subjectLicense,
+        filedAt       = pend.at,
+        killsWritten  = pend.killsWritten,
+        stripsWritten = pend.stripsWritten,
     }
 end)
 
@@ -596,6 +672,7 @@ AddEventHandler('br:evidence:closing', function(ev)
             filedAtGameMs = c.filedAt,
             records       = records,
             priorKills    = c.killsWritten,
+            priorStrips   = c.stripsWritten,
         })
 
         -- EMITTED, NOT CALLED. br_ringmaster listens; if it is not running,

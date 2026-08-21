@@ -261,7 +261,20 @@ function HasModelLoaded() return true end
 function CreateObjectNoOffset() return 0 end
 function DoesEntityExist() return false end
 function IsPedInAnyVehicle() return inVehicle end
-function GetCurrentPedWeapon() return false, 0 end
+--- WHAT THE ENGINE SAYS IS IN THE HAND, and it is a variable rather than a
+--- constant because two things read it and they disagree about what a `false`
+--- means. The ammo report treats "no answer" as a reason to say nothing; the
+--- strip check treats it the same way, which is why the default below leaves
+--- every case written before this one behaving exactly as it did.
+---
+--- nil means the engine declined to answer -- `ok == false`, the shape a ped
+--- mid-animation or mid-stow produces -- and any number is a weapon actually
+--- held.
+local pedWeapon = nil
+function GetCurrentPedWeapon()
+    if pedWeapon == nil then return false, 0 end
+    return true, pedWeapon
+end
 function GetAmmoInPedWeapon() return 0 end
 function GetAmmoInClip() return false, 0 end
 function GetPedArmour() return 0 end
@@ -671,6 +684,17 @@ for _, n in ipairs({
     'SetPedArmour', 'SetPedInfiniteAmmo', 'SetPedInfiniteAmmoClip',
     'SetPlayerCanDoDriveBy', 'SetPlayerMaxArmour', 'SetWeaponsNoAutoswap',
 }) do _G[n] = noop end
+
+--- ...EXCEPT THIS ONE, WHICH IS THE THING UNDER TEST RATHER THAN SCENERY.
+---
+--- The strip block in client/inventory.lua does two things now -- it takes the
+--- weapon out of the hand AND it reports -- and the whole point of the tests
+--- below is that those two are separable. A noop here could not tell "the strip
+--- did not happen" from "the report did not happen", which is the exact
+--- distinction the false-positive guard turns on. Declared after the loop above
+--- so it overrides the noop rather than racing it.
+local stripped = {}
+function RemoveWeaponFromPed(_ped, hash) stripped[#stripped + 1] = hash end
 
 -- ------------------------------------------------------------- pma-voice ---
 --
@@ -4689,6 +4713,170 @@ do
     ok(BR.Inv.local_().active == MELEE,
         'and an explicit slot 0 is carried as a choice, not lost as an absence',
         ('active %s'):format(tostring(BR.Inv.local_().active)))
+end
+
+describe('an unissued weapon in the hand is stripped AND reported')
+do
+    -- THE STRIP IS OLD AND UNCHANGED; THE REPORT IS THE NEW HALF. Both are
+    -- asserted separately in every case here, because the guard that stops this
+    -- accusing innocent players works by withholding one and not the other --
+    -- and a suite that could only see "the tick did something" would pass with
+    -- that guard deleted.
+    --
+    -- WHY THE STRIP EXISTS AT ALL, since it reads like anticheat and is not:
+    -- the engine applies damage locally before the server sees it, so a foreign
+    -- weapon lets a client kill somebody on their own screen while the server
+    -- refuses the shot. The victim reads as dead and is alive. That was a live
+    -- report on 2026-08-08 and taking the weapon out of the hand is what stops
+    -- it happening rather than correcting it a round trip later.
+
+    local CONJURED  = 0x11111111            -- in no table this gamemode has
+    local CARBINE   = 0x83BF0278            -- WEAPON_CARBINERIFLE, issued
+    local PISTOL    = 0x1B06D571            -- WEAPON_PISTOL, issued
+    local UNARMED   = BR.Config.Gadgets.UNARMED
+    local PARACHUTE = BR.Config.Gadgets.PARACHUTE
+
+    local function reports()
+        local out = {}
+        for _, s in ipairs(sent) do
+            if s.name == BR.Net.INV_STRIPPED then out[#out + 1] = s.args[1] end
+        end
+        return out
+    end
+
+    --- How many times ONE weapon was taken out of the hand.
+    ---
+    --- COUNTED BY HASH RATHER THAN BY CALL, because this suite has
+    --- client/skydive.lua loaded and its own TICK callback removes the parachute
+    --- through the same native. A bare call count would be measuring another
+    --- file's behaviour and would have made these cases read as passing for the
+    --- wrong reason.
+    local function strips(hash)
+        local n = 0
+        for _, h in ipairs(stripped) do if h == hash then n = n + 1 end end
+        return n
+    end
+
+    local function reset()
+        sent, stripped = {}, {}
+    end
+
+    --- One TICK with a given weapon in the ped's hand.
+    local function tickHolding(hash)
+        pedWeapon = hash
+        BR.Loop.step(BR.Loop.TICK)
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+
+    -- A carbine in slot 1, selected. This is an ordinary armed player.
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } },
+        ammo = {}, active = 1,
+    })
+
+    -- 1. THE WEAPON THE SERVER ISSUED, IN THE HAND. Nothing happens, which is
+    --    the case that has to stay silent -- it is every tick of every match.
+    reset()
+    tickHolding(CARBINE)
+    ok(strips(CARBINE) == 0, 'the active slot\'s own weapon is not stripped',
+        strips(CARBINE))
+    ok(#reports() == 0, 'and nothing is reported')
+
+    -- 2. FISTS AND THE PARACHUTE. The chute is granted by skydive.lua and
+    --    removing it at 400 metres is a death, not a HUD bug.
+    reset()
+    tickHolding(UNARMED)
+    ok(strips(UNARMED) == 0 and #reports() == 0,
+        'fists are never stripped or reported')
+    reset()
+    tickHolding(PARACHUTE)
+    ok(strips(PARACHUTE) == 0 and #reports() == 0,
+        'and neither is the parachute')
+
+    -- 3. THE CASE THIS EXISTS FOR. A weapon the gamemode has never heard of.
+    reset()
+    fakeTime = fakeTime + 5000
+    tickHolding(CONJURED)
+    ok(strips(CONJURED) == 1, 'a conjured weapon comes out of the hand',
+        strips(CONJURED))
+    ok(#reports() == 1, 'AND it is reported, which it never used to be',
+        #reports())
+    ok(reports()[1] == CONJURED, 'with the hash that was actually held',
+        tostring(reports()[1]))
+
+    -- 4. THE THROTTLE. A cheat re-granting on every tick would otherwise put ten
+    --    net events a second on the wire, per offender, for as long as they kept
+    --    going. The STRIP still happens every tick -- that is the gameplay fix
+    --    and it must not be rate-limited.
+    reset()
+    tickHolding(CONJURED)
+    tickHolding(CONJURED)
+    tickHolding(CONJURED)
+    ok(strips(CONJURED) == 3,
+        'the strip itself is not throttled -- it runs every tick',
+        strips(CONJURED))
+    ok(#reports() == 0, 'but the report is', #reports())
+
+    reset()
+    fakeTime = fakeTime + 1000
+    tickHolding(CONJURED)
+    ok(#reports() == 1, 'and comes back once the window has passed', #reports())
+
+    -- 5. THE FALSE POSITIVE THIS FEATURE COULD ACTUALLY PRODUCE, and the only
+    --    one. The strip compares against the ACTIVE slot, so a weapon from
+    --    another slot of the player's OWN inventory -- held for the tick between
+    --    a slot change and the grant landing -- is stripped too.
+    --
+    --    Stripping it is harmless: applyActive puts the right weapon back on the
+    --    same tick. Opening a case about it would put an innocent player in a
+    --    moderation queue over a tenth of a second of tick ordering, so the
+    --    report is withheld and the strip is not.
+    fire(BR.Net.INV_SET, {
+        slots = {
+            { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 },
+            { id = 'pistol',       kind = BR.ItemKind.WEAPON, clip = 12 },
+        },
+        ammo = {}, active = 1,
+    })
+    reset()
+    fakeTime = fakeTime + 5000
+    tickHolding(PISTOL)
+    ok(strips(PISTOL) == 1,
+        'a weapon from another of your own slots is still stripped',
+        strips(PISTOL))
+    ok(#reports() == 0,
+        'but it is NOT reported -- our own code racing itself is not evidence',
+        #reports())
+
+    -- ...AND THE GUARD IS NOT SIMPLY "NEVER REPORT". The same player, the same
+    -- inventory, a weapon they do not own: reported.
+    reset()
+    fakeTime = fakeTime + 5000
+    tickHolding(CONJURED)
+    ok(strips(CONJURED) == 1 and #reports() == 1,
+        'while a weapon that is in none of their slots still is')
+
+    -- 6. NOT WHILE THE HAND IS NOT OURS TO FILL. canArm() gates the whole tick
+    --    body, so a corpse or a lobby ped holding something reports nothing --
+    --    and, more to the point, is not stripped either, because
+    --    RemoveAllPedWeapons would take a parachute with it.
+    BR.State.me.state = BR.PlayerState.DEAD
+    BR.State.landed = false
+    reset()
+    fakeTime = fakeTime + 5000
+    tickHolding(CONJURED)
+    ok(strips(CONJURED) == 0 and #reports() == 0,
+        'a player who is not alive is neither stripped nor reported')
+
+    -- Leave the world as this block found it.
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    pedWeapon = nil
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    BR.Loop.step(BR.Loop.TICK)
+    reset()
 end
 
 -- ------------------------------------------------ the downed presentation ---

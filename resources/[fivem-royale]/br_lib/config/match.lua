@@ -567,6 +567,11 @@ end
 BR.Config.Evidence = {
     chatMax = 50,
     killMax = 30,
+    -- Weapons the gamemode never issued, taken out of a hand. Smaller than the
+    -- other two because a strip row is a timestamp and a hash: the tenth in a
+    -- row says what the second already said, and it is the PATTERN that is
+    -- evidence. See BR.EvidenceBuf.DEFAULTS, which this mirrors.
+    stripMax = 20,
 }
 
 BR.Config.Combat = {

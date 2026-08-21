@@ -23,6 +23,7 @@ BR.Evidence = {}
 local buf = BR.EvidenceBuf.new({
     chatMax = BR.Config and BR.Config.Evidence and BR.Config.Evidence.chatMax,
     killMax = BR.Config and BR.Config.Evidence and BR.Config.Evidence.killMax,
+    stripMax = BR.Config and BR.Config.Evidence and BR.Config.Evidence.stripMax,
 })
 
 BR.Evidence.buf = buf
@@ -127,6 +128,29 @@ function BR.Evidence.noteKill(feed)
     -- meta -- their record is sealed and stays as it was. Nothing to do, and
     -- deliberately not an error: a shot lands after the shooter leaves.
     if km then buf:noteKill(feed.killerSrc, row, km) end
+end
+
+--- Record that a weapon this gamemode does not issue was in a player's hand.
+---
+--- THE ONLY ENTRY POINT HERE WHOSE SOURCE IS A CLIENT, and it is worth saying so
+--- beside the two above it rather than only in the file that receives the event.
+--- Chat is delivered text the server already saw; a kill is the server's own
+--- attribution out of damage.lua. A strip is a fact about the offender's own ped,
+--- which no server-side native can read -- so the report arrives over the wire and
+--- br_core/server/strip.lua is where it is rate-limited, cross-checked against the
+--- inventory the SERVER holds, and refused for admins. By the time it reaches this
+--- function all of that has already happened.
+---
+--- `at` IS STAMPED HERE, NOT ACCEPTED. Everything on a match timeline is a
+--- server clock reading -- see the header of incident_build.lua -- and a
+--- client-supplied timestamp on a moderation record would be evidence a cheater
+--- writes about themselves.
+--- @param src integer
+--- @param weapon integer|nil  the normalised hash that was in the hand
+function BR.Evidence.noteStrip(src, weapon)
+    local meta = metaFor(src)
+    if not meta then return end
+    buf:noteStrip(src, { at = meta.now, weapon = weapon }, meta)
 end
 
 --- Keep more about this player, because a case has been opened about them.

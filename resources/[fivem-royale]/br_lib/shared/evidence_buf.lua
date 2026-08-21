@@ -36,9 +36,16 @@ BR.EvidenceBuf.__index = BR.EvidenceBuf
 --- Caps. Bounded because 100 players times an unbounded chat log is a memory
 --- leak with a nice name, and because the last fifty lines are the ones that
 --- explain an incident -- the first fifty are the bus ride.
+--- `stripMax` IS THE SMALLEST OF THE THREE ON PURPOSE. A strip row is a
+--- timestamp and a hash -- it says "it happened again" and nothing else -- so
+--- the tenth one in a row carries almost no information the second did not, and
+--- the thing they are all evidence of is a PATTERN rather than a list. Twenty is
+--- already several times more than the vMenu behaviour this exists to catch
+--- produces, and the count that was really seen is kept whatever the cap drops.
 local DEFAULTS = {
     chatMax = 50,
     killMax = 30,
+    stripMax = 20,
 }
 
 --- What a promoted record may hold. See `promote`.
@@ -51,6 +58,12 @@ local DEFAULTS = {
 local PROMOTED = {
     chatMax = 150,
     killMax = 250,
+    -- SIXTY, AND IT IS THE NUMBER THE TIMELINE CAP IS SET FROM rather than a
+    -- second opinion about it -- see MAX_TIMELINE_STRIPS in incident_build.lua,
+    -- which is this value. A minute of recursive re-granting at the client's own
+    -- one-a-second report rate fits inside it; anything past that is truncated
+    -- and SAYS it was truncated, which is the honest end of the trade.
+    stripMax = 60,
 }
 
 --- @param opts table|nil { chatMax, killMax }
@@ -60,6 +73,7 @@ function BR.EvidenceBuf.new(opts)
     local o = setmetatable({}, BR.EvidenceBuf)
     o.chatMax = opts.chatMax or DEFAULTS.chatMax
     o.killMax = opts.killMax or DEFAULTS.killMax
+    o.stripMax = opts.stripMax or DEFAULTS.stripMax
 
     -- Licences whose records are kept larger, because a case has been opened
     -- about them. See `promote` -- this is what makes the promotion apply to
@@ -100,10 +114,18 @@ local function newRecord(key, meta)
         leftAt    = nil,
         chat      = {},
         kills     = {},
+        -- Weapons this gamemode never issued, taken out of this player's hand
+        -- by client/inventory.lua. `stripsSeen` counts what the server accepted,
+        -- which is not the same as what the client observed -- see the throttles
+        -- at both ends -- so the gap between it and `#strips` is what the CAPS
+        -- dropped and nothing more.
+        strips    = {},
         chatSeen  = 0,
         killsSeen = 0,
+        stripsSeen = 0,
         chatMax   = nil,
         killMax   = nil,
+        stripMax  = nil,
     }
 end
 
@@ -165,6 +187,9 @@ function BR.EvidenceBuf:applyPromotion(r)
     if caps.killMax and caps.killMax > (r.killMax or self.killMax) then
         r.killMax = caps.killMax
     end
+    if caps.stripMax and caps.stripMax > (r.stripMax or self.stripMax) then
+        r.stripMax = caps.stripMax
+    end
 end
 
 --- Record one chat line against its sender.
@@ -189,6 +214,25 @@ function BR.EvidenceBuf:noteKill(key, row, meta)
     local r = self:track(key, meta)
     r.killsSeen = r.killsSeen + 1
     push(r.kills, row, r.killMax or self.killMax)
+end
+
+--- Record that a weapon this gamemode does not issue was taken out of a hand.
+---
+--- ONE SIDE ONLY, unlike a kill. A kill has two participants and both of their
+--- records want it; a strip is a fact about one player's own ped and there is
+--- nobody else it is evidence about.
+---
+--- OVERFLOW DROPS THE OLDEST, like everything else here -- and for strips that
+--- costs less than it does anywhere else in this file, because the earliest ones
+--- are the entries that rode the incident's own PutItem at filing time and are
+--- already durable in DynamoDB. What this buffer is holding is the tail.
+--- @param key any
+--- @param row table  { at, weapon }
+--- @param meta table|nil
+function BR.EvidenceBuf:noteStrip(key, row, meta)
+    local r = self:track(key, meta)
+    r.stripsSeen = r.stripsSeen + 1
+    push(r.strips, row, r.stripMax or self.stripMax)
 end
 
 --- Keep more about this player, because a case has been opened about them.
@@ -234,9 +278,14 @@ function BR.EvidenceBuf:promote(license, caps)
         self.promoted[license] = {
             chatMax = math.max(held.chatMax or 0, caps.chatMax or 0),
             killMax = math.max(held.killMax or 0, caps.killMax or 0),
+            stripMax = math.max(held.stripMax or 0, caps.stripMax or 0),
         }
     else
-        self.promoted[license] = { chatMax = caps.chatMax, killMax = caps.killMax }
+        self.promoted[license] = {
+            chatMax = caps.chatMax,
+            killMax = caps.killMax,
+            stripMax = caps.stripMax,
+        }
     end
 
     local n = 0
@@ -354,11 +403,14 @@ end
 --- says the caps are too small for the way this server actually plays.
 function BR.EvidenceBuf:stats()
     local liveN, chat, kills, chatSeen, killsSeen = 0, 0, 0, 0, 0
+    local strips, stripsSeen = 0, 0
     local function count(r)
         chat      = chat + #r.chat
         kills     = kills + #r.kills
         chatSeen  = chatSeen + (r.chatSeen or 0)
         killsSeen = killsSeen + (r.killsSeen or 0)
+        strips     = strips + #(r.strips or {})
+        stripsSeen = stripsSeen + (r.stripsSeen or 0)
     end
     for _, r in pairs(self.live) do
         liveN = liveN + 1
@@ -371,6 +423,11 @@ function BR.EvidenceBuf:stats()
         chatSeen = chatSeen, killsSeen = killsSeen,
         chatDropped  = chatSeen - chat,
         killsDropped = killsSeen - kills,
+        -- `stripRows` ON A HEALTHY SERVER IS ZERO, which makes it the one
+        -- counter here worth reading on its own. Chat and kills are ordinary
+        -- play; a strip is not.
+        stripRows = strips, stripsSeen = stripsSeen,
+        stripsDropped = stripsSeen - strips,
     }
 end
 

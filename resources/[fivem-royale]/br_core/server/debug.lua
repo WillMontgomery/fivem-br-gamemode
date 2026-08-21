@@ -115,6 +115,8 @@ RegisterCommand('brhelp', function()
     print('  brconfig             the tunables that most often explain odd behaviour')
     print('  brwhy <id>           why is this player in the state they are in')
     print('  brartifacts          incident screenshots: taken, stored, refused')
+    print('  brstrips             unissued weapons taken out of hands, and')
+    print('                       how many reports were refused and why')
     print('  brloot [matchId]     world loot: counts by kind and rarity, subscriptions')
     print('  brlootsim [n] [tier] roll the crate table n times and print the')
     print('                       distribution -- including the share of crates')
@@ -1023,6 +1025,47 @@ RegisterCommand('brartifacts', function()
         :format(s.refusedUnknown))
     print(('  skipped        %d (subject gone, or nothing to capture with)')
         :format(s.skipped))
+end, RESTRICTED)
+
+--- What the strip detector has seen, and what it refused.
+---
+--- WRITTEN AT THE SAME TIME AS THE THING IT READS, for the reason the
+--- `brartifacts` note above gives: this resource already carries two stats
+--- functions nobody calls, and BR.Strip.stats() would have been the third.
+---
+--- `races` IS THE NUMBER THIS COMMAND EXISTS FOR. It counts reports refused
+--- because the weapon turned out to be in the player's own server-side
+--- inventory -- the one false positive this feature can produce, and one that
+--- would otherwise be a case opened against an innocent player. On a healthy
+--- server it stays at zero; a number that climbs means the client's own filter
+--- is missing a case and the guard behind it is doing work it should not have
+--- to.
+---
+--- `exempt` IS THE OTHER ONE TO READ, because the exemption is deliberately
+--- generous: it withholds a case from anybody whose console grant is not a
+--- definite `false`, which includes a grant nobody has managed to read yet. A
+--- large number here on a server with no admins online means grant reads are
+--- failing, not that admins are cheating.
+RegisterCommand('brstrips', function()
+    header('unissued weapons taken out of hands')
+    if not BR.Strip then
+        print('  server/strip.lua is not loaded.')
+        return
+    end
+    local s = BR.Strip.stats()
+    print(('  reports        %d received from clients, %d counted')
+        :format(s.reports, s.counted))
+    print(('  refused        %d throttled, %d admin-exempt, %d our own weapon')
+        :format(s.throttled, s.exempt, s.races))
+    print(('  tracking       %d player(s) with a count this match')
+        :format(s.tracked))
+    -- THE LIMIT, PRINTED WHERE SOMEBODY READING THE NUMBERS WILL SEE IT. A zero
+    -- here is not proof of a clean server: the report is sent by our own
+    -- resource on the offender's machine, so a cheat that disables br_core
+    -- disables this with it. The unforgeable half is server/damage.lua.
+    print('  Note: this is a client-side report. A cheat that stops br_core')
+    print('  stops this too -- the server-side damage validation is the half')
+    print('  that does not need the client\'s cooperation.')
 end, RESTRICTED)
 
 --- Print the stored profile row for connected players.

@@ -237,6 +237,67 @@ unrecoverable because the evidence buffer behind it is discarded at match end. S
 the row is written by the game and the event carries only an id. What a
 compromised game box gains from this grant is the ability to file noise.
 
+## The second source: a weapon in a hand the gamemode never filled
+
+Everything above is the **damage** path — refused shots, counted server-side inside
+`weaponDamageEvent`. There is a second thing that opens a case, and it is a
+different shape in every way that matters, so it is documented apart rather than
+folded into the table above.
+
+`br_core/client/inventory.lua` has always taken any weapon that is not the active
+inventory slot out of the ped's hand. **That strip is a gameplay fix and not an
+anticheat one.** The engine applies damage locally before the server sees it, so a
+foreign weapon lets a client kill somebody on their own screen while the server
+refuses the shot — the victim reads as dead and is alive. That was a live report on
+2026-08-08.
+
+**What was wrong with it was the silence.** A player granting themselves a rifle in
+a menu tripped nothing: the weapon vanished, they granted another, and the match
+ended with an empty record. The strip now reports, and
+`br_core/server/strip.lua` turns those reports into the same kind of case the
+refusal path files.
+
+> The **first** countable strip in a match opens one incident. Every strip after it
+> appends a `weapon_strip` entry to **that** incident's `matchTimeline` — never a
+> second case. Announcements to the console follow the same doubling rule
+> `damage.lua` uses (1, 2, 4, 8…), so an offender cannot flood the corroboration
+> queue; the timeline still receives all of them, because it is RAM until the case's
+> own writes carry it.
+
+**Cost is unchanged by volume.** The strips known at filing time ride the `PutItem`
+that was already happening; the rest ride the match-end `UpdateItem` that was
+already happening. That close write touches only the five attributes the game's
+grant on `ringmaster-incidents` allows, and strips add none — which is also why
+there is no `matchStripsSeen` counter beside `matchKillsSeen`. A truncated strip
+list is reported by `matchTimelineComplete` going false, and that is the whole of
+it.
+
+**Two guards stop this accusing innocent players, and they exist because the strip
+is deliberately broader than the report.** The strip compares against the *active*
+slot, so a weapon from another of the player's own slots — held for the tick between
+a slot change and the grant landing — is stripped too. Stripping it is harmless.
+Filing it would not be. So the client declines to report a hash that is in any of
+its own slots, and the server declines again against **its own** inventory, which is
+the copy a compromised client does not control. `brstrips` prints how often that
+second guard fired; on a healthy server it is zero.
+
+**Admins are exempt, and that was not the owner's decision.** Weapons granted
+through vMenu while testing are strips, and without an exemption the first thing
+this feature produces is a queue full of cases about the person who reads the queue.
+The test is the console grant (`BR.Grants.CONSOLE`), read from the same DynamoDB
+grants table the console authorises against. It exempts on anything that is not an
+explicit `false` — including a grant row nobody has managed to read yet — because an
+accusation against a named person should not be built on an unanswered question, and
+because the behaviour repeats: the next strip a second later has the answer.
+
+**This catches one tier and it is not the serious one.** The report is sent by our
+own resource running on the offender's machine. A cheat that stops `br_core` — or
+deletes one `TriggerServerEvent` — silences it completely, and no server-side native
+can read what is in a ped's hand to check. What it catches is the vMenu tier, with
+our resource still running underneath. The unforgeable half is the damage validation
+above, which does not need the client's cooperation and cannot be turned off from
+one.
+
 ## Artifacts: screenshots of the offender, and why they may not exist
 
 A filed case captures the **offending player's own screen** three times —

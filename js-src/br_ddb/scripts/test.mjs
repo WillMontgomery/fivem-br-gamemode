@@ -819,12 +819,67 @@ const entryOf = (extra) =>
     entries[entries.length - 1],
     { at: 99_000, kind: 'match_end' },
   )
-  // Dropping 141 rows and still claiming completeness is the exact failure the
-  // flag exists to prevent.
+  // Dropping rows and still claiming completeness is the exact failure the flag
+  // exists to prevent.
   check(
     'a bounded close does not claim to be complete',
     p.ExpressionAttributeValues[':complete'],
     false,
+  )
+
+  // THE BACKSTOP HAS TO SIT ABOVE WHAT THE LUA SIDE CAN LEGITIMATELY SEND, or
+  // it is not a backstop -- it is this file deleting the oldest rows of every
+  // large close. The Lua ceiling is MAX_TIMELINE_KILLS + MAX_TIMELINE_STRIPS +
+  // the match_end; those two constants live in
+  // br_lib/shared/incident_build.lua and are 250 and 60.
+  check(
+    'and the bound is above the largest close the game can build',
+    CLOSE_LIMITS.MAX_CLOSE_ENTRIES >= 250 + 60 + 1,
+    true,
+  )
+}
+
+// --- an unissued weapon in the hand -----------------------------------------
+//
+// THE ENTRY KIND ADDED FOR THE STRIP REPORT. `timelineEntry` drops kinds it does
+// not know, deliberately, so the failure mode of getting this wrong is silence:
+// the Lua side builds the entries, this side discards every one of them, and
+// both suites stay green. That is why the spelling is asserted rather than
+// assumed.
+
+{
+  const p = closeOk({
+    matchEndedAt: 9000,
+    matchTimeline: [
+      { at: 6000, kind: 'weapon_strip', weapon: 2210333304 },
+      { at: 7000, kind: 'weapon_strip' },
+      { at: 9000, kind: 'match_end' },
+    ],
+    matchTimelineComplete: true,
+    matchKillsSeen: 0,
+  })
+  const entries = p.ExpressionAttributeValues[':entries']
+
+  check('a strip entry survives the projection', entries.length, 3)
+  check('and keeps its kind', entries[0].kind, 'weapon_strip')
+
+  // THE HASH IS THE ONLY IDENTIFIER ANYBODY HAS for a weapon this gamemode has
+  // never heard of, and `str()` answers null for a number -- so without the
+  // coercion every strip would store `weapon: null`, which is the whole content
+  // of the finding thrown away. Exactly the bug the kill path already had.
+  check('the weapon hash reaches the row as a string', entries[0].weapon, '2210333304')
+  check('a strip with no weapon stores null, not a lie', entries[1].weapon, null)
+
+  // NO SECOND-PARTY FIELDS. A strip has no victim and no killer; the row's own
+  // subjectLicense is who it is about.
+  check('a strip names nobody but the subject', entries[0].victimLicense, undefined)
+  check('and carries no weaponIssued -- the kind IS the claim',
+    Object.prototype.hasOwnProperty.call(entries[0], 'weaponIssued'), false)
+
+  check(
+    'a timeline of strips is still complete when nothing was dropped',
+    p.ExpressionAttributeValues[':complete'],
+    true,
   )
 }
 
