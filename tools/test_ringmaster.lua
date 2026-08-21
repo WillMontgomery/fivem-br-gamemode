@@ -2646,71 +2646,79 @@ do
     ok(#strips == 15, 'while all fifteen later strips are on the timeline', #strips)
 end
 
-describe('strip.admin-exempt')
+describe('strip.nobody-is-exempt')
 do
-    -- ═══ A DECISION TAKEN WITHOUT THE OWNER, AND PINNED SO IT CANNOT DRIFT ═══
+    -- ═══ THE EXEMPTION IS GONE, AND ITS ABSENCE IS PINNED ═══
     --
-    -- The owner grants themselves weapons through vMenu constantly while
-    -- testing. Every one of those is a strip, so without this the first thing
-    -- this feature ships is a queue full of cases about the person who reads the
-    -- queue -- and an anticheat known to be noise is one nobody opens again.
+    -- An admin exemption lived here, skipping the report for anyone holding
+    -- BR.Grants.CONSOLE. The owner removed it on 2026-08-21: "I don't want
+    -- admins to be exempt from any incidents please."
+    --
+    -- THIS CASE EXISTS SO NOBODY RESTORES IT AS A KINDNESS. The argument for
+    -- the exemption is genuinely appealing -- the owner grants themselves
+    -- weapons constantly while testing, and every one is a strip -- and that is
+    -- exactly why it needs a test rather than a comment. The hole it opened was
+    -- shaped like the accounts with the most power.
     local W = newTimelineWorld()
     W.startMatch(7, 1000)
     W.join(1, 7, 'license:owner', 'Owner')
     W.admin('license:owner')
 
-    for i = 1, 5 do
+    W.at(4000)
+    W.strip(1, CONJURED)
+
+    ok(#W.S.incidents == 1, 'an admin who conjures a weapon gets a case like anyone else',
+        #W.S.incidents)
+    ok(W.lastIncident() and W.lastIncident().subjectLicense == 'license:owner',
+        'and it is about them', W.lastIncident() and W.lastIncident().subjectLicense)
+
+    -- AND IT IS BUFFERED. The old exemption sat BELOW the evidence note so an
+    -- exempt player's strips were recorded nowhere at all. Nothing is skipped
+    -- now, so the strip that opened the case is on its timeline.
+    local strips = ofKind(W.lastIncident() and W.lastIncident().matchTimeline, 'weapon_strip')
+    ok(#strips == 1, 'with the strip on its timeline', #strips)
+
+    -- REPEATS STILL APPEND RATHER THAN RE-FILE, for staff as for anyone. The
+    -- rule that matters is one case per offender per match, not who they are.
+    --
+    -- THE ACK IS NOT CEREMONY. `priorFor` recognises an existing case by the id
+    -- br_ringmaster hands back after the write lands; without it the server has
+    -- filed something it cannot yet name, and the next strip files again. That
+    -- is the real sequence, so the test reproduces it rather than reaching past
+    -- it -- and it is why this assertion read 3 before the ack was added.
+    W.ack(7, 'license:owner', 'inc-admin-1')
+    for i = 2, 6 do
         W.at(4000 + i * 1000)
         W.strip(1, CONJURED)
     end
-
-    ok(#W.S.incidents == 0, 'an admin testing with vMenu opens no case',
-        #W.S.incidents)
-    ok(#W.S.corroborations == 0, 'and corroborates nothing')
-
-    -- NOT EVEN IN THE BUFFER. An exempt player's strips are not recorded
-    -- anywhere at all, so there is no quiet log of admin activity sitting in
-    -- memory waiting for some later feature to read it.
-    local recs = W.BR.Evidence.forLicense('license:owner')
-    local held = 0
-    for _, r in ipairs(recs) do held = held + #(r.strips or {}) end
-    ok(held == 0, 'and nothing about them is buffered either', held)
-
-    -- THE STRIP ITSELF IS NOT WHAT IS EXEMPT. This suite cannot see the client,
-    -- but the exemption is on the REPORT and the weapon still comes out of the
-    -- hand -- see the strip block in client/inventory.lua, which has no notion
-    -- of a grant.
+    ok(#W.S.incidents == 1, 'and five more strips open no second case', #W.S.incidents)
 end
 
-describe('strip.unknown-grant')
+describe('strip.grant-state-is-irrelevant')
 do
-    -- SILENCE ON DOUBT. BR.Grants.holds answers nil for "we have never
-    -- successfully read this license's row", which is not the same as "they are
-    -- not an admin" -- and an accusation against a named person must not be
-    -- built on a question nobody answered.
-    --
-    -- THE COST OF THAT IS NEARLY NOTHING, WHICH IS WHY IT IS THE RIGHT WAY
-    -- ROUND, and this case proves it rather than asserting it in a comment: the
-    -- behaviour repeats by definition, so the next strip files.
-    local W = newTimelineWorld()
-    W.startMatch(7, 1000)
-    W.join(1, 7, 'license:cheat', 'Cheater')
-    W.unread('license:cheat')
+    -- THE GRANT IS NOT CONSULTED AT ALL ANY MORE, which is a stronger statement
+    -- than "admins are not exempt" and is the one worth pinning. A previous
+    -- version read BR.Grants.holds and treated its three answers -- true, false
+    -- and nil for "never read this row" -- as reasons to stay silent. All three
+    -- now file identically, so a slow or failed DynamoDB read cannot decide
+    -- whether an accusation is made.
+    for _, case in ipairs({
+        { label = 'an admin',                    setup = 'admin'  },
+        { label = 'a player known not to be one', setup = 'plain' },
+        { label = 'a player whose grant was never read', setup = 'unread' },
+    }) do
+        local W = newTimelineWorld()
+        W.startMatch(7, 1000)
+        W.join(1, 7, 'license:subject', 'Subject')
+        if case.setup == 'admin' then W.admin('license:subject')
+        elseif case.setup == 'unread' then W.unread('license:subject') end
 
-    W.at(4000); W.strip(1, CONJURED)
-    ok(#W.S.incidents == 0, 'a strip by a player whose grant is unread files nothing',
-        #W.S.incidents)
-
-    -- The row is read a moment later, as it always is: the cache is primed at
-    -- playerJoining and `holds` re-asks on every miss.
-    W.join(1, 7, 'license:cheat', 'Cheater')
-    W.at(6000); W.strip(1, CONJURED)
-    ok(#W.S.incidents == 1, 'and the next one opens the case', #W.S.incidents)
-
-    local strips = ofKind(W.lastIncident() and W.lastIncident().matchTimeline,
-        'weapon_strip')
-    ok(#strips == 1, 'carrying only the strip that was actually countable', #strips)
+        W.at(4000)
+        W.strip(1, CONJURED)
+        ok(#W.S.incidents == 1, case.label .. ' files a case', #W.S.incidents)
+    end
 end
+
 
 describe('strip.our-own-weapon-is-not-evidence')
 do

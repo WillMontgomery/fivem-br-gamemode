@@ -74,7 +74,7 @@ local MIN_INTERVAL_MS = 900
 --- player's match changes, exactly as server/damage.lua's refusal record is.
 local seenBy = {}
 
-local stat = { reports = 0, counted = 0, throttled = 0, exempt = 0, races = 0 }
+local stat = { reports = 0, counted = 0, throttled = 0, races = 0 }
 
 --- Counters, for brdebug-style introspection.
 ---
@@ -90,7 +90,7 @@ function BR.Strip.stats()
     return {
         tracked = tracked,
         reports = stat.reports, counted = stat.counted,
-        throttled = stat.throttled, exempt = stat.exempt, races = stat.races,
+        throttled = stat.throttled, races = stat.races,
     }
 end
 
@@ -136,44 +136,22 @@ local function ourWeapon(src, h)
     return false
 end
 
---- Is this player exempt from having a case opened about them?
----
---- ═══ THIS IS A DECISION THE OWNER HAS NOT MADE, TAKEN HERE ON PURPOSE ═══
----
---- ADMINS ARE EXEMPT. The owner grants themselves weapons through vMenu
---- constantly while testing, and every one of those grants is a strip. Without
---- this the first thing this feature ships is a queue full of cases about the
---- person who has to read the queue -- and an anticheat whose output is
---- immediately known to be noise is an anticheat nobody looks at again.
----
---- THE TEST IS THE CONSOLE GRANT, `BR.Grants.CONSOLE` ('view'), because that is
---- the capability that means "this person is staff here", read from the same
---- DynamoDB grants table the console itself authorises against. It is not a
---- guess about who is trusted: it is the same row the console checks.
----
---- SILENCE ON DOUBT. `BR.Grants.holds` answers three ways -- true, false, and
---- nil for "we have never successfully read this license's row" -- and this
---- exempts on anything that is not an explicit `false`. An accusation against a
---- named person requires a positive answer that they are NOT staff, which is the
---- same discipline `weaponIssued` follows on the timeline: red requires an
---- explicit false, never the absence of a true.
----
---- AND THE COST OF THAT IS NEARLY NOTHING HERE, which is what makes it the right
---- way round rather than merely the cautious one. nil is transient -- the cache
---- is primed at playerJoining, `holds` re-asks on every miss, and a match starts
---- minutes later -- and the behaviour this file exists to catch REPEATS by
---- definition. A strip silenced by an unknown grant is followed by another strip
---- a second later with the answer in hand.
----
---- NO GRANTS SUBSYSTEM AT ALL IS NOT DOUBT, IT IS AN ANSWER. If BR.Grants is
---- absent -- a br_core built without it -- there is no admin table to be unsure
---- about, and exempting everybody would silently turn the whole feature off.
---- @param license string|nil
---- @return boolean
-local function exemptAdmin(license)
-    if not (BR.Grants and BR.Grants.holds) then return false end
-    return BR.Grants.holds(license, BR.Grants.CONSOLE) ~= false
-end
+-- THERE IS NO ADMIN EXEMPTION, AND THE ABSENCE IS DELIBERATE.
+--
+-- An `exemptAdmin` lived here, testing `BR.Grants.CONSOLE` and skipping the
+-- report for anyone staff. It was written on the reasoning that the owner
+-- grants themselves weapons constantly while testing, so the feature would
+-- ship into a queue full of cases about the person who reads the queue.
+--
+-- The owner overruled it on 2026-08-21, and was right to: the exemption was a
+-- hole in an anticheat shaped exactly like the accounts with the most power,
+-- and it silenced this path for the one group whose misuse would matter most.
+-- The noise it was avoiding is a queue the owner can close; the gap it opened
+-- is one nobody would have seen.
+--
+-- If the testing noise ever becomes the real problem, the fix is a way to mark
+-- a session as testing -- something deliberate, visible and logged -- not a
+-- silent check on who somebody is.
 
 RegisterNetEvent(BR.Net.INV_STRIPPED)
 AddEventHandler(BR.Net.INV_STRIPPED, function(weapon)
@@ -218,27 +196,28 @@ AddEventHandler(BR.Net.INV_STRIPPED, function(weapon)
         return
     end
 
-    -- THE OWNER, TESTING, IS NOT A CHEATER. See `exemptAdmin` -- and note that
-    -- this sits BELOW the evidence note it prevents, deliberately: an exempt
-    -- player's strips are not recorded anywhere at all, so there is no buffer of
-    -- admin activity sitting around waiting for some later feature to read it.
+    -- NOBODY IS EXEMPT. There was an admin exemption here and the owner
+    -- removed it on 2026-08-21: "I don't want admins to be exempt from any
+    -- incidents please."
+    --
+    -- IT WILL FILE CASES ABOUT STAFF, AND THAT IS THE POINT. An admin
+    -- granting themselves a weapon through vMenu produces a case about
+    -- themselves, exactly as it would for anyone else. An anticheat that
+    -- looks away from the people holding the keys is not one, and the owner
+    -- would rather read their own name in the queue than trust a feature
+    -- with a hole in it shaped like staff.
     local license = BR.Roster.licenseOf and BR.Roster.licenseOf(src) or nil
-    if exemptAdmin(license) then
-        stat.exempt = stat.exempt + 1
-        return
-    end
 
     -- THE THROTTLE WINDOW STARTS ON A COUNTED STRIP, NOT ON EVERY MESSAGE, and
     -- the difference is worth stating because the other order looks tidier.
-    -- Starting it here means a report refused as a race, or as an admin's,
-    -- leaves the window closed -- so a genuine strip arriving a moment later is
-    -- still recorded rather than swallowed by a refusal that cost nothing.
+    -- Starting it here means a report refused as a race leaves the window
+    -- closed -- so a genuine strip arriving a moment later is still recorded
+    -- rather than swallowed by a refusal that cost nothing.
     --
-    -- WHAT THAT LEAVES UNBOUNDED IS BOUNDED ELSEWHERE. The two paths a client
-    -- can repeat freely are the race check (a walk of five slots) and the
-    -- exemption (a table lookup; `BR.Grants.holds` guards its own DynamoDB read
-    -- behind an in-flight flag, so it cannot be turned into a read per message).
-    -- Neither reaches the evidence buffer, the incident writer or the wire.
+    -- WHAT THAT LEAVES UNBOUNDED IS BOUNDED ELSEWHERE. The one path a client
+    -- can repeat freely is the race check, a walk of five slots. It does not
+    -- reach the evidence buffer, the incident writer or the wire. (The admin
+    -- exemption used to be the second such path; it is gone.)
     rec.at = now
     rec.count = rec.count + 1
     stat.counted = stat.counted + 1
