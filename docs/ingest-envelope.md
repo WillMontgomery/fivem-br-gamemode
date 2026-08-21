@@ -20,8 +20,9 @@ the two halves start disagreeing about a shape neither of them is testing.
 
 **Outbound only. FXServer never listens.** The game host opens a connection to
 Ringmaster's ingest endpoint over the VPC peering link and pushes. There is no
-inbound HTTP surface on the game box at all — commands, when they exist, arrive
-over SSH instead (see PLAN.md, M9).
+inbound HTTP surface on the game box at all — commands arrive over SSH instead,
+through `tools/dispatch.sh`'s pinned verb set (see
+[branch-switch.md](branch-switch.md)).
 
 ```
 br_ringmaster  ──HTTP POST──▶  https://ringmaster/api/ingest
@@ -397,8 +398,14 @@ at 2, because report 1 opened the case. Its only job is to let a receiver tell 1
 batch after four attempts and neither envelope says so. Treat a gap as "at least this
 many", never as an exact count.
 
-`count` is the running per-match total of counted refusals at the moment of the
-report, so it roughly doubles between consecutive corroborations.
+`count` is the running per-match total at the moment of the report, and **how it
+climbs depends on which detector sent it**. From the refusal path it roughly doubles
+between consecutive corroborations, because `damage.lua` reports at the doublings.
+From the unissued-weapon path it climbs **by one** — `strip.lua` announces every
+strip from the second onward (owner, 2026-08-20) — so consecutive values there are
+2, 3, 4, 5 and a gap means a *lost* corroboration rather than offences that happened
+quietly in between. Treat it as "at least this many" in both cases; never as an
+exact count.
 
 ---
 

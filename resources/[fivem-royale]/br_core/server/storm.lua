@@ -441,27 +441,8 @@ RegisterCommand('brstormscale', function(_, args)
         :format(timeScale, cfg.TotalSeconds() * timeScale / 60.0))
 end, true)
 
-RegisterCommand('brstorm', function()
-    local m = BR.Server.latestMatch()
-    if not m or not m.storm then
-        print('  no storm record (storm starts when a match goes PLAYING)')
-        return
-    end
-    local rec = m.storm
-    local cx, cy, r, st, msLeft, dps = BR.StormAt(rec, GetGameTimer())
-    print(('  match %d  phase %d/%d  %s  %.0fs left in sub-phase'):format(
-        m.id, rec.phase, #cfg.phases, st, msLeft / 1000))
-    print(('  circle  %.0f, %.0f  r %.0f'):format(cx, cy, r))
-    print(('  next    %.0f, %.0f  r %.0f'):format(rec.cx1, rec.cy1, rec.r1))
-    print(('  dps %.1f  timeScale %.2f'):format(dps, timeScale))
-
-    local outside = 0
-    BR.Roster.each(
-        function(e) return e.matchId == m.id and DAMAGEABLE[e.state] end,
-        function(_, e)
-            if e.pos and BR.Dist(e.pos.x, e.pos.y, cx, cy) > r then
-                outside = outside + 1
-            end
-        end)
-    print(('  %d damageable player(s) outside'):format(outside))
-end, true)
+-- `brstorm` LIVES IN server/debug.lua, NOT HERE (#137). Both files registered it
+-- in the same Lua state and debug.lua loads later, so this version never ran
+-- once. Deleted rather than renamed: the surviving one answers the same question
+-- and two commands for one question is how the collision happened. Anything this
+-- printed that the other does not should move there, not come back here.

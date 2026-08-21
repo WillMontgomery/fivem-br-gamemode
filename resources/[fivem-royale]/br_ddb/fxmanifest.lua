@@ -4,11 +4,12 @@ lua54 'yes'
 
 name 'br_ddb'
 author 'Blitz Royale'
--- Read-only on the console's tables, with ONE deliberate exception: incidents
--- are append-only from here. The game files a case and cannot read one back --
--- see the header of js-src/br_ddb/src/index.js for why the write lives on this
--- side rather than on the console's.
-description 'DynamoDB access for the game server: ban checks, grants, profiles, and filing incidents.'
+-- Read-only on the console's tables, with two deliberate exceptions: incidents
+-- are append-only from here, and since 2026-08-20 the screenshots attached to
+-- one are written straight to S3 -- PutObject, one bucket, one prefix, no read
+-- and no list. See the header of js-src/br_ddb/src/index.js for why both writes
+-- live on this side rather than on the console's.
+description 'AWS access for the game server: ban checks, grants, profiles, filing incidents, and uploading incident artifacts.'
 version '0.1.0'
 
 -- NODE 22, NOT THE DEFAULT. FXServer ships an old Node for server scripts; the

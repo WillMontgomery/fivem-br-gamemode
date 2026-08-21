@@ -92,10 +92,81 @@ which is worse than any ban decision either way.
 
 `GetItem` on `ringmaster-bans`, and nothing else — no `Query`, no `Scan`, no
 writes. The only question it ever asks is about one specific license, at connect.
-`br_ddb` exposes exactly two read verbs and deliberately has no general-purpose
-query primitive: a generic DynamoDB bridge inside the game server is one
-careless commit away from a write path into the tables that decide who is banned
-and who is an admin.
+`br_ddb` deliberately has no general-purpose query primitive: a generic DynamoDB
+bridge inside the game server is one careless commit away from a write path into
+the tables that decide who is banned and who is an admin. Adding a verb is meant
+to feel like a decision.
+
+**There is no `Query` and no `Scan` anywhere in `br_ddb`** — not in one verb, not
+in a helper, not on the game's own tables. Every read in the file is a `GetItem`
+on a key the game already holds. That is the property the paragraph above is
+really about, and it is worth stating as a property because it is greppable:
+nothing here can ever *enumerate*. The reward queue is even shaped around it —
+one item holding the whole queue, rather than one item per incident, precisely so
+that finding them again is a `GetItem` rather than a `Query`.
+
+**The split that matters is not read-versus-write, it is whose table.** `br_ddb`
+now exposes sixteen verbs, and several of them write:
+
+| table family | verbs | access |
+|---|---|---|
+| `ringmaster-bans`, `ringmaster-grants`, `ringmaster-maintenance` | `banCheck`, `grantsFetch`, `maintenance` | **read-only**, one key at a time |
+| `ringmaster-incidents` | `putIncident`, `incidentVerdict` | append, plus one narrow projected read |
+| `ringmaster-audit` | — | **none at all** |
+| `br-players` — profiles, inventory, history rows and the reward queue all live on it | `profileFetch`, `statsApply`, `historyPut`, `inventoryFetch`, `purchase`, `equip`, `awardClaim`, `awardQueue`, `awardPay`, `awardSettle` | read and write freely |
+| — | `selftest` | reads a license that will never exist |
+
+Both prefixes are convars (`br_ddb_table_prefix`, default `ringmaster-`;
+`br_ddb_game_prefix`, default `br-`), so the names above are the defaults rather
+than constants.
+
+Everything touching `ringmaster-*` is the console's data and the game server only
+ever asks it questions about a key it already has. Everything touching `br-*` is
+the game's own, so that a match never fails because a web console in another
+region is down.
+
+### The deliberate exceptions on `ringmaster-incidents`
+
+**Writing (2026-08-14).** The game may **file** a case. The alternative was
+sending incidents to the console over the event channel and letting it write, but
+that channel drops batches silently after four attempts and an incident lost that
+way is unrecoverable — the evidence buffer behind it is discarded at match end.
+So the game writes the row and the event carries only an id. The write is
+conditional on the id not already existing, so a repeat can only be refused.
+
+**Reading (2026-08-17, #168).** `incidentVerdict` reads a case back. This
+document said "cannot read one back" until report rewards shipped, and the
+sentence is corrected rather than quietly dropped, because it was load-bearing in
+an argument. What the read actually is:
+
+- **`GetItem`, by an id the game minted itself.** Every id this verb is called
+  with came back from `putIncident` on this same box, so "read back cases whose
+  ids it knows" means "read back its own". It cannot discover an id it did not
+  file.
+- **A projection, not the row.** `ProjectionExpression` asks for exactly four
+  attributes: `incidentId`, `state`, `verdict`, `resolvedAt`. The evidence, the
+  chat log, the kill log, the reporter, the subject, the admin's written
+  resolution and the capture keys are all on that item and **none** of them
+  crosses into the game server.
+- **Eventually consistent, and fails closed.** An unreadable case answers "not
+  settled" and is asked about again on the next sweep — the opposite of the ban
+  check, which fails open. Paying a reward against a verdict nobody has seen is
+  worse than paying it ten minutes late.
+
+**What that cost, stated plainly:** the property "there is no read of any kind on
+this table" is gone, and so is the claim that a compromised game box "cannot see
+a verdict". It still cannot **alter** one.
+
+What a compromised game box can do here: **file noise**, and learn whether a case
+it filed itself was decided and whether anything happened. What it still cannot
+do: enumerate anything on any table (no `Query`, no `Scan`), read a moderator's
+prose, confirm an identity it did not already hold, overwrite an existing
+incident, alter a verdict, or touch the audit log at all.
+
+The read-only grants on `ringmaster-bans` and `ringmaster-grants` are the same
+shape and the same limit: the box can ask "is *this* license banned" or "what
+does *this* license hold", one key at a time, about a license already in front of
+it. It cannot ask who the admins are, or who is banned.
 
 The game server has **no access at all** to `ringmaster-audit`. The audit log is
 the record of what admins did, and a compromised game host must not be able to

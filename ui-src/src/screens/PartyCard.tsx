@@ -58,8 +58,12 @@ export default function PartyCard() {
   const recruitable = squad.members.filter(
     (m) => m.src !== you && !partySrcs.has(m.src) && !pendingSrcs.has(m.src))
 
+  // NO CUE FIRED HERE, and there never should have been one: both callers are
+  // Btns, which play their own `cue` on click -- Accept the default `ui.select`,
+  // Decline an explicit `ui.back`. So this line was a second, overlapping sound
+  // on every press, and on Accept it was `ui.ready`: the ready-up swell, which
+  // is reserved for the ready-up button (owner, 2026-08-17).
   const respond = async (accept: boolean) => {
-    play(accept ? 'ui.ready' : 'ui.back')
     const wasJoinReq = invite?.kind === 'joinreq'
     const requester = invite?.from
     clearInvite()
@@ -87,10 +91,7 @@ export default function PartyCard() {
           >
             {inParty ? 'Your party' : 'Party'}
           </div>
-          <div
-            className="micro-label ts mt-0.5"
-            style={{ ['--fs' as string]: '0.62rem', textTransform: 'none' }}
-          >
+          <div className="body-text mt-0.5">
             {inParty
               ? 'Stays together after this match ends.'
               : 'Start one to keep playing with this squad after the match.'}

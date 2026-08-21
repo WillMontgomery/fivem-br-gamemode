@@ -77,7 +77,10 @@ end)
 --- visible, correct, and completely unclickable, with no cursor. It looked like
 --- the UI was drawn wrong rather than simply not focused.
 ---
---- Both paths are idempotent: pushFocus ignores a screen already on the stack.
+--- Both paths are safe to repeat: pushFocus is a no-op when the screen is
+--- already on top, and RAISES it when it is buried. It used to ignore a screen
+--- anywhere on the stack, which is what left the admin console unopenable for
+--- a whole session after a match ended over it -- see the note on pushFocus.
 --- @param state string
 
 --- Screens that only make sense while standing in the lobby.
@@ -128,13 +131,6 @@ local function applyFocusForState(state)
     end
 end
 
--- ESC IN THE LOBBY RAISES GTA'S PAUSE MENU. With NUI focused the engine
--- never sees the key, so the page captures it, fades itself out, drops
--- focus (nui.lua), and hands over here. The beat before ActivateFrontendMenu
--- lets the fade land; the watcher below gives the lobby its focus back the
--- moment the menu closes -- if the player is still a lobby player.
-local pausePhase, pauseAt = nil, 0
-
 -- THE PAUSE MENU'S GAMEPLAY VERBS. br_ui owns the page and forwards the verb;
 -- what it MEANS is br_core's, the same split the locker and inventory use.
 AddEventHandler('br:ui:pauseAction', function(action)
@@ -145,12 +141,18 @@ AddEventHandler('br:ui:pauseAction', function(action)
         -- next match with somebody who has already gone -- the party would be
         -- holding a slot for a player who left, which is the same broken
         -- state a disconnect used to leave behind.
-        if S.party and S.party.id then
-            TriggerServerEvent(BR.Net.SQUAD_LEAVE)
-        end
-        -- The existing, proven leave path -- interstitial, server round trip,
-        -- teleport home -- rather than a second implementation of it.
-        ExecuteCommand('brleave')
+        --
+        -- PASSED IN RATHER THAN SENT FROM HERE, and that is #124's last path.
+        -- The party leave used to go out on this line, immediately, ahead of
+        -- everything -- so the pause menu's own party card rewrote itself in
+        -- front of the player before the screen had begun to darken. It now
+        -- rides inside the leave, which does not send ANYTHING until the page
+        -- reports the curtain solid black.
+        --
+        -- A direct call rather than ExecuteCommand('brleave'): the leave yields
+        -- now, and a fire-and-forget console command cannot carry an argument or
+        -- be sequenced against. See BR.Spawn.leaveMatch for the whole ordering.
+        BR.Spawn.leaveMatch(S.party ~= nil and S.party.id ~= nil)
 
     elseif action == 'squad' then
         -- DEFERRED, ON PURPOSE, and this is the user's design (2026-08-09):
@@ -208,33 +210,59 @@ AddEventHandler('br:ui:frontendClosed', function()
     end
 end)
 
-AddEventHandler('br:ui:pauseRequest', function()
-    Citizen.SetTimeout(250, function()
-        ActivateFrontendMenu(GetHashKey('FE_MENU_VERSION_SP_PAUSE'), false, -1)
-        pausePhase, pauseAt = 'raising', GetGameTimer()
-    end)
-end)
+-- `br:ui:pauseRequest` AND ITS WATCHER ARE GONE (#138).
+--
+-- They were a SECOND way to raise the engine's frontend, living here in
+-- br_core, alongside br_ui's. This one raised the menu after a 250ms timeout
+-- and restored focus from a `pausePhase` tick watcher; br_ui's announces the
+-- frontend to the page first (which is what actually stops the lobby drawing
+-- over the scaleform -- see #122) and restores via `br:ui:frontendClosed`
+-- above.
+--
+-- Two mechanisms meant two answers to "is the frontend up", and only one of
+-- them told the page. Its two callers -- settings.lua's key-bindings button
+-- and an orphaned `BR.NuiCb.PAUSE` in nui.lua that the page never invoked --
+-- now go through BR.Pause.handOverToFrontend, leaving this with no emitter at
+-- all. Deleted rather than kept "in case": a handler nothing fires is the
+-- thirteenth instance of that pattern in this project, and had it been left,
+-- restoring one caller would have run BOTH restore paths at once.
 
-BR.Loop.register(BR.Loop.TICK, 'state.pausewatch', function()
-    if not pausePhase then return end
-    local active = IsPauseMenuActive()
-    if pausePhase == 'raising' then
-        if active then
-            pausePhase = 'open'
-        elseif GetGameTimer() - pauseAt > 2000 then
-            -- The menu never came up; do not strand the player focusless.
-            pausePhase = nil
-            if S.me.state == BR.PlayerState.LOBBY then
-                TriggerEvent('br:ui:pushFocus', 'lobby')
-            end
-        end
-    elseif pausePhase == 'open' and not active then
-        pausePhase = nil
-        if S.me.state == BR.PlayerState.LOBBY then
-            TriggerEvent('br:ui:pushFocus', 'lobby')
-        end
-    end
-end)
+-- THE CURTAIN GOES UP BEFORE THE SCREEN CHANGES, NOT AFTER IT.
+--
+-- This flag is the whole of #124's first half. The owner's report, verbatim:
+-- "I press ready up, get accepted into a match, then the lobby UI goes away and
+-- cuts immediately to the in-game HUD/minimap/teleports my player, and THEN the
+-- fade to black happens."
+--
+-- The mechanics were exactly that, and the order was not a timing accident --
+-- it was structural. Being accepted into a match arrives as a roster delta;
+-- this file forwarded it to the page the instant it landed, so the lobby went
+-- and the HUD came in on that very frame. The curtain was raised afterwards, by
+-- client/spawn.lua's gather loop, up to a tick later, and then slept on for a
+-- fixed 450ms in the hope it had finished fading. Nothing anywhere WAITED for
+-- it. Adjusting the sleep cannot fix that and has been tried three times.
+--
+-- So the state is held HERE, at the only door it can reach the page through,
+-- until br_ui reports the curtain genuinely opaque. The player never sees the
+-- change because it happens behind solid black -- which is what the curtain was
+-- added for. Bounded, of course: BR.Spawn.awaitCover gives up and lets the
+-- state through, because a stale lobby menu that never updates is worse than a
+-- visible cut.
+--
+-- ONLY the two paint channels are held. Focus is not: it decides who owns the
+-- CURSOR, not what is drawn, and re-asserting it after the hold is idempotent.
+local uiHold = false
+
+-- What "I am being taken into a match" looks like from MY OWN state. WARMUP is
+-- the ordinary door; the rest are here because brforce can reach them directly
+-- and a forced state change is a cut like any other.
+local MATCH_ENTRY = {
+    [BR.PlayerState.WARMUP]   = true,
+    [BR.PlayerState.BUS]      = true,
+    [BR.PlayerState.FREEFALL] = true,
+    [BR.PlayerState.GLIDE]    = true,
+    [BR.PlayerState.ALIVE]    = true,
+}
 
 --- Tell the UI what state the match is in.
 ---
@@ -249,7 +277,12 @@ end)
 ---
 --- The digest path makes it self-healing: if the UI's idea of the state is ever
 --- wrong, it is wrong for at most half a second.
+---
+--- ...UNLESS THE CURTAIN IS STILL GOING UP. See uiHold directly below: the one
+--- moment self-healing is wrong is the moment we are deliberately holding the
+--- old picture on screen because the new one is a cut.
 local function pushMatchState()
+    if uiHold then return end
     TriggerEvent('br:ui:sendLocal', BR.Nui.STATE, {
         state     = S.match.state,
         mode      = S.match.mode,
@@ -260,6 +293,53 @@ local function pushMatchState()
         -- menu.
         participant = roundParticipant,
     })
+end
+
+--- Raise the curtain, and hold the interface still until it is opaque.
+---
+--- The sequence this exists to make real: cover the screen, THEN change what is
+--- on it, THEN uncover. See the long note on `uiHold` above for what it was
+--- doing instead and why no amount of sleeping fixed it.
+---
+--- The trip to the warmup pad (client/spawn.lua) raises the same curtain a tick
+--- later and lowers it once the pad is genuinely under the player's feet -- so
+--- the cover this puts up is HANDED OVER rather than duplicated, and the
+--- curtain watchdog there is the net under a trip that never starts.
+local function enterMatchBehindCurtain()
+    if uiHold then return end
+    uiHold = true
+
+    local wait = BR.Config.Match.coverWaitMs or 2500
+
+    --- Let the held state through, and never twice.
+    local function release()
+        if not uiHold then return end
+        -- The screen is black (or the page never answered and we are past the
+        -- deadline). Everything the hold suppressed now goes out at once, and
+        -- FORCED: BR.PushHud dedupes against what it last sent, and what it
+        -- last sent is the lobby it was refusing to update.
+        uiHold = false
+        pushMatchState()
+        BR.PushHud(true)
+        applyFocusForState(S.match.state)
+    end
+
+    -- THE HOLD MUST NOT BE ABLE TO OUTLIVE THE THREAD THAT OWNS IT.
+    --
+    -- Everything below runs in a bare Citizen thread, and a bare thread that
+    -- throws simply stops -- no error handler, no loop registry to suspend the
+    -- callback and say so. If that happened here the interface would be frozen
+    -- on the lobby menu for the rest of the session with a live match running
+    -- underneath it: strictly worse than the cut this exists to hide, and the
+    -- kind of failure this file has been bitten by before. So the release is
+    -- ALSO scheduled independently, on a clock nothing in the thread can break.
+    Citizen.SetTimeout(wait * 2, release)
+
+    Citizen.CreateThread(function()
+        BR.Spawn.curtain(true, 'dropping')
+        BR.Spawn.awaitCover('curtain', wait)
+        release()
+    end)
 end
 
 --- Keep the participant flag current from MY state. Called wherever my
@@ -288,9 +368,23 @@ local function noteMyState()
     -- on the TRANSITION, so a player who opens the pause menu in the lobby on
     -- purpose keeps it.
     if st ~= lastNoted then
+        local was = lastNoted
         lastNoted = st
         if OUR_SCREEN[st] and IsPauseMenuActive() then
             SetFrontendActive(false)
+        end
+
+        -- READY UP -> ACCEPTED INTO A MATCH is the cut the owner reported, and
+        -- this is the edge it happens on: the server names me a participant and
+        -- the whole screen changes underneath the player in one frame. Cover it
+        -- first (#124).
+        --
+        -- Only from the LOBBY, and only on a real transition. A snapshot that
+        -- re-seeds a client already standing in a match -- a reconnect, a
+        -- br_ui restart -- has nothing to hide and must not drop a black
+        -- rectangle over a live fight; `was` is nil in exactly that case.
+        if was == BR.PlayerState.LOBBY and MATCH_ENTRY[st] then
+            enterMatchBehindCurtain()
         end
 
         -- STICKY NOTICES ARE ABOUT THE MATCH, AND THE MATCH IS OVER FOR ME.
@@ -312,6 +406,7 @@ local function noteMyState()
             pushMatchState()
         end
     elseif st == BR.PlayerState.LOBBY
+       and not diedThisMatch
        and S.match.state ~= BR.MatchState.ENDED
        and S.match.state ~= BR.MatchState.CLEANUP then
         -- Becoming LOBBY while the match is still running means I LEFT the
@@ -320,6 +415,22 @@ local function noteMyState()
         -- their lobby menu (live report, twice). The teardown flip to LOBBY
         -- is different: by then match.state already reads ended, so real
         -- participants keep their verdict.
+        --
+        -- ...AND A DEATH IS NOT A LEAVE, WHICH IS THE OTHER HALF OF THAT TEST
+        -- AND WAS MISSING. "By then match.state already reads ended" is true of
+        -- the SERVER and is an assumption about this client's mirror: the
+        -- teardown sweep is what flips a dead player to LOBBY, and if the ENDED
+        -- broadcast has not been processed here yet -- lost, or simply beaten by
+        -- the delta -- the mirror still reads `playing` and this branch reads a
+        -- corpse being swept home as a voluntary leave. It then withdraws the
+        -- one flag the verdict screen is gated on, permanently, and the player
+        -- who died gets no verdict at all (owner, 2026-08-18). `diedThisMatch`
+        -- tells the two apart with the fact that actually distinguishes them:
+        -- nobody who died in this round walked out of it. It is set by the
+        -- roster delta that made me DEAD and cleared by the next match, so a
+        -- player who dies and THEN uses Leave Match keeps the participation
+        -- they earned by dying in the round, which is the answer that matches
+        -- their placement.
         if roundParticipant then
             roundParticipant = false
             pushMatchState()
@@ -455,22 +566,44 @@ AddEventHandler(BR.Net.DIGEST, function(d)
         applyFocusForState(S.match.state)
     end
 
-    -- REPLAY THE ONE TRANSITION the broadcast can never deliver: WAITING.
-    -- Under parallel matches, STATE events are scoped to a match's audience
-    -- -- a player who LEAVES one stops hearing about it, and their digest
-    -- flipping to WAITING is the only signal the round is over for them.
+    -- REPLAY THE TWO TRANSITIONS whose absence strands the player: WAITING and
+    -- ENDED. Under parallel matches, STATE events are scoped to a match's
+    -- audience -- a player who LEAVES one stops hearing about it, and their
+    -- digest flipping to WAITING is the only signal the round is over for them.
     -- Every subsystem keyed on the STATE event (route line, markers, island,
     -- the skydive latch) must still run its teardown, so that transition is
     -- re-fired locally -- TriggerEvent reaches the same handlers.
     --
-    -- WAITING ONLY, deliberately: for any in-match state the real event
-    -- always arrives (the player is in the audience), and replaying those
-    -- races the wire into DOUBLED side effects -- an early digest re-firing
-    -- 'bus' was part of the duplicated-parachute report (2026-08-04).
-    if S.match.state ~= was and S.match.state == BR.MatchState.WAITING then
+    -- ENDED IS THE SECOND ONE, AND IT IS HERE BECAUSE IT IS THE TERMINAL ONE.
+    -- Two things in this whole client hang off `state == ENDED` and NOTHING
+    -- else raises either of them: the verdict screen (the SUMMARY below) and
+    -- BR.Spawn.toLobby(true), which is the trip home. A client that does not
+    -- process that one event is left standing in a finished match -- for a
+    -- player who died, a corpse on the ground with no verdict, no lobby and
+    -- nothing in any log, because nothing failed; a message simply did not
+    -- arrive. That is the owner's report of 2026-08-18 word for word ("the
+    -- verdict screen was never shown ... effectively a real corpse but stuck
+    -- unable to do anything. No errors were logged"), and it had no safety net
+    -- while every lesser transition did.
+    --
+    -- THE CHANGE GATE IS WHAT MAKES THIS SAFE, and it is why the two names
+    -- below are the only ones here. This fires only when the digest MOVED the
+    -- mirror, so the real event arriving first makes it a no-op -- and for
+    -- ENDED the real event always goes out first by construction:
+    -- BR.Match.transition broadcasts BEFORE onEnter (server/match.lua says the
+    -- ordering is a contract), so a digest carrying 'ended' cannot beat the
+    -- transition that produced it. BUS is the state where that is NOT true --
+    -- onEnter sends it, so a digest can arrive first -- and an early digest
+    -- re-firing 'bus' was part of the duplicated-parachute report (2026-08-04).
+    -- That is the reason for the allowlist, and BUS is why it is an allowlist
+    -- rather than "replay anything that changed".
+    if S.match.state ~= was
+       and (S.match.state == BR.MatchState.WAITING
+            or S.match.state == BR.MatchState.ENDED) then
         TriggerEvent(BR.Net.STATE, {
             state     = S.match.state,
             endsAt    = S.match.endsAt,
+            mode      = S.match.mode,
             serverNow = d.serverNow,
             meta      = { from = was, reason = 'digest' },
         })
@@ -485,6 +618,26 @@ end)
 -- them -- and a dev-solo run did exactly that: the storm killed the only
 -- player and the screen slammed VICTORY ROYALE over their corpse. Placement
 -- says where you finished; the flag says how it ended.
+
+-- ...AND A DEATH THAT WAS UNDONE DID NOT HAPPEN (#144).
+--
+-- This latch is written by the roster delta and cleared only by a new match, so
+-- a player who dies before their match reaches PLAYING -- landed early, fell off
+-- something while the rest of the room was still gliding -- carried it for the
+-- whole round they were then revived into. Win that round and the client would
+-- have refused their own victory screen while the server banked the win: the
+-- placement-1 disagreement from the other end, and the same shape as the bug
+-- where the stats path and the client disagreed about what a death meant.
+--
+-- The revive is the authority on this. It is sent once, by the server, at the
+-- moment the death is unwritten -- so this clears the local record of it in the
+-- same beat, alongside the death cause, which would otherwise pick the verdict
+-- slam for a death nobody had.
+RegisterNetEvent(BR.Net.REVIVED)
+AddEventHandler(BR.Net.REVIVED, function()
+    diedThisMatch = false
+    myDeathCause, myDeathByPlayer = nil, false
+end)
 
 RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)
@@ -523,9 +676,14 @@ AddEventHandler(BR.Net.STATE, function(d)
                 cause      = myDeathCause,
                 byPlayer   = myDeathByPlayer,
                 total      = 0,
-                damage     = 0,
-                survivedMs = 0,
-                xpEarned   = 0,
+                -- `damage`, `survivedMs` and `xpEarned` used to be sent here as
+                -- a hardcoded 0 each. Nothing has ever rendered them, and they
+                -- were three zeroes on the wire sitting immediately next to the
+                -- XP bug -- which is how an hour went into checking whether the
+                -- verdict screen's "0 XP" was reading one of them (#91). What a
+                -- match paid comes from br_stats on MATCH_EARNED, from the same
+                -- numbers written to the database. This payload says what
+                -- HAPPENED to you; that one says what it was worth.
             })
         end)
     end
@@ -747,56 +905,516 @@ end)
 -- burst is thirty overlapping sounds, and that has no visual symptom.
 --- Drag our local copy of somebody else's ped back to the server's number.
 ---
---- ONE PASS, OR SEVERAL. A ped that is merely WRONG needs one write. A ped
---- that has entered the DEATH STATE needs resurrecting, and needs it more than
---- once: the correction arrives a round trip after the engine applied the
---- damage locally, so the ped can still be mid-death when the first attempt
---- lands and the death completes over the top of it.
+--- A CORRECTION IS WATCHED, NEVER FIRED AND FORGOTTEN (#115, owner 2026-08-16
+--- and again 2026-08-17).
 ---
---- Spawning a thread per correction would be wasteful on the common path --
---- one arrives per bullet -- so the retry loop is only entered when there is
---- actually a corpse to argue with.
+--- THE REPORT. "I shot a squad mate, they got 0 damage, and on my screen they
+--- perished. After shooting their ped once more they sprung to life, t-posed,
+--- then was synced perfectly... but I did it again, and now their ped is down
+--- for good."
+---
+--- WHY SHOT TWO WORKED AND SHOTS ONE AND THREE DID NOT. Not "a race decided
+--- differently each time" -- one of the three has no race in it at all:
+---
+---   shots 1 and 3 were fired at a LIVING mate. A fatal hit starts
+---     CTaskDyingDead; it does not have to take the health NUMBER with it (a
+---     headshot is the everyday example) and `IsEntityDead` settles some frames
+---     behind the task either way. For that window BOTH questions this function
+---     used to ask answered "alive": the flag had not caught up and the number
+---     had never fallen. So the correction took the one-write branch, wrote the
+---     health, RETURNED -- and the death finished over the top of the value it
+---     had just written, with nothing left watching.
+---
+---   shot 2 was fired INTO that corpse. Nothing left to race: the flag had
+---     settled seconds earlier, so the very same correction took the other
+---     branch and stood the body up. "Sprung to life, t-posed" is ResurrectPed
+---     followed by ClearPedTasksImmediately, in that order.
+---
+--- ef501ef diagnosed the window correctly and then repaired the wrong half: it
+--- removed the unconfirmed `return` from INSIDE the loop, which was never
+--- entered, and left the identical unconfirmed `return` on the branch that
+--- actually gets taken. tools/test_roster.lua's `resync.client` block executes
+--- all three shots and pins them.
+---
+--- SO THERE IS ONE LOOP AND NO SHORTCUT INTO IT. The only question asked up
+--- front is "is there anything to do at all", which is answerable from a single
+--- sample without being wrong later: a ped standing at or above the server's
+--- number, with the flag clear, needs nothing. Everything else -- wrong number,
+--- flagged dead, or dying quietly with a healthy number -- goes to the watcher,
+--- which writes and then comes back to see whether the write survived.
+---
+--- AND THE FLAG IS THE FACT ABOUT DEATH; THE NUMBER IS NOT. `BR.IsDeadHp` reads
+--- the project's own mapping (display 0..100 onto engine 100..200), and our copy
+--- of somebody else's ped carries GTA's raw damage instead -- four pistol rounds
+--- put it at engine 96 on a ped that is upright and running. Resurrecting that
+--- ped and clearing its tasks is the OTHER half of the t-pose the owner saw, so
+--- only `IsEntityDead` may reach for ResurrectPed. A low number is a reason to
+--- keep correcting, never a reason to declare a corpse.
+---
+--- ROUND FOUR: THE WATCHER STOPPED WATCHING TOO SOON, AND IT STOPPED ON A
+--- QUESTION A DYING PED ANSWERS CORRECTLY (#115, owner 2026-08-17).
+---
+--- a8b22c7 built the loop and then handed it an exit: "alive at the number twice
+--- running, 150ms apart, outlives the task". That is a GUESS about how long
+--- `IsEntityDead` takes to catch up with a fatal hit, wearing the clothes of a
+--- fact -- and the whole reason this bug exists is that during that window a
+--- dying ped reads EXACTLY like a healthy one. Two clean samples are not
+--- evidence the death task has gone; they are evidence it has not finished yet.
+--- The same guess is in the loop's length: six passes is 900ms, and then the
+--- thread stops whatever the ped is doing.
+---
+--- tools/test_roster.lua modelled that settle at 64ms, which is under the 150ms
+--- poll -- so the shipped fix passed a suite that had assumed the answer. Move
+--- the model's settle to 800ms, change nothing else, and the suite reproduces
+--- the owner's report verbatim: shot 1 corpse, shot 2 fine, shot 3 down for
+--- good. It never was a race that "went differently each time"; it is one number
+--- nobody knows, and every version of this fix has been a bet on it.
+---
+--- SO THIS ONE DOES NOT BET. There is no early exit and no confirmation count.
+--- The watch runs for a fixed budget that is longer than any dying animation,
+--- re-asserting the server's number whenever the ped disagrees with it, and the
+--- things that stop it early are FACTS rather than guesses:
+---
+---   * the entity is gone (OneSync re-created it; the new copy is correct);
+---   * the SERVER says the victim is no longer someone to correct -- they were
+---     downed and then finished while we were arguing with their corpse. That is
+---     what `src` is for, and it is the guard that makes a five-second watch safe
+---     to run at all: without it a genuine death landing mid-watch would be
+---     resurrected, which is this bug pointed the other way.
+---
+--- ONE WATCH PER PED, NOT ONE PER BULLET. A burst of automatic fire used to
+--- start a coroutine per round, all of them writing the same value to the same
+--- ped. A later correction now refreshes the running watch -- newest number,
+--- deadline pushed out -- and starts nothing.
+---
+--- ROUND FIVE: THE BET DID NOT GO AWAY. IT MOVED TO THE DOOR (#115, owner
+--- 2026-08-17, fifth report).
+---
+--- Round four took every guess out of the watch and said so: no confirmation
+--- count, no settle time, no early exit, "the deadline is the exit". It left
+--- exactly one judgement standing -- in FRONT of the watch rather than inside
+--- it -- and the comment that used to sit on it confessed the flaw in the same
+--- breath it shipped it:
+---
+---     if not IsEntityDead(ped) and GetEntityHealth(ped) >= hp then return end
+---     -- "A ped that is quietly dying reads exactly like a healthy one here"
+---
+--- It does. And that reading was not deciding what to WRITE -- it was deciding
+--- whether a watch would exist at all. "Nothing to write" and "nothing to write
+--- YET" are the same sample and opposite answers, and the gap between them is a
+--- coroutine that never starts. Everything after this point in the function was
+--- built to survive being wrong about a single sample; this was the one place
+--- where a single sample still ended the conversation.
+---
+--- TWO ORDINARY WAYS IN, neither of them a race the network decides -- they are
+--- the same arithmetic every time, which is why the report reads "still
+--- happening" rather than "sometimes":
+---
+---   * THE NUMBER DOES NOT MOVE. A headshot is CTaskDyingDead from the first
+---     frame with the health untouched -- rule 1, the thing this whole file is
+---     written around. The correction reads 200 against a target of 200 and
+---     walks away from a ped that is already gone.
+---   * THE SERVER'S NUMBER IS BELOW THE CLONE'S, which it usually is: the mate
+---     has taken storm or enemy damage this machine's copy never received, so
+---     the ledger holds 60 display (160 engine) while the clone still reads 174
+---     after our own bullet. `174 >= 160` -- nothing to do, said the door, to a
+---     ped in the middle of dying.
+---
+--- Both leave no thread and nothing anywhere that ever looks at that ped again.
+--- That is "down for good", precisely. tools/test_roster.lua now drives both,
+--- at five settle times from 16ms to 3500ms; before this change all five failed
+--- identically, which is the shape of an arithmetic bug rather than a race.
+---
+--- SO THE DOOR ASKS NOTHING. A correction watches.
+---
+--- THE COST, honestly. One coroutine per PED under fire -- not per bullet, the
+--- refresh above sees to that -- waking 33 times over five seconds to read a
+--- health value. The correction with nothing to do now costs that instead of
+--- costing nothing, and that is the trade this round makes on purpose: the
+--- saving was paid for by a single sample deciding whether the ped was fine,
+--- and that sample cannot tell.
+local WATCH_MS = 5000
+local WATCH_POLL_MS = 150
+
+-- netId -> { hp, src, deadline, ... }. Presence IS "a watch is running".
+local watching = {}
+
+-- WHY A CORRECTION DID NOT BECOME A WATCH (#115, round seven).
+--
+-- "The message never arrived" and "the message arrived and this file declined
+-- it" are the first two of the four things that can be wrong with this issue,
+-- and until now /brcorpse could not tell them apart: both print as "no watch
+-- has finished this session". That is the same class of mistake round six
+-- fixed in the readout -- a blank standing in for an answer -- and it is on
+-- the line that decides whether the next round is the server's work or ours.
+--
+-- Every entry is a REASON a correction stopped short, counted where it stops.
+-- `arrived` counts frames off the wire before any judgement at all, so a zero
+-- there is the server's answer and a non-zero is this file's.
+local corrections = {
+    arrived      = 0,   -- HIT_RESYNC / DAMAGE_FEED frames that reached correctPed
+    noNetId      = 0,   -- ...with no network id on them
+    deadTarget   = 0,   -- ...whose target health is itself a dead number
+    refreshed    = 0,   -- ...answered by a watch that was already running
+    unknownNetId = 0,   -- ...for a network id that does not resolve here
+    noEntity     = 0,   -- ...for a network id with no entity behind it
+    watched      = 0,   -- ...that started a watch. This is the one that counts.
+}
+
+-- The last watch to finish, kept for /brcorpse. A finished watch is exactly
+-- the one worth reading and exactly the one `watching` no longer has.
+local lastWatch = nil
+
 --- @param netId integer
 --- @param hp integer   ENGINE units
-local function correctPed(netId, hp)
-    if not netId or hp <= 0 then return end
-    if not NetworkDoesNetworkIdExist(netId) then return end
-
-    local ped = NetworkGetEntityFromNetworkId(netId)
-    if not ped or ped == 0 or not DoesEntityExist(ped) then return end
-
-    if not IsEntityDead(ped) then
-        -- Only ever UPWARD. Writing it down would be us arguing with the
-        -- owner's own sync about a ped we do not own, for no gain.
-        if GetEntityHealth(ped) < hp then SetEntityHealth(ped, hp) end
+--- @param src integer|nil  the victim's server id, so the roster can call it off
+local function correctPed(netId, hp, src)
+    -- A CORRECTION TO A DEAD NUMBER IS NOT A CORRECTION. This used to read
+    -- `hp <= 0`, which is not the threshold: engine health floors at 100 for a
+    -- player ped, so a target of 100 is a corpse that would have been
+    -- resurrected once per retry into a value that keeps it dead. The server no
+    -- longer sends one (BR.Damage.resync declines a victim who is out), and this
+    -- is the half that cannot be reached by getting that wrong again.
+    corrections.arrived = corrections.arrived + 1
+    if not netId then
+        corrections.noNetId = corrections.noNetId + 1
+        return
+    end
+    if BR.IsDeadHp(hp) then
+        corrections.deadTarget = corrections.deadTarget + 1
         return
     end
 
+    -- A WATCH ALREADY RUNNING IS THE ANSWER TO THIS BULLET TOO. Refresh it and
+    -- go: newest number, deadline pushed out. This is now the ONLY question
+    -- asked before a watch starts, and it is a question about this table rather
+    -- than about the ped -- which is the whole of round five. Nothing here reads
+    -- the engine to decide whether the correction is needed, because a ped
+    -- mid-death reads perfectly fine and deciding on that reading is what left
+    -- four rounds of corpses standing.
+    --
+    -- ...UNLESS THE ENTRY HAS OUTLIVED ITS THREAD. A bare Citizen thread that
+    -- throws simply stops -- no handler, nothing to notice -- and it would leave
+    -- this table holding a watch with nothing behind it. Every later correction
+    -- for that ped would then be answered by refreshing a corpse of a watch, for
+    -- the rest of the session. An entry past its own deadline is that, by
+    -- definition, so it is thrown away and a fresh one started. (The same shape
+    -- of failure as the uiHold thread at the top of this file, which is why it
+    -- gets the same kind of net.)
+    local w = watching[netId]
+    if w and GetGameTimer() < w.deadline then
+        w.hp = hp
+        w.src = src or w.src
+        w.deadline = GetGameTimer() + WATCH_MS
+        corrections.refreshed = corrections.refreshed + 1
+        return
+    end
+    watching[netId] = nil
+
+    if not NetworkDoesNetworkIdExist(netId) then
+        corrections.unknownNetId = corrections.unknownNetId + 1
+        return
+    end
+
+    local ped = NetworkGetEntityFromNetworkId(netId)
+    if not ped or ped == 0 or not DoesEntityExist(ped) then
+        corrections.noEntity = corrections.noEntity + 1
+        return
+    end
+
+    -- ...AND THERE IS NO LONGER A TEST HERE AT ALL. See the round-five note
+    -- above: the reading this used to take -- "not dead and already at the
+    -- number, so nothing to do" -- is the one reading a dying ped answers
+    -- exactly like a healthy one, and answering it decided whether a watch ever
+    -- existed. A correction watches. That is the whole door.
+    --
     -- A CORPSE THAT SHOULD NOT BE ONE. ResurrectPed alone leaves the death
     -- TASK running, so the ped stands up and immediately plays dying again;
     -- clearing tasks is what actually ends it. Before this, the body lay
     -- there for the better part of ten seconds until OneSync re-created it
     -- (user, 2026-08-08).
-    Citizen.CreateThread(function()
-        for _ = 1, 6 do
-            if not NetworkDoesNetworkIdExist(netId) then return end
-            local p = NetworkGetEntityFromNetworkId(netId)
-            if not p or p == 0 or not DoesEntityExist(p) then return end
+    --
+    -- The counters are evidence for /brcorpse, and they are the point of round
+    -- five's other half: if this is STILL a corpse in game, the next question
+    -- is not "was the logic right" but "did the writes land", and that is a
+    -- question about the engine that only the engine can answer. See the
+    -- command at the bottom of this section.
+    corrections.watched = corrections.watched + 1
+    watching[netId] = { hp = hp, src = src,
+                        deadline = GetGameTimer() + WATCH_MS,
+                        startedAt = GetGameTimer(),
+                        passes = 0, writes = 0, resurrects = 0,
+                        sawDead = false }
 
+    Citizen.CreateThread(function()
+        while true do
+            local watch = watching[netId]
+            -- Cleared by a stop condition below, or never created. Either way
+            -- this thread has nothing left to own.
+            if not watch then return end
+
+            --- Give up the watch and the thread together, so the table can
+            --- never hold an entry with nothing behind it.
+            ---
+            --- The finished watch is KEPT, once, for /brcorpse. `watching` is
+            --- empty by the time the player alt-tabs out to type a command, so
+            --- without this the one moment worth inspecting is the one moment
+            --- there is nothing to inspect.
+            ---
+            --- AND IT TAKES A LAST READING ON ITS WAY OUT (#115, round six).
+            --- /brcorpse samples the ped LIVE and prints that sample directly
+            --- beneath these counters. The counters describe the watch's
+            --- lifetime; the sample describes the moment somebody typed the
+            --- command, and those are not the same moment -- they were five
+            --- minutes apart in the owner's own paste. A reading taken HERE,
+            --- with the clock stamped, is what turns that block from a
+            --- contradiction into a diagnosis.
+            local function stop(why)
+                watch.why, watch.netId = why, netId
+                watch.endedAt = GetGameTimer()
+                local q = NetworkDoesNetworkIdExist(netId)
+                          and NetworkGetEntityFromNetworkId(netId) or 0
+                if q ~= 0 and DoesEntityExist(q) then
+                    watch.endHealth = GetEntityHealth(q)
+                    watch.endDead   = IsEntityDead(q)
+                end
+                lastWatch = watch
+                watching[netId] = nil
+            end
+
+            if GetGameTimer() >= watch.deadline then return stop('deadline') end
+
+            if not NetworkDoesNetworkIdExist(netId) then return stop('netid gone') end
+            local p = NetworkGetEntityFromNetworkId(netId)
+            if not p or p == 0 or not DoesEntityExist(p) then
+                return stop('entity gone')
+            end
+
+            -- THE SERVER GETS THE LAST WORD, AND IT CAN CHANGE ITS MIND.
+            --
+            -- A watch outlives the correction that started it, which is the
+            -- whole point -- and a five-second one comfortably outlives the
+            -- squadmate too, if an enemy finishes them mid-watch. Reviving a
+            -- teammate who has genuinely just died would be #115 inverted and
+            -- far worse: the corpse would be the truth and we would be the
+            -- ones deleting it. The mirror already holds the server's verdict,
+            -- so it is read every pass rather than trusted once.
+            --
+            -- Absent entry means keep going: a squadmate is always in the
+            -- roster, and failing open here costs a correction that the next
+            -- OneSync re-creation would have made anyway.
+            local e = watch.src and S.roster[watch.src]
+            if e and e.state ~= BR.PlayerState.ALIVE
+               and e.state ~= BR.PlayerState.DBNO then
+                return stop('server says they are out')
+            end
+
+            watch.passes = watch.passes + 1
+            local target = watch.hp
             if IsEntityDead(p) then
+                watch.sawDead = true
+                watch.resurrects = watch.resurrects + 1
+                watch.writes = watch.writes + 1
                 ResurrectPed(p)
                 ClearPedTasksImmediately(p)
-                SetEntityHealth(p, hp)
-            elseif GetEntityHealth(p) < hp then
-                SetEntityHealth(p, hp)
-                return
-            else
-                return   -- already correct; the owner's sync got there first
+                SetEntityHealth(p, target)
+                -- WHETHER THAT TOOK IS NOT SOMETHING THIS FILE MAY ASSUME. The
+                -- one thing it can do is record the reading the engine gives
+                -- back on the very next line, so /brcorpse can say "resurrected
+                -- 33 times and it read dead every time" -- which is a fact
+                -- about the ENGINE, and the only kind of evidence that settles
+                -- whether a clone of somebody else's player ped can be stood up
+                -- from here at all.
+                watch.stillDeadAfterWrite = IsEntityDead(p)
+            elseif GetEntityHealth(p) < target then
+                watch.writes = watch.writes + 1
+                -- Only ever UPWARD. Writing it down would be us arguing with
+                -- the owner's own sync about a ped we do not own, for no gain.
+                SetEntityHealth(p, target)
             end
-            Citizen.Wait(150)
+            -- ...AND NO `else return`. There is no reading of a ped that proves
+            -- its death task has finished, so there is nothing here to confirm
+            -- against. The deadline is the exit.
+
+            Citizen.Wait(WATCH_POLL_MS)
         end
     end)
 end
+
+--- ROUND SIX: THE BUDGET IS THE LAST BET, AND #115's OWN INSTRUMENT IS WHAT
+--- CAUGHT IT (owner, 2026-08-17, sixth report).
+---
+--- The owner shot a squadmate to a false death and ran /brcorpse. The watch
+--- over that ped had run FIFTY passes, seen no corpse, and written nothing --
+--- next to a live reading of `health 0  dead 1  fatally injured 1`. Read as one
+--- moment that is a contradiction, and four of the five previous rounds would
+--- have gone looking for a broken predicate. It is not one moment. Fifty passes
+--- at one poll every WATCH_POLL_MS is seven and a half seconds of watching, and
+--- the ped was read three hundred and twenty-six SECONDS after that watch
+--- started. The detection was fine. The ped simply died with nothing looking at
+--- it, and everything above only looks while a bullet is recent.
+---
+--- SO THE BUDGET WAS THE BET ALL ALONG. Round four took the guess out of the
+--- predicate; round five took it out of the door; both left it in the clock.
+--- `WATCH_MS` is a number nobody has measured, exactly like the settle time
+--- that made rounds three and four wrong, and tools/test_roster.lua now sweeps
+--- it: a death that shows up at 4900ms is corrected and one at 5200ms is "down
+--- for good" forever. That is the same shape of failure with a bigger constant
+--- in it.
+---
+--- AND THERE IS A FACT HERE THAT NEEDS NO CLOCK AT ALL. A false corpse is not
+--- "a ped that was shot recently and then died". It is, exactly:
+---
+---     the server says this player is ALIVE, and their ped on this machine
+---     reads dead.
+---
+--- That is decidable from the mirror this very file maintains, at any moment,
+--- for every player -- with no netId on the wire, no bullet, and no budget. It
+--- is also the only form of the question that cannot be got wrong by being
+--- asked at the wrong time, because there is no window: ask it again in half a
+--- second and it is still true, and still true, until it is fixed.
+---
+--- ALIVE ONLY, AND DBNO IS DELIBERATELY EXCLUDED. A downed player's body is
+--- POSED by their own client -- client/dbno.lua resurrects them and lays them
+--- out with NetworkResurrectLocalPlayer -- and ClearPedTasksImmediately on a
+--- teammate mid-knock would strip that pose and T-pose them, which is the
+--- previous rounds' bug wearing a new hat. The server calls them DBNO rather
+--- than ALIVE precisely so this can tell the difference.
+---
+--- THE WATCH STAYS. It answers within a poll of the shot rather than within
+--- half a second, and forty-odd assertions pin it. This is the floor under it.
+local RECONCILE_MS = 500
+
+-- EVIDENCE, FOR /brcorpse -- AND COUNTED AS WHAT IT IS.
+--
+-- The first version of this counter said "corrected", which it could not know.
+-- With the writes being dropped it read 623 after five minutes on ONE corpse,
+-- because it was counting attempts and calling them repairs -- the same kind of
+-- over-claiming readout that made this issue take six rounds. So: how many
+-- sweeps found a false corpse, and how many of those were still dead on the
+-- very next line. `found` climbing while `stuck` climbs with it is the ownership
+-- answer the round-five note was reaching for, and it now arrives from a
+-- channel that runs all match instead of for five seconds after a bullet.
+local falseCorpses, falseCorpsesStuck = 0, 0
+
+-- ...AND `stuck ~= 0` IS ONLY HALF THE OWNERSHIP QUESTION (#115, round seven).
+--
+-- `stuck` is read on the line AFTER the write, with no yield in between, so no
+-- packet from anybody can have arrived: it answers "did the native itself take
+-- effect on this machine, this frame". That is a real answer and it is the only
+-- one this file could give -- but it is blind to the other way a repair fails.
+-- A write that lands and is then reverted by the owner's next sync reads
+-- `stuck = 0` every single time, and the old readout called that case "the
+-- corpses are real and being fixed". It is the exact case where they are not.
+--
+-- So the sweep also remembers who it wrote to LAST time. A player written to on
+-- one sweep and found dead again on the next, half a second later, was not
+-- repaired -- whatever the line after the write said. That is a fact about
+-- whether the correction HOLDS, which is a different question from whether it
+-- lands, and between them the two counters separate the last two candidates:
+--
+--   stuck climbing      the native is refused outright -- we do not own the ped
+--   relapsed climbing   the native takes and the owner's sync puts it back
+--   neither             the repair works, and `repaired` is what it did
+local falseCorpsesRelapsed, falseCorpsesRepaired = 0, 0
+
+-- src -> true when the last sweep wrote to that player's ped. Cleared the
+-- moment they read alive again, so a player who is fixed and later dies for
+-- real does not count as a relapse.
+local wroteLastSweep = {}
+
+--- Is a watch already arguing about this player's ped?
+---
+--- IT HAS THE BETTER NUMBER AND IT MUST NOT BE FOUGHT. A watch carries the
+--- health the SERVER put on the wire for this exact hit; the mirror carries the
+--- roster's copy, which is a tick or two behind and rounded through display
+--- units. Two writers on one ped means whichever polls first wins, and the
+--- answer to "what health is this player on" would depend on that. So the
+--- standing check is a FLOOR under the watch, not a second opinion beside it.
+--- @param src integer
+--- @return boolean
+local function watchOwns(src)
+    for _, w in pairs(watching) do
+        if w.src == src then return true end
+    end
+    return false
+end
+
+--- One sweep of the mirror. Split out so the suite can call it directly.
+local function reconcileFalseCorpses()
+    for src, e in pairs(S.roster) do
+        -- A PLAYER THIS SWEEP WILL NOT LOOK AT HAS NO HISTORY WORTH KEEPING.
+        -- Without this, somebody written to and then genuinely killed comes
+        -- back from the dead in the arithmetic: the next false corpse they
+        -- present, minutes later, would be counted as a relapse of a write
+        -- that has nothing to do with it.
+        if e.state ~= BR.PlayerState.ALIVE then wroteLastSweep[src] = nil end
+
+        if src ~= S.me.src and e.state == BR.PlayerState.ALIVE
+           and not watchOwns(src) then
+            -- -1 IS "NOT ON THIS MACHINE", AND IT IS A TRAP RATHER THAN A
+            -- MISS: the ped native answers -1 with the LOCAL player's ped, so
+            -- a squadmate on the far side of the map resolves to us, and we
+            -- would resurrect ourselves in a fight with client/dbno.lua over a
+            -- body it owns. Both the index and the player id are checked.
+            --
+            -- ...AND SCOPE IS NOT BEING USED AS A ROSTER HERE, which is what
+            -- the gate in tools/verify.sh exists to stop. The set of players
+            -- and their states comes off the server broadcast above; scope only
+            -- answers "is there a copy of that ped on this machine to be
+            -- wrong", which is the one question it is actually authoritative
+            -- about. Out of scope there is no local corpse, so there is
+            -- nothing here to fix.
+            local ply = GetPlayerFromServerId(src)  -- scope-ok: a false corpse is a fact about the LOCAL copy of that ped; the roster comes from the server
+            if ply and ply ~= -1 and ply ~= PlayerId() then
+                local ped = GetPlayerPed(ply)  -- scope-ok: same call, same reason -- the ped handle for a player already known to be in scope
+                if ped and ped ~= 0 and DoesEntityExist(ped) then
+                  if IsEntityDead(ped) then
+                    -- The mirror carries DISPLAY units; a ped takes engine
+                    -- ones. Never inline this arithmetic (config/match.lua).
+                    local target =
+                        math.floor(BR.ToEngineHp(e.hp or 100.0) + 0.5)
+                    -- A player the ledger has on the floor is not somebody to
+                    -- resurrect INTO a value that keeps them dead -- the same
+                    -- guard correctPed opens with, and for the same reason.
+                    if not BR.IsDeadHp(target) then
+                        -- DEAD AGAIN, HALF A SECOND AFTER WE WROTE TO THEM.
+                        -- Counted BEFORE this sweep's write, so it describes
+                        -- the fate of the PREVIOUS one.
+                        if wroteLastSweep[src] then
+                            falseCorpsesRelapsed = falseCorpsesRelapsed + 1
+                        end
+                        falseCorpses = falseCorpses + 1
+                        ResurrectPed(ped)
+                        ClearPedTasksImmediately(ped)
+                        SetEntityHealth(ped, target)
+                        wroteLastSweep[src] = true
+                        -- Whether that took is the engine's to say, and the
+                        -- next line is the only place it can be asked.
+                        if IsEntityDead(ped) then
+                            falseCorpsesStuck = falseCorpsesStuck + 1
+                        end
+                    end
+                  elseif wroteLastSweep[src] then
+                    -- WRITTEN TO LAST SWEEP AND UPRIGHT NOW. This is the only
+                    -- evidence in the file that a repair ever actually held,
+                    -- and it is the number whose absence means the corpse is
+                    -- winning however healthy the other counters look.
+                    falseCorpsesRepaired = falseCorpsesRepaired + 1
+                    wroteLastSweep[src] = nil
+                  end
+                end
+            end
+        end
+    end
+end
+
+Citizen.CreateThread(function()
+    while true do
+        Citizen.Wait(RECONCILE_MS)
+        reconcileFalseCorpses()
+    end
+end)
 
 RegisterNetEvent(BR.Net.DAMAGE_FEED)
 AddEventHandler(BR.Net.DAMAGE_FEED, function(d)
@@ -826,9 +1444,185 @@ AddEventHandler(BR.Net.DAMAGE_FEED, function(d)
     -- is absent when the ledger says they are dead, because then the corpse
     -- is right and reviving it would be the bug.
     if d.netId then
-        correctPed(d.netId, math.floor(tonumber(d.hp) or 0))
+        correctPed(d.netId, math.floor(tonumber(d.hp) or 0), tonumber(d.src))
     end
 end)
+
+-- IS ENTITY OWNERSHIP THE BLOCKER? ASK THE ENGINE, IN GAME (#115).
+--
+-- Everything above is a write to a ped this machine does not own, and GTA is
+-- entitled to ignore those. The suite cannot answer that question -- it is a
+-- property of the running session, not of the logic -- so this prints what the
+-- engine says about the last ped we tried to correct, live, next to the number
+-- we were trying to write.
+--
+-- The natives here are READ-ONLY on purpose. `NetworkRequestControlOfEntity` is
+-- deprecated by Cfx.re over cheat abuse, and `sv_filterRequestControl` defaults
+-- to blocking control requests for entities controlled by players -- which is
+-- every player ped on the server. Calling it would be asking for something the
+-- server is configured to refuse.
+--
+-- ROUND FIVE ADDS THE FINISHED WATCH, and that is the reading that matters.
+-- The live table is empty five seconds after the shot, which is roughly when a
+-- player finishes saying "it's still a corpse" and reaches for the console. The
+-- last watch to end says how many passes it got, how many times it wrote, how
+-- many times it resurrected, and -- the one that settles the argument -- what
+-- the engine answered on the line immediately AFTER a resurrection.
+--
+--   resurrects > 0 and stillDead=true   the logic ran and the ENGINE refused.
+--                                       Nothing in Lua fixes that; the repair
+--                                       has to come from the ped's owner, the
+--                                       way client/dbno.lua's floorTheBody does
+--                                       it with NetworkResurrectLocalPlayer.
+--   passes 0, or no watch at all        the correction never arrived, or the
+--                                       roster called it off. That is a logic
+--                                       fault, and this file's to fix.
+--- ...AND THE ONE THING THIS PRINTOUT MUST NEVER DO AGAIN IS PRINT TWO
+--- DIFFERENT MOMENTS AS THOUGH THEY WERE ONE (#115, round six).
+---
+--- The owner's paste was read as a contradiction inside our own instrument:
+---
+---     ENDED netId 3  target hp 200  src 3
+---       exists 1  health 0  dead 1  fatally injured 1
+---       started 326858ms ago  passes 50  writes 0  resurrects 0
+---       saw a corpse false  ended: deadline
+---
+--- A corpse, and a watch over it that saw nothing. It is not a contradiction
+--- and there is nothing wrong with the detection: `passes 50` at one poll every
+--- WATCH_POLL_MS is SEVEN AND A HALF SECONDS of watching, and the ped was read
+--- 326858ms after that watch began -- so the two lines are five minutes and
+--- eighteen seconds apart. The counters are the watch's life; the reading
+--- underneath them is right now. The ped died with nothing looking at it.
+---
+--- So the age of every number is printed next to it, the reading the watch took
+--- on its way out is printed beside the reading taken now, and a gap between
+--- the two is called what it is.
+local function printWatch(label, netId, w)
+    local exists = NetworkDoesNetworkIdExist(netId)
+    local p = exists and NetworkGetEntityFromNetworkId(netId) or 0
+    local now = GetGameTimer()
+    print(('  %s netId %s  target hp %s  src %s')
+        :format(label, tostring(netId), tostring(w.hp), tostring(w.src)))
+
+    -- THE WATCH'S OWN LIFETIME. Every one of these is history.
+    print(('    started %dms ago  ran for %dms  passes %d  writes %d  '
+           .. 'resurrects %d  saw a corpse %s  ended: %s')
+        :format(now - (w.startedAt or now),
+                (w.endedAt or now) - (w.startedAt or now),
+                w.passes or 0, w.writes or 0, w.resurrects or 0,
+                tostring(w.sawDead), tostring(w.why or 'still running')))
+    -- ...AND `nil` HERE IS NOT AN ANSWER EITHER (#115, round seven). This field
+    -- only exists once something has been resurrected, so on a watch that never
+    -- saw a corpse it printed "nil" -- which is round six's dash wearing a
+    -- different word. "Never resurrected" and "resurrected, and it did not
+    -- take" are opposite findings and they must not share a rendering.
+    if w.stillDeadAfterWrite == nil then
+        print('    STILL DEAD ON THE LINE AFTER RESURRECTING: never resurrected '
+              .. 'during this watch, so the engine was never asked')
+    else
+        print(('    STILL DEAD ON THE LINE AFTER RESURRECTING: %s   <-- true here '
+               .. 'means the engine refused the write, not that the logic missed it')
+            :format(tostring(w.stillDeadAfterWrite)))
+    end
+
+    -- WHAT THE WATCH SAW LAST, and how long ago that was.
+    if w.endedAt then
+        print(('    AT THE MOMENT IT ENDED (%dms ago): health %s  dead %s')
+            :format(now - w.endedAt,
+                    tostring(w.endHealth or '-'), tostring(w.endDead)))
+    end
+
+    -- ...AND WHAT THE PED IS DOING NOW, which is a different sentence.
+    --
+    -- `a and b or '-'` IS NOT A SAFE WAY TO PRINT A BOOLEAN, and this readout
+    -- was doing it on all four of the facts it exists to report. When the
+    -- native answers FALSE the idiom falls through to '-' -- so "I looked, and
+    -- the answer is no" printed identically to "there was no ped to ask". The
+    -- worst case is the last line: `I control this ped: -` is the single most
+    -- important fact in this issue, and it read as "unknown" when it meant
+    -- "no". Nothing above is worth trusting if the reader cannot tell a false
+    -- from a blank.
+    local function said(v)
+        if v == nil then return '-' end
+        return tostring(v)
+    end
+    if p ~= 0 then
+        print(('    RIGHT NOW: exists %s  health %s  dead %s  fatally injured %s')
+            :format(said(exists), said(GetEntityHealth(p)), said(IsEntityDead(p)),
+                    IsPedFatallyInjured and said(IsPedFatallyInjured(p))
+                        or 'native unavailable'))
+        print(('    I control this ped: %s')
+            :format(said(NetworkHasControlOfEntity(p))))
+    else
+        print(('    RIGHT NOW: exists %s -- there is no ped on this machine for '
+               .. 'that network id, so nothing below could be asked')
+            :format(said(exists)))
+    end
+
+    -- THE SENTENCE THE OWNER SHOULD NOT HAVE HAD TO WORK OUT BY HAND.
+    if w.endedAt and p ~= 0 and IsEntityDead(p) and not w.endDead then
+        print(('    >>> THIS PED DIED %dms AFTER THE WATCH LET GO OF IT. The '
+               .. 'watch is not wrong; nothing was watching.')
+            :format(now - w.endedAt))
+    end
+end
+
+RegisterCommand('brcorpse', function()
+    print('=== corpse watch ===')
+
+    -- 1. DID THE SERVER'S CORRECTION ARRIVE AT ALL? Printed FIRST and on its
+    --    own line, because it is the only question here whose answer is not
+    --    this file's responsibility -- and until round seven it was invisible.
+    print(('  corrections off the wire: %d arrived  ->  %d started a watch, '
+           .. '%d refreshed a running one')
+        :format(corrections.arrived, corrections.watched, corrections.refreshed))
+    print(('    declined here: %d for a dead target number, %d with no netId, '
+           .. '%d for a netId that does not resolve, %d with no entity behind it')
+        :format(corrections.deadTarget, corrections.noNetId,
+                corrections.unknownNetId, corrections.noEntity))
+    print('    arrived 0 while squadmates are being shot = the SERVER is not')
+    print('      sending them, and nothing below can help.')
+
+    -- 2. THE STANDING CHECK, WHICH NEEDS NO BULLET AND HAS NO WINDOW.
+    print(('  standing check: found a false corpse %d time(s) this session '
+           .. '(a ped the server calls ALIVE, reading dead here)')
+        :format(falseCorpses))
+    print(('    of those: %d were STILL dead on the line after the write, and '
+           .. '%d were found dead AGAIN on the very next sweep')
+        :format(falseCorpsesStuck, falseCorpsesRelapsed))
+    print(('    and %d were upright again when the next sweep looked')
+        :format(falseCorpsesRepaired))
+
+    -- ...AND WHAT THOSE THREE NUMBERS MEAN, WHICH IS THE WHOLE POINT.
+    --
+    -- The line this replaces read "found high and stuck ~0 = the corpses are
+    -- real and being fixed", and that was wrong in the one case it most
+    -- mattered: a write that lands and is reverted by the owner's next sync
+    -- reads stuck 0 forever while nothing is fixed at all. `repaired` is what
+    -- "being fixed" actually looks like, and `relapsed` is what it looks like
+    -- when the engine takes the write and then takes it back.
+    print('    stuck climbing with found  = the engine REFUSES the write. We do')
+    print('      not own that ped and no Lua on this machine can stand it up.')
+    print('    stuck ~0 but relapsed climbing = the write LANDS and does not')
+    print('      HOLD -- the owner\'s next sync puts the corpse back. Same')
+    print('      conclusion: the repair has to run on the victim\'s machine.')
+    print('    repaired climbing and relapsed ~0 = the corrections are working.')
+    print('    found 0 while a corpse is on screen = the mirror never said')
+    print('      ALIVE for them, and the detection is what is broken.')
+
+    local any = false
+    for netId, w in pairs(watching) do
+        any = true
+        printWatch('RUNNING', netId, w)
+    end
+    if not any then print('  nothing being corrected right now') end
+    if lastWatch then
+        print('  --- the last watch to finish ---')
+        printWatch('ENDED  ', lastWatch.netId, lastWatch)
+    else
+        print('  no watch has finished this session')
+    end
+end, false)
 
 -- --------------------------------------------------------------------------
 -- Storm
@@ -877,7 +1671,7 @@ end)
 RegisterNetEvent(BR.Net.HIT_RESYNC)
 AddEventHandler(BR.Net.HIT_RESYNC, function(d)
     if type(d) ~= 'table' then return end
-    correctPed(d.netId, math.floor(tonumber(d.hp) or 0))
+    correctPed(d.netId, math.floor(tonumber(d.hp) or 0), tonumber(d.src))
 end)
 
 RegisterNetEvent(BR.Net.HIT_DAMAGE)
@@ -957,7 +1751,7 @@ end)
 -- --------------------------------------------------------------------------
 
 local lastPush = { hp = -1, armour = -1, alive = -1, squads = -1, kills = -1,
-                   state = '', paused = nil }
+                   state = '', paused = nil, landed = nil }
 
 --- Send the HUD envelope, but only when something actually changed.
 ---
@@ -966,6 +1760,11 @@ local lastPush = { hp = -1, armour = -1, alive = -1, squads = -1, kills = -1,
 --- messages a minute while a player stands still.
 --- @param force boolean|nil
 function BR.PushHud(force)
+    -- HELD WHILE THE CURTAIN IS GOING UP. This is the channel the lobby-to-HUD
+    -- cut actually travelled down: `state` here is what App.tsx reads to decide
+    -- the lobby is over. See uiHold at the top of this file.
+    if uiHold then return end
+
     local me = S.me
     local hp     = math.floor(me.hp or 0)
     local armour = math.floor(me.armour or 0)
@@ -989,11 +1788,35 @@ function BR.PushHud(force)
     -- would defeat the dedupe below.
     local stamina = math.floor((S.stamina or 100.0) + 0.5)
 
+    -- MY FEET ARE ON THE GROUND, WHATEVER THE SERVER STILL THINKS.
+    --
+    -- The interface hides the squad panel and the inventory bar for a player
+    -- who is FREEFALL or GLIDE, which is right in the air and wrong the moment
+    -- they touch down -- because the state that says so is the SERVER's, and it
+    -- arrives when the landing report gets there. That report is the single
+    -- most historically unreliable message in this project (see the long note
+    -- above reportLanded in client/skydive.lua), and everything a landed player
+    -- has hangs off it. When it is late the player stands in a POI with no
+    -- inventory and half a HUD until something else -- in the worst case the
+    -- match reaching PLAYING -- eventually promotes them (#126).
+    --
+    -- It was diagnosed as slowness and answered with speed: retries, a loot
+    -- burst budget, a faster cell loop. They are not slow, they are OFF.
+    --
+    -- So this reports the second fact alongside the first: the server's state,
+    -- AND my own ped's report that it has landed. The mirror is not corrupted
+    -- to say it -- `state` still carries exactly what the server said, and
+    -- nothing that MATTERS (damage, claims, placement) reads this. It is
+    -- observation of our own ped, which is the one thing a client may always
+    -- do, used for the one thing it is allowed to decide: what to draw.
+    local landed = BR.State.landed == true
+
     if not force
        and hp == lastPush.hp and armour == lastPush.armour
        and S.alive == lastPush.alive and S.squadsAlive == lastPush.squads
        and kills == lastPush.kills and me.state == lastPush.state
-       and paused == lastPush.paused and stamina == lastPush.stamina then
+       and paused == lastPush.paused and stamina == lastPush.stamina
+       and landed == lastPush.landed then
         return
     end
 
@@ -1002,6 +1825,7 @@ function BR.PushHud(force)
     lastPush.kills, lastPush.state = kills, me.state
     lastPush.paused = paused
     lastPush.stamina = stamina
+    lastPush.landed = landed
 
     TriggerEvent('br:ui:sendLocal', BR.Nui.HUD, {
         hp          = hp,
@@ -1012,6 +1836,7 @@ function BR.PushHud(force)
         state       = me.state,
         paused      = paused,
         stamina     = stamina,
+        landed      = landed,
     })
 end
 
@@ -1060,9 +1885,21 @@ function pushSquadOrParty()
     local members = {}
     for src, e in pairs(S.roster) do
         if e.squadId == me.squadId then
+            -- THE BLEED CLOCK COMES OFF THE SQUAD BEACON, NOT THE ROSTER, and
+            -- that is the whole point of it. `dbnoUntil` is deliberately absent
+            -- from PUBLIC_FIELDS -- on the public set it would hand every
+            -- enemy the exact second a downed player expires. The beacon is
+            -- already squad-only, so this is the channel that may carry it.
+            local b = BR.Squadmates and BR.Squadmates.beaconOf
+                and BR.Squadmates.beaconOf(src)
             members[#members + 1] = {
                 src = src, name = e.name, state = e.state,
                 hp = e.hp or 0, armour = e.armour or 0,
+                -- Absent unless they are down. The panel renders nothing at all
+                -- for a missing value rather than seeding a local countdown
+                -- that would drift from the server and keep ticking through a
+                -- revive.
+                bleedEndsAt = b and b.bleedEndsAt or nil,
             }
         end
     end

@@ -12,21 +12,98 @@ BR.Config = BR.Config or {}
 
 local R = BR.Rarity
 
+--- `plural` IS THE NAME A REFUSAL USES, and it lives here rather than in the
+--- message so the sentence is written once (#171). The old refusal built its
+--- own by sticking an "s" on `label`, against the consumable table alone --
+--- which is why a player holding three grenades was told "You can only carry 0
+--- of thoses." Anything without this row falls back to `label .. 's'`, which is
+--- right for every name in the game today and wrong the moment one of them
+--- isn't. See BR.Loot.refusalText in br_core/server/loot.lua.
 BR.Config.Consumables = {
     {
-        id = 'minishield', label = 'Small Shield', rarity = R.COMMON,
+        -- THE SMALL ONE IS THIS ROW, AND THE CONFIG SAYS SO RATHER THAN THE
+        -- NAME (#166). `minishield` reads as the smaller tier, but the fields
+        -- are what decide it: 25 armour to a cap of 50, against the 50-to-100
+        -- of the row below. Anything keyed off "which shield is small" reads
+        -- armourCap, not the id.
+        id = 'minishield', label = 'Small Shield', plural = 'Small Shields',
+        rarity = R.COMMON,
         kind = BR.ItemKind.CONSUMABLE, prop = 'prop_bodyarmour_02',
         useMs = 3000, maxStack = 6,
         armour = 25, armourCap = 50,   -- small potions only take you to half shield
+
+        -- HALF SIZE ON THE GROUND (owner, 2026-08-17: "can we make small
+        -- shields literally spawn as a smaller prop? like same prop but
+        -- physically scaled to 50% the size?").
+        --
+        -- WHY IT MATTERS NOW: the Shield below moved RARE -> UNCOMMON on the
+        -- same day, taking it from a crate in 9 to a crate in 3.3, so both
+        -- tiers are on the floor far more often and telling them apart before
+        -- you walk over one is suddenly worth something.
+        --
+        -- HOW IT IS DONE, AND WHY IT IS A NUMBER RATHER THAN A MODEL: GTA V
+        -- has no entity-scale native (client/loot.lua has said so since the
+        -- take animation wanted one). The only lever is the transform matrix,
+        -- so the client normalises the prop's three axis vectors and rescales
+        -- them -- see applyPropScale in br_core/client/loot.lua. That scales
+        -- the RENDER only, never a collision box, which is free here because
+        -- loose floor items are spawned with collision switched off already.
+        --
+        -- THE TWO TIERS STILL USE DIFFERENT MODELS, DELIBERATELY. The owner
+        -- asked for one model at two sizes; leaving the models distinct means
+        -- that if the matrix scale turns out not to render on this build, the
+        -- tiers stay as distinguishable as they are today rather than becoming
+        -- identical. Merging them to prop_bodyarmour_06 is a one-line
+        -- follow-up once a playtest confirms the scale bites.
+        --
+        -- /brpropscale minishield <k> retunes this live, in game, and prints
+        -- the line to paste back here -- the same ruler /brlabel is.
+        propScale = 0.5,
     },
     {
-        id = 'shield', label = 'Shield', rarity = R.RARE,
+        -- UNCOMMON, NOT RARE (owner, 2026-08-17: "seems shield is a very rare
+        -- item - took me 10 crates to get one. That should be increased").
+        --
+        -- HIS TEN CRATES WERE NOT BAD LUCK -- THEY WERE THE TABLE. At RARE a
+        -- crate held a Shield 11.1% of the time across a whole match layout,
+        -- which is one in nine. The report and the model agree to within a
+        -- crate, so there was nothing to explain away.
+        --
+        -- AND THE RARITY FIELD IS THE ONLY LEVER THAT COULD MOVE IT. There is
+        -- no per-item weight in this table: BR.LootPickOfRarity picks UNIFORMLY
+        -- from a rarity bucket (rng:pick, not rng:weighted), so an item's share
+        -- of consumable rolls is decided entirely by which rarity BANDS it owns.
+        -- The Shield owned exactly one, RARE, worth 27% of consumable rolls at
+        -- crate tier -- already the largest single share of the four
+        -- consumables, which is why the kind weight below could not fix this on
+        -- its own: reaching one crate in three that way needs CONSUMABLE at ~46
+        -- out of 100, which would take crate ammo to almost nothing.
+        --
+        -- Moving it to UNCOMMON widens the band to UNCOMMON *and* RARE, because
+        -- the bucket walk goes DOWN: with RARE now empty, a RARE consumable
+        -- roll falls through to this. 27% -> 55% of consumable rolls, which is
+        -- a crate in 3.3 rather than a crate in 9.
+        --
+        -- WHAT IT COSTS: the Shield now renders GREEN/Uncommon rather than
+        -- blue/Rare. That is the whole cost -- rarity on a CONSUMABLE is
+        -- presentation only. RarityInfo.damageMult is read in exactly one place
+        -- (config/weapons.lua's damage calc) and a consumable never reaches it;
+        -- the 50 armour and the 100 cap are fields on this row, not functions of
+        -- the tier. The other half of the cost is inside the consumable bucket:
+        -- Small Shield and Bandage lose the UNCOMMON fall-through they used to
+        -- collect, which the kind weight below is raised to offset.
+        --
+        -- IT IS ALSO THE GENRE'S OWN MAPPING, which is worth saying because it
+        -- means this is not a number bent to hit a target: Fortnite ships Small
+        -- Shield Potion as Common and Shield Potion as Uncommon, and a 50-point
+        -- shield is a staple you expect to find, not a prize.
+        id = 'shield', label = 'Shield', plural = 'Shields', rarity = R.UNCOMMON,
         kind = BR.ItemKind.CONSUMABLE, prop = 'prop_bodyarmour_06',
         useMs = 5000, maxStack = 3,
         armour = 50, armourCap = 100,
     },
     {
-        id = 'bandage', label = 'Bandage', rarity = R.COMMON,
+        id = 'bandage', label = 'Bandage', plural = 'Bandages', rarity = R.COMMON,
         -- The small medical crate: reads as "a bit of health" on the floor
         -- without being mistaken for the full kit (user-sourced, 2026-08-05).
         kind = BR.ItemKind.CONSUMABLE, prop = 'xm_prop_smug_crate_s_medical',
@@ -40,7 +117,7 @@ BR.Config.Consumables = {
         chestOnly = true,
     },
     {
-        id = 'medkit', label = 'Med Kit', rarity = R.EPIC,
+        id = 'medkit', label = 'Med Kit', plural = 'Med Kits', rarity = R.EPIC,
         -- The med bag: visibly the bigger of the two.
         kind = BR.ItemKind.CONSUMABLE, prop = 'xm_prop_x17_bag_med_01a',
         useMs = 8000, maxStack = 3, carryMax = 3,
@@ -114,11 +191,57 @@ BR.Config.RarityWeights = {
 }
 
 --- What kind of thing a roll INSIDE A CRATE produces.
+---
+--- THE WEIGHTS ARE WRITTEN TO SUM TO 100 so a row reads as a percentage of
+--- crate items. Nothing requires that -- rng:weighted normalises -- but it is
+--- the difference between retuning this table and doing arithmetic first.
+---
+--- INVERTED 2026-08-16 (#127). The owner opened crates for a full match and
+--- reported "disproportionately more ammo/medkits than weapons", and the table
+--- agreed with him: at 34/30/28/8, and with meleeChance taking 18% of the
+--- weapon rolls for a machete, a crate item was a FIREARM 27.9% of the time and
+--- ammo-or-consumable 58% of the time. That is 2.08 supporting items for every
+--- gun. Worse, because a crate holds 3 items on average (chestItems below),
+--- only 61% of crates contained a firearm at all -- so two crates in five paid
+--- out no weapon, which is the one thing a player crosses open ground for.
+---
+--- A battle royale's crate has to make a weapon the EXPECTED outcome: you find
+--- the gun, and the ammo and the shields are what you find alongside it. At
+--- 55/22/17/6 a crate item is a firearm 48.4% of the time, 85% of crates hold
+--- at least one, and the supporting-to-gun ratio is 0.81:1 -- the wrong way up
+--- from where it was, which is the point.
+---
+--- HOW TO RETUNE IT WITHOUT OPENING A HUNDRED CRATES: `brlootsim` on the server
+--- console rolls this table as many times as you like and prints the resulting
+--- distribution, including the number that actually matters here -- the share
+--- of crates holding a gun. Change a number, restart, run it again.
+---
+--- The FLOOR table below is deliberately NOT touched by this. Loose ground loot
+--- being almost all ammo is a separate, earlier decision (2026-08-06) and is
+--- where most of the ammo a player trips over comes from.
+--- CONSUMABLE 17 -> 21, PAID FOR BY AMMO (owner, 2026-08-17, the shield report).
+---
+--- Moving the Shield to the UNCOMMON band above roughly doubles its share of
+--- consumable rolls, and it takes that share from Small Shield and Bandage --
+--- which is a healing nerf nobody asked for. Widening the consumable slice by
+--- the same factor puts the healing back: Bandage lands at 2.6% of crate items
+--- against 4.5% before, Med Kit at 4.2% against 3.4%, so the two HEALING items
+--- together move 7.9% -> 6.8% rather than 7.9% -> 5.5%.
+---
+--- WEAPON STAYS AT 55, EXACTLY. That number is #127's whole result -- a crate
+--- item is a firearm 48.4% of the time and 85% of crates hold at least one --
+--- and this change must not be the thing that quietly undoes it. THROWABLE
+--- stays at 6 because it is already the thinnest row on the table.
+---
+--- SO AMMO PAYS, and it is the right row to take from: the FLOOR table below is
+--- 74% ammo and untouched, so loose ground loot remains the ammo firehose it
+--- was deliberately made into (2026-08-06). Crate ammo drops 22 -> 18, which is
+--- about 11% off the map's total ammo once floor loot is counted.
 BR.Config.KindWeights = {
-    { kind = BR.ItemKind.WEAPON,     weight = 34 },
-    { kind = BR.ItemKind.AMMO,       weight = 30 },
-    { kind = BR.ItemKind.CONSUMABLE, weight = 28 },
-    { kind = BR.ItemKind.THROWABLE,  weight =  8 },
+    { kind = BR.ItemKind.WEAPON,     weight = 55 },
+    { kind = BR.ItemKind.AMMO,       weight = 18 },
+    { kind = BR.ItemKind.CONSUMABLE, weight = 21 },
+    { kind = BR.ItemKind.THROWABLE,  weight =  6 },
 }
 
 --- What kind of thing a LOOSE GROUND roll produces.
@@ -475,7 +598,17 @@ BR.Config.Loot = {
     -- How often a CRATE weapon roll produces melee instead of a firearm.
     -- Crate-only: a machete on the roadside is a consolation prize, a machete
     -- in a box you crossed open ground for is a decision (user, 2026-08-07).
-    meleeChance     = 0.18,
+    --
+    -- THIS IS A FRACTION OF THE WEAPON ROLLS, SO IT IS COUPLED TO
+    -- BR.Config.KindWeights AND HAS TO MOVE WITH IT. Raising the weapon weight
+    -- from 34 to 55 for #127 would have taken melee from 6.1% of crate items to
+    -- 9.9% as a side effect -- a 62% increase in machetes that nobody asked
+    -- for, arriving inside a change whose entire purpose was "more guns".
+    -- 0.12 of the new weight lands melee back at 6.6% of crate items, so the
+    -- whole of the increase goes where the owner pointed it: firearms.
+    --
+    -- The knob still means what it always meant. Raise it for more machetes.
+    meleeChance     = 0.12,
 
     -- Crate mass, in kg, via SetObjectPhysicsParams. Tuned in game, in four
     -- passes: the prop default read as "extremely heavy", 12 overcorrected

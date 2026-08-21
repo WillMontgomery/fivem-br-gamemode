@@ -78,11 +78,101 @@ add_ace group.admin command allow
 ensure sessionmanager    # connection handling -- required
 ensure hardcap           # enforces sv_maxclients
 
+# VOICE. THIRD-PARTY, NOT IN THIS REPOSITORY, AND YOU MUST INSTALL IT YOURSELF.
+# See the "Voice" block further down for the exact commands -- this one line is
+# the whole of the config, but the resource has to be on the box first.
+#
+# Started BEFORE br_core so the proximity rules land on a resource that is
+# already up. br_core does not require that -- it re-states them if pma-voice
+# starts later, and it boots without it -- but there is no reason to make it
+# work for a living.
+ensure pma-voice
+
+# SCREENSHOTS ON AN INCIDENT (#34). THIRD-PARTY, NOT IN THIS REPOSITORY, AND
+# DELIBERATELY NOT VENDORED -- see docs/security.md for why this one is
+# installed rather than copied in, unlike pma-voice above.
+#
+# COMMENTED OUT BECAUSE IT IS GENUINELY OPTIONAL. Without it, incidents are
+# filed exactly as before and simply carry no frames -- a supported state, not a
+# degraded one. Uncomment after installing it:
+#
+#   cd resources/[local] && git clone https://github.com/citizenfx/screenshot-basic
+#
+# It builds itself on first start using FXServer's own yarn/webpack system
+# resources, so those must be present (they ship with cfx-server-data). Confirm
+# with `brartifacts` in the server console, which says outright whether it is
+# running.
+# ensure screenshot-basic
+
 # NOT started, on purpose:
 #   chat            -- br_ui provides chat; two systems fight over the T key
 #   spawnmanager    -- br_core owns spawning and the warmup pad
 #   basic-gamemode  -- would respawn players into the world on death
 #   mapmanager      -- nothing to load; we use the vanilla map as-is
+
+# ---------------------------------------------------------------------------
+# TUNABLES -- THE DEV/PUBLIC SPLIT, AND THE LINE THAT MUST STAY ABOVE `ensure`.
+#
+# tunables.cfg is a small file of `set br_*` lines holding the handful of
+# values a dev server wants different from the public one: squad size, warmup
+# length, the summary screen, autofill, bleed-out. It is gitignored, per host,
+# and copied from one of two tracked examples in the repo root:
+#
+#     cp tunables.dev.cfg.example    tunables.cfg     # dev box
+#     cp tunables.public.cfg.example tunables.cfg     # public box
+#
+# Swapping which one you copied and restarting is the whole feature. Nothing
+# else in this file changes between the two servers.
+#
+# THIS LINE MUST STAY ABOVE THE `ensure br_*` BLOCK BELOW, AND THE FAILURE IF
+# IT DOES NOT IS SILENT. The gamemode reads these convars once, while
+# br_lib/config/*.lua loads -- and br_core/server/match.lua copies two of them
+# (warmupSeconds, endedSeconds) into its own table at that same instant. A
+# convar set AFTER the resources have started is set, shows up in the admin
+# console's config report, and changes nothing whatsoever about the game.
+#
+# HOW YOU FIND OUT: br_core prints a `tunables` block on start, one line per
+# setting, saying for each whether the live value came from a convar or from
+# the default in br_lib/config/match.lua. If you set something and that block
+# says "default", this exec line is in the wrong place. br_core also re-reads
+# the convars ten seconds after start and prints a loud warning if any of them
+# appeared in the meantime, which is exactly what an exec below this block
+# looks like.
+#
+# A MISSING OR EMPTY tunables.cfg IS HARMLESS. Every setting falls back to the
+# committed default; FXServer says once that it could not exec the file and
+# carries on. Leaving this line out entirely is also fine -- it is what a
+# public server that never wants to think about this looks like.
+#
+# A BAD VALUE IS NOT HARMLESS, ON PURPOSE. `set br_maxSquadSize two` stops the
+# server at boot with a banner naming the setting, what you typed and what is
+# allowed, rather than starting a server with a squad size of nothing.
+#
+# Unlike everything under resources/, this file is NOT deployed by
+# tools/deploy.sh -- see the CONVARS note further down. tunables.cfg reaches
+# the box only when a human copies it there.
+# ---------------------------------------------------------------------------
+exec "tunables.cfg"
+
+# ---------------------------------------------------------------------------
+# OUR DISCORD, AND IT IS HERE RATHER THAN IN tunables.cfg ON PURPOSE.
+#
+# Set it and a player who is kicked or refused at the door is told, on the end
+# of the same message, where to come and talk to us about it. Leave it out and
+# they see the reason and nothing else -- there is no half-line and no empty
+# link.
+#
+# THE POSITION IS THE POINT. It is the same address on a dev box and a public
+# one, so it does not belong in either tunables example: copying one of those
+# over tunables.cfg is how a box changes character, and an address that has
+# nothing to do with which box this is should not be swept away by that. Below
+# the exec and above `ensure br_lib` is the one place that is true of.
+#
+# It is a full link, path and all -- the code after the slash is the invite. A
+# value that is not one stops the server at boot with a banner naming it, the
+# same as any other setting in the block above.
+# ---------------------------------------------------------------------------
+# set br_discordUrl "https://discord.gg/abcdefg"
 
 # ---------------------------------------------------------------------------
 # Gamemode
@@ -92,15 +182,20 @@ ensure hardcap           # enforces sv_maxclients
 #            started before anything referencing '@br_lib/...' loads.
 #   br_core  defines the loop registry and scheduler.
 #   br_ui    owns the NUI page and NUI focus.
-#   br_stats is last; it is the only optional one.
+#   br_stats and br_ringmaster are the optional ones, and each declares only
+#            br_lib on purpose. br_ringmaster refuses `dependency 'br_core'`
+#            so the `restart br_core` ending every deploy cannot take the
+#            moderation channel with it; br_stats refuses `dependency 'br_ddb'`
+#            so a server with no database still plays. Both degrade to "no live
+#            state" rather than to "not running".
 # ---------------------------------------------------------------------------
 ensure br_lib
 ensure br_core
 ensure br_environment    # world state: IPLs + the Cayo Perico lobby island
 ensure br_ui
 ensure br_loadscreen     # branded loading screen; br_core releases it
-ensure br_ddb            # DynamoDB: ban checks, grants, and stats persistence
-ensure br_stats          # match results + XP, written through br_ddb
+ensure br_ddb            # DynamoDB: bans, grants, profiles, stats, incidents
+ensure br_stats          # match results, XP, Volts, and the report-reward sweep
 ensure br_ringmaster     # optional -- the admin console's game-side half
 
 # ---------------------------------------------------------------------------
@@ -133,6 +228,389 @@ ensure br_ringmaster     # optional -- the admin console's game-side half
 # ---------------------------------------------------------------------------
 # set br_ddb_region       "us-east-2"
 # set br_ddb_table_prefix "ringmaster-"
+
+# ---------------------------------------------------------------------------
+# INCIDENT ARTIFACTS (M9, #34). The screenshots attached to a moderation case.
+#
+# THE BUCKET NAME IS HARD-CODED AND THAT IS DELIBERATE (operator, 2026-08-20):
+# "Public access is disabled so you can hard-code that bucket in." It is not a
+# credential -- the name grants nothing without one -- and the box reaches S3
+# with the same EC2 instance role it reaches DynamoDB with. Set this only if you
+# are pointing a test box at a different bucket. The IAM grant is PutObject on
+# the `incidents/` prefix and nothing else: the game cannot read a frame back,
+# list the bucket, or delete anything.
+#
+# `br_artifacts_dir` is where a frame waits for the few seconds between landing
+# on this box and reaching the bucket. The default is under the OS temp
+# directory. It is emptied when br_ddb starts and swept on every capture, and
+# br_ddb refuses to take a picture at all once it is over its ceiling -- a full
+# disk on the game box is a far worse outcome than a missing screenshot.
+#
+# NOTHING HERE INSTALLS screenshot-basic. It is a third-party Cfx resource and
+# it is NOT vendored into this repository (see docs/security.md). If it is not
+# running, incidents simply carry no frames -- which is a normal, supported
+# state and is not an error. `brartifacts` in the server console says which
+# state you are in.
+# ---------------------------------------------------------------------------
+# set br_artifacts_bucket "royale-incidents-bucket"
+# set br_artifacts_dir    "/tmp/br_artifacts"
+
+# ---------------------------------------------------------------------------
+# VOICE. THE RESOURCE IS VENDORED INTO THIS REPOSITORY AND DEPLOYS WITH IT.
+#
+# The gamemode no longer drives FiveM's Mumble natives itself. It drives
+# pma-voice (MIT, (c) Dillon Skaggs), which owns proximity and the squad radio;
+# br_core only tells it our rules. Six rounds of hand-rolled voice preceded that
+# decision and four of them shipped a silent 'nearby'.
+#
+# ---------------------------------------------------------------------------
+# NOTHING TO INSTALL. THIS SECTION USED TO CARRY A `git clone`. IT DOES NOT ANY
+# MORE, AND RUNNING THE OLD ONE NOW IS A BUG.
+#
+# pma-voice lives at resources/[voice]/pma-voice IN THIS REPOSITORY, pinned at
+# v7.0.2-rc3, and tools/deploy.sh syncs it to resources/[voice]/pma-voice on the
+# box -- the same path the hand-installed clone used, so a deploy REPLACES that
+# clone rather than adding a second resource beside it. `ensure pma-voice`
+# (already in the list above) is unchanged, because a FiveM resource is named by
+# its directory and that name did not move.
+#
+# IF THIS BOX PREDATES THE VENDORING it still has the operator's clone at that
+# path. The deploy overwrites the files but cannot remove the clone's `.git`
+# (rsync --delete does not delete excluded paths), so `rm -rf` that directory
+# once, before the first deploy that carries the vendored copy, and let the
+# deploy recreate it. Two directories both called pma-voice -- or one whose
+# `git describe` and whose contents disagree -- is the "two implementations,
+# nothing asserting only one is active" fault this project has shipped three
+# times.
+#
+# WHY IT IS VENDORED, having deliberately not been for several rounds. Three
+# player-facing faults were unreachable from outside the resource: an
+# unconditional `print` that put "0.6" in every player's F8 console whenever
+# anybody talked; a mic-click chirp with no on/off convar; and two keys
+# registered outside our own key layer (F11 "Cycle Proximity", Left Alt "Talk
+# over Radio"). Each was reported as "no convar exists, cannot be fixed", which
+# was accepting the wrong constraint -- pma-voice is MIT. The local changes are
+# four lines, each marked BR-PATCH and logged in
+# resources/[voice]/pma-voice/VENDOR.json, which also records the upstream tag
+# and commit so the next bump is a re-extract and a re-apply rather than
+# archaeology. tools/verify.sh fails the build if that log and the source drift
+# apart, if the LICENSE goes missing, or if deploy.sh stops syncing it.
+#
+# THE PIN MOVED OFF v7.0.0, AND THIS PARAGRAPH USED TO ARGUE THE OPPOSITE.
+#
+# It said v7.0.0 was "the latest tag that is not a release candidate" and that
+# the rcs were "not recommended for a live box". That was a reasonable default
+# and it was wrong here, because v7.0.0 has the bug this server is reporting.
+#
+# v7.0.0, client/init/proximity.lua, inside addNearbyPlayers():
+#
+#     MumbleAddVoiceChannelListen(playerServerId)
+#
+# -- listen to our OWN Mumble channel, unconditionally, every 200 ms, started
+# by a loop that waits only for `MumbleIsConnected()` and NOT for pma-voice's
+# own handleInitialState() to have joined that channel. Until the join lands the
+# native has nothing to resolve, and FiveM prints
+#
+#     MUMBLE_ADD_VOICE_CHANNEL_LISTEN: Tried to call native on a channel that
+#     didn't exist
+#
+# five times a second, from the moment a player connects. That is #165's third
+# report, in full. NO CONVAR REACHES IT: the call takes none, and the two convars
+# below (which do work, and did close the two OTHER listen sites) cannot help.
+#
+# v7.0.1-rc2 and v7.0.2-rc3 fix exactly this, upstream, three ways: the loop is
+# gated on an `isInitialized` flag that handleInitialState sets only after the
+# join converges; the own-channel listen uses a server-assigned
+# `assignedChannel` instead of the player's server id; and the other two listen
+# sites resolve MumbleGetVoiceChannelFromServerId first and do nothing when it
+# is -1, queueing a retry instead of warning.
+#
+# THE RC LABEL IS UPSTREAM'S RELEASE PROCESS, NOT A STATEMENT ABOUT THIS CODE.
+# Every export br_core uses -- overrideProximityCheck, overrideProximityRange,
+# setRadioChannel, addChannelCheck, setPlayerRadio, getMutedPlayers,
+# toggleMutePlayer -- was checked present in v7.0.2-rc3 as well as v7.0.0, and
+# the proximity-check contract (fn(ply) -> shouldAdd, distance) is unchanged.
+#
+# AND br_core NO LONGER TRUSTS THIS PARAGRAPH TO REACH ANYONE. It reads
+# pma-voice's own `assignedChannel` state bag at runtime, which exists from
+# v7.0.1-rc2 onwards and does not in v7.0.0, and prints the upgrade command on
+# the server console and in `brvoice` on both sides when it finds the old one.
+# This file has now been the place a #165 fix went to die twice.
+#
+# THE DIRECTORY STILL MATTERS AND IT IS STILL NOT ARBITRARY. `[voice]` is a
+# sibling of `[gamemodes]`, and tools/deploy.sh's MAIN rsync is --delete scoped
+# to resources/[gamemodes]/[fivem-royale]/ only. The vendored copy therefore
+# gets a SECOND rsync of its own, with --delete scoped to
+# resources/[voice]/pma-voice/ -- inside the one resource directory, never at
+# the `[voice]` category level, so another voice resource installed alongside it
+# cannot be deleted by our deploy.
+#
+# WHAT THE OLD VERSION OF THIS FILE TRADED AWAY, recorded because the argument
+# was reasonable and still lost:
+#   - "We would own its bugs." We already did. Three of them were in front of
+#     players for several rounds precisely because we could not reach the source.
+#   - "An operator should be able to take an upstream fix the day it lands."
+#     Still true, and the cost is now a re-extract of the new tag plus four
+#     marked lines to re-apply. VENDOR.json exists to keep that cheap.
+#   - "check_secrets.sh would sweep it forever." It does, and it passes.
+# br_core still detects the resource at runtime with GetResourceState and still
+# boots without it, so a box that somehow has no pma-voice says so on the server
+# console at start and on the first line of `brvoice` rather than failing quiet.
+#
+# ---------------------------------------------------------------------------
+# CONVARS. TWO ARE REQUIRED -- AND br_core NOW SETS BOTH ITSELF.
+#
+# READ THIS BEFORE ADDING ANYTHING BELOW. THIS FILE IS NOT A CONFIG FILE.
+# server.cfg is in .gitignore and tools/deploy.sh syncs
+# resources/[fivem-royale]/ and nothing else, so a line added HERE reaches the
+# box only when a human retypes it into the real server.cfg. #165 is what that
+# costs: both required convars were added to this file last round, neither was
+# ever on the server, and both symptoms were reported again the same week.
+#
+# So br_core/server/voice.lua now calls SetConvarReplicated for both of them at
+# start, and ONLY when server.cfg has not set them. Leaving both lines below
+# commented out is a supported, and frankly the recommended, configuration --
+# br_core says in the server console which ones it had to set. Setting one
+# explicitly to something else keeps YOUR value and prints what it costs.
+#
+# REQUIRED (1) -- stop a scripted camera turning players into spectators.
+#
+# pma-voice's proximity loop treats ANY rendering scripted camera as spectating
+# (client/init/proximity.lua: `GetRenderingCam() ~= -1`), and a spectator gets
+# a Mumble channel listen on every streamed player -- unlimited range, no
+# falloff. This gamemode renders a scripted camera in the lobby
+# (br_core/client/lobbycam.lua), ON THE DROP BUS (client/bus.lua) and while
+# downed (client/dbno.lua), so with this at its default of 0 every rider spends
+# the flight listening to the whole plane.
+#
+# IT ALSO LEAKS. The listens are taken over the WARMUP bucket's player list and
+# dropped over the MATCH bucket's a flight later, so whatever was in the first
+# and not the second is never removed -- an unlimited-range listen on players
+# in other matches, for the rest of the session.
+#
+# WHAT THIS BLOCK USED TO CLAIM AND SHOULD NOT HAVE, TWICE OVER. It said this
+# convar was where #165's
+#     MUMBLE_ADD_VOICE_CHANNEL_LISTEN: Tried to call native on a channel that
+#     didn't exist
+# came from, and then that the remainder was pma-voice's version. Neither was
+# right. THE WARNING WAS vMENU'S OWN VOICE CHAT (#185) -- a second voice
+# implementation, on by default, that ran alongside pma-voice through the whole
+# of #150, #157 and #165 while nobody had enumerated what else on this box
+# touches voice. Turn vMenu's voice off; the console is clean with it off.
+# Setting this convar is still required, for the leak described above and not
+# for any warning.
+# setr voice_disableAutomaticListenerOnCamera 1
+#
+# REQUIRED (2) -- turn pma-voice's own overlay off.
+#
+# This is the bottom-RIGHT readout: "Custom [Range]", and "[Call]" and
+# "N Mhz [Radio]" alongside it. All three are one `v-if="voice.uiEnabled"` in
+# pma-voice's voice-ui/src/App.vue, and `uiEnabled` is this convar, sent to its
+# NUI once at start from client/init/init.lua. The gamemode draws its own
+# indicator (bottom CENTRE, driven by br_core/client/voice.lua), and running
+# both is the second contradicting voice this config already complains about
+# elsewhere.
+#
+# WRITTEN DOWN BECAUSE THIS FILE PREVIOUSLY GOT IT WRONG IN BOTH DIRECTIONS. It
+# was first recommended while no voice resource was installed, where it did
+# nothing at all, and this file then said it "DOES NOTHING ON THIS SERVER" --
+# true at the time, false the moment pma-voice is ensured.
+#
+# IF YOU SET IT AT RUNTIME rather than in server.cfg, `restart pma-voice`
+# afterwards: the value is read once, when pma-voice's client script starts.
+# setr voice_enableUi 0
+#
+# RECOMMENDED -- stop F11 cycling the proximity range.
+#
+# pma-voice ships three cycleable ranges (whisper/normal/shout) and a key to
+# rotate them. This gamemode has ONE range, from Config.Match.voice.range.nearby.
+# br_core already disables the cycle through the overrideProximityRange export;
+# this is the belt to those braces.
+#
+# IT DOES NOT REMOVE THE KEYBIND, and an earlier version of this comment claimed
+# it did. Upstream registers the F11 mapping unconditionally, so with this
+# convar at 0 the row stayed in the player's key list and did nothing when
+# pressed -- which is indistinguishable from broken. BR-PATCH 3a in the vendored
+# copy removes the RegisterKeyMapping and leaves the command; that is what
+# actually takes the row out of the list.
+setr voice_enableProximityCycle 0
+#
+# REQUIRED (3) -- no hold-a-radio animation while squadmates talk.
+#
+# pma-voice's radio push-to-talk plays 'random@arrests'/'generic_radio_enter'
+# on the talker's ped for as long as the key is held. That is the right default
+# for a roleplay server and wrong twice here: it re-poses a player who is
+# aiming a rifle, and it is a visible tell to every enemy who can see them that
+# they are on comms. It is purely cosmetic -- no audio goes with it.
+# br_core sets this; it is here so you know it exists.
+# setr voice_enableRadioAnim 0
+#
+# REQUIRED (4) -- no chirp when a player presses or releases push-to-talk.
+#
+# Owner, from the playtest: "It still makes a radio chirp sound when pressing
+# and releasing the button ... the button chirp needs to go."
+#
+# pma-voice plays mic_click_on.ogg / mic_click_off.ogg from its own NUI on the
+# radio press and release. UPSTREAM HAS NO ON/OFF CONVAR FOR IT -- the switch is
+# a per-client KVP (`pma-voice_enableMicClicks`) reachable only through the
+# `setVoiceProperty` export, which br_core/client/voice.lua calls.
+#
+# THE ACTUAL FIX IS NOW BR-PATCH 2 IN THE VENDORED COPY: playMicClicks() returns
+# immediately, so no call site can play a click whatever the KVP, the export or
+# these volumes say. The export call and these two convars are kept as the
+# backstop for a box still running an unvendored pma-voice -- belt, braces, and
+# a second pair of braces. These two are VOLUMES: both feed `click.volume` on
+# the <audio> element directly (pma-voice voice-ui/src/App.vue), so zero is
+# silence.
+#
+# br_core sets both; they are here so you know they exist. They are read ONCE,
+# at pma-voice's script start, into a table -- so if you set them at runtime,
+# `restart pma-voice` afterwards. The export does not have that limitation,
+# which is exactly why br_core uses it as well.
+# setr voice_onClickVolume 0
+# setr voice_offClickVolume 0
+#
+# DO NOT SET voice_enableSubmix 0. THAT IS A DIFFERENT FEATURE AND THE OWNER
+# ASKED TO KEEP IT: "I don't hate the radio sound effect". The submix is the
+# processed, over-the-air quality a squadmate's voice takes on while they are
+# on the radio (SetAudioSubmixEffectRadioFx, pma-voice client/init/main.lua).
+# It has nothing to do with the chirp. It defaults to 1 and nothing in the
+# gamemode touches it.
+#
+# ============================================================================
+# SQUAD VOICE IS A RADIO, AND A RADIO HAS ITS OWN KEY -- BUT THE KEY IS OURS
+# NOW. READ THIS BEFORE REPORTING THAT SQUAD VOICE DOES NOT WORK.
+#
+# The gamemode's `squad` voice mode IS a pma-voice radio channel, assigned by
+# br_core/server/voice.lua from matchId and squadId. pma-voice transmits on a
+# radio ONLY while `+radiotalk` is held (client/module/radio.lua), and until
+# this round the only thing that held it was pma-voice's OWN keybind, "Talk
+# over Radio", on LEFT ALT -- a default this project had simply never set.
+#
+# THAT IS NO LONGER THE PLAYER-FACING KEY. br_core registers its own binding,
+#
+#     brptt, "Royale: Push to talk", default N
+#     (br_core/client/keybinds.lua)
+#
+# and drives BOTH transmit paths from it: `+radiotalk` in squad mode, and GTA's
+# INPUT_PUSH_TO_TALK (control 249) in nearby mode, which is what opens the
+# microphone for proximity. It is rebindable on the gamemode's own settings
+# screen under Controls, Comms, like every other key in this game, and every
+# surface that names a key -- the start-of-match notice, the settings screen,
+# /brvoice -- reads that binding rather than a convar.
+#
+# N because 249's own default keyboard binding is N, so on a fresh client the
+# gamemode's key and the engine's are the same key.
+#
+# DO NOT SET voice_enableRadios 0 AND DO NOT NEUTRALISE THE +radiotalk COMMAND.
+# The KEY moved; the command did not. It is still the only thing that ever puts
+# a squadmate in the Mumble voice target, and br_core calls it. Suppressing it
+# makes squad voice silent by construction -- that is #157 in one line.
+#
+# voice_defaultRadio NOW READS NOTHING AT ALL and is deliberately left alone.
+# It was the default for pma-voice's own "Talk over Radio" row on Left Alt --
+# owner, verbatim: "Why is left alt used for anything? That was a mistake - a
+# default left in place." Setting it to N would only have MOVED that row, and a
+# second binding our settings screen cannot list or move is the problem rather
+# than the key it sits on. So BR-PATCH 3b removes the RegisterKeyMapping in the
+# vendored copy: there is no "Talk over Radio" row any more, and this convar has
+# nothing left to move.
+#
+# A PLAYER WHO ALREADY REBOUND "Talk over Radio" keeps that binding stored in
+# their own FiveM profile. It is inert -- nothing registers the mapping now --
+# but it will not disappear from their file, so it is not evidence of anything.
+# (previously: setr voice_defaultRadio LMENU)
+#
+# ============================================================================
+# pma-voice USED TO PRINT "0.6" IN THE CLIENT CONSOLE. FIXED AT SOURCE, IN THE
+# VENDORED COPY. There is still no convar for it -- there is no longer a need
+# for one.
+#
+#     client/init/main.lua, in toggleVoice(), upstream:
+#         print(volumes[moduleType])
+#
+# A bare, unconditional debug print -- not behind logger.info, not behind
+# logger.verbose, and NOT behind voice_debugMode. It fired once every time a
+# squadmate's radio voice was activated, and the number was
+# `voice_defaultRadioVolume / 100`, which is 60/100 = 0.6 at the default.
+#
+# It is present in v7.0.0, v7.0.1-rc2, v7.0.2-rc3 and on upstream master as of
+# 2026-08-19, and no setting silences it -- voice_defaultRadioVolume changes
+# WHICH number is printed, not whether it prints. THIS PARAGRAPH USED TO END
+# "leave it ... NOT a local edit to pma-voice's files, which are re-cloned on
+# every install." Both halves of that stopped being true when the resource was
+# vendored: the files are ours to edit and nothing re-clones them.
+#
+# BR-PATCH 1 replaces the print with logger.verbose, which is pma-voice's own
+# logger and is gated on voice_debugMode. See
+# resources/[voice]/pma-voice/VENDOR.json.
+#
+# ============================================================================
+# AND ENUMERATE WHAT ELSE ON THIS BOX DOES VOICE. THIS IS #185.
+#
+# vMenu ships its own voice chat, ON BY DEFAULT, and it ran alongside pma-voice
+# for the whole of #150, #157 and #165. Every measurement taken in that time
+# describes the pair. TURN vMENU'S VOICE OFF and leave it off.
+#
+# br_core now reports this itself: it names any other started resource it
+# recognises as a voice implementation, in the server console at start and on
+# the `others` line of `brvoice`. If a fourth one turns up, add it to
+# VOICE_SUSPECTS in br_core/server/voice.lua rather than finding out in a
+# playtest.
+# ============================================================================
+#
+# OPTIONAL -- native audio playback. STILL RECOMMENDED, STILL SECOND.
+#
+#   OFF (default, what you get if you leave this alone)
+#     Voices are mixed by Mumble. Proximity still fades with distance -- that
+#     is pma-voice's doing and it is the capability this whole change was made
+#     to get -- but the sound is not placed in the world by the game engine.
+#
+#   ON
+#     Playback is handed to GTA's own audio engine: occlusion, reverb, and a
+#     voice that sounds like it is coming from where the player is standing.
+#
+#     ONE THING TO KNOW BEFORE YOU TURN IT ON. pma-voice multiplies its own
+#     proximity range by three when this convar is set (client/init/proximity.lua).
+#     br_core does NOT apply that multiplier -- our range is stated in world
+#     metres and our proximity check compares metres -- so the CUTOFF does not
+#     move when you flip this. What moves is how the last few metres sound.
+#     (An earlier version of this note claimed the same outcome for the
+#      hand-rolled system, which was true then for a different reason. It is
+#      restated here because the reason changed and the conclusion did not.)
+#
+# TURN IT ON SECOND, after you have confirmed the range works. A hard edge is
+# unambiguous; a fade and a broken cutoff can sound alike.
+#
+# setr voice_useNativeAudio true
+#
+# ---------------------------------------------------------------------------
+# WHAT DOES *NOT* GO HERE.
+#
+# The proximity range itself. It is the gamemode's, from
+# br_lib/config/match.lua (Config.Match.voice.range.nearby), pushed to each
+# client and handed to pma-voice by br_core. Do not set voice_defaultVoiceMode
+# or add voice modes -- br_core overrides the range on every match assignment
+# and would overwrite you.
+#
+# The squad radio channel numbers. Also the gamemode's, derived from matchId and
+# squadId in br_core/server/voice.lua, and gated by a pma-voice addChannelCheck
+# so a client cannot join a squad it is not on.
+#
+# ---------------------------------------------------------------------------
+# IF VOICE IS BROKEN, IN ORDER:
+#
+#   1. `brvoice` in the SERVER console. First line says whether pma-voice is
+#      running at all; the `convar` lines under it say whether it is configured.
+#      It lists squad radios only -- proximity is not assigned by the server any
+#      more and cannot be diagnosed from there.
+#   2. F8 `brvoice` on the affected CLIENT. First line, again, is the engine.
+#      A `convars` line appears only when one is wrong ON THIS CLIENT, which is
+#      the claim that matters -- both are read client-side. Then "transmitting".
+#   3. AND THIS IS THE PART THAT IS NEW: proximity is enforced by the SPEAKER.
+#      If A cannot hear B, the machine to run /brvoice on is B'S, not A's.
+#      There is nothing on A's client that can be refusing B.
+# ---------------------------------------------------------------------------
 
 # Our loading screen draws its own progress; the engine's busy spinner over
 # it is just a second, contradicting voice.

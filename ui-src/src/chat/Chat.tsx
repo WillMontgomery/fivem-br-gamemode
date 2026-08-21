@@ -39,6 +39,30 @@ const CHANNEL_STYLE: Record<ChatChannel, { label: string; colour: string }> = {
 
 const MAX_LENGTH = 200
 
+/** The chat column, for anything that has to keep out of its way. */
+export const CHAT_COLUMN_ID = 'br-chat-column'
+
+/**
+ * HOW FAR THE CHAT LOG CAN EVER REACH above the column's anchored bottom edge,
+ * in rem. It is `max-h-40` on the scroller below -- Tailwind's 40 is 10rem --
+ * and it lives up here so a screen that has to keep out of the way imports the
+ * number rather than remembering it.
+ *
+ * IT IS A RESERVATION, NOT A MEASUREMENT, and that is the point. The column is
+ * anchored by its BOTTOM and grows upward, so its rendered height is a function
+ * of how many messages happen to be on screen -- anything positioned against
+ * the live box would jump a row every time somebody spoke and jump back twelve
+ * seconds later when the log faded. Reserving the maximum means the neighbour
+ * above is laid out once and stays put.
+ *
+ * THE COMPOSER IS DELIBERATELY NOT IN THIS NUMBER. It adds roughly 3rem below
+ * the log, and it exists only while `focus === 'chat'` -- so it cannot be on
+ * screen at the same time as any panel that holds focus itself, which is every
+ * screen that would want to read this. Reserving room for a row that cannot be
+ * there costs those panels about a row and a half of their own.
+ */
+export const CHAT_LOG_MAX_REM = 10
+
 /** How long the log stays up after the last message before fading away. */
 const FADE_AFTER_MS = 12_000
 
@@ -158,6 +182,7 @@ export default function Chat({ barsVisible = true }: { barsVisible?: boolean }) 
 
   return (
     <div
+      id={CHAT_COLUMN_ID}
       className="fixed w-[28.75rem] max-w-[38vw]"
       style={{
         left: 'var(--map-left)',

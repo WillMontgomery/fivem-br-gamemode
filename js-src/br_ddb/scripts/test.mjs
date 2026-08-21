@@ -1,15 +1,20 @@
+import { artifactNames, ARTIFACT_PREFIX, isSpoolFile } from '../src/artifacts.js'
 import { isActive } from '../src/ban.js'
+import { buildIncidentClose, CLOSE_LIMITS } from '../src/close.js'
 import { buildIncidentItem, LIMITS } from '../src/incident.js'
+import { projectVerdict, verdictWord } from '../src/verdict.js'
 
 /**
- * Tests for the two decisions in br_ddb that are pure arithmetic on data, and
- * therefore the two that can be wrong for weeks without anybody noticing.
+ * Tests for the decisions in br_ddb that are pure arithmetic on data, and
+ * therefore the ones that can be wrong for weeks without anybody noticing.
  *
  *   the ban rule       decides whether a player gets into the server
  *   the incident item  decides what a moderation record says about a person
+ *   artifact names     decide which IAM statement applies and which files the
+ *                      sweeper may delete
  *
- * Neither needs a network, and neither should ever be changed without a case
- * here changing with it.
+ * None needs a network, and none should ever be changed without a case here
+ * changing with it.
  */
 
 let failed = 0
@@ -150,7 +155,6 @@ check('matchId is carried', it.matchId, 7)
 check('reporterLicense is an explicit null', it.reporterLicense, null)
 check('reporterName is an explicit null', it.reporterName, null)
 check('note is null -- no free text ever reaches this row', it.note, null)
-check('captureKeys is an array, not an empty object', it.captureKeys, [])
 
 check('the opened event is stamped at openedAt', it.events[0].at, NOW)
 check('the opened event names the anticheat', it.events[0].byName, 'Anticheat')
@@ -299,6 +303,671 @@ check(
   buildIncidentItem(ID, refusalPayload({ state: 'closed' }), NOW).item.state,
   'pending_review',
 )
+
+// ----------------------------------------------------------------- verdict ---
+//
+// THE RULE THAT DECIDES WHETHER 250 VOLTS ARE PAID TO A STRANGER, and the one
+// place in this repository that can be tested against the console's contract
+// without a table. The cases below are the contract's own edge list: absent is
+// not 'none', a pending row is not a decision, and a missing row is not a
+// verdict of any kind.
+
+console.log('\nverdict reader\n')
+
+const resolvedRow = (verdict) => ({
+  incidentId: ID,
+  state: 'resolved',
+  resolvedAt: NOW,
+  ...(verdict === undefined ? {} : { verdict }),
+})
+
+const shape = (row) => {
+  const v = projectVerdict(row)
+  return { found: v.found, settled: v.settled, payable: v.payable, word: v.word }
+}
+
+check(
+  'a permanent ban pays, and the sentence says banned',
+  shape(resolvedRow({ action: 'ban', expiresAt: null })),
+  { found: true, settled: true, payable: true, word: 'banned' },
+)
+check(
+  'a temporary ban pays exactly the same -- the expiry is not a discount',
+  shape(resolvedRow({ action: 'ban', expiresAt: NOW + HOUR })),
+  { found: true, settled: true, payable: true, word: 'banned' },
+)
+check(
+  'a kick pays, and the sentence says kicked',
+  shape(resolvedRow({ action: 'kick' })),
+  { found: true, settled: true, payable: true, word: 'kicked' },
+)
+check(
+  "an admin who decided 'no action' is settled and pays nobody",
+  shape(resolvedRow({ action: 'none' })),
+  { found: true, settled: true, payable: false, word: null },
+)
+
+// THE CASE THE WHOLE FIELD EXISTS FOR. A resolved row with no verdict is a
+// legacy row or a system auto-resolution -- nobody decided anything -- and it is
+// NOT 'none'. It must not pay, and it must not be left on the queue forever
+// either, because no verdict is ever coming.
+check(
+  'a resolved row with the verdict attribute absent is settled and pays nobody',
+  shape(resolvedRow(undefined)),
+  { found: true, settled: true, payable: false, word: null },
+)
+check(
+  'an explicit null verdict is the same state as an absent one',
+  shape(resolvedRow(null)),
+  { found: true, settled: true, payable: false, word: null },
+)
+check(
+  'absent is reported as action null, never coerced to none',
+  projectVerdict(resolvedRow(undefined)).action,
+  null,
+)
+
+// A PENDING ROW IS NOT A DECISION, however tempting the verdict field looks.
+// The console writes state and verdict in one update, so this shape should never
+// exist -- and if it ever does, waiting is the only safe reading of it.
+check(
+  'a pending row is not settled and pays nobody',
+  shape({ incidentId: ID, state: 'pending_review', verdict: null }),
+  { found: true, settled: false, payable: false, word: null },
+)
+check(
+  'a verdict on a row still marked pending is refused rather than paid',
+  shape({ incidentId: ID, state: 'pending_review', verdict: { action: 'ban', expiresAt: null } }),
+  { found: true, settled: false, payable: false, word: null },
+)
+
+// A ROW THAT IS NOT THERE IS NOT SETTLED. Reporting it as settled would drop the
+// claim; the sweep's age cap is what ends it instead.
+check(
+  'a missing row is not found, not settled, and not payable',
+  shape(null),
+  { found: false, settled: false, payable: false, word: null },
+)
+check(
+  'undefined is treated the same as a missing row',
+  shape(undefined),
+  { found: false, settled: false, payable: false, word: null },
+)
+
+// A MALFORMED VERDICT IS NOT A VERDICT. An action this reader does not
+// recognise reads as absent, which pays nobody and does not guess.
+check(
+  'an unrecognised action pays nobody',
+  shape(resolvedRow({ action: 'warn' })),
+  { found: true, settled: true, payable: false, word: null },
+)
+check(
+  'a verdict that is a string rather than an object pays nobody',
+  shape(resolvedRow('ban')),
+  { found: true, settled: true, payable: false, word: null },
+)
+
+// expiresAt IS READ ONLY THROUGH action, never beside it.
+check(
+  'expiresAt is carried for a temporary ban',
+  projectVerdict(resolvedRow({ action: 'ban', expiresAt: NOW + HOUR })).expiresAt,
+  NOW + HOUR,
+)
+check(
+  'expiresAt is null for a permanent ban, and for a kick that never had one',
+  [
+    projectVerdict(resolvedRow({ action: 'ban', expiresAt: null })).expiresAt,
+    projectVerdict(resolvedRow({ action: 'kick' })).expiresAt,
+  ],
+  [null, null],
+)
+
+check('the word for a ban is past tense and lower case', verdictWord('ban'), 'banned')
+check('the word for a kick is past tense and lower case', verdictWord('kick'), 'kicked')
+check('there is no word for no action', verdictWord('none'), null)
+check('there is no word for an absent verdict', verdictWord(null), null)
+
+// -------------------------------------------------------- artifact names ---
+
+/**
+ * EVERY CASE HERE IS A SECURITY CASE, not a formatting one. The key decides
+ * which IAM statement applies -- the grant is `PutObject` on
+ * `royale-incidents-bucket/incidents/*` and nothing else -- and the file name
+ * decides what the spool sweeper is willing to delete off the game box's disk.
+ * Both are built from values that arrived over an event boundary from Lua.
+ */
+console.log('\nartifact names')
+
+const AID = '0f9c1e2a-3b4c-4d5e-8f60-112233445566'
+
+check(
+  'the key is the prefix, the id, the two-digit frame and the extension',
+  artifactNames(AID, 1, 'webp').key,
+  `incidents/${AID}/01.webp`,
+)
+check('frame 9 pads to two digits like every other', artifactNames(AID, 9, 'webp').key,
+  `incidents/${AID}/09.webp`)
+check(
+  'the local file is flat, so the sweeper never leaves an empty directory',
+  artifactNames(AID, 3, 'webp').file,
+  `${AID}-03.webp`,
+)
+check('webp is stored as image/webp, so a browser draws it rather than downloading it',
+  artifactNames(AID, 1, 'webp').contentType, 'image/webp')
+check('jpg maps to image/jpeg, not image/jpg',
+  artifactNames(AID, 1, 'jpg').contentType, 'image/jpeg')
+
+// THE KEY CANNOT LEAVE THE PREFIX. This is the assertion that pins the grant:
+// a key outside `incidents/` is refused by IAM, which would present as every
+// upload failing at once with no clue why.
+check(
+  'every accepted key starts inside the granted prefix',
+  ['webp', 'jpg', 'png'].every((e) =>
+    artifactNames(AID, 5, e).key.startsWith(ARTIFACT_PREFIX),
+  ),
+  true,
+)
+
+// Rejections. Each of these is a value a compromised or merely broken game side
+// could send, and none of them may reach a path or a key.
+const bad = [
+  ['a traversal in the id', () => artifactNames('../../etc/passwd', 1, 'webp')],
+  ['a slash in the id', () => artifactNames(`${AID}/x`, 1, 'webp')],
+  ['an id that is not a UUID at all', () => artifactNames('hello', 1, 'webp')],
+  ['a v1 UUID -- this resource only ever mints v4', () =>
+    artifactNames('0f9c1e2a-3b4c-1d5e-8f60-112233445566', 1, 'webp')],
+  ['an empty id', () => artifactNames('', 1, 'webp')],
+  ['a non-string id', () => artifactNames(42, 1, 'webp')],
+  ['frame 0', () => artifactNames(AID, 0, 'webp')],
+  ['frame 10 -- nine is the cap and the namespace', () => artifactNames(AID, 10, 'webp')],
+  ['a negative frame', () => artifactNames(AID, -1, 'webp')],
+  ['a fractional frame', () => artifactNames(AID, 1.5, 'webp')],
+  ['a frame that is not a number', () => artifactNames(AID, 'one', 'webp')],
+  ['an encoding with a dot in it', () => artifactNames(AID, 1, '../sh')],
+  ['an encoding nobody asked for', () => artifactNames(AID, 1, 'gif')],
+  ['no encoding', () => artifactNames(AID, 1, undefined)],
+]
+for (const [label, fn] of bad) {
+  const got = fn()
+  check(`refused: ${label}`, typeof got.error === 'string' && !got.key, true)
+}
+
+// -------------------------------------------------------- the sweep guard ---
+
+/**
+ * `br_artifacts_dir` is a convar. A typo could point it at a directory that
+ * matters, so the sweeper deletes only names this module could have produced --
+ * which makes the worst case "the spool fills up" rather than "something else
+ * was emptied".
+ */
+console.log('\nspool sweep guard')
+
+check('a name this module produced is sweepable',
+  isSpoolFile(artifactNames(AID, 4, 'webp').file), true)
+check('and so is one with a jpg extension', isSpoolFile(`${AID}-04.jpg`), true)
+
+const notOurs = [
+  'server.cfg',
+  'cache',
+  '.env',
+  'id_rsa',
+  `${AID}.webp`,
+  `${AID}-4.webp`,
+  `${AID}-00.webp`,
+  `${AID}-10.webp`,
+  `${AID}-04.webp.bak`,
+  `../${AID}-04.webp`,
+  '0f9c1e2a-3b4c-1d5e-8f60-112233445566-04.webp',
+  '',
+]
+for (const name of notOurs) {
+  check(`not swept: ${JSON.stringify(name)}`, isSpoolFile(name), false)
+}
+check('not swept: a non-string', isSpoolFile(null), false)
+
+
+// ------------------------------------------------------- the match timeline ---
+//
+// #30. An incident should show the match around it. These cases are about the
+// two things that are expensive to get wrong and invisible when they are:
+//
+//   * WHICH ATTRIBUTES THE CLOSE TOUCHES. The IAM statement this write needs is
+//     an attribute allowlist, so a new attribute appearing in the
+//     UpdateExpression is a write that will start failing with
+//     AccessDeniedException in production and passing in every test that does
+//     not look. The assertions below read the expression itself.
+//
+//   * WHETHER A TRUNCATED TIMELINE ADMITS IT. A kill list that stops early and
+//     reports itself complete tells an admin "this is everything they did" when
+//     it is not.
+
+const CLOSE_TABLE = 'ringmaster-incidents'
+
+const killAt = (at, victimLicense, extra = {}) => ({
+  at,
+  kind: 'kill',
+  killerLicense: 'license:subject',
+  killerName: 'Subject',
+  victimLicense,
+  victimName: 'V',
+  weapon: 'WEAPON_CARBINERIFLE',
+  cause: 'gunshot',
+  ...extra,
+})
+
+const closeOk = (payload) => {
+  const r = buildIncidentClose('inc-1', payload, CLOSE_TABLE)
+  if (r.error) throw new Error(`expected a close, got ${r.error}`)
+  return r.params
+}
+
+// --- the attributes it may touch, which is the IAM contract -----------------
+
+{
+  const p = closeOk({
+    matchEndedAt: 1_700_000_500_000,
+    matchTimeline: [killAt(1_700_000_400_000, 'license:v1'), { at: 1_700_000_500_000, kind: 'match_end' }],
+    matchTimelineComplete: true,
+    matchKillsSeen: 1,
+  })
+
+  const expr = p.UpdateExpression
+
+  // THE ALLOWLIST, ASSERTED AS A SET. Sorted so a reordering of the expression
+  // is not a failure but an ADDITION is.
+  const touched = [...expr.matchAll(/\b(match[A-Za-z]+)\s*=/g)].map((m) => m[1]).sort()
+  check('close touches exactly the four game-owned attributes', touched, [
+    'matchEndedAt',
+    'matchKillsSeen',
+    'matchTimeline',
+    'matchTimelineComplete',
+  ])
+
+  // THE LINE THAT MUST NOT MOVE. `events` is the console's timeline and
+  // `verdict`/`state` are an admin's decision. A close that could write any of
+  // them would make the game box able to edit a moderation record.
+  for (const forbidden of [
+    'events',
+    'state',
+    'verdict',
+    'resolvedAt',
+    'resolvedByLicense',
+    'resolvedByName',
+    'resolution',
+    'closedByBan',
+    'subjectLicense',
+    'reporterLicense',
+  ]) {
+    check(`close cannot write ${forbidden}`, expr.includes(forbidden), false)
+  }
+
+  check(
+    'close refuses to create a row that is not there',
+    p.ConditionExpression,
+    'attribute_exists(incidentId)',
+  )
+  check('close reads nothing back', p.ReturnValues, 'NONE')
+  check('close is keyed on the incident id alone', p.Key, { incidentId: 'inc-1' })
+  check('close targets the incidents table', p.TableName, CLOSE_TABLE)
+
+  // `if_not_exists` is what makes a row filed by an older game version closable
+  // rather than a failed update.
+  check(
+    'close appends rather than replacing the timeline',
+    expr.includes('list_append(if_not_exists(matchTimeline, :empty), :entries)'),
+    true,
+  )
+}
+
+// --- an incident whose match never ends -------------------------------------
+
+check(
+  'a close with no end timestamp is refused',
+  buildIncidentClose('inc-1', { matchTimeline: [] }, CLOSE_TABLE).error,
+  'no matchEndedAt',
+)
+check(
+  'and refusing it is not worth retrying',
+  buildIncidentClose('inc-1', { matchTimeline: [] }, CLOSE_TABLE).retryable,
+  undefined,
+)
+check(
+  'a close with no id is refused',
+  buildIncidentClose('', { matchEndedAt: 1 }, CLOSE_TABLE).error,
+  'no incidentId',
+)
+
+// --- a Lua boolean that arrived as a NUMBER ---------------------------------
+//
+// The `0` half of this hazard is a Lua problem and is tested on the Lua side,
+// where `0` is truthy. THE JS HALF IS THE OPPOSITE VALUE: a runtime that hands
+// a BOOL back as `1` produces a number that is truthy here, so `=== true` and a
+// bare truthy test agree about `0` and disagree about `1`.
+//
+// These cases therefore assert on `1`, which is the only value that can tell
+// the two implementations apart -- asserting on `0` passes under both and
+// proves nothing, which is how a test re-encodes the code's own assumption and
+// reports a green tick for it.
+//
+// STRICT IS THE SAFE DIRECTION HERE. Reading `1` as "not a headshot" and "not
+// complete" understates the record; reading it as "complete" would put "this is
+// everything they did" on a case where it is false.
+
+{
+  const p = closeOk({
+    matchEndedAt: 2000,
+    matchTimeline: [killAt(1000, 'license:v1', { headshot: 1 })],
+    matchTimelineComplete: true,
+    matchKillsSeen: 1,
+  })
+  check(
+    'a headshot of 1 is not accepted as a boolean true',
+    p.ExpressionAttributeValues[':entries'][0].headshot,
+    false,
+  )
+}
+
+// ---------------------------------------------------------------------------
+// weaponIssued -- the field the console turns into an accusation
+// ---------------------------------------------------------------------------
+//
+// WHAT IS AT STAKE. The console renders `weaponIssued === false` in red and
+// says it is high confidence of cheating, against a named player, with no
+// human in the loop. Every one of the three states is pinned here, and the two
+// that must NOT produce a claim get more attention than the one that must.
+
+const entryOf = (extra) =>
+  closeOk({
+    matchEndedAt: 2000,
+    matchTimeline: [killAt(1000, 'license:v1', extra)],
+    matchTimelineComplete: true,
+    matchKillsSeen: 1,
+  }).ExpressionAttributeValues[':entries'][0]
+
+{
+  const e = entryOf({ weaponIssued: true, weaponLabel: 'Carbine Rifle' })
+  check('an issued weapon is stored as issued', e.weaponIssued, true)
+  check('and carries its display label', e.weaponLabel, 'Carbine Rifle')
+}
+{
+  const e = entryOf({ weaponIssued: false })
+  check('a weapon we do not issue is stored as not issued', e.weaponIssued, false)
+  check('and has no label to show for it', e.weaponLabel, null)
+}
+
+// ABSENT MUST SURVIVE AS ABSENT. This is the one that would ship quietly: a
+// spread default, or an `e.weaponIssued === true` written straight into the
+// object, turns every storm death and every case filed before the field
+// existed into `false` -- which the console reads as cheating.
+{
+  const e = entryOf({})
+  check(
+    'a kill with no weapon claim stores no weaponIssued key at all',
+    Object.prototype.hasOwnProperty.call(e, 'weaponIssued'),
+    false,
+  )
+}
+
+// TRUTHINESS IS NOT ACCEPTED IN EITHER DIRECTION, the same discipline the
+// headshot check above applies, and for the same reason: `0` is truthy in Lua,
+// so a future producer sending one must not be read as an answer.
+{
+  const e = entryOf({ weaponIssued: 0 })
+  check('a weaponIssued of 0 is not an answer', Object.prototype.hasOwnProperty.call(e, 'weaponIssued'), false)
+}
+{
+  const e = entryOf({ weaponIssued: 1 })
+  check('a weaponIssued of 1 is not an answer either', Object.prototype.hasOwnProperty.call(e, 'weaponIssued'), false)
+}
+{
+  const e = entryOf({ weaponIssued: 'false' })
+  check('nor is the string "false"', Object.prototype.hasOwnProperty.call(e, 'weaponIssued'), false)
+}
+
+// THE HASH FORM. The gunshot path stores data.weaponType, a number, and str()
+// answers null for a number -- so before this was fixed the commonest kill in
+// the game recorded nothing about what did it.
+{
+  const e = entryOf({ weapon: -2084633992, weaponIssued: false })
+  check('a numeric weapon identifier is kept, not dropped', e.weapon, '-2084633992')
+}
+{
+  const e = entryOf({ weapon: 'carbinerifle' })
+  check('and a string identifier is untouched', e.weapon, 'carbinerifle')
+}
+
+{
+  const p = closeOk({
+    matchEndedAt: 2000,
+    matchTimeline: [{ at: 2000, kind: 'match_end' }],
+    matchTimelineComplete: 1,
+    matchKillsSeen: 0,
+  })
+  check(
+    'a complete flag of 1 is not accepted as complete',
+    p.ExpressionAttributeValues[':complete'],
+    false,
+  )
+}
+{
+  const p = closeOk({
+    matchEndedAt: 2000,
+    matchTimeline: [{ at: 2000, kind: 'match_end' }],
+    matchTimelineComplete: 0,
+    matchKillsSeen: 0,
+  })
+  check(
+    'and a complete flag of 0 certainly does not',
+    p.ExpressionAttributeValues[':complete'],
+    false,
+  )
+}
+{
+  const p = closeOk({
+    matchEndedAt: 2000,
+    matchTimeline: [{ at: 2000, kind: 'match_end' }],
+    matchTimelineComplete: true,
+    matchKillsSeen: 0,
+  })
+  check(
+    'and a real true still means complete',
+    p.ExpressionAttributeValues[':complete'],
+    true,
+  )
+}
+
+// --- truncation is reported, never silent -----------------------------------
+
+{
+  // The Lua side already dropped rows: it saw 40 kills and is sending 3.
+  const p = closeOk({
+    matchEndedAt: 9000,
+    matchTimeline: [killAt(1, 'license:a'), killAt(2, 'license:b'), { at: 9000, kind: 'match_end' }],
+    matchTimelineComplete: false,
+    matchKillsSeen: 40,
+  })
+  check(
+    'a timeline the game already truncated stays truncated',
+    p.ExpressionAttributeValues[':complete'],
+    false,
+  )
+  check(
+    'and it carries how many kills really happened',
+    p.ExpressionAttributeValues[':seen'],
+    40,
+  )
+}
+
+// --- the volume bound -------------------------------------------------------
+
+{
+  const many = []
+  for (let i = 0; i < 400; i++) many.push(killAt(1000 + i, `license:v${i}`))
+  many.push({ at: 99_000, kind: 'match_end' })
+
+  const p = closeOk({
+    matchEndedAt: 99_000,
+    matchTimeline: many,
+    matchTimelineComplete: true,
+    matchKillsSeen: 400,
+  })
+
+  const entries = p.ExpressionAttributeValues[':entries']
+  check('a close is bounded', entries.length, CLOSE_LIMITS.MAX_CLOSE_ENTRIES)
+  check(
+    'and keeps the RECENT end of the match',
+    entries[entries.length - 1],
+    { at: 99_000, kind: 'match_end' },
+  )
+  // Dropping rows and still claiming completeness is the exact failure the flag
+  // exists to prevent.
+  check(
+    'a bounded close does not claim to be complete',
+    p.ExpressionAttributeValues[':complete'],
+    false,
+  )
+
+  // THE BACKSTOP HAS TO SIT ABOVE WHAT THE LUA SIDE CAN LEGITIMATELY SEND, or
+  // it is not a backstop -- it is this file deleting the oldest rows of every
+  // large close. The Lua ceiling is MAX_TIMELINE_KILLS + MAX_TIMELINE_STRIPS +
+  // the match_end; those two constants live in
+  // br_lib/shared/incident_build.lua and are 250 and 60.
+  check(
+    'and the bound is above the largest close the game can build',
+    CLOSE_LIMITS.MAX_CLOSE_ENTRIES >= 250 + 60 + 1,
+    true,
+  )
+}
+
+// --- an unissued weapon in the hand -----------------------------------------
+//
+// THE ENTRY KIND ADDED FOR THE STRIP REPORT. `timelineEntry` drops kinds it does
+// not know, deliberately, so the failure mode of getting this wrong is silence:
+// the Lua side builds the entries, this side discards every one of them, and
+// both suites stay green. That is why the spelling is asserted rather than
+// assumed.
+
+{
+  const p = closeOk({
+    matchEndedAt: 9000,
+    matchTimeline: [
+      { at: 6000, kind: 'weapon_strip', weapon: 2210333304 },
+      { at: 7000, kind: 'weapon_strip' },
+      { at: 9000, kind: 'match_end' },
+    ],
+    matchTimelineComplete: true,
+    matchKillsSeen: 0,
+  })
+  const entries = p.ExpressionAttributeValues[':entries']
+
+  check('a strip entry survives the projection', entries.length, 3)
+  check('and keeps its kind', entries[0].kind, 'weapon_strip')
+
+  // THE HASH IS THE ONLY IDENTIFIER ANYBODY HAS for a weapon this gamemode has
+  // never heard of, and `str()` answers null for a number -- so without the
+  // coercion every strip would store `weapon: null`, which is the whole content
+  // of the finding thrown away. Exactly the bug the kill path already had.
+  check('the weapon hash reaches the row as a string', entries[0].weapon, '2210333304')
+  check('a strip with no weapon stores null, not a lie', entries[1].weapon, null)
+
+  // NO SECOND-PARTY FIELDS. A strip has no victim and no killer; the row's own
+  // subjectLicense is who it is about.
+  check('a strip names nobody but the subject', entries[0].victimLicense, undefined)
+  check('and carries no weaponIssued -- the kind IS the claim',
+    Object.prototype.hasOwnProperty.call(entries[0], 'weaponIssued'), false)
+
+  check(
+    'a timeline of strips is still complete when nothing was dropped',
+    p.ExpressionAttributeValues[':complete'],
+    true,
+  )
+}
+
+// --- the shape the console reads --------------------------------------------
+
+{
+  const p = closeOk({
+    matchEndedAt: 5000,
+    matchTimeline: [
+      killAt(4000, 'license:victim'),
+      { at: 4500, kind: 'thing-from-the-future' },
+      { at: 5000, kind: 'match_end' },
+    ],
+    matchTimelineComplete: true,
+    matchKillsSeen: 1,
+  })
+  const entries = p.ExpressionAttributeValues[':entries']
+
+  // A KIND NOBODY CAN RENDER IS NOT STORED. Heterogeneous-by-`kind` is what
+  // makes #34's artifact entry free later; it is not a licence to store
+  // anything a caller sends onto a moderation record.
+  check('an unknown entry kind is dropped', entries.length, 2)
+  check(
+    'a dropped entry means the timeline is not complete',
+    p.ExpressionAttributeValues[':complete'],
+    false,
+  )
+
+  // THE PROFILE LINK #30 ASKS FOR. A display name is neither unique nor stable;
+  // the console keys profiles by licence.
+  check('a kill carries the victim licence', entries[0].victimLicense, 'license:victim')
+  check('and the killer licence', entries[0].killerLicense, 'license:subject')
+  check('and a name to render before the profile loads', entries[0].victimName, 'V')
+}
+
+// --- what the FILING writes, which costs no extra write ---------------------
+
+{
+  const item = buildIncidentItem(
+    'inc-2',
+    {
+      subjectLicense: 'license:subject',
+      subjectName: 'Subject',
+      matchId: 7,
+      matchStartedAt: 1_700_000_000_000,
+      matchEndsBy: 1_700_003_600_000,
+      matchTimeline: [
+        { at: 1_700_000_000_000, kind: 'match_start' },
+        killAt(1_700_000_100_000, 'license:v1'),
+      ],
+      matchTimelineComplete: true,
+      matchKillsSeen: 1,
+      atGameMs: 1_700_000_200_000,
+      openedAt: 1_700_000_200_000,
+    },
+    NOW,
+  ).item
+
+  check('the filing records when the match started', item.matchStartedAt, 1_700_000_000_000)
+  // THE WHOLE OF "STILL IN PROGRESS". Written at filing time so it survives the
+  // game box never coming back.
+  check('and when it is expected to be over by', item.matchEndsBy, 1_700_003_600_000)
+  // ABSENT MEANS UNKNOWN, NOT ENDED. The close write is the only thing that
+  // fills this in.
+  check('and does not claim the match has ended', item.matchEndedAt, null)
+  check('the seed timeline is on the row', item.matchTimeline.length, 2)
+  check('starting with the match start', item.matchTimeline[0].kind, 'match_start')
+  check('then the kill', item.matchTimeline[1].kind, 'kill')
+  check(
+    'with the licence the profile link needs',
+    item.matchTimeline[1].victimLicense,
+    'license:v1',
+  )
+}
+
+{
+  // NO MATCH, NO TIMELINE. A `brrefuse` from a console carries none, and
+  // inventing one would put a match on the record that never happened.
+  const item = buildIncidentItem(
+    'inc-3',
+    { subjectLicense: 'license:subject', openedAt: 1 },
+    NOW,
+  ).item
+  check('a case filed outside a match has no match start', item.matchStartedAt, null)
+  check('and no deadline', item.matchEndsBy, null)
+  check('and an empty timeline', item.matchTimeline, [])
+  check('and does not claim completeness it cannot have', item.matchTimelineComplete, false)
+}
 
 if (failed) {
   console.error(`\nbr_ddb: ${failed} of ${ran} case(s) failed`)

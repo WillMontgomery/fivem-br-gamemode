@@ -52,6 +52,22 @@ BR.Net = {
     SQUAD_POS       = 'br:squad:pos',        -- S->C  squadmate positions, SQUAD MEMBERS ONLY (1Hz)
     MATCH_LEAVE     = 'br:match:leave',      -- C->S  abandon the current match, back to the lobby
     TO_LOBBY        = 'br:lobby:return',     -- S->C  respawn at the lobby pad NOW (leave-match flow)
+    -- C->S "my screen is genuinely black, you may take my world away now".
+    --
+    -- THE ONE THING THE SERVER CANNOT SEE. At ENDED the roster sweep to LOBBY
+    -- is what freezes the ped, moves the routing bucket (so the car they were
+    -- driving stops existing) and stops the storm drawing -- and it used to
+    -- fire the instant the match was decided, which is while the verdict slam
+    -- is still playing over a live world. The player watched the world be
+    -- dismantled and THEN watched it fade out (#124).
+    --
+    -- The order the sweep needs is: screen black first, teardown second, and
+    -- only the CLIENT knows when its own page has finished going black. So it
+    -- says so, and the server sweeps that player then. A client that never
+    -- says it is swept on a deadline anyway -- see BR.Config.Match.coverWaitMs
+    -- -- because a player stuck in a match that will not let go is far worse
+    -- than a visible cut.
+    MATCH_COVERED   = 'br:match:covered',    -- C->S  (no payload)
 
     -- Bus / drop
     BUS_ROUTE       = 'br:bus:route',        -- S->C  { sx, sy, ex, ey, alt, tStart, tEnd }
@@ -73,7 +89,7 @@ BR.Net = {
     -- is derived from the match, and matchId is deliberately NEVER public
     -- (see PUBLIC_FIELDS in server/roster.lua). So the server hands each
     -- player the two numbers and nothing else.
-    VOICE_SET       = 'br:voice:set',        -- S->C  { prox, squad }
+    VOICE_SET       = 'br:voice:set',        -- S->C  { prox, mates, nearbyRange, squadRange }
 
     -- Loot / inventory
     LOOT_CELL       = 'br:loot:cell',        -- C->S  { cx, cy } subscribe to a grid cell
@@ -108,6 +124,17 @@ BR.Net = {
     -- validation exists. Reports are accepted ONLY when they LOWER the stored
     -- value, so the worst a liar can do is disarm themselves.
     INV_AMMO        = 'br:inv:ammo',         -- C->S  { pool = { light = n, ... }, clip, slot }
+    -- C->S <weapon hash>. The client took a weapon out of its own ped's hand
+    -- because the inventory never issued it. Client-observed by necessity, in
+    -- the same way NPC_DROP above is: the ped's hand is a client-side fact and
+    -- the server has no native that can read it.
+    --
+    -- IT IS EVIDENCE, NOT AN INSTRUCTION. Nothing on the server changes because
+    -- of this message -- no inventory is touched, no player is told anything.
+    -- It opens a moderation case, so the far end rate-limits it, cross-checks
+    -- the hash against the inventory the SERVER holds, and exempts admins. See
+    -- br_core/server/strip.lua for all three.
+    INV_STRIPPED    = 'br:inv:stripped',     -- C->S  <hash>
 
     -- Combat / DBNO
     -- S->C { hp, armour } in DISPLAY units, an authoritative correction.
@@ -141,11 +168,34 @@ BR.Net = {
     DBNO_SET        = 'br:dbno:set',
     REVIVE_START    = 'br:revive:start',     -- C->S  { target }
     REVIVE_STOP     = 'br:revive:stop',      -- C->S
-    -- S->C { pct, target, reviverName }. Sent to BOTH parties while a revive
-    -- runs: the reviver needs it for their hold ring, and the downed player
-    -- needs to know somebody is actually coming for them -- which is the one
-    -- piece of information that decides whether they hang on or give up.
+    -- S->C { pct, target, reviverName, bleedEndsAt }. Sent to BOTH parties while
+    -- a revive runs: the reviver needs it for their hold ring, and the downed
+    -- player needs to know somebody is actually coming for them -- which is the
+    -- one piece of information that decides whether they hang on or give up.
+    --
+    -- `bleedEndsAt` RIDES HERE FOR ONE REASON: the bleed clock is PAUSED while a
+    -- hold is progressing, and a pause is not a mode -- it is the server moving
+    -- the deadline forward 250ms at a time. DBNO_SET carries that deadline but
+    -- is only sent on edges, so between them the interface counts down from a
+    -- number that has already moved, and the timer visibly runs while the hold
+    -- that stopped it is working. Same units and same origin as DBNO_SET's copy:
+    -- a SERVER timestamp, comparable only to the clock-corrected browser time.
     REVIVE_PROGRESS = 'br:revive:progress',
+    -- S->C (no payload) "get up, the match is starting" (#144).
+    --
+    -- A DEAD PED IS THE ONE THING THE SERVER CANNOT PUT RIGHT ON ITS OWN. Every
+    -- other correction in this block is a NUMBER -- health, armour, a bleed
+    -- clock -- and the roster is where numbers live. Resurrection is not: it is
+    -- NetworkResurrectLocalPlayer on the machine that owns the ped, and without
+    -- spawnmanager nothing else performs it (client/spawn.lua's own note). So
+    -- the roster flip to ALIVE and this event are two halves of one revive, and
+    -- the event goes FIRST -- a client left holding a corpse while the server
+    -- calls it alive is the state the server-observed death check exists to
+    -- eliminate, and it would eliminate them.
+    --
+    -- No payload: the client already knows where its own body is, and the
+    -- server's position sample is a quarter of a second stale.
+    REVIVED         = 'br:revive:atstart',
 
     -- Spectate / end
     SPECTATE_SET    = 'br:spectate:set',     -- S->C  { targetSrc, x, y, z }
@@ -169,7 +219,18 @@ BR.Net = {
     -- fires at the end of the match, while this comes from br_stats after the
     -- result has been turned into deltas -- and it is the only place the real
     -- numbers exist. The verdict screen used to invent both.
-    MATCH_EARNED    = 'br:match:earned',     -- S->C  { xp, volts, level, levelUp }
+    --
+    -- IT CARRIES BOTH ENDS OF THE BAR, not just the award. It used to send the
+    -- earned amount and the level landed on, which left the page to work out
+    -- where the bar should stop -- and the page got it wrong in three separate
+    -- ways at once (#91, #130): it added the award to a total that already
+    -- included it, it subtracted the wrong level's span on a level-up and
+    -- clamped the result at zero, and it kept the old level's span as the
+    -- denominator so the bar could sit past its own end forever. Sending
+    -- `into`/`needed` alongside `fromXp`/`fromNeeded` removes the arithmetic
+    -- from the client entirely; there is nowhere left for it to be wrong.
+    MATCH_EARNED    = 'br:match:earned',     -- S->C  { xp, volts, level, into, needed,
+                                             --         fromLevel, fromXp, fromNeeded, levelUp }
     -- The in-game player list and reporting.
     --
     -- THE SERVER FILTERS THE BUCKET; THE CLIENT NEVER LEARNS WHICH ONE. `matchId`
@@ -178,15 +239,60 @@ BR.Net = {
     -- asking the client to filter on it, which would leak the very field the
     -- projection exists to withhold.
     PLAYERS_ASK     = 'br:players:ask',      -- C->S  (no payload; the server knows who asked)
-    PLAYERS_LIST    = 'br:players:list',     -- S->C  { players = { { src, name, state, squadId, left } } }
-    -- C->S { targets = { { src, category } }, note? }. NEVER a license: the
-    -- client names a server id and the server resolves it, the same rule the
-    -- market follows for item ids.
+    PLAYERS_LIST    = 'br:players:list',     -- S->C  { players = { { id, name, state, squadId, left } } }
+    -- C->S { targets = { { id, category } } }.
+    --
+    -- `id` IS AN OPAQUE PER-MATCH ROW TOKEN, NOT A SERVER ID AND NOT A LICENSE
+    -- (#172). It was `src` until players who have left had to stay reportable,
+    -- and a server id cannot carry that: it is recycled within the minute, so a
+    -- departed row named by its old `src` resolves to whoever holds that slot
+    -- now and files the accusation against a stranger.
+    --
+    -- A LICENSE WITH THE `license:` PREFIX STRIPPED IS NOT THE ANSWER EITHER,
+    -- and the reasoning is on BR.Players.listFor rather than repeated here: the
+    -- prefix is a constant, so removing it is a rename rather than obfuscation,
+    -- and the raw value is the durable key bans and moderation are filed under.
+    -- The token is minted server-side, means nothing outside the match that
+    -- minted it, and dies with that match -- so the client still names something
+    -- the server resolves, which is the rule the market follows for item ids.
     REPORT_SUBMIT   = 'br:report:submit',
     -- S->C { ok, filed, refused? }. Sent when the incident has actually LANDED,
     -- not when the request was received -- the promise to the player is that an
     -- admin will see it, and that promise is only true once a row exists.
     REPORT_RESULT   = 'br:report:result',
+    -- S->C { kind = 'exists' } | { kind = 'killer', name = <who> }.
+    --
+    -- THE SERVER DECIDES WHO GETS IT; THE CLIENT WRITES THE SENTENCE. Both
+    -- prompts name the player-list key, and only the client knows which key that
+    -- is -- it is rebindable, and a hint naming the wrong key is worse than no
+    -- hint (#168, #169). So the envelope carries the OCCASION and never the
+    -- text, and br_ui composes it against the keybind table it is already sent.
+    --
+    -- NO LICENSES, NO IDS, NO LISTS. `name` is a display name the recipient has
+    -- already been shown by the kill feed. Nothing here tells a client anything
+    -- about a player it was not already looking at.
+    REPORT_HINT     = 'br:report:hint',
+    -- C->S, NO PAYLOAD AT ALL, and that is the entire anti-enumeration design
+    -- (#169). "Was I just killed by somebody who already has a case open?" is a
+    -- question only the server may answer, and a client that could NAME the
+    -- player it is asking about would be a probe for who is under suspicion.
+    -- So the client asks about nobody: the server resolves the asker's own
+    -- attributed killer from its own damage records and answers about that
+    -- player or says nothing.
+    REPORT_KILLED   = 'br:report:killed',
+    -- C->S, NO PAYLOAD, FOR THE SAME REASON REPORT_KILLED CARRIES NONE (#177).
+    --
+    -- "Yes, that one too" -- the one-press answer to the prompt above. The
+    -- server resolves the asker's own attributed killer a second time, from the
+    -- same records, and corroborates the case it already found there. A client
+    -- cannot name the subject, so widening the lookup beyond the current match
+    -- (#177 part 1) did not widen what a client can ask ABOUT.
+    --
+    -- IT IS NOT A SECOND WAY TO REPORT. The subject must already have an open
+    -- case, this player must not already have named them this match, and both
+    -- of those are decided server-side by the same function that decides
+    -- whether the prompt is shown at all.
+    REPORT_CORROBORATE = 'br:report:corroborate',
 
     MARKET_STATE    = 'br:market:state',     -- S->C  { balance, owned, equipped }
     MARKET_BUY      = 'br:market:buy',       -- C->S  { id }
@@ -218,6 +324,37 @@ BR.Net = {
     -- -- leaving is something the server should know about rather than
     -- discover.
     LEAVE_SERVER    = 'br:leave:server',
+
+    -- C->S. "The console I am framing says nobody is signed in; please get me
+    -- a session." Answered with a BR.Nui.ADMIN envelope carrying either a URL
+    -- to point the frame at or a machine-readable failure code (#23).
+    --
+    -- THE CLIENT ASKS AND THE SERVER DECIDES, and the asymmetry is the whole
+    -- security design rather than a style choice. Minting is a shared-secret
+    -- call to Ringmaster that produces a working admin session for a named
+    -- Discord id: a client that could make that call could name somebody
+    -- else's. So this event carries NO ARGUMENTS AT ALL -- not a license, not
+    -- a Discord id, not a scope. Everything the mint needs is read on the
+    -- server from `source`, and br_core/server/admin.lua re-runs the full
+    -- eligibility check on every one of these rather than trusting that the
+    -- tab was only ever shown to somebody entitled to it.
+    ADMIN_MINT      = 'br:admin:mint',
+
+    -- S->C { origin?, mint? }. Whether this player has an Admin tab, where the
+    -- console is, and the answer to any mint they asked for.
+    --
+    -- SENT TO ONE PLAYER, NEVER BROADCAST. `origin` present IS the permission,
+    -- so this event is also the only thing that puts the console's address on a
+    -- machine -- which is half of why the server-side gate exists at all.
+    --
+    -- A br_lib EVENT FORWARDED BY br_ui, RATHER THAN A DIRECT `br:ui:send`.
+    -- br_ui/client/nui.lua does register `br:ui:send` as a net event and it
+    -- would work -- but nothing in this project has ever called it from a
+    -- server, and this repo has a documented habit of shipping correct code
+    -- with no callers. Every other server-to-page push in the game goes
+    -- server -> BR.Net.X -> a br_ui client handler -> br:ui:sendLocal, and that
+    -- is the path with production mileage on it.
+    ADMIN_STATE     = 'br:admin:state',
 }
 
 --- Chat channels. `squad` is routed server-side to squad members only -- the
@@ -250,7 +387,11 @@ BR.Nui = {
     -- them, and mid-match it describes the squad -- which is why party
     -- management had nothing to read.
     PARTY     = 'party',
-    -- Who is speaking right now, so the squad panel can say so.
+    -- Who is speaking right now: { talking = {src...}, names = {name...} },
+    -- the two arrays in the same order. The squad panel marks the ids; the
+    -- bottom-centre indicator prints the names, and it has to name people who
+    -- are NOT squadmates -- anyone in proximity can be heard -- so the names
+    -- travel with the ids rather than being looked up in the squad payload.
     VOICE     = 'voice',
     INV       = 'inv',
     PROMPT    = 'prompt',    -- world-anchored interaction prompt + progress ring
@@ -267,6 +408,27 @@ BR.Nui = {
     LOBBY     = 'lobby',     -- queue progress, so waiting has a visible reason
     INVITE    = 'invite',    -- an incoming party invite
     LEAVING   = 'leaving',   -- the voluntary-leave interstitial (black + text)
+    -- THE ENGINE'S FRONTEND OWNS THE SCREEN, so our page must not draw.
+    --
+    -- A scaleform cannot be covered by NUI and NUI cannot be covered by it, so
+    -- for as long as GTA's own menu is up, anything we paint is simply sitting
+    -- ON TOP of the menu the player was sent to use (owner, 2026-08-16:
+    -- "results in the lobby UI overlaying on top of the GTA V settings
+    -- screen").
+    --
+    -- THIS IS A SEPARATE QUESTION FROM FOCUS AND HAS TO BE. Focus decides who
+    -- owns the CURSOR; this decides who owns the SCREEN. The lobby is drawn
+    -- from match state, not from the focus stack -- deliberately, so a queue
+    -- screen is visible before it is clickable -- which means emptying the
+    -- focus stack releases the mouse and leaves the lobby painted exactly
+    -- where it was. That is the whole bug, and one more focus call could
+    -- never have fixed it.
+    --
+    -- LUA OWNS IT, and the page only mirrors it. The previous attempt had the
+    -- PAGE raise a flag before asking Lua to hand over, and the focus
+    -- envelopes Lua emits while tearing its own stack down cleared that flag
+    -- again a frame later.
+    FRONTEND  = 'frontend',  -- { up } -- GTA's menu is on screen; draw nothing
     -- The player's own preferences, read back out of KVP on boot. Sent as a
     -- whole object rather than as deltas: there are a dozen of them, they
     -- change when a human drags a slider, and a merge protocol for that would
@@ -276,16 +438,21 @@ BR.Nui = {
     -- every successful swap -- the page never assumes an apply worked, since
     -- a model that fails to stream leaves you wearing the old one.
     LOCKER    = 'locker',
-    -- LEVEL AND XP, AND THE STORE. Neither system exists server-side yet --
-    -- there is no persistence to hang them on. The envelopes and the screens
-    -- are built first so the shape can be argued about before anybody writes
-    -- the ledger; br_ui seeds a synthetic profile and catalogue, and the day a
-    -- server sends real ones nothing in the interface changes.
+    -- LEVEL AND XP. WHERE THE BAR IS, and the only envelope allowed to say so.
+    -- Every value on it is evaluated by BR.Xp on the server -- from MARKET_STATE
+    -- on connect and after a credit, and from MATCH_EARNED at the end of a
+    -- match. The interface renders it and derives nothing from it; the day it
+    -- derived a level and a span for itself is #91 and #130.
     PROGRESS  = 'progress',
-    -- The post-match award, sent AFTER the new profile so the bar knows both
-    -- where it is going and where it came from. Separate from PROGRESS
+    -- WHERE THE BAR WAS, so the fill has a start. Separate from PROGRESS
     -- because most progress pushes are not awards -- a reconnect should
     -- restore the bar, not replay a celebration.
+    --
+    -- IN PRODUCTION THE VERDICT SCREEN RAISES THIS ITSELF, off EARNED, because
+    -- it is the only thing that can see whether it is on screen. The one Lua
+    -- sender left is the `brxp` preview command. That is deliberate, not
+    -- neglect: an award pushed from Lua is an award timed against a screen Lua
+    -- cannot observe, which is how it went unseen twice.
     XP        = 'xp',
     MARKET    = 'market',
     -- The player list. Carries the roster projection AND the report state --
@@ -303,6 +470,15 @@ BR.Nui = {
     -- to it, so the settings screen can list and rebind them without sending
     -- the player into GTA's own menus to find them.
     KEYBINDS  = 'keybinds',
+    -- The admin console (#23): { origin?, mint? }.
+    --
+    -- `origin` PRESENT IS THE WHOLE OF "SHOW THE ADMIN TAB". It is sent to one
+    -- player, only when the server has decided that player may have it, and it
+    -- is simply absent otherwise -- so the address of the console is never on
+    -- an ordinary player's machine at all. There is no boolean beside it to get
+    -- out of step: the tab needs a URL to be worth anything, so the URL IS the
+    -- permission.
+    ADMIN     = 'admin',
 }
 
 --- NUI -> Lua callback names, namespaced. Every one of these MUST resolve on
@@ -366,12 +542,49 @@ BR.NuiCb = {
     -- Opens GTA's own pause menu so the player can reach the settings no
     -- script can write: microphone, push-to-talk, output device.
     VOICE_SETTINGS = 'br/voice/settings',
+    -- The same handover, asked for by somebody who wants GRAPHICS rather than
+    -- a microphone: resolution, quality, FOV. Identical mechanically, and a
+    -- separate name because the only route to the engine's settings used to be
+    -- a button reading "Microphone & push-to-talk" -- which is not a place any
+    -- player looks for their resolution (owner, 2026-08-16: "no clear way to
+    -- reach GTA's own graphics/display settings").
+    GAME_SETTINGS  = 'br/game/settings',
     -- The interface saying "an animation is playing, do not take the screen
     -- away yet". The post-match XP award is the only thing that raises it.
     XP_BUSY      = 'br/xp/busy',
+    -- THE OTHER HALF OF EVERY TRANSITION: the page saying "I am now fully
+    -- black" (or "I am not any more").
+    --
+    -- Lua raises a cover -- the curtain for a trip, the verdict backdrop at
+    -- the end of a match -- and then has to change the world underneath it.
+    -- Until now it fired the message and moved on, so the change and the
+    -- cover were two independent timers and the change routinely won: the
+    -- lobby vanished and the HUD cut in BEFORE the fade that exists to hide
+    -- exactly that (#124). Tuning the timers has been tried and does not
+    -- hold, because they are measuring different clocks -- one is a Lua
+    -- Wait(), the other is a CSS transition in another process on another
+    -- frame budget.
+    --
+    -- So the page reports it. { kind = 'curtain'|'verdict', covered = bool },
+    -- and per this project's rule (see client/players.lua and pause.lua) it
+    -- reports the STATE it is in rather than a toggle -- a dropped message
+    -- then costs one stale reading instead of permanent disagreement.
+    --
+    -- FAIL SAFE, ALWAYS. Every Lua waiter is bounded: a crashed CEF, a
+    -- dropped POST or a transition the browser optimised away must cost a
+    -- visible cut, never a player parked behind a black screen forever.
+    COVERED      = 'br/cover',
     PAUSE_ACTION = 'br/pause/action',
     -- Rebind one command. { command, key } -- an empty key unbinds it.
     KEYBIND_SET  = 'br/settings/keybind',
+    -- The Admin tab is a DOOR, not a tab body (#23). Opening it pushes a focus
+    -- screen of its own so the console gets the full-page treatment `/help`
+    -- has, rather than the pause menu's tab well -- a board of bans, incidents
+    -- and a player table is unusable in a panel. Same shape as HELP_FOCUS.
+    ADMIN_FOCUS  = 'br/admin/focus',
+    -- "Ringmaster says I am signed out." Forwarded to the server, which is the
+    -- only side allowed to ask for a token. See BR.Net.ADMIN_MINT.
+    ADMIN_MINT   = 'br/admin/mint',
 }
 
 BR.NUI_ENVELOPE_VERSION = 1
@@ -384,16 +597,34 @@ BR.NUI_ENVELOPE_VERSION = 1
 --- listed is now a menu you cannot run around inside, which is the safe way to
 --- be wrong.
 ---
---- Only the inventory and the player list earn it, and both for the same
---- reason: they are meant to be READ during a fight. Checking who is left must
---- not mean standing still to do it.
+--- ONLY THE INVENTORY, AND IT PAYS A PRICE FOR IT THAT IS NOT WRITTEN HERE.
 ---
---- `players` and `playersReport` are the same panel in two modes, and only the
---- first is listed. Report mode has a text field in it, and with input kept
---- every keystroke in that field is also a movement key -- so typing a note
---- walks you off a roof. The page asks for one mode or the other; this table
---- is what makes the difference real.
-BR.FocusKeepsInput = { inventory = true, players = true }
+--- Keeping game input does not stop the page RECEIVING a click. It stops the
+--- player AIMING one, because the mouse is still the camera and the mouse
+--- buttons are still the trigger: reaching for a control turns your view away
+--- from it, and pressing it fires your gun. The inventory is usable in spite of
+--- that only because br_core/client/inventory.lua disables LOOK_LR, LOOK_UD,
+--- ATTACK and AIM every frame while its panel is up -- "the camera spins as you
+--- reach for a slot" (user, 2026-08-05). That per-frame suppressor is the real
+--- cost of an entry in this table, it is written per screen, and nothing here
+--- can grant it.
+---
+--- THE PLAYER LIST WAS ADDED HERE ON 2026-08-16 AND TAKEN BACK OUT THE DAY
+--- AFTER (#135). It never got a suppressor, so it inherited the whole cost and
+--- none of the remedy: "The player list doesn't capture mouse input today. It
+--- should" (owner, 2026-08-16). It also asks for far more pointing than five
+--- slot cards do -- a checkbox per row, a dropdown per ticked row, a note field
+--- -- and it is a latching panel opened deliberately rather than a thing
+--- glanced at mid-burst. So it trades "readable while running" for "clickable
+--- at all", which is the trade the owner asked for.
+---
+--- AND THAT TRADE IS WHAT COLLAPSED THE PANEL BACK TO ONE FOCUS SCREEN. There
+--- was a second, `playersReport`, whose entire reason for existing was to be
+--- ABSENT from this table: a report has a text field, and with input kept every
+--- keystroke in it is also a movement key, so typing a note walked you off a
+--- roof. With view mode out of the table too, both modes want the same focus
+--- and the second screen was machinery doing nothing. See br_ui/client/players.lua.
+BR.FocusKeepsInput = { inventory = true }
 
 --- What the engine and the page should be told, for a given focus stack.
 ---

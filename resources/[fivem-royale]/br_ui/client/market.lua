@@ -63,27 +63,46 @@ local STATE = { balance = 0, owned = {}, equipped = {} }
 ---
 --- Defaults are marked owned rather than hidden: the free item is the thing you
 --- go back to, so it has to be visible and selectable in the same grid as the
---- ones you paid for.
+--- ones you paid for. Rainbow and Standard are real looks a player might choose
+--- on their merits, and both read as items.
+---
+--- `hidden` IS THE ONE EXCEPTION AND IT IS DECLARED IN THE CONFIG, NOT HERE.
+--- A default that paints NOTHING is not a look, and a tile called "None" in a
+--- row of smoke trails reads as a product (owner, 2026-08-20: "'None' smoke
+--- trail should not exist"). The flag lives on the item in
+--- br_lib/config/market.lua so that "what is in the catalogue" and "what is on
+--- the shelf" stay one decision made in one place -- this file renders what it
+--- is sent and decides nothing, which is the rule the header states.
+---
+--- IT IS A DISPLAY FILTER AND NOTHING MORE. The item is still in
+--- BR.Config.MarketIndex, so BR.Config.defaultItem('trail') still answers it,
+--- server/market.lua still fills an empty slot with it, and MARKET_EQUIP still
+--- accepts it by id -- the server resolves ids against the config rather than
+--- against whatever this file happened to render, which is what makes hiding a
+--- tile safe. It also cannot open a purchase hole: BR.Config.buyable() refuses
+--- every `default` item outright.
 local function catalogue()
     local out = {}
 
     for _, season in ipairs(BR.Config.Market.seasons) do
         for _, item in ipairs(season.items) do
-            local owned = item.default == true or STATE.owned[item.id] == true
-            out[#out + 1] = {
-                id       = item.id,
-                name     = item.name,
-                sub      = item.sub,
-                kind     = item.kind,
-                price    = item.price,
-                rarity   = item.rarity,
-                season   = item.seasonName,
-                owned    = owned,
-                equipped = STATE.equipped[item.kind] == item.id,
-                -- Inactive seasons render for the people who own their items
-                -- but cannot be bought from.
-                locked   = not item.purchasable and not item.default,
-            }
+            if item.hidden ~= true then
+                local owned = item.default == true or STATE.owned[item.id] == true
+                out[#out + 1] = {
+                    id       = item.id,
+                    name     = item.name,
+                    sub      = item.sub,
+                    kind     = item.kind,
+                    price    = item.price,
+                    rarity   = item.rarity,
+                    season   = item.seasonName,
+                    owned    = owned,
+                    equipped = STATE.equipped[item.kind] == item.id,
+                    -- Inactive seasons render for the people who own their items
+                    -- but cannot be bought from.
+                    locked   = not item.purchasable and not item.default,
+                }
+            end
         end
     end
 
@@ -162,31 +181,20 @@ RegisterNUICallback(BR.NuiCb.MARKET_EQUIP, function(data, cb)
     cb({ ok = true })
 end)
 
---- Award XP, push the new profile and the award that animates to it.
---- @param amount integer
-function BR.Market.award(amount)
-    amount = math.max(0, math.floor(tonumber(amount) or 0))
-    if amount <= 0 then return end
-
-    local fromLevel, fromXp, fromNeeded = PROFILE.level, PROFILE.xp, PROFILE.needed
-    PROFILE.xp = PROFILE.xp + amount
-    while PROFILE.xp >= PROFILE.needed do
-        PROFILE.xp = PROFILE.xp - PROFILE.needed
-        PROFILE.level = PROFILE.level + 1
-        -- 15% steeper per level. Invented, like everything else here, but
-        -- invented in ONE place so the curve is a number to argue about
-        -- rather than a shape buried in an animation.
-        PROFILE.needed = math.floor(PROFILE.needed * 1.15)
-    end
-
-    -- The new profile FIRST, then the award: the bar animates FROM where the
-    -- award says it was, TO where the profile says it is now. Reversed, it
-    -- would animate to a value it already held.
-    TriggerEvent('br:ui:sendLocal', BR.Nui.PROGRESS, PROFILE)
-    TriggerEvent('br:ui:sendLocal', BR.Nui.XP, {
-        xp = amount, fromLevel = fromLevel, fromXp = fromXp, fromNeeded = fromNeeded,
-    })
-end
+-- BR.Market.award IS GONE, AND IT IS WORTH SAYING WHAT IT WAS.
+--
+-- It took an XP amount, added it to PROFILE, and rolled the level over against
+-- a SECOND curve invented right here -- `needed = needed * 1.15` -- which has
+-- never been the curve the server uses and never could be. Nothing called it.
+-- It was the tenth-something instance of this project's standing failure:
+-- finished, reviewed, committed code wired to nothing, which is invisible
+-- precisely because it cannot misbehave.
+--
+-- Deleted rather than fixed, because the correct version of it is `do nothing`.
+-- The server evaluates BR.Xp against the lifetime total and sends both ends of
+-- the bar on MATCH_EARNED; this file forwards them. A client that computes its
+-- own progression is a client that will eventually disagree with the database,
+-- and the player believes the screen in front of them.
 
 -- EVERY MATCH PAYS, AND IT PAYS ON THE VERDICT SCREEN.
 --
@@ -195,15 +203,6 @@ end
 -- (user, 2026-08-09). On the lobby card it would arrive after a fade, a
 -- teleport and a menu: three screens away from the thing that earned it.
 --
--- The FORMULA IS SYNTHETIC, and it is the shape of the real one rather than a
--- placeholder number: a flat completion payment so a bad match still pays
--- something, a placement bonus that is steep at the top, and per-elimination
--- on top. Swapping in a server-issued `xpEarned` is a one-line change -- the
--- field is already on this payload and has always been zero.
---
--- br_ui registers the summary event itself rather than routing through
--- br_core: several resources may handle one net event, and progression is
--- presentation until there is a ledger behind it.
 -- WHAT THE MATCH ACTUALLY PAID, straight through to the page.
 --
 -- The verdict screen owns the TIMING (it is the only thing that can see itself
@@ -212,48 +211,45 @@ end
 RegisterNetEvent(BR.Net.MATCH_EARNED)
 AddEventHandler(BR.Net.MATCH_EARNED, function(e)
     if type(e) ~= 'table' then return end
+
+    -- EVERY NUMBER HERE CAME FROM THE SERVER, INCLUDING WHERE THE BAR STOPS.
+    -- The fallbacks are for a br_stats old enough not to send the new fields,
+    -- and they fall back to what this client was already showing rather than to
+    -- zero -- an unknown end position should leave the bar where it is, not
+    -- empty it.
     TriggerEvent('br:ui:sendLocal', BR.Nui.EARNED, {
         xp      = tonumber(e.xp) or 0,
         volts   = tonumber(e.volts) or 0,
         level   = tonumber(e.level) or PROFILE.level,
+        into    = tonumber(e.into) or PROFILE.xp,
+        needed  = math.max(1, tonumber(e.needed) or PROFILE.needed),
+        fromLevel  = tonumber(e.fromLevel) or PROFILE.level,
+        fromXp     = tonumber(e.fromXp) or PROFILE.xp,
+        fromNeeded = math.max(1, tonumber(e.fromNeeded) or PROFILE.needed),
         levelUp = e.levelUp == true,
     })
+
+    -- AND THE PROFILE MOVES WITH IT. PROFILE is what `br:ui:ready` and a
+    -- br_ui restart re-push, so leaving it on the pre-match figure meant a
+    -- mid-teardown reload would put the bar back to before the match.
+    -- MARKET_STATE carries the same fact a moment later; this makes the two
+    -- agree in the window between them rather than racing.
+    PROFILE.level  = tonumber(e.level) or PROFILE.level
+    PROFILE.xp     = tonumber(e.into) or PROFILE.xp
+    PROFILE.needed = math.max(1, tonumber(e.needed) or PROFILE.needed)
 end)
 
-RegisterNetEvent(BR.Net.SUMMARY)
-AddEventHandler(BR.Net.SUMMARY, function(s)
-    if not s then return end
-
-    local placement = tonumber(s.placement) or 0
-    local total     = tonumber(s.total) or 1
-    local kills     = tonumber(s.kills) or 0
-
-    local earned = 120                                   -- you turned up
-    if s.won then
-        earned = earned + 500                            -- and you won
-    elseif placement > 0 and total > 1 then
-        -- Linear in how far up you finished, which is enough shape to feel
-        -- like placement matters without pretending to be tuned.
-        earned = earned + math.floor(380 * (1.0 - (placement - 1) / (total - 1)))
-    end
-    earned = earned + kills * 60
-
-    -- A beat after the verdict lands, so the slam owns the first moment and
-    -- the bar is not already moving when the player looks at it. .end-late
-    -- flies the supporting lines in at 3.6s; this arrives just behind them.
-    -- THE AWARD IS THE INTERFACE'S NOW, and this is deliberately not doing
-    -- it any more. It used to push one a couple of seconds after the summary
-    -- arrived, timed against a verdict screen it cannot observe -- and the
-    -- animation was reported as never appearing, twice, because a delay tuned
-    -- against the teardown window misses it whenever teardown is quick.
-    --
-    -- screens/EndScreen.tsx fires the staged award from its own mount, which
-    -- cannot miss a screen that has to exist for the timer to run at all.
-    -- This handler keeps the FORMULA -- the shape of the real one -- so that
-    -- swapping in a server-issued xpEarned is still a one-line change.
-    print(('[br_ui] match XP would be +%d (placement %d/%d, %d kills)')
-        :format(earned, placement, total, kills))
-end)
+-- THE SUMMARY HANDLER THAT PRINTED A THIRD XP FORMULA IS GONE.
+--
+-- It heard BR.Net.SUMMARY and printed "match XP would be +N" from numbers it
+-- made up -- 120 for turning up, 500 for a win, 380 by placement, 60 a kill --
+-- none of which have ever been the real values. It awarded nothing; it only
+-- narrated. That was defensible while there was no ledger, and actively
+-- harmful once there was one: anybody debugging a payout complaint had a
+-- confident, wrong number in the F8 console sitting next to the right one.
+--
+-- The real figures are computed once, in br_stats/server/persist.lua, from the
+-- same values written to DynamoDB, and arrive here on MATCH_EARNED.
 
 AddEventHandler('br:ui:ready', function()
     -- ASK, THEN RENDER WHAT WE HAVE. The request goes to the server and the
@@ -266,36 +262,53 @@ AddEventHandler('br:ui:ready', function()
 end)
 
 RegisterCommand('brxp', function(_, args)
-    -- Drives the award animation with a made-up number, so the post-match
-    -- moment can be watched without playing a match. `brxp 900` fills the
-    -- bar; a number big enough to cross `needed` runs the level-up.
+    -- Drives the LOBBY bar's award animation with a made-up number, so the
+    -- movement can be watched without playing a match. `brxp 900` fills the
+    -- bar; a number big enough to cross `needed` runs the level-up flip.
     --
     -- IT NARRATES, because it reported doing nothing once and the interface
     -- half was provably fine (user, 2026-08-09). The two lines below split
     -- the failure cleanly: no output at all means this file never loaded and
     -- there is no level chip either; output with no movement means the
     -- envelope is arriving somewhere the interface is not listening.
-    local amount = tonumber(args[1]) or 650
+    --
+    -- IT NO LONGER TOUCHES PROFILE, and that is a bug fix rather than tidying.
+    -- It used to roll PROFILE over against `needed * 1.15` -- a curve that has
+    -- never existed on the server -- so running this command left the client's
+    -- cached progression permanently wrong until the next MARKET_STATE, and
+    -- the wrong values were then re-pushed by every `br:ui:ready`. A diagnostic
+    -- that corrupts the thing it is diagnosing is worse than no diagnostic.
+    --
+    -- So the preview is computed into locals and sent; PROFILE is untouched,
+    -- and re-pushed at the end to put the bar back where the server says it is.
+    -- The level-up preview reuses the same span for the next level because this
+    -- side genuinely does not know the curve and must not guess one -- it is a
+    -- preview of the ANIMATION, not of the arithmetic. `brxpsim` on the server
+    -- console is the one that uses real numbers.
+    local amount = math.max(0, math.floor(tonumber(args[1]) or 650))
     local fromLevel, fromXp, fromNeeded = PROFILE.level, PROFILE.xp, PROFILE.needed
 
-    PROFILE.xp = PROFILE.xp + amount
-    while PROFILE.xp >= PROFILE.needed do
-        PROFILE.xp = PROFILE.xp - PROFILE.needed
-        PROFILE.level = PROFILE.level + 1
-        PROFILE.needed = math.floor(PROFILE.needed * 1.15)
+    local toLevel, toXp = fromLevel, fromXp + amount
+    if toXp >= fromNeeded then
+        toLevel = fromLevel + 1
+        toXp = toXp - fromNeeded
     end
 
     -- The new profile FIRST, then the award: the bar animates from where the
     -- award says it was, to where the profile says it is now. Reversed, it
     -- would animate to a value it already held.
-    TriggerEvent('br:ui:sendLocal', BR.Nui.PROGRESS, PROFILE)
+    TriggerEvent('br:ui:sendLocal', BR.Nui.PROGRESS,
+        { level = toLevel, xp = toXp, needed = fromNeeded })
     TriggerEvent('br:ui:sendLocal', BR.Nui.XP, {
         xp = amount, fromLevel = fromLevel, fromXp = fromXp, fromNeeded = fromNeeded,
     })
 
-    print(('[br_ui] brxp: sent "%s" %d/%d lvl %d, and "%s" +%d from lvl %d %d/%d')
-        :format(tostring(BR.Nui.PROGRESS), PROFILE.xp, PROFILE.needed, PROFILE.level,
+    print(('[br_ui] brxp: PREVIEW ONLY -- sent "%s" %d/%d lvl %d, and "%s" +%d from lvl %d %d/%d')
+        :format(tostring(BR.Nui.PROGRESS), toXp, fromNeeded, toLevel,
                 tostring(BR.Nui.XP), amount, fromLevel, fromXp, fromNeeded))
+    print(('[br_ui] brxp: your real profile is untouched (lvl %d, %d/%d) and the'
+        .. ' bar returns to it on the next server push.')
+        :format(PROFILE.level, PROFILE.xp, PROFILE.needed))
     print('[br_ui] brxp: the bar only exists on the LOBBY screen -- if you are'
         .. ' in a match there is nothing on screen to move.')
 end, false)

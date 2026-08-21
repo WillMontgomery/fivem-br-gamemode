@@ -311,7 +311,7 @@ export default function PartyPanel({
           </div>
 
           {subMode === 'random' && (
-            <p className="micro-label">
+            <p className="body-text">
               You&rsquo;ll be matched with random teammates.
             </p>
           )}
@@ -341,7 +341,7 @@ export default function PartyPanel({
                 </div>
               </div>
             ) : (
-              <p className="micro-label">
+              <p className="body-text">
                 No open squads to join right now.
               </p>
             )
@@ -362,7 +362,7 @@ export default function PartyPanel({
           {/* NOT HIDDEN WHEN EMPTY. An absent list and a list with nobody in
               it look identical, and only one of them is a working feature. */}
           {listed.length === 0 && (
-            <p className="micro-label" style={{ textTransform: 'none' }}>
+            <p className="body-text">
               Nobody else is connected right now.
             </p>
           )}

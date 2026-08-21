@@ -110,11 +110,21 @@ RegisterCommand('brhelp', function()
     print('  brstorm              storm record plus the solved circle right now')
     print('  brstormfreeze [off]  hold the wall where it is: no phases, no')
     print('                       damage, for as long as you like (dev mode)')
+    print('  brwarmupfreeze [off] hold the match on the warmup pad: the')
+    print('                       departure timer stops and the bus does not')
+    print('                       come, so a warmup-filed incident can be')
+    print('                       reproduced on demand (dev mode)')
     print('  brperf [reset]       scheduler job cost, most expensive first')
     print('  brjob <on|off> <n>   enable or disable a scheduler job by name')
     print('  brconfig             the tunables that most often explain odd behaviour')
     print('  brwhy <id>           why is this player in the state they are in')
+    print('  brartifacts          incident screenshots: taken, stored, refused')
+    print('  brstrips             unissued weapons taken out of hands, and')
+    print('                       how many reports were refused and why')
     print('  brloot [matchId]     world loot: counts by kind and rarity, subscriptions')
+    print('  brlootsim [n] [tier] roll the crate table n times and print the')
+    print('                       distribution -- including the share of crates')
+    print('                       that hold a gun. Retune loot without playing.')
     print('  brinv <id>           one player\'s inventory, slot by slot')
     print('  brweapons [filter]   list every grantable item id')
     print('  brarm <id|all> <item> [rarity]  weapon + FULL reserve (dev mode)')
@@ -132,7 +142,10 @@ RegisterCommand('brhelp', function()
     print('    brboot, brblack, brfocus, brshield [0-100], brleave (leave the match),')
     print('    brdbno (what THIS client believes about being down, plus which')
     print('    crawl the build actually resolved),')
-    print('    brloot (what this client can see), brlootblips (dev: blip every')
+    print('    brcratehold <ms> (crate hold duration, live -- brloot shows the')
+    print('    hold counting up and whether the key is actually down),')
+    print('    brloot (what this client can see, what it is OFFERING you and')
+    print('    what else is in reach), brlootblips (dev: blip every')
     print('    item in scope), brpois (blip EVERY point of interest, map-wide,')
     print('    coloured by tier with its radius shaded), brpromptcheck,')
     print('    brprobe (what the natives actually do -- run "brprobe" alone')
@@ -268,6 +281,22 @@ RegisterCommand('brsquads', function()
         print('  (no squads -- squadIds are stamped at WARMUP by BR.Party.formSquads,')
         print('   and solo matches never have any: every player is their own team)')
     end
+
+    -- AND THE SHAPE, PER MATCH, IN THE SAME WORDS THE FORMATION USED.
+    --
+    -- The listing above answers "who is on whose team" and says nothing about
+    -- the question that actually brings somebody here: three clients in one
+    -- squad, and is that the squad size or is it me. This is the command whose
+    -- name a person guesses for that, so it carries the live cap and the source
+    -- it came from -- the same two facts `brconfig` has, at the moment they are
+    -- being doubted. See BR.Party.formationReport.
+    if BR.Server.eachMatch then
+        BR.Server.eachMatch(function(m)
+            line('-')
+            print(('  match %d (%s)'):format(m.id, tostring(m.state)))
+            for _, l in ipairs(BR.Party.formationReport(m)) do print('  ' .. l) end
+        end)
+    end
 end, RESTRICTED)
 
 RegisterCommand('brstorm', function()
@@ -385,6 +414,22 @@ RegisterCommand('brconfig', function()
     print(('  inventory         %d slots, %d clip(s) of reserve per weapon found')
         :format(L.slots, L.weaponReserveClips))
     print(('  render ceiling    424 units -- entities beyond this are not drawn'))
+
+    -- THE TUNABLES, AND WHICH SIDE OF THE SPLIT EACH VALUE CAME FROM.
+    --
+    -- Everything above is one number with one home. These have two -- the
+    -- committed default and whatever .cfg this box exec'd -- so the report is
+    -- worthless unless it says which one is live. It reads the values out of
+    -- BR.Config itself, so it cannot report an override that did not land.
+    --
+    -- CHANGING ONE NEEDS A RESTART. They are read while br_lib/config loads;
+    -- `set br_maxSquadSize 2` typed here does nothing until then, which the
+    -- late-arrival warning in server/main.lua will say out loud.
+    line('-')
+    local tune, overridden = BR.Config.Overrides.report()
+    print(('  tunables          %d of %d set by convar (see tunables.cfg; restart to change)')
+        :format(overridden, #BR.Config.Overrides.SPEC))
+    for _, l in ipairs(tune) do print(l) end
 end, RESTRICTED)
 
 RegisterCommand('brloot', function(_, args)
@@ -441,6 +486,129 @@ RegisterCommand('brloot', function(_, args)
     end)
 
     if not any then print('  no matches running') end
+end, RESTRICTED)
+
+--- Roll the crate table N times and print what came out.
+---
+---   brlootsim [crates] [tier] [seed]
+---
+--- THE ANSWER TO "IS THERE ENOUGH GUN IN THE CRATES", WITHOUT OPENING A HUNDRED
+--- OF THEM. #127 was reported from a single match -- "disproportionately more
+--- ammo/medkits than weapons" -- and the only way to check the fix, or any
+--- future retune, was to go and play another one. That is a slow loop for a
+--- table that is four numbers, and it is a loop that cannot tell a real shift
+--- from a run of bad luck.
+---
+--- This rolls the SAME function the layout generator rolls (BR.LootChestContents,
+--- including the one-tier-hotter bump crates get), so it is not a model of the
+--- loot table -- it is the loot table.
+---
+--- The headline is the last line of each block: the share of crates holding at
+--- least one FIREARM. Per-item percentages are interesting, but a player does
+--- not experience percentages, they experience opening a box and finding no gun
+--- in it.
+---
+--- RESTRICTED rather than dev-mode-only, like brloot and brconfig above: it
+--- reads nothing about any player, changes nothing, and spawns nothing. The
+--- commands wearing devOnly are the ones that hand out gear.
+RegisterCommand('brlootsim', function(_, args)
+    local crates = math.tointeger(math.floor(tonumber(args[1]) or 20000))
+    local tierArg = math.tointeger(math.floor(tonumber(args[2]) or 0))
+    -- A FIXED DEFAULT SEED, so two runs either side of a config change differ
+    -- because the config changed. Pass one to check the numbers are not an
+    -- artefact of this particular sequence.
+    local seed = math.tointeger(math.floor(tonumber(args[3]) or 1))
+
+    if crates < 1 or crates > 2000000 then
+        print('  usage: brlootsim [crates] [tier] [seed]   (1..2000000 crates)')
+        return
+    end
+
+    header(('crate loot simulation -- %d crates/tier, seed %d'):format(crates, seed))
+
+    local K = BR.Config.KindWeights
+    local wsum = 0
+    for _, k in ipairs(K) do wsum = wsum + k.weight end
+    local parts = {}
+    for _, k in ipairs(K) do
+        parts[#parts + 1] = ('%s %.0f%%'):format(k.kind, k.weight / wsum * 100.0)
+    end
+    print('  kind weights:  ' .. table.concat(parts, '   '))
+    print(('  melee is %.0f%% of the weapon rolls; a crate holds %d..%d items')
+        :format((BR.Config.Loot.meleeChance or 0.0) * 100.0,
+                BR.Config.Loot.chestItems.min, BR.Config.Loot.chestItems.max))
+
+    local tiers = (tierArg >= 1 and tierArg <= 3) and { tierArg } or { 1, 2, 3 }
+
+    for _, tier in ipairs(tiers) do
+        local rng = BR.Rng(seed + tier)
+
+        local items, byLabel = 0, {}
+        local withFirearm, withAnyWeapon = 0, 0
+        -- Fixed print order. A distribution dump that reorders itself between
+        -- runs is one you cannot diff against the run before it.
+        local order = { 'firearm', 'melee', 'ammo', 'consumable', 'throwable' }
+
+        for _ = 1, crates do
+            local contents = BR.LootChestContents(rng, tier)
+            local gun, weapon = false, false
+            for _, s in ipairs(contents) do
+                items = items + 1
+
+                local bucket
+                if s.kind == BR.ItemKind.WEAPON then
+                    weapon = true
+                    local w = BR.Config.WeaponById[s.item]
+                    if w and w.melee then
+                        bucket = 'melee'
+                    else
+                        bucket = 'firearm'
+                        gun = true
+                    end
+                elseif s.kind == BR.ItemKind.AMMO then
+                    bucket = 'ammo'
+                elseif s.kind == BR.ItemKind.CONSUMABLE then
+                    bucket = 'consumable'
+                else
+                    bucket = 'throwable'
+                end
+
+                byLabel[bucket] = (byLabel[bucket] or 0) + 1
+                -- Consumables are counted a second time by id: "medkits" is
+                -- half of what was reported, and a lump labelled "consumable"
+                -- cannot answer it.
+                if s.kind == BR.ItemKind.CONSUMABLE then
+                    local key = 'consumable:' .. s.item
+                    byLabel[key] = (byLabel[key] or 0) + 1
+                end
+            end
+            if gun then withFirearm = withFirearm + 1 end
+            if weapon then withAnyWeapon = withAnyWeapon + 1 end
+        end
+
+        line('-')
+        print(('  POI tier %d  (crates roll tier %d)   %d items, %.2f per crate')
+            :format(tier, math.min(tier + 1, 3), items, items / crates))
+        for _, k in ipairs(order) do
+            local n = byLabel[k] or 0
+            print(('    %-12s %8d   %5.1f%%   %.2f per crate')
+                :format(k, n, n / items * 100.0, n / crates))
+        end
+        for _, c in ipairs(BR.Config.Consumables) do
+            local n = byLabel['consumable:' .. c.id] or 0
+            if n > 0 then
+                print(('      %-10s %8d   %5.1f%%   1 per %.1f crates')
+                    :format(c.id, n, n / items * 100.0, crates / n))
+            end
+        end
+
+        local guns = byLabel.firearm or 0
+        local support = (byLabel.ammo or 0) + (byLabel.consumable or 0)
+        print(('    support:gun ratio %.2f:1  (ammo+consumables per firearm)')
+            :format(guns > 0 and (support / guns) or 0.0))
+        print(('    CRATES WITH A FIREARM: %.1f%%   with any weapon: %.1f%%')
+            :format(withFirearm / crates * 100.0, withAnyWeapon / crates * 100.0))
+    end
 end, RESTRICTED)
 
 RegisterCommand('brinv', function(_, args)
@@ -812,7 +980,97 @@ RegisterCommand('brrefuse', function(src, args)
     for _ = 1, n do
         BR.Damage.noteRefusal(target, BR.ShotRefusal[why])
     end
+
+    -- WHERE TO LOOK NEXT. The frames are taken at +0, +5s and +10s AFTER the
+    -- DynamoDB acknowledgement, so there is nothing to show yet -- and a
+    -- playtester with no idea that a second command exists reads "no
+    -- screenshots" as "the feature does not work".
+    if BR.Artifacts then
+        print('  Then: brartifacts, ~15s from now, for what the capture did.')
+    end
 end, false)
+
+--- What the capture has actually done.
+---
+--- THE READER FOR BR.Artifacts.stats(), written at the same time as the thing it
+--- reads. Two stats functions in this resource already have no caller
+--- (BR.Evidence.stats, BR.Incident.stats) and a third would have been the same
+--- mistake for the third time.
+---
+--- IT IS THE ONLY WINDOW ONTO THIS FEATURE FROM THE BOX. Nothing about a
+--- screenshot is visible in the game: the subject is shown nothing, the frames
+--- go straight to a bucket the game cannot read back, and a partial set is the
+--- normal outcome -- so "did anything happen" has no other answer short of
+--- opening the case in Ringmaster.
+---
+--- `enabled` IS THE FIRST LINE ON PURPOSE. `screenshot-basic` not being
+--- installed is a supported state, and it is the explanation for every zero
+--- below it.
+RegisterCommand('brartifacts', function()
+    header('incident artifacts')
+    if not BR.Artifacts then
+        print('  server/artifacts.lua is not loaded.')
+        return
+    end
+    local s = BR.Artifacts.stats()
+    print(('  capture        %s'):format(
+        s.enabled and 'screenshot-basic is running'
+                  or 'screenshot-basic is NOT running -- no frames will be taken'))
+    print(('  cases          %d open, %d opened since start, %d evicted')
+        :format(s.open, s.opened, s.evicted))
+    print(('  frames         %d claimed, %d asked for, %d stored, %d lost')
+        :format(s.claimed, s.asked, s.stored, s.lost))
+    print(('  uploaded       %d bytes'):format(s.bytes))
+    -- REFUSALS ARE RULES, NOT FAULTS, and they are printed apart from `lost` so
+    -- that reading is not available only to somebody who has read the source.
+    print(('  not captured   %d at the cap of nine, %d inside the first ten')
+        :format(s.refusedCap, s.refusedCovered))
+    print(('                 %d for cases this process did not file')
+        :format(s.refusedUnknown))
+    print(('  skipped        %d (subject gone, or nothing to capture with)')
+        :format(s.skipped))
+end, RESTRICTED)
+
+--- What the strip detector has seen, and what it refused.
+---
+--- WRITTEN AT THE SAME TIME AS THE THING IT READS, for the reason the
+--- `brartifacts` note above gives: this resource already carries two stats
+--- functions nobody calls, and BR.Strip.stats() would have been the third.
+---
+--- `races` IS THE NUMBER THIS COMMAND EXISTS FOR. It counts reports refused
+--- because the weapon turned out to be in the player's own server-side
+--- inventory -- the one false positive this feature can produce, and one that
+--- would otherwise be a case opened against an innocent player. On a healthy
+--- server it stays at zero; a number that climbs means the client's own filter
+--- is missing a case and the guard behind it is doing work it should not have
+--- to.
+---
+--- `exempt` IS THE OTHER ONE TO READ, because the exemption is deliberately
+--- generous: it withholds a case from anybody whose console grant is not a
+--- definite `false`, which includes a grant nobody has managed to read yet. A
+--- large number here on a server with no admins online means grant reads are
+--- failing, not that admins are cheating.
+RegisterCommand('brstrips', function()
+    header('unissued weapons taken out of hands')
+    if not BR.Strip then
+        print('  server/strip.lua is not loaded.')
+        return
+    end
+    local s = BR.Strip.stats()
+    print(('  reports        %d received from clients, %d counted')
+        :format(s.reports, s.counted))
+    print(('  refused        %d throttled, %d admin-exempt, %d our own weapon')
+        :format(s.throttled, s.exempt, s.races))
+    print(('  tracking       %d player(s) with a count this match')
+        :format(s.tracked))
+    -- THE LIMIT, PRINTED WHERE SOMEBODY READING THE NUMBERS WILL SEE IT. A zero
+    -- here is not proof of a clean server: the report is sent by our own
+    -- resource on the offender's machine, so a cheat that disables br_core
+    -- disables this with it. The unforgeable half is server/damage.lua.
+    print('  Note: this is a client-side report. A cheat that stops br_core')
+    print('  stops this too -- the server-side damage validation is the half')
+    print('  that does not need the client\'s cooperation.')
+end, RESTRICTED)
 
 --- Print the stored profile row for connected players.
 ---
@@ -931,4 +1189,90 @@ RegisterCommand('brprofile', function(src, args)
 
         TriggerEvent('br:ddb:profileFetch', req, p.license)
     end
+end, true)
+
+--- Pose a match-end award at a connected player without writing anything.
+---
+--- THE VALIDATION TOOL FOR #91 AND #130, and it exists because the one beat the
+--- progression system is built for -- the level-up flip -- is the beat nobody
+--- can stage on demand. Confirming it means getting a real player to within a
+--- few hundred XP of a real boundary and then playing a match big enough to
+--- cross it, which is a great deal of arranging to test a bar. Every failure so
+--- far has been in the DISPLAY of these numbers rather than in their
+--- arithmetic, so this drives the display path with real ones.
+---
+---   brxpsim 3          award that player enough to cross their next boundary
+---   brxpsim 3 250      award exactly 250 XP
+---
+--- WHAT IT PROVES AND WHAT IT DOES NOT. It sends the identical MATCH_EARNED a
+--- real match sends, from the identical BR.Xp calls against that player's real
+--- lifetime total -- so if the bar lands anywhere other than where this prints,
+--- the fault is in the interface. It writes NOTHING: no DynamoDB row, no
+--- balance, no XP. `brprofile` reads the same afterwards, and the bar returns
+--- to the stored truth on the next MARKET_STATE. Proving the WRITE path still
+--- takes a real match.
+---
+--- The verdict screen exists only while a match tears down, so run this in the
+--- lobby and watch the lobby's bar. Volts are reported as 0 on purpose:
+--- claiming a payout that nothing paid is the precise lie this issue was about.
+RegisterCommand('brxpsim', function(src, args)
+    if tonumber(src) ~= 0 then
+        print('  brxpsim is server-console only.')
+        return
+    end
+    if not BR.Xp then
+        print('  brxpsim: BR.Xp is not loaded, so there is no curve to evaluate.')
+        return
+    end
+
+    local target = tonumber(args[1])
+    if not target then
+        print('  usage: brxpsim <server id> [xp]   (default: enough to level up)')
+        return
+    end
+
+    local before = BR.Market and BR.Market.lifetimeXp and BR.Market.lifetimeXp(target)
+    if not before then
+        print(('  brxpsim: no loaded profile for %d. They have to be connected'):format(target))
+        print('  with their inventory read finished -- check brprofile first.')
+        return
+    end
+
+    -- The default is "just past the next boundary" rather than a round number,
+    -- because the interesting animation is the one that crosses. Leaving the
+    -- caller to work the gap out is how this ends up being run with a number
+    -- that does not cross and reported as the flip not happening.
+    local levelBefore = BR.Xp.levelFor(before)
+    local amount = tonumber(args[2])
+    if not amount then
+        amount = math.max(1, BR.Xp.thresholdFor(levelBefore + 1) - before + 1)
+    end
+    amount = math.max(0, math.floor(amount))
+
+    local after = before + amount
+    local levelAfter = BR.Xp.levelFor(after)
+    local _, intoBefore, spanBefore = BR.Xp.progress(before)
+    local _, intoAfter, spanAfter = BR.Xp.progress(after)
+
+    TriggerClientEvent(BR.Net.MATCH_EARNED, target, {
+        xp      = amount,
+        volts   = 0,
+        level   = levelAfter,
+        into    = intoAfter,
+        needed  = math.max(1, spanAfter),
+        fromLevel  = levelBefore,
+        fromXp     = intoBefore,
+        fromNeeded = math.max(1, spanBefore),
+        levelUp = levelAfter > levelBefore,
+    })
+
+    print(('=== brxpsim %s (%s) -- NOTHING WRITTEN ==='):format(
+        target, GetPlayerName(target) or '?'))
+    print(('  lifetime xp   %d  ->  %d   (+%d)'):format(before, after, amount))
+    print(('  bar should go lvl %d %d/%d  ->  lvl %d %d/%d%s'):format(
+        levelBefore, intoBefore, spanBefore,
+        levelAfter, intoAfter, spanAfter,
+        levelAfter > levelBefore and '   LEVEL UP' or ''))
+    print('  The lobby bar must land on the second pair exactly. If it does not,')
+    print('  the interface is deriving something it was handed.')
 end, true)

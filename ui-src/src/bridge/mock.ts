@@ -30,6 +30,20 @@ export function emit<E extends Envelope>(env: E): void {
  * prices, real level costs, all invented here and nowhere else, so deleting
  * this block is the entire act of switching to the real thing.
  */
+/**
+ * A console origin for the harness, and it is deliberately not reachable.
+ *
+ * The point of mocking this is the CHROME -- that the tab appears, opens a
+ * full-screen page, spins while it asks, shows a failure code and comes back to
+ * the pause menu. None of that needs a real console, and pointing the browser at
+ * somebody's actual deployment from a dev harness would be a worse default than
+ * a frame that fails to load.
+ */
+const MOCK_CONSOLE = 'https://ringmaster.invalid'
+
+/** Advances per mocked mint, so the screen sees a fresh answer each time. */
+let mockMintSeq = 0
+
 const MOCK_PROGRESS = { level: 14, xp: 2380, needed: 4000 }
 
 const MOCK_MARKET = {
@@ -87,15 +101,46 @@ export async function mockFetch<Res>(name: CallbackName, data?: unknown): Promis
   // this the browser's Settings button would open nothing at all -- and the
   // difference between "the button is broken" and "the mock does not answer"
   // is not visible from the screen.
-  const FOCUS_CB: Record<string, 'settings' | 'locker' | 'market' | 'pause'> = {
+  const FOCUS_CB: Record<string, 'settings' | 'locker' | 'market' | 'pause' | 'admin'> = {
     'br/settings/focus': 'settings',
     'br/locker/focus': 'locker',
     'br/market/focus': 'market',
     'br/pause/focus': 'pause',
+    'br/admin/focus': 'admin',
   }
   if (FOCUS_CB[name]) {
     const open = (data as { open?: boolean } | undefined)?.open === true
-    emit({ k: 'focus', d: { screen: open ? FOCUS_CB[name]! : 'lobby' } })
+    // CLOSING ADMIN GOES BACK TO THE PAUSE MENU, not to the lobby, because that
+    // is what Lua does: br_ui/client/pause.lua re-opens the menu before it pops
+    // `admin`, so the admin lands back where they pressed the tab. A harness
+    // that dropped them on the lobby instead would make the Back button look
+    // like it did the wrong thing in the browser and the right thing in game,
+    // which is worse than not mocking it at all.
+    // ESCAPE TAKES EVERYTHING DOWN, and Lua agrees: ADMIN_FOCUS with `all`
+    // pops 'admin' and then closes the pause menu outright. Mocked here
+    // because a harness where Escape landed on the pause menu would make the
+    // browser and the game disagree about the one key this screen rebinds.
+    const all = (data as { all?: boolean } | undefined)?.all === true
+    const back = name === 'br/admin/focus' ? (all ? 'lobby' : 'pause') : 'lobby'
+    emit({ k: 'focus', d: { screen: open ? FOCUS_CB[name]! : back } })
+    return { ok: true } as Res
+  }
+
+  // THE MINT. Answers the way the game server does -- asynchronously, on the
+  // `admin` envelope -- so the indicator, the seq handling and the failure
+  // branch are all reachable in a browser.
+  //
+  // IT ANSWERS WITH A FAILURE, DELIBERATELY. There is no console to mint
+  // against here, and a fake success would point the frame at a URL that does
+  // not exist -- a blank white rectangle, which is the one outcome that looks
+  // identical to every real bug this screen can have. A named code is honest
+  // and it is the branch worth being able to look at.
+  if (name === 'br/admin/mint') {
+    mockMintSeq += 1
+    const seq = mockMintSeq
+    window.setTimeout(() => {
+      emit({ k: 'admin', d: { origin: MOCK_CONSOLE, mint: { seq, error: 'store' } } })
+    }, 900)
     return { ok: true } as Res
   }
 
@@ -164,6 +209,11 @@ export function startMockDriver(): void {
   // the locker cannot be opened at all.
   emit({ k: 'locker', d: { peds: MOCK_PEDS, chosen: 'streetguy' } })
   emit({ k: 'progress', d: MOCK_PROGRESS })
+  // THE HARNESS IS ALWAYS AN ADMIN, which is the opposite of the in-game
+  // default and is right here: the browser is where the screen gets built, and
+  // a tab you cannot make appear is a screen you cannot work on. In game this
+  // envelope arrives only for a license the server has cleared.
+  emit({ k: 'admin', d: { origin: MOCK_CONSOLE } })
   // Mirrors br_ui/client/keybinds.lua's ACTIONS table. Without it the
   // controls tab renders its empty state, which is a different screen from
   // the one that ships.
@@ -171,11 +221,22 @@ export function startMockDriver(): void {
     k: 'keybinds',
     d: {
       actions: [
+        { group: 'Movement', command: 'brdeploy', label: 'Jump / deploy glider', key: 'Space', default: 'SPACE' },
+        // The market's Trails tab names this row -- it is the key the descent
+        // prompt offers once the glider is open -- so a harness without it
+        // renders that help text one sentence short.
+        { group: 'Movement', command: 'brtrail', label: 'Toggle smoke trail', key: 'B', default: 'B' },
         { group: 'Combat', command: 'brinventory', label: 'Inventory', key: 'TAB', default: 'TAB' },
         { group: 'Combat', command: 'brslot1', label: 'Slot 1', key: '1', default: '1' },
         { group: 'Combat', command: 'brslot2', label: 'Slot 2', key: '2', default: '2' },
         { group: 'World', command: 'brinteract', label: 'Interact / loot', key: 'E', default: 'E', custom: true },
-        { group: 'World', command: 'brmarker', label: 'Place map marker', key: 'B', default: 'B' },
+        // `brping` on Z, NOT `brmarker` on B. The wrong name was hand-typed
+        // here from the same bad list that had bindings written against
+        // commands nobody registered (keybinds.lua tells that story in full),
+        // and it stayed harmless only until something real wanted B: the
+        // harness then drew two rows on one key and looked like a conflict
+        // this project does not have.
+        { group: 'World', command: 'brping', label: 'Place a marker', key: 'Z', default: 'Z' },
         { group: 'Social', command: 'brchat', label: 'Chat', key: 'T', default: 'T' },
         { group: 'Interface', command: 'brpausemenu', label: 'Pause menu', key: 'Escape', default: 'F1' },
         { group: 'Interface', command: 'brleave', label: 'Leave the match', key: '', default: '' },
@@ -194,7 +255,12 @@ export function startMockDriver(): void {
         members: [
           { src: 1, name: 'You',     state: 'alive', hp: 82,  armour: 45, colour: '#6EE7F9' },
           { src: 2, name: 'Kestrel', state: 'alive', hp: 100, armour: 80, colour: '#2DD4BF' },
-          { src: 3, name: 'Vandal',  state: 'dbno',  hp: 12,  armour: 0,  colour: '#FBBF24' },
+          // `bleedEndsAt` rides along on the downed mate, because the squad
+          // panel's timer is unbuildable without it and the harness is where
+          // it gets built. It is a SERVER timestamp everywhere else, and
+          // `serverNow` above is `now`, so `now + n` is the honest shape here.
+          { src: 3, name: 'Vandal',  state: 'dbno',  hp: 12,  armour: 0,  colour: '#FBBF24',
+            bleedEndsAt: now + 40_000 },
           { src: 4, name: 'Nyx',     state: 'dead',  hp: 0,   armour: 0,  colour: '#F472B6' },
         ],
       },
@@ -248,6 +314,74 @@ export function startMockDriver(): void {
     if (Math.random() < 0.05) { kills += 1 }
     emit({ k: 'hud', d: { hp, armour, alive, squadsAlive: Math.ceil(alive / 3), kills, state: 'alive' } })
   }, 900)
+
+  // THE SQUAD RE-PUSH, at the SLOW rate br_core/client/state.lua drives
+  // pushSquadOrParty at. Two things only this can exercise: a downed mate's
+  // bleed deadline actually counting down (and re-arming, so the panel is not
+  // stuck on 0s for the rest of the session), and the panel surviving a
+  // payload landing on it several times a second without flickering.
+  let knockAt = now
+  window.setInterval(() => {
+    const t = Date.now()
+    // Re-knock once the last bleed has run out, so the countdown loops.
+    if (t > knockAt + 40_000) knockAt = t
+    emit({
+      k: 'squad',
+      d: {
+        id: 'sq_1',
+        members: [
+          { src: 1, name: 'You',     state: 'alive', hp: Math.round(hp), armour: Math.round(armour), colour: '#6EE7F9' },
+          { src: 2, name: 'Kestrel', state: 'alive', hp: 100, armour: 80, colour: '#2DD4BF' },
+          { src: 3, name: 'Vandal',  state: 'dbno',  hp: 12,  armour: 0,  colour: '#FBBF24',
+            bleedEndsAt: knockAt + 40_000 },
+          { src: 4, name: 'Nyx',     state: 'dead',  hp: 0,   armour: 0,  colour: '#F472B6' },
+        ],
+      },
+    })
+  }, 1000)
+
+  // WHO IS SPEAKING. Nothing drove this channel before, so TalkingBar rendered
+  // nothing at all in the harness -- which is how a bottom-centre element ends
+  // up being reviewed only in the source. Names AND ids, because the squad
+  // panel's dots read the ids and the bar reads the names.
+  const VOICE = [
+    { talking: [2], names: ['Kestrel'] },
+    { talking: [2, 4], names: ['Kestrel', 'Nyx'] },
+    { talking: [], names: [] },
+    // A CROWD, because proximity voice carries anyone in the match and the
+    // 46% cap is only ever exercised by a line long enough to hit it.
+    { talking: [4, 2, 3, 9, 11, 12, 13],
+      names: ['Nyx', 'Kestrel', 'Vandal', 'Halcyon', 'Rook', 'Marrow', 'Quillon'] },
+    // AND THE TWO STATES THAT ARE WHY VoiceNotice EXISTS. Both were invisible
+    // in the game and both read as "voice is broken" (#157). They are in the
+    // rotation rather than behind a flag because a component that renders
+    // nothing 95% of the time is a component nobody sees in the harness --
+    // which is how the bottom-centre bar itself went unreviewed.
+    { talking: [], names: [],
+      mode: 'squad' as const, radio: null, joined: 0, mates: 0,
+      status: 'nosquad', silent: true, chosen: false,
+      headline: 'Squad voice: you have no squad',
+      detail: 'Squad voice carries your squad and nobody else, so with no '
+            + 'squad it carries nobody -- you cannot hear anyone and nobody '
+            + 'can hear you. Solo matches have no squads. Switch to Nearby '
+            + 'under Settings, Voice to hear the players around you.' },
+    // THE WORKING ROW CARRIES NO HEADLINE, and that is the shape being
+    // mocked rather than an omission -- VoiceNotice draws any headline it is
+    // given, so a working mode that sent one would sit across the bottom of
+    // the screen all match. Lua stopped sending it (BR.Voice.statusFor); this
+    // mock has to agree or the harness renders a line the game does not.
+    { talking: [4], names: ['Nyx'],
+      mode: 'squad' as const, radio: 30703, joined: 30703, mates: 3,
+      status: 'radio', silent: false, chosen: false,
+      detail: 'Squad voice is a radio: it reaches your squad at any distance '
+            + 'and nobody else, however close they are. Hold N to talk. The '
+            + "key is this game's -- rebind it in Settings, Controls, under "
+            + 'Comms.' },
+  ]
+  let voiceAt = 0
+  window.setInterval(() => {
+    emit({ k: 'voice', d: VOICE[voiceAt++ % VOICE.length]! })
+  }, 4000)
 
   // Storm ticks at the same 4 Hz the server would use.
   let radius = 520, edge = -180

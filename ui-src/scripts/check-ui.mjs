@@ -432,6 +432,63 @@ for (const name of builtCss) {
 }
 
 // ---------------------------------------------------------------------------
+// R11  Escape leaves the player list from every state it has (#176).
+//
+// CAUGHT BY A HUMAN PLAYING, twice over. Owner, 2026-08-18: "Escape only closes
+// the player list if they haven't clicked report." The panel holds the cursor,
+// so an Escape that does not close it is a player who believes the interface
+// has hung -- the worst failure this screen can produce short of leaking focus.
+//
+// WHAT THIS ACTUALLY CHECKS, and why it is not a restatement of the code. The
+// bug was never a missing `close()`; it was `close()` sitting behind a LADDER of
+// mode checks, each of which looked reasonable on its own and which together
+// took three presses. So the rule is about the SHAPE: inside the Escape branch,
+// the only thing allowed to stand between the key and `close()` is the search
+// field having something in it -- the one rung the player can see. A branch on
+// `reporting`, or on anything else, fails here.
+//
+// IT CAN FAIL. Re-add `if (reporting) leaveReport()` to that branch and this
+// goes red; delete the `close()` call and it goes red. It cannot prove Escape
+// reaches the handler at all -- there is no DOM in this process -- which is
+// stated so nobody reads a pass as more than it is.
+// ---------------------------------------------------------------------------
+{
+  const f = join(SRC, 'screens', 'PlayerList.tsx')
+  if (!existsSync(f)) {
+    fail('R11 escape', 'src/screens/PlayerList.tsx', 'file is missing.')
+  } else {
+    const body = stripComments(read(f))
+    // The branch runs from the `e.key === 'Escape'` test to its `return`.
+    const m = /if\s*\(\s*e\.key\s*===\s*'Escape'\s*\)\s*\{([\s\S]*?)\n\s*return\s*\n/.exec(body)
+    if (!m) {
+      fail('R11 escape', 'src/screens/PlayerList.tsx',
+        "no `if (e.key === 'Escape') { ... return }` branch found -- either the"
+        + ' handler moved or Escape stopped being answered here. #176 is about'
+        + ' this branch; find it before deleting this rule.')
+    } else {
+      const branch = m[1]
+      if (!/\bclose\s*\(\s*\)/.test(branch)) {
+        fail('R11 escape', 'src/screens/PlayerList.tsx',
+          'the Escape branch never calls close(). Escape must dismiss this'
+          + ' panel -- it holds the cursor, and a panel that ignores Escape'
+          + ' reads as a hung game (#176).')
+      }
+      // `query` is the visible rung and is allowed. Anything else gating the
+      // close is the ladder growing back.
+      for (const g of branch.matchAll(/\bif\s*\(([^)]*)\)/g)) {
+        const cond = g[1]
+        if (/\bquery\b/.test(cond)) continue
+        fail('R11 escape', 'src/screens/PlayerList.tsx',
+          `the Escape branch gates on \`${cond.trim()}\`. Only a non-empty`
+          + ' search box may stand between Escape and close() -- it is the one'
+          + ' step the player can see. Report mode was the other one, and three'
+          + ' presses to leave a panel holding the cursor is what #176 is.')
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Result
 // ---------------------------------------------------------------------------
 if (failures) {

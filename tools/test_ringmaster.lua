@@ -107,8 +107,17 @@ loadAll({
     'br_lib/shared/sched.lua',
     'br_lib/shared/identity.lua',
     'br_lib/shared/outbox.lua',
+    -- BR.Config.Community.discordUrl, which appeal.lua reads at call time. The
+    -- REST of the config chain the manifest loads (match, admin, overrides) is
+    -- deliberately absent: what turns a convar into that value is tested in
+    -- tools/test_config.lua against the real parser, and loading overrides.lua
+    -- into a harness that stubs GetConvar would test the stub.
+    'br_lib/config/community.lua',
     'br_ringmaster/server/config.lua',
     'br_ringmaster/server/main.lua',
+    -- Before gate.lua, as the manifest has it: the gate's rejection message
+    -- goes through this on its way to the player.
+    'br_ringmaster/server/appeal.lua',
     'br_ringmaster/server/gate.lua',
     'br_ringmaster/server/debug.lua',
 })
@@ -609,6 +618,2407 @@ do
     identifiers[71] = { 'discord:901' }
     d = connect(71)
     ok(d.doneCount == 1 and d.doneArg == nil, 'no license means admitted, not refused')
+
+    -- ----------------------------------------------------- the appeal line ---
+    --
+    -- THE OWNER'S SENTENCE, WORD FOR WORD, ON THE END OF A BAN NOTICE. Every
+    -- case above ran with br_discordUrl unset, which is the default and is the
+    -- state the whole block was written in -- so those assertions are also the
+    -- proof that an unconfigured server's ban message is byte-for-byte what it
+    -- was before this existed.
+    local APPEAL = 'Please join our Discord to discuss or appeal: '
+
+    d = connect(70)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), true, { reason = 'Aimbot' })
+    ok(d.doneArg and d.doneArg:find('Discord', 1, true) == nil,
+        'with no br_discordUrl set, a ban notice says nothing about Discord',
+        d.doneArg)
+
+    BR.Config.Community.discordUrl = 'https://discord.gg/PggjJ7hDSg'
+
+    d = connect(70)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), true, { reason = 'Aimbot' })
+    ok(d.doneArg and d.doneArg:find(
+        APPEAL .. 'https://discord.gg/PggjJ7hDSg', 1, true) ~= nil,
+        'and with it set the sentence is on the end, verbatim, with the address',
+        d.doneArg)
+    ok(d.doneArg and d.doneArg:find('Aimbot', 1, true) ~= nil
+       and d.doneArg:find('does not expire', 1, true) ~= nil,
+        'without displacing the reason or the expiry it already carried',
+        d.doneArg)
+    ok(d.doneArg and d.doneArg:sub(-#'https://discord.gg/PggjJ7hDSg')
+       == 'https://discord.gg/PggjJ7hDSg',
+        'and it is the LAST thing on the message, which is what "append" means',
+        d.doneArg)
+
+    -- ONCE. rejection() is used by the deferral AND by the late-answer removal,
+    -- and dropByLicense deliberately does not append -- so a message that
+    -- carried it twice would mean the append had migrated into the drop.
+    local n, at = 0, 1
+    while true do
+        local i = d.doneArg:find(APPEAL, at, true)
+        if not i then break end
+        n, at = n + 1, i + 1
+    end
+    ok(n == 1, 'exactly once, however many composers the path went through',
+        ('found %d times'):format(n))
+
+    -- A BAN WITH NOTHING ELSE TO SAY STILL SAYS IT.
+    d = connect(70)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), true, {})
+    ok(d.doneArg and d.doneArg:find('No reason recorded', 1, true) ~= nil
+       and d.doneArg:find(APPEAL, 1, true) ~= nil,
+        'a reasonless ban gets the line too -- "always" was the instruction',
+        d.doneArg)
+
+    -- AN EMPTY CONVAR IS UNSET, NOT SET-TO-NOTHING. `set br_discordUrl ""` is a
+    -- convar that IS set, so it never reaches its default, and a naive test
+    -- would put a dangling colon on the end of a ban notice.
+    BR.Config.Community.discordUrl = '   '
+    d = connect(70)
+    TriggerEvent('br:ddb:banResult', lastBanCheckReq(), true, { reason = 'Aimbot' })
+    ok(d.doneArg and d.doneArg:find('appeal', 1, true) == nil,
+        'a blank br_discordUrl prints no line at all, rather than a dangling one',
+        d.doneArg)
+
+    BR.Config.Community.discordUrl = ''
+end
+
+-- --------------------------------------------------------------- brkick ---
+
+describe('kick carries the appeal line')
+do
+    -- kick.lua IS LOADED HERE RATHER THAN AT THE TOP, and the reason is one file
+    -- above: slice1.read-only asserts this resource registers exactly two
+    -- commands, and `brkick` is a third. Loading it late keeps that gate meaning
+    -- what it says while still exercising the real command.
+    local dropped = {}
+    function DropPlayer(src, reason) dropped[#dropped + 1] = { src = src, reason = reason } end
+
+    -- GetPlayers answers STRINGS, which is what FiveM does and what
+    -- findByLicense passes straight into the identifier natives -- so the
+    -- identifier table is keyed the same way rather than by number. A stub that
+    -- were tidier than the engine would test the tidiness.
+    local KICKED = 'license:2222222222222222222222222222222222222222'
+    identifiers['80'] = { KICKED, 'discord:800' }
+    GetPlayers = function() return { '80' } end
+
+    loadAll({ 'br_ringmaster/server/kick.lua' })
+    ok(commands['brkick'] ~= nil and commands['brkick'].restricted == true,
+        'brkick is registered, and restricted like every other br* command')
+
+    --- Run brkick the way dispatch.sh types it: license, reason words, command id.
+    local function kick(reason)
+        dropped = {}
+        local args = { KICKED }
+        for w in reason:gmatch('%S+') do args[#args + 1] = w end
+        args[#args + 1] = 'cmd-1'
+        commands['brkick'].fn(0, args, '')
+        return dropped[#dropped]
+    end
+
+    BR.Config.Community.discordUrl = ''
+    local d = kick('Aimbot in match 3')
+    ok(d and d.reason == 'Aimbot in match 3',
+        'with no br_discordUrl the player is told the reason and nothing else',
+        d and d.reason)
+
+    BR.Config.Community.discordUrl = 'https://discord.gg/PggjJ7hDSg'
+    d = kick('Aimbot in match 3')
+    ok(d and d.reason == 'Aimbot in match 3\n\n'
+       .. 'Please join our Discord to discuss or appeal: https://discord.gg/PggjJ7hDSg',
+        'and with it set the whole message is the reason, then the sentence',
+        d and d.reason)
+
+    -- THE REASON IS STILL THE REASON. The console writes an audit row against
+    -- what the admin typed, and a kick that quietly filed "Aimbot ... appeal:
+    -- https://..." as the reason would put our own URL in the moderation log.
+    d = kick('No reason given')
+    ok(d and d.reason:sub(1, #'No reason given') == 'No reason given',
+        'the admin-written reason still leads the message', d and d.reason)
+
+    -- PUT THE BENCH BACK. Both of these are globals and the br_core block far
+    -- below runs in the same Lua state; a roster left believing there is a
+    -- player 80 in it is the kind of cross-test coupling that gets blamed on
+    -- whichever suite happens to fail first.
+    BR.Config.Community.discordUrl = ''
+    GetPlayers = function() return {} end
+end
+
+-- ------------------------------------------------------- the config chain ---
+
+describe('br_ringmaster loads the config chain the appeal line needs')
+do
+    -- THE ONE PART OF THIS FEATURE NOTHING ELSE CAN SEE. Every assertion above
+    -- sets BR.Config.Community.discordUrl by hand, because what turns a convar
+    -- into that value is tested against the real parser in tools/test_config.lua
+    -- -- which leaves exactly one link untested: whether THIS resource's Lua
+    -- state ever loads the file that defines it, and the override file that
+    -- fills it in.
+    --
+    -- BOTH FAILURES ARE SILENT AND ONE IS WORSE THAN THE OTHER.
+    --
+    -- Drop config/community.lua and the key is nil in this state, appeal.lua
+    -- reads nil, and no kick ever carries the line however carefully the convar
+    -- was set. Drop config/overrides.lua and the key is the committed default,
+    -- '', forever -- the same symptom with a different cause. Neither errors.
+    --
+    -- Drop config/match.lua and keep overrides.lua and it is the reverse: this
+    -- resource REFUSES TO START, on any box where br_maxSquadSize is set, which
+    -- is every dev box. overrides.lua raises on a set convar naming a BR.Config
+    -- group its state has not loaded -- correctly; that check is what stops a
+    -- renamed key becoming a value nothing reads. A state that reads the spec
+    -- has to carry every group in it.
+    local function slurp(path)
+        local f = io.open(path, 'r')
+        if not f then return nil end
+        local s = f:read('*a')
+        f:close()
+        return s
+    end
+
+    local manifest = slurp(ROOT .. 'br_ringmaster/fxmanifest.lua')
+    ok(manifest ~= nil, 'br_ringmaster/fxmanifest.lua is readable')
+    manifest = manifest or ''
+
+    --- Where an UNCOMMENTED declaration of `rel` appears, or nil.
+    ---
+    --- Commented lines do not count, and that is not hypothetical: these
+    --- manifests are half prose, and verify.sh's own ordering gate was written
+    --- after `-- '@br_lib/config/overrides.lua',` satisfied a plain grep while
+    --- loading nothing.
+    local function declaredAt(rel)
+        local n = 0
+        for line in (manifest .. '\n'):gmatch('([^\n]*)\n') do
+            n = n + 1
+            local trimmed = line:gsub('^%s+', '')
+            if not trimmed:match('^%-%-') and trimmed:find(rel, 1, true) then
+                return n
+            end
+        end
+        return nil
+    end
+
+    local community = declaredAt("'@br_lib/config/community.lua'")
+    local overrides = declaredAt("'@br_lib/config/overrides.lua'")
+
+    ok(community ~= nil,
+        'it loads config/community.lua, which is where discordUrl is defined')
+    ok(overrides ~= nil,
+        'and config/overrides.lua, which is what puts the convar into it')
+    ok(community ~= nil and overrides ~= nil and overrides > community,
+        'in that order -- overrides.lua edits the tables above it, so loading '
+        .. 'it first edits nothing',
+        ('community at %s, overrides at %s'):format(tostring(community),
+                                                    tostring(overrides)))
+
+    -- EVERY GROUP THE SPEC NAMES, read out of the spec rather than listed here,
+    -- so adding a tunable extends this check for free.
+    local spec = slurp(ROOT .. 'br_lib/config/overrides.lua') or ''
+    local groups = {}
+    for g in spec:gmatch("group%s*=%s*'([%w_]+)'") do groups[g] = true end
+
+    local found = false
+    for _ in pairs(groups) do found = true break end
+    ok(found, 'the override spec names at least one config group')
+
+    -- The one hand-written mapping, and it is deliberately a mapping rather
+    -- than a lowercase() of the group name: a new group with no line here is a
+    -- red build, which is the moment to decide whether this resource needs it.
+    local GROUP_FILE = { Match = 'match', Admin = 'admin', Community = 'community' }
+
+    for group in pairs(groups) do
+        local file = GROUP_FILE[group]
+        ok(file ~= nil,
+            ("the override spec's '%s' group has a file named in this test")
+                :format(group),
+            'add it to GROUP_FILE, then decide whether br_ringmaster loads it')
+        if file then
+            local where = declaredAt(("'@br_lib/config/%s.lua'"):format(file))
+            ok(where ~= nil and overrides ~= nil and where < overrides,
+                ("and br_ringmaster loads config/%s.lua before overrides.lua, "
+                 .. "or a set convar in the '%s' group stops this resource dead")
+                    :format(file, group),
+                ('%s at %s'):format(file, tostring(where)))
+        end
+    end
+end
+
+-- ======================================================================== --
+-- THE SERVER HALF OF A CRATE CLAIM  (br_core/server/loot.lua)
+-- ======================================================================== --
+--
+-- WHY THIS LIVES AT THE BOTTOM OF THE RINGMASTER SUITE, which is otherwise a
+-- strange place for it. br_core is loaded HERE and not at the top because the
+-- Slice-1 gate above counts the commands registered up to that point and
+-- asserts there are exactly two; br_core/server/loot.lua registers two more of
+-- its own (brlootseed, brcrate). Everything above this line is br_ringmaster
+-- and is finished asserting by the time the first br_core file is read.
+--
+-- WHAT THIS BLOCK IS FOR. #129 was a client bug: a FiveM native answered `1`
+-- rather than `true`, so `isHeld` was false every frame and LOOT_CLAIM was
+-- never sent for a crate -- not once, in any session, ever. The client now
+-- sends one, which means the container branch of the claim handler is about to
+-- run in play for the first time.
+--
+-- Every case below drives the REAL AddEventHandler(BR.Net.LOOT_CLAIM) handler
+-- in br_core/server/loot.lua through the harness's own dispatch, against a
+-- REAL generated layout (BR.BuildLootLayout) and the REAL registry, and
+-- asserts on the resulting ENTRY LIST -- what is on the ground afterwards and
+-- what the client was told -- rather than on any function having been called.
+-- Nothing in br_core is stubbed: BR.Roster, BR.Server, BR.Inv, BR.Loot and the
+-- generator are the shipping files. The only stubs are FiveM natives.
+
+-- Natives br_core needs and br_ringmaster does not. Defined now rather than at
+-- the top so the blocks above run against exactly the surface they were
+-- written for.
+function GetPlayerPed(src) return 1000 + (tonumber(src) or 0) end
+function GetEntityCoords() return { x = 0.0, y = 0.0, z = 0.0 } end
+function GetEntityHealth() return 200 end
+function GetPedArmour() return 0 end
+function SetPlayerRoutingBucket() end
+function SetRoutingBucketPopulationEnabled() end
+function DropPlayer() end
+function RegisterNetEvent() end
+function GetCurrentResourceName() return 'br_core' end
+
+--- Everything the server sent to a client, in order.
+local sent = {}
+function TriggerClientEvent(event, target, ...)
+    sent[#sent + 1] = { event = event, target = target, args = { ... } }
+end
+
+loadAll({
+    'br_lib/shared/protocol.lua',
+    'br_lib/shared/names.lua',
+    'br_lib/shared/rng.lua',
+    'br_lib/shared/geo.lua',
+    'br_lib/shared/clock.lua',
+    'br_lib/config/match.lua',
+    'br_lib/config/storm.lua',
+    'br_lib/config/map.lua',
+    'br_lib/config/weapons.lua',
+    'br_lib/config/loot.lua',
+    'br_lib/shared/loot_gen.lua',
+    'br_core/server/main.lua',
+    'br_core/server/broadcast.lua',
+    'br_core/server/roster.lua',
+    'br_core/server/inventory.lua',   -- BR.Inv, for the non-container path
+    'br_core/server/loot.lua',
+})
+
+local LOOT = BR.Config.Loot
+
+--- Dispatch a net event AS THE SERVER RECEIVES IT: `source` set, every
+--- registered handler run. Same shape the ban gate above uses.
+local function fire(name, src, payload)
+    source = src
+    for _, fn in ipairs(handlers[name] or {}) do fn(payload) end
+end
+
+--- Where the outbound log currently ends, so a test can read only what its own
+--- claim produced.
+local function mark() return #sent end
+
+--- Every message sent to `target` since `from`, optionally of one event name.
+local function heard(from, target, event)
+    local out = {}
+    for i = from + 1, #sent do
+        local s = sent[i]
+        if s.target == target and (not event or s.event == event) then
+            out[#out + 1] = s
+        end
+    end
+    return out
+end
+
+--- The notice texts a player was shown since `from`. The distinction between
+--- "refused with a reason" and "refused in silence" is the whole point of the
+--- refusal block below, so it gets its own reader.
+local function notices(from, target)
+    local out = {}
+    for _, s in ipairs(heard(from, target, BR.Net.NOTIFY)) do
+        out[#out + 1] = s.args[1] and s.args[1].text or ''
+    end
+    return out
+end
+
+--- The registry, flattened to comparable strings. A refusal must leave this
+--- IDENTICAL -- not merely leave the claimed entry alone, which would miss a
+--- refusal that scattered contents on its way out.
+local function worldOf(m)
+    local out, n = {}, 0
+    for id, e in pairs(m.loot.items) do
+        out[id] = ('%s|%s|%.3f|%.3f|%s|%s|%d'):format(
+            tostring(e.kind), tostring(e.item), e.x, e.y,
+            tostring(e.prop), tostring(e.cell), e.contents and #e.contents or -1)
+        n = n + 1
+    end
+    out.n = n
+    return out
+end
+
+local function sameWorld(a, b)
+    for id, v in pairs(a) do if b[id] ~= v then return false, id end end
+    for id in pairs(b) do if a[id] == nil then return false, id end end
+    return true
+end
+
+--- What an id currently is, or nil if the entry is gone. Nil-tolerant on
+--- purpose: these tests have to survive a claim handler that does nothing at
+--- all and still report a COUNT, because the count is the sanity check.
+local function kindOf(m, id)
+    local e = m.loot.items[id]
+    return e and e.kind or nil
+end
+
+--- Entries born since `fromId`, which is what "the contents actually spawned"
+--- means in observable terms.
+local function newborn(m, fromId)
+    local out = {}
+    for id = fromId + 1, m.loot.nextId do
+        if m.loot.items[id] then out[#out + 1] = m.loot.items[id] end
+    end
+    return out
+end
+
+--- item id -> count, for comparing what was in the crate against what is now
+--- on the floor without depending on scatter order.
+local function tally(stacks, key)
+    local out = {}
+    for _, s in ipairs(stacks) do
+        local k = s[key or 'item']
+        out[k] = (out[k] or 0) + 1
+    end
+    return out
+end
+
+local function tallyEq(a, b)
+    for k, v in pairs(a) do if b[k] ~= v then return false, k end end
+    for k in pairs(b) do if a[k] == nil then return false, k end end
+    return true
+end
+
+--- Walk a player up to an entry the way a client does: position first, then
+--- the cell subscription. LOOT_CLAIM refuses anything outside the subscription,
+--- so a test that skipped this would be testing the refusal, not the claim.
+local function walkTo(src, e)
+    BR.Roster.get(src).pos = { x = e.x, y = e.y, z = e.z }
+    local cx, cy = BR.LootCellOf(e.x, e.y)
+    fire(BR.Net.LOOT_CELL, src, { cx = cx, cy = cy })
+end
+
+--- The next sealed crate with at least `least` things in it. Tests take a
+--- fresh one each time rather than resetting the world, so an earlier block
+--- cannot leave a later one claiming a husk by accident.
+local function firstSealed(m, least)
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.kind == 'chest' and #(e.contents or {}) >= (least or 1) then
+            return e
+        end
+    end
+    return nil
+end
+
+--- Move past the claim rate limiter's one-second window. Claims are 4/s, and
+-- several blocks below spend the whole budget deliberately.
+local function nextSecond() fakeTime = fakeTime + 2000 end
+
+-- One world, generated from a pinned seed, shared by the blocks below. Two
+-- players in it, both ALIVE, plus a third attached to a match whose loot has
+-- already been torn down.
+local theMatch = { id = 1, state = BR.MatchState.PLAYING, bucket = 1 }
+do
+    BR.Server.matches[1] = theMatch
+    BR.Server.matches[2] = { id = 2, state = BR.MatchState.CLEANUP, bucket = 2 }
+    for _, src in ipairs({ 101, 102, 103, 104 }) do BR.Roster.add(src) end
+    BR.Roster.setMatch(101, 1); BR.Roster.setState(101, BR.PlayerState.ALIVE)
+    BR.Roster.setMatch(102, 1); BR.Roster.setState(102, BR.PlayerState.ALIVE)
+    BR.Roster.setState(103, BR.PlayerState.WARMUP)      -- the shared pad
+    BR.Roster.setMatch(104, 2); BR.Roster.setState(104, BR.PlayerState.ALIVE)
+    BR.Loot.begin(theMatch, 90210)
+end
+
+describe('loot.chest.open')
+do
+    -- THE CASE THAT HAS NEVER RUN IN PLAY. A player standing on a sealed crate
+    -- they have been streamed, claiming it once.
+    local crate = firstSealed(theMatch, 2)
+    ok(crate ~= nil, 'the generated layout contains a sealed crate to open')
+
+    local wanted   = tally(crate.contents)
+    local nInside  = #crate.contents
+    local cx, cy = crate.x, crate.y
+    walkTo(101, crate)
+
+    local before = theMatch.loot.nextId
+    local at     = mark()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = crate.id })
+
+    -- 1. THE CONTENTS ARE ON THE GROUND, as entries, by item id. Counting new
+    -- ids would pass if the crate scattered three copies of the wrong thing.
+    local born = newborn(theMatch, before)
+    ok(#born == nInside, 'opening a crate lays exactly its contents on the ground',
+        ('%d entries for %d items'):format(#born, nInside))
+    local eq, missing = tallyEq(wanted, tally(born))
+    ok(eq, 'and they are the items that were inside it, item for item',
+        tostring(missing))
+
+    -- Nothing born from a crate is itself a container, or the world grows.
+    local nested = 0
+    for _, e in ipairs(born) do
+        if e.kind == 'chest' or e.kind == 'deathbox' or e.kind == 'husk' then
+            nested = nested + 1
+        end
+    end
+    ok(nested == 0, 'and none of them is another container')
+
+    -- REACHABLE FROM WHERE THE CRATE WAS. Contents that land outside the
+    -- server's own pickup reach are contents the opener has to go hunting for.
+    local furthest, coincident = 0.0, false
+    for i, e in ipairs(born) do
+        local d = BR.Dist(e.x, e.y, cx, cy)
+        if d > furthest then furthest = d end
+        for j = i + 1, #born do
+            if BR.Dist(e.x, e.y, born[j].x, born[j].y) < 0.01 then coincident = true end
+        end
+    end
+    ok(furthest <= LOOT.pickupDistance + 4.0,
+        'all of it inside the reach the server itself enforces',
+        ('%.2fm'):format(furthest))
+    ok(not coincident, 'laid out in a ring -- nothing lands inside anything else')
+
+    -- 2. THE CRATE STAYS, OPENED, under its own id.
+    local husk = theMatch.loot.items[crate.id]
+    ok(husk ~= nil, 'the crate entry survives the claim')
+    ok(husk and husk.kind == 'husk' and husk.item == 'husk', 'as a husk')
+    ok(husk and husk.prop == LOOT.chestOpenProp, 'wearing the opened model')
+    ok(husk and husk.contents == nil, 'holding nothing')
+    ok(husk and math.abs(husk.x - cx) < 0.001 and math.abs(husk.y - cy) < 0.001,
+        'exactly where the sealed one stood')
+    ok(husk and theMatch.loot.cells[husk.cell]
+        and theMatch.loot.cells[husk.cell][husk.id],
+        'and still indexed in its cell, so it streams to whoever walks up next')
+
+    -- 3. THE CLIENT WAS TOLD, and told the right things. The husk arrives under
+    -- the ORIGINAL id so the client swaps a model instead of deleting a prop
+    -- and streaming a new one.
+    local sawHusk, sawContents, leaked = false, 0, false
+    for _, s in ipairs(heard(at, 101, BR.Net.LOOT_ADD)) do
+        for _, w in ipairs(s.args[1]) do
+            if w.id == crate.id and w.kind == 'husk' then sawHusk = true end
+            if w.id > before then sawContents = sawContents + 1 end
+            if w.contents ~= nil then leaked = true end
+        end
+    end
+    ok(sawHusk, 'the opener is sent the husk under the crate\'s original id')
+    ok(sawContents == nInside, 'and every scattered item',
+        ('%d of %d'):format(sawContents, nInside))
+    ok(not leaked, 'with no container contents on the wire, ever')
+
+    -- THE ARC ORIGIN travels with the item, which is the whole reason fx/fy/fl
+    -- exist: the client throws the prop out of the crate's mouth rather than
+    -- popping it into being on the grass. `fl` is a LIFT above the ground the
+    -- client probed, never an absolute z -- an absolute one burst items out of
+    -- the floor wherever the authored z sat below the real ground.
+    local arced = 0
+    for _, s in ipairs(heard(at, 101, BR.Net.LOOT_ADD)) do
+        for _, w in ipairs(s.args[1]) do
+            if w.id > before
+                and w.fx and math.abs(w.fx - cx) < 0.001
+                and w.fy and math.abs(w.fy - cy) < 0.001
+                and w.fl == (LOOT.crateMouthHeight or 0.6) then
+                arced = arced + 1
+            end
+        end
+    end
+    ok(arced == nInside, 'each one carrying the crate it came out of as its arc origin',
+        ('%d of %d'):format(arced, nInside))
+
+    -- A MATCH crate is not a pad crate: nothing is queued to come back.
+    ok(#theMatch.loot.respawn == 0,
+        'a crate opened in a match schedules no respawn')
+end
+
+describe('loot.chest.husk')
+do
+    -- AN OPENED CRATE CANNOT BE OPENED AGAIN. If it could, one crate would be
+    -- an infinite loot fountain -- which is the failure mode that makes this
+    -- the single most load-bearing assertion in the file.
+    nextSecond()
+    local crate = firstSealed(theMatch, 2)
+    walkTo(101, crate)
+    fire(BR.Net.LOOT_CLAIM, 101, { id = crate.id })
+    local husk = theMatch.loot.items[crate.id]
+    ok(husk and husk.kind == 'husk', 'a crate is opened')
+
+    nextSecond()
+    local was  = worldOf(theMatch)
+    local wasN = theMatch.loot.nextId
+    local at   = mark()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = crate.id })
+
+    ok(theMatch.loot.nextId == wasN,
+        'claiming the husk spawns no second set of contents',
+        ('%d new entries'):format(theMatch.loot.nextId - wasN))
+    local same, which = sameWorld(was, worldOf(theMatch))
+    ok(same, 'and mutates nothing at all in the registry', 'entry ' .. tostring(which))
+    ok(theMatch.loot.items[crate.id] ~= nil, 'the husk itself stays -- it is scenery')
+
+    -- SILENT, and deliberately so: the client already refuses to target a husk
+    -- (client/loot.lua:522), so an honest player never produces this claim.
+    ok(#heard(at, 101) == 0,
+        'a husk claim is refused in COMPLETE SILENCE -- nothing is sent at all')
+end
+
+describe('loot.chest.refusals')
+do
+    -- EVERY GATE ABOVE THE CONTAINER BRANCH, each one asserted twice: the claim
+    -- is refused, and the world is byte-identical afterwards. A refusal that
+    -- scatters on its way out would pass a "the crate is still sealed" check.
+    --
+    -- The second column is the deliverable: WHICH OF THESE SAY ANYTHING. A
+    -- silent refusal is indistinguishable from #129 -- the player presses the
+    -- key, nothing happens, and nothing anywhere says why.
+
+    -- (a) CAN_TAKE[e.state] -- a corpse reaching for a crate.
+    nextSecond()
+    local crate = firstSealed(theMatch, 2)
+    walkTo(101, crate)
+    BR.Roster.setState(101, BR.PlayerState.DEAD)
+    local was, at = worldOf(theMatch), mark()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = crate.id })
+    ok(sameWorld(was, worldOf(theMatch)), 'a DEAD player cannot open a crate')
+    ok(kindOf(theMatch, crate.id) == 'chest', 'it is still sealed')
+    -- THE SENTENCE IS ASKED FOR, NOT SPELLED OUT. This pinned the literal, and
+    -- when the owner reworded the refusals (2026-08-18) that made a copy of the
+    -- text in a fourth place -- the one place nobody greps. refusalText with no
+    -- reason IS the default sentence, so what this asserts is the property that
+    -- matters: the state refusal says the same thing the reason table falls
+    -- back to, whatever that happens to be.
+    ok(#notices(at, 101) == 1
+        and notices(at, 101)[1] == BR.Loot.refusalText(nil),
+        'CAN_TAKE refuses AUDIBLY', table.concat(notices(at, 101), ' / '))
+    BR.Roster.setState(101, BR.PlayerState.ALIVE)
+
+    -- (b) rateOk -- the token bucket. Burned on ids that do not exist, so the
+    -- budget is spent without opening anything; then a real crate is claimed
+    -- inside the same window.
+    nextSecond()
+    for _ = 1, (LOOT.pickupRateLimit or 4) do
+        fire(BR.Net.LOOT_CLAIM, 101, { id = theMatch.loot.nextId + 9999 })
+    end
+    was, at = worldOf(theMatch), mark()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = crate.id })
+    ok(sameWorld(was, worldOf(theMatch)), 'a rate-limited claim opens nothing')
+    ok(kindOf(theMatch, crate.id) == 'chest', 'the crate is still sealed')
+    ok(#heard(at, 101) == 0,
+        'and the rate limiter refuses in SILENCE -- the server logs it, the player is not told')
+
+    -- ...and the limiter is a window, not a ban: the same crate opens a second
+    -- later. Without this the case above would pass on a permanently broken
+    -- limiter.
+    nextSecond()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = crate.id })
+    ok(kindOf(theMatch, crate.id) == 'husk',
+        'once the window rolls over the same claim succeeds')
+
+    -- (c) not in the client's subscribed cells. Answers IDENTICALLY to an
+    -- entry that never existed -- otherwise the refusal text is an existence
+    -- oracle over a dense id space.
+    nextSecond()
+    local outside
+    for id = 1, theMatch.loot.nextId do
+        local e = theMatch.loot.items[id]
+        if e and e.kind == 'chest' and not (theMatch.loot.subs[101] or {})[e.cell] then
+            outside = e break
+        end
+    end
+    ok(outside ~= nil, 'the layout has a crate this player was never streamed')
+    was, at = worldOf(theMatch), mark()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = outside.id })
+    ok(sameWorld(was, worldOf(theMatch)), 'an unstreamed crate cannot be opened')
+    local unseen = notices(at, 101)
+    at = mark()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = theMatch.loot.nextId + 9999 })
+    local absent = notices(at, 101)
+    ok(#unseen == 1 and unseen[1] == 'Someone beat you to it.',
+        'the subscription check refuses AUDIBLY', table.concat(unseen, ' / '))
+    ok(#absent == 1 and absent[1] == unseen[1],
+        'in the same words as an id that never existed -- no existence oracle')
+
+    -- (d) inReach -- subscribed, in the same 256m cell, 100m from the crate.
+    nextSecond()
+    local far = firstSealed(theMatch, 2)
+    walkTo(101, far)
+    BR.Roster.get(101).pos = { x = far.x + 100.0, y = far.y, z = far.z }
+    was, at = worldOf(theMatch), mark()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = far.id })
+    ok(sameWorld(was, worldOf(theMatch)), 'a crate 100m away cannot be opened')
+    ok(#notices(at, 101) == 1 and notices(at, 101)[1] == 'Too far away.',
+        'inReach refuses AUDIBLY', table.concat(notices(at, 101), ' / '))
+
+    -- (e) no zone: ALIVE, in a match whose loot has been torn down. This is
+    -- reachable in play -- a claim in flight when the match cleans up.
+    nextSecond()
+    was, at = worldOf(theMatch), mark()
+    fire(BR.Net.LOOT_CLAIM, 104, { id = far.id })
+    ok(sameWorld(was, worldOf(theMatch)),
+        'a player whose match has no loot cannot reach another match\'s crates')
+    ok(#heard(at, 104) == 0,
+        'and is refused in SILENCE -- zoneFor returns before CAN_TAKE is consulted')
+
+    -- (f) the malformed shapes, which must not reach anything.
+    at = mark()
+    fire(BR.Net.LOOT_CLAIM, 101, 'not a table')
+    fire(BR.Net.LOOT_CLAIM, 101, { id = 'seven' })
+    fire(BR.Net.LOOT_CLAIM, 101, {})
+    fire(BR.Net.LOOT_CLAIM, 999, { id = far.id })   -- no roster entry
+    ok(sameWorld(was, worldOf(theMatch)), 'a malformed claim changes nothing')
+    ok(#heard(at, 101) == 0 and #heard(at, 999) == 0,
+        'and is refused in SILENCE')
+end
+
+describe('loot.chest.race')
+do
+    -- TWO PLAYERS, ONE CRATE, SAME TICK. The normal case at a hot drop, and the
+    -- one the whole handler is arranged around. Exactly one set of contents may
+    -- reach the ground; a second would be a duplication exploit anybody could
+    -- run by accident.
+    nextSecond()
+    local crate  = firstSealed(theMatch, 2)
+    local nInside = #crate.contents
+    walkTo(101, crate)
+    walkTo(102, crate)
+
+    local before = theMatch.loot.nextId
+    local at     = mark()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = crate.id })
+    fire(BR.Net.LOOT_CLAIM, 102, { id = crate.id })
+
+    local born = newborn(theMatch, before)
+    ok(#born == nInside,
+        'two claims in one tick produce EXACTLY ONE set of contents',
+        ('%d entries for %d items'):format(#born, nInside))
+    ok(kindOf(theMatch, crate.id) == 'husk', 'and one husk')
+
+    -- Both are subscribed, so both must see the crate open and both must see
+    -- the contents -- or the loser is left staring at a sealed prop.
+    local sawHusk = { [101] = false, [102] = false }
+    for _, who in ipairs({ 101, 102 }) do
+        for _, s in ipairs(heard(at, who, BR.Net.LOOT_ADD)) do
+            for _, w in ipairs(s.args[1]) do
+                if w.id == crate.id and w.kind == 'husk' then sawHusk[who] = true end
+            end
+        end
+    end
+    ok(sawHusk[101] and sawHusk[102],
+        'both claimants are shown the crate opening, not just the winner')
+
+    -- THE LOSER IS TOLD NOTHING. The loser of a race for a loose item hears
+    -- "Someone beat you to it"; the loser of a race for a CRATE hears nothing,
+    -- because the second claim lands on a husk and the husk branch is silent.
+    ok(#notices(at, 102) == 0,
+        'the loser of a CRATE race is given no refusal -- the husk branch is silent')
+end
+
+describe('loot.deathbox')
+do
+    -- A DEATH BOX RETIRES RATHER THAN HUSKING, and the comment in the handler
+    -- says why: an empty box left lying there reads as a body nobody has
+    -- looted yet, and sends people across open ground for nothing.
+    --
+    -- Built with the real BR.Loot.spawnStack, because NOTHING IN THE CODEBASE
+    -- MINTS A 'deathbox' ENTRY ANY MORE -- BR.Loot.deathBox scatters a kit
+    -- directly. The branch is still live in the handler, so it is still tested.
+    nextSecond()
+    local anchor = firstSealed(theMatch, 1)
+    walkTo(101, anchor)
+
+    local box = BR.Loot.spawnStack(theMatch, {
+        item = 'deathbox', kind = 'deathbox', rarity = BR.Rarity.RARE, count = 1,
+        contents = {
+            { item = 'pistol',  kind = BR.ItemKind.WEAPON,     rarity = 1, count = 1, clip = 12 },
+            { item = 'bandage', kind = BR.ItemKind.CONSUMABLE, rarity = 1, count = 3 },
+        },
+    }, anchor.x, anchor.y, anchor.z)
+    ok(box ~= nil and theMatch.loot.items[box.id] ~= nil, 'a death box is on the ground')
+
+    local cell   = box.cell
+    local before = theMatch.loot.nextId
+    local at     = mark()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = box.id })
+
+    ok(theMatch.loot.items[box.id] == nil,
+        'claiming a death box RETIRES it -- no husk is left behind')
+    ok(not (theMatch.loot.cells[cell] or {})[box.id],
+        'and it is out of its cell, so it streams to nobody')
+
+    local born = newborn(theMatch, before)
+    ok(#born == 2, 'its contents are on the ground', ('%d entries'):format(#born))
+    ok(tallyEq({ pistol = 1, bandage = 1 }, tally(born)),
+        'item for item, exactly what was in it')
+
+    -- ORDER MATTERS ON THE WIRE: the box is retired before its contents are
+    -- announced, so no client ever holds the box and its spilled kit at once.
+    local goneAt, addAt
+    for i = at + 1, #sent do
+        local s = sent[i]
+        if s.target == 101 and s.event == BR.Net.LOOT_GONE and not goneAt then
+            for _, id in ipairs(s.args[1]) do if id == box.id then goneAt = i end end
+        end
+        if s.target == 101 and s.event == BR.Net.LOOT_ADD and not addAt then
+            for _, w in ipairs(s.args[1]) do if w.id > before then addAt = i end end
+        end
+    end
+    ok(goneAt ~= nil, 'every subscriber is told the box is gone')
+    ok(goneAt and addAt and goneAt < addAt,
+        'and told that BEFORE the contents arrive')
+end
+
+describe('loot.warmup.respawn')
+do
+    -- THE PAD MUST NOT BE STRIPPABLE. Everybody waiting shares one island, so
+    -- whoever queued first opening every crate on it would leave the next
+    -- twenty arrivals with nothing to practise on.
+    --
+    -- THE SHARED ZONE IS PRIVATE TO loot.lua and there is no accessor for it,
+    -- so this block never touches the table. It censuses the island the only
+    -- way anything outside that file can: a WARMUP player walked across it,
+    -- subscribing cell by cell, with BR.Loot.viewFor read at each stop. That is
+    -- the same route a real client takes, and it means every number below is
+    -- one the game itself could produce.
+    nextSecond()
+    local pad = BR.Config.Match.warmupPos
+    local pcx, pcy = BR.LootCellOf(pad.x, pad.y)
+    local size = LOOT.cellSize
+
+    --- Every entry on the pad, id -> wire entry. The island is a 460m annulus
+    --- around the pad, so a 5x5 block of 256m cells covers all of it.
+    local function census()
+        local out = {}
+        for dx = -2, 2 do
+            for dy = -2, 2 do
+                local cx, cy = pcx + dx, pcy + dy
+                BR.Roster.get(103).pos =
+                    { x = (cx + 0.5) * size, y = (cy + 0.5) * size, z = pad.z or 30.0 }
+                fire(BR.Net.LOOT_CELL, 103, { cx = cx, cy = cy })
+                for _, w in ipairs(BR.Loot.viewFor(103) or {}) do out[w.id] = w end
+            end
+        end
+        return out
+    end
+
+    local function countKind(c, kind)
+        local n = 0
+        for _, w in pairs(c) do if w.kind == kind then n = n + 1 end end
+        return n
+    end
+
+    local before = census()
+    local sealed0 = countKind(before, 'chest')
+    ok(sealed0 > 0, 'the shared pad is stocked with sealed crates',
+        ('%d crates'):format(sealed0))
+
+    local padCrate
+    for _, w in pairs(before) do if w.kind == 'chest' then padCrate = w break end end
+
+    -- Open it, standing on it, exactly as in a match.
+    BR.Roster.get(103).pos = { x = padCrate.x, y = padCrate.y, z = padCrate.z }
+    local ccx, ccy = BR.LootCellOf(padCrate.x, padCrate.y)
+    fire(BR.Net.LOOT_CELL, 103, { cx = ccx, cy = ccy })
+    local highest = 0
+    for id in pairs(before) do if id > highest then highest = id end end
+    fire(BR.Net.LOOT_CLAIM, 103, { id = padCrate.id })
+
+    local opened = census()
+    ok(opened[padCrate.id] and opened[padCrate.id].kind == 'husk',
+        'a pad crate opens the same way a match crate does')
+    ok(countKind(opened, 'chest') == sealed0 - 1,
+        'leaving the island one sealed crate short',
+        ('%d -> %d'):format(sealed0, countKind(opened, 'chest')))
+
+    -- Only the respawn job runs. Everything else in br_core and br_ringmaster
+    -- is parked, so what follows is attributable to THAT job rather than to a
+    -- whole server tick.
+    local parked = {}
+    for _, j in ipairs(BR.Sched.stats()) do
+        if j.name ~= 'loot.warmupRespawn' and j.enabled then
+            parked[#parked + 1] = j.name
+            BR.Sched.setEnabled(j.name, false)
+        end
+    end
+
+    -- ONE MILLISECOND EARLY: still short. This is what makes the next
+    -- assertion mean "the timer landed" rather than "a crate exists".
+    fakeTime = fakeTime + (LOOT.warmup.respawnMs or 45000) - 1
+    BR.Sched.step(fakeTime)
+    ok(countKind(census(), 'chest') == sealed0 - 1,
+        'nothing comes back before the respawn is due')
+
+    fakeTime = fakeTime + 2000
+    BR.Sched.step(fakeTime)
+    local back = census()
+    ok(countKind(back, 'chest') == sealed0,
+        'and exactly one crate comes back once it is',
+        ('%d of %d'):format(countKind(back, 'chest'), sealed0))
+
+    -- SOMEWHERE ELSE ON THE ISLAND, under a new id: the husk stays put, so a
+    -- replacement on the same spot would stack two props in one place.
+    local fresh
+    for id, w in pairs(back) do
+        if id > highest and w.kind == 'chest' then fresh = w break end
+    end
+    ok(fresh ~= nil, 'as a new entry rather than the old one un-opened')
+    ok(fresh and BR.Dist(fresh.x, fresh.y, padCrate.x, padCrate.y) > 1.0,
+        'in a different place')
+    ok(back[padCrate.id] and back[padCrate.id].kind == 'husk',
+        'and the husk it replaces is still standing where it was opened')
+
+    -- A SECOND CLAIM ON THE HUSK MUST NOT QUEUE ANOTHER, or the pad is a crate
+    -- printer for anybody willing to press the key twice.
+    nextSecond()
+    local farmFrom = countKind(census(), 'chest')
+    BR.Roster.get(103).pos = { x = padCrate.x, y = padCrate.y, z = padCrate.z }
+    fire(BR.Net.LOOT_CELL, 103, { cx = ccx, cy = ccy })
+    for _ = 1, 3 do fire(BR.Net.LOOT_CLAIM, 103, { id = padCrate.id }) end
+    fakeTime = fakeTime + (LOOT.warmup.respawnMs or 45000) + 2000
+    BR.Sched.step(fakeTime)
+    ok(countKind(census(), 'chest') == farmFrom,
+        'reclaiming a husk queues NO further crates -- the pad cannot be farmed',
+        ('%d -> %d'):format(farmFrom, countKind(census(), 'chest')))
+
+    for _, n in ipairs(parked) do BR.Sched.setEnabled(n, true) end
+end
+
+-- ===========================================================================
+-- THE OTHER HALF OF THE INCIDENT PIPELINE, IN A SANDBOX
+-- ===========================================================================
+--
+-- br_core/server/incident.lua and br_core/server/players.lua are the two files
+-- that decide WHO IS TOLD WHAT about a case, and both of those decisions landed
+-- with #168 and #169. They belong in this suite because the thing they are
+-- about -- an incident becoming real -- is what this whole resource exists for,
+-- and because the rule they enforce is a rule about silence: the offender is
+-- shown nothing, and no client can ask who is under suspicion. A rule that says
+-- "nothing happens" is exactly the kind that passes a playtest by accident.
+--
+-- IN A SANDBOX, and not loaded alongside br_ringmaster above. Both halves
+-- register handlers for `br:ringmaster:refusal` and `br:incident:filed`, so
+-- sharing one environment would have every existing case in this file start
+-- driving the br_core builder as a side effect -- which is a suite testing
+-- something other than what it says. The pattern is test_shared.lua's.
+
+local SANDBOX_STD = {
+    ipairs = ipairs, pairs = pairs, next = next, type = type, select = select,
+    tostring = tostring, tonumber = tonumber, error = error, pcall = pcall,
+    setmetatable = setmetatable, rawget = rawget, rawset = rawset,
+    table = table, string = string, math = math, os = os,
+}
+
+--- A fresh world, with the smallest amount of br_core that will hold up the two
+--- files under test.
+---
+--- @return table  { fire, filed, clientEvents, roster, incidents, setPrior }
+local function newIncidentWorld()
+    local env = setmetatable({}, { __index = function(_, k) return SANDBOX_STD[k] end })
+    env._G = env
+
+    local S = {
+        roster = {},        -- [src] = entry
+        licenses = {},      -- [src] = 'license:...'
+        out = {},           -- every TriggerClientEvent
+        killer = {},        -- [src] = attributed killer src
+    }
+
+    local h = {}
+    env.AddEventHandler = function(name, fn)
+        h[name] = h[name] or {}
+        table.insert(h[name], fn)
+    end
+    env.TriggerEvent = function(name, ...)
+        for _, fn in ipairs(h[name] or {}) do fn(...) end
+    end
+    env.TriggerClientEvent = function(name, src, payload)
+        S.out[#S.out + 1] = { name = name, src = src, payload = payload }
+    end
+    env.RegisterNetEvent = function() end
+    env.RegisterCommand  = function() end
+    env.GetGameTimer     = function() return 1000 end
+    env.GetCurrentResourceName = function() return 'br_core' end
+    env.print = function() end
+    env.GetNumPlayerIdentifiers = function(src) return S.licenses[src] and 1 or 0 end
+    env.GetPlayerIdentifier = function(src) return S.licenses[src] end
+
+    -- Loaded one at a time into THIS env rather than through loadAll above,
+    -- which deliberately loads into the global one.
+    for _, f in ipairs({
+        'br_lib/shared/enums.lua',
+        'br_lib/shared/protocol.lua',
+        'br_lib/shared/identity.lua',
+    }) do
+        local chunk, err = loadfile(ROOT .. f, 't', env)
+        if not chunk then
+            realPrint('\27[31msandbox load error\27[0m ' .. f .. ': ' .. tostring(err))
+            os.exit(1)
+        end
+        chunk()
+    end
+
+    local BRs = env.BR
+
+    -- The smallest roster that answers the two questions these files ask of it.
+    BRs.Roster = {
+        get = function(src) return S.roster[src] end,
+        each = function(pred, fn)
+            local ids = {}
+            for src in pairs(S.roster) do ids[#ids + 1] = src end
+            table.sort(ids)
+            for _, src in ipairs(ids) do
+                local e = S.roster[src]
+                if pred(e) then fn(src, e) end
+            end
+        end,
+    }
+    -- players.lua reads the report rules off BR.Config; none of them is under
+    -- test here, so they are the smallest values that let the file load.
+    BRs.Config = {
+        Report = { maxPerMatch = 3, maxTargets = 5, categories = { 'cheating' } },
+        isReportCategory = function(c) return c == 'cheating' end,
+        defaultReportCategory = function() return 'cheating' end,
+    }
+    -- The REAL attribution question, answered by a stub, because combat.lua's
+    -- own version is a rule about assist windows and is tested where it lives.
+    BRs.Combat = { attributedKiller = function(entry) return S.killer[entry.src] end }
+
+    for _, f in ipairs({
+        'br_core/server/incident.lua',
+        'br_core/server/players.lua',
+    }) do
+        local chunk, err = loadfile(ROOT .. f, 't', env)
+        if not chunk then
+            realPrint('\27[31msandbox load error\27[0m ' .. f .. ': ' .. tostring(err))
+            os.exit(1)
+        end
+        chunk()
+    end
+
+    local W = { env = env, BR = BRs, out = S.out }
+
+    function W.join(src, matchId, license, state)
+        S.roster[src] = {
+            src = src, name = 'P' .. src, matchId = matchId,
+            state = state or BRs.PlayerState.ALIVE,
+        }
+        S.licenses[src] = license
+    end
+
+    function W.killedBy(victim, killer) S.killer[victim] = killer end
+
+    --- The acknowledgement br_ringmaster sends once a row is durable.
+    function W.filed(incidentId, matchId, subjectLicense)
+        env.TriggerEvent('br:incident:filed', {
+            incidentId = incidentId, matchId = matchId,
+            subjectLicense = subjectLicense,
+        })
+    end
+
+    --- A net event from one client.
+    function W.fromClient(name, src)
+        env.source = src
+        env.TriggerEvent(name, nil)
+        env.source = nil
+    end
+
+    --- Everything sent to clients on one event name.
+    function W.sentOn(name)
+        local list = {}
+        for _, o in ipairs(S.out) do
+            if o.name == name then list[#list + 1] = o end
+        end
+        return list
+    end
+
+    function W.clear() for i = #S.out, 1, -1 do S.out[i] = nil end end
+
+    return W
+end
+
+describe('incident.announce')
+do
+    -- #168: everybody in the match is told that reporting exists, once, the
+    -- first time anybody in it draws a case -- and the subject is told nothing.
+    local W = newIncidentWorld()
+    W.join(1, 7, 'license:one')
+    W.join(2, 7, 'license:two')
+    W.join(3, 7, 'license:cheat')
+    W.join(9, 8, 'license:other')          -- a different match entirely
+
+    W.filed('inc-1', 7, 'license:cheat')
+
+    local hints = W.sentOn(W.BR.Net.REPORT_HINT)
+    ok(#hints == 2, 'everybody else in the match is told', tostring(#hints))
+
+    local told = {}
+    for _, hh in ipairs(hints) do told[hh.src] = hh.payload.kind end
+    ok(told[1] == 'exists' and told[2] == 'exists',
+        'and what they are told is that reporting exists')
+
+    -- THE RULE THIS TEST EXISTS FOR (#93). An offender who learns they are
+    -- under suspicion changes behaviour, which costs the case the evidence it
+    -- was going to be made of.
+    ok(told[3] == nil, 'the player the incident is ABOUT is told nothing at all')
+    ok(told[9] == nil, 'and neither is anybody in another match')
+
+    -- ONCE PER MATCH, however many cases are filed in it. A hint per incident
+    -- would nag the whole server every time a persistent cheater tripped the
+    -- threshold again.
+    W.clear()
+    W.filed('inc-2', 7, 'license:cheat')
+    W.filed('inc-3', 7, 'license:two')
+    ok(#W.sentOn(W.BR.Net.REPORT_HINT) == 0,
+        'the second and third cases in the same match announce nothing')
+
+    -- A NEW MATCH IS A CLEAN SHEET, because the people in it are different.
+    W.clear()
+    W.filed('inc-4', 8, 'license:someone')
+    ok(#W.sentOn(W.BR.Net.REPORT_HINT) == 1,
+        'the first case in the NEXT match announces again')
+end
+
+describe('incident.announce.edges')
+do
+    local W = newIncidentWorld()
+    W.join(1, 7, 'license:one')
+    W.join(2, 7, 'license:gone', nil)
+    W.BR.Roster.get(2).state = W.BR.PlayerState.LEFT
+
+    W.filed('inc-1', 7, 'license:cheat')
+    local hints = W.sentOn(W.BR.Net.REPORT_HINT)
+    ok(#hints == 1 and hints[1].src == 1,
+        'a player who has already left is not addressed -- their id may be recycled')
+
+    -- NO MATCH, NO AUDIENCE. `brrefuse` from a console and an anticheat firing
+    -- in the lobby both file under the no-match sentinel; there is no round for
+    -- the nudge to be about.
+    local X = newIncidentWorld()
+    X.join(1, 7, 'license:one')
+    X.filed('inc-lobby', nil, 'license:cheat')
+    ok(#X.sentOn(X.BR.Net.REPORT_HINT) == 0,
+        'an incident filed outside a match announces to nobody')
+end
+
+describe('report.killedBy')
+do
+    -- #169: killed by somebody who ALREADY has a case open, and only then.
+    local W = newIncidentWorld()
+    W.join(1, 7, 'license:victim', W.BR.PlayerState.DEAD)
+    W.join(2, 7, 'license:suspect')
+    W.join(3, 7, 'license:clean')
+    W.killedBy(1, 2)
+
+    -- No case yet: the prompt would be an invitation to report whoever just
+    -- killed you, which is a machine for generating noise.
+    W.fromClient(W.BR.Net.REPORT_KILLED, 1)
+    ok(#W.sentOn(W.BR.Net.REPORT_HINT) == 0,
+        'a killer with no incident against them produces nothing at all')
+
+    -- Now there is one. The announcement fires too, so filter to the nudge.
+    W.filed('inc-1', 7, 'license:suspect')
+    W.clear()
+
+    W.fromClient(W.BR.Net.REPORT_KILLED, 1)
+    local hints = W.sentOn(W.BR.Net.REPORT_HINT)
+    ok(#hints == 1 and hints[1].src == 1, 'the victim is prompted', tostring(#hints))
+    ok(hints[1] and hints[1].payload.kind == 'killer',
+        'with the killer-flavoured prompt')
+    ok(hints[1] and hints[1].payload.name == 'P2',
+        'naming the killer by their display name')
+
+    -- NOTHING ON THE WIRE THAT NAMES A PLAYER THE CLIENT COULD NOT ALREADY SEE.
+    -- No license, no incident id, no list -- see the handler's own note.
+    local p = hints[1] and hints[1].payload or {}
+    local keys = {}
+    for k in pairs(p) do keys[#keys + 1] = k end
+    table.sort(keys)
+    ok(table.concat(keys, ',') == 'kind,name',
+        'and the payload carries only the occasion and a display name',
+        table.concat(keys, ','))
+
+    -- ONCE. A client that fires this every frame gets one answer, because the
+    -- latch is the server's.
+    W.clear()
+    W.fromClient(W.BR.Net.REPORT_KILLED, 1)
+    W.fromClient(W.BR.Net.REPORT_KILLED, 1)
+    ok(#W.sentOn(W.BR.Net.REPORT_HINT) == 0,
+        'asking again about the same killer answers nothing')
+end
+
+describe('report.killedBy.refusals')
+do
+    local W = newIncidentWorld()
+    W.join(1, 7, 'license:victim')          -- ALIVE
+    W.join(2, 7, 'license:suspect')
+    W.killedBy(1, 2)
+    W.filed('inc-1', 7, 'license:suspect')
+    W.clear()
+
+    -- A LIVING PLAYER HAS NOT BEEN KILLED BY ANYBODY, so there is nothing to
+    -- answer -- and answering would turn this into a probe usable at any time.
+    W.fromClient(W.BR.Net.REPORT_KILLED, 1)
+    ok(#W.sentOn(W.BR.Net.REPORT_HINT) == 0, 'a living player is told nothing')
+
+    W.BR.Roster.get(1).state = W.BR.PlayerState.DBNO
+    W.fromClient(W.BR.Net.REPORT_KILLED, 1)
+    ok(#W.sentOn(W.BR.Net.REPORT_HINT) == 0,
+        'and neither is one who is only downed -- being knocked is not being killed')
+
+    W.BR.Roster.get(1).state = W.BR.PlayerState.DEAD
+    W.fromClient(W.BR.Net.REPORT_KILLED, 1)
+    ok(#W.sentOn(W.BR.Net.REPORT_HINT) == 1, 'a dead player is')
+
+    -- NOBODY THE SERVER DOES NOT KNOW ABOUT. A client that is not in the roster
+    -- at all cannot use this to find out anything.
+    W.clear()
+    W.fromClient(W.BR.Net.REPORT_KILLED, 99)
+    ok(#W.sentOn(W.BR.Net.REPORT_HINT) == 0, 'a stranger asking is answered with silence')
+
+    -- THE STORM, A FALL, A FIRE. No attributed killer means no prompt, and the
+    -- server decides that from its own damage records rather than from a claim.
+    local X = newIncidentWorld()
+    X.join(1, 7, 'license:victim', X.BR.PlayerState.DEAD)
+    X.join(2, 7, 'license:suspect')
+    X.filed('inc-1', 7, 'license:suspect')
+    X.clear()
+    X.fromClient(X.BR.Net.REPORT_KILLED, 1)   -- killedBy was never set
+    ok(#X.sentOn(X.BR.Net.REPORT_HINT) == 0,
+        'dying to the storm prompts nothing -- there is no killer to report')
+end
+
+
+-- ======================================================================== --
+-- THE MATCH TIMELINE ON AN INCIDENT  (#30)
+-- ======================================================================== --
+--
+-- An incident should show the match around it: when the match started, every
+-- kill by the offender before AND after the report, the corroborations, and
+-- when the match ended.
+--
+-- WHAT MAKES THESE CASES WORTH WRITING RATHER THAN ASSUMING. Two of them are
+-- about ORDER, and order bugs in this project have shipped as features that look
+-- correct and record nothing:
+--
+--   * server/evidence.lua discards the buffer on `br:match:destroyed`, and
+--     br_core's manifest loads it at line 114 -- twenty-four lines BEFORE
+--     server/incident.lua, which is where the close is built. FiveM runs handlers
+--     in registration order. So a close that listened to `br:match:destroyed`
+--     would read an empty buffer, write a timeline with no kills on it, and pass
+--     any test that only checked "a close was emitted".
+--
+--   * the filing instant is stamped when the payload is BUILT, not when the
+--     acknowledgement returns -- that round trip retries for up to thirty
+--     seconds, and kills inside that window would otherwise be classified as
+--     "before the report" by one function and "after" by the other.
+--
+-- These load the REAL br_lib/shared/evidence_buf.lua, br_lib/shared/
+-- incident_build.lua, br_core/server/evidence.lua and br_core/server/
+-- incident.lua, IN MANIFEST ORDER, and drive them through the real events. The
+-- only stubs are FiveM natives and the roster.
+
+--- A world with the evidence buffer and the incident writer, wired as br_core
+--- wires them.
+---
+--- SEPARATE FROM newIncidentWorld ABOVE, which deliberately loads the smallest
+--- surface that holds up the announcement tests. This one needs the evidence
+--- half as well, and loading it into that world would change what those cases
+--- run against.
+local function newTimelineWorld()
+    local env = setmetatable({}, { __index = function(_, k) return SANDBOX_STD[k] end })
+    env._G = env
+
+    local S = {
+        roster = {},
+        licenses = {},
+        now = 0,
+        matches = {},
+        incidents = {},   -- br:ringmaster:incident payloads
+        closes = {},      -- br:ringmaster:incidentClose payloads
+        corroborations = {},
+        -- The SERVER's inventories, which server/strip.lua cross-checks a
+        -- reported hash against. [src] = { slots = { { item = 'id' }, ... } }
+        invs = {},
+        -- BR.Grants.holds answers, by license. THREE-VALUED ON PURPOSE: true is
+        -- an admin, false is an ordinary player whose row has been read, and nil
+        -- is a row nobody has read yet -- which is the state every player is in
+        -- for the first moments of a session and is a different answer from
+        -- "they are not an admin".
+        grants = {},
+    }
+
+    local h = {}
+    env.AddEventHandler = function(name, fn)
+        h[name] = h[name] or {}
+        table.insert(h[name], fn)
+    end
+    env.TriggerEvent = function(name, ...)
+        for _, fn in ipairs(h[name] or {}) do fn(...) end
+    end
+    env.TriggerClientEvent = function() end
+    env.RegisterNetEvent = function() end
+    env.RegisterCommand  = function() end
+    -- CONTROLLABLE, because every assertion below is about WHEN something was
+    -- recorded relative to something else.
+    env.GetGameTimer = function() return S.now end
+    env.GetCurrentResourceName = function() return 'br_core' end
+    env.print = function() end
+    env.GetNumPlayerIdentifiers = function(src) return S.licenses[src] and 1 or 0 end
+    env.GetPlayerIdentifier = function(src) return S.licenses[src] end
+
+    for _, f in ipairs({
+        'br_lib/shared/enums.lua',
+        'br_lib/shared/protocol.lua',
+        'br_lib/shared/identity.lua',
+        'br_lib/shared/combat_solve.lua',
+        -- THE REAL WEAPON TABLE, not a stub. weaponFacts() decides whether a kill
+        -- gets painted red as an unissued weapon, and a stub would let that
+        -- logic pass against a table shaped the way the test author imagined.
+        -- geo.lua comes first only because weapons.lua calls BR.NormHash.
+        'br_lib/shared/geo.lua',
+        'br_lib/config/weapons.lua',
+        'br_lib/shared/evidence_buf.lua',
+        'br_lib/shared/incident_build.lua',
+    }) do
+        local chunk, err = loadfile(ROOT .. f, 't', env)
+        if not chunk then
+            realPrint('\27[31msandbox load error\27[0m ' .. f .. ': ' .. tostring(err))
+            os.exit(1)
+        end
+        chunk()
+    end
+
+    local BRs = env.BR
+
+    BRs.Roster = {
+        get = function(src) return S.roster[src] end,
+        licenseOf = function(src) return S.licenses[src] end,
+        each = function(pred, fn)
+            local ids = {}
+            for src in pairs(S.roster) do ids[#ids + 1] = src end
+            table.sort(ids)
+            for _, src in ipairs(ids) do
+                local e = S.roster[src]
+                if pred(e) then fn(src, e) end
+            end
+        end,
+    }
+    -- The match registry, which is where `startedAt` lives.
+    BRs.Server = { matches = S.matches }
+    -- EXTENDED, NOT REPLACED, AND THAT IS LOAD-BEARING. A bare assignment here
+    -- threw away everything config/weapons.lua had just put on BR.Config --
+    -- the real weapon tables weaponFacts() classifies kills against. Every kill
+    -- in this world then produced no weapon claim at all, and the tests that
+    -- assert "an environmental death makes NO claim" passed for entirely the
+    -- wrong reason: nothing could make a claim, so nothing did. The tests that
+    -- assert a claim IS made are what caught it.
+    BRs.Config = BRs.Config or {}
+    BRs.Config.Report = { maxPerMatch = 3, maxTargets = 5, categories = { 'cheating' } }
+    BRs.Config.isReportCategory = function(c) return c == 'cheating' end
+    BRs.Config.defaultReportCategory = function() return 'cheating' end
+    BRs.Combat = { attributedKiller = function() return nil end }
+
+    -- THE AUTHORITATIVE INVENTORY, which is what makes server/strip.lua's
+    -- false-positive guard a SERVER decision rather than a client one. The real
+    -- BR.Inv.of returns the roster entry's inventory; nothing else about
+    -- server/inventory.lua is needed to answer "is this weapon theirs".
+    BRs.Inv = { of = function(src) return S.invs[src] end }
+
+    -- THE ADMIN GRANT. `holds` is genuinely three-valued in server/grants.lua
+    -- and server/strip.lua's exemption turns on that, so a stub that collapsed
+    -- it to a boolean would test a rule this project does not have.
+    BRs.Grants = {
+        CONSOLE = 'view',
+        holds = function(license, scope)
+            if scope ~= 'view' then return false end
+            return S.grants[license]
+        end,
+    }
+
+    -- IN MANIFEST ORDER. evidence.lua at br_core/fxmanifest.lua:114, incident.lua
+    -- at :138, strip.lua below it -- the same order the server loads them, which
+    -- is the order that decides whether the close reads a full buffer or an
+    -- empty one.
+    for _, f in ipairs({
+        'br_core/server/evidence.lua',
+        'br_core/server/incident.lua',
+        'br_core/server/strip.lua',
+    }) do
+        local chunk, err = loadfile(ROOT .. f, 't', env)
+        if not chunk then
+            realPrint('\27[31msandbox load error\27[0m ' .. f .. ': ' .. tostring(err))
+            os.exit(1)
+        end
+        chunk()
+    end
+
+    env.AddEventHandler('br:ringmaster:incident', function(p)
+        S.incidents[#S.incidents + 1] = p
+    end)
+    env.AddEventHandler('br:ringmaster:incidentClose', function(p)
+        S.closes[#S.closes + 1] = p
+    end)
+    env.AddEventHandler('br:ringmaster:corroborate', function(p)
+        S.corroborations[#S.corroborations + 1] = p
+    end)
+
+    local W = { env = env, BR = BRs, S = S }
+
+    function W.at(t) S.now = t end
+
+    function W.startMatch(matchId, startedAt)
+        S.matches[matchId] = { id = matchId, startedAt = startedAt }
+    end
+
+    function W.join(src, matchId, license, name)
+        S.roster[src] = {
+            src = src, name = name or ('P' .. src), matchId = matchId, squadId = nil,
+            -- ALIVE, because server/strip.lua will not count a report from a
+            -- lobby ped or a corpse -- the hand it is about is not one this
+            -- gamemode fills in either state.
+            state = BRs.PlayerState.ALIVE,
+        }
+        S.licenses[src] = license
+        -- READ, AND NOT AN ADMIN. The default for a joined player, because the
+        -- grants cache is primed at playerJoining and a match starts minutes
+        -- later. `W.unread` below is the other case.
+        if license ~= nil then S.grants[license] = false end
+    end
+
+    --- Nobody has successfully read this license's grant row.
+    function W.unread(license) S.grants[license] = nil end
+
+    --- This license holds the console grant.
+    function W.admin(license) S.grants[license] = true end
+
+    --- What the SERVER believes is in this player's five slots.
+    function W.carrying(src, items)
+        local slots = {}
+        for i, id in ipairs(items or {}) do slots[i] = { item = id } end
+        S.invs[src] = { slots = slots }
+    end
+
+    --- One strip report, as client/inventory.lua sends it.
+    ---
+    --- `source` IS SET RATHER THAN PASSED, because that is how FiveM delivers it
+    --- and because the whole point of reading it there is that a client cannot
+    --- name somebody else. A helper that passed the src as an argument would be
+    --- testing a function this project does not have.
+    --- @param weapon any  a hash, or deliberate rubbish
+    function W.strip(src, weapon)
+        env.source = src
+        env.TriggerEvent(BRs.Net.INV_STRIPPED, weapon)
+        env.source = nil
+    end
+
+    --- One elimination, through the REAL BR.Evidence.noteKill, in the shape
+    --- server/combat.lua hands it over.
+    --- @param weapon any|nil  hash, id or WEAPON_* name; see weaponFacts()
+    ---
+    --- THE DEFAULT IS A HASH BECAUSE THE GUNSHOT PATH STORES A HASH. This
+    --- fixture used to pass the string 'WEAPON_CARBINERIFLE', which is a form
+    --- the gunshot path never produces -- damage.lua sets `lastHitWeapon` from
+    --- `data.weaponType`, looked up as `WeaponByHash[NormHash(...)]`. Nothing
+    --- consumed the field then, so the mismatch cost nothing; it does now, and
+    --- a fixture that disagrees with the runtime is how a resolver ships
+    --- passing its tests and calling every real kill a conjured weapon.
+    function W.kill(killerSrc, victimSrc, weapon)
+        -- AN EXPLICIT nil TEST, NOT `weapon ~= nil and weapon or DEFAULT`. That
+        -- idiom returns the DEFAULT when weapon is `false`, because the `and`
+        -- yields false and the `or` then takes its right branch -- so the one
+        -- case the caller most wants to pass through is the one it swallows.
+        if weapon == nil then weapon = 0x83BF0278 end  -- WEAPON_CARBINERIFLE
+        BRs.Evidence.noteKill({
+            killer    = killerSrc and S.roster[killerSrc] and S.roster[killerSrc].name or nil,
+            killerSrc = killerSrc,
+            victim    = S.roster[victimSrc] and S.roster[victimSrc].name or 'V',
+            victimSrc = victimSrc,
+            cause     = 'gunshot',
+            weapon    = weapon,  -- nil is substituted by the caller guard above
+            headshot  = nil,
+        })
+    end
+
+    --- File a case the way the anticheat does, then acknowledge it.
+    function W.file(matchId, license, name, incidentId)
+        env.TriggerEvent('br:ringmaster:refusal', {
+            matchId = matchId, license = license, name = name,
+            count = 8, windowMs = 4000,
+            reason  = BRs.ShotRefusal.NO_WEAPON,
+            reasons = { [BRs.ShotRefusal.NO_WEAPON] = 8 },
+            severity = 'high', seq = 1, at = S.now,
+        })
+        if incidentId then
+            env.TriggerEvent('br:incident:filed', {
+                incidentId = incidentId, matchId = matchId,
+                subjectLicense = license,
+            })
+        end
+    end
+
+    --- The acknowledgement br_ringmaster sends once a row is durable.
+    function W.ack(matchId, license, incidentId)
+        env.TriggerEvent('br:incident:filed', {
+            incidentId = incidentId, matchId = matchId, subjectLicense = license,
+        })
+    end
+
+    --- The teardown br_core runs: `br:match:destroyed` is the only path out of
+    --- the registry, and server/evidence.lua answers it.
+    function W.endMatch(matchId)
+        env.TriggerEvent('br:match:destroyed', { matchId = matchId })
+    end
+
+    function W.lastClose() return S.closes[#S.closes] end
+    function W.lastIncident() return S.incidents[#S.incidents] end
+
+    return W
+end
+
+--- Entries of one kind on a timeline.
+local function ofKind(timeline, kind)
+    local out = {}
+    for _, e in ipairs(timeline or {}) do
+        if e.kind == kind then out[#out + 1] = e end
+    end
+    return out
+end
+
+describe('timeline.filing')
+do
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+    W.join(2, 7, 'license:v1', 'Victim1')
+    W.join(3, 7, 'license:v2', 'Victim2')
+
+    W.at(2000); W.kill(1, 2)
+    W.at(3000); W.kill(1, 3)
+
+    W.at(4000)
+    W.file(7, 'license:cheat', 'Cheater')
+
+    local p = W.lastIncident()
+    ok(p ~= nil, 'a refusal files a case')
+    ok(p and p.matchStartedAt == 1000, 'the case records when the match started',
+        p and tostring(p.matchStartedAt))
+
+    -- THE ZERO POINT IS THE CASE'S OWN openedAt, and the console subtracts. The
+    -- game stores absolute times so a corrected timestamp re-renders the whole
+    -- timeline rather than leaving baked-in offsets behind.
+    ok(p and p.atGameMs == 4000, 'and stamps the filing instant from the payload',
+        p and tostring(p.atGameMs))
+
+    local starts = ofKind(p and p.matchTimeline, 'match_start')
+    ok(#starts == 1 and starts[1].at == 1000, 'match start is on the timeline')
+
+    -- THE KILLS BEFORE THE REPORT, which is the half the buffer already had.
+    local kills = ofKind(p and p.matchTimeline, 'kill')
+    ok(#kills == 2, 'both kills before the report are on the timeline', #kills)
+    ok(kills[1] and kills[1].at == 2000 and kills[2] and kills[2].at == 3000,
+        'oldest first')
+
+    -- THE PROFILE LINK. A display name is not what the console can look up.
+    ok(kills[1] and kills[1].victimLicense == 'license:v1',
+        'a kill names the victim by licence', kills[1] and tostring(kills[1].victimLicense))
+    ok(kills[1] and kills[1].killerLicense == 'license:cheat',
+        'and the killer by licence')
+
+    -- NOT ENDED YET, and the row says so by carrying a deadline instead.
+    ok(p and p.matchEndsByMs ~= nil, 'the case carries when the match should be over by')
+    ok(p and p.matchEndedAt == nil, 'and does not claim the match has ended')
+end
+
+describe('timeline.close')
+do
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+    W.join(2, 7, 'license:v1', 'Victim1')
+    W.join(3, 7, 'license:v2', 'Victim2')
+    W.join(4, 7, 'license:v3', 'Victim3')
+
+    W.at(2000); W.kill(1, 2)          -- before the report
+    W.at(4000); W.file(7, 'license:cheat', 'Cheater', 'inc-1')
+    W.at(6000); W.kill(1, 3)          -- AFTER the report
+    W.at(7000); W.kill(1, 4)          -- and again
+
+    W.at(9000)
+    W.endMatch(7)
+
+    local c = W.lastClose()
+    ok(c ~= nil, 'the match ending closes the case it produced')
+    ok(c and c.incidentId == 'inc-1', 'against the id the write came back with')
+    ok(c and c.matchEndedAt == 9000, 'and records when the match ended',
+        c and tostring(c.matchEndedAt))
+
+    local ends = ofKind(c and c.matchTimeline, 'match_end')
+    ok(#ends == 1 and ends[1].at == 9000, 'match end is an entry on the timeline')
+
+    -- THE HALF THAT ONLY EXISTS BECAUSE THE BUFFER OUTLIVED THE MATCH BY ONE
+    -- EVENT. If server/evidence.lua discarded before announcing, this is 0 --
+    -- and the whole feature would be silently dead.
+    local kills = ofKind(c and c.matchTimeline, 'kill')
+    ok(#kills == 2, 'the kills AFTER the report are on the close', #kills)
+    ok(kills[1] and kills[1].at == 6000 and kills[2] and kills[2].at == 7000,
+        'and they are the ones that happened after it',
+        kills[1] and tostring(kills[1].at))
+
+    -- AND NOT THE ONES ALREADY ON THE ROW. A timeline that lists an elimination
+    -- twice is a claim about a person that is false.
+    local dup = false
+    for _, k in ipairs(kills) do if k.at == 2000 then dup = true end end
+    ok(not dup, 'the kill from before the report is not sent twice')
+
+    ok(c and c.matchTimelineComplete == true,
+        'and nothing was dropped, so it says so')
+end
+
+describe('timeline.ordering')
+do
+    -- THE HAZARD, ASSERTED DIRECTLY. server/evidence.lua must announce the
+    -- closing BEFORE it discards the buffer. This drives the real
+    -- `br:match:destroyed` and reads what the buffer held at the moment the
+    -- close was built -- so moving `clearMatch` above the emit fails here.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+    W.join(2, 7, 'license:v1', 'Victim1')
+
+    W.at(4000); W.file(7, 'license:cheat', 'Cheater', 'inc-1')
+    W.at(6000); W.kill(1, 2)
+
+    -- The buffer has the kill right up until the match is torn down.
+    ok(#W.BR.Evidence.forLicense('license:cheat') > 0,
+        'the buffer holds the subject while the match runs')
+
+    W.at(9000)
+    W.endMatch(7)
+
+    local c = W.lastClose()
+    ok(c ~= nil, 'a close is emitted')
+    ok(c and #ofKind(c.matchTimeline, 'kill') == 1,
+        'and it was built while the evidence still existed',
+        c and #ofKind(c.matchTimeline, 'kill'))
+
+    -- AND THE DISCARD STILL HAPPENS. The announcement must not have replaced
+    -- the teardown -- a buffer that is never freed is the leak the caps exist
+    -- to prevent.
+    ok(#W.BR.Evidence.forLicense('license:cheat') == 0,
+        'and the buffer is discarded afterwards anyway')
+end
+
+describe('timeline.never-ends')
+do
+    -- A CRASH, A RESTART, A LOST WRITE. The match end is the one part of this
+    -- that happens later, so it is the one part that can fail to happen at all.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000)
+    W.file(7, 'license:cheat', 'Cheater', 'inc-1')
+
+    local p = W.lastIncident()
+
+    -- NO CLOSE, EVER. Nothing tears the match down.
+    ok(W.lastClose() == nil, 'a match that never ends closes nothing')
+
+    -- SO THE ROW MUST CARRY THE ANSWER ITSELF, written at filing time, when the
+    -- game was still alive to write it. Absent `matchEndedAt` plus a deadline in
+    -- the past is "the end was never reported"; absent plus a deadline in the
+    -- future is "still in progress". Without the deadline both are just absent,
+    -- and an admin cannot tell a live match from a dead server.
+    ok(p and p.matchEndedAt == nil, 'the case has no end timestamp')
+    ok(p and p.matchEndsByMs == W.BR.IncidentBuild.TIMELINE_LIMITS.MATCH_ENDS_BY_MS,
+        'but it does carry a deadline, so absent never means "running forever"')
+    ok(p and p.matchEndsByMs > 0, 'and the deadline is a real duration')
+end
+
+describe('timeline.weapon')
+do
+    -- WHAT THIS IS PROTECTING. The console renders `weaponIssued == false` in
+    -- red and says it is high confidence of cheating. That is an accusation
+    -- against a named player, made automatically, so every branch that can
+    -- reach it is pinned here -- including the ones that must NOT reach it.
+
+    local function killWith(weapon)
+        local W = newTimelineWorld()
+        W.startMatch(7, 1000)
+        W.join(1, 7, 'license:cheat', 'Cheater')
+        W.join(2, 7, 'license:v1', 'Victim1')
+        W.at(2000); W.kill(1, 2, weapon)
+        W.at(3000); W.file(7, 'license:cheat', 'Cheater')
+        local p = W.lastIncident()
+        return ofKind(p and p.matchTimeline, 'kill')[1]
+    end
+
+    -- THE THREE IDENTIFIER FORMS, all of which reach lastHitWeapon in real
+    -- play and all of which name the same rifle.
+    local byHash = killWith(0x83BF0278)
+    ok(byHash and byHash.weaponIssued == true,
+        'a weapon known by hash is issued', byHash and tostring(byHash.weaponIssued))
+    ok(byHash and byHash.weaponLabel == 'Carbine Rifle',
+        'and carries its display label, not its id', byHash and tostring(byHash.weaponLabel))
+
+    local byId = killWith('carbinerifle')
+    ok(byId and byId.weaponIssued == true and byId.weaponLabel == 'Carbine Rifle',
+        'the same weapon by id resolves identically', byId and tostring(byId.weaponLabel))
+
+    local byName = killWith('WEAPON_CARBINERIFLE')
+    ok(byName and byName.weaponIssued == true and byName.weaponLabel == 'Carbine Rifle',
+        'and by WEAPON_* name', byName and tostring(byName.weaponLabel))
+
+    -- THE FINDING ITSELF.
+    local conjured = killWith('not_a_weapon_we_have')
+    ok(conjured and conjured.weaponIssued == false,
+        'a weapon the gamemode does not issue is flagged',
+        conjured and tostring(conjured.weaponIssued))
+    ok(conjured and conjured.weaponLabel == nil,
+        'and gets no label, because we have no name for what we do not hand out')
+
+    -- STRICTLY FALSE, NOT FALSY. The console keys red off `=== false`, and a
+    -- nil arriving where false was meant would silently stop flagging.
+    ok(conjured and type(conjured.weaponIssued) == 'boolean',
+        'the flag is a real boolean', conjured and type(conjured.weaponIssued))
+
+    -- THE FALSE-ACCUSATION GUARDS. Each of these must make NO claim at all.
+    local fell = killWith('fall')
+    ok(fell and fell.weaponIssued == nil,
+        'an environmental death makes no weapon claim', fell and tostring(fell.weaponIssued))
+
+    local fellByName = killWith('WEAPON_FALL')
+    ok(fellByName and fellByName.weaponIssued == nil,
+        'and the same by WEAPON_* name', fellByName and tostring(fellByName.weaponIssued))
+
+    local none = killWith({})  -- a type weaponFacts has no branch for
+    ok(none and none.weaponIssued == nil,
+        'an unexpected type makes no claim rather than a false one',
+        none and tostring(none.weaponIssued))
+
+    -- BACKWARDS COMPATIBILITY, stated as a test because it is a promise to
+    -- every case already in DynamoDB: they carry no weaponIssued, and the
+    -- console must not paint them red. Absence is the same shape as the
+    -- environmental answer above -- the key simply is not there.
+    ok(fell and rawget(fell, 'weaponIssued') == nil,
+        'absence is absence, not a stored nil')
+end
+
+describe('timeline.no-match')
+do
+    -- `brrefuse` from a console, or an anticheat trip in the lobby. Inventing a
+    -- timeline for these would put a match on the record that never happened.
+    local W = newTimelineWorld()
+    W.join(1, nil, 'license:cheat', 'Cheater')
+
+    W.at(4000)
+    W.file(nil, 'license:cheat', 'Cheater', 'inc-1')
+
+    local p = W.lastIncident()
+    ok(p ~= nil, 'a case filed outside a match is still filed')
+    ok(p and p.matchStartedAt == nil, 'with no match start')
+    ok(p and p.matchEndsByMs == nil, 'and no deadline to expire')
+    ok(p and #(p.matchTimeline or {}) == 0, 'and an empty timeline')
+end
+
+describe('timeline.corroboration')
+do
+    -- CORROBORATIONS ARE NOT ON THIS TIMELINE AND MUST NOT BE. They land in the
+    -- console's own `events` list, appended by Ringmaster's `corroborate()`,
+    -- because appending to a case that exists is an UpdateItem the game
+    -- deliberately does not hold on that attribute. The game emits the fact; the
+    -- console records it. This asserts the split rather than assuming it.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.file(7, 'license:cheat', 'Cheater', 'inc-1')
+
+    -- The second refusal doubling corroborates rather than filing again.
+    W.at(6000)
+    W.env.TriggerEvent('br:ringmaster:refusal', {
+        matchId = 7, license = 'license:cheat', name = 'Cheater',
+        count = 16, windowMs = 4000,
+        reason  = W.BR.ShotRefusal.NO_WEAPON,
+        reasons = { [W.BR.ShotRefusal.NO_WEAPON] = 16 },
+        severity = 'high', seq = 2, at = 6000,
+    })
+
+    ok(#W.S.incidents == 1, 'a second refusal does not file a second case',
+        #W.S.incidents)
+    ok(#W.S.corroborations == 1, 'it corroborates the first', #W.S.corroborations)
+    ok(W.S.corroborations[1].incidentId == 'inc-1',
+        'against the case that already exists')
+
+    W.at(9000)
+    W.endMatch(7)
+
+    local c = W.lastClose()
+    ok(c ~= nil, 'and the match still closes that one case')
+    ok(#ofKind(c and c.matchTimeline, 'match_end') == 1, 'with a match end on it')
+    -- The corroboration is the console's to place on the timeline; the game
+    -- never writes one into `matchTimeline`.
+    ok(#ofKind(c and c.matchTimeline, 'note') == 0,
+        'and the game writes no corroboration entry of its own')
+end
+
+describe('timeline.volume')
+do
+    -- A PROLIFIC OFFENDER IN A LONG MATCH. The buffer's default cap is 30 kills
+    -- per player session, which is right for an evidence snippet and wrong for
+    -- "every kill by the offender" -- so filing PROMOTES the subject's records.
+    -- The cost is paid per incident, not per player: a match with no incident
+    -- promotes nobody.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+    W.join(2, 7, 'license:v1', 'Victim1')
+
+    local DEFAULT_KILL_MAX = W.BR.EvidenceBuf.DEFAULTS.killMax
+    ok(DEFAULT_KILL_MAX == 30, 'the default cap is what this case assumes',
+        DEFAULT_KILL_MAX)
+
+    -- File EARLY, which is the real shape: the anticheat fires on a doubling and
+    -- a report comes in mid-match.
+    W.at(2000)
+    W.file(7, 'license:cheat', 'Cheater', 'inc-1')
+
+    -- Now far more kills than the DEFAULT cap would have held.
+    for i = 1, 100 do
+        W.at(3000 + i)
+        W.kill(1, 2)
+    end
+
+    W.at(200000)
+    W.endMatch(7)
+
+    local c = W.lastClose()
+    local kills = ofKind(c and c.matchTimeline, 'kill')
+
+    -- THE POINT: without the promotion this is 30, and the timeline would
+    -- silently be "the last thirty kills" while claiming to be every kill.
+    ok(#kills == 100, 'every kill after the report survives the default cap', #kills)
+    ok(c and c.matchTimelineComplete == true,
+        'and the timeline reports itself complete')
+
+    -- AND IT IS STILL BOUNDED. A DynamoDB item is 400KB.
+    ok(#kills <= W.BR.IncidentBuild.TIMELINE_LIMITS.MAX_TIMELINE_KILLS,
+        'while staying under the hard cap')
+end
+
+describe('timeline.volume.truncated')
+do
+    -- BEYOND EVEN THE PROMOTED CAP, the timeline truncates -- and says so. A
+    -- kill list that stops early and reports itself complete tells an admin
+    -- "this is everything they did" when it is not.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+    W.join(2, 7, 'license:v1', 'Victim1')
+
+    W.at(2000)
+    W.file(7, 'license:cheat', 'Cheater', 'inc-1')
+
+    local PROMOTED = W.BR.EvidenceBuf.PROMOTED.killMax
+    for i = 1, PROMOTED + 50 do
+        W.at(3000 + i)
+        W.kill(1, 2)
+    end
+
+    W.at(500000)
+    W.endMatch(7)
+
+    local c = W.lastClose()
+    local kills = ofKind(c and c.matchTimeline, 'kill')
+
+    ok(#kills <= PROMOTED, 'a runaway kill count is bounded', #kills)
+    ok(c and c.matchTimelineComplete == false,
+        'and a truncated timeline never claims to be complete')
+    ok(c and c.matchKillsSeen >= PROMOTED + 50,
+        'and it reports how many kills there really were',
+        c and tostring(c.matchKillsSeen))
+end
+
+describe('timeline.no-incident')
+do
+    -- THE COST RULE. A match nobody was reported in must produce NOTHING: no
+    -- close, no write, no DynamoDB traffic at all. This is the case that makes
+    -- the whole design affordable, and it is the one that would silently regress
+    -- if the close were ever hung off the match rather than off the incident.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:clean', 'Clean')
+    W.join(2, 7, 'license:v1', 'Victim1')
+
+    W.at(2000); W.kill(1, 2)
+    W.at(3000); W.kill(1, 2)
+
+    W.at(9000)
+    W.endMatch(7)
+
+    ok(#W.S.incidents == 0, 'a quiet match files nothing', #W.S.incidents)
+    ok(#W.S.closes == 0, 'and closes nothing -- zero writes', #W.S.closes)
+end
+
+describe('timeline.filing-window')
+do
+    -- THE ACKNOWLEDGEMENT ARRIVES LATE. br_ringmaster retries a failed write for
+    -- up to thirty seconds, so `br:incident:filed` can come back long after the
+    -- payload was built. A kill inside that window belongs AFTER the report --
+    -- and would be lost entirely if the filing instant were read from the
+    -- acknowledgement instead of from the payload.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+    W.join(2, 7, 'license:v1', 'Victim1')
+
+    W.at(4000)
+    W.file(7, 'license:cheat', 'Cheater')   -- filed, NOT yet acknowledged
+
+    W.at(6000); W.kill(1, 2)                -- during the write's retry window
+
+    W.at(30000)
+    W.env.TriggerEvent('br:incident:filed', {
+        incidentId = 'inc-1', matchId = 7, subjectLicense = 'license:cheat',
+    })
+
+    W.at(40000)
+    W.endMatch(7)
+
+    local c = W.lastClose()
+    local kills = ofKind(c and c.matchTimeline, 'kill')
+    ok(#kills == 1, 'a kill during the write window is still on the timeline', #kills)
+    ok(kills[1] and kills[1].at == 6000, 'at the moment it actually happened',
+        kills[1] and tostring(kills[1].at))
+end
+
+-- ======================================================================== --
+-- AN UNISSUED WEAPON IN THE HAND
+-- ======================================================================== --
+--
+-- client/inventory.lua has always taken a weapon the inventory did not issue
+-- out of the ped's hand, and it did it in silence: a player granting themselves
+-- a rifle in a menu left no trace anywhere at all. These cases are about what
+-- that silence was replaced with.
+--
+-- THE OWNER'S INSTRUCTION IS ONE SENTENCE AND TWO OF THESE CASES ARE IT:
+-- "that triggers an incident. Remember a cheater is likely to do this several
+-- times recursively, so we need to log that in the incident timeline rather
+-- than creating a new incident each time."
+--
+-- The rest are about the ways it could be WRONG, which is where the cost is:
+-- an anticheat that files a case about an innocent player is worse than one
+-- that files nothing, and two of the four paths below exist only to stop that.
+
+-- A weapon this gamemode has never heard of. Nothing in br_lib/config/weapons
+-- carries this hash, which is the whole point of it.
+local CONJURED = 0x11111111
+-- ...and one it issues, by the hash the engine reports for it.
+local CARBINE = 0x83BF0278
+
+describe('strip.the-second-opens-a-case')
+do
+    -- THE OWNER'S BAR, 2026-08-20: "'4 or 5 more times' is too many. This should
+    -- fire an incident on the 2nd offense, and each subsequent should show as
+    -- corroboration from system."
+    --
+    -- ONE IS RECORDED AND ANNOUNCED TO NOBODY. A single weapon in a hand for a
+    -- single tick is the shape our own two inventory mirrors disagreeing has,
+    -- and `ourWeapon` cannot catch every ordering of that. A second one a
+    -- second later is not that shape.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000)
+    W.strip(1, CONJURED)
+    ok(#W.S.incidents == 0, 'the FIRST strip opens no case', #W.S.incidents)
+    ok(#W.S.corroborations == 0, 'and corroborates nothing either',
+        #W.S.corroborations)
+
+    W.at(5000)
+    W.strip(1, CONJURED)
+
+    local p = W.lastIncident()
+    ok(p ~= nil, 'the SECOND strip opens the case')
+    ok(#W.S.incidents == 1, 'exactly one of them', #W.S.incidents)
+    ok(p and p.kind == 'anticheat', 'as an anticheat case, not a new record type',
+        p and tostring(p.kind))
+    ok(p and p.subjectLicense == 'license:cheat', 'about the player it happened to')
+    ok(p and p.reporterLicense == nil,
+        'with no reporter, so the console reads it as system-filed')
+
+    -- SEVERITY IS READ FROM THE TAXONOMY, not restated. NO_WEAPON is graded
+    -- `high` in combat_solve.lua and this must agree with it by construction.
+    ok(p and p.severity == W.BR.ShotTier[W.BR.ShotRefusal.NO_WEAPON],
+        'graded by the same table that grades a conjured-weapon refusal',
+        p and tostring(p.severity))
+
+    -- AND IT DOES NOT CLAIM SHOTS WERE REFUSED. Nothing was fired.
+    ok(p and p.refusal == nil, 'and carries no refusal block, because none happened')
+    ok(p and type(p.summary) == 'string' and p.summary:find('unissued') ~= nil,
+        'the queue line says what actually happened', p and tostring(p.summary))
+
+    -- BOTH EVENTS ARE ON THE TIMELINE, at the moments the server stamped them.
+    -- The strip that stayed quiet was written into the evidence buffer anyway --
+    -- that write happens before the announcement gate -- so the case is created
+    -- knowing about the offence that did not open it. Losing it would be the
+    -- worst of both rules: a bar of two that shows an admin one.
+    local strips = ofKind(p and p.matchTimeline, 'weapon_strip')
+    ok(#strips == 2, 'BOTH strips are on the timeline the case is created with',
+        #strips)
+    ok(strips[1] and strips[1].at == 4000,
+        'including the silent first one, stamped by the SERVER clock',
+        strips[1] and tostring(strips[1].at))
+    ok(strips[2] and strips[2].at == 5000, 'and the one that filed it, second',
+        strips[2] and tostring(strips[2].at))
+    ok(strips[1] and strips[1].weapon == CONJURED,
+        'and carries the hash, which is the only name a conjured weapon has',
+        strips[1] and tostring(strips[1].weapon))
+
+    -- THE QUEUE LINE COUNTS BOTH, because the summary is built from `count` and
+    -- `count` is offences rather than announcements.
+    ok(p and type(p.summary) == 'string' and p.summary:find('2 unissued') ~= nil,
+        'and the queue line says two, not one', p and tostring(p.summary))
+end
+
+describe('strip.repeats-append')
+do
+    -- THE OWNER'S SENTENCE, ASSERTED. Several strips in one match are ONE case
+    -- with several timeline entries -- not one case each, which would let a
+    -- persistent cheater bury the queue the case is meant to be read from.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.strip(1, CONJURED)   -- recorded, announced to nobody
+    W.at(5000); W.strip(1, CONJURED)   -- opens the case
+    W.ack(7, 'license:cheat', 'inc-1')
+
+    -- Recursively, exactly as described. Spaced past the server's own throttle
+    -- so every one of them counts.
+    for i = 1, 5 do
+        W.at(5000 + i * 1000)
+        W.strip(1, CONJURED)
+    end
+
+    ok(#W.S.incidents == 1, 'five more strips file no second case', #W.S.incidents)
+
+    -- ONE CORROBORATION EACH, WHICH IS THE HALF THE OWNER CHANGED. Under the old
+    -- doubling rule these five produced two (at counts 4 and 8 -- and only
+    -- eventually); the instruction is that "each subsequent should show as
+    -- corroboration", so five offences are five.
+    ok(#W.S.corroborations == 5,
+        'and every single one of them corroborates -- five, not two',
+        #W.S.corroborations)
+    local allSame = true
+    for _, c in ipairs(W.S.corroborations) do
+        if c.incidentId ~= 'inc-1' then allSame = false end
+    end
+    ok(allSame, 'every one against the case the write came back with')
+
+    -- THE TWO WIRE COUNTERS, PINNED TOGETHER. `count` is offences and now climbs
+    -- by one; `seq` is announcements and starts at 2 for the first
+    -- corroboration, because announcement 1 opened the case. A gap in either now
+    -- means a LOST message rather than quiet offences in between, and that is
+    -- the meaning change this cadence carries onto the wire.
+    local seqs, counts = {}, {}
+    for i, c in ipairs(W.S.corroborations) do
+        seqs[i] = tostring(c.seq)
+        counts[i] = tostring(c.count)
+    end
+    ok(table.concat(seqs, ',') == '2,3,4,5,6',
+        'seq counts the announcements, from 2', table.concat(seqs, ','))
+    ok(table.concat(counts, ',') == '3,4,5,6,7',
+        'and count counts the offences, one at a time',
+        table.concat(counts, ','))
+
+    -- ATTRIBUTION IS THE EXISTING ONE AND NOT A SECOND SPELLING. The game sends
+    -- a fact with no actor on it; br_ringmaster forwards a fixed field set; and
+    -- the console's `incidents.corroborate()` writes the note as
+    -- `byLicense: null, byName: 'System'` -- the same pair it uses for an
+    -- automatic resolution. So "corroboration from system" is what this channel
+    -- already produces, and a reporter field invented here would be a second
+    -- answer to a question already answered.
+    local noActor = true
+    for _, c in ipairs(W.S.corroborations) do
+        if c.reporterLicense ~= nil or c.reporterName ~= nil then noActor = false end
+    end
+    ok(noActor, 'and none of them names a player as the source')
+
+    -- ...AND EVERY ONE OF THEM REACHES THE TIMELINE, which is the half the
+    -- corroboration channel cannot do: corroborations land in the console's own
+    -- `events` list, and the owner asked for the incident's timeline.
+    W.at(20000)
+    W.endMatch(7)
+
+    local c = W.lastClose()
+    ok(c ~= nil, 'the match ending closes that one case')
+    ok(c and c.incidentId == 'inc-1', 'the same one, not a new row')
+
+    local strips = ofKind(c and c.matchTimeline, 'weapon_strip')
+    ok(#strips == 5, 'every strip after the filing is on the close', #strips)
+    ok(strips[1] and strips[1].at == 6000, 'oldest first',
+        strips[1] and tostring(strips[1].at))
+
+    -- AND THE FIRST TWO ARE NOT SENT TWICE. They rode the PutItem; a timeline
+    -- that lists the same event twice is a claim about a person that is false.
+    local dup = false
+    for _, s in ipairs(strips) do
+        if s.at == 4000 or s.at == 5000 then dup = true end
+    end
+    ok(not dup, 'the strips already on the row are not repeated')
+
+    ok(c and c.matchTimelineComplete == true,
+        'and nothing was dropped, so the record says so')
+end
+
+describe('strip.the-doubling-rule-is-gone')
+do
+    -- ═══ THE CADENCE THE OWNER REPLACED, PINNED SO IT DOES NOT COME BACK ═══
+    --
+    -- This case used to assert the opposite number and was described as
+    -- "sixteen strips produce four corroborations, not fifteen". The rule it
+    -- pinned was server/damage.lua's -- announce at the bar, then at every
+    -- doubling (1, 2, 4, 8, 16) -- copied to bound a 512-deep drop-oldest outbox
+    -- an offender chooses the fill rate of.
+    --
+    -- THE OWNER OVERRULED IT ON 2026-08-20: "'4 or 5 more times' is too many."
+    -- Four announcements for sixteen offences is not a moderation record. The
+    -- bound that remains is MIN_INTERVAL_MS -- one countable strip per 900ms per
+    -- player -- and the artifact planner's per-case frame cap, and the fact that
+    -- no volume of strips adds a DynamoDB write to the two a case always cost.
+    --
+    -- THE HALF THAT DID NOT CHANGE is that the timeline still gets every one of
+    -- them, which was always the distinction this case existed to draw.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.strip(1, CONJURED)   -- 1: recorded, silent
+    W.at(5000); W.strip(1, CONJURED)   -- 2: opens the case
+    W.ack(7, 'license:cheat', 'inc-1')
+
+    for i = 1, 14 do
+        W.at(5000 + i * 1000)
+        W.strip(1, CONJURED)
+    end
+
+    ok(#W.S.incidents == 1, 'sixteen strips are still ONE case', #W.S.incidents)
+    ok(#W.S.corroborations == 14,
+        'sixteen strips produce FOURTEEN corroborations, not four',
+        #W.S.corroborations)
+
+    -- NO GAPS, which is what makes a gap mean something on the wire now.
+    local gapless = true
+    for i, c in ipairs(W.S.corroborations) do
+        if c.seq ~= i + 1 or c.count ~= i + 2 then gapless = false end
+    end
+    ok(gapless, 'numbered 2..15 by announcement and 3..16 by offence, with no gap',
+        W.S.corroborations[14] and tostring(W.S.corroborations[14].count))
+
+    W.at(30000)
+    W.endMatch(7)
+
+    local strips = ofKind(W.lastClose() and W.lastClose().matchTimeline, 'weapon_strip')
+    ok(#strips == 14, 'while all fourteen later strips are on the timeline', #strips)
+end
+
+describe('strip.nobody-is-exempt')
+do
+    -- ═══ THE EXEMPTION IS GONE, AND ITS ABSENCE IS PINNED ═══
+    --
+    -- An admin exemption lived here, skipping the report for anyone holding
+    -- BR.Grants.CONSOLE. The owner removed it on 2026-08-21: "I don't want
+    -- admins to be exempt from any incidents please."
+    --
+    -- THIS CASE EXISTS SO NOBODY RESTORES IT AS A KINDNESS. The argument for
+    -- the exemption is genuinely appealing -- the owner grants themselves
+    -- weapons constantly while testing, and every one is a strip -- and that is
+    -- exactly why it needs a test rather than a comment. The hole it opened was
+    -- shaped like the accounts with the most power.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:owner', 'Owner')
+    W.admin('license:owner')
+
+    W.at(4000); W.strip(1, CONJURED)
+    W.at(5000); W.strip(1, CONJURED)
+
+    ok(#W.S.incidents == 1, 'an admin who conjures a weapon gets a case like anyone else',
+        #W.S.incidents)
+    ok(W.lastIncident() and W.lastIncident().subjectLicense == 'license:owner',
+        'and it is about them', W.lastIncident() and W.lastIncident().subjectLicense)
+
+    -- AND THEY ARE BUFFERED. The old exemption sat BELOW the evidence note so an
+    -- exempt player's strips were recorded nowhere at all. Nothing is skipped
+    -- now, so both strips are on the timeline the case is created with.
+    local strips = ofKind(W.lastIncident() and W.lastIncident().matchTimeline, 'weapon_strip')
+    ok(#strips == 2, 'with both strips on its timeline', #strips)
+
+    -- REPEATS STILL APPEND RATHER THAN RE-FILE, for staff as for anyone. The
+    -- rule that matters is one case per offender per match, not who they are.
+    --
+    -- THE ACK IS NOT CEREMONY. `priorFor` recognises an existing case by the id
+    -- br_ringmaster hands back after the write lands; without it the server has
+    -- filed something it cannot yet name, and the next strip files again. That
+    -- is the real sequence, so the test reproduces it rather than reaching past
+    -- it -- and it is why this assertion read 3 before the ack was added.
+    W.ack(7, 'license:owner', 'inc-admin-1')
+    for i = 2, 6 do
+        W.at(5000 + i * 1000)
+        W.strip(1, CONJURED)
+    end
+    ok(#W.S.incidents == 1, 'and five more strips open no second case', #W.S.incidents)
+end
+
+describe('strip.grant-state-is-irrelevant')
+do
+    -- THE GRANT IS NOT CONSULTED AT ALL ANY MORE, which is a stronger statement
+    -- than "admins are not exempt" and is the one worth pinning. A previous
+    -- version read BR.Grants.holds and treated its three answers -- true, false
+    -- and nil for "never read this row" -- as reasons to stay silent. All three
+    -- now file identically, so a slow or failed DynamoDB read cannot decide
+    -- whether an accusation is made.
+    for _, case in ipairs({
+        { label = 'an admin',                    setup = 'admin'  },
+        { label = 'a player known not to be one', setup = 'plain' },
+        { label = 'a player whose grant was never read', setup = 'unread' },
+    }) do
+        local W = newTimelineWorld()
+        W.startMatch(7, 1000)
+        W.join(1, 7, 'license:subject', 'Subject')
+        if case.setup == 'admin' then W.admin('license:subject')
+        elseif case.setup == 'unread' then W.unread('license:subject') end
+
+        W.at(4000); W.strip(1, CONJURED)
+        W.at(5000); W.strip(1, CONJURED)
+        ok(#W.S.incidents == 1, case.label .. ' files a case', #W.S.incidents)
+    end
+end
+
+
+describe('strip.our-own-weapon-is-not-evidence')
+do
+    -- THE ONLY FALSE POSITIVE THIS FEATURE CAN PRODUCE. The client strips
+    -- anything that is not the ACTIVE slot, so a weapon from another slot of the
+    -- player's own inventory -- held for the tick between a slot change and the
+    -- grant landing -- is stripped too. Stripping it is harmless. Opening a case
+    -- about it would put an innocent player in a moderation queue over a tenth
+    -- of a second of tick ordering.
+    --
+    -- CHECKED AGAINST THE INVENTORY THE SERVER HOLDS, not the one the client
+    -- reported, because the client's copy is exactly what a compromised client
+    -- controls.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:honest', 'Honest')
+    W.carrying(1, { 'carbinerifle' })
+
+    W.at(4000); W.strip(1, CARBINE)
+    W.at(5000); W.strip(1, CARBINE)
+    ok(#W.S.incidents == 0, 'a weapon the server DID issue them opens no case',
+        #W.S.incidents)
+
+    -- And the guard is not simply "never file": the same player, holding the
+    -- same inventory, conjuring something else still files -- on the second one.
+    W.at(6000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 0, 'one conjured weapon is still only one', #W.S.incidents)
+    W.at(7000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 1, 'while two weapons it did not issue still do',
+        #W.S.incidents)
+
+    -- AND THE RACED REPORTS DID NOT COUNT TOWARDS THE BAR. Two carbine strips
+    -- plus two conjured ones is a case about TWO offences, not four -- the
+    -- refusal returns before `rec.count` is touched. A version that counted
+    -- them would file on the first genuine strip and put our own tick ordering
+    -- in the summary.
+    local p = W.lastIncident()
+    ok(p and type(p.summary) == 'string' and p.summary:find('2 unissued') ~= nil,
+        'and the queue line counts two offences, not four',
+        p and tostring(p.summary))
+end
+
+describe('strip.flood-is-bounded')
+do
+    -- A CLIENT CHOOSES HOW OFTEN IT SENDS THIS, so the number that bounds it has
+    -- to be on the server. The client throttles too, but it is code the offender
+    -- has already decided to modify.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000)
+    for _ = 1, 50 do W.strip(1, CONJURED) end   -- all in the same millisecond
+
+    -- FIFTY MESSAGES ARE ONE OFFENCE, so under the owner's bar of two they open
+    -- nothing at all. That is the throttle doing the only job it was ever the
+    -- control for: a client cannot buy itself a case by flooding, and it cannot
+    -- buy somebody else one either.
+    ok(#W.S.incidents == 0, 'a flood inside one window opens NO case',
+        #W.S.incidents)
+
+    local st = W.BR.Strip.stats()
+    ok(st.throttled == 49, 'the rest are refused and counted as refused',
+        st.throttled)
+
+    -- A SECOND WINDOW IS A SECOND OFFENCE, and that is what files.
+    W.at(5000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 1, 'a strip in the next window opens exactly one case',
+        #W.S.incidents)
+
+    local strips = ofKind(W.lastIncident() and W.lastIncident().matchTimeline,
+        'weapon_strip')
+    ok(#strips == 2, 'and puts two entries on the timeline, not fifty-one',
+        #strips)
+end
+
+describe('strip.truncation-is-never-silent')
+do
+    -- THE HONESTY GUARANTEE, AND FOR STRIPS IT IS CARRIED BY ONE FLAG ALONE.
+    --
+    -- A truncated kill list says so twice: `matchTimelineComplete` goes false
+    -- AND `matchKillsSeen` states the real number. Strips have no equivalent
+    -- counter and deliberately never will -- the close write may touch exactly
+    -- five attributes, and that list IS the game's IAM grant on
+    -- `ringmaster-incidents`, so a sixth would mean widening a policy to carry a
+    -- number. So the flag is the whole of it, and it has to be right.
+    --
+    -- WHAT IT PREVENTS is the one failure a moderation record must not produce:
+    -- a list that stops early and looks complete, telling an admin "this is
+    -- everything they did" when it is not.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(2000); W.strip(1, CONJURED)
+    W.at(3000); W.strip(1, CONJURED)
+    W.ack(7, 'license:cheat', 'inc-1')
+
+    local CAP = W.BR.IncidentBuild.TIMELINE_LIMITS.MAX_TIMELINE_STRIPS
+    for i = 1, CAP + 20 do
+        W.at(3000 + i * 1000)
+        W.strip(1, CONJURED)
+    end
+
+    W.at(500000)
+    W.endMatch(7)
+
+    local c = W.lastClose()
+    local strips = ofKind(c and c.matchTimeline, 'weapon_strip')
+    ok(#strips <= CAP, 'a runaway strip count is bounded', #strips)
+    ok(c and c.matchTimelineComplete == false,
+        'and a truncated timeline never claims to be complete',
+        c and tostring(c.matchTimelineComplete))
+end
+
+describe('strip.timeline-stays-chronological')
+do
+    -- THE ORDER OF THIS LIST IS NOT COSMETIC. js-src/br_ddb/src/close.js takes
+    -- the LAST n entries when a close overflows, so a timeline that appended
+    -- every strip after every kill would truncate by KIND rather than by age --
+    -- and an offender who kept stripping would push their own kills off the
+    -- record, which is the opposite of what the evidence is for.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+    W.join(2, 7, 'license:v1', 'Victim1')
+    W.join(3, 7, 'license:v2', 'Victim2')
+
+    W.at(2000); W.strip(1, CONJURED)     -- recorded, silent
+    W.at(2900); W.strip(1, CONJURED)     -- opens the case
+    W.ack(7, 'license:cheat', 'inc-1')
+
+    W.at(3000); W.kill(1, 2)
+    W.at(4000); W.strip(1, CONJURED)
+    W.at(5000); W.kill(1, 3)
+    W.at(6000); W.strip(1, CONJURED)
+
+    W.at(9000); W.endMatch(7)
+
+    local c = W.lastClose()
+    ok(c ~= nil, 'the case closes')
+
+    local last, sorted, kinds = -1, true, {}
+    for _, e in ipairs(c and c.matchTimeline or {}) do
+        if e.at < last then sorted = false end
+        last = e.at
+        kinds[#kinds + 1] = e.kind
+    end
+    ok(sorted, 'kills and strips interleave in the order they happened',
+        table.concat(kinds, ','))
+    ok(table.concat(kinds, ',') == 'kill,weapon_strip,kill,weapon_strip,match_end',
+        'and that order is the one the match actually had',
+        table.concat(kinds, ','))
+end
+
+describe('strip.needs-a-live-match')
+do
+    -- NO MATCH, NOTHING TO PUT IT ON. A report from the lobby has no round to be
+    -- about, and the evidence buffer would refuse the note anyway.
+    --
+    -- TWO OF THEM, DELIBERATELY. The bar is two strips (owner, 2026-08-20), so
+    -- a single one files nothing anywhere and this case would pass without
+    -- exercising the match guard at all.
+    local W = newTimelineWorld()
+    W.join(1, nil, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.strip(1, CONJURED)
+    W.at(5000); W.strip(1, CONJURED)
+    ok(#W.S.incidents == 0, 'strips reported outside a match file nothing',
+        #W.S.incidents)
+    ok(W.BR.Strip.stats().counted == 0, 'and are not even counted',
+        W.BR.Strip.stats().counted)
+end
+
+describe('strip.rubbish-is-not-a-weapon')
+do
+    -- A CLIENT SENDS WHATEVER IT LIKES. The only record it can write to is its
+    -- own -- `source` decides who the entry is about -- so the failure to guard
+    -- against is a malformed value being STORED as though it named something.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.strip(1, 'not a hash')
+    W.at(5000); W.strip(1, 'not a hash')
+
+    local p = W.lastIncident()
+    ok(p ~= nil, 'a strip with a nonsense weapon is still a strip')
+
+    local strips = ofKind(p and p.matchTimeline, 'weapon_strip')
+    ok(#strips == 2, 'and reaches the timeline', #strips)
+    -- IN LUA `0` IS TRUTHY, so a hash of zero would sail through a bare check
+    -- and land on a moderation record as though it named a weapon.
+    ok(strips[1] and strips[1].weapon == nil,
+        'with no weapon on it rather than a stored zero',
+        strips[1] and tostring(strips[1].weapon))
+end
+
+describe('strip.quiet-match-still-costs-nothing')
+do
+    -- THE COST RULE, RESTATED FOR THE NEW SOURCE. Adding a second way to open a
+    -- case must not add a write to a match that produces none -- and this is the
+    -- source whose volume an offender chooses, so it is the one worth pinning.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:clean', 'Clean')
+    W.join(2, 7, 'license:v1', 'Victim1')
+
+    W.at(2000); W.kill(1, 2)
+    W.at(9000); W.endMatch(7)
+
+    ok(#W.S.incidents == 0, 'a match with no strips files nothing')
+    ok(#W.S.closes == 0, 'and closes nothing -- zero writes', #W.S.closes)
 end
 
 -- ----------------------------------------------------------------- result ---

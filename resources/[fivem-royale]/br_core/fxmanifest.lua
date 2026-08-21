@@ -33,6 +33,28 @@ shared_scripts {
     -- you own, and the client has to resolve an equipped id into the natives
     -- that actually put it on you. Both sides need the same definitions.
     '@br_lib/config/market.lua',
+    -- Where the admin console lives. One key, no useful default, and it MUST
+    -- precede overrides.lua: that file refuses to boot if a convar names a
+    -- BR.Config key that does not exist yet, which is the anti-drift check
+    -- doing exactly its job on a load-order mistake.
+    '@br_lib/config/admin.lua',
+    -- Where our Discord is. Same shape as admin.lua -- one key, no useful
+    -- committed default -- and the same load-order requirement: it must precede
+    -- overrides.lua, whose anti-drift check refuses to boot on a convar naming a
+    -- BR.Config key that does not exist yet.
+    '@br_lib/config/community.lua',
+    -- THE CONVAR OVERRIDES, AND THIS LINE'S POSITION IS THE FEATURE.
+    --
+    -- It must come after every config/*.lua above (it edits their tables) and
+    -- before every file below and in server_scripts (several of which COPY
+    -- those values at load -- server/match.lua's DURATION table is built from
+    -- warmupSeconds and endedSeconds the moment it loads, so an override
+    -- arriving later would be read by nothing).
+    --
+    -- On the client and in a bare Lua state this file is inert; it only reads
+    -- convars on the server. tools/test_config.lua fails the build if any
+    -- manifest loads config/match.lua without this line after it.
+    '@br_lib/config/overrides.lua',
     -- BR.Xp. server/market.lua evaluates the curve to send the lobby a real
     -- level -- and without this it is nil, so every player was told they were
     -- level 1 with 0/1 XP regardless of what they had actually earned.
@@ -91,6 +113,10 @@ server_scripts {
     -- above), whose enum values it keys its severity table on.
     '@br_lib/shared/evidence_buf.lua',
     '@br_lib/shared/incident_build.lua',
+    -- SERVER-ONLY for the same reason as the two above: how many screenshots a
+    -- case gets, and when, is a moderation rule. server/artifacts.lua calls
+    -- BR.ArtifactPlan.new() at load time, so this must precede it.
+    '@br_lib/shared/artifact_plan.lua',
     'server/main.lua',      -- defines BR.Server and starts the scheduler
     'server/clock.lua',
     'server/broadcast.lua', -- BR.Broadcast, used by roster
@@ -110,9 +136,34 @@ server_scripts {
     'server/voice.lua',    -- voice channel authority: one room per match, one per squad
     'server/debug.lua',
     'server/market.lua',    -- inventory, purchases and equipped slots
+    -- Admin scopes, read from the same DynamoDB grants table the console
+    -- authorises against, through br_ddb -- never from br_ringmaster, which the
+    -- game must not depend on. players.lua and incident.lua both read it, and
+    -- both nil-guard it, so the order is for a reader rather than for the
+    -- loader: the thing that answers the question is declared above the two
+    -- files that ask it.
+    'server/grants.lua',
+    -- The Admin tab in the pause menu. AFTER grants.lua for a reader rather
+    -- than for the loader: it asks BR.Grants.holds the question grants.lua
+    -- answers, and it is declared below the file that answers it.
+    'server/admin.lua',
     'server/players.lua',   -- the in-game player list and player reports
     'server/ringmaster.lua', -- the admin-console snapshot feed; emits, never listens
     'server/incident.lua',  -- builds incident payloads from evidence; emits, never enforces
+    -- The second anticheat detector, beside server/damage.lua's: a weapon the
+    -- inventory never issued, taken out of a ped's hand by client/inventory.lua
+    -- and reported here. AFTER incident.lua for a reader rather than for the
+    -- loader -- it raises `br:core:stripped`, which that file answers, and the
+    -- order on the page is the order of the pipeline. It reads BR.Grants,
+    -- BR.Evidence and BR.Inv at call time only, so nothing above it is needed at
+    -- load.
+    'server/strip.lua',
+    -- Screenshots of the offender, taken on their own client and uploaded to S3
+    -- through br_ddb. AFTER incident.lua and players.lua for a reader rather
+    -- than for the loader: it listens to `br:incident:filed` and
+    -- `br:ringmaster:corroborate`, which those two raise, and it is declared
+    -- below both so the order on the page is the order of the pipeline.
+    'server/artifacts.lua',
 }
 
 dependency 'br_lib'

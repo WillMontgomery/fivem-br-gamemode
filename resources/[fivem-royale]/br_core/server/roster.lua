@@ -85,9 +85,17 @@ local function newEntry(src)
         lastDamageBy = nil,
         lastDamageAt = 0,
 
-        -- DBNO bookkeeping (M7). All server-side, none of it public: the
-        -- client is TOLD its own downed state on BR.Net.DBNO_SET, and other
-        -- players learn about it only from the `state` field, which is.
+        -- DBNO bookkeeping (M7). All server-side, none of it PUBLIC: the
+        -- client is TOLD its own downed state on BR.Net.DBNO_SET, and everyone
+        -- else learns about it only from the `state` field, which is.
+        --
+        -- `dbnoUntil` HAS ONE SQUAD-ONLY EXIT and it is worth naming here,
+        -- because the next person to want it will reach for PUBLIC_FIELDS
+        -- first: server/party.lua copies it onto the squad beacon as
+        -- `bleedEndsAt`, to the downed player's own squad and to nobody else.
+        -- It must NOT join PUBLIC_FIELDS -- that list goes to every client in
+        -- the match, so putting a bleed-out deadline on it would hand each
+        -- downed player's exact remaining seconds to the people who shot them.
         --   dbnoUntil   when the bleed runs out (server ms)
         --   dbnoCount   knocks this match; each one bleeds faster
         --   downedBy    who gets the kill if nobody touches them again --
@@ -113,6 +121,19 @@ local function newEntry(src)
         -- Cleared at CLEANUP with the rest of the per-match state.
         diedAt     = nil,
         leftAt     = nil,
+
+        -- THEIR PED IS DEAD AND THEIR MATCH IS NOT OVER (#144). Set when a
+        -- player is killed before their match reaches PLAYING, cleared by the
+        -- revive on that transition. It is the reason `state == DEAD` and
+        -- `diedAt == nil` can be true at the same time, which every other part
+        -- of this codebase would otherwise read as a contradiction: DEAD is what
+        -- their own client draws, diedAt is what the results row is built from,
+        -- and for the length of the hold only the first of those has happened.
+        --
+        -- ALSO IN NEITHER ALLOWLIST, and for a stronger reason than diedAt: this
+        -- is a promise the server has made to one player, not a fact about them
+        -- that anyone else can act on.
+        revivePending = nil,
 
         joinedAt   = GetGameTimer(),
         bucket     = 0,
@@ -340,6 +361,42 @@ function BR.Roster.remove(src)
     return entry
 end
 
+--- Seal a COPY of a player's match record, for somebody leaving the MATCH but
+--- not the SERVER (#161).
+---
+--- THE SAME MOVE AS remove(), FOR THE OTHER WAY OUT. A disconnect seals because
+--- the entry is about to be deleted; a voluntary leave has to seal because the
+--- entry is about to be DETACHED -- `BR.Match.leaveMatch` clears matchId so the
+--- player stops hearing this match's traffic, and publishResults finds its rows
+--- by matchId. Either way the record has to survive the exit, and until this
+--- existed only one of the two ways out was covered: a player who pressed Leave
+--- Match forfeited their whole record even from a match that ended normally,
+--- which is #100's bug arriving through the door nobody checked.
+---
+--- A COPY, NOT THE ENTRY ITSELF, and that is the difference from remove(). This
+--- player is still connected and still playing -- they will queue again, take
+--- damage again, and every one of those writes would land on a sealed record if
+--- it were the same table. The entry stays live; the match takes a photograph.
+---
+--- The license is resolved HERE for the reason #100 gives: they may well close
+--- the game before the match they just left finishes dissolving, and by then
+--- `licenseOf` answers for nobody.
+--- @param src integer
+--- @return table|nil the sealed copy
+function BR.Roster.sealLeaver(src)
+    local entry = roster[src]
+    if not entry or not entry.matchId then return nil end
+
+    local copy = {}
+    for k, v in pairs(entry) do copy[k] = v end
+    copy.state  = BR.PlayerState.LEFT
+    copy.leftAt = GetGameTimer()
+    copy.license = BR.Roster.licenseOf(src)
+
+    departed[#departed + 1] = copy
+    return copy
+end
+
 --- @param src integer
 --- @return table|nil
 function BR.Roster.get(src)
@@ -519,9 +576,18 @@ end
 
 --- Sealed entries for one match: the players who disconnected before it ended.
 ---
---- ONLY THE RESULTS PUBLISHER SHOULD CALL THIS. Everything else -- the alive
---- count, the squad panel, the win condition, the console snapshot -- must go
---- on seeing a departed player as gone, because they are.
+--- TWO CALLERS, AND THE RULE THEY BOTH OBEY. This said "only the results
+--- publisher should call this", and the second one (#172) is the in-game player
+--- list: a player who ragequits after cheating is exactly the person still
+--- worth reporting, so `BR.Players.listFor` merges these rows in and marks them
+--- gone. That is the same permission the publisher has, not a new one -- both
+--- are RENDERING a finished record, neither is treating its subject as present.
+---
+--- WHAT IS STILL FORBIDDEN, and it is the part worth keeping loud: nothing may
+--- put a sealed entry back into `roster`, and nothing that counts players may
+--- read this. The alive count, the squad panel, the win condition and the
+--- console snapshot must all go on seeing a departed player as gone, because
+--- they are.
 --- @param matchId integer
 --- @return table array of entries
 function BR.Roster.departedIn(matchId)
@@ -645,10 +711,63 @@ AddEventHandler('playerDropped', function(reason)
     BR.Roster.remove(source)
 end)
 
--- 250ms: squad beacons are drawn straight from this, and at 2Hz a teammate's
--- dot visibly hopped rather than moved. It also halves the staleness the loot
--- claim check has to allow for.
-BR.Sched.every(250, 'roster.positions', samplePositions)
+--- The rate used when the configured one is unusable.
+---
+--- A LAST RESORT, NOT A SECOND COPY OF THE SETTING. It is only ever reached
+--- when `posSampleHz` is nil, zero or negative -- i.e. when somebody has
+--- already made a mistake -- and its job is to keep the server sampling rather
+--- than to express a policy. It is kept equal to the shipped config value so a
+--- broken config degrades to the behaviour everyone has played, and
+--- tools/test_roster.lua asserts that equality rather than leaving two numbers
+--- free to drift, which is the bug this whole change is about.
+local FALLBACK_POS_SAMPLE_HZ = 4
+
+--- How often positions are sampled, in milliseconds, FROM THE CONFIG.
+---
+--- THIS USED TO BE THE LITERAL 250 AND THE CONFIG USED TO SAY 2 Hz. Both
+--- statements were in the repository at once, describing the same thing,
+--- disagreeing by a factor of two, with nothing able to notice -- because
+--- `BR.Config.Match.posSampleHz` had no readers at all. The hardcoded number
+--- was the correct one and the documented one was the value that had been tried
+--- and reverted, which is the worst way round for that pair to be.
+---
+--- 4 Hz IS THE RATE AND THE REASON IT IS NOT 2 IS KEPT HERE DELIBERATELY: squad
+--- beacons are drawn straight from this sampling, and at 2 Hz a teammate's dot
+--- visibly HOPPED rather than moved. It also halves the staleness the loot claim
+--- check has to allow for. 2 Hz is a repeat of a rejected experiment, not a
+--- saving -- and the number now lives in the config where somebody looking to
+--- turn it down will meet that sentence before they do.
+---
+--- GUARDED, BECAUSE THE ALTERNATIVE IS DIVIDING BY IT BLINDLY. `1000 / 0` is
+--- `inf` in Lua and `math.floor(inf)` raises -- so a typo'd config would not
+--- misbehave, it would take the resource down at load, and the traceback would
+--- point here rather than at the line someone edited. nil and negatives are the
+--- same class of answer. A bad value falls back to the shipped rate and says so
+--- loudly; it does not silently pick something.
+---
+--- Exposed rather than local so the guard itself is testable with values no
+--- shipped config would ever hold.
+--- @param hz number|nil  defaults to BR.Config.Match.posSampleHz
+--- @return integer milliseconds
+function BR.Roster.sampleIntervalMs(hz)
+    if hz == nil then hz = BR.Config.Match.posSampleHz end
+    hz = tonumber(hz)
+
+    if not hz or hz <= 0 then
+        print(('^3[br_core] roster: posSampleHz is %s, which is not a rate -- '
+            .. 'sampling at %d Hz instead^7')
+            :format(tostring(hz), FALLBACK_POS_SAMPLE_HZ))
+        hz = FALLBACK_POS_SAMPLE_HZ
+    end
+
+    -- The same shape server/broadcast.lua uses for deltaFlushHz and digestHz,
+    -- so all three rates are derived one way. `math.max(1, ...)` because a
+    -- config above 1000 Hz would floor to zero and give the scheduler a job
+    -- with no interval.
+    return math.max(1, math.floor(1000 / hz))
+end
+
+BR.Sched.every(BR.Roster.sampleIntervalMs(), 'roster.positions', samplePositions)
 BR.Sched.every(5000, 'roster.reconcile', reconcile)
 
 -- Players already connected when the resource starts (a restart mid-session).

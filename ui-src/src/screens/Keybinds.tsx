@@ -73,7 +73,12 @@ export default function Keybinds() {
         return
       }
 
-      play('ui.ready')
+      // `ui.select`, NOT `ui.ready`: the ready-up swell belongs to the ready-up
+      // button and nothing else (owner, 2026-08-17). A key being accepted is a
+      // small affirmative -- the same thing `ui.select` says everywhere else --
+      // and Escape a line above already answers with `ui.back`, so the pair is
+      // consistent.
+      play('ui.select')
       void fetchNui(CB.KEYBIND_SET, { command: listening, vk: code })
       setListening(null)
     }
@@ -102,7 +107,7 @@ export default function Keybinds() {
   }, [listening])
 
   if (actions.length === 0) {
-    return <p className="micro-label">Loading controls…</p>
+    return <p className="body-text">Loading controls…</p>
   }
 
   // Grouped, because eighteen undifferentiated rows is a list nobody reads.
@@ -153,7 +158,7 @@ export default function Keybinds() {
         </div>
       ))}
 
-      <p className="micro-label" style={{ textTransform: 'none' }}>
+      <p className="body-text">
         {listening
           ? 'Press a key — Escape cancels.'
           : rejected
@@ -169,7 +174,7 @@ export default function Keybinds() {
           same mechanism. Rather than ship a second button with the same
           likely failure, the line says where the screen is. */}
       {mouseTried && (
-        <p className="micro-label" style={{ textTransform: 'none' }}>
+        <p className="body-text">
           Mouse buttons can be bound in the game&apos;s own key bindings —
           press Escape twice to reach it, under Settings › Key Bindings.
         </p>

@@ -139,15 +139,29 @@ Two tables in **us-east-2**, and the IAM policy in the Ringmaster repo's
 
 | Table | Partition key | Sort key | Holds |
 |---|---|---|---|
-| `br-players` | `pk` (String) | `sk` (String) | `sk = profile` — matches, wins, kills, XP, level.<br>`sk = purchases` — market items, granted back on join. |
+| `br-players` | `pk` (String) | `sk` (String) | `sk = profile` — matches, wins, kills, XP, level.<br>`sk = purchases` — market items, granted back on join.<br>`sk = match#<endedAt>#<matchId>` — one row per match played. |
 
 Purchases are a separate item under the same key deliberately: they are
 irreplaceable, they are read on the connect path where latency strands people on
 a loading screen, and they must never share a write path with counters that
 update at the end of every match.
 
-The game box needs `GetItem`, `PutItem`, `UpdateItem` and `Query` on `br-*`. It
-keeps **read-only** access to `ringmaster-*`, which is the console's data.
+**Match history is one item per player per match**, filed under the same
+partition key as their profile so "this player's recent matches, newest first"
+is a `Query` with `ScanIndexForward: false` and a `Limit` — no secondary index
+and no scan. They are written in batches of 25, so a 48-player match costs two
+calls. **There is no TTL**, by decision: the rows accumulate. Adding one later is
+possible but only affects items written *after* it is enabled — existing rows
+would need a backfill pass to be given the attribute.
+
+The game box needs `GetItem`, `PutItem`, `UpdateItem`, `BatchWriteItem` and
+`Query` on `br-*`. It keeps **read-only** access to `ringmaster-*`, which is the
+console's data.
+
+> `BatchWriteItem` is a *separate* IAM action from `PutItem` — a policy granting
+> only the latter denies the batch. If match history is the one thing not
+> appearing, that is the first place to look; the server log says
+> `match history: 0/N rows written` with the AccessDenied message attached.
 
 ### If DynamoDB is unreachable
 
@@ -169,7 +183,29 @@ consumes it.
 
 ## 3. Resources
 
-Copy `resources/[fivem-royale]/` into the server's `resources/` directory.
+Copy **both** resource groups into the server's `resources/` directory:
+
+| From the repo | To on the box | What it is |
+|---|---|---|
+| `resources/[fivem-royale]/` | `resources/[gamemodes]/[fivem-royale]/` | the gamemode — ours |
+| `resources/[voice]/pma-voice/` | `resources/[voice]/pma-voice/` | vendored pma-voice, MIT © Dillon Skaggs, pinned at `v7.0.2-rc3` |
+
+`tools/deploy.sh` does both, in two rsyncs. The second one exists because the
+first is `--delete`-scoped to `[fivem-royale]` alone: before it, a resource
+vendored anywhere else would have been committed, gated and then never reached
+the box. Its `--delete` is scoped to the `pma-voice` directory itself, never to
+the `[voice]` category, so another voice resource installed alongside it is
+never removed by our deploy.
+
+**On a box that predates the vendoring**, `rm -rf` the old
+`resources/[voice]/pma-voice` once first. It was a hand-made `git clone`, and
+`rsync --delete` does not remove excluded paths — so its `.git` would survive
+and go on reporting a version the files no longer are.
+
+**`tools/deploy.sh` itself runs from the ops clone** (`/opt/misc/fivem-br-gamemode`),
+not from the deployed tree — so a change to it reaches the box only when that
+clone is pulled. A `deploy.sh` from before the vendoring will sync the gamemode
+and silently skip pma-voice.
 
 The NUI build output (`br_ui/ui/`) is committed, so **no build step is required
 on the server**, and no Node is needed on it either.
@@ -256,6 +292,51 @@ Edit `server.cfg`:
 | `add_principal` | Uncomment and insert your own license identifier to get admin. |
 | `sv_devMode` / `br_devMode` | **Set both to `false` for production.** They lower the minimum players to start and enable client dev tools. |
 | `sv_maxclients` | 48 is the free OneSync ceiling — see the note in `server.cfg` before raising it. |
+
+### The dev/public split: `tunables.cfg`
+
+A handful of gameplay values — squad size, warmup length, the summary screen,
+autofill, bleed-out — can differ between a dev box and the public one without
+changing a line of tracked Lua. They live in a small file `server.cfg` execs.
+
+**This file is not deployed by `tools/deploy.sh`.** Like `server.cfg` itself it
+is gitignored and per-host, so it reaches the box only when a human puts it
+there. On the game box, in the same directory as `server.cfg`
+(`/opt/fivem-server-classic`):
+
+```bash
+# from the checkout at /opt/misc/fivem-br-gamemode
+cp tunables.dev.cfg.example    /opt/fivem-server-classic/tunables.cfg   # dev box
+cp tunables.public.cfg.example /opt/fivem-server-classic/tunables.cfg   # public box
+```
+
+Then, **above** the `ensure br_*` block in `server.cfg`:
+
+```
+exec "tunables.cfg"
+```
+
+Swapping which example you copied and restarting is the whole mechanism.
+
+**Delete the `sv_devMode` / `br_devMode` lines from your `server.cfg`.** They sit
+*below* the exec line, and in a `.cfg` the last line wins — leave them and dev
+mode stops following the file that is supposed to decide it. Both examples set
+those two convars themselves: `true` in the dev one, `false` in the public one.
+
+**The order is load-bearing and getting it wrong fails silently.** These convars
+are read once, while `br_lib/config/*.lua` loads, and two of the values are
+copied into other tables at that same instant. An `exec` below the `ensure`
+block sets every convar correctly and changes nothing about the game.
+
+How you find out: `br_core` prints a `tunables` block on start, one line per
+setting, saying whether the live value came from a convar or from the committed
+default — and it prints a loud warning ten seconds in if a convar turned up
+after the resources had already read them. `brconfig` shows the same list at any
+time.
+
+A missing or empty `tunables.cfg` is harmless: every value falls back to
+`br_lib/config/match.lua`. A *bad* value is not — the server refuses to start,
+with a banner naming the setting, what you typed and what is allowed.
 
 ---
 

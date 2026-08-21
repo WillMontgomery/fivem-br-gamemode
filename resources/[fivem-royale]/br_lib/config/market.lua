@@ -91,18 +91,44 @@ BR.Config.ItemKind = {
 
     Two consequences worth stating plainly:
       * "Crew" has no meaning here. It is a GTA Online crew colour, and this
-        game has squads instead -- which already colour the trail, for free,
-        automatically. We do not need to sell it.
+        game has squads instead. We do not need to sell it.
       * "Patriot" is multi-colour, which one RGB value cannot be. So it is
         rebuilt rather than imitated: a CYCLING trail that steps colours while
         you fall. That is more expensive than a solid because it is strictly
         more work to look at, and it is the only thing in the catalogue that
         animates.
 
-    THE SQUAD COLOUR WINS IN A SQUAD. Trail colour is how you find your team in
-    the air, and that is a gameplay read, not decoration. A bought trail applies
-    when you are dropping alone; in a squad the squad colour overrides it. If
-    that ever feels wrong, this is the paragraph to argue with.
+    A TRAIL IS A PURCHASE OR IT IS NOTHING (owner, 2026-08-20).
+
+    THIS BLOCK HAS ARGUED THE SQUAD COLOUR BOTH WAYS AND NOW SELLS IT NEITHER.
+    First it said the squad colour OVERRODE a bought trail, because finding your
+    team in the air is a gameplay read and decoration should lose to one. #131
+    reversed that -- "Squad colors should not override the bought trail - the
+    player earned that trail" -- leaving the squad colour as the free catalogue
+    default, `trail_squad`, which is what every player wore until they spent
+    Volts. The owner has now removed the idea entirely: "'Squad color' trails
+    should not be a thing."
+
+    SO THE FREE DEFAULT IS `trail_none`, AND IT PAINTS NOTHING. That is the
+    deliberate answer to the question deleting `trail_squad` asks, and it is
+    deliberate in both halves: the slot still HAS a default -- a player who buys
+    Ember needs somewhere to go back to, and BR.Config.defaultItem('trail')
+    returning nil would have left them unable to take it off -- and that default
+    is no smoke rather than the squad's.
+
+    KEEPING THE SQUAD COLOUR AS AN UNNAMED FALLBACK WOULD HAVE BEEN WORSE THAN
+    THE ITEM WAS. With the item gone, every player who has not bought a trail
+    would fly their squad's colour with nothing in the storefront to un-equip --
+    more squad-coloured smoke than before the instruction, and no way out of it.
+    So cosmetics.applyTrail lost its squad branch too, and `trailSource` can no
+    longer answer 'squad'.
+
+    WHAT THE TEAM ACTUALLY LOSES IS SMALL, AND IT IS WORTH SAYING WHY RATHER
+    THAN HOPING. Trails already start OFF on every drop (owner, 2026-08-17) and
+    only appear when the player presses the trail key -- so the squad colour has
+    not been a passive position marker for some time; it was an opt-in one, per
+    drop, per player. The markers, the nameplates and the squad list are
+    untouched and are where the team read lives.
 
     ========================== WEAPON TINTS ==========================
 
@@ -218,44 +244,105 @@ BR.Config.Market = {
                 -- the drop sequence tasks and retries against.
 
                 -- --------------------------------------------------- trails ---
+                -- TRAIL PRICES ARE THEIR OWN RANGE, TOPPING OUT AT 1500 (owner,
+                -- 2026-08-20: "the top price for trails should be like 1500
+                -- volts"). They used to run 800/800/1400/1400/2000/5000, which
+                -- put the legendary trail within 1000 of the legendary canopy.
+                --
+                -- RE-PRICED RATHER THAN CLAMPED. Squashing everything above the
+                -- new ceiling down onto it would have made Void, Toxic, Rose and
+                -- Patriot cost the same, and a rarity that costs what the tier
+                -- below it costs is decoration on a price tag. The five paid
+                -- steps are 400 / 700 / 1000 / 1500 with the gap widening as the
+                -- tier climbs, which is the shape the canopies already use.
+                --
+                -- THEY ARE NOW MUCH CHEAPER THAN A CANOPY OF THE SAME RARITY,
+                -- and that is the instruction rather than an oversight: a
+                -- legendary canopy is 6000 and a legendary trail is 1500. A
+                -- canopy is ninety seconds of everybody looking at it; a trail
+                -- is a keypress on the way down.
                 {
-                    -- The default trail is the squad colour, which is what
-                    -- happens today and costs nothing. `trailRgb = nil` means
-                    -- "leave the squad system alone".
-                    id = 'trail_squad', name = 'Squad Colour', sub = 'Smoke trail',
+                    -- THE FREE DEFAULT, AND IT PAINTS NOTHING. `trail_squad`
+                    -- used to sit here and be the squad colour; the owner
+                    -- removed the idea ("'Squad color' trails should not be a
+                    -- thing"), so what a player wears before they spend Volts is
+                    -- no smoke at all.
+                    --
+                    -- THE SLOT STILL NEEDS A DEFAULT even though that default
+                    -- does nothing, and that is why this is an item rather than
+                    -- an absence: BR.Config.defaultItem('trail') is what
+                    -- server/market.lua fills an empty slot with and what
+                    -- "un-equip" resolves to, so deleting the row outright would
+                    -- have left anybody who bought Ember unable to take it off.
+                    --
+                    -- AN EMPTY `apply` IS THE WHOLE MECHANISM. cosmetics.lua
+                    -- arms a trail only in the branches that actually paint one,
+                    -- so a table with no trailRgb and no trailCycle leaves
+                    -- `trailArmed` false -- no smoke, and no descent prompt
+                    -- offering a key for a trail that is not there (#131).
+                    --
+                    -- ...AND IT IS NOT A CARD IN THE SHOP (owner, 2026-08-20:
+                    -- "'None' smoke trail should not exist - and btw this means
+                    -- the default (new player, new profile) should be no smoke
+                    -- trails at all"). `hidden` is the whole of that change: the
+                    -- item stays in the index, stays the answer to
+                    -- BR.Config.defaultItem('trail'), stays what server/market.lua
+                    -- fills an empty slot with, and simply is not offered a tile
+                    -- in the grid br_ui/client/market.lua builds.
+                    --
+                    -- WHY HIDE RATHER THAN DELETE, RESTATED because the reason
+                    -- has now been rediscovered twice. Deleting the row makes
+                    -- defaultItem('trail') answer nil, and every player who buys
+                    -- Ember then has nothing to go back to. The paragraph above
+                    -- is the record of the first time that argument was made.
+                    --
+                    -- WHAT HIDING COSTS, AND IT IS NOT NOTHING. This tile was
+                    -- the ONLY un-equip control the storefront has -- Market.tsx
+                    -- renders an equipped item as inert text and there is no
+                    -- other affordance anywhere -- so a player who buys Ember can
+                    -- no longer take it back off. What they keep is the part that
+                    -- reaches the sky: a trail starts OFF on every drop (owner,
+                    -- 2026-08-17) and only paints if they press the trail key, so
+                    -- what an un-equip would actually buy them now is silencing
+                    -- the once-per-drop prompt. Reported to the owner rather than
+                    -- solved here, because every fix is either new UI copy nobody
+                    -- asked for or a rule about WHEN this tile appears, and both
+                    -- are the owner's call.
+                    id = 'trail_none', name = 'None', sub = 'Smoke trail',
                     kind = BR.Config.ItemKind.TRAIL,
                     price = 0, rarity = BR.Config.Rarity.COMMON,
                     default = true,
-                    apply = { trailRgb = nil },
+                    hidden = true,
+                    apply = {},
                 },
                 {
                     id = 'trail_ember', name = 'Ember', sub = 'Smoke trail',
                     kind = BR.Config.ItemKind.TRAIL,
-                    price = 800, rarity = BR.Config.Rarity.UNCOMMON,
+                    price = 400, rarity = BR.Config.Rarity.UNCOMMON,
                     apply = { trailRgb = TRAIL.EMBER },
                 },
                 {
                     id = 'trail_ice', name = 'Ice', sub = 'Smoke trail',
                     kind = BR.Config.ItemKind.TRAIL,
-                    price = 800, rarity = BR.Config.Rarity.UNCOMMON,
+                    price = 400, rarity = BR.Config.Rarity.UNCOMMON,
                     apply = { trailRgb = TRAIL.ICE },
                 },
                 {
                     id = 'trail_toxic', name = 'Toxic', sub = 'Smoke trail',
                     kind = BR.Config.ItemKind.TRAIL,
-                    price = 1400, rarity = BR.Config.Rarity.RARE,
+                    price = 700, rarity = BR.Config.Rarity.RARE,
                     apply = { trailRgb = TRAIL.TOXIC },
                 },
                 {
                     id = 'trail_rose', name = 'Rose', sub = 'Smoke trail',
                     kind = BR.Config.ItemKind.TRAIL,
-                    price = 1400, rarity = BR.Config.Rarity.RARE,
+                    price = 700, rarity = BR.Config.Rarity.RARE,
                     apply = { trailRgb = TRAIL.ROSE },
                 },
                 {
                     id = 'trail_void', name = 'Void', sub = 'Smoke trail',
                     kind = BR.Config.ItemKind.TRAIL,
-                    price = 2000, rarity = BR.Config.Rarity.EPIC,
+                    price = 1000, rarity = BR.Config.Rarity.EPIC,
                     apply = { trailRgb = TRAIL.VOID },
                 },
                 {
@@ -264,9 +351,11 @@ BR.Config.Market = {
                     -- so this steps between them while you fall. It is the
                     -- rebuild of the multi-colour canister trail we cannot
                     -- reach without issuing a reserve chute.
+                    --
+                    -- IT IS THE CEILING, which is what 1500 buys.
                     id = 'trail_patriot', name = 'Patriot', sub = 'Smoke trail',
                     kind = BR.Config.ItemKind.TRAIL,
-                    price = 5000, rarity = BR.Config.Rarity.LEGENDARY,
+                    price = 1500, rarity = BR.Config.Rarity.LEGENDARY,
                     apply = {
                         trailCycle = { { 235, 235, 240 }, { 200, 25, 45 }, { 30, 60, 190 } },
                         trailCycleMs = 350,
@@ -347,15 +436,90 @@ BR.Config.Market = {
     matches teach people that playing was a waste of time, which is the exact
     opposite of what a progression system is for.
 
-    Roughly calibrated so a middling match pays ~150 and a strong one ~400: an
-    uncommon canopy is a handful of matches, a legendary is a season's habit.
+    ================== RETUNED 2026-08-16, AND WHY (#89) ==================
+
+    The first calibration paid a single match 470 Volts. Owner: "volts going
+    from 665 to 1135 in one match is insane lol. It should be like MAYBE 1/3 of
+    that max." So the whole table came down by roughly a third.
+
+    THE INVERSION WAS THE INFORMATIVE HALF. In the same match the player who
+    placed SECOND with one kill took 470, and the player who WON took 60 -- the
+    loser earning nearly eight times the winner. A payout where placement is the
+    headline term cannot do that, so placement was not the headline term. Two
+    things were:
+
+      * THE LEVEL-UP BONUS, which was the single largest line on the bill. At
+        100 + 25/level it could exceed the win bonus outright, and the player
+        who took 470 had just crossed a level while the winner had not. A bonus
+        that beats the thing it is a bonus ON is not a bonus. It is now a
+        quarter of a win rather than most of one.
+      * THE RESULTS ROW REACHING THIS FUNCTION BLANK. 60 is `completion` and
+        nothing else, which takes more than a missing placement: it needs
+        placement ≠ 1, zero kills AND zero revives on the same row. The ENDED
+        transition awards placements before it publishes results and nothing
+        writes LOBBY in between, so this is not an ordering bug -- it is the
+        shape of a row published by a SECOND ENDED transition, after
+        BR.Match.resetPlayers has zeroed the per-match counters and cleared
+        placement while leaving matchId intact. That is a defect upstream of
+        this file and no amount of retuning here touches it: retuning a formula
+        whose inputs are blank only changes which wrong number comes out.
+        Called out so the next reader does not conclude these weights produced
+        60.
+
+    CALIBRATED SO PLACEMENT DOMINATES, AND THE SHAPE SURVIVED THE HALVING
+    BELOW. Worked examples on a 16-player field:
+
+      won it, no kills                  8 +  60                    =  68
+      2nd, 1 kill, levelled to 3        8 +  32 +  5 + 17          =  62
+      2nd, 4 kills                      8 +  32 + 20               =  60
+      8th, 2 kills                      8 +  18 + 10               =  36
+      last, nothing                     8                          =   8
+
+    The win is the biggest single line in a winning match; placement is the
+    biggest in every other one; kills are worth chasing without being the
+    strategy; and the level-up is a punctuation mark you notice rather than the
+    reason the number moved.
+
+    ================== HALVED 2026-08-20, AND WHY ==================
+
+    Owner, after a playtest: "Please cut all Volts earnings by 50%". So every
+    weight below is exactly half what it was, and so is BR.Config.levelBonus --
+    the level-up is an earning like any other and exempting it would have made
+    it the largest line again, which is the failure #89 was about.
+
+    NOTHING ABOUT THE SHAPE MOVED. Halving every term of a sum scales the sum;
+    it does not reorder it. The win is still the biggest line in a won match,
+    placement is still the biggest everywhere else, and the level-up is still
+    roughly a quarter of a win. That is the property the suite in
+    tools/test_stats.lua asserts -- it compares payouts against each other and
+    pins none of them, so a retune that broke the ORDER would fail there while
+    this one passes.
+
+    `completion` IS 8 RATHER THAN 7. 15 does not halve into a whole number, and
+    the round is up on purpose: this is the term that carries "every match pays
+    something", and it is the one number here a player can actually recognise
+    when they finish last with nothing.
+
+    WHAT THIS DOES TO THE PRICES ABOVE, stated rather than quietly absorbed,
+    because it is now the second time this has moved and the gap is no longer
+    small. At ~36 for a middling match an uncommon canopy at 1200 is around 33
+    matches, and a legendary at 6000 is 165. The owner asked for the payout and
+    said nothing about the canopy or finish prices, so those are untouched --
+    but "a handful of matches" for an uncommon has not been true for two
+    retunes now, and if prices are the half that should move, it is the table
+    at the top of this file. (The TRAIL prices did move, on the same day and by
+    a separate instruction: the ceiling is 1500.)
+
+    EVERY NUMBER BELOW IS MEANT TO BE ARGUED WITH. They are in one table, next
+    to the prices, on purpose: retuning is editing five integers and re-reading
+    the worked examples above, not tracing a formula through three files.
 ]]
 BR.Config.Market.payout = {
-    completion   = 60,    -- for turning up and finishing
-    win          = 240,
-    placementTop = 150,   -- scaled linearly by how far up you finished
-    perKill      = 20,
-    perRevive    = 15,    -- paid because it is the least selfish thing you can do
+    completion   = 8,     -- for turning up and finishing
+    win          = 60,
+    placementTop = 35,    -- scaled linearly by how far up you finished
+    perKill      = 5,
+    perRevive    = 4,     -- paid because it is the least selfish thing you can do
 }
 
 --- What the currency is called, in ONE place.
@@ -378,11 +542,42 @@ BR.Config.Market.currency = 'Volts'
 --- top of earning, not the earning itself. A player who levels every few
 --- matches should notice it; a player grinding for a legendary should still be
 --- getting there mostly by playing.
+---
+--- IT WAS NOT MODEST, AND THAT IS #89. At 100 + 25/level this line competed
+--- with winning the match: level 3 paid 150 against a 240 win bonus, and at
+--- level 7 it passed it outright and never came back. So the largest single
+--- term in a session's earnings went to whoever happened to cross a boundary,
+--- regardless of how they placed. 25 + 5/level puts it at roughly a quarter of
+--- a win and keeps it there -- still growing with the curve, no longer racing
+--- it.
+---
+--- HALVED WITH EVERYTHING ELSE (owner, 2026-08-20: "cut all Volts earnings by
+--- 50%"). The 25 + 5/level curve is kept and the RESULT is halved, rather than
+--- the two constants being halved in place, for one reason: 5/2 is 2.5 and a
+--- constant of 2 would flatten the growth the paragraph above argues for --
+--- level 20 would pay 50 instead of 60, so the bonus would fall further behind
+--- the win the longer somebody played, which is the exact shape #89 fixed in
+--- the other direction. Halving at the end keeps the ratio to a win at a
+--- quarter at every level and costs one floor.
+---
+--- WHOLE NUMBERS, FLOORED. Alternate levels land on a half; a balance is an
+--- integer in DynamoDB and on the verdict screen, so the half is dropped
+--- rather than rendered. 12, 15, 17, 20, 22 -- still monotonic, still
+--- accelerating at 2.5 a level on average.
+---
+--- THE INPUT THIS DEPENDS ON is `levelBefore`, which br_stats derives from a
+--- lifetime total br_core publishes to it. When that total is missing the
+--- damage is NOT an unbounded payout -- br_stats computes `after` as
+--- `before + xpEarned`, so a zero `before` gives a small `after` and the loop
+--- crosses at most a level or two. The real cost is the level itself: the
+--- profile row and the verdict screen both take a veteran's level from one
+--- match's XP. Small per-level numbers here are what keep the money half of
+--- that failure boring while the level half gets fixed properly.
 --- @param level integer  the level just reached
 --- @return integer
 function BR.Config.levelBonus(level)
     local n = math.max(1, math.floor(tonumber(level) or 1))
-    return 100 + (n - 1) * 25
+    return math.floor((25 + (n - 1) * 5) / 2)
 end
 
 --- What one match earned, in currency.
@@ -395,7 +590,11 @@ function BR.Config.marketPayout(r)
     local placement = tonumber(r.placement) or 0
     local total     = tonumber(r.total) or 1
 
-    if placement == 1 then
+    -- SAME RULE AS THE XP WIN BONUS, and for the same reason: placement 1 says
+    -- nobody outlasted them, not that they were alive at the end. The last
+    -- squad standing taken by the storm places 1st and died. They still get
+    -- the placement scale below -- they did finish top -- just not the win.
+    if placement == 1 and not r.died then
         earned = earned + p.win
     elseif placement > 0 and total > 1 then
         earned = earned + math.floor(p.placementTop * (1.0 - (placement - 1) / (total - 1)))

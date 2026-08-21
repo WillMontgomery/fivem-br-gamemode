@@ -241,7 +241,23 @@ end
 --- visible, which is a signal the console explicitly renders. A report missing
 --- either is dropped rather than filed against a server id.
 ---
---- @param ev table  { license, name, reporterLicense, reporterName, category, note, matchId, at }
+--- THERE IS NO `note`, AND THERE NEVER REALLY WAS. The panel had a free-text
+--- field, the callback forwarded it, the server capped it at BR.Config.Report
+--- .maxNote and this function copied it onto the payload -- and br_ddb has
+--- written `note: null` unconditionally since 2026-08-14, on an owner call
+--- whose comment is still sitting in js-src/br_ddb/src/incident.js: "NO
+--- FREE-TEXT NOTE, EVER, FROM THE GAME ... there is no player-supplied prose
+--- anywhere in this row. That removes the injection surface rather than
+--- guarding it."
+---
+--- So five layers of plumbing carried a string to a hard-coded null. The field
+--- is deleted here rather than left accepting a value it discards, because the
+--- next reader of this file has no way to discover that from Lua -- they would
+--- have to go and read the bundle to find out that the note they are carefully
+--- passing through goes nowhere. Removed with #142, which took the field off
+--- the panel for an unrelated reason and made the whole chain visible.
+---
+--- @param ev table  { license, name, reporterLicense, reporterName, category, matchId, at }
 --- @param records table|nil  evidence rows for the SUBJECT
 --- @return table|nil payload, string|nil why
 function BR.IncidentBuild.fromReport(ev, records)
@@ -291,17 +307,643 @@ function BR.IncidentBuild.fromReport(ev, records)
 
         matchId = ev.matchId,
 
-        -- The summary is the queue row. It names the category rather than
-        -- quoting the note, because the note is free text from a player and the
-        -- queue is read at a glance by somebody deciding what to open.
+        -- The summary is the queue row, and it is built only from a category
+        -- out of a fixed list plus a name. It carried that shape when there was
+        -- also a free-text note to quote and NOT quoting it was the decision;
+        -- with the note gone the shape is the same and the reason is now
+        -- structural, which is stronger.
         summary = ('Reported for %s by %s'):format(
             tostring(ev.category), tostring(ev.reporterName or 'a player')),
-
-        -- NEVER INTERPOLATED ANYWHERE. It reaches the console as data and is
-        -- rendered as text; the length cap is applied by the caller.
-        note = ev.note,
 
         evidence = evidence,
         atGameMs = ev.at,
     }
 end
+
+--- The one line shown in the queue for a strip case.
+---
+--- ITS OWN SENTENCE RATHER THAN `summaryOf`'s, because that one says "%d shots
+--- refused" and no shot was refused. Nothing was fired: a weapon appeared in a
+--- hand the gamemode never put it in, and it was taken back out. Reusing the
+--- refusal wording would put a number of shots on a case that has none, which
+--- is the sort of small lie a reviewer builds a wrong conclusion on.
+---
+--- BUILT FROM SERVER FACTS ONLY -- one integer -- like the other two. The
+--- field's contract on the console side is "displayed and nothing else", and
+--- the day somebody interpolates it a player-controlled name in here would be
+--- the bug.
+--- @param count integer
+--- @return string
+function BR.IncidentBuild.stripSummaryOf(count)
+    local n = math.floor(tonumber(count) or 0)
+    return ('%d unissued weapon%s taken out of the hand this match')
+        :format(n, n == 1 and '' or 's')
+end
+
+--- Build the payload for a case opened by an unissued weapon in the hand.
+---
+--- THE THIRD PRODUCER, and the shape is deliberately the anticheat's rather than
+--- a new one: `kind = 'anticheat'`, filed by the system, no reporter. The console
+--- has two record types and must not grow a third for a finding that triages
+--- exactly like the first.
+---
+--- SEVERITY IS READ, NOT RESTATED. `BR.ShotTier[NO_WEAPON]` is where this
+--- project has already written down how bad "a weapon this gamemode does not
+--- issue" is, and it says `high`. Spelling `'high'` here would be a second copy
+--- of that judgement in a second file, which is how the two end up disagreeing
+--- the day somebody re-grades the taxonomy.
+---
+--- ...AND THE BAR IS NOT READ, WHICH IS THE ONE PLACE THIS DELIBERATELY PARTS
+--- COMPANY WITH THE REFUSAL PATH. `BR.ShotBarOverride[NO_WEAPON] = 2` exists
+--- because a REFUSAL of that reason is a catch-all: it means the hash was in
+--- neither our table nor the world's, so a weapon added by a future game build
+--- or carried by an ambient NPC lands there, and asking for two costs nothing.
+--- A STRIP IS NOT THAT. It is not a lookup failing, it is the ped observably
+--- holding something the inventory did not put there, cross-checked against the
+--- inventory the server itself holds. The bar for it is nevertheless two, and it
+--- is server/strip.lua that holds it rather than this function: the owner set it
+--- there on 2026-08-20 ("this should fire an incident on the 2nd offense"), and
+--- the lowest count that can reach this function is therefore 2. This function
+--- still files on whatever it is given -- deciding when to announce is the
+--- detector's job in both anticheat paths, and duplicating the bar here would be
+--- a second copy of it to disagree with.
+---
+--- NO `refusal` BLOCK. That field carries `count` and `windowMs` from the shot
+--- validator and the console renders it as refused shots; a strip has neither
+--- number and inventing them would dress up the finding. The timeline is where
+--- the evidence for this one lives.
+---
+--- @param ev table  { license, name, matchId, count, at }
+--- @param records table|nil  BR.Evidence.forLicense(ev.license)
+--- @return table|nil payload, string|nil why-not
+function BR.IncidentBuild.fromStrip(ev, records)
+    if type(ev) ~= 'table' then return nil, 'no event' end
+
+    -- NO LICENSE, NO INCIDENT -- the same rule as every other producer here. A
+    -- case keyed to a server id is a case about whoever holds that slot next.
+    if type(ev.license) ~= 'string' or ev.license == '' then
+        return nil, 'no license'
+    end
+
+    local evidence = {}
+    for _, r in ipairs(records or {}) do
+        evidence[#evidence + 1] = evidenceRow(r)
+    end
+    local newest = evidence[#evidence]
+
+    return {
+        kind     = 'anticheat',
+        category = 'system',
+        state    = 'pending_review',
+        severity = BR.ShotTier[BR.ShotRefusal.NO_WEAPON],
+
+        subjectLicense = ev.license,
+        subjectName    = ev.name,
+        subjects = { {
+            license = ev.license,
+            name    = ev.name,
+            squadId = newest and newest.squadId or nil,
+            left    = newest and newest.left or false,
+        } },
+
+        -- NO reporter, absent rather than null -- the same absence
+        -- `fromRefusal` relies on. br_ddb writes the missing keys as explicit
+        -- nulls and the console reads `reporterLicense === null` as "the system
+        -- filed this", which is exactly what happened.
+
+        matchId = ev.matchId,
+        summary = BR.IncidentBuild.stripSummaryOf(ev.count),
+
+        evidence = evidence,
+        atGameMs = ev.at,
+    }
+end
+
+-- ---------------------------------------------------------------------------
+-- The match timeline (#30)
+-- ---------------------------------------------------------------------------
+--
+-- WHAT THIS IS. An incident today records the moment it was filed and almost
+-- nothing around it, so an admin deciding a verdict sees the accusation without
+-- the match it came out of. These functions build the two halves of the match
+-- context that goes on the row: what was already true when the case was filed,
+-- and the one fact that only becomes true later -- that the match ended.
+--
+-- === THE COST RULE, WHICH SHAPES EVERYTHING BELOW ===
+--
+-- A MATCH THAT PRODUCES NO INCIDENT MUST WRITE NOTHING. That is the owner's
+-- constraint and it is also the rule the evidence buffer was already built on:
+-- kills and chat are held in RAM, bounded, and thrown away at match end unless
+-- an incident turned them into a record. The timeline rides that same buffer
+-- rather than adding a second stream of writes.
+--
+-- So the write budget is:
+--
+--   * a match with no incident   ZERO writes. Nothing here runs.
+--   * filing an incident         the PutItem that already happens, carrying
+--                                more fields. NO extra write.
+--   * that match ending          ONE UpdateItem per incident filed in it -- in
+--                                practice one, since the filing rule is one
+--                                case per player per match.
+--
+-- Cost is therefore proportional to INCIDENTS, not to matches, kills or players.
+--
+-- === ABSOLUTE TIMES, NOT OFFSETS ===
+--
+-- Every `at` here is a game-clock reading that br_ringmaster converts to
+-- wall-clock ms on the way out, exactly as it already does for chat and kill
+-- rows. The console renders "3m before the report" by subtracting `openedAt`
+-- itself. Storing offsets instead would bake the zero point into the data and
+-- make every entry unreadable the moment anything about the incident's own
+-- timestamp were corrected.
+--
+-- === SERVER-AUTHORITATIVE, WITH ONE STATED EXCEPTION ===
+--
+-- Almost nothing on this timeline comes from a client. The kills are the
+-- server's own attribution out of damage.lua, the licences are resolved from
+-- identifiers server-side, and the two match timestamps come from the match
+-- registry. This is a moderation record on an anti-cheat surface; a
+-- client-supplied timestamp on it would be evidence a cheater writes about
+-- themselves.
+--
+-- `weapon_strip` IS THE EXCEPTION AND IT IS ADMITTED HERE RATHER THAN LEFT FOR
+-- SOMEBODY TO DISCOVER. What is in a ped's hand is a client-side fact and no
+-- server native can read it, so the entry exists because a client said so. Two
+-- things keep that from being a hole:
+--
+--   * the `at` IS STILL THE SERVER'S. br_core/server/evidence.lua stamps it
+--     from GetGameTimer() when the report arrives and never accepts one over
+--     the wire, so the offender cannot place their own events in time.
+--   * the direction of the lie is harmless. `source` decides who the entry is
+--     about, so the only record a client can write to is its OWN -- a false
+--     report is a confession, and there is no way to spend it on somebody else.
+--
+-- The weapon hash on the entry IS the client's word. It is kept because it is
+-- the one useful fact about the event and because a strip entry without it says
+-- nothing an admin can act on; it is not corroborated by anything.
+--
+-- === ROOM FOR #34 WITHOUT A MIGRATION ===
+--
+-- `matchTimeline` is a heterogeneous list discriminated by `kind`, and the
+-- console switches on that field. An artifact frame becomes an entry by adding
+-- `{ at, kind = 'artifact', ... }` -- no new attribute, no reshaping of what is
+-- already stored, and rows written before that day simply do not contain one.
+-- That is the whole reason this is a list of tagged entries rather than a set of
+-- parallel typed arrays.
+
+--- How long after a match starts its end is still plausibly pending.
+---
+--- THIS IS WHAT STOPS AN ABSENT END READING AS "STILL RUNNING" FOREVER. The
+--- match-end write is the one part of this that happens later, which means it is
+--- the one part that can never happen: a crash, a restart, a lost DynamoDB
+--- write. The console cannot distinguish those from a match still in progress by
+--- looking at a missing field -- both are simply an absent `matchEndedAt`.
+---
+--- So the game states its own expectation at FILING time, when it is already
+--- writing anyway and therefore at no extra cost, and the console compares it to
+--- the clock:
+---
+---   matchEndedAt present          -> ended, at that time
+---   absent, now <  matchEndsBy    -> STILL IN PROGRESS
+---   absent, now >= matchEndsBy    -> end never reported
+---
+--- The third case is the one that matters and it is deliberately NOT the same
+--- answer as the second. "This match is still going, more evidence may arrive"
+--- and "this server never told us how this match finished" are different facts,
+--- and an admin banning on partial evidence needs to tell them apart.
+---
+--- SIXTY MINUTES AGAINST A MATCH THAT RUNS ROUGHLY TWENTY (config/storm.lua's
+--- phase table totals about that). Three times the expected length: long enough
+--- that a slow round, a long warmup or a paused server is never mislabelled as a
+--- crash, short enough that a real crash stops claiming to be live within the
+--- hour rather than at the heat death of the queue.
+local MATCH_ENDS_BY_MS = 60 * 60 * 1000
+
+--- The most kill entries one incident's timeline may carry.
+---
+--- BOUNDED BECAUSE A DYNAMODB ITEM IS 400KB AND A PLAYER INFLUENCES THIS ONE.
+--- The buffer's own promoted cap (250 rows) is the real limiter and this is the
+--- backstop for a caller that promoted differently -- two caps that disagree
+--- should fail towards the smaller, not towards a rejected write. A kill entry
+--- marshals to roughly 200 bytes, so 250 of them is about 50KB against a ceiling
+--- the evidence log is also spending from.
+local MAX_TIMELINE_KILLS = 250
+
+--- The `kind` a strip entry carries.
+---
+--- ONE SPELLING, NAMED ONCE, BECAUSE THE OTHER HALF OF IT IS IN JAVASCRIPT.
+--- js-src/br_ddb/src/close.js discriminates on this exact string and DROPS a
+--- kind it does not know -- deliberately, so a bug on this side cannot put an
+--- unrenderable row on a moderation record. The failure that produces is the
+--- worst kind this project has: the feature works end to end in every test on
+--- each side, and the entries silently never arrive. tools/verify.sh compares
+--- this literal against close.js's, which is the only place the two languages
+--- can be made to agree mechanically.
+local STRIP_KIND = 'weapon_strip'
+
+--- The most strip entries one incident's timeline may carry.
+---
+--- SIXTY, AND IT IS THE BUFFER'S PROMOTED CAP RESTATED AS A BACKSTOP -- exactly
+--- what MAX_TIMELINE_KILLS is to `killMax`. The buffer is the real limiter; this
+--- catches a caller that promoted differently, and two caps that disagree should
+--- fail towards the smaller rather than towards a rejected write.
+--- tools/test_shared.lua pins the two to the same number.
+local MAX_TIMELINE_STRIPS = 60
+
+--- Turn one buffered kill row into a timeline entry.
+---
+--- BOTH SIDES OF THE KILL, NOT JUST THE SUBJECT'S HALF. The buffer records a kill
+--- against the killer AND the victim on purpose -- "reported for teaming" reads
+--- very differently when the record shows the accused dying to the person they
+--- are accused of helping -- and the timeline keeps that. The console decides
+--- which way round to render it by comparing against the incident's own
+--- `subjectLicense`, which it already has; the game does not pre-judge it.
+---
+--- THE LICENCES ARE THE PROFILE LINKS #30 ASKS FOR. `victimName` travels beside
+--- `victimLicense` so the console can render a row whose profile has not loaded,
+--- and so a case stays readable if the licence is later merged or renamed.
+--- Everything this gamemode issues, indexed by every name it answers to.
+---
+--- THREE IDENTIFIER FORMS REACH THIS FILE, AND THAT IS THE WHOLE REASON THIS
+--- TABLE EXISTS. `lastHitWeapon` is not one type:
+---
+---   * the gunshot path stores `data.weaponType`, which is a HASH -- see
+---     damage.lua, where it is looked up as `WeaponByHash[NormHash(...)]`;
+---   * the explosive path stores `f.item`, which is an ID string;
+---   * and a row built by hand may carry the `WEAPON_*` NAME.
+---
+--- A lookup that assumed any one of those would answer "not a weapon we issue"
+--- for the other two. That answer is not cosmetic here -- the console paints it
+--- red and calls it high confidence of cheating -- so the cost of guessing the
+--- form wrong is a false accusation against an innocent player. Accepting all
+--- three is deliberate: a weapon we recognise by ANY of its identifiers is one
+--- we issue, and there is no case where recognising it too easily does harm.
+---
+--- BUILT LAZILY AND CACHED ONLY ONCE POPULATED. br_lib's config and shared
+--- files load in an order this file must not assume, and an empty result means
+--- "the config is not up yet", never "there are no weapons". Caching the empty
+--- one would make every kill for the rest of the process look conjured.
+local known = nil
+local function knownWeapons()
+    if known then return known end
+
+    local cfg = BR.Config
+    if cfg == nil or cfg.WeaponById == nil or next(cfg.WeaponById) == nil then
+        return nil
+    end
+
+    local byId, byHash, byName, env = {}, {}, {}, {}
+    for id, w in pairs(cfg.WeaponById) do
+        byId[id] = w
+        if w.name then byName[w.name] = w end
+        if w.hash and BR.NormHash then byHash[BR.NormHash(w.hash)] = w end
+    end
+    for _, e in ipairs(cfg.Environmental or {}) do
+        env[e.id] = true
+        if e.name then env[e.name] = true end
+    end
+
+    known = { byId = byId, byHash = byHash, byName = byName, env = env }
+    return known
+end
+
+--- What killed them, and whether it is something this gamemode hands out.
+---
+--- THREE ANSWERS, NOT TWO, AND THE THIRD IS WHY THIS IS NOT A BOOLEAN.
+---
+---   * a weapon we issue           -> label, true
+---   * a weapon we do not issue    -> no label, FALSE. This is the finding the
+---                                    field exists to carry.
+---   * a fall, a drowning, a storm -> no label, NIL
+---
+--- The third case is the one that matters. An environmental death is not a
+--- weapon claim at all, and answering `false` would have the console accuse
+--- somebody of cheating because they walked off a cliff. `nil` does not
+--- travel: a Lua key set to nil simply does not appear in the row.
+---
+--- ABSENT MEANS "NO CLAIM", AND THE CONSOLE MUST READ IT THAT WAY. Every case
+--- filed before this field existed carries no `weaponIssued`, and none of them
+--- may light up red the day the console learns to look. Red requires an
+--- explicit `false`, never the absence of a `true`.
+---
+--- SILENCE ON DOUBT, IN EVERY DIRECTION. No config, an unexpected type, no
+--- weapon at all: all `nil`. The dangerous answer here is never silence, it is
+--- a confident wrong one.
+local function weaponFacts(w)
+    if w == nil then return nil, nil end
+
+    local K = knownWeapons()
+    if K == nil then return nil, nil end
+
+    if type(w) == 'number' then
+        local hit = BR.NormHash and K.byHash[BR.NormHash(w)] or nil
+        if hit then return hit.label, true end
+        if BR.Config.EnvironmentalFor and BR.Config.EnvironmentalFor(w) then
+            return nil, nil
+        end
+        return nil, false
+    end
+
+    if type(w) == 'string' then
+        local hit = K.byId[w] or K.byName[w]
+        if hit then return hit.label, true end
+        if K.env[w] then return nil, nil end
+        return nil, false
+    end
+
+    return nil, nil
+end
+
+local function killEntry(k)
+    -- Resolved HERE, on the server, at the moment the case is built, rather
+    -- than shipped to the console as an id for it to look up. The console has
+    -- no weapon list and must not grow one: a second copy of this table in
+    -- another repository is a copy that drifts, and the failure it produces is
+    -- an innocent player shown in red. The gamemode is the authority on what
+    -- the gamemode issues, so the gamemode answers.
+    local weaponLabel, weaponIssued = weaponFacts(k.weapon)
+
+    return {
+        at   = k.at,
+        kind = 'kill',
+
+        killerLicense = k.killerLicense,
+        killerName    = k.killer,
+        victimLicense = k.victimLicense,
+        victimName    = k.victim,
+
+        weapon   = k.weapon,
+        -- The display name, because `weapon` is an id: 'marksmanrifle' is not
+        -- what an admin reads on a case, 'Marksman Rifle' is. Absent when the
+        -- weapon is not one we issue -- we have no label for something we do
+        -- not have, and inventing one would dress up the thing being flagged.
+        weaponLabel  = weaponLabel,
+        weaponIssued = weaponIssued,
+        cause    = k.cause,
+        -- STRICTLY BOOLEAN. `headshot` is set as `(cause == 'headshot') or nil`
+        -- upstream, so it arrives as true or as absent, and this pins it to a
+        -- real boolean before it crosses into JS. IN LUA `0` IS TRUTHY: a bare
+        -- `if k.headshot` would call a `0` from any future producer a headshot.
+        headshot = k.headshot == true,
+    }
+end
+
+--- Every kill in `records`, oldest first, deduplicated, optionally windowed.
+---
+--- @param records table|nil  BR.Evidence.forLicense(license)
+--- @param afterGameMs number|nil  keep only kills strictly later than this
+--- @param cap integer|nil
+--- @return table[] entries, integer offered, integer seen
+local function killEntries(records, afterGameMs, cap)
+    cap = cap or MAX_TIMELINE_KILLS
+
+    local rows, seen = {}, 0
+    -- Identity of a kill, for the reconnect case: `forLicense` returns one
+    -- record per SESSION, and a row could in principle be noted against two of
+    -- them. A timeline that lists the same elimination twice reads as two
+    -- kills, which is a claim about a person that is simply false.
+    local sawRow = {}
+
+    for _, r in ipairs(records or {}) do
+        seen = seen + (r.killsSeen or #(r.kills or {}))
+        for _, k in ipairs(r.kills or {}) do
+            local at = tonumber(k.at)
+            -- `afterGameMs` NIL MEANS EVERYTHING, and that is not the same as 0.
+            -- A game-clock reading of 0 is a legitimate instant, so this compares
+            -- against nil explicitly rather than letting a falsy test decide.
+            if at ~= nil and (afterGameMs == nil or at > afterGameMs) then
+                local id = ('%d|%s|%s'):format(
+                    at, tostring(k.killerLicense or k.killer),
+                    tostring(k.victimLicense or k.victim))
+                if not sawRow[id] then
+                    sawRow[id] = true
+                    rows[#rows + 1] = k
+                end
+            end
+        end
+    end
+
+    table.sort(rows, function(a, b)
+        if a.at == b.at then
+            return tostring(a.victim or '') < tostring(b.victim or '')
+        end
+        return a.at < b.at
+    end)
+
+    local offered = #rows
+    -- OVERFLOW DROPS THE OLDEST, matching the buffer and the outbox: when a
+    -- record is full the rows describing what is happening now are worth more.
+    -- The caller reports the drop rather than hiding it.
+    while #rows > cap do table.remove(rows, 1) end
+
+    local out = {}
+    for _, k in ipairs(rows) do out[#out + 1] = killEntry(k) end
+    return out, offered, seen
+end
+
+--- Every strip in `records`, oldest first, optionally windowed.
+---
+--- NO DEDUPLICATION, UNLIKE THE KILLS ABOVE, and the asymmetry is real rather
+--- than an oversight. A kill is noted against BOTH participants, so `forLicense`
+--- returning one record per session can offer the same elimination twice. A
+--- strip is noted against one player's own record and nobody else's, so two
+--- rows are two events -- and collapsing them would be the actual falsehood
+--- here, because the thing this is evidence OF is repetition.
+---
+--- @param records table|nil  BR.Evidence.forLicense(license)
+--- @param afterGameMs number|nil  keep only strips strictly later than this
+--- @param cap integer|nil
+--- @return table[] entries, integer offered, integer seen
+local function stripEntries(records, afterGameMs, cap)
+    cap = cap or MAX_TIMELINE_STRIPS
+
+    local rows, seen = {}, 0
+    for _, r in ipairs(records or {}) do
+        seen = seen + (r.stripsSeen or #(r.strips or {}))
+        for _, s in ipairs(r.strips or {}) do
+            local at = tonumber(s.at)
+            -- nil MEANS EVERYTHING, and that is not the same as 0 -- the same
+            -- explicit comparison the kills make, for the same reason.
+            if at ~= nil and (afterGameMs == nil or at > afterGameMs) then
+                rows[#rows + 1] = s
+            end
+        end
+    end
+
+    table.sort(rows, function(a, b) return a.at < b.at end)
+
+    local offered = #rows
+    -- OVERFLOW DROPS THE OLDEST, matching the kills and the buffer -- and for
+    -- strips the oldest are the least costly rows to lose, because the earliest
+    -- ones already rode the incident's own PutItem and are durable.
+    while #rows > cap do table.remove(rows, 1) end
+
+    local out = {}
+    for _, s in ipairs(rows) do
+        out[#out + 1] = {
+            at   = s.at,
+            kind = STRIP_KIND,
+            -- THE CLIENT'S WORD, AND THE ONLY FIELD ON THIS TIMELINE THAT IS.
+            -- See the header. Kept because it is the whole content of the
+            -- finding -- there is no label for a weapon the gamemode has never
+            -- heard of, so the number the cheat actually used is what an admin
+            -- gets, exactly as it is for a kill with an unissued weapon.
+            weapon = tonumber(s.weapon),
+        }
+    end
+    return out, offered, seen
+end
+
+--- Two already-sorted entry lists into one, oldest first.
+---
+--- A MERGE RATHER THAN A CONCATENATION-AND-SORT, because the order of this list
+--- is not cosmetic. js-src/br_ddb/src/close.js takes the LAST n entries when a
+--- close overflows -- so a list with every strip appended after every kill would
+--- truncate by KIND rather than by age, and an offender who kept stripping would
+--- push their own kills off the record. Chronological order makes the overflow
+--- rule mean what it says.
+---
+--- STABLE, AND TIES GO TO THE FIRST LIST. Two entries at the same game
+--- millisecond is ordinary -- the clock has 1ms resolution and a tick does
+--- several things -- and an unstable answer would make the tests flap.
+local function mergeByTime(a, b)
+    local out, i, j = {}, 1, 1
+    while i <= #a or j <= #b do
+        local x, y = a[i], b[j]
+        if y == nil or (x ~= nil and x.at <= y.at) then
+            out[#out + 1] = x
+            i = i + 1
+        else
+            out[#out + 1] = y
+            j = j + 1
+        end
+    end
+    return out
+end
+
+--- The match context known at FILING time. Costs no extra write.
+---
+--- Folded into the incident payload by the caller, so these fields ride the
+--- PutItem that was already going to happen.
+---
+--- @param opts table {
+---     matchId, matchStartedAt (game ms), records }
+--- @return table  fields to merge onto the incident payload
+function BR.IncidentBuild.timelineOpen(opts)
+    opts = opts or {}
+
+    -- NO MATCH, NO TIMELINE. An anticheat firing from the lobby or a `brrefuse`
+    -- from the console carries no matchId and no start -- and inventing a
+    -- timeline for it would put a match on the record that never happened. The
+    -- console shows no match context at all in that case, which is the truth.
+    if opts.matchId == nil or opts.matchStartedAt == nil then
+        return {
+            matchStartedAt        = nil,
+            matchEndsByMs         = nil,
+            matchTimeline         = {},
+            matchTimelineComplete = true,
+            matchKillsSeen        = 0,
+            matchKillsWritten     = 0,
+            matchStripsWritten    = 0,
+        }
+    end
+
+    local entries = { { at = opts.matchStartedAt, kind = 'match_start' } }
+
+    local kills, offered, seen = killEntries(opts.records, nil, MAX_TIMELINE_KILLS)
+    local strips, stripsOffered, stripsSeen =
+        stripEntries(opts.records, nil, MAX_TIMELINE_STRIPS)
+    for _, e in ipairs(mergeByTime(kills, strips)) do entries[#entries + 1] = e end
+
+    return {
+        matchStartedAt = opts.matchStartedAt,
+        -- A DURATION HERE, AN ABSOLUTE TIME ON THE ROW. br_ringmaster owns the
+        -- clock pair and turns this into wall-clock `matchEndsBy` on the way
+        -- out, the same conversion every other timestamp in the payload gets.
+        matchEndsByMs  = MATCH_ENDS_BY_MS,
+        matchTimeline  = entries,
+        -- COMPLETENESS IS ABOUT THE WHOLE LIST, NOT ABOUT THE KILLS. A timeline
+        -- whose kills are all present and whose strips were truncated is not
+        -- complete, and saying otherwise would tell an admin "this is everything
+        -- they did" when it is not -- the one failure a moderation record must
+        -- not produce.
+        --
+        -- THERE IS NO `matchStripsSeen` BESIDE `matchKillsSeen`, DELIBERATELY.
+        -- The close write may only touch five attributes -- that allowlist IS
+        -- the game's IAM grant on `ringmaster-incidents` -- and a sixth would
+        -- need the policy widened for a counter. The flag below already carries
+        -- the fact that something was dropped, which is what the reader needs.
+        matchTimelineComplete = (#kills == offered) and (offered == seen)
+            and (#strips == stripsOffered) and (stripsOffered == stripsSeen),
+        matchKillsSeen = seen,
+        -- What the close write must not double-count.
+        matchKillsWritten = #kills,
+        matchStripsWritten = #strips,
+    }
+end
+
+--- The one fact that only becomes true later: the match ended.
+---
+--- @param opts table {
+---     matchEndedAt (game ms), filedAtGameMs, records, priorKills, priorStrips,
+---     complete }
+--- @return table  the close payload
+function BR.IncidentBuild.timelineClose(opts)
+    opts = opts or {}
+
+    local priorKills = tonumber(opts.priorKills) or 0
+    local budget = MAX_TIMELINE_KILLS - priorKills
+    if budget < 0 then budget = 0 end
+
+    local priorStrips = tonumber(opts.priorStrips) or 0
+    local stripBudget = MAX_TIMELINE_STRIPS - priorStrips
+    if stripBudget < 0 then stripBudget = 0 end
+
+    -- STRICTLY AFTER THE FILING INSTANT. The kills up to that moment are already
+    -- on the row, written by timelineOpen; re-sending them would show an admin
+    -- the same elimination twice.
+    --
+    -- THE STRIP THAT OPENED THE CASE IS EXCLUDED BY THIS SAME COMPARISON and
+    -- that is not a coincidence to rely on quietly: the first strip is recorded
+    -- in the buffer and THEN the payload is built, so its `at` equals the filing
+    -- instant exactly, and `> filedAtGameMs` drops it. It is already on the row.
+    local kills, offered, seen =
+        killEntries(opts.records, opts.filedAtGameMs, budget)
+    local strips, stripsOffered, stripsSeen =
+        stripEntries(opts.records, opts.filedAtGameMs, stripBudget)
+
+    local entries = {}
+    for _, e in ipairs(mergeByTime(kills, strips)) do entries[#entries + 1] = e end
+    entries[#entries + 1] = { at = opts.matchEndedAt, kind = 'match_end' }
+
+    -- COMPLETE MEANS COMPLETE END TO END. The filing may already have truncated,
+    -- in which case nothing this write does can make the timeline whole again --
+    -- so the flag carries that forward rather than reporting only on its own
+    -- half. `seen` counts every kill the buffer was ever offered for this
+    -- player, including ones its caps dropped, which is what makes the
+    -- comparison honest.
+    local wrote = priorKills + #kills
+    local stripsWrote = priorStrips + #strips
+    local complete =
+        (opts.complete ~= false)
+        and (#kills == offered)
+        and (seen <= wrote)
+        and (#strips == stripsOffered)
+        and (stripsSeen <= stripsWrote)
+
+    return {
+        matchEndedAt          = opts.matchEndedAt,
+        matchTimeline         = entries,
+        matchTimelineComplete = complete,
+        matchKillsSeen        = seen,
+    }
+end
+
+BR.IncidentBuild.TIMELINE_LIMITS = {
+    MAX_TIMELINE_KILLS  = MAX_TIMELINE_KILLS,
+    MAX_TIMELINE_STRIPS = MAX_TIMELINE_STRIPS,
+    MATCH_ENDS_BY_MS    = MATCH_ENDS_BY_MS,
+}
+
+--- The `kind` a strip entry carries, for the tests and for verify.sh.
+BR.IncidentBuild.STRIP_KIND = STRIP_KIND

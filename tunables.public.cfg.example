@@ -1,0 +1,76 @@
+## FiveM Royale -- PUBLIC SERVER tunables
+##
+## This file deliberately sets nothing.
+##
+## Copy it onto the game box as  tunables.cfg  next to server.cfg. Every value
+## then comes from br_lib/config/match.lua exactly as it is committed, which is
+## what a public server should be running: the values that were reviewed, not
+## the values somebody typed on a box once.
+##
+## It exists so that "make this the public server again" is one copy and a
+## restart -- the same operation as "make this the dev server", in the other
+## direction -- rather than a hunt through a file for lines to comment out.
+##
+## Not having a tunables.cfg on the box at all produces the same GAME. FXServer
+## will complain once on start that it could not execute the file it was told
+## to, and then carry on with every default in place. Shipping this file is how
+## you get the silence as well.
+##
+## The dev settings, and what each one does, are documented in
+## tunables.dev.cfg.example. If you want one of them on a public server, put it
+## here on purpose -- and expect the boot banner to say so on every start.
+
+# ---------------------------------------------------------------------------
+# THE ONE THING THIS FILE DOES SET, and it sets it to the value a public server
+# must have.
+#
+# Dev mode lowers the minimum players to start a match from 16 to 1 and unlocks
+# the dev-only debug commands. It is not one of the tunables -- it is an older
+# switch read by br_core/server/main.lua -- but it is the setting most likely to
+# be left on by accident, and the whole point of this file is that copying it
+# over tunables.cfg leaves you with a public server and nothing to remember.
+#
+# It is spelled out here rather than left absent BECAUSE ABSENT IS NOT ENOUGH:
+# server.cfg.example ships with both of these set to true further down the
+# file, and in a .cfg the last line wins. If your server.cfg still has them,
+# delete those two lines -- otherwise they will quietly override these, and this
+# file will have made a public server that starts matches with one player in it.
+# ---------------------------------------------------------------------------
+set sv_devMode false
+set br_devMode false
+
+# ---------------------------------------------------------------------------
+# THE ADMIN CONSOLE is deliberately NOT set here, and this comment is the only
+# thing about it in this file.
+#
+# br_adminConsoleUrl turns on the Admin tab in the pause menu (#23). It is off
+# on a public server not because it would be unsafe -- the tab is shown only to
+# licenses holding the console scope in DynamoDB, and the console runs its own
+# live Discord role check before it will open a session -- but because a public
+# box has no reason to carry the console's address at all.
+#
+# If you do want it on a public server, put it here on purpose, spelled the way
+# tunables.dev.cfg.example documents, and expect the boot banner to say so on
+# every start.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# OUR DISCORD is not set here either, and this one is worth a second look before
+# you accept that.
+#
+# br_discordUrl is the address appended to the message a kicked or banned player
+# sees ("Please join our Discord to discuss or appeal: ..."). Unlike everything
+# else named in these two files it is NOT a dev-versus-public difference -- it
+# is the same address on every box, and a public server is where the kicks
+# actually happen.
+#
+# It stays unset here because this file's whole promise is that copying it over
+# tunables.cfg leaves you with the reviewed configuration and nothing typed on a
+# box. Put the invite in server.cfg instead -- below the `exec "tunables.cfg"`
+# line and above `ensure br_lib`, which is where server.cfg.example shows it --
+# and it survives every swap between this file and the dev one. Put it here and
+# you will lose it the next time somebody makes this box a dev box and back.
+#
+# Unset is not broken: the player is told why they were removed, and no appeal
+# line is printed at all.
+# ---------------------------------------------------------------------------

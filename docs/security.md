@@ -214,11 +214,21 @@ grenade at your own feet lands several ticks well inside that. A pure-self clust
 of eight is two grenades, not somebody exercising something.
 
 **The game files the row itself, and that is a deliberate widening of `br_ddb`.**
-`ringmaster-incidents` is the one console-owned table the game may write, and it
-is **append-only**: file a case, never read one back, no access at all to grants,
-bans or audit. The write is conditional on the id being absent, so a repeat can
-only be refused — it cannot overwrite a case, or erase a verdict and the admin who
-made it.
+`ringmaster-incidents` is the one console-owned table the game may write. The
+write is conditional on the id being absent, so a repeat can only be refused — it
+cannot overwrite a case, or erase a verdict and the admin who made it. The game
+holds **no access at all** to `ringmaster-audit`, and read-only single-key access
+to `ringmaster-bans` and `ringmaster-grants`.
+
+**This table was write-only until 2026-08-17 and is not any more.** Report
+rewards (#168) added `incidentVerdict`, a `GetItem` by an id the game minted
+itself, projected to four attributes — `incidentId`, `state`, `verdict`,
+`resolvedAt`. Nothing else on the row crosses into the game server: not the
+evidence, not the chat log, not the reporter, not the subject, not the
+moderator's written resolution. A compromised game box can now learn whether a
+case it filed was decided and whether an action followed. It still cannot
+enumerate cases — there is no `Query` and no `Scan` anywhere in `br_ddb` — and it
+still cannot alter a verdict. See [the ban contract](ban-contract.md).
 
 The alternative was posting the case over the event channel and letting the
 console write it. That is worse: the channel drops batches silently after four
@@ -226,6 +236,248 @@ attempts and nothing on either envelope says so, and an incident lost that way i
 unrecoverable because the evidence buffer behind it is discarded at match end. So
 the row is written by the game and the event carries only an id. What a
 compromised game box gains from this grant is the ability to file noise.
+
+## The second source: a weapon in a hand the gamemode never filled
+
+Everything above is the **damage** path — refused shots, counted server-side inside
+`weaponDamageEvent`. There is a second thing that opens a case, and it is a
+different shape in every way that matters, so it is documented apart rather than
+folded into the table above.
+
+`br_core/client/inventory.lua` has always taken any weapon that is not the active
+inventory slot out of the ped's hand. **That strip is a gameplay fix and not an
+anticheat one.** The engine applies damage locally before the server sees it, so a
+foreign weapon lets a client kill somebody on their own screen while the server
+refuses the shot — the victim reads as dead and is alive. That was a live report on
+2026-08-08.
+
+**What was wrong with it was the silence.** A player granting themselves a rifle in
+a menu tripped nothing: the weapon vanished, they granted another, and the match
+ended with an empty record. The strip now reports, and
+`br_core/server/strip.lua` turns those reports into the same kind of case the
+refusal path files.
+
+> The **second** countable strip in a match opens one incident. The first is recorded
+> and announced to nobody — one weapon in one hand for one tick is the shape our own
+> two inventory mirrors disagreeing has, and a second one a second later is not. Every
+> strip after the second announces, **each one**, and appends a `weapon_strip` entry to
+> **that** incident's `matchTimeline` — never a second case. Announcements no longer
+> follow `damage.lua`'s doubling rule: the owner's call on 2026-08-20 was that "'4 or 5
+> more times' is too many", so `count` on the wire now climbs 2, 3, 4, 5 and a gap in it
+> means a **lost** announcement rather than quiet strips in between. What bounds the
+> channel is `MIN_INTERVAL_MS` (one countable strip per 900 ms per player) and the
+> artifact planner's per-case frame cap; the timeline still receives all of them,
+> because it is RAM until the case's own writes carry it.
+
+**Cost is unchanged by volume.** The strips known at filing time ride the `PutItem`
+that was already happening; the rest ride the match-end `UpdateItem` that was
+already happening. That close write touches only the five attributes the game's
+grant on `ringmaster-incidents` allows, and strips add none — which is also why
+there is no `matchStripsSeen` counter beside `matchKillsSeen`. A truncated strip
+list is reported by `matchTimelineComplete` going false, and that is the whole of
+it.
+
+**Two guards stop this accusing innocent players, and they exist because the strip
+is deliberately broader than the report.** The strip compares against the *active*
+slot, so a weapon from another of the player's own slots — held for the tick between
+a slot change and the grant landing — is stripped too. Stripping it is harmless.
+Filing it would not be. So the client declines to report a hash that is in any of
+its own slots, and the server declines again against **its own** inventory, which is
+the copy a compromised client does not control. `brstrips` prints how often that
+second guard fired; on a healthy server it is zero.
+
+**Nobody is exempt.** An admin exemption shipped here for one commit, testing the
+console grant so that weapons granted through vMenu while testing would not open
+cases about the person who reads the queue. The owner removed it the same day: *"I
+don't want admins to be exempt from any incidents please."*
+
+They were right, and the reasoning is worth keeping rather than the exemption. The
+noise it avoided is a queue the owner can close; the hole it opened was shaped
+exactly like the accounts with the most power, and nobody would have seen it. The
+grant is no longer consulted at all — an admin, a player known not to be staff, and
+a player whose grant row was never read all file identically, so a slow or failed
+DynamoDB read cannot decide whether an accusation gets made. Restoring the
+exemption fails six tests by name.
+
+The premise was wrong as well as the policy: **vMenu is a development tool and is
+not going to production**, so there is no benign route to a weapon this gamemode
+never issued. In production every strip is a cheat signal, and one during warmup is
+the earliest one available — it happens before the offender has touched a real
+player.
+
+**This catches one tier and it is not the serious one.** The report is sent by our
+own resource running on the offender's machine. A cheat that stops `br_core` — or
+deletes one `TriggerServerEvent` — silences it completely, and no server-side native
+can read what is in a ped's hand to check. What it catches is the vMenu tier, with
+our resource still running underneath. The unforgeable half is the damage validation
+above, which does not need the client's cooperation and cannot be turned off from
+one.
+
+## Artifacts: screenshots of the offender, and why they may not exist
+
+A filed case captures the **offending player's own screen** three times —
+immediately, at **+5s** and at **+10s** — plus one frame per corroboration
+arriving after that first ten seconds, to a maximum of **nine per case**. At the
+cap the capture stops; nothing already taken is ever discarded to make room.
+
+The capture runs on the **subject's own machine**, through the third-party Cfx
+resource `screenshot-basic`, and uploads to `royale-incidents-bucket` under
+`incidents/<incidentId>/NN.webp`. The game box holds `s3:PutObject` on that
+prefix and nothing else — it cannot read a frame back, list the bucket, or delete
+one. The console holds `GetObject` and serves frames to a browser through
+short-lived presigned GETs; the bucket is not public and objects expire after 180
+days.
+
+**EMPTY IS NORMAL AND IS NOT EVIDENCE OF ANYTHING.** This is the property that
+matters most and the easiest one to lose. The subject can disconnect, crash,
+alt-tab, sit on a loading screen, or be running a client where `screenshot-basic`
+was never installed — and every frame fails independently of the others. A case
+with two frames, or none, is a normal case and says nothing whatsoever about
+whether anything was happening. Nothing in the game logs a missing frame as an
+error, and nothing anywhere should present one as meaningful.
+
+**The timestamp is the server's.** This is an anti-cheat surface: the premise is
+that the subject may be running modified software, so their clock is not
+evidence. Each frame is stamped with `os.time()` on the game box at the moment
+the server decided to ask for it, and that value travels as S3 object metadata
+(`x-amz-meta-captured-at`, unix milliseconds) rather than in the key or on the
+DynamoDB row — the game's grant on `ringmaster-incidents` is append-only, so it
+cannot add to a case it has already filed.
+
+**The subject is told nothing, at any point.** Same rule as the rest of the
+pipeline: no notice, no hint, no sound. A player who learns they are under
+suspicion changes behaviour, which costs the case the evidence it was made of.
+
+### `screenshot-basic` is not vendored, unlike pma-voice
+
+pma-voice lives in this repository at `resources/[voice]/pma-voice` because three
+player-facing faults were unfixable from outside it, and a third-party resource
+we cannot patch is a resource we cannot fix. The same argument was weighed here
+and comes out the other way, for reasons that are about this particular resource
+rather than about the principle:
+
+* **It cannot be vendored the way pma-voice was.** pma-voice ships runnable Lua,
+  so `VENDOR.json` can assert that every byte outside a marked patch is
+  byte-identical to an upstream tag. `screenshot-basic` ships TypeScript with a
+  `package.json` and `webpack_config` lines, and **has no built output in the
+  repository at all** — FXServer builds it on the box with its own Node 16 and
+  yarn toolchain. Vendoring it would mean either shipping that toolchain
+  dependency (which `DEPLOY.md` documents as the thing that already took a
+  resource down once) or committing a build we produced ourselves, which
+  destroys the provenance property the vendoring gate exists to assert.
+* **Nothing in it needs patching for us.** The faults that justified vendoring
+  pma-voice were player-facing and unavoidable. This resource is called once per
+  frame from server code, is never touched by a player, and its one real defect —
+  it holds an upload token open forever, so a callback for a client that never
+  answers is never fired — is worked around cleanly from our side with a timeout
+  and a swept spool directory.
+
+So it is **installed, not vendored**, and the standing rule applies with full
+force: *do not assume it is installed*. `br_core/server/artifacts.lua` checks
+`GetResourceState` before every capture, opens no case state when it is absent,
+and produces no log line at all — a server without it files incidents exactly as
+before, carrying no frames.
+
+## A case has two states, and a verdict is final
+
+`pending_review` and `resolved`. There is no third state, **a resolved case
+cannot be re-opened, and a verdict cannot be changed after the fact.** The
+console writes the state and the verdict in one conditional update that refuses
+to run twice, so there is no window in which a resolved row is still waiting for
+its decision to arrive.
+
+That is what lets the game read a case with a single question and no polling
+subtlety: `state === 'resolved'` means finished, whatever else is or is not on
+the row. It is also why a resolved row carrying **no verdict at all** has to be
+its own answer rather than being folded into "no action taken" — a row that
+predates the field, or one the system auto-resolved, records that nobody decided
+anything, and reporting it as a decision would be a claim about a human who never
+looked.
+
+**A ban issued from a case is an ordinary ban.** It is a standard audit action,
+recorded in `ringmaster-audit` like any other admin action, and the row it writes
+to `ringmaster-bans` is the one in [the ban contract](ban-contract.md) with no
+extra field. There is no separate enforcement pathway that skips the audit log —
+which matters here, because the whole reason the game does not decide what
+happens to a player is that the console is the side with the ban list, the audit
+log and a human.
+
+## Players filing cases, and why the panel gives them so little
+
+A report opens or corroborates a case on the same table the anticheat writes to.
+The limits are in `BR.Config.Report` and there are three of them at once:
+
+| limit | value | what it bounds |
+|---|---|---|
+| `maxTargets` | 5 | players nameable in one submission |
+| `maxPerMatch` | 3 | submissions per player per match |
+| one per target per match | — | how many times one accusation can be made to count twice |
+
+Those are deliberately not the same rule. Three submissions of five distinct
+targets is fifteen reports and is fine; two submissions naming the same person is
+one report and the second is refused. The first bounds how often a player can
+make the server write to a database, the second bounds how often one accusation
+can be double-counted.
+
+- **A submission naming somebody already reported is refused whole**, not partly
+  filed. A partial file has no honest answer — "3 reports sent" is true and hides
+  the refusal — and the panel keeps the selection on a refusal, so an explicit
+  "you have already reported X" leaves the player one untick away from sending
+  the rest. It does **not** cost them a submission; hitting the rate limit does,
+  because hammering the limit is itself a signal worth keeping.
+- **There is no free-text box.** The dropdown reason is the whole report. A note
+  field existed through a page, a callback, a net event and an incident payload,
+  and `br_ddb` had been writing `note: null` unconditionally the whole time.
+- **The reporter is never told whether a case already existed.** "Your report was
+  added to an existing case" would leak that the person they just named is under
+  review, which is precisely what an offender's friend would go looking for.
+- **A report with no license is refused.** An unattributable accusation is worth
+  less than none: the console's "who reports everybody" signal depends on knowing
+  who filed it.
+
+**"Suspect cheating? Press TAB to report &lt;name&gt;" carries no subject on the
+wire, and neither does pressing it.** `BR.Net.REPORT_KILLED` and
+`BR.Net.REPORT_CORROBORATE` both take **no payload at all**. The server resolves
+the asker's own killer from the roster and the damage records it already keeps —
+the same attribution the kill feed uses — and answers about that player or
+answers nothing. The obvious shape, "is player 14 under suspicion?", is a probe:
+a modified client would walk the roster and read back exactly the list this
+feature must never produce. Rate-limiting a probe does not stop it, it slows it.
+**The guard is the absence of a parameter, not a check on one.**
+
+It requires state DEAD — being knocked down is not being killed — a killer the
+server itself attributed, and a case open on that killer. What a player can still
+learn is one bit about one player they were already looking at, and only after
+being killed by them. The subject learns nothing, here or anywhere.
+
+**Widening the lookup did not widen the question (#177).** The prompt now fires
+for a case open against the killer in *any* match rather than only the current
+one, which is a larger set of cases and the same single bit about the same single
+player. The map it reads (`BR.Incident.openFor`) is license-keyed, lives entirely
+server-side, and is reached only by that resolver — there is no verb anywhere
+that accepts a license from a client, and br_ddb still has no Query or Scan, so
+nothing on the box can enumerate cases at all.
+
+**…but it did widen what the keypress spent, and that had to be split back
+apart.** Answering the prompt records itself in `usage.corroborated`, which is
+what makes it one action per offender per match. It also spends `usage.named` —
+the set the *panel* refuses on — but **only when the case it answered belongs to
+this match**. Both writes happened unconditionally until 2026-08-18, so a case
+filed in one round and corroborated from the prompt in the next spent the *next*
+round's panel allowance: the reporter was told "you have already reported X in
+this match" about a match in which they had reported nobody, and that round's own
+cheating opened no case. Filing policy is per match on purpose — three rounds of
+cheating are three things worth telling an admin about — and a prompt that reads
+across matches must not repeal it by the back door.
+
+**Both halves are decided by one function.** `corroborationFor` in
+`br_core/server/players.lua` decides whether the prompt is shown *and* whether
+the keypress does anything. A client that skips the prompt and sends
+`REPORT_CORROBORATE` on its own gets exactly what an honest one would: nothing,
+unless it was genuinely owed. The failed paths answer **silently** rather than
+explaining themselves — "they have no case" and "you already named them" are
+facts about somebody else's standing, and an endpoint that distinguished them
+would be the oracle the payload-free design exists to prevent.
 
 **One event, three answers, and `weaponType` gives all of them.**
 `weaponDamageEvent` fires for everything that hurts a player — gunfire, melee,

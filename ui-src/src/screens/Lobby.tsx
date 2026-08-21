@@ -247,8 +247,18 @@ export default function Lobby({
         }}
       >
         <div>
+          {/* THE WORDMARK, AND IT IS WHY "the lobby still shows FiveM Royale"
+              SURVIVED TWO ROUNDS OF BEING FIXED.
+
+              The two halves of the name are separate text nodes either side of
+              a `<br />`, so the string "FiveM Royale" does not exist anywhere in
+              this file -- a repo-wide grep for the old name returns Help.tsx,
+              PauseMenu.tsx, index.html and the manifests, and skips the one
+              place a player actually reads it, in 4.6rem display caps, on the
+              first screen of the game. It is called out here so the next sweep
+              does not miss it for the same reason. */}
           <h1 className="font-display text-[4.6rem] leading-[0.9] tracking-tight">
-            FiveM<br />
+            Blitz<br />
             <span style={{ color: 'var(--color-royale-accent)' }}>Royale</span>
           </h1>
           <p className="text-[0.95rem] text-white/40 mt-2 tracking-wide">
@@ -302,7 +312,16 @@ export default function Lobby({
                 >
                   {m.name.toUpperCase()}
                 </div>
-                <div className="text-[0.72rem] text-white/40 mt-1.5 leading-snug">{m.sub}</div>
+                {/* Two sentences describing the mode -- prose, and it was
+                    hand-typed at text-white/40, which is the literal the
+                    palette tokens exist to stop. --fs holds the tile's
+                    original 0.72rem so the pair does not re-wrap. */}
+                <div
+                  className="body-text mt-1.5"
+                  style={{ ['--fs' as string]: '0.72rem', lineHeight: 1.375 }}
+                >
+                  {m.sub}
+                </div>
               </button>
             ))}
           </div>
@@ -350,7 +369,7 @@ export default function Lobby({
           ) : (
             <>
               {matchRunning && (
-                <p className="text-[0.8rem] text-white/40 mb-2.5">
+                <p className="body-text mb-2.5">
                   {match.state === 'warmup'
                     ? 'A match is forming — ready up to jump straight in.'
                     : 'A match is in progress — ready up to join the next one.'}
@@ -463,6 +482,27 @@ export default function Lobby({
             </Btn>
           </div>
         </div>
+
+        {/* NOTHING GOES UNDER THE MENU (#147).
+
+            A LEAVE SERVER BUTTON STOOD HERE AND THE OWNER TOOK IT OUT UNDER
+            #83: "the leave button shouldn't be on the front page, but rather
+            in the pause menu." It was here because at the time the pause menu
+            could not be opened from the lobby at all -- the game never
+            receives a keypress while our cursor is up, so neither key route
+            reached it. The page's own Escape handler does receive one, and it
+            now asks for the menu (App.tsx), so the exit went back where it
+            belongs.
+
+            WHAT #83 LEFT BEHIND WAS A KEY HINT -- "Esc — pause menu, and the
+            way to leave the server" -- on the argument that a menu nobody
+            knows about is the same as no menu. The owner has now rejected that
+            too (#147, 2026-08-16: "We don't need helper text under the menu in
+            the lobby btw"), so the hint is gone and this comment is what is
+            left of it: the reasoning was that the menu needed advertising, and
+            the answer is that it does not. Escape is the pause key in every
+            game the players already own, and the button below it is the thing
+            this screen is for. Do not put a third thing here. */}
       </div>
     </div>
   )

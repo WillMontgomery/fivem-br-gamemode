@@ -10,6 +10,16 @@
  * `s` is monotonic so stale or out-of-order messages can be dropped.
  */
 
+/**
+ * The one import in this file, and it is type-only.
+ *
+ * `squadcue` carries a cue NAME, and the set of legal names is the cue table's
+ * to define -- so the envelope references it rather than restating it as a
+ * string. audio/cues.ts imports nothing, so this cannot become a cycle, and
+ * `import type` is erased at build time either way.
+ */
+import type { Cue } from '../audio/cues'
+
 export const ENVELOPE_VERSION = 1
 
 // --- enums, mirroring br_lib/shared/enums.lua -------------------------------
@@ -62,6 +72,23 @@ export interface HudPayload {
   paused?: boolean
   /** Sprint stamina 0..100, client-computed. The bar hides at full. */
   stamina?: number
+  /**
+   * MY OWN PED SAYS IT HAS TOUCHED DOWN, which is not the same claim as
+   * `state`.
+   *
+   * `state` is the SERVER's word, and it becomes 'alive' only once the landing
+   * report has made its round trip -- a message with a documented history of
+   * going missing, which is why it has a retry loop and a server-side rescue
+   * net behind it. Until it lands, the panels below hide themselves and the
+   * player stands on the ground with no inventory bar and no squad panel,
+   * occasionally until the match itself reaches 'playing' (#126).
+   *
+   * That was read as slowness once and answered with speed. It is not
+   * slowness: the systems are off, and this is the second fact that turns them
+   * on. Only presentation reads it -- nothing here decides anything the server
+   * owns.
+   */
+  landed?: boolean
 }
 
 export interface StormPayload {
@@ -89,6 +116,26 @@ export interface SquadMember {
   hp: number
   armour: number
   colour: string
+  /**
+   * WHEN THIS MATE BLEEDS OUT. A SERVER timestamp, on the same clock as every
+   * other `endsAt` in this file, so it is only comparable to
+   * `Date.now() + clockOffset` -- never to a bare Date.now().
+   *
+   * Set only while `state === 'dbno'`, and OPTIONAL BECAUSE LUA DOES NOT SEND
+   * IT YET. `dbnoUntil` is explicitly marked non-public in br_core's
+   * roster.lua ("the client is TOLD its own downed state on BR.Net.DBNO_SET,
+   * and other players learn about it only from the `state` field"), so the
+   * squad payload assembled in br_core/client/state.lua carries no deadline at
+   * all -- see the note in hud/SquadPanel.tsx for exactly what has to change.
+   *
+   * The panel renders NO TIMER when this is absent rather than starting one of
+   * its own. A browser-side countdown seeded from the first frame it saw a mate
+   * go down would be wrong by however late that frame was, would reset on a
+   * br_ui restart, and -- the one that matters -- would keep counting down
+   * while enemy fire SHORTENS the real bleed, telling a squad they have time to
+   * make the pickup when they do not.
+   */
+  bleedEndsAt?: number
 }
 
 export interface SquadPayload {
@@ -212,13 +259,20 @@ export interface SpectatePayload {
   remaining: number
 }
 
+/**
+ * The verdict: what happened to you, not what you were paid.
+ *
+ * `xpEarned`, `damage` and `survivedMs` USED TO BE HERE and were removed. Lua
+ * sent all three as a hardcoded 0 from the day the payload was written, nothing
+ * ever rendered them, and they sat on the wire next to the XP bug looking for
+ * all the world like the thing that fed it (owner, #91). What a match paid
+ * arrives on EarnedPayload, from br_stats, computed from the values actually
+ * written to the database. Two payloads, one of which is a fact.
+ */
 export interface SummaryPayload {
   placement: number
   total: number
   kills: number
-  damage: number
-  survivedMs: number
-  xpEarned: number
   won: boolean
   /** How this player died, when they did: 'storm', 'fall', 'drowned',
    *  'burned', 'explosion', 'roadkill', or undefined/unknown. Drives the
@@ -391,12 +445,70 @@ export interface SettingsPayload {
    *  slider CAN reach -- PlaySoundFrontend has no per-cue volume. */
   volUi: number
   volMusic: number
-  /** Voice routing: 'squad' uses the squad room the server granted, 'nearby'
-   *  declines it and stays on proximity, 'off' stops transmitting. It can only
-   *  ever DECLINE a room -- the server decides which exist. */
-  voiceMode: 'squad' | 'nearby' | 'off'
+  /**
+   * Voice routing, SAVED ONCE PER KIND OF MATCH: 'squad' uses the squad radio
+   * the server granted, 'nearby' declines it and stays on proximity, 'off'
+   * stops transmitting. It can only ever DECLINE a room -- the server decides
+   * which exist.
+   *
+   * TWO FIELDS BECAUSE ONE COULD NOT BE RIGHT FOR BOTH. A player who picks
+   * Squad and then queues a solo used to carry Squad into a match with no
+   * squads, which is total silence by design and identical to a fault (#157).
+   *
+   * WHICH ONE IS IN FORCE IS LUA'S ANSWER, not this page's -- br_core derives
+   * it from the match kind (BR.VoiceModeFor, br_lib/shared/enums.lua) and
+   * sends the result back on the voice envelope as `VoicePayload.mode`. This
+   * page renders the two SAVED preferences and never computes the live one.
+   *
+   * 'squad' IS NOT A LEGAL VALUE FOR THE SOLO SLOT -- the type says so, and
+   * Lua coerces it away regardless. See the solos row in Settings.tsx.
+   */
+  voiceModeSolo: 'nearby' | 'off'
+  voiceModeSquad: 'squad' | 'nearby' | 'off'
   /** Proposed to the server; empty means "use my platform name". */
   gamertag: string
+}
+
+/**
+ * WHO IS SPEAKING, AND WHY YOU MIGHT BE HEARING NOBODY.
+ *
+ * `talking`/`names` are the bottom-centre indicator: ids for the squad panel's
+ * markers and names in the SAME ORDER for the bar. The names have to be on the
+ * wire because proximity voice carries anyone in the match and the interface
+ * has no other way to name a player who is not a squadmate.
+ *
+ * EVERYTHING ELSE IS THE STATUS, AND IT IS THE HALF THIS CHANNEL WAS MISSING.
+ * Squad voice is a pma-voice RADIO with its own push-to-talk, and a player in
+ * squad mode with no squad hears nothing at all -- both correct, both
+ * completely invisible, and between them they produced a week of "squad voice
+ * is broken" (#157). Lua computes the sentence and sends it; the page renders
+ * it and does not compose its own, so there is exactly one place the wording
+ * lives and it is next to the code that decides it (br_core/client/voice.lua,
+ * BR.Voice.statusFor).
+ */
+export interface VoicePayload {
+  talking: number[]
+  names?: string[]
+  /** The mode actually in force on this client, which is not necessarily the
+   *  one the settings screen last drew a button for. */
+  mode?: 'squad' | 'nearby' | 'off'
+  /** The squad radio channel the SERVER granted, or null for none. */
+  radio?: number | null
+  /** What this client last asked pma-voice to join. 0 means "no radio". */
+  joined?: number | null
+  /** How many squadmates the server named. */
+  mates?: number
+  /** A short machine-readable verdict: 'nearby' | 'silenced' | 'nosquad' |
+   *  'alone' | 'radio'. Style on this, never parse the prose. */
+  status?: string
+  /** Nothing can reach this player and nothing they say can leave. */
+  silent?: boolean
+  /** They ASKED for the silence ('off'). Do not alarm them about it. */
+  chosen?: boolean
+  /** One short line for the HUD. Absent when there is nothing to say. */
+  headline?: string | null
+  /** The longer version, for the settings screen. */
+  detail?: string | null
 }
 
 /**
@@ -435,17 +547,49 @@ export interface ProgressPayload {
   needed: number
 }
 
-/** The post-match award, which is what animates the bar. Carries where the
- *  player WAS, because the fill has to start from there. */
-/** What one match actually paid. Server-computed, from the same numbers
- *  written to the database -- not a client-side guess. */
 /** One row of the in-game player list. Everything here is already in
  *  PUBLIC_FIELDS - no position, no health, no matchId. */
 export interface ListedPlayer {
-  src: number
+  /**
+   * WHO THIS ROW IS ABOUT, AS AN OPAQUE PER-MATCH TOKEN (#172).
+   *
+   * It was `src: number` -- the player's server id -- and it could not stay
+   * one, because the rows that matter most now include players who have LEFT
+   * and a server id does not survive a disconnect. FiveM recycles them within
+   * the minute, so a departed row keyed by its old id resolves to whoever holds
+   * that slot now: the report would be filed against a stranger, and inside one
+   * match two rows could have collided on the same key.
+   *
+   * NOT A LICENSE WITH THE PREFIX TRIMMED, WHICH WAS THE PROPOSAL THIS
+   * REPLACED. `license:` is a constant, so removing it is a rename rather than
+   * obfuscation, and what would be left is the durable identifier this project
+   * files bans and moderation under. The server mints this instead, keeps the
+   * mapping, and drops it when the match ends -- so the page holds a string
+   * that means nothing anywhere else and never sees a license.
+   *
+   * SEND IT BACK EXACTLY AS IT ARRIVED. It is the row's React key, the key of
+   * the tick map, and the only thing REPORT_SUBMIT carries about a target.
+   */
+  id: string
   name: string
   state: PlayerState
-  squadId: string | null
+  /**
+   * `squadId` USED TO BE HERE AND IS NOW STRIPPED BEFORE THE ENVELOPE IS SENT
+   * (owner, 2026-08-17: "I don't want players to be able to tell how many
+   * squads are left ... 38 players and 18 squads").
+   *
+   * It was a stable per-squad string, one per row, for every player in the
+   * match -- so counting distinct values is the squad count, exactly, with no
+   * inference needed. The `squad` tag PlayerList drew off it is gone for the
+   * same reason (see the long note there for what the tag actually meant), and
+   * removing only the tag would have left the number on the wire for anything
+   * that reads the envelope.
+   *
+   * Deleted rather than made optional: a field nothing sends and nothing reads
+   * is how a contract grows a member nobody can delete, which is the argument
+   * `remaining` below was removed under. br_ui/client/players.lua is where the
+   * strip happens.
+   */
   /** They disconnected mid-match. Still listed, and still reportable - somebody
    *  who ragequits after cheating is exactly who you want to report. */
   left: boolean
@@ -465,9 +609,23 @@ export interface PlayersPayload {
    *  or the limit, and must not hardcode one that drifts from the server. */
   categories: ReportCategory[]
   defaultCategory: string
+  /** How many players one submission may name. Read by the panel only to stop
+   *  a sixth tick taking; the server refuses the same submission for the same
+   *  reason, and costs the player nothing when it does. */
   maxTargets: number
-  /** Reports left this match. Zero disables submission. */
-  remaining: number
+  /**
+   * `remaining` USED TO BE HERE and was deleted with #142, not merely stopped
+   * being rendered. It carried the reports left this match for one line of
+   * text -- "2 left" -- and the owner's instruction was that the panel does not
+   * say it: "We don't need to tell a player how many people they can report, or
+   * how many reports are left."
+   *
+   * The LIMIT is untouched. What went is the advertisement, and with it the
+   * field: br_core stopped computing it, br_ui stopped forwarding it, and this
+   * stopped declaring it, in one change. A payload member that survives the
+   * last thing that read it is how this project has arrived at twelve confirmed
+   * subsystems wired to nothing.
+   */
 }
 
 /** The answer to a submitted report. */
@@ -477,11 +635,35 @@ export interface ReportResult {
   refused?: string
 }
 
+/**
+ * What one match actually paid, and BOTH ENDS OF THE BAR.
+ *
+ * Every number here is evaluated on the server, by BR.Xp, against the lifetime
+ * total either side of this match. The page renders them and derives nothing.
+ *
+ * IT USED TO CARRY ONLY `xp` AND `level`, and the verdict screen worked out
+ * where the bar should stop by adding the award to whatever it was showing.
+ * That is the whole of #91 and #130: the value it added to had ALREADY been
+ * credited by the MARKET_STATE that lands the same tick, so the sum was
+ * double-counted; on a level-up it then subtracted the wrong level's span and
+ * clamped at zero, which is exactly how a player who gained 1048 XP was shown
+ * 0; and it kept the old span as the denominator, so a bar could read
+ * "3,472 / 2,450" and never reset.
+ */
 export interface EarnedPayload {
   xp: number
   volts: number
   /** Level AFTER the match. */
   level: number
+  /** XP into that level after the match. Server-derived; do not recompute. */
+  into: number
+  /** What that level costs. Never zero -- the server floors it at 1. */
+  needed: number
+  /** Where the bar has to start the fill from: the level, the XP into it, and
+   *  its span, all as they were BEFORE this match. */
+  fromLevel: number
+  fromXp: number
+  fromNeeded: number
   levelUp: boolean
 }
 
@@ -545,15 +727,23 @@ export interface KeybindAction {
 }
 
 /** What the black curtain is covering. See screens/LeaveScreen.tsx. */
-export type CurtainKind = 'leaving' | 'dropping'
+export type CurtainKind = 'leaving' | 'dropping' | 'disconnecting'
 
 /** Which screen currently owns NUI focus. Lua is the authority. */
 export interface FocusPayload {
-  /** `players` and `playersReport` are one panel in two modes. They are two
-   *  screens because they hold different focus -- see BR.FocusKeepsInput. */
+  /** `playersReport` was briefly a member here: the player list held different
+   *  focus in its two modes, because report mode had to give up game input for
+   *  its note field. View mode gave up game input as well in #135, so the two
+   *  modes collapsed into one screen and the name is deleted rather than left
+   *  in the union for a value Lua can no longer send. */
   screen: 'none' | 'lobby' | 'squad' | 'inventory' | 'summary' | 'chat'
         | 'settings' | 'locker' | 'market' | 'pause' | 'help'
-        | 'players' | 'playersReport'
+        | 'players'
+        /** The admin console (#23). A screen of its own rather than a tab body:
+         *  the pause menu's tab well is too small for a board of bans and
+         *  incidents, and `/help` already establishes that a framed page gets
+         *  the full-screen treatment. */
+        | 'admin'
   /** Which channel a chat focus should open in. Rides along here rather than
    *  needing its own envelope kind. */
   channel?: ChatChannel
@@ -561,6 +751,51 @@ export interface FocusPayload {
    *  /help has to say both "open the pause menu" and "on Help", and two
    *  envelopes would be a race for which arrives first. */
   tab?: string
+}
+
+/**
+ * One answer to a mint request (#23).
+ *
+ * EXACTLY ONE OF `url` AND `error` IS SET, and the type does not try to express
+ * that as a union. Lua builds this table field by field and a payload that
+ * arrived with neither -- a shape nothing sends today -- would make a union
+ * unparseable at the point of use rather than merely uninteresting. The screen
+ * treats "no url" as a failure, which is the honest reading either way.
+ */
+export interface AdminMint {
+  /**
+   * Advances on every answer, and it is what makes a repeat mint visible.
+   *
+   * The screen holds one object for this feature, so two mints in a row would
+   * otherwise be indistinguishable from a re-render -- and the second one is
+   * exactly the case that matters, because it is the retry after a first frame
+   * came back to the login page.
+   */
+  seq: number
+  /** Where to point the frame. Already carries the token; never logged. */
+  url?: string
+  /**
+   * A machine code from Ringmaster, or from the game's own refusal.
+   *
+   * NOT A SENTENCE, AND DELIBERATELY NOT TURNED INTO ONE HERE. The console
+   * returns codes and says in as many words that what the admin is shown
+   * in-game is this side's decision. That decision is the owner's to make and
+   * the wording is not invented in this file -- the screen shows the code.
+   */
+  error?: string
+}
+
+/**
+ * The admin console's availability, and the answer to any mint it asked for.
+ *
+ * `origin` PRESENT IS THE WHOLE OF "SHOW THE ADMIN TAB". There is no boolean
+ * beside it that could disagree with it, and a player who is not entitled to the
+ * tab is never sent the console's address at all -- so the URL never reaches an
+ * ordinary player's machine, which is half of why the server-side gate exists.
+ */
+export interface AdminPayload {
+  origin?: string
+  mint?: AdminMint
 }
 
 export interface SnapshotPayload {
@@ -585,9 +820,11 @@ export type Envelope =
   // are different groups -- the squad is this round's team, the party is who
   // you keep -- and one channel can only describe one of them.
   | { k: 'party';    d: SquadPayload }
-  // Who is speaking right now, by server id. Voice was the one system in the
-  // game with no visual at all.
-  | { k: 'voice';    d: { talking: number[] } }
+  // Who is speaking right now: ids for the squad panel's markers, and their
+  // names in the SAME ORDER for the bottom-centre indicator. The names have to
+  // be on the wire because proximity voice carries anyone in the match, and
+  // the interface has no other way to name a player who is not a squadmate.
+  | { k: 'voice';    d: VoicePayload }
   | { k: 'inv';      d: WireInvPayload }
   | { k: 'feed';     d: FeedEntry }
   | { k: 'hit';      d: HitPayload }
@@ -602,6 +839,10 @@ export type Envelope =
   | { k: 'lobby';    d: LobbyPayload }
   | { k: 'invite';   d: InvitePayload }
   | { k: 'leaving';  d: { show: boolean; kind?: CurtainKind } }
+  /** GTA's own menu owns the screen; this page must not draw. Lua is the
+   *  authority and holds it true for as long as the frontend is up -- see the
+   *  note on BR.Nui.FRONTEND in br_lib/shared/protocol.lua. */
+  | { k: 'frontend'; d: { up: boolean } }
   | { k: 'settings'; d: SettingsPayload }
   | { k: 'locker';   d: LockerPayload }
   | { k: 'progress'; d: ProgressPayload }
@@ -611,6 +852,20 @@ export type Envelope =
   | { k: 'earned';   d: EarnedPayload }
   | { k: 'players';  d: PlayersPayload }
   | { k: 'report';   d: ReportResult }
+  | { k: 'admin';    d: AdminPayload }
+  /** A SQUADMATE changed phase, and this is the sound everybody else hears.
+   *
+   *  NOT IN BR.Nui, deliberately, and it is the one kind here that is not. The
+   *  sender (br_core/client/dbno.lua) writes the string literally, next to the
+   *  cue table it has to agree with -- adding a constant for it would create a
+   *  name with no caller, which is a shape this project has shipped often
+   *  enough to have a rule about.
+   *
+   *  THE SERVER DECIDES THE AUDIENCE. `src` and `name` identify the mate for a
+   *  visual that does not exist yet; today only `cue` is read. They are on the
+   *  wire because the sender already had them, not because anything wants them.
+   */
+  | { k: 'squadcue'; d: { cue: Cue; src?: number; name?: string } }
 
 export type EnvelopeKind = Envelope['k']
 
@@ -635,7 +890,8 @@ export const CB = {
   CLOSE:        'br/close',
   CHAT_SEND:    'br/chat/send',
   CHAT_FOCUS:   'br/chat/focus',
-  PAUSE:        'br/pause',
+  /* `PAUSE` was removed with its Lua callback (#138): it raised GTA's frontend
+     without announcing it to this page, and no component ever called it. */
   /** Menu audio. The UI names a CUE; Lua owns the table and the throttle. */
   SFX:          'br/sfx',
   SETTINGS_SAVE:  'br/settings/save',
@@ -652,9 +908,32 @@ export const CB = {
   PAUSE_FOCUS:    'br/pause/focus',
   HELP_FOCUS:     'br/help/focus',
   VOICE_SETTINGS: 'br/voice/settings',
+  /** The same handover as VOICE_SETTINGS, for a player who wants graphics
+   *  rather than a microphone. Separate name so the button can say so. */
+  GAME_SETTINGS:  'br/game/settings',
   XP_BUSY:        'br/xp/busy',
   PAUSE_ACTION:   'br/pause/action',
   KEYBIND_SET:    'br/settings/keybind',
+  /** Open or close the admin console's own screen (#23). Same shape as
+   *  HELP_FOCUS: the tab is a door, and what it opens is a full page. */
+  ADMIN_FOCUS:    'br/admin/focus',
+  /** "The console I am framing says nobody is signed in."
+   *
+   *  CARRIES NOTHING, AND THAT IS THE SECURITY DESIGN. The server reads who is
+   *  asking from the connection; a payload naming a Discord id would be one a
+   *  modified client could use to open a session as somebody else. */
+  ADMIN_MINT:     'br/admin/mint',
+  /**
+   * "I am now fully black."
+   *
+   * The other half of every transition. Lua covers the screen and then changes
+   * the world underneath -- and until this existed it could only GUESS when the
+   * cover had finished going up, because the cover is a CSS transition in CEF
+   * and the change is a Citizen.Wait in another process. It guessed wrong
+   * consistently, and the player saw the cut the cover was added to hide
+   * (#124). See `bridge/cover.ts`.
+   */
+  COVERED:        'br/cover',
   ERROR:        'br/err',
   ENV:          'br/ui/env',
 } as const

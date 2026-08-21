@@ -421,12 +421,13 @@ AddEventHandler('br:debug:teleport', function(x, y)
     end)
 end)
 
-RegisterCommand('brkeys', function()
-    print('--- key actions (rebind in Pause > Settings > Key Bindings) ---')
-    for _, a in ipairs(BR.Keys.actions or {}) do
-        print(('  %-14s held=%s'):format(a, tostring(BR.Keys.isHeld(a))))
-    end
-end, false)
+-- `brkeys` LIVES IN keybinds.lua, NOT HERE (#137). There were two of them in
+-- the same Lua state, and this file loads last, so this one silently won --
+-- which meant the raw-layer, holds and focus-resync readings added to the real
+-- one for #90 and #129 could never print, and the command answered a debugging
+-- question with a fraction of what it knew. Its held column moved there; this
+-- registration is deliberately gone rather than renamed, because two commands
+-- that answer the same question is how the collision happened.
 
 -- ------------------------------------------------------------ canopy audit ---
 --

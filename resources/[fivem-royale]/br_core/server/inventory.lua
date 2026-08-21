@@ -57,12 +57,33 @@ local LIVE = {
 -- Model
 -- --------------------------------------------------------------------------
 
+--- A FRESH INVENTORY STARTS ON FISTS, NOT ON SLOT 1 (#155).
+---
+--- Owner, 2026-08-16: "The default inventory slot should be fists, not slot 1."
+--- A player who lands holding something they never drew has had their first
+--- action taken for them, and on a battle-royale drop the first action is
+--- looking around rather than aiming.
+---
+--- THIS IS THE ONLY PLACE THAT DECIDES IT, and that is the point. `newInv` is
+--- reached by every path that starts or restarts an inventory -- first touch in
+--- BR.Inv.of (spawn and join), BR.Inv.reset (a party leave, a respawn), and
+--- BR.Inv.clearFor (match reset at CLEANUP and at match end) -- so there is one
+--- default rather than five that have to agree. Fixing one and leaving the
+--- others is how the last few of these have gone.
+---
+--- `choseActive` IS NOT BOOKKEEPING, IT IS THE HALF THAT KEEPS THE PICKUP
+--- WORKING. See the note in BR.Inv.give: "a weapon into an empty hand comes up
+--- in it" and "fists are a deliberate choice" used to be the same test, because
+--- the only way to be on slot 0 was to put yourself there. Now that fists are
+--- where everybody STARTS, those two facts have come apart and the flag is what
+--- tells them apart -- false means nobody has chosen anything yet, so the first
+--- gun off the floor still comes up in the hand.
 local function newInv()
     local slots = {}
     for i = 1, SLOTS do slots[i] = false end
     local ammo = {}
     for _, pool in ipairs(BR.Config.AmmoOrder) do ammo[pool] = 0 end
-    return { slots = slots, ammo = ammo, active = 1 }
+    return { slots = slots, ammo = ammo, active = MELEE_SLOT, choseActive = false }
 end
 
 --- The inventory for a player, created on first touch.
@@ -100,9 +121,18 @@ end
 --- Throwables reuse their own maxStack as the carry cap, so the two numbers
 --- cannot drift apart: one slot of three, and the fourth grenade stays on the
 --- floor.
+---
+--- PUBLIC, BECAUSE THE REFUSAL HAS TO NAME THIS NUMBER (#171) AND IT IS NOT
+--- ONE FIELD. A consumable's cap is `carryMax`; a throwable's is its own
+--- `maxStack`, in a different config table. server/loot.lua wrote the message
+--- by reading `BR.Config.ConsumableById[...].carryMax` directly, so a player
+--- holding three grenades -- which are THROWABLE, and therefore not in that
+--- table at all -- was told they could carry ZERO of them. There is one answer
+--- to "how many of these may I hold", and it is this function.
 --- @param stack table
 --- @return integer|nil  nil means uncapped
-local function carryMaxOf(stack)
+function BR.Inv.carryMax(stack)
+    if not stack then return nil end
     if stack.kind == BR.ItemKind.CONSUMABLE then
         local c = BR.Config.ConsumableById[stack.item]
         return c and c.carryMax or nil
@@ -113,6 +143,8 @@ local function carryMaxOf(stack)
     end
     return nil
 end
+
+local carryMaxOf = BR.Inv.carryMax
 
 --- The wire view of a player's inventory.
 --- @param src integer
@@ -198,6 +230,100 @@ end
 -- Giving
 -- --------------------------------------------------------------------------
 
+--- How many of one item this inventory holds, ACROSS EVERY SLOT.
+---
+--- A question about the PLAYER, not about a slot, and that is the whole of
+--- #171's second fault (owner, 2026-08-18: "with 3 shield in one slot, I can
+--- pickup more shields in a different slot. Anything with a max carry limit
+--- should be applied across all slots, not a per-slot basis"). A rule that
+--- reads one slot enforces a PER-SLOT limit no matter how globally it is
+--- worded, and the player discovers that by putting the same item somewhere
+--- else.
+---
+--- `or 1` rather than `or 0` for a countless stack: a weapon slot is one
+--- weapon. Nothing in the game writes a stack without a count today, but a
+--- missing one meaning ZERO would silently under-count a cap, and a cap that
+--- under-counts is the permissive failure -- it lets a player past a ceiling
+--- rather than stopping them short of it.
+--- @param inv table
+--- @param item string
+--- @return integer
+local function heldOf(inv, item)
+    local n = 0
+    for i = 1, SLOTS do
+        local s = inv.slots[i]
+        if s and s.item == item then n = n + (s.count or 1) end
+    end
+    return n
+end
+
+--- How much more of this item the player may carry. THREE ANSWERS (#171).
+---
+---   nil -- THERE IS NO CEILING. Weapons never have one; neither do shields.
+---   > 0 -- there is a ceiling and it has not been reached.
+---   0   -- there is a ceiling and it has been reached.
+---
+--- NIL IS NOT ZERO, and keeping the two apart is the point of returning nil at
+--- all. Reading "no cap" as "a cap of zero" is what shipped "You can only carry
+--- 0 of thoses." out of this pair of files once already, and the reopened half
+--- of #171 is the same confusion wearing a different sentence: a refusal that
+--- announced a maximum for an SNS Pistol, which has never had one.
+---
+--- math.max, because an inventory can already sit OVER a ceiling -- see the
+--- split-stack note in BR.Inv.give. Without it a player holding four bandages
+--- against a cap of three gets a NEGATIVE room, which is not <= 0 by accident
+--- but by arithmetic, and clamping `left` to it would hand them a negative
+--- count.
+--- @param inv table
+--- @param stack table
+--- @return integer|nil
+local function carryRoom(inv, stack)
+    local cap = carryMaxOf(stack)
+    if not cap then return nil end
+    return math.max(0, cap - heldOf(inv, stack.item))
+end
+
+--- Would this swap trade the active slot for something exactly like it?
+---
+--- THE ONE SWAP THAT IS NEVER A CHOICE (owner, 2026-08-18: "I don't want the
+--- swap, if both the item being picked up and the item in my active slot are
+--- the same type").
+---
+--- The swap below exists so a full inventory can still take an UPGRADE in one
+--- motion -- a rifle over a pistol, a med kit over a bandage. Trading a Shield
+--- for a Shield is not an upgrade; it is a lateral move that costs the player
+--- real goods, because what leaves is a whole SLOT and what arrives is one
+--- pickup. Hold a full stack of three shields, walk over a loose one, and the
+--- swap hands you a stack of ONE and puts three on the floor. The player
+--- pressed a key and came away with less than they started with.
+---
+--- SAME ITEM ID, NOT SAME KIND. The wider reading -- refuse when the two are
+--- both WEAPON, or both CONSUMABLE -- would delete the swap outright, since
+--- WEAPON-for-WEAPON is precisely the case it was built for and the one the
+--- comment above still describes. Narrow is also what the report is about: two
+--- shields, one name.
+---
+--- Compared against what is IN THE ACTIVE SLOT rather than against the whole
+--- inventory, because the active slot is the only thing a swap can throw away.
+--- Holding the same gun in slot 4 while slot 2 is a pistol still swaps, and
+--- should: that trade loses nothing.
+---
+--- THIS IS NOT A CARRY LIMIT AND MUST NEVER SPEAK AS ONE. That conflation is
+--- the reopened half of #171. The two rules answer different questions --
+--- "would this trade cost me goods" reads ONE slot, "have I reached my
+--- maximum" reads ALL of them and only exists for items that have a maximum --
+--- and carryRoom above is consulted FIRST in BR.Inv.give so that a player who
+--- really is at a ceiling hears the ceiling's own sentence. What is left for
+--- this to refuse is a swap, so BR.Loot.refusalText answers `sameitem` with the
+--- way out of it: pick another slot.
+--- @param displaced table|nil  what the swap would push out (false when empty)
+--- @param stack table          what is being picked up
+--- @return boolean
+local function isLikeForLike(displaced, stack)
+    if not displaced or not stack then return false end
+    return displaced.item == stack.item
+end
+
 --- Put a stack into a player's inventory.
 ---
 --- Returns what happened, because the caller (a claim, a chest, a death box)
@@ -228,29 +354,36 @@ function BR.Inv.give(src, stack)
         return true, nil, nil
     end
 
+    -- THE CARRY CEILING, ASKED ONCE AND FOR EVERY KIND (#171).
+    --
+    -- It used to be asked inside the consumable branch alone, which was true to
+    -- the config -- only consumables and throwables have ceilings -- and false
+    -- to the READER, who could no longer tell whether a weapon was uncapped or
+    -- merely unchecked. It is asked here now so that the three cases are one
+    -- decision made in one place, above every branch that could disagree:
+    --
+    --   nil ceiling  -- pick it up; find it a slot. A second SNS Pistol is
+    --                   legitimate and always was.
+    --   room left    -- pick it up, clamped to what is left.
+    --   no room      -- refuse, and this is the ONLY refusal entitled to talk
+    --                   about a maximum.
+    --
+    -- `room and room <= 0` and not `not room`: nil is uncapped, zero is full,
+    -- and the day those two collapse into each other is the day every weapon in
+    -- the game becomes unpickable. Lua treats both as falsey; only the code has
+    -- to keep them apart.
+    local room = carryRoom(inv, stack)
+    if room and room <= 0 then return false, nil, 'carrymax' end
+
     if stack.kind == BR.ItemKind.CONSUMABLE
        or stack.kind == BR.ItemKind.THROWABLE then
         local left = stack.count or 1
         local max  = maxStackOf(stack)
 
-        -- A CARRY CEILING ACROSS EVERY SLOT, not just per stack. Without it,
-        -- capping the stack at three simply produced two stacks of three
-        -- (user call, 2026-08-06: "no higher quantities of either item should
-        -- be allowed").
-        local c = BR.Config.ConsumableById[stack.item]
-        local carry = carryMaxOf(stack)
-        if carry then
-            local held = 0
-            for i = 1, SLOTS do
-                local s = inv.slots[i]
-                if s and s.item == stack.item then held = held + (s.count or 0) end
-            end
-            local room = math.max(0, carry - held)
-            if room <= 0 then
-                return false, nil, 'carrymax'
-            end
-            left = math.min(left, room)
-        end
+        -- The ceiling is across EVERY SLOT, not per stack. Without it, capping
+        -- the stack at three simply produced two stacks of three (user call,
+        -- 2026-08-06: "no higher quantities of either item should be allowed").
+        if room then left = math.min(left, room) end
 
         local before = left
 
@@ -260,8 +393,12 @@ function BR.Inv.give(src, stack)
         for i = 1, SLOTS do
             local s = inv.slots[i]
             if left > 0 and s and s.item == stack.item and s.count < max then
-                local room = max - s.count
-                local move = math.min(room, left)
+                -- `space`, not `room`: `room` is the WHOLE INVENTORY's headroom
+                -- and it is still live here. Two different numbers under one
+                -- name inside one function is how a global cap quietly becomes
+                -- a per-slot one.
+                local space = max - s.count
+                local move = math.min(space, left)
                 s.count = s.count + move
                 left = left - move
             end
@@ -295,6 +432,20 @@ function BR.Inv.give(src, stack)
             -- empty hand lands in slot 1.
             local at = math.max(inv.active, 1)
             local displaced = inv.slots[at] or nil
+
+            -- ...BUT NOT FOR AN IDENTICAL ITEM. See isLikeForLike: reaching a
+            -- full inventory with a shield in hand and a shield on the floor
+            -- would otherwise trade a full stack for a single pickup.
+            --
+            -- REACHED ONLY WHEN THERE IS NO CEILING TO BLAME, because carryRoom
+            -- ran above and a player who is genuinely at their maximum already
+            -- left with `carrymax`. Everything that gets this far is an item
+            -- the player MAY have more of and has nowhere to put -- so the
+            -- refusal is about the slot, and says so.
+            if isLikeForLike(displaced, stack) then
+                return false, nil, 'sameitem'
+            end
+
             inv.slots[at] = {
                 item = stack.item, kind = stack.kind,
                 rarity = stack.rarity, count = math.min(max, left),
@@ -345,6 +496,21 @@ function BR.Inv.give(src, stack)
     else
         at = math.max(inv.active, 1)   -- never slot 0: fists hold nothing
         displaced = inv.slots[at] or nil
+
+        -- THE SAME GUN FOR THE SAME GUN IS NOT A TRADE. Nothing has been
+        -- written to the inventory yet, so this returns clean -- and it must
+        -- return here rather than proceed, because the swap would hand the
+        -- player the floor copy's magazine and drop their own loaded one.
+        --
+        -- AND IT IS NOT A MAXIMUM. A weapon has no carryMax and never will, so
+        -- carryRoom returned nil above and no ceiling was ever in play here.
+        -- This is the branch that told the owner he could not pick up any more
+        -- SNS Pistols (2026-08-18) -- reachable at all only because every one
+        -- of his five slots was full, since `free` is taken first and a second
+        -- pistol into an empty slot never reaches this line.
+        if isLikeForLike(displaced, stack) then
+            return false, nil, 'sameitem'
+        end
     end
     inv.slots[at] = placed
 
@@ -355,7 +521,16 @@ function BR.Inv.give(src, stack)
     -- FISTS ARE A DELIBERATE CHOICE, though: someone who selected slot 0 put
     -- their gun away on purpose, and yanking a rifle back into their hands
     -- because they walked over one undoes that.
-    if inv.active ~= MELEE_SLOT
+    --
+    -- ...AND SINCE #155, BEING ON SLOT 0 IS NO LONGER EVIDENCE OF A CHOICE.
+    -- Fists are now where every inventory starts, so `inv.active == MELEE_SLOT`
+    -- on its own would refuse to arm a player who has never touched a slot key
+    -- -- which is every player, on their first gun, in the first minute. That is
+    -- a straight trade of the bug being fixed for a worse one: landing
+    -- empty-handed is the ask, staying empty-handed while standing on a rifle is
+    -- not. `choseActive` is only set by an INV_SELECT the player actually sent,
+    -- so the deliberate holster is still honoured and the default is not.
+    if (inv.active ~= MELEE_SLOT or not inv.choseActive)
        and (displaced or not inv.slots[inv.active] or inv.active == at) then
         inv.active = at
     end
@@ -461,6 +636,13 @@ AddEventHandler(BR.Net.INV_SELECT, function(d)
     if inv.active == slot then return end
 
     inv.active = slot
+    -- THE PLAYER HAS NOW CHOSEN, and this is the only line in the file that may
+    -- say so (#155). It is what makes a hand-picked slot 0 different from the
+    -- one every inventory starts on -- see newInv and the pickup rule in
+    -- BR.Inv.give. Set for every slot, not just fists: coming back to a weapon
+    -- and then holstering it deliberately has to read the same as holstering
+    -- straight away.
+    inv.choseActive = true
     -- Switching weapons interrupts a consumable: both are "what my hands are
     -- doing", and letting a med kit finish while a rifle comes up would be a
     -- free heal mid-fight.

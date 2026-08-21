@@ -25,8 +25,8 @@ import { play } from '../audio/cues'
  *                the roster is curated rather than "every ped in GTA".
  *   CANOPIES     the parachute design. Seen for ninety seconds at the start of
  *                a match, by everybody, which is exactly why they sell.
- *   TRAILS       the parachute smoke colour, which the squad system already
- *                draws. Announces your position, if anything.
+ *   TRAILS       the parachute smoke colour. Announces your position, if
+ *                anything.
  *   FINISHES     the weapon tint.
  *   BANNERS      the card shown beside your name in the kill feed and on the
  *                verdict screen. Seen by other people, never by you mid-fight.
@@ -159,9 +159,16 @@ export default function Market() {
         {/* THE ONLY SCROLLING REGION. min-h-0 is load-bearing: a flex child
             defaults to min-height:auto and refuses to shrink below its content,
             so without it this grows past the viewport and takes Done with it. */}
+        {/* THE TRAILS TAB HAD AN EXPLAINER BOX ABOVE ITS GRID AND IT IS GONE
+            (owner, 2026-08-20: "Please remove the explainer box at the top of
+            the trails page in Market"). It was three paragraphs on how a trail
+            lights itself, which key toggles it, and what Squad Colour was for --
+            written across #131's several lives, and never asked for. Nothing
+            replaces it: the descent already names the key on screen, at the
+            moment the key is worth pressing. */}
         <div className="min-h-0 flex-1 overflow-y-auto thin-scroll pr-1">
           {items.length === 0 ? (
-            <p className="micro-label">Nothing here yet.</p>
+            <p className="body-text">Nothing here yet.</p>
           ) : (
             <div className="grid grid-cols-4 gap-3 pb-2">
               {items.map((it) => (

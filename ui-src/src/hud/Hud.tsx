@@ -11,6 +11,19 @@ import SquadPanel from './SquadPanel'
 import DbnoOverlay from './DbnoOverlay'
 import InventoryBar from './InventoryBar'
 import HitFeedback from './HitFeedback'
+import TalkingBar from './TalkingBar'
+import VoiceNotice from './VoiceNotice'
+
+/**
+ * WHERE THE SQUAD PANEL ENDS, for anything that has to sit below it.
+ *
+ * Exported as an id rather than a rem constant because the panel's height is
+ * data: solo renders nothing at all, a squad renders up to four plates, and a
+ * plate loses its two bars the moment that player is out. Anything that reasons
+ * about the free space in the left column has to measure the box, and this is
+ * the handle it measures. screens/PlayerList.tsx is the only caller today.
+ */
+export const SQUAD_SLOT_ID = 'br-squad-slot'
 
 /**
  * The in-match HUD.
@@ -53,6 +66,23 @@ export default function Hud({ visible }: { visible: boolean }) {
   // free-loot hold, where being outside circle 1 is a rotation problem, not
   // an emergency.
   const outside = (storm?.edgeDistance ?? -1) > 0 && (storm?.dps ?? 0) > 0
+
+  // STILL IN THE AIR -- and "in the air" is now two facts, not one.
+  //
+  // The squad panel and the inventory bar hide during the descent, because the
+  // game's own help boxes own those corners until touchdown. The test was the
+  // server's state alone, and the server only says 'alive' once the landing
+  // report has completed its round trip -- a message with its own retry loop
+  // and its own server-side rescue net, because it goes missing. Every
+  // millisecond it is late is a player standing in a POI with no inventory bar
+  // and no squad panel; in the bad case it lasted until the match itself
+  // reached 'playing' (#126).
+  //
+  // `hud.landed` is this player's own ped reporting that it is on the ground.
+  // It cannot be observed for anyone else and is not used for anything but
+  // deciding what to draw -- see the note on HudPayload.landed.
+  const descending =
+    (hud.state === 'freefall' || hud.state === 'glide') && !hud.landed
 
   return (
     <div
@@ -114,8 +144,17 @@ export default function Hud({ visible }: { visible: boolean }) {
             ("Press SPACE to open the glider.") draw in exactly this corner,
             and the squad panel sat on top of them (user report, 2026-08-04).
             The bus ride already hides the whole HUD; this covers the descent. */}
-        {hud.state !== 'freefall' && hud.state !== 'glide' && (
+        {/* THE ID IS NOT DECORATION. screens/PlayerList.tsx measures this slot
+            to find out where the left column is free -- the squad panel is the
+            one thing in that column whose height is genuinely unknowable in
+            advance (0 rows solo, up to 4 in squads, and a row loses its bars
+            when its player dies), so the panel that has to sit under it reads
+            the rendered box rather than guessing at a rem constant. Removing or
+            renaming this leaves that panel falling back to the safe zone and
+            overlapping this one again. */}
+        {!descending && (
           <div
+            id={SQUAD_SLOT_ID}
             className="absolute w-[13rem]"
             style={{ top: 'var(--hud-top)', left: 'var(--safe-x)' }}
           >
@@ -152,7 +191,7 @@ export default function Hud({ visible }: { visible: boolean }) {
             above it. Hidden during the descent for the same reason the squad
             panel is: the game's own help boxes own the screen until touchdown,
             and there is nothing in the bar to look at before you land. */}
-        {hud.state !== 'freefall' && hud.state !== 'glide' && (
+        {!descending && (
           <div
             className="absolute"
             style={{ bottom: 'var(--safe-y)', right: 'var(--safe-x)' }}
@@ -161,6 +200,16 @@ export default function Hud({ visible }: { visible: boolean }) {
           </div>
         )}
 
+
+        {/* Bottom centre: who is speaking. Deliberately NOT hidden during the
+            descent -- the corners that hide are the ones the game's own help
+            boxes take over, and this is not one of them. Squad comms during
+            the drop is exactly when knowing who is talking matters. */}
+        <TalkingBar />
+
+        {/* AND, JUST ABOVE IT, WHY YOU MIGHT BE HEARING NONE OF THEM. Renders
+            nothing on nearby, which is almost always -- see VoiceNotice. */}
+        <VoiceNotice />
 
         {dbno.downed && <DbnoOverlay dbno={dbno} />}
 

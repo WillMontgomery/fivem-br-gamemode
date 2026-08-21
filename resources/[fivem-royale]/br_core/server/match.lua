@@ -42,6 +42,19 @@ local DURATION = {
     [BR.MatchState.CLEANUP] = M.cleanupSeconds,
 }
 
+--- How long a frozen warmup is held for: a day.
+---
+--- LONG ENOUGH THAT NO SESSION OUTLIVES IT, AND STILL A REAL NUMBER. The same
+--- choice, for the same reason, as the storm freeze's hold (server/storm.lua):
+--- clients derive their countdown by subtracting endsAt, and an infinity poisons
+--- every one of those subtractions. A day is not a duration anybody will sit
+--- through; it is a number that behaves.
+---
+--- Declared here rather than beside the command that uses it because
+--- BR.Match.transition reads it, and a local called above its declaration is
+--- what tools/check_forward_locals.lua exists to refuse.
+local WARMUP_HOLD_MS = 24 * 60 * 60 * 1000
+
 --- Mint a new match instance and start its warmup.
 ---
 --- The participants are ATTACHED FIRST, then flipped to WARMUP: the state
@@ -76,11 +89,95 @@ function BR.Match.create(mode, participants)
     return m
 end
 
+--- Did this match ever actually go live?
+---
+--- `startedAt` is stamped once, on entering PLAYING, and nothing clears it. It
+--- is therefore the honest answer to "was this a match", and it is asked in the
+--- two places that have to decide whether a departure is worth recording.
+---
+--- NOTHING BEFORE PLAYING IS WORTH RECORDING, and that is a statement about the
+--- data rather than a policy. Warmup is invincible and the flight is
+--- untouchable, so every number a results row is built from -- kills, downs,
+--- revives, damage, placement, diedAt -- is still at its initial value, and
+--- `survivedMs`/`presentMs` are both measured from `startedAt` and would come
+--- out zero. Publishing that is not "recording a short match", it is filing a
+--- row of zeroes for every participant: #132's exact fingerprint. A match that
+--- dissolved on the pad did not happen, and the state machine has always said so
+--- (matchTick: "nothing happened, nothing to show").
+--- @param m table|nil
+--- @return boolean
+function BR.Match.wasPlayed(m)
+    return m ~= nil and m.startedAt ~= nil
+end
+
+--- Publish the results of a match that is being DISSOLVED rather than finished
+--- (#161).
+---
+--- THE OWNER'S CALL, 2026-08-16: "we should record everything."
+---
+--- A match everybody walks out of never enters ENDED, so `publishResults` -- which
+--- hangs off that transition -- was never asked to run, and two players who
+--- played most of a match got no aggregate, no XP, no Volts and no history row.
+--- That silently reversed a decision the project had already made twice: #100
+--- seals a departing player's record precisely so it survives their exit, and #81
+--- confirmed a leaver's row does move on a match that ends normally. Leaving did
+--- not forfeit your record -- except when you happened to be the last one out,
+--- which is an accident of which code path runs rather than anybody's decision.
+---
+--- CALLED FROM destroy, WHICH IS THE POINT. destroy is documented as the only way
+--- a match leaves the registry, so every abandonment reaches here -- the
+--- memberless dissolve, the everyone-left dissolve, the underpopulated warmup,
+--- and `brforce waiting` -- including the ones nobody has written yet. And it is
+--- called as the FIRST thing destroy does, ahead of the roster sweep below, which
+--- detaches every remaining player's matchId and would leave publishResults
+--- walking a match nobody belongs to.
+---
+--- THERE IS NO ONCE-PER-MATCH GUARD HERE, DELIBERATELY. `m.publishedAt` inside
+--- publishResults is that guard and it is the only one: a match that ended
+--- normally has already stamped it, so the CLEANUP -> destroy that follows every
+--- finished match no-ops without this function needing to know why. #132 is what
+--- a second publish costs -- br_stats writes an atomic ADD to DynamoDB and there
+--- is no compensating write -- and two guards that can disagree is how you get a
+--- third one.
+---
+--- NO PLACEMENTS ARE AWARDED EITHER, and that is the other deliberate half. See
+--- the note on awardPlacements.
+--- @param m table
+function BR.Match.publishAbandoned(m)
+    if not BR.Match.wasPlayed(m) then return end
+
+    -- AND NOT AFTER THE NUMBERS HAVE BEEN DESTROYED. resetPlayers runs at
+    -- CLEANUP and zeroes kills, downs, revives and damage, clears placement and
+    -- nils diedAt; `BR.Roster.clearDeparted` drops the sealed entries in the same
+    -- breath. Publishing after that records a match in which nobody did anything
+    -- -- #132's fingerprint, filed permanently.
+    --
+    -- The normal path never gets here with this clear (ENDED published long
+    -- before CLEANUP wiped anything), so this is not a second once-guard: it is
+    -- the one reachable ordering hazard, `brforce cleanup` straight from PLAYING,
+    -- where the wipe would happen with nothing yet published.
+    if m.wipedAt then
+        print(('[br_core] match %d: dissolved after CLEANUP wiped it -- '
+            .. 'nothing left to record'):format(m.id))
+        return
+    end
+
+    print(('[br_core] match %d: abandoned -- recording it anyway (#161)'):format(m.id))
+    BR.Match.publishResults(m)
+end
+
 --- Tear an instance down completely. The only way a match leaves the
 --- registry. Any player still attached (a crash mid-teardown, a straggler)
 --- is swept home first.
 --- @param m table
 function BR.Match.destroy(m)
+    -- FIRST, AND THAT IS LOAD-BEARING (#161). A match nobody is left in never
+    -- reaches ENDED, so this is the only chance its results ever get to be
+    -- published -- and the roster sweep immediately below detaches every
+    -- remaining player's matchId, which is the key publishResults builds its rows
+    -- from. One line later there is nothing to publish.
+    BR.Match.publishAbandoned(m)
+
     BR.Roster.each(
         function(e) return e.matchId == m.id end,
         function(src, e)
@@ -106,6 +203,14 @@ function BR.Match.destroy(m)
             BR.Party.withdrawInvitesFrom(src, 'the match ended')
             BR.Party.resync(src)
         end)
+    -- AND THE SEALED ENTRIES GO WITH IT. CLEANUP normally owns this half of the
+    -- wipe, but a dissolved match never reaches CLEANUP -- so every player who
+    -- disconnected from, or walked out of, an abandoned match left an entry in
+    -- `departed` that nothing would ever collect, one per departure for the
+    -- server's uptime. Safe here because publishAbandoned above is the last
+    -- reader they will ever have.
+    BR.Roster.clearDeparted(m.id)
+
     BR.Server.matches[m.id] = nil
     print(('[br_core] match %d destroyed'):format(m.id))
 
@@ -139,6 +244,21 @@ function BR.Match.transition(m, state, durationSec)
     m.state  = state
     m.endsAt = secs and (GetGameTimer() + secs * 1000) or 0
     m.shortened = false
+
+    -- A WARMUP THAT OPENS UNDER A FREEZE IS BORN HELD (brwarmupfreeze, at the
+    -- bottom of this file). The same inheritance BR.Storm.begin already applies
+    -- to a match that starts while brstormfreeze is on: a debug hold that only
+    -- caught the matches running when it was typed would silently stop applying
+    -- to the very next round, which is the round the tester is usually waiting
+    -- for.
+    --
+    -- HERE RATHER THAN IN onEnter, because the broadcast below carries endsAt.
+    -- A warmup that announced 45 seconds and then quietly extended would leave
+    -- every HUD counting down to a departure that is not coming, which is the
+    -- exact failure shortenWarmupIfFull rebroadcasts to avoid.
+    if state == BR.MatchState.WARMUP and BR.Match.warmupFrozen() then
+        m.endsAt = GetGameTimer() + WARMUP_HOLD_MS
+    end
 
     print(('[br_core] match %d: %s -> %s%s'):format(
         m.id, from, state, secs and (' (%ds)'):format(secs) or ''))
@@ -251,6 +371,21 @@ function BR.Match.onEnter(m, state, from)
                 and e.state == BR.PlayerState.WARMUP end,
             function(src) BR.Roster.setState(src, BR.PlayerState.ALIVE) end)
 
+        -- AND THE PEOPLE WHO DIED WAITING FOR THIS MOMENT GET UP (#144).
+        --
+        -- "If a player dies before game state changes to playing, we should
+        -- notify them they will be revived automatically when the match starts,
+        -- and then do so." This is the "then do so" half; the notice went out
+        -- when they died. Their death was never written down -- no placement, no
+        -- diedAt, no kill credited, no results row -- so there is nothing here to
+        -- undo, which is the whole design (server/combat.lua's holdForStart).
+        --
+        -- SCOPED TO THIS MATCH by matchId, like every other sweep in this file.
+        -- A held flag belongs to one instance, and matches advance independently.
+        BR.Roster.each(
+            function(e) return e.matchId == m.id and e.revivePending end,
+            function(src, e) BR.Combat.reviveHeld(src, e) end)
+
         -- Nothing can win in the first moments of a match. Without this, any
         -- path that reaches PLAYING with states still settling ends instantly,
         -- and the log reads as though a match was played and won in one tick.
@@ -275,8 +410,35 @@ function BR.Match.onEnter(m, state, from)
         BR.Storm.begin(m)
 
     elseif state == BR.MatchState.ENDED then
-        BR.Match.awardPlacements(m)
-        BR.Match.publishResults(m)
+        -- ONCE PER MATCH, AND THE SECOND TIME IS WORSE THAN A DUPLICATE.
+        --
+        -- transition() only no-ops on `from == state`, so ENDED can be entered
+        -- again from anywhere -- `brforce ended` after CLEANUP is the reachable
+        -- path today. By then resetPlayers has zeroed kills, downs, revives and
+        -- damage, cleared placement, and nil'd diedAt, while matchId is left
+        -- intact ON PURPOSE (the summary screen still needs this match's
+        -- traffic). So the rows published the second time are not duplicates of
+        -- the first -- they are a fabrication: placement nil, kills 0, damage 0,
+        -- and survivedMs equal to the WHOLE MATCH for every participant.
+        --
+        -- Those rows are not cosmetic. br_stats' `br:match:results` handler
+        -- writes an atomic ADD to DynamoDB, so a second pass adds a second
+        -- `matches`, a second `deaths`, more xp and more Volts -- and there is
+        -- no compensating write to undo it. A 2026-08-16 playtest produced
+        -- exactly this fingerprint: a winner paid the bare completion payout
+        -- with an XP gain equal to survival time alone.
+        --
+        -- Guarded here AND inside publishResults. Here because awardPlacements
+        -- must not re-run either; there because publishResults is the one with
+        -- side effects outside this resource, and a future caller should not
+        -- have to know about this.
+        if m.publishedAt then
+            print(('[br_core] match %d: results already published, not republishing')
+                :format(m.id))
+        else
+            BR.Match.awardPlacements(m)
+            BR.Match.publishResults(m)
+        end
 
         -- Everyone goes HOME at ENDED, not at cleanup. Placements are
         -- already awarded (the line above; the CLEANUP wipe keeps them until
@@ -284,10 +446,33 @@ function BR.Match.onEnter(m, state, from)
         -- trip client-side: the fade, the teleport to the vista, the
         -- invisibility, the shared lobby bucket. They KEEP their matchId --
         -- the summary screen still needs this match's ENDED/CLEANUP traffic.
-        BR.Roster.each(
-            function(e) return e.matchId == m.id
-                and e.state ~= BR.PlayerState.LEFT end,
-            function(src) BR.Roster.setState(src, BR.PlayerState.LOBBY) end)
+        --
+        -- ...BUT NOT ON THIS FRAME, AND THAT IS #124's SECOND HALF.
+        --
+        -- The flip is not a bookkeeping change, it is a TEARDOWN: LOBBY is
+        -- what freezes the ped (client/natives.lua), what moves the player
+        -- into the shared lobby routing bucket -- so the car they were driving
+        -- stops existing for them -- and what stops the storm drawing
+        -- (client/storm.lua). Doing it here meant doing all three while the
+        -- verdict slam was still playing over a live world. The owner, on
+        -- 2026-08-16: "the player should still be able to move during that
+        -- point (but can't), any vehicle they were driving despawns for some
+        -- reason, and if they were in the storm, the storm effects stop
+        -- rendering, THEN it fades to black."
+        --
+        -- The match is over; the world has not gone anywhere yet. So the sweep
+        -- waits until each player's own screen is genuinely black and they say
+        -- so (BR.Net.MATCH_COVERED), and the world is dismantled underneath
+        -- that -- which is the entire purpose of a cover.
+        --
+        -- PER PLAYER, not per match: 48 clients go black at 48 slightly
+        -- different moments and there is no reason to make the quick ones wait
+        -- for the slow ones.
+        --
+        -- AND ON A DEADLINE. A client that has crashed, or whose page never
+        -- reports, must still go home -- see sweepHome in the tick. That is
+        -- the second of three nets; CLEANUP's resetPlayers is the third.
+        m.sweepAt = GetGameTimer() + (M.coverSweepMs or 8000)
 
     elseif state == BR.MatchState.CLEANUP then
         BR.Bus.clear(m)
@@ -301,11 +486,82 @@ function BR.Match.onEnter(m, state, from)
     end
 end
 
+--- Send a finished match's players home to the lobby.
+---
+--- The teardown half of ENDED, split out of onEnter so it can happen at the
+--- right moment rather than the earliest one. Setting LOBBY freezes the ped,
+--- moves the routing bucket and stops the storm drawing on that client -- all
+--- of which must happen behind a black screen, never in front of the verdict
+--- slam (#124, and the note at the ENDED branch of onEnter).
+---
+--- Two callers, and they are the two halves of one fail-safe:
+---   * the player's own client, saying its screen is covered
+---   * the tick, when the deadline passes and nobody said anything
+---
+--- Idempotent, because both can fire for the same player: setState returns
+--- immediately when the state already matches.
+---
+--- @param m table
+--- @param only integer|nil  one player, or every remaining participant
+function BR.Match.sweepHome(m, only)
+    BR.Roster.each(
+        function(e) return e.matchId == m.id
+            and e.state ~= BR.PlayerState.LOBBY
+            and e.state ~= BR.PlayerState.LEFT end,
+        function(src)
+            if only and src ~= only then return end
+            BR.Roster.setState(src, BR.PlayerState.LOBBY)
+        end)
+end
+
+--- A client reporting that its own screen has finished going black.
+---
+--- THE SERVER CANNOT SEE A SCREEN, and this is the only channel that can tell
+--- it. Accepted only from a player whose own match is actually ENDED: outside
+--- that window there is no teardown pending and the message means nothing, so
+--- it is dropped rather than trusted -- a client cannot use this to send itself
+--- home early, mid-fight.
+RegisterNetEvent(BR.Net.MATCH_COVERED)
+AddEventHandler(BR.Net.MATCH_COVERED, function()
+    local src = source
+    local m = BR.Server.matchOf(src)
+    if not m or m.state ~= BR.MatchState.ENDED then return end
+    BR.Match.sweepHome(m, src)
+end)
+
 --- Assign final placements.
 ---
 --- Placement is by squad, not by player: a four-stack that wipes together all
 --- share a placement, which is what players expect and what the summary screen
 --- needs to show.
+---
+--- CALLED AT ENDED ONLY, AND NEVER FOR AN ABANDONED MATCH (#161).
+---
+--- AN ABANDONED MATCH AWARDS NO PLACEMENT OF ITS OWN. This function ranks the
+--- players who are STILL STANDING when a match finishes, and a match is dissolved
+--- precisely because nobody is: there is no last squad, so there is nothing here
+--- to rank. Every row an abandoned match publishes therefore carries only the
+--- placement its player earned on the way out --
+---
+---   * walked out alive -> `BR.Combat.eliminate(src, 'left', nil)` gave them one,
+---     because "leaving while alive IS an elimination" (BR.Match.leaveMatch);
+---   * died first       -> their real placement, from the same function;
+---   * disconnected     -> none at all, which br_stats reads as 0. That is the
+---     shape #100 already produces on a match that ends normally, so an abandoned
+---     match is not a new answer to an old question.
+---
+--- AND THAT IS WHAT STOPS LEAVING BECOMING WINNING. Run here, this loop would
+--- hand `placement = 1` -- first place -- to whoever simply had not left yet,
+--- which is reachable today by an admin dissolving a live match with
+--- `brforce waiting`. The last player out is not the last player standing, and
+--- the difference between those two sentences is the entire hazard.
+---
+--- The last player to walk out DOES still take placement 1 from eliminate(),
+--- because at that instant nobody had outlasted them and that is what placement
+--- means. It is not a win: eliminate stamps `diedAt`, and #133 settled that
+--- `won = placement == 1 and not died` -- one rule, read by the aggregate, the
+--- payout and the history row alike. A leaver keeps the ordering and loses the
+--- victory, exactly like the last squad taken by the storm.
 --- @param m table
 function BR.Match.awardPlacements(m)
     local living = {}
@@ -314,7 +570,20 @@ function BR.Match.awardPlacements(m)
             -- isInMatch, not just ALIVE/DBNO: since landing became what makes
             -- a player alive, a winner can be mid-glide when the last enemy
             -- dies -- still falling is still standing.
-            return e.matchId == m.id and BR.Server.isInMatch(e.state)
+            --
+            -- AND A HELD DEATH IS STILL STANDING TOO (#144). `revivePending` is
+            -- a player who left the bus, went down, and whose match has not
+            -- reached PLAYING: they have no diedAt, no placement and no results
+            -- row saying otherwise, and the only way this function ever sees one
+            -- is an admin ending a match during the flight -- there is no
+            -- gameplay path, because the pre-match tick refuses to end a match
+            -- that is holding somebody. Left out, they would be the one
+            -- participant of a force-ended match to finish with no placement, which
+            -- br_stats reads as a non-winning finish and banks as a death: the
+            -- exact outcome this whole change exists to prevent, arriving
+            -- through the one door nobody was watching.
+            return e.matchId == m.id
+                and (BR.Server.isInMatch(e.state) or e.revivePending == true)
         end,
         function(src, e) living[#living + 1] = { src = src, e = e } end)
 
@@ -356,6 +625,14 @@ end
 --- absent, broken or slow cannot affect the match ending.
 --- @param m table
 function BR.Match.publishResults(m)
+    -- AT MOST ONCE, whoever calls. The consumer's DynamoDB write is an atomic
+    -- ADD with no compensating write, so a second publish is unrecoverable
+    -- without a manual repair -- see the long note at the ENDED branch. Stamped
+    -- before the rows are built rather than after they are sent, so a throw
+    -- part-way through cannot leave the flag clear and invite a retry.
+    if m.publishedAt then return end
+    m.publishedAt = GetGameTimer()
+
     local rows = {}
     local endedAt = GetGameTimer()
     local startedAt = m.startedAt or endedAt
@@ -389,6 +666,20 @@ function BR.Match.publishResults(m)
             revives   = e.revives or 0,
             damage    = e.damage or 0.0,
             placement = e.placement,
+            -- PLACEMENT 1 IS NOT THE SAME QUESTION AS "DID THEY WIN".
+            --
+            -- The last squad standing can still be killed by the storm, and
+            -- eliminate() correctly records them as placement 1 -- nobody
+            -- outlasted them. But they died, and a match that ends with no
+            -- survivors has no winner. The client has always known this
+            -- (`placement == 1 and not diedThisMatch`, client/state.lua) and
+            -- shows them a death; the stats path never got the same rule and
+            -- banked a win, zero deaths, the win payout and the win XP bonus.
+            --
+            -- Sent as a fact about the player rather than left to be inferred,
+            -- because the two halves inferring it separately is exactly how
+            -- they came to disagree.
+            died      = e.diedAt ~= nil,
             squadId   = e.squadId,
             survivedMs = math.max(0, diedAt - startedAt),
             presentMs  = math.max(0, goneAt - startedAt),
@@ -425,40 +716,71 @@ function BR.Match.publishResults(m)
     })
 end
 
+--- Wipe ONE player's per-match state.
+---
+--- Split out of resetPlayers so that LEAVING a match clears the same slate that
+--- the match ending clears (#161). It did not, and the consequence was silent:
+--- BR.Match.leaveMatch detaches matchId, so CLEANUP's sweep -- which filters on
+--- matchId -- never reached anybody who had walked out, and their kills, damage,
+--- placement and diedAt followed them into their NEXT match and were banked
+--- again there. Two matches, one set of kills, counted twice.
+---
+--- One function, both callers, so "what a match leaves behind" is defined once.
+--- @param src integer
+--- @param e table
+function BR.Match.resetPlayer(src, e)
+    e.kills, e.downs, e.revives, e.damage = 0, 0, 0, 0.0
+    e.lastDamageBy, e.lastDamageAt = nil, 0
+    e.stormHp, e.lastStormAt = nil, nil
+    e.hp, e.armour = 100.0, 0.0
+
+    -- Per-match, like the counters above. A stale diedAt would date a
+    -- player's next match to their last one's clock and pay them
+    -- survival XP for a match they had not started.
+    e.diedAt, e.leftAt = nil, nil
+
+    -- THE KNOCK COUNT IS PER MATCH, which is the only thing that makes
+    -- the shortening bleed fair: a player who was picked up three times
+    -- last round starts the next one on a full 45 seconds.
+    e.dbnoUntil, e.dbnoCount = nil, 0
+    e.downedBy, e.reviverSrc, e.reviveFrom = nil, nil, nil
+    e.reviveBeat, e.reviveTickAt = nil, nil
+
+    -- A HELD DEATH BELONGS TO THE MATCH IT HAPPENED IN (#144). Normally
+    -- the flag is cleared by the revive at PLAYING, but a match that
+    -- never reaches PLAYING -- brforce ended, everyone else leaving --
+    -- leaves it set. Carried into the next round it would make its owner
+    -- count toward heldForStart in a match where nothing is holding
+    -- them, which is how the pre-match tick decides whether to go live
+    -- or dissolve. Same reasoning as diedAt above: per match, cleared
+    -- per match.
+    e.revivePending = nil
+
+    -- Explicitly cleared, so clients drop them too. squadId is
+    -- per-match; partyId deliberately survives.
+    BR.Roster.clearFields(src, { 'placement', 'squadId', 'colour' })
+    if e.state ~= BR.PlayerState.LOBBY
+       and e.state ~= BR.PlayerState.LEFT then
+        BR.Roster.setState(src, BR.PlayerState.LOBBY)
+    end
+end
+
 --- Clear per-player match state for one instance's players, at CLEANUP.
 --- @param m table
 function BR.Match.resetPlayers(m)
     m.storm = nil
     m.startSquads = nil
     BR.Inv.clearFor(m)
+
+    -- THE MOMENT THIS MATCH'S NUMBERS STOP EXISTING, stamped so the dissolve
+    -- path can refuse to publish from the wreckage (#161, and see
+    -- publishAbandoned). Everything below this line is destructive, and
+    -- everything that reads a results row has to happen before it.
+    m.wipedAt = GetGameTimer()
+
     BR.Roster.each(
         function(e) return e.matchId == m.id end,
-        function(src, e)
-            e.kills, e.downs, e.revives, e.damage = 0, 0, 0, 0.0
-            e.lastDamageBy, e.lastDamageAt = nil, 0
-            e.stormHp, e.lastStormAt = nil, nil
-            e.hp, e.armour = 100.0, 0.0
-
-            -- Per-match, like the counters above. A stale diedAt would date a
-            -- player's next match to their last one's clock and pay them
-            -- survival XP for a match they had not started.
-            e.diedAt, e.leftAt = nil, nil
-
-            -- THE KNOCK COUNT IS PER MATCH, which is the only thing that makes
-            -- the shortening bleed fair: a player who was picked up three times
-            -- last round starts the next one on a full 45 seconds.
-            e.dbnoUntil, e.dbnoCount = nil, 0
-            e.downedBy, e.reviverSrc, e.reviveFrom = nil, nil, nil
-            e.reviveBeat, e.reviveTickAt = nil, nil
-
-            -- Explicitly cleared, so clients drop them too. squadId is
-            -- per-match; partyId deliberately survives.
-            BR.Roster.clearFields(src, { 'placement', 'squadId', 'colour' })
-            if e.state ~= BR.PlayerState.LOBBY
-               and e.state ~= BR.PlayerState.LEFT then
-                BR.Roster.setState(src, BR.PlayerState.LOBBY)
-            end
-        end)
+        BR.Match.resetPlayer)
 
     -- The other half of the same wipe: the sealed entries of everyone who left
     -- this match. Their results published at ENDED, so nothing needs them now,
@@ -481,6 +803,15 @@ end
 --- @param m table
 function BR.Match.shortenWarmupIfFull(m)
     if m.shortened then return end
+
+    -- A FROZEN WARMUP IS NOT CUT SHORT. brwarmupfreeze exists to hold the pad
+    -- open, and a full lobby is the one thing that would otherwise thaw it by
+    -- the back door -- silently, and down to ten seconds. Returning WITHOUT
+    -- setting `shortened` is deliberate: the cut is refused for now rather than
+    -- spent, so a lobby that fills during the hold is still cut short the moment
+    -- somebody thaws it.
+    if BR.Match.warmupFrozen() then return end
+
     if BR.Server.countIn(m) < M.maxPlayers then return end
 
     local cap = GetGameTimer() + M.warmupShortened * 1000
@@ -650,6 +981,31 @@ local function winConditionMet(m)
     return BR.Server.squadsAlive(m) <= 1
 end
 
+--- How many of this match's players died before it started and are waiting to
+--- be picked back up (#144).
+---
+--- THEY ARE NOT ALIVE AND THEY ARE NOT FINISHED, AND EVERY HEADCOUNT BELOW
+--- ASSUMED THOSE WERE THE ONLY TWO OPTIONS. `BR.Server.aliveCount` counts states
+--- that are in the fight, and DEAD is not one -- correctly, since these players
+--- are lying on the ground. But the two decisions the pre-match tick makes off
+--- that count both come out backwards for them:
+---
+---   * "everyone is down -- ending" would end the match this player is about to
+---     be revived INTO, and end it before PLAYING, so the revive never runs and
+---     the death they were promised would be undone gets published instead.
+---   * "last player down -- going live" would refuse to go live, because it
+---     insists somebody is alive first -- so a solo player who dies during the
+---     flight would hold their own match in BUS forever, waiting for a state
+---     that is the only thing that can revive them.
+---
+--- One count, asked in both places, rather than teaching aliveCount a fourth
+--- meaning: aliveCount answers "can fight", and these players cannot.
+--- @param m table
+--- @return integer
+local function heldForStart(m)
+    return BR.Server.countIn(m, function(p) return p.revivePending == true end)
+end
+
 --- One instance's share of the tick.
 --- @param m table
 local function matchTick(m, now)
@@ -670,6 +1026,20 @@ local function matchTick(m, now)
         BR.Match.shortenWarmupIfFull(m)
     end
 
+    -- NOBODY IS LEFT BEHIND IN A FINISHED MATCH.
+    --
+    -- ENDED now waits for each client to report that its screen has gone black
+    -- before taking that player's world away (#124). This is the net under
+    -- that: a client that crashed, whose CEF died, or whose report was simply
+    -- lost has no way to ask, and must go home anyway. The deadline is set at
+    -- the transition and is comfortably shorter than endedSeconds, so a player
+    -- swept by this still gets the rest of the summary window -- CLEANUP's
+    -- resetPlayers is the backstop behind THIS, not the plan.
+    if m.state == BR.MatchState.ENDED and m.sweepAt and now >= m.sweepAt then
+        m.sweepAt = nil
+        BR.Match.sweepHome(m)
+    end
+
     -- Whoever is already on the ground learns the match is waiting on the
     -- rest. Polled rather than hooked to the landing report, which has a long
     -- history of not arriving -- see BR.Bus.landingNotices.
@@ -684,7 +1054,8 @@ local function matchTick(m, now)
     -- the REAL exit: ENDED runs placements, the verdict, the roster sweep
     -- and the trip home.
     if (m.state == BR.MatchState.WARMUP or m.state == BR.MatchState.BUS)
-       and BR.Server.aliveCount(m) == 0 then
+       and BR.Server.aliveCount(m) == 0
+       and heldForStart(m) == 0 then
         local anyDead = BR.Server.countIn(m, function(p)
             return p.state == BR.PlayerState.DEAD
         end) > 0
@@ -710,7 +1081,13 @@ local function matchTick(m, now)
                 or p.state == BR.PlayerState.FREEFALL
                 or p.state == BR.PlayerState.GLIDE
         end)
-        if airborne == 0 and BR.Server.aliveCount(m) > 0 then
+        -- A HELD PLAYER COUNTS AS A REASON TO GO LIVE (#144). They are on the
+        -- ground, they are not airborne, and PLAYING is the only event that
+        -- gives them their match back -- see heldForStart above. Without this
+        -- the last surviving condition for a solo drop that ended badly is a
+        -- state transition that will not happen.
+        if airborne == 0
+           and (BR.Server.aliveCount(m) > 0 or heldForStart(m) > 0) then
             print(('[br_core] match %d: last player down -- going live'):format(m.id))
             BR.Match.transition(m, BR.MatchState.PLAYING)
             return
@@ -948,6 +1325,62 @@ function BR.Match.leaveMatch(src)
     -- DEAD and SPECTATING players fall through: already out of the fight, they
     -- only need the trip back to the lobby.
 
+    -- ...AND A HELD DEATH IS CANCELLED BY WALKING OUT (#144). Someone who died
+    -- before the match started and then decided not to wait for the revive is
+    -- leaving; the flag must not follow them to the lobby, where it would hold
+    -- their old match open in the pre-match tick and, if that match were still
+    -- forming, revive a player who is no longer in it. Leaving is the one exit
+    -- the hold does not survive -- which is also why 'left' is excluded from the
+    -- hold in the first place (server/combat.lua).
+    entry.revivePending = nil
+
+    -- ...AND THEIR RECORD IS SEALED BEFORE THEY ARE DETACHED (#161).
+    --
+    -- THE ORDER OF THE NEXT THREE STEPS IS THE WHOLE FIX, so they are together:
+    -- seal, wipe, detach. Getting them in any other order loses the match or
+    -- doubles it.
+    --
+    -- publishResults finds its rows by matchId, and the line below clears this
+    -- player's -- so from that moment their kills, damage, placement and diedAt
+    -- are unreachable by the match they earned them in. That was true of EVERY
+    -- match, not just abandoned ones: a player who used Leave Match got no row
+    -- even from a match that ran to a winner, and did not count toward the field
+    -- size either. #100 fixed exactly this for disconnects and this door was
+    -- never checked -- which is what made #161 look like a problem only about
+    -- matches that empty out.
+    --
+    -- ONLY IF THIS MATCH ACTUALLY WROTE SOMETHING DOWN ABOUT THEM, and `diedAt`
+    -- is the field that answers it. It is the one every results row turns on --
+    -- `died`, and the end of the survival clock -- and the branches above are
+    -- exactly the ones that set it: a player who was alive or downed has just
+    -- been through eliminate('left'), and a player who was already DEAD or
+    -- SPECTATING went through it earlier. So the two cases it excludes are the
+    -- two that must be excluded, and neither needs its own clause:
+    --
+    --   * WARMUP -- they stepped off the pad. "The match has not started; there
+    --     is no placement to record", as the branch above already says. Sealing
+    --     would bank `matches +1` and a death for changing their mind.
+    --   * A HELD DEATH (#144) -- holdForStart deliberately writes NO diedAt, no
+    --     placement and no kill, because that death was going to be undone. It
+    --     stays unwritten when its owner walks out instead of waiting for the
+    --     revive; "a death that will be reversed must never be WRITTEN" does not
+    --     stop being true because the player got bored.
+    --
+    -- Whether the MATCH was worth recording is a different question, asked once,
+    -- later, by publishAbandoned -- so a bus-phase leaver is sealed here and then
+    -- correctly discarded if the match never goes live at all.
+    if entry.diedAt ~= nil then
+        BR.Roster.sealLeaver(src)
+    end
+
+    -- THE WIPE HAPPENS EITHER WAY, and it has to. CLEANUP's sweep filters on
+    -- matchId, so it will never reach this player again -- and without this their
+    -- kills, damage, placement and diedAt ride into the next match and are banked
+    -- a second time there. Unconditional because the stale state is just as real
+    -- for somebody who walked out during the bus, where eliminate('left') has
+    -- already written a placement and a diedAt that no longer belong to anything.
+    BR.Match.resetPlayer(src, entry)
+
     BR.Roster.setState(src, BR.PlayerState.LOBBY)
     -- Leaving really leaves: unlike the ENDED sweep (which keeps matchId for
     -- the summary), a voluntary exit detaches immediately -- no more of this
@@ -1040,5 +1473,108 @@ RegisterCommand('brskip', function()
         print(('[br_core] admin skipped to the end of match %d\'s %s'):format(m.id, m.state))
     else
         print(('  %s has no timer to skip'):format(m.state))
+    end
+end, true)
+
+--- HOLD THE MATCH IN WARMUP. Dev mode only.
+---
+---   brwarmupfreeze          hold every open warmup on the pad: the departure
+---                           timer stops, the bus does not come
+---   brwarmupfreeze off      thaw -- re-enter warmup from now, so the pad runs
+---                           its ordinary countdown and departs normally
+---
+--- MODELLED ON brstormfreeze (server/storm.lua) DELIBERATELY, down to the
+--- restriction, the wording of the report and the `off` argument. They are the
+--- same kind of control -- a debug hold on a clock that would otherwise decide
+--- the session -- and giving the second one a different idiom would mean
+--- learning the same command twice.
+---
+--- ═══ WHAT IT IS FOR ═══
+---
+--- Owner, 2026-08-20: "can you make me a server command that will stop the match
+--- in the warmup phase?"
+---
+--- AND THE CASE THAT MAKES IT MORE THAN A CONVENIENCE: an incident filed during
+--- WARMUP gets no match context. Warmup is invincible, the flight has not left,
+--- and a case opened on the pad never enters the match timeline's pending map,
+--- so it never receives the match-end close that gives every other case its
+--- surroundings (server/incident.lua). That is an open design question rather
+--- than a decided one -- but it could only be looked at when a warmup happened
+--- to run long enough to strip a weapon in, which is to say by luck. Holding the
+--- pad open turns "reproduce it if the timing is kind" into "type this, then
+--- take as long as you need".
+---
+--- ═══ IMPLEMENTED AS A DEADLINE, AND BROADCAST LIKE ANY OTHER ═══
+---
+--- The state machine advances a warmup when `endsAt` passes (matchTick), so the
+--- hold is a deadline a day out rather than a flag the tick has to learn about.
+--- Nothing else in the file needs to know: `brskip` still ends it, `brforce bus`
+--- still departs, and a match that dissolves for being underpopulated still
+--- dissolves -- all of those are already written against endsAt or against the
+--- state, not against a clock this command owns.
+---
+--- Every change of endsAt is rebroadcast, for the reason shortenWarmupIfFull
+--- gives: clients derive their countdown from it, so an endsAt that moved in
+--- silence leaves every HUD counting to the wrong moment.
+---
+--- ═══ IT DOES NOT LIFT ITSELF, AND THAT IS THE ONE PLACE IT DIVERGES ═══
+---
+--- brstormfreeze drops at the end of the match it was holding, because carrying
+--- a storm freeze into the next round leaves that round with no storm and a
+--- battle royale with no storm never ends -- an invisible failure.
+---
+--- THE SAME RULE HERE WOULD BE BOTH UNREACHABLE AND WRONG. Unreachable, because
+--- a warmup that is being held never reaches the end of a match to hang the
+--- release on; the only paths that do get there are the dissolves -- everybody
+--- steps off the pad, or the warmup was underpopulated -- so the hook would fire
+--- exactly when a tester walked away for a moment and would disarm a switch they
+--- set thirty seconds ago. And wrong, because the failure it would be protecting
+--- against is not invisible: a held warmup is a departure timer that has stopped
+--- on the screen of everybody standing on the pad. It stays on until somebody
+--- says `off`. Do not "fix" this to match the storm without reading this note.
+local warmupFrozen = false
+
+--- Is warmup currently held by brwarmupfreeze?
+--- Read by BR.Match.transition, so a match opening AFTER the freeze inherits it,
+--- and by shortenWarmupIfFull, so a full lobby cannot cut the hold short.
+--- @return boolean
+function BR.Match.warmupFrozen() return warmupFrozen end
+
+RegisterCommand('brwarmupfreeze', function(_, args)
+    if not BR.Server.devMode then
+        print('  brwarmupfreeze is dev-mode only (br_devMode true)')
+        return
+    end
+
+    local thaw = (args[1] == 'off' or args[1] == 'thaw')
+    local now = GetGameTimer()
+    local touched = 0
+
+    BR.Server.eachMatch(function(m)
+        if m.state ~= BR.MatchState.WARMUP then return end
+
+        if thaw then
+            -- RE-ENTER WARMUP FROM NOW, which is this command's version of the
+            -- storm thaw resuming the phase from wherever the wall is. The pad
+            -- gets a whole ordinary warmup rather than whatever was left of one
+            -- an hour ago, and `shortened` is re-armed so a full lobby is cut
+            -- short again by the rule that was suppressed during the hold.
+            m.endsAt = now + M.warmupSeconds * 1000
+            m.shortened = false
+        else
+            m.endsAt = now + WARMUP_HOLD_MS
+        end
+        BR.Broadcast.state(m, m.state, m.endsAt,
+            { reason = thaw and 'warmupThaw' or 'warmupFreeze' })
+        touched = touched + 1
+    end)
+
+    warmupFrozen = not thaw
+    print(('[br_core] warmup %s (%d match%s)'):format(
+        thaw and 'THAWED -- the pad counts down and the bus comes'
+             or 'FROZEN -- the pad stays open, no departure',
+        touched, touched == 1 and '' or 'es'))
+    if not thaw and touched == 0 then
+        print('  (no warmup open yet -- the next one will start frozen)')
     end
 end, true)

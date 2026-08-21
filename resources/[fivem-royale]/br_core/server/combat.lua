@@ -39,6 +39,209 @@ local function canDie(entry)
         or s == BR.PlayerState.GLIDE
 end
 
+--- Has this player left the bus into a match that has not started yet? (#144)
+---
+--- THE WINDOW IS THE DESCENT AND WHAT FOLLOWS IT, NOT THE WARMUP PAD. Rescoped
+--- on the owner's correction, 2026-08-16:
+---
+---   "this was not supposed to cover dying during warmup, since that's not
+---    possible. instead, the issue is dying between jumping from the bus and
+---    game state changing to playing"
+---
+--- So it takes TWO facts, and neither alone is the window:
+---
+---   THE MATCH IS IN BUS. Which is not a small slice: BUS covers the whole
+---   descent AND the whole wait afterwards, because server/match.lua holds the
+---   state until the LAST player is down and extends it in ten-second steps for
+---   anyone still under canopy. WARMUP is deliberately excluded -- the owner
+---   says death is not possible there, and a hold that covered it would be
+---   holding open something that never happens. WAITING has no players in it,
+---   and by ENDED or CLEANUP the results are published or about to be, so
+---   holding a death there would be holding it open past the moment it is
+---   written down.
+---
+---   AND THIS PLAYER IS OUT OF THE DOOR. Somebody still ABOARD has not entered
+---   the window yet -- "between jumping from the bus and..." is where it starts,
+---   and starting it earlier would put the aircraft back inside a scope the
+---   owner has just taken it out of.
+---
+--- What is left is exactly the descent and the moments after it: FREEFALL and
+--- GLIDE in the air, ALIVE once their feet are down, DBNO if a squadmate's
+--- killer got there first. The last of those is the case that actually happens
+--- and the reason the window matters at all -- a player becomes ALIVE the
+--- instant they LAND, so the first person to touch the ground is mortal, on
+--- foot, in a POI, for as long as the slowest glider takes ("what may be a
+--- minute or more", in the issue's words). The airborne states are invincible
+--- client-side (client/natives.lua) and are covered anyway, because a client
+--- that loses that invincibility is not a reason to bank a death nobody could
+--- have earned.
+--- @param m table|nil
+--- @param entry table|nil
+--- @return boolean
+local function beforeTheMatch(m, entry)
+    if not m or not entry then return false end
+    if m.state ~= BR.MatchState.BUS then return false end
+    local s = entry.state
+    return s == BR.PlayerState.FREEFALL
+        or s == BR.PlayerState.GLIDE
+        or s == BR.PlayerState.ALIVE
+        or s == BR.PlayerState.DBNO
+end
+
+--- A death that is going to be undone, recorded NOWHERE (#144).
+---
+--- The owner: "If a player dies before game state changes to playing, we should
+--- notify them they will be revived automatically when the match starts, and
+--- then do so."
+---
+--- THE DANGEROUS HALF IS THE BOOKKEEPING, NOT THE REVIVE, AND THIS PROJECT HAS
+--- THE SCARS TO PROVE IT. A placement-1 death was banked as a WIN because the
+--- stats path and the client disagreed about what a death meant, and a second
+--- results publish invented a full set of rows -- both landed in DynamoDB as an
+--- atomic ADD, which has no compensating write. There is no undo. So a death
+--- that will be reversed must never be WRITTEN, rather than written and then
+--- carefully unwritten: every field the results row is built from is simply
+--- never touched here.
+---
+--- What eliminate() does that this deliberately does not:
+---   * `entry.placement` -- a placement is a finishing position, and this player
+---     has not finished. Left nil, so awardPlacements and the results row see
+---     someone who was never eliminated.
+---   * `entry.diedAt` -- the single field `died` is derived from, which decides
+---     `wins`, `deaths`, the win XP bonus and the top-10 bonus, AND doubles as
+---     the survival clock's end stamp. Writing it would pay this player for
+---     surviving until the moment they were revived.
+---   * the killer's `kills` -- an undone death is not a kill. The shooter is
+---     told nothing, which is the honest outcome: there is no such kill to tell
+---     them about.
+---   * `BR.Loot.deathBox` -- their inventory stays on their person rather than
+---     being scattered for someone else to take. Undoing THAT is impossible
+---     once another player has walked over it.
+---   * `BR.Evidence.noteKill` and the kill feed -- the feed is how the whole
+---     match learns somebody is out, and this player is not out.
+---
+--- The roster DOES go to DEAD, and that is not a contradiction. Their ped is
+--- genuinely dead on their own machine; a roster that disagreed would leave the
+--- server-observed health check firing `defeat` at them once a second forever.
+--- DEAD is what the client draws off and what stops them shooting; it is the
+--- three fields above, not the state string, that a results row is made of.
+--- @param src integer
+--- @param entry table
+--- @param m table
+local function holdForStart(src, entry, m)
+    -- The knock, if there was one, is over -- same clearing eliminate does, and
+    -- for the same reason: a downed player whose bleed clock keeps running would
+    -- be eliminated for real thirty seconds into the hold.
+    local wasDowned = entry.state == BR.PlayerState.DBNO
+    entry.dbnoUntil, entry.downedBy = nil, nil
+    entry.reviverSrc, entry.reviveFrom = nil, nil
+    entry.reviveBeat, entry.reviveTickAt = nil, nil
+
+    entry.revivePending = true
+    BR.Roster.setState(src, BR.PlayerState.DEAD)
+
+    if wasDowned then
+        TriggerClientEvent(BR.Net.DBNO_SET, src, { downed = false, died = true })
+        TriggerClientEvent(BR.Net.HEALTH_SYNC, src, { hp = 0, armour = 0 })
+    end
+
+    -- STICKY, BECAUSE THE WAIT IS THE PROBLEM. The reason the issue asks for a
+    -- notice at all is that a dead screen with nothing on it reads as "you are
+    -- out" -- and this player may be looking at it for the rest of the flight.
+    -- A notice that fades after four seconds would leave them in exactly the
+    -- silence it was written to break. Keyed and sticky, withdrawn by name when
+    -- the revive lands.
+    BR.Server.notify(src,
+        'You are down, but not out. The match has not started yet -- '
+        .. 'you will be revived automatically when it does.',
+        'info', { key = 'revive.pending', sticky = true })
+
+    print(('[br_core] %s (%d) died before match %d started -- held for revive, '
+        .. 'nothing recorded'):format(entry.name, src, m.id))
+end
+
+--- Get a held player back up, on the transition into PLAYING (#144).
+---
+--- Called from match.lua's onEnter(PLAYING). Public because that is the only
+--- caller and it lives in another file -- and because `/brrevive` should never
+--- become the second way to do this.
+---
+--- ORDER IS LOAD-BEARING IN BOTH DIRECTIONS. The client is told to resurrect
+--- BEFORE the roster says ALIVE, because the server-observed death check reads
+--- `engineHp` from the position sampler and would see a corpse in a state that
+--- can die -- and eliminate them again, for real this time, one second into the
+--- match they were just given back. `engineHp` is cleared here as well: the
+--- sample is up to a second old and clearing it is the difference between "no
+--- opinion until the next sample" and "an opinion from before the revive".
+--- @param src integer
+--- @param entry table
+function BR.Combat.reviveHeld(src, entry)
+    entry.revivePending = nil
+
+    -- NEITHER OF THESE SHOULD BE SET AND BOTH ARE CLEARED ANYWAY. holdForStart
+    -- never writes them, so this is not undoing its work -- it is refusing to
+    -- trust that no other path reached this entry while it was held. The cost is
+    -- two assignments; the cost of being wrong is a fabricated placement and a
+    -- death in DynamoDB that nothing can take back (the fingerprint of both
+    -- earlier stats bugs).
+    entry.placement, entry.diedAt = nil, nil
+    entry.engineHp = nil
+
+    TriggerClientEvent(BR.Net.REVIVED, src)
+
+    BR.Roster.update(src, { hp = 100.0, armour = 0.0 })
+    BR.Roster.setState(src, BR.PlayerState.ALIVE)
+    TriggerClientEvent(BR.Net.HEALTH_SYNC, src, { hp = 100, armour = 0 })
+
+    BR.Server.notifyClear(src, 'revive.pending')
+    BR.Server.notify(src, 'The match has started. You are back in.',
+        'success', { ms = 5000 })
+
+    print(('[br_core] revived %s (%d) -- died before the match started')
+        :format(entry.name, src))
+end
+
+--- Tell a squad that one of them just changed phase -- and never tell the
+--- subject.
+---
+--- "When a squad player goes from alive to DBNO and DBNO to out, a sound effect
+--- should be played that all squadmates can hear, except the one which is down.
+--- They have their own sounds for this phase." (owner, playtest.)
+---
+--- THE AUDIENCE IS THE FEATURE, AND IT IS DECIDED HERE. Every client already
+--- learns that a mate went down -- the roster delta carries `state`, the squad
+--- beacon carries the row, the panel stripe turns red. Any of those could be
+--- watched for an edge and turned into a sound, and every one of those clients
+--- would then be deciding for itself who is allowed to hear it. Two of them
+--- would disagree the first time a delta was coalesced, and the one client that
+--- must NOT play it -- the subject, who has their own cue for this and is busy
+--- hearing it -- is the client least able to tell the difference. The server
+--- knows the squad and the server knows the subject, so the server addresses the
+--- envelope and no client ever holds an opinion about it.
+---
+--- IT RIDES DBNO_SET, which is already the downed channel and already has
+--- exactly one handler in the whole client (client/dbno.lua). The `mate` key is
+--- what distinguishes the two shapes: an envelope with `mate` is ABOUT SOMEBODY
+--- ELSE and says nothing about the receiver's own state, so the handler answers
+--- it and returns before it can touch `mine`.
+---
+--- @param subject integer  who it happened to
+--- @param entry table      their roster entry
+--- @param phase string     'down' | 'out' | 'up'
+local function tellSquad(subject, entry, phase)
+    if not entry.squadId then return end
+    BR.Roster.each(
+        function(e)
+            return e.squadId == entry.squadId
+               and e.src ~= subject
+               and e.matchId == entry.matchId
+        end,
+        function(mate)
+            TriggerClientEvent(BR.Net.DBNO_SET, mate,
+                { mate = { src = subject, name = entry.name, phase = phase } })
+        end)
+end
+
 --- Eliminate a player.
 ---
 --- Placement is assigned as the number of teams still standing INCLUDING this
@@ -54,6 +257,27 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     -- Placement counts THIS match's teams; the kill feed goes to THIS
     -- match's audience. A death in one match is silence in every other.
     local m = BR.Server.matchOf(src)
+
+    -- BEFORE ANYTHING IS WRITTEN DOWN (#144). This has to be the first branch in
+    -- the function -- ahead of the placement read, ahead of the death box --
+    -- because everything below it is a consequence that cannot be taken back.
+    --
+    -- 'left' IS EXCLUDED AND THAT IS NOT AN OVERSIGHT. Leaving mid-match is
+    -- routed through here on purpose ("leaving while alive IS an elimination",
+    -- match.lua) so that quitting cannot be a cheaper exit than dying. A player
+    -- who has disconnected or walked out cannot be revived into a match they are
+    -- no longer in, and holding their exit open would mean a leaver during the
+    -- bus finishes with no placement and no results row at all -- a way out with
+    -- no cost, which is the exact thing that funnel exists to prevent.
+    --
+    -- Everything else IS held, `brkill` included: an admin killing somebody
+    -- during the flight is testing this path, and a test tool that took a
+    -- different route would be testing itself.
+    if cause ~= 'left' and beforeTheMatch(m, entry) then
+        holdForStart(src, entry, m)
+        return
+    end
+
     local placement = BR.Server.squadsAlive(m)
 
     -- THE BOX IS BUILT BEFORE THE STATE CHANGES. What they were carrying and
@@ -98,6 +322,11 @@ function BR.Combat.eliminate(src, cause, killerSrc)
     if wasDowned then
         TriggerClientEvent(BR.Net.DBNO_SET, src, { downed = false, died = true })
         TriggerClientEvent(BR.Net.HEALTH_SYNC, src, { hp = 0, armour = 0 })
+        -- DBNO -> OUT, the second of the owner's two moments. Only from a knock:
+        -- a squadmate who was shot dead outright never took a knee, and the kill
+        -- feed is what carries that. Sent to the squad and not to them -- they
+        -- are watching a verdict screen and have their own sound for it.
+        tellSquad(src, entry, 'out')
     end
 
     local killer = killerSrc and BR.Roster.get(killerSrc)
@@ -340,7 +569,7 @@ function BR.Combat.knock(src, killerSrc)
 
     -- WHO OWNS THE FINISH IF NOBODY EVER TOUCHES THEM AGAIN, and this is the
     -- trap the whole field exists for. BR.Combat.attributedKiller expires at
-    -- assistWindowMs (10s) and a bleed runs 15-45s, so a player who is knocked
+    -- assistWindowMs (10s) and a bleed runs 40-120s, so a player who is knocked
     -- and simply left alone would be credited to nobody -- the same shape as
     -- the "0 eliminations" summary M6 had to fix. downedBy does not expire: it
     -- is cleared by a revive or by the match ending, and by nothing else.
@@ -360,7 +589,38 @@ function BR.Combat.knock(src, killerSrc)
     BR.Roster.update(src, { hp = (M.dbnoHp or 5) + 0.0, armour = 0.0 })
     BR.Roster.setState(src, BR.PlayerState.DBNO)
 
+    -- THE SAMPLE FROM BEFORE THE KNOCK MUST NOT OUTLIVE IT.
+    --
+    -- `engineHp` is up to 250ms old and, on every damage path the engine still
+    -- owns, it is a reading of a CORPSE: a fall, a fire, drowning or a car kills
+    -- the ped outright, and the knock that follows is the server deciding that
+    -- death means "down" instead. Left in place, the server-observed death check
+    -- reads that stale zero and finishes a player it knocked a fraction of a
+    -- second ago. Cleared for exactly the reason reviveHeld clears it -- no
+    -- opinion until the next sample beats an opinion from before the event.
+    entry.engineHp = nil
+
     BR.Combat.pushDbno(src)
+
+    -- ...AND THE PED IS PUT ON THE DOWNED FLOOR, WHATEVER PUT THEM THERE.
+    --
+    -- Sent AFTER pushDbno, and the order is load-bearing: DBNO_SET is what makes
+    -- the client resurrect a ped the world killed (client/dbno.lua), and a
+    -- resurrection restores GTA's default health -- so a health write that
+    -- arrived first would simply be overwritten by it.
+    --
+    -- This used to be implicit and only true down one path. BR.Damage.applyHit
+    -- clamps a knocking shot so the victim's ped survives at this floor, so a
+    -- GUNSHOT knock landed on the right number by construction. Nothing clamps a
+    -- fall, so a player who dropped from a height was handed the downed STATE
+    -- with a dead ped reading zero -- no crawl, no health, and no way back
+    -- (owner, 2026-08-16). The server cannot write a ped; it can say what the
+    -- number is, which is the contract HEALTH_SYNC already exists for.
+    TriggerClientEvent(BR.Net.HEALTH_SYNC, src, { hp = M.dbnoHp or 5, armour = 0 })
+
+    -- ...AND IN SOUND, which is the half that does not need them to be looking
+    -- anywhere at all. ALIVE -> DBNO, the first of the owner's two moments.
+    tellSquad(src, entry, 'down')
 
     -- THE SQUAD IS TOLD IN WORDS, not only in pixels. The panel stripe and the
     -- [DOWN] gamer tag both already say this, and both require the mate to be
@@ -443,24 +703,46 @@ end
 --- Re-checked EVERY tick rather than only when the hold starts, which is what
 --- makes the cancellation rules free: walking away, being knocked yourself,
 --- the target dying and the match ending are all just this returning false.
+---
+--- IT ANSWERS WHY, AND THAT IS THE SERVER HALF OF #163's INSTRUMENT. Six
+--- separate facts used to collapse into one word, `notallowed`, which is what a
+--- reviver was told four times a second while nobody could say which of the six
+--- it was. The reason is carried into refuseRevive and stopRevive, printed by
+--- /brdbno, and -- for the one that is a number -- carries the number.
 --- @param reviver table|nil
 --- @param target table|nil
---- @return boolean
+--- @return boolean allowed, string|nil why not
 local function reviveAllowed(reviver, target)
-    if not reviver or not target then return false end
-    if reviver.state ~= BR.PlayerState.ALIVE then return false end
-    if target.state ~= BR.PlayerState.DBNO then return false end
-    if not reviver.matchId or reviver.matchId ~= target.matchId then return false end
-    if not reviver.squadId or reviver.squadId ~= target.squadId then return false end
+    if not reviver or not target then return false, 'no such player' end
+    if reviver.state ~= BR.PlayerState.ALIVE then
+        return false, 'the reviver is ' .. tostring(reviver.state)
+    end
+    if target.state ~= BR.PlayerState.DBNO then
+        return false, 'the target is ' .. tostring(target.state) .. ', not down'
+    end
+    if not reviver.matchId or reviver.matchId ~= target.matchId then
+        return false, 'different matches'
+    end
+    if not reviver.squadId or reviver.squadId ~= target.squadId then
+        return false, 'different squads'
+    end
 
     -- MEASURED FROM THE SERVER'S OWN POSITION SAMPLES, never from anything a
     -- client said -- the rule the loot claim already follows, with the same
     -- slack for the same 250ms sampling skew.
     local a, b = reviver.pos, target.pos
-    if not a or not b then return false end
+    -- NAMED SEPARATELY, because "the server has never sampled this player"
+    -- looks nothing like "they walked away" and used to read as the same
+    -- refusal. It means OneSync or the position job, not the player.
+    if not a then return false, 'no position sampled for the reviver' end
+    if not b then return false, 'no position sampled for the target' end
 
     local reach = (M.dbnoReviveDist or 1.5) + (M.dbnoReviveSlack or 1.0)
-    return BR.Dist3(a.x, a.y, a.z, b.x, b.y, b.z) <= reach
+    local d = BR.Dist3(a.x, a.y, a.z, b.x, b.y, b.z)
+    if d > reach then
+        return false, ('%.2fm apart, server reach is %.2fm'):format(d, reach)
+    end
+    return true
 end
 
 --- Stop whatever revive is running on this player. Harmless if none is.
@@ -470,6 +752,16 @@ end
 local function stopRevive(src, entry, reason)
     local reviverSrc = entry.reviverSrc
     if not reviverSrc then return end
+
+    -- HOW FAR IT HAD GOT WHEN IT DIED, kept for /brdbno. A hold that is being
+    -- killed and restarted reads as a string of identical percentages here,
+    -- which is the signature of the client re-arming rather than of a player
+    -- who cannot hold a key -- and it is the number that was missing when the
+    -- last three rounds had to guess between the two.
+    entry.reviveLastPct = revivePctOf(entry) * 100.0
+    entry.reviveStopWhy = reason
+    entry.reviveStopAt  = GetGameTimer()
+    entry.reviveStops   = (entry.reviveStops or 0) + 1
 
     entry.reviverSrc, entry.reviveFrom = nil, nil
     entry.reviveBeat, entry.reviveTickAt = nil, nil
@@ -512,6 +804,23 @@ function BR.Combat.revive(src, reviverSrc)
         { hp = M.dbnoReviveHp or 30, armour = 0 })
     BR.Combat.pushDbno(src)
 
+    -- ...AND THE SQUAD HEARS IT, which is the third of the three phases this
+    -- channel carries (owner, 2026-08-18: "when a player is revived all squad
+    -- mates should hear a success sound").
+    --
+    -- SENT FROM HERE AND NOT FROM THE HOLD THAT CAUSED IT, because this is the
+    -- one function every revive goes through: a completed eight seconds,
+    -- `/brrevive`, and anything later that decides to put somebody back on
+    -- their feet all land here. A cue raised at the end of the hold instead
+    -- would be silent for the admin path and would fire for a hold that was
+    -- refused on the last tick.
+    --
+    -- The subject is excluded by tellSquad and that is deliberate and
+    -- unchanged: they are being told in words ("X picked you up") on the line
+    -- below, and the whole reason the server owns the audience is that the
+    -- subject is the one client that must not hear the squad's version.
+    tellSquad(src, entry, 'up')
+
     if reviverSrc then
         TriggerClientEvent(BR.Net.REVIVE_PROGRESS, reviverSrc,
             { pct = 100.0, target = src, done = true })
@@ -540,8 +849,9 @@ local function stepDowned(src, entry, now)
         -- full progress ring.
         local reviver = BR.Roster.get(reviverSrc)
 
-        if not reviveAllowed(reviver, entry) then
-            stopRevive(src, entry, 'interrupted')
+        local allowed, why = reviveAllowed(reviver, entry)
+        if not allowed then
+            stopRevive(src, entry, 'interrupted: ' .. tostring(why))
 
         elseif now - (entry.reviveBeat or 0) > (M.dbnoReviveBeatMs or 750) then
             -- THE HOLDER WENT QUIET. A revive is only alive while the client
@@ -549,14 +859,22 @@ local function stepDowned(src, entry, now)
             -- eight-second hold for a tap (owner, in game). Requiring evidence
             -- rather than trusting one message makes the failure cost a
             -- fraction of a second instead of the whole interaction.
-            stopRevive(src, entry, 'released')
+            stopRevive(src, entry, ('released: nothing heard for %dms')
+                :format(now - (entry.reviveBeat or 0)))
 
         elseif math.max(reviver.lastHitAt or 0, reviver.lastStormAt or 0)
                > (entry.reviveFrom or 0) then
             -- CANCELLED BY THE REVIVER'S DAMAGE, not the downed player's.
             -- Picking somebody up is the thing you cannot do while being shot,
             -- which is the entire reason it takes eight seconds in the open.
-            stopRevive(src, entry, 'hurt')
+            --
+            -- WHICH of the two, because they are different bugs if this turns
+            -- out to be firing when it should not: a storm tick lands on
+            -- everybody standing in the wall, a hit lands on one person.
+            stopRevive(src, entry,
+                ((reviver.lastStormAt or 0) > (reviver.lastHitAt or 0))
+                    and 'hurt: the reviver is taking storm damage'
+                    or  'hurt: the reviver was shot mid-hold')
 
         else
             local pct = revivePctOf(entry)
@@ -579,8 +897,28 @@ local function stepDowned(src, entry, now)
             entry.dbnoUntil = (entry.dbnoUntil or now) + (now - (entry.reviveTickAt or now))
             entry.reviveTickAt = now
 
+            -- ...AND THE MOVED DEADLINE GOES BACK TO THE PLAYER IT BELONGS TO.
+            --
+            -- THE PAUSE ABOVE HAS ALWAYS WORKED AND HAS NEVER BEEN VISIBLE, and
+            -- that is the whole of "while actively reviving, the DBNO timer does
+            -- not stop" (owner, 2026-08-18). The number the downed player WATCHES
+            -- is not this one: DBNO_SET carries `bleedEndsAt` to their client,
+            -- their client hands it to the interface, and ui-src's DbnoOverlay
+            -- counts down from it on requestAnimationFrame -- continuously, on
+            -- the browser's own clock, against whatever deadline it was last
+            -- given. DBNO_SET is sent on EDGES. The last edge before a hold is
+            -- the hold registering, so the browser spent the entire revive
+            -- counting down from a deadline this line had already moved four
+            -- times a second and never mentioned.
+            --
+            -- Carried on the tick that already exists rather than by pushing a
+            -- second envelope beside it: this payload is the only thing sent
+            -- while a hold runs, and both ends of the clock now travel together.
+            -- It reaches the reviver too, who is a squadmate and already sees
+            -- this exact number on the squad beacon (server/party.lua).
             local payload = { pct = pct * 100.0, target = src,
-                              reviverName = reviver.name }
+                              reviverName = reviver.name,
+                              bleedEndsAt = entry.dbnoUntil }
             TriggerClientEvent(BR.Net.REVIVE_PROGRESS, reviverSrc, payload)
             TriggerClientEvent(BR.Net.REVIVE_PROGRESS, src, payload)
         end
@@ -600,15 +938,59 @@ BR.Sched.every(250, 'combat.dbno', function()
         function(src, entry) stepDowned(src, entry, now) end)
 end)
 
+--- Tell a would-be reviver their hold is not happening.
+---
+--- A REFUSAL THAT SAYS NOTHING LOOKS EXACTLY LIKE A HOLD THAT IS WORKING, and
+--- on this interaction that is not a nuance -- it is the entire failure mode.
+--- br_ui/dui/prompt.html fills its ring from a ONE-SHOT CSS animation started by
+--- a single "a hold began, it lasts N ms" message, so the ring closes on
+--- schedule whether or not this file ever agreed to anything. Three of the
+--- returns below used to be silent, which meant the player watched a full ring
+--- and then watched nothing happen, with no evidence anywhere pointing at the
+--- server (owner, playtest; and the same false signal cost four rounds on #129).
+---
+--- The reply is the same envelope stopRevive already sends, so the client needs
+--- no new branch: a cancelled REVIVE_PROGRESS drops the hold and the next
+--- setPrompt takes the ring back down. `reason` is for the log and for whatever
+--- the interface decides to say later; nothing depends on its value today.
+---
+--- CHEAP BY CONSTRUCTION. The client asks at most four times a second per hold,
+--- so a refusal costs the same traffic as the progress ticks an ACCEPTED hold
+--- already generates -- and only while somebody is actually leaning on a key.
+--- @param src integer
+--- @param targetSrc integer
+--- @param reason string
+local function refuseRevive(src, targetSrc, reason)
+    -- RECORDED ON THE TARGET, because that is the row /brdbno prints and the
+    -- refusal is about this body. Kept as the LAST one plus a count: a refusal
+    -- that happens once is a race and the same refusal a hundred times is the
+    -- answer, and the pair fits on one line.
+    local t = BR.Roster.get(targetSrc)
+    if t then
+        t.reviveRefuseWhy = reason
+        t.reviveRefuseAt  = GetGameTimer()
+        t.reviveRefuseBy  = src
+        t.reviveRefusals  = (t.reviveRefusals or 0) + 1
+    end
+    TriggerClientEvent(BR.Net.REVIVE_PROGRESS, src,
+        { pct = 0.0, target = targetSrc, cancelled = true, reason = reason })
+end
+
 RegisterNetEvent(BR.Net.REVIVE_START)
 AddEventHandler(BR.Net.REVIVE_START, function(data)
     local src = source
     local targetSrc = math.tointeger(tonumber(data and data.target))
+    -- The one refusal that stays silent, because there is nobody to answer
+    -- about: without a target id there is no ring on the far side to take down.
     if not targetSrc then return end
 
     local reviver = BR.Roster.get(src)
     local target  = BR.Roster.get(targetSrc)
-    if not reviveAllowed(reviver, target) then return end
+    local allowed, why = reviveAllowed(reviver, target)
+    if not allowed then
+        refuseRevive(src, targetSrc, why or 'notallowed')
+        return
+    end
 
     -- ALREADY OURS: this is the heartbeat, not a new hold. The client
     -- re-asserts every 250ms and the clock below is what expires a revive
@@ -620,11 +1002,21 @@ AddEventHandler(BR.Net.REVIVE_START, function(data)
 
     -- FIRST HAND ON WINS. Two mates holding the same body is not twice as fast
     -- and it must not restart the clock for whoever pressed second.
-    if target.reviverSrc then return end
+    if target.reviverSrc then
+        refuseRevive(src, targetSrc,
+            ('taken: %d already has this body'):format(target.reviverSrc))
+        return
+    end
 
     target.reviverSrc = src
     target.reviveFrom = GetGameTimer()
     target.reviveBeat = target.reviveFrom
+    -- THE PAUSE STARTS HERE, NOT ON THE FIRST TICK. stepDowned advances the
+    -- deadline by `now - reviveTickAt`, and with nothing stamped that first
+    -- pass measured zero -- so the quarter second between the hold registering
+    -- and the scheduler's next look ran off the clock every single time. It is
+    -- a fifth of a knock over a full 2.8s hold, and it is free to close.
+    target.reviveTickAt = target.reviveFrom
     BR.Combat.pushDbno(targetSrc)
 end)
 
@@ -646,6 +1038,14 @@ function BR.Combat.forget(src)
         entry.dbnoUntil, entry.dbnoCount = nil, nil
         entry.downedBy, entry.reviverSrc, entry.reviveFrom = nil, nil, nil
         entry.reviveBeat, entry.reviveTickAt = nil, nil
+        -- ...AND THE DIAGNOSTIC RECORD WITH THEM. /brdbno prints these as ages,
+        -- and an age is a lie if the row belongs to somebody else: server ids
+        -- are recycled within the minute, which is the whole reason this
+        -- function exists.
+        entry.reviveRefuseWhy, entry.reviveRefuseAt = nil, nil
+        entry.reviveRefuseBy, entry.reviveRefusals  = nil, nil
+        entry.reviveStopWhy, entry.reviveStopAt     = nil, nil
+        entry.reviveStops, entry.reviveLastPct      = nil, nil
     end
     -- ...and anything they were in the middle of picking up.
     BR.Roster.each(
@@ -666,6 +1066,41 @@ AddEventHandler(BR.Net.PLAYER_DIED, function(data)
         if BR.Server.devMode then
             print(('[br_core] ignored death report from %d in state %s')
                 :format(src, entry.state))
+        end
+        return
+    end
+
+    -- ...AND A DOWNED PLAYER IS NOT FINISHED BY THEIR OWN CLIENT EITHER
+    -- (owner, 2026-08-17: "I tried triggering DBNO by falling from a height but
+    -- it went straight to dead").
+    --
+    -- THE ASYMMETRY THIS CLOSES. There are exactly two doors from "this ped
+    -- reads dead" to defeat(), and defeat() on a DBNO entry can only ever
+    -- eliminate -- canBeDowned requires ALIVE, so the knock branch is
+    -- unreachable and the fall-through is the whole of it. ef501ef locked one
+    -- door (the server's own sampler, in combat.deathcheck below) and left this
+    -- one standing open, which is why the same symptom came back the moment
+    -- client/dbno.lua's timing changed underneath it.
+    --
+    -- The reason given there applies here word for word: for everybody else the
+    -- ped is the evidence, and for a downed player it is evidence of nothing.
+    -- Their health IS the bleed clock, their ped is invincible by design
+    -- (client/natives.lua), and the engine still kills it down the paths we
+    -- never took over -- a fall, a fire, drowning, a car. A fall is the ordinary
+    -- case: the report BELOW is the one that produced the knock in the first
+    -- place, and the engine then finishes the same death a beat later. The
+    -- client is not lying and is not duplicating; gamerules.death re-arms the
+    -- instant the ped stops reading dead, which is exactly what being
+    -- resurrected onto the downed floor does to it.
+    --
+    -- Nothing is lost by declining. The bleed clock owns this ending and still
+    -- delivers it, at dbnoBleedBase and faster under fire, and a downed player
+    -- can still be finished with a gun through BR.Combat.bleed. What goes is
+    -- only the ability to end yourself twice over one fall.
+    if entry.state == BR.PlayerState.DBNO then
+        if BR.Server.devMode then
+            print(('[br_core] ignored death report from %d: already down, the '
+                   .. 'bleed clock owns that ending'):format(src))
         end
         return
     end
@@ -693,6 +1128,28 @@ BR.Sched.every(1000, 'combat.deathcheck', function()
     -- player against THEIR match's state -- matches advance independently.
     BR.Roster.each(function(e)
         if not canDie(e) then return false end
+
+        -- A DOWNED PLAYER IS NEVER FINISHED BY THIS CHECK, AND THAT IS THE
+        -- WHOLE POINT OF THE STATE (#115 sibling, owner 2026-08-16).
+        --
+        -- For everybody else the ped IS the evidence -- it is the half a
+        -- cheating client cannot avoid. For a downed player it is not evidence
+        -- of anything: the bleed clock is their health (see the DBNO section
+        -- above), their ped is invincible by design (client/natives.lua), and a
+        -- ped reading dead here means only that the ENGINE killed it down a path
+        -- we never took over -- a fall, a fire, drowning, a car -- a beat before
+        -- the knock landed. Reading that corpse turned every fall in a squad
+        -- match into an instant elimination one second after the squad panel
+        -- said DOWN, with the body still lying there and no revive prompt for
+        -- anyone (owner, 2026-08-16).
+        --
+        -- Nothing is lost by declining: defeat() on a DBNO entry can only ever
+        -- eliminate anyway -- canBeDowned requires ALIVE -- so this branch was
+        -- never deciding "down or out", it was racing the bleed clock that
+        -- already owns the answer and already terminates, at dbnoBleedBase and
+        -- faster under fire.
+        if e.state == BR.PlayerState.DBNO then return false end
+
         local m = e.matchId and BR.Server.matches[e.matchId]
         return m ~= nil and (m.state == BR.MatchState.PLAYING
                           or m.state == BR.MatchState.BUS)
@@ -839,6 +1296,13 @@ end, true)
 RegisterCommand('brdbno', function()
     local now = GetGameTimer()
     local n = 0
+
+    --- "12.3s ago", or "never".
+    local function since(t)
+        if not t or t == 0 then return 'never' end
+        return ('%.1fs ago'):format((now - t) / 1000.0)
+    end
+
     print('=== downed ===')
     BR.Roster.each(
         function(e) return e.state == BR.PlayerState.DBNO end,
@@ -853,6 +1317,24 @@ RegisterCommand('brdbno', function()
                             BR.Clamp((now - e.reviveFrom)
                                      / ((M.dbnoReviveTime or 8.0) * 1000.0),
                                      0.0, 1.0) * 100.0) or ''))
+
+            -- WHAT THIS SERVER LAST TOLD SOMEBODY WHO TRIED (#163).
+            --
+            -- The client's own /brdbno can say "the server refused"; only this
+            -- side knows WHICH refusal and with what numbers behind it. The
+            -- pair is the whole instrument: a filled ring plus these two lines
+            -- is an answerable report, and a filled ring on its own is not.
+            print(('       refused  : %s x%d, last %s (asked by %s)')
+                :format(tostring(e.reviveRefuseWhy or '-'),
+                        e.reviveRefusals or 0, since(e.reviveRefuseAt),
+                        tostring(e.reviveRefuseBy)))
+            print(('       stopped  : %s x%d, last %s at %.0f%%')
+                :format(tostring(e.reviveStopWhy or '-'), e.reviveStops or 0,
+                        since(e.reviveStopAt), e.reviveLastPct or 0.0))
+            print(('       position : self %s   reviver %s')
+                :format(e.pos and 'sampled' or 'NEVER SAMPLED -- no OneSync?',
+                        r and (r.pos and 'sampled'
+                                     or 'NEVER SAMPLED -- no OneSync?') or '-'))
         end)
     if n == 0 then print('  nobody is down') end
     print(('  bleed %ds/%d/%ds, %.2fs per damage point, revive %.1fs within %.1fm')

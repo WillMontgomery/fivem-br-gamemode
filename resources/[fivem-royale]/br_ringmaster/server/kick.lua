@@ -117,7 +117,19 @@ RegisterCommand('brkick', function(source, args)
         return
     end
 
-    local kicked, name = BR.Ring.dropByLicense(license, reason)
+    -- THE APPEAL LINE GOES ON HERE, NOT INSIDE dropByLicense. That function is
+    -- also how the ban gate removes somebody a late answer turned out to have
+    -- banned, and the gate has already composed its own message -- appeal line
+    -- and all -- by the time it calls in. Appending inside the drop would give
+    -- that one path the sentence twice.
+    --
+    -- GUARDED, BECAUSE A KICK MUST HAPPEN WHATEVER ELSE IS WRONG. If appeal.lua
+    -- ever falls out of the manifest, an admin's kick still removes the player
+    -- with the reason they typed, instead of the console command erroring on a
+    -- nil call and the player staying in the match.
+    local message = BR.Ring.withAppeal and BR.Ring.withAppeal(reason) or reason
+
+    local kicked, name = BR.Ring.dropByLicense(license, message)
     if not kicked then
         -- NOT AN ERROR, and the distinction matters to the person reading the
         -- audit log later. The player already left, or was never here; the ban

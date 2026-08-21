@@ -25,22 +25,42 @@ it at `$LOCALAPPDATA/Programs/Lua/bin/`.
 | Stage | What it proves |
 |---|---|
 | **Syntax** | `luac -p` on every `.lua`. FiveM runs Lua 5.4 and so does this, so a pass means the resource will at least load. The floor, not the ceiling. |
-| **Unit tests** | 5 suites, ~900 assertions, over the pure shared modules and the server model. |
+| **Unit tests** | 8 suites, ~3,100 assertions, over the pure shared modules, the server model and the client interaction layer. |
 | **Scope gate** | Bans OneSync scope-limited natives from client gameplay code. |
 | **Weapon table** | Re-derives every weapon hash from its name. |
 | **POI siting** | Spacing, water, no-loot zones, distance to roads. |
 | **Forward locals** | Catches a `local function` called above its own declaration. |
+| **Config report** | The convar allowlist may not name a credential. |
 | **Manifest coverage** | Every `.lua` is declared in an fxmanifest. |
+| **Shared coverage** | Anything dropped into `br_lib` is actually loaded. |
+| **Deploy payload** | The deploy's own payload check still works. |
+| **Console capability boundary** | `dispatch.sh`'s SSH verb set, exactly — matched on the *shape* of a case arm, so a verb with a new name cannot be invisible to it. |
+| **Branch-switch invariant** | No path to a hard reset that skips the dispatch blob check. |
+| **Incident surface** | Only `BR.ShotSuspicious` can reach the Ringmaster. |
+| **Secrets** | The only gate that scans the whole repo rather than `resources/`. |
+| **br_ddb bundle** | The committed bundle still matches `js-src/br_ddb`, and the ban rule passes its cases. Drift presents as "my change did nothing" with nothing wrong in any log. Skipped, not failed, without Node. |
+| **Duplicate console commands** | One name, one registration — three collided at once in #137. |
 
 ### The suites
 
-| Suite | Covers |
-|---|---|
-| `test_shared.lua` | The pure modules: RNG determinism, geometry, storm solving, loot generation, combat validation, descent classification, bus doors. No FiveM dependency at all. |
-| `test_roster.lua` | The server model end to end — roster, parties, squads, match state machine, bus, storm, loot streaming, inventory. The big one. |
-| `test_loop.lua` | The client loop registry: bands, suspension after repeated errors, enable/disable. |
-| `test_sched.lua` | The server scheduler: intervals, duplicate-name refusal, stepping. |
-| `test_stats.lua` | XP and placement arithmetic. |
+Counts are what `verify.sh` prints today, and they are here so a suite that
+quietly stops running is visible rather than merely green.
+
+| Suite | Assertions | Covers |
+|---|---|---|
+| `test_shared.lua` | 817 | The pure modules: RNG determinism, geometry, storm solving, loot generation, combat validation, descent classification, bus doors, the DBNO rig. No FiveM dependency at all. |
+| `test_roster.lua` | 1,264 | The server model end to end — roster, parties, squads, match state machine, bus, storm, loot streaming, inventory. The big one. |
+| `test_loop.lua` | 42 | The client loop registry: bands, suspension after repeated errors, enable/disable. |
+| `test_sched.lua` | 41 | The server scheduler: intervals, duplicate-name refusal, stepping. |
+| `test_stats.lua` | 156 | XP and placement arithmetic. |
+| `test_ringmaster.lua` | 143 | The Ringmaster surface: the incident envelope, the gate, kick and maintenance. |
+| `test_artifacts.lua` | 119 | Incident screenshots: three timed frames, the ten-second rule on corroborations, the cap of nine and the clean no-op past it, a subject who disconnects mid-schedule, `screenshot-basic` absent, a failed upload, and a client that never answers. Loads `br_core/server/artifacts.lua` itself. |
+| `test_client.lua` | 526 | The client interaction layer — keybinds, holds, prompts, loot pickup — with the FiveM natives stubbed and the frame band stepped by hand, the same shape `test_roster.lua` uses for the server. |
+| `test_config.lua` | 142 | The server-tunable overrides: strict convar parsing, ranges refused rather than clamped, a renamed config key as a hard failure, the load-time hook on a server / client / bare state, and the shipped `.cfg` examples run through the real parser. |
+
+`test_client.lua` is the odd one out and deliberately so: every other suite here
+is server-side or pure arithmetic, and all three of the regressions that shipped
+on 2026-08-16 landed on a **client** interaction that no gate touched (#140).
 
 ### How the server suite works without a server
 
@@ -72,6 +92,37 @@ through on a naming accident.
 sampler stub zeroes armour on every step. That is written into the test file
 next to the case rather than papered over with a test that passes for the wrong
 reason.
+
+**4. A stub that agrees with the code it tests proves nothing.** This is the
+rule that cost the most to learn, and it is the reason #129 survived **six**
+rounds of fixes with a green suite.
+
+The stub for the raw key sample was `return keys[vk] == true` — a strict Lua
+boolean. `keybinds.lua` then stored that value and compared it with `== true` in
+two places. Stub and code encoded the *same assumption*, so they agreed, the
+suite passed all 202 of its assertions, and the interaction was dead on the
+owner's machine: one press of the trail key counted **545 presses** and toggled
+the smoke 545 times, and a crate hold ran **446 frames earning 0 of 1000 ms**
+(#129/#131, 2026-08-16). Every one of those six rounds was spent in the loot
+code, because the suite was reporting the key layer as proven.
+
+**FiveM natives declared BOOL do not have to hand Lua a boolean**, and this
+codebase already carried two scars from exactly that — `natives.lua` compares
+`hit == 1 or hit == true` on the shape test, `spawn.lua` compares
+`== true or == 1` on the screen fade. Both were written *after* the value
+arrived as a number in play. The stub was the one place that assumption was
+never re-checked.
+
+So the **shape of the returned value is a dimension of the test matrix now**,
+alongside which natives the build has: every raw-layer block runs against
+`true/false`, `1/false`, `1/0` and `1/nil`. `1/0` earns its place specifically
+because **0 is truthy in Lua** — it is the shape that punishes the obvious
+one-line normalisation (`v and true or false`), which would read a released key
+as held forever.
+
+The general form: when you write a stub, ask what it would take for the stub to
+be *wrong in the same direction* as the code. If the answer is "the same
+assumption in both", the test is measuring the harness.
 
 ---
 
@@ -147,6 +198,13 @@ Worth being explicit about, because it shapes where the effort goes:
   test can tell you what `GetAmmoInPedWeapon` does on a live ped. That gap is
   what `/brprobe` exists to fill — a diagnostic that prints what the engine
   actually does, rather than another hypothesis.
+
+  **What `test_client.lua` did and did not close.** It can now prove an
+  interaction against every *shape* a native may answer in, and against builds
+  that lack the raw layer entirely — that is what rule 4 above bought. It still
+  cannot tell you which shape *your* build actually returns. The suite proves
+  the code survives all four; only `/brprobe` says which one you are standing
+  in.
 - **A contaminated environment.** One of those rounds was vMenu's infinite ammo,
   not our code at all. A diagnostic claiming to isolate our code should
   enumerate what else is running before anyone reasons from its numbers.
@@ -178,3 +236,12 @@ New coverage goes into the **existing** suites — no new suite file, so no
 `verify.sh` edit. Open a bare `do … end` block after a `describe(...)`, call
 `reset()` first, and remember the load-bearing rule: revert the fix, watch it
 fail, restore.
+
+The one reason to break that rule is a suite that needs **its own harness**, and
+`test_config.lua` is why the exception is written down. Every other suite loads
+`br_lib/config/*.lua` once into the global state and reads it; that one has to
+load it repeatedly, into fresh sandboxes, with FiveM natives stubbed differently
+each time — because what it tests is the config tables being *rewritten* at load.
+Dropping that into `test_shared.lua` would mutate the config out from under 817
+assertions that read it. A new suite costs one line in `verify.sh`'s loop and a
+row in the table above; skip either and it stops running with nothing to say so.

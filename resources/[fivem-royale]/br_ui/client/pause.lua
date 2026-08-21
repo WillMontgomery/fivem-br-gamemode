@@ -5,14 +5,15 @@
 -- us, so the two can never be on screen together. The key is therefore
 -- captured before the engine sees it, and OUR menu comes up.
 --
--- ESC IS NOT THE KEY, AND CANNOT BE. FiveM cannot rebind the engine's pause
--- control away from Escape, and DisableControlAction on it for the whole match
--- would mean a player whose NUI has broken cannot reach the game's own menu at
--- all -- a soft lock with no escape hatch, which is exactly the class of bug
--- br_ui's focus watchdog exists to prevent. So the pause menu is bound to a
--- key of the player's choosing (F1 by default, rebindable in Settings ->
--- Controls) and Escape still opens GTA's, which stays as the way out of
--- anything we get wrong.
+-- ESC IS THE KEY, AND THIS HEADER USED TO SAY THE OPPOSITE. It said Escape
+-- could not be ours, because FiveM cannot rebind the engine's pause CONTROL --
+-- which is true and turned out not to matter: DISABLE_FRONTEND_THIS_FRAME
+-- stops the frontend being toggled at all, from the keyboard and from a pad
+-- alike (br_core/client/natives.lua). The owner asked for Escape on 2026-08-09
+-- and it moved there, with a KVP migration so it moved for existing players
+-- too. F1 survives only as the ENGINE-side default, for a client with no raw
+-- key layer -- see the long note by the keybind at the bottom of this file,
+-- which is the whole of why the lobby could not open this menu.
 --
 -- The MAP is deliberately handed back to the engine. GTA's map is a scaleform
 -- we cannot reproduce, and re-rendering Los Santos in CEF would cost real
@@ -27,15 +28,64 @@ BR.Pause = {}
 --- re-pushing focus onto a screen that is already showing.
 local open = false
 
+--- When the menu last changed state, so ONE PRESS CANNOT COUNT TWICE.
+---
+--- TWO PATHS CAN SEE ONE ESCAPE, and which of them arrives is not something
+--- this code gets to know. The page has its own keydown listener (App.tsx, and
+--- PauseMenu's own back-out handler) and br_core's raw key layer is reading the
+--- same physical key straight off the keyboard. Either can be first.
+---
+--- IT LIVES UP HERE, BESIDE `open`, RATHER THAN NEXT TO THE KEYBIND, and that
+--- move is the whole of the lobby half of #83. The stamp used to be written
+--- only inside `br:ui:pauseToggle` -- the raw-key path -- so the guard covered
+--- that path against itself and not against the page at all. Opening the menu
+--- from the lobby, which HAS to come from the page (see the keybind section at
+--- the bottom for why the game never sees the key there), therefore left the
+--- window unstamped: a raw Escape landing a frame later read `open == true`
+--- and toggled the menu straight back off, and the player saw a flicker and no
+--- menu. Stamping in open() and close() means every route through this file
+--- shares one window, whichever of them got there first.
+local lastToggle = 0
+
 --- Whether GTA's own frontend is up because WE put it there, showing the map.
 --- Its watcher thread reads this every frame, so clearing it is how anything
 --- else asks the map to close.
 local frontendMap = false
 
+--- Tell the PAGE that the engine's frontend owns the screen.
+---
+--- CLEARING THE FOCUS STACK WAS NEVER ENOUGH, and this is the fix for the
+--- half of #122 that actually matters (owner, 2026-08-16: "results in the
+--- lobby UI overlaying on top of the GTA V settings screen").
+---
+--- The reasoning that was wrong: "our screens follow focus, so emptying the
+--- stack takes them all down". The LOBBY does not follow focus. It is drawn
+--- from match state on purpose -- a queue screen you cannot see is worse than
+--- one you cannot yet click -- so clearFocus released the cursor and left the
+--- lobby painted exactly where it was, on top of a scaleform that nothing we
+--- draw can sit under.
+---
+--- And the attempt before this one had the PAGE raise the flag itself, just
+--- before asking Lua to hand over. That loses a race it cannot see: the
+--- handover pops `pause` and `settings` off the stack, which leaves `lobby`
+--- on top, which makes the bridge send FOCUS{screen='lobby'} -- and the page
+--- treated focus coming back as the frontend having closed, so it cleared its
+--- own flag and redrew, a frame before the menu even appeared. It reproduced
+--- ONLY from the lobby for exactly that reason: nowhere else is there a
+--- `lobby` entry underneath to become the new top.
+---
+--- So the flag is LUA'S, it is set before the frontend is raised and cleared
+--- only once the frontend is genuinely down, and the page mirrors it.
+--- @param up boolean
+local function announceFrontend(up)
+    TriggerEvent('br:ui:sendLocal', BR.Nui.FRONTEND, { up = up == true })
+end
+
 --- @param tab string|nil  which tab to land on ('help', 'notices', ...)
 function BR.Pause.open(tab)
     if open then return end
     open = true
+    lastToggle = GetGameTimer()
     -- The tab rides the focus envelope, the same way the chat channel does --
     -- one message, and the screen knows both that it is opening and what it
     -- is opening ON. A second envelope would race the first.
@@ -52,9 +102,38 @@ function BR.Pause.close()
     -- came back to haunt the lobby (user, 2026-08-09: readied up and "was
     -- brought back to the pause menu where I could not close the UI"). See
     -- the focusChanged handler at the bottom for the full sequence.
+    --
+    -- The stamp is written on the way DOWN as well as on the way up, and only
+    -- when the menu was actually up: the closing press and the opening press
+    -- are the same key, so a raw Escape trailing the page's close by a frame
+    -- would otherwise re-open the menu the player just dismissed.
+    if open then lastToggle = GetGameTimer() end
     open = false
     TriggerEvent('br:ui:popFocus', 'pause')
 end
+
+-- CLOSING THE MENU FROM BEHIND THE CURTAIN (#124).
+--
+-- The one verb on this screen that takes the whole screen away -- "Back to
+-- lobby" -- deliberately does NOT close the menu when it is pressed any more.
+-- br_core raises the curtain, waits for the page to report it solid black, and
+-- only then fires this: the menu comes down, the party is left, the server is
+-- told, and the player sees none of it.
+--
+-- The owner's own FAIL criterion for the path this one was modelled on says why
+-- it cannot close itself first: "you see the lobby menu vanish ... at any point
+-- BEFORE or DURING the fade" is a fail. A pause menu that pops away on the click
+-- and drops the player back into a live match for the length of the fade is the
+-- same fault wearing the same clothes.
+--
+-- br_core owns WHEN because br_core is the only side that knows whether there is
+-- a match to leave at all, and it fires this on every outcome -- the leave
+-- proceeding, the leave being refused because the player is already in the
+-- lobby, and its own fail-safe timer. Three more nets sit under that: the F1
+-- keybind, Escape, and the focusChanged handler at the bottom of this file.
+AddEventHandler('br:ui:pauseClose', function()
+    BR.Pause.close()
+end)
 
 --- GTA's own pause menu, driven straight to its map page.
 ---
@@ -94,6 +173,13 @@ function BR.Pause.openFrontendMap(page)
     -- This is the one time we WANT it, so it has to know to stand down --
     -- otherwise the map opens into a menu that is being closed underneath it.
     TriggerEvent('br:map:frontend', true)
+    -- AND THE PAGE STOPS DRAWING (#138). Latent rather than live until now only
+    -- because PauseMenu.tsx hides the Map card in the lobby, and the lobby is
+    -- the one screen that keeps painting through a cleared focus stack -- so
+    -- this was #122 waiting for somebody to unhide a card. Announced here, and
+    -- cleared at both exits below, for the same reason openFrontendPlain does:
+    -- the scaleform can be up on the very next frame.
+    announceFrontend(true)
 
     Citizen.CreateThread(function()
         -- FE_MENU_VERSION_MP_PAUSE, not SP: the multiplayer pause menu is the
@@ -113,6 +199,9 @@ function BR.Pause.openFrontendMap(page)
             print('[br_ui] map: pause menu never became active; giving up')
             frontendMap = false
             TriggerEvent('br:map:frontend', false)
+            -- Hidden for a frontend that never arrived. Without this the player
+            -- is left looking at the world with no interface and no way back.
+            announceFrontend(false)
             return
         end
 
@@ -146,8 +235,93 @@ function BR.Pause.openFrontendMap(page)
         -- broad rather than precise. A false positive here costs a map that
         -- closes slightly too eagerly; a false negative is a player stuck in
         -- a menu, which is what we have had twice.
-        local EXITS = { 202, 200, 199, 177, 194, 195, 25 }
+        --
+        -- ...AND "SLIGHTLY TOO EAGERLY" IS NOT WHAT A FALSE POSITIVE COSTS. It
+        -- costs the map, mid-match, while the player is reading it -- which is
+        -- the owner's re-report, made more than once and never addressed:
+        -- "opening the pause menu, then map, within the match, then scrolling in
+        -- quick succession, results in the map being dismissed."
+        --
+        -- WHY THIS ROUTE AND NOT THE OTHER ONE, which is the question that was
+        -- never asked. The engine's frontend has TWO openers in this file and
+        -- they are the same scaleform:
+        --
+        --   openFrontendPlain (below) has NO watcher at all. It raises the menu
+        --     and then polls IsPauseMenuActive() every 100ms, letting GTA own
+        --     every input -- because the player has to WALK there themselves and
+        --     "an exit watcher would close it the moment they tried to go
+        --     anywhere". That is the route reachable from the lobby (Settings ->
+        --     Voice / Graphics / GTA key bindings), and it is the one a previous
+        --     round fixed by taking its watcher away.
+        --
+        --   this one keeps the watcher, because the map is entered SIDEWAYS --
+        --     driven straight to a page whose own Back has nowhere sensible to
+        --     go -- so something has to notice the player wanting out.
+        --
+        -- The in-match Map card is the only way in here (PauseMenu.tsx hides it
+        -- in the lobby), so the fix for the lobby could not have reached this and
+        -- the report is not a regression: it is the half that was never touched.
+        -- Nothing in the page is involved -- while the frontend is up the whole
+        -- NUI document is opacity 0 with pointer events off, and PauseMenu.tsx's
+        -- keydown listener is unmounted with the menu -- and CEF is not receiving
+        -- the wheel at all with the cursor released.
+        --
+        -- 195 WAS NOT A BUTTON. The comment above says these are "INPUT_FRONTEND_
+        -- RRIGHT/ACCEPT-adjacent ids", and 194 is indeed INPUT_FRONTEND_RRIGHT --
+        -- but ACCEPT is 201, and 195 is INPUT_FRONTEND_AXIS_X, an ANALOG AXIS.
+        -- IsControlJustPressed on an analog control fires when the axis crosses
+        -- its press threshold, so every pan and every scroll-driven zoom on the
+        -- map page was being read as somebody asking to leave. That is a
+        -- one-number typo doing exactly what the report describes, and it is
+        -- removed rather than corrected: there is no button at 195 to want.
+        local EXITS = { 202, 200, 199, 177, 194, 25 }
+
+        -- AND USING THE MAP IS NOT LEAVING IT. Dropping 195 removes the id we
+        -- can prove is wrong; this removes the CLASS. The wheel is bound to
+        -- several control ids at once in the frontend and which of them the map
+        -- page answers on is a question the game settles, not the documentation
+        -- -- so rather than guess again, any frame in which the player is
+        -- zooming, scrolling or panning suppresses the exit test outright, plus
+        -- a short tail for the input the scaleform is still digesting.
+        --
+        --   241/242  INPUT_CURSOR_SCROLL_UP/DOWN
+        --   180/181  INPUT_CELLPHONE_SCROLL_FORWARD/BACKWARD
+        --   207/208  INPUT_FRONTEND_LT/RT      -- the map's own zoom pair
+        --    14/15   INPUT_WEAPON_WHEEL_NEXT/PREV
+        --   195..198 the frontend axes, which is what a pan is
+        --
+        -- JUST-pressed rather than held, deliberately: a held reading would let a
+        -- drifting controller stick sit on the guard forever and make the map
+        -- unleavable by mouse, which is a worse bug than the one being fixed. An
+        -- edge fires once and the window expires on its own, while a wheel being
+        -- spun produces one edge per notch and therefore keeps refreshing it --
+        -- which is precisely the "in quick succession" case.
+        local USING = { 241, 242, 180, 181, 207, 208, 14, 15, 195, 196, 197, 198 }
+        local BUSY_MS = 300
+        local busyUntil = 0
+
         local function wantsOut()
+            -- ESCAPE FIRST AND OUTSIDE THE GUARD, so there is always one way
+            -- out that nothing above can suppress. IsRawKeyDown reports the HELD
+            -- state, so this fires on the frame it goes down and every frame
+            -- after -- which is fine, because the first one already leaves.
+            local ok, down = pcall(IsRawKeyDown, 0x1B)
+            if ok and down then
+                if BR.Pause.mapDebug then print('[br_ui] map: exit raw ESC') end
+                return true
+            end
+
+            for _, c in ipairs(USING) do
+                if IsControlJustPressed(2, c) or IsDisabledControlJustPressed(2, c) then
+                    if BR.Pause.mapDebug then
+                        print(('[br_ui] map: using the map (control %d) -- holding the exit off'):format(c))
+                    end
+                    busyUntil = GetGameTimer() + BUSY_MS
+                    return false
+                end
+            end
+            if GetGameTimer() < busyUntil then return false end
+
             for _, c in ipairs(EXITS) do
                 if IsControlJustPressed(2, c) or IsDisabledControlJustPressed(2, c) then
                     if BR.Pause.mapDebug then
@@ -155,14 +329,6 @@ function BR.Pause.openFrontendMap(page)
                     end
                     return true
                 end
-            end
-            -- Escape, raw. IsRawKeyDown reports the HELD state, so this fires
-            -- on the frame it goes down and every frame after -- which is
-            -- fine, because the first one already leaves.
-            local ok, down = pcall(IsRawKeyDown, 0x1B)
-            if ok and down then
-                if BR.Pause.mapDebug then print('[br_ui] map: exit raw ESC') end
-                return true
             end
             return false
         end
@@ -197,6 +363,9 @@ function BR.Pause.openFrontendMap(page)
         -- Suppression resumes only once the frontend is genuinely down, so
         -- there is no frame in which both are trying to own it.
         TriggerEvent('br:map:frontend', false)
+        -- And the page draws again. Reached no matter which way the player
+        -- left the map, because the loop above only ends when it is gone.
+        announceFrontend(false)
     end)
 end
 
@@ -221,6 +390,10 @@ function BR.Pause.openFrontendPlain()
     if frontendMap then return end
     frontendMap = true
     TriggerEvent('br:map:frontend', true)
+    -- BEFORE the menu is raised, not after. The scaleform can be on screen on
+    -- the very next frame, and a page still drawing on that frame is the
+    -- overlay the player reports.
+    announceFrontend(true)
 
     Citizen.CreateThread(function()
         ActivateFrontendMenu(GetHashKey('FE_MENU_VERSION_SP_PAUSE'), false, -1)
@@ -238,6 +411,13 @@ function BR.Pause.openFrontendPlain()
             -- emptied before this thread started, so returning quietly here
             -- would leave the player in a lobby they cannot see or click --
             -- a worse outcome than the frontend simply not opening.
+            --
+            -- AND THE PAGE IS TOLD IT MAY DRAW AGAIN, first. We hid it for a
+            -- frontend that never arrived; without this the player is left
+            -- staring at the world with no interface at all and no way to get
+            -- it back short of reconnecting -- strictly worse than the bug
+            -- this whole path exists to fix.
+            announceFrontend(false)
             TriggerEvent('br:ui:frontendClosed')
             return
         end
@@ -252,6 +432,13 @@ function BR.Pause.openFrontendPlain()
 
         frontendMap = false
         TriggerEvent('br:map:frontend', false)
+        -- THE PAGE DRAWS AGAIN BEFORE IT IS CLICKABLE AGAIN, in that order.
+        -- The loop above only ends when the frontend is genuinely gone, by
+        -- whatever route the player took out of it -- Escape, the menu's own
+        -- back button, a controller -- so this is the one place that knows the
+        -- screen is ours again, and it is reached no matter which of those it
+        -- was.
+        announceFrontend(false)
         -- AND THE PLAYER GETS THEIR MENU BACK. We emptied the focus stack to
         -- get out of the frontend's way; leaving it empty would drop them in
         -- the lobby with no cursor and nothing to click. br_core decides what
@@ -274,24 +461,65 @@ end)
 --
 -- Our screens come down first: the frontend is a scaleform, so a menu left
 -- open underneath would hold the cursor with nothing able to draw over it.
-RegisterNUICallback(BR.NuiCb.VOICE_SETTINGS, function(_, cb)
-    -- EVERY SCREEN COMES DOWN, not just the one that asked.
-    --
-    -- Closing the settings page and the pause menu was not enough: in the
-    -- LOBBY the focus stack still has `lobby` underneath, so the lobby menu
-    -- stayed up and drew over GTA's frontend (owner, 2026-08-09). A scaleform
-    -- cannot be covered by NUI and NUI cannot be covered by it, so anything
-    -- of ours left on screen is simply on top of the menu the player was sent
-    -- to use.
-    --
-    -- clearFocus empties the stack rather than popping one screen, which is
-    -- the same thing ESC-in-the-lobby did when it raised the engine's menu.
-    -- br_core hands focus back when the frontend closes -- see the restore
-    -- below.
+--- Hand the whole screen to GTA's own menu.
+---
+--- EVERY SCREEN COMES DOWN, not just the one that asked.
+---
+--- Closing the settings page and the pause menu was not enough: in the LOBBY
+--- the focus stack still has `lobby` underneath, so the lobby menu stayed up
+--- and drew over GTA's frontend (owner, 2026-08-09). A scaleform cannot be
+--- covered by NUI and NUI cannot be covered by it, so anything of ours left on
+--- screen is simply on top of the menu the player was sent to use.
+---
+--- clearFocus empties the stack rather than popping one screen, which is the
+--- same thing ESC-in-the-lobby did when it raised the engine's menu. br_core
+--- hands focus back when the frontend closes.
+---
+--- AND THAT STILL WAS NOT ENOUGH, which is #122 (owner, 2026-08-16). Focus is
+--- about the CURSOR. The lobby is drawn from match state, not from the focus
+--- stack, so emptying the stack took the mouse away and left the lobby
+--- painted over the settings screen -- the same report a second time, for a
+--- reason the first fix could not have addressed. openFrontendPlain announces
+--- the frontend to the page, which is what actually stops it drawing.
+---
+--- THE ORDER MATTERS AND IT IS THIS WAY ROUND ON PURPOSE. Every pop above
+--- emits a focus envelope, and popping `pause`/`settings` in the lobby leaves
+--- `lobby` on top -- so the page hears FOCUS{screen='lobby'} in the middle of
+--- this function. The announcement therefore goes LAST, after the stack has
+--- finished collapsing, or the page would be told to draw again immediately
+--- after being told not to.
+--- PUBLIC BECAUSE THERE WAS A FOURTH DOOR (#138). This was local, so
+--- settings.lua's "GTA key bindings" button could not reach it and grew its own
+--- handover -- `clearFocus` then `br:ui:pauseRequest`, which raises the frontend
+--- from br_core and announces nothing. That is #122 reproduced exactly, on the
+--- one route that was never converted, and reachable from the lobby where it is
+--- the only place the fault shows.
+---
+--- Every route into the engine's frontend goes through this function now, so
+--- there is one place that knows the order and one place to be wrong.
+function BR.Pause.handOverToFrontend()
     BR.Pause.close()
     TriggerEvent('br:ui:closeSettings')
     TriggerEvent('br:ui:clearFocus')
     BR.Pause.openFrontendPlain()
+end
+local handOverToFrontend = BR.Pause.handOverToFrontend
+
+RegisterNUICallback(BR.NuiCb.VOICE_SETTINGS, function(_, cb)
+    handOverToFrontend()
+    cb({ ok = true })
+end)
+
+-- THE SAME DOOR, LABELLED FOR THE PEOPLE WHO WANT GRAPHICS.
+--
+-- Mechanically identical to the voice handover, and deliberately not merged
+-- with it: the only route to the engine's settings used to be a button
+-- reading "Microphone & push-to-talk", buried in the Voice section, so a
+-- player looking for resolution, texture quality or FOV had nothing to find
+-- (owner, 2026-08-16). Two names for one mechanism costs four lines; a player
+-- who cannot change their resolution costs the session.
+RegisterNUICallback(BR.NuiCb.GAME_SETTINGS, function(_, cb)
+    handOverToFrontend()
     cb({ ok = true })
 end)
 
@@ -305,6 +533,93 @@ RegisterNUICallback(BR.NuiCb.HELP_FOCUS, function(data, cb)
         TriggerEvent('br:ui:popFocus', 'help')
     end
     cb({ ok = true })
+end)
+
+-- THE ADMIN CONSOLE IS A SCREEN, NOT A TAB BODY (#23).
+--
+-- The owner's call: "the one in /help is much larger and would be most
+-- appropriate size-wise for Ringmaster". A board of bans, incidents and a player
+-- table does not fit the pause menu's tab well, and the difference between the
+-- two Help frames is not the `inline` prop -- both are non-inline -- it is the
+-- CONTAINER. One sits inside this menu and inherits its width; the other sits
+-- inside <Page>, which is the full-screen treatment.
+--
+-- So the Admin tab is a DOOR. Pressing it pushes a focus screen of its own, the
+-- same way the lobby's Help button does, and the console gets the whole screen.
+-- Nothing new was needed to make that work: BR.FocusResolve gives any screen not
+-- named in BR.FocusKeepsInput the cursor and takes game input, which is exactly
+-- what a console wants, so there is no fourth notion of who owns the keyboard.
+--
+-- ═══ CLOSING PUTS THE MENU BACK, AND THE ORDER IS THE WHOLE OF IT ═══
+--
+-- Pushing `admin` fires br:ui:focusChanged('admin'), and the handler at the
+-- bottom of this file answers that by closing the pause menu -- which POPS
+-- `pause` off the stack. Correct, and it means a plain popFocus('admin') on the
+-- way out would empty the stack entirely: focus 'none', no cursor, no menu, and
+-- the player standing in the world wondering what happened. That is the leaked-
+-- focus failure this file's header calls the worst non-crash bug the UI can
+-- produce.
+--
+-- So the menu is re-opened FIRST and `admin` popped SECOND. Push-then-pop moves
+-- the top of the stack straight from 'admin' to 'pause' in one transition;
+-- pop-then-push would pass through 'none' on the way, and the page would blank
+-- for a frame between two screens that are both meant to be up.
+RegisterNUICallback(BR.NuiCb.ADMIN_FOCUS, function(data, cb)
+    if data and data.open then
+        TriggerEvent('br:ui:pushFocus', 'admin')
+    elseif data and data.all then
+        -- ESCAPE FROM INSIDE THE CONSOLE, WHICH IS NOT THE BACK BUTTON.
+        --
+        -- Back steps up one screen and lands on the pause menu, because that is
+        -- where the Admin tab was pressed. Escape is the other exit: the owner
+        -- asked for "one button - overlay gone", and a player who wants out of
+        -- a menu does not want a different menu.
+        --
+        -- POP FIRST, THEN CLOSE, and that order is the opposite of the branch
+        -- below on purpose. That one re-opens the pause menu BEFORE popping so
+        -- the page never blanks between two screens that are both meant to be
+        -- up. Here nothing is meant to be up afterwards, so there is no gap to
+        -- cover -- and re-opening the menu on the way out would be a frame of
+        -- the very thing being dismissed.
+        TriggerEvent('br:ui:popFocus', 'admin')
+        BR.Pause.close()
+    else
+        BR.Pause.open()
+        TriggerEvent('br:ui:popFocus', 'admin')
+    end
+    cb({ ok = true })
+end)
+
+-- "THE CONSOLE SAYS I AM SIGNED OUT." Forwarded to the server and nowhere else.
+--
+-- NO ARGUMENTS ARE CARRIED, and that is the point rather than an economy. The
+-- server reads everything it needs from `source`; a payload naming a Discord id
+-- would be a payload a modified client could use to open a session as somebody
+-- else. The page has already checked that the message came from the console's
+-- exact origin before calling this, but that check protects the PAGE -- this
+-- hop is protected by having nothing to forge.
+RegisterNUICallback(BR.NuiCb.ADMIN_MINT, function(_, cb)
+    TriggerServerEvent(BR.Net.ADMIN_MINT)
+    cb({ ok = true })
+end)
+
+-- THE SERVER'S ANSWER, FORWARDED TO THE PAGE UNREAD.
+--
+-- This handler deliberately does not look inside the payload. The console's
+-- address is in there, and br_lib/config/overrides.lua's whole contract is that
+-- an overridable key is read on the SERVER and nowhere else -- tools/verify.sh
+-- greps every br_*/client/*.lua for the key names to make the alternative
+-- impossible to introduce. Forwarding the table whole means this file never
+-- learns a name it is not allowed to know, and there is exactly one reader of
+-- the convar in the project.
+--
+-- The type guard is the only inspection: a nil payload would cross the bridge as
+-- an empty envelope and leave the page unable to tell "no tab for you" from "the
+-- message was malformed".
+RegisterNetEvent(BR.Net.ADMIN_STATE)
+AddEventHandler(BR.Net.ADMIN_STATE, function(payload)
+    if type(payload) ~= 'table' then return end
+    TriggerEvent('br:ui:sendLocal', BR.Nui.ADMIN, payload)
 end)
 
 --- The verbs on the front page.
@@ -378,12 +693,70 @@ RegisterNUICallback(BR.NuiCb.PAUSE_ACTION, function(data, cb)
         -- The client's own `disconnect` is a restricted console command and
         -- comes back "Access denied" (user, 2026-08-09). The server drops us.
         BR.Pause.close()
+        -- THE CURTAIN, NOT A SECOND EXIT PATH. Disconnecting is a server round
+        -- trip and DropPlayer lands whenever it lands -- so without this the
+        -- player presses Disconnect and is returned to the lobby they were
+        -- trying to leave, for as long as the trip takes, with nothing saying
+        -- the press registered. The interstitial that already covers leaving a
+        -- match covers this for the same reason: something irreversible is
+        -- under way and there is nothing to look at while it happens.
+        TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING,
+                     { show = true, kind = 'disconnecting' })
         TriggerServerEvent(BR.Net.LEAVE_SERVER)
+
+        -- AND A WAY BACK, WHICH THIS RAISE HAS NEVER HAD.
+        --
+        -- Every other curtain in the game is raised through br_core's
+        -- BR.Spawn.curtain, which records that one is wanted and runs a watchdog
+        -- that lifts an abandoned one after 15 seconds. This one is raised
+        -- straight at the page, from the other resource, so none of that applies
+        -- to it: if the drop never arrives -- br_core stopped, the event lost,
+        -- an error in the server handler -- the player is left on black with
+        -- nothing anywhere that will ever take it away.
+        --
+        -- That was survivable while the curtain passed clicks through and they
+        -- could at least blind-click their way back to the lobby. It stopped
+        -- being survivable today: the curtain swallows clicks now, so a stuck
+        -- one takes the whole interface with it. Ten seconds is far longer than
+        -- any drop takes and this thread simply dies with the client on the
+        -- normal path, so the only way it can ever fire is the failure it is for.
+        Citizen.SetTimeout(10000, function()
+            print('[br_ui] disconnect never landed -- lifting the curtain')
+            TriggerEvent('br:ui:sendLocal', BR.Nui.LEAVING, { show = false })
+        end)
+
         cb({ ok = true })
         return
     end
 
-    -- 'lobby' and 'squad' are gameplay: br_core decides what they mean.
+    if action == 'lobby' then
+        -- THE MENU STAYS UP, AND THAT IS THE FIX (#124).
+        --
+        -- Everything else on this screen closes the menu on the press, because
+        -- everything else leaves the player where they are. Leaving a match does
+        -- not: it is a covered transition, and closing here would uncover it.
+        --
+        -- What that looked like, and what the owner still had after the rest of
+        -- #124 landed (2026-08-16): "leaving mid-match via the pause menu still
+        -- has the old jarring affect." Press the button, the menu snaps away,
+        -- the HUD and the world you just quit come back for the length of the
+        -- curtain's fade, and your character freezes and your car vanishes in
+        -- front of you while it darkens.
+        --
+        -- So the press does one thing only: ask. br_core raises the curtain,
+        -- waits for this page to report itself black, and closes this menu
+        -- through br:ui:pauseClose once nothing can be seen. The menu the player
+        -- clicked is the last thing on screen and it fades out under the
+        -- curtain, which is exactly what the lobby menu does on the ready-up
+        -- path the owner has already passed.
+        TriggerEvent('br:ui:pauseAction', action)
+        cb({ ok = true })
+        return
+    end
+
+    -- 'squad' is gameplay: br_core decides what it means. It changes nothing
+    -- about the round in progress, so there is nothing to cover and the menu
+    -- closes on the press like the rest of them.
     BR.Pause.close()
     TriggerEvent('br:ui:pauseAction', action)
     cb({ ok = true })
@@ -396,17 +769,40 @@ end)
 -- It was registered here with an empty default and in no binding table at all,
 -- which meant the pause menu had no key AND no row in the settings screen to
 -- give it one -- there was literally no way to open it (user, 2026-08-09).
--- br_core/client/keybinds.lua registers it (F1) and fires this; TriggerEvent
+-- br_core/client/keybinds.lua registers it and fires this; TriggerEvent
 -- crosses resources, which is the same hop br_core already uses to reach the
 -- interface.
---- When the menu last changed state, so one press cannot count twice.
-local lastToggle = 0
-
+--
+-- AND IT IS NOT THE ONLY ROUTE IN, WHICH IS #83.
+--
+-- "There is no way to leave the server from within the lobby pause menu"
+-- (owner, 2026-08-16). The row was there; the MENU was not, because in the
+-- lobby neither of the two key routes this file can be reached by exists:
+--
+--   * the engine's own binding (F1, RegisterKeyMapping) needs the game to
+--     receive the key, and in the lobby NUI holds the cursor with keep-input
+--     off, so the game receives nothing at all. On top of that br_core's raw
+--     layer gates every RegisterKeyMapping handler off while it is running, so
+--     F1 is inert on any client that HAS the raw layer;
+--   * and the raw layer itself is registered on Escape for this command -- but
+--     br_core's own frontend suppressor says out loud that "the raw layer
+--     cannot see Escape while CEF holds the cursor" (client/natives.lua), and
+--     the lobby is precisely the screen that holds it.
+--
+-- So the only thing that reliably receives a keypress in the lobby is the PAGE,
+-- which has DOM focus by definition -- and the page already had an Escape
+-- handler there. It used to open our Settings screen; it asks for this menu
+-- now, through the PAUSE_FOCUS callback above, and Settings stays reachable as
+-- the lobby's own button and as a tab inside this menu.
+--
+-- Nothing here needed a new focus owner or a second SetNuiFocus caller to make
+-- that work, which is deliberate: the lesson of #122 and #124 is that the lobby
+-- is drawn from MATCH STATE and not from focus, so anything phrased as "release
+-- focus and our screens go away" is false there. This is a key routing change
+-- and nothing more.
 AddEventHandler('br:ui:pauseToggle', function()
-    -- TWO PATHS CAN SEE ONE ESCAPE. The interface has its own keydown handler
-    -- -- Escape backs out of a confirm, then a tab, then closes -- and the raw
-    -- key layer is watching the same key from Lua. Whether the game sees a key
-    -- while CEF holds focus is not something to rely on either way, so a press
+    -- See `lastToggle` at the top of this file: the page and the raw key layer
+    -- can both see the same physical Escape, in either order, and a press
     -- inside this window is treated as the one press it was.
     local now = GetGameTimer()
     if now - lastToggle < 220 then return end

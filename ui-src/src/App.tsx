@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { useNuiEvent } from './bridge/useNuiEvent'
 import { fetchNui } from './bridge/nui'
 import { CB } from './bridge/types'
+import { play } from './audio/cues'
 import { useUi } from './store'
 import Hud from './hud/Hud'
 import Chat from './chat/Chat'
@@ -16,10 +17,26 @@ import Market from './screens/Market'
 import PlayerList from './screens/PlayerList'
 import PauseMenu from './screens/PauseMenu'
 import Help from './screens/Help'
+import Admin from './screens/Admin'
 import Page from './ui/Page'
 
-/** The lobby's sub-screens. The base menu recedes under any of them. */
-const LOBBY_SUBSCREENS = new Set(['settings', 'locker', 'market', 'help'])
+/**
+ * Screens that take the whole screen while the lobby is behind them. The base
+ * menu recedes under any of them.
+ *
+ * `pause` JOINED THE LIST WITH #83, because the pause menu is now reachable
+ * from the lobby and everything else here was already true of it: it is opaque,
+ * it is full-screen, and the lobby carrying on at full strength underneath is
+ * the "two screens stacked instead of one navigating" reading that put the
+ * others here in the first place.
+ *
+ * `admin` JOINED WITH #23, for exactly the same three reasons -- and it belongs
+ * here rather than being in-match only because it is reached THROUGH the pause
+ * menu, which the lobby has had since #83. An admin wanting the console between
+ * rounds is the likeliest case there is: it is where you go to deal with the
+ * player you just saw.
+ */
+const LOBBY_SUBSCREENS = new Set(['settings', 'locker', 'market', 'help', 'pause', 'admin'])
 
 /**
  * Root.
@@ -49,7 +66,7 @@ export default function App() {
   useNuiEvent('hud',      (d) => s.setHud(d))
   useNuiEvent('squad',    (d) => s.setSquad(d))
   useNuiEvent('party',    (d) => s.setParty(d))
-  useNuiEvent('voice',    (d) => s.setTalking(d.talking ?? []))
+  useNuiEvent('voice',    (d) => s.setVoice(d))
   useNuiEvent('inv',      (d) => s.setInv(d))
   useNuiEvent('storm',    (d) => s.setStorm(d))
   useNuiEvent('dbno',     (d) => s.setDbno(d))
@@ -68,6 +85,10 @@ export default function App() {
   // their anchor by whether the radar is on screen.
   useNuiEvent('screen',   (d) => s.setScreen(d))
   useNuiEvent('leaving',  (d) => s.setLeaving(d.show, d.kind))
+  // GTA'S OWN MENU IS ON SCREEN AND WE MUST NOT DRAW OVER IT (#122). Lua holds
+  // this true for as long as the engine's frontend is up, because Lua is the
+  // only thing that can see the frontend at all.
+  useNuiEvent('frontend', (d) => s.setFrontendUp(d.up === true))
   // Pushed on every br:ui:ready, not only the first: br_ui restarting
   // mid-match hands CEF a fresh page at default scale, and without a re-push
   // the player's interface would silently revert for the rest of the session.
@@ -77,6 +98,20 @@ export default function App() {
   useNuiEvent('market',   (d) => s.setMarket(d))
   useNuiEvent('players',  (d) => s.setPlayers(d))
   useNuiEvent('report',   (d) => s.setReportResult(d))
+  // The Admin tab's availability, and any mint answer. Sent to one player, only
+  // when the server has decided that player may have it.
+  useNuiEvent('admin',    (d) => s.setAdmin(d))
+  // A SQUADMATE WENT DOWN, OUT, OR CAME BACK UP -- and nothing here was
+  // listening. Lua has sent `squadcue` since the squad audio landed and this
+  // handler did not exist, so all three sounds were dropped by the router with
+  // no error anywhere: the envelope arrived, matched no subscriber, and was
+  // discarded. It presents as "the squad sounds don't work", which is
+  // indistinguishable from them never having been written.
+  //
+  // NOT IN THE STORE, the same call HitFeedback.tsx makes: this is a
+  // fire-and-forget event with no state any component reads, and routing it
+  // through zustand would re-render every subscriber to play a sound.
+  useNuiEvent('squadcue', (d) => play(d.cue))
   useNuiEvent('keybinds', (d) => s.setKeybinds(d.actions, d.raw === true))
   // Separate from 'progress' on purpose: a reconnect restores the bar, it
   // does not replay a celebration.
@@ -87,8 +122,18 @@ export default function App() {
   // focus away, the input closes. The UI never decides this on its own.
   useNuiEvent('focus', (d) => {
     s.setFocus(d.screen, d.tab)
-    // Focus returning to the lobby is the pause round-trip completing.
-    if (d.screen === 'lobby') s.setPauseHiding(false)
+    // RECONCILED AGAINST THE FOCUS STACK, the same way pause.lua reconciles
+    // `open` against it and for the same reason: a flag that says the screen
+    // is not ours, left set by a message that never arrived, is a page that is
+    // invisible with no cursor and a reconnect as the only way out. That is
+    // the worst outcome this file can produce, so it gets a second way back.
+    //
+    // Lua granting focus to a real screen is proof the frontend is down --
+    // nothing pushes focus while the engine owns the screen, and the restore
+    // in br_core fires on exactly that transition. `none` is NOT proof: the
+    // handover empties the stack on its way into the frontend, so treating it
+    // as the frontend closing would clear the flag the moment it was set.
+    if (d.screen !== 'none') s.setFrontendUp(false)
     if (d.screen === 'chat') {
       s.openChat(d.channel ?? s.chatChannel)
     } else if (s.chatOpen) {
@@ -96,25 +141,56 @@ export default function App() {
     }
   })
 
-  // ESC IN THE LOBBY OPENS OUR SETTINGS.
+  // ESC IN THE LOBBY OPENS THE PAUSE MENU. THIS HANDLER IS THE ONLY THING THAT
+  // CAN (#83).
   //
-  // It used to raise GTA'S pause menu, which was the right answer when we did
-  // not have one of our own -- and is now the wrong one twice over: the
-  // engine's menu opened and immediately closed again (br_core suppresses the
-  // frontend now that Escape is ours), so the key appeared to flicker and do
-  // nothing (user, 2026-08-09).
+  // The owner's report was "there is no way to leave the server from within the
+  // lobby pause menu" (2026-08-16), and the answer to it is not a button. The
+  // pause menu has had a Leave server row all along. What the lobby did not
+  // have was the MENU: neither key route into it exists on this screen.
   //
-  // In the lobby there is no match to pause, so the useful destination is the
-  // settings screen -- which is what a player pressing Escape at a menu is
-  // reaching for anyway. In a MATCH, Escape is the pause menu and br_core
-  // routes it; this handler deliberately only fires on the lobby.
+  //   * The engine's binding needs the GAME to receive the key. In the lobby
+  //     NUI holds the cursor with keep-input off, so the game receives nothing.
+  //   * br_core's raw key layer reads the keyboard directly and is the thing
+  //     that normally survives that -- but its own frontend suppressor records
+  //     that "the raw layer cannot see Escape while CEF holds the cursor"
+  //     (br_core/client/natives.lua), and the lobby is the screen that holds
+  //     it.
+  //
+  // The page, though, has DOM focus by definition while the cursor is ours, so
+  // this listener is the one thing on the lobby that is certain to see a
+  // keypress. It already existed and already fired reliably -- it was simply
+  // pointed at the wrong screen, opening Settings instead of the menu the
+  // player was asking for.
+  //
+  // The first fix for #83 put a Leave server button on the lobby instead, and
+  // the owner rejected the shape: "the leave button shouldn't be on the front
+  // page, but rather in the pause menu." That button is gone; this is what
+  // replaces it.
+  //
+  // SETTINGS LOSES ITS ESCAPE SHORTCUT AND KEEPS EVERYTHING ELSE. It is still
+  // a button on the lobby and still a tab inside the pause menu, so nothing
+  // became unreachable -- and Escape now means the same thing in the lobby as
+  // it does in a match, which it did not before.
+  //
+  // F1 TOO, BECAUSE IT IS WHAT PEOPLE REACH FOR. It is the pause menu's
+  // engine-side default and is inert on any client running the raw key layer
+  // (br_core gates the RegisterKeyMapping handlers off while it runs), so
+  // pressing it does nothing anywhere. Answering it here costs one comparison
+  // and means the habit works on the screen this issue is about.
+  //
+  // ASKS LUA, NEVER OPENS LOCALLY -- the same rule the locker, market and
+  // settings buttons follow. The focus stack decides what is on screen.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape') return
+      if (e.key !== 'Escape' && e.key !== 'F1') return
       const st = useUi.getState()
+      // Gated on the lobby holding focus, so this cannot fire under a
+      // sub-screen (which has its own back key) or over the loading screen,
+      // where there is nothing behind the menu to come back to.
       if (st.focus !== 'lobby' || !st.worldReady) return
       e.preventDefault()
-      void fetchNui(CB.SETTINGS_FOCUS, { open: true })
+      void fetchNui(CB.PAUSE_FOCUS, { open: true })
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -159,14 +235,59 @@ export default function App() {
 
   // The bus ride is a cutscene: no vitals, no counters, no kill feed.
   // Notices still render -- "doors open" IS one.
-  const ridingBus = s.hud.state === 'bus'
+  //
+  // ...UNLESS THIS PLAYER'S OWN PED SAYS IT IS STANDING ON THE GROUND, AND
+  // THIS IS THE GATE THE FIRST ATTEMPT AT #126 MISSED.
+  //
+  // That attempt taught the three "what to draw" tests in Hud.tsx about
+  // `hud.landed` and stopped here, one level too low. This line feeds `hudUp`,
+  // which is the master switch for the ENTIRE HUD -- vitals, counters, kill
+  // feed, squad panel, inventory bar, chat and the TAB panel all hang off it --
+  // and it had no way to hear about a touchdown at all. So a player whose own
+  // state still reads `bus` (the jump registered on the server but the roster
+  // delta carrying FREEFALL never arrived, or the report went missing on the
+  // way back) stood in a POI with a completely blank screen, and the thing that
+  // eventually rescued them was the match reaching `playing`. That is the
+  // owner's sentence almost word for word: "the inventory/loot/HUD still do not
+  // appear upon landing until game state changes to playing".
+  //
+  // A ped on the ground is not riding a bus. The cutscene rule is about the
+  // flight, and the flight is over.
+  const ridingBus = s.hud.state === 'bus' && !s.hud.landed
 
   // Whether the vitals strip is on screen -- chat and notices fall back to
   // its position when the radar is hidden, so they need to know.
   const hudUp = !showLobby && !ridingBus && !tearingDown
 
   return (
-    <>
+    /* THE WHOLE INTERFACE, BEHIND ONE GATE (#122).
+     *
+     * While GTA's own menu is up, EVERYTHING of ours has to stop drawing --
+     * not just the screen that asked for the handover. The engine's frontend
+     * is a scaleform: nothing we draw can sit under it, so anything still
+     * painting is on top of the menu the player was sent to use.
+     *
+     * ONE WRAPPER RATHER THAN A CONDITION ON EACH SCREEN, because the list of
+     * things that draw is not the list of things that follow focus -- the
+     * lobby comes from match state, the HUD from `hudUp` -- and the previous
+     * fix missed the lobby for exactly that reason. A gate around all of it
+     * cannot miss a screen, and cannot be missed by a screen added later.
+     *
+     * OPACITY, NOT UNMOUNTING. Screens are mounted once and toggled by
+     * visibility so a transition never costs mount work mid-fight; tearing the
+     * tree down here would throw that away and remount the HUD every time
+     * somebody checked their resolution. Opacity 0 paints nothing, which is
+     * all the scaleform needs, and pointer-events off means a page that is
+     * invisible cannot also be quietly swallowing clicks.
+     */
+    <div
+      style={{
+        opacity: s.frontendUp ? 0 : 1,
+        pointerEvents: s.frontendUp ? 'none' : undefined,
+        transition: 'opacity 120ms linear',
+      }}
+      aria-hidden={s.frontendUp || undefined}
+    >
       {/* Always mounted; visibility follows match state so transitions cost no
           mount work mid-fight. Hidden under the pause menu -- the fullscreen
           map does not need our chrome floating over it. */}
@@ -184,7 +305,7 @@ export default function App() {
           menu was visible underneath both of them, reading as two screens
           stacked rather than one navigating (user, 2026-08-09). */}
       <Lobby
-        visible={showLobby && !s.pauseHiding}
+        visible={showLobby}
         under={LOBBY_SUBSCREENS.has(s.focus)}
       />
       {showEnd && s.summary && <EndScreen summary={s.summary} />}
@@ -223,18 +344,31 @@ export default function App() {
       {/* The market is the third face of the same screen. It has no ped to
           show, so it takes the whole width. */}
       <Page show={s.focus === 'market'}><Market /></Page>
-      {/* One panel, two focus screens. Report mode pushes `playersReport` over
-          `players` to give up game input for its text field, so the gate has
-          to accept either or the panel unmounts the moment it is used. */}
-      <Page show={s.focus === 'players' || s.focus === 'playersReport'}>
+      {/* ONE PANEL, ONE FOCUS SCREEN. This gate used to read `'players' ||
+          'playersReport'`, because report mode pushed a second screen purely to
+          give up game input for its note field and the panel would otherwise
+          have unmounted the moment it was used. View mode gave up game input
+          too in #135, so both modes hold the same focus and the second name is
+          gone from here, from the Lua side and from FocusPayload. */}
+      <Page show={s.focus === 'players'}>
         <PlayerList />
       </Page>
       {/* The manual, from the lobby. The same component the pause menu
           embeds, in its own frame. */}
       <Page show={s.focus === 'help'}><Help /></Page>
+      {/* THE ADMIN CONSOLE (#23), IN THE FRAME `/help` GETS AND NOT THE PAUSE
+          MENU'S TAB WELL -- which is the owner's call and the reason it is a
+          screen at all: "the one in /help is much larger and would be most
+          appropriate size-wise for Ringmaster".
+
+          ABOVE PauseMenu IN SOURCE ORDER SO IT SITS UNDER IT, which is what we
+          want: the two are never both up (pushing `admin` closes the menu, see
+          br_ui/client/pause.lua) and if a focus race ever put them together,
+          the menu is the screen with the way out. */}
+      <Page show={s.focus === 'admin'}><Admin /></Page>
       {/* The pause menu REPLACES GTA's, so it sits above everything our own
           screens draw and below only the curtain. */}
       <Page show={s.focus === 'pause'}><PauseMenu /></Page>
-    </>
+    </div>
   )
 }

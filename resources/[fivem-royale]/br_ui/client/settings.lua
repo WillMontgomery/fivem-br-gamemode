@@ -47,11 +47,36 @@ local DEFAULTS = {
     -- slider can reach: PlaySoundFrontend has no per-cue volume.
     volUi       = 0.70,
     volMusic    = 0.50,
-    -- VOICE. 'squad' routes to a channel only your squad hears; 'nearby' is
-    -- proximity; 'off' stops transmitting entirely. Solo has no squad to
-    -- route to, so the client falls back to nearby -- see br_core voice.lua,
-    -- which owns everything the natives do with these.
-    voiceMode   = 'nearby',
+    -- VOICE, AND THE THREE MODES ARE EXCLUSIVE RATHER THAN LAYERED:
+    --   'nearby'  proximity only, out to the gamemode's range, in your own
+    --             match. Squadmates get no special treatment at all.
+    --   'squad'   the squad radio only, at any distance and with no falloff.
+    --             Nobody outside the squad is heard, however close they are --
+    --             and a player with NO squad therefore hears nobody, which is
+    --             why 'nearby' is the default and not this one.
+    --   'off'     neither transmitting nor listening.
+    --
+    -- THE VALUE IS READ, NOT RESTATED. br_core/client/voice.lua acts on this
+    -- setting and used to carry its own default -- 'squad', where this file
+    -- said 'nearby' -- so which one a player got depended on whether br_ui's
+    -- push on br:ui:ready had landed. One definition, in br_lib/shared/enums
+    -- .lua, and both sides read it. See BR.VoiceRouting there for what each
+    -- mode routes; br_core owns everything done with it.
+    --
+    -- TWO SLOTS, ONE PER KIND OF MATCH (owner, from the playtest: "make it so
+    -- that a player can save a different preference (nearby/squad/off) for
+    -- squads and solos"). Which one is in force is BR.VoiceModeFor's answer,
+    -- in br_lib, and br_core re-derives it rather than storing a third value.
+    -- BOTH DEFAULT TO 'nearby' -- the argument for that default has not
+    -- changed and is written out above BR.VoiceModeDefault.
+    --
+    -- 'squad' IS NOT A LEGAL VALUE IN THE SOLO SLOT. It is coerced away below
+    -- by BR.ToSoloVoiceMode, which is also what makes the migration from the
+    -- single old setting safe: a player whose one stored mode was 'squad'
+    -- keeps it for squad matches and gets the default for solos, rather than
+    -- carrying silence into every solo match they queue.
+    voiceModeSolo  = BR.VoiceModeDefault,
+    voiceModeSquad = BR.VoiceModeDefault,
     -- Proposed to the server on join. Empty means "use my platform name".
     gamertag    = '',
 }
@@ -67,7 +92,10 @@ local COLOURBLIND = {
     off = true, deuter = true, protan = true, tritan = true,
 }
 
-local VOICE_MODE = { squad = true, nearby = true, off = true }
+-- NO LOCAL VOICE-MODE TABLE HERE ANY MORE, deliberately. The valid set and the
+-- fallback are br_lib's (BR.ToVoiceMode), for the same reason the default is: a
+-- mode this file accepted and br_core did not -- or the reverse -- is a setting
+-- that saves and then does nothing.
 
 local current = nil
 
@@ -78,6 +106,24 @@ local current = nil
 local function sanitise(raw)
     raw = type(raw) == 'table' and raw or {}
     local out = {}
+
+    -- THE MIGRATION, AND IT RUNS BEFORE THE WHITELIST FOR A REASON.
+    --
+    -- `voiceMode` was one setting and is now two. The loop below drops any key
+    -- the schema does not name, so by the time it has run the old value is
+    -- gone -- which would silently reset every existing player to the default
+    -- on the session this ships. Read here, applied only where the new keys
+    -- are ABSENT, so a payload from the current settings screen (which always
+    -- sends both) is untouched and this costs nothing after the first save.
+    --
+    -- The legacy value goes into BOTH slots and the solo one is coerced a few
+    -- lines down: somebody who chose 'squad' meant it for the matches that
+    -- have squads.
+    local legacy = raw.voiceMode
+    if legacy ~= nil then
+        if raw.voiceModeSolo  == nil then raw.voiceModeSolo  = legacy end
+        if raw.voiceModeSquad == nil then raw.voiceModeSquad = legacy end
+    end
 
     for key, fallback in pairs(DEFAULTS) do
         local v = raw[key]
@@ -98,7 +144,12 @@ local function sanitise(raw)
     end
 
     if not COLOURBLIND[out.colourblind] then out.colourblind = 'off' end
-    if not VOICE_MODE[out.voiceMode] then out.voiceMode = 'nearby' end
+    -- Coerced by br_lib, so the fallback is the same one br_core would apply to
+    -- the very same payload a moment later. The solo slot gets the stricter of
+    -- the two: 'squad' there is a match with no squads, which is silence, and
+    -- br_lib is where that judgement lives so both resources inherit it.
+    out.voiceModeSolo  = BR.ToSoloVoiceMode(out.voiceModeSolo)
+    out.voiceModeSquad = BR.ToVoiceMode(out.voiceModeSquad)
 
     -- A gamertag is shown to other players, so the rules are the server's
     -- eventually -- but there is no reason to send it something obviously
@@ -158,6 +209,28 @@ AddEventHandler('br:ui:ready', function()
     BR.Settings.push()
 end)
 
+--- SOMEBODY ELSE STARTED AND MISSED THE PUSH.
+---
+--- `br:ui:ready` is the NUI page coming up, and it is the only thing that has
+--- ever caused a push. That is enough for the page -- it is the page's own
+--- event -- but it is not enough for the other CONSUMERS of these settings,
+--- which are now br_core's voice channels and its DUI prompts. Restart br_core
+--- on its own and it starts with defaults, having missed a push that already
+--- happened and will not happen again until the player opens this screen.
+---
+--- So the read is available on request as well as on schedule. push() is
+--- idempotent -- it re-sends the stored object to the page and re-fires
+--- br:settings:changed -- so answering costs one repaint and cannot desync
+--- anything: nothing here writes, and the answer is whatever is in KVP.
+---
+--- The caller is br_core/client/dui.lua on its own onClientResourceStart. If
+--- br_ui is the one that restarted, this handler does not exist for a moment
+--- and the request is dropped -- which is correct, because br_ui coming up
+--- fires `br:ui:ready` and pushes anyway.
+AddEventHandler('br:settings:request', function()
+    BR.Settings.push()
+end)
+
 -- ------------------------------------------------------------- callbacks ---
 
 RegisterNUICallback(BR.NuiCb.SETTINGS_SAVE, function(data, cb)
@@ -212,12 +285,20 @@ RegisterNUICallback(BR.NuiCb.KEYBINDS, function(_, cb)
     -- one the game actually reads -- so the button opens the real thing
     -- instead of pretending.
     --
-    -- Reuses the ESC-in-the-lobby path rather than raising the frontend here:
-    -- the pause menu cannot open while NUI holds the cursor, and that path
-    -- already drops focus, waits for the fade, and -- the part worth having
-    -- -- hands focus BACK when the menu closes (br_core/client/state.lua).
-    TriggerEvent('br:ui:clearFocus')
-    TriggerEvent('br:ui:pauseRequest')
+    -- THE SAME DOOR AS THE VOICE AND GRAPHICS BUTTONS, and it was not (#138).
+    --
+    -- This used to do `clearFocus` then `br:ui:pauseRequest`, which raised the
+    -- frontend from br_core and told the PAGE nothing. Clearing the focus stack
+    -- is about the cursor; the lobby is drawn from match state rather than from
+    -- focus, so it kept painting over the scaleform -- #122's report, on the one
+    -- route that was never converted, reachable from the lobby which is the only
+    -- place it shows.
+    --
+    -- handOverToFrontend announces the frontend to the page before raising it
+    -- and clears the announcement once it is genuinely down, by whatever route
+    -- the player left it. It also restores focus itself, so this must NOT also
+    -- fire pauseRequest -- two restore mechanisms racing was the trap here.
+    BR.Pause.handOverToFrontend()
     cb({ ok = true })
 end)
 
@@ -256,7 +337,12 @@ RegisterCommand('brsettings', function(_, args)
     local s = BR.Settings.get()
     print('=== settings ===')
     for _, k in ipairs({ 'uiScale', 'textScale', 'colourblind',
-                         'volUi', 'volMusic', 'gamertag' }) do
+                         'volUi', 'volMusic',
+                         -- Both voice slots, because "which mode am I on" is
+                         -- now an answer this file does not have on its own --
+                         -- it stores the pair and br_core picks. /brvoice on
+                         -- the br_core side prints the one in force.
+                         'voiceModeSolo', 'voiceModeSquad', 'gamertag' }) do
         print(('  %-12s %s'):format(k, tostring(s[k])))
     end
     print('  usage: brsettings [reset]')

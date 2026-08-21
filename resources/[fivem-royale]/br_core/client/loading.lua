@@ -35,6 +35,111 @@ BR.State.worldReady = not GetIsLoadingScreenActive()
 local uiReady = false
 AddEventHandler('br:ui:ready', function() uiReady = true end)
 
+--- How long the reveal will wait for the character before giving up on it.
+---
+--- SIZED OFF THE THING IT IS WAITING FOR, not picked. client/locker.lua gives
+--- its own RequestModel five seconds and then keeps whatever ped you had; this
+--- has to outlast that plus the tick that starts it and the swap itself, or a
+--- model that streams slowly-but-successfully would be revealed half-applied
+--- anyway and the wait would have bought nothing.
+local PED_WAIT_MS = 8000
+
+--- WHY THE CHARACTER IN THE LOBBY SHOT IS NOT READY TO BE LOOKED AT YET.
+---
+--- Returns the REASON as a string, or nil when the ped is genuinely finished.
+--- A string rather than a boolean because the only thing worse than this wait
+--- timing out is it timing out without saying which half never arrived -- the
+--- same argument the fade cue below already makes for logging its own result.
+---
+--- WHAT "FULLY SPAWNED IN" HAD TO MEAN (owner, 2026-08-18: "on the lobby
+--- screen - can we wait to fade the screen in until after our target ped has
+--- fully spawned in?"). Four different moments were available and they are not
+--- the same moment:
+---
+---   * the ped EXISTS. True before we finished connecting -- GTA hands every
+---     player a ped -- so it proves nothing at all.
+---   * the MODEL HAS STREAMED (HasModelLoaded). Proves the character is in
+---     memory, not that it is on the player. locker.apply streams the model and
+---     THEN swaps it, and a reveal in that gap shows the default freemode ped
+---     standing in the shot.
+---   * THE MODEL IS ON THE PLAYER. This is the one, and it is stronger than it
+---     looks because of how locker.apply is written: SetPlayerModel, the
+---     coordinate and heading restore, initHealthModel and
+---     SetPedDefaultComponentVariation all run in ONE unbroken block with no
+---     Citizen.Wait between them, so no other thread can ever observe the ped
+---     between the swap and the components. Reading the model back therefore
+---     reads a ped that is already dressed -- which is the frame that matters,
+---     because a model with no component variation is the one that spawns "in
+---     their underwear" (locker.lua's own words), and two frames of that is
+---     exactly the ped-assembling-itself the report describes.
+---   * IT IS STANDING ON THE MARK. client/lobbycam.lua aims at authored
+---     COORDINATES rather than at the entity, so a ped that is correct but
+---     somewhere else is a menu over an empty hillside -- the other half of the
+---     report.
+---
+--- The last two are both asserted. The first two are implied by them and are
+--- not worth a line of their own.
+---
+--- NOT ASKED: whether the ped is VISIBLE. client/natives.lua sets that every
+--- frame from the player's state, and it is just as true for the default ped as
+--- for the finished one -- it would answer yes to the exact frame we are trying
+--- not to show.
+---
+--- EVERY HALF FAILS OPEN. A missing module or an absent config makes its own
+--- test disappear rather than hold the loading screen up over a game that is
+--- working, which is this file's governing rule and spawn.lua's.
+local function lobbyPedPending()
+    local ped = PlayerPedId()
+
+    -- BOTH SHAPES, because `not DoesEntityExist(ped)` cannot be written here: a
+    -- FiveM native declared BOOL may hand Lua a NUMBER, and 0 is TRUTHY in Lua,
+    -- so the obvious spelling reads a missing ped as present. spawn.lua's
+    -- /brblack footer carries the same `== true or == 1` for the same scar.
+    local exists = DoesEntityExist(ped)
+    if exists ~= true and exists ~= 1 then return 'no ped yet' end
+
+    -- The locker is the only thing that decides WHICH character this is, so it
+    -- is the only honest source for what we are waiting to see.
+    if BR.Locker and BR.PedById then
+        local want = GetHashKey(BR.PedById(BR.Locker.chosen()).model)
+        if GetEntityModel(ped) ~= want then
+            return 'the chosen character is not on the player yet'
+        end
+    end
+
+    -- A TRIP OWNS ITS OWN DARKNESS, AND THIS IS WHERE THE TWO SCREENS COULD
+    -- HAVE LEFT A GAP OF BLACK BETWEEN THEM.
+    --
+    -- spawn.lua's lobby watchdog fires during a fresh boot, not only after a
+    -- match: BR.State.me.state DEFAULTS to LOBBY (client/main.lua) and the ped
+    -- starts wherever GTA put it, thousands of metres from the Cayo vista -- so
+    -- a join routinely has a BR.Spawn.toLobby running underneath the loadscreen.
+    -- That trip is faded OUT from its DoScreenFadeOut until its own collision
+    -- wait finishes, and its teleport lands the ped on the mark BEFORE that --
+    -- so a gate that only asked about the ped would release the loading screen
+    -- into the middle of somebody else's black. Waiting for the trip instead of
+    -- racing it costs nothing: every wait inside it is already bounded.
+    if BR.Spawn and BR.Spawn.traveling then
+        return 'a spawn trip is still in flight'
+    end
+
+    local p = BR.Config and BR.Config.Match and BR.Config.Match.lobbyPos
+    if p then
+        local c = GetEntityCoords(ped)
+        -- Ten metres, against a placement that is EXACT: the lobby is a camera
+        -- mark, so spawn.lua's exact path puts the ped on the authored
+        -- coordinates without a ground snap. The slack is for a frozen entity
+        -- reading back slightly off, not a second opinion about where the lobby
+        -- is -- the failure this catches is a ped in Los Santos, not one that
+        -- drifted.
+        if BR.Dist(c.x, c.y, p.x, p.y) > 10.0 then
+            return 'the ped is not standing on the lobby mark yet'
+        end
+    end
+
+    return nil
+end
+
 Citizen.CreateThread(function()
     if BR.State.worldReady then return end   -- mid-session restart: nothing to do
 
@@ -57,6 +162,64 @@ Citizen.CreateThread(function()
     while GetGameTimer() < wDeadline do
         if HasCollisionLoadedAroundEntity(PlayerPedId()) then break end
         Citizen.Wait(250)
+    end
+
+    -- AND THE CHARACTER STANDING IN THE SHOT. THIS IS THE LOBBY'S FADE.
+    --
+    -- The lobby is a portrait: the ped is the subject and the menu is composed
+    -- around the gap left for it (ui-src/src/screens/Lobby.tsx). Everything
+    -- above waits for the WORLD -- the session, the interface, the collision
+    -- under the vista -- and nothing waited for the person standing in it, so
+    -- the reveal raced client/locker.lua's one-and-only model swap. Whichever
+    -- won was luck: the owner either got the default freemode ped for a beat
+    -- and then a cut to their character, or an empty mark (owner, 2026-08-18).
+    --
+    -- AND IT IS THE ONLY FADE IN THIS CLIENT THAT A PED CAN RACE. spawn.lua has
+    -- five DoScreenFadeIns and not one of them is this moment: the shared one in
+    -- reveal() that every placement ends with (which at boot fires UNDER this
+    -- loading screen -- the world standing by behind the backdrop, not the lobby
+    -- being shown), the trip home's own tail, the WAITING handover out of the
+    -- result screen, the anti-black watchdog, and /brunstuck. All five uncover a
+    -- ped that is already whatever it is going to be, because locker.lua applies
+    -- the stored character EXACTLY ONCE per session -- on the first tick my
+    -- state reads LOBBY -- and never again between rounds ("it does NOT
+    -- re-apply on every return to the lobby", its own words). So the only
+    -- arrival where the character is still being built is this one, and hanging
+    -- any of the others off a lobby-ped condition would hold a warmup spawn or a
+    -- black-screen recovery on a fact about the lobby.
+    --
+    -- AND IT IS BOUNDED, LIKE EVERY OTHER WAIT IN THIS FILE. A character whose
+    -- model is not on this build never arrives at all -- two roster entries
+    -- already were not (locker.lua) -- and a player parked on a loading screen
+    -- because of a typo in a model name is far worse than a pop. It gives up,
+    -- says which half never came, and reveals anyway.
+    local pending = nil
+    local pStarted = GetGameTimer()
+    local pDeadline = pStarted + PED_WAIT_MS
+    while GetGameTimer() < pDeadline do
+        -- pcall'd for the same reason the fade cue below is: this runs in a bare
+        -- Citizen thread with no handler above it, immediately before the only
+        -- code that takes the loading screen down. A predicate that throws would
+        -- stop the thread dead and leave the player on the gag reel forever --
+        -- the exact unrecoverable failure this file and spawn.lua exist to
+        -- prevent -- so an error here releases the screen rather than holding it.
+        local probed, why = pcall(lobbyPedPending)
+        if not probed then
+            print(('[br_core] loading: ped check errored (%s) -- revealing anyway')
+                :format(tostring(why)))
+            pending = nil
+            break
+        end
+        pending = why
+        if not pending then break end
+        Citizen.Wait(100)
+    end
+    if pending then
+        print(('[br_core] loading: the lobby ped never settled in %dms (%s) -- revealing anyway')
+            :format(PED_WAIT_MS, pending))
+    else
+        print(('[br_core] loading: lobby ped ready after %dms')
+            :format(GetGameTimer() - pStarted))
     end
 
     -- Text out (the glow stays). The result is LOGGED: if this channel ever

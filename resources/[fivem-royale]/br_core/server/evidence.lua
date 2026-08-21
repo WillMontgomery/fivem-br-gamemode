@@ -23,6 +23,7 @@ BR.Evidence = {}
 local buf = BR.EvidenceBuf.new({
     chatMax = BR.Config and BR.Config.Evidence and BR.Config.Evidence.chatMax,
     killMax = BR.Config and BR.Config.Evidence and BR.Config.Evidence.killMax,
+    stripMax = BR.Config and BR.Config.Evidence and BR.Config.Evidence.stripMax,
 })
 
 BR.Evidence.buf = buf
@@ -80,6 +81,12 @@ end
 --- record shows the accused died to the person they are supposed to be helping.
 --- @param feed table  the kill feed row
 function BR.Evidence.noteKill(feed)
+    local vm = metaFor(feed.victimSrc)
+    local km = nil
+    if feed.killerSrc and feed.killerSrc ~= feed.victimSrc then
+        km = metaFor(feed.killerSrc)
+    end
+
     local row = {
         killer   = feed.killer,
         victim   = feed.victim,
@@ -87,18 +94,74 @@ function BR.Evidence.noteKill(feed)
         weapon   = feed.weapon,
         headshot = feed.headshot,
         at       = GetGameTimer(),
+
+        -- THE LICENCES ARE RESOLVED HERE AND ADDED TO THE BUFFERED ROW ONLY --
+        -- DELIBERATELY NOT TO `feed` (#30).
+        --
+        -- `feed` IS BROADCAST TO CLIENTS. combat.lua hands the same table to
+        -- BR.Broadcast.toMatch(m, BR.Net.KILL_FEED, feed) two lines after calling
+        -- this, so anything added to it is on every player's machine. A licence
+        -- is the console's profile key and the identifier every ban, grant and
+        -- audit row is written against; putting one on the wire to clients would
+        -- hand the whole lobby a stable cross-match identifier for everybody they
+        -- kill. This row never leaves the server: it lives in RAM and, if an
+        -- incident is ever filed, travels server -> DynamoDB -> console. That is
+        -- a different path with a different audience and it is the reason the
+        -- licence is acceptable here and not there.
+        --
+        -- WHY THEY ARE NEEDED. #30 wants each kill on an incident timeline to
+        -- link to the victim's profile, and the console keys profiles by licence.
+        -- `victim` is a display NAME, which is not unique, is player-chosen and
+        -- is not what the console can look up. `victimSrc` is worse than useless
+        -- for the purpose: server ids are RECYCLED WITHIN THE MINUTE (see
+        -- evidence_buf's header), so a src stored now names somebody else by the
+        -- time an admin reads the case.
+        --
+        -- RESOLVED NOW, WHILE THE SRC IS STILL VALID, for that same reason.
+        killerLicense = km and km.license or nil,
+        victimLicense = vm and vm.license or nil,
     }
 
-    local vm = metaFor(feed.victimSrc)
     if vm then buf:noteKill(feed.victimSrc, row, vm) end
 
     -- A killer who has already disconnected has no roster entry and therefore no
     -- meta -- their record is sealed and stays as it was. Nothing to do, and
     -- deliberately not an error: a shot lands after the shooter leaves.
-    if feed.killerSrc and feed.killerSrc ~= feed.victimSrc then
-        local km = metaFor(feed.killerSrc)
-        if km then buf:noteKill(feed.killerSrc, row, km) end
-    end
+    if km then buf:noteKill(feed.killerSrc, row, km) end
+end
+
+--- Record that a weapon this gamemode does not issue was in a player's hand.
+---
+--- THE ONLY ENTRY POINT HERE WHOSE SOURCE IS A CLIENT, and it is worth saying so
+--- beside the two above it rather than only in the file that receives the event.
+--- Chat is delivered text the server already saw; a kill is the server's own
+--- attribution out of damage.lua. A strip is a fact about the offender's own ped,
+--- which no server-side native can read -- so the report arrives over the wire and
+--- br_core/server/strip.lua is where it is rate-limited, cross-checked against the
+--- inventory the SERVER holds, and refused for admins. By the time it reaches this
+--- function all of that has already happened.
+---
+--- `at` IS STAMPED HERE, NOT ACCEPTED. Everything on a match timeline is a
+--- server clock reading -- see the header of incident_build.lua -- and a
+--- client-supplied timestamp on a moderation record would be evidence a cheater
+--- writes about themselves.
+--- @param src integer
+--- @param weapon integer|nil  the normalised hash that was in the hand
+function BR.Evidence.noteStrip(src, weapon)
+    local meta = metaFor(src)
+    if not meta then return end
+    buf:noteStrip(src, { at = meta.now, weapon = weapon }, meta)
+end
+
+--- Keep more about this player, because a case has been opened about them.
+---
+--- Called from server/incident.lua the moment a filing is acknowledged. See
+--- BR.EvidenceBuf:promote for why the cost is paid per incident rather than per
+--- player: a match that files nothing still costs nothing.
+--- @param license string
+--- @return integer  how many records were promoted
+function BR.Evidence.retain(license)
+    return buf:promote(license)
 end
 
 --- Every record for one license this match, live or sealed.
@@ -153,6 +216,25 @@ end)
 -- anybody could still be looking at that match.
 AddEventHandler('br:match:destroyed', function(ev)
     if not ev or ev.matchId == nil then return end
+
+    -- LAST CALL, AND IT IS EMITTED FROM INSIDE THIS FUNCTION RATHER THAN LEFT TO
+    -- HANDLER ORDER. This is the only moment at which "the match is over" and
+    -- "the evidence still exists" are both true, and #30's match-end write needs
+    -- exactly that moment: it closes the incident timeline with the kills that
+    -- happened after the case was filed.
+    --
+    -- WHY NOT JUST LISTEN TO `br:match:destroyed` OVER IN incident.lua. Because
+    -- it would silently read an empty buffer. FiveM runs handlers in registration
+    -- order, registration order is manifest order, and br_core's manifest loads
+    -- server/evidence.lua (line 114) well before server/incident.lua (line 138) --
+    -- so this handler, and the `clearMatch` below it, would both have run first.
+    -- The feature would have looked correct, logged nothing, and shipped dead.
+    -- This project has form for exactly that, which is why the ordering is a line
+    -- of code here rather than a comment in a manifest: moving `clearMatch` above
+    -- this emit breaks a test, whereas reordering the manifest breaks nothing
+    -- visible until somebody reads a real case.
+    TriggerEvent('br:evidence:closing', { matchId = ev.matchId })
+
     buf:clearMatch(ev.matchId)
 end)
 

@@ -27,25 +27,82 @@
  */
 
 import Ring from '../hud/Ring'
+import { useCoverReport } from '../bridge/cover'
 
 /** What the curtain is covering. Lua names it; the wording lives here. */
-export type CurtainKind = 'leaving' | 'dropping'
+export type CurtainKind = 'leaving' | 'dropping' | 'disconnecting'
+
+/**
+ * The opacity transition's own duration, in ms, and it MUST match the class
+ * below. It is the fallback deadline for the cover report -- see
+ * bridge/cover.ts -- not a second place the fade is timed.
+ */
+const FADE_MS = 600
 
 const COPY: Record<CurtainKind, { title: string; sub: string }> = {
   leaving:  { title: 'Leaving the match', sub: 'Cleaning up the world…' },
   dropping: { title: 'Dropping in',       sub: 'Building the island…' },
+  // A THIRD KIND RATHER THAN REUSING `leaving`, because the words would be a
+  // lie: somebody disconnecting from the lobby is not leaving a match, and
+  // there is no world to clean up. Same component, same shape of moment --
+  // something irreversible is under way and there is nothing to look at --
+  // which is the whole argument for one curtain with three vocabularies
+  // instead of three interstitials that drift apart.
+  disconnecting: { title: 'Leaving the server', sub: 'Disconnecting…' },
 }
 
 export default function LeaveScreen({
   show, kind = 'leaving',
 }: { show: boolean; kind?: CurtainKind }) {
   const copy = COPY[kind] ?? COPY.leaving
+
+  // AND IT TELLS LUA WHEN IT IS ACTUALLY BLACK.
+  //
+  // This is the acknowledgement the whole transition ordering hangs off (#124).
+  // Lua raises the curtain and then waits HERE before changing anything: the
+  // teleport, the island swap, the lobby menu being replaced by the HUD. It
+  // used to sleep 450ms and assume, which is how the player ended up watching
+  // the cut this component exists to cover.
+  //
+  // transitionend on the opacity above is the honest signal -- the browser
+  // saying it has finished painting -- and the duration is only the fallback
+  // for the case where it optimises the transition away entirely.
+  const onCovered = useCoverReport('curtain', show, FADE_MS + 100)
+
   return (
     <div
       className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-6
                  bg-black transition-opacity duration-[600ms]"
-      style={{ opacity: show ? 1 : 0, pointerEvents: 'none' }}
+      // AN OPAQUE SCREEN SWALLOWS CLICKS -- while it is up, and only then.
+      //
+      // This was `'none'` unconditionally, which was harmless while there was
+      // never anything clickable underneath. There is now: the pause menu is
+      // held open on purpose while this curtain rises over it (#124, see
+      // br_ui/client/pause.lua), so a second click during the fade would land
+      // blind on a button the player can no longer see -- and the row directly
+      // under "Leave match" is "Disconnect".
+      //
+      // Off again the moment it is down, because the page is click-through by
+      // default (index.css) and a full-screen layer left at `auto` would eat
+      // every click in the lobby underneath it. The trade it accepts: a curtain
+      // that ever got STUCK up now takes the interface with it rather than
+      // leaving the player clicking blindly at a black screen. That is the
+      // better of two bad states, and it is already watched for from both sides
+      // -- br_core lifts an abandoned curtain after 15s, and /brunstuck drops it
+      // by hand.
+      style={{ opacity: show ? 1 : 0, pointerEvents: show ? 'auto' : 'none' }}
       aria-hidden={!show}
+      // THIS ELEMENT'S OWN OPACITY, AND NOTHING ELSE'S. transitionend bubbles,
+      // so any child of this curtain that ever grows a transition would
+      // otherwise report "the screen is black" the moment IT finished -- at
+      // whatever opacity the curtain happened to be passing through. That is
+      // precisely the class of mistake this handshake replaces, and it would be
+      // invisible until someone restyled a child.
+      onTransitionEnd={(e) => {
+        if (e.target === e.currentTarget && e.propertyName === 'opacity') {
+          onCovered()
+        }
+      }}
     >
       {/* Remount the fly-up per showing so it replays each time. Keyed by
           kind as well, or switching words mid-curtain would keep the old

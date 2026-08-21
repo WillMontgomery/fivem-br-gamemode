@@ -58,7 +58,7 @@ export default function NoticeLog() {
         <div className="font-display text-[1.15rem] uppercase tracking-[0.08em]">
           Nothing yet
         </div>
-        <div className="micro-label" style={{ textTransform: 'none' }}>
+        <div className="body-text">
           Party events, pickups and match alerts appear here as they happen.
         </div>
       </div>
@@ -110,9 +110,12 @@ export default function NoticeLog() {
                   &times;{n.count}
                 </span>
               )}
+              {/* "just now" / "2m ago" is written English, not a caption, and
+                  it was already cancelling the uppercase to say so. --fs keeps
+                  it under the 0.85rem notice it belongs to. */}
               <span
-                className="micro-label ml-auto pl-3 shrink-0"
-                style={{ textTransform: 'none' }}
+                className="body-text ml-auto pl-3 shrink-0"
+                style={{ ['--fs' as string]: '0.7rem' }}
               >
                 {ago(Date.now() - n.at)}
               </span>

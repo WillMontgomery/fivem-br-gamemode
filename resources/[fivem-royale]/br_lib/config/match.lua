@@ -25,12 +25,62 @@ BR.Config.Match = {
     endedSeconds    = 20,     -- summary screen duration before returning to lobby
     cleanupSeconds  = 5,
 
+    -- THE COVER HANDSHAKE'S DEADLINES, and every one of them exists to be
+    -- WRONG SAFELY rather than to be right (#124).
+    --
+    -- A screen transition is: cover the screen, change the world, uncover.
+    -- The cover lives in CEF and the change lives in Lua, so the only honest
+    -- way to order them is for the page to say "I am black now"
+    -- (BR.NuiCb.COVERED). These are the caps on waiting for it -- a page that
+    -- never answers has crashed, and a player left staring at black because
+    -- of it is a far worse bug than the visible cut the cover was hiding.
+    --
+    -- coverWaitMs   the curtain's own fade is 600ms; four times that is
+    --               "something is wrong", not "the machine is slow".
+    -- verdictWaitMs the verdict backdrop starts 1.4s after the summary lands
+    --               and takes 2s to reach solid black -- so ~3.9s from the
+    --               ENDED transition. Six seconds is that plus room.
+    -- coverSweepMs  the SERVER's own deadline for sweeping a player home
+    --               without ever hearing from them. Longer than the client's
+    --               own wait (which is what normally triggers the report) and
+    --               comfortably inside endedSeconds, so CLEANUP is never the
+    --               thing that has to rescue it.
+    coverWaitMs     = 2500,
+    verdictWaitMs   = 6000,
+    coverSweepMs    = 8000,
+
     -- Default mode when a player queues without choosing.
     defaultMode     = 'solo',
 
     -- Squads
     autofill        = true,   -- fill partial squads with solo queuers
+
+    -- FOUR IS THE GAME; TWO IS HOW YOU TEST IT.
+    --
+    -- With three dev clients and a maximum of four, every client lands in the
+    -- SAME squad -- which makes cross-squad damage impossible to produce in
+    -- game, and cross-squad damage is the half of #115's fix that nothing in a
+    -- playtest can otherwise reach. Set this to 2 and three clients become two
+    -- squads (2 + 1), which puts the enemy case on the screen.
     maxSquadSize    = 4,
+
+    -- THE ENGINE'S OWN FRIENDLY-FIRE GATE (#115), and the one-line way back.
+    --
+    -- true  each squad gets a GTA team (SET_PLAYER_TEAM) and a player with a
+    --       live squadmate closes the engine's friendly-fire gate, so the
+    --       shooter's engine never computes a hit on a teammate and the false
+    --       corpse cannot be created. Solos keep team 0 and an OPEN gate, so
+    --       solo play behaves exactly as it did before this existed.
+    -- false no team is ever set and the gate is always open -- byte-for-byte
+    --       the pre-#115 behaviour from e1f9f98.
+    --
+    -- The load-bearing inference is that GTA's damage path refuses a hit when
+    -- shooter and victim share a team and the gate is closed. Everything in
+    -- the record supports it (see the note above BR.Native.teamFor in
+    -- br_core/client/natives.lua) and no source states it in words, so this
+    -- switch exists to make a wrong guess cost one line rather than a round.
+    -- If squad matches suddenly have no combat at all, set this false.
+    engineTeams     = true,
 
     -- A squad match needs somebody to fight. One squad means the win condition
     -- is already satisfied at the starting gun, which reads as "the match ended
@@ -124,39 +174,101 @@ BR.Config.Match = {
     -- players HEARING each other, and betting a whole match's comms on an
     -- undocumented side effect is how you find out in front of 48 people.
     --
-    -- So every match gets its own Mumble channel explicitly. Two channels per
-    -- player:
-    --
-    --   PROXIMITY  one per match. Everyone in the match shares it, and
-    --              talkerProximity decides how far a voice carries INSIDE it.
-    --              Nobody outside the match is in the channel at all, so
-    --              distance never enters into it for them.
-    --   SQUAD      one per squad. No distance limit -- the point of squad
-    --              comms is that they work across the map.
+    -- So every match gets its own Mumble channel explicitly. ONE channel per
+    -- player -- the match's proximity room -- and squadmates are reached by
+    -- NAME instead of by room. See BR.Config.Match.voice.range below and
+    -- br_core/client/voice.lua for why the squad room was removed (#157).
     --
     -- Channel numbers are opaque integers to the client. They are derived
     -- from matchId, which is NEVER public (roster.lua PUBLIC_FIELDS), so the
-    -- server hands each player their two numbers over VOICE_SET.
+    -- server hands each player their number over VOICE_SET.
     voice = {
         enabled          = true,
 
-        -- How far an ordinary voice carries, in metres. Deliberately short:
-        -- being heard is a positional tell, and a wide radius turns every
-        -- rooftop into a public address system.
-        talkerProximity  = 25.0,
+        -- ==================================================================
+        -- HOW FAR A VOICE CARRIES. TWO NUMBERS, BECAUSE THERE ARE TWO JOBS.
+        --
+        -- #157, first report: "even when set to nearby (while in squads or
+        -- solos), the channel is global." Everybody heard everybody at any
+        -- range, because nothing ever told Mumble a distance.
+        --
+        -- #157, second report, after a distance WAS supplied: "regardless of
+        -- distance, 'nearby' doesn't output audio." Silent at every range,
+        -- including nose to nose, while the talking indicator kept naming
+        -- people. That is the engine's own behaviour and not a bug in these
+        -- numbers: MUMBLE_SET_AUDIO_INPUT_DISTANCE / _OUTPUT_DISTANCE switch
+        -- MumbleAudioOutput onto a listener-to-speaker position comparison,
+        -- and a speaker whose position it does not have is silenced outright
+        -- rather than treated as near. So those natives are no longer called.
+        --
+        -- BOTH NUMBERS ARE ENFORCED BY THE CLIENT NOW, one player at a time,
+        -- with MUMBLE_SET_VOLUME_OVERRIDE_BY_SERVER_ID -- 0.0 for somebody out
+        -- of range, 1.0 for a squadmate on the radio, and no override at all
+        -- for somebody inside `nearby`, which leaves the engine to mix them
+        -- positionally as it always has. See br_core/client/voice.lua.
+        --
+        -- THE CUTOFF IS BINARY, NOT A CURVE: in range at full volume, out of
+        -- range at nothing, no fade. `setr voice_useNativeAudio true` in
+        -- server.cfg changes how the edge sounds; see server.cfg.example, and
+        -- do it after the range has been checked rather than with it.
+        --
+        -- WHY THERE ARE STILL TWO NUMBERS, AND WHY ONLY ONE OF THEM IS LIVE.
+        --
+        -- THE MODES ARE EXCLUSIVE. 'nearby' is proximity and only proximity;
+        -- 'squad' is the pma-voice radio and only the radio. Not one on top of
+        -- the other -- see BR.VoiceRouting in br_lib/shared/enums.lua, which is
+        -- where a mode is defined, and the block at the top of
+        -- br_core/client/voice.lua for the rounds that were lost to layering
+        -- them.
+        --
+        -- SO `nearby` BELOW IS THE ONLY NUMBER THAT DOES ANYTHING. `squad` is
+        -- vestigial: a radio channel does not attenuate, so squad voice has no
+        -- range to configure and the client never reads this value. It is still
+        -- SENT (server/voice.lua's VOICE_SET payload) and still asserted on by
+        -- tools/test_roster.lua, which is the only reason it is still here --
+        -- see the marked follow-up beside `squadRange` in that file.
+        range = {
+            -- Ordinary speech, in metres. Deliberately short: being heard is
+            -- a positional tell, and a wide radius turns every rooftop into a
+            -- public address system.
+            nearby = 25.0,
+
+            -- Squadmates, in metres. THE DEFAULT IS PAST THE MAP DIAGONAL
+            -- (8 km x 11.5 km, so ~14 km corner to corner), which means squad
+            -- comms never cut out anywhere a player can stand. That is the
+            -- point of squad comms and 25 m would not be squad comms.
+            --
+            -- It is a real cutoff, not a synonym for infinity, so it is worth
+            -- knowing what the alternatives buy:
+            --   16000  never cuts out. The default.
+            --    3500  the opening storm circle (Config.Storm.radius0) --
+            --          squad comms cover the play area and no further, so a
+            --          squadmate who has not left the bus zone stays reachable
+            --          but one who has run to the far coast does not.
+            --     100  a "shout" band: squads keep contact through a fight
+            --          without a map-wide radio. Harsher, and legitimate.
+            squad  = 16000.0,
+        },
 
         -- Channel id bases. Kept far apart and far from 0, which is the
-        -- default channel every client starts in -- a squad channel that
-        -- collided with a match channel would put two squads in one room.
+        -- default channel every client starts in.
         lobbyChannel     = 1000,
         warmupChannel    = 1001,
         matchBase        = 2000,   -- + matchId
-        squadBase        = 5000,   -- + matchId * squadStride + squad index
-        squadStride      = 16,     -- max squads per match this scheme allows
 
-        -- Whether a squad hears each other at any range. Off means squads are
-        -- proximity-only, which is a legitimate (harsher) design and one
-        -- command away.
+        -- WHETHER THERE IS A SQUAD RADIO AT ALL.
+        --
+        -- `false` means no squad is ever assigned a channel and no squadmate
+        -- list is ever sent, so the 'squad' setting has nothing to route and
+        -- becomes indistinguishable from 'off' for the player who picks it.
+        -- That is the honest reading now that the modes are exclusive: it used
+        -- to mean "squads are proximity-only", and there is no such thing any
+        -- more -- proximity-only IS 'nearby', and it is one click away in the
+        -- settings screen.
+        --
+        -- Turning this off is therefore a decision to ship a mode that does
+        -- nothing, and it should come with removing the option from the
+        -- settings screen (ui-src/src/screens/Settings.tsx, VOICE_MODES).
         squadIsGlobal    = true,
     },
 
@@ -185,10 +297,40 @@ BR.Config.Match = {
     maxArmour       = 100,    -- armour is already 0..100 natively, no conversion
 
     -- DBNO (squads only -- solo has nobody who could revive you).
-    dbnoBleedBase   = 45,     -- seconds on the first knock
-    dbnoBleedStep   = -8,     -- each subsequent knock in the same match is shorter
-    dbnoBleedMin    = 15,
-    dbnoReviveTime  = 8.0,    -- seconds of held interact
+    --
+    -- TWO MINUTES ON THE FIRST KNOCK, up from 45 seconds (owner, playtest:
+    -- "The DBNO bleed out timer seems awfully short. We should probably double
+    -- it at least. It should be 2 minutes minimum").
+    --
+    -- THE OTHER TWO MOVED WITH IT, AND THAT IS THE POINT. The escalation is a
+    -- SHAPE, not three independent numbers: knock N is meant to be a fixed
+    -- FRACTION of the first, so a squad cannot farm revives out of one long
+    -- fight. Raising only the base would have flattened it -- at -8s a step the
+    -- second knock would have dropped 18% of a 45s bleed and 7% of a 120s one,
+    -- which is the same table describing a different rule. Scaled by the same
+    -- 120/45, the curve is identical in proportion and only the units changed:
+    --
+    --   knock  1      2      3      4      5      6
+    --   was    45s    37s    29s    21s    15s    15s   (floor)
+    --   now    120s   99s    78s    57s    40s    40s   (floor)
+    --
+    -- dbnoBleedPerDamage below moved for the same reason -- see its note.
+    dbnoBleedBase   = 120,    -- seconds on the first knock
+    dbnoBleedStep   = -21,    -- each subsequent knock in the same match is shorter
+    dbnoBleedMin    = 40,
+    -- SECONDS OF HELD INTERACT. 2.8, down 65% from the 8.0 that shipped
+    -- (owner, 2026-08-17: "the revive button hold from last round took too
+    -- long - let's cut it by like 65%").
+    --
+    -- THIS IS THE ONLY NUMBER, and that is worth stating because a hold
+    -- duration is the classic thing to end up hardcoded twice -- once for the
+    -- rule and once for the picture that draws it. Everything reads this key:
+    -- server/combat.lua measures the hold against it and reports progress as a
+    -- fraction of it, client/dbno.lua sends it to the prompt as `holdMs`, and
+    -- br_ui/dui/prompt.html sets the ring's animation-duration from that
+    -- message and from nothing else. Change it here and the ring closes with
+    -- the revive, on its own.
+    dbnoReviveTime  = 2.8,
     dbnoReviveDist  = 1.5,
     dbnoReviveHp    = 30,     -- displayed HP after a successful revive
 
@@ -199,10 +341,18 @@ BR.Config.Match = {
     -- countdown, and visible to everyone else as a body still crawling.
     --
     -- THE NUMBER IS A GUESS AND IS WRITTEN DOWN AS ONE, like the molotov's 42.
-    -- At 0.35 a 30-damage rifle round takes 10.5s off a fresh 45s knock -- four
-    -- rounds finish it -- and a shotgun blast (~90) takes 31s. That feels right
-    -- on paper and has never been played. Tune it before defending it.
-    dbnoBleedPerDamage = 0.35,
+    -- The guess is not the seconds, it is the ROUND COUNT: four rifle rounds
+    -- finish a fresh knock, a shotgun blast (~90 damage) takes about a third of
+    -- it. That is the property this key exists to hold, and it is why the number
+    -- had to move when dbnoBleedBase went from 45s to 120s -- at 0.35 the same
+    -- four rounds would have taken 42 seconds off a two-minute clock, so
+    -- finishing somebody would have needed eleven of them and shooting a downed
+    -- player would have stopped being a thing anybody does.
+    --
+    -- 0.93: 30 damage -> 27.9s, four rounds -> 111.6s of a 120s knock, a shotgun
+    -- blast -> 84s. Still a guess, still never played. Tune it before defending
+    -- it -- but tune it against the round count, not against the seconds.
+    dbnoBleedPerDamage = 0.93,
 
     -- The display health the LEDGER holds a downed player at. It has to be
     -- greater than zero for two separate reasons and both are load-bearing:
@@ -240,7 +390,24 @@ BR.Config.Match = {
 
     -- Server-side sampling and broadcast rates. These are the knobs to turn if
     -- the server tick starts running long at full player count.
-    posSampleHz     = 2,
+    --
+    -- posSampleHz SAID 2 AND THE SAMPLER RAN AT 4, for as long as both have
+    -- existed: roster.lua hardcoded `BR.Sched.every(250, ...)` and nothing read
+    -- this value at all. So the knob documented here was not a knob, and the
+    -- number it advertised was the one that had been TRIED AND REJECTED.
+    --
+    -- 4 Hz IS THE RATE, AND IT IS NOT NEGOTIABLE DOWNWARD (owner, confirmed).
+    -- Squad beacons are drawn straight from this sampling, and at 2 Hz a
+    -- teammate's dot visibly hopped rather than moved; it also halves the
+    -- staleness the loot claim check has to tolerate. Anyone reaching for this
+    -- to save server tick should read that sentence first -- 2 has already been
+    -- shipped, played and reverted, so lowering it is a repeat rather than an
+    -- experiment.
+    --
+    -- The value is now READ (br_core/server/roster.lua derives the scheduler
+    -- interval from it) and tools/test_roster.lua fails if the two ever
+    -- disagree again, which is what makes this line worth trusting.
+    posSampleHz     = 4,
     deltaFlushHz    = 4,
     digestHz        = 2,
 
@@ -400,6 +567,11 @@ end
 BR.Config.Evidence = {
     chatMax = 50,
     killMax = 30,
+    -- Weapons the gamemode never issued, taken out of a hand. Smaller than the
+    -- other two because a strip row is a timestamp and a hash: the tenth in a
+    -- row says what the second already said, and it is the PATTERN that is
+    -- evidence. See BR.EvidenceBuf.DEFAULTS, which this mirrors.
+    stripMax = 20,
 }
 
 BR.Config.Combat = {
@@ -601,6 +773,25 @@ BR.Config.Combat = {
     only teach players that reporting does nothing. Every option here is
     something an admin can actually do something about.
 
+    THIS EXACT LIST IS THE OWNER'S, given verbatim in #143 (2026-08-16) and in
+    this order. It is shorter than the one it replaces by one entry and the
+    swap is not cosmetic:
+
+      * `teaming` and `griefing` are GONE and `power_gaming` stands where both
+        of them stood. The pair were two names for the same complaint -- an
+        admin opening either had to read the case to find out which had been
+        meant -- and the split bought nothing, because the action on both is
+        the same conversation with the same player.
+      * `power_gaming` is the term the server's own community already uses for
+        it, so the word on the report is the word an admin will use in the
+        reply.
+
+    THE IDS ARE WHAT REACHES THE DATABASE, not the labels, and they are what a
+    console query filters on. Renaming one silently orphans every row filed
+    under the old spelling -- rows already written keep `teaming`, and nothing
+    here rewrites them, which is correct: a record of what somebody actually
+    reported must not be edited by a config change.
+
     A DEFAULT IS PRE-SELECTED, because a report filed with no category is still
     worth having and a required field is how you get "asdf". `cheating` is the
     default because it is both the most common and the one most worth a human
@@ -608,21 +799,36 @@ BR.Config.Combat = {
 
     RATE LIMITS ARE NOT OPTIONAL. This feature is, by construction, a way for
     any player to make the server write to DynamoDB on demand. The limits are
-    per match and enforced server-side; the client is told what remains so the
-    panel can say so rather than discovering it on submit.
+    per match and enforced server-side.
+
+    THE PANEL NO LONGER ADVERTISES THEM (owner, #142: "We don't need to tell a
+    player how many people they can report, or how many reports are left").
+    They are enforced exactly as hard as they were; the difference is that a
+    player discovers a limit by being told the reason it refused, rather than
+    by reading a running total they never asked for.
 
     REPORT SPAM IS ITSELF A SIGNAL and is kept rather than discarded -- the
     console's "reports they filed against others" section exists precisely so
     somebody who reports everybody is visible. A refused-for-rate report is
     still counted, because the attempt is the signal.
+
+    THERE IS NO `maxNote`, AND NO NOTE. It was deleted with #142 ("We don't
+    need a custom text field for reports. Just the dropdown"), and it turns out
+    it had never done anything: br_ddb has written `note: null` unconditionally
+    since 2026-08-14 ("NO FREE-TEXT NOTE, EVER, FROM THE GAME") -- so a cap on
+    a string that reached a page, a callback, a net event, an incident payload
+    and then a hard null was three layers of plumbing around a value the
+    database was already throwing away.
 ]]
 BR.Config.Report = {
     categories = {
         { id = 'cheating',     label = 'Cheating',     default = true },
-        { id = 'teaming',      label = 'Teaming' },
-        { id = 'griefing',     label = 'Griefing' },
         { id = 'abusive_chat', label = 'Abusive chat' },
         { id = 'exploiting',   label = 'Exploiting' },
+        { id = 'power_gaming', label = 'Power gaming' },
+        -- LAST, whatever else moves. "Something else" is the option a player
+        -- picks after failing to find theirs, so it has to be the one they
+        -- arrive at rather than the one they meet on the way.
         { id = 'other',        label = 'Something else' },
     },
 
@@ -630,10 +836,14 @@ BR.Config.Report = {
     maxTargets = 5,
 
     --- Submissions per player per match.
+    ---
+    --- NOT THE SAME LIMIT AS "one report per target per match" (#143), and both
+    --- are live. This one bounds how many times a player can make the server
+    --- write to a database; the other bounds how many times one accusation can
+    --- be made to count twice. Neither implies the other: three submissions of
+    --- five distinct targets is fifteen reports and is fine, and two
+    --- submissions naming the same person is one report and is refused.
     maxPerMatch = 3,
-
-    --- Free text length. Optional, and capped because it reaches a database.
-    maxNote = 300,
 }
 
 --- The category to pre-select, resolved from the table above rather than

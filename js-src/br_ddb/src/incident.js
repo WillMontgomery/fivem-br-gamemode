@@ -1,3 +1,5 @@
+import { timelineEntry } from './close.js'
+
 /**
  * Building the DynamoDB item for an incident.
  *
@@ -247,11 +249,59 @@ export function buildIncidentItem(incidentId, payload, now) {
       .filter(Boolean),
 
     /**
-     * EMPTY IS NORMAL AND IS NOT EVIDENCE OF ANYTHING -- the console's own note
-     * on this field. The capture uploads from the subject's machine, so it can
-     * fail, be blocked, or never start because they had already left.
+     * ═══ THE MATCH AROUND THE CASE (#30) ═══
+     *
+     * WRITTEN HERE BECAUSE IT IS FREE HERE. Match start and every kill the
+     * subject had landed by the time the case was filed are both already known
+     * -- the match registry knows when it started, and the evidence buffer has
+     * been holding the kills in RAM all along -- so they ride this PutItem and
+     * cost no write of their own. A match that never produces an incident never
+     * reaches this function and therefore writes nothing at all.
+     *
+     * `matchEndedAt` IS ABSENT UNTIL THE MATCH ENDS, which is the single fact
+     * that cannot be known now. close.js fills it with one UpdateItem.
+     *
+     * `matchEndsBy` IS HOW AN ABSENT END STOPS MEANING "STILL RUNNING". The game
+     * states, at filing time, when it expects this match to be over by. The
+     * console then reads three states rather than two:
+     *
+     *   matchEndedAt present        -> ended, at that time
+     *   absent, now <  matchEndsBy  -> STILL IN PROGRESS
+     *   absent, now >= matchEndsBy  -> the end was never reported
+     *
+     * The third is a crashed or restarted server, and an admin must not read it
+     * as the second. Written now rather than later precisely so that it survives
+     * the game box disappearing.
+     *
+     * NULL WHEN THERE WAS NO MATCH. An anticheat trip in the lobby or a
+     * `brrefuse` from a console carries no match, and the console shows no match
+     * context rather than an invented one.
      */
-    captureKeys: [],
+    matchStartedAt: int(payload.matchStartedAt),
+    matchEndedAt: null,
+    matchEndsBy: int(payload.matchEndsBy),
+
+    /**
+     * A LIST DISCRIMINATED BY `kind`, and that is what makes #34 free later: an
+     * artifact frame becomes `{ at, kind: 'artifact', ... }` with no new
+     * attribute and no migration of rows already written.
+     *
+     * IT IS NOT `events`. The console owns `events`; the game owns this. Neither
+     * writes the other's, which is what lets the game's UpdateItem grant be an
+     * attribute allowlist that cannot express an opinion about a verdict. The
+     * console merges the two on `at` at render time.
+     */
+    matchTimeline: list(payload.matchTimeline).map(timelineEntry).filter(Boolean),
+
+    /**
+     * TRUNCATION IS REPORTED, NEVER SILENT, the same house rule as
+     * `evidenceTruncated` above and for the same reason: a kill list that stops
+     * early and looks complete tells an admin "this is everything they did"
+     * when it is not. `matchKillsSeen` is every kill the buffer was ever
+     * offered for this player, including ones its caps dropped.
+     */
+    matchTimelineComplete: payload.matchTimelineComplete === true,
+    matchKillsSeen: int(payload.matchKillsSeen) ?? 0,
 
     events: [
       {

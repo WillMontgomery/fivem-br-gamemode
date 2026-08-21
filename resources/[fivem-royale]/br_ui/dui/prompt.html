@@ -22,11 +22,39 @@
   says "a hold began, it lasts 1000ms" once, and the animation runs locally at
   the browser's own frame rate. A dropped or late message cannot stutter it.
 
+  TWO SIZES ARRIVE HERE FROM TWO DIFFERENT PLACES, and the split is the same
+  one the HUD makes (ui-src/src/index.css):
+
+    * INTERFACE SIZE (--ui-scale in the HUD) never reaches this document at
+      all. It is applied by br_core/client/dui.lua to the SPRITE, because this
+      page renders into a fixed 512x256 texture: growing the content inside it
+      would clip, while growing the sprite grows the whole prompt and cannot.
+
+    * TEXT SIZE (--text-scale) is this document's, because it is the half that
+      must NOT grow the plate. It arrives as `{ t: 'scale', text: n }` and
+      lands on the label and the hint and on nothing else -- not the ring, not
+      the key cap, which are a fixed-size plate.
+
+  THE SCALE MESSAGE MUST NEVER TOUCH THE RING, and it does not: it writes one
+  custom property that no rule on `.fill` reads. A CSS animation restarts when
+  its animation-name list changes or its element is re-inserted, neither of
+  which a custom-property write does -- the deliberate restart in restartHold()
+  is a class remove, a forced reflow and a re-add, and that is the only thing in
+  this file that can retime the hold. Scaling mid-hold repaints the text and
+  leaves the ring exactly where the Lua clock expects to find it.
+
   Kept deliberately dependency-free and inline -- it is loaded as a file:// -
   style resource URL, not through Vite, so there is no build step between
   editing this and seeing it in game.
 -->
 <style>
+  :root {
+    /* The player's text-size preference, written by the script below from a
+       `scale` message. Declared here so the page is correct at 1.00 before
+       any message arrives -- a DUI is drawn the frame its browser comes up,
+       which can be before Lua has had a chance to say anything to it. */
+    --text-scale: 1;
+  }
   /* ANTON, INLINED AS BASE64.
      This document is loaded straight off disk as nui://br_ui/dui/prompt.html
      with no bundler and no import graph, so there is nothing to resolve a
@@ -116,14 +144,20 @@
     text-align: center;
     max-width: 460px;
   }
+  /* THE TWO PROSE LINES, AND THE ONLY TWO THINGS --text-scale TOUCHES.
+     `.plate` keeps its 460px cap and #label keeps its ellipsis, so a long
+     label at the top of the range shortens rather than escaping the texture --
+     the same trade the HUD makes, where text scaling is allowed only where
+     growth cannot push something off screen. */
   #label {
     font-family: 'Anton', 'Segoe UI', sans-serif;
-    font-size: 34px; font-weight: 400; line-height: 1.1;
+    font-size: calc(34px * var(--text-scale)); font-weight: 400; line-height: 1.1;
     text-shadow: 0 2px 6px rgba(0,0,0,0.9);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   }
   #hint {
-    font-size: 19px; letter-spacing: 0.16em; text-transform: uppercase;
+    font-size: calc(19px * var(--text-scale));
+    letter-spacing: 0.16em; text-transform: uppercase;
     color: rgba(255,255,255,0.62); margin-top: 3px;
   }
 </style>
@@ -171,8 +205,33 @@
     fill.style.animationDuration = '';
   }
 
+  // The player's text-size preference.
+  //
+  // WRITES ONE CUSTOM PROPERTY AND RETURNS. It deliberately does not re-render
+  // the prompt, re-send anything, or go near `fill` -- a scale change arriving
+  // in the middle of a crate hold must not retime that hold, and the only code
+  // in this file that CAN retime it is restartHold(), which is reached from the
+  // `prompt` branch below and from nowhere else.
+  //
+  // CLAMPED, because this is the untrusted end. br_core clamps before it sends
+  // and br_ui clamps before it stores, but a page that renders whatever number
+  // reaches it is one stale build away from a label the size of the crate.
+  function setTextScale(v) {
+    v = Number(v);
+    if (!isFinite(v) || v <= 0) v = 1;
+    if (v < 0.5) v = 0.5;
+    if (v > 2) v = 2;
+    document.documentElement.style.setProperty('--text-scale', String(v));
+  }
+
   window.addEventListener('message', function (ev) {
     var d = ev.data || {};
+
+    // BEFORE the `prompt` guard: this is a different message, and it is
+    // deliverable at any time -- while the prompt is hidden, while it is
+    // showing, and mid-hold.
+    if (d.t === 'scale') { setTextScale(d.text); return; }
+
     if (d.t !== 'prompt') return;
 
     if (!d.show) {

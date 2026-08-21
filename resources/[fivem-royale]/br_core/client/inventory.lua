@@ -31,7 +31,15 @@ local MELEE_SLOT = BR.Config.Loot.meleeSlot or 0
 
 -- The mirror. Empty slots are `false`, exactly as they are on the wire and on
 -- the server -- one representation, no boundary conversion to get wrong.
-local inv = { slots = {}, ammo = {}, active = 1, using = nil }
+--
+-- IT STARTS ON FISTS, LIKE THE SERVER DOES (#155). This value is only ever seen
+-- in the window before the first INV_SET lands -- on a fresh join and, more
+-- often, after a `restart br_core`, where the server keeps the real inventory in
+-- the roster and this file is rebuilt from nothing. Leaving it at 1 meant that
+-- window drew a bar highlighting slot 1 and, if the ped could be armed, put
+-- whatever ends up there into the hand. Short is not the same as never: it is
+-- exactly the "selection restore after a resource restart" path #155 names.
+local inv = { slots = {}, ammo = {}, active = MELEE_SLOT, using = nil }
 for i = 1, SLOTS do inv.slots[i] = false end
 
 -- What is actually in the ped's hands right now, and whose hands they were.
@@ -97,10 +105,36 @@ local WHEEL_UP = 15
 --- LIVE table (server/inventory.lua) drops DBNO for the same reason, and the
 --- two have to agree: when they disagreed over WARMUP the symptom was a
 --- keypress that did nothing at all, in silence.
+--- ...AND SO DOES "I HAVE LANDED", which is not the same fact as ALIVE.
+---
+--- ALIVE is the SERVER's word, and it arrives by way of the landing report --
+--- the message with a retry loop and a server-side rescue net, because it goes
+--- missing. Every one of those milliseconds is a player standing on the ground
+--- with empty hands and no bar, and in the bad case it lasted until the match
+--- reached PLAYING (#126). The previous round of work read that as slowness and
+--- made things render sooner; they were not rendering late, they were disabled.
+---
+--- Arming on our own touchdown is safe in the one way that matters: the danger
+--- this gate exists for is RemoveAllPedWeapons taking the PARACHUTE with it
+--- mid-drop, and the same branch in client/skydive.lua that sets this latch has
+--- already shed the canopy. There is no chute left to delete.
+---
+--- THE SERVER HAS NO EQUIVALENT AND DELIBERATELY KEEPS NONE. server/inventory
+--- gates every mutation on its own LIVE table (ALIVE, WARMUP) and that is the
+--- authority boundary -- a client must not be able to talk itself into a slot
+--- switch. The consequence, stated rather than discovered later: inside the
+--- window between our own touchdown and the server agreeing, this file will
+--- draw the bar and answer the slot keys, and INV_SELECT will be dropped at the
+--- far end in silence. That window is short by design and got shorter with
+--- #126 -- the landing report's retry loop was dead and now runs -- but it is
+--- not zero, and "a keypress that does nothing at all, in silence" is a symptom
+--- this project has already paid for once (see the WARMUP note above). If it is
+--- ever reported, the fix is the report, not this gate.
 local function canArm()
     local st = BR.State.me.state
     return st == BR.PlayerState.ALIVE
         or st == BR.PlayerState.WARMUP
+        or BR.State.landed == true
 end
 
 --- The weapon hash a slot represents, or nil for anything not held.
@@ -238,9 +272,14 @@ local function rebaseline()
 end
 
 --- Forget everything. Called at match teardown and on death.
+---
+--- BACK TO FISTS, NOT BACK TO SLOT 1 (#155). This is the death and teardown
+--- path, so the next thing that happens is a fresh drop -- and it has to leave
+--- the mirror agreeing with the server's own newInv() rather than spending the
+--- first frames of the next match disagreeing with it about what is in the hand.
 local function clearLocal()
     for i = 1, SLOTS do inv.slots[i] = false end
-    inv.ammo, inv.active, inv.using = {}, 1, nil
+    inv.ammo, inv.active, inv.using = {}, MELEE_SLOT, nil
     applied, appliedPed = nil, 0
     lastReport.clip, lastReport.total = -1, -1
     BR.Inv.lastGainAt = 0
@@ -539,6 +578,83 @@ AddEventHandler('br:ui:action', function(name, data)
 end)
 
 -- --------------------------------------------------------------------------
+-- Reporting a strip
+-- --------------------------------------------------------------------------
+
+--- The last strip we told the server about.
+local lastStripAt = 0
+
+--- How often one client may report a strip, in milliseconds.
+---
+--- THE TICK BAND IS 10Hz AND A RECURSIVE CHEAT RE-GRANTS ON EVERY ONE OF THEM.
+--- The owner's description of the behaviour is the reason this constant exists:
+--- "a cheater is likely to do this several times recursively". Unthrottled that
+--- is ten net events a second, per offender, for as long as they keep going --
+--- and the thing on the far end of them is an evidence buffer and a moderation
+--- record, neither of which is improved by the ninth entry in one second.
+---
+--- ONE A SECOND IS ENOUGH TO SHOW THE PATTERN and cheap enough to be free. It
+--- is not a security control and must not be mistaken for one: the far end
+--- throttles again, because a modified client can send whatever it likes at
+--- whatever rate it likes and this line is inside the resource it has already
+--- decided to ignore.
+local STRIP_REPORT_MS = 1000
+
+--- Is this hash something the inventory holds SOMEWHERE, just not in hand?
+---
+--- THE ONE FALSE POSITIVE THIS FEATURE COULD ACTUALLY PRODUCE, and it is worth
+--- spelling out because the answer is not obvious from the strip check above.
+--- That check compares against the ACTIVE slot only, so any window in which the
+--- ped holds a weapon from a DIFFERENT slot of the player's own inventory --
+--- a mirror that has adopted a new active slot before `applyActive` has put the
+--- new weapon in the hand, a grant that has not landed, `suspendAmmo` holding
+--- our writes off the ped during /brprobe raw -- reads as "not the active slot"
+--- and is stripped. Stripping it is harmless: `applyActive` puts the right
+--- weapon back on the same tick.
+---
+--- OPENING A CASE ABOUT IT WOULD NOT BE. "You were holding your own shotgun a
+--- tenth of a second after switching to your rifle" is a race between two
+--- pieces of our own code, and filing it as evidence of a trainer would put an
+--- innocent player in a moderation queue. So the strip stays unconditional and
+--- the REPORT is withheld for a weapon we did in fact issue them.
+---
+--- The server checks this again against ITS inventory, which is the
+--- authoritative one -- see br_core/server/strip.lua. This half exists so the
+--- common race costs no net event at all.
+--- @param h integer|nil  a normalised hash
+--- @return boolean
+local function inAnySlot(h)
+    if h == nil then return false end
+    for i = 1, SLOTS do
+        local want = BR.NormHash(hashOf(inv.slots[i]))
+        if want ~= nil and want == h then return true end
+    end
+    return false
+end
+
+--- Tell the server a weapon it never issued was taken out of this ped's hand.
+---
+--- WHAT THIS IS AND IS NOT. It is a report of something that already happened;
+--- the weapon is gone by the time this runs and nothing the server says can
+--- change that. It catches the vMenu tier -- somebody granting themselves a
+--- gun in a menu -- which is exactly the behaviour that produced the
+--- corpse-that-is-alive desync, and it catches nothing above that tier: a cheat
+--- that stops this resource stops this report along with it. The unforgeable
+--- half is still the server-side damage validation in br_core/server/damage.lua,
+--- which does not need the client's cooperation and cannot be turned off from a
+--- client. Nobody should read this as the defence.
+--- @param h integer|nil  the normalised hash that was in the hand
+local function reportStrip(h)
+    if h == nil or inAnySlot(h) then return end
+
+    local now = GetGameTimer()
+    if now - lastStripAt < STRIP_REPORT_MS then return end
+    lastStripAt = now
+
+    TriggerServerEvent(BR.Net.INV_STRIPPED, h)
+end
+
+-- --------------------------------------------------------------------------
 -- Loops
 -- --------------------------------------------------------------------------
 
@@ -573,6 +689,12 @@ BR.Loop.register(BR.Loop.TICK, 'inv.apply', function()
     -- than correcting it a round trip later. This is defence in depth and not
     -- the defence: a cheat that disables this file entirely is still refused
     -- server-side, which is the half that actually matters.
+    --
+    -- AND IT IS NO LONGER SILENT. The strip is unchanged -- it still happens on
+    -- the same tick, for the same reason -- but it now also REPORTS, because a
+    -- cheater taking this route used to trip no alarm anywhere at all: the
+    -- weapon vanished, they granted themselves another, and nothing was ever
+    -- written down. `reportStrip` below is the whole of that addition.
     do
         local ped = PlayerPedId()
         local ok, held = GetCurrentPedWeapon(ped, true)
@@ -587,6 +709,7 @@ BR.Loop.register(BR.Loop.TICK, 'inv.apply', function()
             if not allowed then
                 RemoveWeaponFromPed(ped, held)
                 applied = nil          -- force the active slot back on
+                reportStrip(h)
             end
         end
     end
@@ -600,11 +723,60 @@ end)
 -- and a wheel that flickers into existence every other frame is worse than one
 -- that never goes away.
 BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
-    if not canArm() then return end
-
+    -- THE SUPPRESSION IS UNCONDITIONAL, AND IT SITS ABOVE THE canArm() GATE ON
+    -- PURPOSE (#134). Owner, playtesting the drop: "I just found out the GTA V
+    -- weapon wheel displays when holding TAB in the plane. That shouldn't
+    -- happen."
+    --
+    -- It used to sit BELOW the gate, so the suppression inherited canArm()'s
+    -- answer -- and canArm() answers a completely different question. It asks
+    -- "may this file put a weapon in this ped's hand", which is false for the
+    -- whole lobby, the whole bus ride and the whole descent because
+    -- RemoveAllPedWeapons would take the parachute with it. Whose UI owns TAB
+    -- is not that question and never was. Aboard the bus the state is BUS, the
+    -- callback returned on its first line, nothing disabled control 37, and
+    -- GTA's wheel was free to answer the key.
+    --
+    -- THE FIX IS NOT TO TAKE THE INVENTORY'S GAME INPUT AWAY. The inventory is
+    -- the one screen in this game deliberately marked BR.FocusKeepsInput -- it
+    -- is meant to be usable mid-fight, which means the engine keeps reading the
+    -- keyboard while it is open, which is what lets the engine see TAB at all.
+    -- That behaviour is load-bearing for the screen it belongs to, and trading
+    -- it away to stop a wheel appearing during a phase with no combat in it
+    -- would be paying for a cosmetic bug with a gameplay one.
+    --
+    -- WHAT THIS NOW COVERS, phase by phase, all of them phases where there is
+    -- nothing to select and the engine's wheel is GTA UI drawn on top of ours:
+    --
+    --   LOBBY      frozen ped, no weapons, a camera shot the wheel sat over.
+    --   BUS        the reported case.
+    --   FREEFALL   } the ped is holding GADGET_PARACHUTE for the entire
+    --   GLIDE      } descent, so the wheel there was not even empty -- it
+    --              } offered the canopy, mid-drop, over the drop UI.
+    --   DBNO       client/dbno.lua blocks attack, aim and melee for a downed
+    --              player and has never blocked 37, so the wheel opened while
+    --              crawling. Left to that file to keep or not; this covers it.
+    --   DEAD /     the spectator camera is somebody else's fight; the local
+    --   SPECTATING ped's wheel has no business over it.
+    --
+    -- There is no phase in this gamemode that wants the engine's weapon UI --
+    -- see the SUPPRESS table's own note -- so the correct gate is no gate.
+    --
+    -- DisableControlAction, NOT BLOCK_WEAPON_WHEEL_THIS_FRAME. The blocking
+    -- native may well be the tidier call and this project has never probed it,
+    -- and an unknown binding throws: five throws suspend this callback, and
+    -- THIS callback is the one holding the wheel down. That exact failure has
+    -- already happened once here (see the aiming note below) and the way it
+    -- presents is the wheel coming back. Control 37 is already proven on this
+    -- build by everything that works today in ALIVE and WARMUP.
+    --
+    -- Cost is twelve native calls a frame in the phases that previously made
+    -- none, and it has to be per-frame: a disable lasts exactly one frame.
     for i = 1, #SUPPRESS do
         DisableControlAction(0, SUPPRESS[i], true)
     end
+
+    if not canArm() then return end
 
     -- NOT WHILE THE PAUSE MENU IS UP, and not while aiming down a scope.
     --

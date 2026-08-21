@@ -113,12 +113,45 @@ local function applyFocus()
     TriggerEvent('br:ui:focusChanged', want.screen)
 end
 
---- Take focus for a screen. Idempotent per screen.
+--- Take focus for a screen, raising it if it is already down there.
+---
+--- THIS USED TO BE "idempotent per screen" AND THAT IS WHAT BROKE IT. The old
+--- body walked the stack, and on finding the screen anywhere in it returned --
+--- without appending, and crucially WITHOUT CALLING applyFocus. That reads as
+--- a safe no-op and is one only while the screen is on TOP. Buried, it means
+--- the screen can never be raised again.
+---
+--- HOW IT WAS REACHED, so nobody restores the early return: the owner had the
+--- admin console open in the pause menu when the match ended. br_core pushes
+--- 'lobby' on that transition (client/state.lua), landing on top of a stack
+--- that still held 'admin' -- nothing pops the console, because nothing knows
+--- it is there. Every later press of the Admin tab found 'admin' in the stack
+--- and did nothing at all, with no error, for the rest of the session.
+---
+--- /help pushes through this same function and had the identical bug. It was
+--- never an admin-console problem.
+---
+--- THIS FILE HAS NOW SHIPPED THE SAME MISTAKE TWICE. applyFocus carries the
+--- other one in its own comment: an early return that left the engine and the
+--- page unnotified because a value it compared had not changed. A push is a
+--- request to be seen, and the only state that makes it a no-op is already
+--- being the thing on top.
+---
+--- ALREADY ON TOP IS STILL A NO-OP, and deliberately so. spawn.lua and
+--- state.lua both push a screen they believe is up purely to assert it;
+--- re-announcing an unchanged top would send the page a FOCUS it does not need
+--- on every state tick.
 --- @param screen string
 local function pushFocus(screen)
-    for _, s in ipairs(focusStack) do
-        if s == screen then return end
+    if focusStack[#focusStack] == screen then return end
+
+    -- Remove every copy before re-seating. Appending without removing would
+    -- leave two entries, and popFocus removing only one would look like a pop
+    -- that failed.
+    for i = #focusStack, 1, -1 do
+        if focusStack[i] == screen then table.remove(focusStack, i) end
     end
+
     focusStack[#focusStack + 1] = screen
     applyFocus()
 end
@@ -190,6 +223,28 @@ end, false)
 AddEventHandler('br:ui:pushFocus', pushFocus)
 AddEventHandler('br:ui:popFocus', popFocus)
 AddEventHandler('br:ui:clearFocus', clearFocus)
+
+--- SAY AGAIN, FOR SOMEBODY WHO HAS JUST STARTED LISTENING.
+---
+--- `br:ui:focusChanged` is an EDGE. applyFocus only emits it when the top of
+--- the stack changes, which is correct for a listener that has been running the
+--- whole time and useless to one that has not: br_core restarting under an open
+--- panel gets no event, because from this side nothing happened.
+---
+--- That was survivable while the event only reset a two-frame resync window --
+--- a missed one cost nothing. It stopped being survivable when br_core's key
+--- layer began GATING on it (see br_core/client/keybinds.lua): a listener that
+--- never hears "a screen owns the keyboard" is a listener that lets every
+--- keystroke through underneath one.
+---
+--- IT RE-ANNOUNCES THE CURRENT TOP, NOT A CHANGE, so it is safe to call at any
+--- time and safe to call twice. The other listeners are written against exactly
+--- this shape already -- players.lua and pause.lua both ask "is the top still
+--- mine?", and the answer to that has not changed, so re-stating it is a no-op
+--- for them by construction.
+AddEventHandler('br:ui:focusAsk', function()
+    TriggerEvent('br:ui:focusChanged', lastTop)
+end)
 
 -- Chat is opened by a keybind in br_core, but focus belongs to this resource,
 -- so br_core asks rather than calling SetNuiFocus itself. The channel rides
@@ -293,11 +348,87 @@ callback(BR.NuiCb.LOCKER_FOCUS, function(data)
     return { ok = true }
 end)
 
-callback(BR.NuiCb.PAUSE, function()
-    popFocus('lobby')
-    TriggerEvent('br:ui:pauseRequest')
+-- `BR.NuiCb.PAUSE` IS GONE, AND IT WAS A FOURTH DOOR NOBODY WALKED THROUGH
+-- (#138). It popped the lobby focus and fired `br:ui:pauseRequest`, which
+-- raises GTA's frontend from br_core and announces nothing to the page -- so
+-- it carried #122's bug in full. The page never called it: `PAUSE` was
+-- declared in bridge/types.ts and referenced from no component, verified by
+-- grep across ui-src.
+--
+-- Deleted rather than fixed. A route with no caller cannot be tested and
+-- cannot be trusted, and leaving a broken one wired up is how it becomes live
+-- the first time somebody adds a button. Every real route into the frontend
+-- now goes through BR.Pause.handOverToFrontend.
+
+-- ------------------------------------------------------------- the cover ---
+
+--- Which covers the page currently says are fully opaque.
+---
+--- THIS IS THE ACKNOWLEDGEMENT PATH THAT DID NOT EXIST, and its absence is the
+--- whole of #124. Lua raised a curtain and moved on, so "cover the screen" and
+--- "change the world underneath it" were two timers started at the same moment
+--- on two different clocks -- a Citizen.Wait here, a CSS transition over there
+--- in another process. The world change won, every time, and the player got
+--- exactly the cut the cover was added to hide: "the lobby UI goes away and
+--- cuts immediately to the in-game HUD/minimap/teleports my player, and THEN
+--- the fade to black happens" (owner, 2026-08-16).
+---
+--- Three previous attempts moved the Wait() around. They could not work: no
+--- number is correct on a machine whose frame budget you do not control.
+---
+--- STATE, NOT A TOGGLE -- the same rule players.lua and pause.lua follow. The
+--- page sends the state it is in, so a message lost on a busy frame costs one
+--- stale reading that the next one corrects, rather than leaving the two sides
+--- permanently inverted.
+local covered = {}
+
+--- Is a named cover fully opaque right now?
+--- @param kind string  'curtain' | 'verdict'
+--- @return boolean
+local function isCovered(kind)
+    return covered[kind] == true
+end
+exports('isCovered', isCovered)
+
+callback(BR.NuiCb.COVERED, function(data)
+    local kind = tostring(data.kind or 'curtain')
+    local now  = data.covered == true
+    if covered[kind] == now then return { ok = true } end
+    covered[kind] = now
+
+    -- br_core owns what a covered screen MEANS -- the teleport, the roster
+    -- sweep, the island swap. br_ui only owns the page that said so.
+    TriggerEvent('br:ui:covered', kind, now)
     return { ok = true }
 end)
+
+-- A COVER CANNOT SURVIVE THE PAGE THAT DRAWS IT, and the resource that has to
+-- act on that is br_core, not this one.
+--
+-- br_ui restarting takes this table with it, so there is nothing to clear
+-- here -- but br_core's mirror of it does NOT restart, and a stale "the screen
+-- is black" there would let a teardown run in front of a fresh, transparent
+-- page. It clears its copy on br:ui:ready, which is the event that means "a new
+-- document has loaded and has painted nothing yet". See client/spawn.lua.
+
+--- Cover diagnostics.
+---
+--- "The transition still cuts" and "the page never acknowledged" look identical
+--- from a chair. This says which: a `covered` that never turns true means the
+--- report is not arriving and every sequence ran on its timeout instead, which
+--- is the fallback behaving correctly and NOT the fix working.
+RegisterCommand('brcover', function()
+    print('=== br_ui cover ===')
+    local any = false
+    for kind, on in pairs(covered) do
+        any = true
+        print(('  %-8s %s'):format(kind, on and 'COVERED (page says black)' or 'clear'))
+    end
+    if not any then
+        print('  (nothing has ever reported -- either no transition has happened')
+        print('   yet this session, or the page is not sending br/cover at all)')
+    end
+end, false)
 
 -- Gameplay callbacks are forwarded to br_core, which owns the decisions.
 for _, name in ipairs({
@@ -429,6 +560,31 @@ AddEventHandler('onResourceStop', function(res)
     -- Never strand the player because the UI resource restarted.
     SetNuiFocus(false, false)
     SetNuiFocusKeepInput(false)
+
+    -- AND TELL THE OTHER RESOURCES, WHICH THIS DID NOT DO AND HAD TO.
+    --
+    -- THE ONE ROUTE OUT OF FOCUS THAT EMITTED NOTHING. Every other way a screen
+    -- goes away -- the panel's own dismiss, a report that succeeded, the bus
+    -- taking the panel off a player, `brfocus clear`, the watchdog below --
+    -- runs through applyFocus and announces itself. Stopping this resource
+    -- released the engine's focus directly and told nobody, because for years
+    -- the only listeners were screens inside br_ui that were going away too.
+    --
+    -- br_core is not going away, and its key layer now suppresses key actions
+    -- for as long as it believes a screen owns the keyboard. Left unannounced,
+    -- `ensure br_ui` mid-match would take the player's keyboard permanently:
+    -- no map, no chat, no slots, no interact, and no menu to close because the
+    -- screen that was open went with the resource. A gate that can stick is
+    -- worse than the leak it closes, and this is the only place it could stick.
+    --
+    -- The stack is emptied first so this file's own state agrees with what was
+    -- just announced: a listener that answers by popping a screen finds
+    -- applyFocus with nothing to do and the announcement cannot recur.
+    focusStack, focusHeld = {}, false
+    if lastTop ~= 'none' then
+        lastTop = 'none'
+        TriggerEvent('br:ui:focusChanged', 'none')
+    end
 end)
 
 AddEventHandler('onClientResourceStart', function(res)

@@ -31,6 +31,11 @@ node_modules/
 # identifiers. Track server.cfg.example instead and keep the real one local.
 # ---------------------------------------------------------------------------
 server.cfg
+# The live dev/public tunables, exec'd by server.cfg. Per-host by definition --
+# it is the file whose whole job is to differ between the dev box and the public
+# one -- so the box keeps its own and the repo tracks the two examples it is
+# copied from: tunables.dev.cfg.example and tunables.public.cfg.example.
+tunables.cfg
 *.env
 .env*
 
@@ -69,3 +74,10 @@ PLAN.md
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Local editor/agent state. Nothing in here is part of the game or the build,
+# and the paths inside it are machine-specific. Ignored as a whole rather than
+# per-subdirectory because of `.claude/worktrees/`: each worktree is a full
+# checkout carrying its own `.git` file, which `git add -A` happily commits as
+# an embedded repo. That has already happened here once.
+.claude/

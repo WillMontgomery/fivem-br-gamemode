@@ -16,7 +16,8 @@ import type {
   SpectatePayload, SquadPayload, StormPayload, SummaryPayload,
   CurtainKind, KeybindAction, LockerPayload, MarketPayload, ProgressPayload,
   SettingsPayload,
-  ToastPayload, WireInvPayload, XpAward, EarnedPayload, PlayersPayload, ReportResult,
+  ToastPayload, VoicePayload, WireInvPayload, XpAward, EarnedPayload, PlayersPayload, ReportResult,
+  AdminPayload,
 } from '../bridge/types'
 import { applySettings, DEFAULT_SETTINGS } from '../settings/apply'
 
@@ -36,6 +37,18 @@ export interface UiState {
   party: SquadPayload
   /** Server ids heard speaking right now. */
   talking: number[]
+  /** Their names, in the same order as `talking`. */
+  talkingNames: string[]
+  /**
+   * WHY THIS PLAYER MAY BE HEARING NOBODY, in Lua's words.
+   *
+   * Squad voice is a pma-voice RADIO with its own push-to-talk, and squad mode
+   * with no squad is total silence. Both are correct and both were invisible,
+   * which is the whole of #157 round seven. `headline` is null when there is
+   * nothing worth saying -- which is the common case, and is why the HUD line
+   * is not permanently on screen.
+   */
+  voice: VoicePayload
   inv: InvPayload
   storm: StormPayload | null
   dbno: DbnoPayload
@@ -96,19 +109,35 @@ export interface UiState {
    *  that opens onto nothing reads as broken. */
   locker: LockerPayload
 
-  /** Level and XP. SYNTHETIC until a server writes one -- see
-   *  screens/Progress.tsx for what is and is not real here. */
+  /** Level and XP, exactly as the server last reported them. NOTHING IN THE UI
+   *  MAY WRITE A DERIVED VALUE HERE -- the verdict screen doing precisely that
+   *  is what put a bar past its own end and a level-up at 0 XP (#91, #130). */
   progress: ProgressPayload
   /** A post-match award, which is what animates the bar. Cleared by the
    *  component once the animation has played out. */
   xpAward: XpAward | null
-  /** The real match payout, held until the verdict screen stages it. */
+  /** The real match payout, held until the verdict screen stages it.
+   *
+   *  CLEARED WHEN A NEW MATCH OPENS, which is not housekeeping. It used to
+   *  persist for the whole session, so a match whose stats never recorded --
+   *  br_ddb down, no MATCH_EARNED sent -- showed the PREVIOUS match's Volts and
+   *  replayed its award. That is the one failure the verdict screen is not
+   *  allowed to have: claiming a reward nothing wrote. */
   earned: EarnedPayload | null
+  /** True once the verdict screen has staged `earned` into an animation. The
+   *  guard lives here rather than in a component ref because EndScreen
+   *  remounts whenever App's `showEnd` flickers, and a per-mount ref let the
+   *  same award fire again on every remount. */
+  earnedStaged: boolean
 
   /** The store catalogue and the player's balance. Also synthetic. */
   market: MarketPayload
   /** The in-game player list, and the report rules that came with it. */
   players: PlayersPayload
+  /** The admin console (#23): where it is, and the last mint answer.
+   *  An absent `origin` means no Admin tab, and it is the default -- the tab
+   *  exists only because the server chose to send this player an address. */
+  admin: AdminPayload
   /** The answer to the last submitted report, or null. */
   reportResult: ReportResult | null
 
@@ -136,10 +165,25 @@ export interface UiState {
    *  would just cost the player their health bar in a fight. */
   scoped: boolean
 
-  /** True from the moment ESC is pressed in the lobby until Lua hands the
-   *  lobby its focus back after the pause menu closes -- the menu fades out
-   *  under GTA's pause screen and back in afterwards. */
-  pauseHiding: boolean
+  /**
+   * True while GTA'S OWN MENU OWNS THE SCREEN and this page must draw nothing.
+   *
+   * LUA SETS IT AND LUA CLEARS IT (BR.Nui.FRONTEND). This replaced a flag the
+   * page raised for itself just before asking Lua to hand over, and the
+   * difference is the whole of #122: the handover pops `pause` and `settings`
+   * off the focus stack, which leaves `lobby` on top, which made the bridge
+   * send FOCUS{screen='lobby'} -- and the page read focus coming back as the
+   * frontend having closed and cleared its own flag, one frame before the
+   * menu appeared. The lobby then sat on top of GTA's settings screen (owner,
+   * 2026-08-16). It reproduced only from the lobby because nowhere else is
+   * there a `lobby` entry underneath to become the new top.
+   *
+   * IT IS NOT THE SAME QUESTION AS FOCUS and must not be derived from it.
+   * Focus decides who owns the CURSOR; this decides who owns the SCREEN. The
+   * lobby is drawn from match state on purpose, so emptying the focus stack
+   * takes the mouse away and leaves the lobby painted where it was.
+   */
+  frontendUp: boolean
 
   /** True while the voluntary-leave interstitial covers the screen: black
    *  plus a quiet "Leaving the match" while the world swaps underneath. */
@@ -170,14 +214,15 @@ export interface UiState {
   setHud: (h: HudPayload) => void
   setSquad: (s: SquadPayload) => void
   setParty: (p: SquadPayload) => void
-  setTalking: (ids: number[]) => void
+  setTalking: (ids: number[], names?: string[]) => void
+  setVoice: (v: VoicePayload) => void
   setInv: (i: WireInvPayload) => void
   setStorm: (s: StormPayload | null) => void
   setDbno: (d: DbnoPayload) => void
   setSpectate: (s: SpectatePayload | null) => void
   setSummary: (s: SummaryPayload | null) => void
   setFocus: (f: FocusPayload['screen'], tab?: string) => void
-  setPauseHiding: (v: boolean) => void
+  setFrontendUp: (v: boolean) => void
   setLeaving: (v: boolean, kind?: CurtainKind) => void
   setLobby: (l: LobbyPayload) => void
   setScreen: (s: ScreenPayload) => void
@@ -192,8 +237,12 @@ export interface UiState {
   setProgress: (p: ProgressPayload) => void
   awardXp: (a: XpAward) => void
   setEarned: (e: EarnedPayload | null) => void
+  /** Claim the pending award for animation. Returns it the FIRST time and null
+   *  every time after, so a remounting verdict screen cannot replay it. */
+  stageEarned: () => EarnedPayload | null
   clearXpAward: () => void
   setPlayers: (p: PlayersPayload) => void
+  setAdmin: (a: AdminPayload) => void
   setReportResult: (r: ReportResult | null) => void
   setMarket: (m: MarketPayload) => void
   setKeybinds: (k: KeybindAction[], raw: boolean) => void
@@ -211,8 +260,11 @@ const emptyMatch: MatchPayload = {
 const emptyHud: HudPayload = {
   hp: 100, armour: 0, alive: 0, squadsAlive: 0, kills: 0, state: 'lobby',
 }
+/** Slot 0 is fists, and it is where an inventory starts (#155). The bar already
+ *  draws a fist plate for `active === 0`; what was wrong was the DEFAULT, which
+ *  highlighted slot 1 for every frame before the first INV_SET arrived. */
 const emptyInv: InvPayload = {
-  slots: [null, null, null, null, null], ammo: {}, active: 1, using: null,
+  slots: [null, null, null, null, null], ammo: {}, active: 0, using: null,
 }
 
 /** Lua sends an empty slot as `false` (nil does not survive serialisation in an
@@ -221,7 +273,10 @@ function normaliseInv(d: WireInvPayload): InvPayload {
   return {
     slots: (d.slots ?? []).map((s) => (s ? s : null)),
     ammo: d.ammo ?? {},
-    active: d.active ?? 1,
+    // Fists when the wire says nothing -- see emptyInv (#155). `??` and not
+    // `||`, because 0 is the fist slot and a real answer rather than an absent
+    // one.
+    active: d.active ?? 0,
     using: d.using ?? null,
   }
 }
@@ -434,6 +489,8 @@ export const useUi = create<UiState>((set, get) => {
   squad: { id: null, members: [] },
   party: { id: null, members: [] },
   talking: [],
+  talkingNames: [],
+  voice: { talking: [] },
   inv: emptyInv,
   storm: null,
   dbno: emptyDbno,
@@ -450,8 +507,10 @@ export const useUi = create<UiState>((set, get) => {
   progress: { level: 1, xp: 0, needed: 1000 },
   xpAward: null,
   earned: null,
+  earnedStaged: false,
   market: { balance: 0, items: [] },
-  players: { players: [], categories: [], defaultCategory: 'cheating', maxTargets: 5, remaining: 0 },
+  players: { players: [], categories: [], defaultCategory: 'cheating', maxTargets: 5 },
+  admin: {},
   reportResult: null,
   keybinds: [],
   keybindsRaw: false,
@@ -459,7 +518,7 @@ export const useUi = create<UiState>((set, get) => {
   screen: null,
   scoped: false,
   worldReady: import.meta.env.DEV,
-  pauseHiding: false,
+  frontendUp: false,
   leaving: false,
   curtain: 'leaving',
   invite: null,
@@ -476,12 +535,18 @@ export const useUi = create<UiState>((set, get) => {
   // list mid-fight, and a log that only ever grows makes the one line that
   // matters harder to find. Cleared as a NEW match opens -- on the edge into
   // `warmup`, which is the first state of a round and fires once.
+  // A NEW MATCH ALSO DROPS THE LAST ONE'S PAYOUT. `earned` is what the verdict
+  // screen renders Volts from and stages the XP award out of, and it used to
+  // live for the whole session -- so a match that recorded nothing (br_ddb
+  // down, or a row with no license) would show the previous match's reward and
+  // animate its bar. #91 asks for exactly the opposite: no award and no Volts
+  // line rather than a celebration of something never written.
   setMatch: (match) => {
     const fresh = match.state === 'warmup' && get().match.state !== 'warmup'
     set({
       match,
       ...(match.serverNow ? { clockOffset: match.serverNow - Date.now() } : {}),
-      ...(fresh ? { noticeLog: [] } : {}),
+      ...(fresh ? { noticeLog: [], earned: null, earnedStaged: false } : {}),
     })
   },
   // Unpausing flushes the notice queue: whatever arrived under the pause
@@ -505,7 +570,20 @@ export const useUi = create<UiState>((set, get) => {
   },
   setSquad:    (squad) => set({ squad }),
   setParty:    (party) => set({ party }),
-  setTalking:  (talking) => set({ talking }),
+  // Names default to empty rather than to the ids: a bar reading "Currently
+  // Talking: 27" is worse than no bar, and an id is what is left when the
+  // roster has not caught up with a speaker yet.
+  setTalking:  (talking, talkingNames) =>
+    set({ talking, talkingNames: talkingNames ?? [] }),
+  // ONE ENVELOPE, TWO SLICES, AND THE SPLIT IS DELIBERATE. `talking` changes
+  // several times a second and is read by two hot components; the status
+  // changes when a squad forms or a mode is picked. Keeping them apart means a
+  // speaker starting mid-sentence does not re-render the status line.
+  setVoice:    (voice) => set({
+    voice,
+    talking: voice.talking ?? [],
+    talkingNames: voice.names ?? [],
+  }),
   setInv:      (inv) => set({ inv: normaliseInv(inv) }),
   // Normalised at the boundary: an empty or shapeless payload (a nil that
   // crossed the Lua bridge becomes {}) must read as "no storm", never as a
@@ -515,7 +593,7 @@ export const useUi = create<UiState>((set, get) => {
   setSpectate: (spectate) => set({ spectate }),
   setSummary:  (summary) => set({ summary }),
   setFocus:    (focus, focusTab) => set({ focus, focusTab }),
-  setPauseHiding: (pauseHiding) => set({ pauseHiding }),
+  setFrontendUp: (frontendUp) => set({ frontendUp }),
   setLeaving: (leaving, curtain) => set(curtain ? { leaving, curtain } : { leaving }),
   setLobby:    (lobby) => set({ lobby }),
   // THE SCOPE FLAG NEVER TOUCHES THE METRICS.
@@ -617,10 +695,17 @@ export const useUi = create<UiState>((set, get) => {
   setLocker: (locker) => set({ locker }),
   setProgress: (progress) => set({ progress }),
   awardXp: (xpAward) => set({ xpAward }),
-  setEarned: (earned) => set({ earned }),
+  setEarned: (earned) => set({ earned, earnedStaged: false }),
+  stageEarned: () => {
+    const { earned, earnedStaged } = get()
+    if (!earned || earnedStaged) return null
+    set({ earnedStaged: true })
+    return earned
+  },
   clearXpAward: () => set({ xpAward: null }),
   setMarket: (market) => set({ market }),
   setPlayers: (players) => set({ players }),
+  setAdmin: (admin) => set({ admin }),
   setReportResult: (reportResult) => set({ reportResult }),
   setKeybinds: (keybinds, keybindsRaw) => set({ keybinds, keybindsRaw }),
 

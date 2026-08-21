@@ -24,7 +24,14 @@ export const DEFAULT_SETTINGS: SettingsPayload = {
   textScale: 1,
   colourblind: 'off',
   volUi: 0.7,
-  voiceMode: 'squad',
+  // BOTH MUST MATCH BR.VoiceModeDefault in br_lib/shared/enums.lua. These are
+  // the values the screen renders before Lua's push lands, so a disagreement
+  // shows the player a mode they are not on. TypeScript cannot read the Lua
+  // table, so tools/verify.sh compares the spellings and fails if they drift --
+  // which is how the single field this pair replaced was found sitting on
+  // 'squad' while Lua said 'nearby'.
+  voiceModeSolo: 'nearby',
+  voiceModeSquad: 'nearby',
   volMusic: 0.5,
   gamertag: '',
 }

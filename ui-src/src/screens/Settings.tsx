@@ -31,11 +31,57 @@ import Keybinds from './Keybinds'
  */
 
 type Draft = SettingsPayload
-/** Voice routing, in the order a player is most likely to want it. */
-const VOICE_MODES: { id: Draft['voiceMode']; label: string; sub: string }[] = [
+/**
+ * Voice routing, in the order a player is most likely to want it.
+ *
+ * THE THREE ARE EXCLUSIVE, NOT LAYERED, and these sub-labels are the only
+ * place a player is ever told so. 'Squad' does not also give you proximity and
+ * 'Nearby' does not also give you your squad -- which is what the code did for
+ * several rounds while this label already described the intended behaviour.
+ * Keep them saying "only".
+ *
+ * NEARBY IS THE DEFAULT (BR.VoiceModeDefault, br_lib/shared/enums.lua) and is
+ * listed second only because Squad is what most players go looking for.
+ */
+const VOICE_SQUAD_MODES: {
+  id: Draft['voiceModeSquad']; label: string; sub: string
+}[] = [
   { id: 'squad',  label: 'Squad',  sub: 'Only your team, at any distance' },
-  { id: 'nearby', label: 'Nearby', sub: 'Anyone close enough to see' },
-  { id: 'off',    label: 'Off',    sub: 'You are not transmitting' },
+  { id: 'nearby', label: 'Nearby', sub: 'Only people near you, team or not' },
+  { id: 'off',    label: 'Off',    sub: 'You are not transmitting or hearing' },
+]
+
+/**
+ * THE SOLOS ROW HAS TWO BUTTONS, NOT THREE GREYED ONES, AND THAT IS THE
+ * DECISION RATHER THAN AN OVERSIGHT.
+ *
+ * Owner: "'squad' as a choice is meaningless in a solo match — decide sensibly
+ * (offer it disabled, or omit it from the solos row)."
+ *
+ * OMITTED. A squad radio in a solo match is not a worse option, it is an
+ * option with no referent: the server mints no channel for a player with no
+ * squad, so the mode resolves to silence. A disabled third button still has to
+ * be read, reasoned about and dismissed every time this screen is opened, and
+ * it would say the same thing on every one of those visits.
+ *
+ * AND THE ROW IT REPLACES IS WHY. This screen used to carry ONE mode row with
+ * a greyed 'Squad' whenever the current match was solo, and the comment
+ * defending that is still below -- the reasoning was that a persisted 'squad'
+ * with no button to show it left three modes on screen and none highlighted.
+ * That was a real bug and it had a real cause: ONE STORED SETTING SPANNING TWO
+ * KINDS OF MATCH. With a slot per kind there is nothing to strand. The solos
+ * row can simply not offer a mode that solos do not have, because choosing it
+ * for squads no longer costs you your solo setting.
+ *
+ * Lua enforces the same rule independently (BR.ToSoloVoiceMode, br_lib/shared/
+ * enums.lua), so a 'squad' arriving in this slot from an old KVP blob or a
+ * stale build becomes the default rather than silence.
+ */
+const VOICE_SOLO_MODES: {
+  id: Draft['voiceModeSolo']; label: string; sub: string
+}[] = [
+  { id: 'nearby', label: 'Nearby', sub: 'Only people near you' },
+  { id: 'off',    label: 'Off',    sub: 'You are not transmitting or hearing' },
 ]
 
 const CB_MODES: { id: Draft['colourblind']; label: string; sub: string }[] = [
@@ -44,6 +90,90 @@ const CB_MODES: { id: Draft['colourblind']; label: string; sub: string }[] = [
   { id: 'protan', label: 'Protanopia',    sub: 'Red-weak' },
   { id: 'tritan', label: 'Tritanopia',    sub: 'Blue-yellow' },
 ]
+
+/**
+ * ONE ROW OF SIDE-BY-SIDE VOICE BUTTONS.
+ *
+ * FACTORED OUT BECAUSE THERE ARE TWO OF THEM AND THEY MUST NOT DRIFT. The
+ * solos row and the squads row differ in exactly three things -- their label,
+ * their option list, and which stored field they write -- and every other
+ * property of them is the same control. Copied markup is how one row would end
+ * up with a highlight rule or a text size the other does not have, on a screen
+ * whose whole job is letting somebody compare the two.
+ *
+ * `live` MARKS THE ROW THE GAME IS ACTUALLY READING. Neither row is ever
+ * disabled: setting your squad preference from inside a solo match is the
+ * normal case, not an edge one. But "which of these two is in force right now"
+ * is a real question and the player has no other way to answer it.
+ */
+function VoiceModeRow<T extends string>({
+  label, live, modes, value, onPick,
+}: {
+  label: string
+  live: boolean
+  modes: { id: T; label: string; sub: string }[]
+  value: T
+  onPick: (id: T) => void
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-baseline gap-2">
+        <div className="micro-label">{label}</div>
+        {live && (
+          // The accent, and no border or plate around it: this is an
+          // annotation on the label, not a third interactive thing in a row
+          // of buttons.
+          <span
+            className="micro-label"
+            style={{ color: 'var(--color-royale-accent)' }}
+          >
+            in this match
+          </span>
+        )}
+      </div>
+      <div className="flex gap-1.5">
+        {modes.map((m) => {
+          const on = value === m.id
+          return (
+            <button
+              key={m.id}
+              type="button"
+              className={`btn plate px-3 py-2 text-left flex-1${
+                on ? ' is-active' : ''}`}
+              style={{
+                ['--edgec' as string]: on
+                  ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.16)',
+                ['--plate-fill' as string]: on
+                  ? 'rgba(12,58,72,0.94)' : 'rgba(24,28,40,0.92)',
+                ['--cut-max' as string]: '0.4rem',
+              }}
+              onPointerEnter={() => play('ui.hover')}
+              onClick={() => { play('ui.select'); onPick(m.id) }}
+            >
+              <span
+                className="block text-[0.9rem] ts"
+                style={{
+                  ['--fs' as string]: '0.9rem',
+                  color: on ? 'var(--color-royale-accent)' : '#ffffff',
+                }}
+              >
+                {m.label}
+              </span>
+              {/* A description, not a caption: --fs holds it under the
+                  0.9rem label above it inside a narrow button. */}
+              <span
+                className="body-text block"
+                style={{ ['--fs' as string]: '0.72rem' }}
+              >
+                {m.sub}
+              </span>
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
 
 /**
  * A slider that is legible at a glance.
@@ -241,13 +371,25 @@ export default function Settings({
   // this stays a mirror rather than a second opinion.
   const nameLocked = useUi((s) => s.hud.state !== 'lobby')
   // SQUAD VOICE ONLY EXISTS IN SQUADS. In solo there is no squad room to
-  // route to, and an option that silently behaves as another one is a lie
-  // the settings screen would be telling.
+  // route to. The Squad button is still DRAWN in that case -- see the Voice
+  // section for why hiding it was worse than showing it disabled -- and this
+  // is what decides whether it can be pressed.
   const squadMode = useUi((s) => s.match.mode === 'squad')
+  // WHAT THE CURRENT MODE IS ACTUALLY DOING, in Lua's words rather than in a
+  // sentence this screen invents from a flag. Null on nearby, which is the
+  // common case and correctly shows nothing.
+  const voiceDetail = useUi((s) => s.voice.detail)
+  const voiceSilent = useUi((s) => s.voice.silent === true
+                                   && s.voice.chosen !== true)
   // The handover confirm. Local, not a store field: it is a question this
   // screen is asking, and nothing else in the interface needs to know it was
   // asked.
   const [voiceConfirm, setVoiceConfirm] = useState(false)
+  // The same question for the graphics handover. A SECOND flag rather than one
+  // shared "a handover is pending", so the confirm text can name what the
+  // player is about to go and change -- the whole point of the confirm is that
+  // a full-screen game menu appearing is something they chose.
+  const [gfxConfirm, setGfxConfirm] = useState(false)
 
   // The draft is seeded from the store and pushed straight back into it on
   // every change -- which is what makes the preview live. It is NOT a
@@ -290,10 +432,15 @@ export default function Settings({
     setSettings(next)
   }
 
+  // NO CUE FIRED HERE. `ui.ready` used to be, and it was wrong twice over: it
+  // is the ready-up sound (reserved for that one button -- owner, 2026-08-17),
+  // and Btn already plays its own `cue` on click, so pressing Save produced two
+  // overlapping sounds. The button below carries the cue; this function is the
+  // save, not the press. `ui.error` on a refusal stays -- that one is a second
+  // event, not a second press.
   const save = async () => {
     setSaving(true)
     setNameError(null)
-    play('ui.ready')
     const res = await fetchNui<Draft, {
       ok: boolean; settings?: SettingsPayload; field?: string; reason?: string
     }>(CB.SETTINGS_SAVE, draft)
@@ -380,6 +527,100 @@ export default function Settings({
               />
           </Section>
 
+          {/* DISPLAY IS ITS OWN HEADING, and that is the entire discoverability
+              half of #122 (owner, 2026-08-16: "no clear way to reach GTA's own
+              graphics/display settings"). The handover already existed -- it
+              was a button reading "Microphone & push-to-talk" at the bottom of
+              the Voice section, which is not a place anybody looks for their
+              resolution. A player scanning headings for where the graphics
+              live needs to find a word that means graphics.
+
+              IT SITS ABOVE AUDIO, next to Interface size, because "the game
+              looks wrong" and "the interface is too small" are the same
+              complaint arriving from two directions, and a player who came
+              here for one should see the other. */}
+          <Section title="Display">
+              <div className="flex flex-col gap-1.5">
+                <div className="micro-label">In the game&apos;s own menu</div>
+                {/* THE LIST IN THE #148 SCREENSHOT. It was `micro-label` with
+                    the uppercase locally cancelled -- four bulleted sentences
+                    at 0.2em tracking, which is the exact text the owner held
+                    up as hard to read. `.body-text` is the prose style; the
+                    heading above it stays a caption. */}
+                <ul
+                  className="body-text"
+                  style={{
+                    listStyle: 'disc',
+                    paddingLeft: '1.1rem',
+                    lineHeight: 1.7,
+                  }}
+                >
+                  <li>Resolution, refresh rate and screen type</li>
+                  <li>Texture, shadow and reflection quality</li>
+                  <li>Field of view</li>
+                  <li>Brightness and safe-zone size</li>
+                </ul>
+              </div>
+
+              {gfxConfirm ? (
+                <div
+                  className="plate px-4 py-3 flex flex-col gap-3"
+                  style={{
+                    ['--edgec' as string]: 'var(--color-royale-accent)',
+                    ['--plate-fill' as string]: 'rgba(12,40,50,0.94)',
+                    ['--cut-max' as string]: '0.5rem',
+                  }}
+                >
+                  {/* WHAT IS ABOUT TO HAPPEN, in the same words the voice
+                      handover uses. These are client settings no script can
+                      read or write, and deep-linking the page does not work
+                      (GoDeeper reaches the map, not Settings), so the player
+                      walks the last two steps and is told which they are. */}
+                  <p
+                    className="ts"
+                    style={{ ['--fs' as string]: '0.88rem', lineHeight: 1.5 }}
+                  >
+                    Graphics and display settings belong to GTA&nbsp;V itself.
+                    Choose OK to open its menu, then go to the{' '}
+                    <span className="font-semibold">Settings</span> tab and pick{' '}
+                    <span className="font-semibold">Graphics</span> or{' '}
+                    <span className="font-semibold">Display</span>. Close that
+                    menu and you will come straight back here.
+                  </p>
+                  <div className="flex gap-2">
+                    <Btn
+                      variant="primary" size="sm" cue="ui.select"
+                      onPress={() => {
+                        setGfxConfirm(false)
+                        void fetchNui(CB.GAME_SETTINGS, {})
+                      }}
+                    >
+                      OK
+                    </Btn>
+                    <Btn variant="default" size="sm" cue="ui.back"
+                         onPress={() => setGfxConfirm(false)}>
+                      Stay here
+                    </Btn>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="btn plate px-4 py-2 self-start font-display uppercase
+                             tracking-[0.12em] text-[0.78rem]"
+                  style={{
+                    ['--edgec' as string]: 'rgba(255,255,255,0.22)',
+                    ['--plate-fill' as string]: 'rgba(30,34,48,0.94)',
+                    ['--cut-max' as string]: '0.4rem',
+                  }}
+                  onPointerEnter={() => play('ui.hover')}
+                  onClick={() => { play('ui.select'); setGfxConfirm(true) }}
+                >
+                  Graphics &amp; display
+                </button>
+              )}
+          </Section>
+
           <Section title="Audio">
               <Slider
                 label="Interface sounds" value={draft.volUi} dflt={DEFAULT_SETTINGS.volUi}
@@ -406,47 +647,93 @@ export default function Settings({
                   given you actually use -- so it can decline a room, never
                   enter one. See br_core/client/voice.lua.
 
-                  SQUAD IS ABSENT IN SOLO, because there is no squad room to
-                  route to and an option that silently behaves as another one
-                  is a lie the settings screen would be telling. */}
+                  TWO ROWS NOW, ONE PER KIND OF MATCH, AND THE ROW ABOVE THEM
+                  IS THE BUG THEY FIX. Owner, from the playtest: "make it so
+                  that a player can save a different preference (nearby/squad/
+                  off) for squads and solos. Perhaps a drop-down, but I don't
+                  think we have built one of those with our UI yet. So maybe an
+                  easier lift would be side by side selection buttons."
+
+                  SIDE-BY-SIDE BUTTONS, AND DELIBERATELY NOT A DROP-DOWN. There
+                  is no select component in this interface and building one for
+                  five options across two rows would be a new interaction
+                  vocabulary -- a focus model, a keyboard contract and an
+                  open-state z-index -- introduced for a control that fits on
+                  one line. These are the same plate buttons the colourblind
+                  row already uses.
+
+                  WHAT THE SINGLE ROW GOT WRONG, kept here because it is the
+                  reason for the shape. It stored ONE mode for every kind of
+                  match, so a player who chose Squad and then queued a solo
+                  carried Squad into a match with no squads: total silence, by
+                  design, and indistinguishable from a fault (#157). The fix
+                  attempted at the time was to grey the Squad button out in
+                  solo matches, which left three modes on screen with none
+                  highlighted and no way back. Neither was fixable while one
+                  value had to serve both. Two values, and neither row has to
+                  lie about the other.
+
+                  THE ROW THAT APPLIES RIGHT NOW IS MARKED. Both are always
+                  editable -- you should be able to set up your squad
+                  preference from a solo match -- but which one the game is
+                  reading this second is a fact the player would otherwise have
+                  to work out. */}
+              <VoiceModeRow
+                label="Voice chat in solos"
+                live={!squadMode}
+                modes={VOICE_SOLO_MODES}
+                value={draft.voiceModeSolo}
+                onPick={(id) => set('voiceModeSolo', id)}
+              />
+              <VoiceModeRow
+                label="Voice chat in squads"
+                live={squadMode}
+                modes={VOICE_SQUAD_MODES}
+                value={draft.voiceModeSquad}
+                onPick={(id) => set('voiceModeSquad', id)}
+              />
+
               <div className="flex flex-col gap-1.5">
-                <div className="micro-label">Who hears you</div>
-                <div className="flex gap-1.5">
-                  {VOICE_MODES.filter((m) => m.id !== 'squad' || squadMode).map((m) => (
-                    <button
-                      key={m.id}
-                      type="button"
-                      className={`btn plate px-3 py-2 text-left flex-1${
-                        draft.voiceMode === m.id ? ' is-active' : ''}`}
-                      style={{
-                        ['--edgec' as string]: draft.voiceMode === m.id
-                          ? 'var(--color-royale-accent)' : 'rgba(255,255,255,0.16)',
-                        ['--plate-fill' as string]: draft.voiceMode === m.id
-                          ? 'rgba(12,58,72,0.94)' : 'rgba(24,28,40,0.92)',
-                        ['--cut-max' as string]: '0.4rem',
-                      }}
-                      onPointerEnter={() => play('ui.hover')}
-                      onClick={() => { play('ui.select'); set('voiceMode', m.id) }}
-                    >
-                      <span
-                        className="block text-[0.9rem] ts"
-                        style={{
-                          ['--fs' as string]: '0.9rem',
-                          color: draft.voiceMode === m.id
-                            ? 'var(--color-royale-accent)' : '#ffffff',
-                        }}
-                      >
-                        {m.label}
-                      </span>
-                      <span
-                        className="micro-label ts"
-                        style={{ ['--fs' as string]: '0.62rem', textTransform: 'none' }}
-                      >
-                        {m.sub}
-                      </span>
-                    </button>
-                  ))}
-                </div>
+
+                {/* AND THE PART THE GAME NEVER SAID OUT LOUD. Two different
+                    facts, both of which produced "squad voice is broken":
+
+                      the mode is on and there is no squad -- total silence, by
+                      design, and identical to a fault;
+
+                      the mode is on and working -- and it is a RADIO, which
+                      transmits only while push-to-talk is held. That key is
+                      the gamemode's own now (`brptt`, default N, on the
+                      Controls tab of this very screen); it used to be
+                      pma-voice's "Talk over Radio" on Left Alt, which no
+                      screen of ours could name or move.
+
+                    THIS IS THE SURFACE THAT KEEPS THE SENTENCE. The HUD line
+                    that carried it was removed this round -- a permanent
+                    "hold this key" banner across the bottom of the screen is
+                    furniture (owner, from the playtest) -- and this screen is
+                    a page somebody opened on purpose, so there is no clutter
+                    cost to a sentence they went looking for.
+
+                    THE SENTENCE IS LUA'S. It arrives on the voice envelope from
+                    BR.Voice.statusFor, next to the code that decides which
+                    state we are in, so there is one place the wording lives.
+                    Composing it here from `status` would be a second place for
+                    it to be wrong, and two representations of one fact drifting
+                    apart is this project's signature failure. */}
+                {voiceDetail && (
+                  <div
+                    className="body-text"
+                    style={{
+                      ['--fs' as string]: '0.76rem',
+                      color: voiceSilent
+                        ? 'var(--color-danger)'
+                        : undefined,
+                    }}
+                  >
+                    {voiceDetail}
+                  </div>
+                )}
               </div>
 
               {/* NO VOICE VOLUME SLIDER, and the reason is stronger than "it
@@ -478,10 +765,8 @@ export default function Settings({
               <div className="flex flex-col gap-1.5">
                 <div className="micro-label">In the game&apos;s own menu</div>
                 <ul
-                  className="micro-label ts"
+                  className="body-text"
                   style={{
-                    ['--fs' as string]: '0.62rem',
-                    textTransform: 'none',
                     listStyle: 'disc',
                     paddingLeft: '1.1rem',
                     lineHeight: 1.7,
@@ -518,11 +803,14 @@ export default function Settings({
                       variant="primary" size="sm" cue="ui.select"
                       onPress={() => {
                         setVoiceConfirm(false)
-                        // The lobby FADES rather than being yanked. Lua is
-                        // about to empty the focus stack and raise a
-                        // scaleform; this is the same flag ESC-in-the-lobby
-                        // used, and it clears itself when focus comes back.
-                        useUi.getState().setPauseHiding(true)
+                        // THE PAGE NO LONGER HIDES ITSELF HERE, and that is
+                        // the fix rather than an omission (#122). It used to
+                        // raise a flag on this line -- and lost, every time,
+                        // to the focus envelopes Lua emits while collapsing
+                        // its own stack a millisecond later, which the page
+                        // read as the frontend having closed. Lua raises the
+                        // flag now, after the collapse, and holds it until the
+                        // frontend is genuinely down.
                         void fetchNui(CB.VOICE_SETTINGS, {})
                       }}
                     >
@@ -605,8 +893,13 @@ export default function Settings({
                   )}
                 </div>
               </label>
+              {/* THE LINE THE OWNER NAMED IN #148: this was `micro-label`
+                  with nothing cancelling it, so two sentences of help text
+                  under the name field rendered in tracked-out capitals. It is
+                  prose in both branches now -- the error only recolours it,
+                  rather than being the one branch that got a readable size. */}
               <p
-                className={nameError ? 'text-[0.78rem] tscale' : 'micro-label'}
+                className="body-text"
                 style={nameError ? { color: 'var(--color-danger)' } : undefined}
               >
                 {/* SHORT, BOTH WAYS. The locked line explained the reasoning
@@ -643,7 +936,12 @@ export default function Settings({
                     onClick={() => { play('ui.select'); set('colourblind', m.id) }}
                   >
                     <span className="block text-[0.85rem] tscale">{m.label}</span>
-                    <span className="block micro-label mt-0.5">{m.sub}</span>
+                    <span
+                      className="block body-text mt-0.5"
+                      style={{ ['--fs' as string]: '0.72rem' }}
+                    >
+                      {m.sub}
+                    </span>
                   </button>
                 ))}
               </div>
@@ -690,7 +988,12 @@ export default function Settings({
       </div>
 
         <div className="flex gap-3 mt-4">
-          <Btn variant="primary" size="lg" cue="ui.ready" onPress={save}>
+          {/* `ui.select`, NOT `ui.ready`. Saving a preference is an ordinary
+              affirmative press; the ready-up swell is a 0.9s struck stack that
+              announces a match starting, and hearing it for "Save" in the pause
+              menu makes the one moment it belongs to mean nothing (owner,
+              2026-08-17). Cancel keeps `ui.back` -- the pair reads correctly. */}
+          <Btn variant="primary" size="lg" cue="ui.select" onPress={save}>
             {saving ? 'Saving…' : 'Save'}
           </Btn>
           <Btn variant="default" size="lg" cue="ui.back" onPress={cancel}>

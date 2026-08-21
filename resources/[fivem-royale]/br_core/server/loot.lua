@@ -581,6 +581,173 @@ local function scatter(m, container)
     end
 end
 
+-- --------------------------------------------------------------------------
+-- WHY A REFUSED CLAIM TALKS (#171)
+--
+-- Owner, 2026-08-17: "If I'm already holding the max amount of something and
+-- try to pickup another, show me a toast that says 'you cannot carry more
+-- shields' for example."
+--
+-- The refusal existed and the message did not reach him, in two different ways.
+--
+--   * `carrymax` DID notify -- and built its sentence from
+--     BR.Config.ConsumableById alone. A THROWABLE lives in
+--     BR.Config.WeaponById, so a player holding three grenades got
+--     "You can only carry 0 of thoses." Both halves wrong: the cap and the
+--     name.
+--   * everything else in the chain either had no branch (`noinv`) or had a
+--     branch for a reason BR.Inv.give has never returned (`full`). A reason
+--     with no branch is SILENT, and a silent refusal is indistinguishable
+--     from a broken key -- the rule the bus jump handler earned and #129 then
+--     spent seven rounds relearning.
+--
+-- So the chain is gone. There is a table with a DEFAULT under it, which is the
+-- only shape in which a reason added later cannot arrive silent.
+--
+-- AND THEN A SECOND ROUND, BECAUSE SPEAKING IS NOT THE SAME AS BEING TRUE
+-- (owner, 2026-08-18, after playtest). Once every refusal had a sentence, the
+-- one that had been silent turned out to be saying the wrong thing: `sameitem`
+-- announced a MAXIMUM, and it was neither a maximum nor global.
+--
+-- ONE SENTENCE PER QUESTION, and there are two questions:
+--
+--   HAVE I REACHED MY LIMIT?  -- `carrymax`, and only `carrymax`. Asked of the
+--     WHOLE inventory (BR.Inv.give counts every slot) and asked only of items
+--     that have a limit at all (BR.Inv.carryMax returns nil, not zero, for the
+--     ones that do not). It is the one sentence entitled to quote a number.
+--
+--   CAN THIS GO WHERE I AM STANDING?  -- `sameitem`. One slot, no ceiling
+--     involved, and an item the player is perfectly entitled to more of. It
+--     offers the remedy instead of a verdict.
+--
+-- Merging those two is what reopened this issue. Anything added below that
+-- reads like a limit should be checked against BR.Inv.carryMax before it is
+-- allowed to say so.
+-- --------------------------------------------------------------------------
+
+--- "No, and the reason is not worth a sentence of its own."
+---
+--- ONE LITERAL, THREE READERS (owner, 2026-08-18: "These inventory messages are
+--- just wrong"). This sentence was written out three times -- the `noinv` entry
+--- below, the fallback at the end of refusalText, and the state check in the
+--- claim handler -- and three copies of one sentence is a wording change that
+--- half-lands: two of them move and the third keeps saying the old thing to
+--- whichever player happens to hit that branch.
+local REFUSED = 'You cannot pickup that item right now.'
+
+--- What a refused claim says, by reason.
+---
+--- TWO REASONS ARE DELIBERATELY ABSENT. `carrymax` and `sameitem` both have to
+--- NAME THE ITEM -- and `carrymax` its cap as well -- so they are built in
+--- refusalText, where the config lookup lives. Everything that can be said
+--- without knowing what was picked up is said here.
+local REFUSAL = {
+    ammofull = 'Already carrying the maximum.',
+    -- BR.Inv.of could not find a roster entry. Not reachable from this handler
+    -- today -- it checks the roster several lines earlier -- and listed anyway,
+    -- because "unreachable" is a fact about the caller and this table is about
+    -- the reason. It cost nothing and it was silent.
+    noinv    = REFUSED,
+}
+
+--- What to call this item, one of it.
+---
+--- Three tables and a fallback, in the same order pluralOf walks them, because
+--- an item id can be a consumable, a weapon or throwable, or an ammo pool and
+--- the sentence has no way to know which. The last line is the one that
+--- matters: a refusal that renders `nil` into its own text is worse than the
+--- refusal it replaced.
+--- @param stack table|nil
+--- @return string
+local function labelOf(stack)
+    local id = stack and stack.item
+    local c = id and BR.Config.ConsumableById[id]
+    if c then return c.label or 'item' end
+    local w = id and BR.Config.WeaponById[id]
+    if w then return w.label or 'item' end
+    local a = id and BR.Config.AmmoPickups[id]
+    if a then return a.label or 'item' end
+    return 'item'
+end
+
+--- What to call this item when there is more than one of it.
+---
+--- THE CONFIG'S OWN NAME (see `plural` in br_lib/config/loot.lua), so the
+--- sentence is authored where the item is rather than assembled here. The
+--- fallback forms a regular plural, which is right for every name in the game
+--- today -- including every throwable, whose config is the weapon table.
+--- @param stack table|nil
+--- @return string
+local function pluralOf(stack)
+    local id = stack and stack.item
+    local c = id and BR.Config.ConsumableById[id]
+    if c then return c.plural or ((c.label or 'item') .. 's') end
+    local w = id and BR.Config.WeaponById[id]
+    if w then return w.plural or ((w.label or 'item') .. 's') end
+    local a = id and BR.Config.AmmoPickups[id]
+    if a then return a.label or 'of those' end
+    return 'of those'
+end
+
+--- The sentence a refused claim produces. Never empty, for any reason.
+---
+--- PUBLIC SO IT CAN BE TESTED WITHOUT A CLAIM. The property worth pinning is
+--- not "carrymax says the right thing" -- it is "NO reason produces silence",
+--- and that one is only provable by handing it a reason nobody has written a
+--- branch for.
+--- @param reason string|nil
+--- @param stack table|nil  the entry that was refused, for the name and the cap
+--- @return string
+function BR.Loot.refusalText(reason, stack)
+    if reason == 'carrymax' then
+        -- THE CAP COMES FROM THE INVENTORY, not from a config field guessed at
+        -- here. BR.Inv.carryMax is the same function BR.Inv.give tested
+        -- against to refuse this in the first place, so the number in the
+        -- message cannot disagree with the number that produced it.
+        local cap = BR.Inv.carryMax(stack)
+        -- NO CAP, NO NUMBER. An item with no ceiling cannot produce this
+        -- reason today, so this branch is defensive -- but "You cannot carry
+        -- more than 0 Small Shields" is exactly the kind of sentence the old
+        -- "0 of thoses" was, and printing a zero because a lookup came back
+        -- empty is how that one got shipped in the first place.
+        if not cap or cap <= 0 then
+            return ('You cannot carry more %s.'):format(pluralOf(stack))
+        end
+        return ('You cannot carry more than %d %s.'):format(cap, pluralOf(stack))
+    end
+
+    -- THE LIKE-FOR-LIKE REFUSAL, WHICH IS NOT A LIMIT AND NO LONGER TALKS LIKE
+    -- ONE (#171, reopened -- owner, 2026-08-18: "the 'you cannot pickup any
+    -- more X' notification should really only appear if I'm actively holding an
+    -- item id that has a maximum, and I've reached my maximum already").
+    --
+    -- IT SAID "You cannot pickup any more %s." AND THAT SENTENCE WAS TWO LIES
+    -- AT ONCE. It announced a maximum for an SNS Pistol, which has never had
+    -- one -- weapons have no carryMax and BR.Inv.carryMax returns nil for every
+    -- one of them. And it announced that maximum off the ACTIVE SLOT, so the
+    -- player who took it at face value learned the ceiling was three shields,
+    -- switched to slot 4, and picked up three more. A per-slot rule wearing a
+    -- global sentence teaches the player a limit that does not exist.
+    --
+    -- WHAT IS ACTUALLY TRUE HERE is that the inventory is full and the one slot
+    -- a swap may spend holds this same item -- so spending it would trade a
+    -- stack of three for a pickup of one, or a loaded magazine for a floor
+    -- copy's. The player may still have more of this item; they just cannot
+    -- have it HERE. So the sentence is the way out rather than a verdict, and
+    -- it is the way out the owner found for himself: change slots.
+    --
+    -- SINGULAR, AND "another". `pluralOf` belongs to the carrymax sentence,
+    -- which counts; this one names a single item and dodges the a/an problem
+    -- that "a SNS Pistol" would otherwise walk into. labelOf falls back three
+    -- times for the same reason pluralOf does -- "You can only carry 0 of
+    -- thoses." was born of a lookup that came back empty.
+    if reason == 'sameitem' then
+        return ('Switch slots to pick up another %s.'):format(labelOf(stack))
+    end
+
+    return REFUSAL[reason] or REFUSED
+end
+
 RegisterNetEvent(BR.Net.LOOT_CLAIM)
 AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
     local src = source
@@ -595,7 +762,10 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
     if not m then return end
 
     if not CAN_TAKE[e.state] then
-        BR.Server.notify(src, 'You cannot pick that up right now.', 'warn')
+        -- The same literal the reason table falls back to. This one is not a
+        -- BR.Inv.give reason -- it never gets that far -- but the player is
+        -- being told the same thing, so it is told with the same words.
+        BR.Server.notify(src, REFUSED, 'warn')
         return
     end
 
@@ -645,7 +815,27 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
     end
 
     if item.kind == 'husk' then
-        return   -- an already-looted crate; nothing to take
+        -- AN ALREADY-LOOTED CRATE. Silent, and pinned as silent by
+        -- tools/test_ringmaster.lua (loot.chest.husk, loot.chest.race) on the
+        -- stated grounds that "the client already refuses to target a husk, so
+        -- an honest player never produces this claim".
+        --
+        -- THAT RATIONALE IS WRONG, AND #171 IS NOT THE PLACE TO ACT ON IT.
+        -- The client refuses to TARGET a husk, which is not the same as
+        -- refusing to CLAIM one: a container hold, once started, is never
+        -- re-tested against the entry's kind. loot.render's hold block ends the
+        -- hold for exactly three reasons -- the entry vanished, the player
+        -- walked out of reach, the key came up -- and a sealed crate that
+        -- becomes a husk mid-hold satisfies none of them, because addEntries
+        -- MUTATES THE ENTRY IN PLACE and the id survives. So a player standing
+        -- inside 3.5m who loses a race by a tick holds the key for a full
+        -- second, watches the ring fill, and gets nothing at all.
+        --
+        -- Left alone deliberately: the message is half a fix. The other half is
+        -- ending the hold on the frame the crate opens, which belongs in
+        -- br_core/client/loot.lua, changes what the audit above pins, and wants
+        -- an issue of its own rather than a rider on the floor-pickup one.
+        return
     end
 
     if item.kind == 'chest' or item.kind == 'deathbox' then
@@ -675,16 +865,11 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
 
     local ok, displaced, reason = BR.Inv.give(src, item)
     if not ok then
-        if reason == 'carrymax' then
-            local c = BR.Config.ConsumableById[item.item]
-            BR.Server.notify(src, ('You can only carry %d %s.')
-                :format(c and c.carryMax or 0,
-                        (c and c.label or 'of those') .. 's'), 'warn')
-        elseif reason == 'full' then
-            BR.Server.notify(src, 'No room for that.', 'warn')
-        elseif reason == 'ammofull' then
-            BR.Server.notify(src, 'Already carrying the maximum.', 'warn')
-        end
+        -- ONE CALL, NO BRANCHES, NO WAY OUT WITHOUT SPEAKING. The chain this
+        -- replaces had a branch for `full`, which BR.Inv.give has never
+        -- returned, and none for `noinv`, which it can -- see the note above
+        -- REFUSAL.
+        BR.Server.notify(src, BR.Loot.refusalText(reason, item), 'warn')
         return
     end
 

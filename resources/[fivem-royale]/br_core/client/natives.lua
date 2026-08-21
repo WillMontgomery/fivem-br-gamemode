@@ -478,6 +478,176 @@ function BR.Native.setStormScreen(inside)
     end
 end
 
+-- ------------------------------------------------------------ engine teams ---
+--
+-- WHY THIS EXISTS AT ALL, AND WHY EVERY EARLIER ATTEMPT COULD NOT HAVE WORKED
+-- (#115, ninth round).
+--
+-- The bug: shoot a squadmate and their ped dies on YOUR screen while they walk
+-- around alive on their own. The server refuses the damage with CancelEvent(),
+-- which suppresses replication and sends NO negative acknowledgement back
+-- (citizenfx/fivem#2343, open since Jan 2024, unimplemented) -- so there has
+-- never been a message with which to un-kill the corpse. Health writes cannot
+-- do it: a clone that has already run its death is a corpse, and putting the
+-- number back does not resurrect it.
+--
+-- Rounds one to eight all tried to author state ON THE VICTIM'S CLONE, from the
+-- shooter's machine:
+--
+--   * SetPedRelationshipGroupHash(matePed, BR_ALLY)  -- measured not to stop a
+--     player's bullets, three separate times (2026-08-05).
+--   * SetEntityCanBeDamaged(matePed, false)          -- f1ab8fa. DISPROVEN by
+--     playtest 2026-08-19: "their ped fell over, then popped back up", which is
+--     the damage landing and the repair net catching it, not damage prevented.
+--     The second shot killed outright.
+--
+-- They fail for ONE reason, and it is the same reason each time: a player's ped
+-- is owned by that player's machine, control of it can never be taken, and
+-- script writes to a clone you do not own are not honoured. The Cfx forum has
+-- the same finding from the other side -- "all players were 'PLAYER'
+-- relationship whatever you do with them"
+-- (forum.cfx.re/t/friendly-fire-how-to-properly-assign-teams/89739).
+--
+-- WHAT REPLICATES IS WHAT THE OWNER AUTHORS ABOUT ITSELF. FiveM's own sync tree
+-- is explicit about which player facts travel: CPlayerGameStateDataNode carries
+-- maxHealth, isInvincible, the bullet/fire/explosion/collision/melee proofs,
+-- `playerTeam` as a SIX-BIT field, and `isFriendlyFireAllowed` as a bit
+-- (citizenfx/fivem, code/components/citizen-server-impl/include/state/
+-- SyncTrees_Five.h -- playerTeam at :2961, isFriendlyFireAllowed at :3194).
+-- Every one of those is written by the ped's OWNER and read by everybody else.
+-- That is the channel this file uses, and it is why warmup peace
+-- (SetPlayerInvincible on your own ped) has always worked while eight rounds of
+-- writing to somebody else's ped did not.
+--
+-- AND THE ENGINE REALLY DOES GATE DAMAGE ON IT. GTA V carries a ped config flag
+-- named CPED_CONFIG_FLAG_IgnoreNetSessionFriendlyFireCheckForAllowDamage (442),
+-- documented as "will ignore the friendly fire setting that was set by
+-- NETWORK_SET_FRIENDLY_FIRE_OPTION when checking if Ped can be damaged"
+-- (scripthookvdotnet, PedConfigFlagToggles.cs). A flag that exists to SKIP the
+-- friendly-fire check inside the can-be-damaged path is proof that the check is
+-- in the can-be-damaged path. It is a damage gate, not an AI-targeting one.
+--
+-- THE ONE PIECE THAT IS INFERRED, STATED PLAINLY: no source found says in
+-- words that the check is "same team AND friendly fire off => refuse". It is
+-- the reading every part of the record supports -- SET_PLAYER_TEAM is
+-- documented as "set player team on deathmatch and last team standing", the
+-- forum recipe names NetworkSetFriendlyFireOption(false) as its prerequisite,
+-- and THIS repository measured the prediction from the other end: e1f9f98
+-- found that with the flag unset and nobody on a team, "FiveM ships with
+-- players unable to damage each other", which is exactly what a team check
+-- does when every player shares the default team. Only a playtest closes it.
+--
+-- WHICH IS WHY THE BLAST RADIUS IS BOUNDED RATHER THAN TRUSTED. See the gate
+-- rules on BR.Native.teamFor: a solo never joins anyone's team AND never closes
+-- the gate, so if the inference is wrong, solo play -- the default mode -- is
+-- untouched and only squad matches misbehave, loudly and immediately.
+
+--- The team a player with NO squad carries.
+---
+--- RESERVED, and never handed to a squad. Every solo sharing team 0 is safe
+--- precisely because a solo also leaves the friendly-fire gate OPEN: a
+--- solo-versus-solo pair has the gate open on both sides, so the team they
+--- share can never block anything. What a solo must never do is share a team
+--- with a SQUAD member, whose gate is closed -- and 0 is kept clear of the
+--- squad range for exactly that.
+---
+--- NOT -1, WHICH IS THE OBVIOUS CHOICE AND IS WRONG. `playerTeam` replicates
+--- as an UNSIGNED six-bit field, so -1 goes onto the wire as 63 -- which is a
+--- real squad team in the range below, and would put every solo in the game on
+--- the same side as squad 63 without a single line of it being visible here.
+BR.Native.SOLO_TEAM = 0
+
+--- The widest team id that survives the wire. `playerTeam` is six bits, so
+--- 0..63 is what actually replicates; anything larger would be truncated into
+--- somebody else's team, which is a silent peace treaty in the middle of a
+--- fight. BR.Config.Match.maxPlayers is 48, so a real match never approaches
+--- the wrap -- it is a guard against a config change, not a live condition.
+local MAX_TEAM = 63
+
+--- Which engine team this client is on, and whether the friendly-fire gate
+--- should be CLOSED for it.
+---
+--- PURE, and deliberately split out of applyGameRules. This function decides
+--- who in the entire game can shoot whom, and THE OWNER CANNOT PLAYTEST THE
+--- IMPORTANT HALF OF IT: three clients against a squad maximum of four puts all
+--- three in one squad, so cross-squad damage cannot be produced in game at all
+--- (set BR.Config.Match.maxSquadSize = 2 and it can -- 2 + 1 is two squads).
+--- Until then this is decided at the desk, by tools/test_client.lua, which is
+--- why it takes its world as arguments instead of reading globals.
+---
+--- @param me table|nil      BR.State.me -- { src, squadId }
+--- @param roster table|nil  BR.State.roster mirror, keyed by server id
+--- @return integer team     0..63
+--- @return boolean shield   true => NetworkSetFriendlyFireOption(false)
+function BR.Native.teamFor(me, roster)
+    local squad = me and me.squadId
+    if type(squad) ~= 'string' then return BR.Native.SOLO_TEAM, false end
+
+    -- 'm<match>sq<index>'. server/party.lua namespaces squad ids by match so
+    -- that two concurrent matches cannot conflate anything keyed on squadId.
+    -- Only the INDEX is needed here, and it is unique WITHIN a match -- which
+    -- is the only place two players can shoot each other anyway, because
+    -- separate matches are separate routing buckets and never in each other's
+    -- scope.
+    local index = tonumber(squad:match('^m%d+sq(%d+)$'))
+
+    -- FAIL OPEN, ALWAYS. An id in a shape this does not recognise means the
+    -- squad system moved and this function did not. The safe answer to that is
+    -- the one that leaves every gun in the game working: no team, gate open.
+    -- Guessing a team instead risks two strangers sharing one, and a pair of
+    -- enemies who cannot hurt each other is a worse bug than the one being
+    -- fixed -- it is invisible until somebody loses a fight they should have
+    -- won.
+    if not index then return BR.Native.SOLO_TEAM, false end
+
+    -- 1..63, never 0, so a squad can never collide with the solo team.
+    local team = 1 + ((index - 1) % MAX_TEAM)
+
+    -- THE GATE IS ONLY CLOSED WHEN THERE IS SOMEBODY TO PROTECT, and that is
+    -- the containment. A squad of one -- a player whose mates have all left,
+    -- or a solo queue that still carried a squad id -- keeps the gate OPEN.
+    -- They still get their own team, so nobody shares a side with them, and
+    -- they are damageable by every route the engine has.
+    --
+    -- Read off the roster mirror rather than squadmates.lua's `mates`, because
+    -- `mates` is a SQUAD_POS push that the server deliberately stops sending to
+    -- a squad of one -- silence there is indistinguishable from a dropped
+    -- packet, and this must not close the gate on a guess.
+    local mine = false
+    local myKey = tostring(me.src)
+    for src, e in pairs(roster or {}) do
+        if tostring(src) ~= myKey and e and e.squadId == squad then
+            mine = true
+            break
+        end
+    end
+
+    return team, mine
+end
+
+-- SET_PLAYER_TEAM is memoised, not spammed. Writing the team marks the player
+-- sync node dirty, and re-sending it sixty times a second would put a node on
+-- the wire every frame for a value that changes about twice a match. The
+-- refresh is there because a memo is a belief about the engine's state, and the
+-- engine resets a good deal on respawn -- two seconds is cheap insurance
+-- against a belief that has gone stale without anything noticing.
+local lastTeam, lastTeamAt = nil, 0
+local TEAM_REFRESH_MS = 2000
+
+--- @param team integer
+local function applyTeam(team)
+    local now = GetGameTimer()
+    if team == lastTeam and (now - lastTeamAt) < TEAM_REFRESH_MS then return end
+    lastTeam, lastTeamAt = team, now
+    SetPlayerTeam(PlayerId(), team)
+end
+
+--- Forget the memo. Used by the test suite and by anything that knows the
+--- engine's idea of the team has been reset underneath us.
+function BR.Native.forgetTeam()
+    lastTeam, lastTeamAt = nil, 0
+end
+
 -- --------------------------------------------------------------- game rules ---
 
 --- Strip the vanilla systems that make no sense in a battle royale. Called from
@@ -495,22 +665,68 @@ function BR.Native.applyGameRules()
     -- PvP, with two carve-outs, both enforced on the SHOOTER's client where
     -- GTA computes bullet damage:
     --
-    --   Squadmates: my ped and my squadmates' local peds share the BR_ALLY
-    --   relationship group (squadmates.lua assigns theirs as they stream in),
-    --   and canAttackFriendly = false means same-group damage is refused.
-    --   Everyone else stays in the engine's default PLAYER group, which
-    --   BR_ALLY hates -- so enemies take damage exactly as before. This is
-    --   the same lever that made PvP work in the first place (default no-PvP
-    --   IS "everyone in PLAYER + canAttackFriendly false"), pointed at a
-    --   group that now only contains my own squad.
+    --   Squadmates: my squad has an engine TEAM, and while I have a live
+    --   squadmate the engine's friendly-fire gate is closed. Same team plus a
+    --   closed gate is the engine refusing to compute the hit at all; a
+    --   different team is damage as normal. See the long note above
+    --   BR.Native.teamFor for why this is the only channel that can work and
+    --   what part of it is still inferred.
+    --
+    --   The BR_ALLY relationship group is kept, and is NOT what stops the
+    --   bullet -- this comment used to claim it was, and it was measured
+    --   otherwise three times over (2026-08-05). It governs AI aggression and
+    --   melee, which is worth having, and nothing more.
     --
     --   Warmup: my own ped is simply invincible. Everyone's client does the
     --   same, so nobody can be hurt by anything until the bus.
     --
     -- Per-frame like the rest: the ped handle changes on respawn, and the
     -- group assignment dies with the old handle.
+    --
+    -- =====================================================================
+    -- NetworkSetFriendlyFireOption IS NOT A CONSTANT ANY MORE, AND IT IS
+    -- STILL NOT SAFE TO FLIP GLOBALLY. READ BOTH HALVES.
+    -- =====================================================================
+    --
+    -- It was set true by e1f9f98, deliberately, as the fix for a MEASURED
+    -- fault: "FiveM ships with players unable to damage each other, which
+    -- presented as peace mode on the first real fight". At that point no
+    -- player was ever put on a team, so every player was the engine's idea of
+    -- friendly to every other and this one flag gated ALL PvP. Twice since,
+    -- #115 was diagnosed as "the polarity is backwards"; twice, flipping it on
+    -- its own would have turned off every fight in the game.
+    --
+    -- What changed is the OTHER half. The flag only ever meant "may friendlies
+    -- damage each other", and with teams assigned there are finally friendlies
+    -- for it to be about. So it closes for exactly the players who have a
+    -- squadmate to protect, and stays open for everybody else:
+    --
+    --   solo                  -> team 0, gate OPEN. Unchanged from e1f9f98 in
+    --                            every respect, which is what keeps the
+    --                            DEFAULT MODE out of the blast radius if the
+    --                            team inference turns out to be wrong.
+    --   squad of one          -> own team, gate OPEN. Nobody to protect.
+    --   squad of two or more  -> squad team, gate CLOSED.
+    --
+    -- A pair is only ever blocked when BOTH sides are on the same team, so
+    -- cross-squad and squad-versus-solo damage never depend on the gate at
+    -- all. BR.Config.Match.engineTeams = false reverts the whole thing to the
+    -- e1f9f98 behaviour in one line, without a code change, because this has
+    -- had eight rounds and the ninth should be cheap to undo.
     local ped = PlayerPedId()
-    NetworkSetFriendlyFireOption(true)
+
+    local mcfg = BR.Config and BR.Config.Match
+    local team, shield = BR.Native.SOLO_TEAM, false
+    if not mcfg or mcfg.engineTeams ~= false then
+        team, shield = BR.Native.teamFor(BR.State.me, BR.State.roster)
+        applyTeam(team)
+    end
+
+    -- `not shield` rather than a number: these are BOOL natives and this
+    -- codebase has been bitten four times by 1/0 versus true/false. The value
+    -- handed to the engine is a real Lua boolean, and test_client.lua asserts
+    -- its TYPE as well as its value.
+    NetworkSetFriendlyFireOption(not shield)
     SetPedRelationshipGroupHash(ped, BR.Native.ALLY_GROUP)
     SetCanAttackFriendly(ped, false, false)
 
@@ -533,6 +749,17 @@ function BR.Native.applyGameRules()
     -- The honest cost, stated rather than hidden: a downed player cannot burn
     -- to death. They can be finished with a gun, which is the interaction that
     -- matters, and the storm still runs their clock out.
+    --
+    -- ...AND ONCE THE MATCH IS DECIDED, WHICH IS NEW AND IS NOT COSMETIC.
+    --
+    -- The roster sweep to LOBBY used to fire the instant a match ended, and
+    -- LOBBY is on this list -- so the winner became invincible as a side effect
+    -- of being frozen. That sweep now waits for the player's screen to go black
+    -- (#124), which is the right order for everything else and leaves a live,
+    -- mortal ped standing in a finished match for a few seconds. A winner who
+    -- burns to death under their own VICTORY ROYALE would be a spectacular way
+    -- to reintroduce the bug from the other end. Nothing may kill you after the
+    -- result is in; the placement is already awarded and published.
     local st = BR.State.me.state
     SetPlayerInvincible(pid,
         st == BR.PlayerState.WARMUP
@@ -541,6 +768,8 @@ function BR.Native.applyGameRules()
         or st == BR.PlayerState.FREEFALL
         or st == BR.PlayerState.GLIDE
         or st == BR.PlayerState.DBNO
+        or BR.State.match.state == BR.MatchState.ENDED
+        or BR.State.match.state == BR.MatchState.CLEANUP
         or GetGameTimer() < (BR.State.dropGraceUntil or 0))
 
     -- YOUR PED IS THE LOBBY NOW, so it is no longer hidden there.
@@ -598,9 +827,17 @@ function BR.Native.applyGameRules()
     -- false, which is exactly the lobby, the map button opened nothing at all
     -- and looked broken (user, 2026-08-09). The radar is decided here, once a
     -- frame, so this is the only place that can grant it.
+    -- ...and never WHILE THE CURTAIN IS GOING UP, which is a slightly earlier
+    -- moment than "during a trip" and is the gap the owner actually saw. The
+    -- curtain is raised the instant the server names us a participant, and the
+    -- trip that sets `traveling` starts up to a tick later -- so the minimap
+    -- popped up into those milliseconds and was visible through a curtain that
+    -- was still fading in (#124). Asked-for is the right test here, not
+    -- arrived: a radar hidden slightly early costs nothing.
     DisplayRadar(BR.Native.bigmap
         or (st ~= BR.PlayerState.LOBBY and st ~= BR.PlayerState.BUS
         and not (BR.Spawn and BR.Spawn.traveling)
+        and not (BR.Spawn and BR.Spawn.curtainWanted)
         and not (BR.Screen and BR.Screen.scoped)))
 
     -- GTA'S PAUSE MENU IS OURS NOW.
@@ -872,6 +1109,40 @@ function BR.Native.check()
         SetDrawOrigin(0.0, 0.0, -200.0, 0)
         ClearDrawOrigin()
     end)
+    -- THE ENGINE TEAM GATE (#115), and the only thing here that reports a
+    -- VALUE rather than merely resolving. `detail` normally stays empty on a
+    -- pass, which is right for "does this name exist" and useless for the one
+    -- question this round of #115 turns on: does a team written by this client
+    -- actually stick.
+    --
+    -- Read it as: the number after `team` is what the engine says my team is,
+    -- one line after being told. If it does not match, SET_PLAYER_TEAM is not
+    -- taking on this build and BR.Config.Match.engineTeams should go false --
+    -- and nothing further about #115 is worth writing in Lua.
+    --
+    -- Restores whatever teamFor currently wants, so running /brnativecheck mid
+    -- match cannot leave a player on a probe's team.
+    do
+        local want = BR.Native.teamFor(BR.State.me, BR.State.roster)
+        local ok, got = pcall(function()
+            SetPlayerTeam(PlayerId(), want)
+            return GetPlayerTeam(PlayerId())
+        end)
+        BR.Native.forgetTeam()
+        results[#results + 1] = {
+            name   = 'SetPlayerTeam/GetPlayerTeam',
+            ok     = ok and got == want,
+            detail = ('wrote team %s, engine reports %s')
+                :format(tostring(want), tostring(got)),
+        }
+    end
+    probe('NetworkSetFriendlyFireOption', function()
+        -- Written with the value the frame loop is about to write anyway, so
+        -- the probe cannot leave the gate in the wrong position for a frame.
+        local _, shield = BR.Native.teamFor(BR.State.me, BR.State.roster)
+        NetworkSetFriendlyFireOption(not shield)
+    end)
+
     -- The no-teamkill net reads these every frame that health drops. A nil
     -- here means friendly fire silently works again.
     probe('HasEntityBeenDamagedByEntity', function()
@@ -922,21 +1193,71 @@ function BR.Native.check()
     -- Read-only calls only: setting a channel here would move the player out
     -- of whatever room they are legitimately in.
     probe('MumbleIsConnected',   function() return MumbleIsConnected() end)
+    -- THE FIRST OF THE THREE, AND THE ONE THAT WAS NEVER CALLED (#150).
+    --
+    -- A Mumble channel does not exist because a script named it. Nothing can
+    -- be joined, listened to or transmitted into until it has been created,
+    -- and a nil here is not a degraded voice system -- it is no voice system,
+    -- because every channel id this gamemode uses would name a room that is
+    -- not there. The engine says so out loud when it happens:
+    --   "MUMBLE_ADD_VOICE_CHANNEL_LISTEN: Tried to call native on a channel
+    --    that didn't exist"
+    probe('MumbleCreateChannel', function()
+        return MumbleCreateChannel ~= nil
+    end)
     probe('MumbleSetVoiceChannel', function()
         return MumbleSetVoiceChannel ~= nil
     end)
     probe('MumbleClearVoiceChannel', function()
         return MumbleClearVoiceChannel ~= nil
     end)
+    -- THE VOICE TARGET IS THE TRANSMIT PATH, and this trio is now load-bearing
+    -- rather than optional (#150). Being in a channel decides what a player
+    -- HEARS; the target decides where their own audio GOES, and client/voice.lua
+    -- builds one for every player in every mode because the version that only
+    -- built one for squads left every solo player inaudible. A nil in any of
+    -- these is not "no squad voice" any more -- it is no voice at all.
     probe('MumbleSetVoiceTarget', function()
         return MumbleSetVoiceTarget ~= nil
+    end)
+    probe('MumbleClearVoiceTarget', function()
+        return MumbleClearVoiceTarget ~= nil
     end)
     probe('MumbleAddVoiceTargetChannel', function()
         return MumbleAddVoiceTargetChannel ~= nil
     end)
-    probe('MumbleAddVoiceChannelListen', function()
-        return MumbleAddVoiceChannelListen ~= nil
+    -- SQUAD VOICE IS TWO NATIVES AND NO ROOM (#157). The first routes our
+    -- audio to a squadmate directly; the second is now the load-bearing one for
+    -- the WHOLE receive side, not just for squads: it is the only per-listener
+    -- volume control the engine has, and the proximity cutoff, the squad radio
+    -- and the 'off' switch are all made out of it. A nil in the second one is
+    -- not "no squad radio" -- it is a client with no way to decline audio at
+    -- all, so every player in the match is audible everywhere.
+    probe('MumbleAddVoiceTargetPlayerByServerId', function()
+        return MumbleAddVoiceTargetPlayerByServerId ~= nil
     end)
+    probe('MumbleSetVolumeOverrideByServerId', function()
+        return MumbleSetVolumeOverrideByServerId ~= nil
+    end)
+    -- THE ENGINE'S OWN DISTANCE CUTOFF, PROBED BUT DELIBERATELY NEVER CALLED.
+    --
+    -- These were called for one release and they are what made 'nearby' silent
+    -- at every distance: stating a distance switches MumbleAudioOutput onto a
+    -- position comparison, and a speaker whose position it does not have is
+    -- silenced rather than treated as near. They are still probed because their
+    -- presence is worth knowing when reading a bug report -- if they are
+    -- missing, this build predates the whole mechanism -- but client/voice.lua
+    -- applies the cutoff itself and must not call either of these.
+    probe('MumbleSetAudioInputDistance', function()
+        return MumbleSetAudioInputDistance ~= nil
+    end)
+    probe('MumbleSetAudioOutputDistance', function()
+        return MumbleSetAudioOutputDistance ~= nil
+    end)
+    -- The GAME's own talker proximity, which is a different native from
+    -- MumbleSetTalkerProximity -- that one feeds the engine's SetAudioDistance
+    -- and is avoided for the same reason as the two above. This one belongs to
+    -- the game's voice path and is the right number on native-audio playback.
     probe('NetworkSetTalkerProximity', function()
         return NetworkSetTalkerProximity ~= nil
     end)

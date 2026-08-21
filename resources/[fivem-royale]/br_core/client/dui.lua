@@ -26,6 +26,78 @@ local pages = {}   -- [name] = { dui, txd, tex, w, h }
 --- frame the player is looking at a crate.
 local DIMS = {}
 
+-- ---------------------------------------------------------------------------
+-- THE PLAYER'S INTERFACE SCALE
+-- ---------------------------------------------------------------------------
+--
+-- A DUI IS A SECOND BROWSER AND IT HEARS NOTHING THE HUD HEARS. The settings
+-- screen writes --ui-scale and --text-scale onto the NUI document's :root
+-- (ui-src/src/settings/apply.ts); that document is a different browser from
+-- this one, so a player who scaled their interface up got a HUD that grew and
+-- world prompts that did not. This block is the missing wire.
+--
+-- SPLIT THE SAME WAY THE HUD SPLITS IT, and for the same reasons (index.css):
+--
+--   uiScale is INTERFACE SIZE. In the HUD it multiplies the root font size, so
+--   the whole thing grows. Here it multiplies the SPRITE, in Lua, at draw
+--   time -- which is the exact equivalent, because a DUI's on-screen size is
+--   the sprite's and nothing else. Applied here rather than in the page for
+--   two reasons: growing the content inside a fixed 512x256 texture would clip
+--   it, and a number read per frame needs no message at all (see LIVE below).
+--
+--   textScale is PROSE ONLY, and it is the page's -- it has to be, because it
+--   is the one part that must NOT grow the plate. It is sent to the page,
+--   which applies it to the label and the hint and to nothing else, exactly as
+--   `.tscale` does in the HUD. It is deliberately NOT applied to the hold ring
+--   or the key cap: those are a fixed-size plate, which index.css names as the
+--   one place text scaling must never land.
+--
+-- ONLY `text` GOES OVER THE WIRE. `ui` is applied here and is not sent, so
+-- there is no way for a future edit to the page to apply it a second time and
+-- square the player's preference.
+--
+-- LIVE, ON EXISTING PAGES, WITHOUT A RECONNECT. That is a requirement, not a
+-- nicety -- a setting that needs a reconnect reads as broken:
+--
+--   the sprite half needs no push at all. Every draw multiplies by `prefs.ui`
+--   as it runs, so changing this table changes the next frame, for every page
+--   that already exists and every page made later. There is nothing to miss.
+--
+--   the prose half is pushed to EVERY LIVE PAGE on change (the handler at the
+--   bottom of this file), and again the first frame each page's browser is
+--   genuinely up -- a message sent to a CEF instance that has not finished
+--   starting is simply lost, which is why `ready` is where the second push
+--   lives rather than `page`.
+local prefs = { ui = 1.0, text = 1.0 }
+
+--- Coerce one preference off the wire. Never throws, never returns nil.
+---
+--- br_ui owns the REAL range (0.80..1.30 and 0.90..1.15; see its settings.lua,
+--- which clamps before it stores and is the only thing a slider can reach).
+--- The band here is deliberately wider and exists for a different reason: to
+--- stop a hand-fired event or a stale build putting a nil, a NaN or a 400x
+--- sprite on the frame path. Repeating br_ui's exact numbers here would give
+--- the project two clamps to keep in step.
+--- @param v any
+--- @param fallback number
+--- @return number
+local function pref(v, fallback)
+    v = tonumber(v)
+    if not v or v ~= v then return fallback end   -- nil, or NaN, which compares false to itself
+    if v < 0.5 then return 0.5 end
+    if v > 2.0 then return 2.0 end
+    return v
+end
+
+--- Tell one page the text-size preference. Cheap and idempotent: the page sets
+--- a custom property from it and nothing else, so an extra send costs a
+--- repaint and cannot restart the hold ring.
+--- @param page table
+local function pushScale(page)
+    if not page or not page.dui then return end
+    SendDuiMessage(page.dui, json.encode({ t = 'scale', text = prefs.text }))
+end
+
 --- Create (or fetch) a DUI page and its runtime texture.
 ---
 --- @param name string   unique; also the texture name
@@ -64,7 +136,29 @@ end
 function BR.Dui.ready(page)
     if not page or not page.dui then return false end
     if page.ready then return true end
-    page.ready = IsDuiAvailable(page.dui)
+    -- A NATIVE'S ANSWER IS NOT A LUA BOOLEAN (3b42f0e, #129/#131's seventh
+    -- round). A FiveM native declared BOOL may hand Lua `true`, `1`, `false`,
+    -- `nil` -- or `0`, and IN LUA THE NUMBER 0 IS TRUTHY. Stored verbatim, a
+    -- `0` from a browser that is NOT up latches this page as ready forever on
+    -- the first poll: the scale push below is fired at a CEF instance that
+    -- cannot receive it, every draw puts a blank texture on the screen, and the
+    -- caller's fallback -- the whole reason bus.lua and skydive.lua ask this
+    -- question -- never runs, so nothing anywhere says the browser is missing.
+    --
+    -- Which is why this is an explicit three-way test and NOT `v and true or
+    -- false`: that one-liner maps 0 to true and is the worse bug, verbatim the
+    -- one 3b42f0e rejected. All four shapes the runtime is known to produce are
+    -- covered without this file having to know which one this build uses.
+    local up = IsDuiAvailable(page.dui)
+    page.ready = (up ~= nil and up ~= false and up ~= 0)
+    -- THE ONE MOMENT A MESSAGE TO THIS PAGE IS GUARANTEED TO LAND, and so the
+    -- one place the scale can be handed to a NEW browser. A DUI is a whole CEF
+    -- instance and messages sent before it has finished starting are dropped
+    -- without a word -- so pushing from BR.Dui.page() would work on a warm
+    -- reload and silently not work on a cold one, which is the worst of both.
+    -- This runs once per page, on the false->true edge, because the line above
+    -- latches `ready` and every caller enters through here.
+    if page.ready then pushScale(page) end
     return page.ready
 end
 
@@ -97,7 +191,13 @@ function BR.Dui.drawWorld(page, x, y, z, scale, dist)
         k = BR.Clamp(3.0 / math.max(dist, 0.5), 0.35, 1.6) * k
     end
     -- 0.12 -> 0.09: a quarter smaller (user, 2026-08-06).
-    local w = 0.09 * k
+    --
+    -- ...AND THEN THE PLAYER'S OWN INTERFACE SIZE. Last, so it multiplies the
+    -- finished number rather than one of the terms: a prompt at 1.30 is 30%
+    -- larger than the same prompt at 1.00 whatever the caller passed and
+    -- whatever the distance term did. `h` follows from `w` below, so the plate
+    -- grows in both directions and its aspect is untouched.
+    local w = 0.09 * k * prefs.ui
 
     -- ASPECT MATTERS, and leaving it out is what squashed the prompt.
     --
@@ -123,6 +223,49 @@ function BR.Dui.drawWorld(page, x, y, z, scale, dist)
     SetDrawOrigin(x, y, z, 0)
     DrawSprite(page.txd, page.tex, 0.0, 0.0, w, h, 0.0, 255, 255, 255, 255)
     ClearDrawOrigin()
+end
+
+--- Draw a page FLAT ON THE SCREEN, at a fixed spot, like a HUD element.
+---
+--- THE OTHER TWO DRAWS PIN A PAGE TO THE WORLD; THIS ONE DELIBERATELY DOES NOT,
+--- and the reason it exists is #131. The owner asked for a real button GLYPH on
+--- the smoke-trail prompt, and a glyph is the one thing GTA's help box cannot
+--- give us for one of OUR keys: the engine draws `~INPUT_*~` glyphs from its own
+--- control table, our rebinds live in the raw-key layer in keybinds.lua that the
+--- engine never hears about, and `~INPUT_<hash>~` for a RegisterKeyMapping
+--- command "renders a hole" -- measured on this build, not assumed (probe.lua,
+--- and bus.lua's own note beside INPUT_PARACHUTE_DEPLOY). So the prompt has to
+--- be drawn by something that can draw whatever we like, and we already own one:
+--- this page, with its key-cap badge, is what every crate on the ground uses.
+---
+--- There is nothing in the world to attach a descent prompt to -- the player is
+--- the subject -- so the position is screen space and constant, which is also
+--- the cheapest thing this file can do: no projection, no distance, no matrix.
+---
+--- @param page table
+--- @param x number      screen fraction, 0..1 (0.5 is centre)
+--- @param y number      screen fraction, 0..1
+--- @param scale number  width as a fraction of the screen
+function BR.Dui.drawScreen(page, x, y, scale)
+    if not BR.Dui.ready(page) then return end
+
+    -- The player's interface size, exactly as in drawWorld. This is the
+    -- descent prompt, which is screen furniture in the plainest sense -- if
+    -- anything in this file has to honour "make my interface bigger", it is
+    -- the box pinned to the middle of the screen.
+    local w = (scale or 0.16) * prefs.ui
+    -- The same aspect correction drawWorld needs, and for the same reason: a
+    -- sprite's width is a fraction of the screen's WIDTH and its height a
+    -- fraction of the screen's HEIGHT, which are different units. Leaving this
+    -- out is what squashed the crate prompt to half its height on 16:9.
+    local aspect = GetAspectRatio(false)
+    if not aspect or aspect <= 0.1 then
+        local sw, sh = GetActiveScreenResolution()
+        aspect = (sh and sh > 0) and (sw / sh) or 1.7778
+    end
+    local h = w * (page.h / page.w) * aspect
+
+    DrawSprite(page.txd, page.tex, x, y, w, h, 0.0, 255, 255, 255, 255)
 end
 
 --- Draw a page as a label STUCK TO AN ENTITY'S TOP FACE.
@@ -171,7 +314,28 @@ function BR.Dui.drawOnEntity(page, entity, size, lift, alpha)
     local ox, oy = (mn.x + mx.x) * 0.5, (mn.y + mx.y) * 0.5
     local oz = mx.z + (lift or 0.02)
 
-    local hw = (size or 0.55) * 0.5
+    -- THE INTERFACE SIZE APPLIES HERE TOO -- AND ON THE SHIPPED NUMBERS THE
+    -- CLAMP BELOW WILL EAT MOST OF IT. Said plainly, because a silent no-op is
+    -- how this project keeps shipping wiring that goes nowhere.
+    --
+    -- This label is measured in METRES, not screen fractions: it is a decal on
+    -- a box, and the fit clamp a few lines down exists to stop it overhanging
+    -- the lid. Config already runs it up against that clamp on purpose --
+    -- crateLabelSize was doubled to 1.1 and crateLabelFit opened to 0.48 so
+    -- "the label may cover almost the whole lid" (br_lib/config/loot.lua). A
+    -- crate label is therefore at or near its ceiling before this multiply
+    -- touches it, and scaling up will mostly be clamped straight back.
+    --
+    -- IT STAYS ANYWAY, for two reasons. Scaling DOWN is unclamped, so a player
+    -- who wants a smaller interface gets one here as well as everywhere else;
+    -- and a smaller crateLabelSize, or a different prop with a bigger lid,
+    -- makes the up direction real without needing this line remembered later.
+    --
+    -- WHAT ACTUALLY MOVES A CRATE LABEL FOR A PLAYER WHO CANNOT READ IT is the
+    -- other half of the preference: textScale grows the words INSIDE the plate,
+    -- in the page, where the lid's dimensions do not get a vote. That is the
+    -- lever to point at if the owner reports crate labels not responding.
+    local hw = (size or 0.55) * 0.5 * prefs.ui
     local hh = hw * (page.h / page.w)
 
     -- NEVER OVERHANG THE LID. A label wider than the box reads as floating
@@ -245,4 +409,50 @@ end
 AddEventHandler('onResourceStop', function(res)
     if res ~= GetCurrentResourceName() then return end
     for name in pairs(pages) do BR.Dui.destroy(name) end
+end)
+
+-- ---------------------------------------------------------------------------
+-- Settings
+-- ---------------------------------------------------------------------------
+
+--- THE SAME EVENT br_core ALREADY LISTENS TO FOR VOICE (client/voice.lua),
+--- fired by br_ui's client/settings.lua on every push and every save. A
+--- client-side TriggerEvent crosses resources, which is why this works at all
+--- and why the preference does not have to be duplicated into br_core's own
+--- storage: br_ui owns the value, this file owns what the DUIs do with it.
+---
+--- BOTH HALVES ARE HANDLED HERE, and they are handled differently on purpose.
+--- The sprite half is just the table -- the next frame reads it. The prose half
+--- is a message, so it has to be sent, and it is sent to EVERY page that is
+--- already up rather than to the one that happens to be in front of the player.
+--- Pages that are not up yet are not skipped so much as deferred: they read the
+--- same table from BR.Dui.ready the first frame their browser answers.
+AddEventHandler('br:settings:changed', function(s)
+    if type(s) ~= 'table' then return end
+
+    prefs.ui   = pref(s.uiScale, prefs.ui)
+    prefs.text = pref(s.textScale, prefs.text)
+
+    for _, p in pairs(pages) do
+        if p.ready then pushScale(p) end
+    end
+end)
+
+--- ASK, RATHER THAN WAIT (#131's lesson, in the small).
+---
+--- br_ui pushes settings on `br:ui:ready`, which is the NUI page coming up.
+--- That covers a fresh join and a br_ui restart -- but NOT a br_core restart on
+--- its own, where this file starts with a clean 1.00 and no push is ever coming
+--- because nothing on br_ui's side has changed. A `restart br_core` mid-session
+--- is a normal thing to do while developing, and "the prompts went back to
+--- default size and stayed there" is exactly the kind of silent half-wiring
+--- this project keeps shipping.
+---
+--- THE OTHER END EXISTS: br_ui/client/settings.lua answers this by calling
+--- BR.Settings.push(), which is the same call `br:ui:ready` makes. If br_ui is
+--- not running yet, nothing answers, and br_ui's own push on ready covers it a
+--- moment later -- so both start orders are covered and neither needs a retry.
+AddEventHandler('onClientResourceStart', function(res)
+    if res ~= GetCurrentResourceName() then return end
+    TriggerEvent('br:settings:request')
 end)
