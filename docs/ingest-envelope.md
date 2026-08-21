@@ -254,14 +254,21 @@ See [`tools/fixtures/ingest-events.json`](../tools/fixtures/ingest-events.json).
 `seq` is monotonic **within a `bootEpoch`** and starts at 1. `at` is
 `GetGameTimer()` — convert it with the formula above.
 
-### Event kinds in Slice 1
+### Event kinds
 
-**Four kinds cross this wire and no others**: `player_seen`, `refusal`,
-`incident_filed` and `incident_corroborated`. Nothing the incident, artifact or
-weapon-strip work added is a new kind — artifacts never touch this channel at all
-(frames go straight to S3, and the case row is written by `br_ddb`), and strips
-reuse `incident_filed` and `incident_corroborated`. A receiver that handles these
-four handles everything the game sends.
+**Seven kinds cross this wire and no others**: `player_seen`, `player_left`,
+`refusal`, `incident_filed`, `incident_corroborated`, `outcome` and
+`admin_spectate`. Nothing the incident, artifact or weapon-strip work added is a
+new kind — artifacts never touch this channel at all (frames go straight to S3,
+and the case row is written by `br_ddb`), and strips reuse `incident_filed` and
+`incident_corroborated`.
+
+> **This paragraph said "four kinds" until 2026-08-21 and had been wrong for two
+> slices.** `player_left` shipped with session playtime and `outcome` shipped
+> with the kick, both of them real kinds on this channel with no line here — so
+> the one sentence a console author would read to learn what to expect named
+> less than half of it. `admin_spectate` is the first addition made with this
+> list, and correcting the count was part of adding it.
 
 **`player_seen`** — emitted once per connect, carrying the allowlisted
 identifiers. This is how a Discord id ever becomes associated with a license,
@@ -434,6 +441,61 @@ strip from the second onward (owner, 2026-08-20) — so consecutive values there
 2, 3, 4, 5 and a gap means a *lost* corroboration rather than offences that happened
 quietly in between. Treat it as "at least this many" in both cases; never as an
 exact count.
+
+### `admin_spectate` — who watched whom (#192)
+
+An admin spectate session opening or closing. Two events per session, joined by
+`commandId`.
+
+```json
+{
+  "seq": 91,
+  "kind": "admin_spectate",
+  "at": 4283400,
+  "data": {
+    "commandId": "5f2b…",
+    "adminLicense": "license:abc…",
+    "targetLicense": "license:def…",
+    "targetName": "Nemesis",
+    "phase": "stop",
+    "reason": "target-left",
+    "durationMs": 94210
+  }
+}
+```
+
+**`outcome` is not enough on its own, and that is the whole reason this kind
+exists.** The console mints a `commandId`, writes an intent row, dispatches
+`spectate`, and stamps the `outcome` onto that row — the same two-phase audit the
+kick uses. What that covers is *did the button work*. What it cannot cover is the
+**end**, because nothing asks for it: an admin stops from the in-game pause menu,
+or the target disconnects and the session stops itself. Neither is a command, so
+neither has an outcome, and a log with every start and no end is a log that says
+every admin is still watching.
+
+**`phase`** is `start` or `stop`. **`durationMs` is present on `stop` only** — a
+duration rather than a second timestamp, because every clock the game produces is
+`GetGameTimer()` and that is meaningless once it leaves the box (see the clock
+pair, above).
+
+**`reason` is present on `stop` only**, and it is a bounded string naming which
+of the endings happened:
+
+| `reason` | what happened |
+|---|---|
+| `stopped` | the admin used the pause-menu exit |
+| `target-left` | the target disconnected, **or their server id was recycled** |
+| `retargeted` | the admin pressed Spectate on somebody else |
+| `gone` / `no-match` / `shutdown` | the session could not continue |
+
+**`target-left` covers the recycled id deliberately.** FiveM reuses server ids
+within the minute, so the game re-checks the target's license on every position
+push and ends the session if it no longer matches — which is indistinguishable,
+from the outside, from the target leaving, and means the same thing: the person
+the row was opened about is no longer the person on the other end of the camera.
+
+**A player spectating their own squad produces nothing here.** That is gameplay,
+and a row for every death in every match would bury the rows that matter.
 
 ---
 
