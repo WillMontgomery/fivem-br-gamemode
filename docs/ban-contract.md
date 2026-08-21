@@ -106,15 +106,24 @@ one item holding the whole queue, rather than one item per incident, precisely s
 that finding them again is a `GetItem` rather than a `Query`.
 
 **The split that matters is not read-versus-write, it is whose table.** `br_ddb`
-now exposes sixteen verbs, and several of them write:
+now exposes nineteen verbs, and several of them write:
 
 | table family | verbs | access |
 |---|---|---|
 | `ringmaster-bans`, `ringmaster-grants`, `ringmaster-maintenance` | `banCheck`, `grantsFetch`, `maintenance` | **read-only**, one key at a time |
-| `ringmaster-incidents` | `putIncident`, `incidentVerdict` | append, plus one narrow projected read |
-| `ringmaster-audit` | — | **none at all** |
+| `ringmaster-incidents` | `putIncident`, `incidentClose`, `incidentVerdict` | file a case, close its match timeline, read four attributes back |
+| `ringmaster-audit` | — | no code path (but see the grant note below) |
 | `br-players` — profiles, inventory, history rows and the reward queue all live on it | `profileFetch`, `statsApply`, `historyPut`, `inventoryFetch`, `purchase`, `equip`, `awardClaim`, `awardQueue`, `awardPay`, `awardSettle` | read and write freely |
+| `royale-incidents-bucket` (S3, not DynamoDB) | `artifactBegin`, `artifactPut` | `PutObject` under `incidents/` and nothing else |
 | — | `selftest` | reads a license that will never exist |
+
+The two S3 verbs live in `br_ddb` because what reaches AWS is the **EC2 instance
+role** the SDK's provider chain finds through IMDS, not the DynamoDB client — a
+second resource holding a second copy of the SDK would be a second bundle to keep
+current and a second place to audit. They are still two named verbs and not a file
+bridge: nothing takes a path, a bucket, a key or a body. The game passes an
+incident id, a frame number and an encoding, and every name is derived and
+validated on the JS side.
 
 Both prefixes are convars (`br_ddb_table_prefix`, default `ringmaster-`;
 `br_ddb_game_prefix`, default `br-`), so the names above are the defaults rather
@@ -134,6 +143,33 @@ way is unrecoverable — the evidence buffer behind it is discarded at match end
 So the game writes the row and the event carries only an id. The write is
 conditional on the id not already existing, so a repeat can only be refused.
 
+**Updating (`incidentClose`).** The game may also write to a case it has already
+filed, which is the exception this document did not have and now needs. When the
+match ends, one `UpdateItem` per incident filed in it attaches the match timeline
+and its counters. **It is bounded by an IAM attribute allowlist rather than by
+being a different verb**, which is the distinction worth carrying:
+
+```
+dynamodb:Attributes  incidentId, matchEndedAt, matchTimeline,
+                     matchTimelineComplete, matchKillsSeen
+dynamodb:ReturnValues NONE
+```
+
+`events` — the console's own timeline, where an admin's notes, the corroborations
+and the resolution live — is outside it, and so are `state`, `verdict`,
+`resolvedAt`, `resolvedBy*`, `resolution` and `closedByBan`. So the game adds
+match facts to a case and **cannot express an opinion about one**. `ReturnValues:
+NONE` closes the other half: an attribute allowlist restricts what an update may
+*write*, and `ReturnValues` is how the same request could still read the rest of
+the row back.
+
+An `UpdateItem` was chosen over a second row per closure — which the existing
+`PutItem` grant would already have permitted — because the console `scanAll`s this
+table and reads every row as an incident, with no discriminator. A phantom entry
+in a moderation queue is a worse failure than a narrow, attribute-scoped update.
+The write is conditional on `attribute_exists(incidentId)`, so a close for a case
+whose `PutItem` was lost fails rather than creating a bare row naming nobody.
+
 **Reading (2026-08-17, #168).** `incidentVerdict` reads a case back. This
 document said "cannot read one back" until report rewards shipped, and the
 sentence is corrected rather than quietly dropped, because it was load-bearing in
@@ -145,9 +181,9 @@ an argument. What the read actually is:
   file.
 - **A projection, not the row.** `ProjectionExpression` asks for exactly four
   attributes: `incidentId`, `state`, `verdict`, `resolvedAt`. The evidence, the
-  chat log, the kill log, the reporter, the subject, the admin's written
-  resolution and the capture keys are all on that item and **none** of them
-  crosses into the game server.
+  chat log, the kill log, the match timeline, the reporter, the subject and the
+  admin's written resolution are all on that item and **none** of them crosses
+  into the game server.
 - **Eventually consistent, and fails closed.** An unreadable case answers "not
   settled" and is asked about again on the next sweep — the opposite of the ban
   check, which fails open. Paying a reward against a verdict nobody has seen is
@@ -157,17 +193,38 @@ an argument. What the read actually is:
 this table" is gone, and so is the claim that a compromised game box "cannot see
 a verdict". It still cannot **alter** one.
 
-What a compromised game box can do here: **file noise**, and learn whether a case
-it filed itself was decided and whether anything happened. What it still cannot
-do: enumerate anything on any table (no `Query`, no `Scan`), read a moderator's
-prose, confirm an identity it did not already hold, overwrite an existing
-incident, alter a verdict, or touch the audit log at all.
+What a compromised game box can do here: **file noise**, attach match facts to a
+case it filed, and learn whether that case was decided and whether anything
+happened. What it still cannot do: enumerate anything on any table (no `Query`,
+no `Scan`), read a moderator's prose, confirm an identity it did not already
+hold, overwrite an existing incident, or alter a verdict.
 
-The read-only grants on `ringmaster-bans` and `ringmaster-grants` are the same
-shape and the same limit: the box can ask "is *this* license banned" or "what
-does *this* license hold", one key at a time, about a license already in front of
-it. It cannot ask who the admins are, or who is banned.
+### The read grant is broader than the code, and this document used to say otherwise
 
-The game server has **no access at all** to `ringmaster-audit`. The audit log is
-the record of what admins did, and a compromised game host must not be able to
-read — still less rewrite — the account of its own compromise.
+> **This section ended: "The game server has no access at all to
+> `ringmaster-audit`… a compromised game host must not be able to read — still
+> less rewrite — the account of its own compromise."** The *rewrite* half is
+> still true and is the important half. The *read* half is not, and has not been
+> since 2026-08-17.
+
+On that date the owner widened the game box's read to `dynamodb:GetItem` on the
+whole `ringmaster-*` prefix — *"this is deliberately broad, I know"* — which
+covers `audit`, `bans`, `grants`, `incidents`, `sessions`, `telemetry` and
+`to-gameserver`. **Nothing in `br_ddb` reads six of those seven**, and the file
+names each table it does read exactly once, which is what makes the following
+list the answer when somebody comes to narrow the policy back to a list of ARNs:
+
+```
+ringmaster-bans         GetItem                            the connect gate
+ringmaster-grants       GetItem                            in-game admin scopes
+ringmaster-maintenance  GetItem                            the drain gate
+ringmaster-incidents    GetItem + PutItem + UpdateItem     cases
+```
+
+So "one key at a time, about a license already in front of it" describes the
+**code** and no longer describes the **policy**. It is stated as the gap it is,
+because a policy nobody can summarise is a policy nobody can narrow — and because
+a contract document that understates a grant is the one that gets quoted in an
+argument it should have lost. No write grant of any kind exists on `ringmaster-`
+`audit`, `bans` or `grants`, and the one write on `incidents` is the
+attribute-scoped close above.
