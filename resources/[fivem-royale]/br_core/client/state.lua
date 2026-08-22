@@ -355,6 +355,119 @@ local OUR_SCREEN = {
     [BR.PlayerState.LOBBY]      = true,
 }
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- MATCH-SCOPED SURFACES
+--
+-- A SURFACE RAISED INSIDE A MATCH COMES DOWN WHEN THE MATCH IS OVER FOR THIS
+-- PLAYER, AND THAT IS A RULE RATHER THAN A LINE IN ONE HANDLER (#204).
+--
+-- ═══ WHAT WENT WRONG ═══
+--
+-- The death word (below) is the first surface in this client with a lifetime of
+-- its OWN -- raised at the moment of death, taken down on a clock -- rather
+-- than one borrowed from the match state. It was cleared on the transitions a
+-- round normally passes through and on nothing else, so every exit that is not
+-- "the match ended underneath you" carried it out of the match and into the
+-- lobby, where it means nothing.
+--
+-- Leaving mid-match is the one the owner found (2026-08-22). Going down first
+-- is only what makes it instant: server/match.lua's leaveMatch eliminates a
+-- DBNO player on the way out ("leaving while alive IS an elimination"), so the
+-- DEAD delta and the LOBBY delta arrive in the SAME batch -- the word goes up
+-- on the first and the lobby appears underneath it on the second. The identical
+-- bug needs no knockdown at all: die, then use Leave Match inside the window.
+--
+-- ═══ WHY A REGISTRY AND NOT A THIRD CALL TO clearDeathVerdict ═══
+--
+-- Everything else this client draws mid-match -- the DBNO overlay, the spectate
+-- hint, the vehicle bars -- is safe from this only because App.tsx mounts it
+-- inside <Hud>, whose visibility follows the match state. That is protection by
+-- POSITION, not by rule, and DeathVerdict is mounted outside that wrapper on
+-- purpose: `hudUp` goes false the instant a match is decided and the word has
+-- its own end. The next surface with the same reason to sit outside it repeats
+-- this exactly, which is how a fix per screen becomes a bug per screen.
+--
+-- So the edge is named once, here, and a surface joins it by registering.
+--
+-- ═══ THE EDGES, ALL OF THEM ═══
+--
+--   * MY OWN STATE BECOMES LOBBY -- the one transition every exit passes
+--     through, whichever door was used: Leave Match, the ENDED sweep home, a
+--     match destroyed under a dead player (server/match.lua's destroy, which
+--     never reaches ENDED at all), an admin resetting a stuck round. It sits
+--     with BR.NotifyClear() in noteMyState below, which is the same broom on
+--     the same edge for the same reason.
+--   * THE MATCH STATE IS ANYTHING BUT PLAYING -- including WAITING, which is
+--     where a LEAVER's mirror settles: server/broadcast.lua sends the lobby
+--     digest to players in no match, and the digest replays that transition
+--     locally for exactly this kind of teardown.
+--   * A REVIVE -- a death that was undone must take its word with it. #144's
+--     held death really does put the roster through DEAD (server/combat.lua
+--     says so in as many words), so the word genuinely goes up for a player who
+--     is about to be stood back up.
+--   * br_core STARTING -- THE PAGE OUTLIVES THIS RESOURCE, and see the note on
+--     `force` below for why that one is not like the others.
+--
+-- ═══ WHAT IS DELIBERATELY NOT IN HERE ═══
+--
+-- The match-end verdict SCREEN (BR.Nui.SUMMARY, further down). It is not a
+-- surface raised inside a match; it IS the teardown. It is gated on the
+-- teardown in App.tsx and the page drops it itself at WAITING -- and the LOBBY
+-- flip that this rule fires on is the very transition that raises it, so
+-- registering it would delete the screen it exists to show.
+--
+-- ═══ AND NOTHING HERE TOUCHES FOCUS ═══
+--
+-- The death word takes no input and is not on the focus stack; br_ui/client/
+-- nui.lua owns that stack and its own comments record what getting near it
+-- costs. A dismissal that also popped focus could strand a player who dies,
+-- leaves and rejoins with no cursor and no way to open the pause menu -- worse
+-- than the bug being fixed, so this touches none of it.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+--- Registered surfaces, in registration order. Each is { name, dismiss }.
+local matchSurfaces = {}
+
+--- Declare a surface that belongs to a match in progress.
+---
+--- GLOBAL so a surface can register from the file that owns it instead of being
+--- listed here. That is the point of the registry: the EDGE lives in one place
+--- and what each screen knows about itself stays with that screen.
+---
+--- @param name string  printed on the forced path below, which is the one
+---        dismissal with no other evidence that it happened
+--- @param dismiss fun(force: boolean)  take it down. `force` means "send even
+---        if you believe it is already down" -- see dismissMatchSurfaces.
+function BR.MatchSurface(name, dismiss)
+    matchSurfaces[#matchSurfaces + 1] = { name = name, dismiss = dismiss }
+end
+
+--- The match is over for this player: take down everything it raised.
+---
+--- @param force boolean|nil  pass true only when this client's own idea of what
+---        is on screen cannot be trusted -- which is precisely one case, br_core
+---        restarting in front of a page that did not. Compared against `true`
+---        rather than tested for truth, because in Lua 0 is true and a FiveM
+---        BOOL native answers 1.
+local function dismissMatchSurfaces(force)
+    local hard = force == true
+    local said = {}
+    for _, s in ipairs(matchSurfaces) do
+        s.dismiss(hard)
+        said[#said + 1] = s.name
+    end
+
+    -- SAID OUT LOUD ONLY ON THE FORCED PATH, and only because that one is
+    -- otherwise undiagnosable: "I restarted br_core and the word is still
+    -- there" and "the correction went out and the page ignored it" look
+    -- identical from a chair. Every other dismissal has a state change next to
+    -- it in the log. Once per br_core start, which is not a hot path.
+    if hard and #said > 0 then
+        print(('[br_core] match surfaces dropped on start: %s')
+            :format(table.concat(said, ', ')))
+    end
+end
+
 local function noteMyState()
     local st = S.me.state
 
@@ -396,7 +509,15 @@ local function noteMyState()
         -- was going to do it. This is the broom, on the one edge that covers
         -- all of those at once, and it is why the sticky flag is safe to
         -- hand out.
-        if st == BR.PlayerState.LOBBY then BR.NotifyClear() end
+        --
+        -- ...AND SO IS EVERY SURFACE THE MATCH RAISED (#204). The same edge and
+        -- the same argument one paragraph up: this is the transition every way
+        -- out of a match passes through, so it is the one place that does not
+        -- have to know which door was used.
+        if st == BR.PlayerState.LOBBY then
+            BR.NotifyClear()
+            dismissMatchSurfaces()
+        end
     end
     if st == BR.PlayerState.WARMUP or st == BR.PlayerState.BUS
        or st == BR.PlayerState.FREEFALL or st == BR.PlayerState.GLIDE
@@ -638,6 +759,13 @@ RegisterNetEvent(BR.Net.REVIVED)
 AddEventHandler(BR.Net.REVIVED, function()
     diedThisMatch = false
     myDeathCause, myDeathByPlayer = nil, false
+    -- ...AND THE WORD THAT WENT UP WITH THE DEATH (#204). A held death puts the
+    -- roster through DEAD -- server/combat.lua's holdForStart is explicit that
+    -- it must, or the health check eliminates them for real -- so the death word
+    -- is genuinely on screen for a death that is about to be unwritten. Nothing
+    -- else would take it down: the revive lands on the transition into PLAYING,
+    -- and PLAYING is the one match state a match-scoped surface survives.
+    dismissMatchSurfaces()
 end)
 
 -- ═══════════════════════════════════════════════════════════════════════════
@@ -685,15 +813,27 @@ end
 
 --- Take the death word down, whatever is left of its window.
 ---
---- Called when a new round starts and when the match ends. The second one
---- matters: the verdict SCREEN is the surface for a finished match, and two
---- verdicts on screen at once -- one over the world, one over the backdrop --
---- is the confusion the owner asked to be separated.
-local function clearDeathVerdict()
-    if deathVerdictUntil == 0 then return end
+--- NOT CALLED FROM THE TRANSITIONS ANY MORE -- it is registered as a
+--- match-scoped surface (immediately below) and the edges that mean "the match
+--- is over for this player" reach it through that. See the long note on
+--- BR.MatchSurface for why the list of transitions was the wrong shape: it has
+--- to be complete, it was not, and the one it was missing was the door the
+--- owner used.
+---
+--- @param force boolean|nil  push `show = false` even when this client believes
+---        the word is already down. Only br_core restarting passes it, and it
+---        is the whole reason the argument exists: a fresh Lua state has
+---        deathVerdictUntil = 0, so without it the one call that could correct
+---        a page left holding show=true is the one call that does nothing.
+local function clearDeathVerdict(force)
+    if deathVerdictUntil == 0 and force ~= true then return end
     deathVerdictUntil = 0
     pushDeath(false)
 end
+
+-- THE WORD IS A MATCH-SCOPED SURFACE, and this one line is what puts it under
+-- the rule instead of under a list of transitions somebody has to keep complete.
+BR.MatchSurface('death verdict', clearDeathVerdict)
 
 --- I just died. Put the word up and start the clock.
 ---
@@ -740,20 +880,30 @@ AddEventHandler(BR.Net.STATE, function(d)
     if d.state == BR.MatchState.WARMUP or d.state == BR.MatchState.BUS then
         diedThisMatch = false
         myDeathCause, myDeathByPlayer = nil, false
-        -- AND TAKES LAST ROUND'S WORD DOWN. A player who died in the closing
-        -- seconds can reach the next warmup with the window still open, and a
-        -- fresh match with ELIMINATED across it is the one state this must
-        -- never reach.
-        clearDeathVerdict()
     end
 
-    -- THE VERDICT SCREEN IS THE SURFACE FOR A FINISHED MATCH. Dying in the last
-    -- ten seconds of a round is ordinary, and it would otherwise put the death
-    -- word over the world at the same moment the backdrop and the placement
-    -- come up behind it -- two verdicts at once, which is precisely the pair the
-    -- owner asked to keep distinct.
-    if d.state == BR.MatchState.ENDED or d.state == BR.MatchState.CLEANUP then
-        clearDeathVerdict()
+    -- AND EVERY SURFACE THIS MATCH RAISED COMES DOWN WITH ANY STATE THAT IS NOT
+    -- A LIVE MATCH (#204).
+    --
+    -- ONE NEGATIVE RATHER THAN A LIST OF THE FIVE STATES THAT CLEAR, because the
+    -- list is what shipped and the list is what was wrong. It named WARMUP, BUS,
+    -- ENDED and CLEANUP -- and not WAITING, which is the state a LEAVER's mirror
+    -- settles into (server/broadcast.lua sends the lobby digest to players in no
+    -- match, and the digest replays that transition locally). The one exit that
+    -- was not on the list was the one the owner walked out of.
+    --
+    -- The reasons the old names were there have not changed and are still the
+    -- reasons this holds:
+    --
+    --   ENDED / CLEANUP -- the verdict SCREEN is the surface for a finished
+    --     match. Dying in the closing seconds is ordinary, and without this the
+    --     word sits over the world at the same moment the backdrop and the
+    --     placement come up behind it: two verdicts at once, which is exactly
+    --     the pair the owner asked to keep distinct.
+    --   WARMUP / BUS -- a fresh match with ELIMINATED across it is the one state
+    --     this must never reach.
+    if d.state ~= BR.MatchState.PLAYING then
+        dismissMatchSurfaces()
     end
     -- The round is over for everyone; participation resets with it.
     if d.state == BR.MatchState.WAITING then
@@ -2141,6 +2291,26 @@ end, false)
 
 AddEventHandler('onClientResourceStart', function(res)
     if res ~= GetCurrentResourceName() then return end
+
+    -- THE PAGE OUTLIVES THIS RESOURCE, AND NOTHING ELSE IN THE CLIENT KNOWS IT
+    -- (#204).
+    --
+    -- br_ui is a separate resource with a separate lifetime. `restart br_core`
+    -- mid-match gives us a fresh Lua state in front of a CEF document still
+    -- holding every envelope sent before the restart -- and for the death word
+    -- that means show=true with the deadline that would have retired it gone
+    -- from the only process that had it. Not a screen that lingers for ten
+    -- seconds: one that never comes down at all, which is the failure that is
+    -- worse than the bug.
+    --
+    -- FORCED. A fresh deathVerdictUntil is 0, so an ordinary dismissal is a
+    -- no-op in precisely the case that needs it.
+    --
+    -- SAFE IN THE DIRECTION IT CAN BE WRONG. If nothing was up, the page is told
+    -- a surface it is not drawing is down. If br_ui is not running yet the event
+    -- reaches nobody -- and a page that does not exist is not holding a stale
+    -- one, because its own start will re-request everything from here.
+    dismissMatchSurfaces(true)
 
     -- Fallback only: if br_ui started first, its ready event is already gone and
     -- we would otherwise sit with an empty mirror forever.

@@ -102,14 +102,62 @@ if state then
              .. 'diedThisMatch, or the word never appears')
     end
 
-    -- AND IT COMES DOWN WHEN THE MATCH ENDS. Dying in the closing seconds of a
-    -- round is ordinary; without this the word sits over the world at the same
-    -- moment the verdict SCREEN comes up behind it -- two verdicts at once,
-    -- which is precisely the pair being kept distinct.
-    if not state:find('MatchState%.ENDED or d%.state == BR%.MatchState%.CLEANUP') then
-        fail('the death word is not cleared when the match ends',
-             'a death in the last ten seconds would draw it over the verdict '
-             .. 'screen')
+    -- ═══ #204: IT IS A MATCH-SCOPED SURFACE, NOT A LIST OF TRANSITIONS ═══
+    --
+    -- This gate used to pin the LIST -- "cleared on ENDED or CLEANUP" -- and the
+    -- list is what was wrong. It named the four transitions a round normally
+    -- passes through and could not name the one it was missing, so the word
+    -- walked out of every exit that was not "the match ended underneath you":
+    -- the owner went down, left, and read ELIMINATED across the lobby.
+    --
+    -- What is pinned now is the RULE. The word registers as a surface belonging
+    -- to a match in progress, and the edges that mean "the match is over for
+    -- this player" reach it through that registration. tools/test_matchexit.lua
+    -- drives each of those edges with the real message shapes; these four are
+    -- the wiring a grep can see, and each of them is a silent failure if it is
+    -- deleted -- no error, no log, just a word that stays.
+    if not state:find('BR%.MatchSurface%([^\n]*clearDeathVerdict') then
+        fail('the death word is not registered as a match-scoped surface',
+             'without the registration it is cleared by whichever transitions '
+             .. 'somebody remembered, which is how #204 happened')
+    end
+    if not state:find('d%.state ~= BR%.MatchState%.PLAYING') then
+        fail('the match-state teardown is a list again, not "anything but a '
+             .. 'live match"',
+             'the list that shipped was missing WAITING -- the state a LEAVER '
+             .. "'s own mirror settles into -- which was the reported bug")
+    end
+    if not state:find('BR%.NotifyClear%(%)%s+dismissMatchSurfaces%(%)') then
+        fail('nothing dismisses match surfaces on the LOBBY edge',
+             'that edge is the one transition EVERY exit from a match passes '
+             .. 'through; it is where the sticky-notice broom already lives')
+    end
+    if not state:find('dismissMatchSurfaces%(true%)') then
+        fail('br_core starting does not force a dismissal',
+             'br_ui does not restart with us, so the page can be holding '
+             .. 'show=true with the deadline that would retire it gone -- a '
+             .. 'word that never comes down at all')
+    end
+
+    -- AND THE FORCED PATH ACTUALLY DOES SOMETHING. A `force` argument that the
+    -- dismissal ignores is the same no-op wearing a different name, and the
+    -- case it covers is invisible from a chair until somebody restarts br_core.
+    if not state:find('deathVerdictUntil == 0 and force ~= true') then
+        fail('clearDeathVerdict does not honour the forced dismissal',
+             'a fresh Lua state has deathVerdictUntil = 0, so without this the '
+             .. 'one call that could correct a stale page does nothing')
+    end
+
+    -- AND A REVIVE TAKES IT WITH IT. #144's held death puts the roster through
+    -- DEAD for real, so the word goes up for somebody who is about to be stood
+    -- back up -- and the revive lands on the transition into PLAYING, which is
+    -- the one match state a match-scoped surface survives.
+    local revivedAt = state:find('BR%.Net%.REVIVED, function')
+    if revivedAt and not state:sub(revivedAt, revivedAt + 400)
+                              :find('dismissMatchSurfaces') then
+        fail('a revive does not take the death word down',
+             'the player is alive and fighting with ELIMINATED across the '
+             .. 'screen for the rest of the window')
     end
 end
 

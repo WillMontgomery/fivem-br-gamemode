@@ -147,7 +147,14 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # disabled nothing" is a step of the loop, not a string in a file. A
     # spectator who cannot move after a match is a worse bug than the accidental
     # gunshot that prompted the work.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua; do
+    # test_matchexit.lua is the second suite to load a CLIENT file, and it loads
+    # the biggest one -- client/state.lua, the whole mirror -- because the
+    # property it pins is a sequence rather than a value: every way out of a
+    # match has to take the match's surfaces with it (#204). A death word that
+    # walks into the lobby is not visible to any static check; it is visible in
+    # one batch of roster deltas shaped the way server/match.lua really shapes
+    # them, which is what this drives.
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1
