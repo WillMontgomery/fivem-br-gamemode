@@ -1906,6 +1906,13 @@ local function newTimelineWorld()
         -- geo.lua comes first only because weapons.lua calls BR.NormHash.
         'br_lib/shared/geo.lua',
         'br_lib/config/weapons.lua',
+        -- THE REAL REFUSAL WORDS, for the same reason the weapon table is real.
+        -- A vehicle corroboration now carries BR.Config.VehicleRefusal's own
+        -- prose (see the `br:core:vehicle` handler), and a literal spelled in a
+        -- test would still pass the day somebody re-words the config -- which is
+        -- precisely the drift the cases below exist to catch. It loads AFTER
+        -- geo.lua because it calls BR.NormHash at load time.
+        'br_lib/config/vehicles.lua',
         'br_lib/shared/evidence_buf.lua',
         'br_lib/shared/incident_build.lua',
     }) do
@@ -2106,6 +2113,28 @@ local function newTimelineWorld()
                 subjectLicense = license,
             })
         end
+    end
+
+    --- One refused-vehicle announcement, in the shape server/vehicles.lua sends.
+    ---
+    --- FIRED AT THIS FILE'S HANDLER DIRECTLY rather than through the detector,
+    --- which is deliberate and is the same split `W.file` makes for refusals:
+    --- server/vehicles.lua decides WHEN to announce (the population guard, the
+    --- 900ms throttle, the bar of two) and tools/test_shared.lua drives the real
+    --- handler for all of that. What is under test here is what
+    --- server/incident.lua does with the announcement once it arrives.
+    ---
+    --- `count` STARTS AT 2 BECAUSE THE DETECTOR'S FIRST ANNOUNCEMENT DOES. The
+    --- first refused vehicle is counted and announced to nobody; `seq` is which
+    --- announcement this is, so seq 1 opens the case and 2+ corroborate it.
+    --- @param why string|nil  a BR.Config.VehicleRefusal value, or nil for none
+    function W.vehicle(src, matchId, license, name, count, seq, why)
+        env.TriggerEvent('br:core:vehicle', {
+            src = src, name = name, license = license, matchId = matchId,
+            count = count, seq = seq,
+            why = why,
+            at = S.now,
+        })
     end
 
     --- The acknowledgement br_ringmaster sends once a row is durable.
@@ -3242,6 +3271,180 @@ do
 
     ok(#W.S.incidents == 0, 'a match with no strips files nothing')
     ok(#W.S.closes == 0, 'and closes nothing -- zero writes', #W.S.closes)
+end
+
+-- ======================================================================== --
+-- A REFUSED VEHICLE READS AS A VEHICLE, START TO FINISH  (#193, playtest)
+-- ======================================================================== --
+--
+-- THE OWNER, 2026-08-22: "when getting in an unauthorized vehicle, the incident
+-- is described in ringmaster as an unauthorized weapon."
+--
+-- WHERE THAT CAME FROM, AND WHY NO PURE-FUNCTION TEST COULD HAVE CAUGHT IT.
+-- BR.IncidentBuild.fromVehicle was correct and is covered in test_shared.lua:
+-- the CASE has always said "N refused vehicles spawned this match -- vehicle
+-- flies". What was wrong was the CORROBORATION, which is built in
+-- server/incident.lua and not in br_lib at all -- the whole block was copied
+-- from the strip handler above it, `reason` included, and that field is the
+-- literal sentence "weapon is not one this gamemode issues". Ringmaster prints
+-- it verbatim onto the case's timeline. So the queue row said vehicle and every
+-- row underneath it said weapon.
+--
+-- WHICH IS WHY THESE CASES ARE HERE RATHER THAN IN test_shared.lua. The whole
+-- of this file's `br:core:vehicle` handler had no coverage of any kind; the
+-- functions under it were fully covered and entirely correct. That is the same
+-- gap the header of the strip section describes and the same one this suite
+-- exists to close: a caller wiring correct functions together wrongly.
+--
+-- MUTATION TESTED, which is the only reason to trust any of it. Each was broken
+-- on purpose and this suite watched to fail by name; the counts are what was
+-- observed rather than what was expected:
+--
+--   `reason` goes back to ShotRefusal.NO_WEAPON   5 cases  (the reported bug)
+--   `reason` defaults: `ev.why or NO_WEAPON`      1 case
+--   the corroboration severity becomes 'normal'   2 cases
+--   the vehicle path never corroborates          15 cases
+
+describe('vehicle.the-case-reads-as-a-vehicle')
+do
+    local W = newTimelineWorld()
+    local V = W.BR.Config.VehicleRefusal
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:pilot', 'Pilot')
+
+    -- THE DETECTOR'S FIRST ANNOUNCEMENT IS THE SECOND OFFENCE. See the bar in
+    -- server/vehicles.lua; `count` is offences and `seq` is announcements.
+    W.at(4000); W.vehicle(1, 7, 'license:pilot', 'Pilot', 2, 1, V.FLIES)
+
+    local p = W.lastIncident()
+    ok(p ~= nil, 'a refused vehicle files a case')
+    ok(p and p.kind == 'anticheat' and p.category == 'system',
+        'in the anticheat shape, filed by nobody')
+    ok(p and p.summary == '2 refused vehicles spawned this match -- vehicle flies',
+        'and the one line an admin reads is about a VEHICLE', p and p.summary)
+    -- THE WORD THAT MUST NOT BE IN IT. Asserted as an absence rather than only
+    -- as the sentence above, because the sentence could be re-worded correctly
+    -- while somebody re-borrowed the shot taxonomy for one of its halves.
+    ok(p and not p.summary:find('weapon is not one this gamemode issues'),
+        'and never as the shot validator\'s sentence about weapons', p and p.summary)
+end
+
+describe('vehicle.corroborations-read-as-vehicles-too')
+do
+    -- ═══ THE REGRESSION THE OWNER REPORTED, PINNED ═══
+    local W = newTimelineWorld()
+    local V = W.BR.Config.VehicleRefusal
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:pilot', 'Pilot')
+
+    W.at(4000); W.vehicle(1, 7, 'license:pilot', 'Pilot', 2, 1, V.FLIES)
+    W.ack(7, 'license:pilot', 'inc-veh')
+
+    -- A JET, THEN A TANK. The detector sends the LATEST reason, so the two
+    -- corroborations carry different halves of the owner's rule -- which is the
+    -- property a single borrowed constant destroyed.
+    W.at(5000); W.vehicle(1, 7, 'license:pilot', 'Pilot', 3, 2, V.FLIES)
+    W.at(6000); W.vehicle(1, 7, 'license:pilot', 'Pilot', 4, 3, V.ARMED)
+
+    ok(#W.S.incidents == 1, 'three refused vehicles are ONE case', #W.S.incidents)
+    ok(#W.S.corroborations == 2, 'and two corroborations', #W.S.corroborations)
+
+    local c1, c2 = W.S.corroborations[1], W.S.corroborations[2]
+    ok(c1 and c1.incidentId == 'inc-veh' and c2 and c2.incidentId == 'inc-veh',
+        'both against the case the write came back with')
+
+    -- THE ASSERTION THIS WHOLE SECTION EXISTS FOR.
+    ok(c1 and c1.reason == V.FLIES,
+        'the first corroboration says why the VEHICLE was refused',
+        c1 and tostring(c1.reason))
+    ok(c2 and c2.reason == V.ARMED,
+        'and the second carries the reason that tripped THIS time, not the first',
+        c2 and tostring(c2.reason))
+
+    local weaponish = false
+    for _, c in ipairs(W.S.corroborations) do
+        if c.reason == W.BR.ShotRefusal.NO_WEAPON then weaponish = true end
+    end
+    ok(not weaponish,
+        'and neither of them describes a vehicle case as an unissued weapon')
+
+    -- THE TIER IS STILL THE TAXONOMY'S, which is the half that was right to
+    -- borrow: 'high' is a triage hint with no prose in it, and it must agree
+    -- with the severity fromVehicle put on the case they attach to.
+    ok(c1 and c1.severity == W.BR.ShotTier[W.BR.ShotRefusal.NO_WEAPON],
+        'severity still comes from the taxonomy rather than from a literal',
+        c1 and tostring(c1.severity))
+    ok(c1 and c1.severity == W.lastIncident().severity,
+        'and grades the corroboration exactly as the case itself is graded')
+
+    -- THE WIRE COUNTERS, the same pair the strip path pins. A gap in either
+    -- means a LOST message rather than quiet offences in between.
+    ok(c1 and c1.seq == 2 and c2 and c2.seq == 3,
+        'seq counts the announcements', c1 and tostring(c1.seq))
+    ok(c1 and c1.count == 3 and c2 and c2.count == 4,
+        'and count counts the offences', c1 and tostring(c1.count))
+end
+
+describe('vehicle.no-reason-is-said-rather-than-invented')
+do
+    -- A `why` THAT NEVER ARRIVED LEAVES THE FIELD ABSENT. The console drops the
+    -- `last:` clause of its note entirely when `reason` is missing, which is
+    -- honest; a fallback here would put the shot taxonomy's sentence back on a
+    -- vehicle case through the one door this fix closed.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:pilot', 'Pilot')
+
+    W.at(4000); W.vehicle(1, 7, 'license:pilot', 'Pilot', 2, 1, nil)
+    W.ack(7, 'license:pilot', 'inc-veh')
+    W.at(5000); W.vehicle(1, 7, 'license:pilot', 'Pilot', 3, 2, nil)
+
+    local c = W.S.corroborations[1]
+    ok(c ~= nil, 'it still corroborates')
+    ok(c and c.reason == nil, 'and says nothing rather than guessing a reason',
+        c and tostring(c.reason))
+    ok(c and c.severity ~= nil, 'while the triage hint still travels')
+end
+
+describe('vehicle.a-licenseless-connection-files-nothing')
+do
+    -- THE RULE EVERY PRODUCER HERE SHARES. A case keyed to a server id is a case
+    -- about whoever holds that slot next, and server ids are recycled within the
+    -- minute. server/vehicles.lua sends nil rather than a sentinel when
+    -- BR.Roster.licenseOf has no answer.
+    local W = newTimelineWorld()
+    W.startMatch(7, 1000)
+
+    W.at(4000); W.vehicle(1, 7, nil, 'Ghost', 2, 1, W.BR.Config.VehicleRefusal.FLIES)
+
+    ok(#W.S.incidents == 0, 'no license, no case', #W.S.incidents)
+    ok(#W.S.corroborations == 0, 'and nothing to corroborate either')
+end
+
+describe('vehicle.crosses-kinds-with-the-strip-path')
+do
+    -- ONE PLAYER, ONE ROUND, ONE RECORD -- whichever thing they did first opened
+    -- it. This is `priorFor` being shared rather than per-kind, and it is the
+    -- reason the corroboration's `reason` has to be the DETECTOR's word: a
+    -- vehicle corroborating a strip case is exactly where a borrowed constant
+    -- looks correct and is not.
+    local W = newTimelineWorld()
+    local V = W.BR.Config.VehicleRefusal
+    W.startMatch(7, 1000)
+    W.join(1, 7, 'license:cheat', 'Cheater')
+
+    W.at(4000); W.strip(1, CONJURED)   -- recorded, announced to nobody
+    W.at(5000); W.strip(1, CONJURED)   -- opens a STRIP case
+    W.ack(7, 'license:cheat', 'inc-strip')
+
+    W.at(6000); W.vehicle(1, 7, 'license:cheat', 'Cheater', 2, 1, V.ARMED)
+
+    ok(#W.S.incidents == 1, 'the vehicle opens no second case', #W.S.incidents)
+    local c = W.S.corroborations[#W.S.corroborations]
+    ok(c and c.incidentId == 'inc-strip', 'it appends to the case already open')
+    ok(c and c.reason == V.ARMED,
+        'and still says what the VEHICLE did, on a case a weapon opened',
+        c and tostring(c.reason))
 end
 
 -- ======================================================================== --

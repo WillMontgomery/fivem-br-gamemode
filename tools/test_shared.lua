@@ -7206,6 +7206,177 @@ do
     ok(BR.Config.IsFlyingVehicleType(42) == false, 'and neither does a number')
 end
 
+-- ---------------------------------------------------------------------------
+-- The strip payload, which had no coverage at all until 2026-08-22.
+-- ---------------------------------------------------------------------------
+--
+-- WHY THAT GAP MATTERED MORE THAN A MISSING TEST USUALLY DOES.
+-- `BR.IncidentBuild.fromStrip` and `.fromVehicle` return the SAME payload block
+-- verbatim apart from one line, and `fromVehicle` is the one that was written
+-- second, by copying. So `fromStrip` was the specification for a function that
+-- had tests, while itself having none -- and every property the vehicle cases
+-- below assert was, on this side, merely believed.
+--
+-- IT IS ALSO THE HALF THAT DECIDES WHAT AN ADMIN READS. The two summaries are
+-- deliberately different sentences (see the note above `stripSummaryOf`): a
+-- strip says a weapon appeared in a hand, a refused vehicle says a vehicle
+-- appeared in the match, and the day those two converge is the day a moderation
+-- record describes one finding as the other. The owner reported exactly that
+-- failure on the corroboration channel on 2026-08-22; these cases pin the door
+-- it did NOT come through, so that it stays shut.
+--
+-- MUTATION TESTED. Each was broken on purpose and this suite watched to fail by
+-- name; the counts are what was observed rather than what was expected:
+--
+--   `fromStrip` reuses `summaryOf`                     2 cases
+--   `fromStrip` reuses `vehicleSummaryOf`              2 cases
+--   `fromStrip` drops the license guard                2 cases
+--   `stripSummaryOf` loses its singular/plural rule    1 case
+--   `fromStrip` grows a reporter                       1 case
+--   the strip severity becomes a hardcoded 'high'      1 case
+--   the vehicle severity becomes a hardcoded 'high'    1 case
+--   `fromStrip` reads the OLDEST evidence record       2 cases
+--
+-- TWO OF THOSE SURVIVED THE FIRST PASS AND BOTH ARE WORTH KNOWING. Hardcoding
+-- 'high' failed NOTHING, because `out.severity == BR.ShotTier[NO_WEAPON]`
+-- compares a value against the lookup that produced it -- the pre-existing
+-- vehicle case had the identical blind spot. Re-grading the table and watching
+-- the payload move is what closes it, and both blocks now do that. Reading
+-- `evidence[1]` instead of the newest record also failed nothing, because the
+-- case handed the builder ONE record; it now hands it two with different squads.
+
+describe('incident.strip')
+do
+    local LIC = 'license:hand'
+    local CLEAR = {}
+    local function ev(over)
+        local e = {
+            src = 4, name = 'Palmer', license = LIC, matchId = 9,
+            count = 2, seq = 1, at = 55000,
+        }
+        for k, v in pairs(over or {}) do
+            e[k] = (v ~= CLEAR) and v or nil
+        end
+        return e
+    end
+
+    ok(select(1, BR.IncidentBuild.fromStrip(nil, {})) == nil,
+        'no event files nothing rather than throwing')
+
+    local p, why = BR.IncidentBuild.fromStrip(ev({ license = CLEAR }), {})
+    ok(p == nil and why == 'no license',
+        'a strip with no license files nothing, and says why')
+    ok(select(1, BR.IncidentBuild.fromStrip(ev({ license = '' }), {})) == nil,
+        'an empty license is treated as no license')
+
+    local out = BR.IncidentBuild.fromStrip(ev(), {})
+    ok(out ~= nil, 'a licensed event files')
+    ok(out.kind == 'anticheat' and out.category == 'system',
+        'it reuses the anticheat shape rather than inventing a third')
+    ok(out.state == 'pending_review', 'and lands in the review queue')
+    ok(out.subjectLicense == LIC and out.subjectName == 'Palmer',
+        'the subject is the player whose hand it was in')
+    ok(out.matchId == 9 and out.atGameMs == 55000,
+        'the match and the GAME clock ride along -- br_ringmaster realises the clock')
+    ok(out.openedAt == nil,
+        'and openedAt is NOT set here: br_core has no clock worth putting in a record')
+
+    -- SEVERITY IS READ, NOT SPELLED, exactly as the vehicle cases below assert.
+    ok(out.severity == BR.ShotTier[BR.ShotRefusal.NO_WEAPON],
+        'severity comes from the taxonomy, not from a literal here')
+
+    -- ...AND THAT ASSERTION ALONE PROVES NOTHING, WHICH IS WORTH KNOWING.
+    -- `BR.ShotTier[NO_WEAPON]` is 'high' today, so the line above passes
+    -- identically against a hardcoded 'high' -- verified by making that
+    -- substitution and watching the whole suite stay green. Comparing a value
+    -- against the lookup that produced it cannot tell a lookup from a copy of
+    -- its answer.
+    --
+    -- SO THE TAXONOMY IS RE-GRADED AND THE PAYLOAD HAS TO FOLLOW. The tier is
+    -- read at CALL time, not captured at load, which is the property the claim
+    -- actually rests on: re-grade NO_WEAPON and every producer moves with it
+    -- instead of one of them disagreeing. Restored immediately -- this table is
+    -- global to the suite and every case after this one reads it.
+    local realTier = BR.ShotTier[BR.ShotRefusal.NO_WEAPON]
+    BR.ShotTier[BR.ShotRefusal.NO_WEAPON] = 'low'
+    local regraded = BR.IncidentBuild.fromStrip(ev(), {})
+    BR.ShotTier[BR.ShotRefusal.NO_WEAPON] = realTier
+    ok(regraded and regraded.severity == 'low',
+        're-grading the taxonomy re-grades the case, so it is genuinely read',
+        regraded and tostring(regraded.severity))
+    ok(BR.ShotTier[BR.ShotRefusal.NO_WEAPON] == realTier,
+        'and the table is put back for every case after this one')
+
+    -- NO REPORTER AT ALL -- absent rather than null, which is how the console
+    -- reads "the system filed this". A sentinel here would make an anticheat
+    -- filing look like a player report from nobody.
+    ok(out.reporterLicense == nil and out.reporterName == nil,
+        'no reporter key is set, so the console reads it as system-filed')
+
+    -- NO REFUSAL BLOCK. That field carries `count` and `windowMs` from the shot
+    -- validator and the console renders it as refused shots; a strip has neither
+    -- number, and inventing them would dress up the finding.
+    ok(out.refusal == nil, 'no refusal block is invented for a case with no shots')
+
+    -- ═══ THE SENTENCE, WHICH IS THE WHOLE POINT OF NOT REUSING summaryOf ═══
+    ok(BR.IncidentBuild.stripSummaryOf(1)
+        == '1 unissued weapon taken out of the hand this match',
+        'the summary is singular at one')
+    ok(BR.IncidentBuild.stripSummaryOf(2)
+        == '2 unissued weapons taken out of the hand this match',
+        'and plural above it')
+    ok(out.summary == BR.IncidentBuild.stripSummaryOf(2),
+        'the payload carries that summary rather than a second spelling of it')
+    -- NO SHOT WAS FIRED. `summaryOf` says "%d shots refused"; putting a number
+    -- of shots on a case that has none is the small lie this sentence exists to
+    -- avoid, and it is asserted as an absence so a re-wording cannot reintroduce
+    -- it.
+    ok(not out.summary:find('shot'),
+        'and it never claims a shot was refused', out.summary)
+    -- ...AND IT IS NOT THE VEHICLE ONE EITHER. The two functions are one copy
+    -- apart; this is the assertion that fails if they are ever collapsed.
+    ok(out.summary ~= BR.IncidentBuild.vehicleSummaryOf(2, nil)
+        and not out.summary:find('vehicle'),
+        'nor the refused-vehicle sentence', out.summary)
+
+    -- Rubbish in the count must not reach a moderation record as "nil".
+    ok(BR.IncidentBuild.stripSummaryOf(nil):find('^0 unissued weapons'),
+        'a missing count reads as zero rather than as nil')
+
+    -- ═══ THE SUBJECT ROW IS BUILT FROM THE NEWEST EVIDENCE RECORD ═══
+    --
+    -- It is what carries the squad the console needs to answer "were these two
+    -- on a team", and squads change during a match. TWO RECORDS RATHER THAN ONE,
+    -- with different squads, because a single record makes `evidence[#evidence]`
+    -- and `evidence[1]` the same value -- verified by making that substitution
+    -- and watching a one-record case stay green.
+    local older = {
+        key = 4, license = LIC, name = 'Palmer', matchId = 9, squadId = 2,
+        openedAt = 10000, leftAt = nil, chat = {}, kills = {},
+    }
+    local newer = {
+        key = 4, license = LIC, name = 'Palmer', matchId = 9, squadId = 5,
+        openedAt = 30000, leftAt = 40000, chat = {}, kills = {},
+    }
+    local withEv = BR.IncidentBuild.fromStrip(ev(), { older, newer })
+    ok(withEv.subjects and #withEv.subjects == 1, 'there is one subject')
+    ok(withEv.subjects[1].squadId == 5,
+        'the squad comes from the NEWEST record, not the first one in the list',
+        withEv.subjects[1] and tostring(withEv.subjects[1].squadId))
+    ok(withEv.subjects[1].left == true,
+        'and so does whether they had already gone',
+        withEv.subjects[1] and tostring(withEv.subjects[1].left))
+    ok(#withEv.evidence == 2, 'both evidence records are attached', #withEv.evidence)
+    ok(withEv.evidence[1].key == nil and withEv.evidence[2].key == nil,
+        'and the server id is on neither of them')
+
+    -- NO EVIDENCE IS NOT AN ERROR. A strip during warmup can precede anything
+    -- the buffer holds, and the case must still open.
+    ok(out.subjects and out.subjects[1] and out.subjects[1].squadId == nil,
+        'with no records the squad is absent rather than invented')
+    ok(out.subjects[1].left == false, 'and "already gone" is false rather than nil')
+end
+
 describe('incident.vehicle')
 do
     local LIC = 'license:veh'
@@ -7245,6 +7416,21 @@ do
     -- follows instead of disagreeing.
     ok(ok1.severity == BR.ShotTier[BR.ShotRefusal.NO_WEAPON],
         'severity comes from the taxonomy, not from a literal here')
+
+    -- ...PROVED THE ONLY WAY IT CAN BE. See the identical note in
+    -- `incident.strip` above: the line above survives a hardcoded 'high'
+    -- verbatim, because it compares a value against the lookup that produced
+    -- it. Re-grading the table and watching the payload move is what makes the
+    -- claim testable at all.
+    local realTier = BR.ShotTier[BR.ShotRefusal.NO_WEAPON]
+    BR.ShotTier[BR.ShotRefusal.NO_WEAPON] = 'low'
+    local regraded = BR.IncidentBuild.fromVehicle(ev(), {})
+    BR.ShotTier[BR.ShotRefusal.NO_WEAPON] = realTier
+    ok(regraded and regraded.severity == 'low',
+        're-grading the taxonomy re-grades the case, so it is genuinely read',
+        regraded and tostring(regraded.severity))
+    ok(BR.ShotTier[BR.ShotRefusal.NO_WEAPON] == realTier,
+        'and the table is put back for every case after this one')
 
     -- NO REPORTER AT ALL -- absent rather than null, which is how the console
     -- reads "the system filed this".

@@ -399,13 +399,44 @@ AddEventHandler('br:core:vehicle', function(ev)
             name       = ev.name,
             seq        = ev.seq,
             count      = ev.count,
-            -- THE TAXONOMY'S OWN SENTENCE, exactly as the strip path borrows it:
-            -- "weapon is not one this gamemode issues". It is the closest true
-            -- statement in an enum that is about shots, and the case's own
-            -- summary says what actually happened. A fourth refusal value
-            -- invented here would be a fourth thing the console has to learn to
-            -- render for a finding it already triages correctly.
-            reason     = BR.ShotRefusal.NO_WEAPON,
+            -- ═══ THIS DETECTOR'S OWN WORDS, NOT THE SHOT TAXONOMY'S ═══
+            --
+            -- THIS LINE USED TO READ `BR.ShotRefusal.NO_WEAPON` AND THAT WAS THE
+            -- BUG the owner reported on 2026-08-22: "when getting in an
+            -- unauthorized vehicle, the incident is described in ringmaster as an
+            -- unauthorized weapon". It was borrowed verbatim from the strip
+            -- handler above, along with the rest of this block, on the reasoning
+            -- that it was "the closest true statement in an enum that is about
+            -- shots". It is not a true statement at all here: that enum value IS
+            -- the sentence "weapon is not one this gamemode issues", and the
+            -- console prints `reason` straight onto the case's timeline -- see
+            -- Ringmaster's src/app/api/ingest/route.ts, which composes the note
+            -- as `N refusals this match · last: <reason> · worst: <severity>`.
+            -- So every corroboration on a vehicle case described it as a weapon
+            -- finding, in the one place on the page that says what is STILL
+            -- happening.
+            --
+            -- `ev.why` IS THE FIELD THAT ALREADY EXISTS FOR THIS. config/
+            -- vehicles.lua's BR.Config.VehicleRefusal values -- "vehicle flies",
+            -- "vehicle has built-in weapons" -- are the two halves of the owner's
+            -- rule in the owner's words, and server/vehicles.lua already puts the
+            -- one that tripped on the wire. It is the same string
+            -- BR.IncidentBuild.vehicleSummaryOf builds the case's own summary
+            -- from, so the case and its corroborations now say the same thing
+            -- rather than two different ones.
+            --
+            -- NOT DEFAULTED, DELIBERATELY. A `why` that never arrived leaves this
+            -- nil, the field does not travel, and the console's note drops the
+            -- `last:` clause entirely -- which is honest. A fallback of
+            -- NO_WEAPON here would reintroduce exactly the sentence this line
+            -- exists to stop.
+            reason     = ev.why,
+            -- THE TIER IS STILL READ FROM THE TAXONOMY, and that is not the same
+            -- borrowing. `severity` is 'high'/'normal'/'low' -- a triage hint,
+            -- with no prose in it and nothing to mis-describe -- and it is read
+            -- from the same place BR.IncidentBuild.fromVehicle reads it, so the
+            -- corroborations cannot grade the finding differently from the case
+            -- they attach to.
             severity   = BR.ShotTier[BR.ShotRefusal.NO_WEAPON],
             at         = ev.at,
         })
