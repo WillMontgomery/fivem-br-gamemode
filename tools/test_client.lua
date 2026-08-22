@@ -3996,6 +3996,112 @@ do
        ('`spectated` appears %d time(s), expected 3'):format(reads))
 end
 
+describe('a spectator\'s click does not reach their own ped')
+do
+    -- "I had a gun in hand and accidentally shot it while in spectate. My
+    -- preference would be we disable all ped actions while in spectate" -- the
+    -- owner, 2026-08-22.
+    --
+    -- ═══ WHY THE ANSWER IS NOT ENTIRELY IN client/spectate.lua ═══
+    --
+    -- That file holds down every control a ped acts through, which stops the
+    -- ENGINE reacting to them. THIS file is not the engine. The two readers
+    -- below are `IsDisabledControlJustPressed`, which is documented -- in this
+    -- very file, twice -- to see a control somebody has suppressed; that is the
+    -- whole reason the disabled variants exist and it is how the spectate keys
+    -- themselves keep working. So a suppressed left mouse button went on
+    -- drinking a shield potion, and a suppressed scroll wheel went on swapping
+    -- the weapon in the ped's hand. A longer list in the other file cannot
+    -- reach either of them.
+    --
+    -- ═══ AND WHY ONLY AN ADMIN EVER HIT IT ═══
+    --
+    -- canArm() is false for DEAD and SPECTATING, so a dead player watching
+    -- their squad returns before both readers and always did. An ADMIN
+    -- spectator is ALIVE -- the console's button asks only that they be in game
+    -- -- holding their own loadout, and fell straight through. Which is exactly
+    -- the asymmetry the whole spectate feature keeps having to be reminded of.
+    local realSpectate = BR.Spectate
+    local spectating = false
+    BR.Spectate = { active = function() return spectating end }
+
+    local realPressed = IsDisabledControlJustPressed
+    local pressing = nil
+    function IsDisabledControlJustPressed(_pad, c) return c == pressing end
+
+    -- An ALIVE admin holding a consumable: the reported position.
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'shield_small', kind = BR.ItemKind.CONSUMABLE,
+                    count = 1 } },
+        ammo = {}, active = 1,
+    })
+
+    local function asked(name)
+        local n = 0
+        for _, s in ipairs(sent) do if s.name == name then n = n + 1 end end
+        return n
+    end
+
+    -- 1. THE BASELINE. Not spectating, the click uses the potion. If this ever
+    --    stops being true the two assertions after it prove nothing at all --
+    --    a gate that blocks something already impossible is a gate that passes
+    --    for the wrong reason.
+    sent = {}
+    pressing = 24                                    -- INPUT_ATTACK
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(asked(BR.Net.INV_USE) == 1,
+       'an alive player clicking with a consumable in hand uses it',
+       ('%d INV_USE'):format(asked(BR.Net.INV_USE)))
+
+    -- 2. THE SAME CLICK, SPECTATING.
+    spectating = true
+    sent = {}
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(asked(BR.Net.INV_USE) == 0,
+       'and the same click while spectating does nothing -- the mouse belongs '
+           .. 'to the camera',
+       ('%d INV_USE'):format(asked(BR.Net.INV_USE)))
+
+    -- 3. THE WHEEL, WHICH IS THE OTHER READER AND A SEPARATE PATH. Swapping the
+    --    weapon in your own ped's hand while watching somebody else's fight is
+    --    the same class of accident as firing it.
+    sent = {}
+    pressing = 15                                    -- WHEEL_UP
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(asked(BR.Net.INV_SELECT) == 0,
+       'and the scroll wheel does not swap the weapon in the spectator\'s hand',
+       ('%d INV_SELECT'):format(asked(BR.Net.INV_SELECT)))
+
+    -- 4. GTA'S WEAPON WHEEL IS STILL SUPPRESSED. The gate sits BELOW the
+    --    suppression loop for this reason: #134's own note names DEAD/
+    --    SPECTATING as a phase the engine's wheel must not appear in, so a gate
+    --    written one block higher would trade one bug for that one.
+    local disabled = {}
+    local realDisable = DisableControlAction
+    function DisableControlAction(_pad, c) disabled[c] = true end
+    BR.Loop.step(BR.Loop.FRAME)
+    DisableControlAction = realDisable
+    ok(disabled[37] == true,
+       'and GTA\'s weapon wheel is still held down while spectating (#134)',
+       'control 37 was not disabled')
+
+    -- 5. IT HANDS BACK. The same property the rest of this feature is built on:
+    --    stop spectating and the click works again, with nothing to reset.
+    spectating = false
+    sent = {}
+    pressing = 24
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(asked(BR.Net.INV_USE) == 1,
+       'and the click comes straight back when the session ends',
+       ('%d INV_USE'):format(asked(BR.Net.INV_USE)))
+
+    pressing = nil
+    IsDisabledControlJustPressed = realPressed
+    BR.Spectate = realSpectate
+end
+
 describe('the start-of-match voice notice says the mode and the real key')
 do
     -- THE SENTENCE IS THE OWNER'S, VERBATIM:

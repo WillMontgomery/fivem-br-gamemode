@@ -875,6 +875,42 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
         DisableControlAction(0, SUPPRESS[i], true)
     end
 
+    -- A SPECTATOR'S MOUSE BELONGS TO THE CAMERA, AND THIS FILE IS THE ONE PLACE
+    -- WHERE DISABLING A CONTROL IS NOT ENOUGH TO SAY SO.
+    --
+    -- "I had a gun in hand and accidentally shot it while in spectate. My
+    -- preference would be we disable all ped actions while in spectate" -- the
+    -- owner, 2026-08-22. client/spectate.lua answers that by holding down every
+    -- control a ped acts through, which stops the ENGINE. It does not stop US:
+    -- the two readers below are `IsDisabledControlJustPressed`, which sees a
+    -- suppressed control on purpose -- the comments beside them say so, twice --
+    -- so a suppressed left mouse button still drank a shield potion and a
+    -- suppressed scroll wheel still swapped the weapon in the ped's hand. Both
+    -- are ped actions, both are the same click the report is about, and neither
+    -- goes away by adding another id to a list somewhere else.
+    --
+    -- IT IS AN ADMIN-ONLY PATH, WHICH IS WHY IT SURVIVED THE FIRST READING. A
+    -- dead player never reaches this line -- canArm() below is false for DEAD
+    -- and SPECTATING -- but the console's Spectate button requires only that an
+    -- admin be in game, so an admin watching a suspect is ALIVE, is holding
+    -- their own loadout, and falls straight through.
+    --
+    -- ABOVE canArm() AND BELOW THE SUPPRESSION, deliberately, and both halves
+    -- of that matter. The weapon wheel is suppressed in EVERY phase (#134) and
+    -- its own note names DEAD/SPECTATING as one of them, so returning before
+    -- that loop would bring GTA's wheel back over the spectate camera. And
+    -- closing the panel is the same call the canArm() branch makes below, for
+    -- the same reason: a panel left open is a cursor over a shot.
+    --
+    -- THE NIL-GUARD FAILS OPEN and that is covered elsewhere rather than here:
+    -- tools/test_client.lua already pins `function BR.Spectate.active` against
+    -- the file that defines it, precisely because voice.lua reaches across the
+    -- same way and a rename would silently answer "not spectating" forever.
+    if BR.Spectate and BR.Spectate.active() then
+        closePanel()
+        return
+    end
+
     if not canArm() then return end
 
     -- NOT WHILE THE PAUSE MENU IS UP, and not while aiming down a scope.

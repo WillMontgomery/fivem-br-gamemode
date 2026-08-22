@@ -135,7 +135,19 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # from the map AABB, and the registry that makes a tank survive its driver.
     # Split across two existing suites, the interesting one -- a car staying dry
     # for whoever gets in next -- would be testable in neither.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua; do
+    #
+    # test_spectate.lua is the fifth exception and the only CLIENT one besides
+    # test_client itself. It stands up br_core/client/spectate.lua, which no
+    # other suite loads -- test_client stubs BR.Spectate and says in a comment
+    # why. That was right while the only thing read out of that file was
+    # `active()`; it stopped being right when the file grew a rule about the
+    # player's OWN ped. The property it exists for is not "which controls are in
+    # the list" -- a text gate could do that -- it is that the list is let go on
+    # every path out of a session, and "the frame after the session ended
+    # disabled nothing" is a step of the loop, not a string in a file. A
+    # spectator who cannot move after a match is a worse bug than the accidental
+    # gunshot that prompted the work.
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1

@@ -330,6 +330,138 @@ BR.Loop.register(BR.Loop.SLOW, 'spectate.open', function()
     ask(0)
 end)
 
+-- ---------------------------------------------------------------- the ped ---
+
+-- THE BODY STAYS PUT WHILE THE EYES ARE ELSEWHERE.
+--
+-- "Admin spectating works great, however I had a gun in hand and accidentally
+-- shot it while in spectate. My preference would be we disable all ped actions
+-- while in spectate -- this would allow them to continue riding passenger seat
+-- in a vehicle for example, but would prevent accidental gun fires or walking
+-- around." -- the owner, 2026-08-22.
+--
+-- ═══ WHY A GUN WENT OFF WHEN ATTACK WAS ALREADY DISABLED ═══
+--
+-- The list this replaces was 21-25 and 30-35: sprint, jump, enter, ATTACK, AIM
+-- and the movement axes. INPUT_ATTACK (24) is the trigger ON FOOT and nowhere
+-- else. A ped in a seat fires on INPUT_VEH_ATTACK (69) or, from a passenger
+-- seat, INPUT_VEH_PASSENGER_ATTACK (92) -- and this gamemode made exactly that
+-- shot work on the same day this was reported.
+-- br_environment/data/vehiclelayouts.meta (#197)
+-- redefines DRIVEBY_DEFAULT_ONE_HANDED to admit every firearm in
+-- br_lib/config/weapons.lua, so "passenger with a rifle" is a supported
+-- position here in a way it is not in the base game. The half of the trigger
+-- that was covered was the half an admin sitting in a car does not use.
+--
+-- The same reading finds the rest: INPUT_ATTACK2 (257) and
+-- INPUT_MELEE_ATTACK_ALTERNATE (142) are the same physical left mouse button as
+-- 24 under different ids, and a throwable is INPUT_THROW_GRENADE (58) with
+-- INPUT_DETONATE (47) behind it -- both live, because grenades, sticky bombs
+-- and molotovs are real loot here (br_lib/config/loot.lua) and check_driveby's
+-- own note records that thrown weapons already work from a seat.
+--
+-- ═══ EVERY ID BELOW WAS LOOKED UP, NOT REMEMBERED ═══
+--
+-- docs.fivem.net/docs/game-references/controls and the citizenfx/fivem-docs
+-- source of the same table, 2026-08-22, cross-checked against each other. That
+-- matters more than usual here because client/inventory.lua's panel block --
+-- the nearest thing to prior art -- labels 68 "VEH_ATTACK" and 69
+-- "VEH_PASSENGER_ATTACK" in its comments, and both are wrong: 68 is
+-- INPUT_VEH_AIM, 69 is INPUT_VEH_ATTACK, and the real
+-- INPUT_VEH_PASSENGER_ATTACK is 92, which appears in that file nowhere at all.
+-- Copying a neighbour's comment is how the id nobody checked gets a second home.
+--
+-- ═══ WHAT IS DELIBERATELY NOT HERE ═══
+--
+--   1 and 2 (LOOK_LR / LOOK_UD). The camera below ORBITS on them, through
+--   GetControlNormal -- which answers 0.0 for a disabled control. Adding them
+--   would take the spectator's ability to look around, silently, and the fix
+--   would look like a broken camera rather than a control list. The ped turning
+--   on the spot behind a shot that is somewhere else entirely is invisible and
+--   costs nothing.
+--
+--   THE DRIVING CONTROLS (59-64, 71-76 and the flight equivalents). Not asked
+--   for, and the failure is asymmetric: a spectating driver who cannot brake is
+--   a car rolling into the sea with a player inside it, and it is somebody
+--   else's car in somebody else's fight. Their WEAPONS are covered -- a driver
+--   fires on 69/70 like anybody else -- which is the half the report is about.
+--
+--   199 and 200 (FRONTEND_PAUSE). The pause menu is how spectating is STOPPED.
+--
+-- ═══ IT IS A SUPERSET OF DOWNED_BLOCKED, AND NOT A SHARED COPY OF IT ═══
+--
+-- client/dbno.lua solved a version of this once and the first eleven entries
+-- below are its first eleven, so the overlap is real and worth naming. The
+-- lists are still two, for two reasons that are not tidiness:
+--
+--   * DOWNED_BLOCKED IS READ BACK. dbno.lua disables 30-35 and then drives the
+--     crawl off GetDisabledControlNormal on those same ids -- "disabled-then-
+--     read", in its words. Nothing here reads anything back. One array serving
+--     both would be an array whose entries mean "suppressed" in one file and
+--     "claimed" in the other, and the next person to add one would have to know
+--     which.
+--
+--   * A DOWNED PED HOLDS NOTHING. dbno.lua takes the weapon away before it
+--     disables anything, so the seat and trigger ids below would be dead weight
+--     there -- while a SPECTATING ped may be an admin who is alive, armed, and
+--     mid-match. Widening DOWNED_BLOCKED to cover this would be a behaviour
+--     change to the file that owns the #164 clone-sync beat, bought for nothing.
+--
+-- What IS shared is a direction, and tools/test_spectate.lua pins it: every id
+-- in DOWNED_BLOCKED must appear here. Add a control to the downed list and this
+-- one is made to catch up; the drift that is allowed is the drift that is safe.
+local BLOCKED = {
+    -- ON FOOT. These eleven are DOWNED_BLOCKED's first eleven, verbatim.
+    21, 22, 23, 24, 25,        -- SPRINT, JUMP, ENTER, ATTACK, AIM
+    30, 31, 32, 33, 34, 35,    -- MOVE_LR/UD, MOVE_UP/DOWN/LEFT/RIGHT_ONLY
+    -- ...and these six close the rest of DOWNED_BLOCKED, which stops here.
+    44, 75,                    -- COVER, VEH_EXIT
+    140, 141, 142, 143,        -- MELEE_ATTACK_LIGHT/HEAVY/ALTERNATE, _BLOCK
+
+    -- THE REST OF THE TRIGGER ON FOOT. Nothing a downed player could reach.
+    45, 47, 58,                -- RELOAD, DETONATE, THROW_GRENADE
+    257, 263, 264,             -- ATTACK2, MELEE_ATTACK1, MELEE_ATTACK2
+
+    -- FROM A SEAT, which is the reported case and the one 24 never covered.
+    68, 69, 70,                -- VEH_AIM, VEH_ATTACK, VEH_ATTACK2
+    91, 92,                    -- VEH_PASSENGER_AIM, VEH_PASSENGER_ATTACK
+    114, 331,                  -- VEH_FLY_ATTACK, VEH_FLY_ATTACK2
+    345, 346, 347,             -- VEH_MELEE_HOLD, VEH_MELEE_LEFT/RIGHT
+}
+
+-- ═══ RESTORATION CANNOT BE FORGOTTEN, BECAUSE NOTHING RESTORES ═══
+--
+-- DisableControlAction lasts EXACTLY ONE FRAME, and that is the whole safety
+-- argument rather than an implementation detail. There is no start call, no
+-- stop call and therefore no exit path that can fail to make one: the stop
+-- message, the match ending, a death, a disconnect, a resource restart on
+-- either side, the loop registry suspending this callback after five throws,
+-- and the game being closed all end in the same place -- this function stops
+-- running, or runs and returns on its first line, and the controls are live on
+-- the next frame. It is the same argument BR.Spectate.active() already makes
+-- for the microphone, in the same file, and it is here for the same reason:
+-- br_ui/client/nui.lua has shipped a focus stack that returned early and left a
+-- screen nobody could raise, and a player who cannot move after a match is that
+-- bug with the volume up.
+--
+-- IT IS KEYED ON `session` AND ON NOTHING ELSE, which is why it is not inside
+-- the camera callback where it used to live. Down there it sat below three
+-- early returns -- no coordinates yet, a build with no camera natives, a
+-- CreateCamWithParams that failed -- so a session that had started but had no
+-- shot yet was a session with a live trigger. The condition for "this player is
+-- spectating" and the condition for "there is a picture" are not the same
+-- condition, and the report is about the first one.
+--
+-- AND IT IS NEVER SILENT. `session ~= nil` is also what puts SPECTATING X and
+-- the two arrow glyphs on screen (pushUi above), so there is no state in which
+-- a player's controls are held and nothing tells them why or which key ends it.
+BR.Loop.register(BR.Loop.FRAME, 'spectate.controls', function()
+    if not session then return end
+    for i = 1, #BLOCKED do
+        DisableControlAction(0, BLOCKED[i], true)
+    end
+end)
+
 -- --------------------------------------------------------------- the shot ---
 
 BR.Loop.register(BR.Loop.FRAME, 'spectate.camera', function()
@@ -431,21 +563,6 @@ BR.Loop.register(BR.Loop.FRAME, 'spectate.camera', function()
 
     SetCamCoord(cam, cx, cy, cz)
     PointCamAtCoord(cam, tx, ty, aimZ)
-
-    -- THE BODY STAYS PUT WHILE THE EYES ARE ELSEWHERE, and this is per-frame
-    -- suppression rather than a freeze on purpose. A latch that sets a flag on
-    -- start and clears it on stop is a flag that can stick, and a stuck freeze
-    -- is a player who cannot move with nothing on screen saying why -- the
-    -- failure keybinds.lua's own gate note calls worse than the leak it closes.
-    -- Suppression that has to be re-asserted every frame cannot outlive the
-    -- session by more than one.
-    --
-    -- IT MATTERS FOR THE ADMIN, NOT THE CORPSE. A dead player's ped is not going
-    -- anywhere; an admin spectating from the lobby would otherwise be running
-    -- around blind, and shooting.
-    for _, control in ipairs({ 21, 22, 23, 24, 25, 30, 31, 32, 33, 34, 35 }) do
-        DisableControlAction(0, control, true)
-    end
 end)
 
 AddEventHandler('onResourceStop', function(res)
@@ -470,6 +587,11 @@ RegisterCommand('brspec', function()
             and ('%.1f %.1f %.1f'):format(want.x, want.y, want.z) or 'nil'))
     end
     print(('  camera   %s'):format(cam and 'up' or 'down'))
+    -- "held this frame" rather than "held": the suppression is re-asserted every
+    -- frame and expires with the frame, so a session that is over reads 0 here
+    -- for the same reason the player can move again.
+    print(('  controls %d held this frame  (0 = the ped is the player\'s again)')
+        :format(session and #BLOCKED or 0))
     print(('  keys     %s / %s'):format(
         BR.Keys.labelFor('brspecprev'), BR.Keys.labelFor('brspecnext')))
 end, false)
