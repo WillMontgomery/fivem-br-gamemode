@@ -744,12 +744,21 @@ describe('config.twoStops')
 -- can go by 25%", which takes the tank from 6,000 to 7,500 -- OUT of the
 -- 4,716..7,074 band the two-stop rule defines.
 --
--- THE TWO ASKS CONFLICT AND THIS SUITE REFUSES TO HIDE IT. The newer one is
--- implemented, so the assertions below now pin ONE stop on the straight
--- diagonal. If the owner decides two stops mattered more, the fix is to put
--- tankMetres back under 7,074 and this block flips back -- and either way the
--- number is a measured consequence rather than a comment somebody stopped
--- believing.
+-- ═══ AND THE OWNER HAS SINCE RETIRED THE RULE, WHICH SETTLES IT ═══
+--
+-- Asked whether the band mattered, they said: "Why does the 4716-7074 band
+-- matter? We can set fuel burn to whatever we need. The first round was just a
+-- guess, now we're fine tuning." (2026-08-22.)
+--
+-- So two stops was never a requirement -- it was the first estimate of one, and
+-- the tank size is now simply a number to turn. THAT DOES NOT MAKE THIS BLOCK
+-- POINTLESS. What it pins is not a rule but a MEASUREMENT: how many stops the
+-- current tank actually costs, and at what detour the answer changes. Turning
+-- the tank moves those numbers and this block says so, which is exactly what
+-- fine-tuning needs and what a comment nobody re-derives cannot give.
+--
+-- Nothing below asserts that two stops MUST hold. Read it as the answer to
+-- "what does 7,500 buy", not as a rule being enforced.
 do
     local D = BR.Config.Fuel.mapDiagonal()
     ok(near(D, 14148.1, 1.0), 'the map diagonal is 14,148m', D)

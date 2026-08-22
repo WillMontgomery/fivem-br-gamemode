@@ -299,7 +299,7 @@ BR.Config.Fuel = {
     --- LIVE SERVER, exactly as `promptRadius` was. `/brfuel` on the client now
     --- prints the live vehicle-to-station-centre distance beside this radius, so
     --- the next value is measured at the worst station rather than guessed.
-    refuelRadius = 20.0,
+    refuelRadius = 5.0,
 
     --- How far a player may be from a vehicle and still ask what it holds.
     ---
