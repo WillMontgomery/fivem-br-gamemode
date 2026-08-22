@@ -113,21 +113,26 @@ sv_enforceGameBuild 3095
 # and death boxes (server/loot.lua), so losing them is not a gameplay loss, but
 # it is a difference and it is not zero.
 #
-# ═══ THE UNRESOLVED PART -- THIS IS AWAITING THE OWNER (#193) ═══
+# ═══ THE MODE IS `relaxed`, AND IT WAS A CHOICE BETWEEN TWO DECISIONS ═══
 #
 # The owner's decisions on #193 were "enable entity lockdown" and "let's not
-# change ambient traffic". Under `strict` those two are incompatible: enabling
-# it IS changing ambient traffic, by removing it. `relaxed` is the mode that
-# satisfies both -- it keeps the population and refuses client-created entities,
-# which is the property the vehicle allowlist and br_core/server/vehicles.lua
-# exist to enforce -- but choosing between them is the owner's call and it has
-# been put to them.
+# change ambient traffic". Under `strict` those two are INCOMPATIBLE: enabling
+# it IS changing ambient traffic, by removing it -- ValidateEntity gates the
+# whole random-population carve-out on the mode not being Strict, so ambient
+# traffic, parked cars and ambient peds all stop existing. Under Option A those
+# parked cars are the entire vehicle supply.
 #
-# UNTIL THEN THIS IS THE PLATFORM DEFAULT, SET EXPLICITLY. Writing it out changes
-# no behaviour -- unset and `inactive` are the same server -- and it means the
-# knob is visible, the consequences are written down beside it, and no deploy
-# turns lockdown on because somebody assumed it already was.
-sv_entityLockdown inactive
+# `relaxed` satisfies both, and differs from `strict` in EXACTLY THAT ONE BRANCH
+# and nothing else. It keeps the population and still refuses client-created
+# entities, which is the property the vehicle allowlist and
+# br_core/server/vehicles.lua exist to enforce. The owner chose it on
+# 2026-08-21: "Relaxed is good."
+#
+# DO NOT "TIGHTEN" THIS TO `strict` AS AN IMPROVEMENT. It is not a stricter
+# version of the same setting; it is the same setting plus deleting the map's
+# traffic. And `full` is not a value -- the docs advertise it, the parser
+# rejects it.
+sv_entityLockdown relaxed
 
 # ---------------------------------------------------------------------------
 # Identity
