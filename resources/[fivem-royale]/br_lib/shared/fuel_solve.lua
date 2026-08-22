@@ -297,3 +297,67 @@ function BR.FuelSolve.stationNear(x, y, stations, radius)
     if d > radius then return nil, d end
     return best, d
 end
+
+--- Is the vehicle close enough to the PUMP for the prompt to be drawn?
+---
+--- ═══ A SECOND RADIUS, AN ORDER OF MAGNITUDE SMALLER, AND THE OWNER ASKED FOR
+---     THE GAP BETWEEN THEM ═══
+---
+---   "The DUI draws way too far away from the pumps. We need to be like 10ft
+---    from the pumps or less."   -- owner, 2026-08-22
+---
+--- `stationNear` above answers a different question -- MAY THIS VEHICLE REFUEL
+--- -- and it is answered against the authored forecourt centre at 30m because
+--- the server re-derives it and the server cannot see props. This one answers
+--- IS THERE A PLATE ON SCREEN, against the pump prop the client found at
+--- runtime, and the two numbers are deliberately not the same.
+---
+--- WHAT HAPPENS IN THE GAP, STATED PLAINLY: between the prompt radius and the
+--- station radius a driver can still refuel and sees nothing telling them so.
+--- That is the direction to fail in. Narrowing the REFUEL radius to match would
+--- be a behaviour change nobody asked for, and it is not even available: the
+--- server owns that test and has no pump coordinates to test against.
+---
+--- ═══ 2-D, LIKE EVERY OTHER DISTANCE IN THIS FEATURE ═══
+---
+--- BR.FuelSolve.travelled is 2-D, the storm is 2-D, `stationNear` is 2-D. A
+--- forecourt is flat, so the third dimension here would only ever contribute
+--- the difference between a pump's origin and a car's -- about a metre of a
+--- three-metre budget, spent on nothing.
+---
+--- @param vx number|nil  the vehicle's x
+--- @param vy number|nil  the vehicle's y
+--- @param px number|nil  the pump's x -- or the station centre, when no prop
+---                       was found; client/fuel.lua passes whichever it has
+--- @param py number|nil
+--- @param radius number  metres
+--- @return boolean inReach
+--- @return number dist   metres; math.huge when either point is unreadable
+function BR.FuelSolve.atPump(vx, vy, px, py, radius)
+    vx, vy = tonumber(vx), tonumber(vy)
+    px, py = tonumber(px), tonumber(py)
+    if vx == nil or vy == nil or px == nil or py == nil then
+        return false, math.huge
+    end
+
+    local dx, dy = px - vx, py - vy
+    local d = math.sqrt(dx * dx + dy * dy)
+    -- NaN IS NOT "CLOSE", AND IT WOULD READ AS CLOSE IF THIS WERE LEFT OUT.
+    -- Same argument as clamp(): a NaN compares false to everything, so a
+    -- `d > radius` refusal answers false for it and the prompt draws at a
+    -- position nothing can render. The distance is reported as infinite rather
+    -- than as the NaN, so `/brfuel` prints a number a human can read.
+    if d ~= d then return false, math.huge end
+
+    -- A NON-POSITIVE RADIUS DRAWS NOTHING, and the direction is the point. This
+    -- is reached when the key is missing or mistyped, and the two ways to be
+    -- wrong are "no prompt anywhere" and "the prompt is back at 30m" -- which
+    -- is the exact fault being fixed. Fail towards the absence.
+    --
+    -- THE DISTANCE IS STILL RETURNED. It is what `/brfuel` prints, and a
+    -- misconfigured radius is precisely when somebody wants to see it.
+    radius = tonumber(radius) or 0.0
+    if radius <= 0.0 then return false, d end
+
+    return d <= radius, d
+end

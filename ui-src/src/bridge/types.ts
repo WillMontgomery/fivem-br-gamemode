@@ -121,9 +121,15 @@ export interface VehiclePayload {
    * Tank, 0..100.
    *
    * A PERCENTAGE HERE AND METRES EVERYWHERE ELSE. The server's ledger is a
-   * distance budget in metres -- the owner's unit -- and a bar cannot show a
-   * unit without a caption beside it, which is copy nobody asked for. So the
-   * bar gets the fraction and the metres stay in Lua.
+   * distance budget in metres -- the owner's unit -- and it stays that on the
+   * server, because that is what the two-stops-per-crossing rule is written in.
+   *
+   * THE BAR IS THE FRACTION, AND THAT SURVIVED THE FIRST PLAYTEST BEING ASKED
+   * TO SHOW A NUMBER. The owner asked for a readout on the bar; the number that
+   * goes there is this one rather than the metres, because nothing else on
+   * screen is denominated in metres to compare it against and the condition bar
+   * three millimetres away is already 0..100. hud/VehicleBars.tsx carries the
+   * argument in full.
    */
   fuel: number
 }

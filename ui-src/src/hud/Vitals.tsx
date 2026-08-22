@@ -23,7 +23,7 @@ import { useEffect, useRef, useState } from 'react'
  * one after the first tweak to either. So the component is shared, and only the
  * colours and the split differ.
  */
-export function Fill({ value, colour, segments = 0, num }: {
+export function Fill({ value, colour, segments = 0, num, label }: {
   value: number
   colour: string
   /**
@@ -35,8 +35,45 @@ export function Fill({ value, colour, segments = 0, num }: {
   segments?: number
   /** Show the value on the bar. */
   num?: boolean
+  /**
+   * A caption INSIDE the pill, naming what the bar measures.
+   *
+   * ═══ HEALTH AND SHIELD DO NOT PASS ONE, AND THAT IS NOT AN OVERSIGHT ═══
+   *
+   * They are the two bars every player of this genre already knows on sight,
+   * in the position GTA's own vitals occupied, and a caption on them would be
+   * telling somebody the thing they are looking at is health. The vehicle
+   * strip is different and the owner said so:
+   *
+   *   "The vehicle bars have nothing telling us what they actually indicate,
+   *    and they should have a number or percentage built in as well."
+   *                                                 -- owner, 2026-08-22
+   *
+   * Two unlabelled bars in a corner nobody had bars in before are two mystery
+   * meters. So the caption is opt-in, it exists because it was asked for, and
+   * it goes nowhere it was not.
+   *
+   * IN THE PILL, NOT ABOVE IT. A caption row would add a fourth surface to the
+   * bottom-right column and push the inventory bar up by its height; putting it
+   * where the numeral already lives keeps the strip one object, exactly as tall
+   * as it was.
+   */
+  label?: string
 }) {
   const pct = Math.max(0, Math.min(1, value / 100))
+
+  // A LABELLED BAR HAS TO READ AT ZERO, AND AN UNLABELLED ONE MUST NOT START.
+  //
+  // `num && value > 0` was the rule and it is right for health and shield: 0
+  // there means dead and means no shield, two states the empty bar says by
+  // itself, and a lone "0" floating in an empty pill reads as debris.
+  //
+  // An empty TANK is the one reading a driver most needs, and it sits beside a
+  // caption -- so the same blank would read as the number having failed rather
+  // than as a zero. The caption is what changes the answer, so the caption is
+  // what the condition asks about.
+  const showNum = num === true && (value > 0 || label !== undefined)
+
   return (
     <div className="relative h-full w-full rounded-full bg-black/60 border border-white/10 overflow-hidden">
       <div
@@ -64,7 +101,45 @@ export function Fill({ value, colour, segments = 0, num }: {
           }}
         />
       )}
-      {num && value > 0 && (
+      {label !== undefined && (
+        // THE CAPTION LAYER'S TYPE SPEC, BORROWED WHOLE. `.micro-label` is
+        // index.css's caption class -- "a short noun phrase naming the thing
+        // beside or below it" -- and it owns the size, the weight, the 0.2em
+        // tracking and the uppercase. Restating any of that here would be a
+        // second copy of the project's smallest type style.
+        //
+        // `.ts` WITH AN EXPLICIT --fs, NEVER BARE `tscale`. `.micro-label`
+        // declares its own font-size, and `.tscale` multiplies 1em -- the
+        // PARENT's size -- so `micro-label tscale` ignores the player's text
+        // slider entirely. index.css records that exact pair biting. This is
+        // the shape that survives it, and it is what makes the caption honour
+        // the preference while the numeral beside it stays fixed: prose scales,
+        // a numeral read under pressure is a fixed-size plate.
+        //
+        // COLOUR AND SHADOW ARE OVERRIDDEN, and only those two. `.micro-label`
+        // is dim because it normally sits on a near-black plate; this one sits
+        // ON a saturated fill, so it takes the numeral's separation treatment
+        // instead -- a step under white, over the same heavy shadow.
+        //
+        // `right` RESERVES THE NUMERAL'S CORNER so the two can never overlap:
+        // 2.4rem covers "100" at 0.88rem Anton plus its 0.375rem inset. The
+        // pill already clips, so a caption that outgrows what is left is cut
+        // off rather than escaping the bar.
+        <span
+          className="micro-label ts absolute left-1.5 top-1/2 leading-none
+                     whitespace-nowrap overflow-hidden"
+          style={{
+            ['--fs' as string]: '0.62rem',
+            right: '2.4rem',
+            transform: 'translateY(-50%)',
+            color: 'rgba(255,255,255,0.88)',
+            textShadow: '0 1px 3px rgba(0,0,0,0.98), 0 0 6px rgba(0,0,0,0.7)',
+          }}
+        >
+          {label}
+        </span>
+      )}
+      {showNum && (
         <span
           className="absolute right-1.5 top-1/2 font-display leading-none tabular-nums"
           style={{

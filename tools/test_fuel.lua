@@ -365,6 +365,164 @@ do
     ok(s == nil and near(d, 50), 'out of range is nil AND reports the distance', d)
     ok(BR.FuelSolve.stationNear(0, 0, nil, 30) == nil, 'no list is no station')
     ok(BR.FuelSolve.stationNear(0, 0, list, 0) == nil, 'a zero radius reaches nothing')
+    -- AND NEITHER DOES A MISSING ONE. Found by mutation: `tonumber(radius) or
+    -- 0.0` is what turns an absent radius into a refusal, and every assertion
+    -- above passes with that fallback changed to math.huge -- which would make
+    -- a config typo mean "every station on the map is in range".
+    ok(BR.FuelSolve.stationNear(0, 0, list, nil) == nil,
+       'and a missing radius is not an unbounded one')
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('solve.atPump')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- THE FIRST PLAYTEST'S SECOND ITEM, AS ARITHMETIC:
+--
+--   "The DUI draws way too far away from the pumps. We need to be like 10ft
+--    from the pumps or less."   -- owner, 2026-08-22
+--
+-- The behaviour that fixes it is a distance test the client runs every frame
+-- against a prop it found at runtime. The prop cannot be reached from here --
+-- GET_CLOSEST_OBJECT_OF_TYPE reads a streamed world -- but the test it feeds
+-- can, and the test is the half that decides.
+do
+    local R = 3.0
+
+    -- THE THREE POINTS ON THE BOUNDARY, and the middle one is the reason a
+    -- `<` would be wrong: the owner said "10ft or less", so the radius itself
+    -- is inside.
+    ok(select(1, BR.FuelSolve.atPump(0.0, 0.0, 2.0, 0.0, R)),
+       'inside the radius draws')
+    ok(select(1, BR.FuelSolve.atPump(0.0, 0.0, 3.0, 0.0, R)),
+       'exactly on the radius draws -- "or less" includes it')
+    ok(not select(1, BR.FuelSolve.atPump(0.0, 0.0, 3.01, 0.0, R)),
+       'a centimetre past it does not')
+
+    -- THE WHOLE POINT OF THE CHANGE, stated as the case that used to pass. A
+    -- car on the far side of the forecourt is well inside stationRadius and
+    -- must no longer get a plate.
+    ok(not select(1, BR.FuelSolve.atPump(0.0, 0.0, 25.0, 0.0, R)),
+       'a car 25m away -- inside the station, nowhere near a pump -- does not')
+
+    -- DIAGONALS ARE EUCLIDEAN, not per-axis. 3 east and 3 north is 4.24m and
+    -- is out, which a lazy `|dx| <= r and |dy| <= r` would have let through.
+    ok(not select(1, BR.FuelSolve.atPump(0.0, 0.0, 3.0, 3.0, R)),
+       'three metres on each axis is 4.24m and is out')
+    ok(select(1, BR.FuelSolve.atPump(0.0, 0.0, 2.0, 2.0, R)),
+       'two on each is 2.83m and is in')
+
+    -- IT REPORTS THE DISTANCE, which is what `/brfuel` prints so the next
+    -- adjustment to the radius is measured rather than guessed.
+    local _, d = BR.FuelSolve.atPump(10.0, 10.0, 13.0, 14.0, R)
+    ok(near(d, 5.0), 'the distance comes back alongside the verdict', d)
+
+    -- SIGN DOES NOT MATTER. The pump can be behind you.
+    ok(select(1, BR.FuelSolve.atPump(0.0, 0.0, -2.0, 0.0, R)),
+       'a pump on the other side is the same distance away')
+
+    -- ═══ THE REFUSALS, AND THE DIRECTION THEY ALL FAIL IN ═══
+    --
+    -- Every unreadable input answers NO PLATE. The alternative -- treating an
+    -- unknown as close -- puts the prompt back in the sky at a position
+    -- nothing can render, which is the fault being fixed wearing a different
+    -- hat.
+    ok(not select(1, BR.FuelSolve.atPump(nil, 0.0, 0.0, 0.0, R)),
+       'a vehicle with no x draws nothing')
+    ok(not select(1, BR.FuelSolve.atPump(0.0, 0.0, nil, nil, R)),
+       'and neither does a pump with no coordinates')
+    ok(not select(1, BR.FuelSolve.atPump(0.0, 0.0, 1.0, 0.0, 0.0)),
+       'a zero radius draws nothing rather than everything')
+    -- AND NOT EVEN SITTING ON THE PROP. Found by mutation: at any non-zero
+    -- distance a zero radius is refused by the `d <= radius` test anyway, so
+    -- the explicit guard is only load-bearing at d == 0 -- which is exactly the
+    -- case a car parked dead on a pump produces. Without this assertion the
+    -- guard can be deleted and every other test here still passes.
+    ok(not select(1, BR.FuelSolve.atPump(0.0, 0.0, 0.0, 0.0, 0.0)),
+       'not even with the pump exactly underneath')
+    ok(not select(1, BR.FuelSolve.atPump(0.0, 0.0, 1.0, 0.0, -1.0)),
+       'and so does a negative one')
+    ok(not select(1, BR.FuelSolve.atPump(0.0, 0.0, 1.0, 0.0, nil)),
+       'a missing radius is not an unbounded one')
+
+    -- NaN. `d > radius` answers FALSE for a NaN, so a refusal written that way
+    -- lets it through as a pass -- the same trap BR.FuelSolve.clamp's header
+    -- describes, in the one place where the consequence is a sprite drawn at a
+    -- position the engine cannot use.
+    local nan = 0.0 / 0.0
+    local inNan, dNan = BR.FuelSolve.atPump(0.0, 0.0, nan, 0.0, R)
+    ok(not inNan, 'a NaN coordinate is not "close"')
+    ok(dNan == math.huge, 'and reports an infinite distance, not a NaN', dNan)
+
+    -- A ZERO RADIUS STILL REPORTS THE DISTANCE, because a misconfigured radius
+    -- is exactly when somebody runs /brfuel to find out what it should be.
+    local _, d0 = BR.FuelSolve.atPump(0.0, 0.0, 4.0, 0.0, 0.0)
+    ok(near(d0, 4.0), 'a refused radius still measures', d0)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('config.promptRadius')
+-- ═══════════════════════════════════════════════════════════════════════════
+do
+    local P = BR.Config.Fuel.promptRadius
+    local S = BR.Config.Fuel.stationRadius
+
+    -- TEN FEET IS 3.048m, AND THE OWNER SAID "OR LESS". Anything above that is
+    -- not the number they asked for.
+    ok(P > 0 and P <= 3.048,
+       'the prompt radius is ten feet or less', P)
+
+    -- THE TWO RADII ARE ORDERED, AND THE ORDER IS WHAT MAKES THE SMALLER ONE
+    -- MEAN ANYTHING. The prompt gate sits INSIDE the station gate in
+    -- client/fuel.lua, so a prompt radius at or above the station radius stops
+    -- being a second test at all -- it silently reverts to the behaviour the
+    -- playtest rejected, with a config value that looks deliberate.
+    ok(P < S, 'and it is strictly inside the station radius',
+       ('prompt %.1f, station %.1f'):format(P, S))
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('prompt.copy')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- ═══ THE OWNER'S WORDS, PINNED AS TEXT, BECAUSE THERE IS NO OTHER WAY TO
+--     REACH THEM ═══
+--
+--   "The DUI is not helpful - it just says '6000m' etc. Instead it should say
+--    'Hold to refuel'"   -- owner, 2026-08-22
+--
+-- br_core/client/fuel.lua cannot be loaded here: it registers frame-band loop
+-- callbacks and calls a dozen client natives that this suite does not stub, and
+-- stubbing them to reach one string literal would be a harness larger than the
+-- file. tools/test_client.lua reads client sources as TEXT in four places for
+-- the same reason, and this is that shape.
+--
+-- WHAT A PASS HERE IS AND IS NOT. It proves the string in the file is the
+-- owner's, character for character, and that nothing is concatenated onto it on
+-- its way to the plate. It cannot prove the plate renders -- that needs a game.
+-- The value is against the specific regression this replaces: a label built by
+-- `('%d m'):format(...)`, which is what the owner was reading.
+do
+    local fh = io.open(ROOT .. 'br_core/client/fuel.lua', 'r')
+    ok(fh ~= nil, 'client/fuel.lua is readable')
+    if fh then
+        local src = fh:read('a'); fh:close()
+
+        -- Plain find (the `true` argument): the string is compared as text, so
+        -- a `%` in a future edit cannot be read as a Lua pattern.
+        ok(src:find("local PROMPT_LABEL = 'Hold to refuel'", 1, true) ~= nil,
+           "the plate says exactly 'Hold to refuel'")
+
+        -- AND NOTHING IS APPENDED. The label field must be the constant and
+        -- only the constant -- no `..`, no :format(), no metres.
+        ok(src:find('label = PROMPT_LABEL,', 1, true) ~= nil,
+           'and the prompt sends that constant unmodified')
+
+        -- THE REGRESSION, NAMED. This is the exact expression that produced
+        -- "6000m" on the plate.
+        ok(src:find("('%d m'):format", 1, true) == nil,
+           'no metres formatter survives anywhere in the file')
+    end
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════

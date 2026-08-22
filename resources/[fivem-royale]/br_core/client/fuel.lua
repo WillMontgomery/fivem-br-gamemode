@@ -64,12 +64,27 @@ local blips = {}
 
 --- The station the player is currently parked at, and the pump prop we found
 --- to hang the prompt on.
-local at = { station = nil, pump = nil, pumpAt = 0, px = nil, py = nil, pz = nil }
+---
+--- `dist` is the last measured metres from the vehicle to that anchor. It is
+--- kept for `/brfuel` and for nothing else: `promptRadius` is the one value in
+--- this feature that cannot be checked outside a live server, and a debug line
+--- that prints the live distance beside the radius is what makes the next
+--- number measured rather than guessed.
+local at = {
+    station = nil, pump = nil, pumpAt = 0,
+    px = nil, py = nil, pz = nil, dist = nil,
+}
 
---- What the prompt page was last told, so it is written on change and not per
---- frame. A DUI message is cheap but not free, and the page holds the last
---- thing it was given.
-local promptShown = nil
+--- Is the prompt page currently showing OUR plate?
+---
+--- A BOOLEAN NOW, WHERE IT USED TO BE THE METRES ON THE LABEL. The label is a
+--- constant string, so there is nothing left to compare but shown-ness -- and
+--- one message on the way in and one on the way out is the whole traffic this
+--- prompt generates, down from one per hundred metres of fill.
+---
+--- STARTS false RATHER THAN nil so the first frame off a forecourt is not a
+--- hide message for a plate that was never up.
+local promptShown = false
 
 --- Last time a pump request went out, for the send cadence.
 local pumpedAt = 0
@@ -393,8 +408,15 @@ end
 --- prompt, and dropped entirely on leaving the station.
 ---
 --- FALLS BACK TO THE STATION CENTRE. A station whose pumps are not streamed --
---- or a model list that has gone stale against a game build -- still gets a
---- prompt, in roughly the right place, rather than no prompt at all.
+--- or a model list that has gone stale against a game build -- still has an
+--- anchor rather than none at all.
+---
+--- SINCE THE PROMPT MOVED TO A THREE-METRE RADIUS THAT FALLBACK IS THINNER THAN
+--- IT WAS, and it is worth saying so rather than leaving it to be discovered:
+--- the authored coordinate is a forecourt CENTRE, so a car parked at a pump is
+--- several metres from it and the plate may simply not appear. The refuel is
+--- unaffected -- that is the station radius, and it is thirty metres. See the
+--- gate in the pump loop.
 --- @param x number
 --- @param y number
 --- @param z number
@@ -446,39 +468,64 @@ local function promptPage()
     return BR.Dui.page('lootprompt', 'nui://br_ui/dui/prompt.html', 512, 256)
 end
 
---- Show, hide, or update the pump prompt.
+--- What the plate says. The owner's words, and the whole of them.
 ---
---- SENT ON CHANGE. The label is the metres remaining, so it moves while the
---- tank fills -- rounded to `promptStepM` before it is compared, so a fill sends
---- a message every hundred metres rather than every frame.
+--- ═══ IT USED TO BE THE METRES REMAINING, AND THE PLAYTEST THREW THAT OUT ═══
 ---
---- THE LABEL IS A NUMBER AND A UNIT, AND THAT IS ON PURPOSE. The standing rule
---- is that UI text is the owner's wording and none was given for this prompt,
---- so nothing here writes a sentence: the plate carries the reading in the unit
---- the owner chose ("Meters would be best as well") and the key cap carries the
---- key. If a line of copy is wanted, `hint` is the field it goes in and this is
---- the one line to change.
---- @param metres number|nil  nil hides the prompt
-local function setPrompt(metres)
+---   "The DUI is not helpful - it just says '6000m' etc. Instead it should say
+---    'Hold to refuel'"   -- owner, 2026-08-22
+---
+--- VERBATIM AND NOTHING APPENDED. No metres, no key name in the sentence, no
+--- progress line. The previous draft reasoned that a reading in the owner's unit
+--- was the safest thing to put on a plate nobody had written copy for; the
+--- reading was the complaint.
+---
+--- ═══ WHY IT IS THE `label` FIELD AND NOT `hint` ═══
+---
+--- The pattern this prompt shares with the crate and the revive is label = the
+--- SUBJECT ("Assault Rifle", a teammate's name) and hint = the VERB PHRASE
+--- ("Hold to open", "Hold to revive"), so the hint slot is where a sentence of
+--- this shape belongs. It goes in `label` anyway, for two reasons:
+---
+---   * `#hint` in br_ui/dui/prompt.html is `text-transform: uppercase`. The
+---     owner asked for "Hold to refuel" and that slot can only render
+---     "HOLD TO REFUEL", which is not the string they wrote.
+---   * `label` is the slot that was showing "6000m" -- the line the complaint is
+---     about -- and leaving it empty would put the one thing the plate says in
+---     the small dim line under a blank space.
+---
+--- There is no subject to put above it, because naming one would be inventing a
+--- noun the owner has not written. If they ever give one, it goes in `label` and
+--- this string moves down to `hint`; the plate already draws both.
+local PROMPT_LABEL = 'Hold to refuel'
+
+--- Show or hide the pump prompt.
+---
+--- SENT ON CHANGE, WHICH IS NOW TWICE PER STOP. The label is a constant, so
+--- there is nothing to update between the message that puts the plate up and the
+--- one that takes it down.
+---
+--- THE KEY CAP STAYS, AND IT IS THE PATTERN RATHER THAN AN ADDITION TO THE
+--- STRING. client/loot.lua and client/dbno.lua both pass `key` beside their
+--- prompt copy, and the page draws it as a badge of its own -- it is not
+--- appended to the sentence and does not change a character of it. Dropping it
+--- would be a change to a thing that works, on a fix that was not about it.
+--- @param show boolean
+local function setPrompt(show)
+    show = (show == true)
+    if promptShown == show then return end
+    promptShown = show
+
     local page = promptPage()
-    if metres == nil then
-        if promptShown ~= nil then
-            promptShown = nil
-            BR.Dui.send(page, { t = 'prompt', show = false })
-        end
+    if not show then
+        BR.Dui.send(page, { t = 'prompt', show = false })
         return
     end
-
-    local step = tonumber(F.promptStepM) or 100
-    if step < 1 then step = 1 end
-    local shown = math.floor(metres / step + 0.5) * step
-    if promptShown == shown then return end
-    promptShown = shown
 
     local key = BR.Keys and BR.Keys.labelFor and BR.Keys.labelFor('brinteract') or nil
     BR.Dui.send(page, {
         t = 'prompt', show = true,
-        label = ('%d m'):format(shown),
+        label = PROMPT_LABEL,
         key = key,
         ring = false,
     })
@@ -528,9 +575,9 @@ BR.Loop.register(BR.Loop.TICK, 'fuel.apply', function()
         -- filled to. There is no progress to lose because there is no progress
         -- being accumulated anywhere but in the number itself.
         hideBlips()
-        setPrompt(nil)
+        setPrompt(false)
         pushBars(nil, nil)
-        at.station, at.pump = nil, nil
+        at.station, at.pump, at.dist = nil, nil, nil
         return
     end
 
@@ -544,7 +591,7 @@ BR.Loop.register(BR.Loop.TICK, 'fuel.apply', function()
         -- server has never heard of it and it has no tank here, so the fuel bar
         -- would be describing nothing. The bars stay down rather than reading
         -- full forever.
-        setPrompt(nil)
+        setPrompt(false)
         pushBars(nil, nil)
         return
     end
@@ -583,8 +630,8 @@ BR.Loop.register(BR.Loop.FRAME, 'fuel.pump', function()
     -- what is allowed.
     local ok, driver = pcall(GetPedInVehicleSeat, veh, -1)
     if not ok or driver ~= ped then
-        setPrompt(nil)
-        at.station, at.pump = nil, nil
+        setPrompt(false)
+        at.station, at.pump, at.dist = nil, nil, nil
         return
     end
 
@@ -593,8 +640,8 @@ BR.Loop.register(BR.Loop.FRAME, 'fuel.pump', function()
 
     local station = BR.FuelSolve.stationNear(c.x, c.y, F.stations, F.stationRadius)
     if station == nil then
-        setPrompt(nil)
-        at.station, at.pump = nil, nil
+        setPrompt(false)
+        at.station, at.pump, at.dist = nil, nil, nil
         return
     end
 
@@ -640,21 +687,53 @@ BR.Loop.register(BR.Loop.FRAME, 'fuel.pump', function()
     -- the vehicle's position, which this pass already has.
     resolvePump(c.x, c.y, c.z, now)
 
-    local nid = netOf(veh)
-    local rec = nid and known[nid] or nil
-    setPrompt(rec and rec.m or (tonumber(F.tankMetres) or 0))
-
+    -- ═══ THE PLATE IS GATED ON THE PUMP, NOT ON THE STATION ═══
+    --
+    --   "The DUI draws way too far away from the pumps. We need to be like 10ft
+    --    from the pumps or less."   -- owner, 2026-08-22
+    --
+    -- EVERYTHING ABOVE THIS LINE STILL RUNS ON THE STATION RADIUS, and the horn
+    -- is the reason it has to. A driver who rolls onto a forecourt has to have
+    -- E suppressed from the first frame -- a disable cannot be applied
+    -- retroactively -- so the suppression bubble is the apron and the plate is
+    -- the parking space. Two radii, two jobs, and only the smaller one moved.
+    --
+    -- THE ANCHOR IS WHATEVER resolvePump FOUND, so the test is against the pump
+    -- prop when there is one and the authored forecourt centre when there is
+    -- not. The fallback case is measured on the same three metres deliberately:
+    -- one rule is easier to reason about than two, and a station whose pumps did
+    -- not stream is rare enough that the honest answer -- no plate, refuelling
+    -- still works -- beats a second radius nobody can see the effect of.
     local px = at.px or station.x
     local py = at.py or station.y
-    local pz = (at.pz or (tonumber(station.z) or c.z)) + (tonumber(F.promptLift) or 1.4)
-    BR.Dui.drawWorld(promptPage(), px, py, pz, tonumber(F.promptScale) or 1.6)
+
+    local inReach
+    inReach, at.dist = BR.FuelSolve.atPump(c.x, c.y, px, py,
+                                           tonumber(F.promptRadius) or 0.0)
+    setPrompt(inReach)
+
+    if inReach then
+        local pz = (at.pz or (tonumber(station.z) or c.z))
+                   + (tonumber(F.promptLift) or 1.4)
+        BR.Dui.drawWorld(promptPage(), px, py, pz, tonumber(F.promptScale) or 1.6)
+    end
 
     -- ═══ THE HOLD ═══
+    --
+    -- REFUELLING IS STILL THE STATION'S RADIUS, NOT THE PLATE'S. This send is
+    -- deliberately outside the `inReach` branch above: the owner confirmed
+    -- refuelling works and asked only for the plate to come closer, and the
+    -- server re-derives eligibility from `stationRadius` anyway -- gating the
+    -- send on a client-side pump distance would put a rule in front of the
+    -- server's that the server does not have, for no reason the player asked
+    -- for. The visible cost is the gap: between 3m and 30m of a station a hold
+    -- fills the tank with nothing on screen saying so.
     --
     -- One message every `pumpSendMs` for as long as the key is down, and the
     -- server decides what each one is worth from the wall clock. Sending faster
     -- earns nothing (BR.FuelSolve.grantMs), which is why this cadence can be a
     -- comfort rather than a security boundary.
+    local nid = netOf(veh)
     if nid == nil then return end
     if not (BR.Keys and BR.Keys.isHeld and BR.Keys.isHeld('interact')) then return end
     if (now - pumpedAt) < (tonumber(F.pumpSendMs) or 250) then return end
@@ -783,9 +862,17 @@ RegisterCommand('brfuel', function()
     else
         print('  no ledger reading held for it')
     end
-    print(('  station %s, pump prop %s')
+    -- THE DISTANCE AND THE RADIUS, SIDE BY SIDE. `promptRadius` is the one
+    -- number in this feature that cannot be checked without a live server -- it
+    -- is measured from the vehicle's origin, which is roughly the middle of the
+    -- car, to the pump prop's -- so the next adjustment to it should be read off
+    -- a parked car rather than reasoned about. `dist` is whatever the pump loop
+    -- last measured, and is nil until the player parks at a station.
+    print(('  station %s, pump prop %s at %s m (prompt draws within %s m)')
         :format(at.station and (at.station.id or 'yes') or 'none',
-                tostring(at.pump)))
+                tostring(at.pump),
+                at.dist and ('%.1f'):format(at.dist) or '?',
+                tostring(F and F.promptRadius)))
     local n = 0
     for _ in pairs(known) do n = n + 1 end
     print(('  %d network id(s) remembered'):format(n))

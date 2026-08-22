@@ -183,13 +183,26 @@ BR.Config.Fuel = {
     --- match, which is a real and different game -- it is one edit away.
     repairFraction = 1.0,
 
-    --- How close the VEHICLE has to be to a station to use it.
+    --- How close the VEHICLE has to be to a station to REFUEL.
     ---
     --- Measured from the authored station coordinate, which is a forecourt
     --- centre rather than a specific pump -- so this has to cover the whole
-    --- apron, not a parking space. It is the value most likely to be wrong on
-    --- the first playtest: too small and a player parked at the far pump cannot
-    --- refuel, too large and you can fill up from the road outside.
+    --- apron, not a parking space.
+    ---
+    --- ═══ THIS IS NO LONGER WHAT DECIDES WHETHER THE PROMPT DRAWS ═══
+    ---
+    --- It was, and the first playtest said so:
+    ---
+    ---   "The DUI draws way too far away from the pumps. We need to be like
+    ---    10ft from the pumps or less."   -- owner, 2026-08-22
+    ---
+    --- `promptRadius` below is that number and the plate is gated on it now.
+    --- THIS ONE IS DELIBERATELY UNCHANGED: the owner confirmed refuelling works,
+    --- and the server -- which re-derives every claim in a pump message -- has no
+    --- pump coordinates to test against and cannot be given any, because
+    --- GET_CLOSEST_OBJECT_OF_TYPE reads the STREAMED world and a server streams
+    --- nothing. So the wide radius stays where the authority is and the narrow
+    --- one lives on the client, which is the only side that can see a pump.
     stationRadius = 30.0,
 
     --- How far a player may be from a vehicle and still ask what it holds.
@@ -266,12 +279,36 @@ BR.Config.Fuel = {
 
     --- The pump prompt.
     ---
-    --- `promptStepM`  the label is rounded to this before it is compared, so a
-    ---                fill sends a DUI message every hundred metres instead of
-    ---                every frame.
+    --- `promptRadius` how close the VEHICLE has to be to the pump prop before
+    ---                the plate is drawn at all.
     --- `promptLift`   metres above the pump prop the plate floats.
     --- `promptScale`  passed straight to BR.Dui.drawWorld.
-    promptStepM  = 100,
+    ---
+    --- ═══ 3.0 IS THE OWNER'S NUMBER, CONVERTED AND NOT ROUNDED UP ═══
+    ---
+    ---   "We need to be like 10ft from the pumps or less."
+    ---                                          -- owner, 2026-08-22
+    ---
+    --- Ten feet is 3.048m. Rounded DOWN to 3.0 rather than up, because the
+    --- sentence has "or less" in it: the owner named a ceiling, not a target.
+    ---
+    --- ═══ WHAT IT IS MEASURED FROM, WHICH IS THE THING TO KNOW BEFORE
+    ---     CHANGING IT ═══
+    ---
+    --- From GET_ENTITY_COORDS ON THE VEHICLE -- roughly the middle of the car --
+    --- to the pump prop's own origin. So the BODYWORK is nearer than this number
+    --- by about half a car width, and a driver parked alongside a pump measures
+    --- something like 2 to 3m here rather than the nought-point-something their
+    --- eyes report.
+    ---
+    --- THAT MAKES 3.0 THE TIGHT END OF THE PLAUSIBLE RANGE, and it is the one
+    --- value in this change that cannot be checked without a live server. If the
+    --- plate turns out not to appear for a car parked square at a pump, this
+    --- line is the whole fix -- and `/brfuel` prints the live distance and this
+    --- radius side by side so the next number is measured rather than guessed.
+    --- Everything above `promptRadius` and below `stationRadius` is the gap
+    --- described at `stationRadius`: refuelling works, silently.
+    promptRadius = 3.0,
     promptLift   = 1.4,
     promptScale  = 1.6,
 
