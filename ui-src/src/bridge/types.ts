@@ -267,6 +267,33 @@ export interface DbnoPayload {
  * spectating too, and their pause menu does not offer a way out of it -- there
  * is nowhere for it to go but back to their own corpse.
  */
+/**
+ * YOUR OWN DEATH, for the seconds before the spectator camera takes the screen.
+ *
+ * DISTINCT FROM `SummaryPayload`, which is the match-end verdict SCREEN. The
+ * owner asked for the two to stay separate: the text alone on death (~10s, then
+ * gone as spectating begins), the full screen when the match is over. This
+ * carries only what the word is made of.
+ *
+ * LUA OWNS THE CLOCK -- `show` goes false when the window closes, and the same
+ * deadline is what holds the spectate camera back. There is no duration on the
+ * wire because a second timer in the interface could only agree with Lua's by
+ * coincidence.
+ */
+export interface DeathPayload {
+  show: boolean
+  /**
+   * How they died. Absent is a REAL and expected state, not a defect: the
+   * roster delta that makes a player DEAD and the kill-feed message carrying
+   * the cause are separate wires with no ordering between them, so the word can
+   * go up before the cause is known and be corrected in place. `verdictWord`
+   * falls back to WASTED, which is never wrong -- only less specific.
+   */
+  cause?: string | null
+  /** Another player did it. The one input that produces ELIMINATED. */
+  byPlayer?: boolean
+}
+
 export interface SpectatePayload {
   active: boolean
   admin: boolean
@@ -854,6 +881,7 @@ export type Envelope =
   | { k: 'storm';    d: StormPayload }
   | { k: 'dbno';     d: DbnoPayload }
   | { k: 'spectate'; d: SpectatePayload }
+  | { k: 'death';    d: DeathPayload }
   | { k: 'summary';  d: SummaryPayload }
   | { k: 'focus';    d: FocusPayload }
   | { k: 'toast';    d: ToastPayload }

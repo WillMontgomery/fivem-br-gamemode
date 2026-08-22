@@ -13,7 +13,7 @@ import { create } from 'zustand'
 import type {
   ChatMessage, DbnoPayload, FeedEntry, FocusPayload, HudPayload,
   InvPayload, InvitePayload, LobbyPayload, MatchPayload, ScreenPayload,
-  SpectatePayload, SquadPayload, StormPayload, SummaryPayload,
+  DeathPayload, SpectatePayload, SquadPayload, StormPayload, SummaryPayload,
   CurtainKind, KeybindAction, LockerPayload, MarketPayload, ProgressPayload,
   SettingsPayload,
   ToastPayload, VoicePayload, WireInvPayload, XpAward, EarnedPayload, PlayersPayload, ReportResult,
@@ -53,6 +53,16 @@ export interface UiState {
   storm: StormPayload | null
   dbno: DbnoPayload
   spectate: SpectatePayload | null
+  /**
+   * Your own death, for the ~10s before the spectator camera takes over.
+   *
+   * A SEPARATE SLICE FROM `summary`, not a mode of it. `summary` is the
+   * match-end verdict SCREEN and is gated on the match tearing down; this is
+   * the death MOMENT, mid-match, over a world that is still running. Folding
+   * them together would mean a flag deciding which of two surfaces a payload
+   * meant, which is the pair the owner asked to keep distinct.
+   */
+  death: DeathPayload | null
   summary: SummaryPayload | null
   feed: FeedEntry[]
   chat: ChatMessage[]
@@ -220,6 +230,7 @@ export interface UiState {
   setStorm: (s: StormPayload | null) => void
   setDbno: (d: DbnoPayload) => void
   setSpectate: (s: SpectatePayload | null) => void
+  setDeath: (d: DeathPayload | null) => void
   setSummary: (s: SummaryPayload | null) => void
   setFocus: (f: FocusPayload['screen'], tab?: string) => void
   setFrontendUp: (v: boolean) => void
@@ -495,6 +506,7 @@ export const useUi = create<UiState>((set, get) => {
   storm: null,
   dbno: emptyDbno,
   spectate: null,
+  death: null,
   summary: null,
   feed: [],
   chat: [],
@@ -591,6 +603,7 @@ export const useUi = create<UiState>((set, get) => {
   setStorm:    (storm) => set({ storm: storm && storm.phase != null ? storm : null }),
   setDbno:     (dbno) => set({ dbno }),
   setSpectate: (spectate) => set({ spectate }),
+  setDeath:    (death) => set({ death }),
   setSummary:  (summary) => set({ summary }),
   setFocus:    (focus, focusTab) => set({ focus, focusTab }),
   setFrontendUp: (frontendUp) => set({ frontendUp }),

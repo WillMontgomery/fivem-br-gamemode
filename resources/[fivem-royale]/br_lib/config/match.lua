@@ -1037,4 +1037,24 @@ BR.Config.Spectate = {
     camDistance = 4.5,
     camHeight   = 1.0,
     fov         = 55.0,
+
+    -- HOW LONG YOUR OWN DEATH IS ON SCREEN BEFORE THE CAMERA MOVES ON.
+    --
+    -- "Upon dying, the verdict text ONLY should be shown for ~10 seconds then
+    -- the text can immediately disappear as we snap into spectating" -- the
+    -- owner. Before this, a death cut straight to somebody else's shoulder
+    -- within a second: the SLOW loop in client/spectate.lua asked for a target
+    -- as soon as the state read DEAD, so the moment a player most wants to
+    -- register -- what just happened to them, and who did it -- was the one
+    -- moment the game skipped.
+    --
+    -- IT IS THE TEXT ONLY, NOT THE VERDICT SCREEN. The match-end screen is a
+    -- black backdrop, a placement and a Volts line, and it is unchanged: this is
+    -- the same WORD that screen slams, over the world, with nothing behind it.
+    -- Two moments, two surfaces, one word table (ui-src/src/hud/verdictWord.ts).
+    --
+    -- ~10 SECONDS IS THE OWNER'S NUMBER and the tilde is theirs too. It is here
+    -- rather than in the client so it can be shortened without a rebuild if it
+    -- turns out to be a long time to sit still.
+    deathVerdictMs = 10000,
 }

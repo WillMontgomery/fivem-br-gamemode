@@ -1,4 +1,5 @@
 import Ring from '../hud/Ring'
+import { verdictWord } from '../hud/verdictWord'
 import Progress from './Progress'
 import { useUi } from '../store'
 import { useEffect, useState } from 'react'
@@ -64,27 +65,15 @@ const AWARD_AT_MS = LINES_MS + 800
 /**
  * What the slam says when you lost, by how you lost.
  *
- * "ELIMINATED" is reserved for another player doing it -- getting outrun by
- * a wall of purple or stepping off a cliff is not an elimination and reads
- * as a lie when the screen calls it one. Everything else gets the energy of
- * a GTA death with the honesty of a cause, and the generic environmental
- * fallback is the franchise's own word for it.
+ * THE TABLE MOVED TO `hud/verdictWord`, unchanged, and this is now the second
+ * of two readers. The other is `hud/DeathVerdict`, which puts the same word
+ * over the live world for the ~10 seconds after a death before the spectator
+ * camera takes the screen. Two moments the owner asked to keep distinct, told
+ * in one vocabulary -- a player who reads BLED OUT when they die and
+ * ELIMINATED when the match ends has been given two accounts of one death.
  */
 function slamText(summary: SummaryPayload): string {
-  if (summary.byPlayer) return 'ELIMINATED'
-  switch (summary.cause) {
-    // Nobody finished them; the clock did. Distinct from ELIMINATED on
-    // purpose -- being left on the floor and being shot are different stories,
-    // and only one of them has somebody to blame.
-    case 'bledout':   return 'BLED OUT'
-    case 'storm':     return 'COOKED BY THE STORM'
-    case 'fall':      return 'GRAVITY WINS'
-    case 'drowned':   return 'SLEPT WITH THE FISHES'
-    case 'burned':    return 'EXTRA CRISPY'
-    case 'explosion': return 'BLOWN TO BITS'
-    case 'roadkill':  return 'SPEED BUMP'
-    default:          return 'WASTED'
-  }
+  return verdictWord(summary.cause, summary.byPlayer)
 }
 
 /**

@@ -421,6 +421,17 @@ BR.Nui = {
     STORM     = 'storm',     -- phase, radius, endsAt (4 Hz)
     DBNO      = 'dbno',
     SPECTATE  = 'spectate',
+    -- YOUR OWN DEATH, AS A WORD OVER THE WORLD, for the seconds before the
+    -- spectator camera takes the screen.
+    --
+    -- DELIBERATELY NOT `SUMMARY`, and the split is the point. SUMMARY is the
+    -- match-end verdict SCREEN -- backdrop, placement, Volts -- and it is
+    -- gated on the match being over. This is the death MOMENT: the same word,
+    -- alone, on the live world, ~10 seconds, then gone as spectating begins
+    -- (the owner). One envelope carrying both would have to be told which of
+    -- the two it was, which is a flag standing in for the two surfaces the
+    -- owner asked to keep distinct.
+    DEATH     = 'death',
     SUMMARY   = 'summary',
     FOCUS     = 'focus',     -- tell the UI which screen owns focus
     TOAST     = 'toast',

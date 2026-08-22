@@ -226,6 +226,18 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+# Your own death and the end of the match are two surfaces sharing one word
+# table, and the word and the spectator camera are one sequence on one deadline.
+# The failure this catches is the two coming apart -- a second timer that agrees
+# with the first only by coincidence, leaving dead air after the word or a
+# camera that cuts away mid-sentence.
+echo "${DIM}== death verdict ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_death_verdict.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
 echo "${DIM}== forward locals ==${RST}"
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     # shellcheck disable=SC2046

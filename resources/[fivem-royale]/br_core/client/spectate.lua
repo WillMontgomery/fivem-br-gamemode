@@ -289,6 +289,29 @@ BR.Loop.register(BR.Loop.SLOW, 'spectate.open', function()
     if session or asks >= OPEN_TRIES then return end
     if st ~= BR.PlayerState.DEAD and st ~= BR.PlayerState.SPECTATING then return end
 
+    -- YOUR OWN DEATH GETS THE SCREEN FIRST.
+    --
+    -- "Upon dying, the verdict text ONLY should be shown for ~10 seconds then
+    -- the text can immediately disappear as we snap into spectating" -- the
+    -- owner. This loop is the "snap": it used to fire on the first SLOW tick
+    -- after the state read DEAD, which put the player behind a squadmate's
+    -- shoulder inside a second and skipped the moment entirely.
+    --
+    -- THE HOLD IS THE SAME CLOCK AS THE WORD, not a second timer of the same
+    -- length. client/state.lua owns the deadline and this asks it, so
+    -- BR.Config.Spectate.deathVerdictMs moves both halves together and they
+    -- cannot drift into a gap of dead air or an overlap where the camera cuts
+    -- away mid-sentence.
+    --
+    -- IT DOES NOT SPEND A TRY. `asks` is the budget for requests the server
+    -- might have dropped; returning before incrementing means a player is not
+    -- charged two of their three attempts for waiting out their own death.
+    --
+    -- NIL-GUARDED because this file loads with or without state.lua's half, and
+    -- the safe answer for "is the word up" on a client that cannot say is no --
+    -- which is exactly the behaviour that shipped before this existed.
+    if BR.DeathVerdictUp and BR.DeathVerdictUp() then return end
+
     asks = asks + 1
     ask(0)
 end)

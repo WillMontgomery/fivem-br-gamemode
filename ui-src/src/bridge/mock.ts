@@ -412,6 +412,30 @@ export function startMockDriver(): void {
     emit({ k: 'spectate', d: SPECTATE[specAt++ % SPECTATE.length]! })
   }, 6000)
 
+  // YOUR OWN DEATH, THE WORD ONLY. Lua owns the ~10s window in the real thing;
+  // here it is driven on a shorter cycle so the surface can be looked at.
+  //
+  // THE CAUSES ARE ROTATED because the word is chosen from them, and the LONG
+  // one is in the list on purpose: 'COOKED BY THE STORM' is what exercises the
+  // text-6xl step, and a harness that only ever showed ELIMINATED would review
+  // the one case that cannot overflow.
+  //
+  // The no-cause row is real rather than filler -- the kill feed and the roster
+  // delta have no ordering between them, so a death genuinely can be drawn
+  // before its cause is known, and WASTED is what the player sees then.
+  const DEATHS = [
+    { show: false },
+    { show: true, byPlayer: true, cause: null },
+    { show: false },
+    { show: true, byPlayer: false, cause: 'storm' },
+    { show: false },
+    { show: true, byPlayer: false, cause: null },
+  ]
+  let deathAt = 0
+  window.setInterval(() => {
+    emit({ k: 'death', d: DEATHS[deathAt++ % DEATHS.length]! })
+  }, 3500)
+
   // Storm ticks at the same 4 Hz the server would use.
   let radius = 520, edge = -180
   window.setInterval(() => {

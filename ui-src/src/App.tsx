@@ -8,6 +8,7 @@ import Hud from './hud/Hud'
 import Chat from './chat/Chat'
 import Lobby from './screens/Lobby'
 import EndScreen from './screens/EndScreen'
+import DeathVerdict from './hud/DeathVerdict'
 import LeaveScreen from './screens/LeaveScreen'
 import InventoryPanel from './screens/InventoryPanel'
 import Notices from './hud/Notices'
@@ -71,6 +72,10 @@ export default function App() {
   useNuiEvent('storm',    (d) => s.setStorm(d))
   useNuiEvent('dbno',     (d) => s.setDbno(d))
   useNuiEvent('spectate', (d) => s.setSpectate(d))
+  // Your own death, mid-match. Lua owns how long it stays -- it sends `show`
+  // false when the window closes, on the same clock that releases the spectate
+  // camera -- so there is nothing to time here.
+  useNuiEvent('death',    (d) => s.setDeath(d))
   useNuiEvent('summary',  (d) => s.setSummary(d))
   useNuiEvent('lobby',    (d) => s.setLobby(d))
   // One channel, two verbs: an invite arriving, and an invite being taken
@@ -308,6 +313,20 @@ export default function App() {
         visible={showLobby}
         under={LOBBY_SUBSCREENS.has(s.focus)}
       />
+      {/* YOUR OWN DEATH, MID-MATCH -- the word only, over a world that is still
+          running, for the ~10s before the spectator camera takes the screen.
+
+          MOUNTED ALONGSIDE THE VERDICT SCREEN AND NEVER WITH IT. The two are
+          the pair the owner asked to keep distinct, and they cannot coincide:
+          Lua takes this down on MatchState.ENDED, which is the same transition
+          that raises `showEnd`. Dying in the closing seconds of a round is
+          ordinary, and it is exactly the case that would otherwise put two
+          verdicts on screen at once.
+
+          OUTSIDE the `Hud` wrapper because it is not HUD chrome and must not
+          inherit its visibility: `hudUp` goes false the instant the match is
+          decided, and this has its own end. */}
+      <DeathVerdict />
       {showEnd && s.summary && <EndScreen summary={s.summary} />}
       {/* The voluntary-leave interstitial covers EVERYTHING -- including
           the lobby that mounts underneath it mid-trip -- until Lua says

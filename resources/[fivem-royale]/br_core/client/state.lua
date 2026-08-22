@@ -534,6 +534,7 @@ AddEventHandler(BR.Net.ROSTER_DELTA, function(batch)
             if S.me.state ~= wasState then
                 if S.me.state == BR.PlayerState.DEAD then
                     diedThisMatch = true
+                    BR.NoteDeath()
                 end
                 noteMyState()
                 applyFocusForState(S.match.state)
@@ -639,6 +640,96 @@ AddEventHandler(BR.Net.REVIVED, function()
     myDeathCause, myDeathByPlayer = nil, false
 end)
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- YOUR OWN DEATH, FOR THE TEN SECONDS BEFORE THE CAMERA MOVES ON
+--
+-- "Upon dying, the verdict text ONLY should be shown for ~10 seconds then the
+-- text can immediately disappear as we snap into spectating. Our typical
+-- verdict screen should remain once the match is over." -- the owner.
+--
+-- ═══ THE TWO MOMENTS WERE NOT SHARING A SURFACE. THERE WAS ONLY ONE ═══
+--
+-- Worth stating plainly, because it is not what the change was expected to be:
+-- nothing was drawn on death at all. BR.Nui.SUMMARY is sent only on
+-- MatchState.ENDED (see below), and App.tsx gates the verdict screen on the
+-- match tearing down -- so a player who died mid-match got no word, no pause
+-- and no acknowledgement, and client/spectate.lua's SLOW loop put them behind a
+-- squadmate within a second. The moment a player most wants to read was the one
+-- moment the game skipped.
+--
+-- So this is a NEW surface rather than a split of an old one, and the match-end
+-- screen below is untouched.
+--
+-- ═══ WHY IT IS PUSHED TWICE ═══
+--
+-- The cause arrives on KILL_FEED and the death arrives on a roster delta, and
+-- they are separate messages with no ordering between them. Waiting for both
+-- would mean a word that appears late or not at all; so the word goes up on the
+-- DEATH, with whatever cause is known -- 'WASTED' is the honest fallback and is
+-- the same default the verdict screen uses -- and is re-sent if the cause lands
+-- inside the window. The player sees WASTED become ELIMINATED at worst, which
+-- is a correction rather than a delay.
+-- ═══════════════════════════════════════════════════════════════════════════
+
+--- Game-timer ms at which the death word comes down. 0 when nothing is up.
+local deathVerdictUntil = 0
+
+--- @param show boolean
+local function pushDeath(show)
+    TriggerEvent('br:ui:sendLocal', BR.Nui.DEATH, {
+        show     = show,
+        cause    = show and myDeathCause or nil,
+        byPlayer = show and myDeathByPlayer or false,
+    })
+end
+
+--- Take the death word down, whatever is left of its window.
+---
+--- Called when a new round starts and when the match ends. The second one
+--- matters: the verdict SCREEN is the surface for a finished match, and two
+--- verdicts on screen at once -- one over the world, one over the backdrop --
+--- is the confusion the owner asked to be separated.
+local function clearDeathVerdict()
+    if deathVerdictUntil == 0 then return end
+    deathVerdictUntil = 0
+    pushDeath(false)
+end
+
+--- I just died. Put the word up and start the clock.
+---
+--- GLOBAL because the roster-delta handler above is the only caller and it is
+--- the one place that sees the edge; a local declared after that handler would
+--- resolve as a nil global at runtime, which is the forward-local trap
+--- tools/check_forward_locals.lua exists for.
+function BR.NoteDeath()
+    local ms = (BR.Config.Spectate and BR.Config.Spectate.deathVerdictMs) or 10000
+    if ms <= 0 then return end
+
+    deathVerdictUntil = GetGameTimer() + ms
+    pushDeath(true)
+
+    Citizen.SetTimeout(ms, function()
+        -- STILL THE SAME DEATH? A new round, or a match that ended inside the
+        -- window, has already taken the word down and moved the clock; firing
+        -- blind here would push a stale `show = false` over whatever replaced
+        -- it. Comparing the deadline is what makes this timeout idempotent.
+        if deathVerdictUntil ~= 0 and GetGameTimer() >= deathVerdictUntil then
+            clearDeathVerdict()
+        end
+    end)
+end
+
+--- Is the death word still on screen?
+---
+--- READ BY client/spectate.lua, which holds its first request for a target
+--- until this goes false. That is the "then the text can immediately disappear
+--- as we snap into spectating" half: the two are one sequence, not two timers
+--- that happen to be the same length, so shortening deathVerdictMs moves both.
+--- @return boolean
+function BR.DeathVerdictUp()
+    return deathVerdictUntil ~= 0 and GetGameTimer() < deathVerdictUntil
+end
+
 RegisterNetEvent(BR.Net.STATE)
 AddEventHandler(BR.Net.STATE, function(d)
     S.match.state  = d.state
@@ -649,6 +740,20 @@ AddEventHandler(BR.Net.STATE, function(d)
     if d.state == BR.MatchState.WARMUP or d.state == BR.MatchState.BUS then
         diedThisMatch = false
         myDeathCause, myDeathByPlayer = nil, false
+        -- AND TAKES LAST ROUND'S WORD DOWN. A player who died in the closing
+        -- seconds can reach the next warmup with the window still open, and a
+        -- fresh match with ELIMINATED across it is the one state this must
+        -- never reach.
+        clearDeathVerdict()
+    end
+
+    -- THE VERDICT SCREEN IS THE SURFACE FOR A FINISHED MATCH. Dying in the last
+    -- ten seconds of a round is ordinary, and it would otherwise put the death
+    -- word over the world at the same moment the backdrop and the placement
+    -- come up behind it -- two verdicts at once, which is precisely the pair the
+    -- owner asked to keep distinct.
+    if d.state == BR.MatchState.ENDED or d.state == BR.MatchState.CLEANUP then
+        clearDeathVerdict()
     end
     -- The round is over for everyone; participation resets with it.
     if d.state == BR.MatchState.WAITING then
@@ -856,6 +961,20 @@ AddEventHandler(BR.Net.KILL_FEED, function(d)
     if d.victimSrc == S.me.src then
         myDeathCause    = d.cause
         myDeathByPlayer = d.killerSrc ~= nil
+        -- AND IF THE WORD IS ALREADY UP, CORRECT IT. This event and the roster
+        -- delta that made me DEAD have no ordering between them, so the word
+        -- goes up on whichever arrives first -- with 'WASTED' standing in until
+        -- the cause is known. Re-sending here turns that into ELIMINATED (or
+        -- COOKED BY THE STORM, or whichever it was) inside the same window.
+        -- Waiting for both messages instead would risk a death with no word at
+        -- all, which is the bug being fixed.
+        if BR.DeathVerdictUp and BR.DeathVerdictUp() then
+            TriggerEvent('br:ui:sendLocal', BR.Nui.DEATH, {
+                show     = true,
+                cause    = myDeathCause,
+                byPlayer = myDeathByPlayer,
+            })
+        end
     end
 
     -- Shaped to the UI's FeedEntry contract.
