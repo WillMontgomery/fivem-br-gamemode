@@ -29,6 +29,16 @@ end)
 -- aggression -- the apocalypse does not produce calm commuters. Applied
 -- once per vehicle as they stream in; the handled set is wiped when it
 -- grows stale so handle reuse cannot leak.
+--- Is this native BOOL true?
+---
+--- In Lua `0` IS TRUTHY, and a FiveM native declared BOOL may answer `1`/`0`
+--- rather than `true`/`false`. A bare `not` over one of those refuses every
+--- case -- `not 0` is false -- which this repo has now shipped four times.
+--- client/spectate.lua and client/dbno.lua each carry the same normaliser over
+--- their own BOOL native; see the note at the IsPedAPlayer call below for why
+--- this one is normalised rather than left to the diagnostic.
+local function yes(v) return v == true or v == 1 end
+
 local maddened = {}
 local maddenedCount = 0
 
@@ -137,19 +147,30 @@ BR.Loop.register(BR.Loop.SLOW, 'gamerules.madDrivers', function()
                 -- client/spectate.lua and client/dbno.lua each carry a
                 -- normaliser over their own BOOL native.
                 --
-                -- THIS ONE IS DELIBERATELY NOT NORMALISED. `not IsPedAPlayer()`
-                -- is the test that has been treating drivers since the feature
-                -- was confirmed working, so if this build returns 0 for "not a
-                -- player" then that test has been refusing EVERY driver since
-                -- the day it landed -- a different bug with a different
-                -- history, and picking a direction for it on a hunch is
-                -- precisely what the report asked nobody to do. The value is
-                -- recorded for /brdrivers to print and the branch is left
-                -- alone: one line of console settles it and a guess does not.
+                -- AND THIS ONE IS NORMALISED TOO, WHICH IS A CHANGE OF MIND.
+                --
+                -- The investigation that found the anchor bug left `not raw`
+                -- alone on the reasoning that the feature had been confirmed
+                -- working, so the native must already answer a real boolean on
+                -- this build -- and that picking a direction on a hunch was
+                -- what the report asked nobody to do. The diagnosis was right;
+                -- the conclusion about the code was not.
+                --
+                -- NORMALISING IS A NO-OP IF THAT REASONING HOLDS AND A FIX IF
+                -- IT DOES NOT. Answer a real boolean and `yes()` changes
+                -- nothing whatsoever. Answer `1`/`0` and the bare `not` refuses
+                -- EVERY driver -- `not 0` is false -- so the pass finds cars,
+                -- treats none, and every commuter stays calm forever, looking
+                -- exactly like the feature being switched off. There is no
+                -- third case and no build on which the bare `not` is the better
+                -- test.
+                --
+                -- The raw value is still recorded, because /brdrivers printing
+                -- the type is how anybody ever learns which world we are in.
                 local raw = IsPedAPlayer(drv)
                 lastPass.playerRaw = ('%s (%s)'):format(tostring(raw), type(raw))
 
-                if not raw then
+                if not yes(raw) then
                     lastPass.treated = lastPass.treated + 1
                     if not maddened[veh] then maddenedCount = maddenedCount + 1 end
                     maddened[veh] = now + (A.erraticRetaskMs or 8000)

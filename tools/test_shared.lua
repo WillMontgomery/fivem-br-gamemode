@@ -8020,6 +8020,42 @@ do
         ok(C.tasked[10] == 1, 'and still treats what is near the ped')
     end
 
+    -- ═══ THE BUILD THAT ANSWERS 1 AND 0, WHICH NOTHING HERE USED TO COVER ═══
+    --
+    -- Every other case in this block stubs IsPedAPlayer to a real Lua `false`,
+    -- which is this build's contract -- and that is precisely why neither the
+    -- bare `not` nor the normaliser could be told apart by any assertion above.
+    -- Both mutants survived. On a build that answers `0` for "not a player",
+    -- `not 0` is FALSE and the pass treats NOBODY: it finds the cars, walks
+    -- them, refuses every one, and every commuter stays calm forever, looking
+    -- exactly like the feature being switched off.
+    --
+    -- This is the fifth time this repo has met that trap, so it gets a test
+    -- rather than a comment.
+    do
+        local C = newDriverClient(layout())
+        C.env.IsPedAPlayer = function(ped) return ped == 999 and 1 or 0 end
+        local S = C.pass()
+        ok(S.treated == 1,
+           'a build answering 1/0 still treats the driver in range',
+           S.treated)
+        ok(C.tasked[10] == 1,
+           'and the car beside the player is actually re-tasked on it',
+           tostring(C.tasked[10]))
+    end
+
+    -- AND THE PLAYER IS STILL EXCLUDED ON THAT BUILD, which is the half a
+    -- careless normaliser breaks: `yes(1)` must read as "this IS a player" and
+    -- skip them, or the pass starts re-tasking human drivers.
+    do
+        local C = newDriverClient(layout())
+        C.env.IsPedAPlayer = function() return 1 end
+        local S = C.pass()
+        ok(S.treated == 0,
+           'and a driver the engine calls a player with 1 is left alone',
+           S.treated)
+    end
+
     -- The two gates, which /brdrivers exists to tell apart from "nothing in range".
     do
         local C = newDriverClient(layout())
