@@ -141,11 +141,11 @@ sv_enforceGameBuild 3095
 # without br_core ever seeing it -- which is also why `brvehicles` stays at zero
 # while it happens.
 #
-# THE REPLACEMENT IS `brcar <serverId> [model]`, at the server console. It goes
-# through a SERVER-side CreateVehicle, which the same validator admits by its
-# creation token rather than by the mode -- so it works here and would work
-# under `strict` too. Console only, dev mode only, and only models
-# br_lib/config/vehicles.lua tolerates. See docs/running.md.
+# THE REPLACEMENT IS `brcar <serverId> [model] [type]`, at the server console. It
+# goes through CreateVehicleServerSetter, which builds the entity on the SERVER
+# rather than asking a client to -- so the validator above never sees it, and the
+# mode here does not reach it either. Console only, dev mode only, and only
+# models br_lib/config/vehicles.lua tolerates. See docs/running.md.
 sv_entityLockdown relaxed
 
 # ---------------------------------------------------------------------------

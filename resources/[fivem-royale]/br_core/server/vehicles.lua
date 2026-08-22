@@ -160,6 +160,31 @@ local SCRIPTED = {
 --- instead of bounding what an attacker can force.
 local MIN_INTERVAL_MS = 900
 
+--- How long the driving seat of a refused vehicle must be HELD before it counts.
+---
+--- #211's NUMBER, AND IT LIVES UP HERE BESIDE THE THROTTLE FOR TWO REASONS: the
+--- two bound the same detector from opposite ends -- one says how fast a finding
+--- may repeat, the other how long one takes to become a finding at all -- and
+--- BR.Vehicles.stats() below reports it, so it has to be in scope before that
+--- function is compiled. The section that uses it is much further down, under
+--- "taking one that was already there".
+---
+--- THREE SECONDS, AND THE NUMBER IS CHOSEN AGAINST THE FALSE POSITIVES RATHER
+--- THAN AGAINST THE OFFENCE. At the roster's 4 Hz that is twelve consecutive
+--- samples, all naming the same vehicle handle for the same licence.
+---
+--- What it is sized to reject: a seat read taken during an ejection or a
+--- ragdoll (one or two samples), a player who gets in and straight back out,
+--- and any single sample the engine answered oddly. What it is sized to admit:
+--- somebody who is actually flying, which is the only way to hold a cockpit for
+--- three seconds.
+---
+--- IT IS DELIBERATELY NOT LONGER. The dwell is a noise floor, not a grace
+--- period -- an offender is not being given time to reconsider, because they
+--- are never told and nothing stops them. Every second added is a second of a
+--- stolen Buzzard that files nothing.
+local OCCUPY_DWELL_MS = 3000
+
 --- Per-source counters. [src] = { matchId, count, reports, at, why }
 ---
 --- BOUNDED BY WHO IS CONNECTED. Cleared on disconnect and rebuilt when the
@@ -198,6 +223,10 @@ local stat = {
     seen = 0, vehicles = 0, ambient = 0, allowed = 0,
     counted = 0, throttled = 0, unowned = 0, byType = 0,
     roadkills = 0, roadkillLooks = 0, driving = 0,
+    -- #211's counters. `occupied` is the finding; `dwelling` is how many
+    -- players are sitting out a dwell right now, which is the number that says
+    -- the sampler is watching rather than that it has decided.
+    occupied = 0, dwelling = 0,
 }
 
 --- Counters, for brdebug-style introspection. Printed by `brvehicles`.
@@ -224,6 +253,14 @@ function BR.Vehicles.stats()
         counted   = stat.counted,   throttled = stat.throttled,
         unowned   = stat.unowned,   byType    = stat.byType,
         models    = seenModels,
+        -- #211: the same finding reached by sitting in one rather than by
+        -- conjuring one. Counted separately and filed identically.
+        --
+        -- THE DWELL TRAVELS WITH THEM so `brvehicles` prints the rule rather
+        -- than a second copy of the number -- the readout that says "0 occupied"
+        -- is only readable next to how long somebody has to sit there.
+        occupied  = stat.occupied,  dwelling  = stat.dwelling,
+        dwellMs   = OCCUPY_DWELL_MS,
         -- The roadkill ledger below, which is a gameplay counter rather than an
         -- anticheat one and is printed under its own heading for that reason.
         roadkills = stat.roadkills, roadkillLooks = stat.roadkillLooks,
@@ -279,6 +316,67 @@ local function vehicleType(entity)
     return type(t) == 'string' and t or nil
 end
 
+--- This entity's model hash, or nil when the handle would not answer.
+---
+--- pcall'd FOR `vehicleType`'s REASON, and NOT through `entityFrom` below --
+--- that helper floors negatives to 0, and A MODEL HASH IS LEGITIMATELY
+--- NEGATIVE. GetHashKey answers a SIGNED 32-bit integer, so every hash with the
+--- top bit set arrives here below zero; running one through `entityFrom` would
+--- turn `buzzard` into 0, and 0 is in no row of the refused table. That is a
+--- refusal silently becoming permission, which is the single failure this file
+--- is least able to notice.
+---
+--- nil IS THE SAFE ANSWER and BR.Config.IsAllowedVehicle takes it as "allowed".
+--- Same polarity that function documents: a model the engine could not report
+--- files nothing, rather than opening a case every time a handle goes bad.
+--- @param entity integer
+--- @return integer|nil
+local function modelOf(entity)
+    if not GetEntityModel then return nil end
+    local ok, m = pcall(GetEntityModel, entity)
+    if not ok then return nil end
+    return math.tointeger(tonumber(m))
+end
+
+--- Does the gamemode refuse this vehicle, and on which half of the rule?
+---
+--- THE OWNER'S RULE IN ONE PLACE, ASKED BY BOTH DETECTORS. #193's sentence --
+--- "allow every vehicle except anything that flies or has built-in weapons" --
+--- is now reached down two routes: a client CREATING one (`entityCreating`,
+--- below) and a player SITTING IN one that was already in the world (#211, the
+--- sample pass further down). They must answer identically or the same Buzzard
+--- is two different rulings depending on how somebody got into it.
+---
+--- BOTH SIGNALS, IN THE ORDER THE CREATION PATH ESTABLISHED. The model table
+--- first, because it is one hash lookup and it distinguishes "flies" from
+--- "armed" -- a distinction the engine's class cannot make. `GetVehicleType`
+--- only when the table said yes, as the backstop against config/vehicles.lua
+--- rotting into uniform permission: it is a DENY-list, so an aircraft nobody
+--- wrote down is allowed by construction, forever, silently.
+---
+--- @param entity integer
+--- @return string|nil why    a BR.Config.VehicleRefusal value; nil when allowed
+--- @return integer|nil model  the hash, for the caller's payload and log line
+local function refusalFor(entity)
+    local model = modelOf(entity)
+    local allowed, why = BR.Config.IsAllowedVehicle(model)
+
+    if allowed then
+        local t = vehicleType(entity)
+        if BR.Config.IsFlyingVehicleType(t) then
+            allowed, why = false, BR.Config.VehicleRefusal.FLIES
+            -- COUNTED FROM WHICHEVER ROUTE FOUND IT. The number means "the
+            -- model table missed an aircraft that is in this game build", which
+            -- is a fact about config/vehicles.lua rather than about how the
+            -- vehicle was reached.
+            stat.byType = stat.byType + 1
+        end
+    end
+
+    if allowed then return nil, model end
+    return why, model
+end
+
 local function ownerOf(entity)
     if not NetworkGetEntityOwner then return nil end
     local ok, owner = pcall(NetworkGetEntityOwner, entity)
@@ -290,6 +388,131 @@ local function ownerOf(entity)
     -- exist. `-1` is the platform's "nobody owns this".
     if n == nil or n <= 0 then return nil end
     return n
+end
+
+-- ---------------------------------------------------------------------------
+-- Counting one, and handing it over
+-- ---------------------------------------------------------------------------
+
+--- Record one refused vehicle against a player, and announce it if it is the
+--- second or later this match.
+---
+--- THE ONE ROUTE OUT OF THIS FILE, AND #211 IS WHY IT IS A FUNCTION. There are
+--- now two ways to reach the owner's rule -- a client creating a refused
+--- vehicle, and a player taking one that was already in the world -- and they
+--- must produce the SAME case rather than two cases with two shapes. Everything
+--- that decides what a finding is worth lives here and is therefore shared: the
+--- per-match record, the flood throttle, the bar of two, the corroboration
+--- sequence, and the single `br:core:vehicle` handover.
+---
+--- IT IS ALSO THE SEAM ANY LATER DETECTOR SHOULD USE. server/incident.lua turns
+--- `br:core:vehicle` into a case or a corroboration and knows nothing about who
+--- raised it; anything downstream that hangs off a case being filed -- the
+--- match-wide notice among them -- therefore picks up a new route here for
+--- free, with nothing to call and nothing to register.
+---
+--- ONE COUNTER FOR BOTH ROUTES, DELIBERATELY. A player who spawns a jet and
+--- then steals a Buzzard has done the same thing twice, so it is one case with
+--- a count of two rather than two cases of one -- which is the "one player, one
+--- round, one record" rule server/incident.lua already states.
+---
+--- NOBODY IS EXEMPT, and the absence of an admin check here is deliberate and
+--- inherited. server/strip.lua shipped one for a single commit and the owner
+--- removed it the same day -- "I don't want admins to be exempt from any
+--- incidents please" -- on the reasoning that an exemption is a hole in an
+--- anticheat shaped exactly like the accounts with the most power. It would be
+--- a worse idea here than there: spawning a vehicle through a trainer is
+--- precisely what an admin testing with vMenu does, so the exemption would
+--- silence this path for the only group that can reach it easily.
+---
+--- @param src integer
+--- @param e table      the player's roster entry; caller has checked LIVE
+--- @param why string   a BR.Config.VehicleRefusal value
+--- @param model integer|nil  the model hash, for the log line and the payload
+--- @return boolean  true when this one was counted (as opposed to throttled)
+local function fileRefusal(src, e, why, model)
+    local now = GetGameTimer()
+
+    -- ONE PER WINDOW. Checked before anything else costs a roster walk or an
+    -- identity read, because a flood is exactly the shape a client can choose.
+    local rec = seenBy[src]
+    if not rec or rec.matchId ~= e.matchId then
+        rec = { matchId = e.matchId, count = 0, reports = 0, at = 0, why = why }
+        seenBy[src] = rec
+    end
+    if rec.at ~= 0 and now - rec.at < MIN_INTERVAL_MS then
+        stat.throttled = stat.throttled + 1
+        return false
+    end
+
+    local license = BR.Roster.licenseOf and BR.Roster.licenseOf(src) or nil
+
+    rec.at    = now
+    rec.count = rec.count + 1
+    -- THE LATEST REASON, NOT THE FIRST. A player who spawns a jet and then a
+    -- tank has a case whose one-line summary should say what they are doing
+    -- now; the earlier reasons are on the corroborations, each carrying its own.
+    rec.why   = why
+    stat.counted = stat.counted + 1
+
+    -- SILENT ON THE FIRST, THEN ON EVERY ONE AFTER IT -- the cadence the owner
+    -- set for strips on 2026-08-20 ("this should fire an incident on the 2nd
+    -- offense, and each subsequent should show as corroboration from system"),
+    -- applied here because the shape of the finding is identical.
+    --
+    -- THE FIRST ONE IS QUIET FOR A REASON SPECIFIC TO THIS DETECTOR, and it is
+    -- not strip.lua's reason. There, the first strip is forgiven because two of
+    -- our own inventory mirrors can disagree for a tick. Here, the doubt is
+    -- `ownerOf`: ownership migrates by proximity, so a single refused vehicle
+    -- attributed to one player is a claim resting on one ownership read taken at
+    -- one instant. A second one in the same match from the same player is not
+    -- that. The occupancy route's doubt is a different one -- a seat read taken
+    -- while somebody was being thrown out of a cockpit -- and the dwell rule
+    -- there answers it, but the bar is kept at two for both so that one case
+    -- cannot be opened on a lower standard than the other.
+    if rec.count < 2 then return true end
+    rec.reports = rec.reports + 1
+
+    local name = e.name or ('src ' .. src)
+    print(('[br_core] ANTICHEAT: %s (%d) -- %d refused vehicle(s) this match (%s)')
+        :format(name, src, rec.count, tostring(why)))
+
+    -- HANDED OVER, NOT FILED HERE, exactly as server/strip.lua hands over.
+    -- server/incident.lua is the file that knows what has been filed this match
+    -- and answers the identical question for refusals and for strips.
+    -- Fire-and-forget: if nothing is listening, the count is still kept and the
+    -- boundary is still `sv_entityLockdown`, which is the part that protects the
+    -- match.
+    TriggerEvent('br:core:vehicle', {
+        src      = src,
+        name     = name,
+        -- nil only for a genuinely licenseless connection, in which case
+        -- BR.IncidentBuild.fromVehicle declines to file rather than opening a
+        -- case about whoever holds this server id next.
+        license  = license,
+        matchId  = e.matchId,
+        -- HOW MANY REFUSED VEHICLES THIS PLAYER HAS DRAWN THIS MATCH. Climbs by
+        -- one each time -- 2, 3, 4, 5 -- so a gap here means a LOST
+        -- announcement, exactly as a gap in `seq` does. The same contract
+        -- server/strip.lua's `count` carries since the doubling rule was
+        -- dropped.
+        count    = rec.count,
+        -- WHICH ANNOUNCEMENT THIS IS for this player, this match: 1 opens the
+        -- case, 2+ corroborate it. It rides the wire so the console can tell a
+        -- dropped corroboration from a match where nothing more happened -- the
+        -- event channel discards a batch after four attempts and never says so.
+        seq      = rec.reports,
+        -- WHICH HALF OF THE OWNER'S RULE THIS TRIPPED, as config/vehicles.lua's
+        -- own prose. It is what the queue row is built from.
+        why      = why,
+        -- THE MODEL, NORMALISED, FOR A HUMAN READING THE SERVER LOG. It is
+        -- deliberately absent from the incident summary -- see
+        -- BR.IncidentBuild.vehicleSummaryOf -- because a hash the refused table
+        -- does not name renders as nothing useful on a moderation record.
+        model    = BR.NormHash(model),
+        at       = now,
+    })
+    return true
 end
 
 -- ---------------------------------------------------------------------------
@@ -329,7 +552,8 @@ AddEventHandler('entityCreating', function(entity)
 
     -- THE ALLOWLIST, AND IT IS THE CHEAPEST TEST THAT REJECTS THE MOST. Every
     -- ordinary car in every match reaches this line and leaves at it, one hash
-    -- lookup later.
+    -- lookup later. Both signals live in `refusalFor` because #211's occupancy
+    -- pass asks the identical question of a vehicle nobody created.
     --
     -- GetEntityModel IS READABLE HERE, and that is a property of where in the
     -- platform's clone path this event sits rather than an assumption: the
@@ -337,27 +561,9 @@ AddEventHandler('entityCreating', function(entity)
     -- raised. (It is reported unreliable in this event for PICKUPS and for peds
     -- and objects on RedM, which is why the type gate above narrows to vehicles
     -- before this line rather than after it.)
-    local model = GetEntityModel(entity)
-    local allowed, why = BR.Config.IsAllowedVehicle(model)
+    local why, model = refusalFor(entity)
 
-    -- THE SECOND SIGNAL, AND THE ONLY THING STOPPING THE MODEL TABLE ROTTING
-    -- INTO UNIFORM PERMISSION. config/vehicles.lua is a deny-list: an aircraft
-    -- nobody wrote down is allowed by construction, forever, silently. Asking
-    -- the engine what class this is catches every aircraft including the ones
-    -- added to the game after that table was written.
-    --
-    -- ONLY CONSULTED WHEN THE TABLE SAID YES. A model the table already refuses
-    -- keeps the table's reason -- which distinguishes "flies" from "armed", a
-    -- distinction the class cannot make -- and this native is not called at all.
-    if allowed then
-        local t = vehicleType(entity)
-        if BR.Config.IsFlyingVehicleType(t) then
-            allowed, why = false, BR.Config.VehicleRefusal.FLIES
-            stat.byType = stat.byType + 1
-        end
-    end
-
-    if allowed then
+    if why == nil then
         stat.allowed = stat.allowed + 1
         return
     end
@@ -396,93 +602,170 @@ AddEventHandler('entityCreating', function(entity)
     local e = BR.Roster and BR.Roster.get and BR.Roster.get(src)
     if not e or not LIVE[e.state] or e.matchId == nil then return end
 
-    local now = GetGameTimer()
-
-    -- ONE PER WINDOW. Checked before anything else costs a roster walk or an
-    -- identity read, because a flood is exactly the shape a client can choose.
-    local rec = seenBy[src]
-    if not rec or rec.matchId ~= e.matchId then
-        rec = { matchId = e.matchId, count = 0, reports = 0, at = 0, why = why }
-        seenBy[src] = rec
-    end
-    if rec.at ~= 0 and now - rec.at < MIN_INTERVAL_MS then
-        stat.throttled = stat.throttled + 1
-        return
-    end
-
-    -- NOBODY IS EXEMPT, and the absence of an admin check here is deliberate and
-    -- inherited. server/strip.lua shipped one for a single commit and the owner
-    -- removed it the same day -- "I don't want admins to be exempt from any
-    -- incidents please" -- on the reasoning that an exemption is a hole in an
-    -- anticheat shaped exactly like the accounts with the most power. It would
-    -- be a worse idea here than there: spawning a vehicle through a trainer is
-    -- precisely what an admin testing with vMenu does, so the exemption would
-    -- silence this path for the only group that can reach it easily.
-    local license = BR.Roster.licenseOf and BR.Roster.licenseOf(src) or nil
-
-    rec.at    = now
-    rec.count = rec.count + 1
-    -- THE LATEST REASON, NOT THE FIRST. A player who spawns a jet and then a
-    -- tank has a case whose one-line summary should say what they are doing
-    -- now; the earlier reasons are on the corroborations, each carrying its own.
-    rec.why   = why
-    stat.counted = stat.counted + 1
-
-    -- SILENT ON THE FIRST, THEN ON EVERY ONE AFTER IT -- the cadence the owner
-    -- set for strips on 2026-08-20 ("this should fire an incident on the 2nd
-    -- offense, and each subsequent should show as corroboration from system"),
-    -- applied here because the shape of the finding is identical.
-    --
-    -- THE FIRST ONE IS QUIET FOR A REASON SPECIFIC TO THIS DETECTOR, and it is
-    -- not strip.lua's reason. There, the first strip is forgiven because two of
-    -- our own inventory mirrors can disagree for a tick. Here, the doubt is
-    -- `ownerOf`: ownership migrates by proximity, so a single refused vehicle
-    -- attributed to one player is a claim resting on one ownership read taken at
-    -- one instant. A second one in the same match from the same player is not
-    -- that.
-    if rec.count < 2 then return end
-    rec.reports = rec.reports + 1
-
-    local name = e.name or ('src ' .. src)
-    print(('[br_core] ANTICHEAT: %s (%d) -- %d refused vehicle(s) spawned this match (%s)')
-        :format(name, src, rec.count, tostring(why)))
-
-    -- HANDED OVER, NOT FILED HERE, exactly as server/strip.lua hands over.
-    -- server/incident.lua is the file that knows what has been filed this match
-    -- and answers the identical question for refusals and for strips.
-    -- Fire-and-forget: if nothing is listening, the count is still kept and the
-    -- boundary is still `sv_entityLockdown`, which is the part that protects the
-    -- match.
-    TriggerEvent('br:core:vehicle', {
-        src      = src,
-        name     = name,
-        -- nil only for a genuinely licenseless connection, in which case
-        -- BR.IncidentBuild.fromVehicle declines to file rather than opening a
-        -- case about whoever holds this server id next.
-        license  = license,
-        matchId  = e.matchId,
-        -- HOW MANY REFUSED VEHICLES THIS PLAYER HAS DRAWN THIS MATCH. Climbs by
-        -- one each time -- 2, 3, 4, 5 -- so a gap here means a LOST
-        -- announcement, exactly as a gap in `seq` does. The same contract
-        -- server/strip.lua's `count` carries since the doubling rule was
-        -- dropped.
-        count    = rec.count,
-        -- WHICH ANNOUNCEMENT THIS IS for this player, this match: 1 opens the
-        -- case, 2+ corroborate it. It rides the wire so the console can tell a
-        -- dropped corroboration from a match where nothing more happened -- the
-        -- event channel discards a batch after four attempts and never says so.
-        seq      = rec.reports,
-        -- WHICH HALF OF THE OWNER'S RULE THIS TRIPPED, as config/vehicles.lua's
-        -- own prose. It is what the queue row is built from.
-        why      = why,
-        -- THE MODEL, NORMALISED, FOR A HUMAN READING THE SERVER LOG. It is
-        -- deliberately absent from the incident summary -- see
-        -- BR.IncidentBuild.vehicleSummaryOf -- because a hash the refused table
-        -- does not name renders as nothing useful on a moderation record.
-        model    = BR.NormHash(model),
-        at       = now,
-    })
+    fileRefusal(src, e, why, model)
 end)
+
+-- ---------------------------------------------------------------------------
+-- The second detector: taking one that was already there (#211)
+-- ---------------------------------------------------------------------------
+--
+-- THE OWNER, 2026-08-22:
+--
+--   "I did go to fort zancudo and steal a helicopter, but for whatever reason
+--    that didn't create an incident."
+--
+-- THEY WERE RIGHT, AND IT WAS A HOLE RATHER THAN A BUG. `entityCreating` sees a
+-- vehicle a CLIENT CREATES and nothing else -- the header above says so as a
+-- property worth having, and it is, right up until the refused vehicle is one
+-- the engine put in the world before anybody logged in. A Zancudo Buzzard was
+-- created by nobody. Under `sv_entityLockdown relaxed` that population is large
+-- and permanent: the airbase's aircraft, the hospital helipads, every parked
+-- car. Flying a stock Buzzard is EXACTLY the behaviour #193's rule exists to
+-- catch, and until this section it was invisible.
+--
+-- ═══ THE RULE IS UNCHANGED; ONLY THE QUESTION IS NEW ═══
+--
+-- `refusalFor` is the same function `entityCreating` asks, so the same Buzzard
+-- is the same ruling whether it was conjured or found. And the finding leaves
+-- by the same door: `fileRefusal` above, which owns the throttle, the bar of
+-- two, the corroboration sequence and the single `br:core:vehicle` handover. No
+-- second counter, no second event, no second shape of case.
+--
+-- ═══ DRIVER ONLY, AND NOT ANY SEAT ═══
+--
+-- The owner's rule is about TAKING a refused vehicle, and a passenger did not
+-- take it. Four reasons, in the order they carry weight:
+--
+--   * A PASSENGER CAN BE PUT THERE BY SOMEBODY ELSE. A squadmate lands a
+--     Buzzard and you climb in; you are now a participant in somebody else's
+--     offence. A driver cannot be made a driver by another player, so the
+--     driving seat is the only one whose occupant chose it.
+--   * THE SEAT IS ALREADY READ, AND THE OTHERS ARE NOT. `drivenVehicle` runs
+--     once per ALIVE player per sample for the roadkill ledger. Enumerating
+--     every passenger seat means GetPedInVehicleSeat for every index of every
+--     vehicle every sample -- the exact cost the roadkill section above weighed
+--     and declined for the same reason.
+--   * IT IS THE HALF THE OWNER DESCRIBED. "I did go to fort zancudo and steal a
+--     helicopter" is a driver.
+--   * IT DOES NOT PAINT INTO A CORNER. Widening to passengers later is a loop
+--     around one native inside `occupantRefusal`; nothing else would move.
+--
+-- ═══ HOW OCCUPANCY IS OBSERVED, AND WHY NOT THE OBVIOUS WAY ═══
+--
+-- Through `drivenVehicle`, unchanged, for the reason the roadkill section
+-- already establishes at length: server-side `GetVehiclePedIsIn(ped, false)`
+-- answers the vehicle a ped was LAST in -- citizenfx/fivem#4006, reported fixed
+-- only as of build 3326, and this project pins 3095 -- so on this build it
+-- names a helicopter for a player who climbed out of one ten minutes ago and
+-- has been walking ever since. Taken alone it would file a case against half
+-- the map. So the ped's answer is a CANDIDATE and the vehicle settles it:
+-- `GetPedInVehicleSeat(veh, -1)` is a live read of who is in that vehicle's
+-- driving seat right now, and a ped that left is not in it.
+--
+-- THAT IS ALSO WHY THIS DETECTOR CANNOT BE WRITTEN OFF THE FUEL LEDGER OR THE
+-- ROSTER'S ped FIELD. Both would inherit #4006; this reads the seat.
+--
+-- ═══ THE DWELL, WHICH IS WHAT STOPS IT FIRING ON NOTHING ═══
+--
+-- A single sample showing somebody in a cockpit is not somebody taking an
+-- aircraft. It is also what a player being thrown out of one looks like, what a
+-- ragdoll through a seat looks like, and what a mis-click looks like. So the
+-- seat must be HELD: the same player, the same vehicle handle, continuously,
+-- across samples spanning at least OCCUPY_DWELL_MS.
+--
+-- NOTHING IS COUNTED TWICE FOR ONE SITTING. A count is taken once per
+-- occupancy, not once per sample -- otherwise a five-minute flight would file
+-- twelve hundred corroborations. Getting out and getting back in is a fresh
+-- occupancy and counts again, which is correct: it is a fresh act, and
+-- MIN_INTERVAL_MS still bounds how fast anybody can repeat it.
+--
+-- ═══ NOBODY IS TOLD AND NOBODY IS STOPPED ═══
+--
+-- The owner considered blocking and rejected it. Nothing here removes anybody
+-- from a seat, warns them, or changes what they can do -- the same rule the
+-- creation detector obeys, and #93's: an offender who learns they are under
+-- suspicion changes behaviour, which costs the case the evidence it was going
+-- to be made of.
+--
+-- ═══ WHAT THIS DELIBERATELY DOES NOT DO ═══
+--
+-- IT BUILDS NONE OF #191's AMBULANCE MACHINERY, and it does not need to: the
+-- question "is this model refused" is asked in exactly one place for both
+-- detectors, so the day a rescue vehicle needs an exemption there is one
+-- function to put it in and no second copy to find.
+--
+-- IT SAMPLES ALIVE PLAYERS IN A MATCH ONLY, which is narrower than the creation
+-- detector's LIVE (alive OR warmup), and that is a stated limit rather than an
+-- oversight. The pass below reuses the roadkill job's roster walk, whose filter
+-- is ALIVE; widening that filter would change which players can be credited a
+-- roadkill, which is a different feature's behaviour. A warmup player in a
+-- refused aircraft is caught only if a client created it.
+
+--- Who is sitting out a dwell, and in what.
+---
+--- [src] = { veh, since, license, why, filed }
+---
+--- CARRIES THE LICENCE FOR `track`'s REASON, and the stakes are the same: FiveM
+--- recycles server ids within the minute, so a row left behind by a departing
+--- pilot would be read as the dwell of whoever lands in that slot next -- and
+--- they would inherit a case for a seat they never sat in. A licence that does
+--- not match restarts the dwell, which is the direction that files nothing
+--- rather than the direction that invents a finding.
+---
+--- `why` IS DECIDED ONCE, WHEN THE OCCUPANCY STARTS, and then reused. That is
+--- cheaper -- one model read per sitting rather than one per sample -- and it
+--- is also the more correct of the two: the ruling belongs to the vehicle they
+--- got into, and re-asking every 250 ms only creates a way for the answer to
+--- change underneath a dwell that is already running.
+local seat = {}
+
+--- Fold one sample of one driver into the occupancy ledger, and file if it is
+--- time.
+---
+--- CALLED FROM INSIDE THE SAMPLE JOB'S EXISTING WALK, with the vehicle handle
+--- `drivenVehicle` already resolved -- so an ordinary match, where every driver
+--- is in an ordinary car, costs one model read per driver per SITTING and a
+--- table lookup per sample.
+--- @param src integer
+--- @param e table            roster entry; the caller has filtered ALIVE + match
+--- @param veh integer|nil    the vehicle this player is confirmed DRIVING
+--- @param now integer
+local function occupancySample(src, e, veh, now)
+    -- NOT DRIVING ANYTHING ENDS THE OCCUPANCY. Walking, riding as a passenger,
+    -- and a ped the server could not resolve all land here, and all three mean
+    -- the same thing: whatever dwell was running is over and does not resume.
+    if veh == nil then seat[src] = nil return end
+
+    local license = BR.Roster.licenseOf and BR.Roster.licenseOf(src) or nil
+    local rec = seat[src]
+
+    -- A DIFFERENT VEHICLE, A DIFFERENT PERSON, OR NOTHING YET: start the clock.
+    -- The licence is compared as well as the handle because a recycled server
+    -- id would otherwise walk into a dwell somebody else started -- and nil is
+    -- treated as "cannot prove it is the same person", which restarts.
+    if rec == nil or rec.veh ~= veh
+        or license == nil or rec.license ~= license then
+        local why = refusalFor(veh)
+        rec = { veh = veh, since = now, license = license, why = why,
+                filed = false }
+        seat[src] = rec
+    end
+
+    -- AN ORDINARY CAR, WHICH IS ALL OF THEM. Left here on the second line of
+    -- the function for every driver in every match.
+    if rec.why == nil then return end
+
+    stat.dwelling = stat.dwelling + 1
+
+    -- ONE COUNT PER SITTING. See the section header: without it a flight files
+    -- a corroboration every 250 ms.
+    if rec.filed then return end
+    if now - rec.since < OCCUPY_DWELL_MS then return end
+
+    rec.filed = true
+    stat.occupied = stat.occupied + 1
+    fileRefusal(src, e, rec.why, modelOf(veh))
+end
 
 -- ---------------------------------------------------------------------------
 -- Roadkill: the one environmental cause with a person behind it
@@ -906,6 +1189,11 @@ BR.Sched.every(BR.Roster.sampleIntervalMs(), 'vehicles.roadkill', function()
     driving = {}
     local live = 0
 
+    -- A GAUGE RATHER THAN A TALLY, like `driving` beside it: it is rebuilt from
+    -- this sample, so it answers "how many people are sitting in something
+    -- refused right now" rather than "how many ever were".
+    stat.dwelling = 0
+
     BR.Roster.each(
         function(e) return e.state == BR.PlayerState.ALIVE and e.matchId ~= nil end,
         function(src, e)
@@ -915,6 +1203,12 @@ BR.Sched.every(BR.Roster.sampleIntervalMs(), 'vehicles.roadkill', function()
                 driving[src] = veh
                 live = live + 1
             end
+            -- #211, OFF THE SEAT READ THAT WAS ALREADY TAKEN. Passed the same
+            -- handle the roadkill ledger just confirmed, so the refused-vehicle
+            -- question costs no extra native on the ordinary path -- and nil
+            -- (not driving) is a meaningful value here rather than a skip,
+            -- because it is what ENDS an occupancy.
+            occupancySample(src, e, veh, now)
         end)
 
     stat.driving = live
@@ -950,6 +1244,12 @@ AddEventHandler('playerDropped', function()
     seenBy[src] = nil
     track[src]  = nil
     driving[src] = nil
+    -- AND THE DWELL, for the same reason and with a sharper edge: a row left
+    -- here is a part-served dwell in a stolen helicopter, and the next player to
+    -- hold this id would finish it and take the case. The licence check inside
+    -- occupancySample already refuses that; this is the cheaper half of the
+    -- same guard, and neither is enough on its own.
+    seat[src]   = nil
 end)
 
 AddEventHandler('onResourceStart', function(name)
@@ -957,6 +1257,7 @@ AddEventHandler('onResourceStart', function(name)
         seenBy = {}
         seenModels, seenModelCount = {}, 0
         track, driving = {}, {}
+        seat = {}
     end
 end)
 
@@ -967,6 +1268,33 @@ end)
 --- The model `brcar` spawns when nobody names one. An ordinary four-seat SUV,
 --- which is what a squad test wants and what the allowlist above is happy with.
 local DEFAULT_MODEL = 'granger'
+
+--- The eight sync trees `CreateVehicleServerSetter` knows how to build.
+---
+--- SPELLED OUT HERE SO A BAD ONE NEVER REACHES THE NATIVE, because the native
+--- THROWS on an unrecognised type rather than answering 0 -- and a throw inside
+--- this handler is precisely the failure #212 was. Case-sensitive on the
+--- platform's side; the verb lowercases before it looks, so `Automobile` works
+--- at the console and `automobile` is what is passed.
+---
+--- IT IS NOT CHECKED AGAINST THE MODEL by the platform: the type selects which
+--- sync tree is built and nothing cross-references it against vehicles.meta. So
+--- this list bounds what can be ASKED FOR, not what is correct.
+local VEHICLE_TYPES = {
+    'automobile', 'bike', 'boat', 'heli', 'plane',
+    'submarine', 'trailer', 'train',
+}
+local VEHICLE_TYPE = {}
+for _, t in ipairs(VEHICLE_TYPES) do VEHICLE_TYPE[t] = true end
+
+--- What `brcar` builds when nobody names a type.
+---
+--- THE ONE THAT MATCHES DEFAULT_MODEL, and the one that matches almost every
+--- model the allowlist tolerates. config/vehicles.lua refuses everything that
+--- flies, so `heli` and `plane` are unreachable through this verb by
+--- construction; `boat`, `bike` and the rest are reachable and have to be asked
+--- for by name.
+local DEFAULT_TYPE = 'automobile'
 
 --- How far in front of the target player the vehicle lands, in metres.
 ---
@@ -1003,48 +1331,84 @@ local SPAWN_AHEAD_M = 5.0
 --- `relaxed`, and would go on working under `strict`. Nothing here reads the
 --- convar and nothing here needs to.
 ---
---- ═══ IT SPAWNS BESIDE A PLAYER, AND THAT IS THE PLATFORM'S RULE TOO ═══
+--- ═══ WHY IT SHIPPED BROKEN, WHICH IS #212 AND IS THE WHOLE OF THE REWRITE ═══
 ---
---- `CreateVehicle` is an RPC native: the server asks a client to make the entity.
---- It only works when somebody is inside OneSync focus distance of the
---- coordinates, so "at coordinates" would be a verb that silently does nothing
---- wherever the map is empty. Naming a player turns the one precondition the
---- native has into the one argument the verb takes.
+--- Owner, 2026-08-22: "It seems brcar doesn't do anything."
 ---
---- The routing bucket is copied from that player for the same reason: matches
---- run in their own buckets (server/roster.lua), and a car in bucket 0 is a car
---- nobody in a match can see.
+--- THEY WERE RIGHT AND IT WAS THE SPAWN, NOT THE GATES. The verb used server-side
+--- `CreateVehicle`, which is an RPC native -- `ext/natives/rpc_spec_natives.lua`
+--- registers it with `entity_rpc 'CREATE_VEHICLE'` -- so the server asks a CLIENT
+--- to make the entity and returns IMMEDIATELY, before any entity exists. What it
+--- returns is not an entity handle. It is a `ScriptGuid::Type::TempEntity`, and
+--- `ServerGameState::GetEntity` answers null for anything that is not
+--- `Type::Entity`.
+---
+--- EVERY NATIVE THIS VERB CALLED NEXT IS BUILT WITH `makeEntityFunction`, WHICH
+--- THROWS ON THAT NULL rather than answering: `SET_ENTITY_ROUTING_BUCKET`,
+--- `NETWORK_GET_NETWORK_ID_FROM_ENTITY`, `GET_ENTITY_COORDS` and
+--- `GET_ENTITY_MODEL` all raise "Tried to access invalid entity". So the very
+--- next line after a successful create threw, the handler died there, and the
+--- readout at the bottom -- the part that would have said what happened --
+--- never ran. A verb that throws before it prints is a verb that does nothing.
+---
+--- AND IT WOULD NOT HAVE WORKED EVEN WITHOUT THE THROW. citizenfx/fivem#1407 is
+--- titled "Serverside created vehicles spawn in the routing bucket of the last
+--- serverside spawned vehicle, sometimes do not even spawn", and blattersturm
+--- closed it with the rule this file now obeys: RPC creation is inherently
+--- incompatible with routing buckets, so do not use it if you use any. THIS
+--- GAMEMODE RUNS EVERY MATCH IN ONE. An RPC-created vehicle inherits the bucket
+--- of whichever client the engine picked to build it, which is not the target's.
+---
+--- ═══ SO IT USES THE SERVER SETTER, AND THAT FIXES ALL OF IT AT ONCE ═══
+---
+--- `CreateVehicleServerSetter(model, type, x, y, z, heading)` builds the sync
+--- tree on the server and registers the entity before it mints the handle, so
+--- what comes back is a REAL entity: `SetEntityRoutingBucket` works on it
+--- immediately, with no polling and no throw. It also needs no player in scope,
+--- where the RPC returned 0 when the candidate list was empty.
+---
+--- THE TYPE IS THE SECOND ARGUMENT AND THAT IS EASY TO GET WRONG. It is one of
+--- automobile/bike/boat/heli/plane/submarine/trailer/train, case-sensitive, and
+--- an unrecognised value THROWS rather than answering 0 -- so it is taken as an
+--- optional argument, defaulted, and the call is guarded like everything else
+--- here. It selects which sync tree is built and is NOT validated against the
+--- model, so a mismatch is the caller's to get right; the readout says which
+--- one was used.
+---
+--- ═══ IT SPAWNS BESIDE A PLAYER, WHICH IS NOW A CHOICE RATHER THAN A LIMIT ═══
+---
+--- The server setter would happily spawn at bare coordinates on an empty map.
+--- Naming a player is kept because it is what a squad test wants, and because
+--- the player is where BOTH remaining inputs come from: a position to put the
+--- car beside, and the ROUTING BUCKET to put it in. Matches run in their own
+--- buckets (server/roster.lua) and the setter defaults to bucket 0, so a car
+--- that is not moved into the target's bucket is a car nobody in a match can
+--- see -- which is the other half of what "does nothing" looked like.
 ---
 --- ═══ IT SPAWNS ONLY WHAT THE GAMEMODE ALREADY TOLERATES ═══
 ---
 --- The model goes through BR.Config.IsAllowedVehicle FIRST, and a refused one is
---- refused HERE, before anything is created. That is not timidity, and the
---- alternative was examined properly.
+--- refused HERE, before anything is created.
 ---
---- A server-side `CreateVehicle` DOES raise `entityCreating` -- it is an RPC, so
---- the clone comes back up the client path like any other (the header says so,
---- and says it about #191's ambulance). So a helicopter spawned through this
---- verb would reach the detector above, be refused as FLIES, and be attributed
---- by `ownerOf`.
+--- THAT PRE-CHECK IS NOW THE ONLY THING THERE IS, AND THE REWRITE IS WHY. The
+--- old note here said a refused model would reach the detector at the top of
+--- this file anyway, because an RPC create comes back up the client clone path
+--- and raises `entityCreating`. That was true of the RPC and is NOT true of the
+--- server setter: it raises `serverEntityCreated` and nothing else --
+--- citizenfx/fivem#1737, closed not_planned, "it's not actually created from the
+--- server" -- and nothing in this resource listens to that event.
 ---
---- AND `ownerOf` CANNOT ATTRIBUTE IT TO THE PERSON WHO TYPED IT. The console is
---- source 0, `ownerOf` rejects everything <= 0 by name and says why, and
---- BR.IncidentBuild.fromVehicle declines to file without a license -- which the
---- console does not have. What `NetworkGetEntityOwner` answers is whichever
---- CLIENT the engine handed the fresh entity to, and that is a proximity read.
+--- SO THE BACKSTOP IS GONE AND THE PRE-CHECK IS LOAD-BEARING. Deleting it would
+--- not merely permit a refused model, it would permit one that NOTHING would
+--- notice: no case, no count, not a line in `brvehicles`. It stays first, it
+--- stays before anything is created, and tools/verify.sh asserts the verb and
+--- the allowlist stay in the same file so the two are reviewed on one screen.
 ---
---- So the choice on offer was never "exempt the owner" against "let the owner's
---- own name reach the queue". It was "file nothing" against "file the second one
---- against whichever player happened to be standing nearest", and there is no
---- reading of the rule that deleted the admin exemption -- no exemptions, ever,
---- least of all for the powerful -- that is served by opening a case against a
---- bystander for a car the console spawned.
----
---- SO THERE IS NO EXEMPTION ANYWHERE AND THE DETECTOR ABOVE IS UNTOUCHED. Nobody
---- is exempt because nothing is excused: the verb cannot create the thing that
---- would file. An allowed model reaches the handler above, passes the allowlist
---- like any parked car, and counts in `brvehicles` under `allowed` -- which is
---- honest, because that is exactly what it is.
+--- NOBODY IS EXEMPT AND NOTHING IS EXCUSED. The verb cannot create the thing
+--- that would file, so there is no exemption to grant. An allowed model is an
+--- ordinary car. And a refused vehicle somebody DRIVES is caught by the
+--- occupancy detector above regardless of how it got into the world -- including
+--- one this verb had put there, if the pre-check were ever wrong.
 ---
 --- If a refused model is genuinely wanted in a match, the change is a reviewed
 --- row in config/vehicles.lua, not a back door in a debug verb.
@@ -1056,6 +1420,18 @@ local SPAWN_AHEAD_M = 5.0
 ---     here. It is left on the platform's default orphan mode
 ---     (DeleteWhenNotRelevant), which collects it once no player has it in
 ---     scope -- the same death every ambient car dies.
+---   * IT MAY VANISH ON ITS OWN, AND THAT IS A PLATFORM BUG WE HAVE NOT
+---     REPRODUCED. citizenfx/fivem#2623, "Server side Vehicle created with
+---     CreateVehicleServerSetter are randomly deleted", is OPEN: server-setter
+---     entities sometimes receive `entityRemoved` for no reason the reporter
+---     could pin down, apparently only with more than one player connected, and
+---     with no repro after two years. It is filed as a slight inconvenience and
+---     it is accepted here on those terms -- a dev car that occasionally
+---     disappears is a far better trade than a verb that throws every single
+---     time, which is what the RPC path did. NOT VERIFIED AGAINST OUR PINNED
+---     BUILD: the report is against server b8823 and we pin game build 3095,
+---     which are different numbers for different things. If a spawned car
+---     evaporates, this is the first thing to read.
 ---   * THE FUEL LEDGER PICKS IT UP, BUT NOT AT SPAWN. #195 admits a vehicle from
 ---     its sample pass over players who are LIVE and in a match, keyed on the
 ---     vehicle the PED is in -- so an empty car is in no ledger at all, and the
@@ -1089,12 +1465,27 @@ RegisterCommand('brcar', function(src, args)
 
     local target = tonumber(args and args[1])
     local model  = tostring((args and args[2]) or DEFAULT_MODEL):lower()
+    local vtype  = tostring((args and args[3]) or DEFAULT_TYPE):lower()
     if not target then
-        print(('  usage: brcar <serverId> [model]      default model: %s')
-            :format(DEFAULT_MODEL))
+        print(('  usage: brcar <serverId> [model] [type]   defaults: %s, %s')
+            :format(DEFAULT_MODEL, DEFAULT_TYPE))
         print('    Spawns in front of that player, in their routing bucket.')
         print('    Only models config/vehicles.lua tolerates -- brvehicles reads')
         print('    the other side of the same allowlist.')
+        print(('    type is one of: %s'):format(table.concat(VEHICLE_TYPES, ', ')))
+        return
+    end
+
+    -- THE TYPE IS CHECKED HERE BECAUSE THE NATIVE THROWS ON A BAD ONE rather
+    -- than answering 0, and a throw is what #212 was. Checked against our own
+    -- list rather than by catching the platform's error, so the message names
+    -- the eight that work instead of quoting an exception.
+    if not VEHICLE_TYPE[vtype] then
+        print(('  %s is not a vehicle type the platform knows'):format(vtype))
+        print(('  It must be one of: %s'):format(table.concat(VEHICLE_TYPES, ', ')))
+        print('  It picks which sync tree the server builds, and it is NOT')
+        print('  checked against the model -- so it has to match what the model')
+        print('  actually is (vehicles.meta), not what you would like it to be.')
         return
     end
 
@@ -1123,8 +1514,11 @@ RegisterCommand('brcar', function(src, args)
         return
     end
 
-    if not CreateVehicle then
-        print('  CreateVehicle is not available in this runtime')
+    if not CreateVehicleServerSetter then
+        print('  CreateVehicleServerSetter is not available in this runtime.')
+        print('  That native is what makes this verb work at all: server-side')
+        print('  CreateVehicle is an RPC whose handle cannot be bucketed, and')
+        print('  every match here runs in a routing bucket. See #212.')
         return
     end
 
@@ -1147,38 +1541,89 @@ RegisterCommand('brcar', function(src, args)
     -- NORMALISED BEFORE IT IS TESTED, because this is a handle and the platform
     -- answers 0 for failure -- and 0 is truthy. `if veh then` reports a success
     -- that did not happen and then prints a netId for nothing.
-    local veh = math.tointeger(tonumber(CreateVehicle(
-        hash, x, y, z, heading + 90.0, true, false))) or 0
+    --
+    -- GUARDED, BECAUSE A BAD TYPE THROWS. The check above should have caught
+    -- every one of those, so reaching the failure branch here means the
+    -- platform refused for a reason this verb does not know about -- which is
+    -- exactly the case that has to print rather than disappear.
+    local okCreate, raw = pcall(CreateVehicleServerSetter,
+        hash, vtype, x, y, z, heading + 90.0)
+    if not okCreate then
+        print(('  the platform refused to create %s as a %s'):format(model, vtype))
+        print(('    %s'):format(tostring(raw)))
+        return
+    end
+
+    local veh = math.tointeger(tonumber(raw)) or 0
     if veh == 0 then
         print(('  the engine refused to create %s'):format(model))
-        print('  Either that name is not a vehicle in this game build, or nobody')
-        print(('  was close enough to %s to run the creation: CreateVehicle is')
-            :format(e.name or target))
-        print('  an RPC and some client has to be in range of the coordinates.')
+        print('  The likeliest cause is that the name is not a vehicle in this')
+        print('  game build -- the server does not validate the model, so a')
+        print('  typo gets this far and no further.')
         return
+    end
+
+    -- ═══ EVERY NATIVE FROM HERE DOWN IS GUARDED, AND #212 IS WHY ═══
+    --
+    -- This is the stretch that killed the verb. `makeEntityFunction` natives
+    -- THROW on a handle the server cannot resolve rather than answering a
+    -- default, and the old code called four of them bare -- so one bad handle
+    -- took the whole handler down between creating the car and saying anything
+    -- about it. The car existed and the console was told nothing.
+    --
+    -- The server setter returns a real entity, so none of these SHOULD throw
+    -- now. `should` is the word that put this verb in the issue tracker once
+    -- already: what the guard buys is that the next platform surprise costs a
+    -- printed line instead of a silent verb.
+    local function ask(fn, ...)
+        if not fn then return nil, 'native not available in this runtime' end
+        local okCall, v = pcall(fn, ...)
+        if not okCall then return nil, tostring(v) end
+        return v, nil
     end
 
     -- THE BUCKET, COPIED FROM THE PLAYER RATHER THAN RE-DERIVED. roster.lua owns
     -- the rule that picks it -- lobby, warmup pad, or the match's own -- and a
     -- second copy of that rule here would be a second copy to keep right.
-    local bucket
-    if GetPlayerRoutingBucket then
-        bucket = math.tointeger(tonumber(GetPlayerRoutingBucket(tostring(target))))
-    end
-    if bucket and SetEntityRoutingBucket then
-        SetEntityRoutingBucket(veh, bucket)
+    --
+    -- THE SETTER PUTS IT IN BUCKET 0 AND MATCHES DO NOT RUN THERE, so this is
+    -- not a refinement: a car that stays in 0 is invisible to the person who
+    -- asked for it, which is half of what "brcar does nothing" meant.
+    local bucket = math.tointeger(tonumber(
+        (ask(GetPlayerRoutingBucket, tostring(target)))))
+    local bucketNote
+    if bucket == nil then
+        bucketNote = 'UNKNOWN -- could not read the player\'s bucket'
+    else
+        -- ZERO IS A REAL BUCKET AND IT IS TRUTHY, so this is an explicit nil
+        -- test rather than `if bucket then`. Setting 0 on an entity already in
+        -- 0 is a no-op; NOT setting it because 0 looked falsy would be the bug.
+        local _, err = ask(SetEntityRoutingBucket, veh, bucket)
+        bucketNote = err and ('FAILED (' .. err .. ')') or tostring(bucket)
     end
 
-    local netId = 0
-    if NetworkGetNetworkIdFromEntity then
-        netId = math.tointeger(tonumber(NetworkGetNetworkIdFromEntity(veh))) or 0
-    end
+    local netId = math.tointeger(tonumber((ask(NetworkGetNetworkIdFromEntity, veh)))) or 0
 
-    print(('[br_core] brcar: %s (0x%08X) -> %s (%d)')
-        :format(model, BR.NormHash(hash), e.name or '?', target))
+    -- DID IT ACTUALLY APPEAR? `DoesEntityExist` is the one entity native the
+    -- platform does NOT build with makeEntityFunction -- it is hand-written and
+    -- answers false rather than throwing -- so it is the only honest answer
+    -- available here, and it is normalised through didHit for this file's
+    -- fifth-time reason: a FiveM BOOL hands Lua 1 on some builds, and 0 is
+    -- truthy, so `if DoesEntityExist(v) then` is true for a car that is not
+    -- there.
+    local exists = didHit((ask(DoesEntityExist, veh)))
+
+    print(('[br_core] brcar: %s (0x%08X) as %s -> %s (%d)')
+        :format(model, BR.NormHash(hash), vtype, e.name or '?', target))
     print(('  at       %.1f, %.1f, %.1f   bucket %s')
-        :format(x, y, z, bucket and tostring(bucket) or 'unchanged'))
-    print(('  handle   %d   netId %d'):format(veh, netId))
+        :format(x, y, z, bucketNote))
+    print(('  handle   %d   netId %d   exists %s')
+        :format(veh, netId, tostring(exists)))
+    if not exists then
+        print('  ^ THE SERVER DOES NOT SEE IT. It was created and is already')
+        print('    gone, or the handle never resolved. Nothing below is true.')
+        return
+    end
     print('  Nothing owns it: no match teardown deletes it, and the platform')
     print('  collects it once no player has it in scope. It joins the fuel')
     print('  ledger the moment somebody in a match sits in it, with a full tank.')

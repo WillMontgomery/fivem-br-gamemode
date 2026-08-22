@@ -3282,8 +3282,8 @@ end
 --
 -- WHERE THAT CAME FROM, AND WHY NO PURE-FUNCTION TEST COULD HAVE CAUGHT IT.
 -- BR.IncidentBuild.fromVehicle was correct and is covered in test_shared.lua:
--- the CASE has always said "N refused vehicles spawned this match -- vehicle
--- flies". What was wrong was the CORROBORATION, which is built in
+-- the CASE has always named the vehicle rule -- "N refused vehicles this match
+-- -- vehicle flies". What was wrong was the CORROBORATION, which is built in
 -- server/incident.lua and not in br_lib at all -- the whole block was copied
 -- from the strip handler above it, `reason` included, and that field is the
 -- literal sentence "weapon is not one this gamemode issues". Ringmaster prints
@@ -3320,7 +3320,7 @@ do
     ok(p ~= nil, 'a refused vehicle files a case')
     ok(p and p.kind == 'anticheat' and p.category == 'system',
         'in the anticheat shape, filed by nobody')
-    ok(p and p.summary == '2 refused vehicles spawned this match -- vehicle flies',
+    ok(p and p.summary == '2 refused vehicles this match -- vehicle flies',
         'and the one line an admin reads is about a VEHICLE', p and p.summary)
     -- THE WORD THAT MUST NOT BE IN IT. Asserted as an absence rather than only
     -- as the sentence above, because the sentence could be re-worded correctly

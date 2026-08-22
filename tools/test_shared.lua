@@ -7547,10 +7547,10 @@ do
     -- two and the corroborations climb from there -- a summary reading
     -- "1 refused vehicles" is exactly the small lie the strip path avoided.
     ok(BR.IncidentBuild.vehicleSummaryOf(1, V.FLIES)
-        == '1 refused vehicle spawned this match -- vehicle flies',
+        == '1 refused vehicle this match -- vehicle flies',
         'the summary is singular at one')
     ok(BR.IncidentBuild.vehicleSummaryOf(3, V.ARMED)
-        == '3 refused vehicles spawned this match -- vehicle has built-in weapons',
+        == '3 refused vehicles this match -- vehicle has built-in weapons',
         'and plural above it, carrying the rule\'s own words')
     ok(ok1.summary == BR.IncidentBuild.vehicleSummaryOf(2, V.FLIES),
         'the payload carries that summary rather than a second spelling of it')

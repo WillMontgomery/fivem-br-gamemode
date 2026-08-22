@@ -161,6 +161,43 @@ local function stepOut(veh)
     if vehSeat[veh] then vehSeat[veh][-1] = nil end
 end
 
+-- ═══ WHAT THE VEHICLE IS, FOR #211's OCCUPANCY DETECTOR ═══
+--
+-- The roadkill ledger never asked, so these did not exist: it cares that a
+-- player is driving, not what. The refused-vehicle detector cares about nothing
+-- else.
+--
+-- UNSET MEANS 0, AND 0 IS AN ALLOWED MODEL, which is the polarity
+-- BR.Config.IsAllowedVehicle documents ("zero is allowed, and that is the safe
+-- direction"). So every vehicle the older blocks put on the map stays an
+-- ordinary car and none of them starts filing incidents -- the alternative
+-- would have made the roadkill suite open cases as a side effect.
+--
+-- GetEntityModel ANSWERS THE SIGNED VALUE, because the real one does. Model
+-- hashes with the top bit set arrive NEGATIVE, and a detector that floors them
+-- to zero turns `buzzard` into an ordinary car. Tests set these through
+-- `setModel` below, which signs the hash exactly as GetHashKey would.
+local vehModel = {}
+local vehType  = {}
+function GetEntityModel(h) return vehModel[h] or 0 end
+--- The engine's class for a vehicle, or nil.
+---
+--- `throws` IS A REAL CASE AND IT IS WHY THIS IS NOT A TABLE INDEX. The native
+--- is built with the platform's makeEntityFunction wrapper, which RAISES on a
+--- stale handle rather than answering -- server/vehicles.lua pcalls it for that
+--- reason, and a stub that could not throw would never exercise the pcall.
+function GetVehicleType(h)
+    if vehType[h] == 'throw' then error('Tried to access invalid entity') end
+    return vehType[h]
+end
+
+--- Give a vehicle a model, as the engine would report it: SIGNED.
+local function setModel(veh, name)
+    local h = GetHashKey(name)
+    if h >= 0x80000000 then h = h - 0x100000000 end
+    vehModel[veh] = h
+end
+
 -- Routing buckets, captured for assertion: the lobby is per-player private,
 -- matches are shared.
 local buckets = {}
@@ -170,10 +207,23 @@ function GetPlayerRoutingBucket(src) return buckets[tonumber(src)] end
 
 -- ═══ SERVER-SIDE VEHICLE CREATION, FOR `brcar` ═══
 --
--- `CreateVehicle` ANSWERS A NUMBER AND ANSWERS 0 FOR FAILURE, which is the whole
--- reason it is stubbed rather than assumed: 0 is truthy in Lua, so a stub that
--- returned nil for failure would agree with a caller that tests `if veh then`
--- and prove nothing. `createFail` makes the real failure path reachable.
+-- IT IS `CreateVehicleServerSetter` AND NOT `CreateVehicle`, WHICH IS #212.
+-- Server-side `CreateVehicle` is an RPC: it returns a ScriptGuid the server
+-- cannot resolve yet, so every makeEntityFunction native called on that handle
+-- -- SetEntityRoutingBucket among them -- THROWS "Tried to access invalid
+-- entity". The verb threw one line after creating the car and printed nothing.
+-- The server setter registers the entity before minting the handle, so the
+-- handle is real immediately.
+--
+-- IT ANSWERS A NUMBER AND ANSWERS 0 FOR FAILURE, which is the whole reason it is
+-- stubbed rather than assumed: 0 is truthy in Lua, so a stub that returned nil
+-- for failure would agree with a caller that tests `if veh then` and prove
+-- nothing. `createFail` makes the real failure path reachable.
+--
+-- AND IT THROWS ON A BAD TYPE, which is the other half of #212's lesson: the
+-- native does not answer 0 for an unrecognised type, it raises. A stub that
+-- returned 0 would let a caller that never guards the call pass this suite and
+-- then take the handler down on the real server.
 --
 -- Every call is RECORDED rather than counted. What the tests need to assert is
 -- that a refused model never reaches this function at all -- an assertion about
@@ -181,14 +231,32 @@ function GetPlayerRoutingBucket(src) return buckets[tonumber(src)] end
 local created = {}
 local createFail = false
 local nextVehicle = 500
-function CreateVehicle(hash, x, y, z, heading, isNetwork, netMission)
+local SETTER_TYPES = {
+    automobile = true, bike = true, boat = true, heli = true,
+    plane = true, submarine = true, trailer = true, train = true,
+}
+function CreateVehicleServerSetter(hash, vtype, x, y, z, heading)
     created[#created + 1] = {
-        hash = hash, x = x, y = y, z = z, heading = heading,
-        isNetwork = isNetwork, netMission = netMission,
+        hash = hash, vtype = vtype, x = x, y = y, z = z, heading = heading,
     }
+    if not SETTER_TYPES[vtype] then
+        error(('CREATE_VEHICLE_SERVER_SETTER: Invalid entity type %s')
+            :format(tostring(vtype)))
+    end
     if createFail then return 0 end
     nextVehicle = nextVehicle + 1
     return nextVehicle
+end
+
+-- DOES_ENTITY_EXIST IS THE ONE ENTITY NATIVE THAT DOES NOT THROW, which is why
+-- brcar can use it to answer "did it actually appear?". It answers 1 rather
+-- than true, because that is what a FiveM BOOL does on some builds and 0 is
+-- truthy in Lua -- a caller that tests it bare passes against a boolean stub
+-- and reports success for a car that is not there.
+local existsFail = false
+function DoesEntityExist(h)
+    if h == nil or h == 0 or existsFail then return 0 end
+    return 1
 end
 
 -- The heading a ped is facing. Zero for everybody unless a test says otherwise,
@@ -476,6 +544,12 @@ local function reset()
     -- for -- and this one hands out kills rather than merely moving somebody.
     for k in pairs(pedVehicle) do pedVehicle[k] = nil end
     for k in pairs(vehSeat) do vehSeat[k] = nil end
+    -- AND WHAT THOSE VEHICLES WERE. A refused model left behind would be
+    -- inherited by the next block's reuse of the same handle, and that block
+    -- would file anticheat incidents it never asked for -- a failure whose
+    -- message would point at a feature with no connection to the cause.
+    for k in pairs(vehModel) do vehModel[k] = nil end
+    for k in pairs(vehType) do vehType[k] = nil end
     -- Back to the src-derived default. A block that made a recycled id belong
     -- to a different person (see the identifier stub) must not leave that
     -- opinion lying around: the next block asserts on `license:test<src>` and
@@ -3540,15 +3614,36 @@ do
 
           * the console gate is an equality against 0, and `0` is truthy in Lua
             -- `if src then` lets every player through and nothing looks wrong;
-          * the allowlist check happens BEFORE CreateVehicle, so the thing to
-            assert is that the native was never reached, which is an assertion
-            about absence and needs the call log rather than a return value;
-          * CreateVehicle answers 0 for failure, and 0 is truthy again, so a
-            caller that tests the handle wrongly reports a success that did not
-            happen.
+          * the allowlist check happens BEFORE anything is created, so the thing
+            to assert is that the native was never reached, which is an
+            assertion about absence and needs the call log rather than a return
+            value;
+          * the create answers 0 for failure, and 0 is truthy again, so a caller
+            that tests the handle wrongly reports a success that did not happen.
 
         The fourth is the routing bucket, which fails CLOSED and invisibly: the
         car exists, in bucket 0, where nobody in a match can see it.
+
+        ═══ AND THEN IT SHIPPED AND DID NOTHING ANYWAY (#212) ═══
+
+        Owner, 2026-08-22: "It seems brcar doesn't do anything." Every gate
+        above was correct and every one of these assertions passed. The fault
+        was one line further on, in the only part of the verb this suite did not
+        model: the SPAWN.
+
+        Server-side `CreateVehicle` is an RPC. It returns a ScriptGuid of type
+        TempEntity -- no entity exists yet -- and every `makeEntityFunction`
+        native called on that handle THROWS "Tried to access invalid entity"
+        rather than answering. The verb called four of them bare, starting with
+        SetEntityRoutingBucket, so it threw immediately after creating the car
+        and printed none of its readout. citizenfx/fivem#1407 closed with the
+        rule: RPC creation is incompatible with routing buckets, and every match
+        here runs in one.
+
+        SO THE STUB NOW THROWS WHERE THE PLATFORM THROWS, and the verb uses
+        CreateVehicleServerSetter, which mints a real handle. The lesson worth
+        keeping: a stub that cannot fail the way the platform fails is a stub
+        that certifies a broken verb.
     ]]
 
     local savedDev = BR.Server.devMode
@@ -3585,15 +3680,22 @@ do
 
     -- ------------------------------------------------------ the allowlist ---
     --
-    -- THE ONE THAT DECIDES THE INCIDENT QUESTION. A server-side CreateVehicle is
-    -- an RPC and DOES raise entityCreating, so a refused model spawned here
-    -- would be attributed by ownerOf to whichever CLIENT the engine handed it
-    -- to -- never to the console, which is source 0 and has no license. So the
-    -- verb must not create it at all, and "must not create" is asserted on the
-    -- native never being called rather than on any counter.
+    -- THE ONE THAT IS NOW THE WHOLE BOUNDARY, AND #212 MADE IT SO.
+    --
+    -- While the verb used the RPC, a refused model spawned here would still have
+    -- reached the `entityCreating` detector and opened a case against whichever
+    -- CLIENT the engine handed it to. CreateVehicleServerSetter raises
+    -- `serverEntityCreated` and NOT `entityCreating` (citizenfx/fivem#1737,
+    -- closed not_planned), and nothing in this resource listens to that -- so
+    -- there is no longer any backstop behind this check at all. A refused model
+    -- that got past it would be created, and NOTHING would notice: no case, no
+    -- count, not a line in brvehicles.
+    --
+    -- "Must not create" is therefore asserted on the native never being called,
+    -- rather than on any counter -- an assertion about absence.
     runCommand('brcar', '1', 'buzzard')
     ok(#created == 0,
-        'a refused model reaches CreateVehicle exactly never',
+        'a refused model reaches the create native exactly never',
         ('%d vehicle(s) created'):format(#created))
     ok(BR.Vehicles.stats().counted == baseCounted,
         'and nothing is counted against anybody for asking')
@@ -3628,9 +3730,15 @@ do
         'and it lands 5m in front of the player, not on top of them',
         c and ('%.2f, %.2f'):format(c.x, c.y) or 'nothing created')
     ok(c ~= nil and c.z == 30.0, 'at their own height')
-    ok(c ~= nil and c.isNetwork == true,
-        'NETWORKED, which is the whole point -- a local car is one only the '
-            .. 'spawning client can sit in')
+    -- THE TYPE IS THE SECOND ARGUMENT AND IT IS EASY TO PUT IN THE WRONG PLACE.
+    -- CreateVehicleServerSetter takes (model, TYPE, x, y, z, heading) where the
+    -- RPC took (model, x, y, z, heading, isNetwork, netMission) -- so a
+    -- half-finished port slides the coordinates one slot along and spawns the
+    -- car at the heading. The x/y/z assertions above and this one together are
+    -- what pin the argument order.
+    ok(c ~= nil and c.vtype == 'automobile',
+        'built as an automobile, which is the sync tree a granger needs',
+        c and tostring(c.vtype) or 'nothing created')
     ok(c ~= nil and math.abs(c.heading - 90.0) < 0.001,
         'and turned a quarter across them, so a door faces the player',
         c and ('%.1f'):format(c.heading) or 'nothing created')
@@ -3708,6 +3816,131 @@ do
         'and 0 is not mistaken for a handle -- nothing was done to entity 0',
         tostring(entityBucket[0]))
     createFail = false
+
+    -- ═══════════════════════════ #212: THE SPAWN ITSELF ═══════════════════════
+    --
+    -- The half no assertion reached when this verb shipped, and the half that
+    -- was broken.
+
+    -- A BAD TYPE IS REFUSED BEFORE THE NATIVE, because the native THROWS on one
+    -- rather than answering 0 -- and a throw inside the handler is exactly what
+    -- "brcar does nothing" was. Asserted on the native never being reached,
+    -- because a verb that let it through and caught the error afterwards would
+    -- pass a test that only checked for the absence of a crash.
+    do
+        local n = #created
+        runCommand('brcar', '1', 'granger', 'hovercraft')
+        ok(#created == n,
+            'a vehicle type the platform does not know never reaches the native',
+            ('%d vs %d'):format(#created, n))
+    end
+
+    -- ...AND A GOOD ONE IS PASSED THROUGH, so the check is a filter rather than
+    -- a wall. `boat` is a real sync tree and not the default, so a verb that
+    -- ignored args[3] would be caught here.
+    do
+        local n = #created
+        runCommand('brcar', '1', 'dinghy', 'boat')
+        ok(#created == n + 1 and created[#created].vtype == 'boat',
+            'a named type is the one that is built',
+            created[#created] and tostring(created[#created].vtype) or 'none')
+    end
+
+    -- ═══ AND IF THE NATIVE THROWS ANYWAY, THE VERB SAYS SO INSTEAD OF DYING ═══
+    --
+    -- THE REGRESSION TEST FOR #212 ITSELF. The type check above should stop
+    -- every throw the platform documents; this asserts what happens when it
+    -- does not -- because "should" is the word that put this verb in the issue
+    -- tracker once already. The stub is made to throw the way the platform
+    -- throws, and the requirement is that the command RETURNS rather than
+    -- propagating: a handler that dies mid-way is a verb that prints nothing,
+    -- and printing nothing is the whole bug.
+    do
+        local savedTypes = SETTER_TYPES.automobile
+        SETTER_TYPES.automobile = nil       -- the platform stops recognising it
+        local okCall = pcall(runCommand, 'brcar', '1')
+        SETTER_TYPES.automobile = savedTypes
+        ok(okCall,
+            'a throwing create is caught and reported, not propagated out of '
+                .. 'the handler',
+            tostring(okCall))
+    end
+
+    -- A CAR THE SERVER CANNOT SEE IS NOT A SUCCESS. DoesEntityExist is the one
+    -- entity native that answers rather than throwing, so it is the only honest
+    -- check available -- and it answers 1 rather than true, which is why the
+    -- verb normalises it. A caller testing it bare would report success here.
+    do
+        local n = #created
+        existsFail = true                  -- created, and already not there
+        local okCall = pcall(runCommand, 'brcar', '1')
+        existsFail = false
+        ok(okCall and #created == n + 1,
+            'a vehicle that vanishes on creation still leaves the verb standing',
+            ('%d vs %d'):format(#created, n + 1))
+        -- ...AND SAYS SO, which is the assertion with teeth. The native answers
+        -- 1 and 0 rather than true and false, and 0 IS TRUTHY IN LUA -- so a
+        -- verb that tests the result bare prints its whole success readout for
+        -- a car that is not there. The only difference between the two is this
+        -- line, so this line is what is asserted.
+        ok(printedSaying('THE SERVER DOES NOT SEE IT') ~= nil,
+            'and says the server cannot see it rather than reporting success')
+    end
+
+    -- ═══ AND EVERY REFUSAL SAYS WHY (#212's OTHER HALF) ═══
+    --
+    -- Owner: the verb "doesn't do anything" -- and the issue's title is "and
+    -- does not say why". A refusal nobody can read is the same as no refusal at
+    -- all to the person typing, so each gate is asserted to PRINT and not
+    -- merely to decline. Substring assertions, because the fact a line carries
+    -- is the contract and its punctuation is not.
+    do
+        printed = {}
+        runCommandAs(1, 'brcar', '1')
+        ok(printedSaying('server-console only') ~= nil,
+            'the console gate says it is the console gate')
+
+        printed = {}
+        BR.Server.devMode = false
+        runCommand('brcar', '1')
+        ok(printedSaying('dev-mode only') ~= nil, 'and the dev-mode gate says so')
+        BR.Server.devMode = true
+
+        printed = {}
+        runCommand('brcar')
+        ok(printedSaying('usage: brcar') ~= nil, 'no arguments prints the usage')
+
+        printed = {}
+        runCommand('brcar', '1', 'buzzard')
+        ok(printedSaying('REFUSED') ~= nil,
+            'a refused model says it was refused, and which rule did it')
+
+        printed = {}
+        runCommand('brcar', '99')
+        ok(printedSaying('no roster entry') ~= nil,
+            'an unconnected id says there is nobody by that name')
+
+        printed = {}
+        runCommand('brcar', '1', 'granger', 'hovercraft')
+        ok(printedSaying('not a vehicle type') ~= nil,
+            'and a bad vehicle type names the eight that work')
+    end
+
+    -- BUCKET 0 IS A REAL BUCKET AND IT IS TRUTHY. `if bucket then` and
+    -- `if not bucket then` both compile and both are wrong: the first skips the
+    -- set for bucket 0, the second skips it for every other. The lobby really
+    -- does put players in bucket 0, so this is the live case rather than a
+    -- contrived one -- and the failure it guards is invisible, because a car
+    -- left in the bucket it was already in looks exactly like a car that was
+    -- moved there.
+    do
+        SetPlayerRoutingBucket(1, 0)
+        runCommand('brcar', '1')
+        local veh = nextVehicle
+        ok(entityBucket[veh] == 0,
+            'a target in bucket 0 still has the car put in bucket 0',
+            ('entity %s'):format(tostring(entityBucket[veh])))
+    end
 
     -- --------------------------- and the detector is untouched by any of it ---
     --
@@ -14299,6 +14532,401 @@ do
         ok(victim.lastHitBy == nil,
             'a recycled server id does not inherit the last holder\'s speed',
             tostring(victim.lastHitBy))
+    end
+end
+
+describe('vehicles.occupancy')
+do
+    --[[
+        A STOLEN HELICOPTER FILES A CASE (#211).
+
+        Owner, 2026-08-22: "I did go to fort zancudo and steal a helicopter, but
+        for whatever reason that didn't create an incident."
+
+        THE DETECTOR THAT EXISTED WATCHED CREATION, and a Zancudo Buzzard was
+        created by nobody -- so `entityCreating` never fired and the owner's own
+        rule ("allow every vehicle except anything that flies or has built-in
+        weapons") was enforced only against vehicles a client conjured. These
+        cases are about the other half: a refused vehicle that was already in
+        the world, and a player in its driving seat.
+
+        WHY THEY LIVE IN THIS FILE AND NOT IN test_shared.lua. The creation
+        detector is driven there against a sandboxed roster, which is right for
+        an event handler. This one is a consumer of the roster's own 4 Hz sample
+        job -- real positions, real licences, real scheduler -- and the seat
+        stubs it depends on are the ones the roadkill ledger above already
+        proved. A sandbox would have to reproduce all of that and would then be
+        asserting against the reproduction.
+    ]]
+
+    --- A match with player 1 driving vehicle 7, and 7 being whatever we say.
+    local function heliMatch(model)
+        roadMatch()
+        setModel(7, model or 'buzzard')
+        drive(1, 7)
+        fired = {}
+        return BR.Vehicles.stats()
+    end
+
+    --- Advance `ms` of game time in the sampler's own 250 ms steps.
+    ---
+    --- ONE STEP PER SAMPLE, NOT ONE STEP OF `ms`. The dwell is measured across
+    --- CONSECUTIVE samples, so a single jump of three seconds would satisfy it
+    --- with one observation -- which is exactly the pass-through this feature
+    --- must not fire on, and a test that jumped would not notice.
+    local function run(ms)
+        for _ = 1, math.floor(ms / 250) do
+            fakeTime = fakeTime + 250
+            BR.Sched.step(fakeTime)
+        end
+    end
+
+    -- ------------------------------------------------------- the dwell ---
+    do
+        local base = heliMatch().counted
+
+        -- HALF A SECOND IN A COCKPIT IS NOT TAKING AN AIRCRAFT. It is also what
+        -- an ejection looks like from the server's 4 Hz sample.
+        run(500)
+        ok(BR.Vehicles.stats().counted == base,
+            'a moment in a refused vehicle counts nothing',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+        ok(BR.Vehicles.stats().dwelling == 1,
+            'but the server can see them sitting in it',
+            tostring(BR.Vehicles.stats().dwelling))
+
+        -- ...AND JUST UNDER THE DWELL IS STILL NOTHING. The boundary is asserted
+        -- from both sides, because an off-by-one in the comparison is invisible
+        -- from either one alone.
+        run(2250)
+        ok(BR.Vehicles.stats().counted == base,
+            'and neither does just under three seconds of it',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+
+        run(500)
+        ok(BR.Vehicles.stats().counted == base + 1,
+            'holding the seat past the dwell is counted',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base + 1))
+
+        -- THE FIRST ONE IS QUIET, exactly as the creation detector's first is.
+        -- The bar is two for both routes so that one case cannot be opened on a
+        -- lower standard than the other.
+        ok(#firedOf('br:core:vehicle') == 0,
+            'and announced to nobody, because the bar is two')
+
+        -- A FLIGHT IS ONE FINDING, NOT ONE PER SAMPLE. Without the per-sitting
+        -- latch this would be a corroboration every 250 ms for as long as they
+        -- fly, which is a case nobody can read and a queue nobody can use.
+        run(5000)
+        ok(BR.Vehicles.stats().counted == base + 1,
+            'and staying in it does not count again, however long the flight',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base + 1))
+    end
+
+    -- --------------------------------------- the second one files a case ---
+    do
+        -- 3500 RATHER THAN 3000, AND THE DIFFERENCE IS THE DWELL'S DEFINITION.
+        -- The clock starts at the FIRST sample that sees them at the wheel, not
+        -- at the moment they sat down -- the server cannot see the latter -- so
+        -- a three-second dwell needs three seconds AFTER that first sample.
+        -- Writing 3000 here fails, which is the boundary being asserted rather
+        -- than a number being fudged.
+        local base = heliMatch().counted
+        run(3500)
+        ok(BR.Vehicles.stats().counted == base + 1, 'the first sitting counts')
+
+        -- OUT, AND BACK IN. A fresh occupancy is a fresh act: they chose the
+        -- cockpit twice.
+        stepOut(7)
+        run(500)
+        drive(1, 7)
+        run(3500)
+
+        local f = firedOf('br:core:vehicle')
+        ok(#f == 1, 'the second sitting files exactly one announcement',
+            tostring(#f))
+        ok(f[1] and f[1].count == 2, 'carrying the count the bar is set against',
+            tostring(f[1] and f[1].count))
+        ok(f[1] and f[1].seq == 1, 'as the case-opening announcement',
+            tostring(f[1] and f[1].seq))
+        ok(f[1] and f[1].why == BR.Config.VehicleRefusal.FLIES,
+            'and the half of the rule it tripped, in the rule\'s own words',
+            tostring(f[1] and f[1].why))
+        ok(f[1] and f[1].license == 'license:test1',
+            'keyed to a LICENCE, never to a server id',
+            tostring(f[1] and f[1].license))
+        ok(f[1] and f[1].model == BR.NormHash(GetHashKey('buzzard')),
+            'and names the model as an unsigned hash',
+            tostring(f[1] and f[1].model))
+    end
+
+    -- ----------------------------------------------- and it is ONE ledger ---
+    --
+    -- THE POINT OF SHARING `fileRefusal`. A player who spawns one and then
+    -- steals one has done the same thing twice, so it must be one case with a
+    -- count of two -- not two cases of one, and not two counters that each
+    -- stall below the bar forever.
+    do
+        heliMatch()
+        local s = BR.Vehicles.stats()
+        ok(s.occupied >= 1 and s.counted >= s.occupied,
+            'occupancy findings are part of the same total, not a parallel one',
+            ('occupied %d, counted %d'):format(s.occupied, s.counted))
+    end
+
+    -- ------------------------------------------- every way of NOT filing ---
+
+    -- AN ORDINARY CAR IS THE COMMON CASE and it must cost nothing and say
+    -- nothing. Every match is full of them.
+    do
+        local base = heliMatch('granger').counted
+        run(6000)
+        ok(BR.Vehicles.stats().counted == base,
+            'driving an allowed vehicle for six seconds counts nothing',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+        ok(BR.Vehicles.stats().dwelling == 0,
+            'and does not even register as a dwell')
+    end
+
+    -- A PASSENGER DID NOT TAKE IT. They can be put in that seat by the person
+    -- who did -- a squadmate lands a Buzzard and you climb in -- and a rule that
+    -- files on any seat files against the passenger for somebody else's act.
+    do
+        roadMatch()
+        setModel(7, 'buzzard')
+        local base = BR.Vehicles.stats().counted
+        driveNpc(7)                -- seat -1 is taken by an NPC
+        drive(1, 7, 0)             -- our player is in seat 0
+        fired = {}
+        run(6000)
+        ok(BR.Vehicles.stats().counted == base,
+            'a passenger in a refused vehicle files nothing',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+    end
+
+    -- GETTING IN AND STRAIGHT BACK OUT IS NOT TAKING IT, which is the whole job
+    -- of the dwell. Asserted across REAL samples rather than one jump -- see
+    -- `run` above for why that distinction is the test.
+    do
+        local base = heliMatch().counted
+        run(1000)
+        stepOut(7)
+        run(6000)
+        ok(BR.Vehicles.stats().counted == base,
+            'a pass-through through the cockpit files nothing',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+    end
+
+    -- ...AND LEAVING RESTARTS THE CLOCK RATHER THAN PAUSING IT. Two-thirds of a
+    -- dwell, out, then two-thirds again is not a dwell, and an implementation
+    -- that accumulated would file here.
+    do
+        local base = heliMatch().counted
+        run(2000)
+        stepOut(7)
+        run(500)
+        drive(1, 7)
+        run(2000)
+        ok(BR.Vehicles.stats().counted == base,
+            'two part-dwells do not add up to one',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+    end
+
+    -- ═══ THE PLATFORM BUG AGAIN, AND HERE IT WOULD FILE A CASE ═══
+    --
+    -- citizenfx/fivem#4006: server-side GetVehiclePedIsIn answers the vehicle a
+    -- ped was LAST in. This suite's stub reproduces that rather than hiding it.
+    -- A detector that trusted the ped would keep a player's dwell running for
+    -- the rest of the match after they walked away from a helicopter -- and
+    -- unlike the roadkill ledger, where the cost is a wrong kill credit, the
+    -- cost here is an anticheat case against somebody who is on foot.
+    do
+        local base = heliMatch().counted
+        run(1000)
+        stepOut(7)                 -- out; the PED still names the helicopter
+        run(10000)
+        ok(BR.Vehicles.stats().counted == base,
+            'a player who left a helicopter is not still in it, whatever the ped says',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+        ok(BR.Vehicles.stats().dwelling == 0,
+            'and nobody is recorded as sitting in anything')
+    end
+
+    -- SWITCHING VEHICLES RESTARTS THE DWELL, and the handle is what says so. An
+    -- implementation keyed only on "is in something refused" would carry a
+    -- part-served dwell from one aircraft into another.
+    do
+        local base = heliMatch().counted
+        run(2000)
+        stepOut(7)
+        setModel(8, 'buzzard')
+        drive(1, 8)
+        run(2000)
+        ok(BR.Vehicles.stats().counted == base,
+            'a dwell does not carry from one refused vehicle into another',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+        run(1500)
+        ok(BR.Vehicles.stats().counted == base + 1,
+            'and the new one earns its own dwell')
+    end
+
+    -- A RECYCLED SERVER ID DOES NOT INHERIT A PART-SERVED DWELL. FiveM reuses
+    -- ids within the minute; a row left behind by a departing pilot would be
+    -- finished by the next person into that slot, and they would take the case.
+    do
+        local base = heliMatch().counted
+        run(2000)
+        BR.Roster.get(1).license = 'license:somebodyelse'
+        run(2000)
+        ok(BR.Vehicles.stats().counted == base,
+            'a different human in the same slot starts the dwell again',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+    end
+
+    -- ...AND NEITHER DOES THE SAME HUMAN AFTER A DISCONNECT. This is the case
+    -- the licence check CANNOT catch, and it is why `playerDropped` clears the
+    -- row as well: reconnect inside the minute and the licence matches, because
+    -- it is the same person. Without the clear, two-thirds of a dwell served
+    -- before dropping is two-thirds already banked on the way back in -- and
+    -- the case would be opened partly on time spent in a session that ended.
+    do
+        local base = heliMatch().counted
+        run(2000)
+        leave(1)
+        run(500)
+        -- Back, same id, same licence, and into the same helicopter.
+        join(1, 'A')
+        BR.Roster.setState(1, BR.PlayerState.ALIVE)
+        BR.Roster.get(1).matchId = theMatch().id
+        setPos(1, 0.0, 0.0, 30.0)
+        drive(1, 7)
+        run(2000)
+        ok(BR.Vehicles.stats().counted == base,
+            'a dwell does not survive the disconnect that interrupted it',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base))
+    end
+
+    -- ═══ THE SECOND SIGNAL, WHICH IS THE ONLY THING STOPPING THE MODEL TABLE
+    --     ROTTING INTO UNIFORM PERMISSION ═══
+    --
+    -- config/vehicles.lua is a DENY-list, so an aircraft nobody wrote down is
+    -- allowed by construction, forever, silently. The occupancy route asks
+    -- GetVehicleType for the same reason the creation route does, and this is
+    -- the assertion that it does -- a model the table has never heard of, which
+    -- the engine calls a helicopter.
+    do
+        roadMatch()
+        setModel(7, 'somethingnobodywrotedown')
+        vehType[7] = 'heli'
+        local base = BR.Vehicles.stats().counted
+        local baseByType = BR.Vehicles.stats().byType
+        drive(1, 7)
+        fired = {}
+        run(3500)
+        ok(BR.Vehicles.stats().counted == base + 1,
+            'an aircraft the model table never named is still an aircraft',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base + 1))
+        ok(BR.Vehicles.stats().byType == baseByType + 1,
+            'and brvehicles says the table is the thing that needs fixing',
+            ('%d vs %d'):format(BR.Vehicles.stats().byType, baseByType + 1))
+    end
+
+    -- ═══ A MODEL HASH IS SIGNED, AND FLOORING IT TO ZERO WOULD BE A SILENT
+    --     AMNESTY ═══
+    --
+    -- GetEntityModel answers a SIGNED 32-bit integer, so every hash with the top
+    -- bit set arrives here NEGATIVE. This file's other handle-reading helper
+    -- (`entityFrom`) deliberately floors negatives to 0 because a negative
+    -- ENTITY handle means nothing -- and running a model through it would turn
+    -- half the refused table into 0, which is a hash in no row and therefore
+    -- allowed. That is a refusal quietly becoming permission, and nothing
+    -- downstream would ever say so.
+    --
+    -- SET DIRECTLY RATHER THAN THROUGH A MODEL NAME, so the case does not depend
+    -- on whether some particular aircraft happens to hash above 0x80000000
+    -- today. This is buzzard's hash as the engine would hand it over on a build
+    -- that signs it.
+    do
+        roadMatch()
+        local base = BR.Vehicles.stats().counted
+        vehModel[7] = GetHashKey('buzzard') - 0x100000000
+        ok(vehModel[7] < 0, 'the fixture really is a negative hash',
+            tostring(vehModel[7]))
+        drive(1, 7)
+        fired = {}
+        run(3500)
+        ok(BR.Vehicles.stats().counted == base + 1,
+            'a refused model still refused when its hash arrives signed',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base + 1))
+    end
+
+    -- A THROWING GetVehicleType TAKES NOTHING DOWN. The native is built with the
+    -- platform's makeEntityFunction wrapper and RAISES on a stale handle -- and
+    -- a handle going stale between the seat read and the class read is exactly
+    -- the race a busy match produces. An uncaught throw inside a scheduler job
+    -- costs five of them before BR.Sched suspends the job entirely, which would
+    -- take the roadkill ledger down with it.
+    do
+        roadMatch()
+        setModel(7, 'granger')
+        vehType[7] = 'throw'
+        drive(1, 7)
+        run(3500)
+        ok(BR.Vehicles.stats().driving == 1,
+            'a throwing class read does not suspend the sample job',
+            tostring(BR.Vehicles.stats().driving))
+    end
+
+    -- NOBODY IS EXEMPT, INCLUDING ADMINS. The owner removed the admin exemption
+    -- from server/strip.lua the day it shipped -- "I don't want admins to be
+    -- exempt from any incidents please" -- and this route inherits that by
+    -- having no exemption to inherit. Asserted as an absence, because that is
+    -- the only way an exemption nobody wrote can be caught: a grant is put on
+    -- the player and the finding must be identical.
+    do
+        local base = heliMatch().counted
+        BR.Roster.get(1).admin = true
+        run(3500)
+        ok(BR.Vehicles.stats().counted == base + 1,
+            'an admin in a stolen helicopter files exactly what anybody else does',
+            ('%d vs %d'):format(BR.Vehicles.stats().counted, base + 1))
+    end
+
+    -- AND THE OFFENDER IS TOLD NOTHING (#93). The whole output of this detector
+    -- is one server-side TriggerEvent; a player who learns they are under
+    -- suspicion changes behaviour, which costs the case the evidence it was
+    -- going to be made of. Asserted ON THE WIRE, which is where a stray notify
+    -- would show up and where no server-side assertion would see it.
+    --
+    -- AGAINST A CONTROL RUN RATHER THAN AGAINST ZERO, because zero is the wrong
+    -- bar and would be a test that fails for the wrong reason forever: the
+    -- offender is a live player in a live match and goes on receiving roster
+    -- deltas, storm phases and everything else, exactly as they should. What
+    -- must not exist is a message they get BECAUSE they were caught. So the
+    -- identical scenario is run twice -- once in a Buzzard, once in a granger --
+    -- and the difference is by construction the detector's doing.
+    local function namesToSubject(model)
+        heliMatch(model)
+        sent = {}
+        run(3500)
+        stepOut(7); run(500); drive(1, 7); run(3500)
+        local seen = {}
+        for _, m in ipairs(sent) do
+            if m.target == 1 or m.target == '1' then seen[m.event] = true end
+        end
+        return seen
+    end
+    do
+        local caught  = namesToSubject('buzzard')
+        local control = namesToSubject('granger')
+        local extra = {}
+        for name in pairs(caught) do
+            if not control[name] then extra[#extra + 1] = tostring(name) end
+        end
+        table.sort(extra)
+        ok(#extra == 0,
+            'the offender receives nothing a player in an ordinary car does not',
+            #extra > 0 and table.concat(extra, ', ') or 'nothing extra')
     end
 end
 

@@ -443,9 +443,28 @@ end
 --- @param count integer
 --- @param why string|nil  a BR.Config.VehicleRefusal value
 --- @return string
+--- THE WORD `spawned` USED TO BE IN THIS SENTENCE AND #211 TOOK IT OUT. While
+--- the only detector was `entityCreating`, every case this built really was
+--- about a vehicle somebody conjured, so the verb was true. It stopped being
+--- true the moment a player could draw the same case by climbing into a
+--- helicopter that was already parked at Fort Zancudo: nobody spawned that, and
+--- a moderation record that says they did is a false statement in the one field
+--- an admin reads before deciding.
+---
+--- THAT IS NOT A HYPOTHETICAL FAILURE MODE HERE. The corroboration note on this
+--- exact case type described a refused VEHICLE as a refused WEAPON until
+--- 2026-08-22, because a line was borrowed from the strip handler on the
+--- reasoning that it was the closest true statement available. The owner found
+--- it by reading the queue. A wrong verb is the same bug one field over.
+---
+--- SO THE SENTENCE NAMES THE FINDING AND NOT THE ROUTE. "N refused vehicles
+--- this match" is true whether they were created or taken, and `why` -- "vehicle
+--- flies", "vehicle has built-in weapons" -- is the half an admin triages on
+--- anyway. The route is not omitted to save words; it is omitted because ONE
+--- case can now hold both, and no single verb would be true of it.
 function BR.IncidentBuild.vehicleSummaryOf(count, why)
     local n = math.floor(tonumber(count) or 0)
-    return ('%d refused vehicle%s spawned this match -- %s')
+    return ('%d refused vehicle%s this match -- %s')
         :format(n, n == 1 and '' or 's', tostring(why))
 end
 

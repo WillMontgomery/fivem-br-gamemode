@@ -1081,16 +1081,40 @@ if [ -f "$vehfile_" ]; then
     fi
 
     # ...and nowhere else in any server file may create one.
-    strayveh=$(grep -rlE '(^|[^_[:alnum:]])CreateVehicle[[:space:]]*\(' \
+    #
+    # BOTH SPELLINGS, AND #212 IS WHY THE SECOND ONE IS HERE. The verb used to
+    # call server-side `CreateVehicle`, which is an RPC whose handle cannot be
+    # routed into a bucket -- so it now calls `CreateVehicleServerSetter`. The
+    # old pattern would not have matched the new name (it anchors on the paren
+    # straight after `CreateVehicle`), so this gate would have gone on passing
+    # while the capability it guards moved out from under it.
+    strayveh=$(grep -rlE '(^|[^_[:alnum:]])CreateVehicle(ServerSetter)?[[:space:]]*\(' \
                "resources/[fivem-royale]"/*/server/*.lua 2>/dev/null \
                | grep -v 'br_core/server/vehicles\.lua' || true)
     if [ -n "$strayveh" ]; then
-        echo "${RED}FAIL${RST} server-side CreateVehicle outside br_core/server/vehicles.lua:"
+        echo "${RED}FAIL${RST} server-side vehicle creation outside br_core/server/vehicles.lua:"
         echo "$strayveh" | sed 's/^/     /'
-        echo "     Server-side CreateVehicle is an RPC: it raises entityCreating,"
-        echo "     so a model config/vehicles.lua refuses opens a case against"
-        echo "     whichever CLIENT the engine handed the entity to. That rule"
-        echo "     lives beside the detector; so must the call."
+        echo "     Putting a networked vehicle in a match is the one capability"
+        echo "     that has to be reviewed beside the allowlist that limits it."
+        echo "     CreateVehicleServerSetter raises serverEntityCreated and NOT"
+        echo "     entityCreating, so the refused-vehicle detector never sees"
+        echo "     what it makes -- the pre-check in that file is the only"
+        echo "     thing there is, and it cannot guard a call somewhere else."
+        boundary=1
+    fi
+
+    # AND THE PRE-CHECK ITSELF, which is load-bearing in a way it was not when
+    # the verb shipped. While `brcar` used the RPC, a refused model would have
+    # reached the `entityCreating` detector anyway and opened a case; the server
+    # setter raises no such event, so BR.Config.IsAllowedVehicle in this file is
+    # now the whole of the boundary. Deleting it would permit a refused model
+    # that NOTHING would notice -- no case, no count, not a line in brvehicles.
+    if ! grep -q 'IsAllowedVehicle' "$vehfile_"; then
+        echo "${RED}FAIL${RST} brcar has lost its allowlist pre-check"
+        echo "     BR.Config.IsAllowedVehicle must be consulted in $vehfile_"
+        echo "     BEFORE anything is created. CreateVehicleServerSetter does"
+        echo "     not raise entityCreating, so nothing downstream would catch"
+        echo "     a refused model this verb let through."
         boundary=1
     fi
 fi
