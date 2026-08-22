@@ -4102,6 +4102,83 @@ do
     BR.Spectate = realSpectate
 end
 
+describe('the inventory panel holds the PASSENGER trigger, not just the driver\'s')
+do
+    -- ═══ THE COMMENT NAMED THE CONTROL WE MEANT, BESIDE A DIFFERENT ID ═══
+    --
+    -- The panel-open block read:
+    --
+    --     DisableControlAction(0, 68, true)   -- VEH_ATTACK
+    --     DisableControlAction(0, 69, true)   -- VEH_PASSENGER_ATTACK
+    --
+    -- Checked against the FiveM controls table on 2026-08-22: 68 is VEH_AIM,
+    -- 69 is VEH_ATTACK, 91 is VEH_PASSENGER_AIM and 92 is
+    -- VEH_PASSENGER_ATTACK -- and 92 appeared NOWHERE in inventory.lua. So the
+    -- block took the driver's trigger and both aims and left the passenger's
+    -- trigger live: a player riding shotgun could fire with the panel open,
+    -- which is the one accident this block exists to prevent.
+    --
+    -- The wrong comment is why it survived review, and it is why this is a
+    -- test rather than a corrected comment: a comment cannot fail a build.
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, count = 1 } },
+        ammo = {}, active = 1,
+    })
+
+    --- Every control the FRAME loop disables in one step.
+    local function heldControls()
+        local seen = {}
+        local real = DisableControlAction
+        function DisableControlAction(_pad, c) seen[c] = true end
+        BR.Loop.step(BR.Loop.FRAME)
+        DisableControlAction = real
+        return seen
+    end
+
+    local function togglePanel()
+        for _, fn in ipairs(BR.Keys.listeners['inventory'] or {}) do fn(true) end
+    end
+
+    -- 1. THE BASELINE, WHICH IS THE HALF THAT MAKES THE REST MEAN ANYTHING.
+    --    With the panel shut the trigger must be FREE -- a gate that blocks
+    --    something already blocked passes for the wrong reason.
+    local shut = heldControls()
+    ok(shut[92] ~= true,
+        'with the panel shut, the passenger trigger is the player\'s',
+        'control 92 was disabled with no panel open')
+
+    -- 2. THE PANEL IS OPEN, AND ALL FIVE IN-VEHICLE CONTROLS ARE HELD.
+    togglePanel()
+    local open = heldControls()
+    ok(open[92] == true,
+        'the panel holds VEH_PASSENGER_ATTACK (92) -- the reported gap',
+        'control 92 was NOT disabled with the panel open')
+    ok(open[91] == true,
+        'and VEH_PASSENGER_AIM (91) with it',
+        'control 91 was NOT disabled with the panel open')
+    ok(open[68] == true and open[69] == true and open[70] == true,
+        'and the driver\'s aim and both triggers, as it always did',
+        ('68=%s 69=%s 70=%s'):format(tostring(open[68]), tostring(open[69]),
+                                     tostring(open[70])))
+
+    -- 3. IT HANDS BACK. DisableControlAction lasts one frame, so closing the
+    --    panel restores by arithmetic rather than by remembering to.
+    --
+    --    CLOSED THROUGH THE UI ACTION, NOT A SECOND KEYPRESS. The key handler
+    --    swallows a toggle within 250ms of the last one -- the debounce that
+    --    fixed the panel blinking while TAB was held (user, 2026-08-09) --
+    --    so a test that pressed twice in the same tick would leave the panel
+    --    OPEN and then assert against a state it never reached. It did,
+    --    before this comment existed.
+    fire('br:ui:action', BR.NuiCb.CLOSE)
+    local shutAgain = heldControls()
+    ok(shutAgain[92] ~= true,
+        'and closing the panel gives the trigger straight back',
+        'control 92 was still disabled after the panel closed')
+end
+
 describe('the start-of-match voice notice says the mode and the real key')
 do
     -- THE SENTENCE IS THE OWNER'S, VERBATIM:
