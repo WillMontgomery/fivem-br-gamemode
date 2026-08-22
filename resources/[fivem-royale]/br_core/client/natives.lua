@@ -1012,6 +1012,42 @@ function BR.Native.applyGameRules()
     -- holds, and the two disagree by design: ours is the server's number.
     HideHudComponentThisFrame(2)   -- HUD_WEAPON_ICON (the ammo counter)
 
+    -- GTA'S OWN VEHICLE NAME, WHICH DRAWS ON TOP OF OURS (#208, owner
+    -- 2026-08-22: "there's a GTA V text in the bottom right describing what
+    -- vehicle it is (make/model) - but that text overlaps with our UI").
+    --
+    -- Bottom right is the vehicle bars -- condition, fuel, boost -- and the
+    -- inventory. The engine puts its make/model card in the same corner on
+    -- every vehicle entry, so the two are simply on top of each other.
+    --
+    -- 6 IS THE ONE, LOOKED UP RATHER THAN GUESSED. The HUD is a numbered
+    -- component set and the table is documented (citizenfx/natives,
+    -- HUD/HideHudComponentThisFrame.md): 6 is HUD_VEHICLE_NAME, and that is
+    -- the make/model card by itself.
+    --
+    -- WHAT IS DELIBERATELY NOT HIDDEN, because "hide the vehicle text" has two
+    -- plausible answers and only one of them was asked for:
+    --
+    --   8  HUD_VEHICLE_CLASS -- the CLASS label ("Sports"), a different
+    --      element that the engine raises for races. This gamemode has no
+    --      races, so it is not expected on entry at all; it is named here so
+    --      that if a class label ever does turn up in that corner the next
+    --      person has the id rather than the search. Adding it would be one
+    --      line and would cost nothing -- it is left out because the report
+    --      names the vehicle NAME, and hiding what nobody reported is how a
+    --      list like this stops being reviewable.
+    --
+    --   14 HUD_RETICLE and 21/22, the whole-HUD switches. HideHud/DisplayHud
+    --      and friends would take the reticle and the minimap with them, which
+    --      is the trade the issue rules out in as many words.
+    --
+    -- PER FRAME, like everything else in this function, which is what makes it
+    -- survive a respawn and a match boundary: the component is re-shown by the
+    -- engine every frame it wants to draw, so a one-shot hide at resource start
+    -- would last exactly one frame. This runs on BR.Loop.FRAME via
+    -- client/gamerules.lua with no state gate above it.
+    HideHudComponentThisFrame(6)   -- HUD_VEHICLE_NAME (the make/model card)
+
     -- The corner busy spinner ("Loading...") -- the engine raises it during
     -- session setup and other resources may leave one on. The convar
     -- sv_showBusySpinnerOnLoadingScreen only covers the phase BEFORE scripts

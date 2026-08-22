@@ -10038,6 +10038,572 @@ do
        'the controls that actually expand the radar are left alone')
 end
 
+
+-- ======================================================================== --
+-- #207. THE MAP KEY KEEPS OPENING THE MAP, HOWEVER THE LAST ONE CLOSED
+-- ======================================================================== --
+--
+-- THE REPORT: "after opening the map a few times using M, I can no longer open
+-- the map. No errors either. Is it maybe because I didn't use M to dismiss it
+-- but instead right clicked? That's the game's default 'dismiss' button which
+-- should still be an option. Same with ESC." (owner, 2026-08-22.)
+--
+-- THE BUG WAS IN CODE NO TEST COULD REACH, AND THAT IS THE REAL FINDING. The
+-- block above this one says so in as many words -- "the thread openFrontendMap
+-- starts is RECORDED AND NEVER RUN ... Citizen.Wait is a no-op here, so running
+-- it would spin forever. Everything asserted below happens before that thread's
+-- first Wait." Everything that broke happened AFTER it. The suite proved the key
+-- and the button went through one flag and stopped exactly where the exit
+-- watcher began.
+--
+-- SO THE FIX SHIPPED WITH A SHAPE CHANGE: the watcher is BR.Pause.mapStep(st),
+-- one frame per call, and the thread is `while mapStep(st) do Wait(0) end` and
+-- nothing else. There is no Wait inside a step, so this block drives the
+-- watcher frame by frame with the game answering whatever it likes -- a menu
+-- that never comes up, a menu that vanishes on its own, a second raise landing
+-- on top of the first. None of those was reachable before and the middle one is
+-- the report.
+--
+-- WHAT THE HARNESS MODELS THAT THE OLD ONE DID NOT: IsPauseMenuActive is a
+-- variable here rather than `return false`. The map's state is now DERIVED from
+-- it, so a test that could not move it could not test the derivation.
+
+describe('#207 -- the map opens again however the last one was dismissed')
+do
+    --- HOW THIS BUILD SHAPES A BOOL. Flipped to numbers for the last block:
+    --- a FiveM BOOL native may answer 1 rather than true, `1 == true` is false
+    --- and `0` is TRUTHY -- which this project has shipped four times.
+    local shape = { yes = true, no = false }
+    local function B(v) return v and shape.yes or shape.no end
+
+    local menuActive, restarting, escDown = false, false, {}
+    local ctrl = {}
+    local deactivations = 0
+
+    IsPauseMenuActive     = function() return B(menuActive) end
+    IsPauseMenuRestarting = function() return B(restarting) end
+    -- The game's own answer to SET_FRONTEND_ACTIVE(false) is that the menu
+    -- goes away. Modelling that rather than counting calls is what makes the
+    -- settle phase mean anything: an assertion about a counter would pass
+    -- against a settle that never took the menu down.
+    SetFrontendActive = function(on)
+        deactivations = deactivations + 1
+        if on == false then menuActive = false end
+    end
+    IsRawKeyDown = function(vk) return B(escDown[vk] == true) end
+    IsControlJustPressed         = function(_, c) return B(ctrl[c] == true) end
+    IsDisabledControlJustPressed = function(_, c) return B(ctrl[c] == true) end
+
+    --- The raise currently being stepped. openFrontendMap publishes it.
+    local live = nil
+
+    local function raisesSince(from)
+        local n = 0
+        for i = from + 1, #events do
+            local e = events[i]
+            if e.name == 'br:map:frontend' and e.args[1] == true then n = n + 1 end
+        end
+        return n
+    end
+
+    local function lastFrontendEvent()
+        for i = #events, 1, -1 do
+            if events[i].name == 'br:map:frontend' then return events[i].args[1] end
+        end
+    end
+
+    --- What the PAGE was last told about who owns the screen.
+    ---
+    --- WORTH ITS OWN ASSERTIONS BECAUSE THE FAILURE IS CATASTROPHIC. App.tsx
+    --- puts the entire NUI document at `opacity: 0, pointerEvents: none` while
+    --- this is true -- health, inventory, kill feed, everything. A map exit
+    --- that forgets to lower it leaves the player looking at Los Santos with no
+    --- interface at all and no key that brings it back, which is a great deal
+    --- worse than the map not opening.
+    local function pageHidden()
+        for i = #events, 1, -1 do
+            local e = events[i]
+            if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.FRONTEND then
+                return e.args[2] and e.args[2].up
+            end
+        end
+    end
+
+    local function pressKey()
+        fakeTime = fakeTime + 300          -- past the pause key's own 220ms guard
+        fire('br:ui:mapToggle')
+        if BR.Pause.map then live = BR.Pause.map end
+    end
+
+    --- Step the live raise, one frame per iteration, stopping when it is done.
+    --- @return boolean  whether the watcher still has work
+    local function step(n)
+        local more = true
+        for _ = 1, (n or 1) do
+            fakeTime = fakeTime + 16
+            more = BR.Pause.mapStep(live)
+            if not more then break end
+        end
+        return more
+    end
+
+    --- Back to nothing at all, by the honest road rather than by reaching in.
+    ---
+    --- Every flag this suite drives is a file-local in pause.lua, so a block
+    --- cannot start by assigning them -- it has to leave the previous map the
+    --- way a player would. Which is worth having: a reset that could not be
+    --- expressed as "tell the game the menu is gone and let the code reconcile"
+    --- would be evidence the reconciliation does not work.
+    local function reset()
+        menuActive, restarting, escDown, ctrl = false, false, {}, {}
+        if live then
+            fakeTime = fakeTime + 400
+            for _ = 1, 400 do
+                if BR.Pause.mapStep(live) == false then break end
+                fakeTime = fakeTime + 16
+            end
+        end
+        while BR.Pause.closeMap() do end
+        live = nil
+        deactivations = 0
+    end
+
+    --- A map that is genuinely up: key pressed, menu on screen, page committed.
+    local function openMap()
+        reset()
+        pressKey()
+        step()                 -- raising, and the game has not caught up yet
+        menuActive = true
+        step()                 -- raising -> paging, and the game is believed now
+        step()                 -- paging  -> watching
+        return live
+    end
+
+    BR.Pause.mapMode = 'frontend'
+
+    -- ------------------------------------------------------------------- --
+    -- 1. THE REPORT, REPRODUCED. The frontend dismisses ITSELF.
+    -- ------------------------------------------------------------------- --
+    --
+    -- Right-click is the frontend's own BACK and Escape is its own cancel; both
+    -- are handled inside the scaleform, and the watcher only ever INFERRED them
+    -- from a list of control ids its own comment calls "broad rather than
+    -- precise" because "right mouse cannot be read raw". This is that list
+    -- missing: nothing our end sees, and the menu gone.
+    openMap()
+    ok(live.phase == 'watching',
+       'the map comes up and is watched', tostring(live.phase))
+
+    ok(pageHidden() == true, 'and our page is standing down for it')
+
+    menuActive = false                 -- and not one control we watch fired
+    ok(step(20) == false,
+       'the watcher notices the GAME took the map away, with no input at all')
+    ok(lastFrontendEvent() == false,
+       'br_core gets its frontend suppression back')
+    ok(pageHidden() == false,
+       'and the page is told it may draw again -- a HUD left hidden is worse '
+       .. 'than the map not opening')
+
+    local m = #events
+    pressKey()
+    ok(raisesSince(m) == 1,
+       'AND THE NEXT M PRESS OPENS THE MAP -- which is the whole report',
+       ('raises %d'):format(raisesSince(m)))
+    step(3)
+
+    -- ------------------------------------------------------------------- --
+    -- 2. THE SAME THING WITH NO WATCHER RUNNING AT ALL.
+    -- ------------------------------------------------------------------- --
+    --
+    -- The orphaned-watcher case, which is what a real client had: the loop
+    -- `while frontendMap and not wantsOut()` could not end, because the only
+    -- two things that ended it were our own flag and an input list that had
+    -- already missed. So the flag sat raised over a menu that was not there and
+    -- closeMap answered every press with "yes, there was a map" -- lowering a
+    -- flag nobody was watching and returning, with nothing on screen to show
+    -- for it. No error, because nothing errored.
+    openMap()
+    menuActive = false
+    fakeTime = fakeTime + 300          -- and the watcher never gets a frame
+    ok(BR.Pause.closeMap() == false,
+       'a flag left up over a menu that has gone does not consume the press')
+    ok(BR.Pause.mapStep(live) == false,
+       'and the orphaned watcher is retired rather than left spinning')
+
+    m = #events
+    pressKey()
+    ok(raisesSince(m) == 1, 'so M opens, exactly as the player expected')
+    step(3)
+
+    -- ...AND SO DOES THE BUTTON, which is a SECOND door onto the same stale
+    -- flag. The Map card calls openMap directly and does NOT go through
+    -- closeMap first, so a reconciliation that lived only in closeMap would
+    -- leave the button dead in exactly the state that killed the key -- the
+    -- shape #138 is filed under ("PUBLIC BECAUSE THERE WAS A FOURTH DOOR").
+    reset()
+    pressKey()
+    step()
+    menuActive = true
+    step(2)                            -- a map genuinely up, and then...
+    menuActive = false                 -- ...gone, with nothing watching
+    fakeTime = fakeTime + 300
+    m = #events
+    -- BR.Pause.openMap() is where the Map card's PAUSE_ACTION branch ends up;
+    -- the block above already pins that the card and the key reach this one
+    -- function, so driving it here is driving the button's far end.
+    BR.Pause.openMap()
+    ok(raisesSince(m) == 1,
+       'the pause menu Map BUTTON opens over a stale flag too',
+       ('raises %d'):format(raisesSince(m)))
+    live = BR.Pause.map
+    step(3)
+
+    -- ------------------------------------------------------------------- --
+    -- 3. RIGHT-CLICK AND ESCAPE STILL DISMISS, WHICH THE OWNER ASKED FOR BY
+    --    NAME. "That's the game's default dismiss button which should still be
+    --    an option. Same with ESC."
+    -- ------------------------------------------------------------------- --
+    for _, c in ipairs({ 202, 200, 199, 177, 194, 25 }) do
+        openMap()
+        ctrl = { [c] = true }
+        deactivations = 0
+        step()
+        ok(live.phase == 'settling',
+           ('exit control %d still takes the map down'):format(c),
+           tostring(live.phase))
+        -- ON THE SAME FRAME, not on the next one. The frontend has to come
+        -- down where the player asked for it to; leaving it for the settle's
+        -- re-assert loop to notice would show them one more frame of a menu
+        -- they have already dismissed.
+        ok(deactivations >= 1 and menuActive == false,
+           ('control %d deactivates the frontend on the frame it is pressed')
+               :format(c),
+           ('%d calls, menu %s'):format(deactivations, tostring(menuActive)))
+
+        -- AND THE RE-ASSERT IS REAL. "The same press that got us here is still
+        -- being handled by the scaleform, which can bring the menu straight
+        -- back on the next frame" -- so a menu that comes back during the
+        -- settle has to be put down again rather than left up with the watcher
+        -- already gone.
+        ctrl = {}
+        menuActive = true              -- the scaleform bounces it back
+        step(3)
+        ok(menuActive == false,
+           ('and a menu that flickers back during the settle is put down again '
+            .. '(after control %d)'):format(c))
+        step(60)
+    end
+
+    openMap()
+    escDown = { [0x1B] = true }        -- raw Escape, which the frontend cannot eat
+    step()
+    ok(live.phase == 'settling', 'raw Escape still dismisses the map')
+    escDown = {}
+    step(60)
+    ok(BR.Pause.closeMap() == false, 'and leaves nothing behind')
+
+    -- AND M ITSELF, WHICH CLOSES BY LOWERING THE FLAG RATHER THAN BY BEING
+    -- SEEN. The key never reaches the watcher's input list at all -- br_core
+    -- routes it to closeMap, which drops the flag and lets the watcher find it
+    -- dropped. So "the watcher acts on our flag coming down" is a separate
+    -- path from "the watcher saw a button", and it is the one that has to end
+    -- in a deactivated frontend: nothing else in the file will take GTA's menu
+    -- off the screen.
+    openMap()
+    deactivations = 0
+    pressKey()                         -- M on an open map is a close
+    ok(BR.Pause.mapStep(live) == true and live.phase == 'settling',
+       'the map key lowering the flag sends the watcher to settle',
+       tostring(live.phase))
+    ok(deactivations >= 1 and menuActive == false,
+       'and GTA\'s menu is actually taken off the screen, not just forgotten',
+       ('%d calls, menu %s'):format(deactivations, tostring(menuActive)))
+    step(60)
+    ok(pageHidden() == false, 'with the page handed back')
+
+    -- ------------------------------------------------------------------- --
+    -- 4. A PRESS DURING THE SETTLE IS NOT EATEN.
+    -- ------------------------------------------------------------------- --
+    --
+    -- The half-second re-assert exists because "the same press that got us here
+    -- is still being handled by the scaleform". It used to hold the map's flag
+    -- up for that whole half second, so dismissing the map and pressing M
+    -- straight afterwards -- the most ordinary thing a player does -- did
+    -- nothing at all. What the frontend still owes us is a deactivation; that
+    -- is not a reason to tell the rest of the file there is a map up.
+    openMap()
+    ctrl = { [202] = true }
+    step()
+    ctrl = {}
+    ok(live.phase == 'settling', 'mid-settle...')
+    ok(BR.Pause.closeMap() == false,
+       '...a press is NOT consumed by a map that has already gone')
+
+    -- ------------------------------------------------------------------- --
+    -- 5. AND THE OLD RAISE DOES NOT LAND ON THE NEW ONE.
+    -- ------------------------------------------------------------------- --
+    --
+    -- The other half of the cascade. The old teardown used to write
+    -- `frontendMap = false`, `br:map:frontend false` and announceFrontend(false)
+    -- UNCONDITIONALLY, half a second late -- so it handed br_core's frontend
+    -- suppression back underneath a menu that was mid-raise, br_core closed the
+    -- map that had just been asked for, and the new watcher then sat out its
+    -- full five-second raise deadline. Press again inside that and it happens
+    -- again, which is how "a few times" becomes "no longer".
+    local stale = live
+    m = #events
+    deactivations = 0
+    pressKey()
+    ok(raisesSince(m) == 1, 'it opens a new one, in quick succession')
+    ok(live ~= stale, 'and that really is a NEW raise, not the old one resumed')
+
+    ok(BR.Pause.mapStep(stale) == false,
+       'the superseded raise retires on its next frame')
+    ok(deactivations == 0,
+       'writing nothing on its way out -- no SetFrontendActive aimed at the '
+       .. 'menu the new raise is bringing up', tostring(deactivations))
+    ok(lastFrontendEvent() == true,
+       'so br_core is still stood down for the raise that is actually live')
+
+    menuActive = true
+    step(3)
+    ok(live.phase == 'watching', 'and the new map comes up unharmed',
+       tostring(live.phase))
+    menuActive = false
+    step(20)
+
+    -- ------------------------------------------------------------------- --
+    -- 6. THE RESTART GRACE IS NOT PADDING.
+    -- ------------------------------------------------------------------- --
+    --
+    -- PauseMenuceptionTheKick RESTARTS the scaleform to commit the map page, and
+    -- a restarting menu reads as "not active". Without the grace, deriving the
+    -- flag from the game would close the map on the frame it finished opening --
+    -- a fix that produces a worse bug than the one it fixes.
+    -- LONGER THAN THE GRACE, deliberately. A restart window shorter than
+    -- MAP_GONE_MS would pass with the restart check deleted, which is a test
+    -- that proves the grace and calls it the restart check.
+    openMap()
+    menuActive, restarting = false, true
+    step(30)                           -- ~480ms of restarting, vs a 150ms grace
+    ok(live.phase == 'watching', 'a RESTARTING menu is not a dismissed one',
+       tostring(live.phase))
+
+    restarting = false
+    step(2)                            -- 32ms of "gone", inside the 150ms grace
+    ok(live.phase == 'watching', 'and a frame or two of "gone" is still inside the grace')
+
+    menuActive = true
+    step(2)
+    ok(live.phase == 'watching', 'the menu coming back clears the doubt')
+
+    -- A MAP READ FOR A MINUTE IS STILL A MAP. The grace has to be measured
+    -- from when the game was LAST seen holding the frontend, refreshed every
+    -- frame -- not from one sighting at the start. Anchored at the start, a
+    -- map open longer than the grace would look dismissed while the player was
+    -- still reading it, and the watcher would walk away from a frontend that
+    -- is very much on screen.
+    menuActive = true
+    step(400)                          -- ~6.4 seconds of a map being read
+    ok(live.phase == 'watching',
+       'a map held open far longer than the grace is not read as dismissed',
+       tostring(live.phase))
+    ctrl = { [202] = true }
+    step()
+    ok(live.phase == 'settling',
+       'and it still answers an exit control when the player is done')
+    ctrl = {}
+    step(60)
+
+    openMap()
+    menuActive = false
+    ok(step(20) == false, 'and a real absence still ends it')
+
+    -- ------------------------------------------------------------------- --
+    -- 7. A FRONTEND THAT NEVER ARRIVES GIVES UP AND LEAVES NOTHING BEHIND.
+    -- ------------------------------------------------------------------- --
+    reset()
+    pressKey()
+    fakeTime = fakeTime + 6000
+    ok(step() == false, 'a menu that never comes up is given up on, not waited on')
+    ok(lastFrontendEvent() == false and BR.Pause.closeMap() == false,
+       'and the giving up puts every flag back, so the next press still opens')
+
+    -- ------------------------------------------------------------------- --
+    -- 8. FOR A WHOLE SESSION, WHICHEVER WAY THE LAST ONE WENT.
+    -- ------------------------------------------------------------------- --
+    --
+    -- "M reopens it every time, however the last one was dismissed, for the
+    -- whole session." The bug was cumulative -- it took "a few times" -- so the
+    -- assertion has to be too. Four dismissals, three rounds, and every single
+    -- press in between has to raise a map.
+    local ROUTES = {
+        { name = 'an exit control',   close = function() ctrl = { [202] = true } end },
+        { name = 'raw Escape',        close = function() escDown = { [0x1B] = true } end },
+        { name = 'the map key again', close = function() pressKey() end },
+        { name = 'the frontend, on its own',
+          close = function() menuActive = false end },
+        { name = 'the pause key',
+          close = function()
+              fakeTime = fakeTime + 300
+              fire('br:ui:pauseToggle')
+          end },
+    }
+
+    local everyPressOpened, everyExitTidied = true, true
+    local detail, tidyDetail = nil, nil
+    for round = 1, 3 do
+        for _, r in ipairs(ROUTES) do
+            local before = #events
+            openMap()
+            if raisesSince(before) ~= 1 then
+                everyPressOpened = false
+                detail = detail or ('round %d, after %s: %d raises')
+                    :format(round, r.name, raisesSince(before))
+            end
+            r.close()
+            step(60)
+            escDown, ctrl = {}, {}
+            -- EVERY EXIT PUTS THE SCREEN BACK. Five dismissals, three rounds,
+            -- and not one of them may leave the page hidden, br_core stood
+            -- down, or GTA's menu on screen.
+            if pageHidden() ~= false or lastFrontendEvent() ~= false
+               or menuActive ~= false then
+                everyExitTidied = false
+                tidyDetail = tidyDetail or
+                    ('round %d, %s: page hidden %s, br_core %s, menu %s'):format(
+                        round, r.name, tostring(pageHidden()),
+                        tostring(lastFrontendEvent()), tostring(menuActive))
+            end
+        end
+    end
+    ok(everyPressOpened,
+       'M opens the map on every press of a three-round session, through five '
+       .. 'different dismissals', detail)
+    ok(everyExitTidied,
+       'and every one of those exits hands back the page, the suppression and '
+       .. 'the screen', tidyDetail)
+
+    -- ------------------------------------------------------------------- --
+    -- 9. AND ALL OF IT AGAIN ON A BUILD WHOSE BOOL NATIVES ANSWER NUMBERS.
+    -- ------------------------------------------------------------------- --
+    --
+    -- In Lua `0` is truthy and `1 == true` is false, and a FiveM BOOL native may
+    -- answer either shape. Unnormalised, `not IsPauseMenuActive()` on a build
+    -- that says `0` is FALSE -- so the raise would decide the menu was up before
+    -- it was, and `if IsControlJustPressed(...)` would read every id in both
+    -- lists as pressed on every frame and shut the map on the frame it opened.
+    -- This project has shipped that mistake four times; this is the block that
+    -- makes the fifth fail here instead of in a playtest.
+    shape = { yes = 1, no = 0 }
+
+    openMap()
+    ok(live.phase == 'watching',
+       'the map still comes up when the natives answer 1 rather than true',
+       tostring(live.phase))
+
+    ctrl = {}
+    step(5)
+    ok(live.phase == 'watching',
+       'and a 0 from IsControlJustPressed is NOT read as a press',
+       tostring(live.phase))
+
+    -- THE ONE THAT ACTUALLY BITES, and it is not the one it looks like.
+    -- Unnormalised, `0` is truthy -- so the USING guard fires first, on every
+    -- frame, and refreshes its own busy window forever. wantsOut then never
+    -- reaches the EXITS list at all and the map becomes UNLEAVABLE by any
+    -- control: the map that will not close rather than the map that closes
+    -- itself. Only pressing a real exit on a numeric build shows it.
+    ctrl = { [202] = true }
+    step()
+    ok(live.phase == 'settling',
+       'and a real exit control still closes the map on a numeric build',
+       tostring(live.phase))
+    ctrl = {}
+    step(60)
+
+    openMap()
+    menuActive = false
+    ok(step(20) == false, 'a 0 from IsPauseMenuActive is read as "not active"')
+
+    m = #events
+    pressKey()
+    ok(raisesSince(m) == 1, 'and M opens the map on a numeric build too')
+    step(3)
+    menuActive = false
+    step(20)
+
+    shape = { yes = true, no = false }
+end
+
+-- ======================================================================== --
+-- #208. GTA'S OWN VEHICLE NAME DOES NOT DRAW OVER OURS
+-- ======================================================================== --
+--
+-- "when getting in a vehicle, there's a GTA V text in the bottom right
+-- describing what vehicle it is (make/model) - but that text overlaps with our
+-- UI." (owner, 2026-08-22.) Bottom right is the vehicle bars and the inventory.
+--
+-- THE ASSERTION IS AS MUCH ABOUT WHAT SURVIVES AS ABOUT WHAT GOES. "Hide the
+-- vehicle text" has a lazy answer -- one of the whole-HUD switches -- that
+-- takes the reticle and the minimap with it, and a player who cannot see their
+-- crosshair has a worse problem than one reading a car's name through a fuel
+-- bar.
+
+describe('#208 -- the engine\'s vehicle name is hidden, and only it')
+do
+    local hidden = {}
+    HideHudComponentThisFrame = function(id) hidden[id] = true end
+
+    BR.State.me = { src = 1, state = BR.PlayerState.ALIVE }
+    BR.State.match = { state = BR.MatchState.PLAYING }
+
+    hidden = {}
+    BR.Native.applyGameRules()
+
+    -- 6 is HUD_VEHICLE_NAME, from the documented component table
+    -- (citizenfx/natives, HUD/HideHudComponentThisFrame.md). Looked up rather
+    -- than guessed, and pinned here so the number cannot drift into a nearby
+    -- one that happens to look right in a screenshot.
+    ok(hidden[6] == true,
+       'HUD_VEHICLE_NAME is suppressed, so the make/model card stops drawing '
+       .. 'over the vehicle bars')
+
+    -- THE ONES THAT MUST SURVIVE. 14 is HUD_RETICLE and 21/22 are the
+    -- whole-HUD groups; taking any of them is the shortcut the issue rules out
+    -- in as many words ("do not disable the whole HUD to remove one label").
+    ok(hidden[14] ~= true, 'the reticle is untouched')
+    ok(hidden[21] ~= true and hidden[22] ~= true,
+       'and neither whole-HUD group is taken')
+
+    -- AND THE FOUR THIS FILE ALREADY HID ARE STILL HIDDEN, which is the
+    -- regression a careless edit to that block would produce.
+    ok(hidden[3] == true and hidden[4] == true and hidden[7] == true
+       and hidden[9] == true and hidden[2] == true,
+       'cash, bank, area, street and the ammo counter are all still suppressed')
+
+    -- PER FRAME, WHICH IS WHAT MAKES IT SURVIVE A RESPAWN AND A MATCH
+    -- BOUNDARY. The engine re-shows the component every frame it wants to
+    -- draw, so a one-shot hide at resource start would last exactly one frame.
+    -- applyGameRules is on BR.Loop.FRAME with no state gate above it, so the
+    -- honest way to assert "it stays hidden" is to run it in the states a
+    -- player passes through and find it hidden in each.
+    local held = true
+    for _, st in ipairs({ BR.PlayerState.LOBBY, BR.PlayerState.WARMUP,
+                          BR.PlayerState.BUS, BR.PlayerState.ALIVE,
+                          BR.PlayerState.DOWNED, BR.PlayerState.DEAD,
+                          BR.PlayerState.SPECTATING }) do
+        BR.State.me.state = st
+        hidden = {}
+        BR.Native.applyGameRules()
+        if hidden[6] ~= true then held = false end
+    end
+    ok(held, 'and it is hidden in every player state, so a respawn or a new '
+       .. 'match cannot bring it back')
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+end
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)
