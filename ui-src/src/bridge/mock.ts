@@ -450,6 +450,27 @@ export function startMockDriver(): void {
     })
   }, 250)
 
+  // THE CAR, so the two vehicle bars can be looked at in the dev harness at
+  // all. The loop deliberately drains the tank, tops it back up quickly the way
+  // a refuel does, and lets condition decay -- both of the animations the bars
+  // exist to show, without needing a game.
+  let vFuel = 100, vHealth = 92, vFilling = false
+  window.setInterval(() => {
+    if (vFilling) {
+      vFuel = Math.min(100, vFuel + 2.5)
+      vHealth = Math.min(100, vHealth + 2.5)
+      if (vFuel >= 100) vFilling = false
+    } else {
+      vFuel = Math.max(0, vFuel - 0.8)
+      vHealth = Math.max(0, vHealth - 0.15)
+      if (vFuel <= 0) vFilling = true
+    }
+    emit({
+      k: 'vehicle',
+      d: { show: true, health: Math.round(vHealth), fuel: Math.round(vFuel) },
+    })
+  }, 250)
+
   // Kill feed and chat traffic.
   let feedId = 0
   window.setInterval(() => {

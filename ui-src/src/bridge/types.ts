@@ -91,6 +91,43 @@ export interface HudPayload {
   landed?: boolean
 }
 
+/**
+ * The vehicle the player is sitting in, in any seat.
+ *
+ * A CHANNEL OF ITS OWN RATHER THAN TWO MORE FIELDS ON HudPayload, and the
+ * reason is the dedupe at the far end: client/state.lua's HUD push compares
+ * every field and returns early when none moved, which is what keeps it quiet
+ * for a player standing still. Both numbers below move continuously while
+ * driving, so folding them in would make that comparison always true and turn
+ * the whole HUD envelope into an unconditional 10 Hz push, for a readout that
+ * only exists between one door and the next.
+ */
+export interface VehiclePayload {
+  /**
+   * False the moment the ped is out of a vehicle -- on foot, pulled out, dead,
+   * or the car destroyed under them. Lua treats all of those as the same fact,
+   * so there is one flag rather than a transition per way of leaving.
+   */
+  show: boolean
+  /**
+   * Condition, 0..100.
+   *
+   * THE WORST OF GTA'S THREE HEALTH POOLS -- body, engine and petrol tank --
+   * not the body alone. A pristine shell with a 200-point engine is a car about
+   * to stop, and a bar reading the body would show full right up until it did.
+   */
+  health: number
+  /**
+   * Tank, 0..100.
+   *
+   * A PERCENTAGE HERE AND METRES EVERYWHERE ELSE. The server's ledger is a
+   * distance budget in metres -- the owner's unit -- and a bar cannot show a
+   * unit without a caption beside it, which is copy nobody asked for. So the
+   * bar gets the fraction and the metres stay in Lua.
+   */
+  fuel: number
+}
+
 export interface StormPayload {
   phase: number
   phaseState: StormPhaseState
@@ -879,6 +916,7 @@ export type Envelope =
   | { k: 'feed';     d: FeedEntry }
   | { k: 'hit';      d: HitPayload }
   | { k: 'storm';    d: StormPayload }
+  | { k: 'vehicle';  d: VehiclePayload }
   | { k: 'dbno';     d: DbnoPayload }
   | { k: 'spectate'; d: SpectatePayload }
   | { k: 'death';    d: DeathPayload }

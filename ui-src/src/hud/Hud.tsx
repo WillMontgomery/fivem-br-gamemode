@@ -1,8 +1,10 @@
 import {
   useUi, selHud, selStorm, selSquad, selFeed, selDbno, selMatch, selInv,
+  selVehicle,
 } from '../store'
 import { useScreenMetrics } from './useScreenMetrics'
 import Vitals from './Vitals'
+import VehicleBars from './VehicleBars'
 import StormBar from './StormBar'
 import WarmupTimer from './WarmupTimer'
 import Counters from './Counters'
@@ -59,6 +61,8 @@ export default function Hud({ visible }: { visible: boolean }) {
   const dbno  = useUi(selDbno)
   const match = useUi(selMatch)
   const inv   = useUi(selInv)
+  // The car under this player, in any seat. Null on foot.
+  const vehicle = useUi(selVehicle)
 
   // Applies the game's resolution and safe zone to CSS variables.
   useScreenMetrics()
@@ -194,9 +198,29 @@ export default function Hud({ visible }: { visible: boolean }) {
             and there is nothing in the bar to look at before you land. */}
         {!descending && (
           <div
-            className="absolute"
+            className="absolute flex flex-col items-end gap-1"
             style={{ bottom: 'var(--safe-y)', right: 'var(--safe-x)' }}
           >
+            {/* ═══ THE CAR YOU ARE IN, ABOVE THE INVENTORY AND IN THE SAME
+                    COLUMN ═══
+
+                IN THE FLEX-COL, NOT FLOATING OVER IT, and that is the whole
+                reason this div grew a layout. The inventory bar's height is
+                DATA -- the ammo panel exists only for a weapon with a clip --
+                so anything anchored above it by arithmetic would jump every
+                time the player selected a bandage. Stacking means the browser
+                measures.
+
+                THE COLUMN GROWS UPWARD from the bottom safe edge, which is free
+                here in a way it is not on the left: the kill feed is the only
+                thing above, and it hangs off --hud-top + 5rem at the TOP of the
+                screen. At 1280x720 the strip adds about 17px to a column whose
+                top edge sits around y=600; the feed's lowest row is up near
+                y=190 with eight entries. They do not meet.
+
+                RENDERS null WHEN THERE IS NO VEHICLE, so the column is exactly
+                what it was before for a player on foot -- see VehicleBars. */}
+            <VehicleBars vehicle={vehicle} />
             <InventoryBar inv={inv} />
           </div>
         )}

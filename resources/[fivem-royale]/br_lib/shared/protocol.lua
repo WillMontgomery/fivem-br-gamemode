@@ -235,6 +235,32 @@ BR.Net = {
     SPECTATE_STOP   = 'br:spectate:stop',
     SUMMARY         = 'br:summary',          -- S->C  end-of-match payload
 
+    -- Fuel. The server owns a metre budget per VEHICLE (server/fuel.lua); the
+    -- client owns the gauge, the pump prompt and the station blips.
+    --
+    -- THE FRACTION IS WHAT TRAVELS, NOT THE LITRES, because
+    -- SET_VEHICLE_FUEL_LEVEL is in the vehicle's own tank units and only the
+    -- client can read `fPetrolTankVolume` off the handling. The metres ride
+    -- along for the pump readout, which is the ledger's own number and must not
+    -- be recomputed at the far end from a rounded fraction.
+    --
+    -- S->C  { n = netId, f = 0..1 of a tank, m = metres remaining }
+    FUEL_SET        = 'br:fuel:set',
+    -- C->S  { n = netId } -- "what does this car hold?", sent when the player
+    -- starts the ENTRY ANIMATION rather than when they are seated, so the
+    -- answer is in hand before the ignition would fire. The server answers only
+    -- for a vehicle the asker is standing next to; see server/fuel.lua for why
+    -- an unrestricted version of this would be a small wallhack.
+    FUEL_ASK        = 'br:fuel:ask',
+    -- C->S  { n = netId } -- "I am holding the interact key". Repeated for as
+    -- long as the hold lasts. EVERY OTHER CLAIM IN THAT SENTENCE IS RE-DERIVED
+    -- SERVER-SIDE (in a match, alive, in that vehicle, in the driver's seat, at
+    -- a station), and how much fuel it is worth comes from the wall clock
+    -- rather than from how many of these arrived -- BR.FuelSolve.grantMs. This
+    -- is the only message in the gamemode that can make a resource go UP, which
+    -- is why it is the one with the most checks behind it.
+    FUEL_PUMP       = 'br:fuel:pump',
+
     -- Death. The client reports; the server decides. See server/combat.lua.
     PLAYER_DIED     = 'br:player:died',      -- C->S  { cause, killer? }
 
@@ -427,6 +453,19 @@ BR.Nui = {
     -- travel with the ids rather than being looked up in the squad payload.
     VOICE     = 'voice',
     INV       = 'inv',
+    -- THE CAR YOU ARE IN: { show, health, fuel }, both 0..100.
+    --
+    -- A CHANNEL OF ITS OWN RATHER THAN TWO MORE FIELDS ON `hud`, and the reason
+    -- is the dedupe. client/state.lua's HUD push compares every field it sends
+    -- and returns early when none moved, which is what keeps it quiet for a
+    -- player standing still. Vehicle health and fuel BOTH move continuously
+    -- while driving, so folding them in would make that comparison always true
+    -- and turn the whole HUD envelope into an unconditional 10 Hz push -- for a
+    -- readout only present while seated in a car.
+    --
+    -- IT IS ALSO NOT THE SAME LIFETIME. `hud` is on screen for the whole match;
+    -- this exists between one door and the next.
+    VEHICLE   = 'vehicle',
     PROMPT    = 'prompt',    -- world-anchored interaction prompt + progress ring
     FEED      = 'feed',      -- kill feed + damage numbers
     HIT       = 'hit',       -- YOU connected: {amount, headshot, killed, name}

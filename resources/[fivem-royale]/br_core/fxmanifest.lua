@@ -42,6 +42,12 @@ shared_scripts {
     -- Load it earlier and they would be bucketed like anything else, i.e. found
     -- in ordinary crates, which is the one thing they must not be.
     '@br_lib/config/airdrop.lua',
+    -- The fuel budget and the petrol stations. AFTER config/storm.lua, not
+    -- merely near it: the tank size is DERIVED from BR.Config.Storm.mapAABB at
+    -- load time -- the map diagonal is what "two fuel stops per crossing" is
+    -- measured against -- so loading it earlier would divide by a nil AABB and
+    -- take the resource down at load.
+    '@br_lib/config/fuel.lua',
     '@br_lib/config/audio.lua',
     '@br_lib/config/peds.lua',      -- the locker roster; reads BR.Config
     -- The catalogue. SHARED rather than server-only: the server decides what
@@ -76,6 +82,11 @@ shared_scripts {
     '@br_lib/shared/xp.lua',
     '@br_lib/shared/storm_solve.lua',
     '@br_lib/shared/combat_solve.lua',
+    -- BR.FuelSolve. SHARED because both halves of the fuel model call it: the
+    -- server drains and refills through it, the client converts metres to a
+    -- tank level through it, and a solver only one side can load is a solver
+    -- only one side can be tested against.
+    '@br_lib/shared/fuel_solve.lua',
     '@br_lib/shared/loot_gen.lua',  -- reads the loot/weapon/map config at call time
     -- The airdrop solver: siting, payout and the descent curve. AFTER
     -- config/airdrop.lua, whose resolved pools BR.AirdropPayout deals from.
@@ -119,6 +130,11 @@ client_scripts {
     -- client/loot.lua like anything else.
     'client/airdrop.lua',
     'client/dbno.lua',      -- downed + revive; yields the interact key from loot.lua
+    -- The fuel gauge, the pump prompt and the station blips. AFTER dui.lua
+    -- (it borrows the crate's prompt page) and AFTER keybinds.lua (it reads
+    -- BR.Keys.isHeld('interact')); it reads BR.Native.blipName at call time, so
+    -- natives.lua only has to be somewhere above, which it is.
+    'client/fuel.lua',
     -- The spectator camera. Needs BR.Keys (keybinds.lua) for the arrows and
     -- BR.Native (natives.lua) for the scoped ped lookup; client/lobbycam.lua
     -- reads BR.Spectate.active() at call time, so load order between the two
@@ -169,6 +185,12 @@ server_scripts {
     'server/airdrop.lua',
     'server/damage.lua',    -- M6: weaponDamageEvent validation and attribution
     'server/markers.lua',   -- player map markers: relay + squad scoping
+    -- The fuel ledger: a metre budget per VEHICLE, spent by driving and bought
+    -- back at a petrol station. AFTER roster.lua, and that one is a real load
+    -- order rather than a reader's: it calls BR.Roster.sampleIntervalMs() at
+    -- load time to register its consumption pass on the same clock the position
+    -- sampler runs on, which is the whole reason a distance budget is free.
+    'server/fuel.lua',
     'server/chat.lua',
     'server/voice.lua',    -- voice channel authority: one room per match, one per squad
     'server/debug.lua',

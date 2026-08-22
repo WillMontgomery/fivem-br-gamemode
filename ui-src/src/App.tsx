@@ -70,6 +70,10 @@ export default function App() {
   useNuiEvent('voice',    (d) => s.setVoice(d))
   useNuiEvent('inv',      (d) => s.setInv(d))
   useNuiEvent('storm',    (d) => s.setStorm(d))
+  // The car under you, in any seat. Lua sends `show: false` on every way of
+  // leaving one -- on foot, pulled out, dead, or the vehicle destroyed -- so
+  // there is nothing to clear off a state transition the way the storm is.
+  useNuiEvent('vehicle',  (d) => s.setVehicle(d))
   useNuiEvent('dbno',     (d) => s.setDbno(d))
   useNuiEvent('spectate', (d) => s.setSpectate(d))
   // Your own death, mid-match. Lua owns how long it stays -- it sends `show`

@@ -129,7 +129,13 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # test_artifacts.lua is: the rules under test -- exactly one drop a match,
     # never inside 250m of the wall, never past storm stage 4 -- take a whole
     # match each to observe in the game and are wrong for weeks otherwise.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_config.lua tools/test_admin.lua; do
+    # test_fuel.lua is the fourth suite here to load a real server file, and it
+    # is its own rather than a block inside test_roster because the property
+    # worth pinning spans three layers: the pure solver, the tank size DERIVED
+    # from the map AABB, and the registry that makes a tank survive its driver.
+    # Split across two existing suites, the interesting one -- a car staying dry
+    # for whoever gets in next -- would be testable in neither.
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1

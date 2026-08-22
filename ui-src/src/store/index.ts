@@ -17,7 +17,7 @@ import type {
   CurtainKind, KeybindAction, LockerPayload, MarketPayload, ProgressPayload,
   SettingsPayload,
   ToastPayload, VoicePayload, WireInvPayload, XpAward, EarnedPayload, PlayersPayload, ReportResult,
-  AdminPayload,
+  AdminPayload, VehiclePayload,
 } from '../bridge/types'
 import { applySettings, DEFAULT_SETTINGS } from '../settings/apply'
 
@@ -51,6 +51,15 @@ export interface UiState {
   voice: VoicePayload
   inv: InvPayload
   storm: StormPayload | null
+  /**
+   * The car under you, or null when there is none.
+   *
+   * NULL RATHER THAN A `show: false` OBJECT ONCE IT IS IN THE STORE. Lua sends
+   * the flag because a channel has to say "stop" somehow; the store normalises
+   * it at the boundary so every reader asks one question instead of two, the
+   * same shape `setStorm` uses for a storm that is not running.
+   */
+  vehicle: VehiclePayload | null
   dbno: DbnoPayload
   spectate: SpectatePayload | null
   /**
@@ -228,6 +237,7 @@ export interface UiState {
   setVoice: (v: VoicePayload) => void
   setInv: (i: WireInvPayload) => void
   setStorm: (s: StormPayload | null) => void
+  setVehicle: (v: VehiclePayload) => void
   setDbno: (d: DbnoPayload) => void
   setSpectate: (s: SpectatePayload | null) => void
   setDeath: (d: DeathPayload | null) => void
@@ -504,6 +514,7 @@ export const useUi = create<UiState>((set, get) => {
   voice: { talking: [] },
   inv: emptyInv,
   storm: null,
+  vehicle: null,
   dbno: emptyDbno,
   spectate: null,
   death: null,
@@ -601,6 +612,13 @@ export const useUi = create<UiState>((set, get) => {
   // crossed the Lua bridge becomes {}) must read as "no storm", never as a
   // storm whose every field is undefined.
   setStorm:    (storm) => set({ storm: storm && storm.phase != null ? storm : null }),
+  // NORMALISED AT THE BOUNDARY, exactly as setStorm is. Lua's channel has to be
+  // able to say "stop", and it says it with `show: false`; past this line the
+  // absence of a vehicle is a null, so no component has to remember to check
+  // two things. A shapeless payload -- a nil that crossed the Lua bridge
+  // arrives as {} -- reads as "no vehicle" rather than as a car with undefined
+  // health, which would render two empty bars over the inventory.
+  setVehicle:  (v) => set({ vehicle: (v && v.show) ? v : null }),
   setDbno:     (dbno) => set({ dbno }),
   setSpectate: (spectate) => set({ spectate }),
   setDeath:    (death) => set({ death }),
@@ -740,6 +758,7 @@ export const useUi = create<UiState>((set, get) => {
 // update at 10 Hz does not re-render the chat log.
 export const selHud      = (s: UiState) => s.hud
 export const selStorm    = (s: UiState) => s.storm
+export const selVehicle  = (s: UiState) => s.vehicle
 export const selMatch    = (s: UiState) => s.match
 export const selSquad    = (s: UiState) => s.squad
 export const selInv      = (s: UiState) => s.inv

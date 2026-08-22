@@ -124,6 +124,32 @@
   --color-storm:   #c026d3;
   --color-danger:  #ef4444;
 
+  /* THE CAR, WHICH IS NOT A PERSON. hud/VehicleBars.tsx draws vehicle
+     condition and fuel in the same pill health and shield use, so the ONLY
+     thing separating "my health" from "my car's health" at a glance is hue.
+     Reusing --color-hp for the bodywork would have made green mean two things
+     on one screen, which is the exact failure the palette note above this
+     block describes ("one colour, one meaning, game-wide").
+
+     SLATE FOR CONDITION, because it is barely a hue at all -- a machine reads
+     as metal, and an achromatic bar cannot be confused with any of the four
+     saturated colours that already carry meaning.
+
+     ORANGE FOR FUEL, on the petrol-pump convention, and chosen against the two
+     it must not be mistaken for: it is not --color-danger (#ef4444), which
+     means you are losing health, and it is a full hue step from
+     --color-royale-accent2 (#facc15), which means victory and nothing else.
+
+     NO COLOURBLIND OVERRIDES, DELIBERATELY. The rule this file sets for the
+     [data-cb] blocks is to move only what collapses and to leave the rest,
+     because "gratuitously repainting a palette someone has already learned is
+     its own accessibility cost". These two are only ever read against EACH
+     OTHER -- one strip, two bars, side by side -- and slate against orange
+     separates by saturation in every deficiency, not by hue. There is nothing
+     here for a remap to fix. */
+  --color-vehicle: #94a3b8;
+  --color-fuel:    #fb923c;
+
   /* SECONDARY TEXT, THE CAPTION LAYER. Short labels that name the thing next
      to them -- and are not the thing itself. Headings and values stay plain
      white; this is the layer underneath them.

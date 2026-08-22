@@ -14,8 +14,16 @@ import { useEffect, useRef, useState } from 'react'
  * Both fills animate with `transform: scaleX()`, never `width`. Width
  * animates on the layout thread and costs real frames every time damage
  * lands, which is precisely when frames matter most.
+ *
+ * EXPORTED BECAUSE A SECOND STRIP NOW USES IT. hud/VehicleBars.tsx draws
+ * vehicle condition and fuel, and the owner's brief for those was "using the
+ * same graphical style as the existing ones". The strongest reading of that is
+ * not "copy these styles" but "be these styles": a duplicated pill with its own
+ * gradient literals is the same look on the day it is written and a different
+ * one after the first tweak to either. So the component is shared, and only the
+ * colours and the split differ.
  */
-function Fill({ value, colour, segments = 0, num }: {
+export function Fill({ value, colour, segments = 0, num }: {
   value: number
   colour: string
   /**
