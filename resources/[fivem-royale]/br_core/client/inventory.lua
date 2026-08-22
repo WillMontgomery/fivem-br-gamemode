@@ -992,9 +992,24 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
         DisableControlAction(0, 2, true)    -- LOOK_UD
         DisableControlAction(0, 24, true)   -- ATTACK
         DisableControlAction(0, 25, true)   -- AIM
-        DisableControlAction(0, 68, true)   -- VEH_ATTACK
-        DisableControlAction(0, 69, true)   -- VEH_PASSENGER_ATTACK
+        -- EVERY WAY A SEAT FIRES, AND THE NAMES HERE WERE WRONG.
+        --
+        -- These three lines used to read 68 = VEH_ATTACK, 69 =
+        -- VEH_PASSENGER_ATTACK, 70 = VEH_ATTACK2. Checked against the FiveM
+        -- controls table (2026-08-22): 68 is VEH_AIM, 69 is VEH_ATTACK, 91 is
+        -- VEH_PASSENGER_AIM and 92 is VEH_PASSENGER_ATTACK -- which appeared
+        -- NOWHERE in this file.
+        --
+        -- So the panel suppressed the driver's trigger and the aim, and left
+        -- the PASSENGER'S trigger live: a passenger could fire with the
+        -- inventory open, which is the one thing this block exists to stop.
+        -- The comment being wrong is why nobody noticed -- it named the
+        -- control we meant, beside the id of a different one.
+        DisableControlAction(0, 68, true)   -- VEH_AIM
+        DisableControlAction(0, 69, true)   -- VEH_ATTACK
         DisableControlAction(0, 70, true)   -- VEH_ATTACK2
+        DisableControlAction(0, 91, true)   -- VEH_PASSENGER_AIM
+        DisableControlAction(0, 92, true)   -- VEH_PASSENGER_ATTACK
         DisableControlAction(0, 106, true)  -- VEH_MOUSE_CONTROL_OVERRIDE
         DisableControlAction(0, 140, true)  -- MELEE_ATTACK_LIGHT
         DisableControlAction(0, 141, true)  -- MELEE_ATTACK_HEAVY
