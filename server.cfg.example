@@ -44,6 +44,92 @@ sv_scriptHookAllowed 0
 sv_enforceGameBuild 3095
 
 # ---------------------------------------------------------------------------
+# Entity lockdown -- WHO IS ALLOWED TO CREATE A NETWORKED ENTITY
+#
+# ⚠ THIS ONE LINE IS THE WHOLE SETTING. It is a server-wide switch with
+#   consequences well beyond the vehicles #193 raised it for, and the mode is
+#   NOT SETTLED -- see "the unresolved part" below. Change the value, never the
+#   surrounding code.
+#
+# The four values the PARSER accepts, and nothing else:
+#
+#   inactive    Clients may create any networked entity. This is the platform
+#               default and therefore what this project has always run, whether
+#               or not anybody decided it.
+#   relaxed     Client-created entities are refused UNLESS the engine's own
+#               population placed them -- i.e. ambient traffic, parked cars,
+#               patrol and scenario vehicles and ambient peds all survive, and a
+#               trainer spawning a vehicle does not.
+#   no_dummy    NOT "relaxed but more" -- read the validator before reaching for
+#               it. It permits everything a client creates EXCEPT dummy objects,
+#               so it is closer to `inactive` than to `relaxed`. The docs
+#               describe it as "disables dummy object creation", which is
+#               accurate and reads stricter than it is.
+#   strict      NO entity may be created by a client. AT ALL.
+#
+# ⚠ THE DOCS ADVERTISE A FIFTH MODE CALLED `full` AND THE PARSER DOES NOT ACCEPT
+#   IT. docs.fivem.net's server-commands table lists `full` where the code reads
+#   `no_dummy`; the string was added to the docs alongside the GTAV Enhanced
+#   pages and never existed in the parser. Putting it here is an unknown value,
+#   not a stricter setting.
+#
+# ═══ WHAT `strict` COSTS, AND WHY IT IS NOT MERELY "relaxed BUT MORE" ═══
+#
+# The two modes differ in EXACTLY ONE BRANCH of the platform's entity validator,
+# and that branch is the carve-out admitting engine-placed population. Under
+# strict it is skipped, so RANDOM_AMBIENT, RANDOM_PARKED, RANDOM_PATROL,
+# RANDOM_PERMANENT and RANDOM_SCENARIO are all rejected.
+#
+# So on this gamemode, strict deletes:
+#
+#   * every ambient vehicle and every parked car -- which are the ENTIRE vehicle
+#     supply under #193's Option A, the option the owner chose;
+#   * every ambient ped;
+#   * and it does it by letting the client spawn them and then rejecting the
+#     clone, so the symptom is traffic that appears and vanishes rather than
+#     traffic that never comes.
+#
+# BR.Config.Ambient's `vehicles = 0.45` and `parked = 1.0` would still be written
+# every frame by client/natives.lua and would still do nothing.
+#
+# ═══ WHAT IS SAFE UNDER ANY MODE, so nobody re-tests it ═══
+#
+#   * The parachute. Lockdown broke parachutes once and the platform added an
+#     explicit carve-out for task attachments; it is NOT gated on the mode, so
+#     client/skydive.lua is unaffected by any value here.
+#   * Everything this gamemode creates. The Battle Bus and its pilot
+#     (client/bus.lua) and every loot prop (client/loot.lua) pass
+#     isNetwork = false, and lockdown governs only networked creation.
+#   * Control requests. Under strict the platform always refuses
+#     REQUEST_CONTROL_EVENT, which would break any code asking for an entity it
+#     does not own -- and nothing in this tree does. There is no
+#     NetworkRequestControlOfEntity call anywhere in resources/; client/state.lua
+#     documents deliberately not calling it.
+#   * Player peds, ragdoll and DBNO. The validator skips player entities
+#     entirely, and a downed player's ped is never recreated.
+#
+# What DOES change under relaxed or stricter: engine-created weapon pickups --
+# the objects GTA drops when a ped dies armed. This gamemode owns its own loot
+# and death boxes (server/loot.lua), so losing them is not a gameplay loss, but
+# it is a difference and it is not zero.
+#
+# ═══ THE UNRESOLVED PART -- THIS IS AWAITING THE OWNER (#193) ═══
+#
+# The owner's decisions on #193 were "enable entity lockdown" and "let's not
+# change ambient traffic". Under `strict` those two are incompatible: enabling
+# it IS changing ambient traffic, by removing it. `relaxed` is the mode that
+# satisfies both -- it keeps the population and refuses client-created entities,
+# which is the property the vehicle allowlist and br_core/server/vehicles.lua
+# exist to enforce -- but choosing between them is the owner's call and it has
+# been put to them.
+#
+# UNTIL THEN THIS IS THE PLATFORM DEFAULT, SET EXPLICITLY. Writing it out changes
+# no behaviour -- unset and `inactive` are the same server -- and it means the
+# knob is visible, the consequences are written down beside it, and no deploy
+# turns lockdown on because somebody assumed it already was.
+sv_entityLockdown inactive
+
+# ---------------------------------------------------------------------------
 # Identity
 # ---------------------------------------------------------------------------
 sv_hostname "FiveM Royale | Battle Royale"
