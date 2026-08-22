@@ -167,6 +167,24 @@ export default function VehicleBars({ vehicle }: { vehicle: VehiclePayload | nul
       value: vehicle.fuel,
       colour: 'var(--color-fuel)',
     },
+    {
+      // THE THIRD BAR IS NOT THE CAR'S. Condition and fuel belong to the
+      // vehicle; the boost meter belongs to the DRIVER and follows them into
+      // the next car, because the spec for it opens "akin to sprint on foot"
+      // (the argument is in br_core/client/boost.lua). They share a strip
+      // anyway: the strip is "things that matter while you are in a car", and
+      // a player has no reason to care which side of that line a number is on.
+      //
+      // It arrives as one more entry and no branch, which is exactly the seam
+      // the `value?: number` rule above was written for. The boost feature
+      // originally added a third sibling by hand to avoid colliding with this
+      // file being restyled at the same time; both halves landed, so it is an
+      // entry now.
+      title: 'Boost',
+      label: 'Boost',
+      value: vehicle.boost,
+      colour: 'var(--color-boost)',
+    },
   ]
 
   return (

@@ -314,6 +314,52 @@ tap ('deploy',      'brdeploy',    'Royale: Jump / deploy glider',       'SPACE'
 -- screen's reserved list, so anyone who dislikes it can move it.
 tap ('trail',       'brtrail',     'Royale: Toggle smoke trail',         'B')
 
+-- THE VEHICLE BOOST, AND LEFT SHIFT IS A RESEARCHED CHOICE RATHER THAN A HABIT.
+--
+--   "while holding SHIFT by default (remappable), and in the driver's seat"
+--                                                  -- owner, 2026-08-22, #203
+--
+-- 'LSHIFT' IS THE STRING THE ENGINE TAKES. There is no 'SHIFT' in the keyboard
+-- mapper table -- it is LSHIFT and RSHIFT -- and a key name RegisterKeyMapping
+-- does not recognise is a binding that never appears. The raw layer wants a
+-- different number for the same key; see DEFAULT_VK below, where LSHIFT maps to
+-- 0x10 and the reason is written out.
+--
+-- WHAT SHIFT ALREADY DOES IN A VEHICLE, ESTABLISHED RATHER THAN ASSUMED. Two
+-- independent control tables agree that left shift carries four GTA controls,
+-- and that in a CAR none of them fires:
+--
+--   21   INPUT_SPRINT                     on foot only
+--   61   INPUT_VEH_MOVE_UP_ONLY           aircraft / submarine ascend
+--   352  INPUT_VEH_FLY_BOOST              aircraft only
+--   340  INPUT_VEH_HYDRAULICS_CONTROL_UP  lowriders with hydraulics fitted
+--
+-- That is why it is the right default: it is the most valuable UNBOUND key in a
+-- car, and the same key sprints on foot, so one habit covers both. It is also
+-- the FiveM convention -- the open nitro scripts that ship a default ship this
+-- one.
+--
+-- THE TWO REAL COLLISIONS, AND WHAT IS DONE ABOUT EACH. RegisterKeyMapping does
+-- not suppress an engine control that shares its key (see the note on the
+-- removed 'ping' binding below for what that cost last time), so both of these
+-- are live:
+--
+--   AIRCRAFT   61 and 352 would climb a helicopter while we shoved it forward,
+--              from one press. Excluded in BR.Config.Boost.excludeClasses, which
+--              is the one place to change it.
+--   HYDRAULICS 340 would hop a lowrider fitted with them. NOT excluded: it needs
+--              a Benny's hydraulics mod, nothing in this gamemode fits one, and
+--              a whole vehicle class cannot be taken away for a mod no car here
+--              has. If a boosting Tornado starts bouncing, this is the line.
+--
+-- INPUT_VEH_ROCKET_BOOST (351) IS NOT IN THAT LIST and is worth saying so about,
+-- because it is the control whose name suggests it should be. It is on E, not
+-- shift -- it is already suppressed at petrol pumps for exactly that reason
+-- (BR.Config.Fuel.hornControls) -- and it does nothing at all on a vehicle
+-- without FLAG_HAS_ROCKET_BOOST in its meta, which is no vehicle in this game.
+-- It is neither a help nor an obstacle here.
+hold('boost',       'brboost',     'Royale: Vehicle boost',              'LSHIFT')
+
 group = 'Combat'
 -- Inventory and interaction
 tap ('inventory',   'brinventory', 'Royale: Inventory',                  'TAB')
@@ -558,7 +604,7 @@ end)
 
 --- Names of every registered action, for the debug overlay.
 BR.Keys.actions = {
-    'deploy', 'trail', 'inventory', 'interact', 'drop', 'use',
+    'deploy', 'trail', 'boost', 'inventory', 'interact', 'drop', 'use',
     'slot1', 'slot2', 'slot3', 'slot4', 'slot5',
     -- 'ping' is gone: it had no listener and the marker it was for is placed
     -- by dropping a map waypoint now (client/markers.lua). 'specNext' and
@@ -649,6 +695,37 @@ local DEFAULT_VK = {
     -- skips the binding entirely and the row shows "Unbound" on a settings
     -- screen the player never touched -- see the note above this table.
     T = 0x54, Y = 0x59, Z = 0x5A, M = 0x4D, N = 0x4E, BACK = 0x08,
+    -- ═══ 'LSHIFT' IS THE ENGINE'S NAME AND 0x10 IS THE RAW LAYER'S, AND THEY
+    --     DELIBERATELY DISAGREE ═══
+    --
+    -- The vehicle boost is on left shift (brboost). RegisterKeyMapping's keyboard
+    -- table has no plain 'SHIFT' -- it is LSHIFT and RSHIFT -- so the ENGINE side
+    -- has to be told LSHIFT specifically.
+    --
+    -- The RAW side wants 0x10, which is VK_SHIFT, the GENERIC one. Three separate
+    -- reasons, and they all point the same way:
+    --
+    --   * the raw natives read GTA's own 256-slot keyboard array, indexed by
+    --     virtual-key code and fed from Windows keyboard messages -- and a
+    --     WM_KEYDOWN for either shift carries wParam = VK_SHIFT (0x10). The
+    --     side-specific 0xA0/0xA1 are never what lands in that slot.
+    --   * the settings screen's capture is a browser keydown and reads
+    --     `e.keyCode`, which is 16 for either shift. A rebind onto shift from our
+    --     own screen therefore produces 0x10, so the default has to be 0x10 or a
+    --     player who "rebound" it to the key it was already on would change its
+    --     behaviour.
+    --   * 0x10 is already in VK_NAME as 'Shift', so every prompt and every
+    --     settings row renders it correctly with no change. 0xA0 would fall off
+    --     the end of vkName and print '#160'.
+    --
+    -- The cost, stated: the boost answers to EITHER shift key rather than only
+    -- the left one. That is a superset of what the pause-menu row claims and is
+    -- the friendlier of the two errors.
+    --
+    -- AND IT HAS TO BE HERE AT ALL, which is the note above this table: a default
+    -- missing from DEFAULT_VK is a key the raw layer skips entirely, showing as
+    -- "Unbound" on a settings screen the player never touched.
+    LSHIFT = 0x10,
     LEFT = 0x25, RIGHT = 0x27, UP = 0x26, DOWN = 0x28,
     F1 = 0x70, F2 = 0x71, F3 = 0x72, F4 = 0x73, F5 = 0x74,
 }

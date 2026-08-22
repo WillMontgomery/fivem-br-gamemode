@@ -250,7 +250,7 @@ end
 -- ---------------------------------------------------------------------------
 
 --- What the interface was last told, so an unchanged readout is not re-sent.
-local lastBars = { show = nil, health = -1, fuel = -1 }
+local lastBars = { show = nil, health = -1, fuel = -1, boost = -1 }
 
 --- How healthy a vehicle is, 0..100.
 ---
@@ -308,7 +308,7 @@ end
 --- @param fuelFrac number|nil
 local function pushBars(veh, fuelFrac)
     local show = veh ~= nil
-    local health, fuel = 0, 0
+    local health, fuel, boost = 0, 0, 0
     if show then
         health = math.floor(healthPct(veh) + 0.5)
         -- AN UNKNOWN TANK READS FULL, NOT EMPTY. This is the gap between
@@ -316,16 +316,31 @@ local function pushBars(veh, fuelFrac)
         -- empty for a tenth of a second every time somebody got into a car
         -- would be read as the car being dry.
         fuel = math.floor(BR.FuelSolve.clamp(fuelFrac or 1.0, 1.0) * 100.0 + 0.5)
+        -- ═══ THE THIRD BAR RIDES THIS ENVELOPE RATHER THAN OPENING A SECOND ═══
+        --
+        --   "Good call - I meant to ask for a Boost bar."  -- owner, 2026-08-22
+        --
+        -- The boost meter belongs to client/boost.lua, which owns it and is
+        -- declared above this file. Asked here, at call time, because this is the
+        -- function that already dedupes and already decides when the vehicle
+        -- strip is drawn at all -- and a second NUI channel carrying one number
+        -- on its own cadence is how two surfaces that should agree stop agreeing.
+        --
+        -- NIL-GUARDED so the boost being switched off, or its file failing to
+        -- load, costs a bar rather than the whole strip.
+        boost = math.floor(
+            ((BR.Boost and BR.Boost.meter and BR.Boost.meter()) or 100.0) + 0.5)
     end
 
     if show == lastBars.show and health == lastBars.health
-       and fuel == lastBars.fuel then
+       and fuel == lastBars.fuel and boost == lastBars.boost then
         return
     end
-    lastBars.show, lastBars.health, lastBars.fuel = show, health, fuel
+    lastBars.show, lastBars.health, lastBars.fuel, lastBars.boost =
+        show, health, fuel, boost
 
     TriggerEvent('br:ui:sendLocal', BR.Nui.VEHICLE, {
-        show = show, health = health, fuel = fuel,
+        show = show, health = health, fuel = fuel, boost = boost,
     })
 end
 

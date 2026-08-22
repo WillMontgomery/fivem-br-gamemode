@@ -47,6 +47,15 @@ shared_scripts {
     -- measured against -- so loading it earlier would divide by a nil AABB and
     -- take the resource down at load.
     '@br_lib/config/fuel.lua',
+    -- The boost solver, and then the boost numbers. THIS PAIR IS ORDERED AND THE
+    -- ORDER IS BACKWARDS FROM EVERY OTHER SOLVER HERE, which is why it is
+    -- declared up among the configs rather than down with its siblings:
+    -- config/boost.lua derives `addMps` from BR.BoostSolve.MPH AT LOAD TIME, so
+    -- the solver has to exist first. Putting the mph-to-m/s constant in both
+    -- files instead is the drift this project is most scarred by; one definition
+    -- and one ordered pair is the cheaper price.
+    '@br_lib/shared/boost_solve.lua',
+    '@br_lib/config/boost.lua',
     '@br_lib/config/audio.lua',
     '@br_lib/config/peds.lua',      -- the locker roster; reads BR.Config
     -- The catalogue. SHARED rather than server-only: the server decides what
@@ -137,6 +146,14 @@ client_scripts {
     -- (it borrows the crate's prompt page) and AFTER keybinds.lua (it reads
     -- BR.Keys.isHeld('interact')); it reads BR.Native.blipName at call time, so
     -- natives.lua only has to be somewhere above, which it is.
+    -- The boost: the meter, the forward impulse and the tailpipe flames. AFTER
+    -- keybinds.lua, which is a real load order rather than a reader's -- it
+    -- reads BR.Keys.isHeld('boost') every frame and BR.Keys.labelFor in
+    -- /brboostinfo -- and BEFORE client/fuel.lua for a READER: fuel.lua's
+    -- pushBars asks BR.Boost.meter() for the third bar in the vehicle envelope,
+    -- so the file that answers is declared above the file that asks. It reaches
+    -- it at call time and nil-guards, so the loader does not care.
+    'client/boost.lua',
     'client/fuel.lua',
     -- The spectator camera. Needs BR.Keys (keybinds.lua) for the arrows and
     -- BR.Native (natives.lua) for the scoped ped lookup; client/lobbycam.lua
@@ -193,6 +210,13 @@ server_scripts {
     -- order rather than a reader's: it calls BR.Roster.sampleIntervalMs() at
     -- load time to register its consumption pass on the same clock the position
     -- sampler runs on, which is the whole reason a distance budget is free.
+    -- The boost relay, and the answer to "was this vehicle boosting". BEFORE
+    -- server/fuel.lua for a READER rather than for the loader: fuel.lua's sample
+    -- pass calls BR.Boost.fuelMultiplier at call time and nil-guards it, so the
+    -- order on the page is the order of the question. It needs BR.Sched (already
+    -- above, in shared) for its sweep and BR.Roster for the driver check, which
+    -- it reads at call time.
+    'server/boost.lua',
     'server/fuel.lua',
     'server/chat.lua',
     'server/voice.lua',    -- voice channel authority: one room per match, one per squad

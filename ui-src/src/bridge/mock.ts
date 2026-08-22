@@ -479,11 +479,17 @@ export function startMockDriver(): void {
     })
   }, 250)
 
-  // THE CAR, so the two vehicle bars can be looked at in the dev harness at
+  // THE CAR, so the three vehicle bars can be looked at in the dev harness at
   // all. The loop deliberately drains the tank, tops it back up quickly the way
   // a refuel does, and lets condition decay -- both of the animations the bars
   // exist to show, without needing a game.
   let vFuel = 100, vHealth = 92, vFilling = false
+  // THE BOOST BAR AT ITS REAL RATES, because it is the only one of the three
+  // that moves fast enough for the timing to be part of the look: four seconds
+  // to empty and six to refill, at this loop's 250ms cadence. Getting those two
+  // numbers wrong in the harness would make the bar read correctly and animate
+  // like nothing in the game.
+  let vBoost = 100, vBoosting = false
   window.setInterval(() => {
     if (vFilling) {
       vFuel = Math.min(100, vFuel + 2.5)
@@ -494,9 +500,21 @@ export function startMockDriver(): void {
       vHealth = Math.max(0, vHealth - 0.15)
       if (vFuel <= 0) vFilling = true
     }
+    if (vBoosting) {
+      vBoost = Math.max(0, vBoost - (100 / 4000) * 250)
+      if (vBoost <= 0) vBoosting = false
+    } else {
+      vBoost = Math.min(100, vBoost + (100 / 6000) * 250)
+      if (vBoost >= 100) vBoosting = true
+    }
     emit({
       k: 'vehicle',
-      d: { show: true, health: Math.round(vHealth), fuel: Math.round(vFuel) },
+      d: {
+        show: true,
+        health: Math.round(vHealth),
+        fuel: Math.round(vFuel),
+        boost: Math.round(vBoost),
+      },
     })
   }, 250)
 

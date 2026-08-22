@@ -261,6 +261,28 @@ BR.Net = {
     -- is why it is the one with the most checks behind it.
     FUEL_PUMP       = 'br:fuel:pump',
 
+    -- Vehicle boost. The CLIENT owns the meter, the push and its own flames --
+    -- a twitch input cannot wait for a round trip -- so these two carry only
+    -- what a client cannot do for itself.
+    --
+    -- C->S  { on = boolean, netId = integer, endsAt? = server ms }
+    -- EDGES, NOT DURATIONS, and that is the whole security shape of the fuel
+    -- surcharge: the elapsed time is measured on the server's own clock, so
+    -- there is no millisecond count in this message for anyone to inflate.
+    -- `endsAt` is a HINT about the sender's own meter and is clamped to
+    -- BR.Config.Boost.capacityMs at the far end. See server/boost.lua's header
+    -- for the owner's decision to accept the client's word here, exactly what it
+    -- costs, and the three clamps that bound it.
+    BOOST_SET       = 'br:boost:set',
+    -- S->C  { netId, on, endsAt? }
+    -- The published record, in the same clock-and-record shape the storm and the
+    -- bus route use: every client draws its own LOCAL particle effect from it and
+    -- puts it out on `endsAt` with no second message needed, so a lost stop
+    -- cannot leave a car on fire. Nothing here is an entity; see
+    -- br_core/client/boost.lua on why `sv_entityLockdown` has no opinion on a
+    -- particle handle.
+    BOOST_SYNC      = 'br:boost:sync',
+
     -- Death. The client reports; the server decides. See server/combat.lua.
     PLAYER_DIED     = 'br:player:died',      -- C->S  { cause, killer? }
 

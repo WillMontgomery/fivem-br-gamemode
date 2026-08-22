@@ -445,13 +445,40 @@ local function samplePass(dtMs)
         -- rather than leaving it as a consequence of statement order.
         elseif not charged[netId] then
             charged[netId] = true
+            local dt = now - rec.at
             local metres, jumped = BR.FuelSolve.travelled(
-                rec.x, rec.y, x, y, now - rec.at,
+                rec.x, rec.y, x, y, dt,
                 tonumber(F.maxSpeedMps) or 0.0)
+
+            -- ═══ BOOSTING BURNS FUEL 50% FASTER ═══
+            --
+            --   "And yes, boosting should burn fuel faster. Good point. Let's
+            --    make it burn 50% faster while boosting"  -- owner, 2026-08-22
+            --
+            -- ONE MULTIPLY, ON THE METRES, AND IT IS ASKED FOR EVEN WHEN THE
+            -- STEP WAS DISBELIEVED. BR.Boost.fuelMultiplier is CONSUMING -- it
+            -- takes the interval's boost time out of its own row -- so skipping
+            -- the call on a jumped step would leave that time banked and charge
+            -- it against the NEXT interval's metres, which is a surcharge landing
+            -- on ground that was driven without a boost. Asked here, once per
+            -- vehicle per pass, on the same `dt` the travel was measured over.
+            --
+            -- THE MULTIPLIER IS THE CLIENT'S WORD, DELIBERATELY, AND THE FULL
+            -- ARGUMENT IS IN server/boost.lua's header -- including the owner's
+            -- decision, what a liar gains (about 1.3% of a tank per boost), and
+            -- the three clamps that stop it becoming anything else. It is an
+            -- exception to this file's own rule that the ledger is not
+            -- client-authored, and it is not precedent for a second one.
+            local mult = 1.0
+            if BR.Boost and BR.Boost.fuelMultiplier then
+                mult = BR.Boost.fuelMultiplier(netId, dt)
+            end
+
             if jumped then
                 stat.jumps = stat.jumps + 1
             elseif metres > 0.0 then
-                rec.left = BR.FuelSolve.drain(rec.left, metres, F.tankMetres)
+                rec.left = BR.FuelSolve.drain(
+                    rec.left, metres * mult, F.tankMetres)
                 stat.drained = stat.drained + 1
             end
             rec.x, rec.y, rec.at = x, y, now

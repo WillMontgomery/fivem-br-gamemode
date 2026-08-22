@@ -132,6 +132,26 @@ export interface VehiclePayload {
    * argument in full.
    */
   fuel: number
+  /**
+   * Boost meter, 0..100.
+   *
+   *   "Good call - I meant to ask for a Boost bar."  -- the owner, 2026-08-22
+   *
+   * PER PLAYER, NOT PER VEHICLE, which is why it does not reset when the driver
+   * changes car -- the owner's spec opens "akin to sprint on foot", and sprint
+   * stamina belongs to the player. See br_core/client/boost.lua for the full
+   * argument and for the one place that would change.
+   *
+   * A PERCENTAGE HERE AND MILLISECONDS EVERYWHERE ELSE, for the same reason
+   * `fuel` is a percentage and metres everywhere else: a bar cannot show a unit
+   * without a caption beside it.
+   *
+   * DRAWN FOR EVERY SEAT, like the two beside it -- a passenger sees the
+   * driver's meter. That is not a decision so much as the absence of one: the
+   * strip is shown to whoever is aboard, and carving an exception for one of its
+   * three bars would be the odd thing to do.
+   */
+  boost: number
 }
 
 export interface StormPayload {

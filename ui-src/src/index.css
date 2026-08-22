@@ -150,6 +150,26 @@
   --color-vehicle: #94a3b8;
   --color-fuel:    #fb923c;
 
+  /* BOOST, THE THIRD BAR IN THAT SAME STRIP (owner, 2026-08-22: "I meant to ask
+     for a Boost bar").
+
+     IT IS THE UI ACCENT BY REFERENCE, NOT BY COPY. A second literal holding
+     #22d3ee is a value that agrees today and drifts the first time either is
+     tweaked -- the same argument Vitals.tsx makes for sharing `Fill` rather than
+     restyling it. So this names the ROLE and points at the value.
+
+     THE ACCENT IS THE RIGHT ONE ON ITS MERITS RATHER THAN BY CONVENIENCE. The
+     three bars are only ever read against EACH OTHER, and the strip needs one
+     cool saturated hue to sit beside desaturated slate and warm orange: cyan is
+     the only family in this palette that is neither, and it separates from both
+     by saturation as well as by hue, which is what the block above requires of
+     these bars in every deficiency. It is also not --color-danger and not
+     --color-royale-accent2, the two colours that already mean something
+     specific.
+
+     Not remapped under [data-cb] for the same reason its neighbours are not. */
+  --color-boost:   var(--color-royale-accent);
+
   /* SECONDARY TEXT, THE CAPTION LAYER. Short labels that name the thing next
      to them -- and are not the thing itself. Headings and values stay plain
      white; this is the layer underneath them.
