@@ -1403,6 +1403,35 @@ function BR.Native.check()
     probe('SetPlayerCanDoDriveBy',   function()
         SetPlayerCanDoDriveBy(PlayerId(), true)
     end)
+    -- /brdriveby leans on all six of these, and #197 is precisely a case where
+    -- the readout has to be trusted over an argument -- so the readout's own
+    -- natives get the same treatment as gameplay's.
+    probe('IsPedInAnyVehicle',       function()
+        return IsPedInAnyVehicle(ped, false)
+    end)
+    probe('GetVehiclePedIsIn',       function()
+        return GetVehiclePedIsIn(ped, false)
+    end)
+    probe('GetPedInVehicleSeat',     function()
+        local v = GetVehiclePedIsIn(ped, false)
+        if not v or v == 0 then return 'not in a vehicle (not called)' end
+        return GetPedInVehicleSeat(v, -1) == ped and 'driver' or 'passenger'
+    end)
+    probe('GetDisplayNameFromVehicleModel', function()
+        local v = GetVehiclePedIsIn(ped, false)
+        if not v or v == 0 then return 'not in a vehicle (not called)' end
+        return GetDisplayNameFromVehicleModel(GetEntityModel(v))
+    end)
+    -- The one native that answers "is the engine LETTING you do this", as
+    -- opposed to the six that answer "did anybody stop you".
+    probe('IsPedDoingDriveby',       function() return IsPedDoingDriveby(ped) end)
+    -- Declared BOOL, and read for six controls a frame by the drive-by watch.
+    -- The TYPE is the interesting half: a build that answers 0 would make every
+    -- `not IsControlEnabled(...)` in the game read backwards.
+    probe('IsControlEnabled',        function()
+        local v = IsControlEnabled(0, 24)
+        return ('%s [%s]'):format(tostring(v), type(v))
+    end)
     -- Taking a weapon the server never issued back out of the hand, so a
     -- trainer-spawned rifle cannot even produce the local corpse.
     probe('RemoveWeaponFromPed',     function()

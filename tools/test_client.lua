@@ -682,8 +682,59 @@ for _, n in ipairs({
     'SetEntityHeading', 'SetEntityRotation', 'SetEntityVelocity',
     'SetModelAsNoLongerNeeded', 'SetObjectPhysicsParams', 'SetPedAmmo',
     'SetPedArmour', 'SetPedInfiniteAmmo', 'SetPedInfiniteAmmoClip',
-    'SetPlayerCanDoDriveBy', 'SetPlayerMaxArmour', 'SetWeaponsNoAutoswap',
+    'SetPlayerMaxArmour', 'SetWeaponsNoAutoswap',
+    -- The overlay's drawing half. /brdriveby shares a file with it, so the file
+    -- is loaded, so its FRAME callback runs -- it early-returns while the
+    -- overlay is off, and these exist so that a future test which turns the
+    -- overlay ON does not fail as a native error.
+    'DrawRect', 'SetTextFont', 'SetTextScale', 'SetTextColour',
+    'SetTextDropshadow', 'SetTextEdge', 'SetTextDropShadow', 'SetTextOutline',
+    'BeginTextCommandDisplayText', 'EndTextCommandDisplayText',
+    'RequestCollisionAtCoord',
 }) do _G[n] = noop end
+
+-- ------------------------------------------------------------- drive-by ---
+--
+-- #197's natives, MODELLED RATHER THAN NOOPED, because every one of them is a
+-- fact the diagnosis turns on.
+
+--- SET_PLAYER_CAN_DO_DRIVE_BY, COUNTED.
+---
+--- A noop here could not tell "we assert this every tick" from "we asserted it
+--- once, ten minutes ago, in a branch that has not run since" -- and that
+--- distinction IS #197's first candidate. The counter is what makes the
+--- cadence assertable at the desk.
+local driveByCalls = 0
+function SetPlayerCanDoDriveBy() driveByCalls = driveByCalls + 1 end
+
+--- The seat. `inVehicle` above drives IsPedInAnyVehicle; these two carry the
+--- rest of what a seat is.
+local vehicle, vehicleSeat = 0, nil
+function GetVehiclePedIsIn() return vehicle end
+function GetPedInVehicleSeat(_veh, seat)
+    -- The local ped is 1 (PlayerPedId). Anything else is an empty seat, and an
+    -- empty seat is 0, which is what the engine answers.
+    return seat == vehicleSeat and 1 or 0
+end
+function GetEntityModel() return 42 end
+function GetDisplayNameFromVehicleModel() return 'BALLER' end
+function IsPedDoingDriveby() return false end
+
+--- IS_CONTROL_ENABLED, AND ITS RETURN SHAPE IS PART OF THE FIXTURE.
+---
+--- Declared BOOL, read six times a frame by the drive-by watch, and `0` is
+--- truthy in Lua. A build that answers numbers turns every `not
+--- IsControlEnabled(...)` into a permanent "enabled" -- which would make the
+--- readout confidently exonerate a script that is in fact holding the trigger
+--- down. That is the bug this codebase has shipped four times, so BOTH shapes
+--- are driven through the same assertions below.
+local disabledControls = {}
+local controlsAnswerNumbers = false
+function IsControlEnabled(_pad, c)
+    local on = not disabledControls[c]
+    if controlsAnswerNumbers then return on and 1 or 0 end
+    return on
+end
 
 --- ...EXCEPT THIS ONE, WHICH IS THE THING UNDER TEST RATHER THAN SCENERY.
 ---
@@ -866,6 +917,13 @@ loadAll({
     -- arithmetic was right, tools/test_roster.lua proved it was right, and two
     -- players still could not hear each other.
     'br_core/client/voice.lua',
+    -- THE DEBUG FILE IS LOADED FOR ONE COMMAND, AND IT IS THE POINT OF #197.
+    -- /brdriveby is the only answer the owner gets to "why can a passenger not
+    -- fire", it decides between four causes that look identical from the seat,
+    -- and a readout that reaches the wrong verdict costs a playtest round the
+    -- same way a wrong fix does. Its FRAME sampler is registered here like any
+    -- other callback, so the harness can step it.
+    'br_core/client/debug.lua',
 })
 
 -- ---------------------------------------------------------------- harness ---
@@ -8035,6 +8093,349 @@ do
     ok(item == nil and why == 'already owned by everyone',
         'and it is still refused as a purchase, tile or no tile',
         tostring(why))
+end
+
+-- ------------------------------------------------------------- drive-by ---
+--
+-- #197 -- A PASSENGER CANNOT FIRE FROM A SEAT.
+--
+-- WHAT THESE TESTS CAN AND CANNOT PROVE, FIRST, because the honest answer to
+-- #197 is not a code change and pretending otherwise is how this ships green
+-- and broken.
+--
+-- The cause is the ENGINE's own per-seat weapon rule: a seat carries a list of
+-- weapon groups in its CVehicleDriveByInfo, a standard car seat lists unarmed,
+-- one-handed and thrown, and a rifle is therefore taken out of the ped's hands
+-- on the way into the seat. No Lua process can be asked to confirm that, and no
+-- native lifts it. This file cannot prove the diagnosis.
+--
+-- WHAT IT CAN PROVE IS EVERYTHING WE OWN, which is exactly the half that had to
+-- be ruled out before the platform could be blamed:
+--
+--   1. that we assert the drive-by permission on a CADENCE. It used to be set
+--      only inside applyActive's arm branch, which returns early when the
+--      weapon has not changed -- so the last assertion could be minutes and a
+--      respawn behind the moment the player sat down. That is #197's candidate
+--      1 and it is now closed by construction.
+--   2. that the READOUT reaches the right verdict from a given world. Four
+--      causes look identical from a passenger seat; the owner gets one command
+--      and it has to name the right one, including on a build where BOOL
+--      natives answer numbers.
+--   3. that a diagnostic does not blame a guard that no longer exists.
+
+describe('#197 -- the drive-by permission is asserted on a cadence, not once')
+do
+    bootOn(true, true)
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    inVehicle, vehicle, vehicleSeat = false, 0, nil
+    disabledControls, controlsAnswerNumbers = {}, false
+
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } },
+        ammo = {}, active = 1,
+    })
+    BR.Loop.step(BR.Loop.TICK)      -- the grant lands here
+
+    -- THE REGRESSION, STATED AS AN ASSERTION. Nothing changes from here on: no
+    -- INV_SET, no slot switch, no respawn. applyActive returns on its second
+    -- line for every one of these ticks -- which is precisely the state a player
+    -- is in while they walk to a car, get in, and sit down.
+    driveByCalls = 0
+    BR.Loop.step(BR.Loop.TICK)
+    BR.Loop.step(BR.Loop.TICK)
+    BR.Loop.step(BR.Loop.TICK)
+    ok(driveByCalls == 3,
+        'the permission is re-asserted every tick with NOTHING changing',
+        ('called %d times over 3 quiet ticks'):format(driveByCalls))
+
+    -- AND ABOVE THE canArm() GATE, which is the other half of the same
+    -- argument. canArm() answers "may this file put a weapon in this ped's
+    -- hand" -- false for the lobby, the bus and the whole descent -- and whether
+    -- a player may fire from a seat is not that question. A permission that is
+    -- already true before anybody sits down cannot be late.
+    BR.State.me.state = BR.PlayerState.BUS
+    BR.State.landed = false
+    driveByCalls = 0
+    BR.Loop.step(BR.Loop.TICK)
+    BR.Loop.step(BR.Loop.TICK)
+    ok(driveByCalls == 2,
+        'and it is still asserted in a state this file refuses to arm',
+        ('called %d times in BUS'):format(driveByCalls))
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+
+    -- THE FISTS CASE, which the old placement could never reach at all: the
+    -- unarmed branch of applyActive has no SetPlayerCanDoDriveBy in it and never
+    -- did, so a player who spawned, drew nothing and got into a car was relying
+    -- entirely on the engine's default.
+    fire(BR.Net.INV_SET, { slots = {}, ammo = {}, active = BR.Config.Loot.meleeSlot or 0 })
+    BR.Loop.step(BR.Loop.TICK)
+    driveByCalls = 0
+    BR.Loop.step(BR.Loop.TICK)
+    ok(driveByCalls == 1,
+        'and with fists up, where the arm branch never ran',
+        ('called %d times'):format(driveByCalls))
+end
+
+describe('#197 -- the verdict names the cause, and the causes are separable')
+do
+    local CARBINE = BR.NormHash(BR.Config.WeaponById['carbinerifle'].hash)
+    local UNARMED = BR.NormHash(BR.Config.Gadgets.UNARMED)
+
+    --- "Explicitly absent", because `{ engineHash = nil }` is an EMPTY TABLE in
+    --- Lua and pairs() cannot carry a nil. Half the cases below are about a
+    --- field being missing -- the engine naming no weapon at all is the shape a
+    --- stow produces -- so the absence has to survive being passed around.
+    local NONE = {}
+
+    --- A world, as the readout sees it. Defaults are "an armed passenger with
+    --- nothing wrong", so each case below states only what it is about.
+    local function world(over)
+        local f = {
+            state = BR.PlayerState.ALIVE, canArm = true, panelOpen = false,
+            slotIndex = 1, item = 'carbinerifle',
+            wantHash = CARBINE, appliedHash = CARBINE, engineHash = CARBINE,
+            driveByAt = 0, driveByCount = 900,
+            inVehicle = true, blocked = nil,
+        }
+        for k, v in pairs(over or {}) do
+            if v == NONE then f[k] = nil else f[k] = v end
+        end
+        return f
+    end
+    local function verdict(over)
+        local code = BR.Inv.driveByVerdict(world(over))
+        return code
+    end
+
+    -- THE ANSWER TO #197, and the shape it arrives in: our two hashes agree
+    -- with each other and the ENGINE is holding nothing. The weapon is in the
+    -- inventory and not in the hands.
+    ok(verdict({ engineHash = UNARMED }) == 'stowed',
+        'the engine holding fists over our rifle is named a STOW',
+        verdict({ engineHash = UNARMED }))
+    ok(verdict({ engineHash = NONE }) == 'stowed',
+        'and so is the engine declining to name a weapon at all',
+        verdict({ engineHash = NONE }))
+
+    -- OURS BEFORE THEIRS. Both of the causes we can actually fix are checked
+    -- before the platform is blamed, or the readout would exonerate our own bug
+    -- in the exact case where it matters -- a stow and an open panel look the
+    -- same from the seat.
+    ok(verdict({ engineHash = UNARMED, panelOpen = true }) == 'panel',
+        'an open panel is OUR bug and outranks the stow',
+        verdict({ engineHash = UNARMED, panelOpen = true }))
+    ok(verdict({ engineHash = UNARMED, blocked = 'VEH_PASSENGER_ATTACK' }) == 'control',
+        'and so does a control something disabled',
+        verdict({ engineHash = UNARMED, blocked = 'VEH_PASSENGER_ATTACK' }))
+
+    -- CANDIDATE 1, which is what this round actually changed. If the tick that
+    -- asserts the permission is dead, that is the answer and it is not the
+    -- engine's fault.
+    ok(verdict({ engineHash = UNARMED, driveByCount = 0 }) == 'never-asked',
+        'a permission we never asserted outranks the stow too',
+        verdict({ engineHash = UNARMED, driveByCount = 0 }))
+
+    -- NOT EVERY QUESTION IS THIS QUESTION.
+    ok(verdict({ inVehicle = false }) == 'onfoot',
+        'on foot, there is nothing here to explain')
+    ok(verdict({ canArm = false }) == 'state',
+        'and a state this client will not arm is named as such')
+    ok(verdict({ wantHash = NONE, item = NONE }) == 'unarmed',
+        'an empty hand is not a drive-by problem')
+    ok(verdict({ appliedHash = NONE }) == 'ungranted',
+        'nor is a grant that has not landed yet')
+
+    -- EVERYTHING RULED OUT IS ITS OWN ANSWER, and it has to be, because that is
+    -- the readout that says "#197 is not what you think it is" -- the one case
+    -- where a confident wrong verdict costs the most.
+    ok(verdict({}) == 'unexplained',
+        'a passenger holding what we granted, with every control live, is UNEXPLAINED')
+
+    -- SIGNED HASHES, ON BOTH SIDES. The engine hands weapon hashes back SIGNED
+    -- and the config authors them positive; twenty of the forty weapons in this
+    -- game have the top bit set, and a raw comparison has already produced
+    -- unlimited ammo once. Here it would produce a permanent, confident,
+    -- completely wrong "THE ENGINE HAS STOWED THE WEAPON" for half the loot
+    -- table -- on foot as well as in a seat.
+    local signed = CARBINE - 0x100000000
+    ok(verdict({ engineHash = signed }) == 'unexplained',
+        'the same weapon, signed one side and unsigned the other, is not a stow',
+        verdict({ engineHash = signed }))
+
+    -- BOOLS THAT ARE NUMBERS, which is the bug this codebase has shipped four
+    -- times. `0` is truthy in Lua, so an `if f.inVehicle then` would read a
+    -- build's honest "no, you are not in a vehicle" as yes.
+    ok(verdict({ inVehicle = 1, engineHash = UNARMED }) == 'stowed',
+        'inVehicle = 1 is in a vehicle',
+        verdict({ inVehicle = 1, engineHash = UNARMED }))
+    ok(verdict({ inVehicle = 0, engineHash = UNARMED }) == 'onfoot',
+        'and inVehicle = 0 is NOT, however truthy Lua finds it',
+        verdict({ inVehicle = 0, engineHash = UNARMED }))
+    ok(verdict({ panelOpen = 1, engineHash = UNARMED }) == 'panel',
+        'panelOpen = 1 is an open panel',
+        verdict({ panelOpen = 1, engineHash = UNARMED }))
+    ok(verdict({ panelOpen = 0, engineHash = UNARMED }) == 'stowed',
+        'and panelOpen = 0 is a closed one',
+        verdict({ panelOpen = 0, engineHash = UNARMED }))
+
+    -- A verdict with no world at all must still answer rather than throw: this
+    -- is a diagnostic, and a diagnostic that raises has told you nothing.
+    ok(select(1, BR.Inv.driveByVerdict(nil)) == 'onfoot',
+        'and an empty world answers instead of throwing')
+    ok(type(select(2, BR.Inv.driveByVerdict(nil))) == 'string',
+        'with a sentence, always')
+end
+
+describe('#197 -- /brdriveby measures it end to end')
+do
+    local CARBINE = BR.NormHash(BR.Config.WeaponById['carbinerifle'].hash)
+
+    --- Arm the watch and let it run to its verdict.
+    --- @return string  everything the command printed, as one blob
+    local function run(seconds)
+        logged = {}
+        commands['brdriveby'](nil, { tostring(seconds or 1) }, '')
+        -- frame() steps fakeTime by 16ms, which is what closes the window.
+        frames(math.ceil(((seconds or 1) * 1000) / 16) + 2)
+        return table.concat(logged, '\n')
+    end
+
+    bootOn(true, true)
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } },
+        ammo = {}, active = 1,
+    })
+    BR.Loop.step(BR.Loop.TICK)
+
+    -- THE REPORTED CASE. In a front passenger seat, holding a rifle the server
+    -- issued, with the engine holding nothing.
+    inVehicle, vehicle, vehicleSeat = true, 77, 0
+    pedWeapon = nil
+    disabledControls, controlsAnswerNumbers = {}, false
+    local out = run(1)
+    ok(out:find('VERDICT %[stowed%]') ~= nil,
+        'a rifle in a front passenger seat reads as a STOW', out:sub(1, 400))
+    -- ANCHORED TO THE ROW, NOT TO THE PAGE. The trailer explains what a seat is
+    -- and therefore contains the words "front passenger" whatever seat you are
+    -- actually in -- so a loose `out:find('front passenger')` passes even when
+    -- the row above it says "driver". Caught by mutation: naming seat 0 the
+    -- driver survived a whole test run.
+    ok(out:find('seat%s+0%s+%(front passenger%)') ~= nil,
+        'and the SEAT ROW names the seat, because GTA permits drive-by per seat',
+        out:match('  seat[^\n]*'))
+    ok(out:find('engine held the slot weapon on 0 of') ~= nil,
+        'and the count of frames it was held is 0 -- not a climb-in animation')
+
+    -- THE ENGINE NAMING FISTS is the same answer arriving in the other shape,
+    -- and it is the single most load-bearing line in the readout -- it IS the
+    -- stow. Printed as an unrecognised hash it would be the one row the owner
+    -- skims past.
+    pedWeapon = BR.Config.Gadgets.UNARMED
+    out = run(1)
+    ok(out:find('VERDICT %[stowed%]') ~= nil,
+        'the engine naming WEAPON_UNARMED is a stow too', out:sub(1, 400))
+    ok(out:find('ENGINE holds[^\n]*FISTS') ~= nil,
+        'and the row says FISTS rather than an unrecognised hash',
+        out:match('  ENGINE holds[^\n]*'))
+    pedWeapon = nil
+
+    -- The other two seats a squad car actually has. Rear seats and the driver's
+    -- own seat are separate entries in the vehicle's layout with their own
+    -- weapon lists, so the readout has to distinguish them or the owner cannot
+    -- tell "this seat" from "this vehicle".
+    vehicleSeat = -1
+    ok(run(0.3):find('seat%s+%-1%s+%(driver%)') ~= nil,
+        'the driver seat is named as the driver')
+    vehicleSeat = 2
+    ok(run(0.3):find('seat%s+2%s+%(rear seat 2%)') ~= nil,
+        'and a rear seat as a rear seat')
+    vehicleSeat = 0
+
+    -- THE SAME SEAT WITH THE WEAPON ACTUALLY IN HAND is a different answer, and
+    -- has to be: this is what a pistol looks like, and it is how the owner will
+    -- tell the seat rule from a script bug in ten seconds.
+    pedWeapon = CARBINE
+    out = run(1)
+    ok(out:find('VERDICT %[unexplained%]') ~= nil,
+        'a weapon the engine IS holding is not reported as a stow', out:sub(1, 400))
+
+    -- A CONTROL HELD DOWN EVERY FRAME, which is #197's candidate 3. The watch
+    -- has to catch it, and it has to outrank everything the engine is doing.
+    disabledControls = { [69] = true }
+    out = run(1)
+    ok(out:find('VERDICT %[control%]') ~= nil,
+        'a disabled VEH_PASSENGER_ATTACK is caught by the frame sampler',
+        out:sub(1, 400))
+    ok(out:find('VEH_PASSENGER_ATTACK.*DISABLED on') ~= nil,
+        'and the row says so, with the frame count')
+
+    -- ...ON A BUILD WHERE IsControlEnabled ANSWERS NUMBERS. Same world, same
+    -- expected verdict. `not 0` is false in Lua, so a raw read here would report
+    -- every control as enabled on every frame and hand back the wrong verdict
+    -- with total confidence.
+    controlsAnswerNumbers = true
+    out = run(1)
+    ok(out:find('VERDICT %[control%]') ~= nil,
+        'and still caught when the native answers 1/0 instead of true/false',
+        out:sub(1, 400))
+
+    disabledControls, controlsAnswerNumbers = {}, false
+
+    -- ON FOOT. The command must be runnable anywhere without lying.
+    inVehicle, vehicle, vehicleSeat = false, 0, nil
+    out = run(1)
+    ok(out:find('VERDICT %[onfoot%]') ~= nil,
+        'and on foot it says so rather than inventing a cause', out:sub(1, 400))
+
+    -- THE READOUT ITSELF MUST NOT BE THE THING THAT BREAKS. Five throws suspend
+    -- a callback in this project's loop registry, and the sampler shares its
+    -- band with the weapon-wheel suppression.
+    local suspended = false
+    for _, s in ipairs(BR.Loop.stats()) do
+        if s.name == 'debug.driveby' and (s.suspended or s.errors > 0) then
+            suspended = true
+        end
+    end
+    ok(not suspended, 'and the frame sampler never threw across all of that')
+end
+
+describe('#197 -- the ammo readout does not blame a guard the loop does not have')
+do
+    bootOn(true, true)
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } },
+        ammo = {}, active = 1,
+    })
+    BR.Loop.step(BR.Loop.TICK)
+
+    -- A passenger holding the weapon the slot names. The ammo loop has no
+    -- vehicle guard -- it was replaced by the GetCurrentPedWeapon check years of
+    -- bugs ago -- so nothing is blocking the report, and saying "in a vehicle"
+    -- here sends the reader to a branch that is not in the file.
+    inVehicle = true
+    pedWeapon = BR.Config.WeaponById['carbinerifle'].hash
+    local s = BR.Inv.reportState()
+    ok(s.blockedBy ~= 'in a vehicle',
+        'a seat on its own is never given as the reason the report stopped',
+        tostring(s.blockedBy))
+    ok(s.inVehicle == true,
+        'but the seat is still reported as a FACT, which is what it is',
+        tostring(s.inVehicle))
+
+    -- And the reason that IS true still is.
+    pedWeapon = nil
+    ok(BR.Inv.reportState().blockedBy == 'the ENGINE says the ped holds a different weapon',
+        'a stowed weapon is named as the engine stowing it',
+        tostring(BR.Inv.reportState().blockedBy))
+
+    inVehicle = false
 end
 
 realPrint(('%s%d passed, %d failed\27[0m')

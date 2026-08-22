@@ -429,6 +429,255 @@ end)
 -- registration is deliberately gone rather than renamed, because two commands
 -- that answer the same question is how the collision happened.
 
+-- ---------------------------------------------------------------- drive-by ---
+--
+-- /brdriveby -- WHY CAN A PASSENGER NOT FIRE? (#197)
+--
+-- The symptom has four causes that are indistinguishable from the seat: our
+-- flag never asserted, the engine's own per-seat weapon rule, a control
+-- something disables every frame, or the seat itself. Each of them wants a
+-- different fix in a different file, and three of the four are invisible to
+-- every readout this project already has. So the question is measured instead.
+--
+-- IT SAMPLES ACROSS FRAMES RATHER THAN READING ONCE, and that is the whole
+-- reason this is not four print statements.
+--
+--   A DISABLED CONTROL LASTS ONE FRAME. Whoever disables it does so from their
+--   own callback, at their own point in the frame, and a command handler reads
+--   the flag at ITS point in the frame -- so a single read is a coin flip on
+--   whether the disable has happened yet. Sampling every frame for a couple of
+--   seconds cannot miss it.
+--
+--   A STOWED WEAPON LOOKS EXACTLY LIKE AN ENTRY ANIMATION for the half second
+--   it takes to climb in. "The engine held it on 0 of 120 frames" is the
+--   difference between "you asked too early" and "it is never coming back",
+--   and that difference is the entire diagnosis.
+--
+-- The verdict itself lives in client/inventory.lua as BR.Inv.driveByVerdict --
+-- pure, and settled by tools/test_client.lua, for the same reason
+-- BR.Native.teamFor is.
+
+--- Everything that can stop a trigger, with the name the owner will see.
+---
+--- 68/69/70 are the vehicle set and 24/25/257 are the on-foot set, and BOTH are
+--- listed because which pair the engine actually reads from a seat is a fact
+--- about the build, not something to assume. A row that is always enabled costs
+--- one line and rules out a whole file.
+local ATTACK_CONTROLS = {
+    {  24, 'ATTACK'               },
+    {  25, 'AIM'                  },
+    {  68, 'VEH_ATTACK'           },
+    {  69, 'VEH_PASSENGER_ATTACK' },
+    {  70, 'VEH_ATTACK2'          },
+    { 257, 'ATTACK2'              },
+}
+
+--- A FiveM BOOL. `0` is truthy in Lua and this project has shipped that bug
+--- four times; IsControlEnabled and IsPedInAnyVehicle are both declared BOOL.
+local function yes(v) return v == true or v == 1 end
+
+--- The same rule the server readouts draw between a table and its trailer.
+local function rule()
+    print('--------------------------------------------------------------')
+end
+
+--- Read the engine without letting an unbound native kill the readout.
+---
+--- Every native below is probed in client/natives.lua, which is the standing
+--- rule. This is the belt to that pair of braces: a diagnostic that throws
+--- before it prints a word is worse than no diagnostic, and /brprobe has
+--- already been that once (owner, 2026-08-16).
+local function safe(fn, ...)
+    local ok, v = pcall(fn, ...)
+    if ok then return v end
+    return nil
+end
+
+--- Which seat, in words. -1 is the driver in every vehicle in the game.
+local function seatName(i)
+    if i == nil then return 'not in a seat' end
+    if i == -1 then return 'driver'          end
+    if i ==  0 then return 'front passenger' end
+    return 'rear seat ' .. tostring(i)
+end
+
+--- Which seat this ped is in, by asking the vehicle rather than the ped.
+---
+--- There is no native that answers "which seat am I in"; the engine only
+--- answers "who is in seat N". Eight is past the largest seat count in the base
+--- game, and a miss simply reports nil rather than guessing.
+local function seatOf(veh, ped)
+    for i = -1, 8 do
+        if safe(GetPedInVehicleSeat, veh, i) == ped then return i end
+    end
+    return nil
+end
+
+--- The armed sample, or nil when nothing is being measured. One nil check per
+--- frame when it is off, which is what the overlay above costs too.
+local watch = nil
+
+local function driveByReport()
+    local f = BR.Inv.driveByFacts()
+    local ped = PlayerPedId()
+    local veh = watch.veh
+
+    f.inVehicle    = watch.inVehicle > 0
+    f.blocked      = watch.blocked
+    f.engineHash   = watch.engineHash
+    f.doingDriveby = watch.driveby > 0
+
+    local seat  = veh and veh ~= 0 and seatOf(veh, ped) or nil
+    local model = veh and veh ~= 0 and safe(GetEntityModel, veh) or nil
+    local name  = model and safe(GetDisplayNameFromVehicleModel, model) or nil
+    local w     = f.wantHash and BR.Config.WeaponByHash[BR.NormHash(f.wantHash)]
+
+    --- What to call whatever the engine says is in the hand.
+    ---
+    --- FISTS ARE NAMED, NOT LEFT AS "unknown". WEAPON_UNARMED is the single most
+    --- important value this row can hold -- it IS the stow -- and printing it as
+    --- an unrecognised hash would bury the answer in the one line that carries
+    --- it.
+    local eng = 'nothing'
+    if f.engineHash then
+        local hit = BR.Config.WeaponByHash[BR.NormHash(f.engineHash)]
+        if BR.NormHash(f.engineHash) == BR.NormHash(BR.Config.Gadgets.UNARMED) then
+            eng = 'FISTS -- the weapon is not in your hands'
+        else
+            eng = hit and hit.label or 'unrecognised'
+        end
+    end
+
+    local function hx(h)
+        return h and ('0x%08X'):format(BR.NormHash(h)) or '-'
+    end
+
+    print('==============================================================')
+    print('  #197 -- why can a passenger not fire?')
+    print('==============================================================')
+    print(('  sampled              %d frames over %.1fs')
+        :format(watch.frames, (GetGameTimer() - watch.from) / 1000.0))
+    print(('  state                %s   (this file may arm you: %s)')
+        :format(tostring(f.state), f.canArm and 'yes' or 'NO'))
+    print(('  in a vehicle         %s   (on %d of %d frames)')
+        :format(f.inVehicle and 'yes' or 'no', watch.inVehicle, watch.frames))
+    print(('  vehicle              %s'):format(name or '-'))
+    print(('  seat                 %s   (%s)')
+        :format(seat == nil and '-' or tostring(seat), seatName(seat)))
+    print(('  inventory panel      %s'):format(f.panelOpen and 'OPEN' or 'closed'))
+    print(('  active slot          %d   %s'):format(f.slotIndex, tostring(f.item or '-')))
+    print(('  slot wants           %s   %s'):format(hx(f.wantHash), w and w.label or '-'))
+    print(('  we granted           %s'):format(hx(f.appliedHash)))
+    print(('  ENGINE holds         %s   %s'):format(hx(f.engineHash), eng))
+    print(('  engine held the slot weapon on %d of %d frames')
+        :format(watch.held, watch.frames))
+    print(('  ammo in that weapon  %s'):format(tostring(watch.ammo or '-')))
+    -- "never" rather than an age, because subtracting from a timestamp that
+    -- was never written prints a number the size of the session uptime and
+    -- reads like an answer.
+    print(('  drive-by permission  %s')
+        :format((f.driveByCount or 0) == 0 and 'NEVER ASSERTED'
+            or ('asserted %.1fs ago, %d times so far')
+                :format((GetGameTimer() - (f.driveByAt or 0)) / 1000.0, f.driveByCount)))
+    print(('  IS_PED_DOING_DRIVEBY %s   (on %d of %d frames)')
+        :format(tostring(f.doingDriveby), watch.driveby, watch.frames))
+    for _, c in ipairs(ATTACK_CONTROLS) do
+        local off = watch.off[c[1]] or 0
+        print(('  control %-21s (%3d)  %s')
+            :format(c[2], c[1],
+                off == 0 and 'enabled on every frame'
+                        or ('DISABLED on ' .. off .. ' of ' .. watch.frames .. ' frames')))
+    end
+
+    local code, sentence = BR.Inv.driveByVerdict(f)
+    rule()
+    print(('  VERDICT [%s]'):format(code))
+    print('  ' .. sentence)
+    rule()
+    print('  HOW TO READ THIS')
+    print('  in a vehicle / seat  which seat you were in for the sample. GTA')
+    print('                       permits drive-by per SEAT, so a rear seat and')
+    print('                       a front passenger seat can differ.')
+    print('  slot wants / we granted / ENGINE holds')
+    print('                       three answers to "what is in your hands".')
+    print('                       Ours, ours, and the engine\'s. When the last')
+    print('                       one is nothing while the first two agree, the')
+    print('                       engine has taken the weapon off you.')
+    print('  engine held it on N of M frames')
+    print('                       0 of M means it is never coming back -- a')
+    print('                       seat rule. A few frames means you asked')
+    print('                       during the climb-in animation; run it again.')
+    print('  drive-by permission  our SetPlayerCanDoDriveBy call. Seconds ago')
+    print('                       and a large count is healthy; "never" means')
+    print('                       the inv.apply tick is dead (see /brperf).')
+    print('  control rows         a control disabled on ANY frame is a script')
+    print('                       holding your trigger down, and is fixable.')
+    print('                       All six enabled means no script is at fault.')
+    print('  THE ONE THING NO SCRIPT CAN CHANGE: which weapons a seat accepts is')
+    print('  game DATA -- the WeaponGroup list on that seat\'s CVehicleDriveByInfo')
+    print('  in vehiclelayouts.meta. A standard car seat lists unarmed, one-handed')
+    print('  and thrown. Rifles, shotguns, snipers and MGs are not on it, and')
+    print('  there is no native that adds them. Lifting it means shipping our own')
+    print('  copy of that data file, for every seat in the game -- which is a')
+    print('  design decision about how a car fight feels, not a bug fix.')
+end
+
+BR.Loop.register(BR.Loop.FRAME, 'debug.driveby', function()
+    if not watch then return end
+
+    watch.frames = watch.frames + 1
+
+    local ped = PlayerPedId()
+    if yes(safe(IsPedInAnyVehicle, ped, false)) then
+        watch.inVehicle = watch.inVehicle + 1
+        watch.veh = safe(GetVehiclePedIsIn, ped, false) or watch.veh
+    end
+    if yes(safe(IsPedDoingDriveby, ped)) then watch.driveby = watch.driveby + 1 end
+
+    -- THE HAND, EVERY FRAME. `ok == false` is the engine declining to answer,
+    -- which is the same shape a stow produces and is recorded as "not holding
+    -- it" rather than as no sample -- the question is whether the weapon is
+    -- available to fire, and a weapon the engine will not name is not.
+    local okW, held = GetCurrentPedWeapon(ped, true)
+    watch.engineHash = okW and held or nil
+    local want = BR.Inv.driveByFacts().wantHash
+    if okW and want and BR.NormHash(held) == BR.NormHash(want) then
+        watch.held = watch.held + 1
+    end
+    if want then watch.ammo = safe(GetAmmoInPedWeapon, ped, want) end
+
+    for _, c in ipairs(ATTACK_CONTROLS) do
+        -- NOT `if not IsControlEnabled(...)`. On a build that answers 0 for
+        -- false, `not 0` is false and every row would read "enabled on every
+        -- frame" -- the exact failure this command exists to rule out, wearing
+        -- the exact bug this codebase has shipped four times.
+        if not yes(safe(IsControlEnabled, 0, c[1])) then
+            watch.off[c[1]] = (watch.off[c[1]] or 0) + 1
+            watch.blocked = c[2]
+        end
+    end
+
+    if GetGameTimer() >= watch.until_ then
+        local ok, err = pcall(driveByReport)
+        if not ok then print('[br_core] brdriveby: ' .. tostring(err)) end
+        watch = nil
+    end
+end)
+
+RegisterCommand('brdriveby', function(_, args)
+    local secs = tonumber(args[1] or '') or 2
+    if secs < 0.2 then secs = 0.2 end
+    if secs > 30  then secs = 30  end
+
+    local now = GetGameTimer()
+    watch = {
+        from = now, until_ = now + math.floor(secs * 1000),
+        frames = 0, inVehicle = 0, held = 0, driveby = 0,
+        off = {}, blocked = nil, veh = nil, engineHash = nil, ammo = nil,
+    }
+    print(('[br_core] brdriveby: watching for %.1fs -- SIT IN THE SEAT and try to fire.'):format(secs))
+end, false)
+
 -- ------------------------------------------------------------ canopy audit ---
 --
 -- WHAT A CANOPY INDEX ACTUALLY LOOKS LIKE, ANSWERED BY LOOKING AT IT.

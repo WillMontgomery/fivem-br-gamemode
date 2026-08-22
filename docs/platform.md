@@ -41,6 +41,22 @@ instant the canopy appears, removal at touchdown is retried across real frames
 rather than assumed, and a standing 10 Hz sweep disarms any grounded live
 player still holding one.
 
+**Which weapons may be fired from a vehicle seat is game DATA, not a native.**
+`SET_PLAYER_CAN_DO_DRIVE_BY` is a per-player on/off switch and it defaults to
+on; turning it on cannot make a rifle usable from a car. The real rule lives in
+`vehiclelayouts.meta`: every seat names a `CVehicleDriveByInfo`, and that entry
+carries a `WeaponGroup` list. Standard car seats list
+`DRIVEBY_DEFAULT_UNARMED`, `DRIVEBY_DEFAULT_ONE_HANDED` and `DRIVEBY_THROW` —
+so pistols, the SMG family and thrown weapons work from a seat, and rifles,
+shotguns, snipers and MGs are taken out of the ped's hands on the way in. Two
+of this project's reports are the same fact seen from different ends: "the HUD
+is showing 0 bullets while in a vehicle" (2026-08-06, fixed by not reporting
+ammo for a weapon the engine has stowed) and #197, "a passenger cannot fire".
+A stowed weapon has no ammo reading *and* no trigger. Lifting the restriction
+means streaming our own copy of that data file for every seat in the game,
+which is a gameplay decision rather than a bug fix. `/brdriveby` measures which
+of the four possible causes is actually in play, from the seat, in one command.
+
 **Native names keep an underscore before digit-leading segments.**
 `GetGroundZFor_3dCoord`, not `GetGroundZFor3dCoord` — the latter is `nil`, and
 a nil native is not an error, it is a silent no-op. `luac -p` cannot see it and

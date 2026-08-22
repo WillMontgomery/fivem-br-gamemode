@@ -163,6 +163,57 @@ end
 -- Putting it in the hand
 -- --------------------------------------------------------------------------
 
+--- A FiveM BOOL, read the only way this codebase is allowed to read one.
+---
+--- FIFTH TIME OF ASKING. `0` IS TRUTHY IN LUA and a native declared BOOL may
+--- hand back `1`/`0` rather than `true`/`false`, so both `if v then` and
+--- `v == true` are wrong on one build each. dbno.lua carries the long version
+--- of this scar under `didHit`; the drive-by facts below come straight off
+--- IsPedInAnyVehicle and IsControlEnabled, which are two more of them.
+--- @param v any
+--- @return boolean
+local function yes(v) return v == true or v == 1 end
+
+--- When we last told the engine this player may fire from a seat, and how many
+--- times. Read by /brdriveby so "did we ever ask?" is an observation rather
+--- than an argument about which branch ran.
+local driveBy = { at = 0, count = 0 }
+
+--- PASSENGERS SHOOT, AND WE SAY SO ON A CADENCE RATHER THAN ONCE.
+---
+--- GTA gates drive-bys per player, and with it off a passenger simply cannot
+--- fire at all -- which in a battle royale makes a car a rolling coffin for
+--- everyone who is not driving (user, 2026-08-06: "any seat which is not the
+--- driver should be able to do this").
+---
+--- THIS USED TO LIVE INSIDE applyActive, IN THE ARM BRANCH (#197). That put a
+--- player-scoped engine flag behind two conditions that have nothing to do with
+--- it: the slot had to hold a weapon (the unarmed branch never set it at all),
+--- and the slot had to have just CHANGED, because applyActive returns early
+--- when the mirror already matches. So the last assertion could be minutes and
+--- a respawn behind the moment the player actually sat down in a seat.
+---
+--- Every other engine flag in this project is already re-asserted for exactly
+--- this reason, and each one learned it the hard way: the team memo refreshes
+--- every two seconds "because the engine resets a good deal on respawn"
+--- (natives.lua), SetPedInfiniteAmmo is cleared EVERY TICK because "something
+--- is re-setting the flag after we clear it" (below), and applyGameRules runs
+--- per frame because "several of these reset themselves every tick". One
+--- native a tick buys this one the same guarantee, and it is the only way the
+--- diagnostic can say "we asserted it 0.4s ago" instead of "we asserted it,
+--- once, at some point".
+---
+--- WHAT THIS STILL DOES NOT BUY. The engine applies its own rule about which
+--- weapons are usable from which seat, and that rule is game DATA -- the
+--- WeaponGroup list on the seat's CVehicleDriveByInfo -- not a native we can
+--- call. A standard car seat permits unarmed, one-handed and thrown weapons and
+--- nothing else, so a rifle is stowed on the way in whatever this flag says.
+--- This only stops US being the reason. See /brdriveby.
+local function assertDriveBy()
+    SetPlayerCanDoDriveBy(PlayerId(), true)
+    driveBy.at, driveBy.count = GetGameTimer(), driveBy.count + 1
+end
+
 --- Make the ped hold whatever the active slot says, and nothing else.
 --- @param force boolean|nil  re-apply even if the mirror thinks it is current
 local function applyActive(force)
@@ -215,13 +266,11 @@ local function applyActive(force)
         -- active-slot model for control of the hand.
         SetWeaponsNoAutoswap(true)
 
-        -- PASSENGERS SHOOT. GTA gates drive-bys per player, and with it off a
-        -- passenger simply cannot fire at all -- which in a battle royale
-        -- makes a car a rolling coffin for everyone who is not driving (user,
-        -- 2026-08-06: "any seat which is not the driver should be able to do
-        -- this"). The engine still applies its own rule about which weapons
-        -- are usable from a seat; this only stops us being the reason.
-        SetPlayerCanDoDriveBy(PlayerId(), true)
+        -- THE DRIVE-BY PERMISSION IS NOT SET HERE ANY MORE (#197). It is a
+        -- player-scoped flag, not a property of this grant, and asserting it
+        -- only when the weapon changes is what made "have we asked?" a
+        -- question nobody could answer from a seat. See assertDriveBy above,
+        -- called from the tick loop.
     else
         SetCurrentPedWeapon(ped, UNARMED, true)
     end
@@ -699,6 +748,14 @@ end
 -- --------------------------------------------------------------------------
 
 BR.Loop.register(BR.Loop.TICK, 'inv.apply', function()
+    -- ABOVE THE canArm() GATE, ON THE SAME ARGUMENT THE WEAPON-WHEEL BLOCK
+    -- MAKES (#134, and now #197). canArm() answers "may this file put a weapon
+    -- in this ped's hand", which is false for the lobby, the bus and the whole
+    -- descent -- and "may this player fire from a seat" is not that question.
+    -- A permission asserted while nobody can fire costs one native and is
+    -- already true by the time anybody sits down.
+    assertDriveBy()
+
     if not canArm() then
         -- Airborne, in the lobby, or dead: the hand is not ours to fill. The
         -- mirror is left alone so landing re-applies whatever was picked up
@@ -1149,6 +1206,16 @@ end
 ---
 --- So it reports itself. /brprobe ammo prints this, and the answer is a single
 --- line rather than another round of hypotheses.
+---
+--- "IN A VEHICLE" IS NOT ONE OF THE GUARDS AND HAS NOT BEEN FOR A WHILE (#197).
+--- This chain listed it, and the loop does not have it: the old
+--- IsPedInAnyVehicle guard was replaced by the GetCurrentPedWeapon check above
+--- precisely because the vehicle was the wrong question -- what stops the
+--- report is the engine STOWING the weapon, which happens in a seat and in
+--- three other places besides. A row naming a guard that does not exist sends
+--- the reader to the wrong file, which is the one thing a diagnostic must never
+--- do. The vehicle is still reported, as a FACT, under `inVehicle` -- and
+--- /brdriveby is the command that knows what to make of it.
 --- @return table
 function BR.Inv.reportState()
     local ped   = PlayerPedId()
@@ -1164,7 +1231,6 @@ function BR.Inv.reportState()
     elseif applied ~= hash then             why = 'our own grant has not landed yet'
     elseif not heldOk or BR.NormHash(held) ~= BR.NormHash(hash) then
                                             why = 'the ENGINE says the ped holds a different weapon'
-    elseif IsPedInAnyVehicle(ped, false) then why = 'in a vehicle'
     elseif IsPedReloading(ped) then         why = 'mid-reload'
     end
 
@@ -1178,8 +1244,116 @@ function BR.Inv.reportState()
         serverClip  = slot and slot.clip or nil,
         serverPool  = slot and reserveFor(slot) or nil,
         lastTotal   = lastReport.total,
+        inVehicle   = yes(IsPedInAnyVehicle(ped, false)),
         blockedBy   = why,
     }
+end
+
+-- --------------------------------------------------------------------------
+-- Why can a passenger not fire? (#197)
+-- --------------------------------------------------------------------------
+
+--- Everything THIS FILE knows about the question. The engine half -- the seat,
+--- the vehicle, what is actually in the hand, which controls are live -- is
+--- gathered by client/debug.lua and merged on top, because those are reads that
+--- only mean anything sampled across frames.
+--- @return table
+function BR.Inv.driveByFacts()
+    local slot = inv.slots[inv.active]
+    return {
+        state        = BR.State.me.state,
+        canArm       = canArm(),
+        panelOpen    = panelOpen,
+        slotIndex    = inv.active,
+        item         = slot and slot.id or nil,
+        wantHash     = hashOf(slot),
+        appliedHash  = applied,
+        driveByAt    = driveBy.at,
+        driveByCount = driveBy.count,
+    }
+end
+
+--- THE VERDICT, AND IT IS PURE ON PURPOSE.
+---
+--- The same argument BR.Native.teamFor makes: this decides which of four
+--- indistinguishable causes the owner is looking at, the owner cannot easily
+--- stage all four in game, and a wrong answer here sends somebody to the wrong
+--- file for a day. So it takes its world as an argument and is settled at the
+--- desk by tools/test_client.lua.
+---
+--- ORDER IS THE DESIGN. Each branch is checked before the ones it would
+--- otherwise mask, and the two that are OURS -- a panel we left open, a control
+--- something disabled -- come before the two that are the ENGINE's, so we never
+--- blame the platform for our own bug.
+---
+--- @param f table  BR.Inv.driveByFacts() plus the engine half
+--- @return string code, string sentence
+function BR.Inv.driveByVerdict(f)
+    f = f or {}
+    local want   = BR.NormHash(f.wantHash)
+    local grant  = BR.NormHash(f.appliedHash)
+    local engine = BR.NormHash(f.engineHash)
+    local bare   = BR.NormHash(UNARMED)
+
+    if not yes(f.inVehicle) then
+        return 'onfoot',
+            'You are not in a vehicle, so there is nothing here to explain. '
+            .. 'Get into a seat and run this again.'
+    end
+    if not f.canArm then
+        return 'state',
+            'This client will not arm you at all in state "'
+            .. tostring(f.state or '?')
+            .. '" -- that is the lobby/bus/descent gate, not a drive-by rule.'
+    end
+    if want == nil then
+        return 'unarmed',
+            'The active slot holds nothing that can be fired. Select a weapon '
+            .. 'slot first.'
+    end
+    if yes(f.panelOpen) then
+        return 'panel',
+            'The inventory panel is open, and it deliberately takes ATTACK, '
+            .. 'AIM and both vehicle attack controls while it is up. Close it.'
+    end
+    if f.blocked then
+        return 'control',
+            'Control ' .. tostring(f.blocked) .. ' was DISABLED on at least one '
+            .. 'frame of this sample. Something is holding the trigger down '
+            .. 'every frame -- that is a script, ours or another resource, and '
+            .. 'it is not the engine.'
+    end
+    if (f.driveByCount or 0) == 0 then
+        return 'never-asked',
+            'We have never called SetPlayerCanDoDriveBy on this client. The '
+            .. 'inv.apply tick is meant to do that every tick, so it is not '
+            .. 'running -- check /brperf for a suspended callback.'
+    end
+    if grant ~= want then
+        return 'ungranted',
+            'Our own grant has not landed: the mirror wants this weapon and we '
+            .. 'have not put it on the ped yet. Wait a tick and run it again.'
+    end
+    if engine == nil or engine == bare then
+        return 'stowed',
+            'THE ENGINE HAS STOWED THE WEAPON. It is still in your inventory '
+            .. 'and it is not in your hands, so there is nothing to fire. This '
+            .. 'is GTA\'s own per-seat rule, not ours: a seat permits a list of '
+            .. 'weapon groups and a standard car seat lists unarmed, one-handed '
+            .. 'and thrown. A rifle, shotgun, sniper or MG is not on that list '
+            .. 'and no native lifts it. See the trailer below.'
+    end
+    if engine ~= want then
+        return 'otherweapon',
+            'The engine says the ped is holding a weapon that is not the one '
+            .. 'the active slot names. That is not a drive-by problem -- read '
+            .. '/brprobe ammo, and expect the strip check to take it back.'
+    end
+    return 'unexplained',
+        'Nothing here explains it: you are in a seat, the engine agrees you are '
+        .. 'holding the weapon the slot names, the permission is asserted and no '
+        .. 'attack control was seen disabled. Paste this whole readout -- it '
+        .. 'rules out all four of the causes #197 listed.'
 end
 
 --- Force the active slot back onto the ped.
