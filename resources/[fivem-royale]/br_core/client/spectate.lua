@@ -110,6 +110,11 @@ local function camDown()
     -- world streaming around somewhere the player is not, which is a frame cost
     -- with no picture attached.
     BR.Native.stopSpectate()
+    -- AND SO DOES THE RADAR. A minimap left pinned to a coordinate is the same
+    -- class of bug as a script camera left rendering, which is what this whole
+    -- function exists for: it shows the wrong thing forever, with no error and
+    -- nothing in any log. Every exit path in this file comes through here.
+    BR.Native.unlockMinimap()
     want, shown = nil, nil
 end
 
@@ -337,6 +342,29 @@ BR.Loop.register(BR.Loop.FRAME, 'spectate.camera', function()
     shown.x = shown.x + (want.x - shown.x) * e
     shown.y = shown.y + (want.y - shown.y) * e
     shown.z = shown.z + (want.z - shown.z) * e
+
+    -- THE MINIMAP GOES WHERE THE CAMERA GOES.
+    --
+    -- "the minimap doesn't show the right location - it shows the dead ped's
+    -- location" -- the owner. Nothing had ever moved it: the radar follows the
+    -- local player, and the local player is a corpse where they fell.
+    --
+    -- PINNED TO `shown` AND NOT TO `want`, so the map and the shot are the same
+    -- place. `want` is the raw 4 Hz server sample; `shown` is the eased point
+    -- the camera is actually looking at, and a radar snapping four times a
+    -- second under a camera that glides would read as two different subjects.
+    --
+    -- RE-ASSERTED EVERY FRAME rather than set once per target. The lock is a
+    -- position, not a follow -- the engine holds the coordinate it was given and
+    -- has no idea the subject is running -- so this is the mechanism, not a
+    -- refresh of it.
+    --
+    -- NO PED IS MOVED, and see BR.Native.lockMinimap for why that matters: the
+    -- alternative on the table was teleporting the dead ped onto the target and
+    -- hiding it, which is safe for a dead player and catastrophic for an ADMIN
+    -- who may be alive and mid-match. This is one mechanism that is correct for
+    -- both.
+    BR.Native.lockMinimap(shown.x, shown.y)
 
     -- AND PREFER THE PED WHEN THERE IS ONE. Once the target is streamed in, the
     -- engine has their position every frame and the server's 4 Hz sample is the

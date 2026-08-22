@@ -440,6 +440,53 @@ function BR.Native.spectate(targetSrc, pos)
     return false
 end
 
+--- Point the MINIMAP at a world position, leaving every ped where it is.
+---
+--- ═══ WHY THIS AND NOT THE PED ═══
+---
+--- "the minimap doesn't show the right location - it shows the dead ped's
+--- location" -- the owner, and the proposal attached to it was to move the dead
+--- ped to the target and make it invisible.
+---
+--- THE MINIMAP DOES NOT NEED A PED MOVED. `LockMinimapPosition` is the engine's
+--- own answer: it detaches the radar from the local player and pins it to a
+--- world x/y until it is unlocked. Nothing is teleported, nothing is hidden,
+--- nothing occupies space next to a living player, and -- decisively -- it is
+--- the SAME code for a dead player watching a squadmate and for an ADMIN who
+--- may be alive and mid-match. Moving a ped is only safe for the first of those
+--- two, and a mechanism that is safe in one case and catastrophic in the other
+--- is a mechanism waiting for somebody to forget which case they are in.
+---
+--- SetFocusEntity ABOVE IS A DIFFERENT THING and neither replaces this. That
+--- one pulls the STREAMING volume to the target so the world loads around them;
+--- it has no effect on what the radar draws. They are two halves of "look over
+--- there" and the feature needs both.
+---
+--- THE ANGLE IS LEFT ALONE, deliberately. `LockMinimapAngle` exists and would
+--- turn the map to face the camera, but which way the radar points is a player
+--- SETTING in GTA's own options (north-up versus heading-up) and overriding it
+--- was not asked for. Only the location was reported wrong.
+--- @param x number
+--- @param y number
+function BR.Native.lockMinimap(x, y)
+    if LockMinimapPosition == nil or not x or not y then return false end
+    LockMinimapPosition(x + 0.0, y + 0.0)
+    return true
+end
+
+--- Give the radar back to the local player. Safe to call when nothing is locked.
+---
+--- CALLED FROM EVERY EXIT PATH, including a resource stop. A minimap left
+--- pinned to a coordinate is the same class of bug as a script camera left
+--- rendering -- it shows the wrong thing forever, with no error and nothing in
+--- any log -- and it survives br_core restarting, because the lock lives in the
+--- engine rather than in our Lua state.
+function BR.Native.unlockMinimap()
+    if UnlockMinimapPosition == nil then return false end
+    UnlockMinimapPosition()
+    return true
+end
+
 function BR.Native.stopSpectate()
     if BR.Native.use.spectatorNative and NetworkIsInSpectatorMode() then
         NetworkSetInSpectatorMode(false, PlayerPedId())

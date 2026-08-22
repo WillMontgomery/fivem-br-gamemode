@@ -129,6 +129,41 @@ if spec then
              'the on-screen hint would read "SPECTATING" with nothing after it')
     end
 
+    -- ═══ THE MINIMAP FOLLOWS THE CAMERA, AND NO PED IS EVER MOVED ═══
+    --
+    -- "the minimap doesn't show the right location - it shows the dead ped's
+    -- location" -- the owner. The proposal attached to it was to teleport the
+    -- dead ped onto the target and hide it.
+    --
+    -- THAT PROPOSAL IS SAFE FOR EXACTLY ONE OF THE TWO SESSION KINDS. A player
+    -- spectator is dead, so moving their ped costs nothing. AN ADMIN MAY BE
+    -- ALIVE AND MID-MATCH -- the console's Spectate button requires only that
+    -- the admin be in-game -- and teleporting a living player out of their own
+    -- fight is not a minimap fix, it is a player being removed from the round
+    -- by a moderation tool. This gate is what stops that arriving later, in a
+    -- change whose author is thinking about the dead-player case.
+    --
+    -- LockMinimapPosition MOVES THE MAP INSTEAD, which is correct for both.
+    if not code:find('BR%.Native%.lockMinimap%(') then
+        fail('the spectate camera does not move the minimap',
+             'the radar follows the local player, and while spectating the '
+             .. 'local player is a corpse where they fell')
+    end
+    if not code:find('BR%.Native%.unlockMinimap%(') then
+        fail('nothing gives the minimap back',
+             'a radar left pinned to a coordinate is a script camera left '
+             .. 'rendering: wrong forever, with nothing in any log')
+    end
+    for _, native in ipairs({ 'SetEntityCoords', 'SetEntityVisible',
+                              'FreezeEntityPosition', 'NetworkResurrectLocalPlayer' }) do
+        if code:find(native, 1, true) then
+            fail(('client/spectate.lua calls %s'):format(native),
+                 'a spectator\'s ped is never moved, hidden or frozen -- an '
+                 .. 'ADMIN spectator may be alive and mid-match, and this file '
+                 .. 'cannot tell which kind of session it is running')
+        end
+    end
+
     -- AND THE INVENTORY IS FORWARDED RATHER THAN DECODED HERE. This file owns a
     -- camera; the bar is somebody else's business.
     --
