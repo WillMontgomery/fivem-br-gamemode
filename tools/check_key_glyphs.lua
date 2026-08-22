@@ -222,6 +222,24 @@ do
                  'inside a sentence its min-width would not apply and its '
                  .. 'padding would overlap the line above')
         end
+
+        -- AND IT DOES NOT ANIMATE. `.plate` transitions border-color for its
+        -- focus bevel, and MEASURED in the harness: with that transition live,
+        -- changing --edgec on a mounted element does not repaint the border at
+        -- all -- it keeps whatever it first resolved to. Reproduced on a bare
+        -- `<span class="plate">` with no React involved.
+        --
+        -- That is not cosmetic here. A glyph on screen while the player
+        -- rebinds -- the big-map notice is up for as long as the map is --
+        -- would swap its LETTER and keep the edge tint of the state it used to
+        -- be in, so an unbound cap draws a dash inside a bound-looking plate.
+        -- A key cap has no focus bevel to animate, so it wants none of it.
+        if not cap:find("transition: 'none'") then
+            fail('KeyCap animates, so its edge will not follow a rebind',
+                 'a plate that transitions border-color does not repaint it '
+                 .. 'when --edgec changes on a live element; the cap has no '
+                 .. 'bevel to animate and must opt out')
+        end
     end
 end
 
