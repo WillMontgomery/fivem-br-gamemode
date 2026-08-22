@@ -57,6 +57,13 @@ export default function Hud({ visible }: { visible: boolean }) {
   const storm = useUi(selStorm)
   const squad = useUi(selSquad)
   const talking = useUi((s) => s.talking)
+  // TWO PRIMITIVES RATHER THAN THE ENVELOPE, on purpose. Selecting `s.voice`
+  // would re-render this component -- the whole HUD -- on every push that
+  // changes the talking list, which is several times a second while anybody is
+  // speaking. These two move when the player's voice VERDICT moves, which is
+  // roughly once a match.
+  const voiceSilent = useUi((s) => s.voice.silent === true)
+  const voiceChosen = useUi((s) => s.voice.chosen === true)
   const feed  = useUi(selFeed)
   const dbno  = useUi(selDbno)
   const match = useUi(selMatch)
@@ -163,7 +170,12 @@ export default function Hud({ visible }: { visible: boolean }) {
             className="absolute w-[13rem]"
             style={{ top: 'var(--hud-top)', left: 'var(--safe-x)' }}
           >
-            <SquadPanel squad={squad} talking={talking} />
+            <SquadPanel
+              squad={squad}
+              talking={talking}
+              voiceSilent={voiceSilent}
+              voiceChosen={voiceChosen}
+            />
           </div>
         )}
 

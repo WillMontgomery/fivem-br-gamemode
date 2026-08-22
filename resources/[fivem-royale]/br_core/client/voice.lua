@@ -1005,10 +1005,27 @@ end
 --- screen for longer -- it lasts as long as the preference does, which is
 --- potentially every match they ever play.
 ---
---- So the only rows that still send one are squad-with-no-squad and 'alone': a
---- silence nobody asked for, and a radio with nobody else on it. Both are
---- states a player would want to be interrupted about. Neither is a choice they
---- just made.
+--- AND 'alone' HAS NOW GONE THE SAME WAY, WHICH LEAVES EXACTLY ONE ROW.
+--- Owner, 2026-08-22: "'Squad voice: nobody else on your squad radio yet' - how
+--- about instead of showing this text, we show something in the top squad panel
+--- next to each player which shows if they are muted, not listening, or
+--- talking."
+---
+--- THE SENTENCE WAS ANSWERING A QUESTION THE SQUAD PANEL ALREADY ANSWERS. "Who
+--- else is on your radio" is a list of people, and there is a list of people on
+--- the screen already -- so the line spent the bottom of the screen restating,
+--- in prose, something the player could count. That is the same fault as the
+--- two rows above it, arrived at from a different direction: not "this is
+--- furniture" but "this is a caption for a picture that is already drawn".
+---
+--- WHAT REPLACES IT IS NOT ON THIS CHANNEL AT ALL. The squad panel now marks
+--- each row with the state of that player's voice link -- see
+--- ui-src/src/hud/VoiceMark.tsx for the model and what it is allowed to claim.
+--- Nothing new is sent for it: the mark is built from the `talking` list this
+--- envelope has always carried and from `silent`/`chosen` below.
+---
+--- So the ONLY row that still sends a headline is squad-with-no-squad: a
+--- silence nobody asked for, in a mode the player cannot fix from the panel.
 ---
 --- `detail` IS UNAFFECTED AND STILL SET FOR EVERY ROW, INCLUDING 'off', because
 --- it goes to the SETTINGS SCREEN, which is a page the player opened on purpose.
@@ -1064,8 +1081,18 @@ function BR.Voice.statusFor(mode, radio, mates)
 
     if mates <= 0 then
         return {
+            -- NO HEADLINE, AND THE CODE IS WHAT SURVIVES. `code` is still its
+            -- own row -- 'alone' and 'radio' are different states and the
+            -- envelope's dedup key is keyed on it (see the TICK band below), so
+            -- collapsing the two would stop a squad forming from pushing at
+            -- all. What went is the sentence painted over the game.
+            --
+            -- `silent` STAYS FALSE, and that is not an oversight. A radio with
+            -- one person on it can carry the moment a second joins; nothing is
+            -- refusing anybody. The squad panel's mark reads this field, so a
+            -- `true` here would put a "no voice" glyph on every row of a squad
+            -- whose radio is working.
             code = 'alone', silent = false, chosen = false,
-            headline = 'Squad voice: nobody else on your squad radio yet',
             detail = ('You are on squad radio %d and you are the only one on '
                   .. 'it. %s to speak once a squadmate joins.')
                   :format(radio, holdIt),

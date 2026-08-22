@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useUi } from '../store'
 import type { SquadMember, SquadPayload } from '../bridge/types'
+import VoiceMark from './VoiceMark'
 
 /**
  * Squad status.
@@ -8,6 +9,13 @@ import type { SquadMember, SquadPayload } from '../bridge/types'
  * Squad membership and each member's state come from the server roster, never
  * from enumerating nearby players -- a squadmate across the map is out of scope
  * and would simply be missing.
+ *
+ * VOICE IS A MARK BESIDE THE NAME, NOT A LINE AT THE BOTTOM OF THE SCREEN.
+ * Owner, 2026-08-22: "how about instead of showing this text, we show something
+ * in the top squad panel next to each player which shows if they are muted, not
+ * listening, or talking." The model -- what the mark is allowed to claim about
+ * whom, and why a squadmate's own mute state is not one of the things it can --
+ * is argued in full in hud/VoiceMark.tsx. Nothing new is published for it.
  *
  * A MATE DYING IS A SEQUENCE, NOT AN OPACITY CHANGE. Fading a row out is the
  * least legible thing a HUD can do: it reads as a render glitch rather than as
@@ -194,7 +202,13 @@ function VitalBar({ value, colour, dying }:
   )
 }
 
-function Row({ m, talking }: { m: SquadMember; talking: boolean }) {
+function Row({ m, talking, silent }: {
+  m: SquadMember
+  talking: boolean
+  /** Non-null on the VIEWER'S OWN ROW ONLY, and only while their voice carries
+   *  nothing at all. See VoiceMark for why it cannot be anybody else's. */
+  silent: 'chosen' | 'fault' | null
+}) {
   const { phase, flash } = useDeathSequence(m)
 
   const dead = phase === 'dead'
@@ -244,24 +258,32 @@ function Row({ m, talking }: { m: SquadMember; talking: boolean }) {
 
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline justify-between gap-2">
-          <span className="flex items-center gap-1 min-w-0">
-            {/* SPEAKING. Voice had no visual at all -- somebody talks and
-                nothing on screen says who (owner, 2026-08-09). The name is
-                where it belongs: this panel is already the list of who your
-                squad IS, and a mark beside a name needs no legend.
-                It sits BEFORE the name so it never moves the name around as
-                it appears, and it is a filled dot rather than a glyph -- read
-                peripherally, in a corner, at 0.72rem. */}
-            {talking && (
-              <span
-                className="shrink-0 rounded-full mate-talk"
-                style={{
-                  width: '0.34rem', height: '0.34rem',
-                  background: 'var(--color-royale-accent)',
-                }}
-                title={`${m.name} is speaking`}
-              />
-            )}
+          {/* `items-baseline`, NOT `items-center`, AND IT IS LOAD-BEARING.
+              This group is the first flex item of the row above, which is
+              baseline-aligned -- so the group's own baseline decides where the
+              whole row sits and how tall the plate is. A flex container with no
+              baseline-aligned item inside it synthesises one from its FIRST
+              item's bottom edge, and that first item is the voice mark, whose
+              size follows the player's text-size preference. Aligning on the
+              baseline makes the NAME the source instead; the mark opts out with
+              `align-self: center` (see VoiceMark). Measured either way: without
+              this pair every downed and dead plate is 0.6px taller at text
+              scale 1.15 than at 0.90, for a mark that changes nothing else. */}
+          <span className="flex items-baseline gap-1 min-w-0">
+            {/* VOICE. Somebody talks and nothing on screen says who (owner,
+                2026-08-09); and, since 2026-08-22, whether this player's own
+                voice is carrying anything at all.
+                The name is where both belong: this panel is already the list
+                of who your squad IS, and a mark beside a name needs no legend.
+
+                IT USED TO BE A CONDITIONAL DOT AND IS NOW AN ALWAYS-PRESENT
+                SLOT. The old comment claimed the dot "never moves the name
+                around as it appears" -- it did, by its own width plus the gap,
+                every time somebody started a sentence. A slot that is always
+                rendered pins the name's left edge for the life of the panel,
+                and it is what lets the glyphs cross-fade instead of blinking.
+                See VoiceMark. */}
+            <VoiceMark fs="0.72rem" talking={talking} silent={silent} />
             <span className="text-[0.72rem] font-semibold truncate">{m.name}</span>
           </span>
           {(dead || downed) && (
@@ -322,23 +344,46 @@ function Row({ m, talking }: { m: SquadMember; talking: boolean }) {
   )
 }
 
-export default function SquadPanel({ squad, talking = [] }:
-  { squad: SquadPayload; talking?: number[] }) {
+export default function SquadPanel({
+  squad, talking = [], voiceSilent = false, voiceChosen = false,
+}: {
+  squad: SquadPayload
+  talking?: number[]
+  /** THIS CLIENT's verdict, not anybody else's: nothing can reach it and
+   *  nothing it says can leave. Straight off the voice envelope. */
+  voiceSilent?: boolean
+  /** ...and the player asked for it -- the 'off' preference, or spectating. */
+  voiceChosen?: boolean
+}) {
   // Unchanged and load-bearing: a solo player has no squad panel, and the
   // party-vs-squad fallback that feeds this channel is what made the worst M2
   // bug. Do not widen this test.
   if (!squad.id || squad.members.length <= 1) return null
 
-  // Read AFTER the early return so a solo player subscribes to nothing --
-  // this store field changes whenever anybody starts or stops speaking.
   const talkingSet = new Set(talking)
+
+  // THE SILENCE MARK GOES ON ONE ROW AND ONLY ONE, and `you` is how the row is
+  // found. It rides on every squad payload precisely because the interface has
+  // no other way to know its own server id.
+  //
+  // ABSENT `you` MARKS NOBODY, which is the safe failure: an older Lua, or the
+  // party payload standing in for a squad, produces a panel with no mark rather
+  // than one that has guessed.
+  const mine = squad.you
+  const silence: 'chosen' | 'fault' | null =
+    voiceSilent ? (voiceChosen ? 'chosen' : 'fault') : null
 
   // No outer .panel: each row is its own plate now, so a shared box around
   // them was a second frame doing nothing but adding an edge.
   return (
     <div className="flex flex-col gap-1">
       {squad.members.map((m) => (
-        <Row key={m.src} m={m} talking={talkingSet.has(m.src)} />
+        <Row
+          key={m.src}
+          m={m}
+          talking={talkingSet.has(m.src)}
+          silent={mine !== undefined && m.src === mine ? silence : null}
+        />
       ))}
     </div>
   )

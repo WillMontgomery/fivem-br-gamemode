@@ -1,4 +1,5 @@
 import { useUi } from '../store'
+import VoiceMark from './VoiceMark'
 
 /**
  * WHO IS SPEAKING, along the bottom of the screen.
@@ -75,18 +76,21 @@ export default function TalkingBar() {
                  max-w-[46%] pointer-events-none"
       style={{ bottom: 'var(--safe-y)' }}
     >
-      {/* The same accent dot the squad panel puts beside a speaking mate, on
-          the same slow pulse. Voice has one visual vocabulary and this is it;
-          a second, different marker for the same fact would read as a second
-          fact. */}
-      <span
-        className="shrink-0 rounded-full mate-talk"
-        style={{
-          width: '0.34rem',
-          height: '0.34rem',
-          background: 'var(--color-royale-accent)',
-        }}
-      />
+      {/* THE SAME MARK THE SQUAD PANEL PUTS BESIDE A SPEAKING MATE, from the
+          same component. Voice has one visual vocabulary and this is it; a
+          second, different marker for the same fact would read as a second
+          fact.
+
+          THAT RULE IS WHY THIS LINE CHANGED AT ALL. The panel's mark became a
+          glyph so it could have a second state to be distinguishable FROM
+          (owner, 2026-08-22 -- see VoiceMark). Leaving the accent dot here
+          would have been precisely the divergence this comment has always
+          warned about, so both moved together and there is one definition.
+
+          Sized off --talkline-fs, the same variable the text beside it reads,
+          so the mark and the line grow together and --talkline-h -- which the
+          spectate hint clears -- still describes this row. */}
+      <VoiceMark fs="var(--talkline-fs)" talking />
       {/* min-w-0 with the truncate: a flex item defaults to `min-width: auto`,
           which refuses to shrink below its content -- so the line grew straight
           through the 46% cap the moment enough people spoke at once, and the

@@ -259,6 +259,12 @@ export function startMockDriver(): void {
       hud: { hp: 82, armour: 45, alive: 23, squadsAlive: 8, kills: 3, state: 'alive' },
       squad: {
         id: 'sq_1',
+        // `you` IS NOT DECORATION HERE ANY MORE. The squad panel's voice mark
+        // draws the "no voice at all" glyph on the VIEWER'S OWN ROW and on no
+        // other, so a harness that omitted this would render a panel with that
+        // half of the feature permanently invisible -- which is how the mark
+        // would end up reviewed only in the source.
+        you: 1,
         members: [
           { src: 1, name: 'You',     state: 'alive', hp: 82,  armour: 45, colour: '#6EE7F9' },
           { src: 2, name: 'Kestrel', state: 'alive', hp: 100, armour: 80, colour: '#2DD4BF' },
@@ -336,6 +342,7 @@ export function startMockDriver(): void {
       k: 'squad',
       d: {
         id: 'sq_1',
+        you: 1,
         members: [
           { src: 1, name: 'You',     state: 'alive', hp: Math.round(hp), armour: Math.round(armour), colour: '#6EE7F9' },
           { src: 2, name: 'Kestrel', state: 'alive', hp: 100, armour: 80, colour: '#2DD4BF' },
@@ -372,6 +379,28 @@ export function startMockDriver(): void {
             + 'squad it carries nobody -- you cannot hear anyone and nobody '
             + 'can hear you. Solo matches have no squads. Switch to Nearby '
             + 'under Settings, Voice to hear the players around you.' },
+    // A CHOSEN SILENCE, WHICH IS WHAT A SPECTATOR IS ON. BR.Voice.mode()
+    // answers 'off' for the length of a spectate session, so this is also the
+    // envelope a dead player watching their squad gets -- and it is the one
+    // that puts the squad panel's "no voice" glyph on the viewer's own row.
+    // NO HEADLINE, deliberately: 'off' has sent none since 2026-08-20 and the
+    // spectate rule sends none either, so a mock that carried one here would
+    // draw a bottom-centre line the game does not.
+    { talking: [], names: [],
+      mode: 'off' as const, radio: 30703, joined: 0, mates: 3,
+      status: 'silenced', silent: true, chosen: true,
+      detail: 'You are not transmitting and not listening. Change it under '
+            + 'Settings, Voice.' },
+    // AND THE ROW THAT WAS 'alone'. It used to carry "Squad voice: nobody else
+    // on your squad radio yet" and no longer carries anything at all (owner,
+    // 2026-08-22) -- the squad panel says who is on the radio. It is kept in
+    // the rotation precisely because it now draws NOTHING: a row whose whole
+    // content is an absence is one a harness has to be able to show.
+    { talking: [], names: [],
+      mode: 'squad' as const, radio: 30703, joined: 30703, mates: 0,
+      status: 'alone', silent: false, chosen: false,
+      detail: 'You are on squad radio 30703 and you are the only one on it. '
+            + 'Hold N to speak once a squadmate joins.' },
     // THE WORKING ROW CARRIES NO HEADLINE, and that is the shape being
     // mocked rather than an omission -- VoiceNotice draws any headline it is
     // given, so a working mode that sent one would sit across the bottom of

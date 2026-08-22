@@ -3216,6 +3216,90 @@ do
        'a radio with nobody else on it is a different state from a live one',
        tostring(alone.code))
 
+    -- ...AND IT SAYS SO IN THE SQUAD PANEL RATHER THAN ACROSS THE SCREEN.
+    --
+    -- Owner, 2026-08-22: "'Squad voice: nobody else on your squad radio yet' -
+    -- how about instead of showing this text, we show something in the top
+    -- squad panel next to each player which shows if they are muted, not
+    -- listening, or talking."
+    --
+    -- THE SENTENCE WAS A CAPTION FOR A PICTURE ALREADY ON THE SCREEN. "Who
+    -- else is on your radio" is a list of people, and the squad panel is a
+    -- list of people. Three rows have now gone quiet for three different
+    -- reasons -- 'radio' because it was furniture, 'off' because it named a
+    -- choice, and this one because something else already answers it -- and
+    -- what is left is the rule VoiceNotice.tsx states about itself: a headline
+    -- means something is WRONG.
+    ok(alone.headline == nil,
+       'and it no longer paints a line across the bottom of the screen about '
+           .. 'it -- the squad panel is the list of who is on the radio, and a '
+           .. 'sentence restating a list that is already drawn is a caption',
+       tostring(alone.headline))
+
+    -- THE FLAG THE PANEL'S MARK ACTUALLY READS, and it must stay FALSE.
+    --
+    -- `silent` is not "nobody is talking", it is "nothing can reach this
+    -- player and nothing they say can leave" -- and a radio with one person on
+    -- it carries the instant a second joins. The squad panel draws its
+    -- "no voice" glyph off this field, so a `true` here would mark a working
+    -- radio as dead for every player who reaches their squad first.
+    ok(alone.silent == false,
+       'a radio waiting for its first squadmate is not a silence -- nothing '
+           .. 'is refusing anybody, and the panel mark must not say otherwise',
+       tostring(alone.silent))
+
+    -- THE SETTINGS SCREEN KEEPS ITS SENTENCE. The owner's instruction is about
+    -- the bottom of the screen; `detail` is read on a page somebody opened on
+    -- purpose, and it is the only surface that names the channel number and
+    -- the key.
+    ok(type(alone.detail) == 'string'
+       and alone.detail:find('only one on it', 1, true) ~= nil,
+       'while the settings screen still explains it in full, because that is a '
+           .. 'page the player went looking for',
+       tostring(alone.detail))
+
+    -- AND NOTHING IS TOASTED FOR IT EITHER, which is not a separate rule but
+    -- the same one: pushVoice toasts `st.headline`, so a row with no headline
+    -- interrupts nobody. Asserted through the real push rather than by reading
+    -- that condition, because the condition is what a later round would edit.
+    do
+        local before = #events
+        nobodyElse()
+        standAt(0, 0)
+        voiceApply(BR.VoiceMode.SQUAD, 30703, {}, 1)
+        local toast = nil
+        for i = #events, before + 1, -1 do
+            local e = events[i]
+            if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.TOAST then
+                toast = e.args[2]; break
+            end
+        end
+        ok(toast == nil,
+           'and no toast either: a verdict with no headline interrupts nobody, '
+               .. 'which is what "instead of showing this text" has to mean',
+           toast and tostring(toast.text) or '-')
+
+        -- THE ENVELOPE STILL CARRIES THE ROW. The panel needs `silent` and
+        -- `chosen` to decide its mark, and the settings screen needs `status`
+        -- and `detail`; deleting the headline must not have taken the push
+        -- with it.
+        local env = nil
+        for i = #events, 1, -1 do
+            local e = events[i]
+            if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.VOICE then
+                env = e.args[2]; break
+            end
+        end
+        ok(type(env) == 'table' and env.status == 'alone'
+           and env.silent == false and env.headline == nil,
+           'the envelope still reaches the interface with the verdict on it -- '
+               .. 'silence on the HUD is not silence on the wire',
+           type(env) == 'table'
+               and (tostring(env.status) .. '/' .. tostring(env.silent)
+                    .. '/' .. tostring(env.headline))
+               or 'no voice envelope')
+    end
+
     -- AND NOW THE SURFACES, which is the half that failed. All three derive
     -- from the function above; the point of asserting them separately is that
     -- a surface that stops asking is a surface that goes quietly stale, and
@@ -3691,7 +3775,16 @@ do
     -- "everyone is muted" is distinguishable from "the usual one is muted".
     voiceApply(BR.VoiceMode.SQUAD, 30703, { 2 }, 1)
     playersAt({ [2] = { x = 1, y = 0 }, [3] = { x = 2, y = 0 } })
+    -- AND THE SQUADMATE IS MID-SENTENCE, which is what makes the "and nobody
+    -- is talking while spectating" assertion below mean anything. Left silent
+    -- it would pass on a client that had simply never named anybody.
+    mumble.talking[2] = true
     local alive = settle()
+
+    ok(#talkingNames() == 1 and talkingNames()[1] == 'p2',
+       'before any session: a squadmate speaking on the radio IS named, so the '
+           .. 'panel has a talking mark to lose',
+       table.concat(talkingNames(), ', '))
 
     ok(BR.Voice.mode() == BR.VoiceMode.SQUAD and alive.radio == 30703,
        'before any session: the player is on their squad preference and on the '
@@ -3757,6 +3850,39 @@ do
        'and nothing is painted over the game to announce it -- no headline, so '
            .. 'no toast and no notice',
        tostring(st.headline))
+
+    -- ═══ WHAT A SPECTATOR'S SQUAD PANEL DRAWS, WHICH IS NOW A QUESTION ═══
+    --
+    -- Since 2026-08-22 the squad panel marks each row with the state of that
+    -- player's voice link (ui-src/src/hud/VoiceMark.tsx). A spectator is on
+    -- 'off' for the length of the session, so this is the one envelope that
+    -- decides what a dead player watching their squad sees -- and the two
+    -- flags below are the whole of the input.
+    --
+    -- CHOSEN, NOT A FAULT. The panel paints an unasked-for silence in
+    -- --color-danger and an asked-for one in the dim text colour, which is the
+    -- same rule VoiceNotice has always used for its headline. A spectator's
+    -- silence is not a malfunction and must not be drawn as one -- and 'off'
+    -- is how the rule is expressed here rather than a fourth mode invented for
+    -- spectators, so `chosen` comes out true without anything knowing why.
+    ok(st.silent == true and st.chosen == true,
+       'a spectator\'s own row is marked as having no voice at all, and marked '
+           .. 'as a CHOSEN silence rather than a fault -- the same distinction '
+           .. 'the headline rule has always made',
+       tostring(st.silent) .. '/' .. tostring(st.chosen))
+
+    -- AND THE MATES' ROWS CARRY NOTHING, because there is nothing to carry: a
+    -- spectator is audible-to nobody, so the talking list this panel reads is
+    -- empty by construction rather than by a rule about spectating. THE
+    -- INDICATOR IS DRIVEN FROM THE SAME SET THE MUTE SWEEP USES -- asserted
+    -- through the push rather than off BR.Voice.talking, because the push is
+    -- what reaches the panel.
+    ok(#talkingNames() == 0,
+       'and the squadmate who was mid-sentence a tick ago is no longer named: '
+           .. 'the panel says nobody is talking, which is what a spectator can '
+           .. 'hear. Nothing about spectating is taught to the indicator -- the '
+           .. 'audible set went empty and it fell out',
+       table.concat(talkingNames(), ', '))
 
     -- THE PREFERENCE IS NOT TOUCHED. This single assertion is what makes the
     -- disconnect case, the crash case and the resource-restart case safe: a
@@ -3913,6 +4039,9 @@ do
 
     BR.Spectate = realSpectate
     spectating = false
+    -- AND THE SQUADMATE STOPS TALKING, so the microphone this block opened does
+    -- not follow the suite into every block after it.
+    mumble.talking[2] = nil
     nobodyElse()
 end
 

@@ -262,6 +262,20 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+# The squad panel says who is talking and, on the viewer's own row, that their
+# voice is carrying nothing at all. The Lua half -- the sentence this replaced,
+# and the flags the mark reads -- is unit-tested in test_client. This gate is
+# for the properties no suite can reach: that the panel did not grow an oracle
+# (a per-player voice mode would widen what a client is told about players it
+# cannot see), that the mark stays on one row, and that the two halves of its
+# layout pair have not come apart.
+echo "${DIM}== squad voice marks ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_squad_voice.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
 # Your own death and the end of the match are two surfaces sharing one word
 # table, and the word and the spectator camera are one sequence on one deadline.
 # The failure this catches is the two coming apart -- a second timer that agrees

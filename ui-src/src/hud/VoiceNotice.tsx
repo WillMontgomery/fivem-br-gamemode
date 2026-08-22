@@ -24,9 +24,17 @@ import { useUi } from '../store'
  * with no change on this side at all. That is the point of the words being
  * Lua's rather than this file's.
  *
- * What is left is the half that is genuinely wrong: squad mode with no squad,
- * and a radio with nobody else on it. Those still send a headline and this
- * still draws it.
+ * What is left is one row: squad mode with no squad. It still sends a headline
+ * and this still draws it.
+ *
+ * 'alone' -- A RADIO WITH NOBODY ELSE ON IT -- WAS THE SECOND, AND IT WENT ON
+ * 2026-08-22. Owner: "'Squad voice: nobody else on your squad radio yet' - how
+ * about instead of showing this text, we show something in the top squad panel
+ * next to each player which shows if they are muted, not listening, or
+ * talking." It was a caption for a picture already on the screen: the squad
+ * panel IS the list of who is on your radio. Lua stopped sending the headline
+ * for it, so this renders nothing for it with no condition on this side -- the
+ * third row to go quiet that way. What replaced it is hud/VoiceMark.tsx.
  *
  * 'off' USED TO BE ON THAT LIST AND IS NOT ANY MORE. Owner, 2026-08-20: "when
  * voice is off, we shouldn't have anything print in the bottom of the screen
