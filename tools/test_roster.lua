@@ -93,8 +93,8 @@ function GetPedArmour() return 0 end
 -- `GetVehiclePedIsIn` asks the PED and, on the builds this project runs,
 -- answers the vehicle it was LAST in when it is not in one at all --
 -- citizenfx/fivem#4006, "[Server] GetVehiclePedIsIn(ped, false) returns last
--- vehicle when ped is not in any vehicle", reported fixed only as of build
--- 3326. The documented workaround gates it on `IsPedInAnyVehicle`, which does
+-- vehicle when ped is not in any vehicle", still OPEN with no fix (checked
+-- 2026-08-22). The documented workaround gates it on `IsPedInAnyVehicle`, which does
 -- not exist server-side. So `pedVehicle` here is deliberately STICKY: `drive`
 -- writes it and `stepOut` does not clear it, exactly as the platform does not.
 --
@@ -14357,8 +14357,8 @@ do
     --     THE SEAT RATHER THAN FROM THE PED ═══
     --
     -- citizenfx/fivem#4006: server-side GetVehiclePedIsIn(ped, false) answers the
-    -- vehicle a ped was LAST in when it is in none, reported fixed only as of
-    -- build 3326. The documented workaround gates it on IsPedInAnyVehicle, and
+    -- vehicle a ped was LAST in when it is in none, and is still OPEN with no fix
+    -- (checked 2026-08-22). The documented workaround gates it on IsPedInAnyVehicle, and
     -- that native does not exist on the server. Believing the ped alone would
     -- turn every player who has ever driven anything into a permanent driver --
     -- and this suite's stub reproduces the bug rather than hiding it, so a

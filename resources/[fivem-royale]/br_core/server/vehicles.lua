@@ -654,8 +654,9 @@ end)
 --
 -- Through `drivenVehicle`, unchanged, for the reason the roadkill section
 -- already establishes at length: server-side `GetVehiclePedIsIn(ped, false)`
--- answers the vehicle a ped was LAST in -- citizenfx/fivem#4006, reported fixed
--- only as of build 3326, and this project pins 3095 -- so on this build it
+-- answers the vehicle a ped was LAST in -- citizenfx/fivem#4006, which is still
+-- OPEN with no fix (checked 2026-08-22; the claim that build 3326 fixed it was
+-- wrong, and the one PR touching it is unmerged and RedM-specific) -- so it
 -- names a helicopter for a player who climbed out of one ten minutes ago and
 -- has been walking ever since. Taken alone it would file a case against half
 -- the map. So the ped's answer is a CANDIDATE and the vehicle settles it:
@@ -814,8 +815,8 @@ end
 -- `GetVehiclePedIsIn(ped, false)` is answerable server-side under OneSync and is
 -- the obvious call. It also has a live platform bug -- citizenfx/fivem#4006,
 -- "[Server] GetVehiclePedIsIn(ped, false) returns last vehicle when ped is not
--- in any vehicle", reported fixed only as of build 3326 -- so on the build this
--- project pins it answers a handle for a player who got out of a car ten minutes
+-- in any vehicle", still OPEN with no fix (checked 2026-08-22) -- so on every
+-- build it answers a handle for a player who got out of a car ten minutes
 -- ago and has been walking ever since. Taken alone it would make half the map
 -- into drivers. The documented workaround is to gate it on
 -- `IsPedInAnyVehicle`, and that native does not exist on the server at all.
