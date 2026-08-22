@@ -7337,6 +7337,17 @@ local function newVehicleServer()
             local r = S.roster[s]
             return r and r.license or nil
         end,
+        -- THE ROADKILL LEDGER'S TWO VERBS, and they are here because that half of
+        -- the file registers a scheduler job at LOAD time -- so without them this
+        -- sandbox cannot load the detector either. The ledger itself is driven in
+        -- tools/test_roster.lua against the real roster, real positions and real
+        -- combat; what it needs here is only to not explode.
+        each = function(pred, fn)
+            for s, e in pairs(S.roster) do
+                if not pred or pred(e) then fn(s, e) end
+            end
+        end,
+        sampleIntervalMs = function() return 250 end,
     }
     loadInto(env, { 'br_core/server/vehicles.lua' })
 

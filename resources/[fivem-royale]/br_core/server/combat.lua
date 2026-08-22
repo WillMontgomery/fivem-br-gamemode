@@ -437,6 +437,36 @@ function BR.Combat.attributedKiller(entry)
     return entry.lastHitBy
 end
 
+--- Who gets this death, including the one attributor that runs too late.
+---
+--- BR.Vehicles' roadkill ledger writes `lastHitBy` from the roster's own 4 Hz
+--- sample, which covers every vehicular death that took more than a quarter of a
+--- second to arrive -- a glancing hit, a knock that bleeds out, a player finished
+--- by the storm afterwards. It does NOT cover the ordinary case, which is a car
+--- at speed turning a full-health player into a corpse between two samples: the
+--- victim's client reports the death immediately and this function runs before
+--- the sampler next fires.
+---
+--- So an unattributed death gets one look, HERE, at the freshest state the server
+--- holds. It costs nothing on the common path -- a death with a killer never
+--- reaches the second branch, and a death without one is rare -- and it reads
+--- exactly the same tables the sampler does. Nothing from the wire is consulted:
+--- `data.killer` and `data.cause` are the client's GET_PED_SOURCE_OF_DEATH and
+--- are ignored here as they have been since M6.
+--- @param src integer
+--- @param entry table
+--- @return integer|nil killer src
+local function killerOf(src, entry)
+    local killer = BR.Combat.attributedKiller(entry)
+    if killer then return killer end
+
+    if BR.Vehicles and BR.Vehicles.creditRoadkill
+       and BR.Vehicles.creditRoadkill(src) then
+        return BR.Combat.attributedKiller(entry)
+    end
+    return nil
+end
+
 -- --------------------------------------------------------------------------
 -- DBNO: down, bleed, revive
 -- --------------------------------------------------------------------------
@@ -1112,7 +1142,22 @@ AddEventHandler(BR.Net.PLAYER_DIED, function(data)
         cause = 'storm'
     end
 
-    BR.Combat.defeat(src, cause, BR.Combat.attributedKiller(entry))
+    -- Resolved BEFORE the roadkill cause is read, because resolving is what
+    -- writes `lastRoadkillAt` on the death this handler is processing.
+    local killer = killerOf(src, entry)
+
+    -- ...AND A ROADKILL THE SERVER ITSELF ATTRIBUTED OUTRANKS THE HASH THE
+    -- CLIENT SENT, in the direction that matters. `describeCause` already turns
+    -- WEAPON_RUN_OVER_BY_CAR into 'roadkill', so an honest client usually says it
+    -- first -- but the cause on the wire is the victim's own machine talking, and
+    -- the one thing a victim can do with it is deny their killer the right label.
+    -- Below the storm, which is documented as outranking everything.
+    if cause ~= 'storm' and BR.Vehicles and BR.Vehicles.roadkillRecent
+       and BR.Vehicles.roadkillRecent(entry) then
+        cause = 'roadkill'
+    end
+
+    BR.Combat.defeat(src, cause, killer)
 end)
 
 --- Independent confirmation from server-side health.
@@ -1170,7 +1215,16 @@ BR.Sched.every(1000, 'combat.deathcheck', function()
             -- Attributed the same way as a client-reported death: the server's
             -- own record of who has been shooting them. A player who bleeds
             -- out from a rifle wound still credits the rifle.
-            BR.Combat.defeat(src, cause, BR.Combat.attributedKiller(entry))
+            local killer = killerOf(src, entry)
+            -- ...AND THIS PATH IS THE ONE THAT NEEDS THE ROADKILL LABEL MOST.
+            -- It is reached when the client said nothing at all, so there is no
+            -- cause hash to translate and 'server-observed' is a statement about
+            -- how we found out rather than about what happened.
+            if cause ~= 'storm' and BR.Vehicles and BR.Vehicles.roadkillRecent
+               and BR.Vehicles.roadkillRecent(entry) then
+                cause = 'roadkill'
+            end
+            BR.Combat.defeat(src, cause, killer)
         end
     end)
 end)

@@ -200,6 +200,44 @@ end
 --- Which player states the storm can hurt. Airborne players are untouchable
 --- -- they cannot steer out of a wall they are falling through, and the drop
 --- grace exists for the same reason -- and lobby/warmup are not in the match.
+---
+--- ═══ A VEHICLE IS NOT ON THIS LIST AND NEVER WILL BE (owner, 2026-08-21, #194
+---     question 4) ═══
+---
+---   "no, vehicles will never grant storm immunity. that's not a thing. the
+---    only exception is the ambulance and ONLY while they're in `rescue` state
+---    - so if they hop in an ambulance and drive off they are not granted any
+---    sort of immunity."
+---
+--- WHICH IS WHAT THIS FILE ALREADY DOES, and #194 §4 established that before the
+--- question was asked: the damage loop below is a position check against the
+--- solved circle and a server-side ledger. It holds no ped handle and no vehicle
+--- handle, so a player driving through the wall takes exactly what a player
+--- walking through it takes. Nothing was added to keep it that way. The test in
+--- tools/test_roster.lua's `storm.vehicles` block is what stops it drifting,
+--- because "we never wrote the exemption" is not a property anything can check.
+---
+--- ═══ THE ONE EXCEPTION CANNOT BE WRITTEN YET, AND THIS IS WHERE IT GOES ═══
+---
+--- The ambulance exemption is #191's (the CPR kit), and it is conditioned on a
+--- `rescue` state that does not exist anywhere in this tree today -- there is no
+--- player state, no roster field and no ambulance. Writing the condition now
+--- would mean inventing the thing it reads, and a flag with no writer is a flag
+--- that reads false forever while looking like a working feature.
+---
+--- So it is left as a sentence rather than as code, the way server/combat.lua
+--- leaves solo DBNO ("when it arrives the switch here is BR.Mode.SOLO.dbno =
+--- true"). WHEN #191 LANDS, THE CHANGE IS ONE CONDITION ON THE `BR.Roster.each`
+--- FILTER IN `storm.damage` BELOW -- `and not e.rescue` beside the DAMAGEABLE
+--- test -- written by whatever puts the player in the ambulance, and read in that
+--- one place. Two things it must not become:
+---
+---   * a client-asserted flag. Storm damage is the subsystem specifically built
+---     so a client cannot influence it (#194 §4); an exemption a client can
+---     assert is storm immunity a client can assert.
+---   * a test on the VEHICLE. The owner's rule is about the rescue, not about the
+---     ambulance -- a player who drives one off has no exemption, so a model
+---     check would grant exactly the thing that sentence refuses.
 local DAMAGEABLE = {
     [BR.PlayerState.ALIVE] = true,
     [BR.PlayerState.DBNO]  = true,

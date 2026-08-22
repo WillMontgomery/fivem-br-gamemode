@@ -95,6 +95,8 @@
 BR = BR or {}
 BR.Vehicles = {}
 
+local cfg = BR.Config.Combat or {}
+
 --- Which player states may draw a refused-vehicle count at all.
 ---
 --- The same pair server/strip.lua gates its report on, for the same reason: a
@@ -195,6 +197,7 @@ local MAX_SEEN_MODELS = 16
 local stat = {
     seen = 0, vehicles = 0, ambient = 0, allowed = 0,
     counted = 0, throttled = 0, unowned = 0, byType = 0,
+    roadkills = 0, roadkillLooks = 0, driving = 0,
 }
 
 --- Counters, for brdebug-style introspection. Printed by `brvehicles`.
@@ -221,6 +224,10 @@ function BR.Vehicles.stats()
         counted   = stat.counted,   throttled = stat.throttled,
         unowned   = stat.unowned,   byType    = stat.byType,
         models    = seenModels,
+        -- The roadkill ledger below, which is a gameplay counter rather than an
+        -- anticheat one and is printed under its own heading for that reason.
+        roadkills = stat.roadkills, roadkillLooks = stat.roadkillLooks,
+        driving   = stat.driving,
     }
 end
 
@@ -477,21 +484,354 @@ AddEventHandler('entityCreating', function(entity)
     })
 end)
 
+-- ---------------------------------------------------------------------------
+-- Roadkill: the one environmental cause with a person behind it
+-- ---------------------------------------------------------------------------
+--
+-- THE OWNER'S ANSWER, 2026-08-21 (#194 question 3):
+--
+--   "What if GetPedSourceOfDeath returns vehicle, then see if the vehicle is
+--    driven by a player, then find out which player it is. Roadkill should be
+--    attributed to the driver."
+--
+-- The BEHAVIOUR is exactly that and it is what is built below. The ROUTE is
+-- not, and the difference is the whole of this section.
+--
+-- ═══ GET_PED_SOURCE_OF_DEATH IS READ ON THE VICTIM'S MACHINE ═══
+--
+-- client/gamerules.lua calls it and sends the result to the server, and the
+-- server has ignored that field since M6 -- see BR.Combat.attributedKiller,
+-- "THE CLIENT IS NEVER ASKED". Believing it here would be a new exception to
+-- the one rule docs/security.md is built around, and an unusually cheap one to
+-- abuse: the payload is `{ cause, killer }`, both client-authored, so a pair of
+-- players could farm eliminations by taking turns dying and naming each other's
+-- car. An unattributed roadkill is a hole; a FORGEABLE roadkill credit is a
+-- bigger one, because it manufactures kills that never happened rather than
+-- losing kills that did.
+--
+-- ═══ SO THE SAME QUESTION IS ASKED OF STATE THIS SERVER ALREADY HOLDS ═══
+--
+-- This is server/damage.lua's fire attributor, term for term, and #194 §2 says
+-- so out loud: "that machinery is the template". A player was run over when
+--
+--   * they lost health between two of the roster's own 4 Hz samples, and
+--   * they were ON FOOT, and
+--   * a vehicle a PLAYER was driving was within roadkillRadiusM of them and
+--     moving faster than roadkillMinSpeedMs.
+--
+-- Every one of those is read on the server. Positions come from
+-- roster.positions, which reads GetEntityCoords itself and never asks a client;
+-- health is the same sample the storm and the fire ledger already run off; and
+-- the driver is confirmed by asking the VEHICLE who is in its driving seat.
+-- Nothing in the chain can be asserted by a client, which is the property
+-- BR.Damage's fire ledger has and the reason it was copied.
+--
+-- ═══ WHY THE DRIVER IS CONFIRMED FROM THE SEAT AND NOT FROM THE PED ═══
+--
+-- `GetVehiclePedIsIn(ped, false)` is answerable server-side under OneSync and is
+-- the obvious call. It also has a live platform bug -- citizenfx/fivem#4006,
+-- "[Server] GetVehiclePedIsIn(ped, false) returns last vehicle when ped is not
+-- in any vehicle", reported fixed only as of build 3326 -- so on the build this
+-- project pins it answers a handle for a player who got out of a car ten minutes
+-- ago and has been walking ever since. Taken alone it would make half the map
+-- into drivers. The documented workaround is to gate it on
+-- `IsPedInAnyVehicle`, and that native does not exist on the server at all.
+--
+-- So the ped's answer is treated as a CANDIDATE and the vehicle settles it:
+-- GetPedInVehicleSeat(veh, -1) is a live read of who is in that vehicle's
+-- driving seat right now, and a ped that left the car is not in it. That is
+-- also exactly the question the owner asked -- "see if the vehicle is driven by
+-- a player" -- so the confirmation is not defensive plumbing bolted onto the
+-- rule, it IS the rule.
+--
+-- ═══ WHAT THIS DOES NOT CLAIM ═══
+--
+-- An ambient maniac driver (client/gamerules.lua's erratic peds, ability 0.0,
+-- aggression 1.0) killing a player is still nobody's kill, and #194 says that is
+-- correct: there is no player in the seat. So is a car that explodes with people
+-- in it -- the owner's answer to question 2 was "that's fine... It could be even
+-- the driver driving off a cliff." Neither of those is a gap this file is
+-- failing to close; both are the answer.
+--
+-- A PASSENGER whose car crashes beside another player's moving car can be
+-- credited to that other driver. The guard below excludes a victim who is
+-- DRIVING, because a driver who hits a wall is the crash rather than the
+-- roadkill; excluding passengers too would mean enumerating every seat of every
+-- vehicle every sample, which is a real cost for a case that needs two cars
+-- abreast at speed and one of them dying to something else. Stated rather than
+-- hidden.
+
+--- The vehicle each player is confirmed to be DRIVING, rebuilt every sample.
+---
+--- [src] = vehicle handle. Absent means "not driving", which covers a passenger,
+--- a player on foot, and a player whose ped the server could not resolve.
+---
+--- REBUILT RATHER THAN MAINTAINED, because the events that would maintain it are
+--- client-side (`CEventNetworkPlayerEnteredVehicle` and friends are client
+--- natives) and a map kept by anything a client sends is a map a client owns.
+local driving = {}
+
+--- Position and speed history, per player.
+---
+--- [src] = { x, y, z, at, license, speed }
+---
+--- CARRIES THE LICENCE, AND THAT IS NOT DECORATION. FiveM recycles server ids
+--- within the minute, so the row left behind by a disconnecting driver would be
+--- read as the previous position of whoever lands in that slot next -- and the
+--- displacement between two different humans standing in two different places is
+--- an enormous speed, arriving at the exact moment a fresh player is least able
+--- to have earned a kill. The `playerDropped` handler below already clears the
+--- row; the licence is what covers the case where it did not run, and it fails
+--- CLOSED -- an unrecognised licence means no speed this sample, so no credit.
+local track = {}
+
+--- Read a native that answers an entity handle, defensively.
+---
+--- pcall'd FOR server/vehicles.lua's OWN REASON, stated above `vehicleType`: the
+--- platform builds these with `makeEntityFunction`, which RAISES on a handle that
+--- has gone stale rather than answering zero, and a ped handle sampled up to
+--- 250 ms ago is exactly the handle that goes stale. An uncaught throw inside a
+--- scheduler job costs five of them before BR.Sched suspends the job entirely.
+---
+--- ZERO IS THE ANSWER FOR "NOTHING", AND IN LUA THAT IS TRUTHY. Every caller
+--- below compares against 0 explicitly for the reason `ownerOf` gives: `if veh
+--- then` is true for a vehicle that is not there.
+--- @param fn function|nil
+--- @param ... any
+--- @return integer  0 when the native is absent, threw, or answered nothing
+local function entityFrom(fn, ...)
+    if not fn then return 0 end
+    local ok, v = pcall(fn, ...)
+    if not ok then return 0 end
+    local n = math.tointeger(tonumber(v))
+    if n == nil or n < 0 then return 0 end
+    return n
+end
+
+--- Is this player driving something, and what?
+---
+--- TWO NATIVES, AND THE SECOND ONE IS THE ANSWER. See the section header for
+--- citizenfx/fivem#4006: the first native's answer is a claim about the past on
+--- the build this project pins, and the second is a live read that refutes it.
+--- @param entry table  a roster entry, for the ped roster.positions sampled
+--- @return integer|nil vehicle handle
+local function drivenVehicle(entry)
+    local ped = math.tointeger(tonumber(entry and entry.ped)) or 0
+    if ped == 0 then return nil end
+
+    local veh = entityFrom(GetVehiclePedIsIn, ped, false)
+    if veh == 0 then return nil end
+
+    -- SEAT -1 IS THE DRIVING SEAT. A passenger answers the same vehicle from the
+    -- native above and fails here, which is what makes this the driver test
+    -- rather than an occupancy test.
+    if entityFrom(GetPedInVehicleSeat, veh, -1) ~= ped then return nil end
+    return veh
+end
+
+--- How fast this player was moving at the last sample, in m/s, or nil.
+--- @param src integer
+--- @return number|nil
+local function speedOf(src)
+    local t = track[src]
+    return t and t.speed or nil
+end
+
+--- Take one position sample for a player and fold it into their speed.
+---
+--- FROM OUR OWN TWO SAMPLES RATHER THAN FROM GetEntitySpeed, and the reason is
+--- the same one roster.positions gives for reading coordinates itself: the
+--- number that decides a kill should come from the thing this server already
+--- treats as truth. It also means the speed and the position the radius is
+--- measured against are the SAME pair of samples, so they cannot disagree.
+--- @param src integer
+--- @param entry table
+--- @param now integer
+local function sampleSpeed(src, entry, now)
+    local p = entry.pos
+    if not p then track[src] = nil return end
+
+    local license = BR.Roster.licenseOf and BR.Roster.licenseOf(src) or nil
+    local t = track[src]
+
+    -- A DIFFERENT HUMAN IN THE SAME SLOT HAS NO HISTORY. nil is treated as
+    -- "cannot prove it is the same person" rather than as a licence that matches
+    -- itself, which is the direction that refuses a kill rather than inventing
+    -- one.
+    if t and (license == nil or t.license ~= license) then t = nil end
+
+    local speed = nil
+    if t and now > t.at then
+        speed = BR.Dist3(p.x, p.y, p.z, t.x, t.y, t.z) / ((now - t.at) / 1000.0)
+    end
+
+    track[src] = { x = p.x, y = p.y, z = p.z, at = now,
+                   license = license, speed = speed }
+end
+
+--- How far above or below a driver may be and still have hit this player.
+---
+--- A CAR ON THE BRIDGE OVERHEAD IS NOT RUNNING YOU OVER. The horizontal radius is
+--- generous because the sample lags the collision (see roadkillRadiusM); the
+--- vertical one cannot be, because Los Santos stacks roads. Four metres is a
+--- storey and change -- enough for a truck cab above a prone ped and a ramp, and
+--- short of the freeway above the street. The fire ledger makes the same split
+--- for the same reason.
+local ROADKILL_Z_M = 4.0
+
+--- Which player's vehicle just ran this player over, if the server can see one.
+---
+--- PURE, AND IT READS NO NATIVES. Everything it needs was sampled by the job
+--- below: who is driving, how fast they were going, and where everybody is. That
+--- is what makes it testable, and it is also what keeps the cost of an
+--- unattributed death at zero natives.
+--- @param src integer
+--- @param e table   the victim's roster entry
+--- @return integer|nil driver src
+function BR.Vehicles.roadkillDriverFor(src, e)
+    if not e or not e.pos or e.matchId == nil then return nil end
+
+    -- THE VICTIM IS ON FOOT, OR THIS IS A CRASH RATHER THAN A ROADKILL. Without
+    -- it, two players racing side by side hand each other a kill every time one
+    -- of them hits a wall.
+    if driving[src] then return nil end
+
+    stat.roadkillLooks = stat.roadkillLooks + 1
+
+    local r        = cfg.roadkillRadiusM or 8.0
+    local r2       = r * r
+    local minSpeed = cfg.roadkillMinSpeedMs or 6.0
+
+    local best, bestD2 = nil, nil
+    BR.Roster.each(
+        function(o) return o.src ~= src
+                        and o.matchId == e.matchId
+                        and o.state == BR.PlayerState.ALIVE end,
+        function(osrc, o)
+            if not o.pos or not driving[osrc] then return end
+
+            local sp = speedOf(osrc)
+            if sp == nil or sp < minSpeed then return end
+
+            local dx, dy = o.pos.x - e.pos.x, o.pos.y - e.pos.y
+            local d2 = dx * dx + dy * dy
+            if d2 > r2 then return end
+            if math.abs(o.pos.z - e.pos.z) > ROADKILL_Z_M then return end
+
+            -- NEAREST WINS. Two cars in a pile-up is a real thing and somebody
+            -- has to own it; the one on top of the body is the better claim than
+            -- the one eight metres away.
+            if best == nil or d2 < bestD2 then best, bestD2 = osrc, d2 end
+        end)
+
+    return best
+end
+
+--- Record a roadkill against this player, if the server can see one.
+---
+--- WRITES THE SAME THREE FIELDS THE VALIDATED DAMAGE PATH WRITES, so nothing
+--- downstream needs to learn about vehicles: BR.Combat.attributedKiller reads
+--- `lastHitBy` and the assist window, the kill feed reads `lastHitWeapon`, and a
+--- player who is run over and then finished by a rifle credits the rifle exactly
+--- as they would if the car had been a molotov.
+---
+--- `lastRoadkillAt` IS THE FOURTH AND IT IS THE CAUSE RATHER THAN THE CREDIT. It
+--- does not expire with the assist window -- server/combat.lua reads it against
+--- roadkillCauseMs to decide whether the feed says "roadkill", which is a
+--- different question from who gets the elimination.
+--- @param src integer
+--- @return boolean  true when a driver was credited
+function BR.Vehicles.creditRoadkill(src)
+    local e = BR.Roster and BR.Roster.get and BR.Roster.get(src)
+    if not e then return false end
+
+    local driver = BR.Vehicles.roadkillDriverFor(src, e)
+    if not driver then return false end
+
+    local now = GetGameTimer()
+    e.lastHitBy      = driver
+    e.lastHitAt      = now
+    -- AN ITEM-SHAPED STRING, exactly as the fire ledger writes 'molotov'. The
+    -- kill feed's own CAUSE_PHRASE table already knows this word, so it renders
+    -- the plain arrow rather than hunting for a weapon icon that does not exist.
+    e.lastHitWeapon  = 'roadkill'
+    e.lastRoadkillAt = now
+    stat.roadkills   = stat.roadkills + 1
+    return true
+end
+
+--- Was this player run over recently enough for the feed to say so?
+--- @param e table|nil
+--- @return boolean
+function BR.Vehicles.roadkillRecent(e)
+    if not e or not e.lastRoadkillAt then return false end
+    return (GetGameTimer() - e.lastRoadkillAt) < (cfg.roadkillCauseMs or 3000)
+end
+
+--- Sample who is driving, how fast, and who just lost health because of it.
+---
+--- AT THE ROSTER'S OWN RATE, READ FROM THE ROSTER'S OWN SETTING, so the two
+--- cannot drift: this job's whole input is the sample roster.positions took, and
+--- running at a different cadence would mean either measuring speed over a stale
+--- pair or measuring it twice over the same one. It is registered AFTER
+--- roster.positions (see the fxmanifest order), and BR.Sched runs jobs in
+--- registration order, so within one step the positions are already fresh.
+BR.Sched.every(BR.Roster.sampleIntervalMs(), 'vehicles.roadkill', function()
+    local now = GetGameTimer()
+
+    driving = {}
+    local live = 0
+
+    BR.Roster.each(
+        function(e) return e.state == BR.PlayerState.ALIVE and e.matchId ~= nil end,
+        function(src, e)
+            sampleSpeed(src, e, now)
+            local veh = drivenVehicle(e)
+            if veh then
+                driving[src] = veh
+                live = live + 1
+            end
+        end)
+
+    stat.driving = live
+
+    -- ONLY PLAYERS ACTUALLY LOSING HEALTH ARE ATTRIBUTED, which is the fire
+    -- ledger's guard and it is load-bearing for the same reason: without it,
+    -- driving past a squadmate would own their storm death twenty seconds later.
+    BR.Roster.each(
+        function(e) return e.state == BR.PlayerState.ALIVE and e.matchId ~= nil end,
+        function(src, e)
+            local hp  = (e.hp or 100.0) + (e.armour or 0.0)
+            local was = e.roadHp
+            e.roadHp  = hp
+            if was == nil or hp >= was then return end
+            BR.Vehicles.creditRoadkill(src)
+        end)
+end)
+
 --- Forget a player's refused-vehicle history.
 ---
 --- SERVER IDS ARE RECYCLED WITHIN THE MINUTE, so a record left behind would be
 --- inherited by whoever lands in that slot next -- and inheriting a count is
 --- inheriting somebody else's case. The same reason server/strip.lua and
 --- server/damage.lua clear theirs here.
+---
+--- The roadkill tables go with it, and the stakes there are the same shape: a
+--- position sample left behind is read as the previous position of the NEXT
+--- person to hold that id, and the displacement between two humans is a speed no
+--- car can reach.
 AddEventHandler('playerDropped', function()
     local src = source
     if not src then return end
     seenBy[src] = nil
+    track[src]  = nil
+    driving[src] = nil
 end)
 
 AddEventHandler('onResourceStart', function(name)
     if name == GetCurrentResourceName() then
         seenBy = {}
         seenModels, seenModelCount = {}, 0
+        track, driving = {}, {}
     end
 end)

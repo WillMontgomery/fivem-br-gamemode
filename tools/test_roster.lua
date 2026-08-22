@@ -85,6 +85,82 @@ local pedHealth = {}
 function GetEntityHealth(ped) return pedHealth[ped] or 200 end
 function GetPedArmour() return 0 end
 
+-- ═══ THE TWO SERVER-SIDE VEHICLE NATIVES, AND ONE OF THEM LIES ═══
+--
+-- These are kept as two INDEPENDENT tables on purpose, and a test that sets
+-- only one of them is expressing something real rather than being lazy.
+--
+-- `GetVehiclePedIsIn` asks the PED and, on the builds this project runs,
+-- answers the vehicle it was LAST in when it is not in one at all --
+-- citizenfx/fivem#4006, "[Server] GetVehiclePedIsIn(ped, false) returns last
+-- vehicle when ped is not in any vehicle", reported fixed only as of build
+-- 3326. The documented workaround gates it on `IsPedInAnyVehicle`, which does
+-- not exist server-side. So `pedVehicle` here is deliberately STICKY: `drive`
+-- writes it and `stepOut` does not clear it, exactly as the platform does not.
+--
+-- `GetPedInVehicleSeat` asks the VEHICLE, which is a live read, and `stepOut`
+-- clears that. A stub where both moved together would agree with a naive
+-- implementation and prove nothing -- which is rule 4 in docs/testing.md and
+-- the reason #129 survived six rounds of fixes with a green suite.
+--
+-- BOTH ANSWER 0 RATHER THAN nil for "nothing", because that is what the natives
+-- do and because 0 IS TRUTHY IN LUA. A server that tests `if veh then` passes
+-- against a nil-returning stub and puts every player on the map in a car
+-- against the real thing.
+--
+-- GET_HASH_KEY comes with them, because server/combat.lua's `describeCause`
+-- hashes weapon NAMES at runtime to translate the cause the client reports --
+-- and 'roadkill' is one of its answers. This is the real joaat rather than a
+-- lookup that agrees with config/weapons.lua's authored column, so a test that
+-- names WEAPON_RUN_OVER_BY_CAR and a table that names 0xA36D413E are two
+-- independent statements. (tools/check_weapons.lua carries the same twelve lines
+-- and the same WEAPON_PISTOL anchor; that is the gate that proves the column.)
+function GetHashKey(s)
+    local h = 0
+    s = tostring(s):lower()
+    for i = 1, #s do
+        h = (h + s:byte(i)) & 0xFFFFFFFF
+        h = (h + (h << 10)) & 0xFFFFFFFF
+        h = (h ~ (h >> 6))  & 0xFFFFFFFF
+    end
+    h = (h + (h << 3))  & 0xFFFFFFFF
+    h = (h ~ (h >> 11)) & 0xFFFFFFFF
+    h = (h + (h << 15)) & 0xFFFFFFFF
+    return h
+end
+
+local pedVehicle = {}   -- [ped]     = the vehicle the ped is or WAS in
+local vehSeat    = {}   -- [vehicle] = { [seat] = ped }
+function GetVehiclePedIsIn(ped) return pedVehicle[ped] or 0 end
+function GetPedInVehicleSeat(veh, seat)
+    local s = vehSeat[veh]
+    return (s and s[seat]) or 0
+end
+
+--- Put a player at the wheel of a vehicle.
+local function drive(src, veh, seat)
+    local ped = 1000 + src
+    pedVehicle[ped] = veh
+    vehSeat[veh] = vehSeat[veh] or {}
+    vehSeat[veh][seat or -1] = ped
+end
+
+--- Put an NPC at the wheel -- an ambient maniac driver, which is a real thing
+--- this gamemode creates on purpose (client/gamerules.lua) and must never bill
+--- a player for. The handle is outside the 1000+src range every player ped uses.
+local function driveNpc(veh)
+    vehSeat[veh] = vehSeat[veh] or {}
+    vehSeat[veh][-1] = 9000 + veh
+end
+
+--- Empty a vehicle's driving seat -- somebody got out.
+---
+--- THE PED'S OWN ANSWER IS LEFT BEHIND, because the platform leaves it behind:
+--- the ped goes on naming this vehicle forever. See the note above.
+local function stepOut(veh)
+    if vehSeat[veh] then vehSeat[veh][-1] = nil end
+end
+
 -- Routing buckets, captured for assertion: the lobby is per-player private,
 -- matches are shared.
 local buckets = {}
@@ -167,7 +243,13 @@ for _, f in ipairs({
     'br_lib/shared/sched.lua',   -- BR.Sched; br_core/server/* registers into it
     'br_lib/shared/identity.lua',-- BR.Identity; BR.Roster.ringmaster resolves licenses
     'br_lib/config/match.lua', 'br_lib/config/storm.lua', 'br_lib/config/map.lua',
-    'br_lib/config/weapons.lua', 'br_lib/config/loot.lua',
+    'br_lib/config/weapons.lua',
+    -- AFTER geo.lua, not merely near it: it calls BR.NormHash at LOAD time to
+    -- build its hash-keyed lookup, and loading it earlier would key every row on
+    -- nil -- which reads exactly like a clean table. The fxmanifest says the
+    -- same thing beside the same line.
+    'br_lib/config/vehicles.lua',
+    'br_lib/config/loot.lua',
     -- AFTER the config tables it edits, exactly as br_core's fxmanifest orders
     -- it. Nothing here is overridden -- the load-time hook needs
     -- IsDuplicityVersion and this state has none, so every value stays the
@@ -198,6 +280,18 @@ for _, f in ipairs({
     -- AFTER combat_solve, whose enum values it keys its severity table on.
     'br_lib/shared/incident_build.lua',
     'br_core/server/incident.lua',     -- BR.Incident; listens to the refusal event
+    -- BR.Vehicles. LOADED HERE FOR THE ROADKILL LEDGER rather than for the
+    -- refused-vehicle detector, which tools/test_shared.lua already drives in a
+    -- sandbox. The ledger is the opposite kind of thing: it reads the REAL
+    -- roster's sampled positions, the real health sampler and the real assist
+    -- window, and every one of those is a fixture that stops matching the game
+    -- the moment it is hand-built.
+    --
+    -- AFTER roster.lua, which it asks for the sampling rate at load, and after
+    -- combat.lua, whose two death paths call into it. It registers its own
+    -- scheduler job, so from here on every BR.Sched.step in this suite runs it --
+    -- harmlessly, because nobody is driving anything in any other block.
+    'br_core/server/vehicles.lua',
     -- BR.Grants: admin scopes, read from the DynamoDB grants table through
     -- br_ddb. Loaded BEFORE players.lua for the same reason the manifest
     -- declares it there -- the file that answers "may this license file a
@@ -294,6 +388,12 @@ local function reset()
     for k in pairs(BR.Server.matches) do BR.Server.matches[k] = nil end
     BR.Server.partyHoldSince = nil
     for k in pairs(pedCoords) do pedCoords[k] = nil end
+    -- AND WHO IS IN WHAT. A driver left behind by the previous block would be
+    -- resolved as driving by the roadkill ledger for the whole of the next one,
+    -- which is the same class of cross-block leak the position wipe above exists
+    -- for -- and this one hands out kills rather than merely moving somebody.
+    for k in pairs(pedVehicle) do pedVehicle[k] = nil end
+    for k in pairs(vehSeat) do vehSeat[k] = nil end
     -- Back to the src-derived default. A block that made a recycled id belong
     -- to a different person (see the identifier stub) must not leave that
     -- opinion lying around: the next block asserts on `license:test<src>` and
@@ -6182,7 +6282,17 @@ do
     ok(#eventsOf(BR.Net.INV_SET) > 0, 'and the result is pushed back')
 end
 
--- Fallback coverage ends here; the takeover is the default again.BR.Config.Combat.serverAmmo = savedServerAmmo
+-- Fallback coverage ends here; the takeover is the default again.
+--
+-- THIS RESTORE SPENT SOME TIME INSIDE THE COMMENT ABOVE IT -- the statement and
+-- the sentence were on one line, so it was never executed and `serverAmmo`
+-- stayed FALSE for every block after `inv.ammo`. Nothing failed, because a
+-- suite cannot notice a flag that is off: the ammo assertions before this point
+-- run with it on, and after it the rounds simply stopped being counted. Found
+-- while writing the #194 vehicle blocks, whose "a round into the bodywork still
+-- costs a round" assertion is the first thing after here that reads a magazine.
+BR.Config.Combat.serverAmmo = savedServerAmmo
+
 describe('inv.warmup')
 do
     -- A WARMUP INVENTORY IS A LIVE INVENTORY.
@@ -12932,6 +13042,630 @@ do
     fire(BR.Net.SPECTATE_CYCLE, 1, { dir = -1 })
     ok(watching(1) == 4, 'and the other arrow walks the other way',
         tostring(watching(1)))
+end
+
+-- ------------------------------------------------------- M8: vehicles (#194) ---
+--
+-- FOUR QUESTIONS THE OWNER ANSWERED ON 2026-08-21, AND THREE OF THE ANSWERS WERE
+-- "THAT IS ALREADY WHAT IT DOES". Those three are pinned here and nowhere else,
+-- because "we never wrote the exemption" is not a property any gate can check --
+-- the only way an absence stays true is if something fails when it stops being.
+--
+--   1. in-vehicle ped damage is the same as out-of-vehicle damage    -> vehicles.cover
+--   2. a vehicle exploding with no killer is fine and by design      -> vehicles.explosion
+--   3. roadkill is attributed to the driver                          -> vehicles.roadkill
+--   4. vehicles never grant storm immunity                           -> storm.vehicles
+
+--- A live match with a driver (1), somebody on foot (2) and a bystander (3).
+---
+--- THE THIRD PLAYER IS LOAD-BEARING AND IS NOT PADDING: this is a SOLO match, so
+--- killing the second player with only two in it ends the match and tears the
+--- instance down underneath every assertion that follows the death.
+---
+--- Both players are sampled TWICE before returning. The roadkill ledger measures
+--- speed between two of the roster's own position samples and health against the
+--- previous one, so a fixture that returns after one sample would have every
+--- first assertion pass for the wrong reason -- no history is not the same fact
+--- as no roadkill.
+local function roadMatch()
+    reset()
+    queueUp(1, 'Driver', BR.Mode.SOLO.key)
+    queueUp(2, 'Walker', BR.Mode.SOLO.key)
+    queueUp(3, 'Bystander', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    for s = 1, 3 do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
+    theMatch().state = BR.MatchState.PLAYING
+
+    -- POSITIONS AND HEALTH BOTH FLOW PED -> SAMPLER -> ROSTER, never the other
+    -- way. Writing entry.pos or entry.hp here would be overwritten by
+    -- roster.positions before the ledger ever saw it.
+    setPos(1, 0.0, 0.0, 30.0)
+    setPos(2, 10.0, 0.0, 30.0)
+    setPos(3, 500.0, 500.0, 30.0)
+    for s = 1, 3 do pedHealth[1000 + s] = 200 end
+
+    fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+    fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+    sent = {}
+    return theMatch()
+end
+
+describe('vehicles.roadkill')
+do
+    -- A ROADKILL WAS A FREE, UNATTRIBUTABLE, EVIDENCE-FREE KILL (#194 §3).
+    --
+    -- WEAPON_RAMMED_BY_CAR and WEAPON_RUN_OVER_BY_CAR are both environmental, so
+    -- server/damage.lua counts them and returns without writing lastHitBy;
+    -- server/combat.lua already had the word 'roadkill' for the feed and no
+    -- killer to put in front of it. The owner, 2026-08-21: "Roadkill should be
+    -- attributed to the driver."
+    local m = roadMatch()
+    local victim = BR.Roster.get(2)
+
+    -- NOBODY IS DRIVING. A player losing health beside parked cars is nobody's
+    -- roadkill, and this is the assertion that stops the whole feature from
+    -- being "credit the nearest player".
+    pedHealth[1002] = 180
+    fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+    ok(victim.lastHitBy == nil,
+        'health lost with nobody driving is credited to nobody',
+        tostring(victim.lastHitBy))
+
+    -- A CAR GOING PAST SOMEBODY IT DID NOT HIT IS NOT A ROADKILL. Same guard the
+    -- fire ledger states: only players ACTUALLY LOSING HEALTH are attributed.
+    drive(1, 7)
+    setPos(1, 5.0, 0.0, 30.0)
+    fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+    ok(victim.lastHitBy == nil,
+        'a car driven past an unharmed player credits nobody',
+        tostring(victim.lastHitBy))
+
+    -- ...and now it hits them. 5 m in 500 ms is 10 m/s, comfortably over
+    -- roadkillMinSpeedMs, and it ends up on top of them.
+    setPos(1, 10.0, 0.0, 30.0)
+    pedHealth[1002] = 120
+    fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+    ok(victim.lastHitBy == 1,
+        'health lost under a moving player-driven car belongs to the driver',
+        tostring(victim.lastHitBy))
+    ok(victim.lastHitWeapon == 'roadkill', 'and names the cause as the weapon',
+        tostring(victim.lastHitWeapon))
+    ok(BR.Combat.attributedKiller(victim) == 1,
+        'so the attribution the kill feed reads finally has somebody in it',
+        tostring(BR.Combat.attributedKiller(victim)))
+    ok(BR.Vehicles.stats().roadkills >= 1, 'and it is counted for brvehicles')
+
+    -- IT EXPIRES LIKE EVERY OTHER ATTRIBUTION. A roadkill is not a claim on
+    -- somebody for the rest of the match.
+    fakeTime = fakeTime + BR.Config.Match.assistWindowMs + 1000
+    ok(BR.Combat.attributedKiller(victim) == nil,
+        'and expires with the assist window like any other hit',
+        tostring(BR.Combat.attributedKiller(victim)))
+end
+
+describe('vehicles.roadkill.refused')
+do
+    -- EVERY WAY OF NOT BEING A ROADKILL, because the expensive failure here is
+    -- not a missed credit -- it is a kill awarded to somebody who did nothing.
+
+    -- A PARKED CAR OWNS NOTHING. Without the speed floor, sitting in a car beside
+    -- a squadmate would collect their storm death.
+    do
+        roadMatch()
+        local victim = BR.Roster.get(2)
+        drive(1, 7)
+        setPos(1, 10.0, 0.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        pedHealth[1002] = 120
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(victim.lastHitBy == nil,
+            'a stationary player-driven car on top of a dying player credits nobody',
+            tostring(victim.lastHitBy))
+    end
+
+    -- AND NEITHER DOES ONE ACROSS THE FIELD. The radius is generous because the
+    -- sample lags the collision; it is not a claim on everybody in the district.
+    do
+        roadMatch()
+        local victim = BR.Roster.get(2)
+        drive(1, 7)
+        setPos(1, 60.0, 0.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        setPos(1, 80.0, 0.0, 30.0)
+        pedHealth[1002] = 120
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(victim.lastHitBy == nil,
+            'a car at speed 70m away credits nobody',
+            tostring(victim.lastHitBy))
+    end
+
+    -- A CAR ON THE OVERPASS IS NOT RUNNING YOU OVER. Los Santos stacks roads, so
+    -- the vertical allowance cannot be the horizontal one.
+    do
+        roadMatch()
+        local victim = BR.Roster.get(2)
+        drive(1, 7)
+        setPos(1, 5.0, 0.0, 60.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        setPos(1, 10.0, 0.0, 60.0)
+        pedHealth[1002] = 120
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(victim.lastHitBy == nil,
+            'a car at speed thirty metres overhead credits nobody',
+            tostring(victim.lastHitBy))
+    end
+
+    -- ═══ THE PLATFORM BUG, AND IT IS THE REASON THE DRIVER IS CONFIRMED FROM
+    --     THE SEAT RATHER THAN FROM THE PED ═══
+    --
+    -- citizenfx/fivem#4006: server-side GetVehiclePedIsIn(ped, false) answers the
+    -- vehicle a ped was LAST in when it is in none, reported fixed only as of
+    -- build 3326. The documented workaround gates it on IsPedInAnyVehicle, and
+    -- that native does not exist on the server. Believing the ped alone would
+    -- turn every player who has ever driven anything into a permanent driver --
+    -- and this suite's stub reproduces the bug rather than hiding it, so a
+    -- version of the code that asks only the ped fails here.
+    do
+        roadMatch()
+        local victim = BR.Roster.get(2)
+        drive(1, 7)
+        stepOut(7)                 -- out of the car; the PED still names it
+        setPos(1, 5.0, 0.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        setPos(1, 10.0, 0.0, 30.0)
+        pedHealth[1002] = 120
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(victim.lastHitBy == nil,
+            'a player who left a car is not still driving it, whatever the ped says',
+            tostring(victim.lastHitBy))
+        ok(BR.Vehicles.stats().driving == 0,
+            'and the server counts nobody at a wheel',
+            tostring(BR.Vehicles.stats().driving))
+    end
+
+    -- AN AMBIENT MANIAC IS NOBODY'S KILL, and the passenger is not on the hook
+    -- for it. client/gamerules.lua deliberately makes ambient drivers erratic
+    -- (ability 0.0, aggression 1.0), so a player being driven into somebody by an
+    -- NPC is a thing this gamemode actively causes. #194: "an ambient maniac
+    -- driver killing a player genuinely is nobody's kill."
+    do
+        roadMatch()
+        local victim = BR.Roster.get(2)
+        driveNpc(7)                -- the NPC has seat -1
+        drive(1, 7, 0)             -- our player is only a passenger
+        setPos(1, 5.0, 0.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        setPos(1, 10.0, 0.0, 30.0)
+        pedHealth[1002] = 120
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(victim.lastHitBy == nil,
+            'an NPC at the wheel credits nobody, and never the passenger',
+            tostring(victim.lastHitBy))
+    end
+
+    -- A CRASH IS NOT A ROADKILL. Two players racing side by side would otherwise
+    -- hand each other a kill every time one of them hit a wall.
+    do
+        roadMatch()
+        local victim = BR.Roster.get(2)
+        drive(1, 7)
+        drive(2, 8)
+        setPos(1, 5.0, 0.0, 30.0)
+        setPos(2, 12.0, 0.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        setPos(1, 10.0, 0.0, 30.0)
+        pedHealth[1002] = 120
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(victim.lastHitBy == nil,
+            'a driver who loses health beside another car crashed, and it is nobody else\'s',
+            tostring(victim.lastHitBy))
+    end
+
+    -- ═══ A SERVER ID IS NOT A PERSON ═══
+    --
+    -- FiveM recycles ids within the minute, so the position sample left behind by
+    -- a driver who disconnects would be read as the PREVIOUS POSITION of whoever
+    -- lands in that slot next -- and the displacement between two humans standing
+    -- in two different places is a speed no car can reach, arriving at the exact
+    -- moment a fresh player is least able to have earned a kill. The playerDropped
+    -- handler clears the row; the licence carried on it is what covers the case
+    -- where that did not run, and it fails CLOSED.
+    do
+        roadMatch()
+        local victim = BR.Roster.get(2)
+        drive(1, 7)
+        setPos(1, 5.0, 0.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+
+        -- Same server id, different human.
+        BR.Roster.get(1).license = 'license:somebodyelse'
+
+        setPos(1, 10.0, 0.0, 30.0)
+        pedHealth[1002] = 120
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(victim.lastHitBy == nil,
+            'a recycled server id does not inherit the last holder\'s speed',
+            tostring(victim.lastHitBy))
+    end
+end
+
+describe('vehicles.roadkill.death')
+do
+    -- END TO END: the kill lands on the roster, on the wire, and in the feed's
+    -- own words.
+    roadMatch()
+    local victim = BR.Roster.get(2)
+
+    drive(1, 7)
+    setPos(1, 5.0, 0.0, 30.0)
+    fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+    setPos(1, 10.0, 0.0, 30.0)
+    pedHealth[1002] = 120
+    fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+    ok(victim.lastHitBy == 1, 'the ledger has the driver before the death arrives')
+
+    BR.Roster.get(1).kills = 0
+    sent = {}
+    -- THE CLIENT REPORTS A CAUSE AND A KILLER AND NEITHER IS BELIEVED. `killer`
+    -- is the netId GET_PED_SOURCE_OF_DEATH handed the victim's own machine, and
+    -- the server has ignored that field since M6.
+    fire(BR.Net.PLAYER_DIED, 2,
+         { cause = GetHashKey('WEAPON_RUN_OVER_BY_CAR'), killer = 4242 })
+
+    ok(BR.Roster.get(1).kills == 1, 'a roadkill increments the driver',
+        tostring(BR.Roster.get(1).kills))
+
+    local feed = eventsOf(BR.Net.KILL_FEED)
+    local last = feed[#feed] and feed[#feed].args[1]
+    ok(last and last.killerSrc == 1, 'and the feed names them',
+        tostring(last and last.killerSrc))
+    ok(last and last.cause == 'roadkill', 'and calls it a roadkill',
+        tostring(last and last.cause))
+    -- The UI's CAUSE_PHRASE table already knows this word, so the row draws its
+    -- plain arrow rather than hunting for a weapon icon that does not exist.
+    ok(last and last.weapon == 'roadkill', 'and carries it as the weapon',
+        tostring(last and last.weapon))
+end
+
+describe('vehicles.roadkill.instant')
+do
+    -- THE ORDINARY CASE IS THE ONE THE 4 Hz LEDGER CANNOT SEE.
+    --
+    -- A car at speed turns a full-health player into a corpse between two
+    -- samples: the victim's client reports the death immediately and the death
+    -- handler runs before the sampler next fires, so there is no health drop for
+    -- the ledger to have noticed. server/combat.lua's `killerOf` gives an
+    -- otherwise unattributed death exactly one look at the same server-side
+    -- state, which is what this asserts -- note that NOTHING is stepped between
+    -- the car arriving and the death.
+    roadMatch()
+    local victim = BR.Roster.get(2)
+
+    drive(1, 7)
+    setPos(1, 4.0, 0.0, 30.0)
+    fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+    setPos(1, 10.0, 0.0, 30.0)
+    fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+    ok(victim.lastHitBy == nil,
+        'the victim is untouched right up to the moment they are hit',
+        tostring(victim.lastHitBy))
+
+    BR.Roster.get(1).kills = 0
+    sent = {}
+    fire(BR.Net.PLAYER_DIED, 2, { cause = 'unknown' })
+
+    local feed = eventsOf(BR.Net.KILL_FEED)
+    local last = feed[#feed] and feed[#feed].args[1]
+    ok(last and last.killerSrc == 1,
+        'a death with no ledger entry still resolves the driver at the death itself',
+        tostring(last and last.killerSrc))
+    ok(last and last.cause == 'roadkill',
+        'and the server names the cause the client never reported',
+        tostring(last and last.cause))
+end
+
+describe('vehicles.roadkill.forged')
+do
+    -- ═══ THE ONE THAT WOULD HAVE BEEN WORSE THAN NO FEATURE ═══
+    --
+    -- The owner's suggested route was GET_PED_SOURCE_OF_DEATH, which is read on
+    -- the victim's own machine and arrives in a payload of two client-authored
+    -- fields. Believing it would let two players farm eliminations by taking
+    -- turns dying and naming each other's car -- manufacturing kills that never
+    -- happened, which is strictly worse than losing kills that did.
+    --
+    -- So the label can be claimed and the CREDIT cannot: this death reports the
+    -- real run-over hash and a netId, with no vehicle anywhere on the server.
+    roadMatch()
+    sent = {}
+    BR.Roster.get(1).kills = 0
+    fire(BR.Net.PLAYER_DIED, 2,
+         { cause = GetHashKey('WEAPON_RUN_OVER_BY_CAR'), killer = 1001 })
+
+    local feed = eventsOf(BR.Net.KILL_FEED)
+    local last = feed[#feed] and feed[#feed].args[1]
+    ok(last ~= nil, 'the death is still processed')
+    ok(last and last.killerSrc == nil,
+        'but a roadkill the server cannot see credits nobody, whatever the client sent',
+        tostring(last and last.killerSrc))
+    ok(BR.Roster.get(1).kills == 0, 'and nobody is handed a kill',
+        tostring(BR.Roster.get(1).kills))
+    -- The cause still translates -- describeCause has mapped both car hashes to
+    -- this word since M7. A label is not a credit.
+    ok(last and last.cause == 'roadkill', 'the feed still calls it a roadkill',
+        tostring(last and last.cause))
+end
+
+describe('vehicles.roadkill.squad')
+do
+    -- QUESTION 5, AND THE ANSWER WAS "LEAVE IT" (owner, 2026-08-21): "VDM against
+    -- a squadmate can still kill them. That's not really an issue we need to
+    -- solve today tbh."
+    --
+    -- Friendly fire is gated on the engine team and on the damage validator's
+    -- SAME_SQUAD refusal; a car is neither, so driving into a squadmate goes on
+    -- working. Pinned because it is now ATTRIBUTED as well -- which is the change
+    -- -- and because an admin reading a griefing report wants the driver's name
+    -- on it rather than an anonymous accident.
+    local m = squadMatch(3)
+    for s = 1, 3 do pedHealth[1000 + s] = 200 end
+    setPos(1, 0.0, 0.0, 30.0)
+    setPos(2, 10.0, 0.0, 30.0)
+    setPos(3, 40.0, 0.0, 30.0)
+    tick(500); tick(500)
+
+    local victim = BR.Roster.get(2)
+    drive(1, 7)
+    setPos(1, 5.0, 0.0, 30.0)
+    tick(500)
+    setPos(1, 10.0, 0.0, 30.0)
+    pedHealth[1002] = 120
+    tick(500)
+
+    ok(victim.lastHitBy == 1,
+        'a squadmate at the wheel is credited exactly like anybody else',
+        tostring(victim.lastHitBy))
+
+    -- ...and it still costs the victim, which is the half the owner declined to
+    -- change. A squad knock rather than an elimination, because that is what
+    -- every other damage path does to a player with a standing mate.
+    pedHealth[1002] = 100
+    fire(BR.Net.PLAYER_DIED, 2, { cause = GetHashKey('WEAPON_RAMMED_BY_CAR') })
+    ok(victim.state == BR.PlayerState.DBNO,
+        'and the squadmate still goes down: VDM inside a squad is unchanged',
+        tostring(victim.state))
+    ok(victim.downedBy == 1, 'with the driver on the hook for it',
+        tostring(victim.downedBy))
+end
+
+describe('vehicles.cover')
+do
+    -- QUESTION 1, AND THE ANSWER WAS "NO DIFFERENCE" (owner, 2026-08-21): "yes,
+    -- in-vehicle ped damage should be the same and matters no differently from
+    -- out-of-vehicle damage. The engine blocks bullets going through anything
+    -- other than the vehicle's glass, which is a fair play if they do hit the
+    -- glass then the ped."
+    --
+    -- Which is what BR.Config.ExpectedDamage already does, by having no cover
+    -- term at all: weaponDamage x rarity x falloff x body part, and nothing in
+    -- there knows the victim is behind a car door. NOTHING WAS ADDED. This block
+    -- is the thing that makes the absence checkable -- a `vehicleOccupantMult`
+    -- appearing in that formula fails here.
+    reset()
+    queueUp(1, 'Shooter', BR.Mode.SOLO.key)
+    queueUp(2, 'Target', BR.Mode.SOLO.key)
+    queueUp(3, 'Bystander', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    for s = 1, 3 do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
+
+    local pistol = BR.Config.WeaponById['pistol']
+    local function arm()
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                         count = 1, clip = pistol.clip })
+        BR.Inv.of(1).ammo[BR.AmmoType.LIGHT] = 40
+        BR.Inv.of(1).active = 1
+    end
+    local function shoot(ids)
+        fakeTime = fakeTime + 5000
+        fire('weaponDamageEvent', 1, 1, {
+            damageType = 3, weaponType = pistol.hash, hitComponent = 0,
+            weaponDamage = 26, hitGlobalIds = ids,
+        })
+    end
+
+    for s = 1, 3 do BR.Roster.get(s).pos = { x = s * 2.0, y = 0.0, z = 30.0 } end
+
+    -- The same shot, twice, at a target who is standing and then sitting in a
+    -- car. Health is restored between them so the two are comparable.
+    arm()
+    BR.Roster.get(2).hp = 100.0
+    shoot({ 1002 })
+    local onFoot = 100.0 - BR.Roster.get(2).hp
+
+    arm()
+    BR.Roster.get(2).hp = 100.0
+    drive(2, 9)
+    shoot({ 1002 })
+    local inCar = 100.0 - BR.Roster.get(2).hp
+
+    ok(onFoot > 0.0, 'a pistol round hurts a player standing in the open',
+        tostring(onFoot))
+    ok(inCar == onFoot,
+        'and hurts them by exactly the same amount sitting in a car',
+        ('on foot %s, in a car %s'):format(tostring(onFoot), tostring(inCar)))
+
+    -- ═══ AND A ROUND THAT HITS THE CAR IS STILL NOTHING, INCLUDING NOT A
+    --     REFUSAL ═══
+    --
+    -- hitGlobalIds resolves through a map of PLAYER PEDS only, so a vehicle netId
+    -- answers nil and the whole victim loop is skipped: no damage, no refusal, no
+    -- record. That is what makes a car hard cover, which is the behaviour the
+    -- engine's own hit resolution produces and the owner accepted. The load-
+    -- bearing half is the SECOND assertion: a player emptying a magazine into a
+    -- car must not accumulate anticheat refusals for it.
+    arm()
+    BR.Roster.get(2).hp = 100.0
+    local refusalsBefore = BR.Damage.refusals or 0
+    local firedBefore = #firedOf('br:ringmaster:refusal')
+    shoot({ 5000 })                 -- a netId that is no player's ped
+
+    ok(BR.Roster.get(2).hp == 100.0, 'a round into the bodywork hurts nobody',
+        tostring(BR.Roster.get(2).hp))
+    ok((BR.Damage.refusals or 0) == refusalsBefore,
+        'and is not a refusal, so shooting cars opens no case',
+        ('%d -> %d'):format(refusalsBefore, BR.Damage.refusals or 0))
+    ok(#firedOf('br:ringmaster:refusal') == firedBefore,
+        'and files nothing with the Ringmaster')
+    -- ...but it still costs a round. A miss costs a round too, which is the whole
+    -- difference between counting shots and counting hits.
+    ok(BR.Inv.of(1).slots[1].clip == pistol.clip - 1,
+        'while still spending the round, exactly as a miss does',
+        tostring(BR.Inv.of(1).slots[1].clip))
+end
+
+describe('vehicles.explosion')
+do
+    -- QUESTION 2, AND THE ANSWER WAS "THAT'S FINE" (owner, 2026-08-21): "It's by
+    -- design that vehicles in the game can explode under normal circumstances,
+    -- without a killer necessarily. It could be even the driver driving off a
+    -- cliff."
+    --
+    -- WEAPON_EXPLOSION is environmental, so server/damage.lua counts it and
+    -- returns; explosion type 7 (a car) is not one of the three this gamemode
+    -- issues, so the fire ledger declines it too -- tested from the other end in
+    -- combat.fire. Nothing was added. What is pinned here is that the whole path
+    -- stays quiet: no damage of ours, no attribution, and above all NO REFUSAL,
+    -- because an ambient blast that opened anticheat cases would accuse whoever
+    -- was standing near a petrol station.
+    roadMatch()
+    local victim = BR.Roster.get(2)
+    victim.lastHitBy, victim.lastHitAt = nil, nil
+    victim.hp = 100.0
+
+    local envBefore = BR.Damage.envHits or 0
+    local refusalsBefore = BR.Damage.refusals or 0
+
+    fire('weaponDamageEvent', 1, 1, {
+        damageType = 3, weaponType = GetHashKey('WEAPON_EXPLOSION'),
+        hitComponent = 0, weaponDamage = 200, hitGlobalIds = { 1002 },
+    })
+
+    ok((BR.Damage.envHits or 0) == envBefore + 1,
+        'a vehicle explosion is recognised as the world\'s',
+        ('%d -> %d'):format(envBefore, BR.Damage.envHits or 0))
+    ok((BR.Damage.refusals or 0) == refusalsBefore,
+        'and is never a refusal',
+        ('%d -> %d'):format(refusalsBefore, BR.Damage.refusals or 0))
+    ok(victim.lastHitBy == nil, 'and writes no attribution',
+        tostring(victim.lastHitBy))
+
+    -- ...so the death that follows is nobody's, which is the design rather than
+    -- the gap. A driver going off a cliff has no killer and should not acquire
+    -- one.
+    sent = {}
+    fire(BR.Net.PLAYER_DIED, 2, { cause = GetHashKey('WEAPON_EXPLOSION') })
+    local feed = eventsOf(BR.Net.KILL_FEED)
+    local last = feed[#feed] and feed[#feed].args[1]
+    ok(last and last.killerSrc == nil,
+        'a player killed by an exploding vehicle is nobody\'s kill, by design',
+        tostring(last and last.killerSrc))
+    ok(last and last.cause == 'explosion', 'and the feed says what happened',
+        tostring(last and last.cause))
+end
+
+describe('storm.vehicles')
+do
+    -- QUESTION 4, AND THE ANSWER WAS "NEVER" (owner, 2026-08-21): "no, vehicles
+    -- will never grant storm immunity. that's not a thing. the only exception is
+    -- the ambulance and ONLY while they're in `rescue` state - so if they hop in
+    -- an ambulance and drive off they are not granted any sort of immunity."
+    --
+    -- Which is already true, because server/storm.lua's damage loop is a position
+    -- check against a solved circle and a server-side ledger: it holds no ped
+    -- handle and no vehicle handle, so there is nothing there for a car to change.
+    -- NOTHING WAS ADDED, and #191's ambulance exception is left as a sentence on
+    -- the DAMAGEABLE table rather than as a flag with no writer.
+    --
+    -- Two players stand on the same square metre outside the wall. One is at the
+    -- wheel of a car and one is on foot, and they must be hurt identically -- an
+    -- equality rather than two independent thresholds, because "the driver took
+    -- SOME damage" would still pass if a car halved it.
+    reset()
+    queueUp(1, 'Driver', BR.Mode.SOLO.key)
+    queueUp(2, 'Walker', BR.Mode.SOLO.key)
+    queueUp(3, 'Bystander', BR.Mode.SOLO.key)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+
+    local a0 = manchor()
+    for s = 1, 3 do setPos(s, a0.x, a0.y) end
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+
+    fakeTime = fakeTime + 1000
+    forceState(BR.MatchState.PLAYING)
+    for s = 1, 3 do BR.Roster.setState(s, BR.PlayerState.ALIVE) end
+
+    local rec = mstorm()
+    local a   = manchor()
+    ok(rec ~= nil, 'the storm is running')
+
+    -- Both far outside, on the same spot; the bystander stays at the anchor so
+    -- the match cannot end underneath the assertions.
+    setPos(1, a.x + rec.r0 + 4000.0, a.y)
+    setPos(2, a.x + rec.r0 + 4000.0, a.y)
+    setPos(3, a.x, a.y)
+    -- The car exists and is stationary, which is what a shelter would be. It also
+    -- keeps the roadkill ledger out of this block: nothing is moving.
+    drive(1, 7)
+
+    sent = {}
+    fakeTime = rec.tStart + rec.tWait + 1000
+    BR.Sched.step(fakeTime)
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+
+    local toDriver, toWalker, lastDriver, lastWalker = 0, 0, nil, nil
+    for _, h in ipairs(eventsOf(BR.Net.STORM_DAMAGE)) do
+        if h.target == 1 then toDriver = toDriver + 1 lastDriver = h.args[1] end
+        if h.target == 2 then toWalker = toWalker + 1 lastWalker = h.args[1] end
+    end
+
+    ok(toWalker >= 1, 'the player on foot outside the wall is hurt',
+        tostring(toWalker))
+    ok(toDriver == toWalker,
+        'and the one sitting in a car is hurt exactly as often',
+        ('driver %d, walker %d'):format(toDriver, toWalker))
+    ok(lastDriver and lastWalker and lastDriver.amount == lastWalker.amount,
+        'by exactly the same amount',
+        ('driver %s, walker %s'):format(
+            tostring(lastDriver and lastDriver.amount),
+            tostring(lastWalker and lastWalker.amount)))
+    ok(BR.Roster.get(1).stormHp ~= nil
+       and BR.Roster.get(1).stormHp == BR.Roster.get(2).stormHp,
+        'and the server-side ledger runs down at the same rate for both',
+        ('driver %s, walker %s'):format(tostring(BR.Roster.get(1).stormHp),
+                                        tostring(BR.Roster.get(2).stormHp)))
+
+    -- AND DRIVING DOES NOT HELP EITHER. "if they hop in an ambulance and drive
+    -- off they are not granted any sort of immunity" -- the rule is about the
+    -- rescue, not about being in a vehicle, so a moving one is worth its own
+    -- assertion rather than being assumed to follow from a parked one.
+    --
+    -- ASSERTED ON THE LEDGER RATHER THAN ON THE WIRE, and that is not a weaker
+    -- claim -- it is the stronger one. STORM_DAMAGE carries WHOLE engine points
+    -- and the fraction is carried forward, so at phase 1's rate a given tick
+    -- legitimately sends nothing; `stormHp` is the server-side number that
+    -- decides the elimination and it moves every tick without exception.
+    local before = BR.Roster.get(1).stormHp
+    setPos(1, a.x + rec.r0 + 4010.0, a.y)
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+    fakeTime = fakeTime + 1000; BR.Sched.step(fakeTime)
+    ok(BR.Roster.get(1).stormHp < before,
+        'a player driving through the storm goes on losing health to it',
+        ('%s -> %s'):format(tostring(before), tostring(BR.Roster.get(1).stormHp)))
 end
 
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))

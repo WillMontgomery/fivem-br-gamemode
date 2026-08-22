@@ -729,6 +729,42 @@ BR.Config.Combat = {
     -- it did not.
     blastAttributeMs = 1200,
 
+    --[[
+        ROADKILL, AND IT IS THE SAME ARGUMENT AS THE FIRE LEDGER ABOVE.
+
+        The owner, 2026-08-21 (#194): "Roadkill should be attributed to the
+        driver." The engine agrees that somebody was run over -- it kills the
+        ped with WEAPON_RUN_OVER_BY_CAR -- and says nothing the server can use
+        about who was driving. GET_PED_SOURCE_OF_DEATH names the vehicle, and it
+        is read on the victim's own machine, so a mode that took its word for it
+        would let any client hand any player a free elimination.
+
+        So it is resolved the way fires are: from state this server already
+        holds. A player lost health, they were on foot, and a vehicle a PLAYER
+        was driving was on top of them and moving. Every term in that sentence
+        is a server-side read (br_core/server/vehicles.lua).
+
+        `roadkillRadiusM` IS NOT A CAR'S LENGTH, and that is the whole reason it
+        is 8 rather than 5. Positions are sampled at posSampleHz -- 4 Hz -- so at
+        25 m/s the car has travelled 6.25 m since the sample the check runs
+        against, and the ped it hit is behind it by roughly that. A radius that
+        described the collision would miss the sample that proves it.
+
+        `roadkillMinSpeedMs` IS WHAT STOPS A PARKED CAR OWNING A STORM DEATH.
+        6 m/s is ~21 km/h: below it a car does not kill anybody, and above it a
+        car that happens to be passing is the only false positive left. It is
+        deliberately a SPEED and not a velocity toward the victim -- the server
+        samples position, and two samples give a displacement whichever way the
+        car was pointing.
+    ]]
+    roadkillRadiusM    = 8.0,
+    roadkillMinSpeedMs = 6.0,
+    -- How recently the server must have attributed a roadkill for the kill feed
+    -- to call a death one. The same shape and the same number as the storm's own
+    -- override in server/combat.lua, for the same reason: the finishing blow of
+    -- a vehicular death reads to the engine as generic damage.
+    roadkillCauseMs    = 3000,
+
     -- HOW LONG A THROWN EXPLOSIVE STAYS YOURS.
     --
     -- A grenade goes off a second or more after it leaves the hand, and

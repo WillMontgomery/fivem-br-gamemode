@@ -1305,6 +1305,20 @@ RegisterCommand('brvehicles', function()
     print('  `relaxed` the platform refuses script-created entities before')
     print('  this file is reached, so a low count is the boundary working')
     print('  rather than a quiet server. See server.cfg.example.')
+
+    -- UNDER ITS OWN HEADING, BECAUSE IT IS NOT AN ANTICHEAT NUMBER. Everything
+    -- above counts vehicles the gamemode refuses; this counts kills the gamemode
+    -- credits. They share a file because they share the natives, not because
+    -- they mean the same kind of thing.
+    header('roadkill attribution')
+    print(('  driving        %d player(s) confirmed at the wheel last sample')
+        :format(s.driving or 0))
+    print(('  looks          %d death(s) or health drop(s) asked "was that a car"')
+        :format(s.roadkillLooks or 0))
+    print(('  credited       %d attributed to a driver')
+        :format(s.roadkills or 0))
+    print('  A roadkill by an AMBIENT driver is credited to nobody, by design:')
+    print('  there is no player in the seat. So is a vehicle explosion.')
 end, RESTRICTED)
 
 --- Print the stored profile row for connected players.
