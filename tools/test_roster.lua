@@ -13506,11 +13506,18 @@ do
     -- engine's own hit resolution produces and the owner accepted. The load-
     -- bearing half is the SECOND assertion: a player emptying a magazine into a
     -- car must not accumulate anticheat refusals for it.
+    -- TWO ROUNDS, NOT ONE, AND THE SECOND IS WHAT MAKES THIS A TEST. `NO_WEAPON`
+    -- sits at a bar of TWO -- docs/security.md: it is the catch-all bucket, as
+    -- much a gap in a lookup table as a dishonest shooter -- so ONE refusal files
+    -- nothing whatever the code does. A single shot here passed against a
+    -- deliberately broken handler that DID refuse it. One shot proves the counter
+    -- is quiet; two prove the case is.
     arm()
     BR.Roster.get(2).hp = 100.0
     local refusalsBefore = BR.Damage.refusals or 0
     local firedBefore = #firedOf('br:ringmaster:refusal')
     shoot({ 5000 })                 -- a netId that is no player's ped
+    shoot({ 5000 })
 
     ok(BR.Roster.get(2).hp == 100.0, 'a round into the bodywork hurts nobody',
         tostring(BR.Roster.get(2).hp))
@@ -13518,11 +13525,12 @@ do
         'and is not a refusal, so shooting cars opens no case',
         ('%d -> %d'):format(refusalsBefore, BR.Damage.refusals or 0))
     ok(#firedOf('br:ringmaster:refusal') == firedBefore,
-        'and files nothing with the Ringmaster')
-    -- ...but it still costs a round. A miss costs a round too, which is the whole
+        'and a second magazine into it files nothing with the Ringmaster',
+        ('%d -> %d'):format(firedBefore, #firedOf('br:ringmaster:refusal')))
+    -- ...but they still cost rounds. A miss costs a round too, which is the whole
     -- difference between counting shots and counting hits.
-    ok(BR.Inv.of(1).slots[1].clip == pistol.clip - 1,
-        'while still spending the round, exactly as a miss does',
+    ok(BR.Inv.of(1).slots[1].clip == pistol.clip - 2,
+        'while still spending the rounds, exactly as a miss does',
         tostring(BR.Inv.of(1).slots[1].clip))
 end
 
