@@ -122,6 +122,10 @@ client_scripts {
     'client/markers.lua',   -- pause-map pings: blips + world beams
     'client/dui.lua',       -- browser pages as game textures; loot.lua uses it
     'client/inventory.lua', -- the inventory mirror; owns every weapon grant
+    -- The one-a-session "switch to slot N" notice for a passenger (#206). Reads
+    -- BR.Inv.local_() at call time, so it only has to be BELOW main.lua for the
+    -- loop registry; it is here because the mirror is what it reads.
+    'client/driveby.lua',
     'client/loot.lua',      -- world props + pickup; needs BR.Inv (inventory.lua)
     -- The falling crate, its canopy, its two flares and the blip. Reads
     -- BR.Native (natives.lua) for the blip name and BR.Clock (shared) for the

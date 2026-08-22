@@ -319,11 +319,12 @@ do
     ok(h[69] and h[92],
        'and a gun does not fire from a seat -- INPUT_VEH_ATTACK (69) and '
            .. 'INPUT_VEH_PASSENGER_ATTACK (92), which INPUT_ATTACK never covered '
-           .. 'and which #197 made a supported position in this gamemode')
+           .. 'and which #206 makes a position this gamemode actively tells '
+           .. 'players about')
     ok(h[58] and h[47],
        'a grenade is not thrown and a sticky is not detonated -- both are real '
-           .. 'loot here, and check_driveby records that thrown weapons already '
-           .. 'work from a seat')
+           .. 'loot here, and every throwable is `driveby = true` in '
+           .. 'br_lib/config/weapons.lua because DRIVEBY_THROW reaches every seat')
     ok(h[32] and h[33] and h[34] and h[35],
        'and the ped does not walk')
 end

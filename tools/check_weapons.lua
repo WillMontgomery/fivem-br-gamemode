@@ -200,6 +200,57 @@ for _, list in ipairs({ BR.Config.Weapons, BR.Config.AirdropWeapons }) do
     end
 end
 
+-- ------------------------------------------------------------ drive-by ----
+--
+-- EVERY WEAPON MUST SAY WHETHER A CAR SEAT ACCEPTS IT, AND SAYING NOTHING IS
+-- NOT AN ANSWER (#206).
+--
+-- br_core/client/driveby.lua reads this field and, on the strength of it, tells
+-- a passenger "switch to slot N to fire your X". If the field is missing, Lua
+-- hands back nil, nil is not true, and the weapon is silently treated as
+-- unusable from a seat -- so a gun added to the table above would quietly never
+-- be offered, with no error anywhere. That is the same failure mode as the wrong
+-- hash this gate was written for: no symptom except a feature that stops
+-- working for one weapon.
+--
+-- THE OTHER DIRECTION IS WORSE AND IS NOT CHECKABLE HERE. A `true` on a weapon
+-- the engine actually refuses sends a player to a slot that does not fire, and
+-- no offline gate can know: which weapons a seat accepts is game data inside the
+-- .rpf, and the game refused our attempt to redefine it (2026-08-22, see
+-- docs/vehicle-data.md). The check on THAT direction is /brdriveby, from the
+-- seat: it prints our claim next to what the engine did with the weapon, and
+-- names the verdict `stowed-unexpected` when they disagree.
+--
+-- MELEE AND FISTS MUST NOT CARRY THE FIELD AT ALL. Swinging from a seat is
+-- DRIVEBY_BIKE_MELEE, which no car seat reaches, so the answer is "no" for the
+-- whole list and always will be -- and a `driveby = false` on eleven melee
+-- entries reads as though the question were open per weapon. The absence is
+-- asserted rather than left to habit, so nobody half-annotates the table.
+local function checkDriveBy(list, what)
+    for _, w in ipairs(list or {}) do
+        if type(w.driveby) ~= 'boolean' then
+            fail('%s %q has no `driveby` field (must be an explicit true/false '
+                 .. '-- a missing one reads as false and is never offered)',
+                 what, tostring(w.id))
+        end
+    end
+end
+
+checkDriveBy(BR.Config.Weapons, 'weapon')
+checkDriveBy(BR.Config.Throwables, 'throwable')
+
+for _, w in ipairs(BR.Config.Melee or {}) do
+    if w.driveby ~= nil then
+        fail('melee %q carries a `driveby` field; no car seat reaches '
+             .. 'DRIVEBY_BIKE_MELEE, so the answer is no for the whole list',
+             tostring(w.id))
+    end
+end
+if BR.Config.Fists and BR.Config.Fists.driveby ~= nil then
+    fail('fists carry a `driveby` field; unarmed is DRIVEBY_DEFAULT_UNARMED and '
+         .. 'there is nothing to switch to')
+end
+
 -- THE SIGNED-HASH TRAP, pinned.
 --
 -- The engine returns hashes as SIGNED 32-bit ints, so a hash with the top bit
@@ -248,9 +299,16 @@ end
 -- ------------------------------------------------------------------- report --
 
 if fails == 0 then
+    local db = 0
+    for _, list in ipairs({ BR.Config.Weapons, BR.Config.Throwables }) do
+        for _, w in ipairs(list or {}) do
+            if w.driveby == true then db = db + 1 end
+        end
+    end
     io.write(('\27[32mok\27[0m   %d weapon hashes match their names; %d resolve from '
-        .. 'both signed and unsigned (%d have the top bit set)\n')
-        :format(checked, signedChecked, topBit))
+        .. 'both signed and unsigned (%d have the top bit set); %d are claimed '
+        .. 'usable from a car seat\n')
+        :format(checked, signedChecked, topBit, db))
 else
     io.write(('\27[31m%d weapon table problem(s)\27[0m\n'):format(fails))
 end

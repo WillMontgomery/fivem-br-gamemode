@@ -153,7 +153,7 @@ Install the pre-commit hook with `./tools/install-hooks.sh`.
 |---|---|---|
 | `brnativecheck` | client | Verify every native assumption against the running build |
 | `brprobe` | client | What the natives actually *do*, not what they are named. Sub-modes for ammo, vehicles, armour, crates; `brprobe raw` suspends our own writes so the engine can be watched alone |
-| `brdriveby [seconds]` | client | Why a passenger cannot fire. Samples across frames from the seat: which seat, what the *engine* has in your hands versus what we granted, whether anything disabled a trigger control, and whether we ever asserted the drive-by permission. Also reads our own seat-weapon override back off this client, so "the game ignored our data file" and "the file never got here" are different answers ([vehicle-data.md](vehicle-data.md)). Exists because those causes are indistinguishable from inside the car and each wants a different fix |
+| `brdriveby [seconds]` | client | Why a passenger cannot fire. Samples across frames from the seat: which seat, what the *engine* has in your hands versus what we granted, whether anything disabled a trigger control, and whether we ever asserted the drive-by permission. Also prints our own claim about which weapons a seat accepts next to what the engine actually did with yours, which is the only check there is on that table ([vehicle-data.md](vehicle-data.md)). Exists because those causes are indistinguishable from inside the car and each wants a different fix |
 | `brblack` | client | Every state that can cause a black screen, at once |
 | `brfocus` | client | The NUI focus stack — why you do or don't have a cursor |
 | `brbus`, `brdropdbg` | client | Bus ride and skydive state, live |

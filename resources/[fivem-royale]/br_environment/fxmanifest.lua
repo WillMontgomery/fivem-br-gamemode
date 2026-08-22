@@ -14,7 +14,7 @@ game 'gta5'
 lua54 'yes'
 
 name 'br_environment'
-description 'FiveM Royale -- world state: IPLs, the Cayo Perico lobby island, vehicle seat weapon data, streamed assets'
+description 'FiveM Royale -- world state: IPLs, the Cayo Perico lobby island, streamed assets'
 
 shared_scripts {
     '@br_lib/shared/enums.lua',
@@ -25,24 +25,16 @@ client_scripts {
     'client/ipl.lua',
 }
 
--- THE FIRST GAME DATA FILE THIS PROJECT HAS EVER SHIPPED (#197).
+-- THIS RESOURCE SHIPS NO GAME DATA FILE, AND THAT IS A TESTED RESULT (#197,
+-- closed 2026-08-22 as no plan to fix).
 --
--- `data_file` hands a file to the GAME's own loader rather than to Lua, and
--- VEHICLE_LAYOUTS_FILE is the one that decides which weapons a vehicle seat
--- accepts. Our copy redefines two weapon groups and nothing else -- read the
--- header of the file itself, which is where the whole argument lives.
+-- It briefly shipped `data/vehiclelayouts.meta`, mounted as
+-- VEHICLE_LAYOUTS_FILE, redefining DRIVEBY_DEFAULT_ONE_HANDED and
+-- DRIVEBY_DEFAULT_REAR_ONE_HANDED so a passenger could fire a long gun. The
+-- game IGNORED the redefinition -- an added data file does not get to restate a
+-- CDrivebyWeaponGroup the base game already defines -- and the owner confirmed
+-- it in a seat on 2026-08-22: "carbine rifle in the passenger seat does nothing
+-- but pistols work". Backed out whole.
 --
--- IT IS DECLARED IN BOTH BLOCKS ON PURPOSE. `files` is what makes the file
--- reach the client at all and what makes LoadResourceFile able to read it
--- back (which is how /brdriveby reports whether the override even shipped);
--- `data_file` is what mounts it into the game. Either one alone is a resource
--- that looks correct and does nothing.
---
--- THE BLAST RADIUS IS EVERY VEHICLE AND EVERY PLAYER. Backing it out is
--- deleting these two blocks -- there is no config flag, because a tunable that
--- can only be read at resource start is a switch that lies about being live.
-files {
-    'data/vehiclelayouts.meta',
-}
-
-data_file 'VEHICLE_LAYOUTS_FILE' 'data/vehiclelayouts.meta'
+-- Do not re-add it. docs/vehicle-data.md carries the finding, what it cost to
+-- get, and the only route that remains open.

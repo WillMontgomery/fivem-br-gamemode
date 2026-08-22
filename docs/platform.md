@@ -52,10 +52,10 @@ shotguns, snipers and MGs are taken out of the ped's hands on the way in. Two
 of this project's reports are the same fact seen from different ends: "the HUD
 is showing 0 bullets while in a vehicle" (2026-08-06, fixed by not reporting
 ammo for a weapon the engine has stowed) and #197, "a passenger cannot fire".
-A stowed weapon has no ammo reading *and* no trigger. Lifting the restriction
-means streaming our own copy of that data file for every seat in the game,
-which is a gameplay decision rather than a bug fix. `/brdriveby` measures which
-of the four possible causes is actually in play, from the seat, in one command.
+A stowed weapon has no ammo reading *and* no trigger. **And the restriction
+cannot be lifted from a resource** — see the next entry, which is the tested
+half of this one. `/brdriveby` measures which of the causes is actually in play,
+from the seat, in one command.
 
 **Native names keep an underscore before digit-leading segments.**
 `GetGroundZFor_3dCoord`, not `GetGroundZFor3dCoord` — the latter is `nil`, and
@@ -223,20 +223,36 @@ entries, and each of *those* names one `CDrivebyWeaponGroup`. The seat accepts
 the union of those groups. A stock car seat gets unarmed, one-handed and thrown,
 so a long gun is stowed on the way in and the ammo reads 0 — which is why
 `probe.lua` had already recorded "the clip reading dropping to 0 in a seat is
-EXPECTED" two weeks before anyone connected the two halves. The fix is a
-`data_file 'VEHICLE_LAYOUTS_FILE'` in an fxmanifest, and it is the first game
-data file this project ships: see [vehicle-data.md](vehicle-data.md).
+EXPECTED" two weeks before anyone connected the two halves.
 
-> **Whether a mounted data file may redefine an entry the base game already
-> has is not documented and is not settled here.** Cfx's own loader hands the
-> file straight to the game's mounter (it only sorts `VEHICLE_LAYOUTS_FILE` and
-> `HANDLING_FILE` ahead of the rest, so layouts parse before `vehicles.meta`);
-> what the mounter does with a duplicate name is the game's business.
-> Community reports run both ways and there is a standing feature request on the
-> Cfx forum asking for the ability outright. Our override is written so that
-> being ignored costs nothing — the seat keeps today's rule — and `/brdriveby`
-> answers it from a seat in ten seconds. **Do not repeat this research; run the
-> command.**
+> **A mounted data file may NOT redefine a `CDrivebyWeaponGroup` the base game
+> already has. Tested in game, 2026-08-22, and false.** We shipped exactly that
+> — `DRIVEBY_DEFAULT_ONE_HANDED` and `DRIVEBY_DEFAULT_REAR_ONE_HANDED` restated
+> by name under `data_file 'VEHICLE_LAYOUTS_FILE'`, listing every firearm the
+> gamemode issues. The file was correct and `/brdriveby` read it back off the
+> client, and the engine kept its own list regardless: *"carbine rifle in the
+> passenger seat does nothing but pistols work"* (owner). Cfx hands the file
+> straight to the game's own mounter — it only sorts `VEHICLE_LAYOUTS_FILE` and
+> `HANDLING_FILE` ahead of the rest so layouts parse before `vehicles.meta` —
+> and what the mounter does with a duplicate name is the game's business.
+> **Upstream agrees, and it was found only afterwards:**
+> [citizenfx/fivem#3929](https://github.com/citizenfx/fivem/issues/3929) — *"you
+> can't override existing values in any of these"* — is the identical case,
+> closed without a fix. It did not turn up in the research done before the file
+> shipped because the searches were about `vehiclelayouts.meta` and drive-by, and
+> the issue that answers it is filed under custom SMGs. **The lesson is the
+> search terms, not the conclusion:** when a data file does not take effect, look
+> for somebody overriding the same *kind of entry*, not the same file. **Do not
+> re-derive this**; the write-up is in [vehicle-data.md](vehicle-data.md).
+>
+> **Adding a name the base game does not have is a different question and was
+> not tested.** Every add-on vehicle in the wild depends on new layouts being
+> accepted, so the two cases are not the same case.
+
+Nothing widens the rule, so the remaining work was to stop it being invisible: a
+passenger is told once per session which slot will actually fire
+(`br_core/client/driveby.lua`), on the strength of a `driveby` boolean the
+weapon table is required to carry.
 
 ---
 

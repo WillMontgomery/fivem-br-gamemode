@@ -501,51 +501,18 @@ local function seatName(i)
     return 'rear seat ' .. tostring(i)
 end
 
---- Which seat this ped is in, by asking the vehicle rather than the ped.
+--- Which seat this ped is in. ONE DEFINITION, IN client/driveby.lua.
 ---
---- There is no native that answers "which seat am I in"; the engine only
---- answers "who is in seat N". Eight is past the largest seat count in the base
---- game, and a miss simply reports nil rather than guessing.
-local function seatOf(veh, ped)
-    for i = -1, 8 do
-        if safe(GetPedInVehicleSeat, veh, i) == ped then return i end
-    end
-    return nil
-end
-
---- Where our own answer to the seat rule lives.
+--- The drive-by hint has to answer exactly this question before it will say
+--- anything, and two answers to "which seat am I in" living in one Lua state is
+--- how the duplicate `brkeys` above happened -- the two drift, and the one that
+--- loads last silently wins. The readout borrows the gameplay file's rather
+--- than keeping a second copy: if the hint is looking at the wrong seat, this
+--- command has to show the wrong seat too, or it exonerates the bug.
 ---
---- br_core naming a file inside another resource is a dependency this project
---- otherwise avoids, and it is deliberate here: the ONLY way to tell "the
---- override was ignored by the game" from "the override was never shipped" is
---- to look at whether the file arrived. A diagnostic that cannot tell those two
---- apart sends the owner to the wrong half of the problem.
-local OVERRIDE_RES  = 'br_environment'
-local OVERRIDE_FILE = 'data/vehiclelayouts.meta'
-
---- Read our drive-by override back off this client and see what it says.
----
---- LoadResourceFile is a Cfx builtin rather than a game native -- it is present
---- on every build, so it is not in client/natives.lua's probe list -- but it
---- only returns anything for a file the resource declares in `files{}`, which
---- is why br_environment declares that .meta twice.
----
---- @param name string|nil  the WEAPON_* name in the active slot
---- @return boolean|nil lists  nil = no file to read, or no weapon to look for
---- @return integer|nil count  distinct weapons the file names
---- @return string state       the resource state, for the row
-local function overrideFacts(name)
-    local state = safe(GetResourceState, OVERRIDE_RES) or 'unknown'
-    local text  = safe(LoadResourceFile, OVERRIDE_RES, OVERRIDE_FILE)
-    if type(text) ~= 'string' or text == '' then return nil, nil, state end
-
-    local seen, count = {}, 0
-    for w in text:gmatch('<Item>(WEAPON_[%u%d_]+)</Item>') do
-        if not seen[w] then seen[w] = true; count = count + 1 end
-    end
-    if not name then return nil, count, state end
-    return seen[name] == true, count, state
-end
+--- Resolved at CALL time rather than bound at load time, so this file's position
+--- in the manifest is not a thing anyone has to get right twice.
+local function seatOf(veh, ped) return BR.DriveBy.seatOf(veh, ped) end
 
 --- The armed sample, or nil when nothing is being measured. One nil check per
 --- frame when it is off, which is what the overlay above costs too.
@@ -566,8 +533,20 @@ local function driveByReport()
     local name  = model and safe(GetDisplayNameFromVehicleModel, model) or nil
     local w     = f.wantHash and BR.Config.WeaponByHash[BR.NormHash(f.wantHash)]
 
-    local lists, listed, resState = overrideFacts(w and w.name or nil)
-    f.overrideLists = lists
+    -- OUR CLAIM ABOUT THIS WEAPON, alongside the engine's answer to the same
+    -- question, so the two can be read off one screen. There is no native that
+    -- asks "does this seat accept this weapon" -- the engine only answers by
+    -- stowing or not stowing what is already in the hand -- so this row IS the
+    -- audit of br_lib/config/weapons.lua's `driveby` field, and the sample above
+    -- is the engine's half of it. Left nil when no weapon is selected: nil is
+    -- "nobody asked", and the verdict must not read it as "no".
+    --
+    -- WRITTEN AS AN `if`, NOT AS `a and b or nil`. That idiom collapses `false`
+    -- to `nil` -- which is precisely the tri-state this readout has to keep
+    -- apart, and precisely the family of bug this file has a `yes()` helper for.
+    if f.wantHash ~= nil then
+        f.permitted = BR.DriveBy.permits(f.wantHash)
+    end
 
     --- What to call whatever the engine says is in the hand.
     ---
@@ -618,22 +597,22 @@ local function driveByReport()
                 :format((GetGameTimer() - (f.driveByAt or 0)) / 1000.0, f.driveByCount)))
     print(('  IS_PED_DOING_DRIVEBY %s   (on %d of %d frames)')
         :format(tostring(f.doingDriveby), watch.driveby, watch.frames))
-    -- OUR OVERRIDE, as an observation rather than an assumption. This is the
-    -- row that separates "the game ignored our data file" from "the data file
-    -- never got here", and those two want fixes in different repositories.
-    --
-    -- `~= nil` and not `if listed then`: a file that arrived and named nothing
-    -- gives 0, `0` is truthy in Lua anyway, and writing the version that only
-    -- works by accident is how this project shipped that bug four times.
-    if listed ~= nil then
-        print(('  seat weapon override %s/%s -- READ BACK, names %d weapon(s)')
-            :format(OVERRIDE_RES, OVERRIDE_FILE, listed))
-        print(('  ...and it names %s   %s')
-            :format(w and w.name or '(no weapon selected)',
-                lists == nil and '-' or (lists and 'yes' or 'NO')))
-    else
-        print(('  seat weapon override %s/%s -- NOT READABLE (%s is "%s")')
-            :format(OVERRIDE_RES, OVERRIDE_FILE, OVERRIDE_RES, tostring(resState)))
+    -- OUR CLAIM, PRINTED NEXT TO THE ENGINE'S ANSWER. `== true` / `== false`
+    -- rather than truthiness, because the third state is a real one and reads
+    -- differently: "-" is nobody asked, not "no".
+    print(('  we say the seat    %s   (driveby field, br_lib/config/weapons.lua)')
+        :format(f.permitted == true and 'ACCEPTS it'
+            or (f.permitted == false and 'REFUSES it' or '-')))
+    -- And the drive-by hint, which reads exactly that field. Printing what it
+    -- would say is the only way to see the notification without waiting for the
+    -- one time a session it fires.
+    do
+        local slotN, label = BR.DriveBy.suggestion(BR.Inv.local_())
+        print(('  drive-by hint      %s')
+            :format(slotN and BR.DriveBy.MESSAGE:format(slotN, label)
+                or 'nothing to suggest -- no other slot holds a weapon a seat accepts'))
+        print(('  ...already shown   %s'):format(BR.DriveBy.shown() and 'yes -- once per session, and this session has had it'
+            or 'no'))
     end
     for _, c in ipairs(ATTACK_CONTROLS) do
         local off = watch.off[c[1]] or 0
@@ -667,18 +646,16 @@ local function driveByReport()
     print('  control rows         a control disabled on ANY frame is a script')
     print('                       holding your trigger down, and is fixable.')
     print('                       All six enabled means no script is at fault.')
-    print('  seat weapon override which weapons a seat accepts is game DATA, not a')
-    print('                       native -- the CDrivebyWeaponGroup a seat\'s')
-    print('                       drive-by anim info names. We redefine two of')
-    print('                       them so long guns are on the list. NOT READABLE')
-    print('                       means the file never reached this client, which')
-    print('                       is a deploy problem, not a game one. READ BACK')
-    print('                       plus a stow means the GAME ignored it, which is')
-    print('                       the open question in #197.')
-    print('  THE DRIVER IS NOT EXEMPT, and cannot be from here: the base game gives')
-    print('  the driver\'s seat and the front passenger\'s seat the same weapon group,')
-    print('  so widening it reaches both. docs/vehicle-data.md has what separating')
-    print('  them would cost.')
+    print('  we say the seat      OUR claim, from the driveby field in')
+    print('                       br_lib/config/weapons.lua. There is no native')
+    print('                       that asks the engine this, so the only check on')
+    print('                       it is the row above: ACCEPTS plus a stow means')
+    print('                       the table is WRONG and the hint would send a')
+    print('                       player to a weapon that does not fire.')
+    print('  WIDENING THE SEAT RULE WAS TRIED AND THE GAME REFUSED IT. We shipped a')
+    print('  vehiclelayouts.meta redefining DRIVEBY_DEFAULT_ONE_HANDED by name; the')
+    print('  engine kept its own and ignored ours (owner, 2026-08-22). The file is')
+    print('  gone. docs/vehicle-data.md has the finding and the only route left.')
 end
 
 BR.Loop.register(BR.Loop.FRAME, 'debug.driveby', function()

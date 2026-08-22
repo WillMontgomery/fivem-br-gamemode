@@ -357,8 +357,9 @@ end)
 -- INPUT_MELEE_ATTACK_ALTERNATE (142) are the same physical left mouse button as
 -- 24 under different ids, and a throwable is INPUT_THROW_GRENADE (58) with
 -- INPUT_DETONATE (47) behind it -- both live, because grenades, sticky bombs
--- and molotovs are real loot here (br_lib/config/loot.lua) and check_driveby's
--- own note records that thrown weapons already work from a seat.
+-- and molotovs are real loot here (br_lib/config/loot.lua) and DRIVEBY_THROW is
+-- a weapon group every standard seat reaches, so a thrown weapon works from one
+-- (br_lib/config/weapons.lua marks every throwable `driveby = true`).
 --
 -- ═══ EVERY ID BELOW WAS LOOKED UP, NOT REMEMBERED ═══
 --
