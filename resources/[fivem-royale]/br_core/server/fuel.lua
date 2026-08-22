@@ -112,6 +112,7 @@ local pushed = {}
 local stat = {
     admitted = 0, evicted = 0, swept = 0, drained = 0, jumps = 0,
     pumped = 0, pumpRefused = 0, pushes = 0, asks = 0, askRefused = 0,
+    sfx = 0,
 }
 
 --- Which player states may spend or buy fuel.
@@ -291,6 +292,7 @@ function BR.Fuel.stats()
         pumped   = stat.pumped,   pumpRefused = stat.pumpRefused,
         pushes   = stat.pushes,   asks    = stat.asks,
         askRefused = stat.askRefused,
+        sfx      = stat.sfx,
     }
 end
 
@@ -531,6 +533,62 @@ local function sweep()
 end
 
 -- ---------------------------------------------------------------------------
+-- The pump cues
+-- ---------------------------------------------------------------------------
+
+--- Play a cue from a vehicle, for everybody sitting in it.
+---
+--- ═══ THE OWNER'S RULE, AND WHY IT LANDS ON THE SERVER ═══
+---
+---   "All occupants of a vehicle should hear these sounds."
+---                                          -- owner, 2026-08-22
+---
+--- PLAY_SOUND_FROM_ENTITY IS A CLIENT NATIVE AND IT DOES NOT NETWORK. That was
+--- checked rather than assumed -- its `isNetwork` parameter is undocumented in
+--- citizenfx/natives, every parameter description in that file is empty, and the
+--- established answer to "how do other players hear this" is that you send them
+--- a message. So there is no version of this that a single client can do, and
+--- the fan-out has to live where the facts are.
+---
+--- IT IS ALREADY HERE. Deciding who hears a cue means knowing who is in the car,
+--- and this file walks exactly that set four times a second for the ledger. The
+--- walk below is the same one, run at most twice per refuelling stop.
+---
+--- ═══ OCCUPANTS, NOT EARSHOT, AND THAT IS THE OWNER'S WORDING ═══
+---
+--- The alternative shape is "everyone near the vehicle", which the CLIENT could
+--- decide for itself by refusing to play a cue for a car it has not streamed.
+--- The owner asked for occupants; occupants is what this sends to. Widening it
+--- later is a change to this one predicate and nothing else, which is precisely
+--- why the recipient list is computed in one function rather than inline.
+---
+--- NOTHING HERE CREATES AN ENTITY. `sv_entityLockdown` is `relaxed` on this
+--- server, so a client cannot spawn networked props -- and nothing in this cue
+--- path asks it to. The sound is played from a car GTA's own traffic network
+--- already created, by a native that adds nothing to the world.
+---
+--- @param netId integer
+--- @param matchId integer|nil  only players in this match are considered
+--- @param cue string           a key in BR.Config.Audio.cues
+local function sfxToOccupants(netId, matchId, cue)
+    if netId == nil or matchId == nil then return end
+
+    BR.Roster.each(function(e)
+        return LIVE[e.state] == true and e.matchId == matchId
+    end, function(src, e)
+        local ped = e.ped
+        if not ped or ped == 0 then return end
+        -- THE SAME RESOLUTION THE LEDGER USES, so "is this player in that car"
+        -- is answered by the server reading the world rather than by anything a
+        -- client said. A passenger gets the cue because they ARE a passenger.
+        local inNet = vehicleOf(ped)
+        if inNet ~= netId then return end
+        stat.sfx = stat.sfx + 1
+        TriggerClientEvent(BR.Net.FUEL_SFX, src, { n = netId, c = cue })
+    end)
+end
+
+-- ---------------------------------------------------------------------------
 -- Buying it back
 -- ---------------------------------------------------------------------------
 
@@ -549,7 +607,13 @@ end
 ---                            "Refueling should only be possible while in the
 ---                            driver's seat".
 ---   at a station             the VEHICLE's coordinates, read here, against
----                            BR.Config.Fuel.stations.
+---                            BR.Config.Fuel.stations -- within
+---                            `refuelRadius`, which is TIGHTER than the
+---                            `stationRadius` the forecourt rules use. The
+---                            client mirrors this same test to decide whether
+---                            to draw the plate, so the two agree; it is
+---                            re-run here because agreeing is not the same as
+---                            being trusted.
 ---   for how long             the wall clock since the last grant, capped.
 ---                            See BR.FuelSolve.grantMs.
 RegisterNetEvent(BR.Net.FUEL_PUMP)
@@ -600,16 +664,46 @@ AddEventHandler(BR.Net.FUEL_PUMP, function(d)
     local x, y = coordsOf(veh)
     if x == nil then stat.pumpRefused = stat.pumpRefused + 1 return end
 
-    local station = BR.FuelSolve.stationNear(x, y, F.stations, F.stationRadius)
+    -- ═══ refuelRadius, NOT stationRadius, AND THIS IS THE AUTHORITY HALF OF
+    --     THE OWNER'S "I CAN STILL GET GAS FURTHER AWAY" ═══
+    --
+    -- Still the VEHICLE's coordinates as read HERE, still against the authored
+    -- station list, still nothing the client said -- only the number moved, from
+    -- 30m to 20m. The server cannot test against a pump and never will:
+    -- GET_CLOSEST_OBJECT_OF_TYPE reads the streamed world and a server streams
+    -- nothing. What it can do is stop approximating "on the forecourt" so
+    -- generously, and BR.Config.Fuel.refuelRadius carries the full argument
+    -- including what a modified client still gets away with.
+    local station = BR.FuelSolve.stationNear(x, y, F.stations, F.refuelRadius)
     if station == nil then
         stat.pumpRefused = stat.pumpRefused + 1
         return
     end
 
+    -- ═══ IS THIS THE FIRST MESSAGE OF A NEW HOLD? ═══
+    --
+    --   "When pressing [key] to fuel, a sound should be played."
+    --
+    -- `p` is the record as it was BEFORE this message -- captured at the top of
+    -- the handler, above every `pumping[src] = ...` below -- so this reads the
+    -- previous hold, not the one being started. A press is inferred from the
+    -- silence in front of it, because the server never sees a keypress; see
+    -- BR.Config.Fuel.holdGapMs for why the gap is 750ms.
+    --
+    -- COMPUTED AFTER EVERY REFUSAL ABOVE, so a cue is only ever heard for a hold
+    -- that was actually accepted. A player mashing E in a field hears nothing.
+    local gap = tonumber(F.holdGapMs) or 0
+    local fresh = (p == nil) or (p.netId ~= netId) or ((now - p.at) >= gap)
+    if fresh then sfxToOccupants(netId, e.matchId, 'fuel.start') end
+
     local rec = tanks[netId]
     if rec == nil then
         -- Full and untracked: there is nothing to pour in. Admitting a row here
         -- would be the client growing this table, which admit()'s note refuses.
+        --
+        -- THE START CUE HAS ALREADY PLAYED ABOVE AND THAT IS INTENDED: they
+        -- pressed the key at a pump and the press was accepted. A car that is
+        -- already full is not a refusal, and a silent key would read as one.
         pumping[src] = { at = now, netId = netId }
         pushTo(src, netId, tonumber(F.tankMetres) or 0.0, true)
         return
@@ -638,6 +732,27 @@ AddEventHandler(BR.Net.FUEL_PUMP, function(d)
     if rec.left ~= before or repair > 0.0 then
         stat.pumped = stat.pumped + 1
         pushTo(src, netId, rec.left, true, repair)
+    end
+
+    -- ═══ THE TANK JUST REACHED FULL ═══
+    --
+    --   "When fuel reaches 100%, a 'complete' sound should be played."
+    --                                          -- owner, 2026-08-22
+    --
+    -- AN EDGE, NOT A STATE, which is what makes it fire exactly once. A player
+    -- who keeps holding after the tank is full sends four more messages a second
+    -- and `before` is already at the cap for every one of them, so the test is
+    -- false and nothing plays. Holding on is still worth doing -- the repair
+    -- rides the same grant and has its own clock -- it is just not worth a
+    -- second chime.
+    --
+    -- EXACT COMPARISON IS SAFE HERE rather than lucky: BR.FuelSolve.refill
+    -- clamps through BR.FuelSolve.clamp, which RETURNS `tank` ITSELF when the
+    -- sum passes it, so a full tank is bit-for-bit the configured number and not
+    -- an accumulation of floats that lands near it.
+    local tank = tonumber(F.tankMetres) or 0.0
+    if before < tank and rec.left >= tank then
+        sfxToOccupants(netId, e.matchId, 'fuel.done')
     end
 end)
 
@@ -763,6 +878,6 @@ RegisterCommand('brfuel', function()
                 tostring(s.natives.netIdFrom), tostring(s.natives.entityFromNet)))
     print(('  admitted %d  evicted %d  swept %d  drained %d  jumps %d')
         :format(s.admitted, s.evicted, s.swept, s.drained, s.jumps))
-    print(('  pumped %d  refused %d  asks %d (refused %d)  pushes %d')
-        :format(s.pumped, s.pumpRefused, s.asks, s.askRefused, s.pushes))
+    print(('  pumped %d  refused %d  asks %d (refused %d)  pushes %d  cues %d')
+        :format(s.pumped, s.pumpRefused, s.asks, s.askRefused, s.pushes, s.sfx))
 end, true)

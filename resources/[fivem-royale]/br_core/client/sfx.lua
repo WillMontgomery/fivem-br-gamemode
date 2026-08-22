@@ -53,6 +53,78 @@ function BR.Sfx.play(cue)
     PlaySoundFrontend(-1, def.name, def.set, false)
 end
 
+--- Play a cue POSITIONED ON A WORLD ENTITY instead of in the player's head.
+---
+--- ═══ SAME TABLE, SAME THROTTLE, DIFFERENT NATIVE -- AND THE NATIVE IS STILL
+---     LOCAL ═══
+---
+--- PLAY_SOUND_FROM_ENTITY IS A CLIENT NATIVE AND IT IS NOT NETWORKED. This was
+--- checked rather than assumed, because the whole reason this function exists is
+--- a requirement about OTHER PLAYERS hearing something:
+---
+---   "All occupants of a vehicle should hear these sounds."  -- owner, 2026-08-22
+---
+--- The native's signature is
+--- `PLAY_SOUND_FROM_ENTITY(int soundId, char* audioName, Entity entity,
+---  char* audioRef, BOOL isNetwork, Any p5)` and its `isNetwork` parameter is
+--- UNDOCUMENTED in citizenfx/natives -- every parameter description in that file
+--- is empty. What is established is that the call plays on the machine that
+--- makes it and nowhere else; the community answer to "how do other players hear
+--- this" is uniformly "trigger a client event to the players who should", and the
+--- 3D-audio resources that exist for FiveM exist precisely because there is no
+--- one-call networked version of this.
+---
+--- SO THE FAN-OUT IS OURS AND IT IS THE SERVER'S. br_core/server/fuel.lua works
+--- out who is in the vehicle -- it already has to, for the ledger -- and sends
+--- each of them BR.Net.FUEL_SFX; each client lands here and plays its own copy
+--- from its own handle for the same car. `isNetwork` is passed FALSE for exactly
+--- that reason: we have already addressed everyone who should hear it, and a
+--- native that turned out to network after all would double the sound.
+---
+--- NOTHING HERE CREATES AN ENTITY. Worth saying because `sv_entityLockdown` is
+--- `relaxed` on this server, so a client that tried to spawn a sound-emitter
+--- prop would be refused -- this plays from a car that GTA's own traffic
+--- network already created, and adds nothing to the world.
+---
+--- WHY NOT PlaySoundFrontend FOR THE OCCUPANTS. It would be one native shorter
+--- and it would work, because an occupant is by definition a metre from the car.
+--- Anchoring on the entity is still right: the engine positions and attenuates
+--- it, so it ducks and pans like a thing happening to the vehicle rather than a
+--- menu click, and widening the audience past the occupants later becomes a
+--- change to one list on the server rather than a change of native here.
+---
+--- @param cue string        a key in BR.Config.Audio.cues
+--- @param entity integer    the entity to play it from
+function BR.Sfx.playFrom(cue, entity)
+    if muted or not BR.Config.Audio.enabled then return end
+    -- ZERO IS TESTED EXPLICITLY, because `0` is truthy in Lua and it is what
+    -- every entity-returning native answers for "there isn't one". Playing from
+    -- entity 0 is silent, which is indistinguishable from a wrong sound name.
+    if not entity or entity == 0 then return end
+
+    local def = BR.Config.Audio.cues[cue]
+    if not def then
+        -- Once per cue, exactly as BR.Sfx.play does and for the same reason.
+        if lastPlayed['?' .. cue] == nil then
+            lastPlayed['?' .. cue] = 1
+            print(('[br_core] sfx: unknown cue "%s"'):format(tostring(cue)))
+        end
+        return
+    end
+
+    local gap = BR.Config.Audio.minInterval[cue]
+    if gap then
+        local now = GetGameTimer()
+        if (now - (lastPlayed[cue] or -math.huge)) < gap then return end
+        lastPlayed[cue] = now
+    end
+
+    -- -1 = no specific sound id, we never need to stop these.
+    -- false = not a network sound; the server has already told everyone who
+    --         should hear it, and each of them is playing their own copy.
+    PlaySoundFromEntity(-1, def.name, entity, def.set, false, 0)
+end
+
 --- Silence every cue. Client-side only.
 --- @param on boolean
 function BR.Sfx.setMuted(on)

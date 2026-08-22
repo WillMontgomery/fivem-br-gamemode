@@ -260,6 +260,23 @@ BR.Net = {
     -- is the only message in the gamemode that can make a resource go UP, which
     -- is why it is the one with the most checks behind it.
     FUEL_PUMP       = 'br:fuel:pump',
+    -- S->C  { n = netId, c = cue } -- "play this cue from that car".
+    --
+    -- ═══ THIS EXISTS BECAUSE THE AUDIO NATIVE IS NOT NETWORKED ═══
+    --
+    --   "All occupants of a vehicle should hear these sounds."
+    --                                          -- owner, 2026-08-22
+    --
+    -- PLAY_SOUND_FROM_ENTITY plays on the machine that calls it and nowhere
+    -- else, so "everyone in the car hears it" has to be a message. The SERVER
+    -- decides who gets one -- it is already the thing that knows who is in
+    -- which vehicle, from the ledger's own roster walk -- and each recipient
+    -- plays its own copy anchored on its own handle for that car.
+    --
+    -- THE CUE IS A KEY, NOT A SOUND NAME. `c` indexes BR.Config.Audio.cues, so
+    -- the wire never carries a GTA sound-set name and a client cannot ask for
+    -- an arbitrary one. See br_core/client/sfx.lua's playFrom.
+    FUEL_SFX        = 'br:fuel:sfx',
 
     -- Vehicle boost. The CLIENT owns the meter, the push and its own flames --
     -- a twitch input cannot wait for a round trip -- so these two carry only

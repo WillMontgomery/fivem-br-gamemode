@@ -53,6 +53,74 @@ BR.Config.Audio = {
         -- firefight at full volume forever.
         ['hit']      = { set = 'HUD_MINI_GAME_SOUNDSET', name = 'CHECKPOINT_NORMAL' },
         ['hit.crit'] = { set = 'HUD_MINI_GAME_SOUNDSET', name = 'CHECKPOINT_PERFECT' },
+
+        -- ═══ THE PUMP, AND WHY THESE TWO ARE NATIVE WHEN THE RULE ABOVE SAYS
+        --     INTERFACE AUDIO IS NOT ═══
+        --
+        --   "When pressing [key] to fuel, a sound should be played. This should
+        --    be a native GTA V sound. Pick something most appropriate for
+        --    'interact'"
+        --   "When fuel reaches 100%, a 'complete' sound should be played.
+        --    Again, GTA V sounds only please."
+        --   "All occupants of a vehicle should hear these sounds."
+        --                                          -- owner, 2026-08-22
+        --
+        -- THE LAST SENTENCE IS THE ONE THAT DECIDES THE MEDIUM, and it decides
+        -- it on a fact rather than a preference. ui-src/src/audio/cues.ts plays
+        -- into ONE browser on ONE client: a CEF-synthesised cue physically
+        -- cannot reach the passenger sitting beside the driver, because that
+        -- passenger is a different machine with a different browser. So "all
+        -- occupants hear it" rules the browser out, and the owner asked for
+        -- native anyway. These are also WORLD events, not menu events -- the
+        -- same category the pickup cue was moved back into at the owner's call
+        -- (see loot.lua's `pickupSound`: "a pickup is a world event, it fires
+        -- while shooting, and the engine cue ducks correctly").
+        --
+        -- ═══ WHERE THESE TWO NAMES CAME FROM, BECAUSE A WRONG ONE IS SILENT
+        --     RATHER THAN LOUD ═══
+        --
+        -- Both were checked against the game's own extracted audio table (2,203
+        -- AudioName/AudioRef pairs, 500 distinct refs) rather than off a wiki --
+        -- the header above says every name here must be auditioned, and this is
+        -- the strongest check available without a running client.
+        --
+        -- HUD_FRONTEND_DEFAULT_SOUNDSET is additionally PROVEN LIVE IN THIS
+        -- TREE: loot.lua already ships `PICK_UP` and `NAV_UP_DOWN` out of that
+        -- exact set and both are audible in game. HUD_AWARDS is the set this
+        -- file's own header records as where WIN and LOSER actually live, found
+        -- the expensive way when they were silent in GTAO_FM_EVENTS_SOUNDSET.
+        -- So neither ref is a guess: each has been heard from this codebase.
+        --
+        -- ═══ WHY THESE TWO SOUNDS AND NOT OTHERS ═══
+        --
+        -- THERE IS NO PETROL-PUMP SOUND IN GTA. The complete list of fuel-ish
+        -- entries in the audio table is Gas_Explosion, ARM_2_Repo_Ignite_Petrol,
+        -- FINALE_PETROL_SPILL, Gas_Tanker_Explosion, Gas_Station_Explosion and
+        -- WEAPON_SELECT_FUEL_CAN -- five explosions and a weapon-shop click.
+        -- This is the same shape as the blip sprite in config/fuel.lua, where
+        -- GTA turned out to have no petrol-station icon either and a jerry can
+        -- was the whole available choice. So both cues below are the GENERIC
+        -- ones, chosen for what they communicate rather than for theme.
+        --
+        --   fuel.start  SELECT is the game's own "you interacted with a thing"
+        --               confirm -- the most literal answer to "most appropriate
+        --               for interact" the engine contains.
+        --   fuel.done   CHALLENGE_UNLOCKED is its "a thing you were working on
+        --               has finished" chime. Short, unmistakably terminal, and
+        --               not the match-win fanfare -- a full tank is a completed
+        --               task, not a victory.
+        --
+        -- NEITHER COLLIDES WITH A CUE ALREADY IN USE. PICK_UP is loot,
+        -- NAV_UP_DOWN is the slot switch, CHECKPOINT_NORMAL and
+        -- CHECKPOINT_PERFECT are the hitmarker and the crate. Two actions that
+        -- sound identical are worse than one that sounds wrong.
+        --
+        -- PLAYED FROM THE VEHICLE, NOT FROM THE FRONTEND. See
+        -- BR.Sfx.playFrom -- it is the same table and the same throttle, but
+        -- PlaySoundFromEntity, so the cue is positioned on the car and mixed by
+        -- the engine for every occupant.
+        ['fuel.start'] = { set = 'HUD_FRONTEND_DEFAULT_SOUNDSET', name = 'SELECT' },
+        ['fuel.done']  = { set = 'HUD_AWARDS', name = 'CHALLENGE_UNLOCKED' },
     },
 }
 

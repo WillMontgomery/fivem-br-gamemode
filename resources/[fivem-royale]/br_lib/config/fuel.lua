@@ -61,7 +61,23 @@ BR.Config = BR.Config or {}
 -- the derivation down is that the next person can re-run it when the AABB moves
 -- rather than inheriting a constant with no argument attached.
 --
--- ─── 3. WHICH VALUE INSIDE THE BAND, AND THE ONE ASSUMPTION IT PAYS FOR ──────
+-- ─── 3. THE OWNER ASKED FOR +25% AND IT LEFT THE BAND. READ THIS BEFORE
+--        BELIEVING THE HEADING ABOVE ──────────────────────────────────────────
+--
+--   "We should decrease standard fuel burn by increasing the distance they can
+--    go by 25%."                             -- owner, 2026-08-22
+--
+-- 6,000 * 1.25 = 7,500, and 7,500 IS OUTSIDE THE 4,716..7,074 BAND that section
+-- 2 just derived. So the owner now holds two rules that cannot both be true, and
+-- this file implements the newer one and says so rather than quietly picking:
+--
+--     ceil(14,148 / 7,500) - 1  =  ceil(1.886) - 1  =  2 - 1  =  ONE STOP
+--
+-- A STRAIGHT-LINE CROSSING NOW COSTS ONE STOP, NOT TWO. That is a real change to
+-- the rule of 2026-08-21 and it is the owner's to accept or reverse; putting the
+-- tank back to anything under 7,074 restores two stops and costs them the 25%.
+--
+-- ─── 3b. THE NUANCE THAT MAY SAVE THE RULE ANYWAY, AND IT IS NOT A DODGE ─────
 --
 -- The diagonal is a STRAIGHT LINE and nobody drives one. A real crossing follows
 -- roads, so the ground actually covered is k * D for some detour factor k > 1,
@@ -71,30 +87,36 @@ BR.Config = BR.Config or {}
 --
 -- Solved the other way -- for which k a given T still produces two stops:
 --
---     T = 5,000 m  ->  k in [0.71, 1.06)     two stops only on an almost
---                                            perfectly straight run
---     T = 6,000 m  ->  k in [0.85, 1.27)     <-- CHOSEN
---     T = 7,000 m  ->  k in [0.99, 1.48)     three stops the moment the route
---                                            is even slightly shorter than the
---                                            full diagonal
+--     T = 6,000 m  ->  k in [0.85, 1.27)     the old value
+--     T = 7,000 m  ->  k in [0.99, 1.48)
+--     T = 7,500 m  ->  k in [1.06, 1.59)     <-- CHOSEN, at the owner's +25%
 --
--- 6,000 m is the value whose band straddles k = 1 with room on both sides: it
--- gives two stops for a route flown straight down the diagonal AND for one that
--- wanders 27% further than that. The alternatives are each tight against one
--- edge, which means the rule breaks on the first honest playtest in one
--- direction or the other.
+-- SO AT 7,500 THE ANSWER DEPENDS ENTIRELY ON WHAT "A TRIP ACROSS THE MAP" MEANS.
+-- Measured as the straight diagonal -- which is what this file has always meant,
+-- and what stopsPerCrossing() and the test suite evaluate -- it is ONE stop.
+-- Measured as an actual drive on actual roads, two stops returns as soon as the
+-- route is 6.02% longer than the straight line (the threshold is exactly
+-- 2T/D = 15,000/14,148), and a road route between opposite corners of this map
+-- is certainly more than 6% longer than a straight line.
+--
+-- THAT IS NOT A CLAIM THIS FILE GETS TO MAKE, THOUGH. Nobody has measured k on
+-- this map. The honest statement is: the owner's rule as WRITTEN DOWN and as
+-- TESTED is now broken, and the rule as they probably MEANT it is probably
+-- still fine. They should decide which one they wanted, and a playtest that
+-- drives one corner to the other and counts stops settles it in one round.
 --
 -- ─── 4. SANITY, IN UNITS A PLAYER WOULD RECOGNISE ────────────────────────────
 --
---     a tank at 25 m/s                     240 s  -- four minutes of driving
---     as a share of a match (1,315 s)      18%
---     median POI-to-POI hop (461 m)        ~13 hops
+--     a tank at 25 m/s                     300 s  -- five minutes of driving
+--     as a share of a match (1,315 s)      23%
+--     median POI-to-POI hop (461 m)        ~16 hops
+--     furthest land point from a station   3,216 m, or 43% of a tank
 --     #195's opening guess                 3,000 m, which is FOUR stops
 --
--- The issue's own starting number is doubled here, and that is the owner's
--- answer overriding the issue body: 3,000 m was proposed against no refuelling
--- at all, where the tank has to be a whole match's allowance. With stations on
--- the map the tank is a leg, not a budget.
+-- The issue's own starting number is two and a half times smaller, and that is
+-- the owner's answer overriding the issue body: 3,000 m was proposed against no
+-- refuelling at all, where the tank has to be a whole match's allowance. With
+-- stations on the map the tank is a leg, not a budget.
 --
 -- ─── 5. WHAT IS NOT MODELLED, SAID PLAINLY ───────────────────────────────────
 --
@@ -140,10 +162,13 @@ BR.Config.Fuel = {
 
     --- A full tank, in metres of ground.
     ---
-    --- SEE THE DERIVATION ABOVE. It is chosen inside the band 4,716..7,074 that
-    --- the owner's "two stops per crossing" rule defines, at the point whose
-    --- tolerance for road detours is widest.
-    tankMetres = 6000.0,
+    --- SEE THE DERIVATION ABOVE, AND SECTION 3 IN PARTICULAR. This is the
+    --- owner's +25% of 2026-08-22 applied to the previous 6,000, and it sits
+    --- OUTSIDE the 4,716..7,074 band their earlier "two stops per crossing"
+    --- rule defines. A straight-line crossing now costs ONE stop. That is a
+    --- deliberate, flagged consequence of the newer instruction, not an
+    --- oversight -- see section 3 for what to change to get two stops back.
+    tankMetres = 7500.0,
 
     --- Seconds of holding the interact key to fill an empty tank.
     ---
@@ -183,27 +208,98 @@ BR.Config.Fuel = {
     --- match, which is a real and different game -- it is one edit away.
     repairFraction = 1.0,
 
-    --- How close the VEHICLE has to be to a station to REFUEL.
+    --- How close the VEHICLE has to be to a station for the forecourt rules to
+    --- apply at all -- the horn suppression, the pump search, the blips.
     ---
     --- Measured from the authored station coordinate, which is a forecourt
     --- centre rather than a specific pump -- so this has to cover the whole
     --- apron, not a parking space.
     ---
-    --- ═══ THIS IS NO LONGER WHAT DECIDES WHETHER THE PROMPT DRAWS ═══
+    --- ═══ THIS IS NO LONGER WHAT DECIDES EITHER THE PROMPT OR THE REFUEL ═══
     ---
-    --- It was, and the first playtest said so:
+    --- It used to be both. `promptRadius` took the prompt away from it on
+    --- 2026-08-22, and `refuelRadius` below has now taken the refuel. What is
+    --- LEFT on this number is the one job that genuinely needs the wide bubble:
+    --- THE HORN. A DisableControlAction takes effect for the frame it is issued
+    --- in and cannot be applied retroactively, so E has to be suppressed from
+    --- the moment a driver rolls onto the apron -- waiting until they are at a
+    --- pump means the engine has already had a frame in which the horn was live,
+    --- and the audible result is a chirp at the start of every refuel.
     ---
-    ---   "The DUI draws way too far away from the pumps. We need to be like
-    ---    10ft from the pumps or less."   -- owner, 2026-08-22
-    ---
-    --- `promptRadius` below is that number and the plate is gated on it now.
-    --- THIS ONE IS DELIBERATELY UNCHANGED: the owner confirmed refuelling works,
-    --- and the server -- which re-derives every claim in a pump message -- has no
-    --- pump coordinates to test against and cannot be given any, because
-    --- GET_CLOSEST_OBJECT_OF_TYPE reads the STREAMED world and a server streams
-    --- nothing. So the wide radius stays where the authority is and the narrow
-    --- one lives on the client, which is the only side that can see a pump.
+    --- So: thirty metres of "you are at a petrol station", twenty of "you may
+    --- buy fuel", three of "there is a plate on your screen".
     stationRadius = 30.0,
+
+    --- How close the VEHICLE has to be to a station centre to REFUEL.
+    ---
+    --- ═══ THIS NUMBER EXISTS BECAUSE OF THE GAP THE OWNER REJECTED ═══
+    ---
+    ---   "The distance for the DUI to draw is great, but for some reason I can
+    ---    still get gas further away from the pumps before the DUI is drawn.
+    ---    That's not okay."                   -- owner, 2026-08-22
+    ---
+    --- They are describing a gap this file already documented and shipped
+    --- anyway: the plate was gated at 3m from a PUMP PROP while the refuel was
+    --- gated at 30m from a STATION CENTRE, so between the two a hold filled the
+    --- tank with nothing on screen saying so.
+    ---
+    --- ═══ WHY IT COULD NOT SIMPLY BE SET TO promptRadius ═══
+    ---
+    --- The server re-derives every claim in a pump message, and THE SERVER
+    --- CANNOT TEST AGAINST A PUMP. GET_CLOSEST_OBJECT_OF_TYPE reads the STREAMED
+    --- world and a server streams nothing, so the only geometry the server has
+    --- is this authored list of forecourt centres. Setting this to 3.0 would
+    --- mean "within 3m of the CENTRE of the forecourt", which is not where the
+    --- pumps are -- a car parked square at a pump is several metres from the
+    --- authored point, and refuelling would break at every station.
+    ---
+    --- ═══ SO THE FIX IS IN TWO HALVES, AND ONLY ONE OF THEM IS THIS NUMBER ═══
+    ---
+    --- HALF ONE, WHICH IS THE PART THE OWNER CAN SEE: client/fuel.lua now sends
+    --- BR.Net.FUEL_PUMP only while the plate is actually drawn, and it draws the
+    --- plate only when BOTH tests pass -- within `promptRadius` of a pump AND
+    --- within this radius of the station. The plate and the fill became the same
+    --- condition, so for anybody running the stock client the gap is CLOSED
+    --- rather than narrowed. That is the whole of the reported bug.
+    ---
+    --- HALF TWO, WHICH IS ABOUT LIARS: a modified client can send the message
+    --- without drawing anything, so the server keeps its own independent test
+    --- and this is it. It is tightened from 30 to 20 -- the server still cannot
+    --- see a pump, but it does not need thirty metres to approximate "on the
+    --- forecourt", and every metre here is a metre a liar can refuel from.
+    ---
+    --- ═══ WHAT AN ATTACKER GAINS, STATED PLAINLY ═══
+    ---
+    --- With a modified client: refuelling anywhere within 20m of an authored
+    --- station centre instead of within 3m of a pump. That is DOWN from 30m and
+    --- it is not zero, and it cannot be made zero without pump coordinates the
+    --- server has no licence-clean way to obtain (config's `stations` block
+    --- records the one dataset that has them and why it is not used). What it
+    --- buys them is refuelling from slightly further away while still standing
+    --- still on a forecourt in the open -- the cost the whole feature is built
+    --- around is the ten seconds, not the three metres.
+    ---
+    --- ═══ WHY 20 AND NOT 15, AND THE DIRECTION THE ERROR FALLS ═══
+    ---
+    --- This has to be at least as large as the furthest any real pump sits from
+    --- its authored centre, plus the car's own offset. The coordinates were
+    --- WALKED rather than extracted and sit "within a metre or two of a pump" --
+    --- but a station has several pumps spread across an apron, so the far one
+    --- can be a forecourt's width away from wherever the walker stood. A GTA
+    --- forecourt is roughly 20m across.
+    ---
+    --- CONSERVATIVE ON PURPOSE. Too tight is far worse than too loose: too loose
+    --- lets a cheat refuel from 20m instead of 3m, and too tight means an honest
+    --- player at a real pump at one particular station cannot refuel there AT
+    --- ALL. Because the client draws the plate on this same value, a too-tight
+    --- setting fails as "no plate and no fuel" rather than as the much worse
+    --- "plate says Currently fueling and nothing happens".
+    ---
+    --- THIS IS THE ONE NUMBER IN THE CHANGE THAT CANNOT BE CHECKED WITHOUT A
+    --- LIVE SERVER, exactly as `promptRadius` was. `/brfuel` on the client now
+    --- prints the live vehicle-to-station-centre distance beside this radius, so
+    --- the next value is measured at the worst station rather than guessed.
+    refuelRadius = 20.0,
 
     --- How far a player may be from a vehicle and still ask what it holds.
     ---
@@ -267,6 +363,26 @@ BR.Config.Fuel = {
     pumpStepMs  = 400,
     pumpFloorMs = 80,
 
+    --- How long a silence ends one hold and begins the next.
+    ---
+    --- ═══ THIS IS WHAT MAKES THE START SOUND FIRE ONCE PER PRESS ═══
+    ---
+    ---   "When pressing [key] to fuel, a sound should be played."
+    ---                                          -- owner, 2026-08-22
+    ---
+    --- A press is a CLIENT fact, but the sound has to be heard by everyone in
+    --- the car, so the SERVER is what decides when to send it -- and the server
+    --- never sees a press, only a stream of "still holding" messages arriving
+    --- every `pumpSendMs`. A new hold is therefore inferred from the gap: the
+    --- first message after this long a silence is a press.
+    ---
+    --- COMFORTABLY ABOVE pumpSendMs (250) AND pumpStepMs (400), so a hold that
+    --- drops a message or two mid-stream is not heard as a second press, and far
+    --- below the time it takes a human to let go and press again deliberately.
+    --- Getting this wrong is audible in one direction only: too small and a
+    --- laggy hold chirps repeatedly, which is why it is not 500.
+    holdGapMs = 750,
+
     --- Client-side bookkeeping.
     ---
     --- `askThrottleMs` one question per network id per second, so standing
@@ -301,13 +417,20 @@ BR.Config.Fuel = {
     --- something like 2 to 3m here rather than the nought-point-something their
     --- eyes report.
     ---
-    --- THAT MAKES 3.0 THE TIGHT END OF THE PLAUSIBLE RANGE, and it is the one
-    --- value in this change that cannot be checked without a live server. If the
+    --- THAT MAKES 3.0 THE TIGHT END OF THE PLAUSIBLE RANGE, and it is one of the
+    --- two values here that cannot be checked without a live server. If the
     --- plate turns out not to appear for a car parked square at a pump, this
     --- line is the whole fix -- and `/brfuel` prints the live distance and this
     --- radius side by side so the next number is measured rather than guessed.
-    --- Everything above `promptRadius` and below `stationRadius` is the gap
-    --- described at `stationRadius`: refuelling works, silently.
+    ---
+    --- ═══ THE GAP THAT USED TO BE DESCRIBED HERE IS CLOSED ═══
+    ---
+    --- This block used to end by admitting that everything between this radius
+    --- and `stationRadius` refuelled silently. The owner rejected that on
+    --- 2026-08-22 and it is fixed: the plate is now gated on this radius AND on
+    --- `refuelRadius`, and client/fuel.lua sends nothing while the plate is
+    --- down. Draw and fill are one condition. See `refuelRadius` for the half of
+    --- that fix which survives a modified client, and for what one still gains.
     promptRadius = 3.0,
     promptLift   = 1.4,
     promptScale  = 1.6,

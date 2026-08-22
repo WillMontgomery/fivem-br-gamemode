@@ -65,14 +65,15 @@ local blips = {}
 --- The station the player is currently parked at, and the pump prop we found
 --- to hang the prompt on.
 ---
---- `dist` is the last measured metres from the vehicle to that anchor. It is
---- kept for `/brfuel` and for nothing else: `promptRadius` is the one value in
---- this feature that cannot be checked outside a live server, and a debug line
---- that prints the live distance beside the radius is what makes the next
---- number measured rather than guessed.
+--- `dist` is the last measured metres from the vehicle to that anchor, and
+--- `stationDist` the metres from the vehicle to the authored forecourt centre.
+--- Both are kept for `/brfuel` and for nothing else: `promptRadius` and
+--- `refuelRadius` are the two values in this feature that cannot be checked
+--- outside a live server, and a debug line that prints each live distance beside
+--- its radius is what makes the next number measured rather than guessed.
 local at = {
     station = nil, pump = nil, pumpAt = 0,
-    px = nil, py = nil, pz = nil, dist = nil,
+    px = nil, py = nil, pz = nil, dist = nil, stationDist = nil,
 }
 
 --- Is the prompt page currently showing OUR plate?
@@ -85,6 +86,13 @@ local at = {
 --- STARTS false RATHER THAN nil so the first frame off a forecourt is not a
 --- hide message for a plate that was never up.
 local promptShown = false
+
+--- And which of the two labels it is currently showing.
+---
+--- SEPARATE FROM promptShown because the plate now has three states, not two:
+--- down, up saying "Hold to refuel", up saying "Currently fueling". Folding
+--- them into one variable is how the switch stops being sent.
+local promptFueling = false
 
 --- Last time a pump request went out, for the send cadence.
 local pumpedAt = 0
@@ -209,13 +217,98 @@ end
 --- function is the one place that has to change, and it changes to read that
 --- model's number instead of the three engine ones.
 ---
+--- Undo the damage a player can SEE, all at once.
+---
+--- ═══ THE OWNER ADDED THIS ON 2026-08-22 ═══
+---
+---   "The gas stations should be repairing cosmetic damage as well, which means
+---    a fill up will fix everything in one go."
+---
+--- ═══ FOUR NATIVES, THREE NAMESPACES, AND THEY ARE NOT INTERCHANGEABLE ═══
+---
+--- Each was read out of citizenfx/natives rather than remembered, because the
+--- obvious guess -- "SetVehicleFixed does everything" -- is wrong twice:
+---
+---   SET_VEHICLE_FIXED               0x115722B1B9C14C1C. The "repair the car"
+---   (VEHICLE)                       native: deformation, smashed glass, burst
+---                                   tyres, hanging doors, bullet holes.
+---                                   ITS DOCUMENTED LIMIT IS THE ONE THAT
+---                                   MATTERS HERE: "If the vehicle's engine's
+---                                   broken then you cannot fix it with this
+---                                   native." See the ordering note below.
+---
+---   SET_VEHICLE_DEFORMATION_FIXED   0x953DA1E1B12C0491. Deformation ONLY --
+---   (VEHICLE)                       "the vehicle health doesn't improve". This
+---                                   is what the file already called, and it is
+---                                   kept rather than replaced: it is the one
+---                                   call documented to reset dents with no
+---                                   side-effects, and it costs nothing to
+---                                   follow the broader native with the precise
+---                                   one.
+---
+---   WASH_DECALS_FROM_VEHICLE        0x5B712761429DBC14. IN THE **GRAPHICS**
+---   (GRAPHICS)                      NAMESPACE, NOT VEHICLE -- which is exactly
+---                                   the kind of detail that turns into a nil
+---                                   global and a suspended callback. Scuffs
+---                                   and scrape marks are DECALS painted on the
+---                                   bodywork, not deformation, so
+---                                   SetVehicleFixed does not touch them. This
+---                                   is the owner's "scratches".
+---
+--- NOT CALLED, AND THAT IS A DECISION RATHER THAN AN OMISSION:
+---
+---   SET_VEHICLE_DIRT_LEVEL  would wash the car. DIRT IS NOT DAMAGE -- it
+---                           accumulates from driving in the rain, not from
+---                           being shot -- and the owner asked for cosmetic
+---                           DAMAGE. A petrol station that also valets the car
+---                           is a thing nobody asked for. One line if they want
+---                           it: `SetVehicleDirtLevel(veh, 0.0)`, range 0..15.
+---   SET_VEHICLE_TYRE_FIXED  per-tyre, and FIX_VEHICLE_WINDOW per-window. Both
+---                           are already covered by SetVehicleFixed; looping
+---                           indices would be more code for the same result.
+---
+--- ═══ THE ORDER IS LOAD-BEARING ═══
+---
+--- The engine health is restored by applyRepair BEFORE this runs, because
+--- SetVehicleFixed cannot fix a broken engine. With #213 making vehicles
+--- genuinely destructible, cars will start arriving here with dead engines --
+--- so a version of this that called SetVehicleFixed first and trusted it to do
+--- the whole job would leave exactly the wrecks that most needed fixing.
+---
+--- ═══ ALL-OR-NOTHING, AND THAT IS THE ENGINE'S RULE, NOT A CHOICE ═══
+---
+--- There is no partial dent. Every native above is a reset -- none takes a
+--- fraction, and GTA exposes no way to pop half a deformation out. So cosmetic
+--- repair cannot ride the per-second clock the health pools ride, and it fires
+--- at COMPLETION instead: the frame the body reaches full, which is the moment
+--- the file already chose for the deformation pop and for the same reason
+--- (doing it a tenth at a time reads as the car breathing).
+---
+--- THE PARTIAL RULE IS THEREFORE INTACT: a driver who lets go after three
+--- seconds gets 30% of their health back and NO cosmetic repair, because their
+--- body health did not reach full. They have to finish to get the paint back.
+--- @param veh integer
+local function fixCosmetic(veh)
+    -- Every one of these is pcall'd for the reason /brfuel's header gives: an
+    -- unknown binding THROWS, five throws suspend the callback, and a suspended
+    -- callback is silent. WashDecalsFromVehicle in particular is the first
+    -- GRAPHICS-namespace native this file has ever called.
+    if SetVehicleFixed then pcall(SetVehicleFixed, veh) end
+    if SetVehicleDeformationFixed then pcall(SetVehicleDeformationFixed, veh) end
+    -- p1 is the wash strength; 1.0 is a full wash. The native takes a float and
+    -- the `+ 0.0` is this codebase's habit of never handing an integer to one.
+    if WashDecalsFromVehicle then pcall(WashDecalsFromVehicle, veh, 1.0 + 0.0) end
+end
+
 --- ALL THREE HEALTH POOLS, because "restored" with one of them left low is a car
 --- that looks fine and dies to the next bump. Body is the panels, engine is
 --- whether it runs, petrol tank is whether it catches fire.
 ---
---- THE DEFORMATION IS FIXED ONCE, AT THE TOP. Dents are visual and popping them
+--- THE COSMETIC PASS IS FIXED ONCE, AT THE TOP. Dents are visual and popping them
 --- out a tenth at a time reads as the car breathing; doing it on the frame the
---- body reaches full reads as the repair finishing.
+--- body reaches full reads as the repair finishing. See fixCosmetic for what
+--- "cosmetic" turned out to mean in natives, and why the engine is restored
+--- first.
 --- @param veh integer
 --- @param points number  health, on GTA's 0..1000 scale
 local function applyRepair(veh, points)
@@ -237,12 +330,21 @@ local function applyRepair(veh, points)
         return want
     end
 
+    -- ENGINE FIRST, AND THE ORDER IS NOT COSMETIC. SetVehicleFixed inside
+    -- fixCosmetic is documented not to fix a broken engine, so the engine is
+    -- put back by the explicit setter above it rather than left to a native
+    -- that will decline.
     bump(GetVehicleEngineHealth, SetVehicleEngineHealth)
     bump(GetVehiclePetrolTankHealth, SetVehiclePetrolTankHealth)
     local body = bump(GetVehicleBodyHealth, SetVehicleBodyHealth)
-    if body >= cap and SetVehicleDeformationFixed then
-        pcall(SetVehicleDeformationFixed, veh)
-    end
+
+    -- THE TRIGGER IS STILL THE BODY REACHING FULL, deliberately unchanged. It
+    -- would read as tidier to require all three pools at full, but that hands
+    -- the cosmetic repair a new way to never happen -- if any pool ever refuses
+    -- to climb, the dents stay in forever -- and it is a regression on the one
+    -- trigger that has already been played. The body is the pool the dents
+    -- belong to anyway.
+    if body >= cap then fixCosmetic(veh) end
 end
 
 -- ---------------------------------------------------------------------------
@@ -514,6 +616,27 @@ end
 --- this string moves down to `hint`; the plate already draws both.
 local PROMPT_LABEL = 'Hold to refuel'
 
+--- And what it says while the key is down.
+---
+---   "While holding the key, the DUI should change to say 'Currently fueling'"
+---                                          -- owner, 2026-08-22
+---
+--- VERBATIM, INCLUDING THE SPELLING. "fueling" with one L is what they wrote;
+--- this file does not correct the owner's copy to "fuelling", and a future
+--- tidy-up that does is a change to UI text nobody asked for.
+---
+--- THE SAME SLOT AS THE OTHER ONE, AND FOR THE SAME REASON. `#hint` in
+--- br_ui/dui/prompt.html is `text-transform: uppercase`, so that slot can only
+--- ever render "CURRENTLY FUELING". Both strings live in `label` so both reach
+--- the plate as written.
+---
+--- IT IS THE CLIENT'S KEY STATE THAT SWITCHES THIS, NOT A SERVER GRANT, and the
+--- owner's wording is why: "WHILE HOLDING THE KEY". A plate that waited for the
+--- server to confirm a grant would lag the keypress by a round trip and would
+--- flicker back to "Hold to refuel" every time a message was dropped. The plate
+--- describes what the player is doing; the ledger describes what they earned.
+local PROMPT_LABEL_FUELING = 'Currently fueling'
+
 --- Show or hide the pump prompt.
 ---
 --- SENT ON CHANGE, WHICH IS NOW TWICE PER STOP. The label is a constant, so
@@ -525,11 +648,19 @@ local PROMPT_LABEL = 'Hold to refuel'
 --- prompt copy, and the page draws it as a badge of its own -- it is not
 --- appended to the sentence and does not change a character of it. Dropping it
 --- would be a change to a thing that works, on a fix that was not about it.
+--- NOW THREE MESSAGES PER STOP RATHER THAN TWO: up, switched to fueling, down.
+--- The dedupe below is what keeps it to that -- the label only has two values,
+--- so holding the key for ten seconds sends ONE message, not forty.
 --- @param show boolean
-local function setPrompt(show)
+--- @param fueling boolean|nil  is the interact key down right now?
+local function setPrompt(show, fueling)
     show = (show == true)
-    if promptShown == show then return end
-    promptShown = show
+    fueling = (fueling == true)
+    -- A HIDDEN PLATE HAS NO LABEL, so `fueling` is not compared while hidden --
+    -- otherwise letting go of the key off a forecourt would send a second hide
+    -- message for a plate that is already down.
+    if promptShown == show and (not show or promptFueling == fueling) then return end
+    promptShown, promptFueling = show, fueling
 
     local page = promptPage()
     if not show then
@@ -540,7 +671,7 @@ local function setPrompt(show)
     local key = BR.Keys and BR.Keys.labelFor and BR.Keys.labelFor('brinteract') or nil
     BR.Dui.send(page, {
         t = 'prompt', show = true,
-        label = PROMPT_LABEL,
+        label = fueling and PROMPT_LABEL_FUELING or PROMPT_LABEL,
         key = key,
         ring = false,
     })
@@ -592,7 +723,7 @@ BR.Loop.register(BR.Loop.TICK, 'fuel.apply', function()
         hideBlips()
         setPrompt(false)
         pushBars(nil, nil)
-        at.station, at.pump, at.dist = nil, nil, nil
+        at.station, at.pump, at.dist, at.stationDist = nil, nil, nil, nil
         return
     end
 
@@ -646,17 +777,22 @@ BR.Loop.register(BR.Loop.FRAME, 'fuel.pump', function()
     local ok, driver = pcall(GetPedInVehicleSeat, veh, -1)
     if not ok or driver ~= ped then
         setPrompt(false)
-        at.station, at.pump, at.dist = nil, nil, nil
+        at.station, at.pump, at.dist, at.stationDist = nil, nil, nil, nil
         return
     end
 
     local okc, c = pcall(GetEntityCoords, veh)
     if not okc or c == nil then return end
 
-    local station = BR.FuelSolve.stationNear(c.x, c.y, F.stations, F.stationRadius)
+    -- THE SECOND RETURN IS NOW READ. It is the metres from the vehicle to the
+    -- authored forecourt centre, and it is what `refuelRadius` is measured
+    -- against below -- the same test, on the same authored list, that the
+    -- server will run on its own copy of this vehicle's position.
+    local station, stationDist =
+        BR.FuelSolve.stationNear(c.x, c.y, F.stations, F.stationRadius)
     if station == nil then
         setPrompt(false)
-        at.station, at.pump, at.dist = nil, nil, nil
+        at.station, at.pump, at.dist, at.stationDist = nil, nil, nil, nil
         return
     end
 
@@ -722,10 +858,38 @@ BR.Loop.register(BR.Loop.FRAME, 'fuel.pump', function()
     local px = at.px or station.x
     local py = at.py or station.y
 
-    local inReach
-    inReach, at.dist = BR.FuelSolve.atPump(c.x, c.y, px, py,
-                                           tonumber(F.promptRadius) or 0.0)
-    setPrompt(inReach)
+    local atPump
+    atPump, at.dist = BR.FuelSolve.atPump(c.x, c.y, px, py,
+                                          tonumber(F.promptRadius) or 0.0)
+    at.stationDist = stationDist
+
+    -- ═══ THE PLATE IS GATED ON BOTH RADII, AND THE SECOND ONE IS THE FIX ═══
+    --
+    --   "The distance for the DUI to draw is great, but for some reason I can
+    --    still get gas further away from the pumps before the DUI is drawn.
+    --    That's not okay."                    -- owner, 2026-08-22
+    --
+    -- The pump test is the one they liked and it is unchanged. What is added is
+    -- the SERVER'S OWN TEST, run here as well: `refuelRadius` from the station
+    -- centre. Drawing the plate on the conjunction is what makes the plate an
+    -- honest advertisement of what the hold below will actually achieve --
+    -- there is no longer a position where one is true and the other is not.
+    --
+    -- WHICH DIRECTION THIS FAILS IN, IF refuelRadius IS EVER SET TOO TIGHT: no
+    -- plate and no fuel, at a station whose pumps sit unusually far from the
+    -- authored centre. That is the same class of failure `promptRadius` already
+    -- risks and it is the survivable one. The unsurvivable one -- a plate
+    -- reading "Currently fueling" while the server refuses every message -- is
+    -- precisely what gating on the server's own number prevents.
+    local inReach = atPump
+                    and stationDist <= (tonumber(F.refuelRadius) or 0.0)
+
+    -- THE KEY, READ ONCE AND USED TWICE: it decides what the plate says and
+    -- whether a message goes out, and reading it twice in one frame is how
+    -- those two stop agreeing.
+    local held = BR.Keys ~= nil and BR.Keys.isHeld ~= nil
+                 and BR.Keys.isHeld('interact')
+    setPrompt(inReach, held)
 
     if inReach then
         local pz = (at.pz or (tonumber(station.z) or c.z))
@@ -733,24 +897,29 @@ BR.Loop.register(BR.Loop.FRAME, 'fuel.pump', function()
         BR.Dui.drawWorld(promptPage(), px, py, pz, tonumber(F.promptScale) or 1.6)
     end
 
-    -- ═══ THE HOLD ═══
+    -- ═══ THE HOLD, AND IT NOW SENDS NOTHING WHILE THE PLATE IS DOWN ═══
     --
-    -- REFUELLING IS STILL THE STATION'S RADIUS, NOT THE PLATE'S. This send is
-    -- deliberately outside the `inReach` branch above: the owner confirmed
-    -- refuelling works and asked only for the plate to come closer, and the
-    -- server re-derives eligibility from `stationRadius` anyway -- gating the
-    -- send on a client-side pump distance would put a rule in front of the
-    -- server's that the server does not have, for no reason the player asked
-    -- for. The visible cost is the gap: between 3m and 30m of a station a hold
-    -- fills the tank with nothing on screen saying so.
+    -- THIS ONE LINE IS THE WHOLE OF THE OWNER'S BUG. The send used to sit
+    -- OUTSIDE the `inReach` test on the reasoning that the server re-derives
+    -- eligibility anyway, so a client-side gate added nothing -- which was true
+    -- about SECURITY and completely wrong about what the player experiences. It
+    -- meant a hold anywhere within the station radius filled the tank with
+    -- nothing on screen saying so, and that is what they are complaining about.
+    --
+    -- Gating the send on the plate makes the two the same event: if you can see
+    -- it you can fill, and if you cannot see it nothing happens. The server's
+    -- own test stays exactly where it was and is not weakened by this -- see
+    -- BR.Config.Fuel.refuelRadius for the half of the fix that survives a
+    -- client which ignores this line, and for what such a client actually gains.
     --
     -- One message every `pumpSendMs` for as long as the key is down, and the
     -- server decides what each one is worth from the wall clock. Sending faster
     -- earns nothing (BR.FuelSolve.grantMs), which is why this cadence can be a
     -- comfort rather than a security boundary.
+    if not inReach then return end
     local nid = netOf(veh)
     if nid == nil then return end
-    if not (BR.Keys and BR.Keys.isHeld and BR.Keys.isHeld('interact')) then return end
+    if not held then return end
     if (now - pumpedAt) < (tonumber(F.pumpSendMs) or 250) then return end
     pumpedAt = now
     TriggerServerEvent(BR.Net.FUEL_PUMP, { n = nid })
@@ -818,6 +987,46 @@ AddEventHandler(BR.Net.FUEL_SET, function(d)
             pcall(SetVehicleEngineOn, veh, true, false, false)
         end
     end
+end)
+
+--- The pump cues, played from the car so everybody in it hears them.
+---
+--- ═══ WHY THIS IS A MESSAGE AND NOT A LOCAL DECISION ═══
+---
+---   "All occupants of a vehicle should hear these sounds."
+---                                          -- owner, 2026-08-22
+---
+--- A passenger's client does not know the driver is holding a key, and cannot
+--- be told by the driver's client -- there is no client-to-client channel and
+--- there must not be one. The server is the only thing that knows both facts it
+--- needs (who is holding, who is aboard) and it already knows them both for the
+--- ledger, so it addresses the cue and this end just plays it.
+---
+--- PLAYED FROM THE ENTITY, so the engine positions and mixes it against
+--- whatever else is happening. See BR.Sfx.playFrom for why the native cannot do
+--- the networking itself.
+---
+--- THE CUE NAME IS AN INDEX, NOT A SOUND NAME. BR.Sfx.playFrom looks it up in
+--- BR.Config.Audio.cues and ignores anything it does not recognise, so the worst
+--- a malformed message can do is nothing.
+RegisterNetEvent(BR.Net.FUEL_SFX)
+AddEventHandler(BR.Net.FUEL_SFX, function(d)
+    if type(d) ~= 'table' then return end
+    local nid = math.tointeger(tonumber(d.n))
+    if nid == nil or nid == 0 or type(d.c) ~= 'string' then return end
+
+    -- RESOLVED FRESH RATHER THAN ASSUMED TO BE THE CAR WE ARE IN. The player
+    -- may have left the seat in the milliseconds this message was in flight,
+    -- and a cue that follows them out of the car would be wrong twice over.
+    local ok, ent = pcall(NetworkGetEntityFromNetworkId, nid)
+    -- `0` IS TRUTHY IN LUA and it is what this native answers for a network id
+    -- that resolves to nothing here -- a car that has streamed out, or another
+    -- match's. didHit() covers DoesEntityExist for the same reason.
+    if not ok or not ent or ent == 0 or not didHit(DoesEntityExist(ent)) then
+        return
+    end
+
+    if BR.Sfx and BR.Sfx.playFrom then BR.Sfx.playFrom(d.c, ent) end
 end)
 
 --- ═══ THE TWO ENGINE SWITCHES, SET ON EVERY RESOURCE START ═══
@@ -888,6 +1097,14 @@ RegisterCommand('brfuel', function()
                 tostring(at.pump),
                 at.dist and ('%.1f'):format(at.dist) or '?',
                 tostring(F and F.promptRadius)))
+    -- THE SECOND MEASUREMENT, AND THE REASON IT IS HERE. `refuelRadius` is the
+    -- server's own test and the one this client mirrors to decide whether to
+    -- draw at all, and its safe value depends on how far real pumps sit from
+    -- these authored forecourt centres -- which nobody has measured. Park at
+    -- the awkward stations, read this line, and the next value is a measurement.
+    print(('  station centre at %s m (refuel allowed within %s m)')
+        :format(at.stationDist and ('%.1f'):format(at.stationDist) or '?',
+                tostring(F and F.refuelRadius)))
     local n = 0
     for _ in pairs(known) do n = n + 1 end
     print(('  %d network id(s) remembered'):format(n))

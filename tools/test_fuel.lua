@@ -130,6 +130,31 @@ local function lastSet(src)
     return out
 end
 
+--- Every FUEL_SFX cue a player was sent, in order.
+---
+--- A LIST RATHER THAN A LAST-ONE, because the interesting properties of the pump
+--- cues are about COUNT and ORDER: the start fires once per hold no matter how
+--- many messages the hold is made of, and the completion fires once no matter
+--- how long somebody keeps holding afterwards. A `lastSfx` could not see either.
+--- @param src integer
+--- @return table cues   array of cue-name strings
+local function sfxTo(src)
+    local out = {}
+    for _, s in ipairs(sent) do
+        if s.event == BR.Net.FUEL_SFX and s.target == src then
+            out[#out + 1] = s.args[1] and s.args[1].c
+        end
+    end
+    return out
+end
+
+--- Drop the record of what has been sent, without touching the world.
+---
+--- `reset()` rebuilds the whole map and is far too big for "I want to count the
+--- cues from THIS hold". Parking a car takes a dozen messages and every one of
+--- them would be in the way.
+local function clearSent() sent = {} end
+
 local realPrint = print
 function print() end
 
@@ -482,6 +507,110 @@ do
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
+describe('config.refuelRadius')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- ═══ THE THREE RADII AND THE ORDER THAT MAKES EACH OF THEM MEAN SOMETHING ═══
+--
+--   "The distance for the DUI to draw is great, but for some reason I can still
+--    get gas further away from the pumps before the DUI is drawn. That's not
+--    okay."                                  -- owner, 2026-08-22
+--
+-- promptRadius (3m, from a PUMP PROP)     is there a plate on screen
+-- refuelRadius (20m, from a STATION)      may this vehicle buy fuel
+-- stationRadius (30m, from a STATION)     is the horn suppressed, are pumps
+--                                         searched for
+--
+-- The bug the owner is describing is what happens when the REFUEL test is wider
+-- than the DRAW test: a hold fills the tank with nothing on screen. The fix has
+-- a client half (draw and send are now the same condition) and a server half
+-- (this radius), and this block pins the invariant the server half rests on.
+do
+    local P = BR.Config.Fuel.promptRadius
+    local R = BR.Config.Fuel.refuelRadius
+    local S = BR.Config.Fuel.stationRadius
+
+    ok(type(R) == 'number' and R > 0, 'the refuel radius exists and is positive', R)
+
+    -- ═══ THE ORDERING, WHICH IS THE WHOLE INVARIANT ═══
+    --
+    -- refuelRadius MUST NOT EXCEED stationRadius. The client only looks for a
+    -- station at all within stationRadius, so a refuelRadius above it would be
+    -- a permission the client can never see itself holding -- the plate would
+    -- stop drawing before the server stopped granting, which is the ORIGINAL
+    -- BUG restored from the other end.
+    ok(R <= S, 'the refuel radius is inside the station radius',
+       ('refuel %.1f, station %.1f'):format(R, S))
+
+    -- AND IT IS STRICTLY TIGHTER THAN IT USED TO BE. The refuel test was
+    -- stationRadius; if a later edit puts it back, the gap the owner rejected
+    -- comes back with it and nothing else in this suite would notice.
+    ok(R < S, 'and strictly tighter than the forecourt bubble it was cut from',
+       ('refuel %.1f, station %.1f'):format(R, S))
+
+    -- THE PUMP RADIUS STAYS INSIDE THE REFUEL RADIUS. The client draws on the
+    -- conjunction of the two, so a promptRadius above this would make the
+    -- refuel test the binding one and quietly widen what the plate advertises.
+    ok(P < R, 'and the prompt radius sits inside it',
+       ('prompt %.1f, refuel %.1f'):format(P, R))
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('audio.pumpCues')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- ═══ WHAT THIS CAN AND CANNOT PROVE, SAID FIRST ═══
+--
+--   "This should be a native GTA V sound. Pick something most appropriate for
+--    'interact'"
+--   "When fuel reaches 100%, a 'complete' sound should be played. Again, GTA V
+--    sounds only please."                    -- owner, 2026-08-22
+--
+-- IT CANNOT PROVE A SOUND PLAYS. A wrong sound-set name does not error --
+-- PlaySoundFrontend and PlaySoundFromEntity both play nothing, silently, which
+-- is why /brsfx exists and why config/audio.lua's header says every name must be
+-- auditioned. Only a running client settles that.
+--
+-- WHAT IT DOES PROVE is the half that a unit test can reach: the two cues exist
+-- under the names the fuel code asks for, they carry both fields, and they do
+-- not collide with a cue already in use. The collision check is the valuable
+-- one -- two actions that sound identical is a bug nobody files.
+do
+    -- config/audio.lua is not in this suite's load list (it has no arithmetic in
+    -- it and nothing else here needs it), so it is loaded on its own.
+    load('br_lib/config/audio.lua')
+
+    local cues = BR.Config.Audio and BR.Config.Audio.cues or {}
+
+    for _, name in ipairs({ 'fuel.start', 'fuel.done' }) do
+        local def = cues[name]
+        ok(type(def) == 'table', ('the %s cue exists'):format(name))
+        if type(def) == 'table' then
+            ok(type(def.set) == 'string' and #def.set > 0,
+               ('%s names a sound set'):format(name), tostring(def.set))
+            ok(type(def.name) == 'string' and #def.name > 0,
+               ('%s names a sound'):format(name), tostring(def.name))
+        end
+    end
+
+    -- ═══ NO TWO ACTIONS MAY SOUND THE SAME ═══
+    --
+    -- The hitmarker, the crate and the pump all fire in the same match and a
+    -- player learns them by ear. Sharing a set/name pair between two of them is
+    -- not a crash and not a visible fault -- it just makes the game harder to
+    -- read, permanently, and nobody ever traces it back to a config line.
+    local seen, clash = {}, nil
+    for cue, def in pairs(cues) do
+        if type(def) == 'table' and def.set and def.name then
+            local key = def.set .. '/' .. def.name
+            if seen[key] then clash = ('%s and %s are both %s'):format(seen[key], cue, key) end
+            seen[key] = cue
+        end
+    end
+    ok(clash == nil, 'no two cues share a sound', clash)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
 describe('prompt.copy')
 -- ═══════════════════════════════════════════════════════════════════════════
 --
@@ -513,15 +642,93 @@ do
         ok(src:find("local PROMPT_LABEL = 'Hold to refuel'", 1, true) ~= nil,
            "the plate says exactly 'Hold to refuel'")
 
-        -- AND NOTHING IS APPENDED. The label field must be the constant and
-        -- only the constant -- no `..`, no :format(), no metres.
-        ok(src:find('label = PROMPT_LABEL,', 1, true) ~= nil,
-           'and the prompt sends that constant unmodified')
+        -- ═══ AND THE SECOND STRING, ADDED 2026-08-22 ═══
+        --
+        --   "While holding the key, the DUI should change to say 'Currently
+        --    fueling'"                        -- owner, 2026-08-22
+        ok(src:find("local PROMPT_LABEL_FUELING = 'Currently fueling'", 1, true) ~= nil,
+           "and says exactly 'Currently fueling' while the key is down")
+
+        -- ═══ THE SPELLING IS THE OWNER'S AND IS PINNED AGAINST A HELPFUL
+        --     CORRECTION ═══
+        --
+        -- "fueling" with one L is what they wrote. A future tidy-up to the
+        -- British "fuelling" would be a change to UI copy nobody asked for, and
+        -- it is exactly the kind of edit that looks like an improvement. This is
+        -- the only thing that would catch it.
+        ok(src:find('Currently fuelling', 1, true) == nil,
+           "and nobody has 'corrected' it to the double-L spelling")
+
+        -- AND NOTHING IS APPENDED. The label field must be one of the two
+        -- constants and only that -- no `..`, no :format(), no metres.
+        ok(src:find('label = fueling and PROMPT_LABEL_FUELING or PROMPT_LABEL,',
+                    1, true) ~= nil,
+           'and the prompt sends one of the two constants unmodified')
+
+        -- ═══ THE GAP THE OWNER REJECTED, PINNED SHUT ═══
+        --
+        --   "The distance for the DUI to draw is great, but for some reason I
+        --    can still get gas further away from the pumps before the DUI is
+        --    drawn. That's not okay."         -- owner, 2026-08-22
+        --
+        -- The fix is that the pump message is not sent while the plate is down.
+        -- This is a TEXT check for the same reason the rest of this block is:
+        -- the frame loop it lives in cannot be run here. It proves the early
+        -- return exists; it cannot prove it is reached.
+        ok(src:find('if not inReach then return end', 1, true) ~= nil,
+           'and no pump message goes out while the plate is down')
+
+        -- ═══ AND THE PLATE ITSELF IS GATED ON THE SERVER'S OWN RADIUS ═══
+        --
+        -- The send gate above is only half of it. If the plate kept drawing on
+        -- the pump test alone, the two conditions would come apart again in the
+        -- other direction -- plate up, server refusing -- which is the WORSE
+        -- failure, because it would read "Currently fueling" while nothing
+        -- filled. Mutation testing found this line unprotected.
+        ok(src:find('and stationDist <= (tonumber(F.refuelRadius) or 0.0)',
+                    1, true) ~= nil,
+           'and the plate itself is gated on the radius the server enforces')
+
+        -- ═══ THE LABEL SWITCH ACTUALLY REACHES THE PAGE ═══
+        --
+        -- setPrompt dedupes, and a dedupe that compares only shown-ness would
+        -- send the first label and never the second -- so "Currently fueling"
+        -- would be in the file, correct, and never once displayed. There is no
+        -- symptom to notice in code review. Mutation testing found this too.
+        ok(src:find('(not show or promptFueling == fueling)', 1, true) ~= nil,
+           'and the dedupe compares the label, not just whether it is shown')
+
+        -- ═══ THE COSMETIC REPAIR IS STILL GATED ON COMPLETION ═══
+        --
+        -- The partial rule is that a three-second hold buys 30% of a repair.
+        -- Cosmetic damage cannot be partially undone -- every native involved is
+        -- an all-or-nothing reset -- so it fires when the body reaches full and
+        -- NOT before. Ungating it would hand a full respray to a key tap, which
+        -- is a balance change nobody asked for and one that no other assertion
+        -- here would see.
+        ok(src:find('if body >= cap then fixCosmetic(veh) end', 1, true) ~= nil,
+           'and the cosmetic repair only fires once the body is fully repaired')
 
         -- THE REGRESSION, NAMED. This is the exact expression that produced
         -- "6000m" on the plate.
         ok(src:find("('%d m'):format", 1, true) == nil,
            'no metres formatter survives anywhere in the file')
+
+        -- ═══ THE COSMETIC REPAIR REACHES THE THREE NATIVES IT NAMES ═══
+        --
+        --   "The gas stations should be repairing cosmetic damage as well,
+        --    which means a fill up will fix everything in one go."
+        --                                     -- owner, 2026-08-22
+        --
+        -- WashDecalsFromVehicle is the one worth pinning: it lives in the
+        -- GRAPHICS namespace rather than VEHICLE, which is how it would get
+        -- dropped by somebody tidying the "vehicle natives" together.
+        ok(src:find('pcall(SetVehicleFixed, veh)', 1, true) ~= nil,
+           'the cosmetic pass calls SetVehicleFixed')
+        ok(src:find('pcall(SetVehicleDeformationFixed, veh)', 1, true) ~= nil,
+           'and SetVehicleDeformationFixed')
+        ok(src:find('pcall(WashDecalsFromVehicle, veh', 1, true) ~= nil,
+           'and WashDecalsFromVehicle, for the scratches')
     end
 end
 
@@ -529,32 +736,60 @@ end
 describe('config.twoStops')
 -- ═══════════════════════════════════════════════════════════════════════════
 --
--- THE OWNER'S RULE, AS A BUILD FAILURE: "1 trip across the map should require 2
--- fuel stops." Everything here re-derives it from the shipped numbers rather
--- than restating them, so moving the map AABB or the tank size fails HERE
--- rather than in a playtest.
+-- ═══ THIS BLOCK USED TO ASSERT TWO STOPS. IT NOW ASSERTS ONE, AND THAT IS THE
+--     POINT OF IT ═══
+--
+-- The owner's rule of 2026-08-21 was "1 trip across the map should require 2
+-- fuel stops." Their instruction of 2026-08-22 was "increase the distance they
+-- can go by 25%", which takes the tank from 6,000 to 7,500 -- OUT of the
+-- 4,716..7,074 band the two-stop rule defines.
+--
+-- THE TWO ASKS CONFLICT AND THIS SUITE REFUSES TO HIDE IT. The newer one is
+-- implemented, so the assertions below now pin ONE stop on the straight
+-- diagonal. If the owner decides two stops mattered more, the fix is to put
+-- tankMetres back under 7,074 and this block flips back -- and either way the
+-- number is a measured consequence rather than a comment somebody stopped
+-- believing.
 do
     local D = BR.Config.Fuel.mapDiagonal()
     ok(near(D, 14148.1, 1.0), 'the map diagonal is 14,148m', D)
 
-    ok(BR.Config.Fuel.stopsPerCrossing() == 2,
-       'a straight-line crossing costs exactly two stops',
+    -- THE +25%, PINNED AGAINST THE VALUE IT WAS DERIVED FROM. 6,000 * 1.25.
+    ok(near(TANK, 7500.0, 0.001), 'the tank is the owner +25% of 6,000m', TANK)
+
+    -- ═══ THE CONSEQUENCE, STATED AS AN ASSERTION SO NOBODY HAS TO TAKE IT ON
+    --     TRUST ═══
+    --
+    --   ceil(14,148 / 7,500) - 1  =  2 - 1  =  1
+    ok(BR.Config.Fuel.stopsPerCrossing() == 1,
+       'a straight-line crossing now costs ONE stop, not two (owner +25%)',
        BR.Config.Fuel.stopsPerCrossing())
 
-    -- THE BAND, NOT THE POINT. The tank has to sit inside D/3 .. D/2 for the
-    -- rule to hold at all, and the header's whole argument is about where in
-    -- that band it sits.
-    ok(TANK >= D / 3 and TANK < D / 2,
-       'the tank is inside the band two stops defines',
-       ('%.0f not in [%.0f, %.0f)'):format(TANK, D / 3, D / 2))
+    -- AND THE BAND IT LEFT. Asserted in the NEGATIVE, deliberately: this is the
+    -- line that says out loud that the older rule is broken, so a future reader
+    -- finds a deliberate statement rather than a missing test.
+    ok(not (TANK >= D / 3 and TANK < D / 2),
+       'the tank is deliberately OUTSIDE the band two stops would need',
+       ('%.0f vs [%.0f, %.0f)'):format(TANK, D / 3, D / 2))
 
-    -- ROAD DETOURS. Nobody drives the diagonal; the chosen value is the one
-    -- whose two-stop answer survives a route up to 27% longer than a straight
-    -- line, and still holds for one 15% SHORTER.
-    ok(BR.Config.Fuel.stopsPerCrossing(0.85) == 2, 'still two at k=0.85')
-    ok(BR.Config.Fuel.stopsPerCrossing(1.00) == 2, 'still two at k=1.00')
-    ok(BR.Config.Fuel.stopsPerCrossing(1.27) == 2, 'still two at k=1.27')
-    ok(BR.Config.Fuel.stopsPerCrossing(1.30) == 3, 'three once the detour is 30%')
+    -- ═══ WHAT MAY SAVE THE RULE IN PRACTICE, AND IT IS WORTH A TEST ═══
+    --
+    -- Nobody drives the diagonal. At 7,500 the two-stop answer returns as soon
+    -- as the real route is about 6% longer than the straight line, and a road
+    -- route between opposite corners of this map is certainly more than 6%
+    -- longer than a straight line. So the rule as WRITTEN is broken and the rule
+    -- as MEANT is probably fine -- which is exactly the distinction the owner
+    -- needs in order to decide, and these four lines are where it is recorded.
+    -- THE THRESHOLD IS 2T/D = 15,000/14,148 = 1.0602, and it is asserted from
+    -- BOTH SIDES rather than approximated. 1.06 is BELOW it -- 1.06 * 14,148 is
+    -- 14,997m, three metres short of two tankfuls -- and that near-miss is worth
+    -- pinning: it is the difference between "about 6%" as prose and the actual
+    -- number, and a test that only checked the loose side would drift.
+    ok(BR.Config.Fuel.stopsPerCrossing(1.00) == 1, 'one stop on a perfect straight line')
+    ok(BR.Config.Fuel.stopsPerCrossing(1.06) == 1, 'still one at a 6.0% detour, just')
+    ok(BR.Config.Fuel.stopsPerCrossing(1.07) == 2, 'two again once the route is 7% longer')
+    ok(BR.Config.Fuel.stopsPerCrossing(1.50) == 2, 'still two at a 50% detour')
+    ok(BR.Config.Fuel.stopsPerCrossing(1.60) == 3, 'three once the detour is 60%')
 
     -- A SHORT HOP COSTS NOTHING, and the formula must not answer -1 for it.
     ok(BR.FuelSolve.stopsFor(100, TANK) == 0, 'a hundred metres needs no stop')
@@ -956,6 +1191,236 @@ do
     fakeTime = fakeTime + 1000
     fire(BR.Net.FUEL_PUMP, 1, { n = 900 })
     ok(BR.Fuel.left(900) == TANK, 'and holding it longer does not overfill')
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('pump.gapClosed')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- ═══ THE OWNER'S SECOND-PASS COMPLAINT, AS A SERVER-SIDE ASSERTION ═══
+--
+--   "The distance for the DUI to draw is great, but for some reason I can still
+--    get gas further away from the pumps before the DUI is drawn. That's not
+--    okay."                                  -- owner, 2026-08-22
+--
+-- The client half of the fix is a frame loop this suite cannot run, and is
+-- pinned as text in `prompt.copy`. THIS is the half that can be executed: the
+-- server's own permission test, which used to be stationRadius and is now
+-- refuelRadius. A car parked between the two is what the owner was describing,
+-- and it must now be refused.
+do
+    reset()
+    enrol(1, 1001, 7)
+    local S = BR.Config.Fuel.stations[1]
+    local R = BR.Config.Fuel.refuelRadius
+    local ST = BR.Config.Fuel.stationRadius
+
+    -- Park INSIDE the old radius and OUTSIDE the new one -- the exact band the
+    -- owner is complaining about. Offset on x alone so the distance is the
+    -- offset, with no arithmetic to get wrong.
+    local between = (R + ST) / 2.0
+    makeVehicle(500, 900, S.x + between, S.y)
+    seat(1, 500, -1)
+    tick()
+    drive(500, 500.0)
+    moveVehicle(500, S.x + between, S.y)
+    tick()
+
+    local before = BR.Fuel.left(900)
+    ok(before < TANK, 'the car has spent some fuel to begin with', before)
+
+    fakeTime = fakeTime + 1000
+    fire(BR.Net.FUEL_PUMP, 1, { n = 900 })
+    ok(BR.Fuel.left(900) == before,
+       ('a hold at %.1fm -- inside the old 30m, outside the new 20m -- fills nothing')
+           :format(between),
+       BR.Fuel.left(900) - before)
+
+    -- AND NO CUE IS PLAYED FOR A REFUSED HOLD. The start cue sits after every
+    -- refusal in the handler; if it ever drifts above one of them, a player
+    -- gets a confirmation noise for a press that did nothing.
+    ok(#sfxTo(1) == 0, 'and no sound is played for a refused hold', #sfxTo(1))
+
+    -- ═══ AND THE SAME CAR, MOVED INSIDE, STILL WORKS ═══
+    --
+    -- The paired assertion matters as much as the refusal: a refuelRadius set
+    -- so tight that nothing can ever refuel would pass the test above and break
+    -- the game.
+    moveVehicle(500, S.x + (R / 2.0), S.y)
+    tick()
+    before = BR.Fuel.left(900)
+    fakeTime = fakeTime + 1000
+    fire(BR.Net.FUEL_PUMP, 1, { n = 900 })
+    ok(BR.Fuel.left(900) > before,
+       ('but a hold at %.1fm still fills'):format(R / 2.0),
+       BR.Fuel.left(900) - before)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('pump.cues')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- ═══ THREE OF THE OWNER'S SIX ASKS MEET HERE ═══
+--
+--   "When pressing [key] to fuel, a sound should be played."
+--   "When fuel reaches 100%, a 'complete' sound should be played."
+--   "All occupants of a vehicle should hear these sounds."
+--                                            -- owner, 2026-08-22
+--
+-- The sound itself is unreachable from here -- PlaySoundFromEntity needs a game
+-- -- but WHO IS TOLD and HOW OFTEN are pure server logic, and they are where the
+-- bugs would be: a start cue that repeats every 250ms for the length of a hold,
+-- or a completion cue only the driver hears.
+do
+    local S = BR.Config.Fuel.stations[1]
+
+    reset()
+    enrol(1, 1001, 7)     -- driver
+    enrol(2, 1002, 7)     -- passenger
+    enrol(3, 1003, 7)     -- somebody else, in the same match, in another car
+    makeVehicle(500, 900, S.x, S.y)
+    makeVehicle(501, 901, S.x + 200.0, S.y)
+    seat(1, 500, -1)
+    seat(2, 500, 0)
+    seat(3, 501, -1)
+    tick()
+    drive(500, 3000.0)
+    moveVehicle(500, S.x, S.y)
+    tick()
+
+    -- ═══ THE PRESS ═══
+    clearSent()
+    fakeTime = fakeTime + 1000
+    fire(BR.Net.FUEL_PUMP, 1, { n = 900 })
+
+    ok(#sfxTo(1) == 1 and sfxTo(1)[1] == 'fuel.start',
+       'pressing the key plays the interact cue for the driver',
+       table.concat(sfxTo(1), ','))
+
+    -- ═══ THE PASSENGER HEARS IT, WHICH IS THE WHOLE OF THE FOURTH ASK ═══
+    --
+    -- They are not holding anything and never sent a message. The server knows
+    -- they are aboard because it re-derives that for the ledger anyway.
+    ok(#sfxTo(2) == 1 and sfxTo(2)[1] == 'fuel.start',
+       'and the passenger hears it too, without asking for it',
+       table.concat(sfxTo(2), ','))
+
+    -- ═══ AND NOBODY ELSE DOES ═══
+    --
+    --   "All occupants of a VEHICLE" -- the man in the other car is not one.
+    ok(#sfxTo(3) == 0, 'and a player in a different car hears nothing',
+       table.concat(sfxTo(3), ','))
+
+    -- ═══ HOLDING IS NOT PRESSING AGAIN ═══
+    --
+    -- The client repeats the message every pumpSendMs for as long as the key is
+    -- down. The server sees a stream, not a press, so the cue is inferred from
+    -- the gap in front of it -- and a continuous hold has no gap. Getting this
+    -- wrong is a machine-gun of clicks, which is the failure this asserts away.
+    clearSent()
+    for _ = 1, 8 do
+        fakeTime = fakeTime + BR.Config.Fuel.pumpSendMs
+        fire(BR.Net.FUEL_PUMP, 1, { n = 900 })
+    end
+    ok(#sfxTo(1) == 0, 'a continuous hold does not re-play the interact cue',
+       table.concat(sfxTo(1), ','))
+
+    -- ═══ LETTING GO AND PRESSING AGAIN IS ═══
+    clearSent()
+    fakeTime = fakeTime + BR.Config.Fuel.holdGapMs + 1
+    fire(BR.Net.FUEL_PUMP, 1, { n = 900 })
+    ok(#sfxTo(1) == 1 and sfxTo(1)[1] == 'fuel.start',
+       'but letting go and pressing again does',
+       table.concat(sfxTo(1), ','))
+
+    -- ═══ REACHING FULL ═══
+    clearSent()
+    local guard = 0
+    while BR.Fuel.left(900) < TANK and guard < 200 do
+        fakeTime = fakeTime + BR.Config.Fuel.pumpSendMs
+        fire(BR.Net.FUEL_PUMP, 1, { n = 900 })
+        guard = guard + 1
+    end
+    ok(BR.Fuel.left(900) == TANK, 'the tank reaches full', BR.Fuel.left(900))
+
+    local function count(list, want)
+        local n = 0
+        for _, c in ipairs(list) do if c == want then n = n + 1 end end
+        return n
+    end
+
+    ok(count(sfxTo(1), 'fuel.done') == 1,
+       'and reaching 100% plays the complete cue exactly once',
+       table.concat(sfxTo(1), ','))
+    ok(count(sfxTo(2), 'fuel.done') == 1,
+       'and the passenger hears that one too',
+       table.concat(sfxTo(2), ','))
+
+    -- ═══ AND HOLDING ON PAST FULL DOES NOT PLAY IT AGAIN ═══
+    --
+    -- It is an EDGE. A player who keeps holding for the bodywork sends four
+    -- messages a second, and every one of them starts from a full tank.
+    clearSent()
+    for _ = 1, 6 do
+        fakeTime = fakeTime + BR.Config.Fuel.pumpSendMs
+        fire(BR.Net.FUEL_PUMP, 1, { n = 900 })
+    end
+    ok(count(sfxTo(1), 'fuel.done') == 0,
+       'and holding on past full does not chime again',
+       table.concat(sfxTo(1), ','))
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('pump.cues.audience')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- ═══ WHO IS AN "OCCUPANT", AT THE TWO EDGES THAT ARE NOT OBVIOUS ═══
+--
+--   "All occupants of a vehicle should hear these sounds."
+--                                            -- owner, 2026-08-22
+--
+-- Sitting in the seat is not the whole test, and both extra conditions are ones
+-- the rest of this file already applies to everything else:
+--
+--   THE MATCH. Network ids are GLOBAL across routing buckets -- the teardown
+--   handler in server/fuel.lua exists precisely because of that -- so a cue
+--   addressed by network id alone can reach a player in a different match who
+--   happens to share the number. They would hear a pump they cannot see.
+--
+--   THE STATE. A corpse in a seat is not an occupant. LIVE is the same pair
+--   every other privileged path in this file gates on.
+--
+-- Both survived the first mutation round, which is why they are here.
+do
+    local S = BR.Config.Fuel.stations[1]
+
+    reset()
+    enrol(1, 1001, 7)     -- driver, alive, match 7
+    enrol(2, 1002, 7)     -- passenger, about to be dead
+    enrol(4, 1004, 7)     -- passenger, about to be in another match
+    makeVehicle(500, 900, S.x, S.y)
+    seat(1, 500, -1)
+    seat(2, 500, 0)
+    seat(4, 500, 1)
+    tick()
+    drive(500, 1000.0)
+    moveVehicle(500, S.x, S.y)
+    tick()
+
+    -- Applied AFTER the drive, so the ledger arithmetic above is ordinary.
+    roster[2].state   = BR.PlayerState.DEAD
+    roster[4].matchId = 8
+
+    clearSent()
+    fakeTime = fakeTime + 1000
+    fire(BR.Net.FUEL_PUMP, 1, { n = 900 })
+
+    ok(#sfxTo(1) == 1 and sfxTo(1)[1] == 'fuel.start',
+       'the living driver hears the cue', table.concat(sfxTo(1), ','))
+    ok(#sfxTo(2) == 0, 'a dead passenger does not', table.concat(sfxTo(2), ','))
+    ok(#sfxTo(4) == 0,
+       'and neither does one the roster puts in a different match',
+       table.concat(sfxTo(4), ','))
 end
 
 -- ═══════════════════════════════════════════════════════════════════════════
