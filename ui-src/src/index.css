@@ -83,6 +83,23 @@
      is settled by looking at it in game, not by arithmetic here. */
   --vitals-drop: 0.85rem;
 
+  /* THE "Currently Talking" LINE, AS A SIZE TWO COMPONENTS AGREE ON.
+     Bottom centre is now shared: TalkingBar sits ON the bottom safe edge and
+     the spectate hint stacks directly above it ("not overlapping with our
+     'Currently talking' text" -- the owner).
+
+     BOTH READ THESE RATHER THAN EACH CARRYING A NUMBER. The hint has to know
+     how tall that line is to clear it, and a hand-copied 1rem here would drift
+     the first time the talking line was resized -- silently, into an overlap
+     that only shows up when somebody happens to be speaking. So the font size
+     is declared once and the HEIGHT is derived from it.
+
+     --text-scale is in the derivation because the line grows with the player's
+     text-size preference and the clearance has to grow with it. 1.5 is the
+     line-height TalkingBar sets. */
+  --talkline-fs: 1rem;
+  --talkline-h: calc(var(--talkline-fs) * var(--text-scale) * 1.5);
+
   /* PALETTE — one colour, one meaning, game-wide. Hex, for the reason at the
      top of this file.
 

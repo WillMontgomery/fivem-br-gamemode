@@ -120,6 +120,15 @@ if spec then
         fail('a change of spectate target does not force a HUD push')
     end
 
+    -- THE TARGET'S NAME REACHES THE INTERFACE. It is the X in the owner's
+    -- "SPECTATING X", and this envelope is the only thing that carries it --
+    -- the hint has no other source for who is on screen, so dropping this field
+    -- leaves the line reading "SPECTATING " with nothing after it.
+    if not code:find('name%s*=%s*session and session%.name') then
+        fail('the spectate envelope no longer carries the target\'s name',
+             'the on-screen hint would read "SPECTATING" with nothing after it')
+    end
+
     -- AND THE INVENTORY IS FORWARDED RATHER THAN DECODED HERE. This file owns a
     -- camera; the bar is somebody else's business.
     --
@@ -204,6 +213,166 @@ if inv then
         fail('the inventory bar does not substitute the spectated inventory',
              'this is the one place the swap may happen -- the interface has no '
              .. 'notion of spectating and must not grow one')
+    end
+end
+
+-- --------------------------------------------------- the on-screen hint (#4) ---
+--
+-- "There's no pointers to tell me what buttons to press for next/last spectate
+-- target. That should be shown at the bottom center (not overlapping with our
+-- 'Currently talking' text and scaling properly with our player's preferences)
+-- and look like a button but not have a mouse required. Also some text that
+-- says 'SPECTATING X' would be helpful above those buttons." -- the owner.
+--
+-- The POSITION was verified by measuring the rendered boxes in the dev harness;
+-- what is pinned here are the properties a later edit could quietly undo.
+
+local UI = 'ui-src/src/'
+
+--- TypeScript/CSS source with its comments removed.
+---
+--- NOT OPTIONAL, AND THE REASON IS THIS FILE'S OWN FIRST DRAFT. The components
+--- being checked explain themselves at length and QUOTE THE VERY TOKENS being
+--- searched for -- SpectateHint's header says "never bare `.tscale`" and "what
+--- it is NOT is a real button element". Read raw, the `tscale` assertion below
+--- failed on a file that does not use tscale, because the prose saying so
+--- contains the word.
+---
+--- The same trap is live in ui-src/scripts/check-ui.mjs, which matches
+--- `<button` against raw source: a comment mentioning the tag trips its R3 rule
+--- and a commented-out button would satisfy it. Worth fixing there; out of
+--- scope here, and noted so the next reader does not rediscover it.
+local function codeOfTs(src)
+    src = src:gsub('/%*.-%*/', ' ')        -- block and JSDoc comments
+    src = src:gsub('//[^\n]*', '')          -- line comments
+    return src
+end
+
+--- CSS with its comments removed -- BLOCK COMMENTS ONLY.
+---
+--- CSS has no `//` comment, and running the TypeScript stripper over a
+--- stylesheet would eat everything after the `//` in any `url(https://...)`.
+--- Two languages, two strippers, rather than one that is subtly wrong on one of
+--- them.
+local function codeOfCss(src)
+    return (src:gsub('/%*.-%*/', ' '))
+end
+
+local function readUi(rel)
+    local fh = io.open(UI .. rel, 'r')
+    if not fh then
+        fail(UI .. rel .. ' is missing')
+        return nil
+    end
+    local s = fh:read('a')
+    fh:close()
+    return rel:sub(-4) == '.css' and codeOfCss(s) or codeOfTs(s)
+end
+
+do
+    local code = readUi('hud/SpectateHint.tsx')
+    if code then
+        -- THE OWNER'S STRING, VERBATIM. Not "Spectating" and not "Watching".
+        if not code:find('SPECTATING {', 1, true) then
+            fail('the hint no longer says SPECTATING X in the owner\'s words')
+        end
+
+        -- THE KEYS ARE READ FROM THE REAL BINDINGS, BY COMMAND NAME.
+        --
+        -- The arrows are rebindable, and keybinds.lua resolves a conflict in
+        -- favour of the NEW binding -- so a player who puts something else on
+        -- the right arrow leaves `brspecnext` unbound. A hint with the glyph
+        -- baked in would name a key that does nothing, which is worse than no
+        -- hint at all.
+        if not code:find("command: 'brspecnext'", 1, true)
+            or not code:find("command: 'brspecprev'", 1, true) then
+            fail('the hint does not name the spectate commands',
+                 'it must look its glyphs up rather than hardcode arrows')
+        end
+        if not code:find('keybinds%.find') then
+            fail('the hint does not resolve its keys from the keybinds list',
+                 'a hardcoded arrow is wrong the moment somebody rebinds it')
+        end
+
+        -- IT LOOKS LIKE A BUTTON AND IS NOT ONE. No button element, no click
+        -- handler, and the whole block is pointer-events:none -- a spectating
+        -- player has no cursor, because spectating deliberately never joins the
+        -- focus stack (client/spectate.lua argues why).
+        if code:find('onClick') or code:find('<butt' .. 'on') then
+            fail('the spectate hint has become clickable',
+                 'the owner asked for something that looks like a button and '
+                 .. 'needs no mouse; a spectator has no cursor to give it')
+        end
+        if not code:find('pointer%-events%-none') then
+            fail('the spectate hint does not set pointer-events-none')
+        end
+
+        -- IT SCALES WITH THE PLAYER'S TEXT-SIZE PREFERENCE, AND VIA `.ts`.
+        --
+        -- #159 is the open issue about elements that ignore the preference.
+        -- Bare `tscale` multiplies 1em -- the PARENT's size -- so on an element
+        -- that declares its own --fs it silently throws that value away. Every
+        -- sized element here uses `.ts` with an explicit --fs, which is the
+        -- documented pairing.
+        if not code:find("%['%-%-fs' as string%]") then
+            fail('the hint declares no --fs, so it cannot scale with the '
+                 .. 'player\'s text-size preference (#159)')
+        end
+        if code:find('tscale') then
+            fail('the hint uses bare `tscale` alongside a declared size (#159)',
+                 '`tscale` multiplies the PARENT font size and discards --fs; '
+                 .. '`.ts` is the pairing that works')
+        end
+    end
+end
+
+do
+    -- THE CLEARANCE IS ONE FACT, NOT TWO. The hint stacks above the talking
+    -- line, so it has to know how tall that line is -- and TalkingBar has to be
+    -- reading the same number, or the two drift into an overlap that only
+    -- appears while somebody is speaking.
+    local css = readUi('index.css')
+    if css and not css:find('%-%-talkline%-h') then
+        fail('index.css no longer derives --talkline-h',
+             'the hint\'s clearance over the talking line would become a '
+             .. 'hand-copied literal')
+    end
+    -- BOUNDED TO THE DECLARATION with [^;], not `.-`. Lua's lazy match spans
+    -- newlines, so `--talkline-h:.-var(--text-scale)` was satisfied by the
+    -- property being present and `var(--text-scale)` appearing ANYWHERE later
+    -- in a 1,500-line stylesheet -- it passed happily against a hardcoded
+    -- `--talkline-h: 1.5rem`. That mutation escaped this gate's first draft.
+    if css and not css:find('%-%-talkline%-h:[^;]-var%(%-%-text%-scale%)') then
+        fail('--talkline-h does not scale with --text-scale',
+             'the talking line grows with the preference and the clearance '
+             .. 'over it has to grow too, or it overlaps at the large setting')
+    end
+    local talk = readUi('hud/TalkingBar.tsx')
+    if talk and not talk:find('var%(%-%-talkline%-fs%)') then
+        fail('TalkingBar no longer reads --talkline-fs',
+             'it would be sizing itself from a literal while the hint clears a '
+             .. 'variable -- two spellings of one number')
+    end
+end
+
+do
+    -- THE BUNDLE IS THE THING THE GAME LOADS.
+    --
+    -- ui-src is a SOURCE tree; br_ui/ui/assets/index.js is what ships, and it
+    -- is committed. Editing a component without rebuilding leaves a repository
+    -- where every source assertion above passes and the game shows the old
+    -- interface -- which is precisely why verify.sh already greps this bundle
+    -- for the voice defaults. Same check, same reason.
+    local fh = io.open(ROOT .. 'br_ui/ui/assets/index.js', 'r')
+    if not fh then
+        fail('the built UI bundle is missing')
+    else
+        local js = fh:read('a')
+        fh:close()
+        if not js:find('SPECTATING', 1, true) then
+            fail('the built bundle does not contain the spectate hint',
+                 'the bundle is stale. Run: cd ui-src && npm run build')
+        end
     end
 end
 

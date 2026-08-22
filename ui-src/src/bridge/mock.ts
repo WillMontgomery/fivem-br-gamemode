@@ -237,6 +237,13 @@ export function startMockDriver(): void {
         // harness then drew two rows on one key and looked like a conflict
         // this project does not have.
         { group: 'World', command: 'brping', label: 'Place a marker', key: 'Z', default: 'Z' },
+        // THE SPECTATE ARROWS, which the bottom-centre hint reads BY COMMAND
+        // NAME. Without these two rows that hint draws a dash for both keys --
+        // a real state (a player can rebind something else onto an arrow and
+        // leave this one unbound) but not the one being reviewed, and the
+        // difference is invisible unless the harness can show both.
+        { group: 'Map', command: 'brspecnext', label: 'Spectate next player', key: 'Right', default: 'RIGHT' },
+        { group: 'Map', command: 'brspecprev', label: 'Spectate previous player', key: 'Left', default: 'LEFT' },
         { group: 'Social', command: 'brchat', label: 'Chat', key: 'T', default: 'T' },
         { group: 'Interface', command: 'brpausemenu', label: 'Pause menu', key: 'Escape', default: 'F1' },
         { group: 'Interface', command: 'brleave', label: 'Leave the match', key: '', default: '' },
@@ -382,6 +389,28 @@ export function startMockDriver(): void {
   window.setInterval(() => {
     emit({ k: 'voice', d: VOICE[voiceAt++ % VOICE.length]! })
   }, 4000)
+
+  // SPECTATING, ON A SLOW ROTATION. Same argument the voice rows above make:
+  // the hint renders nothing unless a session is running, so without a driver
+  // for this channel a bottom-centre element could only be reviewed by reading
+  // it -- and its whole specification is about WHERE it sits relative to two
+  // other bottom-centre surfaces.
+  //
+  // THE TARGET CHANGES so the name is visibly the server's rather than a
+  // constant, and the off state is in the rotation so the stack can be seen
+  // collapsing back to just the talking line.
+  const SPECTATE = [
+    { active: false, admin: false },
+    { active: true, admin: false, name: 'Kestrel' },
+    { active: true, admin: false, name: 'Vandal' },
+    // An admin session, which draws identically -- `admin` only decides
+    // whether the pause menu offers the exit.
+    { active: true, admin: true, name: 'Quillon' },
+  ]
+  let specAt = 0
+  window.setInterval(() => {
+    emit({ k: 'spectate', d: SPECTATE[specAt++ % SPECTATE.length]! })
+  }, 6000)
 
   // Storm ticks at the same 4 Hz the server would use.
   let radius = 520, edge = -180

@@ -270,6 +270,16 @@ export interface DbnoPayload {
 export interface SpectatePayload {
   active: boolean
   admin: boolean
+  /**
+   * Who is being watched. Absent when no session is running.
+   *
+   * The `X` in the owner's "SPECTATING X". The KEYS that go under it are not
+   * here and must not be: `keybinds` already carries every binding with its
+   * live label and is re-pushed on every rebind, so a copy on this envelope
+   * would be a second spelling that goes stale the moment somebody moves the
+   * arrows mid-session.
+   */
+  name?: string
 }
 
 /**

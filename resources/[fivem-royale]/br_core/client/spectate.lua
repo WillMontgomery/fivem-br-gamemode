@@ -113,13 +113,24 @@ local function camDown()
     want, shown = nil, nil
 end
 
---- Tell the interface what is happening. Two booleans and no prose: the only
---- thing any screen does with this is decide whether to offer the pause-menu
---- exit the owner asked for.
+--- Tell the interface what is happening.
+---
+--- IT USED TO BE TWO BOOLEANS AND NO PROSE, because the only thing any screen
+--- did with this was decide whether to offer the pause-menu exit. It now
+--- carries the target's NAME as well, for one string the owner wrote out:
+--- "some text that says 'SPECTATING X' would be helpful". X is this.
+---
+--- THE NAME IS THE ONLY THING ADDED, and the keys are deliberately NOT here.
+--- The interface already holds every binding with its current label -- Lua
+--- pushes BR.Nui.KEYBINDS at start and again on every rebind -- so putting the
+--- arrow keys on this envelope too would be a second copy that goes stale the
+--- first time somebody rebinds them mid-session. The hint reads the same rows
+--- the keybinds screen reads.
 local function pushUi()
     TriggerEvent('br:ui:sendLocal', BR.Nui.SPECTATE, {
         active = session ~= nil,
         admin  = session ~= nil and session.admin == true,
+        name   = session and session.name or nil,
     })
 end
 

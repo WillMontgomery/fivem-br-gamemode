@@ -76,11 +76,16 @@ export default function VoiceNotice() {
 
   return (
     <div
-      className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2
-                 max-w-[56%] pointer-events-none"
-      // Clear of the talking bar, which sits on --safe-y. One line of gap so
-      // the two read as related rather than as one wrapped string.
-      style={{ bottom: 'calc(var(--safe-y) + 1.6rem)' }}
+      className="flex items-center gap-2 max-w-[56vw] pointer-events-none"
+      // NO LONGER POSITIONED HERE. This used to be `absolute` at
+      // `calc(var(--safe-y) + 1.6rem)` -- one hand-measured talking line up,
+      // in a literal that did NOT grow with the player's text-size preference,
+      // so at the largest setting it sat on the line it was clearing.
+      //
+      // It is now a plain block inside the bottom-centre COLUMN that Hud.tsx
+      // owns, stacked with the spectate hint. Two surfaces bidding for one
+      // slot with two different arithmetics is how they end up on top of each
+      // other; a flex column cannot overlap itself.
     >
       <span
         className="shrink-0 rounded-full"

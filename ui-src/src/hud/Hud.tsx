@@ -10,6 +10,7 @@ import KillFeed from './KillFeed'
 import SquadPanel from './SquadPanel'
 import DbnoOverlay from './DbnoOverlay'
 import InventoryBar from './InventoryBar'
+import SpectateHint from './SpectateHint'
 import HitFeedback from './HitFeedback'
 import TalkingBar from './TalkingBar'
 import VoiceNotice from './VoiceNotice'
@@ -207,9 +208,43 @@ export default function Hud({ visible }: { visible: boolean }) {
             the drop is exactly when knowing who is talking matters. */}
         <TalkingBar />
 
-        {/* AND, JUST ABOVE IT, WHY YOU MIGHT BE HEARING NONE OF THEM. Renders
-            nothing on nearby, which is almost always -- see VoiceNotice. */}
-        <VoiceNotice />
+        {/* ═══ AND, ABOVE IT, THE TWO SURFACES THAT SHARE THAT EDGE ═══
+
+            ONE COLUMN, NOT TWO ANCHORS. VoiceNotice used to position itself at
+            `--safe-y + 1.6rem` -- one hand-measured talking line up -- and the
+            spectate hint would have needed the same arithmetic plus VoiceNotice's
+            own height to sit clear of both. Two components each computing where
+            the other one is is how they end up drawn on top of each other, and
+            it is exactly what the owner asked this hint not to do ("not
+            overlapping with our 'Currently talking' text").
+
+            SO THE COLUMN OWNS THE CLEARANCE and the children own nothing but
+            their content. --talkline-h is derived from the same font size
+            TalkingBar reads, so it grows with the player's text-size preference
+            and this stack rises with it.
+
+            THE CLEARANCE DOES NOT COLLAPSE when nobody is speaking, even though
+            TalkingBar renders nothing then. A stack that dropped a line every
+            time the room went quiet would move a hint while it was being read.
+
+            ORDER IS BOTTOM-UP BY URGENCY: the spectate hint sits closest to the
+            bottom edge because it is the one the owner asked to be at the
+            bottom centre, and the voice headline -- which changes only when a
+            squad does -- floats above it. */}
+        <div
+          className="absolute left-1/2 -translate-x-1/2 flex flex-col
+                     items-center gap-1 pointer-events-none"
+          style={{
+            bottom: 'calc(var(--safe-y) + var(--talkline-h) + 0.4rem)',
+          }}
+        >
+          {/* WHY YOU MIGHT BE HEARING NONE OF THEM. Renders nothing on nearby,
+              which is almost always -- see VoiceNotice. */}
+          <VoiceNotice />
+          {/* Who you are watching and which keys move you on. Renders nothing
+              unless a session is running. */}
+          <SpectateHint />
+        </div>
 
         {dbno.downed && <DbnoOverlay dbno={dbno} />}
 

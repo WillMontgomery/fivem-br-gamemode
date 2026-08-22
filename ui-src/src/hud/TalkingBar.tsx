@@ -94,7 +94,13 @@ export default function TalkingBar() {
       <span
         className="ts truncate min-w-0"
         style={{
-          ['--fs' as string]: '1rem',
+          // 1rem, VIA A VARIABLE, because the spectate hint stacks directly on
+          // top of this line and has to know how tall it is to clear it. The
+          // number is declared once in index.css (--talkline-fs) and the height
+          // derived from it there; a literal here would drift out of agreement
+          // with that clearance silently, and the overlap would only appear
+          // while somebody was speaking.
+          ['--fs' as string]: 'var(--talkline-fs)',
           lineHeight: 1.5,
           textShadow: 'var(--shadow-text)',
         }}
