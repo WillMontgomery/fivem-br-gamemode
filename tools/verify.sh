@@ -1318,8 +1318,29 @@ if [ -f "$inc_" ] && [ -f "$ring_" ]; then
         notice_rc=1
     fi
 
+    # And one place that asks br_ddb to write a case at all. This is the only
+    # bypass the two pins above cannot see: a new detector that called
+    # `br:ddb:putIncident` itself would file a perfectly good incident, mint no
+    # acknowledgement, and tell nobody -- the feature would ship dead for that
+    # path with every gate green, which is the exact failure the shared-coverage
+    # gate's note about outbox.lua describes.
+    put_askers=$(grep -rn "br:ddb:putIncident" "resources/[fivem-royale]" 2>/dev/null \
+                 | grep -v "/br_ddb/" | wc -l | tr -d ' ')
+    put_where=$(grep -rln "br:ddb:putIncident" "resources/[fivem-royale]" 2>/dev/null \
+                | grep -v "/br_ddb/" || true)
+    if [ "$put_askers" != "1" ] || [ "$put_where" != "$ring_" ]; then
+        echo "${RED}FAIL${RST} br:ddb:putIncident is asked from ${put_askers} place(s)"
+        echo "     in: ${put_where:-<none>}"
+        echo "     Expected exactly one, in ${ring_}. Every creation path must"
+        echo "     reach the database through it, because that is the function"
+        echo "     that emits the acknowledgement the report notice hangs off."
+        echo "     A path that writes its own row files a case nobody is told"
+        echo "     about, and no other gate can see the difference."
+        notice_rc=1
+    fi
+
     if [ "$notice_rc" = "0" ]; then
-        echo "${GRN}ok${RST}   one announcer, one acknowledgement, and corroboration mints neither"
+        echo "${GRN}ok${RST}   one announcer, one acknowledgement, one writer; corroboration is none of them"
     else
         rc=1
     fi
