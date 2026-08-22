@@ -1,4 +1,5 @@
--- Aerial supply drops, client half: the crate, its canopy, and the blip.
+-- Aerial supply drops, client half: the plane, the crate, its canopy, its two
+-- flares, and the blip.
 --
 -- PRESENTATION ONLY. Nothing here decides anything: the server publishes one
 -- record when the drop is committed (AIRDROP_SYNC) and this file solves the

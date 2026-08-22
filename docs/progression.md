@@ -154,14 +154,35 @@ stays there. At the old `100 + 25/level` it competed with winning outright
 again), which meant the largest single term in a session went to whoever
 happened to cross a boundary regardless of how they placed.
 
+### Airdrop Volts (#88)
+
+**100 Volts, lying on the ground inside the supply drop.** The owner named the
+number: *"they should be 100 Volts. This should be an item that does not go into
+inventory - they simply pick it up and it's gone."*
+
+**Paid at match end, not on pickup**, which is the whole reason it is listed
+here rather than as a second earning path. Claiming the pile increments
+`voltsPickedUp` on the roster entry and says one sentence; the number rides the
+match results envelope into `BR.Config.marketPayout` and lands in the **same
+atomic ADD** as everything else the match paid. So the invariant at the top of
+this page — *exactly one writer can increase a balance* — survives an airdrop,
+and there is no per-pickup write on a personally-funded database.
+
+It is added **whole**, and it is the one term the 2026-08-20 halving does not
+touch: every other weight is a curve the owner tuned, and this is a figure the
+owner named and the player was already shown in a toast. Halving it would make
+that toast a lie.
+
+**A player who leaves before the match ends forfeits it**, along with their XP,
+their kills and their placement. That is not special handling — it is the rule
+`resetPlayer` already applies to every per-match counter, and the counter is
+cleared with the rest of them so one airdrop cannot be banked twice.
+
 ### Not paid, on purpose
 
 - **Damage dealt.** Rewards chip-shooting from range and disengaging, which is
   not behaviour worth encouraging.
 - **Time survived.** Rewards hiding.
-- **Airdrops.** No airdrop system exists yet. When it does, the payout should be
-  counted at match end rather than on pickup — paying on pickup rewards
-  *reaching* a contested crate and then dying.
 
 ---
 

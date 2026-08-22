@@ -161,8 +161,8 @@ end
 --- replacement gives you the same sniper three times often enough to matter,
 --- and the whole point of a supply drop is that it is a KIT. Each pool is
 --- shuffled once and dealt from in order; a pool shorter than the number of
---- slots pointing at it wraps, which is why two `exclusive` slots against a
---- one-item pool pay two Heavy Shields rather than nothing.
+--- slots pointing at it wraps, which is why the single-card `volts` pool pays
+--- its slot rather than nothing.
 ---
 --- DETERMINISTIC FOR A GIVEN SEED AND CONFIG. The decks are built in payout
 --- order, so the number of draws burned depends only on the config -- never on
