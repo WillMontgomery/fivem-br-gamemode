@@ -135,9 +135,74 @@ end
 
 -- ------------------------------------------------------------------- wire ---
 
+--- A cheap fingerprint of an inventory payload, for the feed's dedupe.
+---
+--- WHY NOT JUST SEND IT EVERY TICK. The feed runs at 250 ms per SESSION, and
+--- late in a match most of the lobby is dead and watching somebody -- so "send
+--- it anyway" is the whole roster's inventory crossing the wire four times a
+--- second for the rest of the round. client/state.lua's HUD push makes the same
+--- argument in the same words ("600 pointless messages a minute").
+---
+--- IT COVERS WHAT THE BAR DRAWS AND NOTHING ELSE: the five slots' item, count
+--- and clip, the ammo pools, and which slot is in hand. `using` is deliberately
+--- excluded -- its `endsAt` is a timestamp that changes on every tick of a
+--- bandage, which would defeat the dedupe entirely and resend the whole payload
+--- 4 Hz for the duration of every heal.
+--- @param p table|nil  a BR.Inv.publicFor result
+--- @return string
+local function invSig(p)
+    if not p then return '' end
+    local out = {}
+    for i = 1, #p.slots do
+        local s = p.slots[i]
+        out[#out + 1] = s
+            and ('%s:%s:%s'):format(tostring(s.id), tostring(s.count),
+                                    tostring(s.clip))
+            or '-'
+    end
+    -- Ammo pools are a map, so they are read through a sorted key list; pairs()
+    -- order is not stable in Lua and an unstable signature is a dedupe that
+    -- resends at random.
+    local keys = {}
+    for k in pairs(p.ammo or {}) do keys[#keys + 1] = k end
+    table.sort(keys)
+    for _, k in ipairs(keys) do
+        out[#out + 1] = ('%s=%s'):format(k, tostring(p.ammo[k]))
+    end
+    out[#out + 1] = 'a' .. tostring(p.active)
+    return table.concat(out, '|')
+end
+
 local function push(src, s)
     local e = BR.Roster.get(s.target)
     local pos = e and e.pos
+
+    -- ═══ THE TARGET'S INVENTORY RIDES THIS FEED, AND ONLY THIS FEED ═══
+    --
+    -- "the health/shield/inventory don't show properly. They should be fully
+    -- populated" -- the owner. Health and shield need nothing new: `hp` and
+    -- `armour` are already in roster.lua's PUBLIC_FIELDS, so every client
+    -- already holds them for every player in the match and the spectator's HUD
+    -- reads its own mirror. A second copy on this wire would be two
+    -- representations of one fact, which is this project's signature bug.
+    --
+    -- AN INVENTORY IS NOT PUBLIC AND MUST NOT BECOME SO. It is not in
+    -- PUBLIC_FIELDS and it is not broadcast anywhere; knowing what somebody is
+    -- holding is exactly the thing a wallhack wants. So it travels on THIS
+    -- event, to ONE recipient, chosen by the same server-side policy that
+    -- decided they may look at this player at all (spectate_solve). A spectator
+    -- learns nothing about anybody they are not already watching, and the
+    -- moment the session ends the pushes stop.
+    --
+    -- IT IS NOT SENT AT ALL FOR A TARGET WHOSE POSITION WE WOULD NOT SEND
+    -- EITHER -- the licence re-check in the feed runs before this is reached,
+    -- so a recycled server id stops the session rather than handing the new
+    -- occupant's loadout to a stranger.
+    local inv = BR.Inv and BR.Inv.publicFor and BR.Inv.publicFor(s.target) or nil
+    local sig = invSig(inv)
+    local sendInv = (sig ~= s.invSig)
+    s.invSig = sig
+
     TriggerClientEvent(BR.Net.SPECTATE_SET, src, {
         targetSrc = s.target,
         name      = s.name,
@@ -147,6 +212,11 @@ local function push(src, s)
         -- a missing position leaves the camera where it was for one push, which
         -- is what a sample gap actually looks like.
         x = pos and pos.x, y = pos and pos.y, z = pos and pos.z,
+        -- ABSENT WHEN UNCHANGED, and absent is NOT "empty" -- the client holds
+        -- the last one it was given rather than clearing on a quiet tick. An
+        -- inventory that blinked out every time nothing happened would be the
+        -- reported bug with extra steps.
+        inv = sendInv and inv or nil,
     })
 end
 
@@ -259,6 +329,13 @@ local function resolve(src, dir)
             s.targetLicense = BR.Roster.licenseOf(pick.src)
             s.name = pick.name
             watch(src, pick.src)
+            -- A NEW PERSON IS A NEW INVENTORY, WHATEVER IT LOOKS LIKE. The
+            -- signature is derived from CONTENTS, so two squadmates who both
+            -- hold nothing but an AK would produce the same one -- and the push
+            -- below would then send no inventory at all for the player just
+            -- stepped onto, leaving the bar showing the previous one. Clearing
+            -- it makes the first push after a cycle unconditional.
+            s.invSig = nil
         end
     else
         s = {

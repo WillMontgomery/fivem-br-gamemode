@@ -289,17 +289,57 @@ end
 -- The UI channel
 -- --------------------------------------------------------------------------
 
+--- The inventory of the player we are WATCHING, or nil when we are not.
+---
+--- ═══ WHY THIS IS NOT MERGED INTO `inv` ═══
+---
+--- `inv` is the mirror of OUR OWN server-held inventory, and everything in this
+--- file that acts -- swap, drop, use, select, the ammo report -- reads it. A
+--- spectator's view is a picture and nothing more: no key here may act on it,
+--- and the cheapest way to guarantee that is for it to live in a different
+--- variable that only the draw path knows about. Writing the target's slots
+--- into `inv` would put somebody else's rifle one keypress away from a drop
+--- request, and the server would refuse it -- but "the server would refuse it"
+--- is not a reason to send it.
+---
+--- IT IS SET BY THE SPECTATE FEED and by nothing else; client/spectate.lua
+--- forwards what the server chose to send, and the server only sends it for the
+--- one player it has already decided this viewer may watch.
+local spectated = nil
+
 local function pushUi()
+    -- WHOSE INVENTORY THIS IS, DECIDED IN ONE PLACE. The bar is the same
+    -- component either way -- it draws what it is given -- so the substitution
+    -- happens here rather than in the interface. That keeps `InventoryBar` with
+    -- no notion of spectating at all, which is what stops a second copy of
+    -- "am I watching somebody" appearing in TypeScript.
+    local src = spectated or inv
     -- Sent whole rather than as deltas: five slots is a tiny payload, and the
     -- storm's "never send a nil clear" rule means a partial update would need
     -- a vocabulary for "this slot is now empty" that `false` already is.
     TriggerEvent('br:ui:sendLocal', BR.Nui.INV, {
-        slots  = inv.slots,
-        ammo   = inv.ammo,
-        active = inv.active,
-        using  = inv.using,
+        slots  = src.slots,
+        ammo   = src.ammo,
+        active = src.active,
+        using  = src.using,
     })
 end
+
+-- REGISTERED BELOW pushUi AND NOT ABOVE IT, deliberately. `local function f`
+-- only binds `f` from that line down, so a handler written above this point
+-- that calls pushUi() resolves it as a GLOBAL, which is nil at runtime -- no
+-- syntax error, luac -p happy, and the whole inventory bar silently stops
+-- updating after five caught errors. tools/check_forward_locals.lua exists
+-- because BR.Loot's ground probe shipped exactly that and took every crate on
+-- the map with it.
+AddEventHandler('br:spectate:inv', function(p)
+    -- A NIL IS AN EXPLICIT CLEAR, sent when a session ends. It is NOT what a
+    -- quiet feed tick looks like -- the server dedupes and omits `inv` when
+    -- nothing changed, and spectate.lua does not forward those at all, so the
+    -- last picture stands until it genuinely changes or the session stops.
+    spectated = (type(p) == 'table') and p or nil
+    pushUi()
+end)
 
 --- How much of each thing an inventory holds, ignoring WHERE it is.
 ---

@@ -201,6 +201,19 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+# The HUD a spectator reads. The inventory half has a real behaviour test in
+# test_client; this covers the two halves no suite can reach -- the vitals
+# substitution in client/state.lua, which no suite that owns the HUD loads, and
+# the shape of the server feed, whose important property is that the target's
+# inventory goes to ONE watcher rather than to everybody. A broadcast there
+# would look perfect in game and leak every loadout in the match.
+echo "${DIM}== spectator HUD ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_spectator_hud.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
 echo "${DIM}== forward locals ==${RST}"
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     # shellcheck disable=SC2046

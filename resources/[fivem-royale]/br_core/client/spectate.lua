@@ -66,10 +66,28 @@ local function didHit(v)
 end
 
 --- Is a session running? Read by client/lobbycam.lua, which must not raise the
---- lobby shot over this one.
+--- lobby shot over this one, and by client/voice.lua, which takes the
+--- microphone away for as long as this is true.
 --- @return boolean
 function BR.Spectate.active()
     return session ~= nil
+end
+
+--- WHO is being watched, or nil.
+---
+--- EXISTS SO THE HUD CAN DRAW THE RIGHT PERSON'S VITALS. "the health/shield/
+--- inventory don't show properly. They should be fully populated" -- the owner.
+--- A spectator's own ped is dead, so a HUD that reads it shows an empty bar and
+--- an empty bar is what was reported.
+---
+--- IT HANDS BACK A SERVER ID AND NOTHING ELSE, which is the whole of what this
+--- file is allowed to know. Health and shield are then read from the client's
+--- own roster mirror -- they are already in roster.lua's PUBLIC_FIELDS, so this
+--- reveals nothing that was not already on this machine -- and the inventory,
+--- which is NOT public, arrives on the session's own feed from the server.
+--- @return integer|nil
+function BR.Spectate.targetSrc()
+    return session and session.targetSrc or nil
 end
 
 -- ----------------------------------------------------------------- camera ---
@@ -118,11 +136,28 @@ AddEventHandler(BR.Net.SPECTATE_SET, function(d)
         session = nil
         camDown()
         pushUi()
+        -- THE HUD GOES BACK TO ITS OWNER. Both of these are the same call the
+        -- start path makes, and they are here as well because the end of a
+        -- session is the other edge of the same substitution: without them a
+        -- player who stopped spectating would keep looking at the last person
+        -- they watched.
+        TriggerEvent('br:spectate:inv', nil)
+        if BR.PushHud then BR.PushHud(true) end
         return
     end
 
     local fresh = (session == nil) or (session.targetSrc ~= d.targetSrc)
     session = { targetSrc = d.targetSrc, name = d.name, admin = d.admin == true }
+
+    -- THE TARGET'S INVENTORY, WHEN THE SERVER SENT ONE.
+    --
+    -- ABSENT MEANS UNCHANGED, NOT EMPTY -- the feed dedupes, so most pushes
+    -- carry no `inv` at all and the last one given still stands. A `nil` here
+    -- must therefore NOT clear the bar; the only things that clear it are the
+    -- stop path above and a change of target below.
+    if d.inv then
+        TriggerEvent('br:spectate:inv', d.inv)
+    end
 
     if d.x then
         want = { x = d.x, y = d.y, z = d.z }
@@ -144,6 +179,13 @@ AddEventHandler(BR.Net.SPECTATE_SET, function(d)
         camYaw, camPitch = 0.0, -8.0
         print(('[br_core] spectate: watching %s (%s)')
             :format(tostring(d.name), tostring(d.targetSrc)))
+
+        -- THE VITALS FOLLOW THE CAMERA. `BR.PushHud` dedupes on the values it
+        -- last sent, and stepping from one squadmate to another who happens to
+        -- be on the same health would send nothing at all -- so the change of
+        -- SUBJECT has to force a push rather than wait for a change of number.
+        -- The server's own push for the new target is what refills the bar.
+        if BR.PushHud then BR.PushHud(true) end
 
         -- THE CONSOLE GETS OUT OF THE WAY (admin only). The Spectate button is
         -- pressed inside the admin console, which is a full-page focus screen

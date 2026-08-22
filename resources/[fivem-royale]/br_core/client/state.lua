@@ -1751,7 +1751,7 @@ end)
 -- --------------------------------------------------------------------------
 
 local lastPush = { hp = -1, armour = -1, alive = -1, squads = -1, kills = -1,
-                   state = '', paused = nil, landed = nil }
+                   state = '', paused = nil, landed = nil, watching = nil }
 
 --- Send the HUD envelope, but only when something actually changed.
 ---
@@ -1779,6 +1779,46 @@ function BR.PushHud(force)
     -- showing 5% would be claiming they can take a hit.
     if me.state == BR.PlayerState.DBNO then
         hp, armour = 0, 0
+    end
+
+    -- ═══ WHILE SPECTATING, THE BARS ARE THE PERSON ON SCREEN ═══
+    --
+    -- "the health/shield/inventory don't show properly. They should be fully
+    -- populated" -- the owner. They were populated; they were populated with
+    -- the DEAD VIEWER's numbers, which are zero and zero, so the HUD read as
+    -- broken. The camera changed subject and the vitals did not.
+    --
+    -- IT IS THE ROSTER MIRROR AND NOT A NEW WIRE. `hp` and `armour` are in
+    -- roster.lua's PUBLIC_FIELDS, so this client is already told them for every
+    -- player in the match, 2 Hz, whether it is spectating or not. Asking the
+    -- server to send them a second time down the spectate feed would be two
+    -- representations of one fact -- the bug this project is named for in half
+    -- its comments -- and would leak nothing extra either way, because there is
+    -- nothing extra to leak. THE INVENTORY IS THE OPPOSITE CASE and is handled
+    -- where it belongs, in client/inventory.lua: it is not public, so it does
+    -- come down the session's own feed.
+    --
+    -- A TARGET WITH NO ROSTER ROW LEAVES THE VIEWER'S OWN NUMBERS ALONE rather
+    -- than zeroing. A missing row means a delta in flight or a player already
+    -- gone, and the session is about to end on the server's own licence check.
+    -- Painting 0/0 for that frame would flash an empty bar on the way out,
+    -- which is the reported symptom.
+    local watching = BR.Spectate and BR.Spectate.targetSrc
+        and BR.Spectate.targetSrc() or nil
+    if watching then
+        local t = S.roster[watching]
+        if t then
+            hp     = math.floor(t.hp or 0)
+            armour = math.floor(t.armour or 0)
+            -- THE SAME DBNO RULE, APPLIED TO THEM. A downed player's ledger
+            -- parks them a few points above zero so the shooter's copy stays
+            -- correctable; their health IS the bleed countdown. A spectator
+            -- watching a squadmate bleed out must see the same empty bar the
+            -- squadmate sees, not the sliver the ledger holds.
+            if t.state == BR.PlayerState.DBNO then
+                hp, armour = 0, 0
+            end
+        end
     end
     local kills  = (S.roster[me.src] and S.roster[me.src].kills) or 0
     -- The HUD gets out of the way of the pause menu (the map fills the
@@ -1816,7 +1856,12 @@ function BR.PushHud(force)
        and S.alive == lastPush.alive and S.squadsAlive == lastPush.squads
        and kills == lastPush.kills and me.state == lastPush.state
        and paused == lastPush.paused and stamina == lastPush.stamina
-       and landed == lastPush.landed then
+       and landed == lastPush.landed
+       -- WHO THE BARS ARE ABOUT IS PART OF WHAT CHANGED. Two squadmates on the
+       -- same health are the same three numbers, so without this a cycle to the
+       -- next target would dedupe away and the HUD would keep describing the
+       -- previous one.
+       and watching == lastPush.watching then
         return
     end
 
@@ -1826,6 +1871,7 @@ function BR.PushHud(force)
     lastPush.paused = paused
     lastPush.stamina = stamina
     lastPush.landed = landed
+    lastPush.watching = watching
 
     TriggerEvent('br:ui:sendLocal', BR.Nui.HUD, {
         hp          = hp,

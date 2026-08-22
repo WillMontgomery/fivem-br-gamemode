@@ -3528,6 +3528,102 @@ do
     ExecuteCommand, SetControlNormal = realExec, realControl
 end
 
+describe('the inventory bar draws the player being watched')
+do
+    -- THE BUG, IN THE OWNER'S WORDS: "the health/shield/inventory don't show
+    -- properly. They should be fully populated." They were populated -- with
+    -- the DEAD VIEWER's inventory, which is empty, because dying clears it.
+    -- The camera changed subject and the bar did not.
+    --
+    -- WHAT IS ASSERTED HERE is the client half: that the bar is fed from the
+    -- spectate feed while a session is running and from the player's own mirror
+    -- when it is not. The SERVER half -- that the target's inventory is only
+    -- ever sent to somebody the server already let watch them -- is not a value
+    -- this suite can see, and is gated by tools/check_spectator_hud.lua.
+
+    --- The payload of the last `inv` envelope pushed to the interface.
+    local function lastInv()
+        for i = #events, 1, -1 do
+            local e = events[i]
+            if e.name == 'br:ui:sendLocal' and e.args[1] == BR.Nui.INV then
+                return e.args[2]
+            end
+        end
+        return nil
+    end
+
+    -- A LOADOUT NOBODY IN THIS SUITE COULD PRODUCE BY ACCIDENT, so an assertion
+    -- that passes cannot be passing on the local mirror that happens to agree.
+    local WATCHED = {
+        slots = {
+            { id = 'wpn_spectated_rifle', label = 'Watched Rifle',
+              kind = 'weapon', rarity = 'legendary', count = 1, clip = 7,
+              pool = 'rifle' },
+            false, false, false, false,
+        },
+        ammo   = { rifle = 61 },
+        active = 1,
+        using  = nil,
+    }
+
+    fire('br:spectate:inv', WATCHED)
+    local got = lastInv()
+    ok(type(got) == 'table' and got.slots and got.slots[1]
+       and got.slots[1].id == 'wpn_spectated_rifle',
+       'the bar is fed the WATCHED player\'s slots, not the viewer\'s own',
+       tostring(got and got.slots and got.slots[1]
+           and got.slots[1].id or 'nothing'))
+    ok(type(got) == 'table' and got.ammo and got.ammo.rifle == 61
+       and got.active == 1,
+       'and their ammo pools and the slot in their hand travel with it',
+       tostring(got and got.ammo and got.ammo.rifle))
+
+    -- A QUIET TICK MUST NOT BLANK THE BAR. The server dedupes the inventory out
+    -- of most feed pushes, so "no inventory in this message" is the ORDINARY
+    -- case and means unchanged. A client that treated it as empty would blink
+    -- the bar four times a second, which is the reported bug wearing a hat.
+    local before = lastInv()
+    TriggerEvent('br:ui:sendLocal', BR.Nui.INV, before)  -- a push with no change
+    ok(lastInv() ~= nil and lastInv().slots[1] ~= nil
+       and lastInv().slots[1].id == 'wpn_spectated_rifle',
+       'a feed tick carrying no inventory leaves the last one standing',
+       'the bar blanked on an unchanged tick')
+
+    -- AND IT HANDS BACK. A session ending sends an explicit nil, and the bar
+    -- has to return to the viewer's own mirror -- otherwise a player who
+    -- stopped spectating spends the rest of the round looking at somebody
+    -- else's rifle.
+    fire('br:spectate:inv', nil)
+    local mine = lastInv()
+    ok(type(mine) == 'table'
+       and not (mine.slots and mine.slots[1] and mine.slots[1].id
+                == 'wpn_spectated_rifle'),
+       'and the session ending puts the viewer\'s own inventory back',
+       tostring(mine and mine.slots and mine.slots[1]
+           and mine.slots[1].id or 'empty'))
+
+    -- THE PICTURE IS READ-ONLY. Nothing in this file may act on a spectated
+    -- inventory: the slot keys, the drop and the use all read the local mirror,
+    -- and the substitution happens only on the way to the interface. Asserted
+    -- on the source because the defect would be a call site that reads the
+    -- wrong variable, which no payload can show.
+    local invFh  = io.open(ROOT .. 'br_core/client/inventory.lua', 'r')
+    local invSrc = invFh and invFh:read('a') or ''
+    if invFh then invFh:close() end
+    -- THREE, AND THE NUMBER IS THE ASSERTION: the declaration, the ONE read on
+    -- the way to the interface, and the ONE write from the feed. A fourth is
+    -- either a second draw path or -- the case this exists for -- an ACTION
+    -- reading it, which would be a keypress asking the server to drop another
+    -- player's weapon. Somebody who genuinely needs a fourth updates this
+    -- number and has to say why, which is the same discipline verify.sh applies
+    -- to the console's verb set.
+    local reads = select(2, invSrc:gsub('spectated', ''))
+    ok(reads == 3,
+       'the spectated inventory is declared once, drawn from once and written '
+           .. 'once -- it is a picture, and nothing in this file may act on it',
+       ('`spectated` appears %d time(s), expected 3'):format(reads))
+end
+
 describe('the start-of-match voice notice says the mode and the real key')
 do
     -- THE SENTENCE IS THE OWNER'S, VERBATIM:
