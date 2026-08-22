@@ -747,6 +747,18 @@ end
 local stripped = {}
 function RemoveWeaponFromPed(_ped, hash) stripped[#stripped + 1] = hash end
 
+--- ...AND THIS ONE, WHICH WAS SCENERY UNTIL #200 (the radio wheel).
+---
+--- Every control this client suppresses goes through DisableControlAction, and
+--- a noop could not tell "we take the weapon wheel away" from "we take the
+--- player's radio away" -- which is the entire question the issue asks. The
+--- disables also LAST ONE FRAME by contract, so the record is cleared at the top
+--- of every frame rather than accumulated: a test that asked "was 141 ever
+--- disabled" would pass on a build that disabled it once in the lobby, and the
+--- claim being made is about the frame the player is driving on.
+local disabled = {}
+function DisableControlAction(_group, control) disabled[control] = true end
+
 -- ------------------------------------------------------------- pma-voice ---
 --
 -- THE VOICE RESOURCE, MODELLED FROM ITS SOURCE RATHER THAN FROM ITS README.
@@ -1016,6 +1028,10 @@ end
 --- One frame of the FRAME band.
 local function frame(ms)
     fakeTime = fakeTime + (ms or 16)
+    -- A DISABLE LASTS EXACTLY ONE FRAME, which is why the suppressions live in
+    -- a FRAME callback at all -- so the record starts empty on every one of
+    -- them. See the DisableControlAction stub for why this is not cumulative.
+    disabled = {}
     BR.Loop.step(BR.Loop.FRAME)
     -- IS_RAW_KEY_PRESSED is true for exactly one frame.
     edge = {}
@@ -9081,6 +9097,472 @@ do
         tostring(BR.Inv.reportState().blockedBy))
 
     inVehicle = false
+end
+
+-- ======================================================================== --
+-- #200. THE RADIO WHEEL IN THE DRIVER'S SEAT
+-- ======================================================================== --
+--
+-- "while in the driver's seat, the GTA radio wheel cannot be displayed. I assume
+-- it's inadvertently disabled as part of our weapon wheel hide, but not sure."
+-- (owner, 2026-08-22.)
+--
+-- THE CONTROL NUMBERS ARE THE TEST. What opens the radio wheel is 85,
+-- INPUT_VEH_RADIO_WHEEL, whose default key is Q -- and so is 141
+-- (INPUT_MELEE_ATTACK_HEAVY) and so is 264 (INPUT_MELEE_ATTACK2), because GTA
+-- reuses that key across contexts that cannot both apply: you do not throw
+-- punches from a car seat. client/inventory.lua was disabling the on-foot half
+-- of that pair on every frame of a drive.
+--
+-- SO THE ASSERTIONS ARE PER-FRAME AND PER-CONTROL, and both halves are pinned
+-- in both contexts. A test that only proved "141 is free in a car" would pass
+-- with the whole melee block deleted, which is the #134-shaped regression this
+-- fix is one wrong line away from.
+
+describe('#200 -- the radio wheel in the driver\'s seat')
+do
+    local RADIO_WHEEL  = 85                  -- INPUT_VEH_RADIO_WHEEL   Q
+    local MELEE_ON_Q   = { 141, 264 }        -- MELEE_ATTACK_HEAVY / _2  Q
+    local WEAPON_WHEEL = 37                  -- INPUT_SELECT_WEAPON     TAB
+    local MELEE_SLOT   = BR.Config.Loot.meleeSlot or 0
+
+    --- Are all of these disabled on the frame just stepped?
+    local function allOff(list)
+        for _, c in ipairs(list) do
+            if disabled[c] ~= true then return false end
+        end
+        return true
+    end
+    local function anyOff(list)
+        for _, c in ipairs(list) do
+            if disabled[c] == true then return true end
+        end
+        return false
+    end
+
+    bootOn(true, true)
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    inVehicle = false
+
+    -- An ordinary armed player: a carbine in slot 1, selected.
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } },
+        ammo = {}, active = 1,
+    })
+
+    -- 1. ON FOOT, ARMED. Everything the two issues care about, in one frame.
+    frame(16)
+    ok(disabled[WEAPON_WHEEL] == true,
+       'on foot: GTA\'s weapon wheel is suppressed -- #134')
+    ok(allOff(MELEE_ON_Q),
+       'on foot: the melee keys are suppressed, so a rifle cannot throw a punch')
+    ok(disabled[RADIO_WHEEL] ~= true,
+       'and control 85 is not disabled -- this gamemode never touches it')
+
+    -- 2. IN THE DRIVER'S SEAT. The one line that changed, and the one that
+    --    must not have.
+    inVehicle = true
+    frame(16)
+    ok(not anyOff(MELEE_ON_Q),
+       'in a vehicle: the melee controls on Q are left alone, so the radio '
+       .. 'wheel opens -- #200')
+    ok(disabled[WEAPON_WHEEL] == true,
+       'in a vehicle: the weapon wheel is STILL suppressed -- #134 does not '
+       .. 'regress to buy #200')
+    ok(disabled[RADIO_WHEEL] ~= true, 'and 85 is still nobody\'s business here')
+
+    -- 3. THE BOOL SHAPES. IsPedInAnyVehicle is declared BOOL and a FiveM native
+    --    declared BOOL does not have to hand Lua a boolean -- this project has
+    --    shipped that mistake four times. Both directions are pinned because
+    --    they fail in opposite ways and only one of them is visible.
+    inVehicle = 1
+    frame(16)
+    ok(not anyOff(MELEE_ON_Q),
+       'a native answering 1 rather than true is still IN A VEHICLE '
+       .. '(1 == true is false in Lua)')
+
+    inVehicle = 0
+    frame(16)
+    ok(allOff(MELEE_ON_Q),
+       'and one answering 0 rather than false is still ON FOOT -- 0 is TRUTHY '
+       .. 'in Lua, so the one-line normalisation would have said otherwise')
+
+    inVehicle = nil
+    frame(16)
+    ok(allOff(MELEE_ON_Q),
+       'a native that declines to answer resolves to ON FOOT, which is the '
+       .. 'side where being wrong only costs the radio wheel')
+
+    -- 4. WHAT THE FIX DID NOT CHANGE. Fists and a real melee weapon still
+    --    swing, on foot, exactly as they did before -- the gate is the SEAT,
+    --    not the slot, and these two prove it did not quietly become the slot.
+    inVehicle = false
+    fire(BR.Net.INV_SET, { slots = {}, ammo = {}, active = MELEE_SLOT })
+    frame(16)
+    ok(not anyOff(MELEE_ON_Q), 'on foot with fists up, nothing is suppressed')
+
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'machete', kind = BR.ItemKind.WEAPON } },
+        ammo = {}, active = 1,
+    })
+    frame(16)
+    ok(not anyOff(MELEE_ON_Q), 'and a machete is allowed to swing')
+
+    -- 5. AND THE SEAT IS NOT A LICENCE. An armed player who gets out is back
+    --    under the suppression on the very next frame -- the block is per-frame
+    --    by contract and a latch here would be the punch bug with extra steps.
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } },
+        ammo = {}, active = 1,
+    })
+    inVehicle = true
+    frame(16)
+    ok(not anyOff(MELEE_ON_Q), 'armed and seated: free')
+    inVehicle = false
+    frame(16)
+    ok(allOff(MELEE_ON_Q), 'armed and back on the pavement: suppressed again, '
+       .. 'on the first frame')
+end
+
+-- ======================================================================== --
+-- #199. THE MAP KEY
+-- ======================================================================== --
+--
+-- "we need a new keybind - M by default. It should be a one-key press to open
+-- the full screen map, same function as our 'map' button in the pause menu."
+-- (owner, 2026-08-22.)
+--
+-- The binding row already existed and had no listener -- keybinds.lua said so in
+-- as many words ("STILL DEAD AND STILL BOUND"). What is proved here is the
+-- listener, the states it answers in, and that nothing hardcodes M.
+
+describe('#199 -- the map binding')
+do
+    bootOn(true, true)
+    -- THE KEYBOARD HAS TO BE OURS AND THE READING HAS TO HAVE SETTLED. bootOn
+    -- re-announces focus, which opens the resync window -- and a rising edge
+    -- inside it is ADOPTED rather than fired, deliberately (#90's strobe fix).
+    -- Pressing on the next frame would measure that, not the map.
+    fire('br:ui:focusChanged', 'none')
+    frames(3)
+
+    ok(keymap['M'] == 'brmap',
+       'the map is registered with the engine as a bare tap on M',
+       tostring(keymap['M']))
+
+    local row
+    for _, b in ipairs(BR.Keys.bindings) do
+        if b.command == 'brmap' then row = b end
+    end
+    ok(row ~= nil, 'and it is in the table the settings screen reads')
+    ok(row and row.hold == false, 'as a TAP -- one press, not a hold')
+    ok(BR.Keys.boundTo('brmap') == 0x4D,
+       'and the raw layer reads it on M (0x4D) by default',
+       tostring(BR.Keys.boundTo('brmap')))
+
+    --- How many times the map has been asked for since the marker.
+    local function toggles(from)
+        local n = 0
+        for i = from + 1, #events do
+            if events[i].name == 'br:ui:mapToggle' then n = n + 1 end
+        end
+        return n
+    end
+
+    --- One press of a key the raw layer is watching, both paths, like a client.
+    local function tapKey(vk, keyName)
+        keys[vk] = true
+        edge[vk] = true
+        engineKey(keyName, true)
+        frame(16)
+        keys[vk] = nil
+        engineKey(keyName, false)
+        frame(16)
+    end
+
+    -- ONE PRESS, ONE ASK. Two would mean the raw layer and the engine command
+    -- both fired, which is the double-tap `rawActive` exists to prevent.
+    BR.State.me.state = BR.PlayerState.ALIVE
+    local mark = #events
+    tapKey(0x4D, 'M')
+    ok(toggles(mark) == 1, 'one press of M asks for the map exactly once',
+       toggles(mark))
+
+    -- EVERY STATE THE PAUSE MENU'S MAP BUTTON IS OFFERED IN, which is every
+    -- state but the lobby -- PauseMenu.tsx hides the card behind `!inLobby`.
+    for _, st in ipairs({
+        BR.PlayerState.WARMUP, BR.PlayerState.BUS, BR.PlayerState.FREEFALL,
+        BR.PlayerState.GLIDE, BR.PlayerState.ALIVE, BR.PlayerState.DBNO,
+        BR.PlayerState.DEAD, BR.PlayerState.SPECTATING,
+    }) do
+        BR.State.me.state = st
+        local m = #events
+        tapKey(0x4D, 'M')
+        ok(toggles(m) == 1, ('the map opens in %s'):format(st), toggles(m))
+    end
+
+    -- ...AND NOT THE LOBBY, and the reason is #122 rather than taste: the map
+    -- route raises GTA's frontend, and the lobby is the one screen of ours that
+    -- keeps painting through a cleared focus stack.
+    BR.State.me.state = BR.PlayerState.LOBBY
+    local m = #events
+    tapKey(0x4D, 'M')
+    ok(toggles(m) == 0, 'and not in the lobby, where the button is hidden too')
+
+    -- NOTHING HARDCODES M. Move the row and the key moves with it -- both ways
+    -- round, because a rebind that leaves the OLD key working is the same bug
+    -- as one that never takes.
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.Keys.set('brmap', 0x4A)          -- J
+    ok(BR.Keys.boundTo('brmap') == 0x4A, 'a rebind moves the map key')
+
+    m = #events
+    tapKey(0x4D, 'M')
+    ok(toggles(m) == 0, 'after the rebind, M no longer opens the map')
+    m = #events
+    tapKey(0x4A, 'M')                   -- the engine half is still on M
+    ok(toggles(m) == 1, 'and the new key does')
+
+    -- AND THE ENGINE SUPPRESSION FOLLOWS IT. natives.lua takes control 244
+    -- (INPUT_INTERACTION_MENU, the only control whose default key is M) away
+    -- only while our map binding is actually sitting on M.
+    ok(BR.Keys.boundTo('brmap') ~= 0x4D,
+       'with the map rebound, nothing claims M from the engine')
+    BR.Keys.reset('brmap')
+    ok(BR.Keys.boundTo('brmap') == 0x4D, 'and reset puts it back on M')
+
+    -- THE REFACTOR THAT MADE boundTo EXIST MUST NOT HAVE MOVED ownsEscape.
+    -- It is the gate on DisableFrontendThisFrame, and a wrong answer there is
+    -- either GTA's pause menu coming back or the player having none at all.
+    ok(BR.Keys.ownsEscape() == true,
+       'the pause menu still owns Escape while the raw layer runs')
+    BR.Keys.set('brpausemenu', 0x71)    -- F2
+    ok(BR.Keys.ownsEscape() == false,
+       'and gives Escape back to the engine the moment it is rebound off it')
+    BR.Keys.reset('brpausemenu')
+    ok(BR.Keys.ownsEscape() == true, 'and takes it back on a reset')
+
+    -- ON A CLIENT WITH NO RAW LAYER, the ENGINE drives every row -- and boundTo
+    -- has to answer with the engine's key, the one that actually works, rather
+    -- than with whatever we wrote down. It is the same rule labelFor applies and
+    -- it exists for the same reason: #129's third round was a prompt naming a
+    -- key nothing was listening to.
+    bootOn(false, false)
+    ok(BR.Keys.boundTo('brmap') == 0x4D,
+       'with no raw layer the map is on the ENGINE\'s M, and boundTo says so',
+       tostring(BR.Keys.boundTo('brmap')))
+    ok(BR.Keys.set('brmap', 0x4A) == false,
+       'a rebind of an engine-driven row is refused rather than stored')
+    ok(BR.Keys.boundTo('brmap') == 0x4D, 'so the key does not move')
+    ok(BR.Keys.ownsEscape() == false,
+       'and Escape stays the engine\'s, which is that client\'s only pause menu')
+
+    -- AND THE TWO ANSWERS HAVE TO BE ABLE TO DIFFER, or the assertion above
+    -- proves nothing -- it would pass on a boundTo that ignored the engine
+    -- entirely, because a row nobody has moved sits on the same key either way.
+    -- This is the real shape of #129's third round: a rebind made on a client
+    -- that HAD the raw layer is still in the KVP when the profile lands on one
+    -- that does not, and the engine is listening on the original key regardless.
+    bootOn(true, true)
+    BR.Keys.set('brmap', 0x4A)          -- J, and it really is stored this time
+    ok(BR.Keys.boundTo('brmap') == 0x4A, 'with the raw layer, the rebind is the key')
+    bootOn(false, false)
+    ok(BR.Keys.boundTo('brmap') == 0x4D,
+       'without it, the SAME stored rebind is ignored and boundTo answers with '
+       .. 'the engine\'s M -- the key that actually works',
+       tostring(BR.Keys.boundTo('brmap')))
+
+    bootOn(true, true)
+    fire('br:ui:focusChanged', 'none')
+    frames(3)
+    BR.Keys.reset('brmap')
+end
+
+-- ======================================================================== --
+-- #199. THE KEY AND THE BUTTON OPEN THE SAME MAP
+-- ======================================================================== --
+--
+-- "same function as our 'map' button in the pause menu ... find what that
+-- button calls and call it."
+--
+-- WHY THIS LOADS br_ui. The routing decision -- bigmap, frontend or fullscreen,
+-- switchable at runtime with `brmapmode` -- lives over there, and each route
+-- leaves a different flag behind for the closer to find. "The key calls the same
+-- function" is only worth asserting against the real three; a stub of them would
+-- be a stub written to agree.
+--
+-- The thread openFrontendMap starts is RECORDED AND NEVER RUN, the same
+-- arrangement the focus-gate block uses for br_ui's own watchdog: Citizen.Wait
+-- is a no-op here, so running it would spin forever. Everything asserted below
+-- happens before that thread's first Wait.
+
+describe('#199 -- the key and the button open the same map')
+do
+    local nuiCb = {}
+    function RegisterNUICallback(name, fn) nuiCb[name] = fn end
+    local uiThreads = {}
+    Citizen.CreateThread = function(fn) uiThreads[#uiThreads + 1] = fn end
+    function ActivateFrontendMenu() end
+    function PauseMenuceptionGoDeeper() end
+    function PauseMenuceptionTheKick() end
+    function SetFrontendActive() end
+    function IsPauseMenuRestarting() return false end
+    local fullscreenArg = nil
+    function PauseToggleFullscreenMap(on) fullscreenArg = on end
+    -- The bigmap route goes through the REAL br_core/client/natives.lua, which
+    -- is loaded by the suite above -- br_core owns the radar, so br_core owns
+    -- the expansion. These three are the only pieces of it a Lua process cannot
+    -- supply: the engine call itself and the notice stack that lives in
+    -- client/state.lua, which this harness does not load.
+    function SetBigmapActive() end
+    BR.Notify = function() end
+    BR.NotifyClear = function() end
+
+    local coreName = GetCurrentResourceName
+    GetCurrentResourceName = function() return 'br_ui' end
+    loadAll({ 'br_ui/client/pause.lua' })
+    GetCurrentResourceName = coreName
+
+    --- How many times the frontend route has been raised since the marker.
+    local function raises(from)
+        local n = 0
+        for i = from + 1, #events do
+            local e = events[i]
+            if e.name == 'br:map:frontend' and e.args[1] == true then n = n + 1 end
+        end
+        return n
+    end
+
+    local function pressButton()
+        nuiCb[BR.NuiCb.PAUSE_ACTION]({ action = 'map' }, function() end)
+    end
+    local function pressKey() fire('br:ui:mapToggle') end
+
+    ok(BR.Pause.mapMode == 'frontend',
+       'the default route is still the engine frontend, driven to its map page',
+       tostring(BR.Pause.mapMode))
+    ok(BR.Pause.closeMap() == false,
+       'with no map up, the closer says there was nothing to close')
+
+    -- 1. THE BUTTON. What it did before this change, unchanged.
+    local m = #events
+    pressButton()
+    ok(raises(m) == 1, 'the pause menu button raises the frontend map')
+
+    -- 2. THE KEY, ON THE SAME STATE. It finds the map already up and takes it
+    --    down rather than opening a second one -- which is the observable proof
+    --    that both went through the same flag rather than through two copies of
+    --    the routing.
+    m = #events
+    pressKey()
+    ok(raises(m) == 0, 'the map key on an open map does not raise a second one')
+    ok(BR.Pause.closeMap() == false, 'because it closed the one that was up')
+
+    -- 3. THE KEY, FROM NOTHING. Identical effect to the button.
+    m = #events
+    pressKey()
+    ok(raises(m) == 1, 'and from a closed map the key opens exactly what the '
+       .. 'button opens')
+    pressKey()
+
+    -- 4. THE OTHER TWO ROUTES. `brmapmode` is switchable in game, so the key
+    --    has to work whichever one the owner is comparing -- and each leaves its
+    --    own flag, which is precisely why there is one closer and not three.
+    BR.Pause.mapMode = 'bigmap'
+    m = #events
+    pressKey()
+    ok(BR.Pause.bigmap == true, 'in bigmap mode the key expands the minimap')
+    pressKey()
+    ok(BR.Pause.bigmap == false, 'and the same key puts it away')
+
+    -- ...AND THE BUTTON GOES THROUGH THE SAME ROUTING, which is the assertion a
+    -- second implementation written for the key would fail. Pressing the card in
+    -- bigmap mode has to expand the minimap and raise no frontend at all.
+    m = #events
+    pressButton()
+    ok(BR.Pause.bigmap == true and raises(m) == 0,
+       'the button honours brmapmode too -- one opener, not two',
+       ('bigmap %s, frontend raises %d'):format(tostring(BR.Pause.bigmap), raises(m)))
+    pressKey()
+    ok(BR.Pause.bigmap == false, 'and the key closes what the button opened')
+
+    BR.Pause.mapMode = 'fullscreen'
+    fullscreenArg = nil
+    pressKey()
+    ok(BR.Pause.fullscreenMap == true and fullscreenArg == true,
+       'in fullscreen mode the key toggles the map on')
+    pressKey()
+    ok(BR.Pause.fullscreenMap == false and fullscreenArg == false,
+       'and off again')
+
+    -- 5. THE PAUSE KEY STILL CLOSES A MAP FIRST, which is the behaviour the
+    --    extraction of closeMap() could most easily have dropped: it was three
+    --    inline branches in that handler and is now one call.
+    BR.Pause.mapMode = 'bigmap'
+    pressKey()
+    ok(BR.Pause.bigmap == true, 'with a big map up...')
+    fakeTime = fakeTime + 1000          -- past the pause key's own 220ms guard
+    fire('br:ui:pauseToggle')
+    ok(BR.Pause.bigmap == false,
+       '...Escape takes the map down rather than opening the pause menu')
+
+    BR.Pause.mapMode = 'frontend'
+end
+
+-- ======================================================================== --
+-- #199. AND GTA'S OWN M IS TAKEN AWAY WHILE OURS IS ON IT
+-- ======================================================================== --
+--
+-- The issue calls M "GTA's own expanded-map key". It is not: per the FiveM
+-- controls reference the only control whose default key is M is 244,
+-- INPUT_INTERACTION_MENU -- GTA Online's interaction menu, which a FiveM server
+-- does not run. So the suppression is insurance rather than a known fix, and the
+-- thing worth pinning is not that 244 is disabled but that it FOLLOWS THE
+-- BINDING: hardcoding it would be the same mistake as hardcoding the key.
+--
+-- This drives client/natives.lua's per-frame rules directly. It is not on
+-- BR.Loop -- gamerules.lua calls it, and that file is not in this harness -- so
+-- a frame() would not reach it.
+
+describe('#199 -- GTA\'s own M, while ours is on it')
+do
+    BR.State.me = { src = 1, state = BR.PlayerState.ALIVE }
+    BR.State.roster = {}
+    BR.State.match = { state = BR.MatchState.PLAYING }
+    local INTERACTION_MENU = 244
+
+    local function rulesFrame()
+        disabled = {}
+        BR.Native.applyGameRules()
+    end
+
+    BR.Keys.reset('brmap')
+    rulesFrame()
+    ok(disabled[INTERACTION_MENU] == true,
+       'with our map on M, control 244 is taken from the engine so one press '
+       .. 'cannot drive two things')
+
+    BR.Keys.set('brmap', 0x4A)          -- J
+    rulesFrame()
+    ok(disabled[INTERACTION_MENU] ~= true,
+       'move the map off M and the engine gets 244 back -- the suppression '
+       .. 'follows the binding, it is not a constant')
+
+    BR.Keys.set('brmap', nil)           -- deliberately unbound
+    rulesFrame()
+    ok(disabled[INTERACTION_MENU] ~= true,
+       'and an unbound map claims nothing at all')
+
+    BR.Keys.reset('brmap')
+    rulesFrame()
+    ok(disabled[INTERACTION_MENU] == true, 'reset puts both back')
+
+    -- AND IT IS NOT COLLATERAL. 20 and 48 are the two controls that DO expand
+    -- the radar (INPUT_MULTIPLAYER_INFO / INPUT_HUD_SPECIAL, both on Z) and
+    -- neither is ours to take.
+    ok(disabled[20] ~= true and disabled[48] ~= true,
+       'the controls that actually expand the radar are left alone')
 end
 
 realPrint(('%s%d passed, %d failed\27[0m')

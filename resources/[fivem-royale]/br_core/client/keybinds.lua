@@ -390,19 +390,30 @@ hold('ptt',         'brptt',       'Royale: Push to talk',               'N')
 -- any resource on this server registers. The +radiotalk COMMAND is untouched
 -- and is still what `ptt` drives -- see voice.lua.
 --
--- STILL DEAD AND STILL BOUND, deliberately left for a round of its own rather
--- than swept up here: 'map' (M). Same shape, same absence of any BR.Keys.on.
---
--- THE SPECTATE ARROWS ARE NO LONGER ON THAT LIST (#192). 'specNext' (RIGHT) and
--- 'specPrev' (LEFT) stood in this paragraph from M3 until the round that built
--- spectating, and client/spectate.lua is the subscriber they never had. Nothing
--- about the two rows below moved: same actions, same commands, same defaults --
--- so a player who had already rebound a key they had no way to know was dead
--- keeps the key they chose. The public site was corrected on 2026-08-21 to stop
--- claiming they worked; it now says so again because they do.
+--- NOTHING ON THIS SCREEN IS BOUND-BUT-DEAD ANY MORE, AND BOTH HALVES OF THAT
+--- WERE EARNED IN THE SAME WEEK.
+---
+--- THE SPECTATE ARROWS (#192). 'specNext' (RIGHT) and 'specPrev' (LEFT) stood
+--- in this paragraph from M3 until the round that built spectating, and
+--- client/spectate.lua is the subscriber they never had. Nothing about the two
+--- rows below moved: same actions, same commands, same defaults -- so a player
+--- who had already rebound a key they had no way to know was dead keeps the key
+--- they chose. The public site was corrected on 2026-08-21 to stop claiming they
+--- worked; it now says so again because they do.
+---
+--- 'map' (M) WAS THE LAST ONE (#199). It was registered here with no BR.Keys.on
+--- anywhere in the tree. br_ui/client/pause.lua subscribes to it now and opens
+--- the same map the pause menu's button opens -- one function, three callers.
 
 group = 'Map'
--- Map and spectating
+-- Map and spectating.
+--
+-- M, AND IT WAS ALREADY REGISTERED HERE BEFORE IT DID ANYTHING (#199). The row,
+-- the default and the settings-screen entry have existed since the binding
+-- table did; what was missing was a BR.Keys.on for it, which is the whole of
+-- what this issue asked for. Nothing below hardcodes M -- the listener fires on
+-- the ACTION, so a player who moves the row moves the map with it and every
+-- screen that draws a key follows through BR.Keys.push.
 tap ('map',         'brmap',       'Royale: Map',                        'M')
 -- CLEARING A WAYPOINT. GTA's own way to remove one is to open the pause map,
 -- find the flag and click it again -- which in a battle royale means opening a
@@ -469,6 +480,56 @@ BR.Keys.on('settingsMenu', function(pressed)
     if pressed then TriggerEvent('br:ui:settingsToggle') end
 end)
 
+--- WHERE THE MAP KEY IS ANSWERED, AND WHERE IT IS NOT (#199).
+---
+--- ONE PRESS, AND IT IS THE PAUSE MENU'S OWN MAP BUTTON. `br:ui:mapToggle`
+--- reaches the same BR.Pause.openMap() the Map card's PAUSE_ACTION callback
+--- calls -- one implementation of "open the map", switchable by `brmapmode`
+--- like it always was, with nothing here knowing which of the three routes it
+--- ends up taking. A second copy of that decision is exactly what the issue
+--- asked us not to write.
+---
+--- IT ALSO CLOSES, and that is a decision rather than an oversight of the
+--- owner's "one-key press to open". br_ui/client/pause.lua already states the
+--- rule for the other key that reaches the map: "whatever the map key turned
+--- on, the map key turns off. A player should never have to know WHICH native
+--- drew the thing in front of them to get rid of it." A dedicated map key that
+--- can only open leaves the player holding something they have to be told a
+--- different key to dismiss -- and in the default `frontend` route that key is
+--- Escape, which is the one this menu is replacing. Escape still closes it too;
+--- nothing was taken away.
+---
+--- EVERY STATE BUT THE LOBBY, which is the same answer the button gives.
+--- PauseMenu.tsx hides the Map card behind `!inLobby` and says why: the map
+--- route raises GTA's frontend, the lobby is drawn from MATCH STATE rather than
+--- from focus, and a lobby that keeps painting over a scaleform is #122
+--- verbatim. That reasoning is about the route, not about the button, so a key
+--- that skipped the gate would reintroduce the bug through a second door -- the
+--- exact shape #138 was ("PUBLIC BECAUSE THERE WAS A FOURTH DOOR"). So: bus,
+--- freefall, glide, alive, warmup, downed, dead and spectating all open the map;
+--- the lobby does not.
+---
+--- THE GATE IS HERE AND NOT IN br_ui BECAUSE THE STATE IS HERE. br_ui declares
+--- no dependency on br_core and cannot read BR.State at all -- ringmaster.lua:66
+--- records what happens to code that tries ("the first version of this read nil
+--- forever from over there"). The page's own `inLobby` is derived from what the
+--- bridge sends it, which is this same state by a longer road.
+---
+--- THE GATE NAMES THE ONE STATE THAT REFUSES, RATHER THAN THE EIGHT THAT ALLOW,
+--- so an unknown answer opens the map. `BR.State.me.state` is nil for the window
+--- between this file loading and the first state landing, and it would be nil
+--- again for any state added later -- an allowlist would refuse both, which is a
+--- key that silently does nothing on exactly the clients where something else
+--- has already gone wrong. The cost of the other direction is a map opened over
+--- a lobby for the length of that window; the cost of an allowlist is a dead key
+--- nobody can diagnose from a chair.
+BR.Keys.on('map', function(pressed)
+    if not pressed then return end
+    local st = BR.State and BR.State.me and BR.State.me.state
+    if st == BR.PlayerState.LOBBY then return end
+    TriggerEvent('br:ui:mapToggle')
+end)
+
 -- THE KILL PROMPT BORROWS TAB, AND THE BORROWING HAS TO HAPPEN HERE (#177).
 --
 -- br_ui shows the prompt -- it owns the toast and it writes the sentence -- but
@@ -500,9 +561,10 @@ BR.Keys.actions = {
     'deploy', 'trail', 'inventory', 'interact', 'drop', 'use',
     'slot1', 'slot2', 'slot3', 'slot4', 'slot5',
     -- 'ping' is gone: it had no listener and the marker it was for is placed
-    -- by dropping a map waypoint now (client/markers.lua). 'map', 'specNext'
-    -- and 'specPrev' are in the same state and are NOT yet removed -- they are
+    -- by dropping a map waypoint now (client/markers.lua). 'specNext' and
+    -- 'specPrev' are still in that state and are NOT yet removed -- they are
     -- listed here so the debug overlay keeps naming them while they are.
+    -- 'map' was with them and is not any more (#199): it opens the map.
     'chatGlobal', 'chatSquad', 'ptt', 'map', 'specNext', 'specPrev',
     'clearWaypoint',
 }
@@ -821,6 +883,30 @@ function BR.Keys.labelFor(command)
     return BR.Keys.vkName(code) or ('#' .. code), true
 end
 
+--- The virtual-key code a command is ACTUALLY driven on, or nil.
+---
+--- THE NUMERIC TWIN OF labelFor, AND IT APPLIES THE SAME RULE FOR THE SAME
+--- REASON. labelFor answers "what do I print"; this answers "what physical key
+--- is this", which is the question anything suppressing an ENGINE control on
+--- that key has to ask. Both defer to engineDrives: a row the engine is driving
+--- sits on its original default whatever the player has since chosen, because
+--- nothing can move a RegisterKeyMapping binding from script.
+---
+--- Derived from the same two helpers rather than re-deciding, for the reason
+--- written at engineDrives: two separately-written versions of "who owns this
+--- key" is how the world prompts came to name a key nothing was listening to.
+--- @param command string
+--- @return integer|nil
+function BR.Keys.boundTo(command)
+    for _, b in ipairs(BR.Keys.bindings) do
+        if b.command == command then
+            if engineDrives(b) then return engineCode(b) end
+            return load()[b.command] or nil
+        end
+    end
+    return nil
+end
+
 --- Is our pause menu the thing Escape opens?
 ---
 --- ASKED BEFORE THE ENGINE'S OWN MENU IS SUPPRESSED, and that is the whole
@@ -829,11 +915,16 @@ end
 --- who rebinds our pause menu to something else has no pause menu at all and
 --- no way back. So the suppression follows the binding: hold Escape and the
 --- frontend is ours, give Escape up and it is the engine's again.
+---
+--- THE rawActive TEST STAYS IN FRONT AND IS NOT FOLDED INTO boundTo. Without
+--- the raw layer the engine drives this row, boundTo would answer with the
+--- engine's own Escape default (0x1B, the `raw` argument on the tap) and the
+--- frontend would be suppressed on precisely the client that has no other way
+--- to reach a pause menu -- see the second of the two guards at the binding.
 --- @return boolean
 function BR.Keys.ownsEscape()
     if not BR.Keys.rawActive then return false end
-    load()
-    return vk['brpausemenu'] == 0x1B
+    return BR.Keys.boundTo('brpausemenu') == 0x1B
 end
 
 --- Is this a command we registered?

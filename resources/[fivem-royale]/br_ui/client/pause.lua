@@ -447,6 +447,131 @@ function BR.Pause.openFrontendPlain()
     end)
 end
 
+-- ===========================================================================
+-- OPENING AND CLOSING THE MAP, IN ONE PLACE EACH (#199)
+-- ===========================================================================
+--
+-- These two are lifted verbatim out of the Map card's PAUSE_ACTION branch and
+-- out of the `br:ui:pauseToggle` handler, and they are lifted for one reason:
+-- there is now a KEY that does the same thing, and the owner's instruction was
+-- "same function as our map button in the pause menu ... find what that button
+-- calls and call it".
+--
+-- A second copy would have been the easy version and the wrong one. `brmapmode`
+-- switches between three routes at runtime and each of them leaves a DIFFERENT
+-- flag behind for the closer to find; a key that opened the map by its own road
+-- would be a fourth door onto the same three states, which is the shape #138
+-- names ("PUBLIC BECAUSE THERE WAS A FOURTH DOOR") and the shape #122 came back
+-- through. One opener, one closer, and the routes stay a question this file
+-- answers on its own.
+
+--- Open the full-screen map, by whichever route `brmapmode` currently selects.
+---
+--- THREE ROUTES, SWITCHABLE, BECAUSE THIS IS A QUESTION THE GAME ANSWERS AND
+--- NOT ONE THE DOCUMENTATION DOES.
+---
+---   bigmap      SetBigmapActive -- the radar, expanded
+---   frontend    the real pause menu, driven to its map page (the default)
+---   fullscreen  PauseToggleFullscreenMap alone
+---
+--- OUR MENU COMES DOWN FIRST IN EVERY BRANCH, and unconditionally: BR.Pause
+--- .close() pops focus for a screen that may not hold it, which is safe by
+--- design and is what makes this callable from a keypress with no menu open.
+function BR.Pause.openMap()
+    if BR.Pause.mapMode == 'frontend' then
+        BR.Pause.close()
+        BR.Pause.openFrontendMap()
+        return
+    end
+
+    if BR.Pause.mapMode == 'fullscreen' then
+        -- PAUSE_TOGGLE_FULLSCREEN_MAP (0x2DE6C5E2E996F178, "toggles pause
+        -- menu map rendering") on its own, on the chance it draws the map
+        -- with no frontend at all. pcall because a native this obscure is
+        -- exactly the kind that is missing from a build, and a missing one
+        -- must not take the pause menu down with it.
+        BR.Pause.close()
+        local ok, err = pcall(PauseToggleFullscreenMap, true)
+        print(('[br_ui] map: PauseToggleFullscreenMap(true) %s')
+            :format(ok and 'ok' or ('FAILED ' .. tostring(err))))
+        BR.Pause.fullscreenMap = true
+        return
+    end
+
+    -- THE BIG MINIMAP, NOT GTA'S PAUSE MENU.
+    --
+    -- The question was whether the rest of the pause menu's scaleforms
+    -- can be suppressed when we only want the map. They cannot -- the
+    -- tabs are part of that scaleform and ActivateFrontendMenu's
+    -- component argument only chooses which one is FOCUSED (-1 is
+    -- already the map).
+    --
+    -- SET_BIGMAP_ACTIVE avoids the question entirely: it expands the
+    -- minimap to the full-screen map GTA Online uses, drawn over live
+    -- gameplay, with no frontend, no tabs and no pause. It is what every
+    -- resource that wants "just the map" actually uses, and it is better
+    -- than what was asked for -- the world keeps running underneath.
+    --
+    -- IT EXPANDS THE MINIMAP, which is the catch: br_core turns the radar
+    -- off in the lobby, so calling this from here worked exactly as
+    -- documented on a minimap that was not being drawn, and the button
+    -- looked dead (user, 2026-08-09). br_core owns the radar, so br_core
+    -- owns this -- one place decides whether the map is on screen.
+    BR.Pause.close()
+    TriggerEvent('br:map:big', true)
+    BR.Pause.bigmap = true
+    print('[br_ui] map: big map on')
+end
+
+--- Take down whatever the map put up, whichever route put it there.
+--- @return boolean  true if there was a map to take down
+---
+--- WHATEVER THE MAP KEY TURNED ON, THE MAP KEY TURNS OFF. A player should never
+--- have to know WHICH native drew the thing in front of them to get rid of it,
+--- and with `brmapmode` switchable at runtime they could not find out anyway.
+---
+--- THE FRONTEND IS CLEARED, NOT CLOSED, and that asymmetry is deliberate: its
+--- watcher thread owns the teardown and reads this flag every frame, so
+--- lowering it here is how anything asks the map to close. Two callers racing
+--- SetFrontendActive is how a frontend gets left up with nothing listening.
+---
+--- THE RETURN VALUE IS THE WHOLE INTERFACE. Both callers -- the pause key and
+--- the map key -- need to know whether they consumed the press on a map or
+--- should carry on to what they would otherwise have done, and neither of them
+--- can read these three flags for itself.
+function BR.Pause.closeMap()
+    if BR.Pause.bigmap then
+        TriggerEvent('br:map:big', false)
+        BR.Pause.bigmap = false
+        return true
+    end
+    if frontendMap then
+        frontendMap = false
+        return true
+    end
+    if BR.Pause.fullscreenMap then
+        pcall(PauseToggleFullscreenMap, false)
+        BR.Pause.fullscreenMap = false
+        return true
+    end
+    return false
+end
+
+-- THE MAP HAS A KEY OF ITS OWN NOW (#199), and this is the whole of its far
+-- end. br_core/client/keybinds.lua registers the binding (M by default,
+-- rebindable, in the same table every other key is in), decides which player
+-- states may open a map at all, and fires this; the routing decision above
+-- stays here, where the three routes and their flags live.
+--
+-- ONE PRESS, EITHER DIRECTION. See closeMap's note: a key that could only open
+-- would leave the player holding a full-screen map and needing to be told about
+-- a different key to dismiss it -- and in the default `frontend` route that key
+-- is Escape, the one this menu exists to take over.
+AddEventHandler('br:ui:mapToggle', function()
+    if BR.Pause.closeMap() then return end
+    BR.Pause.openMap()
+end)
+
 RegisterNUICallback(BR.NuiCb.PAUSE_FOCUS, function(data, cb)
     if data and data.open then BR.Pause.open(data.tab) else BR.Pause.close() end
     cb({ ok = true })
@@ -632,59 +757,7 @@ RegisterNUICallback(BR.NuiCb.PAUSE_ACTION, function(data, cb)
     local action = tostring(data and data.action or '')
 
     if action == 'map' then
-        -- THREE ROUTES, SWITCHABLE, BECAUSE THIS IS A QUESTION THE GAME
-        -- ANSWERS AND NOT ONE THE DOCUMENTATION DOES.
-        --
-        --   bigmap      SetBigmapActive -- the radar, expanded (default)
-        --   frontend    the real pause menu, driven to its map page
-        --   fullscreen  PauseToggleFullscreenMap alone
-        --
-        -- `brmapmode` switches between them in game.
-        if BR.Pause.mapMode == 'frontend' then
-            BR.Pause.close()
-            BR.Pause.openFrontendMap()
-            cb({ ok = true })
-            return
-        end
-
-        if BR.Pause.mapMode == 'fullscreen' then
-            -- PAUSE_TOGGLE_FULLSCREEN_MAP (0x2DE6C5E2E996F178, "toggles pause
-            -- menu map rendering") on its own, on the chance it draws the map
-            -- with no frontend at all. pcall because a native this obscure is
-            -- exactly the kind that is missing from a build, and a missing one
-            -- must not take the pause menu down with it.
-            BR.Pause.close()
-            local ok, err = pcall(PauseToggleFullscreenMap, true)
-            print(('[br_ui] map: PauseToggleFullscreenMap(true) %s')
-                :format(ok and 'ok' or ('FAILED ' .. tostring(err))))
-            BR.Pause.fullscreenMap = true
-            cb({ ok = true })
-            return
-        end
-
-        -- THE BIG MINIMAP, NOT GTA'S PAUSE MENU.
-        --
-        -- The question was whether the rest of the pause menu's scaleforms
-        -- can be suppressed when we only want the map. They cannot -- the
-        -- tabs are part of that scaleform and ActivateFrontendMenu's
-        -- component argument only chooses which one is FOCUSED (-1 is
-        -- already the map).
-        --
-        -- SET_BIGMAP_ACTIVE avoids the question entirely: it expands the
-        -- minimap to the full-screen map GTA Online uses, drawn over live
-        -- gameplay, with no frontend, no tabs and no pause. It is what every
-        -- resource that wants "just the map" actually uses, and it is better
-        -- than what was asked for -- the world keeps running underneath.
-        --
-        -- IT EXPANDS THE MINIMAP, which is the catch: br_core turns the radar
-        -- off in the lobby, so calling this from here worked exactly as
-        -- documented on a minimap that was not being drawn, and the button
-        -- looked dead (user, 2026-08-09). br_core owns the radar, so br_core
-        -- owns this -- one place decides whether the map is on screen.
-        BR.Pause.close()
-        TriggerEvent('br:map:big', true)
-        BR.Pause.bigmap = true
-        print('[br_ui] map: big map on')
+        BR.Pause.openMap()
         cb({ ok = true })
         return
     end
@@ -808,29 +881,12 @@ AddEventHandler('br:ui:pauseToggle', function()
     if now - lastToggle < 220 then return end
     lastToggle = now
 
-    -- THE BIG MAP IS A STATE THE SAME KEY GETS YOU OUT OF. It is drawn over
-    -- live gameplay with no cursor and no menu, so without this the only way
-    -- back would be a key the player has not been told about.
-    if BR.Pause.bigmap then
-        TriggerEvent('br:map:big', false)
-        BR.Pause.bigmap = false
-        return
-    end
-    -- Same rule for the frontend routes: whatever the map key turned on, the
-    -- map key turns off. A player should never have to know WHICH native drew
-    -- the thing in front of them to get rid of it.
-    if frontendMap then
-        -- Cleared, not closed here: the watcher thread owns the teardown, and
-        -- two callers racing SetFrontendActive is how a frontend gets left up
-        -- with nothing listening.
-        frontendMap = false
-        return
-    end
-    if BR.Pause.fullscreenMap then
-        pcall(PauseToggleFullscreenMap, false)
-        BR.Pause.fullscreenMap = false
-        return
-    end
+    -- THE MAP IS A STATE THE SAME KEY GETS YOU OUT OF. It is drawn over live
+    -- gameplay with no cursor and no menu, so without this the only way back
+    -- would be a key the player has not been told about. All three routes and
+    -- their flags live in BR.Pause.closeMap, which the map key also calls --
+    -- see the note above it for why there is one closer and not two.
+    if BR.Pause.closeMap() then return end
     if open then BR.Pause.close() else BR.Pause.open() end
 end)
 

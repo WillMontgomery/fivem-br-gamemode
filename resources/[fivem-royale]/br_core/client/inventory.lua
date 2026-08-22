@@ -76,6 +76,14 @@ local lastReport = { total = -1, clip = -1, at = 0 }
 -- These are DISABLED, not rebound. The player's own GTA control settings still
 -- decide which physical key each of these is -- we are suppressing the
 -- engine's reaction to them, not claiming a key.
+--
+-- NOT ONE OF THESE IS ON A KEY THE RADIO WHEEL WANTS, and that was checked
+-- rather than assumed when #200 arrived blaming this list. Against the FiveM
+-- controls reference: 37 is TAB, 157-164 are the number row, 99 and 15 are
+-- scroll up, 14 is scroll down, 100 is `[`. The radio wheel is control 85,
+-- INPUT_VEH_RADIO_WHEEL, default Q -- absent from this table and from every
+-- other unconditional disable in this file. The culprit was the MELEE block
+-- further down; see its note.
 local SUPPRESS = {
     37,   -- INPUT_SELECT_WEAPON        (the weapon wheel; TAB by default)
     157, 158, 159, 160, 161,  -- INPUT_SELECT_WEAPON_UNARMED..SHOTGUN (1-5)
@@ -83,6 +91,34 @@ local SUPPRESS = {
     99, 100,                  -- INPUT_SELECT_NEXT/PREV_WEAPON
     14, 15,                   -- INPUT_WEAPON_WHEEL_NEXT/PREV (mouse wheel)
 }
+
+--- IS THE PED IN A VEHICLE RIGHT NOW?
+---
+--- NORMALISED, BECAUSE A FiveM NATIVE DECLARED BOOL DOES NOT HAVE TO HAND LUA A
+--- BOOLEAN, and this project has shipped that mistake four times. `1 == true` is
+--- false, and -- worse in the other direction -- the number 0 is TRUTHY in Lua,
+--- so `not IsPedInAnyVehicle(...)` reads "on foot" as "in a vehicle" on a build
+--- that answers 0. Both shapes are covered here so no caller has to know which
+--- one this build produces. (The evidence says it is a real boolean today:
+--- client/skydive.lua returns early on a raw truthiness test of this same
+--- native, and parachutes deploy -- which they could not if a false read 0. That
+--- is an observation about one build, not a contract.)
+---
+--- WHICH WAY IT IS SAFE TO BE WRONG, AND WHICH WAY THIS LEANS. A false "in a
+--- vehicle" takes the melee suppression away on foot and brings back the
+--- punch-while-drinking bug; a false "on foot" only leaves #200 unfixed. So only
+--- the three values that can actually mean "not in a vehicle" -- nil, false and
+--- 0 -- read as false here, which puts every silence (a native that declined, a
+--- build that has none) on the ON FOOT side, where the cost is the smaller one.
+---
+--- THE SECOND ARGUMENT IS `false` AND THAT MEANS SEATED, not "reaching for the
+--- door" -- so the window where the ped is climbing in still counts as on foot
+--- and still suppresses. There is no radio wheel to open until they are in.
+--- @return boolean
+local function inVehicle()
+    local v = IsPedInAnyVehicle(PlayerPedId(), false)
+    return not (v == nil or v == false or v == 0)
+end
 
 -- SCROLL UP CYCLES BACKWARDS, SCROLL DOWN DOES NOTHING (user call,
 -- 2026-08-05: "if 1 is selected, 5 is next"). One direction through a wrapping
@@ -962,7 +998,58 @@ BR.Loop.register(BR.Loop.FRAME, 'inv.controls', function()
     -- punch into the air -- most visibly mid-drink, where the animation fights
     -- the use (user, 2026-08-07). Fists and actual melee weapons swing;
     -- everything else refuses.
-    do
+    --
+    -- ...AND NOT FROM A SEAT, WHICH IS #200 (owner: "while in the driver's seat,
+    -- the GTA radio wheel cannot be displayed. I assume it's inadvertently
+    -- disabled as part of our weapon wheel hide").
+    --
+    -- THE HYPOTHESIS WAS RIGHT ABOUT THE BLOCK AND WRONG ABOUT THE LINE. It is
+    -- not the weapon-wheel list above -- nothing in that list is on Q, and the
+    -- radio wheel is control 85, INPUT_VEH_RADIO_WHEEL, which we have never
+    -- disabled anywhere. It is these five. Two of them share the radio wheel's
+    -- key, per the FiveM controls reference:
+    --
+    --    85  INPUT_VEH_RADIO_WHEEL      Q     <- what actually opens it
+    --   141  INPUT_MELEE_ATTACK_HEAVY   Q
+    --   264  INPUT_MELEE_ATTACK2        Q
+    --   140  INPUT_MELEE_ATTACK_LIGHT   R
+    --   263  INPUT_MELEE_ATTACK1        R
+    --   142  INPUT_MELEE_ATTACK_ALTERNATE  left mouse
+    --
+    -- GTA reuses Q across contexts precisely because they are exclusive -- you
+    -- cannot throw a punch from a car seat -- and this file was disabling the
+    -- on-foot half of that pair on EVERY frame of a drive, because `canSwing` is
+    -- false for every slot that is not fists or a melee weapon. Which is the
+    -- normal state of a player who is driving somewhere with a gun.
+    --
+    -- SO THE GATE IS THE CONTEXT GTA ALREADY USES, and it costs nothing that was
+    -- ever wanted: there is no melee attack to suppress from inside a vehicle.
+    -- What it deliberately does NOT touch is the SUPPRESS list above -- #134's
+    -- weapon wheel stays disabled in the plane, on the bus, in the lobby and in
+    -- a car, exactly as its own note demands, because that is a list about whose
+    -- UI owns TAB and this is a list about what the ped's arms can do.
+    --
+    -- THE PANEL BLOCK BELOW STILL DISABLES ALL FIVE, deliberately. A player with
+    -- the inventory open has handed that screen the mouse and the melee keys for
+    -- as long as it is up; that is a screen owning a key it is using, not a
+    -- suppression leaking into a context that never wanted it.
+    --
+    -- WHAT IS PROVEN AND WHAT IS NOT, because the difference matters here. What
+    -- is proven from the desk: 85 is what opens the radio wheel (it is the one
+    -- control every "disable the radio" resource disables), its default key is
+    -- Q, 141 and 264 are also on Q, and this file was disabling them on every
+    -- frame of a drive. What is NOT proven from the desk is that disabling a
+    -- control takes the KEY from a different control sharing it -- the natives
+    -- reference does not say either way and this project has no probe for it.
+    -- If the wheel still refuses after this lands, that is the answer: the
+    -- suspicion moves to control 37, whose suppression is unconditional by
+    -- #134's explicit demand, and the fix there is a different shape.
+    --
+    -- THE ONE-KEYPRESS TEST, since it costs nothing to write down: in a car,
+    -- select the FIST slot and try the radio wheel. Fists make `canSwing` true,
+    -- which is the one path that never disabled 141 even before this change --
+    -- so a wheel that opens on fists and not on a rifle is this bug exactly.
+    if not inVehicle() then
         local w = held and BR.Config.WeaponById[held.id] or nil
         local canSwing = (inv.active == MELEE_SLOT) or (w and w.melee) or false
         if not canSwing then

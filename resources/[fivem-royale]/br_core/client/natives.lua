@@ -956,6 +956,39 @@ function BR.Native.applyGameRules()
         end
     end
 
+    -- AND THE MAP KEY GETS THE SAME TREATMENT, FOR THE SAME REASON (#199).
+    --
+    -- WHAT M ACTUALLY IS, checked rather than assumed. The issue calls M "GTA's
+    -- own expanded-map key"; the FiveM controls reference says otherwise -- the
+    -- only control whose default is M is 244, INPUT_INTERACTION_MENU, GTA
+    -- Online's interaction menu. There is no INPUT_MAP and nothing on M expands
+    -- anything. (The expanded radar is 20/48, INPUT_MULTIPLAYER_INFO and
+    -- INPUT_HUD_SPECIAL, both on Z, and both untouched here.)
+    --
+    -- SO THIS IS INSURANCE, AND IT IS HONEST ABOUT BEING INSURANCE. GTA
+    -- Online's interaction menu is not present on a FiveM server -- the online
+    -- scripts that draw it do not run -- so 244 is expected to do nothing on
+    -- this build, and "expected to do nothing" is exactly what #134 and #122
+    -- both were before somebody pressed the key. One press must not drive two
+    -- things; the cost of being wrong in this direction is one comparison and
+    -- one native call a frame.
+    --
+    -- IT FOLLOWS THE BINDING, WHICH IS THE WHOLE POINT OF ASKING. Hardcoding
+    -- the suppression would be the same mistake as hardcoding the key: a player
+    -- who moves the map off M would lose 244 for nothing, and a player who
+    -- moves it ONTO some other engine control would keep the collision. boundTo
+    -- answers with the key that actually drives the row -- ours when the raw
+    -- layer reads it, the engine's default when the engine does -- so the
+    -- suppression is on exactly while the two share a key.
+    --
+    -- KNOWN CONSEQUENCE, STATED: a resource that reads control 244 for a menu
+    -- of its own (vMenu's default is also M) stops seeing it while our map is
+    -- on M. That is the collision being resolved, not a side effect of
+    -- resolving it, and it resolves in favour of the gamemode.
+    if BR.Keys and BR.Keys.boundTo and BR.Keys.boundTo('brmap') == 0x4D then
+        DisableControlAction(0, 244, true)   -- INPUT_INTERACTION_MENU
+    end
+
     -- GTA's own feed ("X joined", "Y died", weapon unlocks, whatever any other
     -- resource posts). The gamemode owns its presentation -- eliminations go
     -- through the kill feed, everything personal through the notice stack --
