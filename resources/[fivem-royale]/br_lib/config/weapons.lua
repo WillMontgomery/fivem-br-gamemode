@@ -13,10 +13,46 @@
 -- natives that would widen it are deprecated. Nothing here has a maxRange above
 -- that, because a target further away is not rendered and cannot be hit legitimately.
 --
--- EXCLUSIONS ARE AN ANTI-CHEAT DECISION as much as a balance one. RPG, minigun,
--- railgun, grenade launcher and homing launcher are absent from this table, which
--- means they are absent from the entity allowlist -- removing the highest-value
--- targets for a weapon-spawning cheat.
+-- ═══ THE EXCLUSION THAT USED TO BE HERE, AND WHY IT IS GONE (#88) ═══
+--
+-- This file used to say, in as many words:
+--
+--   "EXCLUSIONS ARE AN ANTI-CHEAT DECISION as much as a balance one. RPG,
+--    minigun, railgun, grenade launcher and homing launcher are absent from this
+--    table, which means they are absent from the entity allowlist -- removing the
+--    highest-value targets for a weapon-spawning cheat."
+--
+-- The owner reversed it (2026-08-21): "We should adjust config/weapons.lua to
+-- allow RPG/minigun/railgun/etc since these are still validated by 'did we
+-- actually give this to the player', which in the case of air drops could be
+-- yes. There's no scope there. We just spawn normal (ultra rare) loot and they
+-- can pick it up if they want to."
+--
+-- THE ARGUMENT HOLDS, AND IT WAS CHECKED IN CODE BEFORE IT WAS ACTED ON. The
+-- allowlist asks one question and it is not "is this weapon dangerous":
+--
+--   * BR.ValidateShot refuses NOT_HELD unless the weapon is the SERVER's own
+--     active inventory slot for that player. A conjured rocket launcher is
+--     refused by the same line that refuses a conjured carbine, and always was
+--     -- `IsAllowedWeapon` was never what stopped it.
+--   * server/strip.lua counts a stripped weapon against `ourWeapon`, which asks
+--     the server's inventory, NOT this table. A player handed an RPG by the
+--     airdrop has it in a slot, so nothing is stripped and no case is opened.
+--   * Nothing in server/damage.lua, server/incident.lua, shared/combat_solve.lua
+--     or shared/incident_build.lua tests a weapon's IDENTITY for suspicion. The
+--     tiers key on the REFUSAL reason, never on which gun produced it.
+--
+-- So the exclusion only ever bought one thing: a weapon nobody was issued reads
+-- as NO_WEAPON rather than as NOT_HELD. Both are 'high' tier and both file. The
+-- purchase was smaller than the sentence above claimed.
+--
+-- WHAT IT COST, STATED PLAINLY: a cheat that spawns an RPG and fires it at
+-- somebody now trips NOT_HELD (bar 1) instead of NO_WEAPON (bar 2), so it opens
+-- a case SOONER. The one genuine loss is the homing launcher and everything else
+-- still absent -- absence is still refusal, and this table is still an allowlist.
+--
+-- THEY ARE IN BR.Config.AirdropWeapons BELOW, NOT IN THIS TABLE, and the
+-- difference is the whole of "ultra rare". See the note there.
 
 BR = BR or {}
 BR.Config = BR.Config or {}
@@ -74,6 +110,60 @@ BR.Config.Weapons = {
     { id = 'gusenberg',     name = 'WEAPON_GUSENBERG',        hash = 0x61012683, label = 'Gusenberg Sweeper', rarity = R.RARE,      ammo = BR.AmmoType.HEAVY,  damage = 32, maxRange = 200.0, minInterval =  80, clip = 50 },
     { id = 'combatmg',      name = 'WEAPON_COMBATMG',         hash = 0x7FD62962, label = 'Combat MG',         rarity = R.EPIC,      ammo = BR.AmmoType.HEAVY,  damage = 38, maxRange = 250.0, minInterval =  85, clip = 100 },
     { id = 'combatmgmk2',   name = 'WEAPON_COMBATMG_MK2',     hash = 0xDBBD7280, label = 'Combat MG Mk II',   rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY,  damage = 40, maxRange = 270.0, minInterval =  85, clip = 100 },
+}
+
+--- THE AIRDROP SHELF. Ordinary weapons in every respect but one: they are in no
+--- rarity bucket, so no world roll can ever produce them.
+---
+--- IT IS THE FISTS PATTERN, one table down, and for the mirror-image reason.
+--- Fists are resolvable everywhere and are not loot because you always have
+--- them; these are resolvable everywhere and are not WORLD loot because the only
+--- thing on the map that hands them out is an aerial supply drop
+--- (config/airdrop.lua names them by id in its `exclusive` pool). Registered
+--- into WeaponByHash and WeaponById by hand below, exactly as Fists are, and
+--- into BR.Config.WeaponsByRarity never.
+---
+--- WHY NOT JUST APPEND THEM TO BR.Config.Weapons. That array is what the rarity
+--- buckets are built from, and the buckets are what BR.RollLootStack rolls
+--- against -- so a legendary RPG in that table is an RPG on the floor of every
+--- military POI on the map, in every crate that rolls legendary, ~1900 times a
+--- match. The owner asked for ultra-rare AIRDROP loot and said nothing about
+--- world loot; this is the difference between the two, and tools/test_airdrop.lua
+--- proves it by generating a whole layout and looking.
+---
+--- THE HOMING LAUNCHER IS STILL ABSENT, and that is a decision rather than an
+--- oversight. It needs a lock-on to do anything at all, which against a player
+--- on foot is nothing, so it would be an ultra-rare that pays out a dud. Absence
+--- is still refusal here: it remains off the allowlist.
+---
+--- AMMO COMES OUT OF THE HEAVY POOL rather than a sixth pool of its own. A new
+--- pool would have to join BR.Config.AmmoOrder to be rollable, and AmmoOrder is
+--- walked by the layout generator -- adding an entry would renumber every ammo
+--- draw in the game and change every existing map from a fixed seed. Sharing
+--- HEAVY costs a line of realism and zero layout drift.
+---
+--- THE THREE LAUNCHERS ARE `explosive`, WHICH IS A VALIDATOR DECISION AND NOT A
+--- LABEL. It moves them onto the same path grenades already take, for the same
+--- three reasons the note in BR.ValidateShot gives: a blast has no magazine to
+--- be empty of by the time it lands (NO_AMMO would refuse the last rocket in the
+--- tube), no action to cycle (TOO_FAST would refuse a blast that catches four
+--- people in one event), and a reach that is the travel PLUS the blast. The held
+--- check still applies and is the whole security story: `heldItem == w.id`, the
+--- server's own slot. The minigun is NOT explosive -- it is a machine gun and
+--- every ordinary check is correct for it.
+---
+--- minInterval MUST NOT EXCEED WHAT THE ENGINE ACTUALLY DOES. The validator
+--- refuses anything faster than `minInterval * intervalSlack`, so a minigun
+--- given a rifle's 85ms would refuse an honest player's every round as TOO_FAST
+--- and open a case on them. 18ms is GTA's own belt speed with headroom.
+BR.Config.AirdropWeapons = {
+    { id = 'rpg',             name = 'WEAPON_RPG',             hash = 0xB1CA77B1, label = 'RPG',              rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY, damage = 120, maxRange = 300.0, minInterval = 1000, clip =  1, explosive = true, blastRadius = 12.0 },
+    { id = 'grenadelauncher', name = 'WEAPON_GRENADELAUNCHER', hash = 0xA284510B, label = 'Grenade Launcher', rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY, damage =  85, maxRange = 180.0, minInterval =  600, clip = 10, explosive = true, blastRadius = 10.0 },
+    { id = 'railgun',         name = 'WEAPON_RAILGUN',         hash = 0x6D544C99, label = 'Railgun',          rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY, damage = 110, maxRange = 350.0, minInterval = 1200, clip =  3, explosive = true, blastRadius =  5.0 },
+    -- 13 a round at 18ms is ~700 display points a second against the Combat MG
+    -- Mk II's ~470 -- the fastest kill in the game, on the loudest, slowest,
+    -- most visible thing a player can be holding, once per match if at all.
+    { id = 'minigun',         name = 'WEAPON_MINIGUN',         hash = 0x42BF8A85, label = 'Minigun',          rarity = R.LEGENDARY, ammo = BR.AmmoType.HEAVY, damage =  13, maxRange = 200.0, minInterval =   18, clip = 150 },
 }
 
 --- Throwables. Smoke is not filler: it is the only tool that makes a contested
@@ -266,6 +356,20 @@ end
 -- against. Registering them here and nowhere else is what keeps both true.
 BR.Config.WeaponByHash[BR.NormHash(BR.Config.Fists.hash)] = BR.Config.Fists
 BR.Config.WeaponById[BR.Config.Fists.id]                  = BR.Config.Fists
+
+-- The airdrop shelf, by hand and for the same reason: resolvable as weapons --
+-- so the allowlist permits them, the validator can price a hit with one, the
+-- inventory can hold one and the ground can draw one -- while being in no
+-- rarity bucket, which is the only thing the layout generator rolls against.
+--
+-- THE RARITY BUCKETS ARE BUILT FURTHER DOWN THIS FILE, from BR.Config.Weapons
+-- and from nothing else. That is not incidental to this working; it is the
+-- mechanism. Adding a loop over this table there would put an RPG in every
+-- legendary crate on the map.
+for _, w in ipairs(BR.Config.AirdropWeapons) do
+    BR.Config.WeaponByHash[BR.NormHash(w.hash)] = w
+    BR.Config.WeaponById[w.id]                  = w
+end
 
 --- Melee bucketed by rarity, in authored order -- same construction and same
 --- reason as every other bucket table here: the loot layout must replay

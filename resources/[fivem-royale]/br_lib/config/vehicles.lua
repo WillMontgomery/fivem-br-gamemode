@@ -16,11 +16,13 @@
 -- ═══ THE POLARITY IS THE OPPOSITE OF weapons.lua's, AND THAT IS THE ONE THING
 --     TO UNDERSTAND BEFORE EDITING THIS FILE ═══
 --
--- config/weapons.lua says of itself:
---
---   "EXCLUSIONS ARE AN ANTI-CHEAT DECISION as much as a balance one. RPG,
---    minigun, railgun, grenade launcher and homing launcher are absent from this
---    table, which means they are absent from the entity allowlist."
+-- config/weapons.lua is an ALLOWLIST: BR.Config.IsAllowedWeapon answers yes only
+-- for a hash written down in that file, so a weapon nobody thought to name is
+-- refused by construction. (It used to say the RPG, minigun, railgun and both
+-- launchers were absent on anti-cheat grounds. #88 reversed that for the first
+-- four -- they are airdrop loot now, in BR.Config.AirdropWeapons -- and the
+-- reversal did not change the SHAPE of the rule, only which hashes are in it.
+-- The homing launcher is still absent, and still refused.)
 --
 -- There, ABSENCE IS REFUSAL: a weapon has to be written down to be permitted.
 -- Here, ABSENCE IS PERMISSION: a vehicle has to be written down to be refused.

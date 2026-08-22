@@ -710,6 +710,11 @@ function BR.Match.publishResults(m)
             downs     = e.downs or 0,
             revives   = e.revives or 0,
             damage    = e.damage or 0.0,
+            -- What they took off the ground rather than earned by playing
+            -- (#88's airdrop Volts). Carried on the row for the same reason
+            -- `died` is: this is the only journey it makes, and the formula that
+            -- reads it should not have to re-derive it from anything.
+            voltsPickedUp = e.voltsPickedUp or 0,
             placement = e.placement,
             -- PLACEMENT 1 IS NOT THE SAME QUESTION AS "DID THEY WIN".
             --
@@ -775,6 +780,10 @@ end
 --- @param e table
 function BR.Match.resetPlayer(src, e)
     e.kills, e.downs, e.revives, e.damage = 0, 0, 0, 0.0
+    -- Per-match like the four above, and for the reason #161 spells out: a
+    -- counter left standing follows the player into their NEXT match and is
+    -- banked a second time there. One airdrop, paid twice.
+    e.voltsPickedUp = 0
     e.lastDamageBy, e.lastDamageAt = nil, 0
     e.stormHp, e.lastStormAt = nil, nil
     e.hp, e.armour = 100.0, 0.0

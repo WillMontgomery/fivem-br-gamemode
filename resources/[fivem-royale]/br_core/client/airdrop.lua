@@ -20,6 +20,30 @@
 -- is `alt * (1 - elapsed/span)`, a pure function of the record and the clock, so
 -- every machine draws the same crate in the same place because there is nothing
 -- for them to disagree about.
+--
+-- ═══ FOUR OBJECTS, ONE SOLVER, NO ATTACHMENTS ═══
+--
+-- A drop is a crate, a cargo canopy over it and a flare on each side. All four
+-- are separate local objects and all four are positioned the same way: ask
+-- BR.AirdropOffsetAt where this part of the crate is right now, and write the
+-- coordinates.
+--
+-- They are NOT attached to each other, and that is deliberate. Rockstar's own
+-- crate drop uses ATTACH_ENTITY_TO_ENTITY; an earlier version of this file did
+-- too, for the canopy. Writing coordinates instead means there is exactly ONE
+-- thing deciding where any part of a drop is -- a pure function of the record
+-- and the clock -- rather than two, the second of which lives in the engine,
+-- cannot be reached by a test, and has no documented behaviour on a pair of
+-- local non-networked objects. The result on screen is identical and there is
+-- one fewer thing that has to be true.
+--
+-- NOTHING IS SIMULATED. No ACTIVATE_PHYSICS, no SET_ENTITY_VELOCITY, no
+-- SET_DAMPING -- which is what every physics-driven airdrop reaches for and
+-- exactly why they all end up networking the crate to paper over the divergence.
+-- Collision is off and every object is frozen. The one thing here that is not a
+-- pure function of the clock is the flares' particle effect, and it is
+-- presentation with no position of its own: the emitter rides the flare, and
+-- where its smoke has already been drawn does not change where anything IS.
 
 BR = BR or {}
 BR.Airdrop = BR.Airdrop or {}
@@ -38,7 +62,9 @@ local function isTrue(v)
     return v ~= nil and v ~= false and v ~= 0
 end
 
---- [n] = { rec, obj, chute, blip, gz, gzAt, spawning, warned }
+--- [n] = { rec, obj, chute, flares, blip, gz, gzAt, spawning, warned }
+---
+--- `flares` is an array of { obj, fx, ox }, one per side.
 local drops = {}
 
 -- ---------------------------------------------------------------------------
@@ -46,9 +72,19 @@ local drops = {}
 -- ---------------------------------------------------------------------------
 
 local function dropProps(d)
-    -- The chute goes first: it is attached to the crate, and deleting the
-    -- parent out from under an attachment is how you end up with a canopy
-    -- hanging in the sky with nothing under it.
+    -- THE PARTICLE HANDLES GO FIRST, and before the entity they are anchored
+    -- to. A looped ptfx outlives the object it was started on -- that is what
+    -- "looped" means -- so deleting the flare first leaves an emitter running at
+    -- the last place it was, for the rest of the session, and nothing left holds
+    -- its handle.
+    for _, f in ipairs(d.flares or {}) do
+        if f.fx then StopParticleFxLooped(f.fx, false) end
+        f.fx = nil
+        if f.obj and isTrue(DoesEntityExist(f.obj)) then DeleteEntity(f.obj) end
+        f.obj = nil
+    end
+    d.flares = nil
+
     if d.chute and isTrue(DoesEntityExist(d.chute)) then DeleteEntity(d.chute) end
     if d.obj and isTrue(DoesEntityExist(d.obj)) then DeleteEntity(d.obj) end
     d.chute, d.obj = nil, nil
@@ -75,6 +111,44 @@ local function clearAll()
 end
 
 -- ---------------------------------------------------------------------------
+-- The blip
+-- ---------------------------------------------------------------------------
+
+--- Put this drop's marker on the map, if it is not already there.
+---
+--- IDEMPOTENT, AND CALLED FROM TWO PLACES ON PURPOSE. The record's arrival puts
+--- it up immediately, and the render loop re-asserts it every frame the window
+--- is open -- so a blip lost to anything at all (another resource sweeping
+--- blips, a handle that went bad, a teardown that raced an arrival) comes back
+--- on the next frame instead of leaving the match's one airdrop unfindable.
+---
+--- 161 IS A REGULAR SPRITE AND A COORD BLIP IS THE RIGHT CARRIER FOR IT.
+--- Checked against the Cfx blip reference after a playtest reported no marker:
+--- 161 is `radar_mp_noise`, an animated sonic-wave icon, and it is an ordinary
+--- entry in the sprite table. The RADIUS blips are 9 and 10
+--- (`radar_radius_blip` / `radar_radius_outline_blip`) and are made with
+--- AddBlipForRadius, which takes no sprite at all. So the owner's "it will give
+--- them a radius, not an exact point" is satisfied by what the icon LOOKS like,
+--- and does not want AddBlipForRadius.
+--- @param d table
+local function addBlip(d)
+    if not d.rec then return end
+    if d.blip and isTrue(DoesBlipExist(d.blip)) then return end
+
+    -- At the POI's nominal height -- the pause map only cares about x/y, and the
+    -- ground probe has almost certainly not run yet for a point kilometres away.
+    local b = AddBlipForCoord(d.rec.x, d.rec.y, d.rec.gz or 0.0)
+    SetBlipSprite(b, A.blipSprite or 161)
+    SetBlipColour(b, A.blipColour or 5)
+    SetBlipScale(b, A.blipScale or 1.2)
+    -- NOT short range: the whole point is that everyone in the match can see
+    -- where it is coming down, from wherever they are standing.
+    SetBlipAsShortRange(b, false)
+    BR.Native.blipName(b, A.blipName or 'Airdrop')
+    d.blip = b
+end
+
+-- ---------------------------------------------------------------------------
 -- The wire
 -- ---------------------------------------------------------------------------
 
@@ -90,18 +164,11 @@ AddEventHandler(BR.Net.AIRDROP_SYNC, function(rec)
     local d = { rec = rec }
     drops[n] = d
 
-    -- THE BLIP GOES UP THE MOMENT THE DROP IS ANNOUNCED, at the POI's nominal
-    -- height -- the pause map only cares about x/y, and the ground probe has
-    -- almost certainly not run yet for a point kilometres away.
-    local b = AddBlipForCoord(rec.x, rec.y, rec.gz or 0.0)
-    SetBlipSprite(b, A.blipSprite or 161)
-    SetBlipColour(b, A.blipColour or 5)
-    SetBlipScale(b, A.blipScale or 1.2)
-    -- NOT short range: the whole point is that everyone in the match can see
-    -- where it is coming down, from wherever they are standing.
-    SetBlipAsShortRange(b, false)
-    BR.Native.blipName(b, A.blipName or 'Airdrop')
-    d.blip = b
+    -- THE BLIP GOES UP THE MOMENT THE DROP IS ANNOUNCED, rather than on the
+    -- first frame that agrees it is due: the notification the player just read
+    -- and the marker they are about to look for must not be separated by a
+    -- clock estimate.
+    addBlip(d)
 end)
 
 -- Between matches the world is a different place, and a crate still falling
@@ -141,17 +208,65 @@ local function loadModel(model)
     return isTrue(HasModelLoaded(model))
 end
 
---- Build the crate and hang the canopy off it.
+--- Stream a named particle asset, bounded. Same shape and same bound as
+--- loadModel, and returns false rather than blocking on an asset name that is
+--- not one -- a missing trail costs the flares their smoke and must not cost the
+--- match its airdrop.
+--- @param asset string|nil
+--- @return boolean
+local function loadPtfx(asset)
+    if type(asset) ~= 'string' or asset == '' then return false end
+    if isTrue(HasNamedPtfxAssetLoaded(asset)) then return true end
+    RequestNamedPtfxAsset(asset)
+    local waited = 0
+    while not isTrue(HasNamedPtfxAssetLoaded(asset)) and waited < 5000 do
+        Citizen.Wait(50)
+        waited = waited + 50
+    end
+    return isTrue(HasNamedPtfxAssetLoaded(asset))
+end
+
+--- One local, non-networked, non-colliding, frozen object at (x, y, z).
 ---
---- THE CANOPY IS ROCKSTAR'S OWN, and its offset and attach flags are theirs
---- verbatim. GTA Online's crate drop (am_crate_drop) and ammo drop
---- (am_ammo_drop) both do exactly this: a separate `p_cargo_chute_s` object
---- attached at (0, 0, 0.1) with the deploy anim played once. There is no native
---- that does any of it -- researched before this was written, because the
---- alternative was writing code that fights the engine.
+--- EVERY OBJECT A DROP MAKES GOES THROUGH HERE, so "local, invisible to the
+--- physics, and moved only by arithmetic" is one decision rather than four
+--- copies of it. `isNetwork = false` is not consistency for its own sake:
+--- `sv_entityLockdown relaxed` refuses a client-created networked entity
+--- outright, so any other value is an object that silently never appears.
+--- @param model integer
+--- @param x number
+--- @param y number
+--- @param z number
+--- @return integer|nil
+local function makePart(model, x, y, z)
+    local obj = CreateObjectNoOffset(model, x, y, z, false, false, false)
+    if not obj or obj == 0 then return nil end
+    -- A falling crate must not shove anyone, and nothing may shove it: its
+    -- position is decided by arithmetic, and a collision that moved it would put
+    -- this client's crate somewhere no other client's is.
+    SetEntityCollision(obj, false, false)
+    FreezeEntityPosition(obj, true)
+    return obj
+end
+
+--- Build the crate, the canopy over it and a flare on each side.
+---
+--- THE CANOPY IS ROCKSTAR'S OWN, and the offset is theirs verbatim. GTA
+--- Online's crate drop (am_crate_drop) and ammo drop (am_ammo_drop) both use a
+--- separate `p_cargo_chute_s` object at (0, 0, 0.1) with the deploy anim played
+--- once. There is no native that does any of it -- researched before this was
+--- written, because the alternative was writing code that fights the engine.
+--- What we do NOT take from them is the attachment; see the note at the top.
 ---
 --- NOT BR.Config.Drop.parachuteModel. That is `p_parachute1_mp_s`, the
 --- player's back-worn canopy -- a different asset for a different job.
+---
+--- THE FLARES ARE A PROP AND A LOOPED PARTICLE EACH, and both halves are
+--- best-effort in the same way the deploy anim is: a flare with no smoke still
+--- reads as a flare, smoke with no flare prop still reads as a trail, and
+--- neither missing may cost us the drop. The particle is anchored to the flare
+--- rather than started at a coordinate, so the emitter rides the fall while the
+--- smoke it has already made stays where it was made -- which is what a trail is.
 --- @param d table
 local function spawn(d)
     d.spawning = true
@@ -170,33 +285,21 @@ local function spawn(d)
         -- The record may have been torn down while the model streamed.
         if not d.rec then d.spawning = false return end
 
-        local gz = d.gz or d.rec.gz or 0.0
-        local obj = CreateObjectNoOffset(model, d.rec.x, d.rec.y,
-            gz + (d.rec.alt or 0.0), false, false, false)
-        SetModelAsNoLongerNeeded(model)
-        if not obj or obj == 0 then d.spawning = false return end
+        local gz  = d.gz or d.rec.gz or 0.0
+        local top = gz + (d.rec.alt or 0.0)
 
-        -- A falling crate must not shove anyone, and nothing may shove it: its
-        -- position is decided by arithmetic, and a collision that moved it
-        -- would put this client's crate somewhere no other client's is.
-        SetEntityCollision(obj, false, false)
-        FreezeEntityPosition(obj, true)
+        local obj = makePart(model, d.rec.x, d.rec.y, top)
+        SetModelAsNoLongerNeeded(model)
+        if not obj then d.spawning = false return end
         SetEntityHeading(obj, d.rec.heading or 0.0)
         d.obj = obj
 
+        -- The canopy. Positioned every frame from the same solver as the crate.
         local chuteModel = GetHashKey(A.chuteModel or 'p_cargo_chute_s')
-        if loadModel(chuteModel) and isTrue(DoesEntityExist(obj)) then
-            local off = A.chuteOffset or { x = 0.0, y = 0.0, z = 0.1 }
-            local chute = CreateObjectNoOffset(chuteModel, d.rec.x, d.rec.y,
-                gz + (d.rec.alt or 0.0), false, false, false)
+        if loadModel(chuteModel) and d.rec then
+            local chute = makePart(chuteModel, d.rec.x, d.rec.y, top)
             SetModelAsNoLongerNeeded(chuteModel)
-            if chute and chute ~= 0 then
-                SetEntityCollision(chute, false, false)
-                -- Attached to the CRATE, so moving the crate moves both and
-                -- there is one thing to drive rather than two to keep in step.
-                AttachEntityToEntity(chute, obj, 0,
-                    off.x or 0.0, off.y or 0.0, off.z or 0.1,
-                    0.0, 0.0, 0.0, false, false, false, false, 2, true)
+            if chute then
                 d.chute = chute
 
                 -- The deploy anim, once. Best-effort: a canopy that never
@@ -218,6 +321,41 @@ local function spawn(d)
                     end
                 end
             end
+        end
+
+        -- The flares, left and right. One offset, two signs.
+        local off = A.flareOffset or { x = 0.55, y = 0.0, z = 0.0 }
+        local flareModel = GetHashKey(A.flareProp or 'prop_flare_01a')
+        if loadModel(flareModel) and d.rec then
+            local ptfxReady = loadPtfx(A.flarePtfxAsset)
+            d.flares = {}
+            for _, side in ipairs({ 1.0, -1.0 }) do
+                local f = makePart(flareModel, d.rec.x, d.rec.y, top)
+                if f then
+                    local rec = { obj = f, ox = (off.x or 0.55) * side }
+                    if ptfxReady and A.flarePtfxName then
+                        -- USE_PARTICLE_FX_ASSET IS PER CALL, NOT PER SESSION,
+                        -- and it is the line every ptfx bug on the forums turns
+                        -- out to be missing. It has to be re-asserted
+                        -- immediately before each start or the effect resolves
+                        -- against whatever asset was last named.
+                        UseParticleFxAsset(A.flarePtfxAsset)
+                        local fx = StartParticleFxLoopedOnEntity(
+                            A.flarePtfxName, f,
+                            0.0, 0.0, 0.0,
+                            0.0, 0.0, 0.0,
+                            A.flarePtfxScale or 1.0,
+                            false, false, false)
+                        -- A FAILED START ANSWERS 0, AND 0 IS TRUTHY IN LUA --
+                        -- the four-times bug in its other direction. Stored only
+                        -- when it is a real handle, so teardown never calls
+                        -- StopParticleFxLooped(0).
+                        if fx and fx ~= 0 then rec.fx = fx end
+                    end
+                    d.flares[#d.flares + 1] = rec
+                end
+            end
+            SetModelAsNoLongerNeeded(flareModel)
         end
 
         d.spawning = false
@@ -252,6 +390,47 @@ end
 -- The descent
 -- ---------------------------------------------------------------------------
 
+--- Put every part of one drop where the clock says it is, this frame.
+---
+--- ONE FUNCTION FOR ALL FOUR OBJECTS, because they are four renderings of a
+--- single solved state: a height above the ground, a heading, and two offsets
+--- rotated by that heading. Positioning the crate here and the canopy somewhere
+--- else is how a canopy comes to lag a frame behind the box it is over.
+---
+--- The z is `groundOf` + BR.AirdropHeightAt, and the ground is re-probed rather
+--- than resolved once: the drop is announced while everyone is kilometres away,
+--- where the probe is documented not to answer, and it starts answering as
+--- players close in.
+--- @param d table
+--- @param now number  synced clock
+local function place(d, now)
+    local gz   = groundOf(d)
+    local z    = gz + BR.AirdropHeightAt(d.rec, now)
+    local spin = A.spinDegrees or 0.0
+    local hdg  = BR.AirdropHeadingAt(d.rec, now, spin)
+
+    SetEntityCoords(d.obj, d.rec.x, d.rec.y, z, false, false, false, false)
+    SetEntityHeading(d.obj, hdg)
+
+    if d.chute and isTrue(DoesEntityExist(d.chute)) then
+        local off = A.chuteOffset or { x = 0.0, y = 0.0, z = 0.1 }
+        local cx, cy = BR.AirdropOffsetAt(d.rec, now, off.x, off.y, spin)
+        SetEntityCoords(d.chute, cx, cy, z + (off.z or 0.1),
+            false, false, false, false)
+        SetEntityHeading(d.chute, hdg)
+    end
+
+    for _, f in ipairs(d.flares or {}) do
+        if f.obj and isTrue(DoesEntityExist(f.obj)) then
+            local off = A.flareOffset or { x = 0.55, y = 0.0, z = 0.0 }
+            local fx, fy = BR.AirdropOffsetAt(d.rec, now, f.ox, off.y, spin)
+            SetEntityCoords(f.obj, fx, fy, z + (off.z or 0.0),
+                false, false, false, false)
+            SetEntityHeading(f.obj, hdg)
+        end
+    end
+end
+
 BR.Loop.register(BR.Loop.FRAME, 'airdrop.render', function()
     if not next(drops) then return end
 
@@ -267,29 +446,95 @@ BR.Loop.register(BR.Loop.FRAME, 'airdrop.render', function()
     local now = BR.Clock.now()
 
     for n, d in pairs(drops) do
-        if not BR.AirdropBlipVisible(d.rec, now, A.blipLingerMs) then
+        -- THE ONLY TEARDOWN PATH, AND IT ONLY FIRES AT THE FAR END. This asked
+        -- BR.AirdropBlipVisible until 2026-08-22, which is ALSO false for a
+        -- record whose tStart the client's clock estimate has not reached --
+        -- so a client running a few tens of milliseconds behind the server
+        -- destroyed its own airdrop on the frame it arrived, having just shown
+        -- the player a notification about it. See BR.AirdropExpired.
+        if BR.AirdropExpired(d.rec, now, A.blipLingerMs) then
             -- One minute past touchdown: the blip goes, and with it the whole
             -- entry. What is left on the ground is ordinary loot with ordinary
             -- rules.
             removeDrop(n)
-        elseif BR.AirdropLanded(d.rec, now) then
-            -- Down. The husk and the twelve items arrive as registry entries
-            -- from the server; this prop has nothing left to represent.
-            dropProps(d)
         else
-            if not d.obj and not d.spawning then
-                groundOf(d)
-                spawn(d)
+            -- Re-asserted, not assumed. addBlip is idempotent and cheap, and
+            -- this is what makes the marker survive anything that removes it
+            -- while the drop is still live.
+            if BR.AirdropBlipVisible(d.rec, now, A.blipLingerMs) then
+                addBlip(d)
             end
-            if d.obj and isTrue(DoesEntityExist(d.obj)) then
-                local gz = groundOf(d)
-                local t  = BR.AirdropProgress(d.rec, now)
-                SetEntityCoords(d.obj, d.rec.x, d.rec.y,
-                    gz + BR.AirdropHeightAt(d.rec, now), false, false, false, false)
-                -- A slow yaw. A crate under a canopy that never turns reads as
-                -- a prop sliding down an invisible rail.
-                SetEntityHeading(d.obj, (d.rec.heading or 0.0) + t * 30.0)
+
+            if BR.AirdropLanded(d.rec, now) then
+                -- Down. The husk and the twelve items arrive as registry
+                -- entries from the server; these props have nothing left to
+                -- represent.
+                dropProps(d)
+            else
+                if not d.obj and not d.spawning then
+                    groundOf(d)
+                    spawn(d)
+                end
+                if d.obj and isTrue(DoesEntityExist(d.obj)) then
+                    place(d, now)
+                end
             end
         end
     end
 end)
+
+-- ---------------------------------------------------------------- observing ---
+
+--- What this client currently believes about the match's airdrop.
+---
+--- WRITTEN BECAUSE A SILENT FAILURE HERE COSTS A WHOLE ROUND. An airdrop
+--- happens once per match, the blip lives about ninety seconds, and when the
+--- owner reported "I randomly got a notification for airdrop, but didn't see it
+--- on the map" there was nothing on any screen or in any log that could tell
+--- "the record never arrived" apart from "the blip was made and removed" apart
+--- from "the blip is there and you were looking at the wrong part of the map".
+--- Three different bugs, one symptom, and no way to choose between them without
+--- playing another match.
+---
+--- THE CLOCK IS THE FIRST THING IT PRINTS, because the clock is what broke it:
+--- every window in this file is a comparison between the server's timestamps and
+--- this client's ESTIMATE of the server's clock, and that estimate is the one
+--- number a player cannot otherwise see.
+RegisterCommand('brairdrop', function()
+    local now = BR.Clock.now()
+    print('=== airdrop (client) ===')
+    print(('  clock: now %.0f, offset %+.0fms, synced %s')
+        :format(now, BR.Clock.offset or 0.0, tostring(BR.Clock.synced)))
+    print(('  my state: %s'):format(tostring(BR.State.me.state)))
+
+    local any = false
+    for n, d in pairs(drops) do
+        any = true
+        local rec = d.rec
+        if not rec then
+            print(('  drop %d: torn down, blip only'):format(n))
+        else
+            print(('  drop %d at %s (%.0f, %.0f), gz %.1f, alt %.0f')
+                :format(n, tostring(rec.poi), rec.x, rec.y, rec.gz or 0.0,
+                        rec.alt or 0.0))
+            print(('    tStart %.0f (%+.1fs), tLand %.0f (%+.1fs), expires %+.1fs')
+                :format(rec.tStart, (rec.tStart - now) / 1000,
+                        rec.tLand, (rec.tLand - now) / 1000,
+                        (rec.tLand + (A.blipLingerMs or 60000) - now) / 1000))
+            print(('    landed %s, blip should be up %s, expired %s')
+                :format(tostring(BR.AirdropLanded(rec, now)),
+                        tostring(BR.AirdropBlipVisible(rec, now, A.blipLingerMs)),
+                        tostring(BR.AirdropExpired(rec, now, A.blipLingerMs))))
+        end
+        print(('    blip handle %s, exists %s, sprite %d')
+            :format(tostring(d.blip),
+                    tostring(d.blip and isTrue(DoesBlipExist(d.blip))),
+                    A.blipSprite or 161))
+        print(('    crate %s, canopy %s, flares %d')
+            :format(tostring(d.obj), tostring(d.chute), #(d.flares or {})))
+    end
+    if not any then
+        print('  no drop record on this client -- nothing has been announced, '
+              .. 'or it has already expired')
+    end
+end, false)

@@ -327,6 +327,11 @@ for _, f in ipairs({
     -- same thing beside the same line.
     'br_lib/config/vehicles.lua',
     'br_lib/config/loot.lua',
+    -- AFTER config/loot.lua and config/weapons.lua, exactly as br_core's
+    -- fxmanifest orders it. Loaded here for ONE number -- the size of the Volts
+    -- pile an airdrop lays -- so the claim block below asserts against the value
+    -- the game ships rather than a literal that can drift away from it.
+    'br_lib/config/airdrop.lua',
     -- AFTER the config tables it edits, exactly as br_core's fxmanifest orders
     -- it. Nothing here is overridden -- the load-time hook needs
     -- IsDuplicityVersion and this state has none, so every value stays the
@@ -1838,6 +1843,8 @@ do
 
     sent = {}
     local mleave = theMatch()
+    -- They found an airdrop before they walked out (#88).
+    BR.Roster.get(2).voltsPickedUp = 100
     fire(BR.Net.MATCH_LEAVE, 2)
     local e = BR.Roster.get(2)
     ok(e.state == BR.PlayerState.LOBBY, 'the leaver is back in the lobby')
@@ -1856,6 +1863,15 @@ do
     ok(e.placement == nil and e.diedAt == nil,
         'and the live entry is wiped, so last match does not ride into the next one',
         ('placement %s diedAt %s'):format(tostring(e.placement), tostring(e.diedAt)))
+    -- INCLUDING WHAT THEY PICKED UP (#88). A per-match counter left standing
+    -- follows them into the next match and is banked a second time there: one
+    -- airdrop, paid twice. Exactly the #161 failure with a newer field.
+    ok((e.voltsPickedUp or 0) == 0,
+        'and so are the Volts they picked up, so one airdrop is not paid twice',
+        ('got %s'):format(tostring(e.voltsPickedUp)))
+    ok(sealed and sealed.voltsPickedUp == 100,
+        'while the sealed copy keeps them -- that is the row that gets published',
+        ('got %s'):format(tostring(sealed and sealed.voltsPickedUp)))
     ok(#eventsOf(BR.Net.TO_LOBBY) == 1, 'and is sent home')
     ok(mstate() == BR.MatchState.PLAYING,
         'while the match plays on for everyone else')
@@ -11060,6 +11076,149 @@ do
     ok(m.loot.nextId == beforeHusk, 'and produces nothing')
 end
 
+-- ------------------------------------------------ the airdrop's Volts (#88) ---
+--
+-- Owner, 2026-08-21: "Yes Volts should be a loot item in the air drops, and they
+-- should be 100 Volts. This should be an item that does not go into inventory -
+-- they simply pick it up and it's gone. Simple notification that they collected
+-- 100 Volts, and that's it."
+--
+-- WHY THIS BLOCK IS IN THE ROSTER SUITE AND NOT IN tools/test_airdrop.lua. The
+-- pile is laid by the airdrop and everything interesting about it afterwards
+-- belongs to somebody else: the claim path in server/loot.lua, a counter on the
+-- roster entry, the results row in server/match.lua and the payout in
+-- br_stats/server/persist.lua. This is the only suite that loads all four, and
+-- the property worth pinning spans every one of them.
+--
+-- THE INVARIANT IS #88's OWN, RESTATED: nothing outside the match-end stats
+-- write may increase a balance. A pickup that credited immediately would be a
+-- second writer, and the whole no-pay-to-win argument rests on there being one.
+
+describe('loot.volts')
+do
+    local m = lootMatch()
+
+    --- Lay a Volts pile exactly as server/airdrop.lua's land() does -- an
+    --- ordinary registry entry, so it inherits the hardened claim path rather
+    --- than re-earning any of it.
+    local function lay(at)
+        return BR.Loot.spawnStack(m, {
+            item   = 'volts',
+            kind   = 'volts',
+            rarity = BR.Rarity.LEGENDARY,
+            count  = BR.Config.Airdrop.voltsAmount,
+            prop   = BR.Config.Airdrop.voltsProp,
+        }, at.x, at.y, at.z)
+    end
+
+    local anchor = m.loot.items[1]
+    local pile = lay(anchor)
+    ok(pile ~= nil, 'a Volts pile can be laid on the ground')
+
+    local cx, cy = BR.LootCellOf(pile.x, pile.y)
+    standOn(1, pile)
+    standOn(2, pile)
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+    fire(BR.Net.LOOT_CELL, 2, { cx = cx, cy = cy })
+
+    local e1 = BR.Roster.get(1)
+    ok((e1.voltsPickedUp or 0) == 0, 'nobody has picked any up yet')
+
+    local slotsBefore = 0
+    for i = 1, 5 do if BR.Inv.of(1).slots[i] then slotsBefore = slotsBefore + 1 end end
+
+    sent = {}
+    fire(BR.Net.LOOT_CLAIM, 1, { id = pile.id })
+
+    ok(e1.voltsPickedUp == BR.Config.Airdrop.voltsAmount,
+        'claiming it credits exactly the amount that was on the ground',
+        ('got %s'):format(tostring(e1.voltsPickedUp)))
+    ok(m.loot.items[pile.id] == nil, 'and the pile is gone from the world')
+
+    -- IT DOES NOT GO INTO INVENTORY, which is the owner's own wording and the
+    -- one thing that makes this different from every other ground entry. Not
+    -- "it fits somewhere harmless" -- it never reaches BR.Inv.give at all.
+    local slotsAfter = 0
+    for i = 1, 5 do if BR.Inv.of(1).slots[i] then slotsAfter = slotsAfter + 1 end end
+    ok(slotsAfter == slotsBefore, 'no slot is taken',
+        ('%d -> %d'):format(slotsBefore, slotsAfter))
+    for i = 1, 5 do
+        local s = BR.Inv.of(1).slots[i]
+        ok(not s or s.item ~= 'volts', 'and nothing called volts is in one')
+    end
+
+    -- ONE NOTIFICATION, naming the number ("Simple notification that they
+    -- collected 100 Volts, and that's it").
+    local told = {}
+    for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do
+        if s.target == 1 then told[#told + 1] = s.args[1] end
+    end
+    ok(#told == 1, 'the picker is told once', ('got %d'):format(#told))
+    ok(told[1] and told[1].text
+       and told[1].text:find(tostring(BR.Config.Airdrop.voltsAmount), 1, true),
+        'and the sentence carries the amount',
+        told[1] and told[1].text)
+
+    -- FIRST COME, FIRST SERVED, like every other entry: the second claimant
+    -- gets nothing and is not credited.
+    local e2 = BR.Roster.get(2)
+    fire(BR.Net.LOOT_CLAIM, 2, { id = pile.id })
+    ok((e2.voltsPickedUp or 0) == 0, 'the loser of the race is credited nothing',
+        ('got %s'):format(tostring(e2.voltsPickedUp)))
+
+    -- OUT OF REACH IS REFUSED, and refusing must not credit. The claim path's
+    -- distance check is the only thing between a Volts pile and a client that
+    -- names ids from across the map.
+    local far = lay(anchor)
+    local fcx, fcy = BR.LootCellOf(far.x, far.y)
+    fire(BR.Net.LOOT_CELL, 2, { cx = fcx, cy = fcy })
+    BR.Roster.get(2).pos = { x = far.x + 500.0, y = far.y + 500.0, z = far.z }
+    fire(BR.Net.LOOT_CLAIM, 2, { id = far.id })
+    ok((e2.voltsPickedUp or 0) == 0, 'a claim from 700m away credits nothing',
+        ('got %s'):format(tostring(e2.voltsPickedUp)))
+    ok(m.loot.items[far.id] ~= nil, 'and leaves the pile where it was')
+
+    -- TWO PILES STACK. A match could carry more than one drop (perMatch is a
+    -- number), and the counter has to be a sum rather than a flag.
+    standOn(2, far)
+    fire(BR.Net.LOOT_CLAIM, 2, { id = far.id })
+    local second = lay(anchor)
+    standOn(2, second)
+    local scx, scy = BR.LootCellOf(second.x, second.y)
+    fire(BR.Net.LOOT_CELL, 2, { cx = scx, cy = scy })
+    fire(BR.Net.LOOT_CLAIM, 2, { id = second.id })
+    ok(e2.voltsPickedUp == BR.Config.Airdrop.voltsAmount * 2,
+        'two piles are worth two piles',
+        ('got %s'):format(tostring(e2.voltsPickedUp)))
+end
+
+describe('loot.volts.payout')
+do
+    -- THE OTHER HALF OF THE INVARIANT: the number reaches the balance, and it
+    -- reaches it through the ONE write everything else uses.
+    local paid = BR.Config.marketPayout({ placement = 8, total = 16, kills = 2 })
+    local withVolts = BR.Config.marketPayout({
+        placement = 8, total = 16, kills = 2, voltsPickedUp = 100 })
+    ok(withVolts - paid == 100,
+        'a pile of 100 is worth exactly 100 on the bill -- not weighted, not '
+        .. 'halved with the rest of the curve',
+        ('%d -> %d'):format(paid, withVolts))
+
+    -- A missing field is zero rather than an error: every results row written
+    -- before #88 shipped, and every hand-built row in every other suite, has no
+    -- such key.
+    ok(BR.Config.marketPayout({ placement = 8, total = 16, kills = 2,
+                                voltsPickedUp = nil }) == paid,
+        'a row without the field pays what it always did')
+
+    -- AND A NEGATIVE ONE CANNOT PAY. There is no path that writes one today;
+    -- the guard is here because the alternative is a term that could subtract
+    -- from a balance, which is the one direction this formula must never go.
+    ok(BR.Config.marketPayout({ placement = 8, total = 16, kills = 2,
+                                voltsPickedUp = -5000 }) == paid,
+        'and a negative one is ignored rather than taking money away')
+end
+
 describe('loot.warmup')
 do
     -- The pad is a COMMUNAL bucket, so its loot is ONE shared layout -- two
@@ -11408,6 +11567,13 @@ do
     local m = theMatch()
     local startedAt = m.startedAt
 
+    -- BOTH OF THEM REACHED AN AIRDROP (#88). Written onto the roster directly
+    -- rather than by claiming a pile -- the claim path has its own block above
+    -- (loot.volts); what is under test HERE is the journey afterwards, from a
+    -- counter on an entry to a number inside the one atomic write.
+    BR.Roster.get(1).voltsPickedUp = 100
+    BR.Roster.get(2).voltsPickedUp = 100
+
     -- Two minutes in, the quitter is eliminated...
     fakeTime = fakeTime + 120000
     BR.Combat.eliminate(2, 'weapon', 1)
@@ -11557,6 +11723,45 @@ do
             tostring(deltasBy['license:test1'].xp)))
     ok(winner and winner.voltsEarned == deltasBy['license:test1'].balance,
         'and so are the Volts -- including the level-up bonus the player was shown')
+
+    -- THE AIRDROP'S VOLTS TAKE THE SAME ROAD (#88), which is the whole reason
+    -- they are not credited at the pickup. The pile is on the ROW, the row is
+    -- what the payout formula reads, and the formula's answer is what the single
+    -- atomic ADD carries -- so "exactly one writer can increase a balance" is
+    -- still true with an airdrop in the match.
+    ok(byName.Survivor and byName.Survivor.voltsPickedUp == 100,
+        'the results row carries what the survivor picked up off the ground',
+        ('got %s'):format(tostring(byName.Survivor and byName.Survivor.voltsPickedUp)))
+    -- ...AND A SEALED ROW CARRIES IT TOO. The quitter's entry was frozen at
+    -- disconnect; a field added to newEntry but not to row() would be silently
+    -- zero for everybody who left, which is the #100 failure wearing a new key.
+    ok(byName.Quitter and byName.Quitter.voltsPickedUp == 100,
+        'and so does the row of the player who disconnected',
+        ('got %s'):format(tostring(byName.Quitter and byName.Quitter.voltsPickedUp)))
+
+    -- AND IT IS IN THE MONEY, PROVED BY DIFFERENCE RATHER THAN BY ARITHMETIC.
+    -- The same envelope, driven through the same real consumer, with the pile
+    -- taken out of it: whatever else the balance is made of -- placement, kills,
+    -- the level-up bonus persist.lua adds after the formula -- cancels, and what
+    -- is left is exactly the 100 that was on the ground.
+    local dry = { matchId = captured.matchId, mode = captured.mode,
+                  startedAt = captured.startedAt, endedAt = captured.endedAt,
+                  total = captured.total, players = {} }
+    for _, r in ipairs(captured.players) do
+        local copy = {}
+        for k, v in pairs(r) do copy[k] = v end
+        copy.voltsPickedUp = 0
+        dry.players[#dry.players + 1] = copy
+    end
+    local dryMark = #fired
+    fire('br:match:results', nil, dry)
+    local _, dryDeltas = since(dryMark)
+    ok(dryDeltas['license:test1']
+       and deltasBy['license:test1'].balance
+           - dryDeltas['license:test1'].balance == 100,
+        'the banked balance is exactly 100 higher because of the pile',
+        ('%s vs %s'):format(tostring(deltasBy['license:test1'].balance),
+            tostring(dryDeltas['license:test1'] and dryDeltas['license:test1'].balance)))
     ok(winner and winner.damage == deltasBy['license:test1'].damageDealt,
         'and the damage, floored the same way')
 

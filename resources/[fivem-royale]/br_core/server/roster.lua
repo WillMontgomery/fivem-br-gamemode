@@ -79,6 +79,21 @@ local function newEntry(src)
         damage     = 0.0,
         placement  = nil,
 
+        -- CURRENCY PICKED UP OFF THE GROUND THIS MATCH (#88). Airdrops carry a
+        -- Volts pile; claiming one adds to this and writes nothing.
+        --
+        -- IT IS NOT A BALANCE AND MUST NEVER BE READ AS ONE. It is an INPUT to
+        -- the payout formula, published once in the match results and added to
+        -- `deltas.balance` inside br_stats' single atomic write -- which is what
+        -- keeps config/market.lua's "exactly one writer that can increase a
+        -- balance" literally true. Cleared with the rest of the per-match
+        -- counters at CLEANUP.
+        --
+        -- IN NEITHER ALLOWLIST, and deliberately. A client has no use for it --
+        -- the toast at pickup is the whole of what a player is told -- and the
+        -- console cannot act on it.
+        voltsPickedUp = 0,
+
         pos        = nil,          -- sampled server-side, not reported by the client
         posAt      = 0,
 

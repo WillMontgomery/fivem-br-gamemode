@@ -1,11 +1,7 @@
--- Aerial supply drops (#88, first half).
+-- Aerial supply drops (#88).
 --
--- MUST LOAD AFTER config/loot.lua AND config/weapons.lua. It reads their
--- rarity buckets to build its own pools, and it appends to
--- BR.Config.Consumables AFTER config/loot.lua has finished bucketing that
--- array -- which is exactly what keeps the airdrop-only items out of every
--- world roll. See "EXCLUSIVE MEANS EXCLUSIVE" below; tools/test_airdrop.lua
--- pins the property rather than trusting the load order to stay right.
+-- MUST LOAD AFTER config/loot.lua AND config/weapons.lua. It reads their rarity
+-- buckets and their id lookups to build its own pools.
 --
 -- ------------------------------------------------------------------------
 -- THERE IS NO AIRDROP NATIVE. Researched before a line was written, because
@@ -48,72 +44,29 @@ local R = BR.Rarity
 -- ---------------------------------------------------------------------------
 --
 -- Owner, 2026-08-21: "The air drops should have exclusive loot which is not
--- found anywhere else, and a LOT of it (up to 12 items), including our
--- upcoming CPR kit."
+-- found anywhere else, and a LOT of it (up to 12 items)", and then, on what
+-- that loot should be: "Things like explosives, RPGs, miniguns, etc are
+-- exciting."
 --
--- THE MECHANISM IS THE FISTS PATTERN (config/weapons.lua). An item is
--- resolvable everywhere -- the inventory, the label, the refusal sentence, the
--- pickup prompt all go through BR.Config.ConsumableById -- while being absent
--- from every rarity BUCKET, which is the only thing BR.RollLootStack ever
--- rolls against. Registered but never rolled. That is what "found nowhere
--- else" means mechanically, and it costs the world layout nothing: the buckets
--- were built by config/loot.lua before this file loaded, so a fixed seed still
--- produces a byte-identical map.
+-- THE MECHANISM IS THE FISTS PATTERN (config/weapons.lua). A weapon is
+-- resolvable everywhere -- the allowlist, the validator, the inventory, the
+-- ground prop, the label -- through BR.Config.WeaponById, while being absent
+-- from every rarity BUCKET, which is the only thing BR.RollLootStack ever rolls
+-- against. Registered but never rolled. That is what "found nowhere else" means
+-- mechanically, and it costs the world layout nothing: the buckets are built
+-- from BR.Config.Weapons alone, so a fixed seed still produces a byte-identical
+-- map. tools/test_airdrop.lua pins that by generating a whole layout and
+-- looking, rather than by trusting this paragraph.
 --
--- WHY ONLY ONE ITEM TODAY, AND WHY NOT NEW GUNS. The obvious way to make a
--- drop exclusive is exclusive WEAPONS, and config/weapons.lua forbids it in as
--- many words: "EXCLUSIONS ARE AN ANTI-CHEAT DECISION as much as a balance one.
--- RPG, minigun, railgun, grenade launcher and homing launcher are absent from
--- this table, which means they are absent from the entity allowlist." Adding
--- any of them to reach twelve exclusive items would hand a weapon-spawning
--- cheat back its highest-value targets, to decorate a crate. The other route
--- -- moving existing guns OUT of world loot to make them airdrop-only -- is a
--- balance change nobody asked for and would quietly gut the legendary tier of
--- every crate on the map.
+-- THE HEAVY SHIELD USED TO BE HERE AND IS GONE (owner, 2026-08-21: "We don't
+-- need heavy shield to exist. That's not exciting."). Removed outright -- the
+-- item, its registration and the test that pinned it -- rather than left
+-- disabled, because a consumable that exists and is in no pool is indisting-
+-- uishable from a bug for whoever reads this next.
 --
--- So the airdrop's exclusivity is carried by CONSUMABLES, which are pure data
--- and touch no allowlist, and the guns in it are the hottest tiers the world
--- already has -- which is what a supply drop is in every game that has one.
-BR.Config.AirdropItems = {
-    {
-        -- THE FULL SHIELD, and the only one in the game. `shield` takes you to
-        -- 100 from 50 and stops; this is the only item that takes an unshielded
-        -- player straight to the cap, which is exactly the swing worth
-        -- contesting a drop for.
-        id = 'heavyshield', label = 'Heavy Shield', plural = 'Heavy Shields',
-        rarity = R.LEGENDARY,
-        kind = BR.ItemKind.CONSUMABLE,
-
-        -- THE SAME MODEL AS `shield`, SCALED UP, and that is the precedent
-        -- rather than a shortcut: `minishield` is prop_bodyarmour_02 at
-        -- propScale 0.5 for exactly this reason. Reusing a model already
-        -- proven to load on this build beats naming a fifth
-        -- prop_bodyarmour_0X nobody has seen render.
-        prop = 'prop_bodyarmour_06', propScale = 1.30,
-
-        useMs = 6000, maxStack = 2, carryMax = 2,
-        armour = 100, armourCap = 100,
-
-        -- Belt and braces. It is in no bucket at all, so neither flag can fire
-        -- -- but if a later change ever DOES bucket it, chestOnly is what stops
-        -- it landing on the floor as roadside filler.
-        chestOnly   = true,
-        airdropOnly = true,
-    },
-}
-
--- Registered by hand, into the id lookup ONLY.
---
--- Appended to BR.Config.Consumables so that everything which ENUMERATES
--- consumables -- /brpropscale's listing, /brgrant's grantable ids, the crate
--- simulator's per-item breakdown -- can see them. The rarity buckets are NOT
--- rebuilt, and must not be: config/loot.lua built them from this same array
--- before this file loaded, so appending here adds the item to every listing
--- and to no roll.
-for _, c in ipairs(BR.Config.AirdropItems) do
-    BR.Config.Consumables[#BR.Config.Consumables + 1] = c
-    BR.Config.ConsumableById[c.id] = c
-end
+-- `cprkit` IS STILL NAMED, IN THE HEALING POOL, AND IS STILL #191's SEAM. The
+-- resolver below drops ids that do not resolve, so naming it costs nothing
+-- today and costs no edit to this file on the day it exists.
 
 BR.Config.Airdrop = {
     enabled = true,
@@ -200,11 +153,12 @@ BR.Config.Airdrop = {
     -- same rifle four times.
     payout = {
         'exclusive', 'exclusive',
+        'volts',
         'legendary', 'legendary', 'legendary',
         'epic', 'epic',
         'throwable',
         'healing',
-        'ammo', 'ammo', 'ammo',
+        'ammo', 'ammo',
     },
 
     -- The pools the payout draws from.
@@ -215,12 +169,17 @@ BR.Config.Airdrop = {
     --
     -- `ids` names items explicitly, for the pools that are not a whole tier.
     pools = {
-        -- The airdrop-only shelf. `cprkit` IS THE SEAM FOR #191 and nothing
-        -- more: the id is named here, the resolver below skips ids that do not
-        -- resolve, and the day #191 registers a `cprkit` consumable it appears
-        -- in this pool with no change to this file. It is deliberately NOT
-        -- defined here -- building it would be building #191.
-        exclusive = { kind = 'consumable', ids = { 'heavyshield', 'cprkit' } },
+        -- THE AIRDROP SHELF: the four weapons that exist only here
+        -- (BR.Config.AirdropWeapons). Named by id rather than by bucket, on
+        -- purpose -- they are in no bucket, which is the whole of "not found
+        -- anywhere else", and a bucket reference would silently pay out
+        -- nothing the day someone re-tiered them.
+        exclusive = { kind = 'weapon', ids = {
+            'rpg', 'minigun', 'railgun', 'grenadelauncher',
+        } },
+
+        -- Volts. Not an inventory item at all -- see voltsAmount below.
+        volts     = { kind = 'volts' },
 
         legendary = { kind = 'weapon', bucket = R.LEGENDARY },
         epic      = { kind = 'weapon', bucket = R.EPIC },
@@ -229,12 +188,50 @@ BR.Config.Airdrop = {
         -- grenade is a coin flip (the same argument RollLootStack makes for
         -- pairs on the world tables).
         throwable = { kind = 'throwable', ids = { 'sticky', 'grenade' } },
-        healing   = { kind = 'consumable', ids = { 'medkit' } },
+        -- `cprkit` IS THE SEAM FOR #191 and nothing more: the id is named here,
+        -- the resolver below skips ids that do not resolve, and the day #191
+        -- registers a `cprkit` consumable it appears in this pool with no change
+        -- to this file. It is deliberately NOT defined here -- building it would
+        -- be building #191.
+        healing   = { kind = 'consumable', ids = { 'medkit', 'cprkit' } },
         ammo      = { kind = 'ammo', ids = {
             BR.AmmoType.HEAVY, BR.AmmoType.MEDIUM, BR.AmmoType.SHELLS,
             BR.AmmoType.SMG, BR.AmmoType.LIGHT,
         } },
     },
+
+    -- ------------------------------------------------------------------
+    -- VOLTS, AND WHY THE PICKUP IS NOT A WRITE
+    -- ------------------------------------------------------------------
+    --
+    -- Owner, 2026-08-21: "Yes Volts should be a loot item in the air drops, and
+    -- they should be 100 Volts. This should be an item that does not go into
+    -- inventory - they simply pick it up and it's gone. Simple notification that
+    -- they collected 100 Volts, and that's it."
+    --
+    -- WHAT IT IS ON THE GROUND: an ordinary loot registry entry of kind
+    -- 'volts'. It inherits the whole hardened claim path -- range-checked
+    -- against the roster's own sampled position, rate-limited, first-come
+    -- arbitrated, refused identically for an entry that was never streamed to
+    -- you and for one that no longer exists (docs/security.md). It is the
+    -- highest-value single entry on the map, so re-earning that for a bespoke
+    -- pickup would have been the wrong trade.
+    --
+    -- WHAT IT IS NOT: a second writer of a balance. The claim handler credits
+    -- the roster entry and nothing else; the number rides the match results
+    -- envelope into BR.Config.marketPayout and lands in the SAME atomic ADD as
+    -- the match payout and the level-up bonus. config/market.lua's "exactly one
+    -- writer that can increase a balance" stays literally true, and #88 asked
+    -- for that explicitly ("it keeps the one-writer property intact").
+    --
+    -- The player is told at the moment they pick it up either way, which is the
+    -- half the owner described. A player who leaves the match before it ends
+    -- forfeits it along with their XP, their kills and their placement -- the
+    -- rule roster.lua already applies to everything else a match earned.
+    voltsAmount = 100,
+    -- The prop the pile is drawn as. A vanilla money bundle: this is currency
+    -- on the floor and it should read as currency on the floor.
+    voltsProp   = 'prop_anim_cash_pile_01',
 
     -- How far out the contents land, per item, when it bursts open. Same
     -- construction as a crate's scatter ring, one radius wider because twelve
@@ -259,25 +256,85 @@ BR.Config.Airdrop = {
 
     -- THE CARGO CANOPY, which is a different asset from the player's.
     -- `p_parachute1_mp_s` (BR.Config.Drop.parachuteModel) is the back-worn
-    -- one; `p_cargo_chute_s` is the one Rockstar's own crate drop attaches to
+    -- one; `p_cargo_chute_s` is the one Rockstar's own crate drop hangs over
     -- a crate, and it ships its own deploy anim. Base-game and streamed, so it
     -- needs nothing but RequestModel.
     chuteModel   = 'p_cargo_chute_s',
     chuteAnimDict = 'P_cargo_chute_S',
     chuteAnim     = 'P_cargo_chute_S_deploy',
-    -- The offset Rockstar attaches at, verbatim.
+    -- Rockstar's own offset, in the crate's LOCAL frame: right/forward/up in
+    -- metres from the crate's centre. Their script reaches it with
+    -- ATTACH_ENTITY_TO_ENTITY; we reach it by writing the canopy's coordinates
+    -- from the same solver the crate's come from. See the note on rigid parts
+    -- in br_core/client/airdrop.lua for why.
     chuteOffset  = { x = 0.0, y = 0.0, z = 0.1 },
+
+    -- ------------------------------------------------------------------
+    -- THE FLARES
+    -- ------------------------------------------------------------------
+    --
+    -- Owner, 2026-08-21: "we need to attach flares to the left and right side of
+    -- the crate when it's spawned so the flares leave smoke trails as it falls."
+    --
+    -- ONE PROP AND ONE LOOPED PARTICLE PER SIDE. The prop is what you see when
+    -- the particle asset does not stream; the particle is the trail. Both are
+    -- local, non-networked and positioned by the same solver as the crate --
+    -- nothing here is simulated, so every screen draws the flares in the same
+    -- place at the same millisecond for the same reason the crate is.
+    --
+    -- WHY A LOOPED PTFX ANCHORED TO THE FLARE IS THE RIGHT SHAPE, and why the
+    -- lesson client/bus.lua learned does not apply here. That file records two
+    -- rounds of failed tuning on engine smoke for the battle bus: "particles
+    -- detach into world space with no slipstream". That is precisely what a
+    -- flare wants -- the emitter rides the falling prop, the smoke it has
+    -- already made stays where it was made, and the shape that leaves behind IS
+    -- the trail. Exhaust needed particles to keep up with a plane; a trail needs
+    -- them not to.
+    --
+    -- `core` / `proj_flare_trail` IS GTA'S OWN FLARE TRAIL, from the base-game
+    -- particle asset, so it needs nothing streamed from a DLC pack. UNVERIFIED
+    -- IN GAME -- nothing outside a running client can say how big or how bright
+    -- it reads, which is why the asset, the effect, the scale and the offsets
+    -- are all numbers here rather than literals in the client. Rockstar's own
+    -- air-dropped packages use a `*_package_flare` effect out of the DLC script
+    -- assets (`scr_gr_def`, `scr_ba_bb`); if a playtest wants that instead it is
+    -- these two lines.
+    flareProp      = 'prop_flare_01a',
+    flarePtfxAsset = 'core',
+    flarePtfxName  = 'proj_flare_trail',
+    flarePtfxScale = 1.0,
+    -- In the crate's LOCAL frame, so they stay on the crate's left and right
+    -- faces while it yaws. One per side, and the sign is the only difference.
+    flareOffset    = { x = 0.55, y = 0.0, z = 0.0 },
+
+    -- HOW FAR THE CRATE TURNS OVER THE WHOLE DESCENT, in degrees. A crate under
+    -- a canopy that never turns reads as a prop sliding down an invisible rail.
+    -- A number rather than a literal in the client because the flares' world
+    -- positions are derived from it, so the two cannot disagree.
+    spinDegrees = 30.0,
 
     -- ------------------------------------------------------------------
     -- THE BLIP
     -- ------------------------------------------------------------------
     --
-    -- 161, BECAUSE THE OWNER NAMED IT (2026-08-21: "marked on everyone's map in
-    -- the match with bliptype 161"). Worth knowing what it is: 161 is
-    -- `radar_mp_noise`, an ANIMATED radiating-ripple icon -- not a crate. GTA's
-    -- own crate-drop glyph is 306 (`radar_cratedrop`), which is what every
-    -- public airdrop resource uses. Both are one number; the owner's choice is
-    -- the default and the alternative is this line.
+    -- 161 IS THE POINT, NOT A COMPROMISE. It was first written down here as the
+    -- owner's choice over GTA's crate-drop glyph (306, `radar_cratedrop`), as
+    -- though a crate glyph were the thing we could not have. It is the other way
+    -- round -- owner, 2026-08-21: "bliptype 161 is what I want - it will give
+    -- them a radius, not an exact point. That's why we want 161."
+    --
+    -- 161 is `radar_mp_noise`, the animated radiating-ripple icon, and a ripple
+    -- is an AREA. That is the design: everyone in the match learns roughly where
+    -- the drop is coming down and has to find it, rather than being handed a
+    -- pixel to run at. A crate glyph would answer the question the search is
+    -- supposed to be. Do not "fix" this to 306.
+    --
+    -- IT IS AN ORDINARY SPRITE ON AN ORDINARY COORD BLIP, checked against the
+    -- Cfx blip reference after the 2026-08-22 playtest reported no marker. The
+    -- RADIUS blips are 9 and 10 (`radar_radius_blip`,
+    -- `radar_radius_outline_blip`) and are made with AddBlipForRadius, which
+    -- takes no sprite at all -- so "gives them a radius" is what 161 LOOKS like
+    -- and does not mean this wants a radius blip.
     blipSprite = 161,
     blipColour = 5,      -- the same yellow the loot blips use
     blipScale  = 1.2,
@@ -360,6 +417,25 @@ local function resolvePool(p)
                 }
             end
         end
+
+    elseif p.kind == 'volts' then
+        -- ONE TEMPLATE, NO ids LIST. There is exactly one thing this pool can
+        -- pay and the amount is the config's, so the deck is a single card and
+        -- every slot pointing at this pool deals the same 100 Volts. `count`
+        -- carries the amount because that is the field wireEntry already sends;
+        -- nothing new travels for this.
+        --
+        -- 'volts' IS A BARE STRING BECAUSE THE OTHER NON-INVENTORY KINDS ARE.
+        -- BR.ItemKind names what a SLOT can hold, and this is the one loot kind
+        -- that never reaches a slot -- so it sits beside 'chest', 'husk' and
+        -- 'deathbox', which are literals in server/loot.lua and client/loot.lua
+        -- for the same reason.
+        out[#out + 1] = {
+            item = 'volts', kind = 'volts',
+            rarity = BR.Rarity.LEGENDARY,
+            count = BR.Config.Airdrop.voltsAmount or 100,
+            prop = BR.Config.Airdrop.voltsProp,
+        }
     end
 
     return out
@@ -371,7 +447,7 @@ end
 --- lists -- and never from a pairs() walk, for the reason loot_gen.lua states
 --- at the top of its file: a payout must replay identically from a seed.
 BR.Config.Airdrop.resolvedPools = {}
-for _, name in ipairs({ 'exclusive', 'legendary', 'epic', 'throwable',
+for _, name in ipairs({ 'exclusive', 'volts', 'legendary', 'epic', 'throwable',
                         'healing', 'ammo' }) do
     local p = BR.Config.Airdrop.pools[name]
     if p then

@@ -676,8 +676,14 @@ end
 local function labelOf(e)
     if e.kind == 'chest' then return 'Chest' end
     if e.kind == 'deathbox' then return 'Loot Box' end
-    local name = BR.LootLabel({ kind = e.kind, item = e.item })
-    if (e.count or 1) > 1 then return ('%s x%d'):format(name, e.count) end
+    local name = BR.LootLabel({ kind = e.kind, item = e.item, count = e.count })
+    -- 'volts' HAS ALREADY SPENT ITS COUNT ON THE NAME. Every other kind counts
+    -- objects -- three bandages, thirty rounds -- so "x30" reads. A Volts pile
+    -- counts currency, and BR.LootLabel has already put the number in front of
+    -- it, so a suffix here would produce "100 Volts x100".
+    if e.kind ~= 'volts' and (e.count or 1) > 1 then
+        return ('%s x%d'):format(name, e.count)
+    end
     return name
 end
 

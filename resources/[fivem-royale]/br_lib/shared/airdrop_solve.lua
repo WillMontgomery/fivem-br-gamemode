@@ -188,6 +188,10 @@ function BR.AirdropPayout(rng, cfg)
                 rarity = t.rarity,
                 count  = t.count,
                 clip   = t.clip,
+                -- Carried because the Volts pile names its own model: every
+                -- other kind resolves a prop from its id on the client, and
+                -- 'volts' is not an id any config table holds.
+                prop   = t.prop,
             }
         end
     end
@@ -220,6 +224,62 @@ function BR.AirdropHeightAt(rec, now)
     return (rec.alt or 0.0) * (1.0 - BR.AirdropProgress(rec, now))
 end
 
+--- Which way the crate is facing at `now`, in degrees.
+---
+--- The resting heading plus a slow turn over the whole descent: a crate under a
+--- canopy that never rotates reads as a prop sliding down an invisible rail.
+---
+--- IT IS HERE RATHER THAN IN THE CLIENT because the flares hang off it. Their
+--- world positions are the crate's position plus an offset ROTATED BY THIS
+--- ANGLE, so a heading computed in one place and an offset rotated in another
+--- is two chances to disagree about which way "left" is.
+--- @param rec table|nil
+--- @param now number
+--- @param spinDeg number|nil  degrees turned across the whole fall
+--- @return number
+function BR.AirdropHeadingAt(rec, now, spinDeg)
+    if not rec then return 0.0 end
+    return (rec.heading or 0.0)
+         + BR.AirdropProgress(rec, now) * (spinDeg or 0.0)
+end
+
+--- Where a point rigidly fixed to the crate is, in the WORLD, at `now`.
+---
+--- WHY THIS EXISTS AT ALL, AND WHY IT IS NOT ATTACH_ENTITY_TO_ENTITY. The
+--- canopy and the two flares are parts of one falling object. GTA's own crate
+--- drop bolts them on with ATTACH_ENTITY_TO_ENTITY; we write their coordinates
+--- instead, from the same solver the crate's come from, because that is the
+--- design the rest of this file is: every position in a drop is a pure function
+--- of the published record and the synced clock, so there is nothing for two
+--- machines to disagree about. An attachment would be a second mechanism
+--- deciding where something is -- one the engine owns, that no test can see, and
+--- whose behaviour on two LOCAL non-networked objects is not something anything
+--- outside a running client can answer. Same result, one mechanism, testable.
+---
+--- `ox` is the crate's own RIGHT and `oy` its FORWARD, in metres, exactly as an
+--- attach offset would be -- so Rockstar's numbers transfer unchanged.
+--- @param rec table|nil
+--- @param now number
+--- @param ox number    metres to the crate's right
+--- @param oy number    metres forward
+--- @param spinDeg number|nil
+--- @return number x
+--- @return number y
+function BR.AirdropOffsetAt(rec, now, ox, oy, spinDeg)
+    if not rec then return 0.0, 0.0 end
+
+    -- GTA HEADINGS: 0 is north (+Y) and the angle grows ANTICLOCKWISE, so an
+    -- entity's forward is (-sin h, cos h) and its right is (cos h, sin h). Put
+    -- those two together and it is the ordinary rotation matrix -- but only
+    -- because forward is +Y rather than +X, which is the half that is easy to
+    -- get backwards and puts both flares on the same side of the crate.
+    local a = math.rad(BR.AirdropHeadingAt(rec, now, spinDeg))
+    local c, s = math.cos(a), math.sin(a)
+    ox, oy = ox or 0.0, oy or 0.0
+    return (rec.x or 0.0) + ox * c - oy * s,
+           (rec.y or 0.0) + ox * s + oy * c
+end
+
 --- Has it touched down?
 --- @param rec table|nil
 --- @param now number
@@ -243,4 +303,39 @@ function BR.AirdropBlipVisible(rec, now, lingerMs)
     if not rec then return false end
     if now < rec.tStart then return false end
     return now <= rec.tLand + (lingerMs or 60000)
+end
+
+--- Is there nothing left of this drop to draw, ever again?
+---
+--- ═══ THIS IS A SEPARATE QUESTION FROM THE ONE ABOVE, AND CONFLATING THEM COST
+---     THE OWNER A ROUND (playtest, 2026-08-22: "I randomly got a notification
+---     for airdrop, but didn't see it on the map so wasn't sure where to go to
+---     see it.") ═══
+---
+--- The client used to tear a drop down -- blip, crate, record, the lot --
+--- whenever BR.AirdropBlipVisible answered false. That predicate is false at
+--- BOTH ends: after the linger expires, and ALSO for a `now` that has not
+--- reached tStart yet. The second one is not "this drop is over", it is "this
+--- drop has not started"; treating it as teardown destroys the drop on the first
+--- frame and it never comes back.
+---
+--- AND A CLIENT CAN GENUINELY BE THERE. `tStart` is the SERVER's GetGameTimer()
+--- at the moment of commit; the client compares it against BR.Clock.now(), which
+--- is its local timer plus a MEDIAN-OF-EIGHT ESTIMATE of the offset (see
+--- clock.lua, which budgets for ~100ms of error and says so). The record reaches
+--- the client about half a round trip after tStart, so the comparison only has
+--- one-way latency of headroom -- and any client whose estimate is running
+--- behind by more than that loses its airdrop entirely, having just been told
+--- one was coming. Nothing else in the file would notice: no error, no log, one
+--- missing blip per match.
+---
+--- So teardown asks THIS, which is only ever true at the far end. A record from
+--- the future is simply not due yet, and waiting for it costs a frame.
+--- @param rec table|nil
+--- @param now number
+--- @param lingerMs number|nil
+--- @return boolean
+function BR.AirdropExpired(rec, now, lingerMs)
+    if not rec then return true end
+    return now > (rec.tLand or 0.0) + (lingerMs or 60000)
 end

@@ -103,6 +103,12 @@ end
 check(BR.Config.Weapons, 'weapon')
 check(BR.Config.Throwables, 'throwable')
 check(BR.Config.Melee, 'melee')
+-- The airdrop shelf (#88). In no rarity bucket, so nothing that walks the loot
+-- tables would ever notice a typo here -- and a wrong hash on an RPG is the
+-- Advanced Rifle bug at the top of this file with a rocket launcher: the weapon
+-- is given under one hash, read back under another, and has unlimited ammo with
+-- no other symptom.
+check(BR.Config.AirdropWeapons, 'airdrop weapon')
 -- Fists are not a list, but they ARE resolved from an engine hash on every
 -- punch, so the same joaat proof has to cover them. This is the check that
 -- would have caught the hash being wrong; the thing that made fists fail in
@@ -135,27 +141,62 @@ if BR.Config.WeaponByHash[BR.NormHash(BR.Config.Fists.hash)] ~= BR.Config.Fists 
          .. 'would be refused as an unknown weapon')
 end
 
+-- ...and the same for the airdrop shelf, which is registered the same way and
+-- would fail the same way: silently, since nothing else in this file reads it.
+--
+-- AND IN NO BUCKET, WHICH IS THE OTHER HALF OF WHAT THEY ARE. An RPG that
+-- reached BR.Config.WeaponsByRarity is an RPG in every legendary crate on the
+-- map, ~1900 rolls a match, and the only symptom is that the game got a lot
+-- louder. Checked here rather than trusted to the registration loop staying
+-- where it is.
+for _, w in ipairs(BR.Config.AirdropWeapons or {}) do
+    if BR.Config.WeaponByHash[BR.NormHash(w.hash)] ~= w then
+        fail('airdrop weapon %q does not resolve through WeaponByHash -- it '
+             .. 'would be refused as a weapon this gamemode does not issue', w.id)
+    end
+    if BR.Config.WeaponById[w.id] ~= w then
+        fail('airdrop weapon %q does not resolve through WeaponById -- the '
+             .. 'airdrop pool that names it would resolve to nothing', w.id)
+    end
+    for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+        for _, x in ipairs(BR.Config.WeaponsByRarity[r] or {}) do
+            if x.id == w.id then
+                fail('airdrop weapon %q is in rarity bucket %d -- it is world '
+                     .. 'loot now, on the floor of the whole map', w.id, r)
+            end
+        end
+    end
+end
+
 -- An explosive with no blast radius would be range-checked as though the
 -- victim had to be where the grenade landed.
-for _, t in ipairs(BR.Config.Throwables or {}) do
-    if t.explosive then
-        if not t.blastRadius or t.blastRadius <= 0 then
-            fail('throwable %q is explosive but has no blastRadius', t.id)
-        end
-        if not t.maxRange or t.maxRange <= 0 then
-            fail('throwable %q is explosive but has no maxRange (throw distance)', t.id)
+for _, list in ipairs({ BR.Config.Throwables, BR.Config.AirdropWeapons }) do
+    for _, t in ipairs(list or {}) do
+        if t.explosive then
+            if not t.blastRadius or t.blastRadius <= 0 then
+                fail('%q is explosive but has no blastRadius', t.id)
+            end
+            if not t.maxRange or t.maxRange <= 0 then
+                fail('%q is explosive but has no maxRange (travel distance)', t.id)
+            end
         end
     end
 end
 
 -- A firearm without a magazine size or an ammo pool cannot take part in the
 -- ammo model at all -- it would read as unlimited for a different reason.
-for _, w in ipairs(BR.Config.Weapons or {}) do
-    if not w.clip or w.clip < 1 then
-        fail('weapon %q has no clip size', w.id)
-    end
-    if not w.ammo then
-        fail('weapon %q has no ammo pool', w.id)
+for _, list in ipairs({ BR.Config.Weapons, BR.Config.AirdropWeapons }) do
+    for _, w in ipairs(list or {}) do
+        if not w.clip or w.clip < 1 then
+            fail('weapon %q has no clip size', w.id)
+        end
+        if not w.ammo then
+            fail('weapon %q has no ammo pool', w.id)
+        end
+        if w.ammo and not (BR.Config.AmmoCaps or {})[w.ammo] then
+            fail('weapon %q draws from ammo pool %q, which has no cap -- it can '
+                 .. 'never be reloaded', w.id, tostring(w.ammo))
+        end
     end
 end
 
@@ -175,7 +216,8 @@ local function signed32(h)
     return (h >= 0x80000000) and (h - 0x100000000) or h
 end
 
-for _, list in ipairs({ BR.Config.Weapons, BR.Config.Throwables, BR.Config.Melee }) do
+for _, list in ipairs({ BR.Config.Weapons, BR.Config.Throwables,
+                        BR.Config.Melee, BR.Config.AirdropWeapons }) do
     for _, w in ipairs(list or {}) do
         if w.hash then
             signedChecked = signedChecked + 1

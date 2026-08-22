@@ -871,6 +871,39 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
         return
     end
 
+    if item.kind == 'volts' then
+        -- VOLTS ARE NOT AN INVENTORY ITEM (owner, 2026-08-21: "This should be an
+        -- item that does not go into inventory - they simply pick it up and it's
+        -- gone. Simple notification that they collected 100 Volts, and that's
+        -- it."). So the entry is retired and BR.Inv.give is never reached --
+        -- there is no slot to find, nothing to displace, and no refusal that
+        -- could leave the pile on the floor.
+        --
+        -- AND THIS IS NOT A WRITE. It increments a counter on the roster entry;
+        -- the number rides the match results envelope into
+        -- BR.Config.marketPayout and lands in the SAME atomic ADD as the match
+        -- payout. config/market.lua's "exactly one writer that can increase a
+        -- balance" is the property the whole no-pay-to-win argument rests on,
+        -- and #88 asked for it to stay intact by name. Crediting here would have
+        -- been a second writer and a per-pickup write on a personally-funded
+        -- database, for a number the player is told about either way.
+        --
+        -- THE AMOUNT COMES OFF THE ENTRY, not off the config. The entry is what
+        -- the server generated and holds; reading the config here would let a
+        -- retune mid-match pay a different number from the one the pile was
+        -- created as.
+        local n = math.tointeger(item.count) or 0
+        if n > 0 then
+            e.voltsPickedUp = (e.voltsPickedUp or 0) + n
+        end
+        retire(m, item)
+        BR.Server.notify(src,
+            ('You collected %d %s.'):format(n,
+                (BR.Config.Market and BR.Config.Market.currency) or 'Volts'),
+            'success')
+        return
+    end
+
     if item.kind == 'chest' or item.kind == 'deathbox' then
         local contents = item.contents
         if item.kind == 'chest' then

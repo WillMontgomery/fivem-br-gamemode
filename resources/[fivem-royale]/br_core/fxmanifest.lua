@@ -35,12 +35,11 @@ shared_scripts {
     '@br_lib/config/vehicles.lua',
     '@br_lib/config/loot.lua',
     -- AFTER config/loot.lua AND config/weapons.lua, and not merely near them.
-    -- It builds its pools out of their rarity buckets, and it appends the
-    -- airdrop-only consumables to BR.Config.Consumables AFTER loot.lua has
-    -- finished bucketing that array -- which is precisely what keeps those
-    -- items out of every world roll while leaving them resolvable everywhere.
-    -- Load it earlier and they would be bucketed like anything else, i.e. found
-    -- in ordinary crates, which is the one thing they must not be.
+    -- It resolves its payout pools at LOAD time out of their rarity buckets and
+    -- their id lookups -- including BR.Config.AirdropWeapons, the four explosives
+    -- weapons.lua registers into the id lookup and into no bucket. Load this
+    -- earlier and every pool resolves empty, which is an airdrop that lands
+    -- carrying nothing and says so nowhere.
     '@br_lib/config/airdrop.lua',
     -- The fuel budget and the petrol stations. AFTER config/storm.lua, not
     -- merely near it: the tank size is DERIVED from BR.Config.Storm.mapAABB at
@@ -124,10 +123,10 @@ client_scripts {
     'client/dui.lua',       -- browser pages as game textures; loot.lua uses it
     'client/inventory.lua', -- the inventory mirror; owns every weapon grant
     'client/loot.lua',      -- world props + pickup; needs BR.Inv (inventory.lua)
-    -- The falling crate, its canopy and the blip. Reads BR.Native (natives.lua)
-    -- for the blip name and BR.Clock (shared) for the descent; it creates no
-    -- loot of its own -- what lands is server registry entries arriving through
-    -- client/loot.lua like anything else.
+    -- The falling crate, its canopy, its two flares and the blip. Reads
+    -- BR.Native (natives.lua) for the blip name and BR.Clock (shared) for the
+    -- descent; it creates no loot of its own -- what lands is server registry
+    -- entries arriving through client/loot.lua like anything else.
     'client/airdrop.lua',
     'client/dbno.lua',      -- downed + revive; yields the interact key from loot.lua
     -- The fuel gauge, the pump prompt and the station blips. AFTER dui.lua

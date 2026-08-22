@@ -127,40 +127,70 @@ do
     ok(A.chuteModel ~= BR.Config.Drop.parachuteModel,
         'the crate canopy is not the player canopy')
     eq(A.chuteModel, 'p_cargo_chute_s', 'it is Rockstar\'s own cargo chute')
+
+    -- The flares (owner, 2026-08-21). Two things have to be true for the smoke
+    -- to exist at all, and both are one config line, so both are worth pinning:
+    -- a prop to hang the emitter on, and an asset the emitter comes out of.
+    ok(type(A.flareProp) == 'string' and A.flareProp ~= '',
+        'the flares have a prop')
+    ok(type(A.flarePtfxAsset) == 'string' and A.flarePtfxAsset ~= '',
+        'and a particle asset to stream')
+    ok(type(A.flarePtfxName) == 'string' and A.flarePtfxName ~= '',
+        'and an effect inside it')
+    ok(A.flareOffset and (A.flareOffset.x or 0.0) > 0.0,
+        'and an offset with a positive x -- the sign is what makes it two sides')
 end
 
 describe('config: exclusive loot is exclusive')
 do
-    ok(#BR.Config.AirdropItems > 0, 'there is at least one airdrop-only item')
+    -- THE OWNER'S LIST, and it is weapons now rather than a consumable: "Things
+    -- like explosives, RPGs, miniguns, etc are exciting." The Heavy Shield that
+    -- used to be the exclusive item is gone entirely ("We don't need heavy
+    -- shield to exist"), which is why this block no longer mentions it and why
+    -- nothing named `heavyshield` may resolve anywhere.
+    ok(BR.Config.ConsumableById.heavyshield == nil,
+        'the Heavy Shield does not resolve by id -- it is gone, not disabled')
+    for _, c in ipairs(BR.Config.Consumables) do
+        ok(c.id ~= 'heavyshield', 'and it is in no consumable list')
+    end
+    ok(BR.Config.AirdropItems == nil,
+        'and the array that existed only to register it is gone with it')
 
-    for _, c in ipairs(BR.Config.AirdropItems) do
-        ok(BR.Config.ConsumableById[c.id] == c,
-            ('%s resolves by id, so the inventory and the labels can see it')
-                :format(c.id))
+    ok(#BR.Config.AirdropWeapons >= 4, 'there are airdrop-only weapons')
 
-        -- Listed, so /brgrant and /brpropscale enumerate it...
-        local listed = false
-        for _, x in ipairs(BR.Config.Consumables) do
-            if x.id == c.id then listed = true end
-        end
-        ok(listed, ('%s is in BR.Config.Consumables'):format(c.id))
+    for _, w in ipairs(BR.Config.AirdropWeapons) do
+        ok(BR.Config.WeaponById[w.id] == w,
+            ('%s resolves by id, so a pool can name it and the inventory can '
+             .. 'hold it'):format(w.id))
+        ok(BR.Config.WeaponByHash[BR.NormHash(w.hash)] == w,
+            ('%s resolves by hash, so the validator can price a hit with it')
+                :format(w.id))
+        ok(BR.Config.IsAllowedWeapon(w.hash),
+            ('%s is on the allowlist -- the airdrop issues it'):format(w.id))
 
         -- ...and in NO bucket, because a bucket is the only thing
         -- BR.RollLootStack ever rolls against. This is the whole of "found
         -- nowhere else".
         local bucketed = false
         for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
-            for _, x in ipairs(BR.Config.ConsumablesByRarity[r] or {}) do
-                if x.id == c.id then bucketed = true end
-            end
-            for _, x in ipairs(BR.Config.ConsumablesByRarityFloor[r] or {}) do
-                if x.id == c.id then bucketed = true end
+            for _, x in ipairs(BR.Config.WeaponsByRarity[r] or {}) do
+                if x.id == w.id then bucketed = true end
             end
         end
         ok(not bucketed,
             ('%s is in no rarity bucket, so no world roll can produce it')
-                :format(c.id))
+                :format(w.id))
     end
+
+    -- AND THE BUCKETS DID NOT MOVE. Registering four weapons into the id
+    -- lookups must not change the size of any bucket, or the legendary tier of
+    -- every crate on the map has quietly changed.
+    local counted = 0
+    for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+        counted = counted + #BR.Config.WeaponsByRarity[r]
+    end
+    eq(counted, #BR.Config.Weapons,
+        'the rarity buckets still hold exactly BR.Config.Weapons and nothing else')
 end
 
 describe('config: pools resolve')
@@ -178,15 +208,26 @@ do
        #BR.Config.WeaponsByRarity[BR.Rarity.LEGENDARY],
        'the legendary pool is the legendary bucket')
 
-    -- THE #191 SEAM. `cprkit` is named in the pool and does not exist yet, so
-    -- it is dropped at resolution. The day it is registered this test changes
-    -- and nothing else does.
-    local hasCpr = false
+    -- THE EXCLUSIVE POOL IS THE EXPLOSIVES, whole. Named by id rather than by
+    -- bucket, so this is also the check that nobody quietly re-pointed it at a
+    -- tier -- which would pay out ordinary rifles under an "exclusive" label.
+    eq(#A.resolvedPools.exclusive, #BR.Config.AirdropWeapons,
+        'the exclusive pool is the whole airdrop shelf')
     for _, t in ipairs(A.resolvedPools.exclusive) do
+        eq(t.kind, BR.ItemKind.WEAPON, ('%s is dealt as a weapon'):format(t.item))
+        ok(BR.Config.WeaponById[t.item] ~= nil,
+            ('%s resolves'):format(t.item))
+    end
+
+    -- THE #191 SEAM. `cprkit` is named in the healing pool and does not exist
+    -- yet, so it is dropped at resolution. The day it is registered this test
+    -- changes and nothing else does.
+    local hasCpr = false
+    for _, t in ipairs(A.resolvedPools.healing) do
         if t.item == 'cprkit' then hasCpr = true end
     end
     if BR.Config.ConsumableById.cprkit then
-        ok(hasCpr, 'cprkit exists, so it is in the exclusive pool')
+        ok(hasCpr, 'cprkit exists, so it is in the healing pool')
     else
         ok(not hasCpr,
             'cprkit does not exist yet, so the seam resolves to nothing rather '
@@ -207,14 +248,55 @@ do
     end
 end
 
+describe('config: the Volts pile')
+do
+    -- The owner named the number: "they should be 100 Volts".
+    eq(A.voltsAmount, 100, 'a drop carries 100 Volts')
+
+    local pool = A.resolvedPools.volts
+    ok(pool ~= nil and #pool == 1,
+        'the pool is one card, because there is one thing it can pay',
+        pool and #pool or 'nil')
+
+    local t = pool[1]
+    eq(t.kind, 'volts',
+        'it is its own loot kind -- BR.ItemKind names what a SLOT can hold, and '
+        .. 'this never reaches one')
+    eq(t.count, A.voltsAmount, 'and the count IS the amount')
+    ok(type(t.prop) == 'string' and t.prop ~= '',
+        'it names its own prop -- there is no id table to resolve one from')
+
+    -- IT IS IN THE PAYOUT, ONCE. A drop that carried no Volts would still pass
+    -- every other test in this file.
+    local slots = 0
+    for _, name in ipairs(A.payout) do
+        if name == 'volts' then slots = slots + 1 end
+    end
+    eq(slots, 1, 'exactly one payout slot draws from it')
+
+    -- AND IT IS NOT AN INVENTORY ITEM ANYWHERE. The owner: "This should be an
+    -- item that does not go into inventory."
+    ok(BR.Config.ConsumableById.volts == nil, 'volts is not a consumable')
+    ok(BR.Config.WeaponById.volts == nil, 'volts is not a weapon')
+    for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+        for _, x in ipairs(BR.Config.ConsumablesByRarity[r] or {}) do
+            ok(x.id ~= 'volts', 'and no bucket can roll one')
+        end
+    end
+
+    -- The label the pickup prompt shows. "100 Volts", not "Volts x100".
+    eq(BR.LootLabel({ kind = 'volts', item = 'volts', count = 100 }),
+       '100 Volts', 'the count is the name')
+end
+
 describe('config: the world layout is untouched')
 do
-    -- THE PROPERTY THAT CANNOT BE SEEN IN GAME. Appending to
-    -- BR.Config.Consumables after loot.lua has bucketed it is correct and
-    -- subtle, and the failure mode -- a Heavy Shield in an ordinary crate -- is
-    -- one crate in hundreds. So generate a whole match's layout and look.
-    local exclusive = {}
-    for _, c in ipairs(BR.Config.AirdropItems) do exclusive[c.id] = true end
+    -- THE PROPERTY THAT CANNOT BE SEEN IN GAME. Registering four weapons into
+    -- the id lookups and into no bucket is correct and subtle, and the failure
+    -- mode -- an RPG in an ordinary crate -- is one crate in hundreds, on a map
+    -- that rolls ~1900 stacks. So generate a whole match's layout and look.
+    local exclusive = { volts = true }
+    for _, w in ipairs(BR.Config.AirdropWeapons) do exclusive[w.id] = true end
 
     local entries = BR.BuildLootLayout(20260821)
     local leaked, items = nil, 0
@@ -439,16 +521,43 @@ do
     -- to all guns and ammo would still be twelve valid items, still
     -- deterministic, and would have quietly deleted the whole point of #88.
     local excl = {}
-    for _, c in ipairs(BR.Config.AirdropItems) do excl[c.id] = true end
+    for _, w in ipairs(BR.Config.AirdropWeapons) do excl[w.id] = true end
 
-    local hits = 0
+    local drops, withExplosive, withVolts, voltsTotal = 0, 0, 0, 0
     for seed = 1, 20 do
+        drops = drops + 1
+        local sawExpl, sawVolts = false, 0
         for _, s in ipairs(BR.AirdropPayout(BR.Rng(seed), A)) do
-            if excl[s.item] then hits = hits + 1 end
+            if excl[s.item] then sawExpl = true end
+            if s.kind == 'volts' then
+                sawVolts = sawVolts + 1
+                voltsTotal = voltsTotal + s.count
+            end
         end
+        if sawExpl then withExplosive = withExplosive + 1 end
+        if sawVolts == 1 then withVolts = withVolts + 1 end
     end
-    ok(hits >= 20,
-        'every drop carries at least one item that is found nowhere else', hits)
+
+    eq(withExplosive, drops,
+        'every drop carries a weapon that is found nowhere else')
+    eq(withVolts, drops, 'and exactly one Volts pile')
+    eq(voltsTotal, drops * A.voltsAmount,
+        'each one worth exactly the configured amount')
+
+    -- TWO EXCLUSIVE SLOTS AGAINST A FOUR-WEAPON POOL, so they are two DIFFERENT
+    -- explosives rather than the same RPG twice -- the whole reason the payout
+    -- shuffles and deals instead of drawing with replacement.
+    local seen = {}
+    for _, s in ipairs(BR.AirdropPayout(BR.Rng(4), A)) do
+        if excl[s.item] then seen[s.item] = (seen[s.item] or 0) + 1 end
+    end
+    local n, repeats = 0, 0
+    for _, c in pairs(seen) do
+        n = n + 1
+        if c > 1 then repeats = repeats + 1 end
+    end
+    eq(n, 2, 'two exclusive slots pay two explosives')
+    eq(repeats, 0, 'and they are different ones')
 end
 
 describe('payout: a short pool wraps rather than paying nothing')
@@ -508,6 +617,69 @@ do
         'a zero-span descent is already over')
 end
 
+describe('descent: the rigid parts')
+do
+    -- THE CANOPY AND THE FLARES ARE NOT ATTACHED TO THE CRATE. They are solved
+    -- from the same record, so a test can ask where they are -- which an
+    -- ATTACH_ENTITY_TO_ENTITY could not be asked outside a running client, and
+    -- is the reason this design was chosen over Rockstar's.
+    local poi = { id = 'x', x = 100.0, y = 200.0, z = 0.0 }
+    local rec = BR.BuildAirdropRecord(1, poi, 260.0, 0.0, 30000.0, 0.0)
+
+    ok(near(BR.AirdropHeadingAt(rec, 0.0, 30.0), 0.0),
+        'the crate starts on its resting heading')
+    ok(near(BR.AirdropHeadingAt(rec, 15000.0, 30.0), 15.0),
+        'and has turned half the spin halfway down')
+    ok(near(BR.AirdropHeadingAt(rec, 30000.0, 30.0), 30.0),
+        'and the whole of it by touchdown')
+    ok(near(BR.AirdropHeadingAt(rec, 30000.0, 0.0), 0.0),
+        'a zero spin does not turn it at all')
+
+    -- HEADING 0 IS NORTH AND FORWARD IS +Y, which is the half of GTA's
+    -- convention that is easy to get backwards -- and getting it backwards puts
+    -- both flares on the same side of the crate, which nothing else here would
+    -- notice.
+    local rx, ry = BR.AirdropOffsetAt(rec, 0.0, 1.0, 0.0, 0.0)
+    ok(near(rx, 101.0) and near(ry, 200.0),
+        'facing north, the crate\'s right is +X (east)',
+        ('%.3f, %.3f'):format(rx, ry))
+    local fx, fy = BR.AirdropOffsetAt(rec, 0.0, 0.0, 1.0, 0.0)
+    ok(near(fx, 100.0) and near(fy, 201.0),
+        'and its forward is +Y (north)', ('%.3f, %.3f'):format(fx, fy))
+
+    -- Quarter turn: heading grows anticlockwise, so at 90 the right hand points
+    -- north.
+    local turned = BR.BuildAirdropRecord(1, poi, 260.0, 0.0, 30000.0, 90.0)
+    local qx, qy = BR.AirdropOffsetAt(turned, 0.0, 1.0, 0.0, 0.0)
+    ok(near(qx, 100.0, 1e-9) and near(qy, 201.0, 1e-9),
+        'facing west, the crate\'s right is north',
+        ('%.6f, %.6f'):format(qx, qy))
+
+    -- THE TWO FLARES ARE ON OPPOSITE SIDES, AT EVERY MOMENT OF THE FALL. This
+    -- is the property the sign flip in the client exists for, and it has to
+    -- survive the spin -- an offset rotated by a heading computed somewhere else
+    -- would drift the two apart.
+    local off = A.flareOffset.x
+    for _, t in ipairs({ 0.0, 7500.0, 15000.0, 30000.0 }) do
+        local lx, ly = BR.AirdropOffsetAt(rec, t,  off, 0.0, A.spinDegrees)
+        local mx, my = BR.AirdropOffsetAt(rec, t, -off, 0.0, A.spinDegrees)
+        ok(near(BR.Dist(lx, ly, mx, my), off * 2.0, 1e-6),
+            ('the flares stay %.1fm apart at t=%d'):format(off * 2.0, t))
+        -- ...and the crate is exactly between them.
+        ok(near((lx + mx) * 0.5, rec.x, 1e-6)
+           and near((ly + my) * 0.5, rec.y, 1e-6),
+            ('and the crate is midway between them at t=%d'):format(t))
+    end
+
+    -- A zero offset is the crate's own position, whatever the heading.
+    local zx, zy = BR.AirdropOffsetAt(rec, 12345.0, 0.0, 0.0, 137.0)
+    ok(near(zx, rec.x) and near(zy, rec.y),
+        'a zero offset never leaves the crate')
+
+    ok(select(1, BR.AirdropOffsetAt(nil, 0.0, 1.0, 1.0, 30.0)) == 0.0,
+        'no record, no position')
+end
+
 describe('descent: the blip window')
 do
     local poi = { id = 'x', x = 0.0, y = 0.0, z = 0.0 }
@@ -522,6 +694,36 @@ do
     ok(not BR.AirdropBlipVisible(rec, 91001.0, 60000),
         'and gone a millisecond later')
     ok(not BR.AirdropBlipVisible(nil, 5000.0, 60000), 'no record, no blip')
+end
+
+describe('descent: expiry is not the same question as visibility')
+do
+    -- THE 2026-08-22 PLAYTEST BUG, as arithmetic. "Should the blip be up" is
+    -- false at BOTH ends of the window; "is this drop over" is only ever true at
+    -- the far one. The client used to tear a drop down on the first predicate,
+    -- so a clock estimate a few tens of milliseconds behind the server's
+    -- destroyed the whole airdrop on the frame it arrived.
+    local poi = { id = 'x', x = 0.0, y = 0.0, z = 0.0 }
+    local rec = BR.BuildAirdropRecord(1, poi, 260.0, 1000.0, 31000.0, 0.0)
+
+    ok(not BR.AirdropBlipVisible(rec, 900.0, 60000),
+        'a record from the future is not visible yet...')
+    ok(not BR.AirdropExpired(rec, 900.0, 60000),
+        '...and is emphatically not over -- this is the pair that used to be '
+        .. 'one question')
+
+    ok(not BR.AirdropExpired(rec, 1000.0, 60000), 'not over at tStart')
+    ok(not BR.AirdropExpired(rec, 31000.0, 60000), 'not over as it lands')
+    ok(not BR.AirdropExpired(rec, 91000.0, 60000),
+        'not over exactly one minute after landing')
+    ok(BR.AirdropExpired(rec, 91001.0, 60000), 'over a millisecond later')
+    ok(BR.AirdropExpired(nil, 0.0, 60000), 'and no record is nothing to draw')
+
+    -- A YEAR EARLY IS STILL NOT OVER. There is no lower bound at all, which is
+    -- the whole point: however far behind a client's clock estimate is, the
+    -- answer is "wait", never "throw it away".
+    ok(not BR.AirdropExpired(rec, -1e9, 60000),
+        'no amount of clock skew in that direction expires a drop')
 end
 
 -- =========================================================================
@@ -888,6 +1090,27 @@ do
     eq(ringed, #A.payout, 'every item lands clear of the crate')
     eq(origined, #A.payout, 'and every item bursts out of it')
 
+    -- THE VOLTS PILE IS ONE OF THEM, and it is an ordinary registry entry --
+    -- which is the whole reason it inherits the range check, the rate limit,
+    -- the first-come arbitration and the not-yours-to-see refusal that
+    -- docs/security.md describes. A bespoke pickup would have had to re-earn
+    -- every one of those, on the highest-value entry in the match.
+    local piles, explosives = 0, 0
+    local exclusive = {}
+    for _, w in ipairs(BR.Config.AirdropWeapons) do exclusive[w.id] = true end
+    for i = 2, #spawned do
+        local s = spawned[i].stack
+        if s.kind == 'volts' then
+            piles = piles + 1
+            eq(s.count, A.voltsAmount, 'the pile is worth the configured amount')
+            ok(type(s.prop) == 'string' and s.prop ~= '',
+                'and carries its own prop -- no id table can resolve one for it')
+        end
+        if exclusive[s.item] then explosives = explosives + 1 end
+    end
+    eq(piles, 1, 'exactly one Volts pile lands with the drop')
+    eq(explosives, 2, 'and two of the weapons found nowhere else')
+
     -- AND NOTHING ELSE HAPPENS. Exactly one airdrop per match, no more --
     -- including after enough time has passed for another retry to be due,
     -- which is the case a same-tick loop would not reach.
@@ -991,6 +1214,10 @@ local moves     = {}     -- every SetEntityCoords
 --- shape is the bug this project keeps shipping.
 local ground = { ok = 1, z = 12.0 }
 local modelLoaded = 1    -- what HasModelLoaded answers
+local ptfxLoaded  = 1    -- what HasNamedPtfxAssetLoaded answers
+local ptfxHandle  = 900  -- what StartParticleFxLoopedOnEntity answers next
+
+local fxStarted, fxStopped, fxAssetUsed = {}, {}, {}
 
 function GetHashKey(s) return s end
 function IsModelValid() return 1 end
@@ -1001,6 +1228,23 @@ function RequestAnimDict() end
 function HasAnimDictLoaded() return 1 end
 function PlayEntityAnim(e, anim, dict) anims[#anims + 1] = { e = e, anim = anim, dict = dict } end
 function GetCurrentResourceName() return 'br_core' end
+
+function RequestNamedPtfxAsset() end
+function HasNamedPtfxAssetLoaded() return ptfxLoaded end
+function UseParticleFxAsset(a) fxAssetUsed[#fxAssetUsed + 1] = a end
+function StartParticleFxLoopedOnEntity(name, ent, ox, oy, oz, _, _, _, scale)
+    if ptfxHandle == 0 then
+        -- The failure the engine actually reports: a 0 handle, which is TRUTHY
+        -- in Lua. Driven by a test below.
+        fxStarted[#fxStarted + 1] = { name = name, ent = ent, handle = 0 }
+        return 0
+    end
+    ptfxHandle = ptfxHandle + 1
+    fxStarted[#fxStarted + 1] = { name = name, ent = ent, handle = ptfxHandle,
+                                  ox = ox, oy = oy, oz = oz, scale = scale }
+    return ptfxHandle
+end
+function StopParticleFxLooped(h) fxStopped[#fxStopped + 1] = h end
 
 function CreateObjectNoOffset(model, x, y, z, isNetwork, netMission, dynamic)
     nextEnt = nextEnt + 1
@@ -1068,10 +1312,29 @@ local render = loops['airdrop.render']
 local function clientReset()
     fire('onResourceStop', 'br_core')
     ents, blips, attaches, anims, moves = {}, {}, {}, {}, {}
+    fxStarted, fxStopped, fxAssetUsed = {}, {}, {}
     ground.ok, ground.z = 1, 12.0
-    modelLoaded = 1
+    modelLoaded, ptfxLoaded = 1, 1
+    ptfxHandle = 900
     BR.State.me.state = BR.PlayerState.ALIVE
     gameMs = gameMs + 1000000
+end
+
+--- Every entity currently alive, by model name.
+local function entsOfModel(model)
+    local out = {}
+    for h, e in pairs(ents) do
+        if e.model == model then out[#out + 1] = h end
+    end
+    table.sort(out)
+    return out
+end
+
+--- How many entities exist at all.
+local function entCount()
+    local n = 0
+    for _ in pairs(ents) do n = n + 1 end
+    return n
 end
 
 --- Announce a drop to the client, starting now.
@@ -1096,6 +1359,21 @@ local function oneEnt()
     return first and ents[first] or nil, first
 end
 
+--- The last SetEntityCoords written for the crate specifically.
+---
+--- NOT `moves[#moves]`, WHICH IS NOW A FLARE. A drop writes four positions a
+--- frame, in a fixed order, and a test that reads the last one is measuring the
+--- second flare's offset position rather than the crate's descent -- which would
+--- pass while the crate fell to the wrong height by half a metre.
+local function crateMove()
+    local _, crate = oneEnt()
+    if not crate then return nil end
+    for i = #moves, 1, -1 do
+        if moves[i].e == crate then return moves[i] end
+    end
+    return nil
+end
+
 describe('client: the blip')
 do
     clientReset()
@@ -1116,6 +1394,93 @@ do
     eq(n, 1, 'a re-sent record replaces rather than duplicating')
 end
 
+describe('client: a clock running behind does not lose the drop')
+do
+    -- THE 2026-08-22 PLAYTEST BUG, END TO END. `tStart` is the SERVER's timer;
+    -- the client compares it against BR.Clock.now(), which is a median-of-eight
+    -- ESTIMATE of that timer. A client whose estimate is 200ms behind used to
+    -- destroy the drop -- blip, crate, record -- on the first frame after being
+    -- told an airdrop was coming, and nothing anywhere said so.
+    clientReset()
+    BR.Clock.offset = -200.0
+    announce(260.0, 30000)
+
+    ok(oneBlip() ~= nil, 'the blip goes up when the record arrives')
+    render()
+    ok(oneBlip() ~= nil, 'and is still there after a frame the clock calls early')
+
+    -- ...and the moment the estimate catches up, everything proceeds normally.
+    BR.Clock.offset = 0.0
+    render()
+    ok(oneBlip() ~= nil, 'the blip survived')
+    ok(oneEnt() ~= nil, 'and the crate is built rather than never existing')
+
+    BR.Clock.offset = 0.0
+end
+
+describe('client: the blip is re-asserted, not assumed')
+do
+    -- The marker is the only thing telling the match where to run. If anything
+    -- at all removes it while the drop is live -- another resource sweeping
+    -- blips, a handle gone bad -- it comes back on the next frame rather than
+    -- leaving the match's one airdrop unfindable.
+    clientReset()
+    announce(260.0, 30000)
+    render()
+
+    local before = oneBlip()
+    ok(before ~= nil, 'there is a blip')
+    for h in pairs(blips) do RemoveBlip(h) end
+    eq(oneBlip(), nil, 'something took it away')
+
+    render()
+    ok(oneBlip() ~= nil, 'and the next frame puts it back')
+
+    -- ONCE, THOUGH. Re-asserting has to be idempotent or a frame loop makes a
+    -- blip per frame and the pause map fills with sixty copies a second.
+    render(); render(); render()
+    local n = 0
+    for _ in pairs(blips) do n = n + 1 end
+    eq(n, 1, 'and exactly one, however many frames pass')
+
+    -- BUT NOT AFTER THE WINDOW CLOSES. A blip that reappeared forever would be
+    -- worse than one that vanished early.
+    gameMs = gameMs + 30000 + A.blipLingerMs + 1
+    render()
+    eq(oneBlip(), nil, 'once the drop expires it stays gone')
+end
+
+describe('client: the diagnosis command')
+do
+    -- WORTH A TEST BECAUSE IT IS WHAT GETS RUN WHEN THIS BREAKS AGAIN. An
+    -- airdrop happens once a match and its blip lives about ninety seconds, so a
+    -- command that errors is a whole round spent learning nothing.
+    clientReset()
+    local diag = commands['brairdrop']
+    ok(diag ~= nil, 'the client registers one')
+
+    local said = {}
+    local realPrintFn = print
+    print = function(s) said[#said + 1] = tostring(s) end
+
+    diag(0, {}, '')
+    local emptyLines = #said
+
+    announce(260.0, 30000)
+    render()
+    diag(0, {}, '')
+
+    print = realPrintFn
+
+    ok(emptyLines > 0, 'it says something with no drop in flight')
+    local joined = table.concat(said, '\n')
+    ok(joined:find('clock', 1, true) ~= nil,
+        'it reports the clock, which is the number that broke this')
+    ok(joined:find('blip handle', 1, true) ~= nil,
+        'and whether a blip actually exists')
+    ok(joined:find('flares', 1, true) ~= nil, 'and what was built')
+end
+
 describe('client: a malformed record is ignored')
 do
     clientReset()
@@ -1127,7 +1492,7 @@ do
     eq(oneBlip(), nil, 'nothing is drawn for a record that is not one')
 end
 
-describe('client: the crate is local and non-networked')
+describe('client: every part is local and non-networked')
 do
     clientReset()
     announce()
@@ -1135,18 +1500,88 @@ do
 
     local e = oneEnt()
     ok(e ~= nil, 'the crate is built')
-    ok(e.isNetwork == false,
-        'with isNetwork = false -- sv_entityLockdown refuses anything else')
     eq(e.model, A.crateProp, 'and it is the crate prop we already use')
 
-    eq(#attaches, 1, 'the canopy is attached to it')
-    local off = A.chuteOffset
-    ok(near(attaches[1].oz, off.z, 1e-9), 'at Rockstar\'s own offset')
-    ok(#anims >= 1, 'and the deploy anim is played')
+    -- FOUR OBJECTS, AND EVERY ONE OF THEM NON-NETWORKED. This is not a style
+    -- check: `sv_entityLockdown relaxed` refuses a client-created NETWORKED
+    -- entity outright, so a single `true` here is an object that silently never
+    -- appears for anyone.
+    eq(entCount(), 4, 'a crate, a canopy and two flares')
+    local networked = 0
+    for _, x in pairs(ents) do
+        if x.isNetwork ~= false then networked = networked + 1 end
+    end
+    eq(networked, 0, 'and none of them is networked')
 
-    local chute = ents[attaches[1].child]
-    ok(chute ~= nil and chute.isNetwork == false,
-        'the canopy is non-networked too')
+    eq(#entsOfModel(A.chuteModel), 1, 'the canopy exists')
+    eq(#entsOfModel(A.flareProp), 2, 'and a flare on each side')
+    ok(#anims >= 1, 'and the canopy deploy anim is played')
+
+    -- NOTHING IS ATTACHED TO ANYTHING. The canopy and the flares are positioned
+    -- from the same solver as the crate; an ATTACH_ENTITY_TO_ENTITY would be a
+    -- second mechanism deciding where a part of the drop is, and this suite
+    -- could not see it at all.
+    eq(#attaches, 0, 'and nothing is attached to anything')
+end
+
+describe('client: the flares trail smoke')
+do
+    clientReset()
+    announce()
+    render()
+
+    eq(#fxStarted, 2, 'one looped effect, on each flare')
+    local flares = entsOfModel(A.flareProp)
+    local onFlare = 0
+    for _, f in ipairs(fxStarted) do
+        eq(f.name, A.flarePtfxName, 'the configured effect')
+        for _, h in ipairs(flares) do
+            if f.ent == h then onFlare = onFlare + 1 end
+        end
+    end
+    eq(onFlare, 2,
+        'anchored to the FLARES rather than started at a coordinate -- an '
+        .. 'emitter that does not ride the fall leaves no trail')
+
+    -- USE_PARTICLE_FX_ASSET IS PER CALL. Asserted because the symptom of
+    -- missing it is not an error: the effect resolves against whatever asset
+    -- was named last, which on a quiet frame is nothing at all.
+    eq(#fxAssetUsed, 2, 'the asset is re-asserted before every start')
+
+    -- ...and both are stopped, before the entities they are anchored to are
+    -- deleted. A looped effect outlives its entity -- that is what looped means
+    -- -- so the other order leaves an emitter running in mid-air forever.
+    local n = #fxStopped
+    gameMs = gameMs + A.descentMs
+    render()
+    eq(#fxStopped - n, 2, 'and both are stopped on touchdown')
+    eq(#entsOfModel(A.flareProp), 0, 'with the flares deleted')
+end
+
+describe('client: a particle asset that will not stream costs nothing')
+do
+    -- Best-effort, exactly as the canopy's deploy anim is. A flare with no
+    -- smoke still reads as a flare; a drop that failed to arrive because a
+    -- particle asset was missing is a match without its airdrop.
+    clientReset()
+    ptfxLoaded = 0
+    announce()
+    render()
+    eq(#fxStarted, 0, 'no effect is started')
+    eq(#entsOfModel(A.flareProp), 2, 'but the flares are still there')
+    eq(entCount(), 4, 'and so is everything else')
+
+    -- AND A START THAT ANSWERS 0 IS A FAILURE, not a handle. 0 is TRUTHY in
+    -- Lua, so a stored zero would be handed to StopParticleFxLooped at teardown.
+    clientReset()
+    ptfxHandle = 0
+    announce()
+    render()
+    eq(#fxStarted, 2, 'the start was attempted')
+    local before = #fxStopped
+    gameMs = gameMs + A.descentMs
+    render()
+    eq(#fxStopped - before, 0, 'and a 0 handle is never stopped')
 end
 
 describe('client: the descent')
@@ -1154,20 +1589,38 @@ do
     clientReset()
     local rec = announce(260.0, 30000)
     render()
-    local last = moves[#moves]
+    local last = crateMove()
     ok(last ~= nil, 'the crate is positioned')
     ok(near(last.z, ground.z + 260.0, 0.001), 'starting 260m above the ground')
     ok(near(last.x, rec.x, 0.001), 'over the POI')
 
     gameMs = gameMs + 15000
     render()
-    last = moves[#moves]
+    last = crateMove()
     ok(near(last.z, ground.z + 130.0, 0.001), 'halfway down halfway through')
+
+    -- EVERY PART FALLS WITH IT. The canopy and the flares are separate objects,
+    -- so "the crate is at the right height" says nothing about them -- and a
+    -- canopy left at 260m while the crate falls out from under it is exactly
+    -- what an attachment would have hidden.
+    local crateZ = last.z
+    local chute = entsOfModel(A.chuteModel)[1]
+    ok(chute ~= nil and near(ents[chute].z,
+        crateZ + (A.chuteOffset.z or 0.1), 0.001),
+        'the canopy is directly over it, at its own offset')
+    for _, h in ipairs(entsOfModel(A.flareProp)) do
+        ok(near(ents[h].z, crateZ + (A.flareOffset.z or 0.0), 0.001),
+            'and each flare is at the crate\'s height')
+        ok(near(BR.Dist(ents[h].x, ents[h].y, rec.x, rec.y),
+                A.flareOffset.x, 0.001),
+            'and out to the side by exactly the configured offset')
+    end
 
     -- Touchdown: the props go, the blip stays.
     gameMs = gameMs + 15000
     render()
     eq(oneEnt(), nil, 'the falling crate is deleted on touchdown')
+    eq(entCount(), 0, 'and so is every part of it')
     ok(oneBlip() ~= nil, 'but the blip is still up')
 
     -- ...for exactly one more minute.
@@ -1194,7 +1647,7 @@ do
     ground.ok, ground.z = 0, -9999.0
     local rec = announce(260.0, 30000)
     render()
-    local last = moves[#moves]
+    local last = crateMove()
     ok(near(last.z, rec.gz + 260.0, 0.001),
         'a probe answering 0 is a refusal, so the POI height stands in',
         last and last.z)
@@ -1205,9 +1658,24 @@ do
     ground.ok, ground.z = 1, 44.0
     announce(260.0, 30000)
     render()
-    last = moves[#moves]
+    last = crateMove()
     ok(near(last.z, 44.0 + 260.0, 0.001),
         'a probe answering 1 is an answer, and it is used', last and last.z)
+
+    -- HasNamedPtfxAssetLoaded is the fifth BOOL native in this file and the
+    -- newest, so it gets the same pair. A 0 must be a refusal...
+    clientReset()
+    ptfxLoaded = 0
+    announce()
+    render()
+    eq(#fxStarted, 0, 'a ptfx asset answering 0 starts nothing')
+
+    -- ...and a 1 must be an answer.
+    clientReset()
+    ptfxLoaded = 1
+    announce()
+    render()
+    eq(#fxStarted, 2, 'and one answering 1 starts both trails')
 
     -- HasModelLoaded answering 1 must build the crate...
     clientReset()

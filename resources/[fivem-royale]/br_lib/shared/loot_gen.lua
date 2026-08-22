@@ -328,6 +328,13 @@ function BR.LootLabel(stack)
         local c = BR.Config.ConsumableById[stack.item]
         return c and c.label or 'Item'
     end
+    -- CURRENCY ON THE FLOOR (#88). The count IS the name -- "100 Volts" -- which
+    -- is why it is built here rather than left to the caller's "x%d" suffix:
+    -- "Volts x100" reads as a hundred of something called a Volt.
+    if stack.kind == 'volts' then
+        return ('%d %s'):format(math.tointeger(stack.count) or 0,
+            (BR.Config.Market and BR.Config.Market.currency) or 'Volts')
+    end
     local w = BR.Config.WeaponById[stack.item]
     return w and w.label or 'Weapon'
 end

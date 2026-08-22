@@ -2043,17 +2043,46 @@ do
     ok(#over == 0, 'no weapon out-ranges the 424u entity render ceiling',
         table.concat(over, ', '))
 
-    -- Excluded on purpose: these are the highest-value targets for a weapon
-    -- spawning cheat, and keeping them out of the table keeps them off the allowlist.
-    for _, banned in ipairs({
+    -- ALLOWED SINCE #88, AND THE OTHER HALF OF THE PROPERTY IS BELOW.
+    --
+    -- These four were excluded on anti-cheat grounds -- absent from the table,
+    -- therefore absent from the allowlist. The owner reversed it (2026-08-21)
+    -- on the argument that the allowlist asks "did we issue this", not "is this
+    -- dangerous", and that an airdrop can honestly answer yes. So they are
+    -- allowed now, and the invariant worth pinning has MOVED rather than gone:
+    -- allowed to CARRY, never rolled into the WORLD.
+    for _, w in ipairs({
         { 'RPG',              0xB1CA77B1 },
         { 'Minigun',          0x42BF8A85 },
         { 'Railgun',          0x6D544C99 },
         { 'Grenade Launcher', 0xA284510B },
     }) do
-        ok(not BR.Config.IsAllowedWeapon(banned[2]),
-            ('%s is not allowed'):format(banned[1]))
+        ok(BR.Config.IsAllowedWeapon(w[2]),
+            ('%s is allowed -- an airdrop can issue it'):format(w[1]))
     end
+
+    -- ...and the homing launcher is not, because nothing issues one. Absence is
+    -- still refusal here; #88 changed which hashes are written down, not the
+    -- shape of the rule.
+    ok(not BR.Config.IsAllowedWeapon(0x63AB0442),
+        'the homing launcher is still refused -- nothing hands one out')
+
+    -- THE WORLD NEVER PRODUCES ONE. The whole of "ultra rare airdrop loot" is
+    -- that they are registered into the id lookups and into no rarity bucket,
+    -- which is the only thing BR.RollLootStack rolls against.
+    local leaked = {}
+    for _, w in ipairs(BR.Config.AirdropWeapons) do
+        ok(BR.Config.WeaponById[w.id] == w,
+            ('%s resolves by id, so an airdrop pool can name it'):format(w.id))
+        for r = BR.Rarity.COMMON, BR.Rarity.LEGENDARY do
+            for _, x in ipairs(BR.Config.WeaponsByRarity[r] or {}) do
+                if x.id == w.id then leaked[#leaked + 1] = w.id end
+            end
+        end
+    end
+    ok(#leaked == 0,
+        'no airdrop weapon is in any rarity bucket, so no world roll can '
+        .. 'produce one', table.concat(leaked, ', '))
 
     ok(BR.Config.IsAllowedWeapon(0x1B06D571), 'pistol is allowed')
     ok(BR.Config.IsAllowedWeapon(BR.Config.Gadgets.PARACHUTE), 'parachute gadget is allowed')

@@ -603,6 +603,24 @@ function BR.Config.marketPayout(r)
     earned = earned + (tonumber(r.kills) or 0) * p.perKill
     earned = earned + (tonumber(r.revives) or 0) * p.perRevive
 
+    -- WHAT THEY PICKED UP OFF THE GROUND (#88). An airdrop carries a pile of
+    -- Volts; claiming it increments a counter on the roster entry, and this is
+    -- where that counter becomes money -- in the same sum, in the same atomic
+    -- write, as everything else this match paid. That is the whole reason it is
+    -- here rather than credited at the pickup: this file's promise, four hundred
+    -- lines above, is that exactly one writer can increase a balance.
+    --
+    -- ADDED WHOLE, NOT WEIGHTED, AND NOT HALVED. Every other term above is a
+    -- weight the owner tuned and then cut by 50%; this one is a number the owner
+    -- named directly ("they should be 100 Volts"), already carrying the amount
+    -- the player was told they collected. Scaling it here would make the toast a
+    -- lie -- and it is not part of the placement/kills/win curve those weights
+    -- exist to shape.
+    --
+    -- LAST, AND AFTER NOTHING MULTIPLIES IT, so it survives a retune of the five
+    -- weights above unchanged.
+    earned = earned + math.max(0, tonumber(r.voltsPickedUp) or 0)
+
     return math.max(0, math.floor(earned))
 end
 

@@ -153,6 +153,12 @@ local function deltasFor(p, ctx)
         -- Carried into the XP and payout functions so they can apply the same
         -- rule as `won` above, rather than each re-deriving it from placement.
         died       = p.died == true,
+        -- Volts picked up off the ground this match (#88's airdrop pile).
+        -- BR.Config.marketPayout adds it to the sum; BR.Xp.forMatch ignores it,
+        -- deliberately -- currency found on the floor is not experience earned
+        -- by playing, and paying XP for it would make a sprint to the crate the
+        -- fastest way to level.
+        voltsPickedUp = p.voltsPickedUp or 0,
     }
 
     local xpEarned = BR.Xp and BR.Xp.forMatch(r) or 0
