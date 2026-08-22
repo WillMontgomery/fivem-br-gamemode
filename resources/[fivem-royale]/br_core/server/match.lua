@@ -430,6 +430,13 @@ function BR.Match.onEnter(m, state, from)
         -- decisions start with the looting (user call, 2026-08-02).
         BR.Storm.begin(m)
 
+        -- The airdrop schedule is drawn HERE, after the storm, and that order
+        -- is a requirement rather than a preference: siting asks BR.StormAt
+        -- where the circle will be when the crate arrives, so there has to be
+        -- a record to ask. Nothing is committed yet -- this only decides
+        -- whether this match gets one and when it becomes due.
+        if BR.Airdrop then BR.Airdrop.begin(m) end
+
     elseif state == BR.MatchState.ENDED then
         -- ONCE PER MATCH, AND THE SECOND TIME IS WORSE THAN A DUPLICATE.
         --
@@ -498,6 +505,7 @@ function BR.Match.onEnter(m, state, from)
     elseif state == BR.MatchState.CLEANUP then
         BR.Bus.clear(m)
         BR.Loot.clear(m)
+        if BR.Airdrop then BR.Airdrop.clear(m) end
         -- A DEBUG FREEZE DOES NOT OUTLIVE ITS MATCH. brstormfreeze holds ONE
         -- match still while something else is tested in it; carrying it into
         -- the next round means that round silently has no storm, and a battle

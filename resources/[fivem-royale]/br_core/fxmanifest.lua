@@ -34,6 +34,14 @@ shared_scripts {
     -- may sit either side of it.
     '@br_lib/config/vehicles.lua',
     '@br_lib/config/loot.lua',
+    -- AFTER config/loot.lua AND config/weapons.lua, and not merely near them.
+    -- It builds its pools out of their rarity buckets, and it appends the
+    -- airdrop-only consumables to BR.Config.Consumables AFTER loot.lua has
+    -- finished bucketing that array -- which is precisely what keeps those
+    -- items out of every world roll while leaving them resolvable everywhere.
+    -- Load it earlier and they would be bucketed like anything else, i.e. found
+    -- in ordinary crates, which is the one thing they must not be.
+    '@br_lib/config/airdrop.lua',
     '@br_lib/config/audio.lua',
     '@br_lib/config/peds.lua',      -- the locker roster; reads BR.Config
     -- The catalogue. SHARED rather than server-only: the server decides what
@@ -69,6 +77,9 @@ shared_scripts {
     '@br_lib/shared/storm_solve.lua',
     '@br_lib/shared/combat_solve.lua',
     '@br_lib/shared/loot_gen.lua',  -- reads the loot/weapon/map config at call time
+    -- The airdrop solver: siting, payout and the descent curve. AFTER
+    -- config/airdrop.lua, whose resolved pools BR.AirdropPayout deals from.
+    '@br_lib/shared/airdrop_solve.lua',
     -- Who a spectator may look at. Pure, so the squad rule is testable without
     -- a server; read by server/spectate.lua only, but SHARED because a solver
     -- that only the server can load is a solver only the server can test.
@@ -102,6 +113,11 @@ client_scripts {
     'client/dui.lua',       -- browser pages as game textures; loot.lua uses it
     'client/inventory.lua', -- the inventory mirror; owns every weapon grant
     'client/loot.lua',      -- world props + pickup; needs BR.Inv (inventory.lua)
+    -- The falling crate, its canopy and the blip. Reads BR.Native (natives.lua)
+    -- for the blip name and BR.Clock (shared) for the descent; it creates no
+    -- loot of its own -- what lands is server registry entries arriving through
+    -- client/loot.lua like anything else.
+    'client/airdrop.lua',
     'client/dbno.lua',      -- downed + revive; yields the interact key from loot.lua
     -- The spectator camera. Needs BR.Keys (keybinds.lua) for the arrows and
     -- BR.Native (natives.lua) for the scoped ped lookup; client/lobbycam.lua
@@ -146,6 +162,11 @@ server_scripts {
     'server/storm.lua',     -- phase authority + the damage ledger
     'server/inventory.lua', -- BR.Inv: the authoritative inventory model
     'server/loot.lua',      -- world loot: layout, streaming, claim arbitration
+    -- Aerial supply drops. AFTER storm.lua and loot.lua for a reader rather
+    -- than for the loader: it asks BR.StormAt where the circle will be when the
+    -- crate arrives, and hands the contents to BR.Loot.spawnStack so they
+    -- inherit the hardened claim path. Both are call-time.
+    'server/airdrop.lua',
     'server/damage.lua',    -- M6: weaponDamageEvent validation and attribution
     'server/markers.lua',   -- player map markers: relay + squad scoping
     'server/chat.lua',

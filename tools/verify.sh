@@ -123,7 +123,13 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # module. It is worth the stubs: the capture rules -- three frames, one per
     # corroboration after ten seconds, nine and then stop -- can only be seen in
     # the game by drawing nine corroborations on one case.
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_client.lua tools/test_config.lua tools/test_admin.lua; do
+    #
+    # test_airdrop.lua is the third suite here to load a server file rather than
+    # a pure module, and it is worth the stubs for the same reason
+    # test_artifacts.lua is: the rules under test -- exactly one drop a match,
+    # never inside 250m of the wall, never past storm stage 4 -- take a whole
+    # match each to observe in the game and are wrong for weeks otherwise.
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_config.lua tools/test_admin.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1

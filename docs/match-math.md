@@ -61,12 +61,13 @@ that are data rather than logic (see [Testing](testing.md)).
 
 ## 1. Seeds, and why the same match never repeats
 
-Three independent seeds per match, each folded with a **different prime**:
+Four independent seeds per match, each folded with a **different prime**:
 
 ```
-lootSeed  = now + matchId × 15485863
-stormSeed = now + matchId ×     7919
-busSeed   = now + matchId ×   104729
+lootSeed    = now + matchId × 15485863
+stormSeed   = now + matchId ×     7919
+busSeed     = now + matchId ×   104729
+airdropSeed = now + matchId ×   1299709
 ```
 
 where `now` is `GetGameTimer()` — milliseconds since the resource started.
@@ -95,7 +96,15 @@ Subtract the second from the first:
 millisecond.** Match ids are allocated by increment and never reused, so within
 a single server run the probability is *exactly zero* — not small, structurally
 impossible. That is a stronger guarantee than one seed would give, and it is
-what the three different primes buy.
+what the four different primes buy.
+
+**A new subsystem takes a new prime, and the reason is not tidiness.** The
+airdrop (#88) draws its schedule, its landing POI and its contents from
+`airdropSeed`. Had it drawn them from `lootSeed` instead — the obvious
+shortcut, since both are about loot — every draw it took would have shifted the
+entire downstream loot sequence, and every existing layout would have changed
+the day the airdrop shipped. Independent streams are what make a subsystem
+addable without moving anything already on the map.
 
 Across separate server runs, ids restart from the same base, so identity needs
 the same id to be minted at the same millisecond offset. Treating that offset as
@@ -110,6 +119,7 @@ themselves. One layout alone draws roughly:
 | ~3,200 items × (position, kind, rarity, item) | the loot layout |
 | ~24 | storm centres and breakout rolls |
 | ~10 | route chord, tour choice, anchor |
+| ~20 | airdrop: the probability roll, the delay, the POI, the heading, and one shuffle per pool it deals from |
 
 The binding constraint is therefore the seed, not the outcome space — which is
 exactly the right way round. Widening the seed widens everything downstream.

@@ -80,6 +80,18 @@ BR.Net = {
     STORM_SYNC      = 'br:storm:sync',       -- S->C  full storm record (also mirrored to GlobalState)
     STORM_DAMAGE    = 'br:storm:damage',     -- S->C  { amount, targetHp }
 
+    -- Aerial supply drops. ONE MESSAGE PER DROP, at the moment it is
+    -- committed: { n, poi, x, y, gz, alt, heading, tStart, tLand }. Both the
+    -- descent and the blip's lifetime are solved from it locally against the
+    -- synced clock, so nothing about a falling crate is ever on the wire --
+    -- the same bargain STORM_SYNC and BUS_ROUTE already make.
+    --
+    -- THE CONTENTS ARE NOT IN IT, deliberately, and for the same reason a
+    -- chest's are not: what is inside is the reason to run for it, and a
+    -- client that knew would only run for the good ones. They arrive as
+    -- ordinary LOOT_ADD entries when it bursts open.
+    AIRDROP_SYNC    = 'br:airdrop:sync',     -- S->C  one airdrop record
+
     -- Player-placed map markers (one per player; squad-visible in squads)
     MARKER_SET      = 'br:marker:set',       -- C->S  { x, y }
     MARKER_CLEAR    = 'br:marker:clear',     -- C->S  remove my marker
