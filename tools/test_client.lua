@@ -3410,6 +3410,117 @@ do
            .. 'a release never sent is a microphone latched open',
        table.concat(ran, ' '))
 
+    -- =====================================================================
+    -- A SPECTATOR LISTENS AND DOES NOT TALK. Both mechanisms, both edges.
+    --
+    -- "whoever is the spectator should NEVER be able to talk, only listen" --
+    -- the owner, and `NEVER` is what makes this block worth its length. The
+    -- rule has to hold on BOTH transmit paths, and the two are reached by
+    -- different code: squad goes out over +radiotalk and nearby goes out over
+    -- control 249. A gag written into BR.Voice.gagged() alone closes the
+    -- second and leaves the first wide open -- which is the worse half, since
+    -- the squad radio is exactly who a dead player's squadmates are.
+    --
+    -- BR.Spectate IS STUBBED because client/spectate.lua is not in loadAll's
+    -- list -- it is a camera, and standing one up here would mean stubbing
+    -- RenderScriptCams and the shape tests for no assertion's benefit. The
+    -- stub is a hazard of its own and the last assertion in this block is
+    -- what covers it: BR.Voice.silenced() reaches ACROSS files, so a rename
+    -- of the real function would leave the nil-guard answering "not
+    -- spectating" forever and every test here would still pass.
+    local realSpectate = BR.Spectate
+    local spectating = false
+    BR.Spectate = { active = function() return spectating end }
+
+    -- SQUAD, WHICH IS THE PATH THAT MATTERS. The press must not key the radio.
+    voiceApply(BR.VoiceMode.SQUAD, 30703, { 2 }, 1)
+    spectating = true
+    ran = {}
+    ptt(true)
+    ok(table.concat(ran, ' '):find('+radiotalk', 1, true) == nil,
+       'a press while spectating does NOT key the squad radio up -- the one '
+           .. 'path that reaches the dead player\'s own squad',
+       table.concat(ran, ' '))
+    ptt(false)
+
+    -- NEARBY, THE OTHER MECHANISM, ASSERTED SEPARATELY rather than assumed
+    -- from the one above. They are different code and have failed apart.
+    voiceApply(BR.VoiceMode.NEARBY, nil, nil, 1)
+    ptt(true)
+    ok(heldFrames(3) == 0,
+       'and it does not open the proximity microphone either -- both '
+           .. 'mechanisms, not whichever one the mode happens to use',
+       tostring(ptt249))
+    ptt(false)
+
+    -- THE EDGE THAT ACTUALLY HAPPENS: dying mid-sentence. The press was taken
+    -- while alive and entitled, the radio IS open, and then the session
+    -- starts. A rule checked only at the press would leave that microphone
+    -- open for the rest of the round.
+    voiceApply(BR.VoiceMode.SQUAD, 30703, { 2 }, 1)
+    spectating = false
+    ptt(true)
+    ran = {}
+    spectating = true
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(table.concat(ran, ' '):find('-radiotalk', 1, true) ~= nil,
+       'a radio already keyed up when the session STARTS is closed mid-hold -- '
+           .. 'dying with the key down is the ordinary way into spectating, '
+           .. 'and a press-time gate would never see it',
+       table.concat(ran, ' '))
+
+    -- ONCE, NOT EVERY FRAME. The close is an edge; spending an ExecuteCommand
+    -- per frame for as long as a dead player holds a key is a real cost at 48
+    -- players, and it is the obvious way to write this wrong.
+    ran = {}
+    BR.Loop.step(BR.Loop.FRAME)
+    BR.Loop.step(BR.Loop.FRAME)
+    ok(#ran == 0, 'and it is closed ONCE, not re-closed every frame',
+       table.concat(ran, ' '))
+    ptt(false)
+
+    -- AND IT LIFTS. A gag that cannot be given back is how a player who
+    -- stopped spectating spends the next round silent with nothing on screen
+    -- to explain it. Re-derived, never latched -- the same property the bus
+    -- rule is built on.
+    spectating = false
+    voiceApply(BR.VoiceMode.NEARBY, nil, nil, 1)
+    ptt(true)
+    ok(heldFrames(2) == 2,
+       'and stopping the session brings the microphone straight back, with no '
+           .. 'press in between',
+       tostring(ptt249))
+    ptt(false)
+
+    -- THE MASTER SWITCH IS ALSO THE PROXIMITY GAG, so /brvoice cannot report a
+    -- microphone the checks are refusing.
+    spectating = true
+    local sg, sw = BR.Voice.gagged()
+    ok(sg == true and type(sw) == 'string' and sw:find('spectat') ~= nil,
+       'gagged() answers for it too, in words, so the readout cannot drift '
+           .. 'from the behaviour',
+       tostring(sw))
+    spectating = false
+
+    -- THE CROSS-FILE CALL, ASSERTED ON THE REAL SOURCE.
+    --
+    -- BR.Voice.silenced() reads BR.Spectate.active() out of another file
+    -- behind a nil-guard, and the guard is not optional -- voice.lua loads
+    -- with or without a camera. But it means a RENAME on the other side fails
+    -- open and silently: silenced() would answer false forever, a spectator
+    -- would talk, and every assertion above would still pass against the stub.
+    -- So the name is pinned against the file that owns it.
+    local specFh = io.open(ROOT .. 'br_core/client/spectate.lua', 'r')
+    local specSrc = specFh and specFh:read('a') or nil
+    if specFh then specFh:close() end
+    ok(type(specSrc) == 'string'
+       and specSrc:find('function BR.Spectate.active', 1, true) ~= nil,
+       'and client/spectate.lua really defines BR.Spectate.active -- the stub '
+           .. 'above would otherwise be the only thing that does',
+       'BR.Spectate.active is not defined where voice.lua reaches for it')
+
+    BR.Spectate = realSpectate
+
     -- AND THE KEY IS LEFT UP, so nothing after this block inherits a hold.
     ok(heldFrames(2) == 0, 'and the key layer is left with nothing held',
        tostring(ptt249))

@@ -413,6 +413,45 @@ function BR.Voice.routing()
     return BR.VoiceRoutingFor(BR.Voice.mode())
 end
 
+--- MAY THIS PLAYER TRANSMIT AT ALL, ON ANY PATH?
+---
+--- ═══ THIS IS A DIFFERENT QUESTION FROM gagged() AND SITS ABOVE IT ═══
+---
+--- `gagged()` answers about the PROXIMITY microphone and says so at length; it
+--- is deliberately true in 'squad', where the radio carries instead. That makes
+--- it the wrong place to hang a rule that must cover BOTH paths -- a spectator
+--- gagged only by that function would still key up the squad radio, which is
+--- the one channel their dead squadmates are certainly listening to.
+---
+--- ═══ SPECTATING IS THE ONLY REASON TODAY, AND IT IS UNCONDITIONAL ═══
+---
+--- "whoever is the spectator should NEVER be able to talk, only listen" -- the
+--- owner. Not a preference, not a config key, and not varied by whether the
+--- session is a dead player's or an admin's.
+---
+--- IT ONLY CLOSES THE TRANSMIT HALF. Nothing here touches `audibleFor`, the
+--- mute sweep or the radio channel, so a spectator hears exactly what they
+--- heard a moment before they died. That is "only listen", and it is also what
+--- makes the owner's squad-voice proposal true as written: nothing changes when
+--- you spectate.
+---
+--- THE SERVER HOLDS THE SAME RULE and holds it harder -- server/voice.lua's
+--- BR.Voice.setSpectatorMuted mutes the connection at the Mumble server, which
+--- is the half a modified client cannot decline. This one exists because it is
+--- immediate, because it keeps /brvoice honest, and because it is what closes a
+--- radio key that is already held.
+---
+--- RE-ASKED, NEVER LATCHED, exactly like gagged() and the proximity check: a
+--- player who starts or stops spectating mid-press is right on the next frame.
+--- @return boolean silenced
+--- @return string|nil reason  human-readable, for /brvoice
+function BR.Voice.silenced()
+    if BR.Spectate and BR.Spectate.active and BR.Spectate.active() then
+        return true, 'spectating -- a spectator listens and does not talk'
+    end
+    return false, nil
+end
+
 --- Is our proximity microphone gagged, and why?
 ---
 --- ONE FUNCTION, TWO CALLERS, AND THAT IS THE POINT. The proximity check uses
@@ -428,6 +467,12 @@ end
 --- @return boolean gagged
 --- @return string|nil reason  human-readable, for /brvoice
 function BR.Voice.gagged()
+    -- THE MASTER SWITCH FIRST, so it cannot be reasoned around by a mode. See
+    -- BR.Voice.silenced: a spectator does not transmit on any path, and this is
+    -- the proximity path.
+    local off, why = BR.Voice.silenced()
+    if off then return true, why end
+
     local r = BR.Voice.routing()
 
     -- MODES THAT DO NOT ROUTE PROXIMITY AT ALL. Derived from the routing table
@@ -1244,6 +1289,19 @@ local PTT_CONTROL = 249
 --- and the radio has not been told yet, which is the window a latch lives in.
 local pttHeld = false
 
+--- Did WE key the radio up, and has nothing closed it since?
+---
+--- NOT THE SAME AS `pttHeld`, and the gap between them is the whole reason this
+--- exists: the key can be held while the radio is shut, which is exactly the
+--- state a player is in when they die mid-sentence and drop into spectating.
+--- The frame loop uses it to close the radio ONCE on that edge rather than
+--- spending an ExecuteCommand every frame for as long as the key is down.
+---
+--- IT DOES NOT GATE THE RELEASE HANDLER. That one stays unconditional for the
+--- reason argued below it -- a latch that has drifted must not be able to leave
+--- a microphone open with nothing left to close it.
+local radioOpen = false
+
 --- Drive pma-voice's radio push-to-talk. Guarded, never fatal.
 ---
 --- ExecuteCommand rather than an export because pma-voice offers no export for
@@ -1279,7 +1337,16 @@ BR.Keys.on(PTT_ACTION, function(pressed)
         -- and never on a mode name. A press in 'nearby' or 'off' has no radio
         -- to key up, and asking for one is how a mode learns about a channel
         -- it must not have.
-        if BR.Voice.routing().radio then radioTalk(true) end
+        --
+        -- AND ON THE MASTER SWITCH, which is the spectator half. It is checked
+        -- here as well as in the frame loop because this is the EDGE: without
+        -- it, a press taken while spectating opens the radio for the frame it
+        -- takes the loop to shut it again, and a frame of an open microphone is
+        -- a word.
+        if BR.Voice.routing().radio and not BR.Voice.silenced() then
+            radioTalk(true)
+            radioOpen = true
+        end
         return
     end
 
@@ -1295,12 +1362,26 @@ BR.Keys.on(PTT_ACTION, function(pressed)
     -- pma-voice's `-radiotalk` early-returns unless `radioChannel > 0 and
     -- radioPressed`, so it is a no-op for something it never started.
     pttHeld = false
+    radioOpen = false
     radioTalk(false)
 end)
 
 --- THE PROXIMITY HALF. One comparison per frame when the key is up.
 BR.Loop.register(BR.Loop.FRAME, 'voice.ptt', function()
     if not pttHeld then return end
+
+    -- THE SPECTATOR'S KEY IS DEAD IN BOTH HANDS, and the radio has to be shut
+    -- rather than merely not opened: dying with the key down is the ordinary
+    -- way into spectating, and the press that opened the radio happened while
+    -- the player was alive and entitled to it. Once, on the edge -- `radioOpen`
+    -- is what keeps this from being an ExecuteCommand every frame.
+    if BR.Voice.silenced() then
+        if radioOpen then
+            radioOpen = false
+            radioTalk(false)
+        end
+        return
+    end
     -- RE-ASKED EVERY FRAME, never latched at the press. A player who boards
     -- the bus, or whose match kind changes, while holding the key is gagged on
     -- the very next frame -- the same property the proximity check has, and
@@ -1764,6 +1845,17 @@ RegisterCommand('brvoice', function()
         tostring(BR.State and BR.State.match and BR.State.match.mode)))
     print(('  %-14sproximity %s, squad radio %s -- NEVER BOTH'):format('routes',
         r.proximity and 'ON' or 'off', r.radio and 'ON' or 'off'))
+
+    -- THE MASTER SWITCH, PRINTED SEPARATELY FROM THE PROXIMITY ONE.
+    --
+    -- `prox mic` below is about one path and is expected to say NO in squad
+    -- mode; folding the spectator rule into it alone would leave a playtester
+    -- reading "proximity is off, which is normal for squad" while the radio was
+    -- shut too and nothing said so. Same function the gates call, so it cannot
+    -- describe a rule the code is not running.
+    local mute, muteWhy = BR.Voice.silenced()
+    print(('  %-14s%s'):format('transmit',
+        mute and ('NO, ON ANY PATH -- ' .. tostring(muteWhy)) or 'allowed'))
 
     -- TRANSMIT. One line, and it is the truth as the proximity check will
     -- answer it on its next call -- same function, not a description of it.

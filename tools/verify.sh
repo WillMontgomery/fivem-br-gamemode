@@ -187,6 +187,20 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+# A spectator listens and does not talk -- the owner, unconditionally. The
+# CLIENT half of that rule is unit-tested (test_client drives the real key
+# through the real loop). This gate is for the SERVER half, which is not a
+# function with a value to assert but three call sites: two ways to open a
+# session and one to close it, each of which has to reach the mute. The defect
+# it is aimed at is an edge that does not call -- a fourth way to start
+# spectating, added later, that nobody remembers to mute.
+echo "${DIM}== spectator microphone ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_spectator_mic.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
 echo "${DIM}== forward locals ==${RST}"
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     # shellcheck disable=SC2046

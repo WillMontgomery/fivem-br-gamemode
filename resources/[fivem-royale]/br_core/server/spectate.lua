@@ -71,6 +71,32 @@ local function watch(src, target)
     w[src] = true
 end
 
+-- ------------------------------------------------------------- microphone ---
+
+--- A SPECTATOR MAY LISTEN AND MAY NOT TALK. Unconditional, both kinds.
+---
+--- "whoever is the spectator should NEVER be able to talk, only listen" -- the
+--- owner. It is not a config key and not a policy that varies by `kind`: a dead
+--- player narrating their squad's fight and an admin whose voice arrives out of
+--- nowhere beside a suspect are the same defect, and the second is worse.
+---
+--- IT IS CALLED FROM EXACTLY TWO PLACES BECAUSE THERE ARE EXACTLY TWO EDGES --
+--- `sessions[src]` gaining an entry and losing one. Both creation sites
+--- (`resolve` for a player, `adminStart` for an admin) funnel through the same
+--- call, and `BR.Spectate.stop` is the only teardown; anything that adds a
+--- third edge without coming here is a spectator with an open microphone.
+---
+--- THE MUTE ITSELF IS SERVER-SIDE -- see BR.Voice.setSpectatorMuted, which
+--- argues why the client's own gag is not enough on its own and why muted is
+--- deliberately not deafened.
+--- @param src integer
+--- @param on boolean
+local function micFor(src, on)
+    if BR.Voice and BR.Voice.setSpectatorMuted then
+        BR.Voice.setSpectatorMuted(src, on)
+    end
+end
+
 -- ------------------------------------------------------------------ audit ---
 
 --- Tell the console that an admin session started, moved or ended.
@@ -133,6 +159,12 @@ function BR.Spectate.stop(src, reason)
 
     sessions[src] = nil
     unwatch(src, s.target)
+    -- THE MICROPHONE COMES BACK BEFORE ANYTHING ELSE CAN FAIL. Ordered ahead of
+    -- the audit and the client push on purpose: those two reach other resources
+    -- and a raise in either would otherwise leave a player who has stopped
+    -- spectating unable to speak for the rest of the round, with nothing on
+    -- their screen to explain it.
+    micFor(src, false)
     audit(s, 'stop', reason)
 
     -- TOLD EVEN IF THEY ARE GONE. TriggerClientEvent to a departed source is a
@@ -238,6 +270,7 @@ local function resolve(src, dir)
         }
         sessions[src] = s
         watch(src, pick.src)
+        micFor(src, true)
     end
 
     push(src, s)
@@ -317,6 +350,7 @@ function BR.Spectate.adminStart(opts)
     }
     sessions[src] = s
     watch(src, target)
+    micFor(src, true)
     audit(s, 'start')
     push(src, s)
 
@@ -352,8 +386,18 @@ end)
 AddEventHandler('playerDropped', function()
     local gone = source
 
-    -- Their own session, if they were watching.
+    -- Their own session, if they were watching. This is also what gives the
+    -- microphone back, which matters even though they are leaving: the src is
+    -- handed to the next person to connect within the minute, and a mute record
+    -- left standing against it would follow them.
     BR.Spectate.stop(gone, 'left')
+
+    -- AND THE RECORD GOES EVEN IF THERE WAS NO SESSION TO STOP. `stop` returns
+    -- early for a player who was not spectating, so it is not a place to hang
+    -- cleanup that must happen either way.
+    if BR.Voice and BR.Voice.forgetSpectatorMute then
+        BR.Voice.forgetSpectatorMute(gone)
+    end
 
     -- And everyone watching THEM.
     local w = watchers[gone]

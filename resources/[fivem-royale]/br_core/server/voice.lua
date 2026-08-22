@@ -237,6 +237,109 @@ end
 --- restarts, which is why registration is lazy rather than done at start.
 local checked = {}
 
+-- ------------------------------------------------- the spectator's microphone ---
+
+--- Did a native declared BOOL actually say yes?
+---
+--- `MumbleIsPlayerMuted` is declared BOOL and a FiveM native declared BOOL may
+--- hand Lua a NUMBER on some builds -- and IN LUA `0` IS TRUTHY, so
+--- `if MumbleIsPlayerMuted(src) then` reads "muted" for a player who is not.
+--- This repo has shipped that exact bug four times; client/spectate.lua carries
+--- the same normaliser under the name `didHit`. Getting it wrong here would
+--- mean never taking the mute (every player looks already-muted) and never
+--- giving it back, so it is worth six lines.
+--- @param v any
+--- @return boolean
+local function isYes(v)
+    return v == 1 or v == true
+end
+
+--- Players WE are holding a transmit mute on, and nobody else.
+---
+--- THE SET EXISTS SO THE MUTE CAN BE GIVEN BACK WITHOUT STEALING SOMEBODY
+--- ELSE'S. pma-voice's own `/muteply` writes the same native, so "unmute on
+--- stop" as an unconditional call would quietly lift a moderator's mute the
+--- moment a muted player died and started spectating their squad.
+--- @type table<integer, boolean>
+local specMuted = {}
+
+--- Take or return a spectator's microphone. Server-side, and transmit only.
+---
+--- ═══ WHY THE SERVER AND NOT ONLY THE CLIENT ═══
+---
+--- "whoever is the spectator should NEVER be able to talk, only listen" -- the
+--- owner, and `NEVER` is why this is not left to client/voice.lua's gag alone.
+--- Under pma-voice the transmit decision genuinely is the speaker's, on the
+--- speaker's machine (the argument is at the top of this file), so a client-side
+--- gag is a rule a modified client simply declines to follow. `MumbleSetPlayerMuted`
+--- is applied by the Mumble server to the connection itself, so it is the half
+--- that holds when the client is hostile.
+---
+--- THE CLIENT GAG IS STILL THERE AND IS NOT REDUNDANT. It stops the honest
+--- client transmitting on the frame the session opens rather than on the round
+--- trip, it keeps `/brvoice` telling the truth, and it closes the radio key that
+--- may already be held. Two halves, different failure modes.
+---
+--- ═══ MUTED IS NOT DEAFENED ═══
+---
+--- Mumble separates them and only the first is taken. A dead player watching
+--- their squad still HEARS the squad radio and still hears whoever their mode
+--- makes audible -- which is the whole of "only listen", and is also what keeps
+--- the owner's squad-voice proposal (nothing changes when you spectate) intact.
+--- Nothing here touches the radio channel: evicting them would have been the
+--- obvious lever and it is the wrong one, because leaving the channel is how you
+--- stop HEARING it.
+---
+--- @param src integer
+--- @param on boolean  true to take the microphone, false to give it back
+function BR.Voice.setSpectatorMuted(src, on)
+    src = math.tointeger(tonumber(src))
+    if not src then return end
+    if MumbleSetPlayerMuted == nil then return end
+
+    if on then
+        if specMuted[src] then return end
+        -- ALREADY MUTED BY SOMEBODY ELSE: leave it entirely alone. We neither
+        -- take it nor record it, so the stop below will not hand back a mute we
+        -- were never holding.
+        if MumbleIsPlayerMuted ~= nil then
+            local ok, already = pcall(MumbleIsPlayerMuted, src)
+            if ok and isYes(already) then return end
+        end
+        local ok = pcall(MumbleSetPlayerMuted, src, true)
+        if not ok then
+            -- LOUD, because this is the security half failing open. The client
+            -- gag still applies, so an honest client is still silent; what is
+            -- lost is the guarantee against a modified one.
+            print(('[br_core] VOICE: could not mute spectator %d at the Mumble '
+                .. 'server. A modified client could transmit while spectating.')
+                :format(src))
+            return
+        end
+        specMuted[src] = true
+        -- pma-voice mirrors this native into a statebag its own client reads;
+        -- writing both is what keeps its UI from showing an open microphone.
+        pcall(function() Player(src).state.muted = true end)
+        return
+    end
+
+    if not specMuted[src] then return end
+    specMuted[src] = nil
+    pcall(MumbleSetPlayerMuted, src, false)
+    pcall(function() Player(src).state.muted = false end)
+end
+
+--- Drop our bookkeeping for a departed player.
+---
+--- The native call is pointless for a connection that is gone and the src will
+--- be handed to somebody else within the minute -- a stale `true` here would
+--- make the next holder of that id unmutable by this file.
+--- @param src integer
+function BR.Voice.forgetSpectatorMute(src)
+    src = math.tointeger(tonumber(src))
+    if src then specMuted[src] = nil end
+end
+
 local function guard(channel)
     if not channel or checked[channel] then return end
     if not present() then return end
