@@ -122,6 +122,11 @@ RegisterCommand('brhelp', function()
     print('  brstrips             unissued weapons taken out of hands, and')
     print('                       how many reports were refused and why')
     print('  brloot [matchId]     world loot: counts by kind and rarity, subscriptions')
+    print('  brlootnear <id> [r]  every entry within r (50m) of that player, and')
+    print('                       whether the claim path would accept it: the')
+    print('                       registry position, reach, and whether a repair')
+    print('                       would land. The reader for "that crate will')
+    print('                       not open".')
     print('  brlootsim [n] [tier] roll the crate table n times and print the')
     print('                       distribution -- including the share of crates')
     print('                       that hold a gun. Retune loot without playing.')
@@ -486,6 +491,166 @@ RegisterCommand('brloot', function(_, args)
     end)
 
     if not any then print('  no matches running') end
+end, RESTRICTED)
+
+--- One player, the loot around them, and why each piece of it will or will not
+--- open.
+---
+---   brlootnear <serverId> [radius]      radius defaults to 50m
+---
+--- WHAT brloot CANNOT ANSWER. It counts by kind and rarity, which settles "is
+--- the layout right" and says nothing at all about any single entry -- so "I am
+--- stood in front of that crate and it says Too far away" had no reading on
+--- this box short of adding prints to server/loot.lua and restarting (#195).
+--- An entity-specific bug needs a per-entity instrument.
+---
+--- IT RUNS THE REAL CHECKS. BR.Loot.inspect calls the same inReach the claim
+--- handler calls and the same fixOk the repair handler calls, on the same
+--- roster entry, so the `reach` column is not a model of the refusal -- it IS
+--- the refusal. Anything else would be a second opinion, and a second opinion
+--- is worthless against a bug whose entire nature is two positions disagreeing.
+---
+--- THE COLUMN TO READ FIRST IS `at`. Every other symptom follows from it: the
+--- server validates a claim against the REGISTRY position printed there, and
+--- the client prompts off its own mirror of the entry, which it slaves to the
+--- prop. Those are the same place right up until they are not.
+RegisterCommand('brlootnear', function(_, args)
+    local src = tonumber(args[1])
+    if not src then
+        print('  usage: brlootnear <serverId> [radius]')
+        print('    every loot entry the server has within radius (default 50m)')
+        print('    of that player, and whether the claim path would accept it')
+        return
+    end
+
+    local radius = math.max(1.0, math.min(1000.0, tonumber(args[2]) or 50.0))
+    local rows, info = BR.Loot.inspect(src, radius)
+
+    local p = BR.Server.roster[src]
+    header(('loot near %s (%d)'):format(p and p.name or '?', src))
+
+    if info and info.why then
+        print(('  %s'):format(info.why))
+        return
+    end
+    if not info then
+        print(('  no roster entry for %d'):format(src))
+        return
+    end
+
+    print(('  zone           %s'):format(
+        info.warmup and 'the shared warmup pad' or ('match ' .. tostring(info.zone))))
+    print(('  state          %s   may take: %s'):format(
+        tostring(info.state), info.canTake and 'yes' or 'NO'))
+    print(('  position       %s%s'):format(
+        info.pos and ('%.1f, %.1f, %.1f'):format(info.pos.x, info.pos.y, info.pos.z)
+                 or 'not sampled yet',
+        info.posAgeMs and ('   (sampled %s ago)'):format(secs(info.posAgeMs)) or ''))
+    print(('  refuses past   %.1fm, and past %.1fm of height once repaired')
+        :format(info.reachMax, info.reachZ))
+    print(('  repairs        accepted within %.1fm, at most once per %s per container')
+        :format(info.fixRadius, secs(info.fixCool)))
+
+    if not rows then
+        print('  no position sampled for this player, so nothing can be tested')
+        return
+    end
+
+    print(('  %d of %d entries in this zone are within %.0fm')
+        :format(#rows, info.total, radius))
+    line('-')
+
+    -- Nearest first, and capped: a landing at a dense POI has a hundred
+    -- entries in range and the answer is always in the first few.
+    local shown = {}
+    for i = 1, math.min(#rows, 24) do
+        local r = rows[i]
+        shown[#shown + 1] = {
+            id    = r.id,
+            kind  = r.kind,
+            item  = r.item or '-',
+            at    = ('%.0f,%.0f'):format(r.x, r.y),
+            dist  = ('%.1f'):format(r.d),
+            dz    = ('%.1f'):format(r.dz),
+            rep   = r.repaired and 'yes' or 'no',
+            fixed = r.fixAgeMs and ('%.1fs'):format(r.fixAgeMs / 1000.0) or '-',
+            sub   = r.subbed and 'yes' or 'NO',
+            reach = r.reach and 'yes' or 'NO',
+            fix   = r.fix and 'yes' or (r.fixWhy or '?'),
+        }
+    end
+
+    grid({
+        { title = 'id',    width = 5,  key = 'id' },
+        -- 10, because 'consumable' is 10 and a kind that overflows its column
+        -- pushes every field after it out of line for that row only -- which
+        -- is the one row you were reading.
+        { title = 'kind',  width = 10, key = 'kind' },
+        { title = 'item',  width = 12, key = 'item' },
+        { title = 'at',    width = 15, key = 'at' },
+        { title = 'dist',  width = 6,  key = 'dist' },
+        { title = 'dz',    width = 6,  key = 'dz' },
+        { title = 'rep',   width = 3,  key = 'rep' },
+        { title = 'fixed', width = 6,  key = 'fixed' },
+        { title = 'sub',   width = 3,  key = 'sub' },
+        { title = 'reach', width = 5,  key = 'reach' },
+        { title = 'fix',   width = 12, key = 'fix' },
+    }, shown)
+
+    if #rows > #shown then
+        print(('  ... and %d more, nearest first'):format(#rows - #shown))
+    end
+
+    -- WHAT THE GRID MEANS, for the two shapes this was built to tell apart.
+    -- Both look identical from a chair -- a crate you are stood in front of
+    -- that will not open -- and they have different fixes, so the reading is
+    -- spelled out rather than left to be inferred from ten columns.
+    line('-')
+    local said = false
+    for _, r in ipairs(rows) do
+        if not r.reach and r.d > info.reachMax then
+            -- Refused on 2D distance. Whether it can ever recover is the whole
+            -- question: an entry that cannot be re-anchored either is stuck
+            -- there, and that is the shape being hunted.
+            print(('  #%d (%s) is %.1fm away IN THE REGISTRY, at %.1f, %.1f.')
+                :format(r.id, r.kind, r.d, r.x, r.y))
+            if r.fixWhy == 'too far' then
+                print('    A repair from where this player stands is refused as')
+                print(('    well, being past the %.0fm bound. If they are stood at')
+                    :format(info.fixRadius))
+                print('    the crate, the registry has stopped following the prop')
+                print('    and cannot catch up.')
+            elseif not r.fix then
+                -- Some other rule refused the repair, and saying "cannot catch
+                -- up" here would be a diagnosis rather than a reading: a
+                -- cooldown clears on its own and an unsubscribed cell is the
+                -- ordinary state of anything a couple of hundred metres off.
+                print(('    A repair is refused right now: %s.'):format(r.fixWhy))
+            end
+            said = true
+        elseif not r.reach and r.repaired then
+            -- Inside the 2D bound and repaired, so inReach can only have
+            -- refused on height.
+            print(('  #%d (%s) is %.1fm away but %.1fm of height from this player,')
+                :format(r.id, r.kind, r.d, math.abs(r.dz)))
+            print(('    and it is repaired, so the %.1fm height check applies.')
+                :format(info.reachZ))
+            said = true
+        elseif not r.reach then
+            -- Neither clause explains it. Says so rather than guessing: a
+            -- reader who is told a reason that is not the reason is worse off
+            -- than one who is told the rule moved.
+            print(('  #%d (%s) is %.1fm away and unreachable for a reason neither')
+                :format(r.id, r.kind, r.d))
+            print('    the distance nor the height clause accounts for.')
+            said = true
+        end
+    end
+    if not said then
+        print('  Every entry listed would be accepted from where this player is.')
+        print('  If a crate is refusing, its registry position is further than')
+        print(('    %.0fm away -- re-run with a bigger radius.'):format(radius))
+    end
 end, RESTRICTED)
 
 --- Roll the crate table N times and print what came out.

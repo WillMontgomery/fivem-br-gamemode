@@ -508,6 +508,13 @@ end)
 -- Claims
 -- --------------------------------------------------------------------------
 
+--- The two numbers inReach refuses on, named rather than inline because
+--- BR.Loot.inspect PRINTS them. A diagnostic carrying its own copy of the
+--- bound it is reporting on is a diagnostic that lies at exactly the moment it
+--- matters -- when the rule has moved and the reader has not.
+local REACH_SLACK = 4.0
+local REACH_Z     = 12.0
+
 --- Is this player close enough to that entry to have taken it?
 ---
 --- The position being compared is the roster's own 4Hz sample, so it can be
@@ -520,9 +527,8 @@ end)
 --- @return boolean
 local function inReach(e, item)
     if not e.pos then return false end
-    local slack = 4.0
     local d = BR.Dist(e.pos.x, e.pos.y, item.x, item.y)
-    if d > (L.pickupDistance + slack) then return false end
+    if d > (L.pickupDistance + REACH_SLACK) then return false end
 
     -- THE HEIGHT CHECK ONLY APPLIES TO A HEIGHT WE ACTUALLY KNOW.
     --
@@ -537,7 +543,7 @@ local function inReach(e, item)
     -- having again: it stops someone on the floor above claiming the rifle
     -- downstairs.
     if item.repaired then
-        return math.abs((e.pos.z or 0.0) - (item.z or 0.0)) < 12.0
+        return math.abs((e.pos.z or 0.0) - (item.z or 0.0)) < REACH_Z
     end
     return true
 end
@@ -947,6 +953,49 @@ local FIX_RADIUS = 30.0
 -- it can already see by up to 30m, once per entry -- which is a worse outcome
 -- for them than leaving it where it is, and strictly better than the status
 -- quo of items floating in the Pacific.
+
+--- How long a container must wait between accepted repairs. A rolling crate
+--- would otherwise send one of these per frame for as long as it rolls.
+local FIX_COOLDOWN_MS = 1500
+
+--- May this player move this entry to (x, y) right now?
+---
+--- EVERY RULE THE LOOT_FIX HANDLER ENFORCES, IN ONE PLACE THE DIAGNOSTIC CAN
+--- ALSO CALL. BR.Loot.inspect reports whether a repair would be accepted, and
+--- the only way that report can be trusted is for it to ask the same function
+--- the handler asks. A second copy would be a reader that agrees with the rule
+--- until the day the rule changes, which is the day you are reading it.
+---
+--- The refusal REASON is returned for the diagnostic only; the handler drops
+--- it on the floor, because a client is told nothing about a rejected repair
+--- (see the oracle note above the claim handler).
+--- @param m table zone
+--- @param src integer
+--- @param item table
+--- @param x number
+--- @param y number
+--- @return boolean ok
+--- @return string|nil why
+local function fixOk(m, src, item, x, y)
+    -- ONCE PER ENTRY -- EXCEPT FOR CONTAINERS, which are physical and can be
+    -- pushed around by a vehicle for as long as anyone cares to. A crate whose
+    -- registry position stopped following its prop is a crate you can see and
+    -- cannot open, so those get to keep moving; the per-move bound still
+    -- applies to each step, and a cooldown stops a rolling crate flooding the
+    -- server (user, 2026-08-06).
+    local isContainer = item.kind == 'chest' or item.kind == 'deathbox'
+    if item.repaired and not isContainer then return false, 'once-only' end
+    if isContainer and GetGameTimer() - (item.fixedAt or 0) < FIX_COOLDOWN_MS then
+        return false, 'cooldown'
+    end
+
+    -- Must be a place this player is actually looking at, and a small move.
+    local subs = m.loot.subs[src]
+    if not subs or not subs[item.cell] then return false, 'unsubscribed' end
+    if BR.Dist(x, y, item.x, item.y) > FIX_RADIUS then return false, 'too far' end
+    return true, nil
+end
+
 -- NPC WEAPON DROPS.
 --
 -- Ambient peds are client-side: the server has never heard of them, cannot see
@@ -1043,19 +1092,7 @@ AddEventHandler(BR.Net.LOOT_FIX, function(d)
     local item = m.loot.items[id]
     if not item then return end
 
-    -- ONCE PER ENTRY -- EXCEPT FOR CONTAINERS, which are physical and can be
-    -- pushed around by a vehicle for as long as anyone cares to. A crate whose
-    -- registry position stopped following its prop is a crate you can see and
-    -- cannot open, so those get to keep moving; the per-move bound still
-    -- applies to each step, and a cooldown stops a rolling crate flooding the
-    -- server (user, 2026-08-06).
-    local isContainer = item.kind == 'chest' or item.kind == 'deathbox'
-    if item.repaired and not isContainer then return end
-    if isContainer and GetGameTimer() - (item.fixedAt or 0) < 1500 then return end
-
-    -- Must be a place this player is actually looking at, and a small move.
-    if not m.loot.subs[src] or not m.loot.subs[src][item.cell] then return end
-    if BR.Dist(x, y, item.x, item.y) > FIX_RADIUS then return end
+    if not fixOk(m, src, item, x, y) then return end
 
     item.repaired = true
     item.fixedAt = GetGameTimer()
@@ -1072,6 +1109,89 @@ AddEventHandler(BR.Net.LOOT_FIX, function(d)
     -- clients holding it move the entry rather than duplicating it.
     announce(m, item)
 end)
+
+--- What the claim path believes about the entries nearest a player.
+---
+--- THE READER FOR ONE CRATE, because there was not one. brloot counts by kind
+--- and rarity, which answers "is the layout right" and cannot answer "why will
+--- THAT box not open" -- and the difference between those two questions is a
+--- whole class of bug that is invisible from a chair (#195).
+---
+--- IT ASKS THE REAL FUNCTIONS. inReach and fixOk are the ones the LOOT_CLAIM
+--- and LOOT_FIX handlers ask, called here with the same roster entry, so a row
+--- saying `reach no` is the identical computation that produced "Too far
+--- away". Reimplementing either would have made this a second opinion, and a
+--- second opinion is worth nothing against a bug whose whole nature is that
+--- two positions disagree.
+---
+--- THE POSITION IT TESTS A REPAIR FROM IS THE PLAYER'S. The server has never
+--- seen the prop -- crates are client-side objects and only a client knows
+--- where one actually is -- so the closest thing to "could this crate be
+--- re-anchored to where it visibly is" is "would a repair from where the
+--- reporting player stands be accepted". A player standing at the crate makes
+--- that the same question.
+--- @param src integer
+--- @param radius number
+--- @return table|nil rows nearest first
+--- @return table info what the reader needs to interpret them
+function BR.Loot.inspect(src, radius)
+    local e = BR.Roster.get(src)
+    if not e then return nil, { why = 'no roster entry' } end
+
+    local m = zoneFor(src)
+    if not m then
+        return nil, { why = ('state %s is in no loot zone'):format(tostring(e.state)) }
+    end
+
+    local info = {
+        zone      = m.id,
+        warmup    = m.warmup and true or false,
+        state     = e.state,
+        canTake   = CAN_TAKE[e.state] and true or false,
+        pos       = e.pos,
+        posAgeMs  = e.posAt and (GetGameTimer() - e.posAt) or nil,
+        reachMax  = L.pickupDistance + REACH_SLACK,
+        reachZ    = REACH_Z,
+        fixRadius = FIX_RADIUS,
+        fixCool   = FIX_COOLDOWN_MS,
+        total     = 0,
+    }
+    for _ in pairs(m.loot.items) do info.total = info.total + 1 end
+
+    if not e.pos then return nil, info end
+
+    local subs = m.loot.subs[src] or {}
+    local now  = GetGameTimer()
+    local rows = {}
+    for _, item in pairs(m.loot.items) do
+        local d = BR.Dist(e.pos.x, e.pos.y, item.x, item.y)
+        if d <= radius then
+            local fix, fixWhy = fixOk(m, src, item, e.pos.x, e.pos.y)
+            rows[#rows + 1] = {
+                id       = item.id,
+                kind     = item.kind,
+                item     = item.item,
+                x        = item.x, y = item.y, z = item.z,
+                cell     = item.cell,
+                subbed   = subs[item.cell] and true or false,
+                repaired = item.repaired and true or false,
+                fixAgeMs = item.fixedAt and (now - item.fixedAt) or nil,
+                d        = d,
+                dz       = (e.pos.z or 0.0) - (item.z or 0.0),
+                reach    = inReach(e, item),
+                fix      = fix,
+                fixWhy   = fixWhy,
+            }
+        end
+    end
+    -- Nearest first, id as the tiebreak: two entries at the same distance must
+    -- not swap places between two runs of a command you are diffing.
+    table.sort(rows, function(a, b)
+        if a.d ~= b.d then return a.d < b.d end
+        return a.id < b.id
+    end)
+    return rows, info
+end
 
 -- --------------------------------------------------------------------------
 -- Housekeeping

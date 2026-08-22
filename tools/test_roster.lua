@@ -4048,6 +4048,227 @@ do
     ok(m.loot.items[far.id] ~= nil, 'a corpse cannot pick things up')
 end
 
+-- THE REPAIR ROUND-TRIP, AND THE INSTRUMENT THAT READS IT (#195).
+--
+-- Owner, 2026-08-22: "I go to open the crate, the ring fills, then it refuses
+-- with 'Too far away' despite me standing right in front of it. I can only
+-- repro it on the same crate entity."
+--
+-- THE REPAIR PATH HAD NO TESTS AT ALL, which is how a permanent, per-entity
+-- trap lived in it unnoticed: every rule it enforces was reachable only by
+-- pushing a real crate with a real car on a real box, and the failure it
+-- produces is silent by design (a rejected repair tells the client nothing,
+-- for the same anti-oracle reason a rejected claim does not say why).
+--
+-- WHAT IS PINNED HERE IS THE BOUND, NOT THE TRAP. "A shove past the bound does
+-- not move the registry" is the anti-cheat property and must survive any fix:
+-- a client that could relocate a crate at will would open loot it is not
+-- standing next to. The two assertions marked THE TRAP describe the
+-- CONSEQUENCE of that bound as it currently stands -- a crate the registry has
+-- fallen behind on can be neither claimed nor re-anchored -- and they are the
+-- ones a fix is expected to change.
+--
+-- THE LOOSE-ITEM HALF OF THE REPAIR RULES IS PINNED IN `loot.repair` further
+-- down: once-only, the 30m bound, and the subscription. This block is the
+-- CONTAINER exemption to the first of those, which is the only path on which
+-- an entry can be repaired twice -- and therefore the only one on which the
+-- registry can fall behind a moving prop.
+describe('loot.repair.container')
+do
+    local m = lootMatch()
+
+    -- A CONTAINER, because only containers may be repaired more than once. The
+    -- exemption exists precisely because a crate is physical and can be shoved
+    -- around for as long as anyone cares to.
+    local crate
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and e.kind == 'chest' then crate = e break end
+    end
+    ok(crate ~= nil, 'the layout contains a crate to shove')
+
+    local cx, cy = BR.LootCellOf(crate.x, crate.y)
+    standOn(1, crate)
+    fire(BR.Net.LOOT_CELL, 1, { cx = cx, cy = cy })
+
+    local x0, y0, z0 = crate.x, crate.y, crate.z
+
+    ok(BR.Loot.inspect(1, 50.0) ~= nil, 'the inspector answers for a live player')
+    local function rowFor(id, radius)
+        local rows, info = BR.Loot.inspect(1, radius or 300.0)
+        for _, r in ipairs(rows or {}) do
+            if r.id == id then return r, info end
+        end
+        return nil, info
+    end
+
+    local at0 = rowFor(crate.id, 50.0)
+    ok(at0 and at0.reach == true,
+        'a crate underfoot reads as reachable before anything moves it')
+    ok(at0 and at0.fixAgeMs == nil,
+        'and reads as never repaired, because nothing has repaired it')
+
+    -- THE SLACK IS REAL, and it is the whole reason the client's prompt and the
+    -- server's check can normally disagree without anyone noticing: the roster
+    -- samples at 4Hz, so an honest claim arrives from up to a sprint-second
+    -- behind. A claim from five metres is PAST the client's prompt range and
+    -- still accepted here.
+    BR.Roster.get(1).pos = { x = x0 + 5.0, y = y0, z = z0 }
+    local slack, sinfo = rowFor(crate.id, 50.0)
+    ok(slack and slack.d > BR.Config.Loot.pickupDistance and slack.reach == true,
+        'a claim from beyond the prompt range is still inside the server bound',
+        slack and ('%.1fm vs prompt %.1fm'):format(slack.d, BR.Config.Loot.pickupDistance))
+    ok(sinfo and sinfo.reachMax > BR.Config.Loot.pickupDistance,
+        'and the inspector reports the bound WITH its slack, not the raw radius')
+    standOn(1, crate)
+
+    -- A SHOVE THE SERVER ACCEPTS. Inside FIX_RADIUS, so the registry follows
+    -- the prop -- this is #194's "a crate can be pushed by a car and still
+    -- opens", and it must keep working.
+    fakeTime = fakeTime + 2000
+    fire(BR.Net.LOOT_FIX, 1, { id = crate.id, x = x0 + 10.0, y = y0, z = z0 })
+    ok(math.abs(crate.x - (x0 + 10.0)) < 0.01,
+        'a shove inside the bound takes the registry with it',
+        ('%.1f'):format(crate.x - x0))
+
+    -- THE COOLDOWN, which is what stops a rolling crate flooding the server.
+    fire(BR.Net.LOOT_FIX, 1, { id = crate.id, x = x0 + 12.0, y = y0, z = z0 })
+    ok(math.abs(crate.x - (x0 + 10.0)) < 0.01,
+        'a second repair inside the cooldown is refused')
+    local cooling = rowFor(crate.id)
+    ok(cooling and cooling.fix == false and cooling.fixWhy == 'cooldown',
+        'and the inspector names the cooldown as the reason',
+        cooling and tostring(cooling.fixWhy))
+    ok(cooling and cooling.fixAgeMs == 0,
+        'and reports it was repaired just now',
+        cooling and tostring(cooling.fixAgeMs))
+
+    -- THE ANTI-CHEAT PROPERTY. A client must not be able to move a crate
+    -- somewhere convenient and open loot it is not standing next to.
+    fakeTime = fakeTime + 2000
+    local aged = rowFor(crate.id)
+    ok(aged and aged.fixAgeMs == 2000,
+        'the age of the last repair tracks the clock',
+        aged and tostring(aged.fixAgeMs))
+
+    fire(BR.Net.LOOT_FIX, 1, { id = crate.id, x = x0 + 100.0, y = y0, z = z0 })
+    ok(math.abs(crate.x - (x0 + 10.0)) < 0.01,
+        'a shove past the bound does not move the registry',
+        ('%.1f'):format(crate.x - x0))
+
+    -- THE OWNER'S SYMPTOM, REPRODUCED. The player is stood where the prop now
+    -- is; the registry is 100m behind it, on BOTH axes -- a crate is shoved
+    -- across a car park, not along a rail, and a distance that only looked at
+    -- one axis would read this as reachable.
+    BR.Roster.get(1).pos = { x = x0 + 70.0, y = y0 + 80.0, z = z0 }
+    sent = {}
+    fire(BR.Net.LOOT_CLAIM, 1, { id = crate.id })
+    local refused
+    for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do
+        if s.target == 1 then refused = s.args[1].text end
+    end
+    ok(refused == 'Too far away.', 'the reported symptom, reproduced',
+        tostring(refused))
+    ok(m.loot.items[crate.id] ~= nil, 'and the crate is still sat there')
+
+    local row, info = rowFor(crate.id)
+    ok(row ~= nil, 'brlootnear finds the crate the claim just refused')
+    ok(row and math.abs(row.d - 100.0) < 0.5,
+        'and measures to the REGISTRY position, which is what refused it',
+        row and ('%.1f'):format(row.d))
+    ok(row and row.reach == false and row.d > info.reachMax,
+        'and gives the same verdict the claim handler gave, for the same reason')
+    ok(row and row.subbed == true,
+        'the entry is still subscribed, so this is not the oracle path')
+
+    -- THE TRAP ITSELF. Not reachable and not repairable is a crate that can see
+    -- out and never get back: every later repair is measured against the stale
+    -- position, so the gap can only grow. These two are what a fix changes.
+    ok(row and row.fix == false and row.fixWhy == 'too far',
+        'a repair from where the player stands is refused too',
+        row and tostring(row.fixWhy))
+    ok(row and not row.reach and not row.fix,
+        'so the crate is permanently unopenable: the registry has stopped '
+        .. 'following the prop and cannot catch up')
+
+    -- THE RADIUS IS THE SEARCH, and getting it wrong is how this instrument
+    -- would miss the very entry it exists to find: a stale registry position
+    -- can be hundreds of metres from the player, so a reader who trusts the
+    -- default and sees nothing must be seeing a real nothing.
+    ok(rowFor(crate.id, 50.0) == nil, 'a radius short of the entry excludes it')
+    ok(rowFor(crate.id, 300.0) ~= nil, 'and a radius past it includes it')
+
+    -- NEAREST FIRST. The command prints the first 24 rows, so an order that
+    -- was not by distance would drop the interesting entry off the bottom at
+    -- exactly a dense POI, where this is hardest to debug by eye.
+    local ordered = BR.Loot.inspect(1, 300.0)
+    local sorted = true
+    for i = 2, #(ordered or {}) do
+        if ordered[i].d < ordered[i - 1].d then sorted = false break end
+    end
+    ok(ordered and #ordered > 1 and sorted, 'rows come back nearest first',
+        ordered and ('%d rows'):format(#ordered))
+
+    -- AN ENTRY OUTSIDE THE SUBSCRIPTION READS AS OUTSIDE IT. On the wire that
+    -- case is deliberately indistinguishable from "already gone" -- see the
+    -- oracle note in server/loot.lua -- and the console is the one place the
+    -- difference may be shown, because it is the only place it is needed.
+    local unsub, unsubD
+    for id = 1, m.loot.nextId do
+        local e = m.loot.items[id]
+        if e and not m.loot.subs[1][e.cell] then
+            unsub = e
+            unsubD = BR.Dist(x0 + 70.0, y0 + 80.0, e.x, e.y)
+            break
+        end
+    end
+    ok(unsub ~= nil, 'the layout has an entry this player never subscribed to')
+    if unsub then
+        local urow = rowFor(unsub.id, unsubD + 10.0)
+        ok(urow and urow.subbed == false,
+            'and the inspector says so rather than reporting it as visible')
+    end
+
+    -- THE OTHER WAY inReach REFUSES, and the reason the inspector prints both
+    -- coordinates and a height delta rather than a verdict alone. A repaired
+    -- entry gets a height check, so "stood right in front of it" and "refused"
+    -- can ALSO mean a rooftop crate ground-probed to the street below -- which
+    -- looks identical from a chair and has a different fix.
+    BR.Roster.get(1).pos = { x = x0 + 10.0, y = y0, z = z0 + 20.0 }
+    local high, hinfo = rowFor(crate.id)
+    ok(crate.repaired == true, 'the crate is repaired, so height is checked')
+    ok(high and high.reach == false and high.d <= hinfo.reachMax,
+        'a claim from 20m overhead is refused on HEIGHT, not distance',
+        high and ('d %.1f'):format(high.d))
+    ok(high and math.abs(math.abs(high.dz) - 20.0) < 0.5,
+        'and the inspector reports the height delta that did it',
+        high and ('%.1f'):format(high.dz))
+
+    -- Back down to the same floor: the height clause stops refusing, and what
+    -- is left is the distance one. Without this the block above would pass
+    -- just as well against a check that refused everything.
+    BR.Roster.get(1).pos = { x = x0 + 10.0, y = y0, z = z0 }
+    local level = rowFor(crate.id)
+    ok(level and level.reach == true,
+        'and stood on the crate at its own height it is reachable again')
+
+    -- THE ORACLE LINE HOLDS IN THE INSPECTOR TOO. It is a server-console
+    -- reader, not a wire message -- nothing it prints reaches a client -- and
+    -- the claim handler's three-way reply is unchanged by its existence.
+    sent = {}
+    BR.Loot.inspect(1, 300.0)
+    ok(#eventsOf(BR.Net.NOTIFY) == 0 and #eventsOf(BR.Net.LOOT_ADD) == 0,
+        'inspecting sends a client nothing at all')
+
+    -- AND IT MUST NOT MUTATE WHAT IT READS. A diagnostic that consumed a
+    -- cooldown or flipped `repaired` would change the bug while looking at it.
+    local wasFixedAt, wasRepaired = crate.fixedAt, crate.repaired
+    BR.Loot.inspect(1, 300.0)
+    ok(crate.fixedAt == wasFixedAt and crate.repaired == wasRepaired
+        and math.abs(crate.x - (x0 + 10.0)) < 0.01,
+        'and changes nothing about the entry it reports on')
+end
+
 -- A REFUSED PICKUP HAS TO SAY SO (#171).
 --
 -- Owner, 2026-08-17: "If I'm already holding the max amount of something and
@@ -10425,6 +10646,10 @@ describe('loot.repair')
 do
     -- Only a CLIENT can ground-probe, so a correction can only come from out
     -- there -- and the bound on it is what makes accepting one safe.
+    --
+    -- LOOSE ITEMS ONLY. Containers are exempt from the once-only rule below,
+    -- and that exemption is where the registry can fall behind a moving prop;
+    -- it is pinned in `loot.repair.container`, up beside the claim tests.
     local m = lootMatch()
     local target
     for id = 1, m.loot.nextId do
