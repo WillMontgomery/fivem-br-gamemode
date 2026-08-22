@@ -2036,9 +2036,16 @@ do
 
     -- The render ceiling again. A weapon whose range exceeds it promises the
     -- player a shot the engine will never let them take.
+    --
+    -- THE AIRDROP SHELF IS IN THIS WALK, and it was not until a mutation pass
+    -- gave the RPG a 900m range and nothing noticed. Those four are in no rarity
+    -- bucket, so every check that walks the loot tables misses them -- which is
+    -- exactly why each one has to be asked here by name.
     local over = {}
-    for _, w in ipairs(BR.Config.Weapons) do
-        if w.maxRange > 424.0 then over[#over + 1] = w.id end
+    for _, list in ipairs({ BR.Config.Weapons, BR.Config.AirdropWeapons }) do
+        for _, w in ipairs(list) do
+            if w.maxRange > 424.0 then over[#over + 1] = w.id end
+        end
     end
     ok(#over == 0, 'no weapon out-ranges the 424u entity render ceiling',
         table.concat(over, ', '))
@@ -2083,6 +2090,27 @@ do
     ok(#leaked == 0,
         'no airdrop weapon is in any rarity bucket, so no world roll can '
         .. 'produce one', table.concat(leaked, ', '))
+
+    -- THE MINIGUN'S CYCLE IS THE FASTEST IN THE GAME, AND THAT IS A VALIDATOR
+    -- FACT RATHER THAN A BALANCE ONE. BR.ValidateShot refuses anything faster
+    -- than `minInterval * intervalSlack` as TOO_FAST, and TOO_FAST is a COUNTED
+    -- refusal -- so a minigun given a rifle's 85ms would refuse an honest
+    -- player's every round and then open an anticheat case on them for using a
+    -- gun the airdrop handed them. The number has to be at or below what the
+    -- engine actually does, and nothing offline can measure that; what can be
+    -- checked is the claim the config makes about it.
+    local fastest, fastestId = math.huge, nil
+    for _, w in ipairs(BR.Config.Weapons) do
+        if w.minInterval and w.minInterval < fastest then
+            fastest, fastestId = w.minInterval, w.id
+        end
+    end
+    local mg = BR.Config.WeaponById.minigun
+    ok(mg and mg.minInterval and mg.minInterval < fastest,
+        'the minigun cycles faster than anything in the world table',
+        ('minigun %s vs %s at %s'):format(
+            tostring(mg and mg.minInterval), tostring(fastestId),
+            tostring(fastest)))
 
     ok(BR.Config.IsAllowedWeapon(0x1B06D571), 'pistol is allowed')
     ok(BR.Config.IsAllowedWeapon(BR.Config.Gadgets.PARACHUTE), 'parachute gadget is allowed')

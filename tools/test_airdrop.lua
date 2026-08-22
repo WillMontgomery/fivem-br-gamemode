@@ -655,6 +655,27 @@ do
         'facing west, the crate\'s right is north',
         ('%.6f, %.6f'):format(qx, qy))
 
+    -- ...AND FORWARD AT THAT HEADING, WHICH IS THE HALF EVERY CHECK ABOVE
+    -- MISSES. Each of them sits at a heading where one of sin/cos is zero and
+    -- uses an offset with one component, so a sign error in the OTHER term
+    -- multiplies by nothing and cannot show -- a mutation pass proved exactly
+    -- that by flipping it and surviving. Both the config's offsets happen to
+    -- have y = 0 today, so nothing in the game would notice either, until the
+    -- day somebody moves a flare forward.
+    local wx, wy = BR.AirdropOffsetAt(turned, 0.0, 0.0, 1.0, 0.0)
+    ok(near(wx, 99.0, 1e-9) and near(wy, 200.0, 1e-9),
+        'facing west, one metre forward is one metre west',
+        ('%.6f, %.6f'):format(wx, wy))
+
+    -- And a diagonal with both components set, where all four terms of the
+    -- matrix are alive at once.
+    local diag = BR.BuildAirdropRecord(1, poi, 260.0, 0.0, 30000.0, 45.0)
+    local dx, dy = BR.AirdropOffsetAt(diag, 0.0, 1.0, 1.0, 0.0)
+    local h = math.sqrt(2.0) * 0.5
+    ok(near(dx, 100.0 + h - h, 1e-9) and near(dy, 200.0 + h + h, 1e-9),
+        'a diagonal offset at a diagonal heading resolves both axes',
+        ('%.6f, %.6f'):format(dx, dy))
+
     -- THE TWO FLARES ARE ON OPPOSITE SIDES, AT EVERY MOMENT OF THE FALL. This
     -- is the property the sign flip in the client exists for, and it has to
     -- survive the spin -- an offset rotated by a heading computed somewhere else
@@ -1608,13 +1629,26 @@ do
     ok(chute ~= nil and near(ents[chute].z,
         crateZ + (A.chuteOffset.z or 0.1), 0.001),
         'the canopy is directly over it, at its own offset')
-    for _, h in ipairs(entsOfModel(A.flareProp)) do
+    local flares = entsOfModel(A.flareProp)
+    for _, h in ipairs(flares) do
         ok(near(ents[h].z, crateZ + (A.flareOffset.z or 0.0), 0.001),
             'and each flare is at the crate\'s height')
         ok(near(BR.Dist(ents[h].x, ents[h].y, rec.x, rec.y),
                 A.flareOffset.x, 0.001),
             'and out to the side by exactly the configured offset')
     end
+
+    -- ON OPPOSITE SIDES, which "each one is 0.55m from the crate" does not say
+    -- -- both flares stacked on the same side satisfy every check above, and a
+    -- mutation pass proved it by flipping the sign and surviving. Left and right
+    -- is the owner's whole instruction.
+    eq(#flares, 2, 'there are two of them')
+    ok(near(BR.Dist(ents[flares[1]].x, ents[flares[1]].y,
+                    ents[flares[2]].x, ents[flares[2]].y),
+            A.flareOffset.x * 2.0, 0.001),
+        'and they are a full diameter apart -- one offset, two signs',
+        ('%.3f apart'):format(BR.Dist(ents[flares[1]].x, ents[flares[1]].y,
+                                      ents[flares[2]].x, ents[flares[2]].y)))
 
     -- Touchdown: the props go, the blip stays.
     gameMs = gameMs + 15000
