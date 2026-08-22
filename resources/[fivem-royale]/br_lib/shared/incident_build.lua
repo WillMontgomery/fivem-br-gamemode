@@ -419,6 +419,115 @@ function BR.IncidentBuild.fromStrip(ev, records)
     }
 end
 
+--- The one line shown in the queue for a refused-vehicle case.
+---
+--- ITS OWN SENTENCE, for the same reason `stripSummaryOf` is not `summaryOf`:
+--- no shot was refused and no weapon left anybody's hand. A networked entity the
+--- gamemode does not create appeared in a match, and the queue row should say
+--- that and nothing more.
+---
+--- THE REASON IS THE TABLE'S OWN PROSE, not a word chosen here.
+--- BR.Config.VehicleRefusal's values read "vehicle flies" and "vehicle has
+--- built-in weapons", which are the two halves of the rule the owner wrote --
+--- so an admin reading the queue reads the rule rather than a paraphrase of it,
+--- and re-grading the rule re-grades this line by construction.
+---
+--- BUILT FROM SERVER FACTS ONLY -- one integer and one enum value -- like the
+--- other three. The field's contract on the console side is "displayed and
+--- nothing else", and the day somebody interpolates it, a player-controlled
+--- name in here would be the bug. THE MODEL NAME IS DELIBERATELY NOT IN IT: the
+--- server has a hash, and turning a hash back into a name means a lookup that
+--- misses for exactly the models this list does not know about -- which would
+--- put "unknown" on half the cases this ever files.
+---
+--- @param count integer
+--- @param why string|nil  a BR.Config.VehicleRefusal value
+--- @return string
+function BR.IncidentBuild.vehicleSummaryOf(count, why)
+    local n = math.floor(tonumber(count) or 0)
+    return ('%d refused vehicle%s spawned this match -- %s')
+        :format(n, n == 1 and '' or 's', tostring(why))
+end
+
+--- Build the payload for a case opened by a vehicle the gamemode refuses.
+---
+--- THE FOURTH PRODUCER, and like the third it deliberately reuses the
+--- anticheat's shape rather than inventing one: `kind = 'anticheat'`,
+--- `category = 'system'`, no reporter. The console has two record types and must
+--- not grow a third for a finding that triages exactly like the first two.
+---
+--- NO NEW TIMELINE KIND, AND THAT IS A DECISION RATHER THAN AN OMISSION. A strip
+--- earns `weapon_strip` entries because the owner asked for the repeats to land
+--- "in the incident timeline rather than creating a new incident each time", and
+--- paying for that meant a new kind the console had to learn, a per-case cap, and
+--- a share of the truncation budget the kills already compete for. The owner's
+--- instruction here is shorter -- "simply file an incident" -- and the repeat
+--- behaviour it asks for is what `priorFor` already does for every producer:
+--- one case per player per match, everything after it a corroboration. So this
+--- adds a row the console can already render, and adds nothing to the two writes
+--- a case costs.
+---
+--- SEVERITY IS READ, NOT RESTATED, and it is read from the same place
+--- `fromStrip` reads it: `BR.ShotTier[NO_WEAPON]`, whose sentence is "weapon is
+--- not one this gamemode issues" and whose tier is `high` because -- in
+--- server/strip.lua's words -- "the server never issued the means". A networked
+--- vehicle is the same fact about a different kind of means: this gamemode
+--- creates no networked entities at all, so there is no honest path to one.
+--- Spelling `'high'` here would be a second copy of that judgement in a second
+--- file, which is how the two end up disagreeing the day somebody re-grades the
+--- taxonomy.
+---
+--- NO `refusal` BLOCK, for `fromStrip`'s reason: that field carries `count` and
+--- `windowMs` from the shot validator and the console renders it as refused
+--- shots. This has neither number.
+---
+--- @param ev table  { license, name, matchId, count, why, at }
+--- @param records table|nil  BR.Evidence.forLicense(ev.license)
+--- @return table|nil payload, string|nil why-not
+function BR.IncidentBuild.fromVehicle(ev, records)
+    if type(ev) ~= 'table' then return nil, 'no event' end
+
+    -- NO LICENSE, NO INCIDENT -- the same rule as every other producer here. A
+    -- case keyed to a server id is a case about whoever holds that slot next,
+    -- and server ids are recycled within the minute.
+    if type(ev.license) ~= 'string' or ev.license == '' then
+        return nil, 'no license'
+    end
+
+    local evidence = {}
+    for _, r in ipairs(records or {}) do
+        evidence[#evidence + 1] = evidenceRow(r)
+    end
+    local newest = evidence[#evidence]
+
+    return {
+        kind     = 'anticheat',
+        category = 'system',
+        state    = 'pending_review',
+        severity = BR.ShotTier[BR.ShotRefusal.NO_WEAPON],
+
+        subjectLicense = ev.license,
+        subjectName    = ev.name,
+        subjects = { {
+            license = ev.license,
+            name    = ev.name,
+            squadId = newest and newest.squadId or nil,
+            left    = newest and newest.left or false,
+        } },
+
+        -- NO reporter, absent rather than null -- the same absence `fromRefusal`
+        -- and `fromStrip` rely on. br_ddb writes the missing keys as explicit
+        -- nulls and the console reads `reporterLicense === null` as "the system
+        -- filed this", which is exactly what happened.
+
+        matchId = ev.matchId,
+        summary = BR.IncidentBuild.vehicleSummaryOf(ev.count, ev.why),
+
+        evidence = evidence,
+        atGameMs = ev.at,
+    }
+end
+
 -- ---------------------------------------------------------------------------
 -- The match timeline (#30)
 -- ---------------------------------------------------------------------------

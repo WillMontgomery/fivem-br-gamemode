@@ -180,6 +180,18 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+# The same joaat proof as the weapon table, over the refused-vehicle table --
+# and it matters more there, because the polarity is inverted. A wrong hash in
+# weapons.lua makes a gun behave oddly and somebody notices. A wrong hash in
+# vehicles.lua permits a tank, and the only symptom is an incident that is never
+# filed, which looks exactly like a clean server.
+echo "${DIM}== vehicle table ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_vehicles.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
 echo "${DIM}== POI siting ==${RST}"
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_pois.lua || rc=1

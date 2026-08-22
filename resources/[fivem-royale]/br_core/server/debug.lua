@@ -121,6 +121,9 @@ RegisterCommand('brhelp', function()
     print('  brartifacts          incident screenshots: taken, stored, refused')
     print('  brstrips             unissued weapons taken out of hands, and')
     print('                       how many reports were refused and why')
+    print('  brvehicles           refused vehicles seen in matches: what was')
+    print('                       counted, what the engine placed, and which')
+    print('                       models the allowlist did not name')
     print('  brloot [matchId]     world loot: counts by kind and rarity, subscriptions')
     print('  brlootnear <id> [r]  every entry within r (50m) of that player, and')
     print('                       whether the claim path would accept it: the')
@@ -1240,6 +1243,65 @@ RegisterCommand('brstrips', function()
     print('  Note: this is a client-side report. A cheat that stops br_core')
     print('  stops this too -- the server-side damage validation is the half')
     print('  that does not need the client\'s cooperation.')
+end, RESTRICTED)
+
+--- Refused vehicles: what reached the server, and what was done about it.
+---
+--- THE READER FOR TWO QUESTIONS THAT LOOK LIKE ONE. "Is anybody spawning
+--- vehicles" and "is our allowlist complete" have different answers and
+--- different fixes, and the counters below are arranged so they cannot be
+--- confused for each other.
+RegisterCommand('brvehicles', function()
+    header('vehicles the gamemode refuses')
+    if not BR.Vehicles then
+        print('  server/vehicles.lua is not loaded.')
+        return
+    end
+    local s = BR.Vehicles.stats()
+    print(('  entities       %d created by clients, %d of them vehicles')
+        :format(s.seen, s.vehicles))
+    print(('  allowed        %d passed the allowlist')
+        :format(s.allowed))
+    print(('  counted        %d refused and attributed, %d throttled')
+        :format(s.counted, s.throttled))
+    print(('  not attributed %d refused with no owning player')
+        :format(s.unowned))
+    print(('  tracking       %d player(s) with a count this match')
+        :format(s.tracked))
+
+    -- THE TWO NUMBERS THAT MEAN SOMETHING IS WRONG SOMEWHERE ELSE, each with
+    -- the fix named beside it, because neither is fixed in server/vehicles.lua.
+    print(('  by class       %d caught by GetVehicleType and NOT by the model')
+        :format(s.byType))
+    if s.byType > 0 then
+        print('                 ^ config/vehicles.lua does not name an aircraft')
+        print('                   that is in this game build. Add it.')
+    end
+    print(('  engine-placed  %d refused model(s) claiming to be population')
+        :format(s.ambient))
+    local any = false
+    for hash, n in pairs(s.models or {}) do
+        if not any then
+            print('                 models seen, as the engine reported them:')
+            any = true
+        end
+        -- THE HASH RATHER THAN A NAME, because the models worth seeing here are
+        -- exactly the ones config/vehicles.lua could not name -- a lookup would
+        -- print "unknown" for the interesting half.
+        print(('                   0x%08X  x%d'):format(hash, n))
+    end
+    if s.ambient > 0 then
+        print('                 ^ either GTA places ambient aircraft in matches,')
+        print('                   or a client is lying about the population')
+        print('                   field to walk one past `relaxed` lockdown.')
+        print('                   The model list above is what tells them apart;')
+        print('                   nothing is filed for either.')
+    end
+
+    print('  Note: what this can see depends on sv_entityLockdown. Under')
+    print('  `relaxed` the platform refuses script-created entities before')
+    print('  this file is reached, so a low count is the boundary working')
+    print('  rather than a quiet server. See server.cfg.example.')
 end, RESTRICTED)
 
 --- Print the stored profile row for connected players.

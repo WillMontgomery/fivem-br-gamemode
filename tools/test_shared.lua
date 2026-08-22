@@ -22,6 +22,9 @@ for _, f in ipairs({
     'config/storm.lua',
     'config/map.lua',
     'config/weapons.lua',
+    -- AFTER geo.lua, which it calls at LOAD time: BR.NormHash builds its
+    -- hash-keyed lookup, and loading it earlier would key every row on nil.
+    'config/vehicles.lua',
     'config/loot.lua',
     'shared/storm_solve.lua',
     'shared/loot_gen.lua',
@@ -3430,7 +3433,8 @@ local SANDBOX_LIB = {
     'br_lib/shared/geo.lua', 'br_lib/shared/clock.lua',
     'br_lib/shared/sched.lua', 'br_lib/config/match.lua',
     'br_lib/config/storm.lua', 'br_lib/config/map.lua',
-    'br_lib/config/weapons.lua', 'br_lib/config/loot.lua',
+    'br_lib/config/weapons.lua', 'br_lib/config/vehicles.lua',
+    'br_lib/config/loot.lua',
     'br_lib/config/audio.lua', 'br_lib/config/peds.lua',
     'br_lib/config/market.lua', 'br_lib/shared/xp.lua',
     'br_lib/shared/storm_solve.lua', 'br_lib/shared/combat_solve.lua',
@@ -7131,6 +7135,419 @@ do
     local one = { { src = 3, name = 'C' } }
     ok(S.step(one, 3, 1).src == 3, 'a single candidate is its own next')
     ok(S.step(one, 3, -1).src == 3, 'and its own previous')
+end
+
+-- --------------------------------------------------------- vehicles (#193) ---
+
+describe('vehicles.allowlist')
+do
+    local V = BR.Config.VehicleRefusal
+
+    -- THE POLARITY, ASSERTED FIRST, because it is the one thing about this table
+    -- that is the opposite of weapons.lua's and the one thing a careless edit
+    -- inverts. Absence is PERMISSION here.
+    ok(BR.Config.IsAllowedVehicle(0x00000001) == true,
+        'a model nobody wrote down is allowed')
+
+    local allowed, why = BR.Config.IsAllowedVehicle(0x2EA68690)   -- rhino
+    ok(allowed == false and why == V.ARMED,
+        'a tank is refused, on the weapons half of the rule')
+
+    local _, hy = BR.Config.IsAllowedVehicle(0x39D6E83F)          -- hydra
+    ok(hy == V.FLIES, 'a jet is refused, on the flight half')
+
+    -- THE SIGNED-HASH TRAP, AND IT IS THE BUG THIS PROJECT HAS SHIPPED FOUR
+    -- TIMES. GetEntityModel reports signed; the table authors positive. Forty-
+    -- five of the ninety-four rows have the top bit set, so unnormalised this
+    -- whole feature would refuse nothing that matters and look fine doing it.
+    ok(BR.Config.IsAllowedVehicle(0x2EA68690 - 0x100000000) == false,
+        'a tank is still refused when the hash arrives signed')
+    ok(BR.Config.IsAllowedVehicle(0xB39B0AE6 - 0x100000000) == false,
+        'and so is a fighter jet, whose hash has the top bit set')
+
+    -- ZERO IS TRUTHY IN LUA, so BR.NormHash(0) answers 0 rather than nil and 0
+    -- is in no row. A model the engine could not report must read as ordinary
+    -- rather than as a cheat.
+    ok(BR.Config.IsAllowedVehicle(0) == true, 'model 0 is allowed, not refused')
+    ok(BR.Config.IsAllowedVehicle(nil) == true, 'and so is no model at all')
+
+    -- THE BATTLE BUS. It is an aircraft, the rule refuses it, and that is safe
+    -- only because client/bus.lua never networks it. If this ever flips, the
+    -- reason is in config/vehicles.lua's header and the fix is not here.
+    ok(BR.Config.IsAllowedVehicle(0x761E2AD3) == false,
+        'the Battle Bus model is refused by the rule, as an aircraft')
+
+    -- Every authored row resolves, in both hash forms, to its own reason. The
+    -- gate proves this too; asserting it here means a broken table fails the
+    -- suite as well as the gate.
+    local rows, bad = 0, 0
+    for _, v in ipairs(BR.Config.RefusedVehicles) do
+        rows = rows + 1
+        local a1, w1 = BR.Config.IsAllowedVehicle(v.hash)
+        local signed = (v.hash & 0x80000000) ~= 0 and (v.hash - 0x100000000) or v.hash
+        local a2, w2 = BR.Config.IsAllowedVehicle(signed)
+        if a1 or a2 or w1 ~= v.why or w2 ~= v.why then bad = bad + 1 end
+    end
+    ok(rows > 0 and bad == 0,
+        'every refused row resolves to its own reason, signed and unsigned',
+        ('%d of %d rows did not'):format(bad, rows))
+
+    -- THE SECOND SIGNAL. Two of GetVehicleType's eight values mean flight.
+    ok(BR.Config.IsFlyingVehicleType('heli') == true,  'heli flies')
+    ok(BR.Config.IsFlyingVehicleType('plane') == true, 'plane flies')
+    ok(BR.Config.IsFlyingVehicleType('automobile') == false, 'a car does not')
+    ok(BR.Config.IsFlyingVehicleType('boat') == false,
+        'and neither does a boat -- the owner\'s rule does not reach them')
+    ok(BR.Config.IsFlyingVehicleType('submarine') == false, 'nor a submarine')
+    -- THE NATIVE ANSWERS nil FOR A NON-VEHICLE, and indexing a table with a nil
+    -- key is an error in Lua rather than a miss -- which is why this is a
+    -- function and not a bare lookup.
+    ok(BR.Config.IsFlyingVehicleType(nil) == false, 'no type does not fly')
+    ok(BR.Config.IsFlyingVehicleType(42) == false, 'and neither does a number')
+end
+
+describe('incident.vehicle')
+do
+    local LIC = 'license:veh'
+    local V = BR.Config.VehicleRefusal
+    local CLEAR = {}
+    local function ev(over)
+        local e = {
+            src = 5, name = 'Driver', license = LIC, matchId = 3,
+            count = 2, seq = 1, why = V.FLIES, at = 60000,
+        }
+        for k, v in pairs(over or {}) do
+            e[k] = (v ~= CLEAR) and v or nil
+        end
+        return e
+    end
+
+    ok(select(1, BR.IncidentBuild.fromVehicle(nil, {})) == nil,
+        'no event files nothing rather than throwing')
+
+    local p, why = BR.IncidentBuild.fromVehicle(ev({ license = CLEAR }), {})
+    ok(p == nil and why == 'no license',
+        'a refused vehicle with no license files nothing, and says why')
+    ok(select(1, BR.IncidentBuild.fromVehicle(ev({ license = '' }), {})) == nil,
+        'an empty license is treated as no license')
+
+    local ok1 = BR.IncidentBuild.fromVehicle(ev(), {})
+    ok(ok1 ~= nil, 'a licensed event files')
+    ok(ok1.kind == 'anticheat' and ok1.category == 'system',
+        'it reuses the anticheat shape rather than inventing a third')
+    ok(ok1.state == 'pending_review', 'and lands in the review queue')
+    ok(ok1.subjectLicense == LIC and ok1.subjectName == 'Driver',
+        'the subject is the owning player')
+    ok(ok1.matchId == 3 and ok1.atGameMs == 60000, 'the match and clock ride along')
+
+    -- SEVERITY IS READ, NOT SPELLED. Comparing against the taxonomy rather than
+    -- against 'high' is the whole point: if somebody re-grades NO_WEAPON, this
+    -- follows instead of disagreeing.
+    ok(ok1.severity == BR.ShotTier[BR.ShotRefusal.NO_WEAPON],
+        'severity comes from the taxonomy, not from a literal here')
+
+    -- NO REPORTER AT ALL -- absent rather than null, which is how the console
+    -- reads "the system filed this".
+    ok(ok1.reporterLicense == nil and ok1.reporterName == nil,
+        'no reporter key is set, so the console reads it as system-filed')
+    -- NO REFUSAL BLOCK: that field carries shot counts and this case has none.
+    ok(ok1.refusal == nil, 'no refusal block is invented for a case with no shots')
+
+    -- The one line an admin reads. Singular and plural both, because the bar is
+    -- two and the corroborations climb from there -- a summary reading
+    -- "1 refused vehicles" is exactly the small lie the strip path avoided.
+    ok(BR.IncidentBuild.vehicleSummaryOf(1, V.FLIES)
+        == '1 refused vehicle spawned this match -- vehicle flies',
+        'the summary is singular at one')
+    ok(BR.IncidentBuild.vehicleSummaryOf(3, V.ARMED)
+        == '3 refused vehicles spawned this match -- vehicle has built-in weapons',
+        'and plural above it, carrying the rule\'s own words')
+    ok(ok1.summary == BR.IncidentBuild.vehicleSummaryOf(2, V.FLIES),
+        'the payload carries that summary rather than a second spelling of it')
+
+    -- Rubbish in the count must not reach a moderation record as "nil".
+    ok(BR.IncidentBuild.vehicleSummaryOf(nil, V.FLIES):find('^0 refused vehicles'),
+        'a missing count reads as zero rather than as nil')
+end
+
+-- ---------------------------------------------------------------------------
+-- The detector itself, not just the functions under it.
+-- ---------------------------------------------------------------------------
+--
+-- THIS REPO HAS TWICE HAD A MUTATION PASS BECAUSE EVERY PURE FUNCTION STAYED
+-- CORRECT WHILE THE CALLER WIRED THEM WRONGLY. `IsAllowedVehicle` being right is
+-- worth nothing if the handler tests it against the wrong entity, forgets the
+-- population guard, or files on the first offence. So the real
+-- br_core/server/vehicles.lua is loaded here and driven through the same event
+-- FiveM raises.
+
+--- @return table  a loaded server/vehicles.lua and the levers to drive it
+local function newVehicleServer()
+    local env = newSandbox()
+    -- THE CLOCK DOES NOT START AT ZERO, AND THAT IS NOT ARBITRARY. The throttle
+    -- uses `rec.at ~= 0` as its "never counted yet" sentinel -- server/strip.lua's
+    -- idiom, kept deliberately identical -- so a test clock at 0 makes the first
+    -- counted offence indistinguishable from no offence and the window never
+    -- opens. GetGameTimer() is milliseconds since the process started and is
+    -- never 0 by the time a player is in a match, so starting here is what the
+    -- real server looks like rather than a workaround.
+    local S = { now = 50000, roster = {}, filed = {}, cancels = 0, ents = {} }
+
+    env.GetGameTimer = function() return S.now end
+    env.print        = function() end
+    env.GetCurrentResourceName = function() return 'br_core' end
+    env.RegisterNetEvent = function() end
+    env.RegisterCommand  = function() end
+    -- COUNTED RATHER THAN STUBBED AWAY. The owner said "don't stop them", so a
+    -- cancel appearing in this file is a behaviour change and the suite should
+    -- say so rather than silently tolerate it.
+    env.CancelEvent = function() S.cancels = S.cancels + 1 end
+    env.Citizen = { CreateThread = function() end, Wait = function() end }
+
+    local handlers = {}
+    env.AddEventHandler = function(n, fn)
+        handlers[n] = handlers[n] or {}
+        handlers[n][#handlers[n] + 1] = fn
+    end
+    env.TriggerEvent = function(n, ...)
+        if n == 'br:core:vehicle' then
+            local a = { ... }
+            S.filed[#S.filed + 1] = a[1]
+        end
+        for _, fn in ipairs(handlers[n] or {}) do fn(...) end
+    end
+
+    -- The entity, as the engine would answer for it.
+    local function e(h) return S.ents[h] or {} end
+    env.DoesEntityExist         = function(h) return e(h).exists end
+    env.GetEntityType           = function(h) return e(h).etype or 0 end
+    env.GetEntityModel          = function(h) return e(h).model or 0 end
+    env.GetEntityPopulationType = function(h) return e(h).pop end
+    env.GetVehicleType          = function(h)
+        local v = e(h)
+        if v.throws then error('Tried to access invalid entity') end
+        return v.vtype
+    end
+    env.NetworkGetEntityOwner   = function(h) return e(h).owner end
+
+    loadInto(env, SANDBOX_LIB)
+    env.BR.Roster = {
+        get      = function(s) return S.roster[s] end,
+        licenseOf = function(s)
+            local r = S.roster[s]
+            return r and r.license or nil
+        end,
+    }
+    loadInto(env, { 'br_core/server/vehicles.lua' })
+
+    --- Raise `entityCreating` exactly as the platform raises it.
+    function S.create(handle, spec)
+        S.ents[handle] = spec
+        for _, fn in ipairs(handlers['entityCreating'] or {}) do fn(handle) end
+    end
+    function S.drop(src)
+        env.source = src
+        for _, fn in ipairs(handlers['playerDropped'] or {}) do fn() end
+    end
+    S.env = env
+    S.stats = function() return env.BR.Vehicles.stats() end
+    return S
+end
+
+describe('vehicles.detector')
+do
+    local RHINO = 0x2EA68690
+    local ADDER = 0xB779A091           -- an ordinary supercar; in no refused row
+    local MISSION, AMBIENT = 7, 5
+
+    local function alive(S, src)
+        S.roster[src] = { src = src, name = 'P' .. src, matchId = 1,
+                          state = S.env.BR.PlayerState.ALIVE,
+                          license = 'license:p' .. src }
+    end
+
+    local function scripted(model, owner, vtype)
+        return { exists = true, etype = 2, model = model, pop = MISSION,
+                 owner = owner, vtype = vtype or 'automobile' }
+    end
+
+    -- An ordinary car costs nothing and files nothing. This is every vehicle in
+    -- every match under Option A, so it is the path that must stay silent.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, scripted(ADDER, 1))
+        S.create(11, scripted(ADDER, 1))
+        ok(#S.filed == 0, 'an allowed model never files')
+        ok(S.stats().allowed == 2, 'and is counted as allowed')
+    end
+
+    -- THE BAR IS TWO, AND THE FIRST IS SILENT. Same cadence as strip.lua, for a
+    -- reason specific to this detector: one refused vehicle rests on one
+    -- ownership read, and ownership migrates by proximity.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, scripted(RHINO, 1))
+        ok(#S.filed == 0, 'the first refused vehicle is recorded and announced to nobody')
+        S.now = S.now + 1000
+        S.create(11, scripted(RHINO, 1))
+        ok(#S.filed == 1, 'the second opens the case')
+
+        local f = S.filed[1]
+        ok(f.count == 2 and f.seq == 1, 'carrying the offence count and the first seq')
+        ok(f.license == 'license:p1' and f.matchId == 1, 'and the subject and match')
+        ok(f.why == BR.Config.VehicleRefusal.ARMED, 'and which half of the rule it tripped')
+        ok(f.model == RHINO, 'and the model, normalised, for the server log')
+
+        -- EVERY ONE AFTER IT ANNOUNCES, climbing by one, so a gap means a lost
+        -- message rather than quiet offences.
+        S.now = S.now + 1000
+        S.create(12, scripted(RHINO, 1))
+        ok(#S.filed == 2 and S.filed[2].count == 3 and S.filed[2].seq == 2,
+            'and every one after it corroborates, climbing by one')
+
+        ok(S.cancels == 0,
+            'nothing is ever cancelled -- the owner said do not stop them')
+    end
+
+    -- THE THROTTLE IS THE ONLY REAL BOUND ON A PATH THE ATTACKER CHOOSES THE
+    -- VOLUME OF. Two inside the window is one counted offence.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, scripted(RHINO, 1))
+        S.now = S.now + 100
+        S.create(11, scripted(RHINO, 1))
+        ok(#S.filed == 0, 'a second inside the throttle window does not reach the bar')
+        ok(S.stats().throttled == 1, 'and is counted as throttled')
+        S.now = S.now + 900
+        S.create(12, scripted(RHINO, 1))
+        ok(#S.filed == 1, 'the next one outside the window does')
+    end
+
+    -- THE GUARD THAT MATTERS MOST UNDER OPTION A. The map is full of vehicles
+    -- the engine placed; blaming a player for one would be the worst false
+    -- positive available here.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        for h = 10, 14 do
+            S.now = S.now + 1000
+            S.create(h, { exists = true, etype = 2, model = RHINO,
+                          pop = AMBIENT, owner = 1, vtype = 'automobile' })
+        end
+        ok(#S.filed == 0, 'a refused model the ENGINE placed files nothing')
+        ok(S.stats().ambient == 5, 'but is counted, because it is also the bypass signal')
+        ok(S.stats().models[RHINO] == 5, 'and the model is listed for a human to read')
+    end
+
+    -- THE SECOND SIGNAL: an aircraft config/vehicles.lua does not name is still
+    -- caught, because the engine knows it is a plane. This is what stops the
+    -- deny-list rotting into uniform permission.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, scripted(0x1234ABCD, 1, 'plane'))
+        S.now = S.now + 1000
+        S.create(11, scripted(0x1234ABCD, 1, 'heli'))
+        ok(#S.filed == 1, 'an unnamed aircraft is refused on its class alone')
+        ok(S.filed[1].why == BR.Config.VehicleRefusal.FLIES, 'as flight, not as weapons')
+        ok(S.stats().byType == 2, 'and is counted as a gap in the model table')
+    end
+
+    -- A NAMED MODEL KEEPS THE TABLE'S REASON. The class cannot tell "armed" from
+    -- "flies", so the table must win where it has an opinion.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, scripted(RHINO, 1, 'plane'))
+        S.now = S.now + 1000
+        S.create(11, scripted(RHINO, 1, 'plane'))
+        ok(S.filed[1].why == BR.Config.VehicleRefusal.ARMED,
+            'a named model keeps its authored reason even when the class disagrees')
+    end
+
+    -- The native throws on a stale handle rather than answering. An uncaught
+    -- throw here would take the model check down with it.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, { exists = true, etype = 2, model = ADDER, pop = MISSION,
+                       owner = 1, throws = true })
+        ok(S.stats().allowed == 1,
+            'a throwing GetVehicleType is caught, and the model check still ran')
+    end
+
+    -- Things that are not this file's business.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, { exists = false, etype = 2, model = RHINO, pop = MISSION, owner = 1 })
+        ok(S.stats().vehicles == 0, 'an entity that does not exist is not examined')
+        S.create(11, { exists = true, etype = 1, model = RHINO, pop = MISSION, owner = 1 })
+        ok(S.stats().vehicles == 0, 'and neither is a ped')
+    end
+
+    -- ═══ THE NUMERIC BOOL, WHICH IS THIS CODEBASE'S MOST EXPENSIVE RECURRING
+    --     BUG AND HAS SHIPPED FIVE TIMES ═══
+    --
+    -- A FiveM native declared BOOL hands Lua a NUMBER on some builds. In Lua
+    -- `0` is TRUTHY, so `if DoesEntityExist(e) then` is TRUE for an entity that
+    -- does not exist. Testing only with `true`/`false` cannot see this: a
+    -- mutation replacing didHit with plain truthiness stayed green until these
+    -- two cases existed.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, { exists = 0, etype = 2, model = RHINO, pop = MISSION, owner = 1 })
+        ok(S.stats().vehicles == 0,
+            'DoesEntityExist answering the NUMBER 0 is still "no"')
+        S.now = S.now + 1000
+        S.create(11, { exists = 1, etype = 2, model = RHINO, pop = MISSION, owner = 1 })
+        ok(S.stats().vehicles == 1,
+            'and answering the NUMBER 1 is still "yes"')
+    end
+
+    -- A COUNT BELONGS TO A MATCH, NOT TO A CONNECTION. The same player carried
+    -- into the next round starts clean -- otherwise one offence last match plus
+    -- one this match opens a case about a round in which they did it once.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, scripted(RHINO, 1))
+        S.roster[1].matchId = 2
+        S.now = S.now + 1000
+        S.create(11, scripted(RHINO, 1))
+        ok(#S.filed == 0, 'a count does not carry across a match boundary')
+        S.now = S.now + 1000
+        S.create(12, scripted(RHINO, 1))
+        ok(#S.filed == 1 and S.filed[1].matchId == 2,
+            'the new match opens its own case at its own second offence')
+    end
+
+    -- SOURCE 0 IS THE SERVER CONSOLE AND `0` IS TRUTHY. A bare `if owner then`
+    -- would accept it and go looking for a roster entry that cannot exist.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, { exists = true, etype = 2, model = RHINO, pop = MISSION, owner = 0 })
+        S.create(11, { exists = true, etype = 2, model = RHINO, pop = MISSION, owner = -1 })
+        ok(S.stats().unowned == 2, 'owner 0 and owner -1 are both "nobody"')
+        ok(#S.filed == 0, 'and neither files')
+    end
+
+    -- Outside a match there is no timeline to put this on.
+    do
+        local S = newVehicleServer()
+        S.roster[1] = { src = 1, name = 'P1', matchId = nil,
+                        state = S.env.BR.PlayerState.LOBBY, license = 'license:p1' }
+        S.create(10, scripted(RHINO, 1))
+        S.now = S.now + 1000
+        S.create(11, scripted(RHINO, 1))
+        ok(#S.filed == 0, 'a player in the lobby draws no case')
+    end
+
+    -- SERVER IDS ARE RECYCLED WITHIN THE MINUTE. A count left behind is
+    -- inherited by whoever lands in that slot next.
+    do
+        local S = newVehicleServer(); alive(S, 1)
+        S.create(10, scripted(RHINO, 1))
+        S.drop(1)
+        alive(S, 1)
+        S.now = S.now + 1000
+        S.create(11, scripted(RHINO, 1))
+        ok(#S.filed == 0, 'a disconnect clears the count rather than passing it on')
+    end
 end
 
 -- ----------------------------------------------------------------- result ---

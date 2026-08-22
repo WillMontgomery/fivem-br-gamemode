@@ -360,6 +360,74 @@ AddEventHandler('br:core:stripped', function(ev)
 end)
 
 -- ---------------------------------------------------------------------------
+-- A vehicle this gamemode refuses (#193)
+-- ---------------------------------------------------------------------------
+--
+-- THE THIRD ANTICHEAT SOURCE, AND IT REACHES THIS FILE THE WAY THE OTHER TWO DO.
+-- server/vehicles.lua counts and decides, exactly as damage.lua and strip.lua
+-- count and decide; this file turns the announcement into a case or into a
+-- corroboration. None of the three detectors knows this file exists, which is
+-- what lets any of them be restarted, replaced or absent without the others
+-- caring.
+--
+-- ONE CASE PER PLAYER PER MATCH IS UNCHANGED, AND HERE IT IS THE WHOLE OF THE
+-- REPEAT HANDLING. The strip path also grows the incident's timeline, because
+-- the owner asked for recursive strips to land "in the incident timeline rather
+-- than creating a new incident each time". The owner's instruction for this one
+-- is shorter -- "simply file an incident" -- so `priorFor` does all of it: the
+-- first announcement opens a case, every one after it appends a corroboration to
+-- that same case. See BR.IncidentBuild.fromVehicle for why no new timeline kind
+-- was added, and what it would have cost.
+--
+-- AND IT CROSSES KINDS, WHICH IS THE POINT OF `priorFor` BEING SHARED. A refused
+-- vehicle after a strip case appends to the strip case; a refused shot after a
+-- vehicle case appends to the vehicle case. One player, one round, one record --
+-- whichever thing they did first opened it.
+AddEventHandler('br:core:vehicle', function(ev)
+    if type(ev) ~= 'table' then return end
+
+    local prior = BR.Incident.priorFor(ev.matchId, ev.license)
+    if #prior > 0 then
+        -- SAME CHANNEL, SAME REASONING as the two above: the case is already
+        -- durable, so "it is still happening" may ride the lossy event channel,
+        -- and `seq` travels so the console can tell a dropped corroboration from
+        -- a quiet match.
+        TriggerEvent('br:ringmaster:corroborate', {
+            incidentId = prior[#prior],
+            matchId    = ev.matchId,
+            license    = ev.license,
+            name       = ev.name,
+            seq        = ev.seq,
+            count      = ev.count,
+            -- THE TAXONOMY'S OWN SENTENCE, exactly as the strip path borrows it:
+            -- "weapon is not one this gamemode issues". It is the closest true
+            -- statement in an enum that is about shots, and the case's own
+            -- summary says what actually happened. A fourth refusal value
+            -- invented here would be a fourth thing the console has to learn to
+            -- render for a finding it already triages correctly.
+            reason     = BR.ShotRefusal.NO_WEAPON,
+            severity   = BR.ShotTier[BR.ShotRefusal.NO_WEAPON],
+            at         = ev.at,
+        })
+        return
+    end
+
+    local records = BR.Evidence and BR.Evidence.forLicense(ev.license) or {}
+
+    local payload, why = BR.IncidentBuild.fromVehicle(ev, records)
+    if not payload then
+        print(('^3[br_core] vehicle incident NOT filed for %s: %s^7')
+            :format(tostring(ev.name), tostring(why)))
+        return
+    end
+
+    payload.priorIncidentIds = prior
+    BR.Incident.attachTimeline(payload, records)
+
+    TriggerEvent('br:ringmaster:incident', payload)
+end)
+
+-- ---------------------------------------------------------------------------
 -- Telling the rest of the match that reporting exists (#168)
 -- ---------------------------------------------------------------------------
 

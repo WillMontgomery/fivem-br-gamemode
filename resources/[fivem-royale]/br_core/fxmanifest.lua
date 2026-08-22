@@ -26,6 +26,13 @@ shared_scripts {
     '@br_lib/config/storm.lua',
     '@br_lib/config/map.lua',
     '@br_lib/config/weapons.lua',
+    -- Which vehicles the gamemode refuses, and why. AFTER geo.lua (above), not
+    -- merely near it: the file calls BR.NormHash at LOAD time to build its
+    -- hash-keyed lookup, so loading it any earlier would key every row on nil
+    -- and refuse nothing -- silently, since an empty refusal table reads exactly
+    -- like a clean one. It reads BR.Config.Bus.model nowhere, so config/map.lua
+    -- may sit either side of it.
+    '@br_lib/config/vehicles.lua',
     '@br_lib/config/loot.lua',
     '@br_lib/config/audio.lua',
     '@br_lib/config/peds.lua',      -- the locker roster; reads BR.Config
@@ -171,6 +178,13 @@ server_scripts {
     -- BR.Evidence and BR.Inv at call time only, so nothing above it is needed at
     -- load.
     'server/strip.lua',
+    -- The third anticheat detector: a networked vehicle the gamemode refuses,
+    -- caught in the server-side `entityCreating` before the entity exists.
+    -- AFTER incident.lua for a reader rather than for the loader -- it raises
+    -- `br:core:vehicle`, which that file answers, and the order on the page is
+    -- the order of the pipeline. Beside strip.lua because the two are the same
+    -- shape: count, hold a bar, hand over, never enforce.
+    'server/vehicles.lua',
     -- Screenshots of the offender, taken on their own client and uploaded to S3
     -- through br_ddb. AFTER incident.lua and players.lua for a reader rather
     -- than for the loader: it listens to `br:incident:filed` and

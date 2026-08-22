@@ -389,6 +389,71 @@ our resource still running underneath. The unforgeable half is the damage valida
 above, which does not need the client's cooperation and cannot be turned off from
 one.
 
+## The third source: a vehicle the gamemode refuses
+
+M8's Option A means **this gamemode spawns no vehicles at all** — the supply is
+GTA's own ambient traffic and its parked-car network. Nothing in the resource
+tree creates a networked vehicle. So any networked vehicle a client creates is,
+by construction, something we did not make, and `br_core/server/vehicles.lua`
+catches it in the server-side `entityCreating` event.
+
+**The allowlist is authored in `br_lib/config/vehicles.lua`, and its polarity is
+the opposite of the weapon table's.** There, a weapon must be written down to be
+permitted. Here, a vehicle must be written down to be *refused* — because the
+owner's rule is "every vehicle except anything that flies or has built-in
+weapons", and GTA ships several hundred of them.
+
+> That makes it a deny-list, and a deny-list rots: an aircraft nobody wrote down
+> is permitted silently and forever. **The flight half of the rule does not rot,
+> because it is asked of the engine rather than of a list.** `GetVehicleType` is
+> answerable server-side and returns one of eight strings; `heli` and `plane`
+> between them are "anything that flies", including models added to the game
+> after the table was written. It is read out of the client's own clone packet
+> and is therefore assertable, which is why it is the *second* signal: the model
+> table catches what it names whatever the client claims, and the class catches
+> what the table never heard of. Defeating both means spawning an unlisted
+> aircraft *and* lying about its class.
+
+**Nothing is cancelled.** The owner's call on 2026-08-21 was *"For offenders,
+don't stop them, simply file an incident"* — the same shape as the weapon strip:
+prevent at the boundary, and where the boundary is bypassed, record rather than
+block. The **second** refused vehicle in a match opens one case; every one after
+it corroborates that case, never a second one. The first is silent, and for a
+reason specific to this detector rather than the strip's: attribution rests on
+`NetworkGetEntityOwner`, and ownership follows proximity and migrates, so one
+refused vehicle is a claim resting on one ownership read.
+
+**No new timeline kind was added, and that is a decision.** A strip earns
+`weapon_strip` entries because the owner asked for recursive strips to land on
+the timeline; paying for that meant a kind the console had to learn and a share
+of the truncation budget. "Simply file an incident" asks for what `priorFor`
+already does for every producer, so this costs the console nothing new and the
+case the same two writes.
+
+**What it can see depends on `sv_entityLockdown`, and the two are partly
+substitutes rather than complements.** The platform validates a client's
+clone-create *before* raising `entityCreating` — a rejected entity is deleted and
+the event never fires. Under `inactive` (the default, and what this project has
+always run) the validator is not called at all and every client-created vehicle
+reaches the detector. Under `relaxed` the honest cheat is stopped by the platform
+and never reaches it; what still arrives is a refused model claiming to be engine
+population, because that field is four bits out of the client's own packet.
+
+> **A refused model claiming to be population is counted and not filed**, and
+> `brvehicles` prints the models. It is either GTA placing ambient aircraft or a
+> client lying to walk one past `relaxed` — indistinguishable from the server,
+> and blaming the nearest player for the first would be the worst false positive
+> this feature can produce. One playtest reads the list and settles it.
+
+**The mode itself is unresolved and is the owner's call.** `strict` is
+incompatible with Option A: the platform's entity validator gates its
+engine-population carve-out on the mode not being strict, so strict rejects
+`RANDOM_AMBIENT`, `RANDOM_PARKED`, `RANDOM_PATROL`, `RANDOM_PERMANENT` and
+`RANDOM_SCENARIO` — which is the entire vehicle supply, plus ambient peds.
+Enabling it *is* changing ambient traffic. `server.cfg.example` carries the full
+consequence list beside the single line that sets it, and ships the platform
+default explicitly so no deploy turns it on by assumption.
+
 ## Artifacts: screenshots of the offender, and why they may not exist
 
 A filed case captures the **offending player's own screen** three times —
