@@ -846,3 +846,336 @@ RegisterCommand('brchute', function(_, args)
     print(('[br_core] brchute: canopy set to %d -- %s'):format(index, CHUTE_TINTS[index] or '?'))
     print('[br_core] brchute: takes effect on the NEXT deploy, not the current canopy.')
 end, false)
+
+-- ------------------------------------------------------------ boost audit ---
+--
+-- /brboostwhy -- WHY DOES THE BOOST DO NOTHING? (#203)
+--
+-- NOT `brboost`, AND THE NAME IS A GATE RATHER THAN A PREFERENCE. `brboost` is
+-- already taken twice: server/boost.lua registers it for the relay stats (a
+-- different Lua state, so that alone would be fine and is common here), and
+-- keybinds.lua's own hold() registers the +brboost / -brboost pair on THIS
+-- state. tools/verify.sh's duplicate-command gate counts the hold registrar as
+-- claiming the bare name, deliberately -- #137 was three commands silently
+-- shadowing each other, one of which was the very readout we were telling the
+-- owner to run to diagnose the bug it was hiding.
+--
+--   "Boost does nothing, likely because GTA V's drift mode is taking over which
+--    is bound on SHIFT. If we can find a way to override that and test again."
+--   "The boost bar does display and is at 100, so that's good at least."
+--                                                  -- owner, 2026-08-22
+--
+-- ═══ THE FULL METER IS WHY THIS COMMAND EXISTS ═══
+--
+-- It reads as reassurance and it is the opposite: the meter only falls on a
+-- frame the boost loop decides to SPEND, so "100 and staying there" is the
+-- signature of every failure at once. A key that never arrives, a seat gate that
+-- refuses, a dry latch, and an impulse the engine ignores all leave the bar
+-- exactly where the owner found it. Three of those four want a fix in a
+-- different file.
+--
+-- So the chain is measured instead, one rung at a time, and the rung that fails
+-- is named. This is /brdriveby's argument for #197 applied to #203, and it is
+-- the same shape because the situation is the same shape: several causes, one
+-- symptom, and no way to tell them apart from the driver's seat.
+--
+-- ═══ WHAT IT SAMPLES THAT NOTHING ELSE CAN ═══
+--
+--   THE KEYBOARD, THREE WAYS AT ONCE. /brprobe rawkey already answers "is
+--   IsRawKeyDown a level or an edge" for ONE virtual-key code. That is not the
+--   question here. The question is whether the code the boost is ACTUALLY
+--   WATCHING is the code this build reports shift on -- so all three shift codes
+--   are counted side by side, and the winner is named. 0x10 (VK_SHIFT) is what
+--   keybinds.lua's DEFAULT_VK chose, on three converging arguments and no
+--   observation; if 0xA0 counts frames and 0x10 counts none, that reasoning was
+--   wrong and the fix is one table entry.
+--
+--   GTA'S OWN CONTROLS ON THE SAME KEY. If no raw code reports the key and a
+--   control does, the key is reaching the game and IsRawKeyDown is the wrong
+--   reader -- which is a different fix again, and is not something any existing
+--   readout in this project can see.
+--
+--   AND THE SPEED THE CAR ACTUALLY REACHED, against the speed the spec asked
+--   for. That is the only thing that can convict APPLY_FORCE_TO_ENTITY, and it
+--   is measured inside the push itself (BR.Boost.trace) rather than modelled out
+--   here -- a second copy of the rules would exonerate the bug.
+
+--- Every raw code worth asking about for a binding on shift.
+---
+--- ALL THREE, ALWAYS, EVEN THOUGH ONLY ONE CAN BE RIGHT. The whole diagnostic
+--- value is in the DISAGREEMENT: one of these counting frames while the one the
+--- boost watches counts none is the finding, and it cannot be seen by asking
+--- about a single code.
+local SHIFT_VK = {
+    { 0x10, 'VK_SHIFT   -- either shift, what DEFAULT_VK chose' },
+    { 0xA0, 'VK_LSHIFT  -- left only'  },
+    { 0xA1, 'VK_RSHIFT  -- right only' },
+}
+
+--- GTA's own controls on left shift, from br_lib/config/boost.lua's own list.
+---
+--- BORROWED RATHER THAN RETYPED IN SPIRIT: the numbers and their names are the
+--- four that config/boost.lua's header enumerates as "what shift already does in
+--- a vehicle", and this is the row that turns that research into an observation.
+--- A control firing here in a CAR contradicts the claim that none of them does,
+--- and that claim is what picked shift as the default.
+local SHIFT_CONTROLS = {
+    {  21, 'INPUT_SPRINT'                    },
+    {  61, 'INPUT_VEH_MOVE_UP_ONLY'          },
+    { 340, 'INPUT_VEH_HYDRAULICS_CONTROL_UP' },
+    { 352, 'INPUT_VEH_FLY_BOOST'             },
+}
+
+--- The armed boost sample, or nil. One nil check per frame when it is off.
+local bwatch = nil
+
+--- @param w table  the sample, PASSED IN rather than read from `bwatch`.
+---
+--- The caller disarms before it reports -- a report that throws must not leave
+--- the trace armed on the FRAME band forever -- so by the time this runs
+--- `bwatch` is already nil. Reading it from the upvalue instead cost the first
+--- run of this command its entire output.
+local function boostReport(w)
+    -- THE FILE'S OWN STATE, MERGED IN RATHER THAN RE-ASKED. BR.Boost.facts()
+    -- carries the two things that were true before this window opened -- whether
+    -- the force native has EVER been accepted, and what it said when it was not.
+    for k, v in pairs(BR.Boost.facts()) do w[k] = v end
+
+    -- HOW OFTEN THE CODE WE ACTUALLY WATCH READ DOWN. Counted here from the
+    -- per-code table rather than sampled separately, so it cannot disagree with
+    -- the row printed below it.
+    --
+    -- ITS ABSENCE MADE ONE WHOLE VERDICT UNREACHABLE, and mutation testing is
+    -- what found it: `key-not-routed` -- the raw code down while
+    -- BR.Keys.isHeld stays false, which is what a NUI screen holding the
+    -- keyboard looks like -- reads `rawSelf`, and nothing ever wrote it. Every
+    -- such case came out as `key-unseen`, which names the wrong file.
+    w.rawSelf = (w.rawSelfCode and w.raw[w.rawSelfCode]) or 0
+
+    -- WHICH RAW CODE DID BEST, AND IT IS NOT ALLOWED TO BE OUR OWN. The verdict
+    -- asks "did some OTHER code answer for this key", so the one we are already
+    -- watching is excluded here or it would answer its own question.
+    --
+    -- ═══ THE EXCLUSION IS UNREACHABLE TODAY, AND MUTATION TESTING SAYS SO ═══
+    --
+    -- Deleting `r[1] ~= w.rawSelfCode` changes no outcome and no assertion
+    -- notices, which is worth writing down rather than leaving for the next
+    -- person to rediscover. The branch that consumes `rawBestFrames` is only
+    -- reached when `rawSelf` is ZERO -- rung 1 takes the `rawSelf > 0` road
+    -- first -- and a code that read down on zero frames cannot win a `>`
+    -- comparison against zero. So our own code can never be the winner here
+    -- whether or not it is excluded.
+    --
+    -- KEPT ANYWAY, for the reason boost_solve.lua keeps its own unreachable
+    -- floor: the two protect against different edits. The ladder's ordering is
+    -- what makes this dead, and the ladder is a thing somebody will reorder --
+    -- at which point a verdict that told the owner "0x10 never answered but
+    -- 0x10 did" would be worse than no verdict at all.
+    w.rawBestCode, w.rawBestFrames = nil, 0
+    for _, r in ipairs(SHIFT_VK) do
+        local c = w.raw[r[1]] or 0
+        if r[1] ~= w.rawSelfCode and c > w.rawBestFrames then
+            w.rawBestCode, w.rawBestFrames = r[1], c
+        end
+    end
+
+    w.engineFrames = 0
+    for _, c in ipairs(SHIFT_CONTROLS) do
+        local n = w.ctrl[c[1]] or 0
+        if n > w.engineFrames then w.engineFrames = n end
+    end
+
+    local function mph(m) return (m or 0.0) / BR.BoostSolve.MPH end
+
+    print('==============================================================')
+    print('  #203 -- why does the boost do nothing?')
+    print('==============================================================')
+    print(('  sampled              %d boost.drive frames over %.1fs')
+        :format(w.frames or 0, (GetGameTimer() - w.from) / 1000.0))
+    print(('  boost enabled        %s   meter %.0f%%  (%.0f / %.0f ms)')
+        :format(w.enabled and 'yes' or 'NO', BR.Boost.meter(),
+                w.budgetMs or 0, w.capacityMs or 0))
+    rule()
+    print('  THE KEY')
+    print(('  binding              %s   watching %s')
+        :format(tostring(BR.Keys.labelFor('brboost')),
+                w.rawSelfCode and ('0x%02X'):format(w.rawSelfCode)
+                              or 'NOTHING -- unbound'))
+    print(('  raw layer            active %s   holds %s   ui owns keyboard %s')
+        :format(tostring(BR.Keys.rawActive), tostring(BR.Keys.rawHolds),
+                tostring(BR.Keys.uiOwnsKeyboard)))
+    for _, r in ipairs(SHIFT_VK) do
+        local n = w.raw[r[1]] or 0
+        print(('  IsRawKeyDown 0x%02X    %-24s %s')
+            :format(r[1],
+                n == 0 and 'never'
+                       or (('DOWN on %d of %d'):format(n, w.samples or 0)),
+                r[2]))
+    end
+    -- THE SHAPES, BECAUSE `1` IS NOT `true`. keybinds.lua normalises at the
+    -- sample (truth()), and this is the row that says whether it had to.
+    for k, n in pairs(w.shapes) do
+        print(('  ...returned          %s on %d sample(s)'):format(k, n))
+    end
+    print(('  BR.Keys.isHeld       %s')
+        :format((w.heldFrames or 0) == 0 and 'NEVER true'
+            or ('true on %d of %d frames'):format(w.heldFrames, w.frames or 0)))
+    rule()
+    print('  WHAT GTA ITSELF DOES WITH THAT KEY')
+    for _, c in ipairs(SHIFT_CONTROLS) do
+        local n   = w.ctrl[c[1]] or 0
+        local off = w.ctrlOff[c[1]] or 0
+        print(('  control %-33s (%3d)  %s%s')
+            :format(c[2], c[1],
+                n == 0 and 'never pressed'
+                       or ('PRESSED on %d of %d'):format(n, w.samples or 0),
+                off > 0 and ('   [disabled on %d]'):format(off) or ''))
+    end
+    rule()
+    print('  THE SEAT')
+    print(('  in a vehicle         %s')
+        :format((w.inVehFrames or 0) == 0 and 'no'
+            or ('on %d frames'):format(w.inVehFrames)))
+    print(('  in the driver seat   %s')
+        :format((w.driverFrames or 0) == 0 and 'NO'
+            or ('on %d frames'):format(w.driverFrames)))
+    print(('  vehicle class        %s%s')
+        :format(tostring(w.class),
+            (w.excludedFrames or 0) > 0
+                and ('   EXCLUDED on %d frames (BR.Config.Boost.excludeClasses)')
+                    :format(w.excludedFrames) or ''))
+    rule()
+    print('  THE LOOP')
+    print(('  wanted to boost      %s')
+        :format((w.wantFrames or 0) == 0 and 'on NO frame'
+            or ('on %d of %d frames'):format(w.wantFrames, w.frames or 0)))
+    print(('  refused: dry latch %d   meter empty %d')
+        :format(w.dryFrames or 0, w.emptyFrames or 0))
+    rule()
+    print('  THE PUSH')
+    print(('  push() ran           %s')
+        :format((w.pushFrames or 0) == 0 and 'never'
+            or ('on %d frames'):format(w.pushFrames)))
+    print(('  ...no speed reading  %d      ...already ahead of the ramp  %d')
+        :format(w.noSpeed or 0, w.alreadyAhead or 0))
+    print(('  APPLY_FORCE accepted %d   threw %d   (this session: %d of %d)')
+        :format(w.forced or 0, w.forceThrew or 0, w.forceOk or 0, w.forceCalls or 0))
+    if w.forceErr then
+        print(('  FIRST ERROR          %s'):format(w.forceErr))
+    end
+    print(('  total asked for      %.1f m/s summed over every pushing frame')
+        :format(w.dvAsked or 0.0))
+    rule()
+    print('  DID THE CAR GO FASTER')
+    print(('  speed seen           %.1f .. %.1f m/s  (%.0f .. %.0f mph)')
+        :format(w.speedMin or 0.0, w.speedMax or 0.0,
+                mph(w.speedMin), mph(w.speedMax)))
+    print(('  best gain over the speed at the press   %.1f m/s  (%.1f mph)')
+        :format(w.gain or 0.0, mph(w.gain)))
+    print(('  the spec asks for                       %.1f m/s  (%.1f mph)')
+        :format(w.addMps or 0.0, mph(w.addMps)))
+
+    local code, sentence = BR.Boost.verdict(w)
+    rule()
+    print(('  VERDICT [%s]'):format(code))
+    print('  ' .. sentence)
+    rule()
+    print('  HOW TO READ THIS')
+    print('  IsRawKeyDown rows    the three codes shift can arrive as. The boost')
+    print('                       watches ONE of them (named above). If a code we')
+    print('                       are NOT watching counts frames and ours counts')
+    print('                       none, DEFAULT_VK in keybinds.lua is wrong -- and')
+    print('                       that is a one-line fix in a different file.')
+    print('  control rows         GTA\'s own controls on the same key. These read')
+    print('                       the engine\'s mapper, not the keyboard, so a')
+    print('                       control firing while every raw code stays silent')
+    print('                       means the key reaches the GAME and not us.')
+    print('                       All four silent in a CAR is config/boost.lua\'s')
+    print('                       claim confirmed -- shift is free in a car.')
+    print('  BR.Keys.isHeld       the key layer\'s own conclusion. A raw code down')
+    print('                       with this never true is keybinds.lua dropping it')
+    print('                       -- check `holds` and `ui owns keyboard` above.')
+    print('  APPLY_FORCE accepted 0 accepted with a non-zero call count is the')
+    print('                       native refusing us, and the message says why.')
+    print('  best gain            the spec in its own words: "30mph faster than')
+    print('                       what it was doing when they pressed it". Pushing')
+    print('                       for hundreds of frames and gaining nothing is')
+    print('                       the impulse doing nothing, which is a decision')
+    print('                       for the owner -- the fallback is a torque')
+    print('                       multiplier and it cannot hit an exact speed.')
+end
+
+BR.Loop.register(BR.Loop.FRAME, 'debug.boost', function()
+    if not bwatch then return end
+    local w = bwatch
+
+    -- `samples` IS THIS CALLBACK'S OWN COUNT AND `frames` IS boost.drive's, AND
+    -- THEY ARE DELIBERATELY TWO NUMBERS. Both run on the FRAME band so they
+    -- should agree -- and if they do not, that is itself the finding: a
+    -- boost.drive that is suspended (see BR.Loop's error ceiling) would leave
+    -- every counter below at zero for a reason that has nothing to do with the
+    -- key. One number would hide it.
+    w.samples = (w.samples or 0) + 1
+
+    for _, r in ipairs(SHIFT_VK) do
+        local ok, v = pcall(IsRawKeyDown, r[1])
+        if ok then
+            -- THE SHAPE, NOT JUST THE TRUTHINESS. /brprobe rawkey's own note:
+            -- counting with `if ok and v` exonerated the key layer for six
+            -- rounds while the native was handing back the NUMBER 1 and every
+            -- consumer compared it with `== true`. 0 is truthy in Lua, so a
+            -- truthiness count cannot tell `true` from `1`, and `1` was the bug.
+            local shape = ('%s %s'):format(type(v), tostring(v))
+            w.shapes[shape] = (w.shapes[shape] or 0) + 1
+            if not (v == nil or v == false or v == 0) then
+                w.raw[r[1]] = (w.raw[r[1]] or 0) + 1
+            end
+        end
+    end
+
+    for _, c in ipairs(SHIFT_CONTROLS) do
+        -- DISABLED-INCLUSIVE, DELIBERATELY. IsControlPressed goes quiet for a
+        -- control something disabled this frame, and "the key reached the
+        -- engine" is true either way -- which is the only thing this row is
+        -- being asked. The disable itself is counted beside it.
+        if yes(safe(IsDisabledControlPressed, 0, c[1])) then
+            w.ctrl[c[1]] = (w.ctrl[c[1]] or 0) + 1
+        end
+        if not yes(safe(IsControlEnabled, 0, c[1])) then
+            w.ctrlOff[c[1]] = (w.ctrlOff[c[1]] or 0) + 1
+        end
+    end
+
+    if GetGameTimer() >= w.until_ then
+        -- DISARMED BEFORE THE REPORT, NOT AFTER. A report that throws must not
+        -- leave the trace armed on the FRAME band forever -- a diagnostic that
+        -- breaks the thing it is measuring has happened on this project once
+        -- already (/brprobe, owner 2026-08-16).
+        BR.Boost.trace(nil)
+        bwatch = nil
+        local ok, err = pcall(boostReport, w)
+        if not ok then print('[br_core] brboostwhy: ' .. tostring(err)) end
+    end
+end)
+
+RegisterCommand('brboostwhy', function(_, args)
+    local secs = tonumber(args[1] or '') or 6
+    if secs < 0.5 then secs = 0.5 end
+    if secs > 30  then secs = 30  end
+
+    local now = GetGameTimer()
+    bwatch = {
+        from = now, until_ = now + math.floor(secs * 1000),
+        raw = {}, ctrl = {}, ctrlOff = {}, shapes = {}, samples = 0,
+        -- WHAT THE BOOST IS ACTUALLY WATCHING, ASKED OF THE KEY LAYER RATHER
+        -- THAN ASSUMED TO BE SHIFT. The binding is remappable by the spec, so a
+        -- readout that hardcoded 0x10 would be lying to any player who moved it,
+        -- and "the boost is on a key you are not pressing" is a real answer.
+        rawSelfCode = BR.Keys.boundTo('brboost'),
+    }
+    -- The counters only boost.lua can fill land in the same table.
+    BR.Boost.trace(bwatch)
+
+    print(('[br_core] brboostwhy: watching for %.1fs -- BE DRIVING A CAR and HOLD %s '
+        .. 'for the whole window.'):format(secs, tostring(BR.Keys.labelFor('brboost'))))
+end, false)

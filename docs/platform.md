@@ -75,6 +75,44 @@ only asks whether the call throws, not what the answer means. Three rounds of
 a real hold each native answers true for — a level answers on nearly every
 frame, an edge on about one.
 
+**Which virtual-key code a shift press fills is undocumented.** `IsRawKeyDown`
+takes a *Windows* virtual-key code and reads GTA's own 256-slot keyboard array
+(`(*ioKeyboardKeys)[*ioKeyboardActive][key]` in FiveM's `InputNatives.cpp`); the
+native's own docs give `IsRawKeyDown(32)` for space, so the indexing is settled.
+What is **not** settled by any source — the declaration, that source file, the
+docs, or any forum thread — is whether shift fills `0x10` (`VK_SHIFT`), the
+side-specific `0xA0`/`0xA1`, or all three. FiveM's mapper parameter table *does*
+distinguish `LSHIFT` from `RSHIFT`, which is a reason to doubt that only the
+generic slot is filled. `keybinds.lua` bet on `0x10` for the vehicle boost and
+wrote the bet down as three converging inferences, none of which is an
+observation; since #203 the raw reader asks all three for that binding
+(`VK_ALSO`), which is a strict superset and costs nothing if the bet was right.
+`/brboostwhy` counts all three side by side, which is what settles it on a real
+machine.
+
+**`RegisterKeyMapping` and a stock GTA control coexist on the same key; neither
+swallows the other.** FiveM evaluates custom bindings from the same
+`rage::ioValue` device state the stock controls use, and *deliberately bypasses*
+the game's own conflict resolver for them — custom control ids carry
+`0x80000000` and `HandleMappingConflicts` returns early (`GameInput.cpp`). Both
+fire. This is why aircraft are excluded from the boost rather than relying on
+the binding to win the key, and why "some engine control is eating our keypress"
+is not an available explanation for a binding that does nothing.
+
+**GTA V has no drift-mode input, and nothing vanilla uses LSHIFT in a car.**
+#203's playtest attributed a dead boost to "GTA V's drift mode... bound on
+SHIFT". Drift Tuning (Chop Shop, b3095) is a *vehicle modification* bought at
+Hao's — a handling change with no key, no toggle and no mode; there is no
+`INPUT_*DRIFT*` control in any control table, and the only drift natives are
+tyre-level (`_SET_DRIFT_TYRES_ENABLED`), which a script calls rather than a
+player pressing. The belief comes from third-party FiveM drift *resources* that
+bind left shift themselves. Eight controls default to LSHIFT and only
+`INPUT_VEH_HYDRAULICS_CONTROL_UP` (340) can fire in a ground vehicle, and only
+on a lowrider with hydraulics fitted. Stated honestly: the public control table's
+last substantive update was November 2020 (build ~2189), so an input added
+between then and 3095 would not appear in it — which is why `/brboostwhy` samples
+GTA's own controls on the key rather than trusting the document.
+
 **A native declared BOOL may hand Lua a number.** `IsRawKeyDown` may answer
 `true/false`, `1/false`, `1/0` or `1/nil` depending on the build, and **`0` is
 truthy in Lua** — so the obvious normalisation `v and true or false` reads a

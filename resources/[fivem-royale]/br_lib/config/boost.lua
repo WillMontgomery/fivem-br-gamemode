@@ -98,20 +98,59 @@ BR.Config.Boost = {
     ---
     --- The owner said "the vehicle", not "the car", so the default here is as
     --- close to everything as the keyboard allows. LEFT SHIFT is the right
-    --- default key precisely because GTA leaves it unbound in a CAR -- verified
-    --- against two independent control tables, which agree that shift carries
-    --- four controls and that none of them fires in a ground vehicle:
+    --- default key precisely because GTA does nothing with it in a CAR. The full
+    --- list is longer than the four that used to be written here -- eight
+    --- controls default to LSHIFT -- and the conclusion is unchanged, because
+    --- only one of the eight can fire in a ground vehicle at all:
     ---
-    ---     21   INPUT_SPRINT                     on foot only
-    ---     61   INPUT_VEH_MOVE_UP_ONLY           aircraft / submarine, ascend
-    ---     352  INPUT_VEH_FLY_BOOST              aircraft only
-    ---     340  INPUT_VEH_HYDRAULICS_CONTROL_UP  lowriders with hydraulics fitted
+    ---     21   INPUT_SPRINT                       on foot only
+    ---     61   INPUT_VEH_MOVE_UP_ONLY             aircraft / heli axis
+    ---     131  INPUT_VEH_SUB_ASCEND               submarines
+    ---     155  INPUT_PARACHUTE_PRECISION_LANDING  under canopy
+    ---     209  INPUT_FRONTEND_LS                  frontend group
+    ---     254  INPUT_CREATOR_MENU_TOGGLE          creator
+    ---     352  INPUT_VEH_FLY_BOOST                aircraft only
+    ---     340  INPUT_VEH_HYDRAULICS_CONTROL_UP    lowriders with hydraulics
     ---
-    --- Two of those four are aircraft, and REGISTER_KEY_MAPPING DOES NOT SUPPRESS
-    --- AN ENGINE CONTROL THAT SHARES ITS KEY (br_core/client/keybinds.lua says so
-    --- at length). So holding the boost key in a helicopter would climb AND shove
-    --- it forward, from one press, with no way for the player to want only one of
-    --- them. That is not a balance question, it is two features on one key.
+    --- TWO ENTRIES THAT USED TO BE SUSPECTED ARE NOT ON THE LIST AT ALL:
+    --- INPUT_VEH_DUCK is 73 (X) and INPUT_VEH_HANDBRAKE is 76 (SPACE). Neither
+    --- is shift and neither was ever a collision here.
+    ---
+    --- ═══ "DRIFT MODE IS ON SHIFT" WAS INVESTIGATED AND IS NOT A GTA FEATURE ═══
+    ---
+    --- The #203 playtest attributed the dead boost to it -- "likely because GTA
+    --- V's drift mode is taking over which is bound on SHIFT" -- and it is worth
+    --- writing down what the research found so nobody re-litigates it.
+    ---
+    --- Drift Tuning is a Chop Shop (1.68 / b3095) VEHICLE MODIFICATION bought at
+    --- Hao's, available on about eight cars. It is a handling change -- AWD
+    --- conversion, more power, different grip -- and it has NO key, no toggle and
+    --- no mode. There is no INPUT_*DRIFT* control in any control table. The only
+    --- drift natives are tyre-level (_SET_DRIFT_TYRES_ENABLED), which is
+    --- something a script calls, not something a player presses.
+    ---
+    --- WHERE THE BELIEF COMES FROM: several third-party FiveM drift RESOURCES
+    --- bind left shift themselves. That is a convention of other people's
+    --- scripts, not of the game -- and no such resource runs on this server.
+    ---
+    --- STATED HONESTLY: the public control table's last substantive update was
+    --- November 2020 (build ~2189), so an input Rockstar added between then and
+    --- 3095 would not appear in it. "No drift control exists" is therefore very
+    --- well supported and not absolutely proven. /brboost samples GTA's own
+    --- controls on the key while you hold it, which is what settles it on this
+    --- build rather than in a document.
+    ---
+    --- REGISTER_KEY_MAPPING AND AN ENGINE CONTROL DO NOT FIGHT OVER A KEY, and
+    --- this is now source-backed rather than assumed. FiveM's GameInput.cpp
+    --- evaluates custom bindings from the same rage::ioValue device state the
+    --- stock controls use, and deliberately BYPASSES the game's own conflict
+    --- resolver for them (custom ids carry 0x80000000; HandleMappingConflicts
+    --- returns early). Both fire. Nothing swallows anything.
+    ---
+    --- WHICH IS EXACTLY WHY AIRCRAFT ARE STILL EXCLUDED. Holding the boost key in
+    --- a helicopter would climb it (61 / 352) AND shove it forward, from one
+    --- press, with no way for the player to want only one of them. That is not a
+    --- balance question, it is two features on one key.
     ---
     --- 15 is HELICOPTER and 16 is PLANE, from GET_VEHICLE_CLASS. Boats are
     --- deliberately IN: shift does nothing in one, and a boat has an exhaust.

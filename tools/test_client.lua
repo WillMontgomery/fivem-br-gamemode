@@ -166,6 +166,16 @@ local edge = {}
 --- focus change, and a hold that cannot survive it is a hold that cannot be
 --- completed on a machine that ever opens a menu.
 local lying = {}
+--- Codes the raw natives are BLIND to for this whole simulated build, however
+--- hard the key is held.
+---
+--- DIFFERENT FROM `lying` IN THE ONE WAY THAT MATTERS: `lying` is a dropout, one
+--- frame long, cleared at the end of every frame(). This is a PROPERTY OF THE
+--- BUILD and persists, because that is the shape #203's leading candidate has --
+--- "IsRawKeyDown does not answer for shift on this machine, ever". A per-frame
+--- dropout cannot express it, and it is the state in which GTA's own controls
+--- see the key and we do not.
+local rawBlind = {}
 
 --- WHAT THE NATIVE HANDS BACK, WHICH IS NOT THE SAME QUESTION AS WHAT IT MEANS.
 ---
@@ -201,7 +211,7 @@ local build = { rawDown = true, rawPressed = true, shape = SHAPES[1] }
 --- IS_RAW_KEY_DOWN -- a per-frame LEVEL. True for EVERY frame of a hold.
 function IsRawKeyDown(vk)
     if not build.rawDown then error('IS_RAW_KEY_DOWN: no such native', 0) end
-    if lying[vk] then return build.shape.up end
+    if lying[vk] or rawBlind[vk] then return build.shape.up end
     if keys[vk] then return build.shape.down end
     return build.shape.up
 end
@@ -213,6 +223,20 @@ function IsRawKeyPressed(vk)
     if edge[vk] then return build.shape.down end
     return build.shape.up
 end
+
+--- THE HARNESS'S OWN KEYBOARD, KEPT SO A LATER BLOCK CAN HAND IT BACK.
+---
+--- Blocks further down this file legitimately swap a native for a narrower stub
+--- of their own -- #207's map block replaces IsRawKeyDown with an escape-key
+--- model, because what it is testing is the escape key and nothing else. That is
+--- fine right up until a block AFTER it needs the real keyboard, at which point
+--- the failure is silent and looks like a bug in the code under test: #203's
+--- boost block inherited the escape stub, every shift read came back up, and
+--- three verdicts changed to ones that name the wrong file entirely.
+---
+--- One reference, restored by whoever needs it, is cheaper than a rule about
+--- who has to tidy up.
+local RAW_KEYBOARD = { down = IsRawKeyDown, pressed = IsRawKeyPressed }
 
 -- ------------------------------------------------------------------ world ---
 
@@ -759,6 +783,132 @@ function RemoveWeaponFromPed(_ped, hash) stripped[#stripped + 1] = hash end
 local disabled = {}
 function DisableControlAction(_group, control) disabled[control] = true end
 
+-- ---------------------------------------------------------------- boost ---
+--
+-- #203's natives, and the car is a PHYSICS MODEL rather than a counter.
+--
+-- ═══ WHY A MODEL AND NOT A SPY ═══
+--
+-- The owner's report is "boost does nothing, and the bar is at 100". Asserting
+-- "ApplyForceToEntity was called with 0.22" would have PASSED on the build that
+-- produced that report -- the call is made, every frame, and the car does not
+-- move. A spy proves we asked; the complaint is about the answer.
+--
+-- So the stub integrates: an impulse scaled by mass IS a velocity change, so
+-- `dv` lands on the car's speed and the next frame's reading reflects it. That
+-- makes the closed loop a closed loop at the desk, and it makes the failure the
+-- owner reported EXPRESSIBLE -- `forceInert` below is a car that takes every
+-- call and ignores it, which is candidate 2 exactly. A suite that cannot state
+-- the bug cannot prove the fix.
+--
+-- WHAT IS DELIBERATELY NOT MODELLED: drag, gearing, gradient, tyre grip and the
+-- contact solver. The controller only ever asks for a gap and clamps it, so
+-- nothing it does depends on where the resistance comes from -- and modelling a
+-- guess at GTA's drag would be a fixture asserting its own author's arithmetic.
+
+--- The car, in one number. Metres per second, forward.
+local vehSpeed = 0.0
+--- Does APPLY_FORCE_TO_ENTITY do anything on this simulated build?
+local forceInert = false
+--- Does it exist at all, and does it throw?
+local forceThrows = false
+--- Every call, in order, so the ARGUMENTS can be asserted separately from the
+--- effect -- `bScaleByMass` being dropped is a real regression that would leave
+--- the speed test passing on a Blista and failing on nothing the suite drives.
+local forceCalls = {}
+
+function ApplyForceToEntity(ent, ftype, x, y, z, ox, oy, oz, bone,
+                            dirRel, upVec, forceRel, audio, warp)
+    if forceThrows then error('APPLY_FORCE_TO_ENTITY: no such native', 0) end
+    forceCalls[#forceCalls + 1] = {
+        ent = ent, ftype = ftype, x = x, y = y, z = z,
+        ox = ox, oy = oy, oz = oz, bone = bone, dirRel = dirRel,
+        upVec = upVec, forceRel = forceRel, audio = audio, warp = warp,
+    }
+    if forceInert then return end
+    -- SCALED BY MASS MEANS THE UNIT IS m/s. That is the whole argument in
+    -- client/boost.lua's header for why the impulse is a velocity change, and
+    -- it is the argument this line encodes: with the flag set, `y` lands on the
+    -- speed unchanged. WITHOUT the flag an impulse would be divided by the
+    -- vehicle's mass and a heavy car would barely move -- so a mutant that
+    -- passes `false` there must not be able to pass a speed assertion.
+    if forceRel ~= true then return end
+    vehSpeed = vehSpeed + (tonumber(y) or 0.0)
+end
+
+--- GET_ENTITY_SPEED_VECTOR(entity, relative) -- +y is forward in the entity's
+--- own frame, which is the whole reason boost.lua prefers it over the scalar.
+--- Returns a vector table, which is the shape FiveM's Lua runtime produces.
+local speedVectorMissing = false
+function GetEntitySpeedVector(_ent, _rel)
+    if speedVectorMissing then error('GET_ENTITY_SPEED_VECTOR: no such native', 0) end
+    return { x = 0.0, y = vehSpeed, z = 0.0 }
+end
+
+--- The scalar fallback. UNSIGNED, like the real one -- which is exactly why
+--- boost.lua asks the vector first, and why a build without the vector is a
+--- build where reversing reads as going forwards.
+local speedScalarMissing = false
+function GetEntitySpeed(_ent)
+    if speedScalarMissing then error('GET_ENTITY_SPEED: no such native', 0) end
+    return math.abs(vehSpeed)
+end
+
+--- GET_VEHICLE_CLASS. 0 is Compacts; 15/16 are the excluded aircraft.
+local vehClass = 0
+function GetVehicleClass() return vehClass end
+
+--- The network id, and `0` for a vehicle that is not networked -- the case
+--- boost.lua writes down explicitly because 0 is TRUTHY in Lua.
+local vehNetId = 77
+function NetworkGetNetworkIdFromEntity() return vehNetId end
+function NetworkGetEntityFromNetworkId(id) return id == vehNetId and vehicle or 0 end
+
+--- The particle asset. Loaded by default: the flames are not what any of these
+--- tests are about, and an asset that never arrives would have every boost take
+--- the "no flames" branch and prove nothing about the push.
+local ptfxLoaded = true
+function RequestNamedPtfxAsset() end
+function HasNamedPtfxAssetLoaded() return ptfxLoaded end
+function UseParticleFxAsset() end
+function GetEntityBoneIndexByName(_ent, name)
+    -- Exactly one exhaust, so the fallback-offset path is not taken. -1 is the
+    -- engine's "no such bone" and is what everything else must answer.
+    return name == 'exhaust' and 3 or -1
+end
+function GetModelDimensions() return { x = -1.0, y = -2.0, z = -0.5 }, { x = 1.0, y = 2.0, z = 1.0 } end
+local ptfxHandles = 0
+function StartParticleFxLoopedOnEntityBone()
+    ptfxHandles = ptfxHandles + 1
+    return ptfxHandles
+end
+function StartParticleFxLoopedOnEntity()
+    ptfxHandles = ptfxHandles + 1
+    return ptfxHandles
+end
+function StopParticleFxLooped() end
+function SetParticleFxLoopedColour() end
+function SetParticleFxLoopedAlpha() end
+function SetParticleFxLoopedScale() end
+
+--- IS_DISABLED_CONTROL_PRESSED, which /brboostwhy reads to ask "did the key reach
+--- GTA's own mapper at all". Driven off the same `keys` table the raw natives
+--- read, through a control->virtual-key map, so a test that presses shift
+--- presses it for BOTH readers exactly as a real keyboard does -- which is the
+--- arrangement that makes "the engine saw it and we did not" a state the suite
+--- can actually reach.
+local CONTROL_VK = { [21] = 0x10, [61] = 0x10, [340] = 0x10, [352] = 0x10 }
+--- Which controls this simulated build reports at all. Emptying it is a build
+--- where shift drives no control in a car, which is what config/boost.lua
+--- claims and what /brboostwhy exists to check.
+local controlsLive = { [21] = true, [61] = true, [340] = true, [352] = true }
+function IsDisabledControlPressed(_pad, c)
+    if not controlsLive[c] then return controlsAnswerNumbers and 0 or false end
+    local on = keys[CONTROL_VK[c] or -1] == true
+    if controlsAnswerNumbers then return on and 1 or 0 end
+    return on
+end
+
 -- ------------------------------------------------------------- pma-voice ---
 --
 -- THE VOICE RESOURCE, MODELLED FROM ITS SOURCE RATHER THAN FROM ITS README.
@@ -901,6 +1051,10 @@ loadAll({
     -- made of, and BR.Config.MarketIndex is where that answer lives.
     'br_lib/config/market.lua',
     'br_lib/shared/storm_solve.lua', 'br_lib/shared/loot_gen.lua',
+    -- THE BOOST PAIR, AND THE ORDER IS THE MANIFEST'S RATHER THAN A
+    -- PREFERENCE. config/boost.lua derives `addMps` from BR.BoostSolve.MPH at
+    -- LOAD time, so a swap here gives every boost a target of nil.
+    'br_lib/shared/boost_solve.lua', 'br_lib/config/boost.lua',
     'br_core/client/main.lua',       -- the loop registry; must be first
 })
 
@@ -941,6 +1095,19 @@ loadAll({
     -- arithmetic was right, tools/test_roster.lua proved it was right, and two
     -- players still could not hear each other.
     'br_core/client/voice.lua',
+    -- THE BOOST, AND IT IS HERE FOR THE SAME REASON keybinds.lua IS (#203).
+    --
+    -- The owner's report is a key that appears to do nothing, and the last time
+    -- this project had one of those it cost #129 six rounds and #139 alongside
+    -- it, entirely because no suite could drive a keypress. This file already
+    -- models the keyboard three ways; loading the boost underneath it means the
+    -- chain from a physical shift to a force on a car is one assertion, on every
+    -- shape and every simulated build the keyboard block enumerates.
+    --
+    -- AFTER keybinds.lua and BEFORE debug.lua, which is the manifest's own
+    -- order: boost.lua reads BR.Keys.isHeld at load-registered call time, and
+    -- debug.lua's /brboostwhy calls BR.Boost.trace().
+    'br_core/client/boost.lua',
     -- THE DEBUG FILE IS LOADED FOR ONE COMMAND. /brdriveby is the only answer
     -- the owner gets to "why can a passenger not fire", it decides between
     -- causes that look identical from the seat, and it is now also the ONLY
@@ -10656,6 +10823,504 @@ do
 
     BR.State.me.state = BR.PlayerState.ALIVE
 end
+
+-- ═══════════════════════════════════════════════════════════════ #203 ═══
+--
+-- THE VEHICLE BOOST, FROM A PHYSICAL KEY TO A FORCE ON A CAR.
+--
+-- The owner's report is "boost does nothing, and the bar is at 100", and the
+-- feature's own report named two unverified guesses as the likely causes with a
+-- third from the owner. Every one of those is a different rung of one chain, and
+-- NOT ONE of them was reachable by a test before this block: the boost suite
+-- tests the arithmetic (tools/test_boost.lua, pure), and nothing tested the
+-- chain the arithmetic sits in.
+--
+-- That is the exact hole #129 fell through twice. The rule this file was written
+-- for applies unchanged: a suite that cannot press a key cannot tell a broken
+-- interaction from a working one, and the expensive check -- a human in a car --
+-- becomes the only check.
+--
+-- WHAT IS PROVED HERE AND WHAT IS NOT. The keyboard, the key layer, the seat
+-- gate, the meter, the decision to push and the ARGUMENTS to the impulse are all
+-- proved. Whether GTA's physics actually moves a car when handed that impulse is
+-- not a thing a Lua process can be asked -- so it is modelled BOTH ways
+-- (`forceInert`) and what is proved instead is that the readout tells the two
+-- apart. That is the deliverable: the suite cannot say which cause is real, and
+-- it can say that the instrument names it correctly whichever it is.
+do
+    describe('#203 the boost, key to car')
+
+    -- THE KEYBOARD, TAKEN BACK. #207's block above swaps IsRawKeyDown for an
+    -- escape-key stub of its own and does not put it back -- correctly, for what
+    -- it tests. Inheriting it here made every shift read come back UP, which is
+    -- indistinguishable from the bug this block exists to measure: three
+    -- verdicts flipped to ones that name a different file. See RAW_KEYBOARD.
+    IsRawKeyDown, IsRawKeyPressed = RAW_KEYBOARD.down, RAW_KEYBOARD.pressed
+
+    local VK_SHIFT, VK_LSHIFT, VK_RSHIFT = 0x10, 0xA0, 0xA1
+
+    --- Which virtual-key codes this simulated BUILD fills when shift goes down.
+    ---
+    --- THE WHOLE OF THE FIX IS THIS ONE FIXTURE. IS_RAW_KEY_DOWN reads a 256-slot
+    --- array indexed by Windows virtual-key code, and no source anywhere -- the
+    --- native declaration, InputNatives.cpp, the docs, the forums -- says which
+    --- slot a shift press fills. keybinds.lua BET on 0x10 and wrote the bet down
+    --- as three converging inferences. So the bet is a dimension of the matrix
+    --- now, exactly as the raw-native shape became one after #129's seventh
+    --- round: every build below is one a player could be sitting at.
+    local FILLS = {
+        { name = 'generic only (0x10)',        codes = { VK_SHIFT } },
+        { name = 'side-specific only (0xA0)',  codes = { VK_LSHIFT } },
+        { name = 'right shift only (0xA1)',    codes = { VK_RSHIFT } },
+        { name = 'both generic and side',      codes = { VK_SHIFT, VK_LSHIFT } },
+    }
+
+    local function shiftDown(fill)
+        for _, c in ipairs(fill.codes) do
+            keys[c] = true
+            edge[c] = true
+        end
+        engineKey('LSHIFT', true)
+    end
+
+    local function shiftUp(fill)
+        for _, c in ipairs(fill.codes) do keys[c] = nil end
+        engineKey('LSHIFT', false)
+    end
+
+    --- Put the player in the driver's seat of an ordinary car at `speed` m/s.
+    local function drive(speed, class)
+        inVehicle   = true
+        vehicle     = 900
+        vehicleSeat = -1          -- -1 is the driver in every vehicle in the game
+        vehClass    = class or 0  -- 0 is Compacts; 15/16 are the excluded aircraft
+        vehSpeed    = speed or 20.0
+    end
+
+    local function onFoot()
+        inVehicle, vehicle, vehicleSeat = false, 0, nil
+    end
+
+    --- A clean slate for one scenario: no key held, meter full, engine willing.
+    local function resetBoost(fill)
+        if fill then shiftUp(fill) end
+        for _, f in ipairs(FILLS) do shiftUp(f) end
+        forceInert, forceThrows = false, false
+        speedVectorMissing, speedScalarMissing = false, false
+        forceCalls = {}
+        vehClass, vehNetId = 0, 77
+        -- SIX SECONDS ON FOOT REFILLS THE METER FROM EMPTY, on wall clock, which
+        -- is the per-player rule client/boost.lua argues for. Doing it by running
+        -- the real loop rather than by poking the local means a change to that
+        -- rule shows up here as a failure rather than being papered over.
+        onFoot()
+        frames(400, 16)
+    end
+
+    local C = BR.Config.Boost
+
+    -- ── THE CHAIN, ON EVERY BUILD THE KEYBOARD CAN BE ────────────────────────
+    for _, fill in ipairs(FILLS) do
+        resetBoost()
+        drive(20.0)
+        shiftDown(fill)
+        frames(8, 16)
+
+        ok(BR.Keys.isHeld('boost') == true,
+           ('key layer sees shift when the build fills %s'):format(fill.name))
+        ok(BR.Boost.active() == true,
+           ('a boost starts when the build fills %s'):format(fill.name))
+        ok(#forceCalls > 0,
+           ('the impulse is applied when the build fills %s'):format(fill.name))
+
+        shiftUp(fill)
+        frames(2, 16)
+        ok(BR.Boost.active() == false,
+           ('the boost ends on release, %s'):format(fill.name))
+    end
+
+    -- ── AND THE KEY LAYER MUST NOT INVENT ONE ────────────────────────────────
+    --
+    -- The superset only widens the codes that mean SHIFT. A build where nothing
+    -- is held must still read as nothing held, or the fix is a boost that runs
+    -- forever -- which is the failure mode a truthiness bug would produce and the
+    -- one this project has shipped four times.
+    resetBoost()
+    drive(20.0)
+    frames(8, 16)
+    ok(BR.Keys.isHeld('boost') == false,
+       'no shift code down means no boost -- the superset widens the key, not the answer')
+    ok(BR.Boost.active() == false, 'and no boost starts')
+
+    -- ...AND IT MUST NOT LEAK ONTO ANOTHER BINDING. 0xA0 now means shift; it must
+    -- not also mean the interact key, which is what a synonym table applied to
+    -- every code instead of to one would do.
+    resetBoost()
+    keys[VK_LSHIFT] = true
+    frames(4, 16)
+    ok(BR.Keys.isHeld('interact') == false,
+       'a shift synonym does not fire the interact binding')
+    keys[VK_LSHIFT] = nil
+
+    -- ── THE SEAT, THE CLASS AND THE METER ────────────────────────────────────
+    local fill = FILLS[1]
+
+    resetBoost()
+    onFoot()
+    shiftDown(fill)
+    frames(8, 16)
+    ok(BR.Boost.active() == false, 'holding the key on foot boosts nothing')
+    shiftUp(fill)
+
+    resetBoost()
+    drive(20.0)
+    vehicleSeat = 0                     -- front passenger
+    shiftDown(fill)
+    frames(8, 16)
+    ok(BR.Boost.active() == false, 'a passenger cannot boost -- the driver seat is the spec')
+    shiftUp(fill)
+
+    resetBoost()
+    drive(20.0, 15)                     -- helicopter
+    shiftDown(fill)
+    frames(8, 16)
+    ok(BR.Boost.active() == false,
+       'a helicopter cannot boost -- shift already climbs it (excludeClasses)')
+    shiftUp(fill)
+
+    -- ── THE ARGUMENTS THE IMPULSE IS GIVEN ───────────────────────────────────
+    --
+    -- ASSERTED SEPARATELY FROM THE EFFECT, because they fail separately. Dropping
+    -- bScaleByMass leaves the call being made and the units silently becoming
+    -- newton-seconds -- a Blista would leap and a Phantom would not move, and no
+    -- speed assertion on one vehicle could see it.
+    resetBoost()
+    drive(20.0)
+    shiftDown(fill)
+    frames(4, 16)
+    local call = forceCalls[1]
+    ok(call ~= nil, 'the impulse reaches APPLY_FORCE_TO_ENTITY')
+    if call then
+        ok(call.ftype == 1, 'forceType 1 -- APPLY_TYPE_IMPULSE, not a continuous force')
+        ok(call.x == 0.0 and call.z == 0.0, 'nothing is pushed sideways or upwards')
+        ok(call.y > 0.0, 'the push is FORWARD (+y in the entity frame)')
+        ok(call.dirRel == true, 'bLocalForce -- so +y means the car\'s nose, not north')
+        ok(call.forceRel == true,
+           'bScaleByMass -- the flag that makes dv a velocity change in m/s')
+        ok(call.audio == false,
+           'bPlayAudio false -- it squeals once per call and this is called every frame')
+        ok(call.ent == 900, 'and it is applied to the vehicle, not the ped')
+    end
+    shiftUp(fill)
+
+    -- ── THE CAR ACTUALLY GOES FASTER, AND STOPS BEING PUSHED ON RELEASE ──────
+    resetBoost()
+    drive(20.0)
+    shiftDown(fill)
+    -- Two seconds is the whole ramp, so this is the spec's own claim: "+30mph
+    -- ... over the course of the first 2 seconds".
+    frames(125, 16)
+    local reached = vehSpeed
+    ok(reached > 20.0 + C.addMps * 0.9,
+       'two seconds of boost reaches about +30 mph over the speed at the press',
+       ('reached %.2f from 20.0, wanted about %.2f'):format(reached, 20.0 + C.addMps))
+
+    -- NOTHING IS DONE TO THE CAR ON RELEASE. The clause the owner stated in as
+    -- many words and the one most likely to be "fixed" by a tidy-up.
+    shiftUp(fill)
+    frames(30, 16)
+    ok(vehSpeed >= reached,
+       'releasing the key does nothing at all to the car -- no braking, no restore',
+       ('was %.2f, now %.2f'):format(reached, vehSpeed))
+
+    -- ── THE READOUT, WHICH IS THE ACTUAL DELIVERABLE ─────────────────────────
+    --
+    -- IT IS ASSERTED ON RATHER THAN TRUSTED, for the reason /brloot's own helper
+    -- gives: the readout is the only thing a playtester can send back, and a
+    -- diagnostic nobody tests can print the wrong number for six rounds without
+    -- anyone noticing. Here it is worse than that -- the readout is what decides
+    -- WHICH of three files gets edited next, so a wrong verdict costs the same
+    -- round a wrong fix does.
+
+    --- Run /brboostwhy for a window and give back its verdict code.
+    local function brboost(secs)
+        logged = {}
+        commands['brboostwhy'](nil, { tostring(secs or 1) }, '')
+        frames(math.floor((secs or 1) * 1000 / 16) + 2, 16)
+        local text = table.concat(logged, '\n')
+        return text:match('VERDICT %[([%w%-]+)%]'), text
+    end
+
+    resetBoost()
+    drive(20.0)
+    shiftDown(fill)
+    -- 2.5s, AND THE LENGTH IS PART OF THE TEST. The ramp is 2s, so a window
+    -- shorter than that measures a boost still climbing and correctly reads
+    -- INCONCLUSIVE -- which is the verdict doing its job, not a failure. The
+    -- default window is 6s for the same reason: a diagnostic that reports
+    -- half a boost invites the wrong fix.
+    local code, text = brboost(2.5)
+    ok(code == 'ok', 'a working boost reads as [ok]', code)
+    ok(text:find('best gain', 1, true) ~= nil,
+       'and the readout states the gain against the +30 mph the spec asks for')
+    shiftUp(fill)
+
+    -- CANDIDATE 2, THE ONE THE SUITE EXISTS TO BE ABLE TO STATE. Every call is
+    -- made and the engine ignores all of them: the key is fine, the seat is fine,
+    -- the meter spends, and the car does not move. This is the owner's report
+    -- exactly, and the readout must name the impulse rather than the key.
+    resetBoost()
+    drive(20.0)
+    forceInert = true
+    shiftDown(fill)
+    code, text = brboost(1)
+    ok(code == 'force-inert',
+       'an impulse the engine ignores reads as [force-inert], not as a key fault', code)
+    ok(text:find('APPLY_FORCE_TO_ENTITY is doing nothing', 1, true) ~= nil,
+       'and it says so in words, with the torque-multiplier trade named as the owner\'s call')
+    shiftUp(fill)
+    forceInert = false
+
+    -- CANDIDATE 1. The key never arrives at all: no raw code, no engine control.
+    resetBoost()
+    drive(20.0)
+    code = brboost(1)
+    ok(code == 'key-unseen', 'a key that never arrives reads as [key-unseen]', code)
+
+    -- ...AND THE VERSION OF CANDIDATE 1 THAT IS ACTIONABLE. The build fills only
+    -- the side-specific slot. With the VK_ALSO superset in place the boost simply
+    -- works, so the readout says [ok] -- which is the point: the fix removes the
+    -- failure rather than diagnosing it. The verdict for the un-fixed shape is
+    -- proved directly against BR.Boost.verdict below, where it can be stated
+    -- without un-fixing the code.
+    resetBoost()
+    drive(20.0)
+    shiftDown(FILLS[2])
+    code = brboost(2.5)
+    ok(code == 'ok',
+       'a build that fills only 0xA0 boosts anyway -- that is the fix, measured', code)
+    shiftUp(FILLS[2])
+
+    -- ...AND A WINDOW SHORTER THAN THE RAMP SAYS SO RATHER THAN GUESSING. This
+    -- is the same working boost measured for half its climb; a readout that
+    -- called it [force-inert] would send the next round to rewrite the physics.
+    resetBoost()
+    drive(20.0)
+    shiftDown(fill)
+    code = brboost(1)
+    ok(code == 'inconclusive',
+       'half a ramp is [inconclusive], not a verdict on the impulse', code)
+    shiftUp(fill)
+
+    -- AND THE SEAT, THROUGH THE REAL READOUT.
+    resetBoost()
+    onFoot()
+    shiftDown(fill)
+    code = brboost(1)
+    ok(code == 'not-in-vehicle', 'holding the key on foot reads as [not-in-vehicle]', code)
+    shiftUp(fill)
+
+    resetBoost()
+    drive(20.0, 16)                     -- plane
+    shiftDown(fill)
+    code = brboost(1)
+    ok(code == 'excluded-class', 'a plane reads as [excluded-class]', code)
+    shiftUp(fill)
+
+    -- THE KEY ARRIVES AND THE KEY LAYER DROPS IT. A NUI screen holding the
+    -- keyboard is the reachable version of that: IsRawKeyDown still reports the
+    -- code down, and BR.Keys.held is forced false so a player typing in a panel
+    -- does not boost. The readout has to name keybinds.lua rather than say the
+    -- key was never seen -- those are different files.
+    --
+    -- THIS CASE IS WHY `rawSelf` EXISTS. Mutation testing found the field was
+    -- never written, so this whole verdict was unreachable and every instance of
+    -- it came out as [key-unseen].
+    resetBoost()
+    drive(20.0)
+    shiftDown(fill)
+    fire('br:ui:focusChanged', 'players')
+    code, text = brboost(1)
+    ok(code == 'key-not-routed',
+       'a raw code down with isHeld false is [key-not-routed], not [key-unseen]', code)
+    ok(text:find('keybinds.lua', 1, true) ~= nil,
+       'and the verdict names the file to edit')
+    fire('br:ui:focusChanged', 'none')
+    shiftUp(fill)
+
+    -- ═══ THE SHAPE #203'S LEADING CANDIDATE ACTUALLY HAS ═══
+    --
+    -- The raw natives do not answer for shift AT ALL on this build, on any of the
+    -- three codes, while the key is physically down and GTA's own controls on it
+    -- report pressed. That is what "IsRawKeyDown may not answer for shift" means
+    -- if it is true, and it is the state no readout in this project could see
+    -- before now: the key reaches the GAME and not us, so the fault is the
+    -- READER, and neither a different default key nor a rewrite of the physics
+    -- would touch it.
+    resetBoost()
+    drive(20.0)
+    rawBlind[VK_SHIFT], rawBlind[VK_LSHIFT], rawBlind[VK_RSHIFT] = true, true, true
+    shiftDown(fill)
+    code, text = brboost(1)
+    ok(code == 'key-engine-only',
+       'raw silent while the engine control fires is [key-engine-only]', code)
+    ok(text:find('IsRawKeyDown cannot', 1, true) ~= nil,
+       'and the verdict says the READER is wrong, not the key and not the physics')
+    shiftUp(fill)
+    rawBlind[VK_SHIFT], rawBlind[VK_LSHIFT], rawBlind[VK_RSHIFT] = nil, nil, nil
+
+    -- REMAPPABLE, WHICH IS THE SPEC, AND THE READOUT HAS TO FOLLOW THE REBIND.
+    -- "while holding SHIFT by default (REMAPPABLE)". A diagnostic that assumed
+    -- shift would tell a player who moved the key that their key never arrived.
+    resetBoost()
+    drive(20.0)
+    BR.Keys.set('brboost', 0x4B)        -- K
+    keys[0x4B], edge[0x4B] = true, true
+    code, text = brboost(2.5)
+    ok(code == 'ok', 'the boost follows a rebind off shift', code)
+    ok(text:find('watching 0x4B', 1, true) ~= nil,
+       'and the readout names the key the binding is actually on')
+    keys[0x4B] = nil
+    BR.Keys.reset('brboost')
+    frames(2, 16)
+
+    -- THE RAW NATIVES ANSWERING 1/0 RATHER THAN true/false, WHICH IS THE BUG
+    -- THIS PROJECT HAS SHIPPED FOUR TIMES AND WHICH A TRUTHINESS COUNT CANNOT
+    -- SEE. `0` is TRUTHY in Lua, so a sampler written as `if v then` counts every
+    -- frame of an UNTOUCHED key as pressed -- and then confidently reports that
+    -- the key layer is fine. /brprobe rawkey did exactly that for six rounds.
+    --
+    -- Nothing is held here, so every honest reading is "up": the verdict must be
+    -- [key-unseen]. Under the truthiness bug all three codes read down and it
+    -- becomes [key-not-routed], which sends the next round to the wrong file.
+    bootOn(true, true, SHAPES[3])       -- number 1 / number 0
+    resetBoost()
+    drive(20.0)
+    code = brboost(1)
+    ok(code == 'key-unseen',
+       'on a build that answers 1/0, an untouched key still reads as unseen', code)
+    bootOn(true, true, SHAPES[1])       -- back to booleans for what follows
+
+    -- A NATIVE THAT THROWS. The pcall used to discard its result, which is the
+    -- construction that can fail on every frame of every boost and say nothing.
+    resetBoost()
+    drive(20.0)
+    forceThrows = true
+    shiftDown(fill)
+    code, text = brboost(1)
+    ok(code == 'force-throws', 'a native that throws reads as [force-throws]', code)
+    ok(text:find('no such native', 1, true) ~= nil,
+       'and the readout carries the engine\'s own message, not a guess')
+    shiftUp(fill)
+    forceThrows = false
+
+    -- ── THE VERDICT LADDER, DIRECTLY ─────────────────────────────────────────
+    --
+    -- The rungs above are the ones reachable by driving the real client. These
+    -- are the rest, and they matter for the same reason: each names a DIFFERENT
+    -- file to edit, and a ladder that reaches the wrong rung sends the next round
+    -- to the wrong place. Pure function, so they cost nothing.
+    describe('#203 the verdict ladder')
+
+    local base = {
+        enabled = true, frames = 100, heldFrames = 100, inVehFrames = 100,
+        driverFrames = 100, wantFrames = 100, pushFrames = 100, forced = 100,
+        addMps = C.addMps, gain = C.addMps,
+    }
+    local function verdict(over)
+        local f = {}
+        for k, v in pairs(base) do f[k] = v end
+        for k, v in pairs(over or {}) do f[k] = (v ~= 'nil') and v or nil end
+        return (BR.Boost.verdict(f))
+    end
+
+    ok(verdict({ enabled = false }) == 'disabled', 'boost switched off is [disabled]')
+    ok(verdict({ frames = 0 }) == 'no-frames', 'a loop that never ran is [no-frames]')
+
+    -- THE THREE KEY FAULTS, WHICH ARE THREE DIFFERENT FIXES IN THREE PLACES.
+    ok(verdict({ heldFrames = 0, rawSelf = 90, rawSelfCode = 0x10 }) == 'key-not-routed',
+       'raw code down and isHeld never true is keybinds.lua dropping it')
+    ok(verdict({ heldFrames = 0, rawSelfCode = 0x10, rawBestCode = 0xA0,
+                 rawBestFrames = 90 }) == 'key-wrong-code',
+       'another code answering and ours not is the wrong virtual-key code')
+    ok(verdict({ heldFrames = 0, rawSelfCode = 0x10, engineFrames = 90 }) == 'key-engine-only',
+       'the engine seeing the key while no raw code does is the wrong READER')
+    ok(verdict({ heldFrames = 0, rawSelfCode = 0x10 }) == 'key-unseen',
+       'and nothing at all seeing it is [key-unseen]')
+
+    -- THE key-wrong-code SENTENCE HAS TO NAME BOTH CODES, or it is a verdict the
+    -- reader still has to go and investigate.
+    do
+        local _, s = BR.Boost.verdict({
+            enabled = true, frames = 100, heldFrames = 0,
+            rawSelfCode = 0x10, rawBestCode = 0xA0, rawBestFrames = 90,
+        })
+        ok(s:find('0x10', 1, true) and s:find('0xA0', 1, true),
+           'the wrong-code verdict names the code we watch AND the one that answered')
+    end
+
+    ok(verdict({ driverFrames = 0, inVehFrames = 0 }) == 'not-in-vehicle',
+       'held on foot is [not-in-vehicle]')
+    ok(verdict({ driverFrames = 0 }) == 'not-driver', 'held as a passenger is [not-driver]')
+    -- THE EXCLUSION IS ASKED BEFORE THE SEAT, AND THIS IS THE CASE THAT FOUND IT.
+    -- `driverFrames` counts the SEAT and the class gate is applied after it, so a
+    -- pilot has a non-zero seat count. A ladder that asked the seat first let a
+    -- helicopter through to rung 3 and answered `no-want` -- the ladder's own
+    -- word for "unreachable" -- which would have sent the next round hunting a
+    -- bug that did not exist.
+    ok(verdict({ driverFrames = 100, wantFrames = 0, excludedFrames = 90,
+                 pushFrames = 0, forced = 0, class = 15 }) == 'excluded-class',
+       'a pilot IS in the driver seat, and the class gate still names the cause')
+    ok(verdict({ driverFrames = 0, wantFrames = 0, pushFrames = 0, forced = 0,
+                 excludedFrames = 90, class = 15 }) == 'excluded-class',
+       'and so is a passenger in one')
+    -- ...BUT IT MUST NOT CLAIM A BOOST THAT WORKED. Sit in a helicopter for a
+    -- moment, get into a car, boost it properly: the helicopter is not the story.
+    ok(verdict({ excludedFrames = 30, class = 15 }) == 'ok',
+       'an excluded vehicle earlier in the window does not overrule a boost that ran')
+    ok(verdict({ wantFrames = 0, dryFrames = 90 }) == 'dry-latch',
+       'a latched dry meter is [dry-latch] -- let go and press again')
+    ok(verdict({ wantFrames = 0, emptyFrames = 90 }) == 'meter-empty',
+       'an empty meter is [meter-empty] -- wait six seconds')
+    ok(verdict({ wantFrames = 0 }) == 'no-want', 'and an unreachable combination says so')
+    ok(verdict({ pushFrames = 0 }) == 'no-push', 'wanting to boost and never pushing says so')
+    ok(verdict({ forced = 0, forceThrew = 90 }) == 'force-throws', 'a throwing native is named')
+    ok(verdict({ forced = 0, noSpeed = 90 }) == 'no-speed-native',
+       'no speed reading is [no-speed-native] and stops the ladder there')
+    ok(verdict({ forced = 0, alreadyAhead = 90 }) == 'already-ahead',
+       'a car already faster than the ramp is correct behaviour, not a fault')
+
+    -- THE LAST RUNG, AND ITS MIDDLE. A threshold that called a working boost
+    -- broken would cost exactly the round this whole readout exists to save.
+    ok(verdict({ gain = 0.0 }) == 'force-inert', 'no gain at all is [force-inert]')
+    ok(verdict({ gain = C.addMps * 0.05 }) == 'force-inert',
+       'and a gain far under a tenth of what was asked still is')
+    ok(verdict({ gain = C.addMps * 0.3 }) == 'inconclusive',
+       'a third of the way is INCONCLUSIVE rather than a guess in either direction')
+    ok(verdict({ gain = C.addMps * 0.8 }) == 'ok',
+       'and most of the way, against drag and gearing, is [ok]')
+
+    -- ORDER IS PART OF THE CONTRACT. Every rung assumes the ones above passed, so
+    -- a late symptom must never be able to name itself as the cause: a boost that
+    -- never started trivially "applied no force".
+    ok(verdict({ heldFrames = 0, driverFrames = 0, pushFrames = 0, forced = 0,
+                 gain = 0.0, rawSelfCode = 0x10 }) == 'key-unseen',
+       'with everything downstream also empty, the KEY is still the verdict')
+
+    -- AND A TABLE WITH NOTHING IN IT MUST NOT THROW. The readout calls this
+    -- inside a pcall, and a verdict that errors is a readout that prints its
+    -- rows and then swallows its own conclusion.
+    do
+        local okc, c = pcall(BR.Boost.verdict, {})
+        ok(okc and c == 'disabled', 'an empty facts table is answered, not thrown on')
+        local okn = pcall(BR.Boost.verdict, nil)
+        ok(okn, 'and so is nil')
+    end
+
+    resetBoost()
+    onFoot()
+end
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)

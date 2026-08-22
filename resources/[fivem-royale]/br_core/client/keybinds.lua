@@ -325,19 +325,17 @@ tap ('trail',       'brtrail',     'Royale: Toggle smoke trail',         'B')
 -- different number for the same key; see DEFAULT_VK below, where LSHIFT maps to
 -- 0x10 and the reason is written out.
 --
--- WHAT SHIFT ALREADY DOES IN A VEHICLE, ESTABLISHED RATHER THAN ASSUMED. Two
--- independent control tables agree that left shift carries four GTA controls,
--- and that in a CAR none of them fires:
---
---   21   INPUT_SPRINT                     on foot only
---   61   INPUT_VEH_MOVE_UP_ONLY           aircraft / submarine ascend
---   352  INPUT_VEH_FLY_BOOST              aircraft only
---   340  INPUT_VEH_HYDRAULICS_CONTROL_UP  lowriders with hydraulics fitted
+-- WHAT SHIFT ALREADY DOES IN A VEHICLE, ESTABLISHED RATHER THAN ASSUMED. Eight
+-- GTA controls default to left shift and only one of them can fire in a ground
+-- vehicle at all; the full list, and the finding that GTA's "drift mode" is a
+-- handling MOD with no key rather than an input on this one, are in
+-- br_lib/config/boost.lua's excludeClasses note.
 --
 -- That is why it is the right default: it is the most valuable UNBOUND key in a
 -- car, and the same key sprints on foot, so one habit covers both. It is also
 -- the FiveM convention -- the open nitro scripts that ship a default ship this
--- one.
+-- one, and the three that were read all read it as control 21 while driving,
+-- which is independent evidence that the key is free in a car.
 --
 -- THE TWO REAL COLLISIONS, AND WHAT IS DONE ABOUT EACH. RegisterKeyMapping does
 -- not suppress an engine control that shares its key (see the note on the
@@ -721,6 +719,19 @@ local DEFAULT_VK = {
     -- The cost, stated: the boost answers to EITHER shift key rather than only
     -- the left one. That is a superset of what the pause-menu row claims and is
     -- the friendlier of the two errors.
+    --
+    -- ═══ AND ALL THREE OF THOSE REASONS ARE INFERENCES, WHICH IS WHY 0x10 IS NO
+    --     LONGER ASKED ALONE (#203) ═══
+    --
+    -- Not one of them is an observation of what this build puts in the keyboard
+    -- array: the first is a fact about Windows messages, the second about our own
+    -- rebinder, the third about printing. #203's playtest had the boost doing
+    -- nothing with the meter untouched, which is exactly what a key that never
+    -- reads down looks like -- and no source anywhere settles which slot a shift
+    -- press fills. The raw reader now asks 0x10, 0xA0 and 0xA1 for this binding;
+    -- see VK_ALSO at the frame loop for why that is a strict superset rather than
+    -- a second guess. This entry stays 0x10 because it is also what gets STORED,
+    -- printed and rebound, and those three were right all along.
     --
     -- AND IT HAS TO BE HERE AT ALL, which is the note above this table: a default
     -- missing from DEFAULT_VK is a key the raw layer skips entirely, showing as
@@ -1229,6 +1240,71 @@ local function truth(v)
     return true
 end
 
+--- ═══ ONE PHYSICAL KEY, MORE THAN ONE VIRTUAL-KEY CODE, AND NOBODY DOCUMENTS
+---     WHICH SLOT THE ENGINE FILLS ═══
+---
+--- IS_RAW_KEY_DOWN reads GTA's own keyboard array -- FiveM's InputNatives.cpp is
+--- `(*ioKeyboardKeys)[*ioKeyboardActive][key]` over 256 slots -- and the native's
+--- own documentation says the index is a WINDOWS VIRTUAL-KEY CODE, with an
+--- example of 32 for space. That much is settled.
+---
+--- WHAT IS NOT SETTLED, AND WAS SHIPPED AS IF IT WERE: which slot a SHIFT press
+--- lands in. DEFAULT_VK picks 0x10 (VK_SHIFT, the side-agnostic one) on three
+--- converging arguments, and every one of them is an inference:
+---
+---   * a WM_KEYDOWN for either shift carries wParam = VK_SHIFT -- true of
+---     Windows, and it assumes the game populates the array straight from that
+---     message rather than from a device layer that already knows the side;
+---   * the settings screen's capture reads `e.keyCode`, which is 16 for either
+---     shift -- true, and it is a fact about our own rebinder, not about the
+---     engine;
+---   * 0x10 is already in VK_NAME so it prints nicely -- true, and it is about
+---     printing.
+---
+--- NONE OF THE THREE IS AN OBSERVATION OF THIS BUILD, and the research says so
+--- out loud: no source -- the native declaration, InputNatives.cpp, the docs, or
+--- any forum thread -- states whether shift fills 0x10, the side-specific
+--- 0xA0/0xA1, or all three. FiveM's own mapper parameter table DOES distinguish
+--- LSHIFT from RSHIFT, so the engine knows the side somewhere, which is a
+--- reason to doubt that only the generic slot is filled.
+---
+--- SO ASK ALL OF THEM. This is a STRICT SUPERSET and that is the whole argument
+--- for doing it without waiting for a playtest to say which is true:
+---
+---   * if 0x10 is filled, this changes nothing -- the first read already
+---     answered and the others are never reached;
+---   * if only 0xA0/0xA1 are filled, a binding that could never fire now fires;
+---   * there is no third case in which asking MORE codes about the same
+---     physical key makes a binding worse.
+---
+--- THE SEMANTIC COST WAS ALREADY ACCEPTED, IN WRITING, AT DEFAULT_VK: "the boost
+--- answers to EITHER shift key rather than only the left one... the friendlier
+--- of the two errors." Nothing new is being given up here.
+---
+--- ONLY 0x10 NEEDS AN ENTRY, and that is not an oversight. This table is keyed
+--- on the code that can actually be STORED for a binding, and the only two
+--- writers are DEFAULT_VK (which uses 0x10) and the settings screen (whose
+--- browser keydown yields 16 for either shift). 0xA0 can never be the stored
+--- code, so a reverse entry would be a row nothing could ever look up.
+local VK_ALSO = {
+    [0x10] = { 0xA0, 0xA1 },   -- VK_SHIFT <- VK_LSHIFT, VK_RSHIFT
+}
+
+--- Is this binding's key down, asking every code that can mean it.
+--- @param code integer
+--- @return boolean
+local function rawDownAny(code)
+    -- NORMALISED HERE AND NOWHERE ELSE, for the reason written at truth(): the
+    -- native may answer 1/0, and 0 is truthy in Lua.
+    if truth(rawDownFn(code)) then return true end
+    local also = VK_ALSO[code]
+    if also == nil then return false end
+    for i = 1, #also do
+        if truth(rawDownFn(also[i])) then return true end
+    end
+    return false
+end
+
 BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
     if not BR.Keys.rawActive then return end
 
@@ -1278,7 +1354,11 @@ BR.Loop.register(BR.Loop.FRAME, 'keybinds.raw', function()
             -- of which test it with `== true`. Converting here means none of
             -- them can ever see the native's own shape. See truth() above for
             -- what went wrong when they did.
-            local down = truth(rawDownFn(code))
+            -- rawDownAny, NOT rawDownFn: one physical key can arrive as more
+            -- than one virtual-key code and no source settles which slot this
+            -- build fills for shift. See VK_ALSO above -- it is a superset, so
+            -- for every key that already worked this is the same call it was.
+            local down = rawDownAny(code)
             local was = rawDown[b.command] == true
 
             -- A HELD FLAG THAT IS ONLY EVER WRITTEN ON AN EDGE IS A LATCH, AND

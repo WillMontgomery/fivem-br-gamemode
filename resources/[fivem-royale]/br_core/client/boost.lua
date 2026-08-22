@@ -179,6 +179,72 @@ local run = {
 --- part-charged meter spends exactly what is there, which is the spec.
 local dry = false
 
+-- ---------------------------------------------------------------------------
+-- THE TRACE
+--
+-- ═══ WHY THE READOUT IS BUILT INTO THIS FILE RATHER THAN BESIDE IT ═══
+--
+--   "Boost does nothing, likely because GTA V's drift mode is taking over which
+--    is bound on SHIFT."   "The boost bar does display and is at 100, so that's
+--    good at least."                              -- owner, 2026-08-22, #203
+--
+-- A FULL METER IS THE SYMPTOM, NOT THE RESERVE. The meter only falls on a frame
+-- the loop below decides to spend, so "100 and staying there" narrows nothing:
+-- it is equally the signature of a key that never arrives, a seat gate that
+-- refuses, and a boost that runs perfectly while the impulse does nothing. Three
+-- causes, three files, one indistinguishable reading from a chair.
+--
+-- SO THE DECISIONS ARE COUNTED WHERE THEY ARE MADE. `held`, `driving` and `want`
+-- are locals inside the frame callback and nothing outside can re-derive them
+-- without writing a second copy of this file's rules -- and a second copy is a
+-- second opinion, which is worthless against a bug whose whole nature is that
+-- the stages look alike. /brdriveby's own note makes this argument about
+-- `seatOf`: the readout borrows the gameplay file's answer, "or it exonerates
+-- the bug". Same here.
+--
+-- NIL ALMOST ALWAYS, WHICH IS WHAT IT COSTS. This is the FRAME band -- every
+-- player, every frame, forever -- so the trace is one `if trace then` on each
+-- path and nothing else. /brboostwhy hands in a table; everything until then pays a
+-- nil check, which is exactly what client/debug.lua's `watch` costs.
+-- ---------------------------------------------------------------------------
+
+--- The table /brboostwhy is accumulating into, or nil.
+local trace = nil
+
+--- Arm or disarm the trace. Pass a table to collect into, nil to stop.
+---
+--- THE TABLE IS THE CALLER'S, so client/debug.lua owns the deadline, the
+--- keyboard samples it takes alongside these, and the printing. This file only
+--- writes down what only this file can see.
+--- @param t table|nil
+function BR.Boost.trace(t)
+    trace = (type(t) == 'table') and t or nil
+end
+
+--- Bump one counter on the armed trace. A no-op when nothing is armed.
+--- @param k string
+--- @param by number|nil  defaults to 1
+local function note(k, by)
+    if not trace then return end
+    trace[k] = (trace[k] or 0) + (by or 1)
+end
+
+--- THE LAST THING APPLY_FORCE_TO_ENTITY SAID WHEN IT SAID ANYTHING, KEPT
+--- FOREVER AND NOT ONLY WHILE TRACING.
+---
+--- The call is `pcall(ApplyForceToEntity, ...)` and its result was DISCARDED,
+--- which is a hole with exactly the shape of this bug: an unbound native, a
+--- signature the build disagrees with, or an argument the engine refuses all
+--- fail identically and silently, every frame, for the whole life of the
+--- feature. One string, written only on the failing branch, turns "boost does
+--- nothing" into a sentence. /brboostinfo prints it.
+local forceErr = nil
+
+--- How many times the force call has been made and how many of those returned.
+--- Written on every boosting frame and on no other, so an idle client pays
+--- nothing; two integers are cheaper than the question they answer.
+local forceCalls, forceOk = 0, 0
+
 --- The meter as the HUD wants it, 0..100.
 ---
 --- READ BY client/fuel.lua's pushBars, which owns the vehicle envelope. The bar
@@ -427,14 +493,42 @@ end
 --- @param veh integer
 --- @param dtMs number
 local function push(veh, dtMs)
+    note('pushFrames')
     local have = forwardMps(veh)
-    if have == nil then return end
+    if have == nil then
+        -- NEITHER SPEED NATIVE ANSWERED. The caller latches `dry` on the press
+        -- for this, but a build that answers on the press and stops answering
+        -- mid-boost would spend the meter and never push, which is
+        -- indistinguishable from an inert impulse without this row.
+        note('noSpeed')
+        return
+    end
+    if trace then
+        if trace.speedMin == nil or have < trace.speedMin then trace.speedMin = have end
+        if trace.speedMax == nil or have > trace.speedMax then trace.speedMax = have end
+        -- ═══ THE ONE NUMBER THE SPEC IS WRITTEN IN ═══
+        --
+        -- "30mph faster than what it was doing when they pressed it". `baseMps`
+        -- IS what it was doing when they pressed it, frozen, so this is the
+        -- feature's own contract measured in the feature's own terms -- and it
+        -- is what settles whether the impulse does anything at all. A boost
+        -- whose best gain is a fraction of a m/s over four seconds of pushing is
+        -- APPLY_FORCE_TO_ENTITY declining, which no count of frames can show.
+        local gain = have - run.baseMps
+        if trace.gain == nil or gain > trace.gain then trace.gain = gain end
+    end
 
     local want = BR.BoostSolve.target(
         run.baseMps, C.addMps, GetGameTimer() - run.startAt, C.rampMs)
 
     local dv = want - have
-    if dv <= 0.0 then return end
+    if dv <= 0.0 then
+        -- ALREADY FASTER THAN THE RAMP ASKS FOR, which is not a failure -- see
+        -- the note above this function. Counted so a readout can tell "the loop
+        -- declined to push" from "the loop pushed and nothing happened".
+        note('alreadyAhead')
+        return
+    end
 
     -- THE CEILING IS WHAT STOPS A CRASH BECOMING A CATAPULT. Without it, a car
     -- that hit a wall at 40 m/s would be handed the whole 40 back as one frame's
@@ -456,10 +550,27 @@ local function push(veh, dtMs)
     --                      that makes the controller's units m/s at all.
     --   bPlayAudio false   it plays a suspension squeal sized by the force, once
     --                      per call, and this is called every frame.
-    pcall(ApplyForceToEntity, veh, 1,
+    --
+    -- THE RESULT IS READ NOW. It was discarded, and a discarded pcall over a
+    -- native is the one construction that can fail on every frame of every boost
+    -- for the whole life of a feature and say nothing at all -- an unbound
+    -- native, a signature this build disagrees with, or an argument it refuses
+    -- are all the same silence. See `forceErr`.
+    forceCalls = forceCalls + 1
+    local ok, err = pcall(ApplyForceToEntity, veh, 1,
         0.0, dv, 0.0,
         0.0, 0.0, 0.0,
         0, true, true, true, false, true)
+    if ok then
+        forceOk = forceOk + 1
+        note('forced')
+        note('dvAsked', dv)
+    else
+        -- FIRST ONE KEPT, NOT THE LATEST. They are all the same message at 60 Hz
+        -- and the first is the one from before anything else went wrong.
+        if forceErr == nil then forceErr = tostring(err) end
+        note('forceThrew')
+    end
 end
 
 -- ---------------------------------------------------------------------------
@@ -487,12 +598,19 @@ local function stop(announce)
 end
 
 BR.Loop.register(BR.Loop.FRAME, 'boost.drive', function(dtMs)
+    note('frames')
     if not enabled() then
+        note('offFrames')
         if run.on then stop(true) end
         return
     end
 
     local held = BR.Keys.isHeld('boost')
+    -- THE KEY LAYER'S OWN CONCLUSION, COUNTED BEFORE ANYTHING ACTS ON IT. This
+    -- is the row that separates "the keyboard never reached us" from every other
+    -- cause: /brboostwhy samples the raw natives itself alongside this, so the two
+    -- disagreeing names the fault as keybinds.lua's rather than this file's.
+    if held then note('heldFrames') end
     -- THE DRY LATCH CLEARS ON THE RELEASE AND ONLY ON THE RELEASE. See `dry`.
     if not held then dry = false end
 
@@ -533,8 +651,10 @@ BR.Loop.register(BR.Loop.FRAME, 'boost.drive', function(dtMs)
     end
     local driving = false
     if veh ~= 0 then
+        note('inVehFrames')
         local ok, driver = pcall(GetPedInVehicleSeat, veh, -1)
         driving = ok and driver == ped
+        if driving then note('driverFrames') end
         -- AIRCRAFT ARE OUT BECAUSE THE KEY IS ALREADY THEIRS. Left shift is
         -- INPUT_VEH_FLY_BOOST (352) and INPUT_VEH_MOVE_UP_ONLY (61), and
         -- RegisterKeyMapping cannot take a control away from the engine -- so a
@@ -542,13 +662,24 @@ BR.Loop.register(BR.Loop.FRAME, 'boost.drive', function(dtMs)
         -- and the full argument are in BR.Config.Boost.excludeClasses.
         if driving and type(C.excludeClasses) == 'table' then
             local okc, class = pcall(GetVehicleClass, veh)
+            if trace and okc then trace.class = math.tointeger(tonumber(class)) end
             if okc and C.excludeClasses[math.tointeger(tonumber(class)) or -1] then
                 driving = false
+                note('excludedFrames')
             end
         end
     end
 
     local want = driving and held and not dry and budget > 0.0
+    if trace then
+        if want then note('wantFrames') end
+        -- THE TWO REFUSALS THAT ARE NOT THE SEAT, SEPARATED. A held key in the
+        -- driver's seat that still does not boost is either a latched dry meter
+        -- or an empty one, and they want different answers -- the first is
+        -- "let go and press again", the second is "wait six seconds".
+        if driving and held and dry then note('dryFrames') end
+        if driving and held and not dry and budget <= 0.0 then note('emptyFrames') end
+    end
     budget = BR.BoostSolve.step(
         budget, dtMs, want == true, C.capacityMs, C.rechargeMs)
 
@@ -683,6 +814,212 @@ AddEventHandler('onClientResourceStop', function(res)
     flamesAllOff()
 end)
 
+-- ---------------------------------------------------------------------------
+-- THE VERDICT
+-- ---------------------------------------------------------------------------
+
+--- The state only this file can see, for /brboostwhy's report.
+---
+--- Separate from the trace table because these are not counted over a window --
+--- they are true right now, and two of them (`forceErr`, `forceOk`) are true
+--- from before the window opened, which is the point of keeping them at all.
+--- @return table
+function BR.Boost.facts()
+    return {
+        enabled    = enabled(),
+        budgetMs   = budget,
+        capacityMs = C and tonumber(C.capacityMs) or 0.0,
+        addMps     = C and tonumber(C.addMps) or 0.0,
+        rampMs     = C and tonumber(C.rampMs) or 0.0,
+        running    = run.on == true,
+        dryLatch   = dry == true,
+        forceCalls = forceCalls,
+        forceOk    = forceOk,
+        forceErr   = forceErr,
+    }
+end
+
+--- ═══ WHICH STAGE FAILED, AS ONE WORD AND ONE SENTENCE ═══
+---
+--- PURE, AND IT IS THE WHOLE REASON /brboostwhy IS NOT SIX PRINT STATEMENTS. #203
+--- has three candidate causes -- a key that never arrives, a seat gate that
+--- refuses, and an impulse that does nothing -- and from the driver's seat all
+--- three are "boost does nothing, meter stays at 100". Each wants a fix in a
+--- different file. A readout that prints numbers and leaves the reading to the
+--- person holding the controller is a readout that costs another playtest round
+--- when the numbers are misread, which is exactly what BR.Inv.driveByVerdict
+--- exists to prevent for #197.
+---
+--- THE LADDER IS ORDERED BY THE CHAIN, NOT BY LIKELIHOOD. Each rung assumes
+--- every rung above it passed, so the first one that fails is the one to fix and
+--- everything below it is unmeasured rather than fine. Reordering it would let a
+--- late symptom name itself as the cause -- "the impulse did nothing" is
+--- trivially true on a boost that never started.
+---
+--- @param f table  the trace table, with BR.Boost.facts() merged in
+--- @return string code
+--- @return string sentence
+function BR.Boost.verdict(f)
+    f = type(f) == 'table' and f or {}
+    --- Counters are absent rather than zero when nothing incremented them.
+    local function n(k) return tonumber(f[k]) or 0 end
+
+    if f.enabled ~= true then
+        return 'disabled',
+            'BR.Config.Boost.enabled is off, or capacityMs is zero. Nothing was '
+            .. 'ever going to happen; there is no bug here to find.'
+    end
+    if n('frames') == 0 then
+        return 'no-frames',
+            'The boost.drive frame callback did not run once. That is the loop, '
+            .. 'not the boost -- see /brperf and /brloop.'
+    end
+
+    -- ── RUNG 1: DID THE KEY REACH US? ──────────────────────────────────────
+    if n('heldFrames') == 0 then
+        if n('rawSelf') > 0 then
+            return 'key-not-routed',
+                ('The virtual-key code the boost watches (0x%02X) read DOWN on %d '
+                .. 'frames, and BR.Keys.isHeld("boost") was never true. The key '
+                .. 'arrived and the key layer did not deliver it -- the fault is '
+                .. 'in br_core/client/keybinds.lua. Check `holds` and `ui input` '
+                .. 'in /brkeys.'):format(tonumber(f.rawSelfCode) or 0, n('rawSelf'))
+        end
+        if n('rawBestFrames') > 0 then
+            return 'key-wrong-code',
+                ('The boost watches 0x%02X and that code never read down, but '
+                .. '0x%02X read down on %d frames. We are asking the raw layer '
+                .. 'about the wrong virtual-key code -- the fix is DEFAULT_VK in '
+                .. 'br_core/client/keybinds.lua, not the boost.')
+                :format(tonumber(f.rawSelfCode) or 0,
+                        tonumber(f.rawBestCode) or 0, n('rawBestFrames'))
+        end
+        if n('engineFrames') > 0 then
+            return 'key-engine-only',
+                ('No raw-key code reported the key at all, and GTA\'s own controls '
+                .. 'on it fired on %d frames. The game can see the key and '
+                .. 'IsRawKeyDown cannot, so the raw layer is the wrong reader for '
+                .. 'this key. Drive the hold from the RegisterKeyMapping +/- pair '
+                .. 'instead, or read the key by control.'):format(n('engineFrames'))
+        end
+        return 'key-unseen',
+            'Nothing saw the key: not the raw layer, not GTA\'s own controls on '
+            .. 'it, not the key layer. Either it was not held for the window, or '
+            .. 'the game did not have keyboard focus. Run it again and hold the '
+            .. 'key for the whole countdown before blaming the code.'
+    end
+
+    -- ── RUNG 2: WERE WE DRIVING SOMETHING THAT MAY BOOST? ─────────────────
+    --
+    -- THE CLASS GATE IS ASKED BEFORE THE SEAT, AND IT HAS TO BE. `driverFrames`
+    -- counts the seat and nothing else -- the exclusion is applied afterwards, so
+    -- a player at the controls of a helicopter has a non-zero seat count and
+    -- would sail past a rung that only asked about the seat. It did: a plane
+    -- reached rung 3 and came out as `no-want`, which is the ladder's own word
+    -- for "this should not be possible" and would have sent the next round
+    -- looking for a bug that was not there.
+    --
+    -- GUARDED ON `wantFrames`, so a player who sat in a helicopter for a moment
+    -- and then boosted a car properly is not told the helicopter was the answer.
+    if n('excludedFrames') > 0 and n('wantFrames') == 0 then
+        return 'excluded-class',
+            ('The key was seen, and the vehicle is class %s, which is in '
+            .. 'BR.Config.Boost.excludeClasses -- aircraft are excluded because '
+            .. 'left shift already climbs them. Boost a car.')
+            :format(tostring(f.class))
+    end
+    if n('driverFrames') == 0 then
+        if n('inVehFrames') == 0 then
+            return 'not-in-vehicle',
+                'The key was seen on ' .. n('heldFrames') .. ' frames and you were '
+                .. 'not in a vehicle on any of them. Boost only runs in a seat.'
+        end
+        return 'not-driver',
+            'The key was seen and you were in a vehicle, never in the DRIVER\'s '
+            .. 'seat of it. Boost is the driver\'s, by the spec.'
+    end
+
+    -- ── RUNG 3: DID THE LOOP DECIDE TO SPEND? ─────────────────────────────
+    if n('wantFrames') == 0 then
+        if n('emptyFrames') > 0 then
+            return 'meter-empty',
+                'Key seen, driving, and the meter was empty for the whole window. '
+                .. 'It refills in six seconds from empty; wait, then try again.'
+        end
+        if n('dryFrames') > 0 then
+            return 'dry-latch',
+                'Key seen, driving, and the dry latch was set for the whole '
+                .. 'window -- the meter emptied while the key was still down, and '
+                .. 'a fresh boost needs a fresh press. Let go, then press again.'
+        end
+        return 'no-want',
+            'Key seen and driving, and the loop still declined to boost on every '
+            .. 'frame. That combination is not reachable by the rules as written; '
+            .. 'paste this whole readout.'
+    end
+
+    -- ── RUNG 4: DID THE PUSH RUN, AND DID THE ENGINE ACCEPT IT? ───────────
+    if n('pushFrames') == 0 then
+        return 'no-push',
+            'The loop wanted to boost on ' .. n('wantFrames') .. ' frames and '
+            .. 'push() ran on none of them. That is not reachable by the rules as '
+            .. 'written; paste this whole readout.'
+    end
+    if n('forced') == 0 then
+        if n('forceThrew') > 0 then
+            return 'force-throws',
+                'APPLY_FORCE_TO_ENTITY threw on every call: ' ..
+                tostring(f.forceErr or 'no message') .. '. The native is unbound '
+                .. 'on this build or refuses these arguments. This is the impulse, '
+                .. 'not the key -- the fallback is a torque multiplier, which '
+                .. 'cannot be asked for an exact speed and is the owner\'s call.'
+        end
+        if n('noSpeed') > 0 then
+            return 'no-speed-native',
+                'Neither GET_ENTITY_SPEED_VECTOR nor GET_ENTITY_SPEED answered, so '
+                .. 'the controller has no idea how fast the car is going and never '
+                .. 'asked for anything. Nothing downstream of this was measured.'
+        end
+        return 'already-ahead',
+            'The car was already going faster than the ramp asked for on every '
+            .. 'frame, so nothing was applied -- which is correct, and is the '
+            .. 'spec\'s "never slow the car down". Boost from a lower speed.'
+    end
+
+    -- ── RUNG 5: DID THE CAR ACTUALLY GO FASTER? ───────────────────────────
+    --
+    -- THE THRESHOLD IS DELIBERATELY LOW AND THE MIDDLE IS DELIBERATELY NAMED.
+    -- Drag, gradient, gearing and a driver who lifted off all take a bite out of
+    -- the gain, so anything near the full 30 mph would be a threshold that calls
+    -- a working boost broken. A gain under a tenth of what was asked, over a
+    -- boost that pushed for real frames, is not drag -- it is nothing happening.
+    -- Between the two this says INCONCLUSIVE rather than picking, because a
+    -- wrong verdict here costs the same playtest round as a wrong fix.
+    local asked = tonumber(f.addMps) or 0.0
+    local gain  = tonumber(f.gain) or 0.0
+    if asked > 0.0 and gain < asked * 0.1 then
+        return 'force-inert',
+            ('The impulse was applied on %d frames and the car never got more than '
+            .. '%.1f m/s above its speed at the press, against the %.1f m/s asked '
+            .. 'for. The key, the seat, the meter and the loop are all fine and '
+            .. 'APPLY_FORCE_TO_ENTITY is doing nothing. The fallback is a torque '
+            .. 'multiplier, and it makes the exact +30 mph approximate -- that is '
+            .. 'the owner\'s decision, not a silent swap.')
+            :format(n('forced'), gain, asked)
+    end
+    if asked > 0.0 and gain < asked * 0.6 then
+        return 'inconclusive',
+            ('The impulse was applied on %d frames and the car gained %.1f m/s of '
+            .. 'the %.1f m/s asked for. Something is happening and it is short. '
+            .. 'Boost on a flat straight at a steady speed and read it again '
+            .. 'before changing anything.'):format(n('forced'), gain, asked)
+    end
+    return 'ok',
+        ('The whole chain ran: key seen on %d frames, pushed on %d, and the car '
+        .. 'gained %.1f m/s of the %.1f m/s asked for. Boost works on this build.')
+        :format(n('heldFrames'), n('forced'), gain, asked)
+end
+
 --- Everything about the meter, in one paste. The same shape as /brstam.
 RegisterCommand('brboostinfo', function()
     print('=== boost ===')
@@ -697,8 +1034,20 @@ RegisterCommand('brboostinfo', function()
             el, BR.BoostSolve.ramp(el, C.rampMs),
             BR.BoostSolve.target(run.baseMps, C.addMps, el, C.rampMs)))
     end
+    -- ═══ THE ROW THAT SAYS WHETHER THE ENGINE EVER TOOK THE IMPULSE ═══
+    --
+    -- `pcall(ApplyForceToEntity, ...)` discarded its result, so a native that is
+    -- unbound on this build, or that refuses this signature, failed silently on
+    -- every frame of every boost and left exactly the reported symptom: a meter
+    -- that spends and a car that does not move. Two integers and a string.
+    --
+    -- 0 of 0 IS NOT A FAULT -- it means nobody has boosted yet this session.
+    print(('  force calls %d, accepted %d%s'):format(
+        forceCalls, forceOk,
+        forceErr and ('   FIRST ERROR: ' .. forceErr) or ''))
     local n = 0
     for _ in pairs(lit) do n = n + 1 end
     print(('  vehicles alight %d   key %s'):format(
         n, tostring(BR.Keys.labelFor('brboost'))))
+    print('  /brboostwhy [secs] measures the whole chain and names the stage that fails')
 end, false)
