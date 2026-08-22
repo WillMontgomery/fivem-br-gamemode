@@ -513,6 +513,40 @@ local function seatOf(veh, ped)
     return nil
 end
 
+--- Where our own answer to the seat rule lives.
+---
+--- br_core naming a file inside another resource is a dependency this project
+--- otherwise avoids, and it is deliberate here: the ONLY way to tell "the
+--- override was ignored by the game" from "the override was never shipped" is
+--- to look at whether the file arrived. A diagnostic that cannot tell those two
+--- apart sends the owner to the wrong half of the problem.
+local OVERRIDE_RES  = 'br_environment'
+local OVERRIDE_FILE = 'data/vehiclelayouts.meta'
+
+--- Read our drive-by override back off this client and see what it says.
+---
+--- LoadResourceFile is a Cfx builtin rather than a game native -- it is present
+--- on every build, so it is not in client/natives.lua's probe list -- but it
+--- only returns anything for a file the resource declares in `files{}`, which
+--- is why br_environment declares that .meta twice.
+---
+--- @param name string|nil  the WEAPON_* name in the active slot
+--- @return boolean|nil lists  nil = no file to read, or no weapon to look for
+--- @return integer|nil count  distinct weapons the file names
+--- @return string state       the resource state, for the row
+local function overrideFacts(name)
+    local state = safe(GetResourceState, OVERRIDE_RES) or 'unknown'
+    local text  = safe(LoadResourceFile, OVERRIDE_RES, OVERRIDE_FILE)
+    if type(text) ~= 'string' or text == '' then return nil, nil, state end
+
+    local seen, count = {}, 0
+    for w in text:gmatch('<Item>(WEAPON_[%u%d_]+)</Item>') do
+        if not seen[w] then seen[w] = true; count = count + 1 end
+    end
+    if not name then return nil, count, state end
+    return seen[name] == true, count, state
+end
+
 --- The armed sample, or nil when nothing is being measured. One nil check per
 --- frame when it is off, which is what the overlay above costs too.
 local watch = nil
@@ -531,6 +565,9 @@ local function driveByReport()
     local model = veh and veh ~= 0 and safe(GetEntityModel, veh) or nil
     local name  = model and safe(GetDisplayNameFromVehicleModel, model) or nil
     local w     = f.wantHash and BR.Config.WeaponByHash[BR.NormHash(f.wantHash)]
+
+    local lists, listed, resState = overrideFacts(w and w.name or nil)
+    f.overrideLists = lists
 
     --- What to call whatever the engine says is in the hand.
     ---
@@ -581,6 +618,23 @@ local function driveByReport()
                 :format((GetGameTimer() - (f.driveByAt or 0)) / 1000.0, f.driveByCount)))
     print(('  IS_PED_DOING_DRIVEBY %s   (on %d of %d frames)')
         :format(tostring(f.doingDriveby), watch.driveby, watch.frames))
+    -- OUR OVERRIDE, as an observation rather than an assumption. This is the
+    -- row that separates "the game ignored our data file" from "the data file
+    -- never got here", and those two want fixes in different repositories.
+    --
+    -- `~= nil` and not `if listed then`: a file that arrived and named nothing
+    -- gives 0, `0` is truthy in Lua anyway, and writing the version that only
+    -- works by accident is how this project shipped that bug four times.
+    if listed ~= nil then
+        print(('  seat weapon override %s/%s -- READ BACK, names %d weapon(s)')
+            :format(OVERRIDE_RES, OVERRIDE_FILE, listed))
+        print(('  ...and it names %s   %s')
+            :format(w and w.name or '(no weapon selected)',
+                lists == nil and '-' or (lists and 'yes' or 'NO')))
+    else
+        print(('  seat weapon override %s/%s -- NOT READABLE (%s is "%s")')
+            :format(OVERRIDE_RES, OVERRIDE_FILE, OVERRIDE_RES, tostring(resState)))
+    end
     for _, c in ipairs(ATTACK_CONTROLS) do
         local off = watch.off[c[1]] or 0
         print(('  control %-21s (%3d)  %s')
@@ -613,13 +667,18 @@ local function driveByReport()
     print('  control rows         a control disabled on ANY frame is a script')
     print('                       holding your trigger down, and is fixable.')
     print('                       All six enabled means no script is at fault.')
-    print('  THE ONE THING NO SCRIPT CAN CHANGE: which weapons a seat accepts is')
-    print('  game DATA -- the WeaponGroup list on that seat\'s CVehicleDriveByInfo')
-    print('  in vehiclelayouts.meta. A standard car seat lists unarmed, one-handed')
-    print('  and thrown. Rifles, shotguns, snipers and MGs are not on it, and')
-    print('  there is no native that adds them. Lifting it means shipping our own')
-    print('  copy of that data file, for every seat in the game -- which is a')
-    print('  design decision about how a car fight feels, not a bug fix.')
+    print('  seat weapon override which weapons a seat accepts is game DATA, not a')
+    print('                       native -- the CDrivebyWeaponGroup a seat\'s')
+    print('                       drive-by anim info names. We redefine two of')
+    print('                       them so long guns are on the list. NOT READABLE')
+    print('                       means the file never reached this client, which')
+    print('                       is a deploy problem, not a game one. READ BACK')
+    print('                       plus a stow means the GAME ignored it, which is')
+    print('                       the open question in #197.')
+    print('  THE DRIVER IS NOT EXEMPT, and cannot be from here: the base game gives')
+    print('  the driver\'s seat and the front passenger\'s seat the same weapon group,')
+    print('  so widening it reaches both. docs/vehicle-data.md has what separating')
+    print('  them would cost.')
 end
 
 BR.Loop.register(BR.Loop.FRAME, 'debug.driveby', function()

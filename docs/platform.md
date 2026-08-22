@@ -214,5 +214,29 @@ that reaches the server anyway resolves to the `SAME_SQUAD` refusal in
 machine never computes the hit in the first place, so there is no local corpse to
 correct — which is the only thing that was ever wrong with the server-side answer.
 
+**Which weapons a vehicle seat accepts is game DATA, and no native reaches it.**
+A passenger could not fire a rifle (#197, owner 2026-08-21) and the search went
+straight to `SET_PLAYER_CAN_DO_DRIVE_BY` — which defaults to **on**, was already
+being called, and was never the lever. The rule lives in `vehiclelayouts.meta`:
+a seat names a `CVehicleDriveByInfo`, that names `CVehicleDriveByAnimInfo`
+entries, and each of *those* names one `CDrivebyWeaponGroup`. The seat accepts
+the union of those groups. A stock car seat gets unarmed, one-handed and thrown,
+so a long gun is stowed on the way in and the ammo reads 0 — which is why
+`probe.lua` had already recorded "the clip reading dropping to 0 in a seat is
+EXPECTED" two weeks before anyone connected the two halves. The fix is a
+`data_file 'VEHICLE_LAYOUTS_FILE'` in an fxmanifest, and it is the first game
+data file this project ships: see [vehicle-data.md](vehicle-data.md).
+
+> **Whether a mounted data file may redefine an entry the base game already
+> has is not documented and is not settled here.** Cfx's own loader hands the
+> file straight to the game's mounter (it only sorts `VEHICLE_LAYOUTS_FILE` and
+> `HANDLING_FILE` ahead of the rest, so layouts parse before `vehicles.meta`);
+> what the mounter does with a duplicate name is the game's business.
+> Community reports run both ways and there is a standing feature request on the
+> Cfx forum asking for the ability outright. Our override is written so that
+> being ignored costs nothing — the seat keeps today's rule — and `/brdriveby`
+> answers it from a seat in ten seconds. **Do not repeat this research; run the
+> command.**
+
 ---
 

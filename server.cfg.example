@@ -282,7 +282,7 @@ exec "tunables.cfg"
 # ---------------------------------------------------------------------------
 ensure br_lib
 ensure br_core
-ensure br_environment    # world state: IPLs + the Cayo Perico lobby island
+ensure br_environment    # world state: IPLs, the lobby island, drive-by seat data
 ensure br_ui
 ensure br_loadscreen     # branded loading screen; br_core releases it
 ensure br_ddb            # DynamoDB: bans, grants, profiles, stats, incidents

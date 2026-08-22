@@ -205,10 +205,12 @@ local driveBy = { at = 0, count = 0 }
 ---
 --- WHAT THIS STILL DOES NOT BUY. The engine applies its own rule about which
 --- weapons are usable from which seat, and that rule is game DATA -- the
---- WeaponGroup list on the seat's CVehicleDriveByInfo -- not a native we can
---- call. A standard car seat permits unarmed, one-handed and thrown weapons and
---- nothing else, so a rifle is stowed on the way in whatever this flag says.
---- This only stops US being the reason. See /brdriveby.
+--- CDrivebyWeaponGroup named by the seat's drive-by anim info -- not a native
+--- we can call. A stock car seat permits unarmed, one-handed and thrown weapons
+--- and nothing else, so a rifle is stowed on the way in whatever this flag says.
+--- We widen that list in br_environment/data/vehiclelayouts.meta rather than
+--- from here, because it is not something Lua can reach. This only stops US
+--- being the reason. See /brdriveby.
 local function assertDriveBy()
     SetPlayerCanDoDriveBy(PlayerId(), true)
     driveBy.at, driveBy.count = GetGameTimer(), driveBy.count + 1
@@ -1286,6 +1288,21 @@ end
 --- something disabled -- come before the two that are the ENGINE's, so we never
 --- blame the platform for our own bug.
 ---
+--- THE OVERRIDE IS A TRI-STATE AND IT IS COMPARED, NEVER TESTED (#197).
+---
+--- `f.overrideLists` has three meanings and only three:
+---
+---   nil    we could not read br_environment's vehiclelayouts.meta at all --
+---          the resource is not running, or it does not ship one.
+---   false  we read it, and this weapon is not in it.
+---   true   we read it, and this weapon is in it.
+---
+--- `if f.overrideLists then` collapses the first two into one answer and would
+--- tell the owner "we never shipped an override" when what actually happened is
+--- that they shipped one and left a gun off it. Same family as the `0` bug this
+--- project has shipped four times: the value has three states and Lua's
+--- truthiness only has two.
+---
 --- @param f table  BR.Inv.driveByFacts() plus the engine half
 --- @return string code, string sentence
 function BR.Inv.driveByVerdict(f)
@@ -1335,19 +1352,52 @@ function BR.Inv.driveByVerdict(f)
             .. 'have not put it on the ped yet. Wait a tick and run it again.'
     end
     if engine == nil or engine == bare then
-        return 'stowed',
-            'THE ENGINE HAS STOWED THE WEAPON. It is still in your inventory '
-            .. 'and it is not in your hands, so there is nothing to fire. This '
-            .. 'is GTA\'s own per-seat rule, not ours: a seat permits a list of '
-            .. 'weapon groups and a standard car seat lists unarmed, one-handed '
-            .. 'and thrown. A rifle, shotgun, sniper or MG is not on that list '
-            .. 'and no native lifts it. See the trailer below.'
+        if f.overrideLists == nil then
+            return 'stowed',
+                'THE ENGINE HAS STOWED THE WEAPON. It is still in your inventory '
+                .. 'and it is not in your hands, so there is nothing to fire. This '
+                .. 'is GTA\'s own per-seat rule, not ours: a seat permits a list of '
+                .. 'weapon groups and a standard car seat lists unarmed, one-handed '
+                .. 'and thrown. A rifle, shotgun, sniper or MG is not on that list '
+                .. 'and no native lifts it. We ship an override that widens that '
+                .. 'list -- br_environment/data/vehiclelayouts.meta -- and this '
+                .. 'client could not read it, so it is not loaded here at all. '
+                .. 'Check br_environment is started.'
+        end
+        if f.overrideLists == false then
+            return 'stowed-unlisted',
+                'THE ENGINE HAS STOWED THE WEAPON, and our own override does not '
+                .. 'list this one. The list in br_environment/data/vehiclelayouts.meta '
+                .. 'REPLACES the base game\'s rather than extending it, so a weapon '
+                .. 'missing from it loses drive-by outright. Add it there -- '
+                .. 'tools/check_driveby.lua is meant to make that impossible, so '
+                .. 'this verdict also means the gate has a hole in it.'
+        end
+        return 'override-ignored',
+            'THE ENGINE HAS STOWED THE WEAPON EVEN THOUGH OUR OVERRIDE LISTS IT. '
+            .. 'That is the one thing #197 could not settle at the desk: the game '
+            .. 'has kept its OWN DRIVEBY_DEFAULT_ONE_HANDED and ignored the '
+            .. 'redefinition in br_environment/data/vehiclelayouts.meta. Nothing '
+            .. 'has regressed -- this is exactly today\'s behaviour -- but the '
+            .. 'weapon-group route is dead and the only remaining one is '
+            .. 'per-seat, which is docs/vehicle-data.md.'
     end
     if engine ~= want then
         return 'otherweapon',
             'The engine says the ped is holding a weapon that is not the one '
             .. 'the active slot names. That is not a drive-by problem -- read '
             .. '/brprobe ammo, and expect the strip check to take it back.'
+    end
+    -- THE POSITIVE ANSWER, and it is the one the owner will actually be
+    -- looking for after the override ships. The engine holding the weapon in a
+    -- seat IS the whole fix; saying "nothing here explains it" to a readout
+    -- that has just proved the change worked reads as a failure.
+    if f.overrideLists == true then
+        return 'armed',
+            'The engine is letting you hold this weapon IN THIS SEAT. If it is a '
+            .. 'rifle, shotgun, sniper or MG, that is the override in '
+            .. 'br_environment doing its job -- the base game would have taken it '
+            .. 'off you. Nothing about the seat is stopping you firing.'
     end
     return 'unexplained',
         'Nothing here explains it: you are in a seat, the engine agrees you are '

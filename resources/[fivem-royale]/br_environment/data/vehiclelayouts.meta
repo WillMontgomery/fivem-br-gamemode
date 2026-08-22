@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!--
+  PASSENGERS FIRE LONG GUNS (#197).
+
+  WHY THIS FILE EXISTS. GTA decides which weapons a seat accepts in DATA, not
+  in code. Every vehicle seat names a CVehicleDriveByInfo, that names a list of
+  CVehicleDriveByAnimInfo, and each of those names ONE CDrivebyWeaponGroup. The
+  seat accepts the union of those groups and nothing else, and there is no
+  native that widens it -- SET_PLAYER_CAN_DO_DRIVE_BY is a per-player on/off
+  switch that already defaults to on. So a rifle is taken out of the ped's
+  hands on the way into a seat, and no amount of Lua puts it back.
+
+  WHAT THIS FILE CHANGES, EXACTLY. Two entries, both of which already exist in
+  the base game and are REDEFINED here by name:
+
+      DRIVEBY_DEFAULT_ONE_HANDED       front seats of ordinary vehicles
+      DRIVEBY_DEFAULT_REAR_ONE_HANDED  rear seats of ordinary vehicles
+
+  Their weapon list becomes every firearm this gamemode issues. Nothing else in
+  the file is touched: no layout, no seat, no entry point, no drive-by info, no
+  animation clip set, no aim angle. Bikes (DRIVEBY_BIKE_ONE_HANDED), thrown
+  weapons (DRIVEBY_THROW), unarmed (DRIVEBY_DEFAULT_UNARMED), helicopters and
+  mounted weapons are all left exactly as Rockstar shipped them.
+
+  THIS IS THE WHOLE FILE ON PURPOSE, AND THAT IS THE POINT. The alternative --
+  the one every "enable drive-by" resource on the internet ships -- is a copy of
+  Rockstar's own vehiclelayouts.meta, tens of thousands of lines, redefining
+  every seat in the game. That copy is stale the day a game build lands, it is
+  Rockstar's data being redistributed, and it silently reverts any seat whose
+  definition changed upstream. Two named entries have none of those properties:
+  there is nothing here to fall out of date, because there is no Rockstar data
+  here to fall out of date. Every clip set, every angle and every seat keeps
+  coming from the game's own file.
+
+  IT APPLIES TO THE DRIVER TOO, AND THAT IS NOT A CHOICE WE GET TO MAKE HERE.
+  The owner asked for "any seat which is not the driver" (2026-08-06). The base
+  game gives the driver's seat and the front passenger's seat the SAME weapon
+  group -- DRIVEBY_DEFAULT_ONE_HANDED -- so there is no edit to this list that
+  reaches one and not the other. Separating them means redefining the per-seat
+  CVehicleDriveByAnimInfo entries instead, which means restating Rockstar's
+  clip set names for every vehicle class, which is the enormous file above.
+  See docs/vehicle-data.md for what that would cost and how to do it if the
+  owner decides the driver matters more than the maintenance.
+
+  THE ANIMATION IS THE ONE THE SEAT ALREADY HAS. Clip sets live on the anim
+  info, which this file does not touch, so a rifle fired from a passenger seat
+  plays that seat's existing ONE-HANDED drive-by animation: held in one hand,
+  swept through the same arc a pistol uses. It is not a two-handed rifle pose
+  and it will not look like one. It is NOT a missing clip set, so it is not a
+  T-pose -- the animation exists and is fully populated; only the weapon model
+  in the hand is bigger than the pose was authored for.
+
+  WHAT IS NOT VERIFIED FROM A DESK. Whether the game lets an added data file
+  redefine an entry it already has, rather than keeping its own, is a question
+  no unit test on this machine can answer. It fails SAFE either way -- if the
+  redefinition is ignored, every seat keeps the rule it has today and nothing
+  regresses -- and `/brdriveby` answers it in ten seconds from a seat.
+
+  ONLY WEAPONS THIS GAMEMODE ISSUES ARE LISTED, and that is deliberate: the
+  list REPLACES the base one rather than extending it, so anything left off
+  loses drive-by. Every firearm a player can be holding in a match is in
+  br_lib/config/weapons.lua and every one of them is below --
+  tools/check_driveby.lua fails the build if the two ever disagree, in either
+  direction. Thrown weapons are not here because they are DRIVEBY_THROW, a
+  group this file does not touch, and they already work from a seat. Melee is
+  not here because a melee drive-by is DRIVEBY_BIKE_MELEE and is not what was
+  asked for.
+-->
+
+<CVehicleMetadataMgr>
+  <DrivebyWeaponGroups>
+
+    <!-- Front seats: driver and front passenger. -->
+    <Item type="CDrivebyWeaponGroup">
+      <Name>DRIVEBY_DEFAULT_ONE_HANDED</Name>
+      <WeaponGroupNames />
+      <WeaponTypeNames>
+        <Item>WEAPON_PISTOL</Item>
+        <Item>WEAPON_SNSPISTOL</Item>
+        <Item>WEAPON_COMBATPISTOL</Item>
+        <Item>WEAPON_PISTOL_MK2</Item>
+        <Item>WEAPON_HEAVYPISTOL</Item>
+        <Item>WEAPON_REVOLVER</Item>
+        <Item>WEAPON_REVOLVER_MK2</Item>
+        <Item>WEAPON_MICROSMG</Item>
+        <Item>WEAPON_MACHINEPISTOL</Item>
+        <Item>WEAPON_MINISMG</Item>
+        <Item>WEAPON_SMG</Item>
+        <Item>WEAPON_SMG_MK2</Item>
+        <Item>WEAPON_ASSAULTSMG</Item>
+        <Item>WEAPON_COMBATPDW</Item>
+        <Item>WEAPON_BULLPUPRIFLE</Item>
+        <Item>WEAPON_ASSAULTRIFLE</Item>
+        <Item>WEAPON_CARBINERIFLE</Item>
+        <Item>WEAPON_ADVANCEDRIFLE</Item>
+        <Item>WEAPON_CARBINERIFLE_MK2</Item>
+        <Item>WEAPON_ASSAULTRIFLE_MK2</Item>
+        <Item>WEAPON_SPECIALCARBINE</Item>
+        <Item>WEAPON_MILITARYRIFLE</Item>
+        <Item>WEAPON_SAWNOFFSHOTGUN</Item>
+        <Item>WEAPON_PUMPSHOTGUN</Item>
+        <Item>WEAPON_ASSAULTSHOTGUN</Item>
+        <Item>WEAPON_PUMPSHOTGUN_MK2</Item>
+        <Item>WEAPON_HEAVYSHOTGUN</Item>
+        <Item>WEAPON_COMBATSHOTGUN</Item>
+        <Item>WEAPON_MARKSMANRIFLE</Item>
+        <Item>WEAPON_SNIPERRIFLE</Item>
+        <Item>WEAPON_MARKSMANRIFLE_MK2</Item>
+        <Item>WEAPON_HEAVYSNIPER</Item>
+        <Item>WEAPON_MG</Item>
+        <Item>WEAPON_GUSENBERG</Item>
+        <Item>WEAPON_COMBATMG</Item>
+        <Item>WEAPON_COMBATMG_MK2</Item>
+      </WeaponTypeNames>
+    </Item>
+
+    <!-- Rear seats. A squad rides in the back; this is the half of the change
+         that matters most to a squad and it is a separate entry in the base
+         game, so it needs saying twice. -->
+    <Item type="CDrivebyWeaponGroup">
+      <Name>DRIVEBY_DEFAULT_REAR_ONE_HANDED</Name>
+      <WeaponGroupNames />
+      <WeaponTypeNames>
+        <Item>WEAPON_PISTOL</Item>
+        <Item>WEAPON_SNSPISTOL</Item>
+        <Item>WEAPON_COMBATPISTOL</Item>
+        <Item>WEAPON_PISTOL_MK2</Item>
+        <Item>WEAPON_HEAVYPISTOL</Item>
+        <Item>WEAPON_REVOLVER</Item>
+        <Item>WEAPON_REVOLVER_MK2</Item>
+        <Item>WEAPON_MICROSMG</Item>
+        <Item>WEAPON_MACHINEPISTOL</Item>
+        <Item>WEAPON_MINISMG</Item>
+        <Item>WEAPON_SMG</Item>
+        <Item>WEAPON_SMG_MK2</Item>
+        <Item>WEAPON_ASSAULTSMG</Item>
+        <Item>WEAPON_COMBATPDW</Item>
+        <Item>WEAPON_BULLPUPRIFLE</Item>
+        <Item>WEAPON_ASSAULTRIFLE</Item>
+        <Item>WEAPON_CARBINERIFLE</Item>
+        <Item>WEAPON_ADVANCEDRIFLE</Item>
+        <Item>WEAPON_CARBINERIFLE_MK2</Item>
+        <Item>WEAPON_ASSAULTRIFLE_MK2</Item>
+        <Item>WEAPON_SPECIALCARBINE</Item>
+        <Item>WEAPON_MILITARYRIFLE</Item>
+        <Item>WEAPON_SAWNOFFSHOTGUN</Item>
+        <Item>WEAPON_PUMPSHOTGUN</Item>
+        <Item>WEAPON_ASSAULTSHOTGUN</Item>
+        <Item>WEAPON_PUMPSHOTGUN_MK2</Item>
+        <Item>WEAPON_HEAVYSHOTGUN</Item>
+        <Item>WEAPON_COMBATSHOTGUN</Item>
+        <Item>WEAPON_MARKSMANRIFLE</Item>
+        <Item>WEAPON_SNIPERRIFLE</Item>
+        <Item>WEAPON_MARKSMANRIFLE_MK2</Item>
+        <Item>WEAPON_HEAVYSNIPER</Item>
+        <Item>WEAPON_MG</Item>
+        <Item>WEAPON_GUSENBERG</Item>
+        <Item>WEAPON_COMBATMG</Item>
+        <Item>WEAPON_COMBATMG_MK2</Item>
+      </WeaponTypeNames>
+    </Item>
+
+  </DrivebyWeaponGroups>
+</CVehicleMetadataMgr>

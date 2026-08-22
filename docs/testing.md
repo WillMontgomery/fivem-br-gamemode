@@ -28,6 +28,7 @@ it at `$LOCALAPPDATA/Programs/Lua/bin/`.
 | **Unit tests** | 10 suites, ~3,900 assertions, over the pure shared modules, the server model, the client interaction layer, and the two subsystems that reach AWS. |
 | **Scope gate** | Bans OneSync scope-limited natives from client gameplay code. |
 | **Weapon table** | Re-derives every weapon hash from its name. |
+| **Drive-by data** | The one file here the *game* parses instead of us. Every firearm the gamemode issues is named in `br_environment/data/vehiclelayouts.meta` — its list **replaces** the base game's, so a gun left off silently loses drive-by — and the file still redefines two weapon groups and nothing else. See [Vehicle data overrides](vehicle-data.md). |
 | **POI siting** | Spacing, water, no-loot zones, distance to roads. |
 | **Forward locals** | Catches a `local function` called above its own declaration. |
 | **Config report** | The convar allowlist may not name a credential. |
@@ -232,6 +233,7 @@ The tests prove the model; these prove the engine. Run in the F8 console.
 | `brhitch` | Frame-time *distribution* and the worst frame, with the callbacks that were expensive during it. An average cannot find a hitch. |
 | `brbench <name>` | A real per-call cost, by running a callback many times — `brperf` structurally cannot measure sub-millisecond work at 1 ms timer resolution. |
 | `brperf` / `brloop` | Per-callback totals, and disabling one to bisect. |
+| `brdriveby [s]` | Why a passenger cannot fire (#197). Samples across frames — a disabled control lasts one, and a stow is indistinguishable from the climb-in animation until you count them — then names the cause: our own panel, a control something holds down, a permission never asserted, the seat's weapon rule, or our seat-weapon override having been ignored by the game. |
 | `brloot` | What this client can see, plus crate drag counters. |
 | `brdamagelog` | Records real `weaponDamageEvent` payloads and prints every field. |
 | `brdamage off` | Backs the damage takeover out live, without a redeploy. |

@@ -25,6 +25,10 @@
 *.tsx   text eol=lf
 *.css   text eol=lf
 *.html  text eol=lf
+# Game data. The GAME parses these, not us, and its parser is not ours to
+# forgive a stray CR with -- so pin them the same way the shell scripts are
+# pinned rather than leaving them to `text=auto`.
+*.meta  text eol=lf
 
 # Binary -- never touch these.
 *.png   binary

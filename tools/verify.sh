@@ -204,6 +204,18 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+# The one file in this repo the GAME parses instead of us. It decides which
+# weapons a vehicle seat accepts, its weapon list REPLACES the base game's
+# rather than extending it, and a gun left off it silently loses drive-by with
+# no error anywhere. The gate also refuses the scope creep that would turn a
+# 180-line override into a copy of Rockstar's own file.
+echo "${DIM}== drive-by data ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_driveby.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
 echo "${DIM}== POI siting ==${RST}"
 if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
     "$LUA" tools/check_pois.lua || rc=1

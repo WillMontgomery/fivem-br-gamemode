@@ -831,6 +831,13 @@ local pmaAPI = {
     end,
 }
 
+--- Whether br_environment -- which carries the drive-by data override (#197) --
+--- is running on this client. Declared up here rather than beside
+--- LoadResourceFile below because GetResourceState reads it, and a local
+--- declared AFTER the function that names it is a global nil, which is the
+--- exact bug tools/check_forward_locals.lua exists to catch.
+local overrideResource = 'started'
+
 --- THE RESOURCE BEING ABSENT IS A FIRST-CLASS STATE, not an error case. br_core
 --- has to boot and keep running with no voice resource installed at all, and
 --- that is asserted rather than assumed.
@@ -838,6 +845,7 @@ function GetResourceState(name)
     if name == 'pma-voice' then
         return pma.running and 'started' or 'missing'
     end
+    if name == 'br_environment' then return overrideResource end
     return 'started'
 end
 
@@ -861,6 +869,28 @@ exports = setmetatable({}, {
 -- ---------------------------------------------------------------- modules ---
 
 local ROOT = 'resources/[fivem-royale]/'
+
+--- LoadResourceFile, READING THE FILE THAT IS ACTUALLY SHIPPED.
+---
+--- The alternative -- a string in this file standing in for
+--- br_environment/data/vehiclelayouts.meta -- would agree with the code under
+--- test forever and prove nothing about the data that reaches a player, which
+--- is rule 4 in docs/testing.md. Reading it off disk means /brdriveby's answer
+--- is checked against the real override: delete a weapon from that .meta and
+--- the assertions below fail, which is the point.
+---
+--- Returning nil for a resource that is not started is the shape FiveM gives
+--- you, and it is the case that separates "the game ignored our data file" from
+--- "the file never got here".
+function LoadResourceFile(res, path)
+    if res == 'br_environment' and overrideResource ~= 'started' then return nil end
+    local f = io.open(ROOT .. res .. '/' .. path, 'r')
+    if not f then return nil end
+    local s = f:read('*a')
+    f:close()
+    return s
+end
+
 local function loadAll(list)
     for _, f in ipairs(list) do
         local chunk, err = loadfile(ROOT .. f)
@@ -8573,6 +8603,98 @@ do
         'with a sentence, always')
 end
 
+describe('#197 -- our own seat-weapon override is a TRI-STATE, and each state is a different fix')
+do
+    local CARBINE = BR.NormHash(BR.Config.WeaponById['carbinerifle'].hash)
+    local UNARMED = BR.NormHash(BR.Config.Gadgets.UNARMED)
+
+    --- A stowed rifle in a passenger seat -- the reported case -- with only the
+    --- override fact varying. Everything else is "nothing wrong", so each
+    --- assertion below is about exactly one thing.
+    local function stow(lists)
+        return BR.Inv.driveByVerdict({
+            state = BR.PlayerState.ALIVE, canArm = true, panelOpen = false,
+            slotIndex = 1, item = 'carbinerifle',
+            wantHash = CARBINE, appliedHash = CARBINE, engineHash = UNARMED,
+            driveByAt = 0, driveByCount = 900,
+            inVehicle = true, blocked = nil,
+            overrideLists = lists,
+        })
+    end
+
+    -- THREE STATES, THREE DIFFERENT PEOPLE FIXING IT. Not shipped is a deploy
+    -- problem; shipped-but-silent about this weapon is a one-line edit to the
+    -- .meta; shipped-and-ignored is the platform question #197 could not settle
+    -- at the desk. Collapsing any two of them wastes a day in the wrong file.
+    ok(stow(nil) == 'stowed',
+        'no override on this client at all reads as the plain GTA seat rule', stow(nil))
+    ok(stow(false) == 'stowed-unlisted',
+        'an override that does not name this weapon is OUR omission, and says so',
+        stow(false))
+    ok(stow(true) == 'override-ignored',
+        'an override that DOES name it, with the weapon still stowed, is the game '
+        .. 'refusing the redefinition', stow(true))
+
+    -- ...AND `false` IS NOT `nil`. This is the same family as the `0` bug this
+    -- project has shipped four times: `if f.overrideLists then` reads both of
+    -- the first two states as "no override", and the owner is sent to check a
+    -- deploy when what actually happened is a gun missing from a list.
+    ok(stow(false) ~= stow(nil),
+        'a weapon left off the list is NOT reported as a missing file')
+
+    -- THE POSITIVE READING. Once the override is live this is the verdict the
+    -- owner sees, and "nothing here explains it" would read as a failure on a
+    -- readout that has just proved the change worked.
+    local function held(lists)
+        return BR.Inv.driveByVerdict({
+            state = BR.PlayerState.ALIVE, canArm = true, panelOpen = false,
+            slotIndex = 1, item = 'carbinerifle',
+            wantHash = CARBINE, appliedHash = CARBINE, engineHash = CARBINE,
+            driveByAt = 0, driveByCount = 900,
+            inVehicle = true, blocked = nil,
+            overrideLists = lists,
+        })
+    end
+    ok(held(true) == 'armed',
+        'a rifle the engine lets you keep in a seat is the override working',
+        held(true))
+    ok(held(nil) == 'unexplained',
+        'and with no override to credit it is still UNEXPLAINED', held(nil))
+
+    -- ORDER. Every cause we can fix ourselves still outranks all three of
+    -- these, or the readout blames the platform for an open panel.
+    local function stowWith(lists, over)
+        local f = {
+            state = BR.PlayerState.ALIVE, canArm = true, panelOpen = false,
+            slotIndex = 1, item = 'carbinerifle',
+            wantHash = CARBINE, appliedHash = CARBINE, engineHash = UNARMED,
+            driveByAt = 0, driveByCount = 900,
+            inVehicle = true, blocked = nil, overrideLists = lists,
+        }
+        for k, v in pairs(over) do f[k] = v end
+        return BR.Inv.driveByVerdict(f)
+    end
+    ok(stowWith(true, { panelOpen = true }) == 'panel',
+        'an open panel still outranks a redefinition the game ignored')
+    ok(stowWith(true, { blocked = 'VEH_PASSENGER_ATTACK' }) == 'control',
+        'and so does a control held down every frame')
+    ok(stowWith(true, { driveByCount = 0 }) == 'never-asked',
+        'and so does a permission we never asserted')
+
+    -- Every sentence names the file, because the fix is an edit to a file and
+    -- a verdict that does not say which one is a riddle.
+    for _, state in ipairs({ 'nil', 'false', 'true' }) do
+        local lists = (state == 'nil') and nil or (state == 'true')
+        local _, sentence = BR.Inv.driveByVerdict({
+            inVehicle = true, canArm = true, wantHash = CARBINE,
+            appliedHash = CARBINE, engineHash = UNARMED, driveByCount = 9,
+            overrideLists = lists,
+        })
+        ok(sentence:find('vehiclelayouts.meta', 1, true) ~= nil,
+            'the ' .. state .. ' sentence names the file that has to change', sentence)
+    end
+end
+
 describe('#197 -- /brdriveby measures it end to end')
 do
     local CARBINE = BR.NormHash(BR.Config.WeaponById['carbinerifle'].hash)
@@ -8602,8 +8724,14 @@ do
     pedWeapon = nil
     disabledControls, controlsAnswerNumbers = {}, false
     local out = run(1)
-    ok(out:find('VERDICT %[stowed%]') ~= nil,
-        'a rifle in a front passenger seat reads as a STOW', out:sub(1, 400))
+    -- `override-ignored` RATHER THAN `stowed`, and the difference is the whole
+    -- of this round: the readout has now READ OUR OWN OVERRIDE OFF DISK, found
+    -- WEAPON_CARBINERIFLE named in it, and can therefore say the game refused
+    -- the redefinition instead of leaving the owner to guess between that and a
+    -- file that never shipped.
+    ok(out:find('VERDICT %[override%-ignored%]') ~= nil,
+        'a rifle our override names, stowed anyway, is the GAME refusing it',
+        out:sub(1, 400))
     -- ANCHORED TO THE ROW, NOT TO THE PAGE. The trailer explains what a seat is
     -- and therefore contains the words "front passenger" whatever seat you are
     -- actually in -- so a loose `out:find('front passenger')` passes even when
@@ -8621,11 +8749,61 @@ do
     -- skims past.
     pedWeapon = BR.Config.Gadgets.UNARMED
     out = run(1)
-    ok(out:find('VERDICT %[stowed%]') ~= nil,
+    ok(out:find('VERDICT %[override%-ignored%]') ~= nil,
         'the engine naming WEAPON_UNARMED is a stow too', out:sub(1, 400))
     ok(out:find('ENGINE holds[^\n]*FISTS') ~= nil,
         'and the row says FISTS rather than an unrecognised hash',
         out:match('  ENGINE holds[^\n]*'))
+    pedWeapon = nil
+
+    -- THE OVERRIDE ROW, AGAINST THE FILE THAT IS ACTUALLY SHIPPED. LoadResourceFile
+    -- is stubbed to read br_environment/data/vehiclelayouts.meta off disk, so
+    -- these two assertions fail if that file stops naming the carbine -- which
+    -- is the only way a Lua suite can say anything true about a data file the
+    -- game, not us, parses.
+    ok(out:find('seat weapon override[^\n]*READ BACK, names %d+ weapon') ~= nil,
+        'the readout reads our own override back off this client',
+        out:match('  seat weapon override[^\n]*'))
+    ok(out:find('names WEAPON_CARBINERIFLE%s+yes') ~= nil,
+        'and confirms the carbine is on its list',
+        out:match('  %.%.%.and it names[^\n]*'))
+
+    -- A WEAPON THE OVERRIDE DELIBERATELY DOES NOT NAME. Melee is a different
+    -- drive-by group and the .meta says so in as many words; the readout must
+    -- report "NO" rather than repeating the file's headline count, or the row
+    -- is decoration.
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'machete', kind = BR.ItemKind.WEAPON, clip = 1 } },
+        ammo = {}, active = 1,
+    })
+    BR.Loop.step(BR.Loop.TICK)
+    pedWeapon = BR.Config.Gadgets.UNARMED
+    out = run(1)
+    ok(out:find('VERDICT %[stowed%-unlisted%]') ~= nil,
+        'a weapon our override leaves off is named as OUR omission, not the game\'s',
+        out:sub(1, 500))
+    ok(out:find('names WEAPON_MACHETE%s+NO') ~= nil,
+        'and the row says NO for it',
+        out:match('  %.%.%.and it names[^\n]*'))
+
+    -- THE FILE NOT BEING THERE AT ALL is the third state, and it is a DEPLOY
+    -- problem rather than a platform one. Collapsing it into either of the
+    -- other two sends the owner to the wrong repository.
+    overrideResource = 'stopped'
+    out = run(1)
+    ok(out:find('VERDICT %[stowed%]') ~= nil,
+        'with br_environment stopped the verdict is the plain GTA seat rule',
+        out:sub(1, 500))
+    ok(out:find('NOT READABLE %(br_environment is "stopped"%)') ~= nil,
+        'and the row says which resource is not running',
+        out:match('  seat weapon override[^\n]*'))
+    overrideResource = 'started'
+
+    fire(BR.Net.INV_SET, {
+        slots = { { id = 'carbinerifle', kind = BR.ItemKind.WEAPON, clip = 30 } },
+        ammo = {}, active = 1,
+    })
+    BR.Loop.step(BR.Loop.TICK)
     pedWeapon = nil
 
     -- The other two seats a squad car actually has. Rear seats and the driver's
@@ -8645,7 +8823,7 @@ do
     -- tell the seat rule from a script bug in ten seconds.
     pedWeapon = CARBINE
     out = run(1)
-    ok(out:find('VERDICT %[unexplained%]') ~= nil,
+    ok(out:find('VERDICT %[armed%]') ~= nil,
         'a weapon the engine IS holding is not reported as a stow', out:sub(1, 400))
 
     -- A CONTROL HELD DOWN EVERY FRAME, which is #197's candidate 3. The watch

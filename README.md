@@ -143,7 +143,7 @@ Eight resources under `resources/[fivem-royale]/`, started in this order by
 |---|---|---|
 | `br_lib` | No | Shared config, enums, protocol constants, geometry, seeded RNG, storm solver. Consumed via `shared_scripts { '@br_lib/...' }`, which loads files into each consuming resource's own Lua state — zero runtime cost, no exports. |
 | `br_core` | Yes | All gameplay, client and server. One Lua state, one loop registry. |
-| `br_environment` | Yes | World state: IPL loading and the Cayo Perico lobby island (home of the pre-match lobby; released back to the streamer once a match is live). Will grow into the streamed-asset container. |
+| `br_environment` | Yes | World state: IPL loading and the Cayo Perico lobby island (home of the pre-match lobby; released back to the streamer once a match is live), and the one game data file this project ships — the vehicle seat weapon rule that lets a passenger fire a long gun ([vehicle-data.md](docs/vehicle-data.md)). Will grow into the streamed-asset container. |
 | `br_ui` | Yes | The NUI page and the only file that touches `SetNuiFocus`. |
 | `br_loadscreen` | Yes | The loading screen. Shuts down manually rather than on a timer: `br_core` holds it open until the world is genuinely ready and choreographs the handoff onto the lobby's identical backdrop. |
 | `br_ddb` | Yes | The only path to AWS — ban checks at connect, grants, profiles, stats and filing incidents in DynamoDB, and putting artifact frames in S3. Runs on Node 22 rather than FXServer's bundled Node, which the AWS SDK bundle requires. |
@@ -217,6 +217,7 @@ Each of these stands on its own:
 | **[Deploying](DEPLOY.md)** | Standing the server up on Ubuntu against standard FXServer Linux artifacts. |
 | **[Testing](docs/testing.md)** | The suites and gates, when to run them, the rules that keep them honest, and the real bugs each one has caught. |
 | **[Platform constraints](docs/platform.md)** | FiveM and CEF behaviours discovered the hard way — the ones that cost days — and what each one taught. |
+| **[Vehicle data overrides](docs/vehicle-data.md)** | The one file the *game* parses instead of us: which weapons a vehicle seat accepts, the two entries we redefine and the thousands we deliberately do not, and the worked template for folding an add-on vehicle's own `vehiclelayouts.meta` into it. |
 
 The moderation half has its own contracts, because two repositories have to agree
 on them without either being able to call the other:
