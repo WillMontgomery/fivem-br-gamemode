@@ -560,6 +560,17 @@ end)
 -- vehicle every sample, which is a real cost for a case that needs two cars
 -- abreast at speed and one of them dying to something else. Stated rather than
 -- hidden.
+--
+-- AND A CAR AT SPEED PASSING A PLAYER WHO IS BURNING OR IN THE STORM CAN TAKE
+-- THE CREDIT FOR THAT SAMPLE. It is the fire ledger's exposure exactly -- the
+-- test is "health went down and the thing was on top of them", and the server
+-- cannot ask the engine which of two causes moved the number. A storm veto was
+-- weighed and declined for two reasons: it would reopen the hole #194 is about
+-- (a griefer with a car and the storm as an alibi), and the storm's own ledger
+-- kill already passes `nil` for the killer outright -- server/storm.lua's
+-- `defeat(src, 'storm', nil)` -- so the ordinary storm death cannot be stolen at
+-- all. What is left is a death the storm ledger did not get to first, which is
+-- the case where a car really might have been the thing that finished them.
 
 --- The vehicle each player is confirmed to be DRIVING, rebuilt every sample.
 ---

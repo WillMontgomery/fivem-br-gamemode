@@ -13100,7 +13100,7 @@ do
     -- server/combat.lua already had the word 'roadkill' for the feed and no
     -- killer to put in front of it. The owner, 2026-08-21: "Roadkill should be
     -- attributed to the driver."
-    local m = roadMatch()
+    roadMatch()
     local victim = BR.Roster.get(2)
 
     -- NOBODY IS DRIVING. A player losing health beside parked cars is nobody's
@@ -13408,7 +13408,7 @@ do
     -- working. Pinned because it is now ATTRIBUTED as well -- which is the change
     -- -- and because an admin reading a griefing report wants the driver's name
     -- on it rather than an anonymous accident.
-    local m = squadMatch(3)
+    squadMatch(3)
     for s = 1, 3 do pedHealth[1000 + s] = 200 end
     setPos(1, 0.0, 0.0, 30.0)
     setPos(2, 10.0, 0.0, 30.0)
