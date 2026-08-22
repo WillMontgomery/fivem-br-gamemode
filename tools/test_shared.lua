@@ -7851,6 +7851,204 @@ do
     end
 end
 
+-- ---------------------------------------------------------------------------
+-- Mad drivers: WHERE the pass measures "near the player" from.
+--
+-- "The NPC drivers are all too calm now, did something change?" -- the owner,
+-- 2026-08-22, one day after spectating went live.
+--
+-- Something had. client/gamerules.lua maddens ambient drivers within
+-- erraticRange of a point, and that point was PlayerPedId()'s coordinates. A
+-- spectator's ped is a corpse where they fell -- client/spectate.lua never
+-- moves it, deliberately, because an ADMIN spectator may be alive and
+-- mid-match -- while SET_FOCUS_ENTITY drags the streaming volume onto the
+-- target, so the traffic that populates and renders is the traffic around the
+-- TARGET. Every vehicle in the shot sat hundreds of metres outside the range
+-- test, none of them was ever re-tasked, and every driver the spectator could
+-- see was a calm commuter.
+--
+-- Both directions are pinned below, because only fixing one of them is how
+-- this comes back: a living player's anchor must STILL be their own ped.
+-- ---------------------------------------------------------------------------
+
+describe('mad drivers / anchor')
+do
+    local V = {}
+    V.__index = V
+    V.__sub = function(a, b)
+        return setmetatable({ x = a.x - b.x, y = a.y - b.y, z = a.z - b.z }, V)
+    end
+    V.__len = function(a) return math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z) end
+    local function vec(x, y, z) return setmetatable({ x = x, y = y, z = z }, V) end
+
+    local PED = 1
+
+    --- One client with a vehicle pool, the real gamerules.lua on the real loop.
+    --- @param pos table  [handle] = {x,y,z} for the ped and every vehicle
+    local function newDriverClient(pos)
+        local env = newSandbox()
+        local C = { now = 1000, tasked = {}, pos = pos }
+
+        env.GetGameTimer = function() return C.now end
+        env.print = function() end
+        env.GetCurrentResourceName = function() return 'br_core' end
+        env.GetHashKey = function(s) return #tostring(s) end
+        env.PlayerId = function() return 0 end
+        env.GetPlayerServerId = function() return 1 end
+        env.AddEventHandler = function() end
+        env.RegisterNetEvent = function() end
+        env.RegisterCommand = function() end
+        env.TriggerServerEvent = function() end
+        env.Citizen = { CreateThread = function() end, Wait = function() end,
+                        SetTimeout = function() end }
+
+        loadInto(env, SANDBOX_LIB)
+
+        env.PlayerPedId     = function() return PED end
+        env.DoesEntityExist = function(e) return C.pos[e] ~= nil end
+        env.GetEntityCoords = function(e)
+            local p = C.pos[e] or { x = 0.0, y = 0.0, z = 0.0 }
+            return vec(p.x, p.y, p.z)
+        end
+
+        -- THE POOL IS EVERY VEHICLE, wherever it is. That is the real
+        -- GetGamePool contract and it is what makes the range test the only
+        -- thing deciding who gets treated -- which is the whole subject here.
+        env.GetGamePool = function(kind)
+            if kind ~= 'CVehicle' then return {} end
+            local out = {}
+            for h in pairs(C.pos) do
+                if h ~= PED then out[#out + 1] = h end
+            end
+            table.sort(out)
+            return out
+        end
+
+        -- Every vehicle has a driver, and none of them is a player. Returning a
+        -- real Lua `false` is this build's contract; /brdrivers prints the raw
+        -- value precisely because another build may not honour it.
+        env.GetPedInVehicleSeat = function(veh) return veh + 100 end
+        env.IsPedAPlayer = function() return false end
+
+        env.SetDriverAbility        = function() end
+        env.SetDriverAggressiveness = function() end
+        env.SetPedKeepTask          = function() end
+        env.SetDriveTaskMaxCruiseSpeed = function() end
+        env.SetDriveTaskDrivingStyle   = function() end
+        env.SetDriverRacingModifier    = function() end
+        env.TaskVehicleDriveWander = function(_, veh)
+            C.tasked[veh] = (C.tasked[veh] or 0) + 1
+        end
+
+        loadInto(env, { 'br_core/client/main.lua' })
+        env.BR.Native = env.BR.Native or {}
+        env.BR.Native.applyGameRules = function() end
+        env.BR.State.me.state = env.BR.PlayerState.ALIVE
+
+        loadInto(env, { 'br_core/client/gamerules.lua' })
+
+        C.env = env
+        --- Run one SLOW pass, the band madDrivers is registered into.
+        function C.pass()
+            env.BR.Loop.step(env.BR.Loop.SLOW)
+            return env.BR.Gamerules.driverStats()
+        end
+        return C
+    end
+
+    -- A vehicle beside the ped, and one most of a kilometre away. erraticRange
+    -- is 250m, so exactly one of them is in range of whichever anchor wins.
+    local function layout()
+        return {
+            [PED] = { x = 0.0,   y = 0.0, z = 0.0 },   -- the ped / the corpse
+            [10]  = { x = 10.0,  y = 0.0, z = 0.0 },   -- next to the ped
+            [20]  = { x = 900.0, y = 0.0, z = 0.0 },   -- next to the target
+        }
+    end
+
+    -- ALIVE: unchanged, and that is half the point of the fix.
+    do
+        local C = newDriverClient(layout())
+        local S = C.pass()
+
+        ok(S.ran, 'an alive player runs the pass')
+        ok(S.anchorFrom == 'ped',
+           'with no spectate session the anchor is the local ped, as it always was')
+        ok(S.anchorOffPed < 0.001,
+           'and it is the ped exactly, not near it', S.anchorOffPed)
+        ok(C.tasked[10] == 1, 'the vehicle beside the player is re-tasked')
+        ok(C.tasked[20] == nil, 'the vehicle 900m away is left alone')
+        ok(S.treated == 1, 'one driver treated', S.treated)
+    end
+
+    -- SPECTATING: the anchor follows the shot, which is the regression.
+    do
+        local C = newDriverClient(layout())
+        -- The session client/spectate.lua would be running: the ped has not
+        -- moved and must not, and the camera is on somebody 900m away.
+        C.env.BR.Spectate = {
+            active = function() return true end,
+            watchPoint = function() return vec(900.0, 0.0, 0.0) end,
+        }
+        C.env.BR.State.me.state = C.env.BR.PlayerState.SPECTATING
+
+        local S = C.pass()
+
+        ok(S.anchorFrom == 'spectate',
+           'a running session moves the anchor onto the point being watched')
+        ok(S.anchorOffPed > 800.0,
+           'which is nowhere near the spectator own ped', S.anchorOffPed)
+        ok(C.tasked[20] == 1,
+           'THE REGRESSION: the driver on screen is re-tasked. Before the fix '
+           .. 'this was nil -- nothing visible was ever in range')
+        ok(C.tasked[10] == nil,
+           'and the traffic around the corpse nobody is looking at is left alone')
+        ok(S.treated == 1, 'still exactly one driver treated', S.treated)
+    end
+
+    -- A session with no eased point yet (the first frames, before the feed
+    -- lands) must fall back rather than throw or anchor on nothing.
+    do
+        local C = newDriverClient(layout())
+        C.env.BR.Spectate = {
+            active = function() return true end,
+            watchPoint = function() return nil end,
+        }
+        local S = C.pass()
+        ok(S.anchorFrom == 'ped',
+           'a session with no point yet falls back to the ped rather than throwing')
+        ok(C.tasked[10] == 1, 'and still treats what is near the ped')
+    end
+
+    -- The two gates, which /brdrivers exists to tell apart from "nothing in range".
+    do
+        local C = newDriverClient(layout())
+        C.env.BR.Config.Ambient.erratic = false
+        local S = C.pass()
+        ok(not S.ran and S.why:find('erratic'),
+           'erratic off is reported as erratic off, not as an empty pass')
+        ok(C.tasked[10] == nil, 'and nothing is touched')
+    end
+
+    do
+        local C = newDriverClient(layout())
+        C.env.BR.State.me.state = C.env.BR.PlayerState.WARMUP
+        local S = C.pass()
+        ok(not S.ran and S.why:find('warmup'),
+           'the warmup gate names the state that closed it')
+        ok(C.tasked[10] == nil, 'the island stays a stage')
+    end
+
+    -- The readout has to survive being read before the first pass, because the
+    -- first thing anybody will do is type /brdrivers.
+    do
+        local C = newDriverClient(layout())
+        local S = C.env.BR.Gamerules.driverStats()
+        ok(S ~= nil and not S.ran and S.why == 'not run yet',
+           'the readout answers before the first pass instead of erroring')
+    end
+end
+
 -- ----------------------------------------------------------------- result ---
 
 io.write(('\n%s%d passed%s'):format('\27[32m', pass, '\27[0m'))

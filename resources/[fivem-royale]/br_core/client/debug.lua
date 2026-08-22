@@ -1179,3 +1179,64 @@ RegisterCommand('brboostwhy', function(_, args)
     print(('[br_core] brboostwhy: watching for %.1fs -- BE DRIVING A CAR and HOLD %s '
         .. 'for the whole window.'):format(secs, tostring(BR.Keys.labelFor('brboost'))))
 end, false)
+
+-- ------------------------------------------------------------ mad drivers ---
+--
+-- WHY THE AMBIENT DRIVERS ARE CALM, ANSWERED BY READING RATHER THAN GUESSING.
+--
+-- "The NPC drivers are all too calm now, did something change?" -- the owner,
+-- 2026-08-22. That question has four candidate answers and no way to tell them
+-- apart through a windscreen: the feature can be switched off, the pass can be
+-- gated out by player state, the pass can be running and finding nothing in
+-- range, or it can be finding drivers and having the re-task refused. All four
+-- look identical from the driver's seat and every one of them has a different
+-- fix, which is exactly how a tuning pass ends up being done on a hunch.
+--
+-- Every number below is taken off the pass itself (client/gamerules.lua), so
+-- this reports what happened rather than what was supposed to happen.
+RegisterCommand('brdrivers', function()
+    local S = BR.Gamerules and BR.Gamerules.driverStats and BR.Gamerules.driverStats()
+    if not S then
+        print('[br_core] brdrivers: client/gamerules.lua is not loaded')
+        return
+    end
+
+    print('--- mad drivers: the last pass ---')
+    print(('  erratic          %s   (BR.Config.Ambient.erratic)')
+        :format(S.erratic and 'ON' or 'OFF'))
+    print(('  player state     %s'):format(tostring(BR.State.me.state)))
+    print(('  last pass        %s   %s')
+        :format(S.ran and 'RAN' or 'DID NOT RUN', S.why or '?'))
+
+    -- THE ANCHOR IS THE LINE THAT ANSWERED THE 2026-08-22 REPORT. A spectator's
+    -- ped is a corpse where they fell and the shot is somewhere else entirely,
+    -- so a pass anchored on the ped treats the traffic around a body nobody is
+    -- looking at and leaves every driver on screen alone.
+    if S.ran then
+        print(('  anchored on      %s   (%.0fm from your own ped)')
+            :format(tostring(S.anchorFrom), S.anchorOffPed or 0.0))
+        print(('  vehicles         %d in the pool, %d within %.0fm')
+            :format(S.pool, S.inRange, S.range))
+        print(('    of those       %d empty, %d driven by a player, %d treated')
+            :format(S.empty, S.playerDriven, S.treated))
+        print(('  tracked handles  %d (re-tasked on a cadence, not once)')
+            :format(S.tracked))
+        -- IN LUA `0` IS TRUTHY and a BOOL native may hand back a number, which
+        -- this repo has shipped four times. gamerules.lua tests this value with
+        -- a bare `not`, so a build that returns 0 for "not a player" would make
+        -- that test refuse EVERY driver. Printed raw, with its type, because
+        -- reading it is the only way to know which build this is.
+        print(('  IsPedAPlayer     %s   <- if that is a NUMBER, read the note in')
+            :format(S.playerRaw or 'no driver seen yet'))
+        print('                   client/gamerules.lua before changing anything')
+    end
+
+    for _, s in ipairs(BR.Loop.stats()) do
+        if s.name == 'gamerules.madDrivers' then
+            print(('  loop callback    %s, %d errors%s')
+                :format(s.suspended and 'SUSPENDED' or (s.enabled and 'live' or 'disabled'),
+                        s.errors,
+                        s.suspended and ' -- /brloop enable gamerules.madDrivers' or ''))
+        end
+    end
+end, false)

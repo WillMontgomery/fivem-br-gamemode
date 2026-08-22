@@ -99,6 +99,34 @@ function BR.Spectate.targetSrc()
     return session and session.targetSrc or nil
 end
 
+--- WHERE the shot is looking, or nil when no session is running.
+---
+--- EXISTS BECAUSE "NEAR THE PLAYER" AND "ON THE PLAYER'S SCREEN" STOPPED BEING
+--- THE SAME PLACE the moment spectating went in. Every client subsystem that
+--- treats the world around the player was written when the only way to see
+--- somewhere was to stand there, so they all measure from PlayerPedId() -- and
+--- a spectator's ped is a corpse where they fell, deliberately (see
+--- BR.Native.lockMinimap for why it is not moved and must not be).
+---
+--- client/gamerules.lua's mad-driver pass is the first caller: it maddens
+--- ambient drivers within erraticRange of this point, so the drivers on screen
+--- are the ones that get treated rather than the ones standing around a body
+--- half a map away.
+---
+--- IT IS `shown` AND NOT `want`, the same choice the minimap lock makes and for
+--- the same reason: `want` is the raw 4 Hz server sample and `shown` is the
+--- eased point actually being rendered, so what gets treated is what is on
+--- screen rather than what will be on screen a fifth of a second from now.
+---
+--- A WORLD POINT IS ALL IT HANDS BACK. It reveals nothing that is not already
+--- being drawn on this machine, and in particular it is not a ped, a handle or
+--- anything a caller could reach a player through.
+--- @return vector3|nil
+function BR.Spectate.watchPoint()
+    if not session or not shown then return nil end
+    return vector3(shown.x, shown.y, shown.z)
+end
+
 -- ----------------------------------------------------------------- camera ---
 
 --- Take the camera down. Safe to call when nothing is up.

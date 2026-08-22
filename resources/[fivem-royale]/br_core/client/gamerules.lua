@@ -32,18 +32,83 @@ end)
 local maddened = {}
 local maddenedCount = 0
 
+BR.Gamerules = BR.Gamerules or {}
+
+--- WHAT THE LAST PASS ACTUALLY DID, so "the drivers are all too calm" has an
+--- answer that is a reading rather than another round of guessing. Drained by
+--- /brdrivers in client/debug.lua; nothing reads it to make a decision.
+local lastPass = {
+    at = 0, ran = false, why = 'not run yet',
+    anchorFrom = nil, anchorOffPed = 0.0,
+    pool = 0, inRange = 0, empty = 0, playerDriven = 0, treated = 0,
+    playerRaw = nil,
+}
+
+--- WHERE "NEAR THE PLAYER" IS MEASURED FROM.
+---
+--- THE PED IS THE WRONG POINT WHILE SPECTATING, and that is a live regression
+--- rather than a theoretical one. A spectator's ped is a corpse where they fell
+--- -- client/spectate.lua deliberately never moves it, and must not, because an
+--- ADMIN spectator may be alive and mid-match (see BR.Native.lockMinimap) --
+--- while SET_FOCUS_ENTITY pulls the streaming volume onto whoever is being
+--- watched. So the world on screen loads and populates around the TARGET, and
+--- every vehicle in the shot is hundreds of metres from the point this pass
+--- used to measure from. Nothing visible was ever in range, nothing visible was
+--- ever treated, and every driver the spectator could see was a calm commuter.
+--- "The NPC drivers are all too calm now" -- the owner, 2026-08-22, one day
+--- after spectating went live.
+---
+--- WITH NO SESSION RUNNING THIS IS EXACTLY WHAT IT ALWAYS WAS: the local ped's
+--- coordinates, same native, same value, same drivers treated. A living
+--- player's pass is byte-for-byte unchanged, which is the point -- the anchor
+--- moves only in the one case that was broken.
+---
+--- ASKED OF client/spectate.lua RATHER THAN OF THE CAMERA. A rendered-camera
+--- coordinate would cover the same case, but it also answers during every
+--- cutscene, lobby shot and death cam, and a wrong answer there would move the
+--- anchor for a player who is alive and standing still -- which is precisely
+--- the regression this is fixing, pointed the other way.
+--- @return vector3 point, string source
+local function anchor()
+    local S = BR.Spectate
+    if S and S.active and S.watchPoint and S.active() then
+        local p = S.watchPoint()
+        if p then return p, 'spectate' end
+    end
+    return GetEntityCoords(PlayerPedId()), 'ped'
+end
+
 BR.Loop.register(BR.Loop.SLOW, 'gamerules.madDrivers', function()
-    if not BR.Config.Ambient.erratic then return end
+    lastPass.at  = GetGameTimer()
+    lastPass.ran = false
+    lastPass.pool, lastPass.inRange = 0, 0
+    lastPass.empty, lastPass.playerDriven, lastPass.treated = 0, 0, 0
+
+    if not BR.Config.Ambient.erratic then
+        lastPass.why = 'BR.Config.Ambient.erratic is off'
+        return
+    end
     local st = BR.State.me.state
-    if st == BR.PlayerState.LOBBY or st == BR.PlayerState.WARMUP then return end
+    if st == BR.PlayerState.LOBBY or st == BR.PlayerState.WARMUP then
+        lastPass.why = ('player state is %s -- the island is a stage'):format(tostring(st))
+        return
+    end
 
     if maddenedCount > 300 then maddened = {} maddenedCount = 0 end
 
     local A   = BR.Config.Ambient
     local now = GetGameTimer()
-    local mp  = GetEntityCoords(PlayerPedId())
+    local mp, from = anchor()
 
-    for _, veh in ipairs(GetGamePool('CVehicle')) do
+    lastPass.ran          = true
+    lastPass.why          = 'ran'
+    lastPass.anchorFrom   = from
+    lastPass.anchorOffPed = #(mp - GetEntityCoords(PlayerPedId()))
+
+    local pool = GetGamePool('CVehicle')
+    lastPass.pool = #pool
+
+    for _, veh in ipairs(pool) do
         -- RE-TASKED ON A CADENCE, NOT ONCE AND FOREVER.
         --
         -- The old version marked a vehicle done the first time it was
@@ -59,35 +124,86 @@ BR.Loop.register(BR.Loop.SLOW, 'gamerules.madDrivers', function()
             -- sight branded empty or not-yet-crewed vehicles as done, and
             -- their drivers stayed calm forever ("some peds drive like
             -- assholes, but not all", live report).
+            lastPass.inRange = lastPass.inRange + 1
             local drv = GetPedInVehicleSeat(veh, -1)
-            if drv ~= 0 and not IsPedAPlayer(drv) then
-                if not maddened[veh] then maddenedCount = maddenedCount + 1 end
-                maddened[veh] = now + (A.erraticRetaskMs or 8000)
-
-                -- Ability/aggressiveness alone changed nothing visible (live
-                -- report: "drivers are still very much calm") -- the ambient
-                -- cruise TASK is what actually drives, so it gets replaced.
+            if drv == 0 then
+                lastPass.empty = lastPass.empty + 1
+            else
+                -- RECORDED RAW AND JUDGED EXACTLY AS IT SHIPPED ON 2026-08-07.
                 --
-                -- THE STYLE IS THE WHOLE THING. 786468 still carried the
-                -- avoid-vehicles and avoid-objects flags, so a "rushed"
-                -- driver still politely went round everything. See
-                -- BR.Config.Ambient.erraticStyle for the flags that are left
-                -- and, more importantly, the ones that are not.
-                SetDriverAbility(drv, A.erraticAbility or 0.0)
-                SetDriverAggressiveness(drv, A.erraticAggression or 1.0)
-                SetPedKeepTask(drv, true)
-                TaskVehicleDriveWander(drv, veh,
-                    A.erraticSpeed or 45.0, A.erraticStyle or 262656)
-                SetDriveTaskMaxCruiseSpeed(drv, A.erraticSpeed or 45.0)
-                -- Two more that make the difference between "fast" and
-                -- "unhinged": they will not brake for a red light and they
-                -- will not wait for a gap.
-                SetDriveTaskDrivingStyle(drv, A.erraticStyle or 262656)
-                SetDriverRacingModifier(drv, 1.0)
+                -- A FiveM native declared BOOL can hand Lua a number or a
+                -- boolean depending on the build, and IN LUA `0` IS TRUTHY --
+                -- this repo has shipped that bug four times, which is why
+                -- client/spectate.lua and client/dbno.lua each carry a
+                -- normaliser over their own BOOL native.
+                --
+                -- THIS ONE IS DELIBERATELY NOT NORMALISED. `not IsPedAPlayer()`
+                -- is the test that has been treating drivers since the feature
+                -- was confirmed working, so if this build returns 0 for "not a
+                -- player" then that test has been refusing EVERY driver since
+                -- the day it landed -- a different bug with a different
+                -- history, and picking a direction for it on a hunch is
+                -- precisely what the report asked nobody to do. The value is
+                -- recorded for /brdrivers to print and the branch is left
+                -- alone: one line of console settles it and a guess does not.
+                local raw = IsPedAPlayer(drv)
+                lastPass.playerRaw = ('%s (%s)'):format(tostring(raw), type(raw))
+
+                if not raw then
+                    lastPass.treated = lastPass.treated + 1
+                    if not maddened[veh] then maddenedCount = maddenedCount + 1 end
+                    maddened[veh] = now + (A.erraticRetaskMs or 8000)
+
+                    -- Ability/aggressiveness alone changed nothing visible (live
+                    -- report: "drivers are still very much calm") -- the ambient
+                    -- cruise TASK is what actually drives, so it gets replaced.
+                    --
+                    -- THE STYLE IS THE WHOLE THING. 786468 still carried the
+                    -- avoid-vehicles and avoid-objects flags, so a "rushed"
+                    -- driver still politely went round everything. See
+                    -- BR.Config.Ambient.erraticStyle for the flags that are left
+                    -- and, more importantly, the ones that are not.
+                    SetDriverAbility(drv, A.erraticAbility or 0.0)
+                    SetDriverAggressiveness(drv, A.erraticAggression or 1.0)
+                    SetPedKeepTask(drv, true)
+                    TaskVehicleDriveWander(drv, veh,
+                        A.erraticSpeed or 45.0, A.erraticStyle or 262656)
+                    SetDriveTaskMaxCruiseSpeed(drv, A.erraticSpeed or 45.0)
+                    -- Two more that make the difference between "fast" and
+                    -- "unhinged": they will not brake for a red light and they
+                    -- will not wait for a gap.
+                    SetDriveTaskDrivingStyle(drv, A.erraticStyle or 262656)
+                    SetDriverRacingModifier(drv, 1.0)
+                else
+                    lastPass.playerDriven = lastPass.playerDriven + 1
+                end
             end
         end
     end
 end)
+
+--- What the last mad-driver pass saw and did. Read by /brdrivers.
+---
+--- A COPY, so a reader cannot edit the pass's own bookkeeping by holding it.
+--- @return table
+function BR.Gamerules.driverStats()
+    return {
+        at           = lastPass.at,
+        ran          = lastPass.ran,
+        why          = lastPass.why,
+        anchorFrom   = lastPass.anchorFrom,
+        anchorOffPed = lastPass.anchorOffPed,
+        pool         = lastPass.pool,
+        inRange      = lastPass.inRange,
+        empty        = lastPass.empty,
+        playerDriven = lastPass.playerDriven,
+        treated      = lastPass.treated,
+        playerRaw    = lastPass.playerRaw,
+        tracked      = maddenedCount,
+        range        = BR.Config.Ambient.erraticRange or 250.0,
+        erratic      = BR.Config.Ambient.erratic and true or false,
+    }
+end
 
 -- --------------------------------------------------------------------------
 -- Death
