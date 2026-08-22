@@ -324,9 +324,29 @@ do
             fail('the hint does not name the spectate commands',
                  'it must look its glyphs up rather than hardcode arrows')
         end
-        if not code:find('keybinds%.find') then
-            fail('the hint does not resolve its keys from the keybinds list',
-                 'a hardcoded arrow is wrong the moment somebody rebinds it')
+
+        -- THE LOOKUP MOVED AND THE ASSERTION FOLLOWED IT (#209). This read
+        -- `keybinds%.find` against THIS file, which was right while the hint
+        -- was the only surface in the game that drew a key. The owner then
+        -- asked for key glyphs generally -- "we should make our own glyphs for
+        -- keys" -- and the answer to two surfaces drawing keys was one
+        -- component rather than a second copy of this one, so the badge and its
+        -- lookup are now ui/KeyCap.tsx and this file passes it a command.
+        --
+        -- BOTH ENDS ARE PINNED, because either alone is satisfied by a broken
+        -- arrangement: a hint that renders <KeyCap> with a hardcoded string
+        -- would pass a check on the component, and a component that resolved
+        -- bindings correctly would pass a check on the hint that no longer
+        -- called it. The pair is the claim.
+        if not code:find('<KeyCap%s') then
+            fail('the hint no longer draws its keys with the shared KeyCap',
+                 'the badge treatment would have forked again, which is the '
+                 .. 'thing #209 asked to stop')
+        end
+        if not code:find('command={command}', 1, true) then
+            fail('the hint does not pass its command names to KeyCap',
+                 'a glyph asked for by anything but the command name is a '
+                 .. 'hardcoded arrow wearing a component')
         end
 
         -- IT LOOKS LIKE A BUTTON AND IS NOT ONE. No button element, no click

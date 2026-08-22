@@ -4,6 +4,7 @@ import { fetchNui } from '../bridge/nui'
 import { CB } from '../bridge/types'
 import type { SettingsPayload } from '../bridge/types'
 import Btn from '../ui/Btn'
+import { KeyText } from '../ui/KeyCap'
 import { play } from '../audio/cues'
 import { DEFAULT_SETTINGS } from '../settings/apply'
 import Keybinds from './Keybinds'
@@ -720,7 +721,15 @@ export default function Settings({
                     state we are in, so there is one place the wording lives.
                     Composing it here from `status` would be a second place for
                     it to be wrong, and two representations of one fact drifting
-                    apart is this project's signature failure. */}
+                    apart is this project's signature failure.
+
+                    ...AND THE KEY IN IT IS A PLATE, NOT A LETTER (#209). The
+                    sentence arrives with a `{key:brptt}` hole rather than a
+                    substituted glyph, so the page draws the binding and Lua
+                    keeps the words. THIS IS THE SCREEN THE SENTENCE POINTS AT
+                    -- "rebind it in Settings, Controls, under Comms" -- so it is
+                    also the one screen where the player can watch the plate
+                    change under the sentence describing it. */}
                 {voiceDetail && (
                   <div
                     className="body-text"
@@ -731,7 +740,7 @@ export default function Settings({
                         : undefined,
                     }}
                   >
-                    {voiceDetail}
+                    <KeyText text={voiceDetail} fs="0.7rem" />
                   </div>
                 )}
               </div>

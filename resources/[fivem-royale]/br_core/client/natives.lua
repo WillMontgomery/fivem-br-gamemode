@@ -224,8 +224,15 @@ function BR.Native.setBigmap(on)
         -- A full-screen map with no cursor and no menu needs to say how to
         -- leave, and it has to name the player's OWN key -- the whole point
         -- of the rebinder is that F1 is a default, not a fact.
+        --
+        -- DRAWN AS A KEY, AND THIS IS THE NOTICE THAT MOST NEEDED IT (#209).
+        -- It is STICKY: it stays up for as long as the map is open, which is
+        -- exactly the window in which a player might go and rebind the pause
+        -- key. A substituted label would sit there naming the old one. The
+        -- token names the command and the page redraws the plate on the rebind
+        -- push -- see BR.KeyToken in br_lib/shared/protocol.lua.
         local key = (BR.Keys and BR.Keys.labelFor and BR.Keys.labelFor('brpausemenu'))
-        BR.Notify(key and ('Press %s to close the map'):format(key)
+        BR.Notify(key and ('Press %s to close the map'):format(BR.KeyToken('brpausemenu'))
                        or 'Press the pause key to close the map',
                   'info', { key = 'map.big', sticky = true })
     else

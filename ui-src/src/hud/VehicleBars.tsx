@@ -193,8 +193,16 @@ export default function VehicleBars({ vehicle }: { vehicle: VehiclePayload | nul
         .filter((b) => typeof b.value === 'number' && isFinite(b.value))
         .map((b) => (
           <div key={b.title} className="w-[9rem]" title={b.title}>
+            {/* `zeroNum` IS EXPLICIT NOW AND USED TO BE INFERRED. Fill read the
+                presence of a caption as "this bar's zero is a reading worth
+                printing", which was true while these were the only captioned
+                bars in the game and stopped being true the moment health and
+                shield got captions of their own (#210). An empty tank is the
+                one number a driver most needs; a dead player's 0 is debris in
+                an empty pill. Both are still right, and now both are stated.
+                See the `zeroNum` note in Vitals.tsx. */}
             <Fill value={b.value as number} colour={b.colour}
-                  label={b.label} num />
+                  label={b.label} num zeroNum />
           </div>
         ))}
     </div>

@@ -603,6 +603,40 @@ BR.Nui = {
     ADMIN     = 'admin',
 }
 
+--- A HOLE IN A SENTENCE WHERE A KEY BELONGS.
+---
+--- Owner, 2026-08-22: "we should make our own glyphs for keys. For example,
+--- this message looks too bland and hard coded: 'Voice chat is set to nearby.
+--- Hold N to speak. You can change your preference and keybinds in Settings.'"
+---
+--- THE WORDING STAYS HERE AND THE DRAWING GOES THERE, which is the only split
+--- that satisfies both of this project's standing rules at once. Interface text
+--- is composed in Lua, beside the code that decides which state we are in --
+--- one place for the words, and VoiceNotice.tsx, Settings.tsx and this file's
+--- own callers all argue why. A key drawn as a key is a plate with a border and
+--- a bevel, which Lua cannot express. So Lua writes the sentence with a gap in
+--- it and names the COMMAND; ui-src/src/ui/KeyCap.tsx resolves that command
+--- against the keybinds list and draws the plate.
+---
+--- THE COMMAND, NEVER THE LABEL, AND THAT IS THE POINT RATHER THAN A STYLE
+--- CHOICE. A substituted key label is a photograph of the binding at the
+--- instant the string was built. These strings outlive that instant -- a
+--- twelve-second toast, a sticky notice that stays up while the map is open, a
+--- settings paragraph that sits on the very screen the player rebinds from --
+--- so a label would go stale under the reader, naming a key that no longer does
+--- anything. A command name cannot go stale, and the page re-resolves it on
+--- every rebind push.
+---
+--- WHAT IT DOES NOT DO: decide whether a key EXISTS. A caller that has a
+--- different sentence for the unbound case still has to ask (see
+--- BR.Voice.statusFor, which does exactly that). This only marks the gap.
+---
+--- @param command string   a RegisterCommand name, e.g. 'brptt'
+--- @return string          the token to embed, e.g. '{key:brptt}'
+function BR.KeyToken(command)
+    return ('{key:%s}'):format(tostring(command))
+end
+
 --- NUI -> Lua callback names, namespaced. Every one of these MUST resolve on
 --- every path including errors; a missing resolve hangs the CEF promise forever.
 BR.NuiCb = {

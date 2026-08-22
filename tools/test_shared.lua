@@ -152,6 +152,53 @@ do
     ok(moved, 'shuffle() actually reorders')
 end
 
+-- ------------------------------------------------------------- key tokens ---
+
+describe('BR.KeyToken')
+do
+    -- ═══ WHAT THIS IS FOR ═══
+    --
+    -- Owner, 2026-08-22 (#209), about the start-of-match voice notice: "we
+    -- should make our own glyphs for keys. For example, this message looks too
+    -- bland and hard coded: 'Voice chat is set to nearby. Hold N to speak...'"
+    --
+    -- The wording is composed in Lua and the plate is drawn in TypeScript, so
+    -- what crosses the boundary is the sentence with a HOLE in it. This builds
+    -- the hole. ui-src/src/ui/KeyCap.tsx parses it; tools/check_key_glyphs.lua
+    -- is what checks the two agree, since nothing executes both languages.
+
+    -- IT NAMES THE COMMAND. That is the entire design: a command name cannot go
+    -- stale, and a key LABEL substituted at compose time is a photograph of the
+    -- binding at that instant. These strings outlive the instant -- a sticky
+    -- notice stays up for as long as the big map is open.
+    ok(BR.KeyToken('brptt') == '{key:brptt}',
+       'builds a hole naming the command', tostring(BR.KeyToken('brptt')))
+
+    -- DIFFERENT COMMANDS ARE DIFFERENT HOLES, which is only worth asserting
+    -- because a constant would satisfy the line above.
+    ok(BR.KeyToken('brpausemenu') == '{key:brpausemenu}',
+       'and a different command gives a different hole',
+       tostring(BR.KeyToken('brpausemenu')))
+    ok(BR.KeyToken('brptt') ~= BR.KeyToken('brinteract'),
+       'two commands never collapse to one token')
+
+    -- IT IS A PURE FUNCTION OF ITS ARGUMENT and reads no key layer at all.
+    -- Nothing here resolves a binding: that happens on the page, on every
+    -- rebind push. A version that reached for BR.Keys would reintroduce exactly
+    -- the compose-time snapshot the token exists to avoid, and it would do so
+    -- invisibly because the string would still look right on the day.
+    ok(BR.KeyToken('brptt') == BR.KeyToken('brptt'),
+       'the same command always gives the same token')
+
+    -- NO CRASH ON A NIL COMMAND. It is a programming error rather than a real
+    -- state, but this is called while composing a sentence that is about to go
+    -- on screen, and a hard error there costs the whole notice rather than one
+    -- glyph. tostring() makes it visible instead: '{key:nil}' draws a dash.
+    local okCall, out = pcall(BR.KeyToken, nil)
+    ok(okCall and type(out) == 'string',
+       'a nil command does not throw mid-sentence', tostring(out))
+end
+
 -- -------------------------------------------------------------------- geo ---
 
 describe('geo')

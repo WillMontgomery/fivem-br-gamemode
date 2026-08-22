@@ -1,6 +1,7 @@
 import { useUi, selNotices, selScreen } from '../store'
 import type { ToastPayload } from '../bridge/types'
 import NoticeRow from './NoticeRow'
+import { KeyText } from '../ui/KeyCap'
 
 /**
  * The notification stack.
@@ -84,8 +85,17 @@ export default function Notices({ barsVisible = true }: { barsVisible?: boolean 
           sticky={n.sticky}
         >
           {/* min-w-0 so the flex child may actually shrink, break-words so a
-              long unbroken token cannot force the row wider than the stack. */}
-          <span className="min-w-0 break-words">{n.text}</span>
+              long unbroken token cannot force the row wider than the stack.
+
+              KeyText, NOT the raw string (#209). A notice whose sentence names
+              a key -- the once-a-session voice notice, the sticky one over the
+              big map -- carries a `{key:command}` hole where the key goes, and
+              this is what fills it with a plate. Every other notice in the game
+              contains no token, is returned untouched by KeyText, and renders
+              exactly as it did. */}
+          <span className="min-w-0 break-words">
+            <KeyText text={n.text} fs="0.75rem" />
+          </span>
           {/* COALESCED REPEATS. Four ammo pickups is one line reading x4, not
               four lines shoving each other off the stack. */}
           {n.count > 1 && (

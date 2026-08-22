@@ -1070,12 +1070,25 @@ function BR.Voice.statusFor(mode, radio, mates)
         }
     end
 
-    -- "Hold N" or, when the player has no push-to-talk key at all, a sentence
+    -- "Hold [N]" or, when the player has no push-to-talk key at all, a sentence
     -- that says so instead of naming a key that does not exist. pttKeyLabel()
     -- returning nil is a real state -- cleared, or lost to a conflict -- and
     -- it is the one case where the honest answer is not a key name.
+    --
+    -- THE BOUND BRANCH NAMES THE COMMAND, NOT THE KEY (#209). BR.KeyToken is a
+    -- hole the interface fills with a drawn plate, so what crosses the
+    -- boundary is "Hold <the push-to-talk key>" rather than "Hold N" -- the
+    -- wording still Lua's, the glyph the page's, and the binding resolved at the
+    -- moment it is DRAWN rather than the moment it was composed. That last part
+    -- is what the label would have cost: this detail is read on a screen the
+    -- player can rebind the key from, so a substituted letter would go stale
+    -- under them mid-sentence.
+    --
+    -- pttKeyLabel() IS STILL CALLED, AND ONLY TO CHOOSE THE BRANCH. Whether a
+    -- key exists changes the SENTENCE, which is Lua's business; which key it is
+    -- changes the glyph, which is not.
     local key = BR.Voice.pttKeyLabel()
-    local holdIt = key and ('Hold %s'):format(key)
+    local holdIt = key and ('Hold %s'):format(BR.KeyToken(PTT_COMMAND))
         or 'Push to talk is not bound to any key -- bind it in Settings, '
         .. 'Controls, and then hold it'
 
@@ -1600,8 +1613,15 @@ end)
 --- PURE AND IT TAKES ITS INPUTS, so the suite can assert the owner's wording
 --- without a match, a key layer or a running game. Returns nil for the one
 --- case that must produce no notice at all.
+---
+--- `key` IS A BOOLEAN IN EVERYTHING BUT TYPE, and has been since #209. What it
+--- decides is which of two sentences to return -- one that names a key, one
+--- that says there is not one -- and the key it names is a `{key:...}` token
+--- carrying the COMMAND, resolved to a plate by the page. The LABEL passed in
+--- is never substituted into the string any more, so a caller that had a stale
+--- one would no longer be able to put a wrong letter on screen with it.
 --- @param mode string|nil  the voice mode in force
---- @param key string|nil   the push-to-talk key label, or nil when unbound
+--- @param key string|nil   the push-to-talk key label; only its presence is read
 --- @return string|nil
 function BR.Voice.noticeFor(mode, key)
     mode = BR.ToVoiceMode(mode)
@@ -1611,11 +1631,23 @@ function BR.Voice.noticeFor(mode, key)
     if not (r.proximity or r.radio) then return nil end
 
     local label = (mode == BR.VoiceMode.SQUAD) and 'squad' or 'nearby'
-    local hold = key and ('Hold %s to speak.'):format(key)
+    -- THE KEY IS A HOLE, NOT A LETTER (#209). THIS IS THE SENTENCE THE OWNER
+    -- WAS LOOKING AT when he asked for key glyphs, and the complaint was not
+    -- the wording -- every word of it is still his, in his order. It was that
+    -- the N sat in the middle of it as a letter of prose, so the line read as
+    -- hardcoded text rather than as the thing you press. BR.KeyToken marks the
+    -- gap and ui/KeyCap.tsx draws the plate; see the token's own note.
+    local hold = key and ('Hold %s to speak.'):format(BR.KeyToken(PTT_COMMAND))
         -- NO KEY MEANS NO KEY. Naming one here would be the exact lie #129's
         -- third round was: a prompt that names a key nothing is listening to
         -- turns "unavailable" into "broken" for somebody who has no way to
         -- tell those apart from a chair.
+        --
+        -- AND IT IS STILL A SENTENCE RATHER THAN AN UNBOUND GLYPH. A plate
+        -- drawing a dash is the right answer where a key is one word of
+        -- furniture beside a label; here the whole point of the notice is to
+        -- teach the player how to talk, and "Hold [--] to speak." teaches
+        -- nothing. The sentence says what is wrong, so it stays.
         or 'Push to talk is not bound to any key.'
     return ('Voice chat is set to %s. %s You can change your voice preference '
         .. 'and keybinds in Settings.'):format(label, hold)

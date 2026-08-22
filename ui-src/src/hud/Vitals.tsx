@@ -23,7 +23,7 @@ import { useEffect, useRef, useState } from 'react'
  * one after the first tweak to either. So the component is shared, and only the
  * colours and the split differ.
  */
-export function Fill({ value, colour, segments = 0, num, label }: {
+export function Fill({ value, colour, segments = 0, num, label, zeroNum }: {
   value: number
   colour: string
   /**
@@ -38,41 +38,72 @@ export function Fill({ value, colour, segments = 0, num, label }: {
   /**
    * A caption INSIDE the pill, naming what the bar measures.
    *
-   * ═══ HEALTH AND SHIELD DO NOT PASS ONE, AND THAT IS NOT AN OVERSIGHT ═══
+   * ═══ HEALTH AND SHIELD PASS ONE NOW, AND THAT IS A CORRECTION ═══
    *
-   * They are the two bars every player of this genre already knows on sight,
-   * in the position GTA's own vitals occupied, and a caption on them would be
-   * telling somebody the thing they are looking at is health. The vehicle
-   * strip is different and the owner said so:
+   * This note used to argue at length that they must not: they are the two
+   * bars every player of this genre knows on sight, in the position GTA's own
+   * vitals occupied, and naming them would be telling somebody that the thing
+   * they are looking at is health. The vehicle strip got captions because two
+   * unlabelled bars in a corner nobody had bars in before are two mystery
+   * meters, and that argument was sound.
    *
-   *   "The vehicle bars have nothing telling us what they actually indicate,
-   *    and they should have a number or percentage built in as well."
-   *                                                 -- owner, 2026-08-22
+   * It was also not the owner's, and he has now said the opposite:
    *
-   * Two unlabelled bars in a corner nobody had bars in before are two mystery
-   * meters. So the caption is opt-in, it exists because it was asked for, and
-   * it goes nowhere it was not.
+   *   "All 3 bars look good. I wish we had the same type text within the
+   *    health/shield bars to be honest."          -- owner, 2026-08-22
    *
-   * IN THE PILL, NOT ABOVE IT. A caption row would add a fourth surface to the
-   * bottom-right column and push the inventory bar up by its height; putting it
-   * where the numeral already lives keeps the strip one object, exactly as tall
-   * as it was.
+   * So the caption is no longer opt-in on an argument about legibility; it is
+   * on both strips because both were asked for. What survives from the old
+   * note is the mechanics below, which were built for the vehicle bars and are
+   * copied here rather than re-derived -- and one rule that did NOT survive
+   * contact with this change, which is `zeroNum` immediately below.
+   *
+   * THE WORDS ARE THE ONES THIS FILE WAS ALREADY USING. `Health` and `Shield`
+   * are the two `title` attributes the vitals row has carried since it was
+   * written -- invisible, because nothing hovers a HUD in a game. Nothing new
+   * was named, which is the same move VehicleBars made with `Condition` and
+   * `Fuel`.
+   *
+   * IN THE PILL, NOT ABOVE IT. A caption row would add a surface to a column
+   * that has none to spare -- the vitals strip sits a couple of rem under the
+   * radar and grows UPWARD, which is the arithmetic that put it over the
+   * minimap once already. Putting the caption where the numeral already lives
+   * keeps the strip one object, exactly as tall as it was: measured at
+   * 1280x720 the row is 11.55px high and its top edge is at y=694.77 both
+   * before and after this change, at every text scale.
    */
   label?: string
+  /**
+   * Draw the numeral even at zero.
+   *
+   * ═══ WHY THIS IS A PROP AND NOT A QUESTION ABOUT `label` ═══
+   *
+   * The rule is genuinely split, and it was right when it shipped:
+   *
+   *   health and shield   HIDE a zero. 0 means dead and means no shield, two
+   *                       states the empty bar already says by itself, and a
+   *                       lone "0" floating in an empty pill reads as debris.
+   *   an empty TANK       SHOWS it. It is the one reading a driver most needs,
+   *                       and a blank beside a caption reads as the number
+   *                       having failed rather than as a zero.
+   *
+   * WHAT BROKE IS HOW THE SPLIT WAS ASKED. It was `value > 0 || label !==
+   * undefined` -- the caption was used as the proxy for "this is a bar whose
+   * zero is a reading", because at the time the only captioned bars were the
+   * vehicle's. Giving health and shield captions makes that proxy false: the
+   * shield would have started showing a 0 in an empty pill, which is the exact
+   * thing the rule exists to prevent, and it would have happened silently as a
+   * side effect of a change about captions.
+   *
+   * So the condition now asks the question it actually means. A heuristic that
+   * has to be true for the caller to be correct is a bug waiting for its second
+   * caller, and this is that second caller arriving.
+   */
+  zeroNum?: boolean
 }) {
   const pct = Math.max(0, Math.min(1, value / 100))
 
-  // A LABELLED BAR HAS TO READ AT ZERO, AND AN UNLABELLED ONE MUST NOT START.
-  //
-  // `num && value > 0` was the rule and it is right for health and shield: 0
-  // there means dead and means no shield, two states the empty bar says by
-  // itself, and a lone "0" floating in an empty pill reads as debris.
-  //
-  // An empty TANK is the one reading a driver most needs, and it sits beside a
-  // caption -- so the same blank would read as the number having failed rather
-  // than as a zero. The caption is what changes the answer, so the caption is
-  // what the condition asks about.
-  const showNum = num === true && (value > 0 || label !== undefined)
+  const showNum = num === true && (value > 0 || zeroNum === true)
 
   return (
     <div className="relative h-full w-full rounded-full bg-black/60 border border-white/10 overflow-hidden">
@@ -196,16 +227,22 @@ export default function Vitals({ hp, armour, stamina = 100 }:
           tall enough to hold it -- and the whole strip then moved DOWN, clear
           of the radar, because a bottom-anchored bar grows upward and this
           one had started covering the minimap. See --vitals-drop in Hud.tsx. */}
+      {/* THE CAPTIONS ARE THE `title` ATTRIBUTES BESIDE THEM, and deliberately
+          the same two strings rather than a second pair -- see the `label` note
+          on Fill. NEITHER PASSES `zeroNum`: a dead player's 0 and an empty
+          shield's 0 stay hidden, which is the behaviour the captions would have
+          silently taken away under the old heuristic. */}
       <div className="flex gap-[3px] items-stretch h-[1.05rem]">
         <div className="basis-[62%] relative" title="Health">
-          <Fill value={hp} colour="var(--color-hp)" num />
+          <Fill value={hp} colour="var(--color-hp)" label="Health" num />
           {hit > 0 && <div key={hit} className="vitals-hit-flash" />}
         </div>
         <div className="basis-[38%]" title="Shield">
           {/* Four segments: the shield cap is 100 and a big potion is 50, so
               each notch is half a potion. The notches are the reason a
               shield reads as a resource you are spending. */}
-          <Fill value={armour} colour="var(--color-shield)" segments={4} num />
+          <Fill value={armour} colour="var(--color-shield)" segments={4}
+                label="Shield" num />
         </div>
       </div>
       {/* Sprint stamina: full-width and the SAME HEIGHT as health and

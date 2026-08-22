@@ -3160,10 +3160,33 @@ do
     -- the one it named was Left Alt. BR.Keys.labelFor has no such limit for a
     -- binding this layer owns, and the sentence is derived from it rather than
     -- describing it.
+    -- ...AND IT NAMES THE COMMAND RATHER THAN THE LETTER, WHICH IS #209 AND IS
+    -- STRICTLY STRONGER THAN WHAT THIS USED TO ASSERT.
+    --
+    -- This read `radio.detail:find(key)` -- the resolved LABEL had to appear in
+    -- the sentence. That was the right assertion while the sentence carried a
+    -- letter, and the property it was defending is unchanged: the surface must
+    -- follow the player's own binding rather than a convar. What changed is
+    -- WHEN the binding is read. A substituted label is read once, at compose
+    -- time; this paragraph is displayed on the settings screen, which is the
+    -- screen the player rebinds the key FROM, so a label baked in here goes
+    -- stale under them as they use it. The token is resolved by the page on
+    -- every rebind push instead.
     local key = BR.Voice.pttKeyLabel()
-    ok(type(key) == 'string' and radio.detail:find(key, 1, true) ~= nil,
-       'the key in the sentence is the one BR.Keys.labelFor reports, so it '
-           .. 'moves when the player moves it',
+    ok(type(key) == 'string',
+       'the key layer still reports a push-to-talk label at all -- it is what '
+           .. 'decides WHICH sentence is used',
+       tostring(key))
+    ok(radio.detail:find(BR.KeyToken('brptt'), 1, true) ~= nil,
+       'the sentence names the push-to-talk COMMAND, so the glyph the player '
+           .. 'sees is resolved when it is drawn rather than when it was '
+           .. 'composed',
+       tostring(radio.detail))
+    -- AND THE LABEL IS NOT ALSO IN IT. The mutation that keeps the assertion
+    -- above green and puts the bug back is emitting both -- a token nothing
+    -- reads beside the letter that started this issue.
+    ok(radio.detail:find('Hold ' .. tostring(key), 1, true) == nil,
+       'and the resolved letter appears nowhere in it',
        tostring(key) .. ' / ' .. tostring(radio.detail))
 
     -- AND THE ROW ITSELF EXISTS, IN OUR TABLE, WITH THE OWNER'S DEFAULT.
@@ -4321,20 +4344,49 @@ do
     local noticeFor = BR.Voice.noticeFor
         or function() return nil end
 
+    -- ═══ THE KEY IS A TOKEN NOW, AND THAT IS #209 ═══
+    --
+    -- This block used to assert 'Hold N to speak.' -- the LABEL, substituted
+    -- here. Owner, 2026-08-22, looking at this exact sentence on screen: "we
+    -- should make our own glyphs for keys. For example, this message looks too
+    -- bland and hard coded". The complaint was not the wording, which is
+    -- unchanged below to the character; it was that the N was a letter of
+    -- prose. So the sentence now carries BR.KeyToken('brptt') and the page
+    -- draws a plate for it.
+    --
+    -- THE WORDING ASSERTIONS ARE THE POINT AND THEY DID NOT MOVE. Everything
+    -- around the hole is still checked verbatim, so a change that "fixed" the
+    -- glyph by rewriting the owner's sentence still fails here.
     local nb = noticeFor(BR.VoiceMode.NEARBY, 'N')
     ok(type(nb) == 'string' and nb:find('set to nearby', 1, true) ~= nil,
        'it names the mode in force', tostring(nb))
-    ok(type(nb) == 'string' and nb:find('Hold N to speak.', 1, true) ~= nil,
-       'and the key, in the owner\'s words', tostring(nb))
+    ok(type(nb) == 'string'
+       and nb:find('Hold {key:brptt} to speak.', 1, true) ~= nil,
+       'and the key, in the owner\'s words, with the key itself left as a hole '
+           .. 'for the interface to draw',
+       tostring(nb))
+    -- AND THE LABEL IS NOWHERE IN IT. Passing 'N' must not put an N in the
+    -- string: the whole value of the token is that the sentence cannot go
+    -- stale, and a version that substituted the label AND emitted a token
+    -- would satisfy the assertion above while keeping the bug.
+    ok(type(nb) == 'string' and nb:find('Hold N', 1, true) == nil,
+       'the resolved label is not substituted into the sentence at all',
+       tostring(nb))
     ok(type(nb) == 'string'
        and nb:find('voice preference and keybinds in Settings', 1, true) ~= nil,
        'and where to change both', tostring(nb))
 
+    -- A DIFFERENT LABEL PRODUCES THE SAME STRING, which is the token's whole
+    -- claim stated as a test: what reaches the interface no longer depends on
+    -- what key was bound at the moment it was composed, only on WHETHER one
+    -- was. The page resolves the rest, live, on every rebind push.
     local sq = noticeFor(BR.VoiceMode.SQUAD, 'V')
     ok(type(sq) == 'string' and sq:find('set to squad', 1, true) ~= nil
-       and sq:find('Hold V', 1, true) ~= nil,
-       'the mode and the key are both read rather than assumed -- a rebound '
-           .. 'key is named as the key it now is',
+       and sq:find('Hold {key:brptt}', 1, true) ~= nil,
+       'the mode is read rather than assumed, and the key is named by command',
+       tostring(sq))
+    ok(sq == noticeFor(BR.VoiceMode.SQUAD, 'Page Down'),
+       'and rebinding does not change the sentence -- only the glyph it holds',
        tostring(sq))
 
     -- OFF SAYS NOTHING. Explicit owner instruction, and it is the same rule

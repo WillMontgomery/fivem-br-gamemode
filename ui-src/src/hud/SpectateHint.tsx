@@ -1,4 +1,5 @@
 import { useUi } from '../store'
+import { KeyCap } from '../ui/KeyCap'
 
 /**
  * WHO YOU ARE WATCHING, AND WHICH KEYS MOVE YOU ON.
@@ -38,21 +39,25 @@ import { useUi } from '../store'
  * stack (see client/spectate.lua on why it must never join one), so a control
  * that needed pointing at could not be reached.
  *
- * ═══ THE KEYS ARE THE REAL BINDINGS ═══
+ * ═══ THE KEYS ARE THE REAL BINDINGS, AND THE BADGE IS NOW SHARED ═══
  *
- * Read out of `keybinds`, the same rows the rebinder screen draws, matched by
- * COMMAND NAME rather than by position. Lua pushes that list at start and again
- * on every rebind, so moving Spectate next off the right arrow updates this
- * hint with no further plumbing. Nothing here hardcodes an arrow -- the arrows
- * are rebindable, and a hint naming a key the player no longer has is worse
- * than no hint.
+ * THE PLATE THAT USED TO BE WRITTEN OUT HERE NOW LIVES IN ui/KeyCap.tsx, and
+ * this file passes it a command name. Nothing about the drawing changed -- that
+ * component IS this badge, moved -- and the reason it moved is #209: the owner
+ * asked for key glyphs after reading a key spelled out as a letter mid-sentence
+ * in the voice notice, and the answer to "two surfaces draw keys differently"
+ * is one component rather than a second copy of this one.
  *
- * AN UNBOUND ACTION IS DRAWN AS A DASH rather than hidden. `key` is '' when
- * nothing is bound, which is a state a player can reach by rebinding something
- * else onto the arrow (keybinds.lua resolves conflicts in favour of the new
- * binding and leaves the loser unbound). Hiding the row would make the feature
- * look absent; a dash says the key is gone, which is the truth and is
- * recoverable from the Controls screen.
+ * What that component guarantees is what this file used to guarantee alone, so
+ * it is still true here: the key is read out of `keybinds` BY COMMAND NAME --
+ * the same rows the rebinder screen draws -- and Lua pushes that list at start
+ * and again on every rebind, so moving Spectate next off the right arrow
+ * updates this hint with no further plumbing. Nothing hardcodes an arrow; the
+ * arrows are rebindable, and a hint naming a key the player no longer has is
+ * worse than no hint. AN UNBOUND ACTION IS DRAWN AS A DASH rather than hidden,
+ * which is a state a player reaches by rebinding something else onto the arrow
+ * (keybinds.lua resolves conflicts in favour of the new binding and leaves the
+ * loser unbound).
  *
  * ═══ SCALING ═══
  *
@@ -70,15 +75,11 @@ const KEYS = [
 
 export default function SpectateHint() {
   const spectate = useUi((s) => s.spectate)
-  const keybinds = useUi((s) => s.keybinds)
 
   // Nothing at all when no session is running. Not an empty plate: the bottom
   // of the screen is shared with the talking line and the inventory bar, and
   // reserving space for a hint that does not apply is chrome for its own sake.
   if (!spectate?.active) return null
-
-  const keyFor = (command: string) =>
-    keybinds.find((k) => k.command === command)?.key || ''
 
   return (
     <div
@@ -106,29 +107,14 @@ export default function SpectateHint() {
 
       <div className="flex items-center gap-3">
         {KEYS.map(({ command, label }) => {
-          const key = keyFor(command)
           return (
             <span key={command} className="flex items-center gap-1.5">
-              {/* The cap. `.plate` and `font-display` are what the Keybinds
-                  screen uses for the same object, so the player is looking at
-                  the thing they would go and change. */}
-              <span
-                className="plate ts font-display text-center"
-                style={{
-                  ['--fs' as string]: '0.8rem',
-                  ['--edgec' as string]: key
-                    ? 'rgba(255,255,255,0.22)'
-                    : 'rgba(255,255,255,0.12)',
-                  ['--plate-fill' as string]: 'rgba(30,34,48,0.94)',
-                  ['--cut-max' as string]: '0.3rem',
-                  color: key ? '#ffffff' : 'rgba(255,255,255,0.3)',
-                  minWidth: '2.6rem',
-                  padding: '0.15rem 0.5rem',
-                  lineHeight: 1.4,
-                }}
-              >
-                {key || '--'}
-              </span>
+              {/* The cap, drawn by the shared component. `.plate` and
+                  `font-display` are what the Keybinds screen uses for the same
+                  object, so the player is looking at the thing they would go
+                  and change -- and now so is everyone reading a key anywhere
+                  else in the interface. */}
+              <KeyCap command={command} />
               <span
                 className="ts"
                 style={{

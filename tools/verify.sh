@@ -272,6 +272,32 @@ else
     echo "${YEL}skip${RST} (lua interpreter not found)"
 fi
 
+# A key is drawn as a key (#209). The half that is a value -- the owner's
+# sentence, and that a resolved key LABEL never reaches it -- is unit-tested in
+# test_client. This gate is for what no suite can execute: that the token Lua
+# writes and the pattern the page parses are still one wire format, that the
+# glyph resolves by command name and draws a dash when unbound, and that the
+# surfaces carrying those sentences still render it. A mismatch does not error
+# -- it puts a raw `{key:brptt}` in the middle of the owner's sentence.
+echo "${DIM}== key glyphs ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_key_glyphs.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
+# The health and shield bars name themselves inside the pill (#210). The rule
+# this protects is the one that change could have broken silently: the shield
+# hides its numeral at 0, and the condition deciding that used to key off
+# whether the bar had a caption -- which stopped being a valid proxy the moment
+# these two got captions of their own.
+echo "${DIM}== vitals bars ==${RST}"
+if [ -n "${LUA:-}" ] && [ -x "$LUA" ]; then
+    "$LUA" tools/check_vitals_bars.lua || rc=1
+else
+    echo "${YEL}skip${RST} (lua interpreter not found)"
+fi
+
 # Your own death and the end of the match are two surfaces sharing one word
 # table, and the word and the spectator camera are one sequence on one deadline.
 # The failure this catches is the two coming apart -- a second timer that agrees

@@ -245,6 +245,13 @@ export function startMockDriver(): void {
         { group: 'Map', command: 'brspecnext', label: 'Spectate next player', key: 'Right', default: 'RIGHT' },
         { group: 'Map', command: 'brspecprev', label: 'Spectate previous player', key: 'Left', default: 'LEFT' },
         { group: 'Social', command: 'brchat', label: 'Chat', key: 'T', default: 'T' },
+        // PUSH TO TALK, which is the row #209 was reported against: the
+        // once-a-session voice notice and the settings detail both name it,
+        // and both now do so with a `{key:brptt}` token that ui/KeyCap.tsx
+        // resolves through THIS list. Without the row the harness draws the
+        // unbound dash for a key the game has bound by default, which is a
+        // real state but not the one being reviewed.
+        { group: 'Comms', command: 'brptt', label: 'Push to talk', key: 'N', default: 'N' },
         { group: 'Interface', command: 'brpausemenu', label: 'Pause menu', key: 'Escape', default: 'F1' },
         { group: 'Interface', command: 'brleave', label: 'Leave the match', key: '', default: '' },
       ],
@@ -399,8 +406,13 @@ export function startMockDriver(): void {
     { talking: [], names: [],
       mode: 'squad' as const, radio: 30703, joined: 30703, mates: 0,
       status: 'alone', silent: false, chosen: false,
+      // THE KEY IS A TOKEN, NOT AN N. Lua composes these two `detail` strings
+      // with BR.KeyToken (br_core/client/voice.lua) so the settings screen can
+      // draw the binding as a plate rather than a letter of prose -- #209. A
+      // harness that kept the letter would render the one thing that issue was
+      // about and look correct doing it.
       detail: 'You are on squad radio 30703 and you are the only one on it. '
-            + 'Hold N to speak once a squadmate joins.' },
+            + 'Hold {key:brptt} to speak once a squadmate joins.' },
     // THE WORKING ROW CARRIES NO HEADLINE, and that is the shape being
     // mocked rather than an omission -- VoiceNotice draws any headline it is
     // given, so a working mode that sent one would sit across the bottom of
@@ -410,9 +422,9 @@ export function startMockDriver(): void {
       mode: 'squad' as const, radio: 30703, joined: 30703, mates: 3,
       status: 'radio', silent: false, chosen: false,
       detail: 'Squad voice is a radio: it reaches your squad at any distance '
-            + 'and nobody else, however close they are. Hold N to talk. The '
-            + "key is this game's -- rebind it in Settings, Controls, under "
-            + 'Comms.' },
+            + 'and nobody else, however close they are. Hold {key:brptt} to '
+            + "talk. The key is this game's -- rebind it in Settings, "
+            + 'Controls, under Comms.' },
   ]
   let voiceAt = 0
   window.setInterval(() => {
