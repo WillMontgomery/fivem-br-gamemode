@@ -4135,11 +4135,16 @@ do
     sent = {}
     fire(BR.Net.LOOT_CLAIM, 1, { id = far.id })
     ok(m.loot.items[far.id] ~= nil, 'a claim from 400m away is refused')
-    local toldFar = false
+    -- MATCHED IN FULL, NOT BY SUBSTRING. This read `text:find('far')` and so
+    -- silently stopped testing anything the moment the sentence changed --
+    -- it passed for 'Too far away.' and would pass again for any wording
+    -- containing those three letters.
+    local refusal
     for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do
-        if s.target == 1 and s.args[1].text:find('far') then toldFar = true end
+        if s.target == 1 then refusal = s.args[1].text end
     end
-    ok(toldFar, 'and audibly so')
+    ok(refusal == 'This crate has a lock on it and cannot be opened.',
+        'and audibly so', tostring(refusal))
 
     -- A dead player cannot loot.
     standOn(1, far)

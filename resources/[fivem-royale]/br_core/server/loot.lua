@@ -816,40 +816,34 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
     end
 
     if not inReach(e, item) then
-        -- A CRATE SAYS SOMETHING ELSE, BECAUSE "TOO FAR AWAY" IS A LIE THE ONE
-        -- TIME A PLAYER READS IT.
+        -- "TOO FAR AWAY" IS GONE, EVERYWHERE, WITH NO EXCEPTIONS.
         --
-        -- This branch is very nearly unreachable honestly. The client only
-        -- offers the prompt within pickupDistance; this accepts within
-        -- pickupDistance + REACH_SLACK, which is wider; and the container hold
-        -- ends the moment the player walks out of reach. So the server refusing
-        -- a container claim for DISTANCE means the two sides disagree about
-        -- WHERE THE ENTRY IS -- #198, where the client's mirror of a shoved
-        -- crate diverges from the registry and never re-converges.
+        -- This is a straight one-for-one replacement of that sentence and it is
+        -- deliberately NOT conditional on kind. An earlier version said this
+        -- only for chests and kept the distance answer for everything else, on
+        -- the reasoning that for a deathbox or a dropped rifle the distance is
+        -- at least TRUE. The owner overruled it (2026-08-21): "Players have no
+        -- idea what 'Too far away' means without any context or awareness as to
+        -- the expected/actual positions of crates etc. So something that is more
+        -- meaningful to them, even if not technically true, is less confusing."
         --
-        -- THE MECHANISM IS UNFIXED AND THIS DOES NOT FIX IT. What changes is
-        -- the sentence. A player stood against a crate, told they are too far
-        -- from it, learns nothing and does the one thing that cannot work --
-        -- walks closer. A lock is at least a reason to walk away. Owner's
-        -- wording, 2026-08-21, and #198 stays open for the real cause.
+        -- THE MESSAGE BEING LITERALLY TRUE IS NOT THE PROPERTY THAT MATTERS. A
+        -- player cannot see the registry position, so "too far away" reads as
+        -- nonsense whenever it fires -- and it can only fire when the client's
+        -- idea of where the entry is and the server's have diverged, since the
+        -- client only offers the prompt within pickupDistance and this accepts
+        -- within pickupDistance + REACH_SLACK, which is wider. A sentence that
+        -- tells them to stop trying is more use than one that tells them to walk
+        -- closer to something they are already touching.
         --
-        -- CHESTS ONLY. A deathbox is not a crate and loose loot is not a crate;
-        -- both keep the honest distance answer, which for them is also the
-        -- true one.
+        -- IT DOES NOT FIX THE DIVERGENCE and is not meant to; #198 carries the
+        -- mechanism and the designed fix.
         --
         -- AND IT LEAKS NOTHING, which in this handler always deserves the
-        -- question -- see the oracle argument above this block. The reply is
-        -- now distinguishable by kind, but `kind` is a field of wireEntry:
-        -- anything reaching this line is subscribed, and every subscribed
-        -- entry's kind was announced to that client when it arrived. The
-        -- distinction is only ever drawn over something the client was already
-        -- told, so it hands a prober nothing it did not already have.
-        if item.kind == 'chest' then
-            BR.Server.notify(src,
-                'This crate has a lock on it and cannot be opened.', 'warn')
-        else
-            BR.Server.notify(src, 'Too far away.', 'warn')
-        end
+        -- question -- see the oracle argument above. Being kind-independent, it
+        -- is strictly less distinguishing than the version it replaced.
+        BR.Server.notify(src,
+            'This crate has a lock on it and cannot be opened.', 'warn')
         return
     end
 

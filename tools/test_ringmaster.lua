@@ -1260,12 +1260,13 @@ do
         'inReach refuses AUDIBLY, and a CRATE blames a lock, not the distance',
         table.concat(notices(at, 101), ' / '))
 
-    -- (d2) THE SAME REFUSAL, ON SOMETHING THAT IS NOT A CRATE. A death box is
-    -- not a crate and must not claim to have a lock on it: the crate wording
-    -- exists because "too far away" is unreadable to a player stood against a
-    -- crate they cannot open (#198), and nothing about that argument extends
-    -- to a box a player can see is 100m off. Same cell, same distance, same
-    -- handler, different sentence.
+    -- (d2) THE SAME REFUSAL, ON SOMETHING THAT IS NOT A CRATE -- AND IT SAYS
+    -- THE SAME THING. An earlier version of this case asserted the opposite,
+    -- on the reasoning that for a death box the distance answer is at least
+    -- true. The owner overruled it: the replacement is one-for-one, with no
+    -- exceptions, because a player cannot see a registry position and "too far
+    -- away" reads as nonsense whatever the entry happens to be. THIS CASE NOW
+    -- EXISTS TO STOP THE KIND BRANCH COMING BACK.
     nextSecond()
     local box2 = BR.Loot.spawnStack(theMatch, {
         item = 'deathbox', kind = 'deathbox', rarity = BR.Rarity.RARE, count = 1,
@@ -1274,8 +1275,8 @@ do
     was, at = worldOf(theMatch), mark()
     fire(BR.Net.LOOT_CLAIM, 101, { id = box2.id })
     ok(sameWorld(was, worldOf(theMatch)), 'a death box 100m away cannot be opened either')
-    ok(#notices(at, 101) == 1 and notices(at, 101)[1] == 'Too far away.',
-        'and it gets the honest distance answer, not the crate lock',
+    ok(#notices(at, 101) == 1 and notices(at, 101)[1] == 'This crate has a lock on it and cannot be opened.',
+        'and it gets the SAME sentence -- the replacement is not kind-aware',
         table.concat(notices(at, 101), ' / '))
 
     -- (e) no zone: ALIVE, in a match whose loot has been torn down. This is
