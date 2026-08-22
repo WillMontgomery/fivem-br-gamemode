@@ -4167,7 +4167,8 @@ do
     for _, s in ipairs(eventsOf(BR.Net.NOTIFY)) do
         if s.target == 1 then refused = s.args[1].text end
     end
-    ok(refused == 'Too far away.', 'the reported symptom, reproduced',
+    ok(refused == 'This crate has a lock on it and cannot be opened.',
+        'the reported symptom, reproduced -- and a crate now blames a lock',
         tostring(refused))
     ok(m.loot.items[crate.id] ~= nil, 'and the crate is still sat there')
 

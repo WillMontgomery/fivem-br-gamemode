@@ -816,7 +816,40 @@ AddEventHandler(BR.Net.LOOT_CLAIM, function(d)
     end
 
     if not inReach(e, item) then
-        BR.Server.notify(src, 'Too far away.', 'warn')
+        -- A CRATE SAYS SOMETHING ELSE, BECAUSE "TOO FAR AWAY" IS A LIE THE ONE
+        -- TIME A PLAYER READS IT.
+        --
+        -- This branch is very nearly unreachable honestly. The client only
+        -- offers the prompt within pickupDistance; this accepts within
+        -- pickupDistance + REACH_SLACK, which is wider; and the container hold
+        -- ends the moment the player walks out of reach. So the server refusing
+        -- a container claim for DISTANCE means the two sides disagree about
+        -- WHERE THE ENTRY IS -- #198, where the client's mirror of a shoved
+        -- crate diverges from the registry and never re-converges.
+        --
+        -- THE MECHANISM IS UNFIXED AND THIS DOES NOT FIX IT. What changes is
+        -- the sentence. A player stood against a crate, told they are too far
+        -- from it, learns nothing and does the one thing that cannot work --
+        -- walks closer. A lock is at least a reason to walk away. Owner's
+        -- wording, 2026-08-21, and #198 stays open for the real cause.
+        --
+        -- CHESTS ONLY. A deathbox is not a crate and loose loot is not a crate;
+        -- both keep the honest distance answer, which for them is also the
+        -- true one.
+        --
+        -- AND IT LEAKS NOTHING, which in this handler always deserves the
+        -- question -- see the oracle argument above this block. The reply is
+        -- now distinguishable by kind, but `kind` is a field of wireEntry:
+        -- anything reaching this line is subscribed, and every subscribed
+        -- entry's kind was announced to that client when it arrived. The
+        -- distinction is only ever drawn over something the client was already
+        -- told, so it hands a prober nothing it did not already have.
+        if item.kind == 'chest' then
+            BR.Server.notify(src,
+                'This crate has a lock on it and cannot be opened.', 'warn')
+        else
+            BR.Server.notify(src, 'Too far away.', 'warn')
+        end
         return
     end
 

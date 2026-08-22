@@ -1256,8 +1256,27 @@ do
     was, at = worldOf(theMatch), mark()
     fire(BR.Net.LOOT_CLAIM, 101, { id = far.id })
     ok(sameWorld(was, worldOf(theMatch)), 'a crate 100m away cannot be opened')
+    ok(#notices(at, 101) == 1 and notices(at, 101)[1] == 'This crate has a lock on it and cannot be opened.',
+        'inReach refuses AUDIBLY, and a CRATE blames a lock, not the distance',
+        table.concat(notices(at, 101), ' / '))
+
+    -- (d2) THE SAME REFUSAL, ON SOMETHING THAT IS NOT A CRATE. A death box is
+    -- not a crate and must not claim to have a lock on it: the crate wording
+    -- exists because "too far away" is unreadable to a player stood against a
+    -- crate they cannot open (#198), and nothing about that argument extends
+    -- to a box a player can see is 100m off. Same cell, same distance, same
+    -- handler, different sentence.
+    nextSecond()
+    local box2 = BR.Loot.spawnStack(theMatch, {
+        item = 'deathbox', kind = 'deathbox', rarity = BR.Rarity.RARE, count = 1,
+        contents = { { item = 'bandage', kind = BR.ItemKind.CONSUMABLE, rarity = 1, count = 1 } },
+    }, far.x, far.y, far.z)
+    was, at = worldOf(theMatch), mark()
+    fire(BR.Net.LOOT_CLAIM, 101, { id = box2.id })
+    ok(sameWorld(was, worldOf(theMatch)), 'a death box 100m away cannot be opened either')
     ok(#notices(at, 101) == 1 and notices(at, 101)[1] == 'Too far away.',
-        'inReach refuses AUDIBLY', table.concat(notices(at, 101), ' / '))
+        'and it gets the honest distance answer, not the crate lock',
+        table.concat(notices(at, 101), ' / '))
 
     -- (e) no zone: ALIVE, in a match whose loot has been torn down. This is
     -- reachable in play -- a claim in flight when the match cleans up.
