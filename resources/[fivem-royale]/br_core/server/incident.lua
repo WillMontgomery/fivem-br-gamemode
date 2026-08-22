@@ -502,6 +502,38 @@ end)
 --- narrower but unchanged -- the wire carries occasions, and a server that
 --- shipped prose would be a server that has to be redeployed to fix a typo.
 ---
+--- ═══ WHY THERE IS NO DELAY AND NO JITTER ON THIS (#214) ═══
+---
+--- The question is fair and was asked directly: this fires the instant a case
+--- becomes durable, and the offender is the one player who does not see it. If
+--- they can watch anybody else react, is the TIMING itself not a signal that
+--- tells them what they just got caught doing?
+---
+--- IT IS NOT, AND THE REASON IS THE ONE-PER-MATCH CAP RATHER THAN ANY SPACING.
+--- A timing oracle is only worth anything if it can be RUN AGAIN. The attack
+--- would be: do a suspicious thing, watch a second account or a stream for the
+--- toast, adjust, repeat -- and read the detection threshold off the responses.
+--- The cap is what kills that. One notice per match, total, means the channel
+--- carries exactly one bit per round, and the FIRST case of the round spends it
+--- -- possibly a case about somebody else entirely. There is no second trial to
+--- compare against and no way to attribute the bit to one's own behaviour.
+---
+--- AND THE ENVELOPE NAMES NOBODY. `{ kind = 'exists' }` carries no subject, no
+--- reporter, no reason, no count. A player who RECEIVES it learns only that
+--- somebody in this round drew a case, so even a cooperating observer -- a
+--- squadmate on voice, a second client -- cannot tell the offender that it was
+--- about them. They do not know either. That is what reduces the oracle to a
+--- single anonymous bit, and a delay on a single anonymous bit buys nothing.
+---
+--- NOR IS THE ABSENCE INFORMATIVE. Seeing no toast is the overwhelmingly common
+--- state of every honest match ever played, so "I saw nothing" is not evidence
+--- of anything and cannot be made into evidence by waiting longer.
+---
+--- WHAT WOULD CHANGE THIS: making the notice per-incident, per-pair, or naming
+--- the subject. Any of the three restores the repeatable experiment, and the
+--- delay-and-jitter conversation would then be worth having. Under the cap it is
+--- machinery guarding an experiment nobody can run twice.
+---
 --- @param matchId any
 --- @param subjectLicense string
 --- @param reporterLicense string|nil  nil for an anticheat filing
@@ -509,10 +541,33 @@ local function announceReporting(matchId, subjectLicense, reporterLicense)
     -- NOT OUTSIDE A MATCH. `brrefuse` from a console, or an anticheat firing in
     -- the lobby, files under the `nomatch` sentinel -- there is no audience to
     -- address and no round for the nudge to be about.
+    --
+    -- ═══ WARMUP IS INSIDE, NOT OUTSIDE (#214) ═══
+    --
+    -- "During a match" is decided here, by whether the filing carries a matchId
+    -- at all -- and a warmup case carries one. A match exists from the moment it
+    -- is formed: it is in the registry with a `createdAt`, players are on the
+    -- roster in WARMUP with its id, and server/strip.lua counts WARMUP as a live
+    -- state on purpose. So a weapon granted on the pad opens a case and this
+    -- notice goes out to the pad, which is the owner's call, in the owner's
+    -- words: "Granting yourself a weapon through vMenu is exactly what NOBODY
+    -- will do in the lobby. That's what cheaters do."
+    --
+    -- THE TEST IS DELIBERATELY NOT `m.startedAt ~= nil`. That field is stamped
+    -- on entering PLAYING and is nil for the whole warmup, so gating on it would
+    -- have silently excluded the earliest and cleanest cheat signal this server
+    -- produces -- which is the exact bug #B had to repair one layer down, in
+    -- attachTimeline, where a warmup case was never queued for its match-end
+    -- write. Do not reintroduce that test here.
+    --
+    -- A REFUSED SHOT IN WARMUP STILL FILES NOTHING, and that is a different
+    -- decision made in a different place: WARMUP is a RULE-class refusal, absent
+    -- from BR.ShotSuspicious, so it never becomes an incident and never reaches
+    -- this function. Strips and vehicles are MEANS-class and do.
     if matchId == nil then return end
     if not BR.Roster then return end
 
-    local told, skipped, hushed = 0, 0, 0
+    local told, skipped, hushed, blind = 0, 0, 0, 0
 
     BR.Roster.each(
         function(e) return e.matchId == matchId end,
@@ -523,7 +578,44 @@ local function announceReporting(matchId, subjectLicense, reporterLicense)
 
             local byKind = BR.Identity and BR.Identity.ofPlayer(src)
             local lic = byKind and BR.Identity.qualified('license', byKind.license)
-            if lic ~= nil and lic == subjectLicense then
+
+            -- ═══ A PLAYER WE CANNOT NAME IS NOT TOLD (#214) ═══
+            --
+            -- THIS USED TO FALL THROUGH TO THE TriggerClientEvent BELOW, and it
+            -- was the one failure the paragraph at the top of this function says
+            -- it must not have. Both skips beneath were written as `lic ~= nil
+            -- and lic == ...`, so a player whose licence did not resolve matched
+            -- NEITHER test and was therefore told. When that player is the
+            -- SUBJECT, the offender has just been handed the notice #93 exists
+            -- to withhold from them -- quietly, on the one path with no second
+            -- check behind it.
+            --
+            -- THE TRIGGER IS NARROW AND IT IS NOT HYPOTHETICAL. This resolves
+            -- the licence LIVE, off GetPlayerIdentifiers, whose own header in
+            -- br_lib/shared/identity.lua says it "returns nil when FiveM did not
+            -- report a license, which does happen". And the gap between the
+            -- filing and this notice is a DynamoDB round trip that retries for
+            -- up to thirty seconds, so the subject can be most of the way out of
+            -- the server by the time we ask -- still on the roster, not yet
+            -- LEFT, and no longer answering with identifiers.
+            --
+            -- FAILING CLOSED COSTS A COURTESY AND NOTHING ELSE. A player who
+            -- goes untold loses a nudge about a feature that will still be there
+            -- next round. A player who is wrongly told is an offender who now
+            -- knows. Those are not comparable, so the nil case takes the safe
+            -- side rather than the generous one.
+            --
+            -- AND IT IS DELIBERATELY NOT `BR.Identity` BEING ABSENT THAT THIS
+            -- GUARDS. If that module ever went missing the whole match would go
+            -- untold, which is the safe direction but a dead feature -- so the
+            -- count below is on the log line rather than swallowed, and the
+            -- shared-coverage gate is what keeps the module loaded.
+            if lic == nil then
+                blind = blind + 1
+                return
+            end
+
+            if lic == subjectLicense then
                 skipped = skipped + 1
                 return
             end
@@ -533,7 +625,7 @@ local function announceReporting(matchId, subjectLicense, reporterLicense)
             -- that must never break, the other is a courtesy, and a log line
             -- that added them together could not tell "the offender was
             -- excluded" from "somebody was".
-            if lic ~= nil and reporterLicense ~= nil and lic == reporterLicense then
+            if reporterLicense ~= nil and lic == reporterLicense then
                 hushed = hushed + 1
                 return
             end
@@ -557,8 +649,14 @@ local function announceReporting(matchId, subjectLicense, reporterLicense)
             told = told + 1
         end)
 
-    print(('[br_core] report hint: told %d player(s) in match %s, withheld from %d subject(s) and %d reporter(s)')
-        :format(told, tostring(matchId), skipped, hushed))
+    -- `unnamed` IS ON THE LINE RATHER THAN FOLDED INTO `withheld`, for the same
+    -- reason the subject and the reporter are counted apart: it is a different
+    -- fact. A non-zero count here is not a moderation decision, it is this
+    -- server failing to read identifiers for somebody who was standing in the
+    -- match -- and a number that only ever appears bundled with two deliberate
+    -- withholdings is a number nobody will ever investigate.
+    print(('[br_core] report hint: told %d player(s) in match %s, withheld from %d subject(s) and %d reporter(s), %d unnamed')
+        :format(told, tostring(matchId), skipped, hushed, blind))
 end
 
 -- The other half of the loop: br_ringmaster reports back what id the write got,
@@ -579,6 +677,38 @@ end
 -- already carried, not looking anything up. It is absent on an anticheat
 -- filing, because `BR.IncidentBuild.fromRefusal` sets no reporter at all, and
 -- that absence is what makes the skip below correct without a sentinel.
+--
+-- ═══ EVERY CREATION PATH ARRIVES HERE, AND THAT IS THE DESIGN (#214) ═══
+--
+-- The owner's rule is "any time an incident is created for any reason during a
+-- match, even by `system`". There are FOUR creation paths today -- a refused
+-- shot, a stripped weapon, a refused vehicle (all three in this file) and a
+-- player's report (server/players.lua) -- and not one of them announces
+-- anything itself. All four emit `br:ringmaster:incident`; br_ringmaster writes
+-- the row and emits `br:incident:filed`; this handler is where they meet.
+--
+-- SO A FIFTH PATH IS COVERED THE DAY IT IS WRITTEN, WITHOUT CALLING ANYTHING.
+-- That is not a happy accident and it is worth stating plainly, because #211 is
+-- adding one right now (occupancy-based filing for stolen aircraft). Whoever
+-- writes it has to do nothing here: emit the payload like the other four and
+-- the notice follows. The only way to build a path this misses is to write the
+-- DynamoDB row without going through `br:ringmaster:incident` -- and verify.sh's
+-- `incident surface` gate fails the build if a second sender of the hint, or a
+-- second emitter of this acknowledgement, ever appears.
+--
+-- A CORROBORATION IS NOT A CREATION, and the separation is structural rather
+-- than a condition anybody has to remember. Corroborations go out on
+-- `br:ringmaster:corroborate`, br_ringmaster puts them on the outbox and mints
+-- no acknowledgement, so they never reach this handler at all. Nothing here has
+-- to test for one.
+--
+-- THE CAP IS `first`, AND IT IS ONE PER MATCH RATHER THAN ONE PER PLAYER.
+-- `remember` returns true only when the match had no filings at all, so the
+-- second case of a round -- about anybody, from any path -- announces nothing,
+-- and a player who joins after the notice went out is simply not told. See the
+-- oracle note on `announceReporting`: the cap is what makes the timing of this
+-- notice unusable to the offender, so it is load bearing for #93 and not merely
+-- a politeness about toast volume.
 AddEventHandler('br:incident:filed', function(ack)
     if type(ack) ~= 'table' then return end
     local first = BR.Incident.remember(ack.matchId, ack.subjectLicense, ack.incidentId)

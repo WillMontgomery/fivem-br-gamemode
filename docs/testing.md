@@ -40,6 +40,7 @@ it at `$LOCALAPPDATA/Programs/Lua/bin/`.
 | **Console capability boundary** | `dispatch.sh`'s SSH verb set, exactly — matched on the *shape* of a case arm, so a verb with a new name cannot be invisible to it. |
 | **Branch-switch invariant** | No path to a hard reset that skips the dispatch blob check. |
 | **Incident surface** | Only `BR.ShotSuspicious` can reach the Ringmaster. |
+| **Incident notice surface** | Exactly one sender of the "See something suspicious?" notice, exactly one emitter of the `br:incident:filed` acknowledgement every creation path converges on, and no acknowledgement from the corroboration handler. It pins the two choke points rather than counting the creation paths, so a new detector is covered on the day it lands (#214). A second announcer would not fail a test nobody wrote — it would quietly tell the offender, which is #93. |
 | **Timeline entry kinds** | Every match-timeline `kind` the Lua side writes is one `close.js` stores. The two live in different languages in different directories, and a kind added on one side alone is a timeline entry that silently never arrives. |
 | **Secrets** | The only gate that scans the whole repo rather than `resources/`. |
 | **br_ddb bundle** | The committed bundle still matches `js-src/br_ddb`, and the ban rule passes its cases. Drift presents as "my change did nothing" with nothing wrong in any log. Skipped, not failed, without Node. |

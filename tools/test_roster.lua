@@ -8688,6 +8688,337 @@ do
         'and a second filing in the same round says nothing to anybody')
 end
 
+describe('report.hintCap')
+do
+    --[[
+        ONE NOTICE PER MATCH, FROM ANY CREATION PATH, AND NOTHING THE OFFENDER
+        CAN READ (#214).
+
+        The owner's rule: an incident CREATED during a match, for any reason and
+        from any source including `system`, shows the rest of the round the "See
+        something suspicious?" notice -- once per match, total, minus the
+        offender and minus the reporter when there is one.
+
+        WHAT THE BLOCK ABOVE ALREADY COVERS: the audience of a single filing.
+        What it does not cover is the CAP under pressure, which is where this
+        feature can regress silently -- a second notice is not a crash, it is
+        just a second toast, and the only person who can tell it went wrong is
+        the cheater it went wrong for. So each of the three ways the cap is
+        asked to hold is asserted separately:
+
+          a second case      about a DIFFERENT player. The map `remember`
+                             derives "first" from is keyed by MATCH, not by
+                             subject -- if that ever became per-player, the
+                             round's second cheater would announce themselves
+                             and the block above would still pass.
+          a corroboration    on the first case. Driven through the real strip
+                             handler rather than by firing an acknowledgement,
+                             because "a corroboration is not a creation" is a
+                             property of which EVENT the handler picks and that
+                             is the thing worth pinning.
+          a mid-match join   after the notice went out. A newcomer must not
+                             re-arm anything, and must not be quietly told by
+                             the next filing.
+
+        AND THE #93 CASE THIS FILE SHIPPED WITHOUT. The offender exclusion is
+        resolved by comparing a live-read licence against the subject's. Both
+        skips used to be written `lic ~= nil and lic == ...`, so a player whose
+        licence did not resolve matched NEITHER and was told -- and when that
+        player is the subject, that is the anticheat handing the offender the
+        one notice it exists to withhold. It is asserted here rather than left
+        to the playtest because it is invisible from the outside: the log line
+        said "withheld from 0 subject(s)" and looked like a match where the
+        subject had already left.
+    ]]
+
+    --- Server ids that received the 'exists' notice, in order.
+    ---
+    --- A LIST RATHER THAN A SET, unlike `hintKinds` above, because the cap is a
+    --- statement about HOW MANY notices went out and a set cannot count two
+    --- notices to the same player.
+    local function hintTargets()
+        local out = {}
+        for _, s in ipairs(sent) do
+            if s.event == BR.Net.REPORT_HINT and (s.args[1] or {}).kind == 'exists' then
+                out[#out + 1] = s.target
+            end
+        end
+        return out
+    end
+
+    local function toldSet()
+        local out = {}
+        for _, t in ipairs(hintTargets()) do out[t] = true end
+        return out
+    end
+
+    local function lic(src)
+        return BR.Identity.qualified('license', BR.Identity.licenseOf(src))
+    end
+
+    --- Three players in one match. `live` false leaves it on the warmup pad.
+    local function threeInAMatch(live)
+        reset()
+        fired = {}
+        licenseOf[1] = 'capReporter'
+        licenseOf[2] = 'capSubject'
+        licenseOf[3] = 'capBystander'
+        queueUp(1, 'Rae', BR.Mode.SOLO.key)
+        queueUp(2, 'Sid', BR.Mode.SOLO.key)
+        queueUp(3, 'Tam', BR.Mode.SOLO.key)
+        fakeTime = fakeTime + 300
+        BR.Sched.step(fakeTime)
+        for _, s in ipairs({ 1, 2, 3 }) do
+            BR.Roster.setState(s,
+                live and BR.PlayerState.ALIVE or BR.PlayerState.WARMUP)
+        end
+        if live then theMatch().state = BR.MatchState.PLAYING end
+        return theMatch()
+    end
+
+    -- ------------------------------------ a second case, different subject ---
+    local m = threeInAMatch(true)
+    local subject = lic(2)
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'cap-1', matchId = m.id, subjectLicense = subject,
+    })
+    ok(#hintTargets() == 2,
+        'the first case of a round tells everybody but the offender',
+        tostring(#hintTargets()))
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'cap-2', matchId = m.id, subjectLicense = lic(3),
+    })
+    ok(#hintTargets() == 0,
+        'a SECOND case, about a different player, tells nobody -- the cap is '
+        .. 'per match and not per subject',
+        tostring(#hintTargets()))
+
+    -- --------------------------------------------------- a mid-match join ---
+    --
+    -- Uma was not in the match when the notice went out. She does not get a
+    -- late copy, and her arrival does not re-arm anything for the next filing.
+    join(4, 'Uma')
+    licenseOf[4] = 'capNewcomer'
+    BR.Roster.get(4).matchId = m.id
+    BR.Roster.setState(4, BR.PlayerState.ALIVE)
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'cap-3', matchId = m.id, subjectLicense = lic(3),
+    })
+    ok(#hintTargets() == 0,
+        'and a player who joined after the notice is not told by the next case',
+        tostring(#hintTargets()))
+
+    -- ------------------------------------------ a player who already left ---
+    --
+    -- A DEPARTED ENTRY KEEPS ITS matchId, so the roster filter still matches it
+    -- and only the LEFT check stops the send. That check is not a tidiness:
+    -- FiveM recycles server ids within the minute, so a TriggerClientEvent to a
+    -- departed id addresses WHOEVER LANDED IN THAT SLOT -- a player in another
+    -- match, or in the lobby, told about a round they are not in. Worse in the
+    -- one direction that matters here: the offender reconnecting into their own
+    -- old slot would receive the notice about themselves.
+    local mL = threeInAMatch(true)
+    local subjL = lic(2)
+    BR.Roster.setState(3, BR.PlayerState.LEFT)
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'cap-left', matchId = mL.id, subjectLicense = subjL,
+    })
+    local leftTold = toldSet()
+    ok(leftTold[3] == nil,
+        'a player who has left the match is not addressed -- their id may '
+        .. 'belong to somebody else by now',
+        ('told: %s'):format(table.concat(hintTargets(), ',')))
+    ok(leftTold[1] == true,
+        'while the players still in it are told')
+
+    -- --------------------------------- an acknowledgement that arrives late ---
+    --
+    -- THE RETRY WINDOW IS THIRTY SECONDS, which is longer than the end of a
+    -- match. `br:match:destroyed` clears the map `remember` derives "first"
+    -- from, so a late acknowledgement is "first" all over again and DOES call
+    -- the announcer -- the cap does not stop this one.
+    --
+    -- WHAT STOPS IT IS THE AUDIENCE BEING GONE. server/match.lua calls
+    -- BR.Roster.setMatch(src, nil) for every player before it emits the
+    -- teardown, so nothing on the roster still answers to that matchId and the
+    -- notice addresses nobody. That is worth an assertion rather than a
+    -- comment: it is the reason no extra guard is needed here, and if the order
+    -- of those two steps ever changed, a dead match would start talking to
+    -- whoever inherited its id.
+    local mD = threeInAMatch(true)
+    local subjD = lic(2)
+    local destroyedId = mD.id
+    BR.Match.destroy(mD)
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'cap-late', matchId = destroyedId, subjectLicense = subjD,
+    })
+    ok(#hintTargets() == 0,
+        'an acknowledgement arriving after the match was torn down announces '
+        .. 'to nobody -- the roster no longer answers to that match',
+        tostring(#hintTargets()))
+
+    -- ------------------------------------------- a corroboration is not it ---
+    --
+    -- THROUGH THE REAL HANDLER. The first strip opens a case; the second finds
+    -- `prior` non-empty and must take the corroboration branch -- which emits a
+    -- different event, mints no acknowledgement, and therefore cannot reach the
+    -- announcer at all.
+    local m2 = threeInAMatch(true)
+    local subj2 = lic(2)
+
+    fired = {}
+    sent = {}
+    fire('br:core:stripped', nil, {
+        src = 2, name = 'Sid', license = subj2, matchId = m2.id,
+        count = 2, seq = 1, at = GetGameTimer(),
+    })
+    ok(#firedOf('br:ringmaster:incident') == 1,
+        'the first strip of a round opens a case',
+        tostring(#firedOf('br:ringmaster:incident')))
+    ok(#hintTargets() == 0,
+        'and announces nothing yet -- the notice waits for the row to be durable',
+        tostring(#hintTargets()))
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'cap-strip', matchId = m2.id, subjectLicense = subj2,
+    })
+    ok(#hintTargets() == 2,
+        'the acknowledgement is what announces it', tostring(#hintTargets()))
+
+    fired = {}
+    sent = {}
+    fire('br:core:stripped', nil, {
+        src = 2, name = 'Sid', license = subj2, matchId = m2.id,
+        count = 3, seq = 2, at = GetGameTimer(),
+    })
+    ok(#firedOf('br:ringmaster:corroborate') == 1
+       and #firedOf('br:ringmaster:incident') == 0,
+        'a repeat corroborates the open case rather than creating a second',
+        ('%d corroborate, %d incident'):format(
+            #firedOf('br:ringmaster:corroborate'),
+            #firedOf('br:ringmaster:incident')))
+    ok(#hintTargets() == 0,
+        'and a corroboration announces nothing -- it is not a creation',
+        tostring(#hintTargets()))
+
+    -- ------------------------------------------------------------ warmup ---
+    --
+    -- THE OWNER WAS EMPHATIC THAT THIS COUNTS: "Granting yourself a weapon
+    -- through vMenu is exactly what NOBODY will do in the lobby. That's what
+    -- cheaters do." A match on the warmup pad has a matchId and an audience, so
+    -- a case filed there notifies exactly like one filed after the drop.
+    --
+    -- WHAT THIS CATCHES is the tempting `m.startedAt ~= nil` test. `startedAt`
+    -- is nil for the whole warmup, so gating the notice on it would leave this
+    -- assertion failing and every other one in the block passing.
+    local m3 = threeInAMatch(false)
+    ok(m3.startedAt == nil,
+        'the warmup fixture really has not started', tostring(m3.startedAt))
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'cap-warm', matchId = m3.id, subjectLicense = lic(2),
+    })
+    local warmTold = toldSet()
+    ok(warmTold[1] == true and warmTold[3] == true,
+        'a case filed during WARMUP tells the pad',
+        ('1=%s 3=%s'):format(tostring(warmTold[1]), tostring(warmTold[3])))
+    ok(warmTold[2] == nil, 'and still withholds it from the offender')
+
+    -- ------------------------------- a licence that will not resolve (#93) ---
+    --
+    -- Captured BEFORE the identifiers stop answering: the incident carries the
+    -- licence read at filing time, and this notice is sent seconds later off a
+    -- fresh read. The gap is the bug -- up to thirty seconds of DynamoDB retry,
+    -- during which the subject can be most of the way out of the server.
+    local m4 = threeInAMatch(true)
+    local subj4 = lic(2)
+    noLicense[2] = true
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'cap-blind', matchId = m4.id, subjectLicense = subj4,
+    })
+    local blindTold = toldSet()
+    ok(blindTold[2] == nil,
+        'a subject whose licence no longer resolves is STILL not told -- the '
+        .. 'offender learns nothing, #93',
+        ('told: %s'):format(table.concat(hintTargets(), ',')))
+    ok(blindTold[1] == true and blindTold[3] == true,
+        'and the rest of the match is unaffected by one unreadable connection',
+        ('1=%s 3=%s'):format(tostring(blindTold[1]), tostring(blindTold[3])))
+
+    -- A BYSTANDER WE CANNOT NAME IS ALSO NOT TOLD, and that is the same rule
+    -- rather than a second one. The function cannot tell "unreadable bystander"
+    -- from "unreadable subject" -- that is precisely what it failed to do -- so
+    -- it fails closed for both. The cost is a nudge; the alternative cost is a
+    -- cheater who knows.
+    local m5 = threeInAMatch(true)
+    local subj5 = lic(2)
+    noLicense[3] = true
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'cap-blind2', matchId = m5.id, subjectLicense = subj5,
+    })
+    local blind2 = toldSet()
+    ok(blind2[3] == nil,
+        'a bystander whose licence will not resolve is not told either -- the '
+        .. 'nil case fails closed rather than generous')
+    ok(blind2[1] == true,
+        'while everybody the server can still name is told as normal')
+
+    -- ------------------------------- every creation path, one notice each ---
+    --
+    -- NOT A LIST OF PATHS, AND DELIBERATELY SO. What is asserted is that the
+    -- announcer is downstream of the acknowledgement and of nothing else, which
+    -- is what makes a path nobody has written yet -- #211's aircraft occupancy
+    -- filing -- covered on the day it lands. Three detectors fire here and none
+    -- of them announces; the single acknowledgement does, once.
+    local m6 = threeInAMatch(true)
+    local subj6 = lic(2)
+
+    fired = {}
+    sent = {}
+    fire('br:core:stripped', nil, {
+        src = 2, name = 'Sid', license = subj6, matchId = m6.id,
+        count = 2, seq = 1, at = GetGameTimer(),
+    })
+    fire('br:core:vehicle', nil, {
+        src = 2, name = 'Sid', license = subj6, matchId = m6.id,
+        count = 1, seq = 1, why = 'vehicle flies', at = GetGameTimer(),
+    })
+    fire('br:ringmaster:refusal', nil, {
+        src = 2, name = 'Sid', license = subj6, matchId = m6.id,
+        count = 2, seq = 1, reason = BR.ShotRefusal.NO_WEAPON,
+        reasons = { [BR.ShotRefusal.NO_WEAPON] = 2 },
+        severity = 'high', at = GetGameTimer(),
+    })
+    ok(#hintTargets() == 0,
+        'no detector announces on its own -- a case that never files must not '
+        .. 'spend the round its one notice',
+        tostring(#hintTargets()))
+
+    sent = {}
+    fire('br:incident:filed', nil, {
+        incidentId = 'cap-any', matchId = m6.id, subjectLicense = subj6,
+    })
+    ok(#hintTargets() == 2,
+        'and the acknowledgement announces once, whichever path produced it',
+        tostring(#hintTargets()))
+end
+
 describe('combat.attribution')
 do
     -- WHO GETS THE KILL, and why it cannot come from the client any more.

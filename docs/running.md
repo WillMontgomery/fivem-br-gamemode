@@ -94,12 +94,12 @@ hear; `brvoice` in the server console says whether pma-voice is even present.
 ## Development
 
 ```bash
-./tools/verify.sh          # syntax, tests, and 18 further gates
+./tools/verify.sh          # syntax, tests, and 19 further gates
 cd ui-src && npm run dev   # the UI in a browser, no game required
 cd ui-src && npm run build # typecheck, build, and CSS compatibility check
 ```
 
-`verify.sh` runs **20 gates**, in increasing order of strictness, exiting
+`verify.sh` runs **21 gates**, in increasing order of strictness, exiting
 non-zero on any failure:
 
 | | |
@@ -120,6 +120,7 @@ non-zero on any failure:
 | `console capability boundary` | `dispatch.sh`'s SSH verb set, exactly |
 | `branch-switch invariant` | no path to a hard reset that skips the dispatch blob check |
 | `incident surface` | only `BR.ShotSuspicious` can reach the Ringmaster |
+| `incident notice surface` | one announcer of the report notice, one `br:incident:filed`, and corroboration mints neither |
 | `timeline entry kinds` | every match-timeline kind Lua writes is one `close.js` stores |
 | `secrets` | scans the whole repo, not just `resources/` |
 | `br_ddb bundle` | the committed bundle matches `js-src/br_ddb` |

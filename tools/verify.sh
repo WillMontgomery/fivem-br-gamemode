@@ -1243,6 +1243,88 @@ if [ -f "$cs_" ]; then
     fi
 fi
 
+# --- 4b-ii. who gets TOLD that a case was opened (#214) -----------------------
+#
+# The rule: an incident CREATED during a match, from any source including
+# `system`, shows the rest of the match the "See something suspicious?" notice,
+# once per match, minus the offender and minus the reporter.
+#
+# WHAT MAKES THAT TRUE IS A SHAPE, NOT A CALL. The four creation paths -- refused
+# shot, stripped weapon, refused vehicle, player report -- all emit
+# `br:ringmaster:incident`; br_ringmaster writes the row and emits ONE
+# acknowledgement, `br:incident:filed`; br_core/server/incident.lua announces
+# from there and nowhere else. A fifth creation path is therefore covered on the
+# day it is written, having called nothing -- which is the property #211's
+# aircraft-occupancy filing depends on without knowing it does.
+#
+# SO THIS GATE PINS THE TWO CHOKE POINTS AND DELIBERATELY DOES NOT COUNT THE
+# PATHS. Pinning "there are four creation paths" would fail the build for #211
+# doing exactly the right thing, and whoever hit that would fix it by editing a
+# number rather than by reading any of this. What must not change is that there
+# is ONE announcer and ONE acknowledgement; add a second of either and the cap,
+# the offender exclusion and the reporter exclusion all become things two places
+# have to agree about.
+#
+# THE OFFENDER EXCLUSION IS #93 AND IS THE REASON THIS IS A GATE AT ALL. A
+# second sender of the notice would not fail a test that nobody thought to
+# write; it would just quietly tell somebody.
+echo "${DIM}== incident notice surface ==${RST}"
+inc_="resources/[fivem-royale]/br_core/server/incident.lua"
+ring_="resources/[fivem-royale]/br_ringmaster/server/incident.lua"
+if [ -f "$inc_" ] && [ -f "$ring_" ]; then
+    notice_rc=0
+
+    # One sender of the 'exists' notice. The 'killer' nudge on the same event
+    # (server/players.lua) is a DIFFERENT occasion -- it answers a dead player
+    # who asked about their killer -- and is not constrained here.
+    hint_senders=$(grep -rn "TriggerClientEvent(BR\.Net\.REPORT_HINT" \
+                   "resources/[fivem-royale]" 2>/dev/null \
+                   | grep -c "'exists'" || true)
+    hint_where=$(grep -rln "TriggerClientEvent(BR\.Net\.REPORT_HINT.*'exists'" \
+                 "resources/[fivem-royale]" 2>/dev/null || true)
+    if [ "$hint_senders" != "1" ] || [ "$hint_where" != "$inc_" ]; then
+        echo "${RED}FAIL${RST} the 'See something suspicious?' notice has ${hint_senders} sender(s)"
+        echo "     in: ${hint_where:-<none>}"
+        echo "     Expected exactly one, in ${inc_}."
+        echo "     That function is where the once-per-match cap, the #93"
+        echo "     offender exclusion and the #180 reporter exclusion live. A"
+        echo "     second sender does not break them loudly -- it just tells"
+        echo "     somebody who was supposed to be told nothing."
+        notice_rc=1
+    fi
+
+    # One minter of the acknowledgement every creation path converges on.
+    ack_senders=$(grep -rn "TriggerEvent('br:incident:filed'" \
+                  "resources/[fivem-royale]" 2>/dev/null | wc -l | tr -d ' ')
+    ack_where=$(grep -rln "TriggerEvent('br:incident:filed'" \
+                "resources/[fivem-royale]" 2>/dev/null || true)
+    if [ "$ack_senders" != "1" ] || [ "$ack_where" != "$ring_" ]; then
+        echo "${RED}FAIL${RST} br:incident:filed has ${ack_senders} emitter(s)"
+        echo "     in: ${ack_where:-<none>}"
+        echo "     Expected exactly one, in ${ring_}, sent only after DynamoDB"
+        echo "     accepted the write. A second emitter would announce a case"
+        echo "     that may not exist, and would spend the one notice this"
+        echo "     match gets on it."
+        notice_rc=1
+    fi
+
+    # A corroboration is not a creation. It must never mint the acknowledgement.
+    if sed -n "/AddEventHandler('br:ringmaster:corroborate'/,/^end)/p" "$ring_" \
+       | grep -q "br:incident:filed"; then
+        echo "${RED}FAIL${RST} the corroboration handler emits br:incident:filed"
+        echo "     A corroboration appends to a case that already exists. If it"
+        echo "     mints an acknowledgement it becomes a creation, and the"
+        echo "     second thing a cheater does in a round announces itself."
+        notice_rc=1
+    fi
+
+    if [ "$notice_rc" = "0" ]; then
+        echo "${GRN}ok${RST}   one announcer, one acknowledgement, and corroboration mints neither"
+    else
+        rc=1
+    fi
+fi
+
 # --- 4c. the timeline entry kinds agree across the language boundary ----------
 #
 # THE SAME SHAPE AS THE VOICE DEFAULT ABOVE, WHICH IS THIS PROJECT'S SIGNATURE
