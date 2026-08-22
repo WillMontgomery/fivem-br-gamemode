@@ -27,28 +27,42 @@ BR = BR or {}
 ---     gz,          -- the POI's NOMINAL height, a hint only. Only a client can
 ---                  --   ground-probe, so this is what it falls back to.
 ---     alt,         -- metres ABOVE THE GROUND at tStart, never an absolute z
----     heading,     -- the crate's resting heading
+---     heading,     -- the crate's resting heading, AND the plane's bearing
 ---     tStart,      -- server time the drop was committed and the blip appeared
+---     tRelease,    -- server time the plane is overhead and the crate leaves it
 ---     tLand,       -- server time it touches down and bursts open
 ---   }
+---
+--- THREE TIMESTAMPS RATHER THAN TWO, and the middle one is what makes a plane
+--- worth having. A record reaches a client AFTER tStart, so a flyover timed to
+--- tStart would already be departing by the time anyone was told about it.
+--- Announcing at tStart and releasing at tRelease gives the match a window in
+--- which to look up and watch the thing arrive.
+---
+--- `tRelease` DEFAULTS TO `tStart`, so a record built the old way describes a
+--- crate that appears in the sky the instant it is announced -- which is exactly
+--- what this file did before the plane, and keeps every caller that has not
+--- learned about the middle timestamp honest rather than broken.
 --- @param n integer
 --- @param poi table    a BR.Config.Map.POIs entry
 --- @param alt number
 --- @param tStart number
 --- @param tLand number
 --- @param heading number|nil
+--- @param tRelease number|nil
 --- @return table
-function BR.BuildAirdropRecord(n, poi, alt, tStart, tLand, heading)
+function BR.BuildAirdropRecord(n, poi, alt, tStart, tLand, heading, tRelease)
     return {
-        n       = n,
-        poi     = poi.id,
-        x       = poi.x + 0.0,
-        y       = poi.y + 0.0,
-        gz      = (poi.z or 0.0) + 0.0,
-        alt     = alt + 0.0,
-        heading = (heading or 0.0) + 0.0,
-        tStart  = tStart + 0.0,
-        tLand   = tLand + 0.0,
+        n        = n,
+        poi      = poi.id,
+        x        = poi.x + 0.0,
+        y        = poi.y + 0.0,
+        gz       = (poi.z or 0.0) + 0.0,
+        alt      = alt + 0.0,
+        heading  = (heading or 0.0) + 0.0,
+        tStart   = tStart + 0.0,
+        tRelease = (tRelease or tStart) + 0.0,
+        tLand    = tLand + 0.0,
     }
 end
 
@@ -203,15 +217,34 @@ end
 -- The descent
 -- ---------------------------------------------------------------------------
 
---- How far through the fall, 0 at tStart and 1 at tLand.
+--- How far through the fall, 0 at the RELEASE and 1 at tLand.
+---
+--- MEASURED FROM tRelease, NOT tStart. The fall begins when the crate leaves the
+--- plane; the announcement is `planeLeadMs` earlier and is when the blip goes up,
+--- not when anything starts moving. On a record with no tRelease the two are the
+--- same instant and this is what it always was.
 --- @param rec table|nil
 --- @param now number  server time
 --- @return number
 function BR.AirdropProgress(rec, now)
     if not rec then return 1.0 end
-    local span = (rec.tLand or 0.0) - (rec.tStart or 0.0)
+    local from = rec.tRelease or rec.tStart or 0.0
+    local span = (rec.tLand or 0.0) - from
     if span <= 0.0 then return 1.0 end
-    return BR.Clamp((now - rec.tStart) / span, 0.0, 1.0)
+    return BR.Clamp((now - from) / span, 0.0, 1.0)
+end
+
+--- Has the crate left the plane yet?
+---
+--- The crate does not exist before this: it is inside the aircraft. Drawing one
+--- during the lead-in would put a box in the sky under a plane that has not
+--- reached it, which is the picture the lead-in exists to replace.
+--- @param rec table|nil
+--- @param now number
+--- @return boolean
+function BR.AirdropReleased(rec, now)
+    if not rec then return false end
+    return now >= (rec.tRelease or rec.tStart or 0.0)
 end
 
 --- Metres above the ground at `now`. Linear, because a canopy falls at
@@ -222,6 +255,72 @@ end
 function BR.AirdropHeightAt(rec, now)
     if not rec then return 0.0 end
     return (rec.alt or 0.0) * (1.0 - BR.AirdropProgress(rec, now))
+end
+
+-- ---------------------------------------------------------------------------
+-- The plane
+-- ---------------------------------------------------------------------------
+
+--- Is the delivery plane in the world at `now`?
+---
+--- From the announcement until `trailMs` after the release. Deliberately NOT
+--- until the crate lands: the aircraft's job is over the moment the box leaves
+--- it, and a Titan orbiting the drop for another half-minute is scenery arguing
+--- with the fight underneath it.
+--- @param rec table|nil
+--- @param now number
+--- @param cfg table|nil  BR.Config.Airdrop
+--- @return boolean
+function BR.AirdropPlaneVisible(rec, now, cfg)
+    if not rec then return false end
+    cfg = cfg or {}
+    if now < (rec.tStart or 0.0) then return false end
+    return now <= (rec.tRelease or rec.tStart or 0.0)
+                + (cfg.planeTrailMs or 15000)
+end
+
+--- Where the delivery plane is at `now`.
+---
+--- A STRAIGHT LINE AT CONSTANT SPEED, passing exactly over the drop point at
+--- tRelease. That is the whole model, and it is the whole model on purpose: it
+--- is a pure function of the published record and the clock, so every client's
+--- plane is in the same place at the same millisecond with nothing on the wire
+--- and nothing simulated -- the same bargain the crate, the storm and the bus
+--- route already make. A flight path with any state in it would be the one part
+--- of a drop that could desync.
+---
+--- THE BEARING IS `rec.heading`, which is also the crate's resting heading. One
+--- number doing two jobs is not a shortcut here: it means the box lands pointing
+--- the way the plane that dropped it was going.
+---
+--- z IS METRES ABOVE THE GROUND, never an absolute height -- only a client can
+--- ground-probe, so the caller adds its own answer. Same rule as `rec.alt`.
+--- @param rec table|nil
+--- @param now number
+--- @param cfg table|nil  BR.Config.Airdrop
+--- @return number x
+--- @return number y
+--- @return number zAboveGround
+--- @return number heading
+function BR.AirdropPlaneAt(rec, now, cfg)
+    if not rec then return 0.0, 0.0, 0.0, 0.0 end
+    cfg = cfg or {}
+
+    local hdg = rec.heading or 0.0
+    -- GTA forward for a heading: (-sin, cos). See BR.AirdropOffsetAt for the
+    -- convention and why it is the half that gets written backwards.
+    local a  = math.rad(hdg)
+    local fx, fy = -math.sin(a), math.cos(a)
+
+    -- Signed: NEGATIVE before the release, which is the inbound leg the whole
+    -- lead-in exists to show.
+    local dt = (now - (rec.tRelease or rec.tStart or 0.0)) / 1000.0
+    local d  = (cfg.planeSpeed or 90.0) * dt
+
+    return (rec.x or 0.0) + fx * d,
+           (rec.y or 0.0) + fy * d,
+           (rec.alt or 0.0) + (cfg.planeAltAbove or 40.0),
+           hdg
 end
 
 --- Which way the crate is facing at `now`, in degrees.

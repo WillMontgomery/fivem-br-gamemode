@@ -127,7 +127,14 @@ local function tryCommit(m, p, now)
     -- THE CIRCLE AT ARRIVAL, not the one showing now. BR.StormAt is a pure
     -- function of the published record, so "will this point be inside the
     -- circle when the crate lands" is arithmetic rather than a guess.
-    local tLand = now + (A.descentMs or 30000)
+    --
+    -- ARRIVAL IS THE PLANE'S RUN-IN PLUS THE FALL. `planeLeadMs` is the window
+    -- between the announcement and the crate leaving the aircraft, and it counts
+    -- here for the same reason `descentMs` does: the 250m margin is a promise
+    -- about where the crate will be when it TOUCHES DOWN, and solving it against
+    -- a time twelve seconds early would quietly shave the margin on every shrink.
+    local tRelease = now + (A.planeLeadMs or 0)
+    local tLand    = tRelease + (A.descentMs or 30000)
     local cx, cy, r = BR.StormAt(m.storm, tLand)
 
     local poi, seen = BR.AirdropPickSite(m.airdrop.rng, BR.Config.Map.POIs,
@@ -138,7 +145,7 @@ local function tryCommit(m, p, now)
     end
 
     local rec = BR.BuildAirdropRecord(p.n, poi, A.altitude or 260.0,
-        now, tLand, m.airdrop.rng:float() * 360.0)
+        now, tLand, m.airdrop.rng:float() * 360.0, tRelease)
     local items = BR.AirdropPayout(m.airdrop.rng, A)
 
     m.airdrop.live[#m.airdrop.live + 1] = { rec = rec, items = items }
@@ -152,9 +159,10 @@ local function tryCommit(m, p, now)
     -- one's drop.
     BR.Server.notify(BR.Server.audience(m), A.notifyText, 'info')
 
-    print(('[br_core] airdrop: match %d drop %d -> %s (%.0f, %.0f), lands in %.0fs, %d POI(s) qualified (circle r %.0f, margin %.0f)')
+    print(('[br_core] airdrop: match %d drop %d -> %s (%.0f, %.0f), released in %.0fs and lands in %.0fs, %d POI(s) qualified (circle r %.0f, margin %.0f)')
         :format(m.id, rec.n, tostring(poi.id), poi.x, poi.y,
-                (A.descentMs or 30000) / 1000, seen, r, A.insideBy or 250.0))
+                (A.planeLeadMs or 0) / 1000,
+                (tLand - now) / 1000, seen, r, A.insideBy or 250.0))
     return 'sent'
 end
 
@@ -328,8 +336,10 @@ RegisterCommand('brairdrop', function(_, args)
     end
 
     local n = (st.sent or 0) + 1
+    local tRelease = now + (A.planeLeadMs or 0)
     local rec = BR.BuildAirdropRecord(n, poi, A.altitude or 260.0,
-        now, now + (A.descentMs or 30000), st.rng:float() * 360.0)
+        now, tRelease + (A.descentMs or 30000), st.rng:float() * 360.0,
+        tRelease)
     st.live[#st.live + 1] = { rec = rec, items = BR.AirdropPayout(st.rng, A) }
     st.sent = n
     BR.Broadcast.toMatch(m, BR.Net.AIRDROP_SYNC, rec)

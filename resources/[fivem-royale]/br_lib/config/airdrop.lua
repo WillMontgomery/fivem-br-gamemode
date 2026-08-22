@@ -105,6 +105,69 @@ BR.Config.Airdrop = {
     altitude  = 260.0,
 
     -- ------------------------------------------------------------------
+    -- THE PLANE
+    -- ------------------------------------------------------------------
+    --
+    -- The owner said no plane, then changed their mind (2026-08-21). It is
+    -- hand-rolled, because there is no native for any of this -- and the thing
+    -- it is modelled on is already in this repo: client/bus.lua's ghost flights
+    -- (795-853) fly a LOCAL, non-networked Titan along a server-published timed
+    -- route by direct coordinate writes against the synced clock, for warmup
+    -- bystanders. That is an airdrop flyover with a different model and route.
+    --
+    -- NOTHING WAS TAKEN FROM kq_airdrop, the paid resource in the owner's
+    -- project folder. Its plane and drop logic is Cfx.re escrow-ENCRYPTED (FXAP
+    -- header), so there is no source to read; it is a commercial product with no
+    -- licence permitting reuse; and its one readable spawn call is
+    -- `CreateObject(model, coords, 1, 0, 0)` -- isNetwork = true, which
+    -- `sv_entityLockdown relaxed` refuses outright. There was nothing to take
+    -- and it would not have worked.
+    --
+    -- ═══ THE RELEASE IS NOT THE ANNOUNCEMENT, AND THAT IS WHAT THE PLANE
+    --     BOUGHT ═══
+    --
+    -- Before the plane, the crate began falling at `tStart` -- the moment the
+    -- server committed the drop and sent the record. Clients receive that record
+    -- AFTER tStart, so there is no window in which a plane could be seen flying
+    -- IN: by the time anyone knew, it would already be leaving.
+    --
+    -- So the record now carries a third timestamp. `tStart` is when the drop is
+    -- announced and the blip goes up; `tRelease` is `planeLeadMs` later, when
+    -- the plane is overhead and the crate leaves it; `tLand` is `descentMs`
+    -- after that. Everyone gets the notification, looks up, and watches it
+    -- arrive -- which is the entire point of having a plane rather than a crate
+    -- that appears in the sky.
+    --
+    -- IT COSTS THE MATCH `planeLeadMs` OF EXTRA WARNING and nothing else. The
+    -- siting rule is solved against the circle at tLand, so the margin is still
+    -- honoured at the moment the crate actually arrives.
+    planeLeadMs = 12000,
+
+    -- The flyover is on the same bet as everything else here: a pure function of
+    -- the record and the clock, so every client's plane is in the same place at
+    -- the same millisecond with nothing on the wire. It flies a STRAIGHT LINE
+    -- along `rec.heading` -- the same heading the crate rests at, which makes
+    -- the box land pointing the way the plane was going -- and is over the drop
+    -- point exactly at tRelease.
+    --
+    -- THE SAME MODEL AS THE BATTLE BUS, deliberately. It is already proven to
+    -- load and fly on this build, its engine simulation is already understood
+    -- (a seated ped is what keeps the props turning -- see bus.lua), and a
+    -- supply drop arriving on the same airframe the match arrived on is a
+    -- coherent world rather than a second aircraft to source.
+    planeModel = 'titan',
+    planePilot = 's_m_m_pilot_01',
+    -- Metres a second. 90 is about 175 knots -- a cargo run rather than a strike
+    -- package, and slow enough to be readable from the ground at 300m.
+    planeSpeed = 90.0,
+    -- Metres ABOVE THE CRATE's release altitude, never an absolute z. Same rule
+    -- as `altitude` above and for the same reason: only a client can ground-probe.
+    planeAltAbove = 40.0,
+    -- How long it stays in the world after the release. Long enough to watch it
+    -- go, short enough that it is gone before the fight over the crate starts.
+    planeTrailMs = 15000,
+
+    -- ------------------------------------------------------------------
     -- WHERE IT LANDS, AND THE TWO RULES THAT CAN CONTRADICT EACH OTHER
     -- ------------------------------------------------------------------
     --

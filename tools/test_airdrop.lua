@@ -717,6 +717,84 @@ do
     ok(not BR.AirdropBlipVisible(nil, 5000.0, 60000), 'no record, no blip')
 end
 
+describe('the plane')
+do
+    -- The owner said no plane and then changed their mind. What it bought is
+    -- the RELEASE: a window between the announcement and the crate leaving the
+    -- aircraft, so a match that has just been told an airdrop is coming can look
+    -- up and watch it arrive rather than watch it already leaving.
+    local poi = { id = 'x', x = 1000.0, y = 2000.0, z = 30.0 }
+    -- Announced at 0, released at 10s, on the ground at 40s. Facing NORTH, so
+    -- the flight path runs up +Y and the arithmetic is readable.
+    local rec = BR.BuildAirdropRecord(1, poi, 260.0, 0.0, 40000.0, 0.0, 10000.0)
+    local cfg = { planeSpeed = 100.0, planeAltAbove = 40.0, planeTrailMs = 15000 }
+
+    eq(rec.tRelease, 10000.0, 'the record carries a release time of its own')
+
+    -- THE FALL IS MEASURED FROM THE RELEASE, not from the announcement. A
+    -- progress that still counted from tStart would have the crate a quarter of
+    -- the way down at the moment it left the plane.
+    ok(near(BR.AirdropProgress(rec, 10000.0), 0.0), 'progress is 0 at the release')
+    ok(near(BR.AirdropProgress(rec, 25000.0), 0.5), 'and 0.5 halfway down')
+    ok(near(BR.AirdropProgress(rec, 40000.0), 1.0), 'and 1 on the ground')
+    ok(near(BR.AirdropHeightAt(rec, 10000.0), 260.0),
+        'and it is still at full altitude when it leaves')
+    ok(near(BR.AirdropHeightAt(rec, 0.0), 260.0),
+        'as it is during the whole run-in')
+
+    ok(not BR.AirdropReleased(rec, 9999.0), 'the crate is aboard until the release')
+    ok(BR.AirdropReleased(rec, 10000.0), 'and away at it')
+    ok(not BR.AirdropReleased(nil, 0.0), 'no record, nothing released')
+
+    -- WHERE IT IS. Over the drop point exactly at the release, inbound before,
+    -- outbound after -- one straight line at one speed, which is what makes it a
+    -- pure function of the record with nothing on the wire.
+    local ax, ay, az, ah = BR.AirdropPlaneAt(rec, 10000.0, cfg)
+    ok(near(ax, rec.x, 1e-6) and near(ay, rec.y, 1e-6),
+        'the plane is exactly over the drop point at the release',
+        ('%.3f, %.3f'):format(ax, ay))
+    ok(near(az, 260.0 + 40.0), 'flying above the crate\'s release altitude', az)
+    ok(near(ah, rec.heading), 'on the record\'s own bearing')
+
+    -- Ten seconds earlier, a kilometre back down the approach: heading 0 is
+    -- north, so inbound is from the SOUTH.
+    local bx, by = BR.AirdropPlaneAt(rec, 0.0, cfg)
+    ok(near(bx, rec.x, 1e-6) and near(by, rec.y - 1000.0, 1e-6),
+        'ten seconds before, it is a kilometre south -- inbound, not outbound',
+        ('%.3f, %.3f'):format(bx, by))
+
+    -- ...and after, the same distance the other way.
+    local cx2, cy2 = BR.AirdropPlaneAt(rec, 20000.0, cfg)
+    ok(near(cx2, rec.x, 1e-6) and near(cy2, rec.y + 1000.0, 1e-6),
+        'and ten seconds later, a kilometre north', ('%.3f, %.3f'):format(cx2, cy2))
+
+    -- The bearing is not ignored: due west should run the path along -X.
+    local west = BR.BuildAirdropRecord(1, poi, 260.0, 0.0, 40000.0, 90.0, 10000.0)
+    local wx, wy = BR.AirdropPlaneAt(west, 20000.0, cfg)
+    ok(near(wx, rec.x - 1000.0, 1e-6) and near(wy, rec.y, 1e-6),
+        'a plane on heading 90 leaves to the west', ('%.3f, %.3f'):format(wx, wy))
+
+    -- WHEN IT IS THERE. From the announcement to trailMs past the release, and
+    -- NOT for the whole descent: the aircraft's job ends when the box leaves it.
+    ok(not BR.AirdropPlaneVisible(rec, -1.0, cfg), 'nothing before the announcement')
+    ok(BR.AirdropPlaneVisible(rec, 0.0, cfg), 'in the air from the announcement')
+    ok(BR.AirdropPlaneVisible(rec, 10000.0, cfg), 'and at the release')
+    ok(BR.AirdropPlaneVisible(rec, 25000.0, cfg),
+        'and for the trail window afterwards')
+    ok(not BR.AirdropPlaneVisible(rec, 25001.0, cfg), 'and gone after it')
+    ok(not BR.AirdropPlaneVisible(nil, 0.0, cfg), 'no record, no plane')
+    ok(rec.tLand > 10000.0 + (cfg.planeTrailMs or 0),
+        'the plane is gone well before the crate lands, by construction')
+
+    -- A RECORD WITH NO RELEASE IS THE OLD ONE, and must still describe a crate
+    -- that starts falling when it is announced. Nothing builds one today; this
+    -- is what stops the default being a surprise.
+    local old = BR.BuildAirdropRecord(1, poi, 260.0, 0.0, 30000.0, 0.0)
+    eq(old.tRelease, old.tStart, 'tRelease defaults to tStart')
+    ok(near(BR.AirdropProgress(old, 15000.0), 0.5),
+        'and such a record falls exactly as it always did')
+end
+
 describe('descent: expiry is not the same question as visibility')
 do
     -- THE 2026-08-22 PLAYTEST BUG, as arithmetic. "Should the blip be up" is
@@ -829,6 +907,12 @@ end
 
 local function tick() jobs['airdrop.tick']() end
 
+--- ANNOUNCEMENT TO TOUCHDOWN, which is the plane's run-in PLUS the fall.
+--- Every block below that wants "wind the clock forward until it lands" wants
+--- this rather than descentMs -- the two were the same number until the plane
+--- put a release between them.
+local FLIGHT = (A.planeLeadMs or 0) + A.descentMs
+
 describe('server: the job is registered once')
 do
     ok(jobs['airdrop.tick'] ~= nil, 'airdrop.tick exists')
@@ -915,7 +999,16 @@ do
     eq(#m.airdrop.pending, 0, 'and no longer pending')
 
     local rec = published[1].payload
-    ok(rec.tLand - rec.tStart == A.descentMs, 'the descent is descentMs long')
+    -- THREE TIMESTAMPS, AND THE MIDDLE ONE IS THE PLANE'S RUN-IN. Announced at
+    -- tStart, released at tStart + planeLeadMs, on the ground descentMs after
+    -- that. A record that collapsed the first two would be a crate appearing in
+    -- the sky the instant the notification fires, with a plane already leaving.
+    ok(rec.tRelease - rec.tStart == A.planeLeadMs,
+        'the plane gets planeLeadMs between the announcement and the release',
+        ('%s'):format(tostring(rec.tRelease - rec.tStart)))
+    ok(rec.tLand - rec.tRelease == A.descentMs,
+        'and the descent is descentMs long, measured from the RELEASE',
+        ('%s'):format(tostring(rec.tLand - rec.tRelease)))
     ok(rec.poi ~= nil, 'the record names the POI it is landing on')
 
     -- THE CONTENTS DO NOT TRAVEL, the same rule a chest's contents follow: a
@@ -951,7 +1044,7 @@ do
     reset()
     local away = newMatch(1)
     away.storm = BR.BuildStormRecord(1, poi.x, poi.y, 2600.0,
-        poi.x, poi.y, 100.0, gameMs, 0, A.descentMs, 1.0)
+        poi.x, poi.y, 100.0, gameMs, 0, FLIGHT, 1.0)
     BR.Airdrop.begin(away)
     away.airdrop.pending[1].dueAt = gameMs
     tick()
@@ -963,7 +1056,7 @@ do
     reset()
     local toward = newMatch(1)
     toward.storm = BR.BuildStormRecord(1, poi.x, poi.y, 100.0,
-        poi.x, poi.y, 2600.0, gameMs, 0, A.descentMs, 1.0)
+        poi.x, poi.y, 2600.0, gameMs, 0, FLIGHT, 1.0)
     BR.Airdrop.begin(toward)
     toward.airdrop.pending[1].dueAt = gameMs
     tick()
@@ -1086,7 +1179,7 @@ do
 
     eq(#spawned, 0, 'nothing is on the ground while it is still falling')
 
-    gameMs = gameMs + A.descentMs
+    gameMs = gameMs + FLIGHT
     tick()
 
     eq(#m.airdrop.live, 0, 'the drop is no longer in flight')
@@ -1186,7 +1279,7 @@ do
     eq(#m.airdrop.live, 1, 'and the drop is in flight')
     eq(#notices, 1, 'and the match is told, in the same words')
 
-    gameMs = gameMs + A.descentMs
+    gameMs = gameMs + FLIGHT
     tick()
     eq(#spawned, #A.payout + 1, 'and it opens on arrival like any other')
 
@@ -1222,6 +1315,8 @@ end
 -- until the build that starts answering the other way.
 
 local ents      = {}     -- [handle] = { model, x, y, z, isNetwork, dynamic }
+local vehicles  = {}     -- the delivery plane
+local peds      = {}     -- its pilot
 local nextEnt   = 100
 local blips     = {}     -- [handle] = { sprite, colour, scale, shortRange, name }
 local nextBlip  = 500
@@ -1274,8 +1369,42 @@ function CreateObjectNoOffset(model, x, y, z, isNetwork, netMission, dynamic)
                       dynamic = dynamic }
     return nextEnt
 end
-function DoesEntityExist(e) return ents[e] and 1 or 0 end
-function DeleteEntity(e) ents[e] = nil end
+
+-- THE AIRCRAFT AND ITS CREW LIVE IN THEIR OWN TABLES, so `ents` keeps meaning
+-- "the props this drop made" and every count over it stays readable. They all
+-- answer DoesEntityExist, because the code under test does not care which is
+-- which.
+function CreateVehicle(model, x, y, z, heading, isNetwork, netMission)
+    nextEnt = nextEnt + 1
+    vehicles[nextEnt] = { model = model, x = x, y = y, z = z,
+                          heading = heading, isNetwork = isNetwork,
+                          netMission = netMission }
+    return nextEnt
+end
+function CreatePed(_, model, x, y, z, heading, isNetwork, netMission)
+    nextEnt = nextEnt + 1
+    peds[nextEnt] = { model = model, x = x, y = y, z = z, heading = heading,
+                      isNetwork = isNetwork, netMission = netMission }
+    return nextEnt
+end
+function SetEntityInvincible() end
+function SetBlockingOfNonTemporaryEvents() end
+function SetPedIntoVehicle(ped, veh) if peds[ped] then peds[ped].inVehicle = veh end end
+function SetVehicleEngineOn(v) if vehicles[v] then vehicles[v].engine = true end end
+function SetEntityCoordsNoOffset(e, x, y, z)
+    moves[#moves + 1] = { e = e, x = x, y = y, z = z }
+    local t = ents[e] or vehicles[e] or peds[e]
+    if t then t.x, t.y, t.z = x, y, z end
+end
+function SetEntityRotation(e, _, _, yaw)
+    local t = ents[e] or vehicles[e] or peds[e]
+    if t then t.heading = yaw end
+end
+
+function DoesEntityExist(e)
+    return (ents[e] or vehicles[e] or peds[e]) and 1 or 0
+end
+function DeleteEntity(e) ents[e], vehicles[e], peds[e] = nil, nil, nil end
 function SetEntityCollision() end
 function FreezeEntityPosition() end
 function SetEntityHeading() end
@@ -1333,6 +1462,7 @@ local render = loops['airdrop.render']
 local function clientReset()
     fire('onResourceStop', 'br_core')
     ents, blips, attaches, anims, moves = {}, {}, {}, {}, {}
+    vehicles, peds = {}, {}
     fxStarted, fxStopped, fxAssetUsed = {}, {}, {}
     ground.ok, ground.z = 1, 12.0
     modelLoaded, ptfxLoaded = 1, 1
@@ -1349,6 +1479,17 @@ local function entsOfModel(model)
     end
     table.sort(out)
     return out
+end
+
+--- The delivery plane, and the pilot who keeps its propellers turning.
+local function onePlane()
+    for _, v in pairs(vehicles) do return v end
+    return nil
+end
+
+local function onePed()
+    for _, p in pairs(peds) do return p end
+    return nil
 end
 
 --- How many entities exist at all.
@@ -1413,6 +1554,77 @@ do
     local n = 0
     for _ in pairs(blips) do n = n + 1 end
     eq(n, 1, 'a re-sent record replaces rather than duplicating')
+end
+
+describe('client: the plane flies, then leaves')
+do
+    -- Announced now, released planeLeadMs later, on the ground descentMs after
+    -- that -- the real shape, which every other client block flattens by
+    -- letting tRelease default to tStart.
+    clientReset()
+    local t0  = gameMs
+    local rel = t0 + A.planeLeadMs
+    local rec = BR.BuildAirdropRecord(1,
+        { id = 'lsia', x = 100.0, y = 200.0, z = 30.0 },
+        260.0, t0, rel + A.descentMs, 0.0, rel)
+    fire(BR.Net.AIRDROP_SYNC, rec)
+    render()
+
+    local plane = onePlane()
+    ok(plane ~= nil, 'a plane is in the air from the announcement')
+    ok(plane and plane.model == A.planeModel, 'and it is the configured model')
+    ok(plane and plane.isNetwork == false,
+        'local and non-networked, like everything else this file makes')
+    ok(onePed() ~= nil,
+        'with a pilot aboard -- a prop aircraft shuts its engine off empty')
+    ok(plane and plane.engine == true, 'and its engine running')
+
+    -- THE CRATE IS STILL INSIDE IT. Building one now would put a box in the sky
+    -- under an aircraft that has not reached it, which is the picture the
+    -- run-in exists to replace.
+    eq(oneEnt(), nil, 'and no crate, because it has not been released yet')
+
+    -- INBOUND. Heading 0 is north, so it comes up from the south and the
+    -- distance closes as the release approaches.
+    local far = BR.Dist(plane.x, plane.y, rec.x, rec.y)
+    ok(far > 100.0, 'it starts a long way out', ('%.0fm'):format(far))
+    ok(plane.y < rec.y, 'south of the drop point, inbound')
+
+    gameMs = gameMs + A.planeLeadMs
+    render()
+    plane = onePlane()
+    ok(plane and BR.Dist(plane.x, plane.y, rec.x, rec.y) < 1.0,
+        'and is directly over the drop point at the release',
+        plane and ('%.1fm'):format(BR.Dist(plane.x, plane.y, rec.x, rec.y)))
+    ok(oneEnt() ~= nil, 'which is when the crate appears')
+
+    -- OUTBOUND, and gone when its trail window closes -- long before the crate
+    -- lands. A Titan orbiting the drop for another half-minute is scenery
+    -- arguing with the fight underneath it.
+    gameMs = gameMs + A.planeTrailMs
+    render()
+    ok(onePlane() ~= nil, 'still there at the end of the trail window')
+    ok(onePlane().y > rec.y, 'north of the drop point now, outbound')
+
+    gameMs = gameMs + 1
+    render()
+    eq(onePlane(), nil, 'and gone a millisecond later')
+    eq(onePed(), nil, 'pilot and all')
+    ok(oneEnt() ~= nil, 'while the crate is still falling')
+
+    -- Teardown takes the aircraft too, whenever it happens. A fresh record,
+    -- because the clock has been wound past the one above's trail window.
+    clientReset()
+    local t1  = gameMs
+    local rel1 = t1 + A.planeLeadMs
+    fire(BR.Net.AIRDROP_SYNC, BR.BuildAirdropRecord(1,
+        { id = 'lsia', x = 100.0, y = 200.0, z = 30.0 },
+        260.0, t1, rel1 + A.descentMs, 0.0, rel1))
+    render()
+    ok(onePlane() ~= nil, 'a plane is up')
+    fire(BR.Net.STATE, { state = BR.MatchState.ENDED })
+    eq(onePlane(), nil, 'and the match ending removes it')
+    eq(onePed(), nil, 'with its pilot')
 end
 
 describe('client: a clock running behind does not lose the drop')

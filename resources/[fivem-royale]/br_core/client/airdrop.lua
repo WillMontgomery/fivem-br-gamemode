@@ -62,7 +62,8 @@ local function isTrue(v)
     return v ~= nil and v ~= false and v ~= 0
 end
 
---- [n] = { rec, obj, chute, flares, blip, gz, gzAt, spawning, warned }
+--- [n] = { rec, obj, chute, flares, plane, pilot, blip, gz, gzAt, spawning,
+---         flying, warned }
 ---
 --- `flares` is an array of { obj, fx, ox }, one per side.
 local drops = {}
@@ -70,6 +71,14 @@ local drops = {}
 -- ---------------------------------------------------------------------------
 -- Teardown
 -- ---------------------------------------------------------------------------
+
+--- The plane and its crew. Separate from dropProps because it goes FIRST: the
+--- aircraft's work is done at the release, and the crate's has only just begun.
+local function dropPlane(d)
+    if d.pilot and isTrue(DoesEntityExist(d.pilot)) then DeleteEntity(d.pilot) end
+    if d.plane and isTrue(DoesEntityExist(d.plane)) then DeleteEntity(d.plane) end
+    d.plane, d.pilot = nil, nil
+end
 
 local function dropProps(d)
     -- THE PARTICLE HANDLES GO FIRST, and before the entity they are anchored
@@ -93,6 +102,7 @@ end
 local function removeDrop(n)
     local d = drops[n]
     if not d then return end
+    dropPlane(d)
     dropProps(d)
     if d.blip and isTrue(DoesBlipExist(d.blip)) then RemoveBlip(d.blip) end
     -- THE RECORD IS THE SPAWN THREAD'S PERMISSION SLIP. A model stream takes
@@ -190,7 +200,7 @@ AddEventHandler('onResourceStop', function(res)
 end)
 
 -- ---------------------------------------------------------------------------
--- The prop
+-- The aircraft and the props
 -- ---------------------------------------------------------------------------
 
 --- Load a model, bounded. Returns false rather than blocking forever on a
@@ -247,6 +257,65 @@ local function makePart(model, x, y, z)
     SetEntityCollision(obj, false, false)
     FreezeEntityPosition(obj, true)
     return obj
+end
+
+--- Build the delivery plane and the pilot who keeps its engine turning.
+---
+--- LOCAL, NON-NETWORKED, AND FLOWN BY COORDINATE WRITE, exactly as
+--- client/bus.lua's ghost flights are -- that file is the working precedent for
+--- this whole idea, and two things it learned the hard way are copied here
+--- rather than rediscovered:
+---
+---   * A PROP AIRCRAFT SHUTS ITS ENGINE OFF WHEN UNOCCUPIED. That is engine
+---     behaviour, not a missing call, so the pilot is load-bearing: a seated ped
+---     is what keeps the propellers turning and the audio playing. Without one
+---     the Titan glides past as a silent model with static props.
+---   * NOT FROZEN. The fly loop writes coordinates every frame anyway, and a
+---     frozen plane does not run its engine simulation at all -- which is half
+---     of what made the first battle-bus flight unconvincing.
+---
+--- Collision off and invincible, because it is scenery: nothing in the match may
+--- hit it, and it may not hit anybody.
+--- @param d table
+local function spawnPlane(d)
+    d.flying = true
+    Citizen.CreateThread(function()
+        local model = GetHashKey(A.planeModel or 'titan')
+        if not loadModel(model) then
+            d.flying = false
+            return
+        end
+        if not d.rec then d.flying = false return end
+
+        local px, py, pz = BR.AirdropPlaneAt(d.rec, BR.Clock.now(), A)
+        local gz = d.gz or d.rec.gz or 0.0
+        local plane = CreateVehicle(model, px, py, gz + pz,
+            d.rec.heading or 0.0, false, false)
+        SetModelAsNoLongerNeeded(model)
+        if not plane or plane == 0 then d.flying = false return end
+        SetEntityCollision(plane, false, false)
+        SetEntityInvincible(plane, true)
+        d.plane = plane
+
+        -- The crew, best-effort. A plane with no pilot still flies the route;
+        -- it just does it with the props stopped, which is worse and is not
+        -- worth losing the flyover over.
+        local pilotModel = GetHashKey(A.planePilot or 's_m_m_pilot_01')
+        if loadModel(pilotModel) and isTrue(DoesEntityExist(plane)) then
+            local pilot = CreatePed(4, pilotModel, px, py, gz + pz,
+                d.rec.heading or 0.0, false, false)
+            SetModelAsNoLongerNeeded(pilotModel)
+            if pilot and pilot ~= 0 then
+                SetEntityInvincible(pilot, true)
+                SetBlockingOfNonTemporaryEvents(pilot, true)
+                SetPedIntoVehicle(pilot, plane, -1)
+                d.pilot = pilot
+            end
+        end
+        SetVehicleEngineOn(plane, true, true, false)
+
+        d.flying = false
+    end)
 end
 
 --- Build the crate, the canopy over it and a flare on each side.
@@ -465,12 +534,39 @@ BR.Loop.register(BR.Loop.FRAME, 'airdrop.render', function()
                 addBlip(d)
             end
 
+            -- THE PLANE, WHICH LIVES ON ITS OWN CLOCK. It arrives with the
+            -- announcement, is overhead at the release, and leaves -- so it is
+            -- gone long before the crate is, and it is torn down where it is
+            -- decided rather than where the crate is.
+            if BR.AirdropPlaneVisible(d.rec, now, A) then
+                if not d.plane and not d.flying then
+                    groundOf(d)
+                    spawnPlane(d)
+                end
+                if d.plane and isTrue(DoesEntityExist(d.plane)) then
+                    local px, py, pz, phdg = BR.AirdropPlaneAt(d.rec, now, A)
+                    SetEntityCoordsNoOffset(d.plane, px, py, groundOf(d) + pz,
+                        false, false, false)
+                    -- A STRAIGHT LINE NEEDS NO EASED HEADING. bus.lua smooths
+                    -- its bearing because a polyline steps between legs; this
+                    -- route has one leg and one bearing, so the honest write is
+                    -- the constant.
+                    SetEntityRotation(d.plane, 0.0, 0.0, phdg, 2, true)
+                end
+            elseif d.plane or d.pilot then
+                dropPlane(d)
+            end
+
             if BR.AirdropLanded(d.rec, now) then
                 -- Down. The husk and the twelve items arrive as registry
                 -- entries from the server; these props have nothing left to
                 -- represent.
                 dropProps(d)
-            else
+            elseif BR.AirdropReleased(d.rec, now) then
+                -- THE CRATE ONLY EXISTS ONCE IT HAS LEFT THE PLANE. Building it
+                -- during the run-in would put a box in the sky under an aircraft
+                -- that has not reached it, which is the picture the run-in was
+                -- added to replace.
                 if not d.obj and not d.spawning then
                     groundOf(d)
                     spawn(d)
@@ -517,21 +613,27 @@ RegisterCommand('brairdrop', function()
             print(('  drop %d at %s (%.0f, %.0f), gz %.1f, alt %.0f')
                 :format(n, tostring(rec.poi), rec.x, rec.y, rec.gz or 0.0,
                         rec.alt or 0.0))
-            print(('    tStart %.0f (%+.1fs), tLand %.0f (%+.1fs), expires %+.1fs')
-                :format(rec.tStart, (rec.tStart - now) / 1000,
-                        rec.tLand, (rec.tLand - now) / 1000,
+            print(('    tStart %+.1fs, tRelease %+.1fs, tLand %+.1fs, expires %+.1fs')
+                :format((rec.tStart - now) / 1000,
+                        ((rec.tRelease or rec.tStart) - now) / 1000,
+                        (rec.tLand - now) / 1000,
                         (rec.tLand + (A.blipLingerMs or 60000) - now) / 1000))
-            print(('    landed %s, blip should be up %s, expired %s')
-                :format(tostring(BR.AirdropLanded(rec, now)),
+            print(('    released %s, landed %s, blip should be up %s, expired %s')
+                :format(tostring(BR.AirdropReleased(rec, now)),
+                        tostring(BR.AirdropLanded(rec, now)),
                         tostring(BR.AirdropBlipVisible(rec, now, A.blipLingerMs)),
                         tostring(BR.AirdropExpired(rec, now, A.blipLingerMs))))
+            local px, py = BR.AirdropPlaneAt(rec, now, A)
+            print(('    plane should be up %s, at (%.0f, %.0f)')
+                :format(tostring(BR.AirdropPlaneVisible(rec, now, A)), px, py))
         end
         print(('    blip handle %s, exists %s, sprite %d')
             :format(tostring(d.blip),
                     tostring(d.blip and isTrue(DoesBlipExist(d.blip))),
                     A.blipSprite or 161))
-        print(('    crate %s, canopy %s, flares %d')
-            :format(tostring(d.obj), tostring(d.chute), #(d.flares or {})))
+        print(('    plane %s, pilot %s, crate %s, canopy %s, flares %d')
+            :format(tostring(d.plane), tostring(d.pilot), tostring(d.obj),
+                    tostring(d.chute), #(d.flares or {})))
     end
     if not any then
         print('  no drop record on this client -- nothing has been announced, '
