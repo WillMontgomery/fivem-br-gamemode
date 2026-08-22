@@ -3586,6 +3586,290 @@ do
     ExecuteCommand, SetControlNormal = realExec, realControl
 end
 
+describe('voice is OFF while spectating, and the preference comes back by itself')
+do
+    -- THE OWNER, 2026-08-21: "On voice -- let's set voice to OFF while in
+    -- spectate, and return it to their preferred setting once spectate is
+    -- over."
+    --
+    -- ═══ WHAT THIS IS NOT, AND WHY THE BLOCK ABOVE DOES NOT COVER IT ═══
+    --
+    -- It is not the spectator mute. That shipped already and it is the
+    -- TRANSMIT half only -- MumbleSetPlayerMuted on the server, and
+    -- BR.Voice.silenced() over both push-to-talk mechanisms on the client. Its
+    -- own comments are explicit about where it stops: "MUTED IS NOT DEAFENED",
+    -- the radio channel and the mute sweep are left alone. So a spectator on
+    -- 'nearby' went on hearing every stranger standing near whoever they were
+    -- watching, and a spectator on 'squad' went on sitting on the squad radio.
+    --
+    -- 'off' IN THIS PROJECT HAS ALWAYS MEANT BOTH HALVES, and that is the
+    -- owner's own ruling, made against a build that only did the first:
+    --
+    --   "'you are not transmitting' should also mean 'you are not listening',
+    --    but alas both are false."
+    --
+    -- So the assertions below lean hardest on the RECEIVE half -- who is
+    -- audible, who is muted, and which radio channel this client is on. Those
+    -- are the facts that moved. The whole suite above this block passes either
+    -- way, which is the point of writing them down.
+    --
+    -- ═══ EVERY RESTORE HERE IS DRIVEN BY THE CLOCK AND NOTHING ELSE ═══
+    --
+    -- The "and it comes back" cases end a session and then step the TICK BAND
+    -- ONLY. No settings event, no VOICE_SET, no state broadcast -- nothing a
+    -- real client is merely usually given. That is the property under test:
+    -- the restore is arithmetic over a mode that is re-derived on every call,
+    -- not an action an exit path has to remember. There are five ways out of a
+    -- session -- the pause-menu stop, the match ending, the player leaving,
+    -- disconnecting, and br_core restarting -- and a design where each one
+    -- calls something is a design where one of them eventually does not.
+    -- A player left voiceless for the rest of a round is a worse bug than the
+    -- one being fixed, and this repo has shipped that exact shape before.
+
+    local realSpectate = BR.Spectate
+    local spectating = false
+    BR.Spectate = { active = function() return spectating end }
+
+    --- One 10 Hz band tick and one pma-voice proximity tick, frozen. THE ONLY
+    --- THING ANY RESTORE BELOW IS ALLOWED TO BE GIVEN.
+    local function settle()
+        BR.Loop.step(BR.Loop.TICK)
+        pmaTick()
+        return pmaSnapshot()
+    end
+
+    -- A SQUAD MATCH, BECAUSE IT IS THE ONLY KIND WHERE ALL THREE MODES ARE
+    -- REACHABLE and the only one with a radio channel to be evicted from and
+    -- put back on. Player 2 is a squadmate, player 3 is a stranger on the
+    -- roster -- so 'squad' has somebody to refuse and somebody to keep, and
+    -- "everyone is muted" is distinguishable from "the usual one is muted".
+    voiceApply(BR.VoiceMode.SQUAD, 30703, { 2 }, 1)
+    playersAt({ [2] = { x = 1, y = 0 }, [3] = { x = 2, y = 0 } })
+    local alive = settle()
+
+    ok(BR.Voice.mode() == BR.VoiceMode.SQUAD and alive.radio == 30703,
+       'before any session: the player is on their squad preference and on the '
+           .. 'channel the server granted',
+       tostring(BR.Voice.mode()) .. ' / radio ' .. tostring(alive.radio))
+    ok(alive.muted[3] == true and alive.muted[2] == nil,
+       'and squad refuses the stranger while keeping the squadmate -- the '
+           .. 'state the session has to be visible against',
+       'muted 2=' .. tostring(alive.muted[2]) .. ' 3=' .. tostring(alive.muted[3]))
+
+    -- ==================================================================== --
+    -- THE SESSION STARTS.
+
+    spectating = true
+    local spec = settle()
+
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF,
+       "the mode in force goes to 'off' for the length of the session -- the "
+           .. 'setting, which is what the owner asked to be set',
+       tostring(BR.Voice.mode()))
+
+    local r = BR.Voice.routing()
+    ok(r.proximity == false and r.radio == false,
+       'and it is the real mode, both columns of the routing table, rather '
+           .. 'than a fourth mode invented for spectators',
+       tostring(r.proximity) .. '/' .. tostring(r.radio))
+
+    -- THE HALF THAT IS ACTUALLY NEW. The suite above would pass with the
+    -- receive side untouched, because the microphone was already taken.
+    local audible = BR.Voice.audibleFor(BR.Voice.mode(), BR.State.roster,
+                                        BR.Voice.state.mates, 1)
+    ok(next(audible) == nil,
+       'a spectator is audible-to nobody: the receive half moves too, which is '
+           .. 'the whole difference between this and the microphone rule that '
+           .. 'shipped before it',
+       'audible set is not empty')
+
+    ok(spec.muted[2] == true and spec.muted[3] == true,
+       'so the sweep holds a mute on the squadmate as well as the stranger -- '
+           .. 'squad radio included, which is the one channel the old rule '
+           .. 'deliberately left open',
+       'muted 2=' .. tostring(spec.muted[2]) .. ' 3=' .. tostring(spec.muted[3]))
+
+    ok(spec.radio == 0,
+       'and this client leaves the squad radio channel, because that is what '
+           .. "'off' does -- not because anything told it to spectate",
+       tostring(spec.radio))
+
+    -- THE TRANSMIT HALF IS UNCHANGED AND IS STILL ITS OWN RULE. Two
+    -- independent reasons a spectator cannot talk is the property the owner's
+    -- `NEVER` asked for; a mutant that deleted silenced() on the grounds that
+    -- the mode now covers it would be strictly weaker and would open a
+    -- microphone for the 100ms the band takes to notice.
+    ok(BR.Voice.silenced() == true,
+       'the master transmit switch still answers for itself, independently of '
+           .. 'the mode -- it is read at the keypress and every frame, where '
+           .. 'the mode is read on a 10 Hz band',
+       tostring(BR.Voice.silenced()))
+
+    -- NO UI TEXT. The owner did not ask to be told about this and must not be.
+    local st = BR.Voice.status()
+    ok(st.headline == nil,
+       'and nothing is painted over the game to announce it -- no headline, so '
+           .. 'no toast and no notice',
+       tostring(st.headline))
+
+    -- THE PREFERENCE IS NOT TOUCHED. This single assertion is what makes the
+    -- disconnect case, the crash case and the resource-restart case safe: a
+    -- session that ends by this client simply ceasing to exist leaves nothing
+    -- behind to be put back, because nothing was ever taken.
+    ok(BR.Voice.pref.squad == BR.VoiceMode.SQUAD,
+       'while the SAVED preference is not written at all -- there is no stored '
+           .. 'mode to be stranded by a disconnect, a crash or a restart',
+       tostring(BR.Voice.pref.squad))
+
+    -- ==================================================================== --
+    -- AND THE SESSION ENDS, WITH NOTHING BUT A TICK.
+
+    spectating = false
+    local back = settle()
+
+    ok(BR.Voice.mode() == BR.VoiceMode.SQUAD,
+       'stopping restores the PREFERENCE, not the default -- and nothing was '
+           .. "fired to make it happen; 'squad' is not BR.VoiceModeDefault, so "
+           .. 'a restore that fell back could not pass this',
+       tostring(BR.Voice.mode()))
+    ok(back.radio == 30703,
+       'the squad radio channel is rejoined on the same tick, with no event of '
+           .. 'any kind in between -- this is the assertion that a forgotten '
+           .. 'exit path fails',
+       tostring(back.radio))
+    ok(back.muted[2] == nil and back.muted[3] == true,
+       'and the ears come back exactly as they were: the squadmate released, '
+           .. 'the stranger still refused',
+       'muted 2=' .. tostring(back.muted[2]) .. ' 3=' .. tostring(back.muted[3]))
+    ok(BR.Voice.silenced() == false,
+       'and the microphone is given back with it',
+       tostring(BR.Voice.silenced()))
+
+    -- ==================================================================== --
+    -- THE MATCH ENDS UNDERNEATH THE SPECTATOR.
+    --
+    -- THIS IS THE CASE THAT SEPARATES THE TWO POSSIBLE DESIGNS, and it is the
+    -- reason the implementation is an overlay rather than a saved value. A
+    -- dead player spectates their squad; the match ends while they are
+    -- watching; the session stops in the lobby. An implementation that
+    -- SNAPSHOT the mode at session start and put it back would put back
+    -- 'squad' -- the squad-match answer -- for a player who is now in no match
+    -- at all. Re-deriving gets the lobby's answer, which is the SOLO slot.
+    --
+    -- The two slots are set to DIFFERENT values here on purpose; it is the
+    -- only way to see which one won.
+    fire('br:settings:changed',
+         { voiceModeSolo = BR.VoiceMode.OFF, voiceModeSquad = BR.VoiceMode.SQUAD })
+    BR.State.match.mode = BR.Mode.SQUAD.key
+    settle()
+    spectating = true
+    settle()
+    -- the match ends: no match kind any more, and the session stops
+    BR.State.match.mode = nil
+    spectating = false
+    settle()
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF,
+       'a session that outlives its match comes back to the preference for the '
+           .. 'match the player is in NOW -- the solo slot, not a snapshot of '
+           .. 'the squad answer taken when the camera went up',
+       tostring(BR.Voice.mode()))
+
+    -- ==================================================================== --
+    -- THE PREFERENCE IS CHANGED DURING THE SESSION.
+    --
+    -- The settings screen is reachable from the pause menu and the pause menu
+    -- opens over the spectate camera. "Their preferred setting" is whatever
+    -- they last chose, so the value that comes back is the NEW one -- and
+    -- 'squad' is neither BR.VoiceModeDefault nor the value in force before the
+    -- session, so nothing but the real preference can satisfy this.
+    BR.State.match.mode = BR.Mode.SQUAD.key
+    fire('br:settings:changed',
+         { voiceModeSolo = BR.VoiceMode.NEARBY, voiceModeSquad = BR.VoiceMode.NEARBY })
+    settle()
+    spectating = true
+    local mid = settle()
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF and mid.radio == 0,
+       'a session over a nearby preference is off and off the radio too',
+       tostring(BR.Voice.mode()) .. ' / radio ' .. tostring(mid.radio))
+
+    voiceMode(BR.VoiceMode.SQUAD)   -- the settings screen, mid-session
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF,
+       'changing the preference mid-session does not lift the session -- the '
+           .. 'camera is still up, so voice is still off',
+       tostring(BR.Voice.mode()))
+
+    spectating = false
+    local changed = settle()
+    ok(BR.Voice.mode() == BR.VoiceMode.SQUAD and changed.radio == 30703,
+       'and what comes back is the setting they chose WHILE watching, not the '
+           .. 'one they had when the camera went up',
+       tostring(BR.Voice.mode()) .. ' / radio ' .. tostring(changed.radio))
+
+    -- ==================================================================== --
+    -- TWICE IN A ROW.
+    --
+    -- Two sessions in one round is the ordinary case, not an edge: a dead
+    -- player steps between squadmates, and every step the SERVER treats as a
+    -- re-resolve. A latch that is taken on the first start and released on the
+    -- first stop is right once and wrong forever after.
+    spectating = true;  settle()
+    spectating = false; local one = settle()
+    spectating = true;  settle()
+    spectating = false; local two = settle()
+    ok(one.radio == 30703 and two.radio == 30703
+       and BR.Voice.mode() == BR.VoiceMode.SQUAD,
+       'two sessions back to back both restore -- nothing is spent on the '
+           .. 'first one',
+       tostring(one.radio) .. ' then ' .. tostring(two.radio))
+
+    -- ==================================================================== --
+    -- pma-voice RESTARTS UNDER THE SESSION.
+    --
+    -- An admin restarting the voice resource mid-match is a real thing that
+    -- happens, and br_core's handler for it drops everything it believes about
+    -- the engine (`joined`, `muted`). The session is still running, so the
+    -- answer must still be off -- and stopping must still put the channel back
+    -- on a resource that has never heard of it.
+    spectating = true
+    settle()
+    fire('onClientResourceStart', 'pma-voice')
+    local restarted = settle()
+    ok(restarted.radio == 0,
+       'a voice resource that restarts under a spectator comes back off the '
+           .. 'radio, because the mode is re-derived rather than replayed',
+       tostring(restarted.radio))
+    spectating = false
+    local afterRestart = settle()
+    ok(afterRestart.radio == 30703,
+       'and the channel is put back afterwards all the same',
+       tostring(afterRestart.radio))
+
+    -- ==================================================================== --
+    -- THE CROSS-FILE CALL, PINNED ON THE REAL SOURCE.
+    --
+    -- BR.Voice.mode() reads BR.Spectate.active() behind a nil-guard -- it has
+    -- to, because client/voice.lua loads with or without the camera. That
+    -- guard means a RENAME on the other side fails OPEN AND IN SILENCE: mode()
+    -- would answer with the preference forever, a spectator would hear the
+    -- whole match, and every assertion in this block would still pass against
+    -- the stub above. So the name is checked against the file that owns it.
+    -- (The mute block above pins the same name for the same reason; it is
+    -- repeated here because these are two independent readers and either could
+    -- be the one left behind.)
+    local sFh = io.open(ROOT .. 'br_core/client/spectate.lua', 'r')
+    local sSrc = sFh and sFh:read('a') or nil
+    if sFh then sFh:close() end
+    ok(type(sSrc) == 'string'
+       and sSrc:find('function BR.Spectate.active', 1, true) ~= nil,
+       'and BR.Spectate.active really is the name client/spectate.lua defines '
+           .. '-- the nil-guard in mode() would hide a rename completely',
+       'BR.Spectate.active is not defined where voice.lua reaches for it')
+
+    BR.Spectate = realSpectate
+    spectating = false
+    nobodyElse()
+end
+
 describe('the inventory bar draws the player being watched')
 do
     -- THE BUG, IN THE OWNER'S WORDS: "the health/shield/inventory don't show

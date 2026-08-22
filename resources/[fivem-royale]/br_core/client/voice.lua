@@ -396,8 +396,58 @@ end
 ---
 --- THE LOBBY AND AN UNKNOWN MATCH BOTH RESOLVE TO THE SOLO PREFERENCE, which
 --- is BR.VoiceModeFor's rule rather than one invented here.
+---
+--- ═══ AND A SPECTATOR IS ON 'off', WHICH IS THE OWNER'S NEWEST WORD ═══
+---
+--- "On voice -- let's set voice to OFF while in spectate, and return it to
+--- their preferred setting once spectate is over" -- the owner, 2026-08-21.
+---
+--- THIS IS A BIGGER RULE THAN BR.Voice.silenced() AND IT REPLACES THAT
+--- FUNCTION'S SCOPE NOTE. `silenced()` closes the TRANSMIT half and says so at
+--- length: it leaves `audibleFor`, the mute sweep and the radio channel alone,
+--- so a spectator on 'nearby' still heard every stranger near their target and
+--- a spectator on 'squad' was still sat on the squad radio. That was written
+--- against "should NEVER be able to talk, only listen". The instruction above
+--- supersedes it, and 'off' in this project is not a synonym for muted -- the
+--- owner settled that already, on the version that only did the first half:
+---
+---   "'you are not transmitting' should also mean 'you are not listening',
+---    but alas both are false."
+---
+--- So OFF here means the whole mode, both columns of BR.VoiceRouting, and it
+--- reaches the receive half for free BECAUSE it is expressed as a mode rather
+--- than as a second gag: applyRadio() leaves the channel, audibleFor() returns
+--- the empty set and muteSweep() holds a mute on everybody. Nothing new is
+--- taught about spectating anywhere below this line.
+---
+--- ═══ NOTHING IS SAVED, SO NOTHING CAN FAIL TO BE RESTORED ═══
+---
+--- "Return it to their preferred setting" is the requirement, and the safest
+--- way to meet it is to never take the setting away. BR.Voice.pref is NOT
+--- written here and is not written anywhere on a spectate path -- this is an
+--- overlay on a derivation that is already recomputed on every call and
+--- deliberately never cached, so the preference comes back by ARITHMETIC the
+--- first time this function is asked after the session ends.
+---
+--- That is deliberate rather than tidy, and the alternative is the bug this
+--- project has already shipped once: br_ui/client/nui.lua's pushFocus carries
+--- a note about a stack that returned early and left a screen nothing could
+--- raise for a whole session. A saved-mode-and-restore-it design has that
+--- exact failure mode, and here it costs a player their voice for the rest of
+--- the round. There is no save, so there is no path -- disconnect mid-session,
+--- match ended under them, resource restarted, two sessions back to back --
+--- on which a restore can be skipped, and a preference changed DURING a
+--- session is simply the one that is in force when it ends.
 --- @return string  one of BR.VoiceMode
 function BR.Voice.mode()
+    -- NIL-GUARDED THE SAME WAY BR.Voice.silenced() IS, and for the same
+    -- reason: this file loads with or without client/spectate.lua, and the
+    -- safe answer for "is a camera running" on a client that cannot say is no.
+    -- The cross-file name is pinned by the suite against spectate.lua itself,
+    -- because a rename on the other side fails OPEN and in silence.
+    if BR.Spectate and BR.Spectate.active and BR.Spectate.active() then
+        return BR.VoiceMode.OFF
+    end
     local m = BR.State and BR.State.match and BR.State.match.mode
     return BR.VoiceModeFor(BR.Voice.pref, m)
 end
@@ -429,11 +479,27 @@ end
 --- owner. Not a preference, not a config key, and not varied by whether the
 --- session is a dead player's or an admin's.
 ---
---- IT ONLY CLOSES THE TRANSMIT HALF. Nothing here touches `audibleFor`, the
---- mute sweep or the radio channel, so a spectator hears exactly what they
---- heard a moment before they died. That is "only listen", and it is also what
---- makes the owner's squad-voice proposal true as written: nothing changes when
---- you spectate.
+--- IT ONLY CLOSES THE TRANSMIT HALF, AND IT IS NO LONGER THE WHOLE RULE.
+--- Nothing here touches `audibleFor`, the mute sweep or the radio channel --
+--- the RECEIVE half now comes from BR.Voice.mode() returning 'off' for the
+--- length of a session, which is the owner's 2026-08-21 instruction and is
+--- argued where it is implemented. This function is deliberately left as the
+--- narrower rule rather than folded into that one:
+---
+---   IT IS THE EDGE. mode() is read by things that run on the 10 Hz band; this
+---   is read at the keypress and on every FRAME, which is what closes a radio
+---   already keyed up when the session starts. Dying with the key down is the
+---   ordinary way in, and a band that ticks every 100ms is 100ms of open
+---   microphone.
+---
+---   IT IS THE READOUT. gagged() consults this FIRST, so /brvoice and the
+---   settings screen say "spectating" rather than "off" -- the true reason
+---   rather than the mechanism.
+---
+---   AND IT DOES NOT DEPEND ON THE MODE BEING RIGHT. Two independent rules
+---   that both have to fail before a spectator transmits is the property the
+---   owner's `NEVER` asked for; collapsing them into one would be tidier and
+---   strictly weaker.
 ---
 --- THE SERVER HOLDS THE SAME RULE and holds it harder -- server/voice.lua's
 --- BR.Voice.setSpectatorMuted mutes the connection at the Mumble server, which
@@ -1670,6 +1736,30 @@ end
 local lastKey = ''
 BR.Loop.register(BR.Loop.TICK, 'voice.hear', function()
     local s = BR.Voice.state
+
+    -- THE RADIO CHANNEL CONVERGES HERE RATHER THAN ON AN EDGE, and this line is
+    -- the whole of "the restore cannot be forgotten".
+    --
+    -- WHAT IT FIXES. applyRadio() used to be reachable only from apply(), and
+    -- apply() is called from four events -- VOICE_SET, br:settings:changed, the
+    -- match STATE broadcast and pma-voice restarting. NONE OF THEM FIRE WHEN A
+    -- PLAYER DIES. Now that the mode goes to 'off' for the length of a spectate
+    -- session, that gap is not cosmetic: a session that began between two of
+    -- those events and ended between two more would leave `joined` at 0 with the
+    -- preference back on 'squad' -- a player who watched their squad die and
+    -- then spent the next round off the radio, with nothing on screen to say
+    -- why. That is the failure this whole change is under instruction to avoid.
+    --
+    -- IT IS THE SAME BAND AND THE SAME READ AS THE MUTE SWEEP, on purpose. The
+    -- two consequences of a mode are "which channel am I on" and "who am I
+    -- refusing", and they were previously driven by different clocks; the one
+    -- that ran on a clock at all was the only one that could not be missed.
+    --
+    -- AND IT IS FREE WHEN THERE IS NOTHING TO DO. applyRadio() diffs against
+    -- `joined` and returns on the first comparison, which is the state it is in
+    -- on all but the handful of ticks where the answer has actually moved. It
+    -- calls no export until the number changes.
+    BR.Voice.apply()
 
     -- WHO WE DO NOT REFUSE, from the one function that decides it. On 'nearby'
     -- that is everybody -- proximity is the SPEAKER's decision and we do not

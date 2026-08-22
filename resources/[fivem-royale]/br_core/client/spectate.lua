@@ -66,8 +66,17 @@ local function didHit(v)
 end
 
 --- Is a session running? Read by client/lobbycam.lua, which must not raise the
---- lobby shot over this one, and by client/voice.lua, which takes the
---- microphone away for as long as this is true.
+--- lobby shot over this one, and by client/voice.lua, where it is the whole of
+--- the voice rule: BR.Voice.mode() reads it and answers 'off' while it is true,
+--- so a spectator neither transmits nor hears for the length of the session and
+--- is back on their saved preference the moment it ends.
+---
+--- NOTHING IN THIS FILE TELLS VOICE ANYTHING, AND THAT IS THE DESIGN. There is
+--- no "start" call to pair with a "stop" call and therefore no exit path that
+--- can forget to make one -- not the pause-menu stop, not the match ending, not
+--- a disconnect, not a resource restart. voice.lua asks this function; a
+--- session that is over answers false, and the preference it never overwrote is
+--- simply what it was.
 --- @return boolean
 function BR.Spectate.active()
     return session ~= nil

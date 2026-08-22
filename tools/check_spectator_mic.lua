@@ -136,10 +136,23 @@ if voice then
              .. 'the Mumble server mute is the half that holds')
     end
 
-    -- MUTED IS NOT DEAFENED, AND THE RADIO IS NOT TOUCHED. Evicting a spectator
-    -- from their squad channel is the obvious lever and it is the wrong one --
-    -- leaving the channel is how you stop HEARING it, and "only listen" is the
-    -- half being kept. This looks for the eviction inside the function.
+    -- THE RADIO CHANNEL IS NOT TOUCHED FROM HERE, AND THE REASON MOVED.
+    --
+    -- It used to be "a dead player must still hear their squad". That is no
+    -- longer the rule: the owner's 2026-08-21 word is "let's set voice to OFF
+    -- while in spectate, and return it to their preferred setting once spectate
+    -- is over", and a spectator now hears nobody. The assertion survives it
+    -- because the reason it was worth making was never only about ears.
+    --
+    -- THE CLIENT OWNS THAT MEMBERSHIP AND MUST GO ON OWNING IT ALONE. Leaving
+    -- and rejoining the channel is a consequence of BR.Voice.mode() answering
+    -- 'off' for the length of a session (br_core/client/voice.lua) -- it goes
+    -- out over pma-voice's setRadioChannel and comes back the same way, on a
+    -- band that ticks whatever happens. A server-side eviction bolted on beside
+    -- it would be a SECOND authority over one membership, and the way that ends
+    -- is a player who stopped spectating and is on no channel at all because
+    -- each half assumed the other would put it back. One clock, and it is the
+    -- client's.
     local fnAt = code:find('function BR.Voice.setSpectatorMuted', 1, true)
     if fnAt then
         local rest   = code:sub(fnAt)
@@ -147,8 +160,9 @@ if voice then
         local body   = nextFn and rest:sub(1, nextFn) or rest
         if body:find('setPlayerRadio', 1, true) then
             fail('the spectator mute also moves them off their radio channel',
-                 'that is a DEAFEN, not a mute -- a dead player must still hear '
-                 .. 'their squad')
+                 'the client already leaves and rejoins that channel from its '
+                 .. 'own mode; a second owner of one membership is how a player '
+                 .. 'comes back from a session onto no channel at all')
         end
     end
 
@@ -190,4 +204,5 @@ if failures > 0 then
 end
 
 io.write('ok   a spectator is muted at both session-start sites, unmuted once '
-    .. 'on stop,\n     and still hears everything they heard before\n')
+    .. 'on stop;\n     the radio channel is left to the client, whose mode owns '
+    .. 'it\n')

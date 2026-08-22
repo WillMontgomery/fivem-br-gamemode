@@ -280,15 +280,35 @@ local specMuted = {}
 --- trip, it keeps `/brvoice` telling the truth, and it closes the radio key that
 --- may already be held. Two halves, different failure modes.
 ---
---- ═══ MUTED IS NOT DEAFENED ═══
+--- ═══ THIS HALF IS STILL ONLY A MUTE, AND THAT IS STILL DELIBERATE ═══
 ---
---- Mumble separates them and only the first is taken. A dead player watching
---- their squad still HEARS the squad radio and still hears whoever their mode
---- makes audible -- which is the whole of "only listen", and is also what keeps
---- the owner's squad-voice proposal (nothing changes when you spectate) intact.
---- Nothing here touches the radio channel: evicting them would have been the
---- obvious lever and it is the wrong one, because leaving the channel is how you
---- stop HEARING it.
+--- Mumble separates muted from deafened and only the first is taken here.
+---
+--- WHAT CHANGED ABOVE IT. The owner's 2026-08-21 word -- "let's set voice to
+--- OFF while in spectate, and return it to their preferred setting once
+--- spectate is over" -- means a spectator no longer hears anything either. That
+--- is implemented as a MODE, on the client, in br_core/client/voice.lua's
+--- BR.Voice.mode(): it leaves the radio channel and holds a mute on everybody,
+--- exactly as it does for a player who picks Off on the settings screen.
+---
+--- WHY IT IS NOT ALSO DONE FROM HERE, now that the rule wants both halves.
+---
+---   THE THREAT MODEL IS ASYMMETRIC, and it is the only reason this file has a
+---   half at all. A modified client that TRANSMITS while spectating is talking
+---   into a match it can see and is being fed the position of; that is why the
+---   microphone is taken at the Mumble server, which is the one place a client
+---   cannot argue with. A modified client that declines to go DEAF hears audio
+---   its own machine was already being sent. There is nothing to win there, and
+---   the server has no lever that fits anyway: this is a receive-side volume
+---   override on the listener's own mixer.
+---
+---   AND THE OBVIOUS SERVER LEVER IS STILL THE WRONG ONE. Evicting a spectator
+---   from their squad's radio channel from here would be a SECOND authority
+---   over a channel the client is already leaving on its own -- two owners of
+---   one membership, which is how a player comes back from a session onto no
+---   channel at all. The client leaves it because its mode says to, and rejoins
+---   it because its mode says to; there is one clock and it is that one.
+---   tools/check_spectator_mic.lua holds this function to that.
 ---
 --- @param src integer
 --- @param on boolean  true to take the microphone, false to give it back
