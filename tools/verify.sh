@@ -993,8 +993,64 @@ if compgen -G "$rmdir_" >/dev/null 2>&1; then
     fi
 fi
 
+# THE OTHER DIRECTION OF THE SAME BOUNDARY: what the GAME lets the console do
+# that it lets nobody else do. #202 added the first one -- `brcar`, which puts a
+# vehicle in the world under `sv_entityLockdown relaxed`, where a trainer cannot.
+#
+# WHY IT NEEDS A GATE AND THE OTHER FORTY VERBS DO NOT. Every other command in
+# br_core is registered RESTRICTED, which means the server console OR a live
+# client holding the `br.admin` ACE, and that is the right boundary for all of
+# them. This one is narrower on purpose -- the owner is the only person with
+# console access, not even admins have it, and #202's rule is that this "must not
+# become a route for anyone without console access to obtain a vehicle". The
+# narrowing is one `tonumber(src) ~= 0` inside the handler, which is precisely
+# the kind of line a refactor deletes without anything looking wrong afterwards:
+# the verb keeps working, for everybody.
+#
+# AND `0` IS TRUTHY IN LUA, which is why the pattern is matched as an EQUALITY
+# rather than by looking for the word `src`. `if src then` and `if not src then`
+# are both real, both compile, and both are wrong in opposite directions -- the
+# first admits every player, the second admits nobody.
+#
+# CreateVehicle IS SCOPED TO ONE FILE for server/kick.lua's reason above: it is
+# the only server-side call in this tree that puts a networked entity in a match,
+# and keeping it in the file that also holds the refused-vehicle detector means
+# the spawn and the rule it must obey are reviewed on one screen.
+vehfile_="resources/[fivem-royale]/br_core/server/vehicles.lua"
+if [ -f "$vehfile_" ]; then
+    if ! grep -q "RegisterCommand('brcar'" "$vehfile_"; then
+        echo "${RED}FAIL${RST} brcar is not registered in $vehfile_"
+        echo "     If it moved, move this gate with it -- and keep the console"
+        echo "     check and the CreateVehicle call in the same file."
+        boundary=1
+    elif ! grep -qE 'tonumber\(src\) ~= 0' "$vehfile_"; then
+        echo "${RED}FAIL${RST} brcar has lost its server-console gate"
+        echo "     Expected 'tonumber(src) ~= 0' in $vehfile_."
+        echo "     RESTRICTED is not that gate: it also admits any live client"
+        echo "     holding br.admin, and #202's rule is console access only."
+        echo "     It must stay an equality -- 0 is truthy in Lua, so both"
+        echo "     'if src then' and 'if not src then' are wrong."
+        boundary=1
+    fi
+
+    # ...and nowhere else in any server file may create one.
+    strayveh=$(grep -rlE '(^|[^_[:alnum:]])CreateVehicle[[:space:]]*\(' \
+               "resources/[fivem-royale]"/*/server/*.lua 2>/dev/null \
+               | grep -v 'br_core/server/vehicles\.lua' || true)
+    if [ -n "$strayveh" ]; then
+        echo "${RED}FAIL${RST} server-side CreateVehicle outside br_core/server/vehicles.lua:"
+        echo "$strayveh" | sed 's/^/     /'
+        echo "     Server-side CreateVehicle is an RPC: it raises entityCreating,"
+        echo "     so a model config/vehicles.lua refuses opens a case against"
+        echo "     whichever CLIENT the engine handed the entity to. That rule"
+        echo "     lives beside the detector; so must the call."
+        boundary=1
+    fi
+fi
+
 if [ "$boundary" -eq 0 ]; then
     echo "${GRN}ok${RST}   the console can kick, ban, deploy, switch branch and READ config -- no raw stop/restart, no config writes"
+    echo "${GRN}ok${RST}   brcar is console-only and CreateVehicle is scoped to the file that holds the allowlist"
 else
     rc=1
 fi

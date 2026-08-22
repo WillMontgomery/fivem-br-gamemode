@@ -846,3 +846,227 @@ AddEventHandler('onResourceStart', function(name)
         track, driving = {}, {}
     end
 end)
+
+-- ---------------------------------------------------------------------------
+-- Putting one there on purpose
+-- ---------------------------------------------------------------------------
+
+--- The model `brcar` spawns when nobody names one. An ordinary four-seat SUV,
+--- which is what a squad test wants and what the allowlist above is happy with.
+local DEFAULT_MODEL = 'granger'
+
+--- How far in front of the target player the vehicle lands, in metres.
+---
+--- FAR ENOUGH NOT TO LAND ON THEM. A vehicle created at a ped's own coordinates
+--- leaves the engine to resolve the intersection, and it resolves it by throwing
+--- one of the two.
+local SPAWN_AHEAD_M = 5.0
+
+--- PUT A VEHICLE IN THE WORLD WITHOUT A TRAINER. Console only, dev mode only.
+---
+---   brcar <serverId> [model]    spawn a vehicle in front of that player
+---
+--- ═══ WHY IT EXISTS: vMENU IS NOT BROKEN AND NEITHER ARE WE ═══
+---
+--- Owner, 2026-08-22 (#202): "Probably related to our hardening but I can no
+--- longer spawn a vehicle through vMenu. We should have dev tooling to do this
+--- otherwise if vMenu won't be an option."
+---
+--- IT IS `sv_entityLockdown relaxed`, AND IT IS THE PLATFORM RATHER THAN THIS
+--- FILE. The engine's own ValidateEntity admits a client's clone-create only if
+--- the sync tree reports one of the five RANDOM_* population types, or if the
+--- entity's creation token carries a script guid. A trainer's vehicle is
+--- POPTYPE_MISSION with no token, so it is refused and the clone deleted -- and
+--- `entityCreating` is raised only AFTER that validation, so the handler at the
+--- top of this file never sees it and `brvehicles` stays at zero. A refusal we
+--- reported and a refusal the platform swallowed look completely different in
+--- that readout, and vMenu's is the second one.
+---
+--- ═══ AND THE SAME VALIDATOR IS WHY THIS WORKS ═══
+---
+--- The creation-token branch is not gated on the lockdown mode. A server script
+--- that asks for an entity gets a token with a script guid on it, and that is
+--- what admits the clone when it comes back -- so this path works under
+--- `relaxed`, and would go on working under `strict`. Nothing here reads the
+--- convar and nothing here needs to.
+---
+--- ═══ IT SPAWNS BESIDE A PLAYER, AND THAT IS THE PLATFORM'S RULE TOO ═══
+---
+--- `CreateVehicle` is an RPC native: the server asks a client to make the entity.
+--- It only works when somebody is inside OneSync focus distance of the
+--- coordinates, so "at coordinates" would be a verb that silently does nothing
+--- wherever the map is empty. Naming a player turns the one precondition the
+--- native has into the one argument the verb takes.
+---
+--- The routing bucket is copied from that player for the same reason: matches
+--- run in their own buckets (server/roster.lua), and a car in bucket 0 is a car
+--- nobody in a match can see.
+---
+--- ═══ IT SPAWNS ONLY WHAT THE GAMEMODE ALREADY TOLERATES ═══
+---
+--- The model goes through BR.Config.IsAllowedVehicle FIRST, and a refused one is
+--- refused HERE, before anything is created. That is not timidity, and the
+--- alternative was examined properly.
+---
+--- A server-side `CreateVehicle` DOES raise `entityCreating` -- it is an RPC, so
+--- the clone comes back up the client path like any other (the header says so,
+--- and says it about #191's ambulance). So a helicopter spawned through this
+--- verb would reach the detector above, be refused as FLIES, and be attributed
+--- by `ownerOf`.
+---
+--- AND `ownerOf` CANNOT ATTRIBUTE IT TO THE PERSON WHO TYPED IT. The console is
+--- source 0, `ownerOf` rejects everything <= 0 by name and says why, and
+--- BR.IncidentBuild.fromVehicle declines to file without a license -- which the
+--- console does not have. What `NetworkGetEntityOwner` answers is whichever
+--- CLIENT the engine handed the fresh entity to, and that is a proximity read.
+---
+--- So the choice on offer was never "exempt the owner" against "let the owner's
+--- own name reach the queue". It was "file nothing" against "file the second one
+--- against whichever player happened to be standing nearest", and there is no
+--- reading of the rule that deleted the admin exemption -- no exemptions, ever,
+--- least of all for the powerful -- that is served by opening a case against a
+--- bystander for a car the console spawned.
+---
+--- SO THERE IS NO EXEMPTION ANYWHERE AND THE DETECTOR ABOVE IS UNTOUCHED. Nobody
+--- is exempt because nothing is excused: the verb cannot create the thing that
+--- would file. An allowed model reaches the handler above, passes the allowlist
+--- like any parked car, and counts in `brvehicles` under `allowed` -- which is
+--- honest, because that is exactly what it is.
+---
+--- If a refused model is genuinely wanted in a match, the change is a reviewed
+--- row in config/vehicles.lua, not a back door in a debug verb.
+---
+--- ═══ WHAT HAPPENS TO IT AFTERWARDS ═══
+---
+---   * NOTHING DELETES IT AT MATCH END. Option A means this gamemode owns no
+---     vehicles, so there is no vehicle teardown to add it to, and none is added
+---     here. It is left on the platform's default orphan mode
+---     (DeleteWhenNotRelevant), which collects it once no player has it in
+---     scope -- the same death every ambient car dies.
+---   * THE FUEL LEDGER PICKS IT UP, BUT NOT AT SPAWN. #195 admits a vehicle from
+---     its sample pass over players who are LIVE and in a match, keyed on the
+---     vehicle the PED is in -- so an empty car is in no ledger at all, and the
+---     moment somebody in a match sits in it, it is admitted with a full tank
+---     exactly like a car found at the roadside.
+RegisterCommand('brcar', function(src, args)
+    -- CONSOLE ONLY, AND `RESTRICTED` IS NOT WHAT DOES THAT. Every verb in this
+    -- family is registered restricted, which means the server console OR a live
+    -- client holding the `br.admin` ACE. That is the right boundary for a
+    -- readout and the wrong one for a vehicle: #202's rule is that this "must
+    -- not become a route for anyone without console access to obtain a vehicle",
+    -- and an admin holding br.admin does not have console access.
+    --
+    -- AN EQUALITY RATHER THAN A TRUTHINESS TEST, because 0 IS TRUTHY IN LUA and
+    -- source 0 is the console -- `if src then` admits everybody and `if not src
+    -- then` admits nobody. The same distinction ownerOf spells out above.
+    if tonumber(src) ~= 0 then
+        print('  brcar is server-console only (the br.admin ACE is not enough)')
+        return
+    end
+
+    -- ...AND DEV MODE ON TOP OF IT, the same gate brgive and brarm carry, for
+    -- the reason their note gives: one switch meaning "this box is not a real
+    -- match", rather than a second thing to remember. Option A says the gamemode
+    -- spawns no vehicles, and a car appearing out of nothing in a live round is
+    -- the event that rule exists to prevent.
+    if not BR.Server.devMode then
+        print('  brcar is dev-mode only (br_devMode true)')
+        return
+    end
+
+    local target = tonumber(args and args[1])
+    local model  = tostring((args and args[2]) or DEFAULT_MODEL):lower()
+    if not target then
+        print(('  usage: brcar <serverId> [model]      default model: %s')
+            :format(DEFAULT_MODEL))
+        print('    Spawns in front of that player, in their routing bucket.')
+        print('    Only models config/vehicles.lua tolerates -- brvehicles reads')
+        print('    the other side of the same allowlist.')
+        return
+    end
+
+    local e = BR.Roster and BR.Roster.get and BR.Roster.get(target)
+    if not e then
+        print(('  no roster entry for %d'):format(target))
+        return
+    end
+
+    -- THE PED, NOT THE PLAYER. The RPC needs a real position, and the roster's
+    -- sampled ped is where the rest of this server reads one from.
+    local ped = e.ped
+    if not ped or ped == 0 then
+        print(('  no ped for %d yet -- connected but not spawned, or OneSync is off')
+            :format(target))
+        return
+    end
+
+    local hash = GetHashKey(model)
+    local allowed, why = BR.Config.IsAllowedVehicle(hash)
+    if not allowed then
+        print(('  REFUSED %s -- %s'):format(model, tostring(why)))
+        print('  This gamemode opens a case about that model when a CLIENT puts')
+        print('  one in a match, so the console does not get to put one there')
+        print('  either. If the rule is wrong, change config/vehicles.lua.')
+        return
+    end
+
+    if not CreateVehicle then
+        print('  CreateVehicle is not available in this runtime')
+        return
+    end
+
+    local p = GetEntityCoords(ped)
+    if not p then
+        print(('  no coordinates for %d'):format(target))
+        return
+    end
+
+    -- IN FRONT OF THEM, TURNED ACROSS. GTA's heading is degrees clockwise from
+    -- north, so the forward vector is (-sin, cos) -- and the vehicle is set a
+    -- quarter turn off that, so what faces the player is a door.
+    local heading = 0.0
+    if GetEntityHeading then heading = tonumber(GetEntityHeading(ped)) or 0.0 end
+    local rad = math.rad(heading)
+    local x = p.x - math.sin(rad) * SPAWN_AHEAD_M
+    local y = p.y + math.cos(rad) * SPAWN_AHEAD_M
+    local z = p.z
+
+    -- NORMALISED BEFORE IT IS TESTED, because this is a handle and the platform
+    -- answers 0 for failure -- and 0 is truthy. `if veh then` reports a success
+    -- that did not happen and then prints a netId for nothing.
+    local veh = math.tointeger(tonumber(CreateVehicle(
+        hash, x, y, z, heading + 90.0, true, false))) or 0
+    if veh == 0 then
+        print(('  the engine refused to create %s'):format(model))
+        print('  Either that name is not a vehicle in this game build, or nobody')
+        print(('  was close enough to %s to run the creation: CreateVehicle is')
+            :format(e.name or target))
+        print('  an RPC and some client has to be in range of the coordinates.')
+        return
+    end
+
+    -- THE BUCKET, COPIED FROM THE PLAYER RATHER THAN RE-DERIVED. roster.lua owns
+    -- the rule that picks it -- lobby, warmup pad, or the match's own -- and a
+    -- second copy of that rule here would be a second copy to keep right.
+    local bucket
+    if GetPlayerRoutingBucket then
+        bucket = math.tointeger(tonumber(GetPlayerRoutingBucket(tostring(target))))
+    end
+    if bucket and SetEntityRoutingBucket then
+        SetEntityRoutingBucket(veh, bucket)
+    end
+
+    local netId = 0
+    if NetworkGetNetworkIdFromEntity then
+        netId = math.tointeger(tonumber(NetworkGetNetworkIdFromEntity(veh))) or 0
+    end
+
+    print(('[br_core] brcar: %s (0x%08X) -> %s (%d)')
+        :format(model, BR.NormHash(hash), e.name or '?', target))
+    print(('  at       %.1f, %.1f, %.1f   bucket %s')
+        :format(x, y, z, bucket and tostring(bucket) or 'unchanged'))
+    print(('  handle   %d   netId %d'):format(veh, netId))
+    print('  Nothing owns it: no match teardown deletes it, and the platform')
+    print('  collects it once no player has it in scope. It joins the fuel')
+    print('  ledger the moment somebody in a match sits in it, with a full tank.')
+end, true)

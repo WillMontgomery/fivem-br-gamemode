@@ -132,6 +132,20 @@ sv_enforceGameBuild 3095
 # version of the same setting; it is the same setting plus deleting the map's
 # traffic. And `full` is not a value -- the docs advertise it, the parser
 # rejects it.
+#
+# ═══ AND IT IS WHY A TRAINER CANNOT SPAWN A CAR HERE ANY MORE ═══
+#
+# Owner, 2026-08-22 (#202): "I can no longer spawn a vehicle through vMenu."
+# That is this line working, not a regression. The platform validates a client's
+# clone-create BEFORE raising `entityCreating`, so a refused vehicle is deleted
+# without br_core ever seeing it -- which is also why `brvehicles` stays at zero
+# while it happens.
+#
+# THE REPLACEMENT IS `brcar <serverId> [model]`, at the server console. It goes
+# through a SERVER-side CreateVehicle, which the same validator admits by its
+# creation token rather than by the mode -- so it works here and would work
+# under `strict` too. Console only, dev mode only, and only models
+# br_lib/config/vehicles.lua tolerates. See docs/running.md.
 sv_entityLockdown relaxed
 
 # ---------------------------------------------------------------------------

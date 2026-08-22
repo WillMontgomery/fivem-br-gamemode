@@ -277,12 +277,28 @@ function BR.Match.transition(m, state, durationSec)
     -- A warmup that announced 45 seconds and then quietly extended would leave
     -- every HUD counting down to a departure that is not coming, which is the
     -- exact failure shortenWarmupIfFull rebroadcasts to avoid.
+    local heldByFreeze = false
     if state == BR.MatchState.WARMUP and BR.Match.warmupFrozen() then
         m.endsAt = GetGameTimer() + WARMUP_HOLD_MS
+        heldByFreeze = true
     end
 
+    -- AND THE LINE BELOW SAYS SO. It used to print `(45s)` for a warmup being
+    -- held for a day, because it reports `secs` -- the value from the DURATION
+    -- table -- rather than the deadline the two lines above just overwrote.
+    --
+    -- THAT WAS THE WHOLE OF #202's SECOND HALF. The owner froze a warmup, the
+    -- lobby emptied and rebuilt, and every new match logged a confident
+    -- `WAITING -> WARMUP (45s)` while sitting on the pad forever. The one line
+    -- in the whole feature that printed anything about a held warmup was
+    -- printing the opposite, so the console actively argued the freeze was off.
+    -- A stuck server with no indication of why is bad; a stuck server whose log
+    -- denies it is worse.
     print(('[br_core] match %d: %s -> %s%s'):format(
-        m.id, from, state, secs and (' (%ds)'):format(secs) or ''))
+        m.id, from, state,
+        heldByFreeze
+            and ' (HELD by brwarmupfreeze -- `brwarmupfreeze off` releases it)'
+            or (secs and (' (%ds)'):format(secs) or '')))
 
     -- Broadcast BEFORE onEnter -- the ordering is a CONTRACT. At ENDED the
     -- client must hear the match ended BEFORE the roster sweep flips its
@@ -1286,6 +1302,12 @@ end
 local function tick()
     local now = GetGameTimer()
 
+    -- A DEBUG HOLD DOES NOT OUTLIVE THE SESSION IT WAS SET FOR (#202). Asked
+    -- FIRST, before the dissolves below empty the registry, so the order of the
+    -- two is never load-bearing: the freeze is judged on who is connected, which
+    -- neither of them changes.
+    BR.Match.thawOnEmptyServer()
+
     BR.Server.eachMatch(function(m) matchTick(m, now) end)
 
     -- FORMATION, PER MODE. Matches are homogeneous (user call, 2026-08-04),
@@ -1512,6 +1534,9 @@ end, true)
 ---   brwarmupfreeze off      thaw -- re-enter warmup from now, so the pad runs
 ---                           its ordinary countdown and departs normally
 ---
+--- The hold also lifts on its own once the server is empty (#202). It survives
+--- matches; it does not survive the session. `brstate` says when it is on.
+---
 --- MODELLED ON brstormfreeze (server/storm.lua) DELIBERATELY, down to the
 --- restriction, the wording of the report and the `off` argument. They are the
 --- same kind of control -- a debug hold on a clock that would otherwise decide
@@ -1546,28 +1571,80 @@ end, true)
 --- gives: clients derive their countdown from it, so an endsAt that moved in
 --- silence leaves every HUD counting to the wrong moment.
 ---
---- ═══ IT DOES NOT LIFT ITSELF, AND THAT IS THE ONE PLACE IT DIVERGES ═══
+--- ═══ IT DOES NOT LIFT AT MATCH END, AND IT DOES LIFT ON AN EMPTY SERVER ═══
 ---
 --- brstormfreeze drops at the end of the match it was holding, because carrying
 --- a storm freeze into the next round leaves that round with no storm and a
 --- battle royale with no storm never ends -- an invisible failure.
 ---
---- THE SAME RULE HERE WOULD BE BOTH UNREACHABLE AND WRONG. Unreachable, because
---- a warmup that is being held never reaches the end of a match to hang the
+--- THE SAME RULE HERE WOULD BE UNREACHABLE AND WRONG. Unreachable, because a
+--- warmup that is being held never reaches the end of a match to hang the
 --- release on; the only paths that do get there are the dissolves -- everybody
 --- steps off the pad, or the warmup was underpopulated -- so the hook would fire
 --- exactly when a tester walked away for a moment and would disarm a switch they
 --- set thirty seconds ago. And wrong, because the failure it would be protecting
 --- against is not invisible: a held warmup is a departure timer that has stopped
---- on the screen of everybody standing on the pad. It stays on until somebody
---- says `off`. Do not "fix" this to match the storm without reading this note.
+--- on the screen of everybody standing on the pad.
+---
+--- THAT REASONING SURVIVES #202 INTACT. What it does NOT cover, and what the
+--- owner hit on 2026-08-22, is the case where there is no tester to disarm a
+--- switch out from under:
+---
+---   "I ran brwarmupfreeze but after all players left and went back in, the
+---    warmup is still frozen."
+---
+--- Every word of that is the code above doing what it says. `warmupFrozen` is a
+--- process-lifetime flag; BR.Match.transition re-applies it to every warmup that
+--- ever opens again, so the freeze was not stuck, it was PERMANENT -- one
+--- console line held every future lobby on this server until somebody typed
+--- `off` or restarted the resource. Nothing was broken; the scope was wrong.
+---
+--- SO THE RELEASE IS HUNG ON THE SERVER EMPTYING, NOT ON A MATCH ENDING. See
+--- BR.Match.thawOnEmptyServer below. The two are different events and only one
+--- of them is a lie about what the tester wanted: a match dissolving means the
+--- people testing stepped into the lobby, and a server with nobody connected
+--- means the session the hold was set for is over. An empty server rebuilding a
+--- lobby from scratch should not inherit a debug switch from the last one.
+---
+--- IT IS STILL RELEASABLE BY HAND, AND ALWAYS WAS -- `brwarmupfreeze off`, the
+--- same word the storm takes. That was never the missing piece. The missing
+--- pieces were that the hold outlived its session and that NOTHING SAID SO: see
+--- the log line in BR.Match.transition, which used to print `(45s)` over a
+--- warmup being held for a day, and the `brstate` readout in server/debug.lua.
 local warmupFrozen = false
 
 --- Is warmup currently held by brwarmupfreeze?
 --- Read by BR.Match.transition, so a match opening AFTER the freeze inherits it,
---- and by shortenWarmupIfFull, so a full lobby cannot cut the hold short.
+--- by shortenWarmupIfFull, so a full lobby cannot cut the hold short, and by
+--- `brstate` (server/debug.lua), so a held server says why it is held.
 --- @return boolean
 function BR.Match.warmupFrozen() return warmupFrozen end
+
+--- Drop the hold once nobody is connected.
+---
+--- POLLED FROM THE TICK RATHER THAN HOOKED TO `playerDropped`, and the reason is
+--- ordering rather than taste. Half this resource registers a drop handler and
+--- roster.lua's is the one that takes the entry out of the roster -- so a
+--- handler here would be asking "is the server empty" either side of the answer
+--- changing, depending on registration order in the manifest. The tick asks 4Hz
+--- later, when the roster has settled and there is exactly one answer.
+---
+--- CHEAP ON THE ORDINARY PATH: the flag is false, so this is one comparison per
+--- tick and never reaches the count.
+---
+--- WHY THE COUNT AND NOT THE MATCH REGISTRY. An empty registry is not an empty
+--- server -- it is the ordinary state of a lobby between rounds, which is
+--- precisely the moment a tester is standing there waiting for the next held
+--- warmup. `BR.Server.count()` is zero only when the roster is empty, and
+--- BR.Roster.remove clears the entry rather than marking it LEFT, so it reaches
+--- zero on the last disconnect.
+function BR.Match.thawOnEmptyServer()
+    if not warmupFrozen then return end
+    if BR.Server.count() > 0 then return end
+    warmupFrozen = false
+    print('[br_core] warmup freeze lifted -- the server is empty, so the next '
+        .. 'lobby is not born held')
+end
 
 RegisterCommand('brwarmupfreeze', function(_, args)
     if not BR.Server.devMode then

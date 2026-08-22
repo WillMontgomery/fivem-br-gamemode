@@ -124,6 +124,10 @@ RegisterCommand('brhelp', function()
     print('  brvehicles           refused vehicles seen in matches: what was')
     print('                       counted, what the engine placed, and which')
     print('                       models the allowlist did not name')
+    print('  brcar <id> [model]   spawn a vehicle in front of a player, since')
+    print('                       entity lockdown refuses trainers. CONSOLE')
+    print('                       ONLY -- the br.admin ACE is not enough -- and')
+    print('                       only models the allowlist tolerates (dev mode)')
     print('  brloot [matchId]     world loot: counts by kind and rarity, subscriptions')
     print('  brlootnear <id> [r]  every entry within r (50m) of that player, and')
     print('                       whether the claim path would accept it: the')
@@ -184,6 +188,27 @@ RegisterCommand('brstate', function()
     line('-')
     print(('  minted ids   %d'):format(BR.Server.matchId))
     print(('  devMode      %s'):format(tostring(BR.Server.devMode)))
+
+    -- THE DEBUG HOLDS, PRINTED ONLY WHEN THEY ARE ON.
+    --
+    -- #202: the owner froze warmup, the lobby emptied and rebuilt, and every
+    -- match after that was born held -- with nothing anywhere saying so. This is
+    -- the first command anybody runs at a server that is not doing what they
+    -- expect, so it is where the answer belongs.
+    --
+    -- ONLY WHEN ON, because a line reading `warmup hold  off` on every healthy
+    -- server is noise that teaches people to skip the block it lives in. A hold
+    -- is the exception and prints like one.
+    if BR.Match and BR.Match.warmupFrozen and BR.Match.warmupFrozen() then
+        print('  warmup       HELD by brwarmupfreeze -- every warmup that opens')
+        print('               stays on the pad. `brwarmupfreeze off` releases it,')
+        print('               and it lifts itself once the server is empty.')
+    end
+    if BR.Storm and BR.Storm.isFrozen and BR.Storm.isFrozen() then
+        print('  storm        HELD by brstormfreeze -- no phases, no damage.')
+        print('               `brstormfreeze off` releases it, and it lifts')
+        print('               itself at the end of the match it is holding.')
+    end
     print(('  onesync      %s%s'):format(
         tostring(BR.Server.onesync),
         (BR.Server.onesync == 'off' or BR.Server.onesync == '')

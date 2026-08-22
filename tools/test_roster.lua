@@ -166,6 +166,39 @@ end
 local buckets = {}
 function SetPlayerRoutingBucket(src, bucket) buckets[tonumber(src)] = bucket end
 function SetRoutingBucketPopulationEnabled() end
+function GetPlayerRoutingBucket(src) return buckets[tonumber(src)] end
+
+-- ═══ SERVER-SIDE VEHICLE CREATION, FOR `brcar` ═══
+--
+-- `CreateVehicle` ANSWERS A NUMBER AND ANSWERS 0 FOR FAILURE, which is the whole
+-- reason it is stubbed rather than assumed: 0 is truthy in Lua, so a stub that
+-- returned nil for failure would agree with a caller that tests `if veh then`
+-- and prove nothing. `createFail` makes the real failure path reachable.
+--
+-- Every call is RECORDED rather than counted. What the tests need to assert is
+-- that a refused model never reaches this function at all -- an assertion about
+-- absence, which needs the log rather than a return value.
+local created = {}
+local createFail = false
+local nextVehicle = 500
+function CreateVehicle(hash, x, y, z, heading, isNetwork, netMission)
+    created[#created + 1] = {
+        hash = hash, x = x, y = y, z = z, heading = heading,
+        isNetwork = isNetwork, netMission = netMission,
+    }
+    if createFail then return 0 end
+    nextVehicle = nextVehicle + 1
+    return nextVehicle
+end
+
+-- The heading a ped is facing. Zero for everybody unless a test says otherwise,
+-- which makes the spawn offset arithmetic checkable by hand: facing north
+-- (heading 0) puts the car +SPAWN_AHEAD_M on Y and nothing on X.
+local pedHeading = {}
+function GetEntityHeading(ent) return pedHeading[ent] or 0.0 end
+
+local entityBucket = {}
+function SetEntityRoutingBucket(ent, bucket) entityBucket[ent] = bucket end
 
 -- Capture outbound traffic so tests can assert on what clients would receive.
 local sent = {}
@@ -208,6 +241,21 @@ local function runCommand(name, ...)
     return true
 end
 
+--- Run one AS SOMEBODY, which is the only way to reach a console-only gate.
+---
+--- runCommand always passes 0 -- the server console -- because that is how every
+--- verb in this project is meant to be typed. `brcar` is the first one whose
+--- refusal of everybody ELSE is a security boundary rather than a convenience,
+--- and a boundary nothing ever crosses in a test is a boundary nobody has
+--- checked. Source 0 is the console; anything else is a live client, including
+--- one holding the br.admin ACE that makes `RESTRICTED` let it through.
+local function runCommandAs(src, name, ...)
+    local fn = commands[name]
+    if not fn then return false end
+    fn(src, { ... }, name)
+    return true
+end
+
 -- br_stats asks whether br_ddb is running before it records anything, and
 -- answers 'not started' by doing nothing at all. Saying 'started' here is what
 -- lets the match-history block below drive the real write path; every other
@@ -221,8 +269,37 @@ function GetResourceState() return 'started' end
 -- timer would only delete bookkeeping the test wants to read.
 function SetTimeout() end
 
+--- The server console, swallowed but not thrown away.
+---
+--- This was `function print() end`, and that made the CONSOLE the one output of
+--- this server nothing could assert on. It is a real output: `brstate`,
+--- `brvehicles` and the whole debug family exist only as print, and #202 turned
+--- on a line of it -- a match born under a warmup hold used to log the departure
+--- time it was not going to keep, which is worse than silence because it argues
+--- the hold is off.
+---
+--- A RING RATHER THAN A LOG. Every block in this suite prints; keeping all of it
+--- would be a table growing without bound for the sake of the handful of lines
+--- anybody looks at. The last PRINT_KEEP lines are always there, which is more
+--- than any single assertion needs.
 local realPrint = print
-function print() end
+local PRINT_KEEP = 256
+local printed = {}
+function print(...)
+    local parts = {}
+    for i = 1, select('#', ...) do parts[i] = tostring((select(i, ...))) end
+    printed[#printed + 1] = table.concat(parts, '\t')
+    if #printed > PRINT_KEEP then table.remove(printed, 1) end
+end
+
+--- Did the console say this, recently? Substring, because the assertions worth
+--- writing are about the fact a line carries and not about its punctuation.
+local function printedSaying(needle)
+    for i = #printed, 1, -1 do
+        if printed[i]:find(needle, 1, true) then return printed[i] end
+    end
+    return nil
+end
 
 Citizen = { CreateThread = function() end, Wait = function() end,
             SetTimeout = function() end }
@@ -411,6 +488,26 @@ local function reset()
     -- so a block that turns free spectate on cannot decide what a later one is
     -- testing.
     BR.Config.Spectate.freeAfterSquadOut = false
+
+    -- THE VEHICLE-CREATION LOG, which is read by absence as well as by content:
+    -- a block asserting that a refused model created nothing would pass on the
+    -- previous block's entries if this were not cleared.
+    for k in pairs(created) do created[k] = nil end
+    for k in pairs(pedHeading) do pedHeading[k] = nil end
+    for k in pairs(entityBucket) do entityBucket[k] = nil end
+    createFail = false
+
+    -- AND THE WARMUP HOLD, which is process-lifetime state by design (#202) --
+    -- so a block that leaves it on holds every warmup in every block after it,
+    -- and those blocks fail somewhere with no visible connection to the cause.
+    -- Cleared through the command rather than by hand, because the command is
+    -- the only thing that owns the flag -- which means borrowing dev mode for
+    -- one call and putting back whatever the block was using, since the thaw is
+    -- gated on it and reset() must not decide that for anybody.
+    local devWas = BR.Server.devMode
+    BR.Server.devMode = true
+    runCommand('brwarmupfreeze', 'off')
+    BR.Server.devMode = devWas
 end
 
 -- ------------------------------------------------ parallel-match helpers ---
@@ -3294,6 +3391,9 @@ do
     queueUp(1, 'A'); queueUp(2, 'B')
     fakeTime = fakeTime + 1000
     sent = {}
+    -- The console too, for the assertion below: what is being asserted is what
+    -- THIS step printed, not what some earlier block left in the ring.
+    printed = {}
     BR.Sched.step(fakeTime)
     ok(mstate() == BR.MatchState.WARMUP, 'a match forms under the freeze')
     ok(mendsAt() > fakeTime + warmupMs,
@@ -3303,6 +3403,21 @@ do
     ok(born ~= nil and born.endsAt == mendsAt(),
         'and the state event that announced it carries the held deadline, so '
             .. 'no client is ever told the wrong one')
+
+    -- ...AND THE CONSOLE SAYS SO RATHER THAN THE OPPOSITE. The transition log
+    -- reports `secs` from the DURATION table, which the hold has just
+    -- overwritten -- so this line used to read `WAITING -> WARMUP (45s)` over a
+    -- match being held for a day. That was #202's second half: the one line in
+    -- the whole feature that printed anything about a held warmup was arguing
+    -- the freeze was off.
+    -- The MATCH's transition, not a player's: roster.setState logs
+    -- `lobby -> warmup` per player a moment later, and only the instance comes
+    -- from WAITING.
+    local logged = printedSaying(
+        BR.MatchState.WAITING .. ' -> ' .. BR.MatchState.WARMUP)
+    ok(logged ~= nil and logged:find('HELD', 1, true) ~= nil,
+        'and the transition log says HELD, not the departure it will not keep',
+        tostring(logged))
 
     -- ------------------------------- it does not lift itself, on purpose ---
     --
@@ -3320,8 +3435,276 @@ do
     ok(runCommand('brwarmupfreeze', 'thaw') and BR.Match.warmupFrozen() == false,
         "and 'thaw' is the same word, as it is for the storm")
 
+    -- ------------------------------ ...BUT IT DOES NOT SURVIVE THE SESSION ---
+    --
+    -- #202, and the owner's exact sequence: "I ran brwarmupfreeze but after all
+    -- players left and went back in, the warmup is still frozen."
+    --
+    -- THE TWO EVENTS THE BLOCK ABOVE AND THIS ONE SEPARATE ARE THE WHOLE FIX. A
+    -- match dissolving is a tester stepping into the lobby and it must not
+    -- disarm anything. A server with NOBODY CONNECTED is the session being over,
+    -- and a lobby rebuilt from scratch after that should not inherit a debug
+    -- switch from the last one. Asserted in that order, because a release hung
+    -- on the wrong one of those looks identical from either side alone.
+    reset()
+    BR.Server.devMode = true
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    runCommand('brwarmupfreeze')
+    ok(BR.Match.warmupFrozen() == true, 'the hold is on with two players in')
+
+    -- ONE OF THEM LEAVING IS NOT THE SERVER EMPTYING, and this is the assertion
+    -- that stops the fix from becoming the thing the command's note refuses.
+    leave(2)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Match.warmupFrozen() == true,
+        'one player leaving does not lift it -- somebody is still testing')
+
+    leave(1)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    ok(BR.Match.warmupFrozen() == false,
+        'the LAST player leaving does: an empty server has no hold to inherit')
+
+    -- ...AND THE LOBBY THAT REBUILDS IS AN ORDINARY ONE. The owner's report is
+    -- about what happened after they came back, so the test goes there too:
+    -- asserting the flag alone would pass for a fix that cleared the flag and
+    -- left the next warmup held by some other route.
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    ok(mstate() == BR.MatchState.WARMUP, 'they come back and a warmup opens')
+    ok(mendsAt() == fakeTime + warmupMs,
+        'and it counts down like any other, rather than being born held',
+        ('endsAt %d, now %d, warmup %d'):format(mendsAt(), fakeTime, warmupMs))
+
+    fakeTime = fakeTime + warmupMs
+    BR.Sched.step(fakeTime)
+    ok(mstate() ~= BR.MatchState.WARMUP,
+        'and the bus comes, which is the whole of what the owner reported',
+        tostring(mstate()))
+
+    -- --------------------------- a held server SAYS it is held ---
+    --
+    -- The other half of #202. `brwarmupfreeze off` always worked; what did not
+    -- was finding out that anything needed releasing. BR.Match.warmupFrozen is
+    -- the reader `brstate` prints from, so it is asserted to be readable while a
+    -- hold is on rather than merely settable -- a private flag with no reader is
+    -- the version of this bug that survives the fix.
+    reset()
+    BR.Server.devMode = true
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+    runCommand('brwarmupfreeze')
+    ok(BR.Match.warmupFrozen() == true and mendsAt() > fakeTime + warmupMs,
+        'the reader and the deadline agree while the hold is on')
+    runCommand('brwarmupfreeze', 'off')
+    ok(BR.Match.warmupFrozen() == false and mendsAt() == fakeTime + warmupMs,
+        'and they agree again after it is released')
+
     BR.Server.devMode = savedDev
     BR.Config.Match.maxPlayers = savedMax
+end
+
+describe('vehicles.devSpawn')
+do
+    --[[
+        brcar -- PUT A VEHICLE IN THE WORLD WITHOUT A TRAINER (#202).
+
+        Owner, 2026-08-22: "Probably related to our hardening but I can no
+        longer spawn a vehicle through vMenu. We should have dev tooling to do
+        this otherwise if vMenu won't be an option."
+
+        WHAT THESE ASSERTIONS CATCH THAT READING THE FILE DOES NOT. Three of the
+        four gates on this verb fail OPEN if they are written wrong, and every
+        one of them fails open silently:
+
+          * the console gate is an equality against 0, and `0` is truthy in Lua
+            -- `if src then` lets every player through and nothing looks wrong;
+          * the allowlist check happens BEFORE CreateVehicle, so the thing to
+            assert is that the native was never reached, which is an assertion
+            about absence and needs the call log rather than a return value;
+          * CreateVehicle answers 0 for failure, and 0 is truthy again, so a
+            caller that tests the handle wrongly reports a success that did not
+            happen.
+
+        The fourth is the routing bucket, which fails CLOSED and invisibly: the
+        car exists, in bucket 0, where nobody in a match can see it.
+    ]]
+
+    local savedDev = BR.Server.devMode
+
+    -- THE DETECTOR'S COUNTERS ARE MODULE-LIFETIME and reset() does not touch
+    -- them, so this block asks about its own DELTA rather than about zero. An
+    -- absolute assertion here would be a landmine for whoever adds a
+    -- refused-vehicle block above it, and it would fail with a message pointing
+    -- at the wrong feature.
+    local baseCounted = BR.Vehicles.stats().counted
+
+    reset()
+    BR.Server.devMode = true
+    queueUp(1, 'A'); queueUp(2, 'B')
+    fakeTime = fakeTime + 1000
+    BR.Sched.step(fakeTime)
+
+    -- ------------------------------------------------- the console gate ---
+    --
+    -- RESTRICTED is not this gate. A live client holding br.admin reaches every
+    -- other verb in this family; #202's rule is that it must not reach this one.
+    ok(runCommandAs(1, 'brcar', '1'), 'brcar is registered')
+    ok(#created == 0,
+        'and a live client cannot spawn one, ACE or no ACE',
+        ('%d vehicle(s) created'):format(#created))
+    ok(runCommandAs(2, 'brcar', '1') and #created == 0,
+        'nor can any other')
+
+    -- ------------------------------------------------- the dev-mode gate ---
+    BR.Server.devMode = false
+    runCommand('brcar', '1')
+    ok(#created == 0, 'and the console itself cannot, outside dev mode')
+    BR.Server.devMode = true
+
+    -- ------------------------------------------------------ the allowlist ---
+    --
+    -- THE ONE THAT DECIDES THE INCIDENT QUESTION. A server-side CreateVehicle is
+    -- an RPC and DOES raise entityCreating, so a refused model spawned here
+    -- would be attributed by ownerOf to whichever CLIENT the engine handed it
+    -- to -- never to the console, which is source 0 and has no license. So the
+    -- verb must not create it at all, and "must not create" is asserted on the
+    -- native never being called rather than on any counter.
+    runCommand('brcar', '1', 'buzzard')
+    ok(#created == 0,
+        'a refused model reaches CreateVehicle exactly never',
+        ('%d vehicle(s) created'):format(#created))
+    ok(BR.Vehicles.stats().counted == baseCounted,
+        'and nothing is counted against anybody for asking')
+
+    runCommand('brcar', '1', 'rhino')
+    ok(#created == 0, 'the armed half of the rule is refused too')
+
+    -- ...AND THE REFUSAL IS THE SAME ONE THE DETECTOR USES. Two independent
+    -- statements: the table says no, and the verb asks the table.
+    local deniedHeli = select(1, BR.Config.IsAllowedVehicle(GetHashKey('buzzard')))
+    local deniedTank = select(1, BR.Config.IsAllowedVehicle(GetHashKey('rhino')))
+    ok(deniedHeli == false and deniedTank == false,
+        'and config/vehicles.lua is what refused them, not a second list here')
+
+    -- --------------------------------------------------------- the spawn ---
+    --
+    -- Player 1 faces north (heading 0), so the forward vector is +Y and the car
+    -- lands 5m up-map with nothing on X. Hand-checkable on purpose: an offset
+    -- computed with sin and cos transposed still "works" from every angle
+    -- except the one somebody can do in their head.
+    setPos(1, 100.0, 200.0, 30.0)
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+
+    runCommand('brcar', '1')
+    ok(#created == 1, 'an allowed model is created', ('%d'):format(#created))
+    local c = created[1]
+    ok(c ~= nil and c.hash == GetHashKey('granger'),
+        'the default model is the one the file names, hashed')
+    ok(c ~= nil and math.abs(c.x - 100.0) < 0.001
+                and math.abs(c.y - 205.0) < 0.001,
+        'and it lands 5m in front of the player, not on top of them',
+        c and ('%.2f, %.2f'):format(c.x, c.y) or 'nothing created')
+    ok(c ~= nil and c.z == 30.0, 'at their own height')
+    ok(c ~= nil and c.isNetwork == true,
+        'NETWORKED, which is the whole point -- a local car is one only the '
+            .. 'spawning client can sit in')
+    ok(c ~= nil and math.abs(c.heading - 90.0) < 0.001,
+        'and turned a quarter across them, so a door faces the player',
+        c and ('%.1f'):format(c.heading) or 'nothing created')
+
+    -- THE OFFSET ROTATES WITH THE PLAYER, which is the half of it that a
+    -- transposed sin and cos still gets right when everybody happens to face
+    -- north. Heading 90 is east, so the forward vector is (-1, 0) and the car
+    -- lands 5m DOWN on X with nothing on Y -- the opposite axis to the case
+    -- above, on purpose.
+    pedHeading[1001] = 90.0
+    runCommand('brcar', '1')
+    local east = created[#created]
+    ok(east ~= nil and math.abs(east.x - 95.0) < 0.001
+                   and math.abs(east.y - 200.0) < 0.001,
+        'the offset follows the heading rather than always pointing north',
+        east and ('%.2f, %.2f'):format(east.x, east.y) or 'nothing created')
+    ok(east ~= nil and math.abs(east.heading - 180.0) < 0.001,
+        'and so does the quarter turn')
+    pedHeading[1001] = nil
+
+    -- The routing bucket. A match's players live in the match's own bucket, so
+    -- a car left in bucket 0 is a car nobody in a round can see -- the failure
+    -- that looks like "the command did nothing".
+    ok(entityBucket[501] == buckets[1] and buckets[1] ~= nil,
+        "and it is put in the target's own routing bucket",
+        ('entity %s vs player %s'):format(
+            tostring(entityBucket[501]), tostring(buckets[1])))
+
+    -- A NAMED MODEL, and one that is not the default, so a verb that ignored
+    -- args[2] entirely would be caught.
+    local n = #created
+    runCommand('brcar', '2', 'sultan')
+    ok(#created == n + 1 and created[#created].hash == GetHashKey('sultan'),
+        'a named model is the one that is spawned')
+
+    -- ------------------------------------------- the refusals that are not ---
+    --
+    -- gates: a bad target, and an engine that says no. Both must print and
+    -- neither must create.
+    local before = #created
+    runCommand('brcar', '99')
+    ok(#created == before, 'an unconnected server id creates nothing')
+    runCommand('brcar')
+    ok(#created == before, 'and so does no argument at all -- that is the usage')
+
+    -- A PLAYER THE SERVER CANNOT RESOLVE A PED FOR: connected, on the roster,
+    -- and with no position to spawn beside -- OneSync off, or not spawned in
+    -- yet. Without the guard `GetEntityCoords(0)` answers the origin rather than
+    -- failing, so the car is created in the sea off Los Santos and the command
+    -- reports success. Nothing about that looks wrong in the console.
+    join(4, 'D')
+    noPed[4] = true
+    fakeTime = fakeTime + 300
+    BR.Sched.step(fakeTime)
+    runCommand('brcar', '4')
+    ok(#created == before,
+        'and a player with no ped creates nothing, rather than a car at 0,0,0',
+        ('%d vs %d'):format(#created, before))
+    noPed[4] = nil
+
+    -- CREATEVEHICLE ANSWERS 0 FOR FAILURE AND 0 IS TRUTHY. There is no assertion
+    -- available on the return value here; what is asserted is that the failure
+    -- path is reached and survives -- a caller that treated 0 as a handle would
+    -- go on to hash it into a netId report.
+    createFail = true
+    runCommand('brcar', '1')
+    ok(#created == before + 1,
+        'a refused creation still reached the native (it is the engine saying '
+            .. 'no, not us)')
+    -- AND THE HANDLE OF 0 IS NOT TREATED AS ONE. This is the assertion with
+    -- teeth: `if veh then` is true for the platform's own failure value, and the
+    -- only visible consequence downstream is that the code goes on to bucket
+    -- entity 0 and read a netId off it. So that is what is asserted.
+    ok(entityBucket[0] == nil,
+        'and 0 is not mistaken for a handle -- nothing was done to entity 0',
+        tostring(entityBucket[0]))
+    createFail = false
+
+    -- --------------------------- and the detector is untouched by any of it ---
+    --
+    -- The one number that would mean this feature opened a hole. Nothing above
+    -- filed, nothing above was counted, and no exemption was added anywhere for
+    -- it to have used.
+    local s = BR.Vehicles.stats()
+    ok(s.counted == baseCounted and s.tracked == 0,
+        'no refused-vehicle count was drawn by any of that',
+        ('counted %d (was %d), tracked %d')
+            :format(s.counted, baseCounted, s.tracked))
+
+    BR.Server.devMode = savedDev
 end
 
 describe('match.busSafetyNets')
