@@ -333,3 +333,289 @@ function BR.Config.IsAllowedVehicle(hash)
     if v == nil then return true, nil end
     return false, v.why
 end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- HOW BREAKABLE A CAR IS
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- THE OWNER'S REQUEST, VERBATIM (2026-08-22, #213):
+--
+--   "the vehicle collision/cosmetic damage should be set way higher than it is
+--    right now. As you may be aware, damaging vehicles to a point of total
+--    failure is nearly impossible in base GTA V. That should not be the case
+--    here."
+--
+-- ═══ WHY IT BELONGS IN THIS FILE AND NOT A NEW ONE ═══
+--
+-- Everything above decides WHICH vehicles a match tolerates. This decides how
+-- long one of them lasts, and both are answers to the same question -- what a
+-- vehicle is allowed to be in this gamemode. #195 settled the shape of that
+-- question for fuel: "a vehicle must not be a permanent advantage". A car that
+-- cannot be destroyed is the same permanence by a different route, so the
+-- numbers that stop it live beside the list that bounds it.
+--
+-- ═══ FIVE MULTIPLIERS EXIST AND THEY ARE NOT ONE KNOB ═══
+--
+-- GTA keeps these as separate per-vehicle floats in `handling.meta`, all on a
+-- documented 0.0..10.0 scale where HIGHER MEANS MORE DAMAGE (0.0 is immune,
+-- 10.0 is ten times stock). What each one governs:
+--
+--   fCollisionDamageMult    how much damage an impact does to the car at all.
+--                           This is the one the owner's word "collision" names.
+--   fDeformationDamageMult  how far the panels actually bend. Purely visual,
+--                           and it is the owner's word "cosmetic".
+--   fEngineDamageMult       how fast the engine takes damage, "causing
+--                           explosion or engine failure" in GTA's own words.
+--                           THIS IS THE ONE "TOTAL FAILURE" ACTUALLY MEANS: a
+--                           car with crumpled panels and a live engine still
+--                           drives away, which is exactly the complaint.
+--   fWeaponDamageMult       how much bullets hurt it. NOT what was asked for --
+--                           see `weaponMultiplier` below.
+--   fPetrolTankVolume       how much fuel leaks when the tank is shot. Read
+--                           already by br_core/client/fuel.lua to convert the
+--                           metre ledger into a gauge reading, and DELIBERATELY
+--                           NOT TOUCHED here: changing it would move the fuel
+--                           gauge as a side effect of a damage change.
+--
+-- The three petrol-tank/engine/body HEALTH pools (0..1000) are a different
+-- thing again and are not set here either. They are what the condition bar
+-- reads and what a pump refill restores; this file changes the RATE they fall
+-- at, never their value. Nothing in this feature ever writes a health number.
+--
+-- ═══ THEY ARE PER VEHICLE, SO SOMETHING HAS TO APPLY THEM PER VEHICLE ═══
+--
+-- SET_VEHICLE_HANDLING_FLOAT is a Cfx native with `apiset: client`, and its
+-- implementation clones the model's CHandlingData onto the one entity it is
+-- given (fivem/code/components/handling-loader-five). So there is no global
+-- switch to throw and no server-side call to make: every client applies these
+-- itself, to the vehicles it can see, and br_core/client/vehdamage.lua is the
+-- file that does it. Read its header for who applies them and when.
+--
+-- ITS PER-MODEL SIBLING WAS EXAMINED AND IS THE WRONG NATIVE. SET_HANDLING_FLOAT
+-- takes a handling NAME rather than an entity and edits the shared template --
+-- which sounds like exactly what "set it once for everything" wants, and is not,
+-- because the clone above is taken AT SPAWN. Every vehicle already in the world
+-- holds its own copy and would never see the edit; only cars spawned afterwards
+-- would. Under #193's Option A the world is populated before anybody drives
+-- anything, so that is close to "no vehicle in the match".
+--
+-- ═══ THE `SetVehicleDamageModifier` FAMILY WAS LOOKED FOR AND IS NOT USABLE ═══
+--
+-- #213 names it. It does exist -- 0x4E20D2A627011E8E -- and so do three
+-- neighbours (0x45A561A9421AB6AD, 0x84D7FFD223CAAFFD, 0x9640E30A7F395E4B).
+-- Every one of them is an UNNAMED native: no Rockstar name, an empty
+-- description, unknown parameters, and no open implementation anywhere that
+-- calls any of them. Two competing community databases disagree about what the
+-- first one is even called. Shipping a balance lever whose semantics nobody can
+-- state would make every later "make it more" a guess about a guess, so the
+-- documented handling fields are what this uses. If somebody ever measures one
+-- of those hashes in game, this is the paragraph to come back to.
+--
+-- ═══ WHOSE PRIOR ART, AND WHY NONE OF IT IS IN THIS TREE ═══
+--
+-- RECORDED BECAUSE THE STANDING RULE IS TO RECORD IT. The read-scale-write shape
+-- below is the one the ecosystem converged on, and every implementation of it is
+-- licensed in a way this repo cannot take a byte from:
+--
+--   RealisticVehicleFailure (iEns/Jens Sandalgaard)  CC BY-SA 4.0. Share-alike
+--                                                    copyleft; the canonical
+--                                                    implementation.
+--   QuantumMalice/vehiclehandler, aabbdev/VehicleHealth   GPL-3.0
+--   PawanKrd/pk_vehiclecrash                              AGPL-3.0
+--   Kiminaze/VehicleDeformation                      proprietary (NOASSERTION)
+--   VehicleRealismV3                                 PAID and obfuscated
+--
+-- NO CODE WAS TAKEN FROM ANY OF THEM. What is used is the natives' own
+-- documentation, GTAMods' handling.meta reference for what each field means and
+-- what its range is, and FiveM's own C++ for how the per-vehicle override is
+-- stored -- all of which are documentation of the platform rather than somebody
+-- else's work. One published FINDING is used and is worth attributing plainly:
+-- RealisticVehicleFailure's README states that visual deformation does not sync
+-- to other players, which independently corroborates the ownership analysis in
+-- br_core/client/vehdamage.lua's header.
+--
+-- ═══ ONE NUMBER, BECAUSE IT WILL BE TUNED BY PLAYTEST ═══
+--
+-- "How hard a car should be to destroy" is not a desk question. It will be
+-- turned up or down after somebody drives one into a wall, and the request will
+-- arrive as "more" or "less" -- so exactly one value below is the answer to
+-- that sentence, and everything else is either a name, a guard rail, or a knob
+-- the owner has not asked to move.
+
+--- GTA's own documented top of range for a damage multiplier.
+---
+--- The handling fields above are documented 0.0..10.0, where 10.0 is "ten times
+--- damage". Nothing in the engine enforces that, which is why it is enforced
+--- here: it is the ceiling `scale` falls back to when the configured one is
+--- missing or nonsense, so a bad `ceiling` cannot produce an unbounded write.
+BR.Config.VehicleDamageRangeMax = 10.0
+
+BR.Config.VehicleDamage = {
+    --- The whole feature, on one switch.
+    ---
+    --- OFF MEANS STOCK GTA, not "half applied". Every write this feature makes
+    --- is derived from the model's own value, so switching it off simply stops
+    --- the writes -- there is no half-state to be left in.
+    enabled = true,
+
+    --- ═══ THE ONE NUMBER ═══
+    ---
+    --- How many times more damage a vehicle takes than GTA gives it. It is a
+    --- MULTIPLE OF THE MODEL'S OWN VALUE, not an absolute, and that is the
+    --- choice worth understanding before changing it:
+    ---
+    ---   * stock values differ per model -- a Phantom is not a Blista -- and
+    ---     writing one absolute over all of them would flatten whatever balance
+    ---     Rockstar authored into the vehicle list. A relative scale keeps a
+    ---     tough model relatively tough and still makes every model breakable.
+    ---   * it composes with a deny-list that has nothing to say about
+    ---     durability. config/vehicles.lua's own note on the plain `insurgent`
+    ---     -- "it is armoured and has no weapon, and the rule the owner wrote is
+    ---     about built-in weapons, not about durability" -- stays true: the
+    ---     Insurgent is still the toughest thing on the road, it just is not
+    ---     immortal any more.
+    ---
+    --- WHY 5.0, AND IT IS A STARTING POINT RATHER THAN AN ANSWER.
+    ---
+    --- Sampled stock values across a spread of models are roughly:
+    ---
+    ---     fCollisionDamageMult      0.7 .. 1.0
+    ---     fDeformationDamageMult    0.7 .. 0.8
+    ---     fEngineDamageMult         1.5
+    ---
+    --- and the handling mods that exist to fix precisely this complaint converge
+    --- on an ABSOLUTE 4 to 5 for collision and 5 to 8.75 for deformation. So 5x
+    --- puts an ordinary car at 3.5-5.0 collision (in that band), 3.5-4.0
+    --- deformation (just under it) and 7.5 engine -- which is the aggressive one
+    --- on purpose, because the engine is what "total failure" means and it is
+    --- the half of the complaint that a dented immortal car does not answer.
+    ---
+    --- THAT IS ARITHMETIC ABOUT SOMEBODY ELSE'S TASTE. It is a defensible place
+    --- to start and it is not a measurement; the measurement is somebody driving
+    --- into a wall and saying whether that felt right.
+    ---
+    --- IT IS THE NUMBER TO TURN. "More" is a bigger one, "less" is a smaller
+    --- one, and nothing else in this feature has to move with it. Below 1.0
+    --- makes cars TOUGHER than GTA ships them, which is a legitimate direction;
+    --- at or below 0.0 the feature switches itself off rather than making cars
+    --- invulnerable, because a config typo must cost the feature and never
+    --- reverse it.
+    ---
+    --- ═══ IT HAS ABOUT 6.6 OF HEADROOM BEFORE `ceiling` STARTS DECIDING ═══
+    ---
+    --- The engine field starts highest, so it meets the 10.0 cap first: 1.5 x
+    --- 6.67 is 10.0. Past that, turning this number up stops moving the engine
+    --- multiplier on an ordinary car and only moves the other two, which is a
+    --- knob that has quietly half stopped working. `/brvehdamage` counts every
+    --- clamped write and prints it, so this is visible rather than deduced -- but
+    --- if the answer to a playtest is genuinely "much more than this", the
+    --- honest edit is `ceiling` and not another turn of this.
+    multiplier = 5.0,
+
+    --- Bullet damage to a vehicle. DELIBERATELY 1.0, WHICH IS NO CHANGE.
+    ---
+    --- The owner asked for collision and cosmetic damage. Gunfire is a separate
+    --- multiplier and a separate balance question -- it decides how long a car
+    --- works as COVER, which is a thing a battle royale cares about a great deal
+    --- and which nobody has asked to change. It is named here rather than left
+    --- out so that the answer to "and what about shooting it?" is one edit and a
+    --- readable default, instead of a field somebody has to discover.
+    ---
+    --- ABSOLUTE, NOT SCALED BY `multiplier`. Turning the one number above must
+    --- not silently move a value the owner did not ask about.
+    weaponMultiplier = 1.0,
+
+    --- The most any of these may be written as, whatever the arithmetic says.
+    ---
+    --- GTA documents the range as 0.0..10.0 and does not enforce it. This does,
+    --- and it earns its place twice: it keeps a large `multiplier` on a model
+    --- that already had a high stock value inside the range the engine was
+    --- tuned for, and it is the backstop for the one way this feature can drift
+    --- -- see br_core/client/vehdamage.lua on re-reading a baseline off a
+    --- vehicle we already wrote to.
+    ceiling = 10.0,
+
+    --- The only handling class SET_VEHICLE_HANDLING_FLOAT supports.
+    ---
+    --- Named rather than written into the client file as a bare string, for the
+    --- reason config/weapons.lua gives about hashes: a magic constant in a file
+    --- nobody edits is a magic constant nobody can check.
+    class = 'CHandlingData',
+
+    --- WHICH FIELDS ARE WRITTEN, WHAT DECIDES EACH, AND WHAT EACH ONE GOVERNS.
+    ---
+    --- AN ORDERED LIST RATHER THAN A KEYED TABLE, so the client applies them in
+    --- a fixed order and `/brvehdamage` prints them in one. `from` names the key
+    --- ABOVE that scales it, which is what keeps "the one number" honest: three
+    --- rows read `multiplier` and the fourth deliberately does not.
+    ---
+    --- `governs` IS CONSOLE TEXT, NOT INTERFACE TEXT. It is printed by
+    --- /brvehdamage and by nothing a player can see.
+    fields = {
+        { field = 'fCollisionDamageMult',   from = 'multiplier',
+          governs = 'how much an impact hurts the car at all' },
+        { field = 'fDeformationDamageMult', from = 'multiplier',
+          governs = 'how far the panels bend -- the cosmetic half' },
+        { field = 'fEngineDamageMult',      from = 'multiplier',
+          governs = 'how fast the engine dies, which is what total failure is' },
+        { field = 'fWeaponDamageMult',      from = 'weaponMultiplier',
+          governs = 'how much bullets hurt the car -- unchanged at 1.0' },
+    },
+
+    --- How many distinct MODELS one client remembers stock handling for.
+    ---
+    --- The baseline is a property of the model rather than of the car, so this
+    --- is bounded by how many different vehicles one player climbs into in a
+    --- session -- a handful. The cap exists for the reason server/vehicles.lua's
+    --- MAX_SEEN_MODELS does: the keys arrive from the world, and a table keyed
+    --- on something the world supplies gets a bound whether or not anyone can
+    --- imagine it filling. Past the cap a new model keeps its stock handling,
+    --- which is the fail-safe direction -- a tougher car, never a wilder one.
+    maxModels = 64,
+}
+
+--- What to write for one field, given the model's own value.
+---
+--- PURE, AND THAT IS THE POINT. This is the whole arithmetic of the feature, so
+--- it can be tested against the shipped numbers in a bare Lua state --
+--- tools/test_vehdamage.lua -- rather than only against a running game, which is
+--- the same bargain BR.FuelSolve and BR.BoostSolve strike.
+---
+--- A BAD `stock` ANSWERS nil AND THE CALLER WRITES NOTHING. There is no
+--- defensible value to invent for a field the engine would not report: leaving
+--- GTA's own number alone is the only answer that cannot be wrong.
+---
+--- A BAD `mult` IS 1.0, NEVER A REVERSAL. BR.BoostSolve.target learned this the
+--- same way and says so: "a config typo must cost the feature, never reverse
+--- it." A negative multiplier here would write a negative damage multiplier,
+--- and nobody knows what the engine does with one.
+---
+--- @param stock number|nil    the model's own handling value
+--- @param mult number|nil     the multiplier from BR.Config.VehicleDamage
+--- @param ceiling number|nil  the cap; falls back to the documented range top
+--- @return number|nil value   what to write, or nil to leave the field alone
+--- @return boolean clamped    true when the ceiling is what decided the answer
+function BR.Config.VehicleDamage.scale(stock, mult, ceiling)
+    local s = tonumber(stock)
+    -- NaN IS NOT A NUMBER AND `s ~= s` IS THE ONLY WAY TO ASK. A NaN baseline
+    -- multiplied by anything is NaN, and a NaN written into handling is a
+    -- vehicle whose damage calculation nobody can predict.
+    if s == nil or s ~= s or s < 0.0 then return nil, false end
+
+    local m = tonumber(mult)
+    if m == nil or m ~= m or m < 0.0 then m = 1.0 end
+
+    local cap = tonumber(ceiling)
+    if cap == nil or cap ~= cap or cap <= 0.0 then
+        cap = BR.Config.VehicleDamageRangeMax
+    end
+
+    local v = s * m
+    if v > cap then return cap, true end
+    -- The floor cannot be reached from a non-negative stock and a non-negative
+    -- multiplier, and it is here anyway: the two guards above are what make
+    -- that true, and a clamp that depends on two other clamps staying correct
+    -- is one refactor away from not being one.
+    if v < 0.0 then return 0.0, false end
+    return v, false
+end

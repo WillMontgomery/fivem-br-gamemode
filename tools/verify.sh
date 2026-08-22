@@ -154,8 +154,19 @@ if [ -x "$LUA" ] || command -v "$LUA" >/dev/null 2>&1; then
     # walks into the lobby is not visible to any static check; it is visible in
     # one batch of roster deltas shaped the way server/match.lua really shapes
     # them, which is what this drives.
+    #
+    # test_vehdamage.lua is the third suite to load a CLIENT file, and the one
+    # whose fixture is the argument. #213's applier writes four handling
+    # multipliers derived from the model's own values -- and FiveM's
+    # GET_VEHICLE_HANDLING_FLOAT reads the vehicle's own CLONE of that handling,
+    # so it answers our write once we have made one. An applier that read the
+    # field and multiplied it would therefore multiply by five ten times a
+    # second, and a fixture whose getter answered a constant would agree with it
+    # happily. So the fixture keeps the template and the clone as two tables and
+    # the suite's central assertion is that two hundred passes leave the numbers
+    # where one pass did.
 
-    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua tools/test_boost.lua; do
+    for suite in tools/test_shared.lua tools/test_loop.lua tools/test_sched.lua tools/test_roster.lua tools/test_stats.lua tools/test_ringmaster.lua tools/test_artifacts.lua tools/test_airdrop.lua tools/test_client.lua tools/test_spectate.lua tools/test_matchexit.lua tools/test_config.lua tools/test_admin.lua tools/test_fuel.lua tools/test_boost.lua tools/test_vehdamage.lua; do
         [ -f "$suite" ] || continue
         printf '%s' "${DIM}$(basename "$suite" .lua): ${RST}"
         "$LUA" "$suite" || rc=1

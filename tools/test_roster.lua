@@ -14186,6 +14186,94 @@ do
             tostring(victim.lastHitBy))
     end
 
+    -- ═══ AND NEITHER IS THE CRASH THAT HURTS THE PASSENGER (#213) ═══
+    --
+    -- THE GUARD ABOVE ONLY COVERS THE DRIVER, AND THE RULE IS WIDER THAN THAT.
+    -- config/match.lua states it as "a player lost health, THEY WERE ON FOOT,
+    -- and a vehicle a PLAYER was driving was on top of them and moving". A
+    -- passenger is not on foot -- and they sit about a metre from their own
+    -- driver, travelling at exactly their own driver's speed, so every other
+    -- term is satisfied by construction. A crash that hurt a passenger has
+    -- therefore always been creditable to the person at the wheel beside them.
+    --
+    -- #213 IS WHAT TURNS THAT FROM A CURIOSITY INTO THE ORDINARY CASE. Vehicles
+    -- are genuinely breakable now, so a squad car meeting a wall hurts everyone
+    -- in it -- and without this, the driver collects an elimination for each of
+    -- their own passengers, in the feed, called a roadkill. The owner settled
+    -- the shape on #194: "It's by design that vehicles in the game can explode
+    -- under normal circumstances, without a killer necessarily."
+    do
+        roadMatch()
+        local victim = BR.Roster.get(2)
+        drive(1, 7)                -- player 1 at the wheel...
+        drive(2, 7, 0)             -- ...and the victim in the seat beside them
+        setPos(1, 5.0, 0.0, 30.0)
+        setPos(2, 5.5, 0.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        setPos(1, 10.0, 0.0, 30.0)
+        setPos(2, 10.5, 0.0, 30.0)
+        pedHealth[1002] = 120
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(victim.lastHitBy == nil,
+            'a passenger hurt in the car they are riding in is nobody\'s roadkill',
+            tostring(victim.lastHitBy))
+        ok(victim.lastHitWeapon ~= 'roadkill',
+            'and the feed is not told their own driver ran them over',
+            tostring(victim.lastHitWeapon))
+    end
+
+    -- ...AND THE GUARD IS ABOUT THE SHARED CABIN, NOT ABOUT PASSENGERS.
+    --
+    -- STATED AS AN ASSERTION RATHER THAN LEFT TO INFERENCE, because the cheap
+    -- way to write the guard above is "refuse every victim who is in any
+    -- vehicle", and that is a wider rule than #194 asked for: a passenger in car
+    -- A killed by player B's car alongside is the fire ledger's exposure exactly
+    -- -- health went down and a thing was on top of them -- and narrowing it
+    -- further would need the server to know what hurt them.
+    do
+        roadMatch()
+        local victim = BR.Roster.get(2)
+        drive(1, 7)                -- somebody else's car...
+        drive(2, 8, 0)             -- ...and the victim is riding in a DIFFERENT one
+        setPos(1, 5.0, 0.0, 30.0)
+        setPos(2, 5.5, 0.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        setPos(1, 10.0, 0.0, 30.0)
+        setPos(2, 10.5, 0.0, 30.0)
+        pedHealth[1002] = 120
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(victim.lastHitBy == 1,
+            'a rider in another car is still creditable to the car that hit it',
+            tostring(victim.lastHitBy))
+    end
+
+    -- ═══ AND THE PED'S OWN ANSWER IS NOT ALLOWED TO REFUSE A REAL ROADKILL ═══
+    --
+    -- citizenfx/fivem#4006 again, from the other direction. `GetVehiclePedIsIn`
+    -- on a ped who is in no vehicle answers the one they were LAST in, and this
+    -- suite's stub reproduces that rather than hiding it -- so a guard written on
+    -- that native would refuse to credit somebody run over by a car they had
+    -- climbed out of, forever. The guard asks the VEHICLE's seats instead, which
+    -- is a live read, and this is the block that fails if it is ever rewritten
+    -- as the cheaper ped comparison.
+    do
+        roadMatch()
+        local victim = BR.Roster.get(2)
+        drive(2, 7, 0)             -- the victim rode in car 7...
+        drive(3, 7, 0)             -- ...and somebody else has that seat now
+        drive(1, 7)                -- while player 1 drives it at them
+        setPos(1, 5.0, 0.0, 30.0)
+        setPos(2, 5.5, 0.0, 30.0)
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        setPos(1, 10.0, 0.0, 30.0)
+        setPos(2, 10.5, 0.0, 30.0)
+        pedHealth[1002] = 120
+        fakeTime = fakeTime + 500; BR.Sched.step(fakeTime)
+        ok(victim.lastHitBy == 1,
+            'a player who left a car can still be run over by it, whatever the ped says',
+            tostring(victim.lastHitBy))
+    end
+
     -- ═══ A SERVER ID IS NOT A PERSON ═══
     --
     -- FiveM recycles ids within the minute, so the position sample left behind by

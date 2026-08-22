@@ -553,13 +553,21 @@ end)
 -- the driver driving off a cliff." Neither of those is a gap this file is
 -- failing to close; both are the answer.
 --
--- A PASSENGER whose car crashes beside another player's moving car can be
--- credited to that other driver. The guard below excludes a victim who is
--- DRIVING, because a driver who hits a wall is the crash rather than the
--- roadkill; excluding passengers too would mean enumerating every seat of every
--- vehicle every sample, which is a real cost for a case that needs two cars
--- abreast at speed and one of them dying to something else. Stated rather than
--- hidden.
+-- NOR IS A CRASH THAT HURTS A PASSENGER, AND THAT IS NEWER THAN THE REST OF
+-- THIS SECTION. Two guards now stand between a crash and a kill feed entry: the
+-- victim must not be DRIVING -- a driver who hits a wall is the crash rather
+-- than the roadkill -- and the victim must not be riding in the CANDIDATE'S OWN
+-- CAR, because a passenger sits a metre from their own driver at exactly their
+-- own driver's speed and satisfies every other term by construction. #213 made
+-- vehicles genuinely breakable, which turned that from a curiosity into the
+-- ordinary outcome of a squad car meeting a wall; the second guard is at
+-- `ridesAsPassenger` below and carries the argument.
+--
+-- WHAT IS STILL CREDITED, STATED RATHER THAN HIDDEN: a passenger in car A who
+-- dies while a DIFFERENT player's car B is alongside at speed is credited to
+-- B's driver. That is the fire ledger's exposure exactly -- health went down and
+-- a thing was on top of them -- and narrowing it further would need the server
+-- to know what hurt them, which is the question it cannot ask.
 --
 -- AND A CAR AT SPEED PASSING A PLAYER WHO IS BURNING OR IN THE STORM CAN TAKE
 -- THE CREDIT FOR THAT SAMPLE. It is the fire ledger's exposure exactly -- the
@@ -680,6 +688,59 @@ local function sampleSpeed(src, entry, now)
                    license = license, speed = speed }
 end
 
+--- How many passenger seats are walked when asking whether somebody is riding
+--- in a car somebody else is driving.
+---
+--- Seats 0..7, so this covers an eight-passenger vehicle. Every car, van and
+--- pickup in the game is inside it; a bus is not, and somebody riding in the
+--- back of one is described at `ridesAsPassenger` below.
+local CABIN_SEATS = 8
+
+--- Is this ped riding as a PASSENGER of this vehicle?
+---
+--- ═══ THE VEHICLE IS ASKED, NOT THE PED, AND THAT IS citizenfx/fivem#4006
+---     AGAIN ═══
+---
+--- `drivenVehicle` above already explains it for the driver: server-side
+--- `GetVehiclePedIsIn(ped, false)` answers the vehicle a ped was LAST in when it
+--- is in none, and `IsPedInAnyVehicle` -- the documented workaround -- does not
+--- exist on the server at all. So the ped's answer is a claim about the past and
+--- `GetPedInVehicleSeat` is the live read that settles it.
+---
+--- THE SAME TRICK, MOVED FROM THE DRIVING SEAT TO THE PASSENGER SEATS, because
+--- the question here is not "who is driving" but "is this person riding with the
+--- driver", and a passenger answers no to the first and yes to the second.
+---
+--- ═══ SEAT -1 IS DELIBERATELY NOT WALKED, AND MUTATION TESTING IS WHY IT SAYS
+---     SO ═══
+---
+--- A first draft checked the driving seat too, on the reasoning that "is this
+--- ped in this vehicle" should mean any seat. It is UNREACHABLE from the only
+--- caller and a mutant that deleted it changed nothing: the caller has already
+--- established that seat -1 of this vehicle holds the CANDIDATE'S ped
+--- (`drivenVehicle` is what put the vehicle in `driving`), and the candidate is
+--- never the victim -- BR.Roster.each is filtered on `o.src ~= src`. So the
+--- branch could not answer true, and a check that cannot fire is a check the
+--- next reader has to work out the emptiness of. The name says passenger now,
+--- which is what it actually asks.
+---
+--- WHAT IT MISSES: a ped in seat 8 or beyond -- the back of a bus or a coach.
+--- They would still be creditable as a roadkill to their own driver, which is
+--- the bug this exists to stop, for the handful of vehicles in the game big
+--- enough to have that seat. Stated rather than papered over with a seat count
+--- nobody can justify; enumerating every seat of every candidate every sample is
+--- a real cost for a case that needs a coach.
+--- @param veh integer
+--- @param ped integer
+--- @return boolean
+local function ridesAsPassenger(veh, ped)
+    if veh == 0 or ped == 0 then return false end
+    for s = 0, CABIN_SEATS - 1 do
+        if entityFrom(GetPedInVehicleSeat, veh, s) == ped then return true end
+    end
+    return false
+end
+
 --- How far above or below a driver may be and still have hit this player.
 ---
 --- A CAR ON THE BRIDGE OVERHEAD IS NOT RUNNING YOU OVER. The horizontal radius is
@@ -709,6 +770,45 @@ function BR.Vehicles.roadkillDriverFor(src, e)
 
     stat.roadkillLooks = stat.roadkillLooks + 1
 
+    -- ═══ ...AND NEITHER IS A PASSENGER IN THE CAR THAT CRASHED (#194, #213) ═══
+    --
+    -- The guard above only excludes the victim who was DRIVING, and the rule
+    -- this file implements is wider than that: config/match.lua states it as "a
+    -- player lost health, THEY WERE ON FOOT, and a vehicle a PLAYER was driving
+    -- was on top of them and moving". A passenger is not on foot.
+    --
+    -- IT WAS A GAP BETWEEN THE PROSE AND THE CODE, AND #213 IS WHAT MAKES IT
+    -- BITE. A passenger sits about a metre from their own driver, in a vehicle
+    -- moving at exactly the vehicle's speed -- so every term below is satisfied
+    -- by the person at the wheel of the car they are sitting in. Any crash that
+    -- hurts a passenger has therefore always been creditable to their own
+    -- driver, as a "roadkill", in the feed. It was rare only because a car
+    -- crashing hard enough to hurt anybody was rare.
+    --
+    -- #213 makes vehicles genuinely destructible, which makes it ORDINARY: a
+    -- squad car that hits a wall would hand the driver an elimination for each
+    -- of their passengers. The owner settled the shape of this on #194 -- "It's
+    -- by design that vehicles in the game can explode under normal
+    -- circumstances, without a killer necessarily" -- so a crash stays
+    -- uncredited, and raising the damage rates must not quietly turn crashes
+    -- into kills.
+    --
+    -- ═══ AND IT ASKS THE VEHICLE, NEVER THE PED ═══
+    --
+    -- The obvious spelling is "does GetVehiclePedIsIn(victim) name the same car
+    -- the candidate is driving", and it is wrong twice over. It is #4006 again
+    -- -- the ped's answer is a claim about the PAST, so it names a car the
+    -- victim left ten minutes ago and would refuse a genuine roadkill by
+    -- somebody now driving it -- and MUTATION TESTING FOUND THE OTHER HALF: in
+    -- the window where a player has moved between two cars, the ped's answer and
+    -- the seat disagree in the other direction and the guard misses the very
+    -- case it is for.
+    --
+    -- So the ped is not asked at all. `ridesAsPassenger` is a live read of the
+    -- CANDIDATE'S OWN CAR, which is the same doctrine `drivenVehicle` states
+    -- above for the driver, applied to the passenger seats.
+    local victimPed = math.tointeger(tonumber(e.ped)) or 0
+
     local r        = cfg.roadkillRadiusM or 8.0
     local r2       = r * r
     local minSpeed = cfg.roadkillMinSpeedMs or 6.0
@@ -719,7 +819,9 @@ function BR.Vehicles.roadkillDriverFor(src, e)
                         and o.matchId == e.matchId
                         and o.state == BR.PlayerState.ALIVE end,
         function(osrc, o)
-            if not o.pos or not driving[osrc] then return end
+            if not o.pos then return end
+            local veh = driving[osrc]
+            if not veh then return end
 
             local sp = speedOf(osrc)
             if sp == nil or sp < minSpeed then return end
@@ -728,6 +830,17 @@ function BR.Vehicles.roadkillDriverFor(src, e)
             local d2 = dx * dx + dy * dy
             if d2 > r2 then return end
             if math.abs(o.pos.z - e.pos.z) > ROADKILL_Z_M then return end
+
+            -- SAME CABIN, NO CREDIT -- see the block above `victimPed`.
+            --
+            -- ASKED LAST, AND THAT IS THE WHOLE OF ITS COST CONTROL. It is the
+            -- only test in this callback that spends natives -- eight seat reads
+            -- -- and every test above it is arithmetic on samples this server
+            -- already took. Ordering it here means the seats are walked only for
+            -- a driver who is ALREADY within eight metres of a dying player and
+            -- moving, which is a handful of times a match rather than once per
+            -- driver per sample.
+            if ridesAsPassenger(veh, victimPed) then return end
 
             -- NEAREST WINS. Two cars in a pile-up is a real thing and somebody
             -- has to own it; the one on top of the body is the better claim than

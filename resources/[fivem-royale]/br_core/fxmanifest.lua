@@ -155,6 +155,14 @@ client_scripts {
     -- it at call time and nil-guards, so the loader does not care.
     'client/boost.lua',
     'client/fuel.lua',
+    -- How breakable a car is: the four handling multipliers, written on this
+    -- machine, to the car this player is in. NEEDS NOTHING ABOVE IT EXCEPT
+    -- client/main.lua for the loop registry -- it reads BR.Config.VehicleDamage
+    -- (a shared config, already loaded) and BR.NormHash (geo.lua, likewise), and
+    -- it talks to no other subsystem in either direction. It is declared HERE,
+    -- after client/fuel.lua, for a reader: fuel.lua is the file that draws the
+    -- condition bar this one makes move, and the file that puts the health back.
+    'client/vehdamage.lua',
     -- The spectator camera. Needs BR.Keys (keybinds.lua) for the arrows and
     -- BR.Native (natives.lua) for the scoped ped lookup; client/lobbycam.lua
     -- reads BR.Spectate.active() at call time, so load order between the two
