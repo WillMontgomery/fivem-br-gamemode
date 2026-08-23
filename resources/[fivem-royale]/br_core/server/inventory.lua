@@ -814,20 +814,61 @@ AddEventHandler(BR.Net.INV_AMMO, function(d)
 
     if s.kind ~= BR.ItemKind.WEAPON then return end
 
-    -- RETIRED BY M6, for magazined weapons only. Once the server counts rounds
-    -- off validated shot events it has a better answer than the client's, and
-    -- accepting both means two authorities for one number -- the reload the
-    -- server just paid for gets overwritten by a client report that has not
-    -- seen it yet.
-    --
-    -- Left registered rather than deleted for one reason: a client running
-    -- with server ammo disabled (`/brdamage off`) still needs this path, and
-    -- deleting the handler would make that a silent failure rather than a
-    -- config choice.
-    if (BR.Config.Combat or {}).serverAmmo then return end
-
     local w = BR.Config.WeaponById[s.item]
     if not w then return end
+
+    -- ═══ UNDER serverAmmo THIS IS A FLOOR, NOT AN AUTHORITY (2026-08-23) ═══
+    --
+    -- It used to be a flat `return`. M6 counts rounds off validated shot events,
+    -- so for the shots it SEES it has the better answer and a second opinion
+    -- would only overwrite the reload it just paid for. The part that was not
+    -- true is the part that mattered: BR.Damage.spendRound is reachable from
+    -- ONE place, the weaponDamageEvent handler, so a round burnt by anything
+    -- that raises no such event was charged to nobody and stayed on the books
+    -- forever. An explosive raises none at all -- server/damage.lua measured
+    -- that on 2026-08-08 -- which is the whole airdrop shelf, and the owner
+    -- found it on the railgun: fire it dry, switch slots, and client/inventory's
+    -- re-grant wrote the untouched server number back onto the ped.
+    --
+    -- So the client keeps ONE job here and it is the job only it can do: saying
+    -- that rounds are GONE. The TOTAL may fall and may do nothing else -- it
+    -- cannot rise (the arithmetic below is a subtraction), it cannot choose the
+    -- split, and it cannot trigger a reload the pool has not paid for. Under an
+    -- honest client this fires only when the server has fallen behind, which is
+    -- exactly the drift it exists to close; under a lying one the worst
+    -- available move is still to throw your own ammunition away.
+    if (BR.Config.Combat or {}).serverAmmo then
+        local pool     = w.ammo and (inv.ammo[w.ammo] or 0) or 0
+        local wasClip  = s.clip or 0
+        local lost     = (wasClip + pool) - total
+        if lost <= 0 then return end
+
+        -- OUT OF THE MAGAZINE FIRST, then the reserve, because that is the
+        -- order rounds leave a gun. Anything deeper than the magazine is a
+        -- burst that spanned a reload, and the reserve is what paid for it.
+        local newClip = wasClip - lost
+        local newPool = pool
+        if newClip < 0 then
+            newPool = math.max(0, newPool + newClip)
+            newClip = 0
+        end
+
+        -- AND THE RELOAD IS STILL THE SERVER'S, by running the same rule
+        -- spendRound runs rather than a second copy of it: an empty magazine
+        -- over a non-empty pool refills, once, capped by the magazine. Writing
+        -- it here rather than waiting for the next shot keeps the two paths
+        -- from disagreeing about what an empty gun looks like -- and it moves
+        -- rounds without creating any, so the total is untouched.
+        if newClip <= 0 and newPool > 0 then
+            local moved = math.min(w.clip or 0, newPool)
+            newPool, newClip = newPool - moved, moved
+        end
+
+        s.clip = newClip
+        if w.ammo then inv.ammo[w.ammo] = newPool end
+        BR.Inv.push(src)
+        return
+    end
 
     -- ONE NUMBER IS AUTHORITATIVE AND IT IS THE TOTAL.
     --

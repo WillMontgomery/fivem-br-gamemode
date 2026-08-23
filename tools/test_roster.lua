@@ -6192,17 +6192,25 @@ do
         ('%s -> %s'):format(tostring(meleeClipBefore),
                             tostring(BR.Inv.of(1).slots[1].clip)))
 
-    -- THE CLIENT REPORT IS REFUSED while this is on. Two authorities for one
-    -- number means the reload the server just paid for is overwritten by a
-    -- report that has not seen it yet.
+    -- THE CLIENT REPORT IS A FLOOR while this is on, and it used to be a flat
+    -- refusal (2026-08-23). The refusal was right about the risk -- two
+    -- authorities for one number means the reload the server just paid for is
+    -- overwritten by a report that has not seen it -- and wrong about the cost:
+    -- spendRound only runs on a weaponDamageEvent, so every round burnt by a
+    -- shot that raises none stayed on the books and came back on the next slot
+    -- switch. The client may now say the total FELL, and may say nothing else.
+    -- See inv.ammo.floorUnderServerAmmo for the whole contract.
     BR.Inv.reset(1)
     BR.Inv.give(1, { item = 'carbinerifle', kind = BR.ItemKind.WEAPON,
                      rarity = 3, count = 1, clip = rifle.clip })
     BR.Inv.of(1).ammo[BR.AmmoType.MEDIUM] = 60
     fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 5, clip = 5 })
-    ok(BR.Inv.of(1).slots[1].clip == rifle.clip,
-        'and a client ammo report is ignored outright',
-        tostring(BR.Inv.of(1).slots[1].clip))
+    ok((BR.Inv.of(1).slots[1].clip or 0)
+       + (BR.Inv.of(1).ammo[BR.AmmoType.MEDIUM] or 0) == 5,
+        'a client ammo report may lower the total, and only lower it',
+        ('clip %s reserve %s'):format(
+            tostring(BR.Inv.of(1).slots[1].clip),
+            tostring(BR.Inv.of(1).ammo[BR.AmmoType.MEDIUM])))
 end
 
 describe('combat.multivictim')
@@ -7668,6 +7676,111 @@ do
     BR.Damage.forget(1)
     ok(not BR.Damage.threwRecently(1, 'grenade'),
         'and a disconnect forgets it outright')
+end
+
+describe('inv.ammo.floorUnderServerAmmo')
+do
+    -- THE ROUNDS THAT WERE CHARGED TO NOBODY (owner, 2026-08-23).
+    --
+    -- "once depleted, switching between slots gave me more ammo." The switch was
+    -- innocent: client/inventory.lua grants zero and then writes an explicit
+    -- number, so it can only hand out what the SERVER told it. The server was
+    -- the one with the wrong number.
+    --
+    -- BR.Damage.spendRound is reachable from exactly ONE place -- the
+    -- weaponDamageEvent handler -- so a round burnt by anything that raises no
+    -- such event was never charged. An explosive raises none at all, which this
+    -- file's own `damage.notThrownIsReachable` block and server/damage.lua's
+    -- 2026-08-08 capture both turn on, and that is the whole airdrop shelf: the
+    -- RPG, the grenade launcher and the railgun the owner was holding.
+    --
+    -- The INV_AMMO handler used to return outright while serverAmmo was on, so
+    -- the one observer that COULD see those rounds leave was silenced. It is now
+    -- a FLOOR: the client may say the total has fallen and may say nothing else.
+    ok(BR.Config.Combat.serverAmmo, 'server ammo is on for this block')
+
+    lootMatch()
+    BR.Inv.reset(1)
+    local rail = BR.Config.WeaponById['railgun']
+    BR.Inv.give(1, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rail.clip })
+    local inv = BR.Inv.of(1)
+    inv.active = 1
+    inv.ammo[BR.AmmoType.HEAVY] = rail.clip
+    local total = rail.clip + rail.clip
+
+    -- THE MAGAZINE PAYS FIRST, because that is the order rounds leave a gun.
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = total - 1, clip = 0 })
+    ok(inv.slots[1].clip == rail.clip - 1,
+        'a round the server never saw still comes off the magazine',
+        tostring(inv.slots[1].clip))
+    ok(inv.ammo[BR.AmmoType.HEAVY] == rail.clip,
+        'and the reserve is untouched while the magazine has rounds in it',
+        tostring(inv.ammo[BR.AmmoType.HEAVY]))
+
+    -- ...AND THE CLIENT DOES NOT GET TO CHOOSE THE SPLIT. The report above said
+    -- `clip = 0` and the server did not believe it: with serverAmmo on the only
+    -- thing a client may move is the total. That is what keeps the reload the
+    -- server paid for from being overwritten by a report that has not seen it.
+    ok(inv.slots[1].clip ~= 0,
+        'the client cannot empty a magazine it still has rounds in',
+        tostring(inv.slots[1].clip))
+
+    -- SPENDING PAST THE MAGAZINE comes out of the reserve, and the server's own
+    -- reload rule then refills -- the same rule spendRound runs, so an empty gun
+    -- looks the same whichever path emptied it.
+    inv.slots[1].clip = 1
+    inv.ammo[BR.AmmoType.HEAVY] = 3
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 2, clip = 0 })
+    ok(inv.slots[1].clip + inv.ammo[BR.AmmoType.HEAVY] == 2,
+        'two rounds spent leave exactly what is left, wherever it sits',
+        ('clip %s reserve %s'):format(inv.slots[1].clip,
+                                      inv.ammo[BR.AmmoType.HEAVY]))
+    ok(inv.slots[1].clip == 2 and inv.ammo[BR.AmmoType.HEAVY] == 0,
+        'and an empty magazine over a live pool reloads, once',
+        ('clip %s reserve %s'):format(inv.slots[1].clip,
+                                      inv.ammo[BR.AmmoType.HEAVY]))
+
+    -- A RISE IS STILL REFUSED, WHICH IS THE WHOLE SAFETY ARGUMENT. Opening this
+    -- path must not open the 2026-08-06 unlimited-ammo round with it.
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 999, clip = 999 })
+    ok(inv.slots[1].clip == 2 and inv.ammo[BR.AmmoType.HEAVY] == 0,
+        'a client still cannot report itself more ammo with serverAmmo on',
+        ('clip %s reserve %s'):format(inv.slots[1].clip,
+                                      inv.ammo[BR.AmmoType.HEAVY]))
+
+    -- RUNNING DRY STAYS DRY. An empty pool cannot conjure a magazine, because
+    -- there is nothing for the arithmetic to take it from -- and this is the
+    -- state a slot switch used to undo.
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 0, clip = 0 })
+    ok(inv.slots[1].clip == 0 and inv.ammo[BR.AmmoType.HEAVY] == 0,
+        'A DEPLETED WEAPON IS DEPLETED ON THE SERVER TOO',
+        ('clip %s reserve %s'):format(inv.slots[1].clip,
+                                      inv.ammo[BR.AmmoType.HEAVY]))
+
+    -- ...and the result is pushed, because the reserve is the server's own
+    -- arithmetic and the client has no other way to learn it.
+    sent = {}
+    inv.slots[1].clip = 3
+    inv.ammo[BR.AmmoType.HEAVY] = 0
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 1, clip = 1 })
+    ok(#eventsOf(BR.Net.INV_SET) > 0, 'and the corrected inventory is pushed back')
+
+    -- IT IS NOT RAILGUN-ONLY. The railgun is where the owner found it because
+    -- an explosive is charged for nothing at all; every other weapon leaks the
+    -- same way for every shot that raises no event, a miss included.
+    BR.Inv.reset(1)
+    local carbine = BR.Config.WeaponById['carbinerifle']
+    BR.Inv.give(1, { item = 'carbinerifle', kind = BR.ItemKind.WEAPON,
+                     rarity = 3, count = 1, clip = carbine.clip })
+    inv = BR.Inv.of(1)
+    inv.active = 1
+    inv.ammo[BR.AmmoType.MEDIUM] = 0
+    fire(BR.Net.INV_AMMO, 1, { slot = 1, total = 0, clip = 0 })
+    ok(inv.slots[1].clip == 0 and inv.ammo[BR.AmmoType.MEDIUM] == 0,
+        'and an ordinary rifle emptied by misses is emptied on the server too',
+        ('clip %s reserve %s'):format(inv.slots[1].clip,
+                                      inv.ammo[BR.AmmoType.MEDIUM]))
 end
 
 -- THE FALLBACK PATH, still live when `/brdamage off` turns the takeover back

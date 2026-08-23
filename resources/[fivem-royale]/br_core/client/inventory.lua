@@ -68,6 +68,62 @@ BR.Inv.suspendAmmo = false
 -- without reporting, so a weapon switch never looks like a burst of fire.
 local lastReport = { total = -1, clip = -1, at = 0 }
 
+--- ROUNDS THIS PED HAS ACTUALLY SPENT THAT THE SERVER HAS NOT CHARGED FOR.
+---
+--- ═══ THE AMMO THAT CAME BACK ═══
+---
+--- Owner, 2026-08-23, live playtest: "once depleted, switching between slots
+--- gave me more ammo". That is a duplication exploit -- cycle the wheel and the
+--- gun is full again -- and it does not live in the switch. The switch is right:
+--- applyActive grants ZERO and then SetPedAmmo's an explicit number, so it can
+--- only ever hand out what it was told to.
+---
+--- IT LIVES IN WHAT IT WAS TOLD. The number applyActive writes is the SERVER's
+--- (`slot.clip` + the pool), and with `Combat.serverAmmo` on the server only
+--- debits a round when a validated `weaponDamageEvent` reaches
+--- BR.Damage.spendRound. Every round the engine burns that raises no such event
+--- -- and an explosive is the clear case, since server/damage.lua's own capture
+--- says a blast raises none at all -- is spent on the ped and never spent on the
+--- server. The two numbers drift apart, silently, and the next slot switch
+--- re-asserts the server's, which is the higher one. That is the refill.
+---
+--- SO THE DRIFT IS MEASURED RATHER THAN ASSUMED AWAY. Per slot, while its weapon
+--- is confirmed in the hand, this holds `what the server says we hold` minus
+--- `what the engine says we hold`. It is subtracted from every re-grant, so a
+--- weapon that was empty when it was stowed comes back empty -- whatever the
+--- server still believes -- and it is REPORTED, so the server stops believing
+--- it. Both halves matter: the report is the fix, and this is what makes the
+--- ped honest inside the round trip.
+---
+--- IT CANNOT INVENT AMMO. It is clamped at zero and only ever subtracts, so the
+--- worst a wrong reading does is leave a player short -- and a short player is
+--- one INV_SET away from the server's number again, while a duplicated magazine
+--- is a match somebody else loses.
+---
+--- KEYED BY SLOT *AND* ITEM. A slot whose weapon changed is a different weapon
+--- with a different magazine, and carrying a rifle's deficit onto the pistol
+--- that replaced it would take rounds off a gun that never fired one.
+---
+--- `svClip` IS HERE BECAUSE `slot.clip` IS NOT THE SERVER'S NUMBER ANY MORE BY
+--- THE TIME ANYONE READS IT. The report loop writes the ENGINE's magazine into
+--- the mirror every tick so the counter follows the gun at 10Hz (see its note),
+--- which means the mirror's clip is honest and the mirror's POOL is the only
+--- stale half left. Measuring the deficit against the laundered value would
+--- therefore find the reserve drift and miss the magazine drift entirely -- and
+--- the magazine is the half a re-grant hands straight back. So what the server
+--- actually said is kept, once, at the moment it says it.
+local shortfall = {}   -- [slot] = { id = <item id>, svClip = <n>, n = <rounds> }
+
+--- The deficit recorded for a slot, or 0 when there is none for THIS weapon.
+--- @param at integer
+--- @param slot table|false
+--- @return integer
+local function shortfallFor(at, slot)
+    local rec = shortfall[at]
+    if not rec or not slot or rec.id ~= slot.id then return 0 end
+    return rec.n or 0
+end
+
 -- GTA'S OWN WEAPON UI HAS TO GO. The inventory replaces it wholesale, and
 -- leaving the engine's version bound to the same keys means every one of our
 -- inputs fires two things at once: TAB opened our panel AND the weapon wheel,
@@ -292,6 +348,22 @@ local function applyActive(force)
         local clip    = math.floor(slot.clip or 0)
         local reserve = reserveFor(slot)
 
+        -- WHAT THIS PED HAS ALREADY SPENT COMES OFF THE TOP.
+        --
+        -- The server's numbers are the authority on what this player OWNS; they
+        -- are not a measurement of what is left in the gun, and with serverAmmo
+        -- on they can sit above it indefinitely (see `shortfall`). Re-asserting
+        -- them unmodified is what let a dry weapon come back loaded from a
+        -- press of a number key.
+        --
+        -- Subtracted from the TOTAL and then taken out of the MAGAZINE first,
+        -- because that is the order rounds actually leave a gun. A weapon that
+        -- ran dry has a deficit equal to everything it was granted, so both
+        -- halves land on zero and it comes back empty.
+        local short = shortfallFor(inv.active, slot)
+        local total = math.max(0, clip + reserve - short)
+        clip = math.min(clip, total)
+
         -- GIVE THE WEAPON WITH ZERO AMMO, THEN SET THE AMMO. This is
         -- ox_inventory's order, and the reason for it is that
         -- GIVE_WEAPON_TO_PED *ADDS* rounds to a weapon the ped already holds
@@ -300,7 +372,7 @@ local function applyActive(force)
         -- up by a full holding -- invisible while switching between two guns,
         -- and compounding whenever anything re-applied the same one.
         GiveWeaponToPed(ped, want, 0, false, true)
-        SetPedAmmo(ped, want, clip + reserve)
+        SetPedAmmo(ped, want, total)
         SetAmmoInClip(ped, want, clip)
         SetCurrentPedWeapon(ped, want, true)
 
@@ -340,7 +412,17 @@ local function reapplyAmmo(serverClip)
     local ped  = PlayerPedId()
     local clip = math.floor(slot.clip or 0)
 
-    SetPedAmmo(ped, hash, reserveFor(slot) + clip)
+    -- ...AND MINUS WHAT WAS ALREADY SPENT, exactly as applyActive does it and
+    -- for the same reason. This path is reached on every INV_SET whose ammo
+    -- went up -- which includes a pickup of something else entirely, since the
+    -- pool is shared -- so without the deduction ANY inventory change refilled a
+    -- gun the server had not noticed running dry. The switch is the way the
+    -- owner found it; it was never the only way in.
+    local short = shortfallFor(inv.active, slot)
+    local total = math.max(0, reserveFor(slot) + clip - short)
+    clip = math.min(clip, total)
+
+    SetPedAmmo(ped, hash, total)
     SetAmmoInClip(ped, hash, clip)
     lastReport.clip = serverClip or clip
 end
@@ -374,6 +456,10 @@ local function clearLocal()
     inv.ammo, inv.active, inv.using = {}, MELEE_SLOT, nil
     applied, appliedPed = nil, 0
     lastReport.clip, lastReport.total = -1, -1
+    -- The deficits go with the guns they were measured on. A new match hands
+    -- out new weapons and a corpse's rifle is not this player's problem any
+    -- more; carrying the numbers over would dock the next magazine.
+    shortfall = {}
     BR.Inv.lastGainAt = 0
 end
 
@@ -510,6 +596,21 @@ local function adopt(d)
     for i = 1, SLOTS do
         local s = d.slots[i]
         inv.slots[i] = (type(s) == 'table') and s or false
+
+        -- WHAT THE SERVER SAID THIS MAGAZINE HOLDS, kept before the report loop
+        -- overwrites it with what the ENGINE says (see `shortfall`). A slot
+        -- whose item changed is a different gun: the deficit measured on the one
+        -- that left goes with it, or the replacement arrives already docked.
+        local id  = (type(s) == 'table') and s.id or nil
+        local rec = shortfall[i]
+        if id == nil or (rec and rec.id ~= id) then
+            shortfall[i] = nil
+            rec = nil
+        end
+        if id ~= nil then
+            if not rec then rec = { id = id, n = 0 } shortfall[i] = rec end
+            rec.svClip = math.floor(s.clip or 0)
+        end
     end
     local wasActive = inv.active
     inv.ammo   = d.ammo or {}
@@ -1373,6 +1474,29 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
         total = granted
     end
 
+    -- ...AND THE OTHER DIRECTION, WHICH USED TO BE THROWN AWAY.
+    --
+    -- The engine holding FEWER rounds than the server issued is not impossible
+    -- and not a cheat: it is the ordinary state of a gun that has been fired
+    -- since the last thing the server charged for. Nothing recorded it, so the
+    -- next re-grant wrote the server's larger number back onto the ped and the
+    -- rounds came back (owner, 2026-08-23). It is recorded here, against the
+    -- SERVER's own magazine rather than the laundered mirror -- see `shortfall`
+    -- -- and it is subtracted by both write paths.
+    --
+    -- MEASURED ONLY WHERE THE READ IS TRUSTED. Every guard above this line --
+    -- our grant has landed, the ENGINE agrees the ped holds it, no reload is
+    -- playing -- exists because those are the states where the ammo natives
+    -- answer about a weapon that is not in the hand. A stow reads 0, and 0
+    -- recorded here would be a whole holding declared spent.
+    do
+        local rec = shortfall[inv.active]
+        if rec and rec.id == slot.id then
+            local said = (rec.svClip or slot.clip or 0) + reserveFor(slot)
+            rec.n = math.max(0, math.floor(said) - total)
+        end
+    end
+
     -- GET_AMMO_IN_CLIP is a BOOL with an out-param, so Lua gets two returns.
     local _, clip = GetAmmoInClip(ped, hash)
     clip = math.max(0, math.min(clip or 0, total))
@@ -1419,16 +1543,30 @@ BR.Loop.register(BR.Loop.TICK, 'inv.ammo', function()
         return
     end
 
-    -- THE DISPLAY STILL FOLLOWS THE GUN, but the REPORT may be retired.
+    -- THE REPORT IS NOT RETIRED BY serverAmmo ANY MORE, AND THIS IS THE HALF
+    -- THAT ACTUALLY FIXES THE DUPLICATION.
     --
-    -- With M6's server ammo on, the server counts rounds off the shot events
-    -- it already validates, so it has a better answer than this one and does
-    -- not want ours -- two authorities for one number means the reload the
-    -- server just paid for is overwritten by a report that has not seen it.
-    -- The clamp above still runs, because keeping the ped in agreement with
-    -- the server's number is this file's job either way.
-    if (BR.Config.Combat or {}).serverAmmo then return end
-
+    -- It used to return here. The reasoning was sound and the consequence was
+    -- not: M6's server counts rounds off validated shot events, so it has a
+    -- better answer THAN THIS ONE FOR THE SHOTS IT SEES -- and it silently keeps
+    -- its old answer for every round burnt by a shot it never saw. Nothing else
+    -- observes those, so "the server does not want ours" meant nobody had one,
+    -- for as long as the match lasted. A blast raises no weaponDamageEvent at
+    -- all (server/damage.lua's own 2026-08-08 capture), which puts the whole
+    -- airdrop shelf -- the RPG, the grenade launcher and the railgun the owner
+    -- reported -- on the never-charged side.
+    --
+    -- WHAT GOES OUT IS UNCHANGED AND STILL DECREASE-ONLY: the loop below only
+    -- speaks when the ENGINE's total has fallen BELOW the last thing the server
+    -- said, because rebaseline() anchors that baseline on every INV_SET. It
+    -- therefore cannot describe a pickup (a rise, refused at both ends) and it
+    -- cannot describe a reload (which moves rounds between the halves and leaves
+    -- the total alone). It describes rounds that are gone, which is the one
+    -- thing the server cannot see for itself.
+    --
+    -- The server's matching half refuses to let it move anything but the total
+    -- while serverAmmo is on, so the reload the server just paid for is still
+    -- the server's -- see the INV_AMMO handler in server/inventory.lua.
     local now = GetGameTimer()
     if now - lastReport.at < (L.ammoReportMs or 150) then return end
     lastReport.at = now
@@ -1520,6 +1658,10 @@ function BR.Inv.reportState()
         engineTotal = hash and GetAmmoInPedWeapon(ped, hash) or nil,
         serverClip  = slot and slot.clip or nil,
         serverPool  = slot and reserveFor(slot) or nil,
+        -- Rounds this ped has spent that the server has not charged for. A
+        -- non-zero value here IS the 2026-08-23 duplication, caught: it is the
+        -- amount a slot switch would have handed back. See `shortfall`.
+        shortfall   = slot and shortfallFor(inv.active, slot) or nil,
         lastTotal   = lastReport.total,
         inVehicle   = yes(IsPedInAnyVehicle(ped, false)),
         blockedBy   = why,
@@ -1679,3 +1821,97 @@ function BR.Inv.reapply()
     applied = nil
     applyActive(true)
 end
+
+-- --------------------------------------------------------------------------
+-- Where did the rounds go? (/brammo)
+-- --------------------------------------------------------------------------
+
+--- Everything three parties believe about this player's ammunition, side by
+--- side, in the F8 console.
+---
+--- IT EXISTS BECAUSE THE OWNER HAD NO WAY TO CHECK ANY OF THIS. The 2026-08-23
+--- report was "it seemed to have a different amount of ammo than what the HUD
+--- showed, then once depleted, switching between slots gave me more ammo" --
+--- two sentences describing FOUR numbers that were never printed anywhere: what
+--- the server says the magazine holds, what the pool holds, what the ENGINE says
+--- is in the gun, and what this file has recorded as spent-but-uncharged. The
+--- HUD shows the first two and the gun obeys the third, so a disagreement
+--- between them is invisible from inside the game and reads as "the ammo is
+--- wrong", which is the least actionable bug report a playtest can produce.
+---
+--- WHY THIS AND NOT /brprobe ammo. That one watches the ACTIVE weapon across
+--- time and answers "is the report loop running" -- it is a stopwatch. This is a
+--- still photograph of ALL FIVE SLOTS at one instant, which is the only shape
+--- that can answer a question about SWITCHING: the slot you are not holding is
+--- exactly the one whose numbers nothing else prints.
+---
+--- DIFFERENCES ARE MARKED, because a table of five identical-looking rows is
+--- how the last one hid. A row whose server total and engine total disagree gets
+--- a `!`, and the deficit that disagreement produced is printed next to it.
+---
+--- Console only, by design: this is a diagnostic for a person reading a log, and
+--- nothing here belongs on a player's screen.
+RegisterCommand('brammo', function()
+    local ped = PlayerPedId()
+    local st  = BR.Inv.reportState()
+
+    print('=== ammo ===')
+    print(('  state %s   active slot %d   serverAmmo %s')
+        :format(tostring(BR.State.me.state), inv.active,
+                tostring(((BR.Config.Combat or {}).serverAmmo) == true)))
+    if st.blockedBy then
+        print(('  the report loop is NOT running: %s'):format(st.blockedBy))
+    end
+
+    print('  slot  item             mag  pool  said  engine  spent')
+    for i = 1, SLOTS do
+        local slot = inv.slots[i]
+        if not slot then
+            print(('   %s %d  --'):format(inv.active == i and '>' or ' ', i))
+        else
+            local w    = BR.Config.WeaponById[slot.id]
+            local rec  = shortfall[i]
+            local sv   = (rec and rec.id == slot.id and rec.svClip)
+                or slot.clip or 0
+            local pool = reserveFor(slot)
+            local said = math.floor(sv) + pool
+
+            -- THE ENGINE IS ONLY ASKED ABOUT THE WEAPON IT IS ACTUALLY HOLDING.
+            -- RemoveAllPedWeapons has taken every other one off the ped, so
+            -- GetAmmoInPedWeapon would answer 0 for four rows out of five and
+            -- the readout would invent four faults. '-' is the honest answer:
+            -- not stowed, not empty -- not on this ped at all.
+            local hash = hashOf(slot)
+            local eng  = nil
+            if hash and applied == hash then
+                eng = GetAmmoInPedWeapon(ped, hash) or 0
+            end
+
+            print(('   %s %d  %-15s %4s %5d %5d %7s %6s%s')
+                :format(inv.active == i and '>' or ' ', i,
+                        tostring(slot.id),
+                        slot.clip and tostring(math.floor(slot.clip)) or '-',
+                        pool, said,
+                        eng and tostring(eng) or '-',
+                        rec and tostring(rec.n or 0) or '-',
+                        (eng and eng ~= said) and '  !' or ''))
+
+            if w and w.clip and slot.clip and math.floor(slot.clip) > w.clip then
+                print(('        magazine %d is bigger than %s\'s configured %d')
+                    :format(math.floor(slot.clip), slot.id, w.clip))
+            end
+        end
+    end
+
+    for _, pool in ipairs(BR.Config.AmmoOrder or {}) do
+        print(('  pool %-8s %d'):format(pool, math.floor(inv.ammo[pool] or 0)))
+    end
+
+    print('  mag    what the mirror shows -- the ENGINE\'s magazine, written')
+    print('         every tick so the counter follows the gun')
+    print('  said   what the SERVER last said this weapon holds in total')
+    print('  engine what the ENGINE says the ped holds, magazine included')
+    print('  spent  rounds burnt that the server has not charged for; this is')
+    print('         subtracted from every re-grant, so a `!` row is the bug')
+    print('         being contained rather than the bug happening')
+end, false)

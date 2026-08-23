@@ -70,7 +70,7 @@ actually is.
 | **Warmup loot** | One layout on the Cayo Perico pad, shared by every concurrent match — the pad is a communal routing bucket, so a per-match layout would put two players side by side seeing different crates. Looted crates respawn on a timer, and everything found there is wiped at wheels-up. |
 | **Slots** | Five, matching the `slot1`–`slot5` keybinds, plus **slot 0: fists** — always present, never fillable, left of slot 1 on the bar and part of the scroll ring. Weapons, throwables and consumables occupy a slot; ammo lives in a separate capped pool. Picking anything up with no free slot swaps it into the active slot and drops what was there onto the ground; nothing is ever refused, because reaching for an item means wanting it more than what is in hand. |
 | **Active slot** | The one thing the ped is holding. Every switch is `RemoveAllPedWeapons` + `GiveWeaponToPed`, so the weapon wheel cannot drift out of agreement with the inventory — and it is suspended while airborne, because that call would take the parachute with it. |
-| **Ammo reports** | The one number only the client can observe before M6 validates shots. Reports are accepted **only when they lower** the stored value, so the worst a liar can do is disarm themselves. See below — the choice of *which* number cost five rounds. |
+| **Ammo reports** | The one number only the client can observe. Reports are accepted **only when they lower** the stored value, so the worst a liar can do is disarm themselves. M6's shot counting did not retire this — it left a hole the size of every shot that raises no `weaponDamageEvent`, which is every explosive — so under `serverAmmo` the report survives as a floor on the total and nothing else. See below — the choice of *which* number cost five rounds, and the hole cost a sixth. |
 
 #### The ammo model, and the four models before it
 
@@ -106,6 +106,36 @@ increases rather than explaining them. Two consequences here:
 - **`GiveWeaponToPed` is called with ammo 0**, then `SetPedAmmo` sets the
   holding. That native *adds* rounds to a weapon the ped already has, so
   passing the real count re-granted a full holding on every re-apply.
+
+##### What M6 changed, and the hole it left (2026-08-23)
+
+With `Combat.serverAmmo` on the server counts rounds off validated shot events
+and the client's report was switched off entirely. `BR.Damage.spendRound` is
+reachable from exactly one place — the `weaponDamageEvent` handler — so **a
+round burnt by a shot that raises no such event was charged to nobody**. An
+explosive raises none at all, which is the whole airdrop shelf: the RPG, the
+grenade launcher and the railgun. The server's number then sat above the ped's
+for the rest of the match, and every re-grant — a slot switch, a pickup that
+touched the shared pool, the post-landing chute sweep — wrote it back onto the
+gun. Owner, from a playtest: *"once depleted, switching between slots gave me
+more ammo."*
+
+Two things changed and the rule above is unchanged by both:
+
+- **The report is a floor, not a retirement.** Under `serverAmmo` the client may
+  say the total has FALLEN and may say nothing else — it cannot raise it, cannot
+  choose the split, and cannot buy a reload the pool has not paid for. It is the
+  only observer of rounds the server never saw leave.
+- **The client tracks its own shortfall.** Per slot, `what the server says` minus
+  `what the engine says`, measured only where the ammo natives are trusted, and
+  subtracted from every write onto the ped. That is what makes a dry weapon come
+  back dry inside the round trip rather than one INV_SET later.
+
+`/brammo` prints all of it — the server's magazine, the pool, the engine's
+holding and the shortfall, for all five slots at once. `/brprobe ammo` is the
+stopwatch for the active weapon; this is the photograph that includes the slots
+you are not holding, which is the only shape that can answer a question about
+switching.
 
 Infinite ammo and infinite-ammo-clip are asserted **off every tick**, not once
 per weapon grant: the raw probe showed the flag surviving a grant-time clear.

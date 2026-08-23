@@ -12920,6 +12920,241 @@ do
     Citizen = savedCitizen
 end
 
+-- ======================================================================== --
+-- N. THE AMMO THAT CAME BACK
+-- ======================================================================== --
+--
+-- Owner, 2026-08-23, live two-player playtest: "when picking up a railgun from
+-- the airdrop it seemed to have a different amount of ammo than what the HUD
+-- showed, then once depleted, switching between slots gave me more ammo."
+--
+-- The second sentence is a duplication exploit: cycle the wheel and the gun is
+-- loaded again, for free, as many times as you like.
+--
+-- IT IS NOT IN THE SWITCH, WHICH IS WHY READING THE SWITCH FOUND NOTHING.
+-- applyActive does RemoveAllPedWeapons -> GiveWeaponToPed(..., 0, ...) ->
+-- SetPedAmmo, so it grants nothing and then writes an explicit number: it can
+-- only ever hand out what it was TOLD. What it is told is the SERVER's number,
+-- and with Combat.serverAmmo on the server only debits a round when a validated
+-- weaponDamageEvent reaches BR.Damage.spendRound. Rounds burnt by anything else
+-- were charged to nobody, and the re-grant handed them straight back.
+--
+-- WHY THE HARNESS MODELS THE PED'S AMMO RATHER THAN COUNTING CALLS. "SetPedAmmo
+-- was called with 6" is true of the fix and of the bug; the question is what the
+-- GUN ends up holding after a sequence of grants, and only a model of the ped
+-- can answer that. Every native below is the real one's contract: GiveWeaponToPed
+-- ADDS (which is why the file passes 0), SetPedAmmo SETS the total, and the
+-- magazine is part of the total rather than beside it.
+describe('a depleted weapon stays depleted across a slot switch -- 2026-08-23')
+do
+    local savedGive    = GiveWeaponToPed
+    local savedRemove  = RemoveAllPedWeapons
+    local savedSetAmmo = SetPedAmmo
+    local savedSetClip = SetAmmoInClip
+    local savedGetAmmo = GetAmmoInPedWeapon
+    local savedGetClip = GetAmmoInClip
+    local savedCurrent = SetCurrentPedWeapon
+
+    -- The ped's own holding, by normalised hash. `total` includes the magazine,
+    -- which is the whole point of the model the report loop watches.
+    local gun = { total = {}, clip = {} }
+
+    function RemoveAllPedWeapons() gun.total, gun.clip = {}, {} end
+    function GiveWeaponToPed(_, hash, ammo)
+        local h = BR.NormHash(hash)
+        gun.total[h] = (gun.total[h] or 0) + (ammo or 0)
+    end
+    function SetPedAmmo(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.total[h] = math.max(0, n or 0)
+        gun.clip[h]  = math.min(gun.clip[h] or 0, gun.total[h])
+    end
+    function SetAmmoInClip(_, hash, n)
+        local h = BR.NormHash(hash)
+        gun.clip[h] = math.min(math.max(0, n or 0), gun.total[h] or 0)
+    end
+    function GetAmmoInPedWeapon(_, hash) return gun.total[BR.NormHash(hash)] or 0 end
+    function GetAmmoInClip(_, hash) return true, gun.clip[BR.NormHash(hash)] or 0 end
+    function SetCurrentPedWeapon(_, hash) pedWeapon = hash end
+
+    local RAILGUN = BR.Config.WeaponById['railgun']
+    local PISTOL  = BR.Config.WeaponById['pistol']
+    local RH, PH  = BR.NormHash(RAILGUN.hash), BR.NormHash(PISTOL.hash)
+
+    --- Pull the trigger, the way the engine does: one round out of the magazine
+    --- and out of the total, and a reload off the ped's own reserve when the
+    --- magazine empties. Nothing here talks to the server, which IS the bug.
+    local function pull(hash, n)
+        local h = BR.NormHash(hash)
+        for _ = 1, (n or 1) do
+            if (gun.total[h] or 0) <= 0 then break end
+            gun.total[h] = gun.total[h] - 1
+            gun.clip[h]  = math.max(0, (gun.clip[h] or 0) - 1)
+            if gun.clip[h] == 0 then
+                local w = BR.Config.WeaponByHash[h]
+                gun.clip[h] = math.min(w and w.clip or 0, gun.total[h])
+            end
+        end
+        -- Ten ticks: enough for the report loop's own gate to open, and enough
+        -- for the mirror to have seen the gun at rest afterwards.
+        for _ = 1, 10 do
+            fakeTime = fakeTime + 100
+            BR.Loop.step(BR.Loop.TICK)
+        end
+    end
+
+    --- What the server would send. `clip` and the pool are the SERVER's numbers,
+    --- so leaving them where they were is exactly a server that has not noticed
+    --- the shots -- which is the state an explosive weapon is always in.
+    local function serverSays(active, railClip, heavy)
+        fire(BR.Net.INV_SET, {
+            slots = {
+                { id = 'railgun', label = 'Railgun', kind = BR.ItemKind.WEAPON,
+                  rarity = 5, count = 1, clip = railClip, pool = 'heavy' },
+                { id = 'pistol', label = 'Pistol', kind = BR.ItemKind.WEAPON,
+                  rarity = 1, count = 1, clip = PISTOL.clip, pool = 'light' },
+            },
+            ammo = { heavy = heavy, light = 24 },
+            active = active,
+        })
+        BR.Loop.step(BR.Loop.TICK)
+    end
+
+    local function ammoReports()
+        local out = {}
+        for _, s in ipairs(sent) do
+            if s.name == BR.Net.INV_AMMO then out[#out + 1] = s.args[1] end
+        end
+        return out
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+
+    -- ── 1. THE PICKUP. What the HUD draws and what the gun holds are the same
+    --       number, which is the first half of the report.
+    --
+    --       The HUD reads `clip` and the pool off the payload and prints them as
+    --       "clip / reserve"; the ped is given `clip + reserve` in total. So the
+    --       assertion is that the engine's total equals what the bar adds up to,
+    --       and that the magazine matches the number in the big type.
+    sent = {}
+    serverSays(1, RAILGUN.clip, RAILGUN.clip)
+    local hudClip, hudReserve = RAILGUN.clip, RAILGUN.clip
+    ok(gun.total[RH] == hudClip + hudReserve,
+       'a railgun off an airdrop holds exactly what the HUD adds up to',
+       ('engine %s, HUD %d + %d'):format(tostring(gun.total[RH]),
+                                         hudClip, hudReserve))
+    ok(gun.clip[RH] == hudClip,
+       'and its magazine is the number the bar prints in the big type',
+       ('engine %s, HUD %d'):format(tostring(gun.clip[RH]), hudClip))
+
+    -- ── 2. FIRE IT DRY, WITH THE SERVER NONE THE WISER.
+    --
+    --       No INV_SET follows, because for an explosive there is nothing to
+    --       follow: a blast raises no weaponDamageEvent (server/damage.lua's own
+    --       2026-08-08 capture), so spendRound never runs and the server's
+    --       numbers stay exactly where they were.
+    sent = {}
+    pull(RAILGUN.hash, hudClip + hudReserve)
+    ok(gun.total[RH] == 0, 'the gun is empty after the last round',
+       tostring(gun.total[RH]))
+
+    -- THE HALF THAT TELLS THE SERVER. Silenced by serverAmmo until 2026-08-23,
+    -- which is why the drift was permanent rather than a round trip long.
+    local reports = ammoReports()
+    ok(#reports > 0 and reports[#reports].total == 0,
+       'the client reports the rounds as gone, even with serverAmmo on',
+       ('%d report(s), last total %s'):format(
+           #reports, reports[#reports] and tostring(reports[#reports].total) or '-'))
+
+    -- ── 3. THE EXPLOIT. Switch away, switch back. The server still believes the
+    --       railgun is loaded, so this is the exact press the owner made.
+    serverSays(2, RAILGUN.clip, RAILGUN.clip)
+    ok(gun.total[RH] == nil or gun.total[RH] == 0,
+       'switching away takes the railgun off the ped',
+       tostring(gun.total[RH]))
+
+    serverSays(1, RAILGUN.clip, RAILGUN.clip)
+    ok((gun.total[RH] or 0) == 0,
+       'A DEPLETED WEAPON COMES BACK DEPLETED -- the switch conjures nothing',
+       ('engine total %s (server still says %d + %d)'):format(
+           tostring(gun.total[RH]), RAILGUN.clip, RAILGUN.clip))
+
+    -- ...AND NOT ONLY THROUGH THE SWITCH. reapplyAmmo runs on any INV_SET whose
+    -- ammo went up, and the pool is SHARED -- so picking up a bandage while
+    -- somebody else's sniper ammo landed used to reload the railgun too. Same
+    -- deficit, same subtraction, different door.
+    serverSays(1, RAILGUN.clip, RAILGUN.clip + 5)
+    ok((gun.total[RH] or 0) == 5,
+       'and an unrelated pickup credits only what was actually picked up',
+       tostring(gun.total[RH]))
+
+    -- ── 4. IT IS NOT RAILGUN-ONLY, AND THE REPORT UNDERSTATES IT. The railgun is
+    --       where the owner found it because an explosive is charged for nothing
+    --       at all; every weapon leaks for every shot the server does not see.
+    sent = {}
+    serverSays(2, RAILGUN.clip, 0)
+    pull(PISTOL.hash, PISTOL.clip + 24)
+    ok(gun.total[PH] == 0, 'a pistol emptied the same way is empty',
+       tostring(gun.total[PH]))
+    serverSays(1, RAILGUN.clip, 0)
+    serverSays(2, RAILGUN.clip, 0)
+    ok((gun.total[PH] or 0) == 0,
+       'and it stays empty across the same switch -- this was never railgun-only',
+       tostring(gun.total[PH]))
+
+    -- ── 5. THE OTHER DIRECTION, WHICH IS THE ONE A CARELESS FIX BREAKS. A
+    --       genuine grant must still arm the player: the deficit may only ever
+    --       take away rounds the ENGINE has already spent.
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+    sent = {}
+    serverSays(1, RAILGUN.clip, RAILGUN.clip)
+    ok(gun.total[RH] == RAILGUN.clip * 2,
+       'a fresh weapon after a teardown is fully loaded',
+       tostring(gun.total[RH]))
+
+    -- Firing without the shortfall ever being measured (the state a stow or a
+    -- suspended probe leaves) must not dock anything either: it is `max(0, ...)`
+    -- and it is keyed on the item, so a slot that changed weapons starts clean.
+    pull(RAILGUN.hash, 2)
+    serverSays(1, 0, 0)             -- the server catches up: nothing left
+    serverSays(1, PISTOL.clip, 12)  -- ...and a DIFFERENT gun lands in slot 1
+    fire(BR.Net.INV_SET, {
+        slots = {
+            { id = 'pistol', label = 'Pistol', kind = BR.ItemKind.WEAPON,
+              rarity = 1, count = 1, clip = PISTOL.clip, pool = 'light' },
+        },
+        ammo = { light = 24 }, active = 1,
+    })
+    BR.Loop.step(BR.Loop.TICK)
+    ok(gun.total[PH] == PISTOL.clip + 24,
+       'and a new weapon in a slot that was empty is not docked for it',
+       tostring(gun.total[PH]))
+
+    -- ── 6. THE READOUT. The owner cannot check any of this from a chair, and a
+    --       diagnostic that throws is worse than none -- /brloot and /brkeys are
+    --       pinned the same way for the same reason. Exercised on a live
+    --       inventory AND on an empty one, because the empty case is the one
+    --       that reaches for fields that are not there.
+    ok(pcall(commands['brammo'], nil, {}, ''),
+       '/brammo does not throw with a weapon in hand')
+    fire(BR.Net.INV_SET, { slots = {}, ammo = {}, active = 0 })
+    ok(pcall(commands['brammo'], nil, {}, ''),
+       'and neither does it on an empty inventory holding fists')
+
+    GiveWeaponToPed     = savedGive
+    RemoveAllPedWeapons = savedRemove
+    SetPedAmmo          = savedSetAmmo
+    SetAmmoInClip       = savedSetClip
+    GetAmmoInPedWeapon  = savedGetAmmo
+    GetAmmoInClip       = savedGetClip
+    SetCurrentPedWeapon = savedCurrent
+    pedWeapon = nil
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+end
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)
