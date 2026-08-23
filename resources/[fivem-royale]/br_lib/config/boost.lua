@@ -97,11 +97,8 @@ BR.Config.Boost = {
     ---     ═══
     ---
     --- The owner said "the vehicle", not "the car", so the default here is as
-    --- close to everything as the keyboard allows. LEFT SHIFT is the right
-    --- default key precisely because GTA does nothing with it in a CAR. The full
-    --- list is longer than the four that used to be written here -- eight
-    --- controls default to LSHIFT -- and the conclusion is unchanged, because
-    --- only one of the eight can fire in a ground vehicle at all:
+    --- close to everything as the keyboard allows. Eight controls default to
+    --- LSHIFT:
     ---
     ---     21   INPUT_SPRINT                       on foot only
     ---     61   INPUT_VEH_MOVE_UP_ONLY             aircraft / heli axis
@@ -115,6 +112,39 @@ BR.Config.Boost = {
     --- TWO ENTRIES THAT USED TO BE SUSPECTED ARE NOT ON THE LIST AT ALL:
     --- INPUT_VEH_DUCK is 73 (X) and INPUT_VEH_HANDBRAKE is 76 (SPACE). Neither
     --- is shift and neither was ever a collision here.
+    ---
+    --- ═══ WHAT THIS FILE USED TO CLAIM HERE WAS WRONG, AND THE PLAYTEST SAID SO
+    ---     ═══
+    ---
+    --- It said "GTA does nothing with it in a CAR" and "only one of the eight can
+    --- fire in a ground vehicle at all". `/brboostwhy 6`, run from the driver's
+    --- seat of a car on this build, answered:
+    ---
+    ---     control INPUT_SPRINT                    ( 21)  PRESSED on 590 of 686
+    ---     control INPUT_VEH_MOVE_UP_ONLY          ( 61)  PRESSED on 590 of 686
+    ---     control INPUT_VEH_HYDRAULICS_CONTROL_UP (340)  PRESSED on 590 of 686
+    ---     control INPUT_VEH_FLY_BOOST             (352)  PRESSED on 590 of 686
+    ---
+    --- Four for four, on every frame the key was down. The claim is deleted above
+    --- rather than softened.
+    ---
+    --- ═══ AND WHAT THAT READING ACTUALLY MEANS IS NARROWER THAN IT LOOKS ═══
+    ---
+    --- IS_DISABLED_CONTROL_PRESSED ANSWERS THE MAPPER, NOT THE GAME. It reports
+    --- "the input bound to this control id is currently down". It does not report
+    --- that anything in the engine ACTED on it -- there is no native that asks
+    --- that question at all. All four of those ids are bound to LSHIFT, so on any
+    --- build whatsoever, in any context whatsoever, holding shift makes all four
+    --- read PRESSED. The 590-of-686 row is the sentence "shift was down", printed
+    --- four times.
+    ---
+    --- So the observation refutes the old claim in the only form the old claim
+    --- was testable -- these ids are not silent in a car -- and it does NOT
+    --- establish that GTA did four things to the car. What each control does when
+    --- the engine consumes it is unchanged from the table above, and on a
+    --- ground vehicle that is: 21 nothing (on foot only), 352 nothing (aircraft
+    --- only), 61 mid-air pitch, 340 nothing unless the model has hydraulics
+    --- fitted.
     ---
     --- ═══ "DRIFT MODE IS ON SHIFT" WAS INVESTIGATED AND IS NOT A GTA FEATURE ═══
     ---
@@ -140,6 +170,28 @@ BR.Config.Boost = {
     --- controls on the key while you hold it, which is what settles it on this
     --- build rather than in a document.
     ---
+    --- ═══ RE-RESEARCHED AFTER THE SECOND PLAYTEST, AND IT HELD ═══
+    ---
+    ---   "Vehicle boost does work now, but still getting drift mode at the same
+    ---    time. Sick affect, but not intended or acceptable really."
+    ---                                              -- owner, 2026-08-22
+    ---
+    --- The Cfx controls reference was re-read end to end against this. It runs
+    --- 0..359 (359 is INPUT_RESPAWN_FASTER) and NO control name in it contains
+    --- DRIFT or SLIDE. Drift Tuning is still a Hao's modification with no key.
+    --- Nothing in this repo calls SET_VEHICLE_MOD, _SET_DRIFT_TYRES_ENABLED or
+    --- any grip native -- the only handling writer in the gamemode is
+    --- client/vehdamage.lua and its four fields are all *DamageMult.
+    ---
+    --- WHICH LEAVES THE REPORT UNEXPLAINED BY ANY CONTROL, and the honest
+    --- statement of that is: the boost's own impulse is the leading suspect and
+    --- it has NOT been proved. `maxAccelMps2` is about 1.4 g of longitudinal
+    --- acceleration applied to the rigid body as an impulse, which does not go
+    --- through the tyres and so never spends any of their grip budget. A car
+    --- handed speed the tyre model did not authorise, mid-corner, slides -- which
+    --- is what a drift looks like. See client/boost.lua's `slipMax` trace row,
+    --- which is the measurement that would settle it.
+    ---
     --- REGISTER_KEY_MAPPING AND AN ENGINE CONTROL DO NOT FIGHT OVER A KEY, and
     --- this is now source-backed rather than assumed. FiveM's GameInput.cpp
     --- evaluates custom bindings from the same rage::ioValue device state the
@@ -160,6 +212,62 @@ BR.Config.Boost = {
         [15] = true,   -- helicopters
         [16] = true,   -- planes
     },
+
+    --- ═══ THE ENGINE CONTROLS WE HOLD DOWN WHILE THE BOOST KEY IS HELD ═══
+    ---
+    --- Of the eight ids that default to LSHIFT, these are the ones that can do
+    --- something to a GROUND vehicle. Both are the driver's own car misbehaving
+    --- under a key the driver is pressing for us, which is what makes them ours:
+    ---
+    ---     61   INPUT_VEH_MOVE_UP_ONLY            pitches a car nose-up while it
+    ---                                            is airborne. A boosted car
+    ---                                            leaves the ground far more
+    ---                                            often than an unboosted one,
+    ---                                            and the key that launched it is
+    ---                                            still down when it does.
+    ---     340  INPUT_VEH_HYDRAULICS_CONTROL_UP   raises the suspension of a
+    ---                                            hydraulics-equipped lowrider.
+    ---
+    --- ═══ AND THE OTHER TWO ARE DELIBERATELY LEFT ALONE, WHICH IS #200'S LESSON
+    ---     ═══
+    ---
+    --- An over-broad per-frame suppression in client/inventory.lua ate the radio
+    --- wheel for months, because it disabled the melee ids that share Q with
+    --- INPUT_VEH_RADIO_WHEEL in a context where only the radio wheel could
+    --- apply. The way that happened was suppressing a list because every id on it
+    --- was on the same key, rather than because each id did something unwanted.
+    --- So each id here has to earn its place, and two do not:
+    ---
+    ---     21   INPUT_SPRINT        cannot reach the driver of a vehicle. It is
+    ---                              the on-foot sprint, and a ped in a seat is
+    ---                              not running. Suppressing it would be exactly
+    ---                              the #200 move -- an id on the list because of
+    ---                              its KEY rather than its EFFECT.
+    ---     352  INPUT_VEH_FLY_BOOST aircraft only, and aircraft never reach this
+    ---                              code path at all: excludeClasses turns the
+    ---                              boost off for 15 and 16 before the
+    ---                              suppression is reached, precisely so a
+    ---                              helicopter pilot keeps their collective.
+    ---
+    --- NEITHER OMISSION COSTS ANYTHING IF THE RESEARCH IS WRONG ABOUT THEM, and
+    --- that is worth stating because the research above was wrong once already:
+    --- adding an id here is a one-line edit with a test beside it, and the
+    --- suppression's scope (below) is narrow enough that a wrong id would cost
+    --- one control, in one seat, while one key is held.
+    ---
+    --- ═══ WHEN IT APPLIES, WHICH IS THE HALF #200 WAS ABOUT ═══
+    ---
+    --- client/boost.lua holds these down only when ALL of: the boost is enabled,
+    --- the player is IN a vehicle, in the DRIVER's seat (-1), the class is not
+    --- excluded, and the boost key is HELD. It is deliberately NOT gated on the
+    --- boost actually running -- a player holding the key on an empty meter is
+    --- still pressing the key, and the engine control does not care that our
+    --- meter is dry. Let go and every one of these is the engine's again on the
+    --- very next frame, because a disable lasts exactly one frame.
+    ---
+    --- REVERSIBLE IN ONE LINE, like the table above it: empty this and the engine
+    --- gets the whole key back.
+    suppressControls = { 61, 340 },
 
     --- ═══ THE FLAMES ═══
     ---

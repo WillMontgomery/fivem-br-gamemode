@@ -840,9 +840,22 @@ end
 --- own frame, which is the whole reason boost.lua prefers it over the scalar.
 --- Returns a vector table, which is the shape FiveM's Lua runtime produces.
 local speedVectorMissing = false
+--- HOW SIDEWAYS THE CAR IS, which is 0.0 for every test that is not about the
+--- drift report. `x` is the lateral component in the entity's own frame, so a
+--- non-zero value here IS a car in a slide -- the state the owner's second
+--- report describes and the one /brboostwhy had no row for.
+--- `vehLateralStep` is added to it on every read, so a slide can DECAY across a
+--- measurement window. A constant would make the peak and the mean and the
+--- minimum the same number, and a readout that reported any of the three would
+--- look correct -- see the peak assertions in the boost block.
+local vehLateral, vehLateralStep = 0.0, 0.0
 function GetEntitySpeedVector(_ent, _rel)
     if speedVectorMissing then error('GET_ENTITY_SPEED_VECTOR: no such native', 0) end
-    return { x = 0.0, y = vehSpeed, z = 0.0 }
+    local x = vehLateral
+    if vehLateralStep ~= 0.0 and vehLateral > 0.0 then
+        vehLateral = math.max(0.0, vehLateral + vehLateralStep)
+    end
+    return { x = x, y = vehSpeed, z = 0.0 }
 end
 
 --- The scalar fallback. UNSIGNED, like the real one -- which is exactly why
@@ -897,6 +910,9 @@ function SetParticleFxLoopedScale() end
 --- presses it for BOTH readers exactly as a real keyboard does -- which is the
 --- arrangement that makes "the engine saw it and we did not" a state the suite
 --- can actually reach.
+--- WHICH KEY EACH CONTROL SITS ON. The four are the LSHIFT set; 350 is not one
+--- of them and is not on the key, so it is silent unless a test puts it there --
+--- which is what a build with a control the 2020 table does not name looks like.
 local CONTROL_VK = { [21] = 0x10, [61] = 0x10, [340] = 0x10, [352] = 0x10 }
 --- Which controls this simulated build reports at all. Emptying it is a build
 --- where shift drives no control in a car, which is what config/boost.lua
@@ -11448,6 +11464,301 @@ do
         local okn = pcall(BR.Boost.verdict, nil)
         ok(okn, 'and so is nil')
     end
+
+    -- ══════════════════════════════════════════════════════════════════════ --
+    -- THE REST OF WHAT THE BOOST KEY DOES
+    -- ══════════════════════════════════════════════════════════════════════ --
+    --
+    -- "Vehicle boost does work now, but still getting drift mode at the same
+    -- time. Sick affect, but not intended or acceptable really."
+    --                                              -- owner, 2026-08-22
+    --
+    -- RegisterKeyMapping does not take a key away from the engine, and eight
+    -- stock controls default to LSHIFT. client/boost.lua now holds down the two
+    -- that can act on a ground vehicle while the key is held in the driver's
+    -- seat.
+    --
+    -- ═══ THIS BLOCK IS SHAPED BY #200 RATHER THAN BY THE FIX ═══
+    --
+    -- A suppression is one edit away from eating a control somebody needs -- an
+    -- unconditional block in client/inventory.lua took the radio wheel away for
+    -- months. So the assertions come in PAIRS, and the negative half of each pair
+    -- is the one that matters: every scope clause is tested by showing that
+    -- OUTSIDE it nothing is suppressed, and the two ids deliberately left off the
+    -- list are pinned as still free. A test that only proved "61 is held down in
+    -- a car" would pass with the whole list replaced by every id on the key,
+    -- which is exactly the regression #200 was.
+    describe('#203 what else is on the boost key')
+
+    -- THE IDS ARE WRITTEN OUT HERE RATHER THAN READ FROM THE CONFIG, and
+    -- mutation testing is why. Every assertion below used to check
+    -- BR.Config.Boost.suppressControls against itself, so deleting 340 from the
+    -- config deleted it from the expectation too and the suite stayed green on a
+    -- control that had silently stopped being suppressed. The list IS the
+    -- decision -- which ids of the eight on this key are ours to take -- so it is
+    -- pinned as a literal and the config is checked against it.
+    local EXPECT     = { 61, 340 }      -- MOVE_UP_ONLY, HYDRAULICS_CONTROL_UP
+    local LEFT_ALONE = { 21, 352 }      -- on the key, off the list, and why
+    local SUPPRESSED = BR.Config.Boost.suppressControls
+
+    local function allOff(list)
+        for _, c in ipairs(list) do
+            if disabled[c] ~= true then return false end
+        end
+        return true
+    end
+    local function anyOff(list)
+        for _, c in ipairs(list) do
+            if disabled[c] == true then return true end
+        end
+        return false
+    end
+
+    -- THE CONFIG SAYS WHAT THIS BLOCK SAYS. Checked as a SET both ways round: a
+    -- missing id and an extra one are different bugs and the second is #200.
+    do
+        local want, got = {}, {}
+        for _, c in ipairs(EXPECT) do want[c] = true end
+        for _, c in ipairs(SUPPRESSED or {}) do got[c] = true end
+        local same = #EXPECT == #(SUPPRESSED or {})
+        for c in pairs(want) do if not got[c] then same = false end end
+        for c in pairs(got) do if not want[c] then same = false end end
+        ok(same, 'BR.Config.Boost.suppressControls is exactly {61, 340} -- adding '
+           .. 'an id here without a reason beside it is how #200 happened',
+           table.concat(SUPPRESSED or {}, ','))
+    end
+
+    -- 1. THE CASE THE OWNER IS IN. Driving a car, holding the key.
+    resetBoost()
+    drive(20.0)
+    shiftDown(fill)
+    frames(8, 16)
+    ok(allOff(EXPECT),
+       'driving and holding the key: 61 and 340 are both held down')
+    ok(not anyOff(LEFT_ALONE),
+       'and 21 and 352 are NOT -- they are on the key and do nothing to a car, '
+       .. 'which is the #200 distinction between a key and an effect')
+
+    -- 2. THE KEY IS THE SCOPE, AND IT IS MEASURED ON THE VERY NEXT FRAME. The
+    --    release frame is the whole difference: the boost loop skips everything
+    --    below its idle path once the key is up AND no boost is running, so a
+    --    suppression missing its `held` clause looks correct on every frame
+    --    except the one where a running boost is being stopped. Waiting four
+    --    frames to look is what let that mutant live.
+    shiftUp(fill)
+    frame(16)
+    ok(not anyOff(EXPECT),
+       'let go and the engine has all of it back on the VERY NEXT frame, '
+       .. 'including the frame the running boost is stopped on')
+
+    -- 3. THE SEAT IS THE SCOPE.
+    resetBoost()
+    onFoot()
+    shiftDown(fill)
+    frames(8, 16)
+    ok(not anyOff(EXPECT),
+       'holding the key on foot suppresses nothing -- sprint is not ours to take')
+    shiftUp(fill)
+
+    resetBoost()
+    drive(20.0)
+    vehicleSeat = 0                     -- front passenger
+    shiftDown(fill)
+    frames(8, 16)
+    ok(not anyOff(EXPECT),
+       'a passenger keeps their controls -- the boost is the driver\'s and so is '
+       .. 'the suppression')
+    shiftUp(fill)
+
+    -- 4. AND SO IS THE CLASS, WHICH IS THE ONE THAT WOULD HURT MOST TO GET
+    --    WRONG. 61 and 352 ARE the collective in a helicopter. Excluding
+    --    aircraft from the boost and then suppressing their flight controls
+    --    anyway would ground every pilot on the server, silently, for as long as
+    --    they held a key they had every reason to hold.
+    for _, class in ipairs({ 15, 16 }) do
+        resetBoost()
+        drive(20.0, class)
+        shiftDown(fill)
+        frames(8, 16)
+        ok(not anyOff(EXPECT),
+           ('class %d keeps every control -- an excluded aircraft is excluded '
+            .. 'from the suppression too, not just from the push'):format(class))
+        shiftUp(fill)
+    end
+
+    -- 5. NOT GATED ON THE BOOST RUNNING, WHICH IS THE CLAUSE A TIDY-UP WOULD
+    --    ADD. Four seconds of capacity spent, key still down: the meter is empty
+    --    and the dry latch is set, so `want` is false and nothing is being
+    --    pushed -- and GTA does not consult our meter before pitching the car.
+    resetBoost()
+    drive(20.0)
+    shiftDown(fill)
+    frames(340, 16)                     -- 5.4s: past the 4s capacity, still held
+    ok(BR.Boost.active() == false, 'the meter has run dry, so no boost is running')
+    ok(allOff(EXPECT),
+       'and the controls are STILL held down -- the scope is the key and the '
+       .. 'seat, not the meter')
+    shiftUp(fill)
+
+    -- 6. THE OFF SWITCH TAKES THE SUPPRESSION WITH IT. `enabled = false` is
+    --    documented as "the client registers nothing", and a suppression left
+    --    running under it would be this file quietly keeping a control from a
+    --    server that had switched the whole feature off.
+    resetBoost()
+    drive(20.0)
+    BR.Config.Boost.enabled = false
+    shiftDown(fill)
+    frames(8, 16)
+    ok(not anyOff(EXPECT),
+       'with the boost switched off, nothing is suppressed either')
+    BR.Config.Boost.enabled = true
+    shiftUp(fill)
+
+    -- 7. THE BOOL SHAPES, AGAIN, BECAUSE THE SEAT GATE IS THE SUPPRESSION'S
+    --    GATE. IsPedInAnyVehicle is declared BOOL, `0` is TRUTHY in Lua, and
+    --    this project has shipped that mistake five times. Both directions,
+    --    because they fail in opposite ways and only one of them is visible.
+    resetBoost()
+    drive(20.0)
+    shiftDown(fill)
+    inVehicle = 1
+    frames(8, 16)
+    ok(allOff(EXPECT),
+       'a native answering 1 rather than true is still IN A VEHICLE '
+       .. '(1 == true is false in Lua)')
+
+    inVehicle = 0
+    frames(8, 16)
+    ok(not anyOff(EXPECT),
+       'and one answering 0 rather than false is still ON FOOT -- 0 is TRUTHY, '
+       .. 'so the naive normalisation would suppress a pedestrian\'s sprint')
+    shiftUp(fill)
+
+    -- ══════════════════════════════════════════════════════════════════════ --
+    -- THE INSTRUMENT THAT WOULD NAME A CAUSE THE DESK CANNOT
+    -- ══════════════════════════════════════════════════════════════════════ --
+    --
+    -- Two rows were added to /brboostwhy for the second report, and both exist
+    -- because the first report was read wrongly: four controls reading PRESSED
+    -- was taken as four things happening to the car, when IS_DISABLED_CONTROL_
+    -- PRESSED only ever answers "the key bound to this id is down".
+    resetBoost()
+    drive(20.0)
+    shiftDown(fill)
+    local code, text = brboost(2.5)
+    ok(code == 'ok', 'the suppression does not break the boost it protects', code)
+    ok(text:find('every OTHER control', 1, true) ~= nil,
+       'the readout sweeps the whole 0..359 table and says so when it finds '
+       .. 'nothing -- the four rows above it are a hardcoded 2020 list')
+    shiftUp(fill)
+
+    -- ...AND IT NAMES ONE WHEN THERE IS ONE. A control this build answers for on
+    -- the same key, absent from the four, is precisely the input Rockstar could
+    -- have added after the public table's last update -- the one candidate the
+    -- old readout was structurally incapable of showing.
+    resetBoost()
+    drive(20.0)
+    CONTROL_VK[350], controlsLive[350] = 0x10, true
+    shiftDown(fill)
+    code, text = brboost(1)
+    ok(text:find('(350)', 1, true) ~= nil,
+       'a fifth control on the key is named by its id, not silently dropped')
+    ok(text:find('not in the 2020 table', 1, true) ~= nil,
+       'and it is labelled as one the reference does not cover')
+    shiftUp(fill)
+    CONTROL_VK[350], controlsLive[350] = nil, nil
+
+    -- ...AND THE SWEEP MUST NOT REPORT THE WHOLE DRIVING CONTROL SET. It runs
+    -- only on frames the boost key is down; a version that ran every frame would
+    -- list accelerate, steer and brake, which is true and useless and would bury
+    -- the one row worth having.
+    --
+    -- 350 IS PUT ON A KEY THAT IS HELD DOWN AND THE BOOST KEY IS NOT PRESSED,
+    -- which is the only shape that separates the two versions. Testing it with
+    -- shift ALSO held proves nothing: an ungated sweep and a gated one both run
+    -- on every frame of that window. 0x60 is numpad 0 -- no binding in this
+    -- project watches it, so holding it drives nothing else.
+    resetBoost()
+    drive(20.0)
+    CONTROL_VK[350], controlsLive[350] = 0x60, true
+    keys[0x60] = true
+    code, text = brboost(1)
+    ok(text:find('(350)', 1, true) == nil,
+       'a control held on a DIFFERENT key is not swept up -- the sweep runs only '
+       .. 'on frames the boost key is down')
+    ok(text:find('silent on all 0 frames', 1, true) ~= nil,
+       'and the readout says how many frames it actually swept, so an empty '
+       .. 'list cannot be read as evidence when nothing was sampled')
+    keys[0x60] = nil
+    CONTROL_VK[350], controlsLive[350] = nil, nil
+
+    -- THE SIDEWAYS ROW. The owner's word is "drift", no drift INPUT exists on
+    -- this build, and the remaining suspect is our own impulse -- 1.4 g handed
+    -- to the rigid body without passing through the tyres. This is the number
+    -- that convicts or exonerates it, and it could not be read before.
+    --
+    -- THE VALUE IS READ OUT OF THE ROW RATHER THAN SEARCHED FOR IN THE WHOLE
+    -- REPORT, and anchored at its start. `find('6.0 m/s peak')` matches inside
+    -- '-6.0 m/s peak', which is exactly the reading a dropped abs() would print.
+    local function slipRow(t)
+        return (t:match('sideways while boosting%s+([^\n]+)')) or ''
+    end
+
+    -- A SLIDE THAT DECAYS, so peak, mean and minimum are three different
+    -- numbers and only one of them is 7.5. A readout that kept the last sample,
+    -- or the smallest, passes a constant-value test and fails this one.
+    resetBoost()
+    drive(20.0)
+    vehLateral, vehLateralStep = 7.5, -0.02
+    shiftDown(fill)
+    code, text = brboost(2.5)
+    ok(slipRow(text):find('^7%.5 m/s peak') ~= nil,
+       'the readout reports PEAK lateral speed while boosting, which is what a '
+       .. 'drift IS', slipRow(text))
+    shiftUp(fill)
+    vehLateral, vehLateralStep = 0.0, 0.0
+
+    -- SIDEWAYS IS SIDEWAYS WHICHEVER WAY IT SLID. The component is signed -- a
+    -- car sliding left reads negative -- and a peak taken without abs() would
+    -- report the least sideways frame of a left-hand drift as its worst.
+    resetBoost()
+    drive(20.0)
+    vehLateral = -6.0
+    shiftDown(fill)
+    code, text = brboost(2.5)
+    ok(slipRow(text):find('^6%.0 m/s peak') ~= nil,
+       'a drift the other way is the same size drift -- the sign is dropped, '
+       .. 'not printed', slipRow(text))
+    shiftUp(fill)
+    vehLateral = 0.0
+
+    -- AND A NaN IS NOT A MEASUREMENT. `x ~= x` is the only test for it, and
+    -- without it the row prints '-nan m/s peak' -- which is worse than no row,
+    -- because it looks like an answer.
+    resetBoost()
+    drive(20.0)
+    vehLateral = 0.0 / 0.0
+    shiftDown(fill)
+    code, text = brboost(2.5)
+    ok(slipRow(text):find('^not measured') ~= nil,
+       'a NaN lateral reading is discarded rather than printed as a peak',
+       slipRow(text))
+    shiftUp(fill)
+    vehLateral = 0.0
+
+    -- ...AND SAYS SO RATHER THAN PRINTING A ZERO WHEN IT CANNOT MEASURE. A build
+    -- with no speed vector falls back to the unsigned scalar, which has no
+    -- direction to decompose -- and a confident 0.0 there would exonerate the
+    -- impulse on evidence that was never collected.
+    resetBoost()
+    drive(20.0)
+    speedVectorMissing = true
+    shiftDown(fill)
+    code, text = brboost(2.5)
+    ok(text:find('not measured', 1, true) ~= nil,
+       'a build with no speed vector reports that it could not measure, not 0.0')
+    shiftUp(fill)
+    speedVectorMissing = false
 
     resetBoost()
     onFoot()

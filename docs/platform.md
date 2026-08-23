@@ -87,8 +87,17 @@ generic slot is filled. `keybinds.lua` bet on `0x10` for the vehicle boost and
 wrote the bet down as three converging inferences, none of which is an
 observation; since #203 the raw reader asks all three for that binding
 (`VK_ALSO`), which is a strict superset and costs nothing if the bet was right.
-`/brboostwhy` counts all three side by side, which is what settles it on a real
-machine.
+
+**It was wrong, and this build fills the side-specific slot only.**
+`/brboostwhy 6` on the owner's machine: `0x10` never read down across 686 frames,
+`0xA0` read down on 590 of them, `0xA1` never. So `VK_ALSO` is not a hedge — it
+is the only reason the vehicle boost fires at all, and deleting it as redundant
+would restore #203's original symptom exactly (full meter, dead key, no error).
+`DEFAULT_VK` still stores `0x10` deliberately: it is the code the settings screen
+captures (a browser `keydown` gives `keyCode` 16 for either shift), the code
+`VK_NAME` prints as `Shift`, and the key `VK_ALSO` is looked up by. Moving it to
+`0xA0` would narrow the raw read to one side, break right shift, and print
+`#160`.
 
 **`RegisterKeyMapping` and a stock GTA control coexist on the same key; neither
 swallows the other.** FiveM evaluates custom bindings from the same
@@ -106,12 +115,28 @@ Hao's — a handling change with no key, no toggle and no mode; there is no
 `INPUT_*DRIFT*` control in any control table, and the only drift natives are
 tyre-level (`_SET_DRIFT_TYRES_ENABLED`), which a script calls rather than a
 player pressing. The belief comes from third-party FiveM drift *resources* that
-bind left shift themselves. Eight controls default to LSHIFT and only
-`INPUT_VEH_HYDRAULICS_CONTROL_UP` (340) can fire in a ground vehicle, and only
-on a lowrider with hydraulics fitted. Stated honestly: the public control table's
-last substantive update was November 2020 (build ~2189), so an input added
-between then and 3095 would not appear in it — which is why `/brboostwhy` samples
-GTA's own controls on the key rather than trusting the document.
+bind left shift themselves. Re-checked after the second playtest: the Cfx control
+table runs 0..359 (359 is `INPUT_RESPAWN_FASTER`) and **no control name in it
+contains DRIFT or SLIDE**.
+
+**A control reading PRESSED means the key is down, not that the engine did
+something.** `IsControlPressed` / `IsDisabledControlPressed` answer the *mapper*
+— "is the input bound to this id currently down" — and no native anywhere
+reports whether the engine consumed it. Eight controls default to LSHIFT, so
+holding shift makes every one of them read PRESSED, in any context, on any
+build. `/brboostwhy` proved exactly that in a car (21, 61, 340 and 352 all
+PRESSED on 590 of 686 frames) and it refutes the older claim in this file that
+they would be silent there — but it does *not* mean four things happened to the
+car. What each does when consumed is unchanged: 21 is on-foot sprint, 352 is
+aircraft-only, 61 pitches an airborne vehicle, 340 needs hydraulics fitted.
+`br_lib/config/boost.lua` carries the full reading and the two ids the boost
+suppresses because of it.
+
+Stated honestly: the public control table's last substantive update was November
+2020 (build ~2189), so an input added between then and 3095 would not appear in
+it. That gap is why `/brboostwhy` no longer trusts its own hardcoded four and
+sweeps all 360 ids on the frames the key is held, naming anything else that
+answers.
 
 **A native declared BOOL may hand Lua a number.** `IsRawKeyDown` may answer
 `true/false`, `1/false`, `1/0` or `1/nil` depending on the build, and **`0` is

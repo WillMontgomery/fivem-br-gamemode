@@ -325,30 +325,42 @@ tap ('trail',       'brtrail',     'Royale: Toggle smoke trail',         'B')
 -- different number for the same key; see DEFAULT_VK below, where LSHIFT maps to
 -- 0x10 and the reason is written out.
 --
--- WHAT SHIFT ALREADY DOES IN A VEHICLE, ESTABLISHED RATHER THAN ASSUMED. Eight
--- GTA controls default to left shift and only one of them can fire in a ground
--- vehicle at all; the full list, and the finding that GTA's "drift mode" is a
--- handling MOD with no key rather than an input on this one, are in
--- br_lib/config/boost.lua's excludeClasses note.
+-- WHAT SHIFT ALREADY DOES IN A VEHICLE. Eight GTA controls default to left
+-- shift. The full list, what each does when the engine consumes it, and the
+-- finding that GTA's "drift mode" is a handling MOD with no key rather than an
+-- input on this one, are in br_lib/config/boost.lua's excludeClasses note.
 --
--- That is why it is the right default: it is the most valuable UNBOUND key in a
--- car, and the same key sprints on foot, so one habit covers both. It is also
--- the FiveM convention -- the open nitro scripts that ship a default ship this
--- one, and the three that were read all read it as control 21 while driving,
--- which is independent evidence that the key is free in a car.
+-- THIS COMMENT USED TO SAY "only one of them can fire in a ground vehicle at
+-- all", AND THE PLAYTEST REFUTED IT. /brboostwhy 6 from the driver's seat of a
+-- car reported 21, 61, 340 and 352 all PRESSED on 590 of 686 frames. What that
+-- actually proves is narrower than it sounds -- IS_DISABLED_CONTROL_PRESSED
+-- answers the MAPPER, so four ids bound to one key all read down whenever that
+-- key is down -- but the old sentence was testable and it failed, so it is gone
+-- rather than softened. config/boost.lua carries the full reading.
 --
--- THE TWO REAL COLLISIONS, AND WHAT IS DONE ABOUT EACH. RegisterKeyMapping does
--- not suppress an engine control that shares its key (see the note on the
--- removed 'ping' binding below for what that cost last time), so both of these
--- are live:
+-- Shift is still the right default: it is the most valuable key in a car that
+-- has no vanilla EFFECT there, and the same key sprints on foot, so one habit
+-- covers both. It is also the FiveM convention -- the open nitro scripts that
+-- ship a default ship this one, and the three that were read all read it as
+-- control 21 while driving.
+--
+-- THE COLLISIONS, AND WHAT IS DONE ABOUT EACH. RegisterKeyMapping does not
+-- suppress an engine control that shares its key (see the note on the removed
+-- 'ping' binding below for what that cost last time), so all of these are live:
 --
 --   AIRCRAFT   61 and 352 would climb a helicopter while we shoved it forward,
 --              from one press. Excluded in BR.Config.Boost.excludeClasses, which
 --              is the one place to change it.
---   HYDRAULICS 340 would hop a lowrider fitted with them. NOT excluded: it needs
---              a Benny's hydraulics mod, nothing in this gamemode fits one, and
---              a whole vehicle class cannot be taken away for a mod no car here
---              has. If a boosting Tornado starts bouncing, this is the line.
+--   IN THE AIR 61 pitches a CAR that is airborne, and a boosted car is airborne
+--              far more often. Held down by client/boost.lua while the key is
+--              held in the driver's seat -- BR.Config.Boost.suppressControls.
+--   HYDRAULICS 340 would hop a lowrider fitted with them. Still a mod no car in
+--              this gamemode has fitted, so it remains SPECULATIVE that it can
+--              ever fire here -- the playtest did not confirm it, because what
+--              the playtest saw was the key being down, not a suspension
+--              moving. Suppressed anyway, on the same line as 61, because the
+--              suppression is free and the alternative is a bouncing Tornado
+--              nobody can explain.
 --
 -- INPUT_VEH_ROCKET_BOOST (351) IS NOT IN THAT LIST and is worth saying so about,
 -- because it is the control whose name suggests it should be. It is on E, not
@@ -730,8 +742,42 @@ local DEFAULT_VK = {
     -- reads down looks like -- and no source anywhere settles which slot a shift
     -- press fills. The raw reader now asks 0x10, 0xA0 and 0xA1 for this binding;
     -- see VK_ALSO at the frame loop for why that is a strict superset rather than
-    -- a second guess. This entry stays 0x10 because it is also what gets STORED,
-    -- printed and rebound, and those three were right all along.
+    -- a second guess.
+    --
+    -- ═══ THE OBSERVATION ARRIVED, THE FIRST INFERENCE WAS WRONG, AND THIS ENTRY
+    --     STAYS 0x10 ANYWAY ═══
+    --
+    -- /brboostwhy 6, driver's seat, this build:
+    --
+    --     IsRawKeyDown 0x10    never                    VK_SHIFT
+    --     IsRawKeyDown 0xA0    DOWN on 590 of 686       VK_LSHIFT  -- left only
+    --     IsRawKeyDown 0xA1    never                    VK_RSHIFT  -- right only
+    --
+    -- So the keyboard array is filled SIDE-SPECIFICALLY and the generic slot is
+    -- never filled at all. The first of the three reasons above is dead: GTA does
+    -- not populate that array straight from the WM_KEYDOWN wParam. The other two
+    -- are untouched, because they were never about the array.
+    --
+    -- MOVING THIS ENTRY TO 0xA0 WOULD BREAK THE BINDING IT LOOKS LIKE IT WOULD
+    -- FIX, and that is the whole decision. VK_ALSO is keyed on the STORED code
+    -- and holds exactly one row, 0x10 -> {0xA0, 0xA1}. Store 0xA0 here and:
+    --
+    --   * the lookup misses -- there is no VK_ALSO[0xA0] -- so the raw layer
+    --     would ask 0xA0 and nothing else, and RIGHT shift, which works today,
+    --     would stop working;
+    --   * vkName(0xA0) is not in VK_NAME, so every prompt and the settings row
+    --     would print '#160' instead of 'Shift';
+    --   * the settings screen captures a browser keydown, whose keyCode is 16 for
+    --     either shift, so the moment a player rebound the boost onto the key it
+    --     was already on it would be stored as 0x10 -- back to the default this
+    --     change was meant to move away from, with the default and the stored
+    --     value now disagreeing about the same physical key.
+    --
+    -- 0x10 IS NOT A GUESS ABOUT THE KEYBOARD ANY MORE; IT IS THE NAME THIS LAYER
+    -- STORES, PRINTS AND REBINDS BY, and VK_ALSO is what turns that name into the
+    -- codes the array actually fills. The bet that failed has already been paid
+    -- off by the superset, which is why the boost works at all -- so the fix is
+    -- to stop calling VK_ALSO a hedge, not to move this line. See VK_ALSO.
     --
     -- AND IT HAS TO BE HERE AT ALL, which is the note above this table: a default
     -- missing from DEFAULT_VK is a key the raw layer skips entirely, showing as
@@ -1276,6 +1322,23 @@ end
 ---   * if only 0xA0/0xA1 are filled, a binding that could never fire now fires;
 ---   * there is no third case in which asking MORE codes about the same
 ---     physical key makes a binding worse.
+---
+--- ═══ THE PLAYTEST CAME BACK AND IT IS THE SECOND CASE. THIS TABLE IS NOW THE
+---     ONLY REASON THE BOOST WORKS ═══
+---
+--- /brboostwhy 6, driver's seat: 0x10 never read down over 686 frames, 0xA0 read
+--- down on 590 of them. The generic slot this project's DEFAULT_VK stores is not
+--- filled by this build at all -- so `rawDownFn(code)` on the first line of
+--- rawDownAny() below answers false on every single frame, forever, and every
+--- press of the boost key is caught by the loop over `also`.
+---
+--- WHICH MAKES THIS A LOAD-BEARING TABLE WEARING A HEDGE'S CLOTHES, and it is
+--- worth being loud about because "belt and braces" is exactly what somebody
+--- tidies away. DELETE THIS TABLE AND THE VEHICLE BOOST DIES SILENTLY -- no
+--- error, no log line, a full meter and a key that does nothing, which is #203's
+--- original report word for word. It is pinned by tools/test_client.lua's
+--- `#203 the boost, key to car` block, whose FILLS matrix runs a build that fills
+--- only 0xA0 and asserts the boost still starts.
 ---
 --- THE SEMANTIC COST WAS ALREADY ACCEPTED, IN WRITING, AT DEFAULT_VK: "the boost
 --- answers to EITHER shift key rather than only the left one... the friendlier

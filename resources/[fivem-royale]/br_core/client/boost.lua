@@ -461,14 +461,20 @@ end
 --- overstates forward speed in a slide and reads a reversing car as going fast
 --- forwards. It is here because a build without the vector native must still
 --- boost, and being approximately right beats not working.
+---
+--- THE SECOND RETURN IS THE SIDEWAYS COMPONENT, AND ONLY THE TRACE READS IT. A
+--- car's lateral speed in its own frame is how sideways it is travelling, which
+--- is the number a drift IS -- see push(). It is nil on the scalar fallback,
+--- because an unsigned magnitude has no direction to decompose.
 --- @param veh integer
---- @return number|nil
+--- @return number|nil  forward m/s, signed
+--- @return number|nil  lateral m/s, signed, when the vector native answered
 local function forwardMps(veh)
     if GetEntitySpeedVector then
         local ok, v = pcall(GetEntitySpeedVector, veh, true)
         if ok and v ~= nil then
             local y = tonumber(v.y)
-            if y ~= nil and y == y then return y end
+            if y ~= nil and y == y then return y, tonumber(v.x) end
         end
     end
     local ok, s = pcall(GetEntitySpeed, veh)
@@ -494,7 +500,7 @@ end
 --- @param dtMs number
 local function push(veh, dtMs)
     note('pushFrames')
-    local have = forwardMps(veh)
+    local have, lateral = forwardMps(veh)
     if have == nil then
         -- NEITHER SPEED NATIVE ANSWERED. The caller latches `dry` on the press
         -- for this, but a build that answers on the press and stops answering
@@ -516,6 +522,26 @@ local function push(veh, dtMs)
         -- APPLY_FORCE_TO_ENTITY declining, which no count of frames can show.
         local gain = have - run.baseMps
         if trace.gain == nil or gain > trace.gain then trace.gain = gain end
+
+        -- ═══ HOW SIDEWAYS THE CAR WENT WHILE WE WERE PUSHING IT ═══
+        --
+        -- The owner's second report is "still getting drift mode at the same
+        -- time", and nothing in this project could measure that claim. The
+        -- controls research says no drift INPUT exists on this build -- the Cfx
+        -- table runs 0..359 and no name in it contains DRIFT -- so the suspect
+        -- with no alibi is this file: `maxAccelMps2` is about 1.4 g applied to
+        -- the rigid body as an impulse, which never passes through the tyres and
+        -- so never spends any of their grip. A car handed speed its tyre model
+        -- did not authorise slides, and a slide is lateral velocity.
+        --
+        -- SO THE NUMBER IS RECORDED RATHER THAN THE THEORY BEING ARGUED. A boost
+        -- whose slipMax stays near zero exonerates the impulse and sends the next
+        -- round back to the controls; one that climbs with the ramp convicts it.
+        -- Peak rather than mean, because a drift is an excursion.
+        if lateral ~= nil and lateral == lateral then
+            local a = lateral < 0.0 and -lateral or lateral
+            if trace.slipMax == nil or a > trace.slipMax then trace.slipMax = a end
+        end
     end
 
     local want = BR.BoostSolve.target(
@@ -668,6 +694,46 @@ BR.Loop.register(BR.Loop.FRAME, 'boost.drive', function(dtMs)
                 note('excludedFrames')
             end
         end
+    end
+
+    -- ═══ THE REST OF WHAT THE KEY DOES, HELD DOWN ═══
+    --
+    --   "Vehicle boost does work now, but still getting drift mode at the same
+    --    time. Sick affect, but not intended or acceptable really."
+    --                                              -- owner, 2026-08-22
+    --
+    -- RegisterKeyMapping does not take a key away from the engine -- FiveM
+    -- bypasses the game's conflict resolver for custom bindings on purpose, so
+    -- both fire -- and eight stock controls default to LSHIFT. Two of them can
+    -- act on a ground vehicle. Those two are held down here, and the list, the
+    -- reason each is on it and the reason the other six are not are in
+    -- BR.Config.Boost.suppressControls.
+    --
+    -- ═══ THE SCOPE IS THE POINT, AND #200 IS WHY ═══
+    --
+    -- An unconditional per-frame suppression in client/inventory.lua ate the
+    -- radio wheel for months, because the melee controls it disabled share Q
+    -- with INPUT_VEH_RADIO_WHEEL. Every clause below narrows this one to the
+    -- exact circumstance the owner is describing:
+    --
+    --   `driving`  is already IN A VEHICLE, in the DRIVER's seat, and NOT an
+    --              excluded class -- computed above, so this cannot drift out of
+    --              agreement with the gate the boost itself uses. A passenger
+    --              keeps their controls, and a helicopter pilot keeps 61 and 352,
+    --              which is the whole reason aircraft are excluded rather than
+    --              suppressed.
+    --   `held`     only while the boost key is actually down. Let go and the
+    --              engine has all of it back on the very next frame, because a
+    --              disable lasts exactly one frame.
+    --
+    -- NOT GATED ON `want`, AND THAT IS DELIBERATE RATHER THAN AN OVERSIGHT. A
+    -- player holding the key on a dry meter is still holding the key, and GTA
+    -- does not consult our meter before pitching their car. Gating on the boost
+    -- actually running would hand the collision back for exactly the six seconds
+    -- a player is most likely to still be leaning on the key.
+    if driving and held and type(C.suppressControls) == 'table' then
+        local sc = C.suppressControls
+        for i = 1, #sc do DisableControlAction(0, sc[i], true) end
     end
 
     local want = driving and held and not dry and budget > 0.0

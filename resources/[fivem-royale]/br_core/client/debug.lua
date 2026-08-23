@@ -916,15 +916,55 @@ local SHIFT_VK = {
 ---
 --- BORROWED RATHER THAN RETYPED IN SPIRIT: the numbers and their names are the
 --- four that config/boost.lua's header enumerates as "what shift already does in
---- a vehicle", and this is the row that turns that research into an observation.
---- A control firing here in a CAR contradicts the claim that none of them does,
---- and that claim is what picked shift as the default.
+--- a vehicle", and this is the row that turned that research into an
+--- observation. It did: all four read PRESSED on 590 of 686 frames in a car.
+---
+--- WHAT THAT ROW CANNOT TELL YOU, WRITTEN HERE BECAUSE IT WAS MISREAD ONCE.
+--- IS_DISABLED_CONTROL_PRESSED answers the MAPPER -- "is the input bound to this
+--- id down" -- and there is no native anywhere that asks whether the engine
+--- ACTED on it. All four of these are bound to LSHIFT, so all four read down
+--- whenever shift is down, on any build, in any context. Four PRESSED rows are
+--- the sentence "shift was down" printed four times; they are not four things
+--- happening to the car.
 local SHIFT_CONTROLS = {
     {  21, 'INPUT_SPRINT'                    },
     {  61, 'INPUT_VEH_MOVE_UP_ONLY'          },
     { 340, 'INPUT_VEH_HYDRAULICS_CONTROL_UP' },
     { 352, 'INPUT_VEH_FLY_BOOST'             },
 }
+
+--- The highest control id in the Cfx table (359 is INPUT_RESPAWN_FASTER).
+local CONTROL_MAX = 359
+
+--- ═══ AND EVERY OTHER CONTROL IN THE TABLE, BECAUSE THE FOUR ABOVE ARE A
+---     HARDCODED LIST AND THE DOCUMENT THEY CAME FROM IS SIX YEARS OLD ═══
+---
+--- config/boost.lua states the gap in its own words: the public control table's
+--- last substantive update was November 2020 (build ~2189), so an input Rockstar
+--- added between then and 3095 would not appear in it. SHIFT_CONTROLS is that
+--- document, retyped. A fifth control on this key -- the thing that would
+--- actually explain "still getting drift mode" -- is by construction the one
+--- thing the four rows above can never show.
+---
+--- SO THE WHOLE TABLE IS SWEPT AND ANYTHING UNEXPECTED IS NAMED. Ids 0..359,
+--- every sample, reported only when they read down while the boost key is held
+--- and only when they are not already one of the four. An empty list here is
+--- "the four are all there is"; a populated one names the id to look up, which
+--- is the difference between the next round having an answer and having another
+--- hypothesis.
+---
+--- THE COST IS 360 PROBES A FRAME AND IT IS PAID BY A COMMAND WITH A DEADLINE.
+--- Nothing sweeps unless /brboostwhy is armed, the window is six seconds by
+--- default and thirty at most, and every probe goes through safe() -- an id this
+--- build does not know throws once and is skipped, rather than killing the
+--- readout before it prints a word.
+local function sweepOther(w)
+    for c = 0, CONTROL_MAX do
+        if not w.known[c] and yes(safe(IsDisabledControlPressed, 0, c)) then
+            w.other[c] = (w.other[c] or 0) + 1
+        end
+    end
+end
 
 --- The armed boost sample, or nil. One nil check per frame when it is off.
 local bwatch = nil
@@ -1031,6 +1071,22 @@ local function boostReport(w)
                        or ('PRESSED on %d of %d'):format(n, w.samples or 0),
                 off > 0 and ('   [disabled on %d]'):format(off) or ''))
     end
+
+    -- ANYTHING ELSE IN THE TABLE THAT ANSWERED TO THE SAME KEY. Sorted, because
+    -- pairs() order is a different readout every run and this one gets pasted
+    -- into an issue.
+    local other = {}
+    for c in pairs(w.other) do other[#other + 1] = c end
+    table.sort(other)
+    if #other == 0 then
+        print(('  every OTHER control    silent on all %d frames the key was down')
+            :format(w.sweeps or 0))
+    else
+        for _, c in ipairs(other) do
+            print(('  control %-33s (%3d)  ALSO PRESSED on %d of %d')
+                :format('-- not in the 2020 table --', c, w.other[c], w.sweeps or 0))
+        end
+    end
     rule()
     print('  THE SEAT')
     print(('  in a vehicle         %s')
@@ -1074,6 +1130,19 @@ local function boostReport(w)
         :format(w.gain or 0.0, mph(w.gain)))
     print(('  the spec asks for                       %.1f m/s  (%.1f mph)')
         :format(w.addMps or 0.0, mph(w.addMps)))
+    -- ═══ AND HOW SIDEWAYS IT WENT WHILE WE PUSHED IT ═══
+    --
+    -- "still getting drift mode at the same time" (owner, 2026-08-22). No drift
+    -- INPUT exists on this build -- the Cfx table runs 0..359 and no name in it
+    -- contains DRIFT -- so the remaining suspect is our own impulse, which
+    -- delivers about 1.4 g to the rigid body without passing through the tyres
+    -- and therefore without spending any of their grip. This is that claim made
+    -- falsifiable: a car travelling sideways at several m/s while boosting IS a
+    -- drift, and one whose lateral speed stays near zero is not.
+    print(('  sideways while boosting                 %s')
+        :format(w.slipMax == nil
+            and 'not measured (no speed vector on this build)'
+            or ('%.1f m/s peak  (%.1f mph)'):format(w.slipMax, mph(w.slipMax))))
 
     local code, sentence = BR.Boost.verdict(w)
     rule()
@@ -1090,8 +1159,20 @@ local function boostReport(w)
     print('                       the engine\'s mapper, not the keyboard, so a')
     print('                       control firing while every raw code stays silent')
     print('                       means the key reaches the GAME and not us.')
-    print('                       All four silent in a CAR is config/boost.lua\'s')
-    print('                       claim confirmed -- shift is free in a car.')
+    print('                       ALL FOUR ARE BOUND TO LSHIFT, so all four read')
+    print('                       PRESSED whenever shift is down, in any context.')
+    print('                       That is the mapper answering, NOT four things')
+    print('                       happening to the car -- no native reports what')
+    print('                       the engine did with a control. What each one')
+    print('                       actually does is in config/boost.lua.')
+    print('  OTHER control rows   the rest of the table (0..359), swept only on')
+    print('                       frames the key was down. Empty is the answer we')
+    print('                       expect; a row here is an input added after the')
+    print('                       public table\'s last update and is the first')
+    print('                       thing to look up.')
+    print('  sideways             lateral speed while boosting. A drift is this')
+    print('                       number being large. Near zero exonerates the')
+    print('                       impulse and sends the next round to the key.')
     print('  BR.Keys.isHeld       the key layer\'s own conclusion. A raw code down')
     print('                       with this never true is keybinds.lua dropping it')
     print('                       -- check `holds` and `ui owns keyboard` above.')
@@ -1117,6 +1198,12 @@ BR.Loop.register(BR.Loop.FRAME, 'debug.boost', function()
     -- key. One number would hide it.
     w.samples = (w.samples or 0) + 1
 
+    -- IS THE BOOST KEY DOWN ON THIS FRAME, ASKED OF BOTH READERS. It gates the
+    -- sweep below and nothing else: a sweep that ran on every frame would report
+    -- INPUT_VEH_ACCELERATE and the whole of the driving control set, which is
+    -- true, useless, and would bury the one row worth having.
+    local keyDown = false
+
     for _, r in ipairs(SHIFT_VK) do
         local ok, v = pcall(IsRawKeyDown, r[1])
         if ok then
@@ -1129,6 +1216,7 @@ BR.Loop.register(BR.Loop.FRAME, 'debug.boost', function()
             w.shapes[shape] = (w.shapes[shape] or 0) + 1
             if not (v == nil or v == false or v == 0) then
                 w.raw[r[1]] = (w.raw[r[1]] or 0) + 1
+                keyDown = true
             end
         end
     end
@@ -1140,10 +1228,17 @@ BR.Loop.register(BR.Loop.FRAME, 'debug.boost', function()
         -- being asked. The disable itself is counted beside it.
         if yes(safe(IsDisabledControlPressed, 0, c[1])) then
             w.ctrl[c[1]] = (w.ctrl[c[1]] or 0) + 1
+            keyDown = true
         end
         if not yes(safe(IsControlEnabled, 0, c[1])) then
             w.ctrlOff[c[1]] = (w.ctrlOff[c[1]] or 0) + 1
         end
+    end
+
+    -- THE REST OF THE TABLE, ONLY WHILE THE KEY IS DOWN. See sweepOther.
+    if keyDown then
+        w.sweeps = w.sweeps + 1
+        sweepOther(w)
     end
 
     if GetGameTimer() >= w.until_ then
@@ -1164,9 +1259,17 @@ RegisterCommand('brboostwhy', function(_, args)
     if secs > 30  then secs = 30  end
 
     local now = GetGameTimer()
+    -- WHICH IDS THE SWEEP IS NOT TO REPORT, BUILT FROM THE PRINTED LIST RATHER
+    -- THAN RETYPED. Two copies of "the four" is how one of them ends up with a
+    -- fifth entry nobody notices, and the whole value of the sweep is that its
+    -- output is exactly the ids the four rows above did not already cover.
+    local known = {}
+    for _, c in ipairs(SHIFT_CONTROLS) do known[c[1]] = true end
+
     bwatch = {
         from = now, until_ = now + math.floor(secs * 1000),
         raw = {}, ctrl = {}, ctrlOff = {}, shapes = {}, samples = 0,
+        known = known, other = {}, sweeps = 0,
         -- WHAT THE BOOST IS ACTUALLY WATCHING, ASKED OF THE KEY LAYER RATHER
         -- THAN ASSUMED TO BE SHIFT. The binding is remappable by the spec, so a
         -- readout that hardcoded 0x10 would be lying to any player who moved it,
