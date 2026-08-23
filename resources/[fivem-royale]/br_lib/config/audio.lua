@@ -104,11 +104,60 @@ BR.Config.Audio = {
         --
         --   fuel.start  SELECT is the game's own "you interacted with a thing"
         --               confirm -- the most literal answer to "most appropriate
-        --               for interact" the engine contains.
-        --   fuel.done   CHALLENGE_UNLOCKED is its "a thing you were working on
-        --               has finished" chime. Short, unmistakably terminal, and
-        --               not the match-win fanfare -- a full tank is a completed
-        --               task, not a victory.
+        --               for interact" the engine contains. THE OWNER HAS HEARD
+        --               THIS ONE AND KEPT IT; it is not to be changed.
+        --   fuel.done   PROPERTY_PURCHASE is the game's "the transaction you
+        --               were making has gone through" chime -- see the block
+        --               below for why it replaced CHALLENGE_UNLOCKED.
+        --
+        -- ═══ WHY fuel.done IS NO LONGER CHALLENGE_UNLOCKED ═══
+        --
+        --   "the noise we're playing when fueling finishes is more like a
+        --    warning sound than a complete/confirmation sound. That should be
+        --    changed."                                 -- owner, 2026-08-22
+        --
+        -- THE SET DID NOT MOVE, AND THAT IS THE POINT. Only the name changed,
+        -- and it changed WITHIN HUD_AWARDS. That matters more than any argument
+        -- about which chime is nicer, because the one way a cue fails here is
+        -- SILENTLY: a sound set that is not loaded plays nothing and reports
+        -- nothing, exactly like a misspelled name. The owner's complaint is
+        -- itself the proof that this set loads and is audible on the shipping
+        -- build -- they heard CHALLENGE_UNLOCKED and disliked it. Staying inside
+        -- the set they heard is the lowest-risk change available; hopping to a
+        -- DLC bank would have put the audibility question back open.
+        --
+        -- (Pit_Stop_Complete was the on-theme candidate and was rejected for
+        -- exactly that reason: it lives in DLC_H3_Circuit_Racing_Sounds, which
+        -- is a script audio bank this gamemode never requests.)
+        --
+        -- CHECKED THE SAME THREE WAYS THE TWO ORIGINAL NAMES WERE:
+        --   1. The game's own extracted audio table (2,204 AudioName/AudioRef
+        --      pairs). HUD_AWARDS holds exactly 22 names and PROPERTY_PURCHASE
+        --      is one of them, alongside CHALLENGE_UNLOCKED, WIN and LOSER --
+        --      which is the same table agreeing with what this file's header
+        --      already learned the expensive way.
+        --   2. A second, independently maintained extraction of the same table
+        --      lists the identical 22 names for HUD_AWARDS. Two sources, one
+        --      answer.
+        --   3. This file's own note above: HUD_AWARDS is where WIN and LOSER
+        --      actually live, found when they were silent in
+        --      GTAO_FM_EVENTS_SOUNDSET. The ref has been heard from this
+        --      codebase.
+        --
+        -- WHY THIS NAME AND NOT ANOTHER OF THE 22. Most of HUD_AWARDS is
+        -- CELEBRATION -- MEDAL_GOLD, RANK_UP, WIN, the golf and tennis stings --
+        -- and a full tank is not a victory, which is the same reason
+        -- CHALLENGE_UNLOCKED was picked over the win fanfare in the first place.
+        -- PROPERTY_PURCHASE is the one entry that is a plain TRANSACTION
+        -- CONFIRM: the sound GTA plays when a thing you were paying for is now
+        -- done. That is what filling a tank is. COLLECTED was the other
+        -- candidate and was dropped because it is a pickup cue and PICK_UP is
+        -- already the loot sound -- see the collision rule immediately below.
+        --
+        -- STILL AUDITIONABLE THE SAME WAY, and nothing had to be added for it:
+        -- /brsfx takes any key in this table, so the new cue is `/brsfx
+        -- fuel.done` exactly as the old one was. `/brsfx HUD_AWARDS
+        -- PROPERTY_PURCHASE` plays the raw pair without going through the table.
         --
         -- NEITHER COLLIDES WITH A CUE ALREADY IN USE. PICK_UP is loot,
         -- NAV_UP_DOWN is the slot switch, CHECKPOINT_NORMAL and
@@ -120,7 +169,7 @@ BR.Config.Audio = {
         -- PlaySoundFromEntity, so the cue is positioned on the car and mixed by
         -- the engine for every occupant.
         ['fuel.start'] = { set = 'HUD_FRONTEND_DEFAULT_SOUNDSET', name = 'SELECT' },
-        ['fuel.done']  = { set = 'HUD_AWARDS', name = 'CHALLENGE_UNLOCKED' },
+        ['fuel.done']  = { set = 'HUD_AWARDS', name = 'PROPERTY_PURCHASE' },
     },
 }
 

@@ -361,3 +361,122 @@ function BR.FuelSolve.atPump(vx, vy, px, py, radius)
 
     return d <= radius, d
 end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+-- WHO MAY SEE THE STATION BLIPS, WHICH IS NOT ARITHMETIC AND IS HERE ANYWAY
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- The header above says everything here is a function of numbers. This one is a
+-- function of tables, and it is in this file for the OTHER half of that header's
+-- bargain: br_core/client/fuel.lua cannot be unit-tested. It registers
+-- frame-band callbacks and calls a dozen natives at load, and tools/test_fuel.lua
+-- reads it as TEXT for exactly that reason. A visibility rule left in the client
+-- file would be pinned by grep and by nothing else; here it is executed.
+--
+-- IT IS SHARED CODE ONLY THE CLIENT CALLS, like stationNear before it. The cost
+-- is one function the server never asks for; the gain is that a rule the owner
+-- asked for has a truth table.
+
+--- MAY THE OCCUPANT OF THIS SEAT SEE THE GAS STATION BLIPS?
+---
+--- ═══ THE RULE, IN THE OWNER'S TWO INSTRUCTIONS ═══
+---
+---   "Also, while in a vehicle (any seat), all gas stations should be shown as
+---    blips on the map."                          -- owner, 2026-08-21, #195
+---   "passengers should only see gas station blips if the driver is in the same
+---    squad."                                     -- owner, 2026-08-22
+---
+--- THE DRIVER ALWAYS. A PASSENGER ONLY BEHIND A SQUADMATE AT THE WHEEL. A SOLO
+--- PASSENGER IN A STRANGER'S CAR SEES NOTHING -- there is no squad in a solo
+--- match, so there is no squadmate the driver could be, and the rule resolves
+--- without ever asking what kind of match this is.
+---
+--- PURE, AND IT TAKES ITS INPUTS RATHER THAN READING THEM -- the same shape as
+--- BR.Voice.audibleFor, and for the same reason: the suite drives every
+--- combination without a game, and without a stub that agrees with the code by
+--- construction.
+---
+--- ═══ WHY THE DRIVER IS A PED AND THE SQUAD IS A ROSTER WALK ═══
+---
+--- The engine answers "who is in the driver's seat" with a PED, and this client
+--- has no way to turn a ped back into a server id. GetPlayerFromServerId and
+--- GetPlayerPed are both banned in br_core/client by tools/verify.sh without a
+--- marked `-- scope-ok:` exception, no reverse native is in use anywhere in this
+--- tree, and a marked exception per feature is how an allowlist rots into a
+--- permission -- BR.Squadmates.pedOf's own note makes that argument.
+---
+--- So the comparison runs the other way. Walk the players the ROSTER says share
+--- my squad -- `squadId` is in server/roster.lua's PUBLIC_FIELDS, so it is the
+--- SERVER's answer and it is already on this machine -- and ask the one
+--- sanctioned resolver whether any of their peds is the ped at the wheel. A
+--- squadmate driving the car this player is sitting in is a metre away and
+--- therefore certainly streamed, which is the one situation in which pedOf's
+--- "0 means out of scope" cannot bite.
+---
+--- ═══ WHAT IT COSTS, BECAUSE THE OWNER ASKED WHETHER IT WAS A LOT ═══
+---
+--- It is not, and it is cheaper than the question implies. Called on the 10 Hz
+--- TICK band, never per frame, and only while the player is in a vehicle:
+---
+---   THE DRIVER'S CASE IS THREE COMPARISONS and returns. That is the majority
+---   of all ticks, because most people are driving their own car.
+---   A PASSENGER WITH NO SQUAD IS ONE MORE. The squadId type test ends it.
+---   A PASSENGER WITH A SQUAD walks the roster ONCE -- at most 48 entries in a
+---   full match, of which at most three reach a table lookup and a comparison.
+---
+--- The caller adds exactly one native to the tick, GetPedInVehicleSeat. Nothing
+--- is cached, so nothing has to be invalidated when a driver changes seat, bails
+--- out or disconnects: the answer is re-derived within 100 ms and no transition
+--- has to be enumerated. THE CACHING IS WHAT WOULD HAVE COST SOMETHING, and it
+--- is the thing deliberately not being done.
+---
+--- @param driver integer|nil  the ped in seat -1; 0 or nil when the seat is empty
+--- @param ped integer|nil     this player's own ped
+--- @param me table|nil        BR.State.me -- `src` and `squadId` are read
+--- @param roster table|nil    BR.State.roster; [src] = { squadId = ... }
+--- @param pedOf function|nil  server id -> local ped handle, 0 when not streamed
+--- @return boolean
+function BR.FuelSolve.blipsVisibleTo(driver, ped, me, roster, pedOf)
+    -- ZERO IS TESTED EXPLICITLY, TWICE, AND `0` IS TRUTHY IN LUA. These are
+    -- ENTITY handles rather than BOOLs, so this is not quite the didHit case --
+    -- but it is the same trap wearing different clothes: 0 is what every
+    -- entity-returning native answers for "there isn't one". Without these two
+    -- lines an empty driver's seat (0) and an unreadable own-ped (0) would
+    -- compare EQUAL to each other, and every passenger in a driverless car would
+    -- be handed the map by the `driver == ped` test below.
+    if not driver or driver == 0 then return false end
+    if not ped or ped == 0 then return false end
+
+    -- THE DRIVER, ALWAYS, AND TESTED BEFORE ANYTHING ABOUT SQUADS. That
+    -- ordering is what makes the rule hold in a solo match, in a squad that
+    -- never formed, and on a client whose roster has not arrived yet -- none of
+    -- which the driver should be punished for.
+    if driver == ped then return true end
+
+    -- From here this player is a PASSENGER, and the only way through is a
+    -- squadmate at the wheel.
+    if type(me) ~= 'table' then return false end
+
+    local squad = me.squadId
+    -- TYPE-TESTED, NOT TRUTH-TESTED, and that is the line that keeps solos safe.
+    -- squadId is a string when it exists and absent otherwise. A truth test
+    -- would pass for any non-nil -- and if a future build ever put a number or a
+    -- `false` there, every squadless player would match every other squadless
+    -- player and a solo lobby would share one "squad" of strangers. Fail towards
+    -- no blips.
+    if type(squad) ~= 'string' then return false end
+    if type(roster) ~= 'table' or type(pedOf) ~= 'function' then return false end
+
+    for src, e in pairs(roster) do
+        -- `src ~= me.src` because this player's own row is in the roster and
+        -- shares their squadId by definition. Without it a passenger would test
+        -- themselves -- harmless today, since pedOf(me.src) could not equal a
+        -- driver who is not them, but it is a coincidence rather than a reason
+        -- and the next change to pedOf would decide it.
+        if src ~= me.src and type(e) == 'table' and e.squadId == squad then
+            local p = pedOf(src)
+            if p and p ~= 0 and p == driver then return true end
+        end
+    end
+    return false
+end

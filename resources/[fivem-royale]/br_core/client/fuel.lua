@@ -450,15 +450,46 @@ end
 -- Station blips
 -- ---------------------------------------------------------------------------
 
---- Put every station on the map.
+--- WHO MAY SEE THE STATION BLIPS FROM THE SEAT THEY ARE IN.
 ---
---- ═══ THE OWNER ASKED FOR ALL OF THEM, AND ONLY WHILE ABOARD ═══
+--- ═══ THE RULE, IN TWO INSTRUCTIONS ═══
 ---
 ---   "Also, while in a vehicle (any seat), all gas stations should be shown as
----    blips on the map."   -- owner, 2026-08-21, #195
+---    blips on the map."                          -- owner, 2026-08-21, #195
+---   "passengers should only see gas station blips if the driver is in the same
+---    squad."                                     -- owner, 2026-08-22
 ---
---- ANY SEAT, so this is not gated on being the driver: a passenger navigating
---- for the driver is the case that makes the rule worth having.
+--- THE SECOND NARROWS THE FIRST AND KEEPS ITS REASON INTACT. "Any seat" was
+--- never about seats -- the case that made it worth having was a PASSENGER
+--- NAVIGATING FOR THE DRIVER, and a passenger navigating for a stranger is not
+--- that case. So the map still opens for the person doing the navigating; it no
+--- longer opens for somebody who happens to have climbed into a car.
+---
+--- ═══ WHAT WAS SETTLED, SAID OUT LOUD ═══
+---
+---   THE DRIVER ALWAYS SEES THEM, whoever else is aboard and whatever match
+---   this is. They are the one who has to reach a pump.
+---   A PASSENGER SEES THEM ONLY WHEN THE DRIVER IS A SQUADMATE. Same squadId,
+---   from the roster, which is the server's answer rather than this client's.
+---   A SOLO PASSENGER IN A STRANGER'S CAR SEES NOTHING. There is no squad in a
+---   solo match, so there is no squadmate the driver could be -- the rule
+---   resolves to "not the driver, no blips" without needing to know the match
+---   kind at all. The same line covers a squad match before squads are formed
+---   and a player whose squad is gone: no squadId is not a squad of strangers,
+---   it is nobody, and the conservative answer is the right one.
+---   AN EMPTY DRIVER'S SEAT IS NOT A SQUADMATE. Sitting in the passenger seat
+---   of a parked car with nobody at the wheel shows nothing, and the blips
+---   appear the moment a squadmate takes it.
+---
+--- ═══ THE DRIVER CHANGING SEAT OR LEAVING MID-DRIVE COSTS NOTHING ═══
+---
+--- Because this is RE-DERIVED ON THE TICK BAND AND NEVER LATCHED, the same
+--- shape as everything else in this file. There is no "the driver changed"
+--- event to subscribe to and none is wanted: the seat is read fresh every 100
+--- ms, so a squadmate bailing out takes the blips down within a tick and a
+--- squadmate sliding into the driver's seat puts them back within a tick. No
+--- transition has to be enumerated, so none can be forgotten -- which is the
+--- same argument the not-in-a-vehicle branch below already makes for itself.
 ---
 --- SHORT RANGE, which is what keeps a few dozen icons from becoming a wall. A
 --- short-range blip is drawn on the PAUSE MAP always and on the minimap only
@@ -472,6 +503,15 @@ end
 --- whatever heist the briefcase sprite was drawn for." The legend string is the
 --- only text this feature invents and it is one factual noun; nothing else here
 --- writes a word of prose.
+--- THE PREDICATE ITSELF IS BR.FuelSolve.blipsVisibleTo, in br_lib, and it is
+--- there rather than here for one reason: this file cannot be loaded by a test.
+--- tools/test_fuel.lua says so at length at its `prompt.copy` block -- registering
+--- frame-band callbacks and calling a dozen unstubbed natives at load makes it
+--- readable only as TEXT -- so a rule written here would be pinned by grep and
+--- nothing more. In br_lib it is executed, against every combination of seat,
+--- squad and roster, by a suite that already loads that module.
+---
+--- Put every station on the map.
 local function showBlips()
     if #blips > 0 then return end
     local b = F.blip or {}
@@ -727,10 +767,31 @@ BR.Loop.register(BR.Loop.TICK, 'fuel.apply', function()
         return
     end
 
-    -- ANY SEAT. The blips are the passenger's as much as the driver's.
-    showBlips()
-
     local veh = GetVehiclePedIsIn(ped, false)
+
+    -- THE SEAT RULE FOR THE BLIPS. See BR.Fuel.blipsVisibleTo for the owner's
+    -- two instructions and everything that was settled between them.
+    --
+    -- READ HERE RATHER THAN INSIDE showBlips(), so the else-branch exists and
+    -- has to be written. A visibility rule that only knows how to turn a thing
+    -- ON leaves it on: a passenger whose squadmate gets out would keep every
+    -- station on their map for the rest of the drive, and there is no event
+    -- that would have taken them down.
+    --
+    -- pcall FOR THE SAME REASON THE PUMP'S SEAT READ HAS ONE, twenty lines
+    -- below: GetPedInVehicleSeat is called on a vehicle handle that can go
+    -- stale between this tick and the last, and a raise here would take the
+    -- whole 10 Hz band with it.
+    local okSeat, driver = pcall(GetPedInVehicleSeat, veh, -1)
+    if okSeat and BR.FuelSolve.blipsVisibleTo(
+            driver, ped, BR.State.me, BR.State.roster,
+            BR.Squadmates and BR.Squadmates.pedOf)
+    then
+        showBlips()
+    else
+        hideBlips()
+    end
+
     local nid = netOf(veh)
     if nid == nil then
         -- A non-networked vehicle -- the Battle Bus, #191's ambulance. The

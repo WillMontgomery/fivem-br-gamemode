@@ -1597,6 +1597,261 @@ do
     ok(lastSet(1) ~= nil, 'a hundred metres does')
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('blips.seat')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- ═══ THE RULE, AS THE OWNER GAVE IT TWICE ═══
+--
+--   "Also, while in a vehicle (any seat), all gas stations should be shown as
+--    blips on the map."                            -- owner, 2026-08-21, #195
+--   "passengers should only see gas station blips if the driver is in the same
+--    squad. Is that a lot of compute to do each time?"
+--                                                  -- owner, 2026-08-22
+--
+-- THE SECOND NARROWS THE FIRST WITHOUT LOSING ITS REASON. "Any seat" was never
+-- about seats -- the case that made it worth having was a PASSENGER NAVIGATING
+-- FOR THE DRIVER, and a passenger navigating for a stranger is not that case.
+--
+-- ═══ WHY THIS BLOCK EXISTS AT ALL RATHER THAN A TEXT CHECK ═══
+--
+-- br_core/client/fuel.lua cannot be loaded here -- see the `prompt.copy` block
+-- above, which reads it as TEXT for exactly that reason. So the predicate lives
+-- in br_lib/shared/fuel_solve.lua, which this suite already loads, and it is
+-- PURE and TAKES ITS INPUTS. That is what makes the truth table below possible:
+-- every combination of seat, squad and roster, with no game and no stub that
+-- could agree with the code by construction.
+do
+    -- Peds are opaque handles. Distinct non-zero numbers is the whole model.
+    local ME, MATE, STRANGER = 101, 202, 303
+
+    --- The one sanctioned resolver, faked: server id -> local ped, 0 when the
+    --- player is not streamed. Matches BR.Squadmates.pedOf's contract exactly,
+    --- including the zero.
+    local function pedMap(t)
+        return function(src) return t[src] or 0 end
+    end
+
+    local squadRoster = {
+        [1] = { squadId = 'sq-a' },   -- me
+        [2] = { squadId = 'sq-a' },   -- my squadmate
+        [3] = { squadId = 'sq-b' },   -- somebody else's squad
+    }
+    local peds = pedMap({ [2] = MATE, [3] = STRANGER })
+    local meSquad = { src = 1, squadId = 'sq-a' }
+    local meSolo  = { src = 1 }
+
+    local V = BR.FuelSolve.blipsVisibleTo
+
+    ok(type(V) == 'function', 'BR.FuelSolve.blipsVisibleTo exists')
+
+    -- ═══ THE DRIVER, ALWAYS ═══
+    ok(V(ME, ME, meSquad, squadRoster, peds) == true,
+       'the driver sees the stations')
+    ok(V(ME, ME, meSolo, {}, peds) == true,
+       'and sees them in a solo match, with no squad and an empty roster -- the '
+           .. 'driver test is ahead of everything about squads on purpose')
+    ok(V(ME, ME, nil, nil, nil) == true,
+       'and on a client whose state has not arrived yet, which is a cold start '
+           .. 'rather than a fault')
+
+    -- ═══ THE PASSENGER, BEHIND A SQUADMATE ═══
+    ok(V(MATE, ME, meSquad, squadRoster, peds) == true,
+       'a passenger whose DRIVER is a squadmate sees them -- the navigator '
+           .. 'case, which is the whole reason "any seat" was asked for')
+
+    -- ═══ THE PASSENGER, BEHIND ANYBODY ELSE ═══
+    ok(V(STRANGER, ME, meSquad, squadRoster, peds) == false,
+       "a passenger in another squad's car sees nothing")
+    ok(V(999, ME, meSquad, squadRoster, peds) == false,
+       'and so does a passenger behind a driver who is on no roster row at all '
+           .. '-- an NPC, or a player this client has not been told about')
+
+    -- ═══ SOLOS, WHICH THE OWNER ASKED TO HAVE SETTLED ═══
+    --
+    -- A solo passenger in a stranger's car sees nothing. There is no squad in a
+    -- solo match, so there is no squadmate the driver could be, and the rule
+    -- resolves without the predicate ever asking what kind of match this is --
+    -- which is why there is no match-mode argument.
+    ok(V(STRANGER, ME, meSolo, squadRoster, peds) == false,
+       'a SOLO passenger in a stranger\'s car sees nothing')
+    ok(V(MATE, ME, meSolo, squadRoster, peds) == false,
+       'and sees nothing even behind the player who WOULD be their squadmate in '
+           .. 'a squad match -- no squadId is nobody, not everybody')
+
+    -- ═══ AND THE SAME LINE COVERS A SQUAD MATCH BEFORE SQUADS ARE FORMED ═══
+    --
+    -- Squads are cut at WARMUP (server/match.lua, BR.Party.formSquads). A
+    -- player in the lobby or between rounds has no squadId, and neither does
+    -- anybody else -- so a truth-test rather than a type-test here would make
+    -- every squadless player a squadmate of every other, and a whole lobby
+    -- would share one map. THE TYPE TEST IS WHAT STOPS THAT and these two pin
+    -- it from both sides.
+    local noSquadRoster = { [1] = {}, [2] = {}, [3] = {} }
+    ok(V(MATE, ME, {}, noSquadRoster, peds) == false,
+       'nobody has a squad yet, so no passenger sees anything')
+    ok(V(MATE, ME, { src = 1, squadId = false }, noSquadRoster, peds) == false,
+       'and a squadId that is present but not a string is still not a squad')
+
+    -- THE ONE THAT ONLY THE TYPE TEST CATCHES, FOUND BY MUTATION. Every case
+    -- above still passes if `type(squad) ~= 'string'` is relaxed to
+    -- `squad == nil`, because no OTHER row shares the junk value. This is the
+    -- shape that would actually ship: a build that writes the same non-string
+    -- placeholder into every squadless row, at which point `e.squadId == squad`
+    -- is TRUE for every stranger and the whole match shares one map.
+    local junk = { [1] = { squadId = false }, [2] = { squadId = false },
+                   [3] = { squadId = false } }
+    ok(V(MATE, ME, { src = 1, squadId = false }, junk, peds) == false,
+       'and when EVERY squadless row carries the same non-string placeholder, '
+           .. 'they still do not become one squad -- the test is the TYPE, not '
+           .. 'the equality')
+
+    -- ═══ AN EMPTY DRIVER'S SEAT IS NOT A SQUADMATE, AND `0` IS TRUTHY ═══
+    --
+    -- THIS IS THE ONE THAT WOULD HAVE SHIPPED. GetPedInVehicleSeat answers 0
+    -- for an empty seat, and BR.Squadmates.pedOf answers 0 for a player who is
+    -- not streamed. In Lua `if 0 then` is TRUE -- so without the explicit zero
+    -- tests those two zeroes compare EQUAL to each other, and a passenger
+    -- sitting in a driverless car alongside any out-of-scope squadmate would be
+    -- handed the whole map. This repository has shipped the `0`-is-truthy bug
+    -- five times.
+    ok(V(0, ME, meSquad, squadRoster, peds) == false,
+       'a passenger in a car with an EMPTY driver seat sees nothing')
+    ok(V(0, 0, meSquad, squadRoster, pedMap({})) == false,
+       'and two zeroes -- an empty seat and an unstreamable ped -- do not '
+           .. 'satisfy the driver test by comparing equal to each other')
+    ok(V(0, ME, meSquad, squadRoster, pedMap({ [2] = 0 })) == false,
+       'nor does an empty seat match a squadmate the engine cannot place')
+    ok(V(MATE, 0, meSquad, squadRoster, peds) == false,
+       'and a client that cannot read its OWN ped shows nothing rather than '
+           .. 'guessing')
+    ok(V(nil, ME, meSquad, squadRoster, peds) == false,
+       'a nil seat read is refused the same way a zero is')
+
+    -- ═══ OUR OWN ROW IS SKIPPED ═══
+    --
+    -- The roster contains this player, and their squadId equals their own by
+    -- definition. Without the `src ~= me.src` guard the loop would ask pedOf
+    -- about ourselves -- harmless only by coincidence today, and this pins the
+    -- guard so the coincidence is not what is relied on.
+    ok(V(ME, 999, meSquad, squadRoster, pedMap({ [1] = ME })) == false,
+       'a driver who is ME-by-ped but not this player\'s own ped does not pass '
+           .. 'through our own roster row')
+
+    -- ═══ MISSING COLLABORATORS FAIL TOWARDS NO BLIPS ═══
+    --
+    -- client/squadmates.lua may not have loaded, the roster may not have
+    -- arrived, and a passenger is the case where a wrong answer LEAKS
+    -- information. Every one of these is a real cold-start state, and the safe
+    -- direction is the same in all of them.
+    ok(V(MATE, ME, meSquad, squadRoster, nil) == false,
+       'no ped resolver, no blips')
+    ok(V(MATE, ME, meSquad, nil, peds) == false,
+       'no roster, no blips')
+    ok(V(MATE, ME, 'not a table', squadRoster, peds) == false,
+       'and a junk `me` is refused rather than indexed')
+
+    -- ═══ THE DRIVER CHANGING MID-DRIVE IS NOT A CASE, AND THAT IS THE POINT ═══
+    --
+    -- The predicate is a pure function of the seat as it is RIGHT NOW, so the
+    -- caller re-deriving it on the 10 Hz tick is the whole of "the driver
+    -- changed seat or left". There is no transition to enumerate and therefore
+    -- none to forget. Here it is as a sequence anyway, because that is the
+    -- owner's actual question.
+    ok(V(MATE, ME, meSquad, squadRoster, peds) == true
+       and V(0, ME, meSquad, squadRoster, peds) == false
+       and V(STRANGER, ME, meSquad, squadRoster, peds) == false
+       and V(MATE, ME, meSquad, squadRoster, peds) == true,
+       'squadmate drives, bails out, a stranger takes the wheel, the squadmate '
+           .. 'comes back -- on, off, off, on, with nothing cached in between')
+
+    -- ═══ AND THE CALLER REALLY TAKES BOTH BRANCHES ═══
+    --
+    -- A visibility rule that only knows how to turn a thing ON leaves it on.
+    -- client/fuel.lua cannot be executed here, so this is TEXT -- but the
+    -- specific defect it guards is `if visible then showBlips() end` with no
+    -- else, which would leave every station on a passenger's map for the rest
+    -- of a drive after their squadmate got out, with no event to take them down.
+    local fh = io.open(ROOT .. 'br_core/client/fuel.lua', 'r')
+    ok(fh ~= nil, 'client/fuel.lua is readable')
+    if fh then
+        local src = fh:read('a'); fh:close()
+        local code = src:gsub('%-%-%[%[.-%]%]', ' '):gsub('%-%-[^\n]*', '')
+        ok(code:find('BR.FuelSolve.blipsVisibleTo', 1, true) ~= nil,
+           'the tick asks the predicate rather than carrying its own copy of '
+               .. 'the rule')
+        local at = code:find('BR.FuelSolve.blipsVisibleTo', 1, true)
+        local after = at and code:sub(at, at + 400) or ''
+        ok(after:find('showBlips()', 1, true) ~= nil
+           and after:find('hideBlips()', 1, true) ~= nil,
+           'and BOTH branches are written -- a rule with no else-branch leaves '
+               .. 'the blips up forever once they are up')
+        -- AND THE SEAT IS READ FRESH RATHER THAN REMEMBERED. A cached driver is
+        -- what would make "the driver changed seat" a case that needs handling.
+        ok(code:find('pcall(GetPedInVehicleSeat, veh, -1)', 1, true) ~= nil,
+           'the driver seat is read from the engine on the tick, guarded, and '
+               .. 'not held between ticks')
+    end
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════
+describe('pump.cues.completion')
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+--   "the noise we're playing when fueling finishes is more like a warning
+--    sound than a complete/confirmation sound. That should be changed."
+--                                                  -- owner, 2026-08-22
+--
+-- ═══ WHAT THIS CAN PROVE AND WHAT ONLY A CLIENT CAN ═══
+--
+-- IT CANNOT PROVE THE NEW SOUND READS AS A CONFIRMATION. That is a judgement
+-- about audio and it belongs to whoever is wearing the headphones -- `/brsfx
+-- fuel.done` is how they make it.
+--
+-- WHAT IT PINS is the two facts a later edit could quietly get wrong: the
+-- rejected sound does not come back, and the START sound -- which the owner
+-- listened to and KEPT -- is not "improved" while somebody is in here changing
+-- its neighbour. The block above already asserts both cues exist, carry both
+-- fields, and collide with nothing.
+do
+    local cues = BR.Config.Audio and BR.Config.Audio.cues or {}
+    local done  = cues['fuel.done'] or {}
+    local start = cues['fuel.start'] or {}
+
+    ok(done.name ~= 'CHALLENGE_UNLOCKED',
+       'the sound the owner heard as a warning is gone', tostring(done.name))
+
+    -- THE SET DID NOT MOVE, AND THAT IS THE SAFETY PROPERTY RATHER THAN A
+    -- PREFERENCE. A wrong sound SET plays nothing, silently, exactly like a
+    -- misspelled name -- so the only empirical evidence that a set is audible on
+    -- the shipping build is that somebody has heard something out of it. The
+    -- owner's complaint IS that evidence for HUD_AWARDS. Staying inside it makes
+    -- this change name-only; hopping to a DLC bank would reopen the question.
+    ok(done.set == 'HUD_AWARDS',
+       'and the replacement stays in the set the owner has demonstrably heard '
+           .. 'sounds from -- the complaint itself is the proof it loads',
+       tostring(done.set))
+
+    -- THE START SOUND IS OWNER-CONFIRMED AND IS NOT TO BE TOUCHED.
+    ok(start.set == 'HUD_FRONTEND_DEFAULT_SOUNDSET' and start.name == 'SELECT',
+       'and the START cue is untouched -- the owner heard it and kept it, so it '
+           .. 'is not collateral in a change to the other one',
+       tostring(start.set) .. '/' .. tostring(start.name))
+
+    -- AUDITIONABLE THE SAME WAY, AND NOTHING HAD TO BE ADDED FOR IT. /brsfx
+    -- takes any key in this table, so `/brsfx fuel.done` plays whatever is
+    -- configured. That is only true while the cue is reached BY KEY -- a
+    -- name/set pair inlined at the call site would be unauditionable, which is
+    -- the state config/audio.lua's header exists to prevent.
+    local fh = io.open(ROOT .. 'br_core/client/sfx.lua', 'r')
+    if fh then
+        local sfx = fh:read('a'); fh:close()
+        ok(sfx:find('BR.Config.Audio.cues[args[1]]', 1, true) ~= nil,
+           "/brsfx still resolves any cue by key, so `/brsfx fuel.done` "
+               .. 'auditions whatever this table says')
+    end
+end
+
 realPrint(('\n\27[32m%d passed\27[0m'):format(pass))
 if fail > 0 then
     realPrint(('\27[31m%d failed\27[0m'):format(fail))

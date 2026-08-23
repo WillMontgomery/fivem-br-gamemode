@@ -2009,15 +2009,43 @@ do
     -- (it has to be, or it could never be withdrawn), and a test that pins
     -- the English is a test that fails every time the copy is edited while
     -- proving nothing about the behaviour.
-    local told, sticky = false, false
+    local told, sticky, text = false, false, nil
     for _, n in ipairs(noticesTo(1)) do
         if n.key == 'bus.landing' and not n.clear then
             told = true
             sticky = n.sticky == true
+            text = n.text
         end
     end
     ok(told, 'the first player down is told the match is waiting on the others')
     ok(sticky, 'and it is STICKY -- a four-second toast is gone before it matters')
+
+    -- ═══ AND THE SENTENCE ITSELF, CHARACTER FOR CHARACTER ═══
+    --
+    -- The paragraph above argues against pinning the English, and it is right
+    -- about the assertions it is attached to: `told`, `sticky` and the
+    -- withdrawal are about BEHAVIOUR and must not break when copy is edited.
+    -- This one is a different kind of assertion and it earns its place for the
+    -- opposite reason.
+    --
+    --   'Let''s change the "Waiting for other players to land" notification to
+    --    say "The match will start once all players have landed."'
+    --                                                  -- owner, 2026-08-22
+    --
+    -- WHEN THE OWNER GIVES WORDING, IT IS USED VERBATIM. That is a standing
+    -- rule on this project and it is pinned everywhere else it applies --
+    -- tools/test_fuel.lua does it for 'Hold to refuel' and even guards the
+    -- owner's one-L spelling of "fueling" against a helpful correction.
+    --
+    -- AND THIS SENTENCE HAS ALREADY BEEN SILENTLY REWORDED ONCE. It shipped as
+    -- exactly this string, was replaced with 'Waiting for the last players to
+    -- land' when the notice became sticky, and is now being asked for back.
+    -- Nothing failed when it changed, which is precisely the argument for
+    -- pinning it: a rewrite of the copy is a change to what the owner asked
+    -- for, and it should have to be deliberate.
+    ok(text == 'The match will start once all players have landed.',
+       "the notice says the owner's sentence exactly, trailing full stop and all",
+       tostring(text))
 
     -- ONCE. The tick runs four times a second; a notice per tick would be a
     -- wall of toasts for the whole descent.

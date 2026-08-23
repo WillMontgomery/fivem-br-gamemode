@@ -384,6 +384,52 @@ local function onBus()
     return me ~= nil and me.state == BR.PlayerState.BUS
 end
 
+--- Is this player sitting in the lobby right now?
+---
+--- THE SAME SHAPE AS onBus(), DELIBERATELY, AND FOR THE SAME REASON: read off
+--- the mirrored player state on every call, never cached and never hung off a
+--- transition. A voice rule that latches on an edge is a rule that misses the
+--- edge it was not told about, and the lobby is reachable from more directions
+--- than any other state in this game -- connecting, a match ending, being
+--- returned by brforce, a party dissolving, a match destroyed underneath you.
+---
+--- IT IS `LOBBY` AND NOT WARMUP. Warmup is inside a match: the squads are
+--- formed, the radio channel exists, and players are shooting each other on the
+--- pad. The owner's word was "the lobby", and client/lobbycam.lua, locker.lua
+--- and spawn.lua all draw the same line at exactly this state.
+--- @return boolean
+local function inLobby()
+    local me = BR.State and BR.State.me
+    return me ~= nil and me.state == BR.PlayerState.LOBBY
+end
+
+--- WHAT THE PLAYER'S PREFERENCE RESOLVES TO, WITH NOTHING OVERLAID ON IT.
+---
+--- SPLIT OUT OF mode() RATHER THAN INLINED IN IT, and the split is load-bearing
+--- rather than tidiness. Two callers want different questions answered:
+---
+---   "WHAT IS IN FORCE" is mode(), overlays and all, and it is what every
+---   routing decision reads -- the radio join, the mute sweep, the gag.
+---   "WHAT DID THEY CHOOSE" is this, and exactly one thing asks it: the
+---   once-a-session notice, which is a sentence ABOUT the setting rather than
+---   an action taken because of it.
+---
+--- THAT NOTICE IS WHY THIS FUNCTION EXISTS AT ALL, and the reason is an
+--- ordering fact rather than a preference. It fires on the STATE broadcast for
+--- WARMUP -- and server/match.lua sends that broadcast BEFORE it moves anybody
+--- out of LOBBY (see BR.Match.onEnter: Broadcast.state runs in transition(),
+--- the Roster.setState loop runs after it). So at the instant the notice is
+--- composed, this client's mirrored state is still LOBBY. A notice reading
+--- mode() would therefore see 'off', return nil, and decline to say anything
+--- -- every match, forever, because the latch is spent on delivery and so
+--- never spent at all. The player would simply never be told the push-to-talk
+--- key, which is the one fact the removed HUD line used to carry.
+--- @return string  one of BR.VoiceMode
+function BR.Voice.chosenMode()
+    local m = BR.State and BR.State.match and BR.State.match.mode
+    return BR.VoiceModeFor(BR.Voice.pref, m)
+end
+
 --- THE MODE IN FORCE RIGHT NOW, RE-DERIVED ON EVERY CALL.
 ---
 --- Two saved preferences and the kind of match resolve to one mode
@@ -438,6 +484,46 @@ end
 --- match ended under them, resource restarted, two sessions back to back --
 --- on which a restore can be skipped, and a preference changed DURING a
 --- session is simply the one that is in force when it ends.
+--- ═══ AND THE LOBBY IS 'off' TOO, ON THE SAME MECHANISM ═══
+---
+--- "the lobby should not allow talking or listening. period. zero voice in
+--- lobby." -- the owner, 2026-08-22.
+---
+--- BOTH HALVES, AND `period` IS DOING WORK IN THAT SENTENCE. Not muted-but-
+--- hearing, which is what the spectator rule was before it was widened, and not
+--- a proximity gag like the bus rule -- that one is deliberately narrow (a
+--- squad on the bus keeps its radio, which is the whole point of having one on
+--- the way to the drop) and it would leave the lobby's radio wide open. This is
+--- the whole mode, so it reaches applyRadio(), audibleFor() and muteSweep()
+--- without any of them being taught the word "lobby".
+---
+--- IT IS EXPRESSED HERE RATHER THAN AS A SECOND GAG FOR EXACTLY THE REASON THE
+--- SPECTATOR RULE IS, and the block below this one is the whole argument:
+--- nothing is saved, so nothing can fail to be restored. The preference comes
+--- back by ARITHMETIC on the first call after the player leaves the lobby --
+--- match start, a disconnect and reconnect, br_core restarting, pma-voice
+--- restarting underneath them. There is no exit path that has to remember.
+--- A player left permanently voiceless by a visit to the lobby would be a far
+--- worse bug than the one this fixes, and a save-and-restore design is how
+--- this repository would get there.
+---
+--- ═══ WHAT A LOBBY PLAYER HEARS WHILE A MATCH IS RUNNING: NOTHING ═══
+---
+--- Settled deliberately, and it falls out of the rule being written against
+--- THIS PLAYER'S state rather than the MATCH's. Somebody sitting in the lobby
+--- while a round plays out is in the lobby, so they are on 'off' -- they cannot
+--- hear the match and the match cannot hear them. That is the answer the owner
+--- asked for and it is also the only one that is safe: the lobby is where a
+--- player who just died and a player waiting for the next round both sit, and a
+--- lobby that could listen to a live match is a channel for exactly the intel a
+--- spectator was muted to stop carrying.
+---
+--- ═══ AND AN ADMIN IN THE LOBBY IS NOT DIFFERENT ═══
+---
+--- Unconditional, with no config key and no permission check -- the same shape
+--- as BR.Voice.silenced()'s "not varied by whether the session is a dead
+--- player's or an admin's". An admin who wants to hear a match has the spectate
+--- camera, and that is on 'off' as well.
 --- @return string  one of BR.VoiceMode
 function BR.Voice.mode()
     -- NIL-GUARDED THE SAME WAY BR.Voice.silenced() IS, and for the same
@@ -448,8 +534,14 @@ function BR.Voice.mode()
     if BR.Spectate and BR.Spectate.active and BR.Spectate.active() then
         return BR.VoiceMode.OFF
     end
-    local m = BR.State and BR.State.match and BR.State.match.mode
-    return BR.VoiceModeFor(BR.Voice.pref, m)
+    -- NEEDS NO GUARD OF ITS OWN. BR.PlayerState is br_lib, which loads before
+    -- this file in every manifest, and inLobby() already tolerates a missing
+    -- BR.State by answering no -- which is the safe direction here: a client
+    -- that cannot say where it is has not been put in the lobby by this line.
+    if inLobby() then
+        return BR.VoiceMode.OFF
+    end
+    return BR.Voice.chosenMode()
 end
 
 --- The routing row for the mode this player has chosen. Never nil.
@@ -507,13 +599,46 @@ end
 --- immediate, because it keeps /brvoice honest, and because it is what closes a
 --- radio key that is already held.
 ---
+--- ═══ THE LOBBY IS THE SECOND REASON, AND IT IS HERE FOR THE FIRST OF THE
+---     THREE ARGUMENTS ABOVE RATHER THAN ALL OF THEM ═══
+---
+--- "zero voice in lobby" is already true from BR.Voice.mode(), which answers
+--- 'off' in the lobby and therefore shuts both halves. So this line is not what
+--- makes the rule hold -- it is what makes it hold IMMEDIATELY.
+---
+--- THE EDGE IS A REAL ONE AND IT IS THE ORDINARY WAY IN. The match ends while a
+--- player is holding push-to-talk on the squad radio; the roster moves them to
+--- LOBBY; mode() is read on the 10 Hz band, so without this the radio stays
+--- keyed for up to 100 ms of lobby. That is the same shape as dying with the
+--- key down, which is what put the spectator rule here, and 100 ms of open
+--- microphone is a word.
+---
+--- AND IT KEEPS /brvoice HONEST. gagged() consults this first, so the readout
+--- says "in the lobby" rather than "the player chose 'off'" -- the true reason
+--- rather than the mechanism, which is the whole reason this function returns a
+--- sentence at all.
+---
+--- WHAT IS DELIBERATELY NOT HERE: A SERVER HALF. The spectator rule has one
+--- (server/voice.lua's BR.Voice.setSpectatorMuted, MumbleSetPlayerMuted) because
+--- a modified client that transmits while watching a live match is carrying
+--- intel out of it. A lobby player is not looking at a match. More to the point,
+--- tools/check_spectator_mic.lua already argues at length that ONE authority
+--- must own a player's mute -- a second one bolted on beside it is how somebody
+--- comes back from the lobby still muted because each half assumed the other
+--- would lift it. One clock, and it is the client's.
+---
 --- RE-ASKED, NEVER LATCHED, exactly like gagged() and the proximity check: a
---- player who starts or stops spectating mid-press is right on the next frame.
+--- player who starts or stops spectating mid-press is right on the next frame,
+--- and so is one whose match ends mid-press.
 --- @return boolean silenced
 --- @return string|nil reason  human-readable, for /brvoice
 function BR.Voice.silenced()
     if BR.Spectate and BR.Spectate.active and BR.Spectate.active() then
         return true, 'spectating -- a spectator listens and does not talk'
+    end
+    if inLobby() then
+        return true, 'in the lobby -- there is no voice chat in the lobby, '
+            .. 'in either direction'
     end
     return false, nil
 end
@@ -1696,7 +1821,18 @@ AddEventHandler(BR.Net.STATE, function(d)
     -- made it once per MATCH.
     if noticed or d.state ~= BR.MatchState.WARMUP then return end
 
-    local text = BR.Voice.noticeFor(BR.Voice.mode(), BR.Voice.pttKeyLabel())
+    -- THE CHOSEN MODE, NOT THE MODE IN FORCE, AND THAT IS NOT A SHORTCUT.
+    --
+    -- This sentence is ABOUT THE SETTING -- "Voice chat is set to nearby" -- so
+    -- the setting is what it must read. The distinction only started to matter
+    -- when the lobby became an overlay, and it matters absolutely: the server
+    -- broadcasts WARMUP before it moves anybody out of LOBBY, so at this exact
+    -- line BR.Voice.mode() is still answering 'off' for the lobby the player has
+    -- not left yet. noticeFor() returns nil on 'off', the latch is spent on
+    -- delivery and so would never be spent, and the notice would be dead in
+    -- every match of every session with nothing on screen to say so. See
+    -- BR.Voice.chosenMode.
+    local text = BR.Voice.noticeFor(BR.Voice.chosenMode(), BR.Voice.pttKeyLabel())
     -- SPENT ON DELIVERY, NOT ON THE OPPORTUNITY. `text` is nil only for 'off',
     -- and a player who was on 'off' has been told nothing -- so there is
     -- nothing to have used up. Setting the latch before this line would mean a

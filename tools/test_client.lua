@@ -4257,6 +4257,415 @@ do
     nobodyElse()
 end
 
+describe('there is zero voice in the lobby, in both directions, and it all comes back')
+do
+    -- THE OWNER, 2026-08-22: "the lobby should not allow talking or listening.
+    -- period. zero voice in lobby."
+    --
+    -- ═══ `period` IS DOING WORK IN THAT SENTENCE ═══
+    --
+    -- BOTH HALVES. Not muted-but-hearing, which is what the spectator rule was
+    -- before the owner widened it with "'you are not transmitting' should also
+    -- mean 'you are not listening', but alas both are false." And not a
+    -- proximity gag like the bus rule, which is deliberately narrow -- a squad
+    -- on the bus KEEPS its radio -- and would have left the lobby's radio wide
+    -- open. So the assertions below lean on the receive half and on the radio
+    -- channel, exactly as the spectate block above does, because those are the
+    -- facts a half-done version gets wrong.
+    --
+    -- ═══ AND EVERY RESTORE IS DRIVEN BY THE CLOCK AND NOTHING ELSE ═══
+    --
+    -- Same discipline as the block above, and it matters MORE here: the lobby
+    -- is reachable from more directions than any other state in this game --
+    -- connecting, a match ending, a match destroyed underneath you, brforce,
+    -- a party dissolving, dying and being returned. Every "and it comes back"
+    -- case below moves the state and steps the TICK BAND ONLY. No settings
+    -- event, no VOICE_SET, no STATE broadcast. A player left permanently
+    -- voiceless by a visit to the lobby is a far worse bug than the one being
+    -- fixed, and a saved-mode-and-restore-it design is how this repository
+    -- would get there.
+
+    local function settle()
+        BR.Loop.step(BR.Loop.TICK)
+        pmaTick()
+        return pmaSnapshot()
+    end
+
+    -- A SQUAD MATCH WITH A REAL CHANNEL AND A REAL STRANGER, for the same
+    -- reasons the spectate block gives: it is the only kind where all three
+    -- modes are reachable, the only one with a radio to be evicted from, and
+    -- the only one where "everybody is muted" is distinguishable from "the
+    -- usual one is muted".
+    voiceApply(BR.VoiceMode.SQUAD, 41207, { 2 }, 1)
+    playersAt({ [2] = { x = 1, y = 0 }, [3] = { x = 2, y = 0 } })
+    mumble.talking[2] = true
+    local alive = settle()
+
+    -- THE SAVED PAIR AS IT STANDS BEFORE ANY OF THIS, captured rather than
+    -- restated. The two slots do NOT both read 'squad' even though voiceApply
+    -- asked for it -- BR.ToSoloVoiceMode coerces 'squad' out of the solo slot on
+    -- the way in, because a squad radio in a solo match is silence with extra
+    -- steps. Writing the expected values by hand here would encode that
+    -- coercion a second time and go stale the day it changes; what this block
+    -- is actually about is that the pair does not MOVE.
+    local prefBefore = { solo = BR.Voice.pref.solo, squad = BR.Voice.pref.squad }
+
+    ok(BR.Voice.mode() == BR.VoiceMode.SQUAD and alive.radio == 41207,
+       'in a match: the player is on their squad preference and on the channel '
+           .. 'the server granted',
+       tostring(BR.Voice.mode()) .. ' / radio ' .. tostring(alive.radio))
+    ok(alive.muted[2] == nil and alive.muted[3] == true,
+       'and squad keeps the squadmate while refusing the stranger -- the state '
+           .. 'the lobby has to be visible against',
+       'muted 2=' .. tostring(alive.muted[2]) .. ' 3=' .. tostring(alive.muted[3]))
+    ok(#talkingNames() == 1,
+       'and the squadmate mid-sentence IS named, so there is a talking mark to '
+           .. 'lose', table.concat(talkingNames(), ', '))
+
+    -- ==================================================================== --
+    -- INTO THE LOBBY.
+
+    local lob = beState(BR.PlayerState.LOBBY)
+
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF,
+       "the mode in force goes to 'off' the moment the player is in the lobby",
+       tostring(BR.Voice.mode()))
+
+    local r = BR.Voice.routing()
+    ok(r.proximity == false and r.radio == false,
+       'and it is the REAL mode, both columns of the routing table, rather than '
+           .. 'a fourth mode invented for the lobby -- which is what makes the '
+           .. 'receive half free',
+       tostring(r.proximity) .. '/' .. tostring(r.radio))
+
+    -- LISTENING. The half a transmit-only fix would leave broken, and the half
+    -- the owner's "period" is about.
+    local audible = BR.Voice.audibleFor(BR.Voice.mode(), BR.State.roster,
+                                        BR.Voice.state.mates, 1)
+    ok(next(audible) == nil,
+       'a player in the lobby is audible-to nobody: the LISTEN half moves too',
+       'audible set is not empty')
+    ok(lob.muted[2] == true and lob.muted[3] == true,
+       'so the sweep holds a mute on the squadmate as well as the stranger -- '
+           .. 'the squad radio included, which a bus-shaped gag would have left '
+           .. 'open',
+       'muted 2=' .. tostring(lob.muted[2]) .. ' 3=' .. tostring(lob.muted[3]))
+    ok(lob.radio == 0,
+       'and this client leaves the squad radio channel entirely',
+       tostring(lob.radio))
+    ok(#talkingNames() == 0,
+       'and the squadmate who was mid-sentence a tick ago is no longer named -- '
+           .. 'nothing about the lobby was taught to the indicator, the audible '
+           .. 'set went empty and it fell out',
+       table.concat(talkingNames(), ', '))
+
+    -- TALKING. Two independent reasons, which is what "period" asked for: the
+    -- mode covers it on the 10 Hz band, and silenced() covers it at the
+    -- keypress and on every FRAME. A match ending while a player holds
+    -- push-to-talk is the ordinary way in, and 100ms of open microphone is a
+    -- word.
+    local sil, why = BR.Voice.silenced()
+    ok(sil == true,
+       'the master transmit switch answers for itself, independently of the '
+           .. 'mode -- it is read at the keypress and every frame, where the '
+           .. 'mode is read on a 10 Hz band',
+       tostring(sil))
+    ok(type(why) == 'string' and why:find('lobby', 1, true) ~= nil,
+       'and it gives the LOBBY as the reason rather than "the player chose '
+           .. "'off'\" -- /brvoice reports the cause, not the mechanism",
+       tostring(why))
+
+    -- NO UI TEXT. The owner did not ask to be told about this and must not be.
+    local st = BR.Voice.status()
+    ok(st.headline == nil,
+       'and nothing is painted over the game to announce it -- no headline, so '
+           .. 'no toast and no notice',
+       tostring(st.headline))
+    ok(st.silent == true and st.chosen == true,
+       'the row is marked silent AND chosen, so the squad panel draws it in the '
+           .. 'dim colour rather than as a fault -- the same distinction a '
+           .. "spectator's row gets",
+       tostring(st.silent) .. '/' .. tostring(st.chosen))
+
+    -- THE PREFERENCE IS NOT TOUCHED. This one assertion is what makes the
+    -- disconnect, the crash and the resource-restart cases safe: a lobby visit
+    -- that ends by this client ceasing to exist leaves nothing behind to put
+    -- back, because nothing was taken.
+    ok(BR.Voice.pref.solo == prefBefore.solo
+       and BR.Voice.pref.squad == prefBefore.squad
+       and BR.Voice.pref.squad == BR.VoiceMode.SQUAD,
+       'while the SAVED pair is byte-for-byte what it was before the lobby -- '
+           .. 'there is no stored mode to be stranded by a disconnect, a crash '
+           .. 'or a restart, because nothing was taken',
+       tostring(BR.Voice.pref.solo) .. '/' .. tostring(BR.Voice.pref.squad)
+           .. ' was ' .. tostring(prefBefore.solo) .. '/'
+           .. tostring(prefBefore.squad))
+
+    -- ==================================================================== --
+    -- RESTORE 1: THE MATCH STARTS. The ordinary path, and nothing but a tick.
+
+    local back = beState(BR.PlayerState.WARMUP)
+    ok(BR.Voice.mode() == BR.VoiceMode.SQUAD,
+       'leaving the lobby restores the PREFERENCE, not the default -- and '
+           .. "nothing was fired to make it happen. 'squad' is not "
+           .. 'BR.VoiceModeDefault, so a restore that fell back could not pass '
+           .. 'this', tostring(BR.Voice.mode()))
+    ok(back.radio == 41207,
+       'the squad radio channel is rejoined on the same tick, with no event of '
+           .. 'any kind in between -- this is the assertion a forgotten exit '
+           .. 'path fails', tostring(back.radio))
+    ok(back.muted[2] == nil and back.muted[3] == true,
+       'and the ears come back exactly as they were: the squadmate released, '
+           .. 'the stranger still refused',
+       'muted 2=' .. tostring(back.muted[2]) .. ' 3=' .. tostring(back.muted[3]))
+    ok(BR.Voice.silenced() == false,
+       'and the microphone is given back with it',
+       tostring(BR.Voice.silenced()))
+
+    -- ==================================================================== --
+    -- WARMUP IS NOT THE LOBBY, AND THAT IS A DECISION RATHER THAN A GAP.
+    --
+    -- The state above is WARMUP and voice is fully back, which pins it. Warmup
+    -- is INSIDE a match: squads are formed, the radio channel exists, and
+    -- players are shooting each other on the pad. The owner's word was "the
+    -- lobby", and lobbycam.lua, locker.lua and spawn.lua all draw the line at
+    -- exactly BR.PlayerState.LOBBY. A rule that swallowed warmup would silence
+    -- the one moment in a round when a squad is actually planning.
+    ok(BR.Voice.routing().radio == true,
+       'a player on the warmup pad has their squad radio -- the rule is the '
+           .. 'lobby, not "anything before the bus"',
+       tostring(BR.Voice.mode()))
+
+    -- ==================================================================== --
+    -- RESTORE 2: TWICE IN A ROW.
+    --
+    -- Not an edge. A player who plays two rounds passes through the lobby twice,
+    -- and a latch taken on the first entry and released on the first exit is
+    -- right once and wrong forever after.
+    beState(BR.PlayerState.LOBBY)
+    local one = beState(BR.PlayerState.ALIVE)
+    beState(BR.PlayerState.LOBBY)
+    local two = beState(BR.PlayerState.ALIVE)
+    ok(one.radio == 41207 and two.radio == 41207
+       and BR.Voice.mode() == BR.VoiceMode.SQUAD,
+       'two lobby visits back to back both restore -- nothing is spent on the '
+           .. 'first one',
+       tostring(one.radio) .. ' then ' .. tostring(two.radio))
+
+    -- ==================================================================== --
+    -- RESTORE 3: pma-voice RESTARTS WHILE THE PLAYER IS IN THE LOBBY.
+    --
+    -- An admin restarting the voice resource between rounds is a real thing
+    -- that happens, and br_core's handler drops everything it believes about the
+    -- engine (`joined`, `muted`). The answer must still be off while in the
+    -- lobby -- and leaving must still put the channel back on a resource that
+    -- has never heard of it.
+    beState(BR.PlayerState.LOBBY)
+    fire('onClientResourceStart', 'pma-voice')
+    local restarted = settle()
+    ok(restarted.radio == 0,
+       'a voice resource that restarts under a lobby player comes back off the '
+           .. 'radio, because the mode is re-derived rather than replayed',
+       tostring(restarted.radio))
+    local afterRestart = beState(BR.PlayerState.ALIVE)
+    ok(afterRestart.radio == 41207,
+       'and the channel is put back afterwards all the same',
+       tostring(afterRestart.radio))
+
+    -- ==================================================================== --
+    -- RESTORE 4: br_core ITSELF RESTARTS UNDER THE LOBBY.
+    --
+    -- The other half of the same admin action, and the one a saved-value design
+    -- loses outright: a stored "what they were on before the lobby" lives in Lua
+    -- state, and a resource reload is exactly what throws Lua state away. There
+    -- is nothing to lose here because nothing is stored -- the preferences are
+    -- pushed back by br_ui and the mode is arithmetic over them.
+    beState(BR.PlayerState.LOBBY)
+    fire('onClientResourceStart', 'br_core')
+    BR.State.me.src = 1     -- main.lua's own handler re-reads it; see voiceApply
+    settle()
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF,
+       'br_core restarting under a lobby player leaves them off, because the '
+           .. 'lobby is read from the state mirror rather than remembered',
+       tostring(BR.Voice.mode()))
+    fire('br:settings:changed',
+         { voiceModeSolo = BR.VoiceMode.NEARBY, voiceModeSquad = BR.VoiceMode.SQUAD })
+    fire(BR.Net.VOICE_SET, { radio = 41207, mates = { 2 },
+                             nearbyRange = VR.nearby })
+    local afterCore = beState(BR.PlayerState.ALIVE)
+    ok(BR.Voice.mode() == BR.VoiceMode.SQUAD and afterCore.radio == 41207,
+       'and the preference the settings screen pushes back is what they leave '
+           .. 'the lobby on',
+       tostring(BR.Voice.mode()) .. ' / radio ' .. tostring(afterCore.radio))
+
+    -- ==================================================================== --
+    -- RESTORE 5: THE PREFERENCE IS CHANGED WHILE IN THE LOBBY.
+    --
+    -- The settings screen is reachable from the lobby menu, which makes this the
+    -- ordinary case rather than an edge. What comes back is what they last
+    -- chose -- and it must not be overridden by a snapshot taken on the way in.
+    beState(BR.PlayerState.LOBBY)
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF,
+       'in the lobby again, off again', tostring(BR.Voice.mode()))
+    voiceMode(BR.VoiceMode.NEARBY)      -- the settings screen, mid-lobby
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF,
+       'changing the preference in the lobby does not lift the rule -- they are '
+           .. 'still in the lobby, so there is still no voice',
+       tostring(BR.Voice.mode()))
+    local changed = beState(BR.PlayerState.ALIVE)
+    ok(BR.Voice.mode() == BR.VoiceMode.NEARBY and changed.radio == 0,
+       'and what comes back is the setting they chose WHILE in the lobby, not '
+           .. 'the one they had when they entered it',
+       tostring(BR.Voice.mode()) .. ' / radio ' .. tostring(changed.radio))
+
+    -- ==================================================================== --
+    -- RESTORE 6: THE MATCH KIND CHANGES WHILE THEY SIT IN THE LOBBY.
+    --
+    -- THE CASE THAT SEPARATES THE TWO POSSIBLE DESIGNS, and the reason this is
+    -- an overlay rather than a saved value. A player finishes a SQUAD match,
+    -- lands in the lobby, and queues a SOLO. An implementation that snapshotted
+    -- the mode on the way in would put back the squad answer for a match that
+    -- has no squads -- which is total silence by design and indistinguishable
+    -- from a fault (#157's second half). Re-deriving reads the slot for the
+    -- match they are in NOW.
+    --
+    -- The two slots are set to DIFFERENT values on purpose; it is the only way
+    -- to see which one won.
+    fire('br:settings:changed',
+         { voiceModeSolo = BR.VoiceMode.OFF, voiceModeSquad = BR.VoiceMode.SQUAD })
+    BR.State.match.mode = BR.Mode.SQUAD.key
+    settle()
+    beState(BR.PlayerState.LOBBY)
+    BR.State.match.mode = BR.Mode.SOLO.key   -- they queued a solo from the lobby
+    beState(BR.PlayerState.WARMUP)
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF,
+       'a lobby visit that changes match kind comes back to the preference for '
+           .. 'the match they are in NOW -- the solo slot, not a snapshot of the '
+           .. 'squad answer taken on the way in',
+       tostring(BR.Voice.mode()))
+    BR.State.match.mode = BR.Mode.SQUAD.key
+    beState(BR.PlayerState.LOBBY)
+    beState(BR.PlayerState.WARMUP)
+    ok(BR.Voice.mode() == BR.VoiceMode.SQUAD,
+       'and back the other way, with no settings change in between',
+       tostring(BR.Voice.mode()))
+
+    -- ==================================================================== --
+    -- A LOBBY PLAYER WHILE A MATCH IS RUNNING HEARS NOTHING, AND THAT IS THE
+    -- ANSWER RATHER THAN AN ACCIDENT.
+    --
+    -- The rule is written against THIS PLAYER's state, not the MATCH's, so a
+    -- match in full flight underneath somebody sitting in the lobby changes
+    -- nothing about them. That is what the owner asked for and it is also the
+    -- only safe answer: the lobby is where a player who just died and a player
+    -- waiting for the next round both sit, and a lobby that could listen to a
+    -- live match is a channel for exactly the intel a spectator was muted to
+    -- stop carrying.
+    fire('br:settings:changed',
+         { voiceModeSolo = BR.VoiceMode.NEARBY, voiceModeSquad = BR.VoiceMode.NEARBY })
+    BR.State.match.mode = BR.Mode.SQUAD.key
+    local during = beState(BR.PlayerState.LOBBY)
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING, mode = BR.Mode.SQUAD.key })
+    during = settle()
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF,
+       'a live match running around a lobby player does not give them voice -- '
+           .. 'the rule is their state, not the match state',
+       tostring(BR.Voice.mode()))
+    ok(during.sends[2] == nil and during.sends[3] == nil,
+       'they transmit to nobody, though a nearby preference and two players one '
+           .. 'metre away would otherwise reach both',
+       'sends 2=' .. tostring(during.sends[2]) .. ' 3=' .. tostring(during.sends[3]))
+    ok(during.muted[2] == true and during.muted[3] == true,
+       'and they hear nobody either',
+       'muted 2=' .. tostring(during.muted[2]) .. ' 3=' .. tostring(during.muted[3]))
+
+    -- AN ADMIN IN THE LOBBY IS NOT DIFFERENT, and there is nothing to assert
+    -- against because there is nothing to assert: no config key, no permission
+    -- read, no branch. Same shape as BR.Voice.silenced()'s "not varied by
+    -- whether the session is a dead player's or an admin's". This is a TEXT
+    -- check, and it is the only instrument that can see the absence of a branch.
+    do
+        local vFh = io.open(ROOT .. 'br_core/client/voice.lua', 'r')
+        local vSrc = vFh and vFh:read('a') or ''
+        if vFh then vFh:close() end
+        local code = vSrc:gsub('%-%-%[%[.-%]%]', ' '):gsub('%-%-[^\n]*', '')
+        local lobAt = code:find('local function inLobby', 1, true)
+        local body = lobAt and code:sub(lobAt, lobAt + 400) or ''
+        ok(body:find('BR.PlayerState.LOBBY', 1, true) ~= nil,
+           'the lobby test really reads BR.PlayerState.LOBBY, the same name '
+               .. 'lobbycam.lua and locker.lua use',
+           'inLobby does not compare against BR.PlayerState.LOBBY')
+        ok(not code:find('Admin', 1, true) and not code:find('isAdmin', 1, true),
+           'and nothing in client/voice.lua consults an admin flag -- the rule '
+               .. 'is unconditional, with no exemption to keep in step',
+           'client/voice.lua has grown an admin branch')
+    end
+
+    -- ==================================================================== --
+    -- A CLIENT THAT CANNOT SAY WHERE IT IS, IS NOT IN THE LOBBY.
+    --
+    -- FOUND BY MUTATION: flipping inLobby() to `me == nil or ...` -- so a
+    -- missing state mirror counts AS the lobby -- passed every assertion above,
+    -- because BR.State.me is populated at load by client/main.lua and nothing
+    -- here had ever taken it away.
+    --
+    -- THE DIRECTION IS onBus()'s, DELIBERATELY. That function has answered this
+    -- exact question with `me ~= nil and ...` since it was written, the two sit
+    -- three lines apart, and two neighbouring reads of the same mirror
+    -- disagreeing about what nil means is a bug waiting for whoever edits one of
+    -- them. It is also the honest answer: nothing has PUT this player in the
+    -- lobby, so nothing should silence them for it -- and the state arrives
+    -- within one roster push, at which point the rule applies for real.
+    do
+        local realMe = BR.State.me
+        BR.State.me = nil
+        ok(BR.Voice.mode() ~= BR.VoiceMode.OFF,
+           'a client with no state mirror at all is not treated as being in the '
+               .. 'lobby -- the same answer onBus() gives to the same question, '
+               .. 'three lines away', tostring(BR.Voice.mode()))
+        ok(BR.Voice.silenced() == false,
+           'and its microphone is not taken on the strength of a nil',
+           tostring(BR.Voice.silenced()))
+        BR.State.me = realMe
+    end
+
+    -- ==================================================================== --
+    -- SPECTATING AND THE LOBBY OVERLAP, AND NEITHER RESCUES THE OTHER.
+    --
+    -- The real sequence: a dead player spectates their squad, the match ends
+    -- under them, and the session stops IN THE LOBBY. The spectate block above
+    -- asserts the session ending restores the preference; that must not happen
+    -- here, because they are now in the lobby. Two overlays over one derivation,
+    -- and the second has to hold when the first lifts.
+    local realSpectate2 = BR.Spectate
+    local spectating2 = false
+    BR.Spectate = { active = function() return spectating2 end }
+    fire('br:settings:changed',
+         { voiceModeSolo = BR.VoiceMode.NEARBY, voiceModeSquad = BR.VoiceMode.SQUAD })
+    BR.State.match.mode = BR.Mode.SQUAD.key
+    beState(BR.PlayerState.SPECTATING)
+    spectating2 = true
+    settle()
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF, 'watching: off', tostring(BR.Voice.mode()))
+    -- the match ends: the camera comes down and they land in the lobby
+    spectating2 = false
+    local landed = beState(BR.PlayerState.LOBBY)
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF and landed.radio == 0,
+       'a spectate session that ends IN THE LOBBY does not give voice back -- '
+           .. 'the camera lifting is not the lobby lifting',
+       tostring(BR.Voice.mode()) .. ' / radio ' .. tostring(landed.radio))
+    local next2 = beState(BR.PlayerState.WARMUP)
+    ok(BR.Voice.mode() == BR.VoiceMode.SQUAD and next2.radio == 41207,
+       'and the next match gives it back, once both overlays are gone',
+       tostring(BR.Voice.mode()) .. ' / radio ' .. tostring(next2.radio))
+    BR.Spectate = realSpectate2
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    mumble.talking[2] = nil
+    nobodyElse()
+    settle()
+end
+
 describe('the inventory bar draws the player being watched')
 do
     -- THE BUG, IN THE OWNER'S WORDS: "the health/shield/inventory don't show
@@ -4676,11 +5085,44 @@ do
     -- removed HUD line used to carry.
     matchOver()
     voiceMode(BR.VoiceMode.NEARBY)
+
+    -- ═══ AND THE BROADCAST ARRIVES WHILE THIS CLIENT IS STILL IN THE LOBBY,
+    --     WHICH IS THE REAL ORDERING AND NOT AN EDGE ═══
+    --
+    -- server/match.lua's BR.Match.onEnter sends Broadcast.state(WARMUP) from
+    -- transition() BEFORE it runs the Roster.setState loop that moves anybody
+    -- out of LOBBY. Those are two different messages on two different paths, so
+    -- at the instant this handler runs the mirrored state is still `lobby`.
+    --
+    -- SINCE 2026-08-22 THAT IS A MODE OF 'off' (BR.Voice.mode overlays the
+    -- lobby), and noticeFor() returns nil on 'off'. A handler that read mode()
+    -- here would therefore decline to say anything -- every match, in every
+    -- session, forever, because the latch is spent on DELIVERY and so would
+    -- never be spent at all. The player would simply never be told the
+    -- push-to-talk key, which is the one fact the removed HUD line carried.
+    --
+    -- The fix is that the notice reads BR.Voice.chosenMode() -- the SETTING,
+    -- which is what the sentence is about -- and this is the assertion that
+    -- says so. Nothing else in the suite would have caught it: voiceApply()
+    -- leaves this client ALIVE, so every other warmup() in this block runs from
+    -- a state the real game is never in at that moment.
+    BR.State.me.state = BR.PlayerState.LOBBY
+    ok(BR.Voice.mode() == BR.VoiceMode.OFF,
+       'a client that has not yet been moved out of the lobby really is on '
+           .. "'off' when the WARMUP broadcast lands -- the precondition, "
+           .. 'stated so this test cannot pass by the state being wrong',
+       tostring(BR.Voice.mode()))
+
     local shown = warmup()
     ok(type(shown) == 'string',
        'and turning voice ON later still earns the notice -- being suppressed '
-           .. 'is not the same as having been shown',
+           .. 'is not the same as having been shown, and the lobby the player '
+           .. 'has not left yet does not suppress it',
        tostring(shown))
+    ok(type(shown) == 'string' and shown:find('set to nearby', 1, true) ~= nil,
+       'and it names the mode they CHOSE rather than the lobby they are '
+           .. 'standing in', tostring(shown))
+    BR.State.me.state = BR.PlayerState.ALIVE
 
     -- 3. ONCE PER BROADCAST IS NOT ENOUGH. The digest re-fires STATE on any
     -- change, so the same warmup can arrive more than once.

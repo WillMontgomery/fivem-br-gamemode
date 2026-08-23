@@ -430,10 +430,11 @@ function BR.Match.onEnter(m, state, from)
 
         m.landCheck = nil   -- fresh stuck-lander bookkeeping per match
 
-        -- The flight is over, so nobody is waiting for it. The "waiting for
-        -- the last players to land" notice is STICKY, and a sticky notice is
-        -- only as good as the code that withdraws it -- landingNotices runs
-        -- during BUS only, so it cannot be the caller for the moment BUS ends.
+        -- The flight is over, so nobody is waiting for it. The `bus.landing`
+        -- notice is STICKY, and a sticky notice is only as good as the code
+        -- that withdraws it -- landingNotices runs during BUS only, so it
+        -- cannot be the caller for the moment BUS ends. (Named by key, not by
+        -- its sentence: the wording is the owner's and has changed twice.)
         BR.Bus.clearLandingNotices(m)
 
         -- Normally counted at BUS entry (before anyone can be dead); this
