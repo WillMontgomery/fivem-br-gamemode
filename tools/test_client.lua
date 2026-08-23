@@ -11729,7 +11729,7 @@ do
     local held = true
     for _, st in ipairs({ BR.PlayerState.LOBBY, BR.PlayerState.WARMUP,
                           BR.PlayerState.BUS, BR.PlayerState.ALIVE,
-                          BR.PlayerState.DOWNED, BR.PlayerState.DEAD,
+                          BR.PlayerState.DBNO, BR.PlayerState.DEAD,
                           BR.PlayerState.SPECTATING }) do
         BR.State.me.state = st
         hidden = {}
