@@ -7783,6 +7783,176 @@ do
                                       inv.ammo[BR.AmmoType.MEDIUM]))
 end
 
+describe('inv.ammo.dropPickup')
+do
+    -- ═══ THE FOURTH DOOR (owner, 2026-08-23) ═══
+    --
+    -- "when I drop it and pick it back up it has 1 round in it now." His
+    -- /brammo, on a railgun fired dry: the magazine went 0 -> 1 while the heavy
+    -- pool stayed 0. A round was CREATED, and docs/terminology.md says an empty
+    -- pool cannot conjure.
+    --
+    -- THE THREE DOORS ABOVE WERE RE-GRANTS -- the server's stale number written
+    -- back onto the ped -- AND THIS IS NOT ONE. Nothing drifted and no client
+    -- was believed: BR.Inv.give simply minted a clip's worth of reserve for any
+    -- weapon that arrived, and a weapon coming back off the floor is not found
+    -- loot. The whole trip is server-side, which is why it is pinned here rather
+    -- than in test_client: the drop, the world entry and the pickup are three
+    -- server calls and the client is not consulted by any of them.
+    --
+    -- MEASURED IN `held` -- magazine PLUS pool -- because that is the quantity
+    -- the invariant is about and the split is exactly what hid this. The owner's
+    -- own row moved 0 -> 1 in one column while the other stayed put.
+    ok(BR.Config.Combat.serverAmmo, 'server ammo is on for this block')
+
+    local m = lootMatch()
+
+    --- Everything a player holds for one pool, magazines included.
+    local function held(src, pool)
+        local i = BR.Inv.of(src)
+        local n = i.ammo[pool] or 0
+        for s = 1, 5 do
+            local slot = i.slots[s]
+            local w = slot and BR.Config.WeaponById[slot.item]
+            if w and w.ammo == pool then n = n + (slot.clip or 0) end
+        end
+        return n
+    end
+
+    --- Drop slot 1 on the floor and pick the same entry straight back up, the
+    --- way a player does: two real events, through the real handlers.
+    --- @return table|nil entry  the world entry, before it was claimed
+    local function roundTrip(src, item)
+        -- A second between trips: the claim handler rate-limits to four a
+        -- second, and a loop that ran inside one millisecond would be measuring
+        -- that refusal rather than the pickup.
+        fakeTime = fakeTime + 1000
+        fire(BR.Net.INV_DROP, src, { slot = 1 })
+        local e
+        for id = m.loot.nextId, 1, -1 do
+            local cand = m.loot.items[id]
+            if cand and cand.item == item and cand.dropped then e = cand break end
+        end
+        if not e then return nil end
+        standOn(src, e)
+        local cx, cy = BR.LootCellOf(e.x, e.y)
+        fire(BR.Net.LOOT_CELL, src, { cx = cx, cy = cy })
+        fire(BR.Net.LOOT_CLAIM, src, { id = e.id })
+        return e
+    end
+
+    BR.Inv.reset(1)
+    local rail = BR.Config.WeaponById['railgun']
+    BR.Inv.give(1, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rail.clip })
+    local inv = BR.Inv.of(1)
+    inv.active = 1
+
+    -- A FOUND GUN STILL ARRIVES LOADED, which is the direction a careless fix
+    -- breaks and the reason the grant exists at all. Asserted first, so a fix
+    -- that simply deleted the grant cannot pass this block.
+    ok(held(1, BR.AmmoType.HEAVY) == rail.clip * 2,
+       'a railgun off the floor arrives with a magazine and a reserve',
+       tostring(held(1, BR.AmmoType.HEAVY)))
+
+    -- Fired dry, with the server none the wiser and then caught up by the floor
+    -- above: magazine 0, pool 0, which is the row the owner photographed.
+    inv.slots[1].clip = 0
+    inv.ammo[BR.AmmoType.HEAVY] = 0
+
+    local entry = roundTrip(1, 'railgun')
+    ok(entry ~= nil, 'the dropped railgun is on the ground as an entry')
+    ok(entry and entry.clip == 0,
+       'and it went down with its EMPTY magazine, not a full one',
+       tostring(entry and entry.clip))
+
+    -- THE ASSERTION THE WHOLE BLOCK IS FOR.
+    ok(held(1, BR.AmmoType.HEAVY) == 0,
+       'A DRY WEAPON DROPPED AND PICKED BACK UP IS STILL DRY -- nothing conjured',
+       ('held %d (clip %s, pool %s)'):format(
+           held(1, BR.AmmoType.HEAVY),
+           tostring(inv.slots[1] and inv.slots[1].clip),
+           tostring(inv.ammo[BR.AmmoType.HEAVY])))
+
+    -- AND IT DID NOT MERELY GET SMALLER. Before the fix this compounded -- the
+    -- same trip three times measured 3, 6, 9 -- so a version that granted half a
+    -- clip, or granted once and not twice, would still be an ammunition printer
+    -- with a longer duty cycle.
+    for _ = 1, 5 do roundTrip(1, 'railgun') end
+    ok(held(1, BR.AmmoType.HEAVY) == 0,
+       'and six trips in a row are still zero -- it does not compound',
+       tostring(held(1, BR.AmmoType.HEAVY)))
+
+    -- A PARTLY LOADED GUN MAKES THE TRIP WITH EXACTLY WHAT IT HAD. Zero is the
+    -- case that exposed this; it is not the case the rule is about.
+    inv.slots[1].clip = 1
+    inv.ammo[BR.AmmoType.HEAVY] = 2
+    roundTrip(1, 'railgun')
+    ok(held(1, BR.AmmoType.HEAVY) == 3,
+       'a half-loaded railgun comes back half-loaded, to the round',
+       ('held %d'):format(held(1, BR.AmmoType.HEAVY)))
+
+    -- IT WAS NEVER RAILGUN-ONLY, and the railgun is only where it is VISIBLE.
+    -- Every weapon with a pool minted the same way; a pistol's twelve free
+    -- rounds simply look like loot when there is already ammo to hide them in.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'pistol', kind = BR.ItemKind.WEAPON, rarity = 1,
+                     count = 1, clip = 0 })
+    inv = BR.Inv.of(1)
+    inv.active = 1
+    inv.slots[1].clip = 0
+    inv.ammo[BR.AmmoType.LIGHT] = 0
+    roundTrip(1, 'pistol')
+    ok(held(1, BR.AmmoType.LIGHT) == 0,
+       'and a dry PISTOL stays dry too -- this was never railgun-only',
+       tostring(held(1, BR.AmmoType.LIGHT)))
+
+    -- A DEATH BOX IS THE SAME FACT BY A DIFFERENT ROUTE. Everything a corpse was
+    -- carrying left an inventory, so a looter cannot re-mint it either -- and
+    -- the corpse's POOL is on the floor beside it, which is where those rounds
+    -- actually are.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'railgun', kind = BR.ItemKind.WEAPON, rarity = 5,
+                     count = 1, clip = rail.clip })
+    inv = BR.Inv.of(1)
+    inv.slots[1].clip = 0
+    inv.ammo[BR.AmmoType.HEAVY] = 0
+    BR.Roster.get(1).pos = { x = 300.0, y = 300.0, z = 30.0 }
+    BR.Loot.deathBox(m, 1)
+    local corpseGun
+    for id = m.loot.nextId, 1, -1 do
+        local cand = m.loot.items[id]
+        if cand and cand.item == 'railgun' then corpseGun = cand break end
+    end
+    ok(corpseGun ~= nil, 'the corpse scattered its railgun')
+
+    BR.Inv.reset(2)
+    BR.Roster.get(2).pos = { x = 300.0, y = 300.0, z = 30.0 }
+    standOn(2, corpseGun)
+    local ccx, ccy = BR.LootCellOf(corpseGun.x, corpseGun.y)
+    fire(BR.Net.LOOT_CELL, 2, { cx = ccx, cy = ccy })
+    fire(BR.Net.LOOT_CLAIM, 2, { id = corpseGun.id })
+    ok(held(2, BR.AmmoType.HEAVY) == 0,
+       'and looting a dead man\'s empty railgun does not load it',
+       tostring(held(2, BR.AmmoType.HEAVY)))
+
+    -- ...AND A WEAPON PUSHED OUT OF A FULL INVENTORY IS THE THIRD WAY OUT.
+    -- `displaced` is a slot table like the other two, and a swap that dropped an
+    -- unmarked copy on the floor would reopen the door one indirection along.
+    BR.Inv.reset(1)
+    for _ = 1, 5 do
+        BR.Inv.give(1, { item = 'sawnoff', kind = BR.ItemKind.WEAPON,
+                         rarity = 1, count = 1, clip = 0 })
+    end
+    inv = BR.Inv.of(1)
+    inv.active = 1
+    local _, pushedOut = BR.Inv.give(1, { item = 'pistol',
+        kind = BR.ItemKind.WEAPON, rarity = 1, count = 1, clip = 0 })
+    ok(pushedOut and pushedOut.carried == true,
+       'a weapon displaced by a pickup is marked as having been carried',
+       tostring(pushedOut and pushedOut.carried))
+end
+
 -- THE FALLBACK PATH, still live when `/brdamage off` turns the takeover back
 -- into an audit. If the server is not applying damage it is not seeing shots
 -- either, and a magazine nothing decrements is better than one nothing

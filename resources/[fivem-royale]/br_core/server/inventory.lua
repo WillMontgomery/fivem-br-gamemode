@@ -226,6 +226,52 @@ local function addAmmo(inv, pool, amount)
     return next_ - have
 end
 
+--- STAMP A STACK THAT IS LEAVING SOMEBODY'S HANDS.
+---
+--- ═══ THE FOURTH DOOR (owner, 2026-08-23) ═══
+---
+--- "when I drop it and pick it back up it has 1 round in it now." His /brammo,
+--- on a railgun fired dry: the magazine went 0 -> 1 while the heavy pool stayed
+--- 0. A round was CREATED, not moved, and docs/terminology.md says an empty pool
+--- cannot conjure.
+---
+--- IT IS THE PICKUP, AND IT WAS NEVER ONE ROUND. BR.Inv.give ends by granting a
+--- clip's worth of reserve to any weapon that arrives -- "a found gun has to be
+--- usable" -- and it asked nothing about where the gun came from. So a railgun
+--- dropped with 0/0 came back with THREE in the heavy pool, out of nothing, and
+--- it COMPOUNDED: the same trip run three times measured 3, 6, 9. What the owner
+--- saw was smaller only because it had already been laundered -- the client
+--- pushes the conjured three onto the ped, the engine's own reading comes back
+--- lower, and the INV_AMMO floor below spends the difference and then reloads,
+--- which turns "+3 in the pool" into "1 in the magazine, pool 0". The row he
+--- photographed is the tail of it, not the size of it.
+---
+--- AND IT IS NOT RAILGUN-ONLY. A dry pistol makes the same trip and comes back
+--- with twelve light rounds. The railgun is simply the only weapon whose pool is
+--- normally 0, so it is the only one where a conjured round has nothing to hide
+--- behind -- exactly as the 2026-08-23 switch bug was found on the same gun for
+--- the same reason.
+---
+--- THE GRANT IS RIGHT AND ITS AUDIENCE WAS WRONG. A gun off the floor of the
+--- world, out of a crate, off the airdrop shelf, should arrive with something in
+--- it; that is a piece of loot being minted. A gun that has already been in an
+--- inventory has already been paid for -- its magazine travels with it and its
+--- reserve stayed with the player who had it -- so re-minting one is printing
+--- ammunition on demand.
+---
+--- So every stack that leaves an inventory is marked on the way out, and the
+--- grant asks. The mark is applied at the EXIT rather than stored on the slot:
+--- there are exactly four ways out (a drop, a death, a displaced swap, and this
+--- is all of them), each of them returns the slot table itself, and deriving the
+--- fact where it becomes true means there is no stale copy of it to go wrong.
+--- @generic T
+--- @param s T
+--- @return T
+local function released(s)
+    if s then s.carried = true end
+    return s
+end
+
 -- --------------------------------------------------------------------------
 -- Giving
 -- --------------------------------------------------------------------------
@@ -451,7 +497,7 @@ function BR.Inv.give(src, stack)
                 rarity = stack.rarity, count = math.min(max, left),
             }
             BR.Inv.push(src)
-            return true, displaced, nil
+            return true, released(displaced), nil
         end
 
         BR.Inv.push(src)
@@ -535,14 +581,22 @@ function BR.Inv.give(src, stack)
         inv.active = at
     end
 
-    -- A found gun has to be usable. One clip's worth of reserve, capped by
+    -- A FOUND gun has to be usable. One clip's worth of reserve, capped by
     -- the pool -- enough to fight with, not enough to stop looting ammo.
-    if w and w.ammo then
+    --
+    -- `not stack.carried` IS THE WHOLE OF THE 2026-08-23 DROP/PICKUP FIX, and
+    -- the note on `released` above is why. This line used to run for every
+    -- weapon that arrived by any route, so a gun the player had just thrown on
+    -- the floor was minted a fresh magazine's worth of reserve when they picked
+    -- it up again -- out of an empty pool, repeatable, compounding. A weapon
+    -- that has been in an inventory is not found loot; it is the same weapon
+    -- coming back, and it comes back with what it left with.
+    if w and w.ammo and not stack.carried then
         addAmmo(inv, w.ammo, (w.clip or 0) * (L.weaponReserveClips or 1))
     end
 
     BR.Inv.push(src)
-    return true, displaced, nil
+    return true, released(displaced), nil
 end
 
 --- Take a whole slot out. Used by drops and by death.
@@ -555,7 +609,7 @@ function BR.Inv.take(src, slot)
     local s = inv.slots[slot]
     if not s then return nil end
     inv.slots[slot] = false
-    return s
+    return released(s)
 end
 
 --- Everything a player was carrying, emptied out. The death box's contents.
@@ -569,7 +623,7 @@ function BR.Inv.dropAll(src)
     for i = 1, SLOTS do
         local s = inv.slots[i]
         if s then
-            out[#out + 1] = s
+            out[#out + 1] = released(s)
             inv.slots[i] = false
         end
     end

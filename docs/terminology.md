@@ -131,11 +131,40 @@ Two things changed and the rule above is unchanged by both:
   subtracted from every write onto the ped. That is what makes a dry weapon come
   back dry inside the round trip rather than one INV_SET later.
 
+##### The fourth door: a gun that came back with a round (2026-08-23)
+
+Three doors were closed above — the slot switch, an unrelated pickup, the
+post-landing sweep — and all three were **re-grants**, the server's stale number
+written onto the ped. The fourth is not a re-grant at all. Owner, same day:
+*"when I drop it and pick it back up it has 1 round in it now."*
+
+`BR.Inv.give` ends by granting a clip's worth of reserve to any weapon that
+arrives, so that a found gun is usable. It asked nothing about where the gun came
+from, so **a weapon a player dropped was minted a fresh magazine's worth on the
+way back in** — out of an empty pool, repeatable, and compounding: the same trip
+run three times on a railgun measured 3, 6, 9 in the heavy pool. What the owner
+saw was one round because the conjured three had already been laundered — the
+client pushes them onto the ped, the engine reads back lower, and the floor above
+spends the difference and reloads. Not railgun-specific either: a dry pistol
+makes the same trip and comes back with twelve. The railgun is only where it
+shows, because its pool is the only one normally at zero.
+
+The grant was right and its audience was wrong. Every stack that leaves an
+inventory — a drop, a death, a displaced swap — is now stamped `carried` on the
+way out, it travels with the world entry, and the grant is for **found** loot
+only. A weapon that has been in an inventory comes back with what it left with.
+
 `/brammo` prints all of it — the server's magazine, the pool, the engine's
 holding and the shortfall, for all five slots at once. `/brprobe ammo` is the
 stopwatch for the active weapon; this is the photograph that includes the slots
 you are not holding, which is the only shape that can answer a question about
 switching.
+
+It also prints **`held`** — pool plus every magazine drawing on it — and how that
+number moved since the last `/brammo`. The split is what the five rows show and
+the invariant is about the sum, which is why the fourth door survived a readout
+built to find the first three: every column was honest and none of them said
+*you have more ammunition than you did*.
 
 Infinite ammo and infinite-ammo-clip are asserted **off every tick**, not once
 per weapon grant: the raw probe showed the flag surviving a grant-time clear.

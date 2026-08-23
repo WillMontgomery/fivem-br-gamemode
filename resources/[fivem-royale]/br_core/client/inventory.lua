@@ -1826,6 +1826,15 @@ end
 -- Where did the rounds go? (/brammo)
 -- --------------------------------------------------------------------------
 
+--- What the last /brammo counted, per pool, so the next one can print the
+--- CHANGE. Declared here rather than inside the command because the command is
+--- a closure built at load time -- see tools/check_forward_locals.lua.
+---
+--- nil until the first dump, and that is the honest answer rather than a zeroed
+--- table: "nothing has changed since a measurement nobody took" is a sentence a
+--- diagnostic must not print.
+local lastHeld = nil
+
 --- Everything three parties believe about this player's ammunition, side by
 --- side, in the F8 console.
 ---
@@ -1851,6 +1860,26 @@ end
 ---
 --- Console only, by design: this is a diagnostic for a person reading a log, and
 --- nothing here belongs on a player's screen.
+---
+--- ═══ AND IT NOW PRINTS `held` AND A DELTA, WHICH IS WHAT THE NEXT BUG NEEDED
+---     (owner, 2026-08-23, second report) ═══
+---
+--- The drop/pickup round trip was found with this command and it took two dumps
+--- and a careful eye, because what it printed was five DISTRIBUTIONS and the
+--- question was about a TOTAL. His two rows read `0 0 0 0 0` and `1 0 1 1 0` --
+--- a magazine that went up beside a pool that did not move -- and the round that
+--- had actually been created was three of them, minted into the pool and then
+--- spent back down by the INV_AMMO floor before he looked. Every column was
+--- honest and none of them said "you have more ammunition than you did".
+---
+--- `held` is the number the invariant is actually about: everything this player
+--- has for a pool, magazines included, which is the quantity docs/terminology.md
+--- says an empty pool cannot raise. And the delta is against the LAST /brammo,
+--- because that is how the command is used -- dump, do the suspicious thing,
+--- dump again -- so the diff the owner was doing by eye is done for him. A drop
+--- and a pickup with nothing else touched would have printed `+3 since the last
+--- /brammo` on the line above his railgun, and there is no reading of that line
+--- in which the ammunition was moved rather than made.
 RegisterCommand('brammo', function()
     local ped = PlayerPedId()
     local st  = BR.Inv.reportState()
@@ -1903,9 +1932,38 @@ RegisterCommand('brammo', function()
         end
     end
 
+    -- EVERYTHING THIS PLAYER HAS FOR A POOL, MAGAZINES INCLUDED.
+    --
+    -- The rows above print the SPLIT and the invariant is about the SUM: rounds
+    -- move between a magazine and its pool for free, and no route may raise the
+    -- two together. Adding them up here is what makes "a round was created"
+    -- something the readout says rather than something the reader works out.
+    local held = {}
     for _, pool in ipairs(BR.Config.AmmoOrder or {}) do
-        print(('  pool %-8s %d'):format(pool, math.floor(inv.ammo[pool] or 0)))
+        held[pool] = math.floor(inv.ammo[pool] or 0)
     end
+    for i = 1, SLOTS do
+        local slot = inv.slots[i]
+        local w    = slot and BR.Config.WeaponById[slot.id]
+        -- `held[w.ammo] ~= nil`, not `held[w.ammo]`: a pool sitting at 0 is
+        -- exactly the case this whole readout was built for, and 0 IS TRUTHY IN
+        -- LUA -- so the bare test happens to work and says the wrong thing. The
+        -- question is whether AmmoOrder listed the pool at all.
+        if w and w.ammo and held[w.ammo] ~= nil then
+            held[w.ammo] = held[w.ammo] + math.floor(slot.clip or 0)
+        end
+    end
+
+    for _, pool in ipairs(BR.Config.AmmoOrder or {}) do
+        local was   = lastHeld and lastHeld[pool]
+        local delta = was and (held[pool] - was) or 0
+        print(('  pool %-8s %4d   held %4d%s'):format(
+            pool, math.floor(inv.ammo[pool] or 0), held[pool],
+            delta ~= 0
+                and ('   %+d since the last /brammo'):format(delta)
+                or ''))
+    end
+    lastHeld = held
 
     print('  mag    what the mirror shows -- the ENGINE\'s magazine, written')
     print('         every tick so the counter follows the gun')
@@ -1914,4 +1972,7 @@ RegisterCommand('brammo', function()
     print('  spent  rounds burnt that the server has not charged for; this is')
     print('         subtracted from every re-grant, so a `!` row is the bug')
     print('         being contained rather than the bug happening')
+    print('  held   pool PLUS every magazine drawing on it. Nothing may raise')
+    print('         this but a pickup: a `+` after a drop, a switch or a')
+    print('         reload is a round that was made rather than moved')
 end, false)

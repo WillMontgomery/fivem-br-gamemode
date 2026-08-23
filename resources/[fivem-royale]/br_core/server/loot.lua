@@ -185,6 +185,20 @@ function BR.Loot.spawnStack(m, stack, x, y, z, from)
         rarity = stack.rarity,
         count  = stack.count or 1,
         clip   = stack.clip,
+        -- HAS THIS BEEN IN SOMEBODY'S HANDS? Set by BR.Inv's `released` on every
+        -- stack that leaves an inventory -- a drop, a death, a displaced swap --
+        -- and read by BR.Inv.give, which mints a clip's worth of reserve for a
+        -- FOUND gun and must not mint one for a gun coming back. It has to
+        -- survive the round trip through the world or the fact is lost exactly
+        -- where it is needed (owner, 2026-08-23: "when I drop it and pick it
+        -- back up it has 1 round in it now"). Nil on all 1300 generated entries,
+        -- on every crate's contents and on the airdrop shelf, which is what
+        -- keeps found loot arriving loaded.
+        --
+        -- SERVER-SIDE ONLY, like the three husk fields below: wireEntry does not
+        -- carry it, because it is an input to an arbitration the server makes
+        -- alone and a client has no use for it and no right to it.
+        carried = stack.carried,
         x = x, y = y, z = z,
         prop   = stack.prop,
         heading = stack.heading,
