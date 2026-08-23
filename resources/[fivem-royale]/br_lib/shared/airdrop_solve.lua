@@ -195,6 +195,12 @@ end
 --- future, and the storm record is a pure function of time, so the server can
 --- simply ask it.
 ---
+--- ONE CIRCLE IS NOT THE RULE THE SERVER USES ANY MORE and this is now the
+--- single-circle case of BR.AirdropSitesIn -- see the block below it for why a
+--- drop is sited against a LIST. Kept as its own name because one circle is
+--- still the honest way to ask "would this point be safe at that instant", which
+--- is what every test of the margin actually wants to say.
+---
 --- Returned in AUTHORED POI ORDER, never a pairs() walk: the caller picks from
 --- this with a seeded rng and a payout must replay identically from a seed.
 ---
@@ -212,30 +218,8 @@ end
 --- @param placeable function|nil  (x, y) -> boolean; BR.LootPlaceable
 --- @return table[] candidates
 function BR.AirdropSites(pois, cx, cy, r, margin, placeable)
-    local out = {}
-
-    -- HOW FAR FROM THE CENTRE A QUALIFYING POINT MAY BE, and the comparison
-    -- below is the whole rule: `d <= reach` is "at least `margin` inside the
-    -- rim", inclusive at both ends.
-    --
-    -- A NEGATIVE REACH NEEDS NO EARLY RETURN, and there was one here until the
-    -- mutation pass showed it could not be killed. A distance is never
-    -- negative, so `d <= reach` already refuses everything once the circle is
-    -- narrower than the margin -- the guard was an optimisation that could
-    -- never change an answer, and it also disagreed with the inclusive rule at
-    -- exactly reach == 0: a POI standing on the centre of a circle whose radius
-    -- IS the margin is exactly `margin` inside it, and therefore qualifies,
-    -- for the same reason a POI exactly on the margin does anywhere else.
-    local reach = (r or 0.0) - (margin or 0.0)
-
-    for _, poi in ipairs(pois or {}) do
-        if BR.Dist(poi.x, poi.y, cx, cy) <= reach then
-            if not placeable or placeable(poi.x, poi.y) then
-                out[#out + 1] = poi
-            end
-        end
-    end
-    return out
+    return BR.AirdropSitesIn(pois,
+        { { x = cx or 0.0, y = cy or 0.0, r = r or 0.0 } }, margin, placeable)
 end
 
 --- One of them, uniformly. nil when nothing qualifies.
@@ -254,9 +238,189 @@ end
 --- @return table|nil poi
 --- @return integer candidateCount
 function BR.AirdropPickSite(rng, pois, cx, cy, r, margin, placeable)
-    local candidates = BR.AirdropSites(pois, cx, cy, r, margin, placeable)
+    return BR.AirdropPickSiteIn(rng, pois,
+        { { x = cx or 0.0, y = cy or 0.0, r = r or 0.0 } }, margin, placeable)
+end
+
+-- ---------------------------------------------------------------------------
+-- Siting against a WINDOW rather than an instant
+-- ---------------------------------------------------------------------------
+--
+-- ═══ ONE CIRCLE WAS NEVER ENOUGH, AND THE 2026-08-23 PLAYTEST IS THE RECEIPT
+--     ═══
+--
+-- Owner: "aidrops aren't spawning within the circle at all times. Perhaps to be
+-- safe they should only spawn within the NEXT circle and spawn before the
+-- beginning of phase 3?"
+--
+-- WHY IT WAS HAPPENING. The margin used to be solved ONCE, at siting, against
+-- BR.StormAt(storm, now + planeLeadMs + descentMs) -- the SOONEST landing the
+-- drop could have. Since the 200m gate (owner, 2026-08-22) the crate does not
+-- leave for as long as it takes somebody to walk there, which the blip's own
+-- ceiling caps at `blipMaxMs` -- FOUR MINUTES. A phase is 150-360 seconds long,
+-- so the storm can complete a shrink and start another one inside that wait,
+-- and the crate lands under a circle nobody solved anything against.
+--
+-- THE OLD FILE ARGUED THIS WAS SELF-CORRECTING: a point that ends up outside the
+-- circle is a point nobody is near, so the gate never opens. IT IS NOT, and the
+-- reason is the announcement -- the blip goes up at siting and TELLS the match
+-- to go there. Players run to it, arm it from the rim, and the crate lands
+-- exactly where the storm no longer is. The feature that was supposed to keep
+-- anybody from being near an unsafe drop is the thing that delivers them to it.
+--
+-- ═══ SO A DROP IS SITED AGAINST EVERY CIRCLE IT COULD LAND UNDER ═══
+--
+-- Not one circle: a LIST, and the point has to clear all of them by the margin.
+--
+--   * the circle at the SOONEST landing  (somebody is already standing there)
+--   * the circle at the LATEST landing   (the gate's own deadline)
+--   * the circle the storm is shrinking TOWARD
+--
+-- THE FIRST TWO BOUND EVERY INSTANT BETWEEN THEM, and that is arithmetic rather
+-- than optimism. Inside one published record the centre and the radius are both
+-- LINEAR in time (BR.StormAt lerps them), so f(t) = |P - C(t)| - r(t) is convex
+-- -- a norm of an affine function minus an affine function. A convex function
+-- that is <= 0 at both ends of an interval is <= 0 across the whole of it. Two
+-- checks therefore cover a four-minute window exactly, with nothing sampled and
+-- nothing approximated.
+--
+-- THE THIRD IS THE OWNER'S "NEXT CIRCLE", and it is a separate check because
+-- this storm's circles do not nest. config/storm.lua's BREAKOUT lets the next
+-- circle leave the current one entirely (owner, 2026-08-06: "this will force ALL
+-- players to move"), and the containment proof for "inside the next circle
+-- implies inside every circle on the way to it" needs |C1 - C0| <= r0 - r1,
+-- which is precisely what a breakout violates. So neither rule implies the
+-- other and both are asked: the first two say the crate ARRIVES safe, the third
+-- says it is still safe when the sweep it arrived during finishes.
+--
+-- BEYOND THIS PHASE NOTHING CAN BE PROMISED FROM HERE. The record describes one
+-- phase; the circle after it has not been drawn and may break out anywhere. That
+-- is what the re-check at the ARM is for -- see br_core/server/airdrop.lua.
+
+--- Is (x, y) at least `margin` metres inside every one of these circles?
+---
+--- INCLUSIVE AT BOTH ENDS, which is the rule BR.AirdropSites has always had: a
+--- point exactly `margin` inside the rim qualifies, and so does a POI standing
+--- on the centre of a circle whose radius IS the margin.
+---
+--- NO EARLY RETURN FOR A NEGATIVE REACH, for the reason the single-circle
+--- version recorded when a mutation pass showed the guard could not be killed: a
+--- distance is never negative, so the comparison already refuses everything once
+--- a circle is narrower than the margin.
+--- @param circles table[]  array of { x, y, r }
+--- @param x number
+--- @param y number
+--- @param margin number|nil
+--- @return boolean
+function BR.AirdropInside(circles, x, y, margin)
+    local m = margin or 0.0
+    for _, c in ipairs(circles or {}) do
+        if BR.Dist(x, y, c.x or 0.0, c.y or 0.0) > (c.r or 0.0) - m then
+            return false
+        end
+    end
+    return true
+end
+
+--- Every POI that clears all of `circles` by `margin`.
+---
+--- Returned in AUTHORED POI ORDER, never a pairs() walk: the caller picks from
+--- this with a seeded rng and a payout must replay identically from a seed.
+---
+--- CAN LEGITIMATELY BE EMPTY, and that is the whole reason this returns a list
+--- rather than a POI. See the long note in config/airdrop.lua: the two rules the
+--- owner gave -- use POIs, stay 250m inside -- have no common answer once the
+--- circle is small, and the caller's job is to wait or to skip rather than to
+--- bend one of them.
+--- @param pois table[]        BR.Config.Map.POIs
+--- @param circles table[]     array of { x, y, r }
+--- @param margin number
+--- @param placeable function|nil  (x, y) -> boolean; BR.LootPlaceable
+--- @return table[] candidates
+function BR.AirdropSitesIn(pois, circles, margin, placeable)
+    local out = {}
+    for _, poi in ipairs(pois or {}) do
+        if BR.AirdropInside(circles, poi.x, poi.y, margin) then
+            if not placeable or placeable(poi.x, poi.y) then
+                out[#out + 1] = poi
+            end
+        end
+    end
+    return out
+end
+
+--- One of them, uniformly. nil when nothing qualifies.
+--- @param rng table
+--- @param pois table[]
+--- @param circles table[]
+--- @param margin number
+--- @param placeable function|nil
+--- @return table|nil poi
+--- @return integer candidateCount
+function BR.AirdropPickSiteIn(rng, pois, circles, margin, placeable)
+    local candidates = BR.AirdropSitesIn(pois, circles, margin, placeable)
     if #candidates == 0 then return nil, 0 end
     return rng:pick(candidates), #candidates
+end
+
+--- The circles a drop committed at `now` has to clear, given that it may sit
+--- for up to `waitMs` before anybody turns up to arm it.
+---
+--- `waitMs` IS THE WHOLE DIFFERENCE BETWEEN THE TWO CALLERS. At siting it is
+--- the gate's deadline (`blipMaxMs`), because the landing time is unknown; at
+--- the arm it is ZERO, because the landing time has just become exact. One
+--- function, two windows, so the rule the drop was chosen under and the rule it
+--- is re-checked against cannot drift apart.
+---
+--- A nil storm yields a circle of radius 0, which refuses every point on the
+--- map. That is the right answer -- a drop cannot promise a margin against a
+--- circle nobody has published -- and the server refuses earlier anyway
+--- (BR.AirdropStormOk).
+--- @param storm table|nil   the published storm record
+--- @param now number
+--- @param cfg table|nil     BR.Config.Airdrop
+--- @param waitMs number|nil
+--- @return table[]  array of { x, y, r }
+function BR.AirdropLandingCircles(storm, now, cfg, waitMs)
+    cfg = cfg or {}
+    local flight  = (cfg.planeLeadMs or 0) + (cfg.descentMs or 30000)
+    local soonest = now + flight
+    local latest  = soonest + (waitMs or 0)
+
+    local out = {}
+    local function add(x, y, r)
+        out[#out + 1] = { x = x + 0.0, y = y + 0.0, r = r + 0.0 }
+    end
+
+    local ax, ay, ar = BR.StormAt(storm, soonest)
+    add(ax, ay, ar)
+    if latest > soonest then
+        local bx, by, br = BR.StormAt(storm, latest)
+        add(bx, by, br)
+    end
+    -- THE CIRCLE THE STORM IS SHRINKING TOWARD -- the owner's "next circle".
+    -- Read straight off the record rather than solved, because BR.StormAt only
+    -- reaches it once the shrink is over and a drop landing mid-sweep would
+    -- never be asked the question at all.
+    if storm and type(storm.r1) == 'number' then
+        add(storm.cx1 or 0.0, storm.cy1 or 0.0, storm.r1)
+    end
+    return out
+end
+
+--- The tightest of a set of circles, for a log line.
+---
+--- WHICH ONE DECIDED IT is the only thing a playtest can act on: "no POI
+--- qualified" is unreadable, "no POI qualified inside a 950m circle at the
+--- deadline" names the rule that refused.
+--- @param circles table[]
+--- @return number r  math.huge when there are none
+function BR.AirdropTightest(circles)
+    local best = math.huge
+    for _, c in ipairs(circles or {}) do
+        if (c.r or 0.0) < best then best = c.r or 0.0 end
+    end
+    return best
 end
 
 --- Is the storm early enough for a drop? "No airdrops past storm stage 4."
@@ -494,6 +658,104 @@ function BR.AirdropPlaneAt(rec, now, cfg)
            (rec.y or 0.0) + fy * d,
            (rec.alt or 0.0) + (cfg.planeAltAbove or 40.0),
            hdg
+end
+
+-- ---------------------------------------------------------------------------
+-- ...AND WHAT IS BETWEEN IT AND THE DROP
+-- ---------------------------------------------------------------------------
+--
+-- Owner, 2026-08-23: "We also need a way to make sure the cargobob avoids
+-- terrain, because drops at chili[ad]".
+--
+-- THE FLIGHT PLAN IS FLAT AND IT IS PINNED TO THE WRONG GROUND. `rec.alt` and
+-- `planeAltAbove` are both measured from the ground AT THE DROP POINT, so the
+-- aircraft holds one absolute height for the whole run-in: groundAtDrop + 195.
+-- Nothing in it has ever looked at what the run-in crosses. Site a drop at
+-- `chiliad_e` (authored z 160) and the corridor behind it climbs into a massif
+-- whose summit POI is authored at 780 -- the Cargobob is six hundred metres
+-- inside the rock, and the only reason it has never been a crash is that
+-- client/airdrop.lua switches its collision off.
+--
+-- ═══ THE FIX IS A FLOOR UNDER THE FLIGHT PLAN, NOT A NEW FLIGHT PLAN ═══
+--
+-- The route stays a straight line at constant speed passing over the drop point
+-- at tRelease -- that is what makes every client's aircraft the same pure
+-- function of the record and the clock. What changes is the HEIGHT, and only
+-- upward: the aircraft flies at whichever is higher, its nominal altitude or a
+-- fixed clearance above the highest ground still ahead of it.
+--
+-- IT IS EXACT AT THE RELEASE BY CONSTRUCTION, which is the property that stops
+-- this from costing the drop its geometry. The corridor below is measured from
+-- where the aircraft IS to where it will be `horizonMs` later, clipped at
+-- tRelease -- so as the release approaches the corridor collapses onto the drop
+-- point, the highest ground in it is the ground under the crate, and the floor
+-- falls back below the nominal altitude. The crate leaves the aircraft exactly
+-- `planeAltAbove` beneath it however high the ridge behind them was.
+--
+-- THE PROBING IS THE CLIENT'S (GetGroundZFor_3dCoord is a client native, the
+-- same rule `rec.alt` is written under), and it FAILS OPEN: a corridor nothing
+-- answers for leaves the aircraft at its nominal height, which is exactly
+-- today's behaviour.
+
+--- The points to ground-probe for an aircraft's approach at `now`.
+---
+--- FROM WHERE IT IS TO WHERE IT IS GOING, never the whole route: the ridge
+--- behind the aircraft is not its problem, and a corridor that kept it would
+--- hold the Cargobob high all the way to a drop point at sea level.
+---
+--- CLIPPED AT tRelease ON THE INBOUND LEG. That clip is what makes the lift
+--- vanish exactly when the crate leaves -- see the block above. After the
+--- release the horizon runs full length again, because the aircraft still has
+--- `planeTrailMs` of flying to do and the ridge in FRONT of it is real.
+--- @param rec table|nil
+--- @param now number
+--- @param cfg table|nil     BR.Config.Airdrop
+--- @param samples integer|nil  how many points, ends included (min 2)
+--- @param horizonMs number|nil how far ahead to look, in ms of flight
+--- @return table[]  array of { x, y }
+function BR.AirdropApproach(rec, now, cfg, samples, horizonMs)
+    local out = {}
+    if not rec then return out end
+    cfg = cfg or {}
+
+    local n = math.tointeger(samples or 8) or 8
+    if n < 2 then n = 2 end
+
+    -- CLIPPED AT tRelease INCLUSIVELY -- `<=`, not `<`. On the frame of the
+    -- release itself the corridor has to be a POINT, or the terrain in front of
+    -- the aircraft could still be lifting it on the one frame where the crate
+    -- leaves and the gap between them has to be exactly `planeAltAbove`.
+    local tRel = rec.tRelease or rec.tStart or 0.0
+    local tEnd = now + (horizonMs or 6000)
+    if now <= tRel and tEnd > tRel then tEnd = tRel end
+
+    for i = 0, n - 1 do
+        local t = now + (tEnd - now) * (i / (n - 1))
+        local x, y = BR.AirdropPlaneAt(rec, t, cfg)
+        out[#out + 1] = { x = x, y = y }
+    end
+    return out
+end
+
+--- How high the aircraft actually flies, given what is under its approach.
+---
+--- UPWARD ONLY. `nominalZ` is the flight plan and this can never lower it: an
+--- aircraft that dipped toward a valley would arrive under the crate's release
+--- height, and the crate's height is the record's business and nobody else's.
+---
+--- A nil `terrainZ` is "nothing answered", not "no terrain". It returns the
+--- nominal height -- the behaviour this file had before terrain was considered
+--- at all -- because a probe that cannot see must never be read as a probe that
+--- saw flat ground.
+--- @param nominalZ number       absolute z the flight plan wants
+--- @param terrainZ number|nil   highest ground along the approach, absolute
+--- @param clearance number|nil  metres to hold above it
+--- @return number z
+function BR.AirdropPlaneZ(nominalZ, terrainZ, clearance)
+    if type(terrainZ) ~= 'number' then return nominalZ end
+    local floor = terrainZ + (clearance or 60.0)
+    if floor > nominalZ then return floor end
+    return nominalZ
 end
 
 --- Which way the crate is facing at `now`, in degrees.

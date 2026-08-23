@@ -619,6 +619,130 @@ do
 end
 
 -- =========================================================================
+-- PART A -- siting against a WINDOW
+-- =========================================================================
+--
+-- ═══ THE RULE THAT REPLACED "ONE CIRCLE, SOLVED ONCE" (owner, 2026-08-23:
+--     "aidrops aren't spawning within the circle at all times") ═══
+--
+-- A drop is announced at siting and does not fall until somebody walks over,
+-- which the blip's ceiling caps at four minutes -- longer than a storm phase. So
+-- the landing time is a RANGE, and the margin has to hold across all of it.
+
+describe('siting: every circle, not just one')
+do
+    local one = { { x = 0.0, y = 0.0, r = 1000.0 } }
+    ok(BR.AirdropInside(one, 0.0, 0.0, 250.0), 'the centre clears one circle')
+    ok(BR.AirdropInside(one, 750.0, 0.0, 250.0),
+        'and so does a point exactly on the margin -- inclusive, as it always was')
+    ok(not BR.AirdropInside(one, 750.001, 0.0, 250.0),
+        'a millimetre past it does not')
+
+    -- TWO CIRCLES MEANS AND, NEVER OR. A point that satisfies one of them and
+    -- not the other is a point the crate could land outside of, which is the
+    -- whole failure being fixed.
+    local two = {
+        { x = 0.0,    y = 0.0, r = 1000.0 },
+        { x = 1500.0, y = 0.0, r = 1000.0 },
+    }
+    ok(BR.AirdropInside(two, 750.0, 0.0, 250.0),
+        'a point 250m inside BOTH circles qualifies')
+    ok(not BR.AirdropInside(two, 0.0, 0.0, 250.0),
+        'the first circle\'s own centre does not, because the second refuses it')
+    ok(not BR.AirdropInside(two, 1500.0, 0.0, 250.0),
+        'and neither does the second\'s, for the mirror reason')
+
+    -- A CIRCLE NARROWER THAN THE MARGIN REFUSES EVERYTHING, with no early
+    -- return doing it -- a distance is never negative.
+    ok(not BR.AirdropInside({ { x = 0.0, y = 0.0, r = 100.0 } },
+            0.0, 0.0, 250.0),
+        'a circle narrower than the margin has no qualifying point at all')
+
+    -- AN EMPTY LIST IS NOT "ANYWHERE", it is a caller bug -- but the only way
+    -- to reach one is to build it by hand, and BR.AirdropLandingCircles never
+    -- returns fewer than one.
+    eq(#BR.AirdropLandingCircles(nil, 0.0, A, 0), 1,
+        'a nil storm still yields a circle to be refused by')
+    ok(not BR.AirdropInside(BR.AirdropLandingCircles(nil, 0.0, A, 0),
+            0.0, 0.0, A.insideBy),
+        'and it is radius 0, so no point on the map qualifies without a storm')
+end
+
+describe('siting: the window is the gate\'s own deadline')
+do
+    -- A storm HELD for a day: every instant answers the same circle, so the
+    -- window collapses and the only thing left is the count.
+    local held = BR.BuildStormRecord(1, 0.0, 0.0, 2000.0,
+        0.0, 0.0, 2000.0, 0.0, 24 * 60 * 60 * 1000, 1000, 1.0)
+
+    local atArm = BR.AirdropLandingCircles(held, 0.0, A, 0)
+    eq(#atArm, 2, 'at the arm: the landing circle, and the one being shrunk toward')
+
+    local atSite = BR.AirdropLandingCircles(held, 0.0, A, A.blipMaxMs)
+    eq(#atSite, 3,
+        'at siting: the soonest landing, the latest one the gate allows, and the next circle')
+
+    -- THE TWO ENDPOINTS BOUND EVERYTHING BETWEEN THEM, and that is convexity
+    -- rather than sampling: inside one published record the centre and the
+    -- radius are both LINEAR in time, so |P - C(t)| - r(t) is convex and a
+    -- convex function that is <= 0 at both ends is <= 0 across the interval.
+    -- This drives a real shrink and checks the claim at a hundred instants.
+    local shrinking = BR.BuildStormRecord(2, 0.0, 0.0, 2000.0,
+        900.0, 0.0, 800.0, 0.0, 0, 600000, 1.0)
+    local flight = (A.planeLeadMs or 0) + A.descentMs
+    local circles = BR.AirdropLandingCircles(shrinking, 0.0, A, 300000)
+
+    local held2 = true
+    for _, p in ipairs({ { x = 700.0, y = 0.0 }, { x = 900.0, y = 0.0 },
+                         { x = 800.0, y = 100.0 }, { x = 300.0, y = 0.0 } }) do
+        if BR.AirdropInside(circles, p.x, p.y, A.insideBy) then
+            for i = 0, 100 do
+                local t = flight + (300000 * i / 100)
+                local cx, cy, r = BR.StormAt(shrinking, t)
+                if BR.Dist(p.x, p.y, cx, cy) > r - A.insideBy then
+                    held2 = false
+                end
+            end
+        end
+    end
+    ok(held2,
+        'a point that clears both ends of the window clears every instant in it')
+end
+
+describe('siting: the owner\'s "only spawn within the NEXT circle"')
+do
+    -- ═══ AND WHY IT IS A SEPARATE CHECK RATHER THAN A CONSEQUENCE ═══
+    --
+    -- If circles nested -- |C1 - C0| <= r0 - r1 -- then "inside the next circle"
+    -- would imply "inside every circle on the way to it" and one check would do.
+    -- config/storm.lua's BREAKOUT is exactly the rule that breaks that (owner,
+    -- 2026-08-06: "this will force ALL players to move"), so both are asked.
+    local broken = BR.BuildStormRecord(3, 0.0, 0.0, 2000.0,
+        1500.0, 0.0, 800.0, 0.0, 600000, 600000, 1.0)
+    ok(BR.Dist(0.0, 0.0, 1500.0, 0.0) > 2000.0 - 800.0,
+        'this storm record is a genuine breakout: the next circle is not nested')
+
+    -- Holding, so the landing circle is the CURRENT one at both ends of the
+    -- window and only the next-circle check can refuse anything.
+    local circles = BR.AirdropLandingCircles(broken, 0.0, A, A.blipMaxMs)
+    ok(BR.AirdropInside({ circles[1] }, 0.0, 0.0, A.insideBy),
+        'the current circle is perfectly happy with its own centre')
+    ok(not BR.AirdropInside(circles, 0.0, 0.0, A.insideBy),
+        'and the whole rule refuses it, because the storm is leaving')
+    ok(BR.AirdropInside(circles, 1500.0, 0.0, A.insideBy),
+        'a point 250m inside both is what survives')
+
+    -- ...AND IT IS THE POI FILTER THAT CHANGES, not just a predicate.
+    local pois = {
+        { id = 'stay', x = 1500.0, y = 0.0 },
+        { id = 'left', x = 0.0,    y = 0.0 },
+    }
+    local got = BR.AirdropSitesIn(pois, circles, A.insideBy, nil)
+    eq(#got, 1, 'one of the two POIs qualifies')
+    eq(got[1].id, 'stay', 'and it is the one the storm is moving toward')
+end
+
+-- =========================================================================
 -- PART A -- the payout
 -- =========================================================================
 
@@ -1210,6 +1334,113 @@ do
     eq(old.tRelease, old.tStart, 'tRelease defaults to tStart')
     ok(near(BR.AirdropProgress(old, 15000.0), 0.5),
         'and such a record falls exactly as it always did')
+end
+
+describe('the plane: the flyover and the release are ONE instant, at any speed')
+do
+    -- ═══ THE FIRST THING TO RULE OUT FOR "THE DELAY BETWEEN WHEN THE CARGOBOB
+    --     FLIES OVER AND WHEN THE CARGO DROPS" (owner, 2026-08-23) ═══
+    --
+    -- `planeSpeed` was halved from 90 to 45 on the same day and `planeLeadMs` was
+    -- deliberately not compensated. This is the block that says what that could
+    -- and could not have done, as arithmetic rather than as a paragraph.
+    local poi = { id = 'x', x = 500.0, y = -300.0, z = 20.0 }
+    local rec = BR.ArmAirdropRecord(
+        BR.BuildAirdropSite(1, poi, A.altitude, 0.0, 37.0), 0.0, A)
+
+    for _, speed in ipairs({ 22.5, 45.0, 90.0, 180.0 }) do
+        local cfg = {
+            planeSpeed = speed, planeAltAbove = A.planeAltAbove,
+            planeLeadMs = A.planeLeadMs, planeTrailMs = A.planeTrailMs,
+        }
+        local px, py = BR.AirdropPlaneAt(rec, rec.tRelease, cfg)
+        ok(near(px, rec.x, 1e-6) and near(py, rec.y, 1e-6),
+            ('at %.1f m/s the aircraft is over the drop point at tRelease')
+                :format(speed), ('%.4f, %.4f'):format(px, py))
+
+        -- ...AND THE RUN-IN IS THE SAME NUMBER OF SECONDS. Speed decides where
+        -- the approach STARTS, never when it ends: the aircraft is switched on
+        -- at tArm and BR.AirdropPlaneAt puts it over the point planeLeadMs
+        -- later. That is why halving it needed no compensation, and why it
+        -- cannot be the cause of a late crate.
+        local sx, sy = BR.AirdropPlaneAt(rec, rec.tArm, cfg)
+        ok(near(BR.Dist(sx, sy, rec.x, rec.y),
+                speed * (A.planeLeadMs / 1000.0), 1e-3),
+            ('and it starts %.0fm out, which is the only thing speed moves')
+                :format(speed * (A.planeLeadMs / 1000.0)))
+    end
+
+    -- THE CRATE LEAVES ON THE SAME MILLISECOND, which is the other half of the
+    -- owner's sentence. There is one timestamp and both read it.
+    ok(BR.AirdropReleased(rec, rec.tRelease), 'the crate is away at tRelease')
+    ok(not BR.AirdropReleased(rec, rec.tRelease - 1), 'and aboard a millisecond before')
+    ok(near(BR.AirdropProgress(rec, rec.tRelease), 0.0),
+        'with the whole fall still ahead of it')
+    ok(near(BR.AirdropHeightAt(rec, rec.tRelease), A.altitude),
+        'at the full release altitude')
+
+    -- AND THE AIRCRAFT IS EXACTLY `planeAltAbove` ABOVE THE BOX AT THAT INSTANT.
+    -- Both are heights above the SAME ground -- the drop point's -- so the gap
+    -- between them is one config value and nothing else.
+    local _, _, paz = BR.AirdropPlaneAt(rec, rec.tRelease, A)
+    ok(near(paz - BR.AirdropHeightAt(rec, rec.tRelease), A.planeAltAbove),
+        'and the box leaves exactly planeAltAbove beneath it')
+end
+
+describe('the plane: the approach clears what is under it')
+do
+    -- ═══ "WE ALSO NEED A WAY TO MAKE SURE THE CARGOBOB AVOIDS TERRAIN, BECAUSE
+    --     DROPS AT CHILI[AD]" (owner, 2026-08-23) ═══
+    local poi = { id = 'chiliad_e', x = 1150.0, y = 5350.0, z = 160.0 }
+    local rec = BR.ArmAirdropRecord(
+        BR.BuildAirdropSite(1, poi, A.altitude, 0.0, 270.0), 0.0, A)
+
+    -- UPWARD ONLY, AND NEVER DOWNWARD. The flight plan is a floor of its own:
+    -- an aircraft that dipped into a valley would arrive under the crate's
+    -- release height, which is the record's business and not the terrain's.
+    eq(BR.AirdropPlaneZ(355.0, nil, 60.0), 355.0,
+        'nothing answered means the nominal height, which is today\'s behaviour')
+    eq(BR.AirdropPlaneZ(355.0, 10.0, 60.0), 355.0,
+        'ground far below it changes nothing')
+    eq(BR.AirdropPlaneZ(355.0, 780.0, 60.0), 840.0,
+        'and the Chiliad summit lifts it to 60m over the rock')
+    eq(BR.AirdropPlaneZ(355.0, 295.0, 60.0), 355.0,
+        'a ridge exactly at the clearance is not a lift')
+
+    -- THE CORRIDOR IS AHEAD OF THE AIRCRAFT AND CLIPPED AT THE RELEASE, which is
+    -- what makes the lift vanish exactly when the crate leaves.
+    local far = BR.AirdropApproach(rec, rec.tArm, A, 8, A.planeLookAheadMs)
+    eq(#far, 8, 'eight samples, ends included')
+    local ax, ay = BR.AirdropPlaneAt(rec, rec.tArm, A)
+    ok(near(far[1].x, ax, 1e-6) and near(far[1].y, ay, 1e-6),
+        'the first is where the aircraft is')
+    ok(BR.Dist(far[8].x, far[8].y, rec.x, rec.y)
+       < BR.Dist(far[1].x, far[1].y, rec.x, rec.y),
+        'and the last is closer to the drop than the first -- forward, not behind')
+
+    -- AT THE RELEASE THE CORRIDOR IS A POINT: the drop point itself. So the
+    -- highest ground in it is the ground under the crate, the floor falls under
+    -- the nominal height, and the release geometry is untouched.
+    local atRel = BR.AirdropApproach(rec, rec.tRelease, A, 8, A.planeLookAheadMs)
+    local collapsed = true
+    for _, p in ipairs(atRel) do
+        if not (near(p.x, rec.x, 1e-6) and near(p.y, rec.y, 1e-6)) then
+            collapsed = false
+        end
+    end
+    ok(collapsed, 'every sample sits on the drop point at the release itself')
+
+    -- ...AND IT OPENS OUT AGAIN AFTERWARDS, because the aircraft still has
+    -- planeTrailMs of flying to do and the ridge in FRONT of it is real.
+    local after = BR.AirdropApproach(rec, rec.tRelease + 5000, A, 8,
+        A.planeLookAheadMs)
+    ok(BR.Dist(after[1].x, after[1].y, after[8].x, after[8].y) > 1.0,
+        'the corridor has length again on the outbound leg')
+
+    ok(#BR.AirdropApproach(nil, 0.0, A, 8, 6000) == 0,
+        'no record, no corridor')
+    eq(#BR.AirdropApproach(rec, rec.tArm, A, 1, 6000), 2,
+        'and a single sample is refused -- a corridor needs two ends')
 end
 
 describe('descent: expiry is not the same question as visibility')
@@ -2104,10 +2335,11 @@ end
 
 describe('server: the storm cap is re-checked while the drop waits')
 do
-    -- THE PHASE CAP IS NOT SELF-CORRECTING AND THE MARGIN IS. A point that falls
-    -- outside the circle is a point nobody is near, so the gate never opens on
-    -- its own -- but players are very much inside the circle at stage 5, and
-    -- would happily open a gate the owner's own rule says is shut.
+    -- BOTH ARE RE-CHECKED NOW. This block's comment used to say the phase cap
+    -- was re-asked and the margin was not, because the margin was believed to be
+    -- self-correcting -- a point outside the circle is a point nobody is near.
+    -- It is not, and the block below this one is why: the drop is ANNOUNCED at
+    -- siting, so a blip stands over the point telling the match to run at it.
     reset()
     local m = newMatch(1)
     BR.Airdrop.begin(m)
@@ -2124,6 +2356,108 @@ do
     eq(#m.airdrop.waiting, 0, 'the drop is abandoned instead')
     eq(#spawned, 0, 'and nothing lands')
     ok(m.airdrop.outcome ~= nil, 'and the match records why')
+end
+
+describe('server: the margin is re-checked when the wait ends')
+do
+    -- ═══ THE 2026-08-23 PLAYTEST BUG, AS CODE (owner: "aidrops aren't spawning
+    --     within the circle at all times") ═══
+    --
+    -- The margin used to be solved once, at siting, against the SOONEST landing.
+    -- Since the 200m gate a drop can sit for four minutes -- longer than a storm
+    -- phase -- and the argument that this was safe was that a point outside the
+    -- circle is a point nobody is near. It is exactly the point everybody is
+    -- near: the blip has been standing over it since the announcement.
+    reset()
+    local m = newMatch(1)
+    BR.Airdrop.begin(m)
+    m.airdrop.pending[1].dueAt = gameMs
+    tick()
+    local rec = published[1].payload
+    eq(#m.airdrop.waiting, 1, 'sited under the circle that was showing')
+
+    -- The storm turns over a phase while somebody walks: a new circle, four
+    -- kilometres from the place the match was told to go to.
+    m.storm = BR.BuildStormRecord(3, rec.x + 4000.0, rec.y, 900.0,
+        rec.x + 4000.0, rec.y, 900.0, gameMs, 24 * 60 * 60 * 1000, 1000, 1.0)
+
+    standAt(101, rec.x, rec.y, 0.0)
+    gameMs = gameMs + 1000
+    tick()
+    eq(#m.airdrop.live, 0, 'a player standing on it cannot arm it any more')
+    eq(#m.airdrop.waiting, 0, 'the drop is abandoned instead')
+    eq(#spawned, 0, 'and no crate is ever put on the ground outside the circle')
+    -- WHICH RULE REFUSED IT. There are three ways a waiting drop ends without
+    -- landing and /brairdrop printing "nobody came" for all three is how a
+    -- playtest goes after the wrong bug.
+    ok(m.airdrop.outcome
+       and tostring(m.airdrop.outcome.why):find('circle moved off it', 1, true),
+        'and the outcome names the circle rather than blaming the players',
+        m.airdrop.outcome and m.airdrop.outcome.why)
+end
+
+describe('server: siting solves the whole gate window, not the first landing')
+do
+    reset()
+    local m = newMatch(1)
+    local poi = BR.Config.Map.GetPOI('lsia')
+    -- Phase 2 mid-sweep: a 2600m circle closing onto a 950m one a kilometre
+    -- away, over ten minutes -- longer than the four the gate allows a drop to
+    -- wait, so the window really does straddle a moving circle.
+    m.storm = BR.BuildStormRecord(2, poi.x - 1000.0, poi.y, 2600.0,
+        poi.x, poi.y, 950.0, gameMs, 0, 600000, 1.0)
+    BR.Airdrop.begin(m)
+    m.airdrop.pending[1].dueAt = gameMs
+    local sitedAt = gameMs
+    tick()
+    local rec = published[1] and published[1].payload
+    ok(rec ~= nil, 'a POI still qualifies')
+
+    if rec then
+        -- THE POINT CLEARS THE DEADLINE, not merely the soonest landing.
+        local late = sitedAt + A.blipMaxMs + FLIGHT
+        local cx, cy, r = BR.StormAt(m.storm, late)
+        ok(BR.Dist(rec.x, rec.y, cx, cy) <= r - A.insideBy,
+            'it is still 250m inside the circle at the LATEST landing the gate allows')
+        -- ...AND THE NEXT CIRCLE, which is the owner's own half of the proposal.
+        ok(BR.Dist(rec.x, rec.y, m.storm.cx1, m.storm.cy1)
+           <= m.storm.r1 - A.insideBy,
+            'and 250m inside the circle the storm is shrinking toward')
+    end
+
+    -- AND THE RULE REALLY IS STRICTER. The single circle the old code asked
+    -- about accepts points this one refuses; if that ever stops being true the
+    -- window has quietly become decoration.
+    local sx, sy, sr = BR.StormAt(m.storm, sitedAt + FLIGHT)
+    local before = BR.AirdropSites(BR.Config.Map.POIs, sx, sy, sr,
+        A.insideBy, BR.LootPlaceable)
+    local after = BR.AirdropSitesIn(BR.Config.Map.POIs,
+        BR.AirdropLandingCircles(m.storm, sitedAt, A, A.blipMaxMs),
+        A.insideBy, BR.LootPlaceable)
+    ok(#after < #before,
+        'the window refuses candidates the single circle accepted',
+        ('%d vs %d'):format(#after, #before))
+    ok(#after > 0, 'without refusing all of them')
+end
+
+describe('server: a forced drop keeps its exemption at the arm')
+do
+    -- `/brairdrop <poiId>` exists to put a drop somewhere specific without
+    -- waiting for the circle to cooperate. Re-imposing the margin at the arm
+    -- would make it work only where the circle already agreed, which is the
+    -- case that never needed the verb.
+    reset()
+    local m = newMatch(1)
+    BR.Airdrop.begin(m)
+    commands['brairdrop'](0, { 'sandy' }, '')
+    local rec = published[1].payload
+    m.storm = BR.BuildStormRecord(2, rec.x + 5000.0, rec.y, 900.0,
+        rec.x + 5000.0, rec.y, 900.0, gameMs, 24 * 60 * 60 * 1000, 1000, 1.0)
+    standAt(101, rec.x, rec.y, 0.0)
+    gameMs = gameMs + 1000
+    tick()
+    eq(#m.airdrop.live, 1,
+        'a forced drop arms with a player on it, wherever the circle has gone')
 end
 
 describe('server: the tick is inert outside PLAYING')
@@ -2425,7 +2759,27 @@ function AttachEntityToEntity(child, parent, _, ox, oy, oz)
     attaches[#attaches + 1] = { child = child, parent = parent,
                                 ox = ox, oy = oy, oz = oz }
 end
-function GetGroundZFor_3dCoord() return ground.ok, ground.z end
+--- THE GROUND, AND IT HAS TO BE ABLE TO VARY WITH POSITION.
+---
+--- One flat number was enough while the only thing probed was the drop point.
+--- The aircraft's terrain floor probes a CORRIDOR (owner, 2026-08-23: "make sure
+--- the cargobob avoids terrain, because drops at chili[ad]") and a rig that
+--- answered the same height everywhere would agree with a mountain and with a
+--- salt flat alike. `ground.at` is opt-in so every test written before this one
+--- keeps the flat answer it was written against.
+function GetGroundZFor_3dCoord(x, y)
+    if ground.at then return ground.ok, ground.at(x, y) end
+    return ground.ok, ground.z
+end
+
+--- [entity] = the LOD distance it was asked to draw from.
+---
+--- There is no getter for this in the engine either, so what the rig can assert
+--- is exactly what /brairdrop can print: the call was made, on that handle, with
+--- that number. That is the whole of the fix for "the loose flares drop before
+--- the cargo" -- see drawFar in br_core/client/airdrop.lua.
+local lods = {}
+function SetEntityLodDist(e, d) lods[e] = d end
 
 function AddBlipForCoord(x, y, z)
     nextBlip = nextBlip + 1
@@ -2547,7 +2901,8 @@ local function clientReset()
     shots, weaponAssets, audioCalls = {}, {}, {}
     weaponLoads = 1
     scaled = {}
-    ground.ok, ground.z = 1, 12.0
+    lods = {}
+    ground.ok, ground.z, ground.at = 1, 12.0, nil
     modelLoaded, ptfxLoaded = 1, 1
     ptfxHandle = 900
     fxAlive = true
@@ -3090,6 +3445,164 @@ do
         'and the built-in fallback is negative, like every resource that does '
         .. 'this')
     A.flareSpeed = realSpeed
+end
+
+--- The delivery plane's HANDLE, not its row. The terrain block below reads the
+--- z that was written to it, which needs the key.
+local function planeHandle()
+    for h in pairs(vehicles) do return h end
+    return nil
+end
+
+describe('client: the crate exists on the frame its flares are lit')
+do
+    -- ═══ THE ARGUMENT THAT DIAGNOSED "THE LOOSE FLARES DROP BEFORE THE CARGO"
+    --     (owner, 2026-08-23) ═══
+    --
+    -- "we need to fix the delay between when the cargobob flies over and when
+    -- the cargo drops. It seems that the loose flares drop before the cargo -
+    -- they should all be at once. The flares start dropping at the perfect time
+    -- for the cargo to drop."
+    --
+    -- THEY ARE NOT TWO TIMINGS THAT COULD DRIFT. place() writes the crate's
+    -- coordinates and THEN hands client/flares.lua the two positions beside it,
+    -- and place() only ever runs on a frame where the crate object exists. This
+    -- block is that sentence as code: a flare at the right moment PROVES a crate
+    -- at the right moment, which is what turns "the cargo is late" into "the
+    -- cargo is not being drawn".
+    clientReset()
+    eq(#shots, 0, 'nothing is lit before the drop')
+    eq(entCount(), 0, 'and nothing is built')
+
+    announce(170.0)
+    render()
+
+    local crates = entsOfModel(A.crateProp)
+    eq(#crates, 1, 'one crate exists after one frame')
+    eq(#shots, 2, 'and its pair of flares was lit on that same frame')
+
+    local mv = crateMove()
+    ok(mv ~= nil, 'the crate was placed on it too')
+    if mv then
+        ok(near(shots[1].z1, mv.z, 1e-6),
+            'and the flares are at the crate\'s own height, not somewhere above it',
+            ('flare %.3f, crate %.3f'):format(shots[1].z1, mv.z))
+        ok(near(mv.z, ground.z + 170.0, 1e-6),
+            'which is the full release altitude -- nothing has fallen yet',
+            mv.z)
+    end
+
+    -- ═══ SO THE FIX IS THE DRAW DISTANCE, AND HERE IS THE CALL ═══
+    --
+    -- The box comes into being 170m up. A projectile flare is visible from
+    -- there because it carries the engine's own light and corona; a Cargobob is
+    -- visible because it is a vehicle. A wooden box is a small prop with a small
+    -- authored LOD distance and starts being drawn most of the way down, which
+    -- reads exactly as "the cargo dropped late".
+    --
+    -- There is no getter for SET_ENTITY_LOD_DIST, so what can be asserted is
+    -- what /brairdrop can print: the call was made, on that handle, with that
+    -- number.
+    eq(lods[crates[1]], A.propLodDist, 'the crate is asked to draw from up there')
+    local chutes = entsOfModel(A.chuteModel)
+    eq(#chutes, 1, 'and so is the canopy over it')
+    eq(lods[chutes[1]], A.propLodDist, 'at the same distance')
+    local ph = planeHandle()
+    ok(ph ~= nil, 'and the aircraft, whose run-in starts 540m out')
+    if ph then eq(lods[ph], A.propLodDist, 'carries it too') end
+
+    -- A BUILD WITHOUT THE BINDING LOSES THE DRAW DISTANCE, NOT THE DROP. Same
+    -- rule as every other native this file cannot prove is present.
+    clientReset()
+    local realLod = SetEntityLodDist
+    SetEntityLodDist = nil
+    announce(170.0)
+    render()
+    eq(#entsOfModel(A.crateProp), 1,
+        'no SetEntityLodDist on this build still builds the crate')
+    eq(#shots, 2, 'and still lights its flares')
+    SetEntityLodDist = realLod
+end
+
+describe('client: the aircraft climbs over what is between it and the drop')
+do
+    -- ═══ "WE ALSO NEED A WAY TO MAKE SURE THE CARGOBOB AVOIDS TERRAIN, BECAUSE
+    --     DROPS AT CHILI[AD]" (owner, 2026-08-23) ═══
+    --
+    -- The flight plan is flat and pinned to the ground at the DROP POINT, so a
+    -- drop at the foot of a massif flies the aircraft through it. The rig's
+    -- ground is a ridge: everything more than 120m from the drop point stands at
+    -- 500, the drop point itself at 12.
+    clientReset()
+    ground.at = function(x, y)
+        return BR.Dist(x, y, 100.0, 200.0) > 120.0 and 500.0 or 12.0
+    end
+
+    local rec = announceSited()
+    armSited(rec)
+    render()
+
+    local ph = planeHandle()
+    ok(ph ~= nil, 'the aircraft is on its run-in')
+    if ph then
+        ok(vehicles[ph].z >= 500.0 + (A.planeTerrainClearance or 60.0),
+            'and it is flying clear of the ridge rather than through it',
+            vehicles[ph].z)
+        -- ...WHICH IT WOULD NOT HAVE BEEN. The nominal flight plan is the
+        -- ground at the DROP POINT plus the release altitude plus
+        -- planeAltAbove, and that is 200m inside the rock here.
+        ok(12.0 + 260.0 + (A.planeAltAbove or 25.0) < 500.0,
+            'the nominal height really is below the ridge -- this test would '
+            .. 'pass by accident otherwise')
+    end
+
+    -- ═══ AND IT IS BACK ON THE FLIGHT PLAN AT THE RELEASE ═══
+    --
+    -- The corridor is clipped at tRelease, so it collapses onto the drop point
+    -- as the release arrives and the highest ground in it is the ground under
+    -- the crate. The box still leaves exactly planeAltAbove beneath the
+    -- aircraft, however high the ridge behind them was.
+    gameMs = gameMs + A.planeLeadMs
+    render()
+    if ph and vehicles[ph] then
+        ok(near(vehicles[ph].z, 12.0 + 260.0 + (A.planeAltAbove or 25.0), 1e-6),
+            'at the release it is exactly where the flight plan says',
+            vehicles[ph].z)
+        local mv = crateMove()
+        ok(mv and near(vehicles[ph].z - mv.z, A.planeAltAbove or 25.0, 1e-6),
+            'and exactly planeAltAbove over the crate that just left it',
+            mv and (vehicles[ph].z - mv.z))
+    end
+
+    -- FLAT GROUND IS NOT A LIFT. The same corridor over the same ground with no
+    -- ridge in it must write the nominal height and nothing else -- otherwise
+    -- this feature is a permanent altitude increase wearing a probe.
+    clientReset()
+    local flat = announceSited()
+    armSited(flat)
+    render()
+    local ph2 = planeHandle()
+    ok(ph2 and near(vehicles[ph2].z, 12.0 + 260.0 + (A.planeAltAbove or 25.0),
+                    1e-6),
+        'over flat ground the aircraft flies its nominal height exactly',
+        ph2 and vehicles[ph2].z)
+
+    -- AND A PROBE THAT ANSWERS NOTHING IS TODAY'S BEHAVIOUR, not a crash and
+    -- not a lift. `ground.ok = 0` is the shape that matters: 0 is truthy in Lua
+    -- and this project has shipped that six times.
+    clientReset()
+    ground.ok = 0
+    local blind = announceSited()
+    armSited(blind)
+    render()
+    local ph3 = planeHandle()
+    ok(ph3 ~= nil, 'a blind probe still builds the aircraft')
+    if ph3 then
+        ok(near(vehicles[ph3].z, (blind.gz or 0.0) + 260.0
+                                 + (A.planeAltAbove or 25.0), 1e-6),
+            'and flies it off the POI\'s authored height, exactly as before',
+            vehicles[ph3].z)
+    end
 end
 
 describe('client: touchdown leaves the fired flares to the engine')

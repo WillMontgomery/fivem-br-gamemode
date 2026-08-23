@@ -229,25 +229,27 @@ local function trySite(m, p, now)
     -- about where the crate will be when it TOUCHES DOWN, and solving it against
     -- a time twelve seconds early would quietly shave the margin on every shrink.
     --
-    -- ═══ AND IT IS THE EARLIEST ARRIVAL NOW, NOT THE ONLY ONE ═══
+    -- ═══ AND ARRIVAL IS A WINDOW RATHER THAN AN INSTANT (owner, 2026-08-23:
+    --     "aidrops aren't spawning within the circle at all times") ═══
     --
-    -- Since the 200m gate, the crate may not leave for minutes after this. So
-    -- this solves the margin against the SOONEST landing the drop could have --
-    -- the case where somebody is already standing there -- and the real landing
-    -- can be later, under a circle that has shrunk further.
+    -- This used to solve ONE circle: BR.StormAt at the soonest landing, the case
+    -- where somebody is already standing there. Since the 200m gate the crate
+    -- may not leave for as long as it takes anybody to walk over, which
+    -- `blipMaxMs` caps at four minutes -- longer than a whole storm phase. So the
+    -- point was chosen against a circle that no longer existed by the time the
+    -- box arrived.
     --
-    -- THE MARGIN IS DELIBERATELY NOT RE-CHECKED AT THE ARM, and the reason is
-    -- that the gate does the job instead: a point that ends up outside the
-    -- circle is a point nobody is near, so nobody opens the gate and the drop
-    -- expires on its own. Re-checking would abandon a drop for a player who
-    -- walked to it exactly as asked, which is worse than what it would prevent.
-    -- See config/airdrop.lua.
-    local tRelease = now + (A.planeLeadMs or 0)
-    local tLand    = tRelease + (A.descentMs or 30000)
-    local cx, cy, r = BR.StormAt(m.storm, tLand)
+    -- BR.AirdropLandingCircles IS THE WINDOW: the circle at the soonest landing,
+    -- the circle at the LATEST landing this gate permits, and the circle the
+    -- storm is shrinking toward -- which is the owner's own "they should only
+    -- spawn within the next circle". The first two bound every instant between
+    -- them by convexity rather than by sampling; the third is a separate
+    -- question because this storm's circles can BREAK OUT and therefore do not
+    -- nest. See the block over that function.
+    local circles = BR.AirdropLandingCircles(m.storm, now, A, A.blipMaxMs or 240000)
 
-    local poi, seen = BR.AirdropPickSite(m.airdrop.rng, BR.Config.Map.POIs,
-        cx, cy, r, A.insideBy or 250.0, BR.LootPlaceable)
+    local poi, seen = BR.AirdropPickSiteIn(m.airdrop.rng, BR.Config.Map.POIs,
+        circles, A.insideBy or 250.0, BR.LootPlaceable)
     if not poi then
         local _ = seen
         return 'wait'
@@ -286,9 +288,10 @@ local function trySite(m, p, now)
     -- one's drop.
     BR.Server.notify(BR.Server.audience(m), A.notifyText, 'info')
 
-    print(('[br_core] airdrop: match %d drop %d SITED at %s (%.0f, %.0f) -- waiting for a player within %.0fm, %d POI(s) qualified (circle r %.0f, margin %.0f), expires in %.0fs')
+    print(('[br_core] airdrop: match %d drop %d SITED at %s (%.0f, %.0f) -- waiting for a player within %.0fm, %d POI(s) qualified (%d circle(s), tightest r %.0f, margin %.0f), expires in %.0fs')
         :format(m.id, rec.n, tostring(poi.id), poi.x, poi.y,
-                A.armWithin or 200.0, seen, r, A.insideBy or 250.0,
+                A.armWithin or 200.0, seen, #circles,
+                BR.AirdropTightest(circles), A.insideBy or 250.0,
                 (BR.AirdropBlipEndsAt(rec, A) - now) / 1000))
     return 'sited'
 end
@@ -351,11 +354,34 @@ end
 --- and because the client tears its own blip down off the same record and the
 --- same clock, this needs no message at all.
 ---
---- THE STORM PHASE IS RE-CHECKED, unlike the 250m margin. The margin is
---- self-correcting -- a point that falls outside the circle is a point nobody is
---- near, so the gate simply never opens -- but the phase cap is not: players are
---- inside the circle at stage 5 and would happily open a gate the owner's own
---- rule says is closed.
+--- THE STORM PHASE IS RE-CHECKED, and since 2026-08-23 SO IS THE 250m MARGIN.
+---
+--- ═══ THE ARGUMENT FOR NOT RE-CHECKING IT WAS WRONG, AND THE OWNER FOUND OUT
+---     THE EXPENSIVE WAY ═══
+---
+--- What this comment used to say: the margin is self-correcting -- a point that
+--- falls outside the circle is a point nobody is near, so the gate simply never
+--- opens. Owner, 2026-08-23: "aidrops aren't spawning within the circle at all
+--- times."
+---
+--- IT IS NOT SELF-CORRECTING BECAUSE THE DROP IS ANNOUNCED FIRST. A blip has
+--- been standing over the point since siting, telling the match where to run;
+--- somebody runs there, arms it from the rim, and the crate lands outside the
+--- circle. The gate is not a filter on bad points, it is a delivery service to
+--- them.
+---
+--- SO THE POINT IS RE-ASKED AGAINST THE LANDING TIME THAT HAS JUST BECOME KNOWN.
+--- At siting the margin was solved against a four-minute WINDOW because the
+--- landing time was unknown (see trySite); here it is `now` plus the run-in plus
+--- the fall, exactly, plus the circle the storm is shrinking toward. One
+--- function builds both -- BR.AirdropLandingCircles -- so the rule the drop was
+--- chosen under and the rule it is held to cannot drift apart.
+---
+--- IT FIRES BEFORE ANYBODY IS MEASURED, deliberately. A point that has stopped
+--- qualifying will not start again (circles only close), so the honest moment to
+--- put the blip out is the tick that notices -- not the one where somebody
+--- finally arrives. That is the difference between abandoning a drop and
+--- abandoning a player's run to it.
 --- @param m table
 --- @param w table   the waiting entry { rec, items, closest }
 --- @param now number
@@ -372,8 +398,32 @@ local function tryArm(m, w, now)
     end
 
     if not BR.AirdropStormOk(m.storm, A.maxPhase) then
+        w.why = ('the storm went past stage %d while it waited')
+            :format(A.maxPhase or 4)
         print(('[br_core] airdrop: match %d drop %d abandoned -- storm went past stage %d while it waited (closest was %s)')
             :format(m.id, rec.n, A.maxPhase or 4,
+                    w.closest < math.huge and ('%.0fm'):format(w.closest)
+                                           or 'nobody in the match'))
+        return 'expired'
+    end
+
+    -- THE MARGIN, AGAINST THE LANDING THIS DROP WOULD ACTUALLY HAVE. `waitMs` is
+    -- zero here and `blipMaxMs` at siting, and that one argument is the whole
+    -- difference between the two questions.
+    --
+    -- A FORCED DROP IS EXEMPT, because the whole of `/brairdrop <poiId>` is
+    -- "put one here anyway" -- it bypasses the margin at siting and re-imposing
+    -- it here would make the verb work only where the circle already agreed,
+    -- which is the case that never needed it.
+    local circles = BR.AirdropLandingCircles(m.storm, now, A, 0)
+    if not w.forced
+       and not BR.AirdropInside(circles, rec.x, rec.y, A.insideBy or 250.0) then
+        w.why = ('the circle moved off it while it waited -- %.0fm from a '
+                 .. 'circle of r %.0f, and the margin is %.0fm')
+            :format(BR.Dist(rec.x, rec.y, circles[1].x, circles[1].y),
+                    BR.AirdropTightest(circles), A.insideBy or 250.0)
+        print(('[br_core] airdrop: match %d drop %d abandoned at %s -- %s (closest player was %s)')
+            :format(m.id, rec.n, tostring(rec.poi), w.why,
                     w.closest < math.huge and ('%.0fm'):format(w.closest)
                                            or 'nobody in the match'))
         return 'expired'
@@ -524,9 +574,15 @@ BR.Sched.every(1000, 'airdrop.tick', function()
                 -- same record and the same clock at the same instant -- see
                 -- BR.AirdropExpired, which is the one question both sides ask.
                 table.remove(st.waiting, i)
+                -- WHY, IN THE ABANDONER'S OWN WORDS. There are three ways a
+                -- waiting drop ends without landing now -- nobody came, the
+                -- storm passed the phase cap, or the circle moved off the point
+                -- -- and /brairdrop printing the first one for all three is how
+                -- a playtest chases the wrong bug.
                 st.outcome = {
                     n = w.rec.n, poi = w.rec.poi,
-                    why = 'nobody came within range before the blip expired',
+                    why = w.why
+                        or 'nobody came within range before the blip expired',
                     closest = w.closest,
                 }
             end
@@ -775,6 +831,11 @@ RegisterCommand('brairdrop', function(_, args)
         now, st.rng:float() * 360.0)
     st.waiting[#st.waiting + 1] = {
         rec = rec, items = BR.AirdropPayout(st.rng, A), closest = math.huge,
+        -- THE FLAG THE MARGIN RE-CHECK READS. This verb bypassed `insideBy` at
+        -- siting and has to keep bypassing it at the arm, or a forced drop would
+        -- be sited wherever it was asked for and then abandoned a second later
+        -- by a rule the operator deliberately stepped around.
+        forced = true,
     }
     -- COUNTED, NOT ASSIGNED. `sent` is how many drops this match has ANNOUNCED
     -- -- that is what trySite does to it and what the status line reads it as --

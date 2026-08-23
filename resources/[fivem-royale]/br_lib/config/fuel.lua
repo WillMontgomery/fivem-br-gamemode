@@ -540,6 +540,29 @@ BR.Config.Fuel = {
     pumpSearchRadius = 25.0,
     pumpRefreshMs    = 3000,
 
+    --- ═══ HOW LONG BETWEEN ONE MODEL AND THE NEXT WHILE RESOLVING A PUMP ═══
+    ---
+    --- GET_CLOSEST_OBJECT_OF_TYPE IS THE MOST EXPENSIVE NATIVE THIS PROJECT
+    --- CALLS, and `pumpModels` above is a list of SEVEN of them. It has no
+    --- spatial index behind it -- Cfx.re's own thread on the native
+    --- (forum.cfx.re/t/146715) measures it at 2-4ms a call and the replies
+    --- explain why: it walks the object pool. Seven of those in one frame is
+    --- 14-28ms, which is one to two entire frames of a 60fps budget spent
+    --- inside a single loop callback.
+    ---
+    --- So client/fuel.lua asks about ONE model per pass and keeps a running
+    --- best across the sweep, and this is the gap between passes. The sweep
+    --- therefore costs `#pumpModels * pumpScanStepMs` (~700ms) of wall clock
+    --- and at most ONE such call in any one frame, instead of finishing inside
+    --- a single frame and taking the framerate with it.
+    ---
+    --- NOTHING WAITS ON THE SWEEP. The previous answer stays live the whole
+    --- time it runs, so the plate does not move, flicker or drop to the
+    --- forecourt centre while the next answer is being assembled -- and the
+    --- answer is only consulted every `pumpRefreshMs` anyway, which is four
+    --- times longer than a whole sweep takes.
+    pumpScanStepMs   = 100,
+
     --- The petrol stations.
     ---
     --- ═══ WHERE THESE CAME FROM ═══

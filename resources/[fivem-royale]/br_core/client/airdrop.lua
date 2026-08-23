@@ -125,6 +125,10 @@ local function dropPlane(d)
     if d.pilot and isTrue(DoesEntityExist(d.pilot)) then DeleteEntity(d.pilot) end
     if d.plane and isTrue(DoesEntityExist(d.plane)) then DeleteEntity(d.plane) end
     d.plane, d.pilot = nil, nil
+    -- THE TERRAIN FLOOR GOES WITH THE AIRCRAFT IT WAS MEASURED FOR. It is a
+    -- corridor ahead of a thing that no longer exists; leaving it set would hand
+    -- a stale ridge to whatever aircraft came next.
+    d.terrainZ, d.terrainAt, d.terrainFresh = nil, nil, nil
 end
 
 local function dropProps(d)
@@ -311,6 +315,44 @@ local function loadModel(model)
     return isTrue(HasModelLoaded(model))
 end
 
+--- Ask the engine to keep drawing this entity from further away than its model
+--- was authored for.
+---
+--- ═══ THIS IS THE ANSWER TO "THE FLARES DROP BEFORE THE CARGO" ═══
+---
+--- Owner, 2026-08-23: "It seems that the loose flares drop before the cargo -
+--- they should all be at once. The flares start dropping at the perfect time for
+--- the cargo to drop."
+---
+--- THEY CANNOT BE TWO TIMINGS. place() writes the crate's coordinates and then
+--- hands client/flares.lua the two positions beside it, in that order, in one
+--- function, on frames where the crate object already exists. A flare at the
+--- right moment is a crate at the right moment; there is no branch that lights
+--- one without the other. So the box was there and was not being DRAWN.
+---
+--- WHY THAT IS EVEN POSSIBLE. The crate comes into being 170m up. A projectile
+--- flare is visible from there because it carries the engine's own light and
+--- corona, and the Cargobob is visible because it is a vehicle. A wooden box is
+--- a small prop, its authored LOD distance is small, and it starts being drawn
+--- when it has fallen far enough to be worth drawing -- which is most of the way
+--- down, and reads exactly as "the cargo dropped late".
+---
+--- SET_ENTITY_LOD_DIST IS THE ONLY LEVER and it is a uint16: citizenfx/natives
+--- records 0..0xFFFF, "higher values will result in 0xFFFF". `propLodDist` is
+--- 1000, comfortably past the 195m anything in a drop is ever seen from.
+---
+--- GUARDED AND pcall'd, like every other native this file cannot prove is here:
+--- a build without the binding must lose the draw distance rather than the
+--- drop, and there is no getter, so nothing can read the value back afterwards.
+--- @param ent integer|nil
+local function drawFar(ent)
+    if not ent or ent == 0 then return end
+    if not SetEntityLodDist then return end
+    local d = math.tointeger(A.propLodDist or 0) or 0
+    if d <= 0 then return end
+    pcall(SetEntityLodDist, ent, d)
+end
+
 --- One local, non-networked, non-colliding, frozen object at (x, y, z).
 ---
 --- EVERY OBJECT A DROP MAKES GOES THROUGH HERE, so "local, invisible to the
@@ -327,6 +369,10 @@ end
 local function makePart(model, x, y, z, scale)
     local obj = CreateObjectNoOffset(model, x, y, z, false, false, false)
     if not obj or obj == 0 then return nil end
+    -- DRAWN FROM 170m UP, WHICH IS WHERE EVERY PART OF A DROP BEGINS. See
+    -- drawFar: this is the one line that decides whether the crate the owner is
+    -- looking for is on screen at the moment the flares beside it are lit.
+    drawFar(obj)
     -- A falling crate must not shove anyone, and nothing may shove it: its
     -- position is decided by arithmetic, and a collision that moved it would put
     -- this client's crate somewhere no other client's is.
@@ -413,6 +459,10 @@ local function spawnPlane(d)
         if not plane or plane == 0 then d.flying = false return end
         SetEntityCollision(plane, false, false)
         SetEntityInvincible(plane, true)
+        -- THE RUN-IN BEGINS 540m OUT and the whole reason for having an aircraft
+        -- is that the match looks up and watches it arrive. Same call, same
+        -- number, same reason as the crate's -- see drawFar.
+        drawFar(plane)
         d.plane = plane
 
         -- The crew, best-effort. A plane with no pilot still flies the route;
@@ -618,6 +668,70 @@ local function groundOf(d)
     return d.gz
 end
 
+--- The highest ground the aircraft still has to cross, absolute z.
+---
+--- ═══ "WE ALSO NEED A WAY TO MAKE SURE THE CARGOBOB AVOIDS TERRAIN, BECAUSE
+---     DROPS AT CHILI[AD]" (owner, 2026-08-23) ═══
+---
+--- The flight plan is FLAT and it is pinned to the ground at the DROP POINT:
+--- groundOf(d) + rec.alt + planeAltAbove, held for the whole run-in. Nothing in
+--- it has ever looked at what the run-in crosses. `chiliad_e` is authored at z
+--- 160 and the `chiliad` summit POI at 780, so a corridor laid across the massif
+--- puts the aircraft hundreds of metres inside it -- cosmetic rather than fatal,
+--- because its collision is off, and visible from every angle.
+---
+--- SO THE CORRIDOR IS PROBED AND THE AIRCRAFT IS GIVEN A FLOOR. Upward only, and
+--- only over the ground it has not passed yet: BR.AirdropApproach walks forward
+--- from where the aircraft is to where it will be `planeLookAheadMs` later,
+--- clipped at tRelease, so the corridor collapses onto the drop point exactly as
+--- the release arrives and the floor falls back under the nominal height. The
+--- crate still leaves `planeAltAbove` beneath the aircraft.
+---
+--- IT STARTS THE SEARCH AT `planeProbeFromZ` AND NOT AT THE AIRCRAFT.
+--- GetGroundZFor_3dCoord returns the highest ground BELOW the point it is given,
+--- so probing from the aircraft's own altitude would find nothing at all over a
+--- summit standing above it -- the exact case this exists for.
+---
+--- FAIL-OPEN, AND ON A HOLD. A sample the probe cannot answer for is skipped; a
+--- pass where nothing answers keeps the last verdict for `planeProbeHoldMs` and
+--- then forgets it, which is today's behaviour. A probe that blinks out for one
+--- pass must not drop the aircraft into the ridge it just measured, and one that
+--- has been silent for two seconds is not describing anything any more.
+--- @param d table
+--- @param now number   synced clock
+--- @return number|nil  absolute z, or nil for "nothing answered"
+local function approachTop(d, now)
+    if not d.rec then return nil end
+    local ms = GetGameTimer()
+    if d.terrainAt and (ms - d.terrainAt) < (A.planeProbeMs or 250) then
+        return d.terrainZ
+    end
+    d.terrainAt = ms
+
+    local from = A.planeProbeFromZ or 1200.0
+    local top  = nil
+    for _, p in ipairs(BR.AirdropApproach(d.rec, now, A,
+                                          A.planeProbeSamples or 8,
+                                          A.planeLookAheadMs or 6000)) do
+        local ok, gz = GetGroundZFor_3dCoord(p.x, p.y, from, false)
+        -- SEA LEVEL IS ZERO AND A SEABED IS NOT TERRAIN TO CLEAR. Same rule
+        -- client/loot.lua's solidGround applies, and for the same reason: a
+        -- failed probe hands back a z as well as a false, and the ocean floor
+        -- is the answer over open water.
+        if isTrue(ok) and type(gz) == 'number' and gz > 0.0 then
+            if not top or gz > top then top = gz end
+        end
+    end
+
+    if top then
+        d.terrainZ, d.terrainFresh = top, ms
+    elseif d.terrainFresh
+           and (ms - d.terrainFresh) > (A.planeProbeHoldMs or 2000) then
+        d.terrainZ, d.terrainFresh = nil, nil
+    end
+    return d.terrainZ
+end
+
 -- ---------------------------------------------------------------------------
 -- The descent
 -- ---------------------------------------------------------------------------
@@ -743,7 +857,17 @@ BR.Loop.register(BR.Loop.FRAME, 'airdrop.render', function()
                 end
                 if d.plane and isTrue(DoesEntityExist(d.plane)) then
                     local px, py, pz, phdg = BR.AirdropPlaneAt(d.rec, now, A)
-                    SetEntityCoordsNoOffset(d.plane, px, py, groundOf(d) + pz,
+                    -- THE FLIGHT PLAN, AND THEN A FLOOR UNDER IT. `pz` is
+                    -- measured from the ground at the DROP POINT and says
+                    -- nothing about what the run-in crosses; approachTop is what
+                    -- the aircraft has to clear before it gets there (owner,
+                    -- 2026-08-23: "make sure the cargobob avoids terrain,
+                    -- because drops at chili[ad]"). Upward only, and it is back
+                    -- at the nominal height by tRelease by construction -- see
+                    -- BR.AirdropApproach.
+                    local z = BR.AirdropPlaneZ(groundOf(d) + pz,
+                        approachTop(d, now), A.planeTerrainClearance)
+                    SetEntityCoordsNoOffset(d.plane, px, py, z,
                         false, false, false)
                     -- A STRAIGHT LINE NEEDS NO EASED HEADING. bus.lua smooths
                     -- its bearing because a polyline steps between legs; this
@@ -884,9 +1008,30 @@ RegisterCommand('brairdrop', function(_, args)
                         tostring(BR.AirdropLanded(rec, now)),
                         tostring(BR.AirdropBlipVisible(rec, now, A)),
                         tostring(BR.AirdropExpired(rec, now, A))))
-            local px, py = BR.AirdropPlaneAt(rec, now, A)
+            local px, py, ppz = BR.AirdropPlaneAt(rec, now, A)
             print(('    plane should be up %s, at (%.0f, %.0f)')
                 :format(tostring(BR.AirdropPlaneVisible(rec, now, A)), px, py))
+            -- ═══ WHAT THE AIRCRAFT IS CLEARING, WHICH IS THE ONLY WAY TO TELL
+            --     A LIFT FROM A BUG ═══
+            --
+            -- An aircraft flying 300m higher than the flight plan is either
+            -- avoiding Mount Chiliad exactly as asked or reading a probe that
+            -- has gone wrong, and from a chair those look identical. So the
+            -- line names the nominal height, the highest ground the corridor
+            -- found, and the height actually written.
+            local nominal = (d.gz or 0.0) + ppz
+            print(('    approach: nominal z %.0f, highest ground ahead %s, '
+                   .. 'flying at %.0f (clearance %.0f over %d sample(s), '
+                   .. 'lod %s)')
+                :format(nominal,
+                        type(d.terrainZ) == 'number'
+                            and ('%.0f'):format(d.terrainZ)
+                            or 'nothing answered',
+                        BR.AirdropPlaneZ(nominal, d.terrainZ,
+                            A.planeTerrainClearance),
+                        A.planeTerrainClearance or 60.0,
+                        A.planeProbeSamples or 8,
+                        tostring(A.propLodDist)))
             -- THE ROOFTOP VERDICT for the point the crate is falling to. `roof`
             -- is set by groundOf when the navmesh refuses the probed ground --
             -- and since 2026-08-23 that is ALL it is. The crate comes down onto

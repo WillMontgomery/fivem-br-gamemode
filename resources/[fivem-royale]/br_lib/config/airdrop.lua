@@ -154,6 +154,58 @@ BR.Config.Airdrop = {
     altitude  = 170.0,
 
     -- ------------------------------------------------------------------
+    -- ...AND A CRATE THAT HIGH HAS TO BE ASKED TO DRAW AT ALL
+    -- ------------------------------------------------------------------
+    --
+    -- Owner, 2026-08-23: "we need to fix the delay between when the cargobob
+    -- flies over and when the cargo drops. It seems that the loose flares drop
+    -- before the cargo - they should all be at once. The flares start dropping
+    -- at the perfect time for the cargo to drop."
+    --
+    -- ═══ THERE IS NO DELAY IN THE ARITHMETIC, AND THE FLARES ARE THE PROOF ═══
+    --
+    -- The crate and the flares are not two timings that could drift apart. They
+    -- are ONE function: client/airdrop.lua's place() writes the crate's
+    -- coordinates and then hands client/flares.lua the two positions beside it,
+    -- and place() is only ever called on a frame where the crate object already
+    -- exists. A flare at the right moment therefore PROVES a crate at the right
+    -- moment -- there is no path that lights one without the other.
+    --
+    -- SO WHAT THE OWNER SAW WAS NOT A LATE CRATE. It was a crate that existed,
+    -- in the right place, on the right frame, and was not being DRAWN. It comes
+    -- into being 170m up; every part of a drop that IS visible from there is
+    -- visible for a reason of its own -- a projectile flare carries the engine's
+    -- own light and corona, and a Cargobob is a vehicle. A wooden box is a small
+    -- prop with a small authored LOD distance, and it pops in when it has fallen
+    -- far enough to be worth drawing, which is most of the way down.
+    --
+    -- AND `planeSpeed` IS NOT THE CAUSE, which was worth ruling out before
+    -- anything moved: the run-in lasts `planeLeadMs` at ANY speed (the aircraft
+    -- is switched on at tArm and the release is planeLeadMs later), and
+    -- BR.AirdropPlaneAt puts it exactly over the drop point at tRelease. Halving
+    -- it on 2026-08-23 moved where the approach starts, never when it ends.
+    --
+    -- ═══ SET_ENTITY_LOD_DIST IS THE ONE LEVER, AND IT IS A uint16 ═══
+    --
+    -- (0x5927F96A78577363.) citizenfx/natives records the range as "0 to 0xFFFF
+    -- (higher values will result in 0xFFFF) as it is actually stored as a 16-bit
+    -- value". 1000 is well inside that and comfortably past the 195m the highest
+    -- part of a drop is ever seen from -- generous rather than tuned, because
+    -- there is exactly one crate and one canopy per match and for thirty
+    -- seconds.
+    --
+    -- IT IS APPLIED TO THE PLANE TOO, at the same value and for the same
+    -- sentence: the run-in begins 540m out and the aircraft the owner is meant
+    -- to look up at is the whole point of having one.
+    --
+    -- WHAT NOBODY CAN TELL YOU FROM HERE is whether the box was invisible for
+    -- this reason or for another one -- nothing outside a running client can
+    -- read a prop's LOD distance back. What can be said is that this is the only
+    -- native that governs it, that the call is free, and that /brairdrop now
+    -- prints the value each part was built with.
+    propLodDist = 1000,
+
+    -- ------------------------------------------------------------------
     -- THE PLANE
     -- ------------------------------------------------------------------
     --
@@ -279,6 +331,74 @@ BR.Config.Airdrop = {
     planeTrailMs = 15000,
 
     -- ------------------------------------------------------------------
+    -- AND IT HAS TO CLEAR WHAT IS BETWEEN IT AND THE DROP
+    -- ------------------------------------------------------------------
+    --
+    -- Owner, 2026-08-23: "We also need a way to make sure the cargobob avoids
+    -- terrain, because drops at chili[ad]".
+    --
+    -- ═══ THE `altitude` NOTE ABOVE PREDICTED THIS AND DID NOTHING ABOUT IT ═══
+    --
+    -- "A ridge more than ~195m above the drop point within that half-kilometre
+    -- is something the Cargobob flies through rather than over." It is worse
+    -- than a ridge: `chiliad_e` is authored at z 160 and the `chiliad` summit
+    -- POI at 780, so a run-in laid across the massif puts the aircraft six
+    -- hundred metres inside it.
+    --
+    -- WHAT CHANGES IS THE HEIGHT AND NOTHING ELSE. The route is still a straight
+    -- line at constant speed passing over the drop point at tRelease -- the
+    -- property the whole file rests on. The aircraft now flies at whichever is
+    -- higher: its nominal altitude, or `planeTerrainClearance` above the highest
+    -- ground still AHEAD of it. See BR.AirdropApproach and BR.AirdropPlaneZ.
+    --
+    -- AND IT COSTS THE RELEASE NOTHING, which is the half worth checking rather
+    -- than trusting: the corridor is measured forward from the aircraft and
+    -- clipped at tRelease, so it collapses onto the drop point as the release
+    -- arrives and the floor drops back under the nominal height. The crate still
+    -- leaves exactly `planeAltAbove` beneath the aircraft.
+    --
+    -- 60m OVER THE HIGHEST GROUND AHEAD. A Cargobob is about 20m long and the
+    -- probe answers bare ground, not the pylon, mast or pine standing on it, so
+    -- this is three airframes of margin and not a tight fit. It is deliberately
+    -- WELL under `altitude` + `planeAltAbove` (195m): a clearance above that
+    -- would raise the aircraft over flat ground too, and the drop point's own
+    -- ground is always in the corridor.
+    planeTerrainClearance = 60.0,
+    -- How far ahead the corridor looks, in MILLISECONDS OF FLIGHT rather than
+    -- metres -- so it is a fixed slice of the run-in whatever `planeSpeed` is,
+    -- exactly as `planeLeadMs` is. 6s of the 12s run-in, which is 270m at the
+    -- current speed.
+    --
+    -- LONGER IS NOT BETTER. GetGroundZFor_3dCoord is documented to fail beyond
+    -- render distance and the far end of the corridor is already the far end of
+    -- what a client near the drop can answer for; samples that fail are skipped,
+    -- so a longer horizon buys mostly nothing and costs probes.
+    planeLookAheadMs      = 6000,
+    -- Points along it, ends included. Eight over 270m is a sample every ~39m --
+    -- finer than the aircraft's own length, which is the resolution that
+    -- matters, since anything narrower than the airframe it can fly through
+    -- without touching.
+    planeProbeSamples     = 8,
+    -- How often the corridor is re-probed. The ground probe is slow enough that
+    -- config/storm.lua caches it at 1Hz for the wall; 4Hz over 8 points for at
+    -- most 27 seconds once a match is the cheapest version of this that still
+    -- reads as flying rather than stepping.
+    planeProbeMs          = 250,
+    -- ...and how long a corridor that stops answering keeps its last verdict.
+    -- FAIL-OPEN, BUT NOT INSTANTLY: a probe that blinks out for one pass must
+    -- not drop the aircraft into the ridge it just measured, and a probe that
+    -- has been silent for two seconds is not describing anything any more.
+    planeProbeHoldMs      = 2000,
+    -- WHERE THE PROBE STARTS ITS SEARCH DOWNWARD, as an ABSOLUTE z, and it is
+    -- the one number here that cannot be derived from the drop.
+    -- GetGroundZFor_3dCoord returns the highest ground BELOW the point it is
+    -- given, so probing from the aircraft's own altitude would find nothing at
+    -- all over a summit that stands above it -- the exact case this feature
+    -- exists for. 1200 clears Mount Chiliad (~1100m), which is the highest
+    -- ground on this map.
+    planeProbeFromZ       = 1200.0,
+
+    -- ------------------------------------------------------------------
     -- AND THE OTHER CURE FOR "I COULD BARELY HEAR IT"
     -- ------------------------------------------------------------------
     --
@@ -370,15 +490,39 @@ BR.Config.Airdrop = {
     -- coming, and a second announcement naming a second place would read as two
     -- airdrops when the owner asked for exactly one.
     --
-    -- WHY THE 250m MARGIN IS NOT RE-CHECKED WHEN THE WAIT ENDS. It is solved
-    -- once, at siting, against the earliest landing the drop could have. A wait
-    -- of minutes lets the circle shrink under it, so in principle the point can
-    -- end up on or outside the rim -- and re-checking would abandon a drop for a
-    -- player who did exactly what this feature asked of them, which is worse
-    -- than the thing it would prevent. It is also self-correcting: if the point
-    -- falls outside the circle, players are not near it, the gate never opens
-    -- and the drop expires on its own. The residual case is a player who walks
-    -- out to the rim deliberately, and they have chosen that.
+    -- ═══ THE 250m MARGIN IS RE-CHECKED WHEN THE WAIT ENDS, AND THIS BLOCK USED
+    --     TO ARGUE THAT IT SHOULD NOT BE ═══
+    --
+    -- What stood here, until 2026-08-23: the margin is solved once at siting
+    -- against the earliest landing; a wait of minutes lets the circle shrink
+    -- under it; re-checking would abandon a drop for a player who did exactly
+    -- what this feature asked of them; and anyway it is SELF-CORRECTING, because
+    -- a point outside the circle is a point nobody is near, so the gate never
+    -- opens.
+    --
+    -- THE LAST CLAUSE IS THE ONE THAT WAS WRONG, and the owner found it:
+    -- "aidrops aren't spawning within the circle at all times." The drop is
+    -- ANNOUNCED at siting -- that is this whole feature's first half -- so a
+    -- blip is standing over the point telling the match to run at it. They do.
+    -- They arm it. The crate lands where the storm no longer is. The gate does
+    -- not fail to open on a bad point; it is the thing that delivers somebody to
+    -- one.
+    --
+    -- SO BOTH ENDS MOVED. Siting now solves the margin against every circle the
+    -- drop could land under, out to this gate's own deadline (`blipMaxMs`), and
+    -- against the circle the storm is shrinking toward -- which is the owner's
+    -- own suggestion, "they should only spawn within the next circle", made
+    -- exact. And the arm re-asks it against the landing time that has just
+    -- become known. See BR.AirdropLandingCircles.
+    --
+    -- WHAT THAT COSTS IS THE CASE THE OLD TEXT WAS PROTECTING: a storm that
+    -- turns over a whole phase while somebody walks can still leave the point
+    -- outside, and that drop is now abandoned rather than delivered. It is the
+    -- rarer of the two evils and it is the one this file already chose
+    -- everywhere else -- "the drop has to be a fight, not a sprint into the
+    -- wall". A crate that lands outside the circle is not a consolation prize
+    -- for the player who ran to it; it is a death sentence for whoever contests
+    -- it, which is the sentence `insideBy` exists to write.
     --
     -- 200m IS THE OWNER'S NUMBER. /brairdrop prints the CLOSEST APPROACH any
     -- player actually made, which is how this gets retuned from a playtest
@@ -417,10 +561,39 @@ BR.Config.Airdrop = {
     --
     -- In practice the default delay lands during phase 1 or 2, where the radius
     -- is 2600m or more and dozens of POIs qualify, so the zero should be rare.
+    --
+    -- ═══ AND IT IS MEASURED AGAINST MORE THAN ONE CIRCLE NOW (2026-08-23) ═══
+    --
+    -- The number did not move; what it is asked OF did. A landing point has to
+    -- clear this margin against every circle the drop could land under -- see
+    -- `armWithin` above and BR.AirdropLandingCircles. Raising or lowering this
+    -- one number still tunes all of them together, which is why it is still one
+    -- number.
     insideBy = 250.0,
 
     -- NO AIRDROPS PAST STORM STAGE 4 (owner). Read against the published
     -- record's phase at the moment the drop is committed.
+    --
+    -- ═══ "SPAWN BEFORE THE BEGINNING OF PHASE 3?" -- ASKED, AND ANSWERED NO
+    --     (owner, 2026-08-23) ═══
+    --
+    -- It was the second half of their proposal for drops landing outside the
+    -- circle, and it treats the symptom rather than the cause. The cause was
+    -- that the margin was solved once and never re-asked while the drop waited
+    -- (see `armWithin`); a phase cap does not touch that -- a drop sited in
+    -- phase 2 can still sit for four minutes and land in phase 4.
+    --
+    -- AND IT WOULD COST MOST MATCHES THEIR AIRDROP. The schedule draws
+    -- uniformly from 3m30 to 7m00 after PLAYING, and phase 3 begins somewhere
+    -- around 280-660 seconds in (config/storm.lua: phase 1 holds 120-180s and
+    -- sweeps 40-240s, phase 2 holds 120s and sweeps up to 120s). A cap at "before
+    -- phase 3" would refuse a large slice of that window outright.
+    --
+    -- LATE PHASES ARE ALREADY SELF-LIMITING, which is the reason none of that is
+    -- needed. Phase 4's target radius is 520m and the margin is 250m, so a
+    -- qualifying POI has to sit in a 270m disc; at this map's density that is
+    -- usually empty, the drop waits, and the match gets its deliberate zero. The
+    -- cap stays at the owner's own earlier number.
     maxPhase = 4,
 
     -- ------------------------------------------------------------------

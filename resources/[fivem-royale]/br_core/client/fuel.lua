@@ -71,10 +71,32 @@ local blips = {}
 --- `refuelRadius` are the two values in this feature that cannot be checked
 --- outside a live server, and a debug line that prints each live distance beside
 --- its radius is what makes the next number measured rather than guessed.
+--- `scan` is the sweep in progress, or nil between sweeps. See resolvePump.
 local at = {
     station = nil, pump = nil, pumpAt = 0,
     px = nil, py = nil, pz = nil, dist = nil, stationDist = nil,
+    scan = nil,
 }
+
+--- Forget the pump anchor entirely.
+---
+--- THE ANCHOR COORDINATES ARE CLEARED HERE AND THEY WERE NOT CLEARED ANYWHERE
+--- BEFORE, which was a real bug rather than tidying. The three teardown sites
+--- and the change-of-station branch all reset `pump` and left `px/py/pz`
+--- standing, so a driver who resolved a pump at one station and then parked at
+--- a station whose pumps did not stream kept the FIRST station's pump as their
+--- anchor -- `local px = at.px or station.x` reads whatever is there. The
+--- documented fallback ("FALLS BACK TO THE STATION CENTRE") could therefore
+--- never happen once any pump had ever been found in the session.
+---
+--- An in-flight sweep goes too. It carries a running best measured from a
+--- vehicle position at a different station, and finishing it after a move would
+--- commit that answer here.
+local function forgetPump()
+    at.pump, at.pumpAt = nil, 0
+    at.px, at.py, at.pz = nil, nil, nil
+    at.scan = nil
+end
 
 --- Is the prompt page currently showing OUR plate?
 ---
@@ -578,31 +600,102 @@ end
 --- @param y number
 --- @param z number
 --- @param now integer
+--- ═══ THIS RAN SEVEN GET_CLOSEST_OBJECT_OF_TYPE CALLS IN ONE FRAME, AND ON A
+---     MISS IT RAN THEM ON EVERY FRAME FOREVER ═══
+---
+---   "Major client performance hits when at gas stations - what can we do about
+---    that?"                                    -- owner, 2026-08-23
+---
+--- THIS FUNCTION IS THAT REPORT. Two faults, and the second is the one that
+--- turns a stutter into a collapse:
+---
+---   1. SEVEN CALLS, ONE FRAME. `pumpModels` has seven entries and the old body
+---      asked about all of them between two lines of the FRAME band.
+---      GET_CLOSEST_OBJECT_OF_TYPE has no spatial index -- it walks the object
+---      pool -- and Cfx.re's thread on it (forum.cfx.re/t/146715) measures
+---      2-4ms per call. Seven is 14-28ms: one to two whole frames of a 60fps
+---      budget, spent inside one callback, EVERY `pumpRefreshMs`. That alone is
+---      a visible hitch every three seconds on every forecourt.
+---
+---   2. A MISS WAS NEVER CACHED. The old guard was
+---
+---          if at.pump and (now - at.pumpAt) < pumpRefreshMs then return end
+---
+---      -- it holds the answer only when there IS one. `at.pump` is nil the
+---      moment the sweep fails, so the guard was false again on the very next
+---      frame and the whole seven-call sweep ran again, at 60Hz, for as long as
+---      the player stayed put. And a miss is not the rare case: the horn
+---      suppression bubble is `stationRadius` (30m) while the search is
+---      `pumpSearchRadius` (25m), so EVERY approach to EVERY station spends its
+---      first stretch inside the radius that runs this and outside the radius
+---      that can answer it -- and a station whose pump props are not in the
+---      model list never answers at all, for the whole time the player is
+---      parked on it.
+---
+--- ═══ WHAT IT DOES NOW: ONE MODEL PER PASS, AND A MISS IS AN ANSWER ═══
+---
+--- The sweep is incremental. Each pass asks about ONE model, keeps the running
+--- best, and commits when it has been round the whole list -- so the cost in
+--- any single frame is one call rather than seven, and `pumpScanStepMs` spaces
+--- the passes so the seven are spread over ~700ms rather than seven frames.
+---
+--- The commit records `pumpAt` whether or not a pump was found, which is the
+--- whole of fault 2: a station with no findable pump is now asked about once
+--- every `pumpRefreshMs`, exactly like a station with one.
+---
+--- NOTHING VISIBLE CHANGES. The previous answer stays live for the whole sweep
+--- -- the plate does not move or flicker while the next one is assembled -- and
+--- the anchor is only re-read every `pumpRefreshMs` regardless. What the player
+--- gets is the same plate, on the same pump, without the frame it used to cost.
+--- @param x number
+--- @param y number
+--- @param z number
+--- @param now integer
 local function resolvePump(x, y, z, now)
-    if at.pump and (now - at.pumpAt) < (tonumber(F.pumpRefreshMs) or 3000) then
-        return
+    local models = F.pumpModels
+    local reach  = tonumber(F.pumpSearchRadius) or 0.0
+    if reach <= 0.0 or type(models) ~= 'table' or #models == 0 then return end
+
+    local scan = at.scan
+    if not scan then
+        -- Idle: hold the committed answer -- FOUND OR NOT -- for the refresh
+        -- interval. This single `or` is fault 2's fix.
+        if (now - (at.pumpAt or 0)) < (tonumber(F.pumpRefreshMs) or 3000) then
+            return
+        end
+        scan = { i = 1, bestD = math.huge, stepAt = 0 }
+        at.scan = scan
     end
-    at.pumpAt = now
-    at.pump = nil
 
-    local reach = tonumber(F.pumpSearchRadius) or 0.0
-    if reach <= 0.0 or type(F.pumpModels) ~= 'table' then return end
+    -- ONE MODEL, AND NOT BEFORE THE STEP INTERVAL IS UP.
+    if (now - scan.stepAt) < (tonumber(F.pumpScanStepMs) or 100) then return end
+    scan.stepAt = now
 
-    local bestD = math.huge
-    for i = 1, #F.pumpModels do
-        local ok, obj = pcall(GetClosestObjectOfType, x, y, z, reach,
-                              F.pumpModels[i], false, false, false)
-        if ok and obj and obj ~= 0 and didHit(DoesEntityExist(obj)) then
-            local okc, c = pcall(GetEntityCoords, obj)
-            if okc and c then
-                local d = BR.Dist(x, y, c.x, c.y)
-                if d < bestD then
-                    bestD = d
-                    at.pump = obj
-                    at.px, at.py, at.pz = c.x, c.y, c.z
-                end
+    local name = models[scan.i]
+    scan.i = scan.i + 1
+
+    local ok, obj = pcall(GetClosestObjectOfType, x, y, z, reach,
+                          name, false, false, false)
+    if ok and obj and obj ~= 0 and didHit(DoesEntityExist(obj)) then
+        local okc, c = pcall(GetEntityCoords, obj)
+        if okc and c then
+            local d = BR.Dist(x, y, c.x, c.y)
+            if d < scan.bestD then
+                scan.bestD = d
+                scan.pump = obj
+                scan.px, scan.py, scan.pz = c.x, c.y, c.z
             end
         end
+    end
+
+    -- Round the whole list: commit, and start the refresh clock.
+    if scan.i > #models then
+        at.scan   = nil
+        at.pumpAt = now
+        at.pump   = scan.pump
+        -- A MISS CLEARS THE ANCHOR rather than leaving the last station's pump
+        -- standing in it -- see forgetPump for what that bug looked like.
+        at.px, at.py, at.pz = scan.px, scan.py, scan.pz
     end
 end
 
@@ -763,7 +856,8 @@ BR.Loop.register(BR.Loop.TICK, 'fuel.apply', function()
         hideBlips()
         setPrompt(false)
         pushBars(nil, nil)
-        at.station, at.pump, at.dist, at.stationDist = nil, nil, nil, nil
+        at.station, at.dist, at.stationDist = nil, nil, nil
+        forgetPump()
         return
     end
 
@@ -838,7 +932,8 @@ BR.Loop.register(BR.Loop.FRAME, 'fuel.pump', function()
     local ok, driver = pcall(GetPedInVehicleSeat, veh, -1)
     if not ok or driver ~= ped then
         setPrompt(false)
-        at.station, at.pump, at.dist, at.stationDist = nil, nil, nil, nil
+        at.station, at.dist, at.stationDist = nil, nil, nil
+        forgetPump()
         return
     end
 
@@ -853,14 +948,15 @@ BR.Loop.register(BR.Loop.FRAME, 'fuel.pump', function()
         BR.FuelSolve.stationNear(c.x, c.y, F.stations, F.stationRadius)
     if station == nil then
         setPrompt(false)
-        at.station, at.pump, at.dist, at.stationDist = nil, nil, nil, nil
+        at.station, at.dist, at.stationDist = nil, nil, nil
+        forgetPump()
         return
     end
 
     local now = GetGameTimer()
     if at.station ~= station then
         at.station = station
-        at.pump, at.pumpAt = nil, 0
+        forgetPump()
     end
 
     -- ═══ THE HORN ═══
