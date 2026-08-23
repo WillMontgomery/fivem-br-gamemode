@@ -107,6 +107,15 @@ LIB_DIR="$SERVER_ROOT/resources/$TARGET_CATEGORY/[fivem-royale]/br_lib"
 # A box that has never deployed still gets an answer, from the clone.
 [ -d "$LIB_DIR/config" ] || LIB_DIR="$SRC_DIR/resources/[fivem-royale]/br_lib"
 
+# THE DEPLOYED br_ddb, for the same reason and with the same fallback. The
+# question `status` answers about this resource is whether the bundle FXServer
+# loaded is the one the manifest beside it describes, and an interrupted rsync
+# is the realistic way for those two to disagree -- so it has to be the deployed
+# copy that is read, not the clone the deploy came from. The clone's pair always
+# agrees with itself; reading it would be a check that cannot fail.
+DDB_DIR="$SERVER_ROOT/resources/$TARGET_CATEGORY/[fivem-royale]/br_ddb"
+[ -d "$DDB_DIR/dist" ] || DDB_DIR="$SRC_DIR/resources/[fivem-royale]/br_ddb"
+
 # WHICH REF THE NEXT DEPLOY SHOULD CHECK OUT, AS A PLAIN FILE THIS USER OWNS.
 #
 # One line: `<ref> <sha>`, or `<ref>` once the sha has been consumed by a
@@ -171,6 +180,124 @@ json_str() {
     printf '%s' "${1:-}" \
         | tr -d '\000-\037' \
         | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+# A quoted JSON string, or the literal null for an empty one. The two are
+# different answers on the wire and the console reads them differently: `""` is
+# a value it would compare, `null` is "we could not read it".
+json_or_null() {
+    if [ -z "${1:-}" ]; then printf 'null'; else printf '"%s"' "$(json_str "$1")"; fi
+}
+
+# A JSON number, or null. Every non-digit is stripped rather than trusted --
+# this value is printed unquoted into the response, so a stray character in it
+# is not a wrong number, it is a broken line the console cannot parse at all.
+num_or_null() {
+    local n="${1:-}"
+    n="$(printf '%s' "$n" | tr -cd '0-9')"
+    if [ -z "$n" ]; then printf 'null'; else printf '%s' "$n"; fi
+}
+
+# --- the br_ddb bundle --------------------------------------------------------
+#
+# WHAT THIS CHECK CAN HONESTLY MEAN, and the sentence is short on purpose: the
+# bundle on the box is the file the manifest beside it describes. That is all.
+#
+# The box has dist/server.js and dist/fingerprint.json and NO SOURCE TREE and no
+# build tool, so the only comparison available here is the file against the hash
+# recorded next to it. It catches an rsync that did not finish and a bundle
+# somebody hand-patched. It does NOT prove the bundle was rebuilt from current
+# source -- that is the manifest's `source` half, it needs js-src/br_ddb, and
+# tools/verify.sh checks it before a commit ever lands. And it is NOT tamper
+# detection: the manifest sits in the same directory as the bundle, writable by
+# whoever can write the bundle. Do not describe it as security anywhere. The
+# realistic cause of a mismatch is a deploy that did not finish.
+#
+# THIS SCRIPT COMPARES NOTHING. It reports two readings and the console decides,
+# because a boolean computed here could not say WHICH half was missing -- and a
+# missing manifest, a missing bundle and a box with no hasher are three
+# different absences, none of which is a mismatch.
+
+# One field out of the manifest, read the way tools/br_ddb_fingerprint.sh reads
+# it -- a sed, no jq, because that script deliberately needs no toolchain and a
+# reader of its output should not need more than the writer did.
+#
+# NEWLINES ARE STRIPPED FIRST so a minified manifest reads the same as the
+# pretty-printed one this repo commits. The leading `.*` cannot run past the key
+# it is anchored on, because the key literal has to follow it and appears once.
+manifest_str() {
+    tr -d '\n\r' < "$2" 2>/dev/null \
+        | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" \
+        | head -1
+}
+
+manifest_num() {
+    tr -d '\n\r' < "$2" 2>/dev/null \
+        | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p" \
+        | head -1
+}
+
+# CR-STRIPPED, WHICH IS NOT A DETAIL. tools/br_ddb_fingerprint.sh records the
+# manifest's `bundle` hash over the file with every CR byte deleted, so that a
+# repo authored on Windows and run on Linux cannot produce fake drift. Hashing
+# the raw bytes here would compare two different digests of the same file and
+# report a mismatch on a box where nothing is wrong -- a false red, which the
+# console renders as a critical alert.
+#
+# THE SAME THREE TOOLS THAT SCRIPT ACCEPTS, and silence if none of them is here.
+# An empty answer becomes null, which reads as "unknown"; inventing a digest
+# from a tool we do not have would be worse than not answering.
+ddb_sha256() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        tr -d '\r' < "$1" | sha256sum | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then
+        tr -d '\r' < "$1" | shasum -a 256 | cut -d' ' -f1
+    elif command -v openssl >/dev/null 2>&1; then
+        tr -d '\r' < "$1" | openssl dgst -sha256 | sed 's/.*= *//'
+    fi
+}
+
+# `{"manifest":<object|null>,"onDisk":<sha256|null>}` -- ALWAYS VALID JSON.
+#
+# THE MANIFEST IS RE-EMITTED FIELD BY FIELD RATHER THAN PASSED THROUGH VERBATIM,
+# and that is the one deliberate difference from "print the file". This object
+# is interpolated into the single line `status` prints, so a truncated or
+# half-written fingerprint.json pasted through would not produce a wrong bundle
+# reading -- it would produce a line the console reports as `dispatch returned
+# non-JSON`, taking the process state, the commit and the branch pin down with
+# it to report a hash. Reconstructing the five fields the console declares makes
+# malformed output structurally impossible, and costs only that a field added to
+# the manifest later needs adding here too -- which it would need on the console
+# side anyway before anything could render it.
+#
+# NO `source` HASH MEANS NO MANIFEST, which is the rule the resource itself used
+# to apply: a manifest with nothing to identify a source tree by is not a half
+# manifest, it is a file we could not read, and publishing blanks from it would
+# look like the box had answered.
+ddb_bundle_json() {
+    local mf="$DDB_DIR/dist/fingerprint.json"
+    local js="$DDB_DIR/dist/server.js"
+    local manifest="null" ondisk="null" src="" hash=""
+
+    [ -r "$mf" ] && src="$(manifest_str source "$mf")"
+    if [ -n "$src" ]; then
+        manifest="$(printf '{"scheme":%s,"source":%s,"bundle":%s,"bundleBytes":%s,"files":%s}' \
+            "$(json_or_null "$(manifest_str scheme "$mf")")" \
+            "$(json_or_null "$src")" \
+            "$(json_or_null "$(manifest_str bundle "$mf")")" \
+            "$(num_or_null  "$(manifest_num bundleBytes "$mf")")" \
+            "$(num_or_null  "$(manifest_num files "$mf")")")"
+    fi
+
+    # Shape-checked before it is printed. A hasher that failed, or printed a
+    # diagnostic instead of a digest, must not reach the console as a value it
+    # would compare -- 64 hex characters or nothing.
+    [ -r "$js" ] && hash="$(ddb_sha256 "$js")"
+    if printf '%s' "$hash" | grep -qE '^[0-9a-f]{64}$'; then
+        ondisk="\"$hash\""
+    fi
+
+    printf '{"manifest":%s,"onDisk":%s}' "$manifest" "$ondisk"
 }
 
 # Is this a ref name we are willing to hand to git, judged as a RAW STRING
@@ -327,12 +454,27 @@ do_status() {
         [ -n "$pinned_at" ] || pinned_at=0
     fi
 
-    printf '{"running":%s,"pid":%s,"uptimeSec":%s,"commit":"%s","sha":"%s","behindMain":%s,"hostUptimeSec":%s,"deployedRef":"%s","pinnedRef":"%s","pinnedBy":"%s","pinnedAt":%s}\n' \
+    # THE br_ddb BUNDLE RIDES THIS VERB'S RESPONSE, AND NO NINTH VERB EXISTS.
+    #
+    # The console's capability over this box is the VERB SET, pinned by name in
+    # tools/verify.sh. Widening a read-only verb's ANSWER moves that boundary
+    # nowhere: same call, same permissions, same six-second budget, one more
+    # object on a line already being printed by a function already reading files
+    # on this box. A new verb for two file reads and a sha256 would be a new
+    # capability recorded forever to save appending to a printf.
+    #
+    # Two reads and one hash of a 700KB file, on a poll the console makes every
+    # 15s: well under a millisecond, off the page cache, against a six-second
+    # budget. Nothing here can block, and every failure inside it is a null.
+    local bundle
+    bundle="$(ddb_bundle_json)"
+
+    printf '{"running":%s,"pid":%s,"uptimeSec":%s,"commit":"%s","sha":"%s","behindMain":%s,"hostUptimeSec":%s,"deployedRef":"%s","pinnedRef":"%s","pinnedBy":"%s","pinnedAt":%s,"bundle":%s}\n' \
         "$running" "${pid:-0}" "$uptime" "$commit" \
         "$(git -C "$SRC_DIR" rev-parse HEAD 2>/dev/null || echo unknown)" \
         "$behind" "$host_uptime" \
         "$(json_str "$deployed_ref")" "$(json_str "$pinned_ref")" \
-        "$(json_str "$pinned_by")" "$pinned_at"
+        "$(json_str "$pinned_by")" "$pinned_at" "$bundle"
 }
 
 do_telemetry() {

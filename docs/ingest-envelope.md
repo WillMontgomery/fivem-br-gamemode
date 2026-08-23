@@ -204,6 +204,89 @@ not.
 serialisation in either direction, so absent-versus-null is not a distinction
 this wire can carry — the field is always present.
 
+### `snapshot.ddb` — can this box reach DynamoDB?
+
+**Optional, and absent is the normal case.** It is not in
+`tools/fixtures/ingest-snapshot.json` for that reason: the fixture pins the
+required shape, and this field's absence is a state the receiver must handle
+anyway.
+
+```json
+"ddb": {
+  "ok": true,
+  "at": 4281003,
+  "error": null,
+  "region": "us-east-1",
+  "prefix": "ringmaster-",
+  "ms": 42
+}
+```
+
+**Why it rides the push.** `br:ddb:selftest` is a real `GetItem` issued by the
+running `br_ddb` with its own region, prefix and credentials — the probe `brddb`
+prints. **Only something inside FXServer can ask it.** A shell probe from
+`tools/dispatch.sh` would answer whether the *machine* has a route, which is one
+of the three ways this breaks and reports healthy for the other two: no IAM
+grant, and a wrong region. So the verdict travels on the channel the game
+already owns, and the console's SSH verb set is untouched.
+
+**`at` is the probe's clock, not the push's,** and that is the whole reason it
+is on the wire. `br_ringmaster` does **not** round-trip to DynamoDB on every
+push — that would be a network call every two seconds to answer a question that
+changes when somebody edits an IAM policy. It probes on its own cadence and
+resends the cached verdict, so the receiver dates the **probe**. Convert it like
+every other timestamp; the console expires a reading at five minutes and reads
+anything older as *unknown*.
+
+**The cadence is a minute, with a faster retry while there is nothing at all to
+report** (`server/ddb.lua`). Four beats inside that five-minute ceiling, so one
+skipped probe never flaps the reading to unknown.
+
+**Absent is never a failure.** `br_ddb` not started, no probe answered yet, a
+probe that was never replied to — all of them leave the key off the snapshot
+entirely, and the receiver must read that as *not told*. Nothing on the game
+side invents a verdict in either direction: a false green hides a ban gate
+failing open, and a false red fires on every routine `restart br_ddb`, which
+`tools/deploy.sh` tells you to run after every deploy.
+
+**Bounded at the sender.** `error` ≤ 512, `region` ≤ 64, `prefix` ≤ 128, because
+those are the receiver's caps and an over-long AWS error message would fail the
+whole envelope — taking the player list down to report a database.
+
+### The other half of the same question lives on `status`, not here
+
+Reachability is one of **two** `br_ddb` facts, and the second one is not on this
+wire at all. *Is the box running a `dist/server.js` that is the file its own
+`dist/fingerprint.json` describes?* is answered off the filesystem, so it rides
+`tools/dispatch.sh`'s existing `status` verb as an optional `bundle` object:
+
+```json
+"bundle": {
+  "manifest": { "scheme": "…", "source": "…", "bundle": "…", "bundleBytes": 713416, "files": 8 },
+  "onDisk": "<sha256 of the deployed dist/server.js>"
+}
+```
+
+Both halves are independently nullable and **absence is never a mismatch** — a
+missing manifest, a missing bundle and a box with no `sha256sum` are three
+different absences. The dispatcher compares nothing; it reports two readings.
+
+**What a match means, and the three things it does not.** The box has the bundle
+and the manifest and **no source tree**, so the only comparison available there
+is the file against the hash recorded beside it. It catches an rsync that did
+not finish or a hand-patched bundle. It does **not** prove the bundle was
+rebuilt from current source — that is the manifest's `source` half, it needs
+`js-src/br_ddb`, and `tools/verify.sh` checks it before a commit ever lands. It
+does not prove the bundle is *correct*; nothing reads a line of it. And it is
+**not tamper detection**: the manifest sits in the same directory as the bundle,
+writable by whoever can write the bundle. It is a mistake detector, the realistic
+mistake is a deploy that did not finish, and it must not be described as a
+security property anywhere.
+
+**No ninth verb.** This widens a read-only verb's *response*, not the verb set —
+which is the console's actual capability boundary and is pinned by name in
+`tools/verify.sh`.
+
 ---
 
 ## `kind: "events"`

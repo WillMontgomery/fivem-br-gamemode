@@ -21,7 +21,17 @@ node_version '22'
 -- THE BUNDLE, NOT THE SOURCE. dist/server.js is generated -- edit js-src/br_ddb
 -- and run `npm run build`. tools/pre-commit refuses a source-only commit, and
 -- verify.sh compares the source against the fingerprint recorded in
--- dist/fingerprint.json, which server/fingerprint.lua republishes at boot.
+-- dist/fingerprint.json before a commit lands.
+--
+-- dist/fingerprint.json IS NOT LOADED BY THIS RESOURCE, and briefly was. A
+-- server/fingerprint.lua published the manifest to `GlobalState.brDdbBundle` at
+-- boot and nothing ever read it, in either repo -- and it could not have
+-- answered the question it was added for anyway: it republished the manifest's
+-- CLAIM and never hashed the bundle, and there is no sha256 available to a Lua
+-- script in FXServer to hash it with. That check now runs where the hasher is:
+-- tools/dispatch.sh reads both files off the deployed resource and reports the
+-- manifest and the bundle's real digest together on the `status` verb. The file
+-- travels with the bundle either way, because deploys rsync the resource whole.
 --
 -- THERE IS DELIBERATELY NO package.json IN THIS RESOURCE. FXServer's own build
 -- toolchain (Node 16, yarn) tries to build any resource that has one, which
@@ -30,7 +40,6 @@ node_version '22'
 server_scripts {
     'dist/server.js',
     'server/debug.lua',
-    'server/fingerprint.lua',
 }
 
 -- No dependency on br_core or br_ringmaster in either direction. This resource

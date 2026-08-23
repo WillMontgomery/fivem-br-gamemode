@@ -50,6 +50,8 @@ server_scripts {
 
     'server/config.lua',    -- must load first; everything else reads BR.Ring.Config
     'server/main.lua',      -- boot banner, boot epoch, identity capture
+    'server/ddb.lua',       -- caches br_ddb's last selftest verdict (before
+                            -- push.lua, which resends it on the snapshot)
     'server/push.lua',      -- the wire: snapshots latest-wins, events via outbox
     'server/incident.lua',  -- files incidents in DynamoDB, then rings the doorbell
                             -- (after push.lua: reads BR.Ring.outbox)

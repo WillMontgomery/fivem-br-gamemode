@@ -1740,6 +1740,143 @@ else
     fi
 fi
 
+# --- 6b. the same bundle, read off a BOX -------------------------------------
+#
+# The gate above is the one that matters and it runs before a commit lands: it
+# proves the committed bundle was recorded against the committed source. It says
+# nothing at all about the file a running server actually loaded, because a
+# deploy happens afterwards and rsync can stop halfway.
+#
+# So `status` carries a second reading -- the deployed manifest, and the deployed
+# bundle's real digest -- and the console compares the two. THIS SECTION DRIVES
+# tools/dispatch.sh AGAINST FIXTURES, because every interesting case here is a
+# case where a file is missing or wrong, and none of them can be produced by
+# reading this repo.
+#
+# WHAT IS ACTUALLY BEING PINNED:
+#
+#   1. the shape, so the console's parser and this printf cannot drift apart;
+#   2. that ABSENCE IS REPRESENTABLE -- no manifest, no bundle, and no hasher
+#      each produce null rather than a value. A false green is the worst
+#      outcome this feature can produce and null is what prevents it;
+#   3. that a MISMATCH IS REPRESENTABLE. A check that cannot go red is a
+#      decoration, and this one is one hash comparison away from always
+#      agreeing with itself;
+#   4. that the DEPLOYED copy is what gets read. Reading the clone would be a
+#      check that passes by construction -- the clone's manifest and bundle
+#      arrived in the same commit and always agree.
+#
+# NOTHING HERE IS A SECURITY PROPERTY. The manifest sits beside the bundle and
+# is writable by whoever can write the bundle; this catches a deploy that did
+# not finish, which is the realistic cause and very nearly the only one.
+
+echo "${DIM}== br_ddb bundle over the wire ==${RST}"
+mf_="resources/[fivem-royale]/br_ddb/dist/fingerprint.json"
+js_="resources/[fivem-royale]/br_ddb/dist/server.js"
+if [ ! -f tools/dispatch.sh ] || [ ! -f "$mf_" ] || [ ! -f "$js_" ]; then
+    echo "     no dispatcher or no committed bundle, skipping"
+elif ! command -v sha256sum >/dev/null 2>&1 \
+     && ! command -v shasum >/dev/null 2>&1 \
+     && ! command -v openssl >/dev/null 2>&1; then
+    echo "${YEL}skip${RST} no sha256 tool -- bundle reading not driven"
+else
+    bx_=$(mktemp -d)
+    bfail_=0
+
+    # A box: a served clone, and a DEPLOYED resource tree that is not it.
+    mkdir -p "$bx_/.git" "$bx_/resources/[gamemodes]/[fivem-royale]/br_ddb/dist"
+    mkdir -p "$bx_/resources/[fivem-royale]/br_ddb/dist"
+    dep_="$bx_/resources/[gamemodes]/[fivem-royale]/br_ddb/dist"
+    clone_="$bx_/resources/[fivem-royale]/br_ddb/dist"
+
+    ask_() {
+        env BR_SERVER_ROOT="$bx_" BR_SRC_DIR="$bx_" BR_REPO_DIR="$bx_" \
+            BR_TARGET_CATEGORY='[gamemodes]' SSH_ORIGINAL_COMMAND=status \
+            bash tools/dispatch.sh 2>/dev/null
+    }
+    says_() {
+        if ! printf '%s' "$2" | grep -qF "$3"; then
+            echo "${RED}FAIL${RST} status bundle: $1"
+            echo "     expected to contain: $3"
+            echo "     got: $2"
+            bfail_=1
+        fi
+    }
+
+    want_="$(sed -n 's/.*"bundle"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$mf_" | head -1)"
+
+    # 1. The healthy case. The digest on the line is the manifest's own, which
+    #    is what makes the console say "Matches" rather than anything stronger.
+    cp "$mf_" "$js_" "$dep_/"
+    out_="$(ask_)"
+    says_ 'a deployed pair reports its manifest' "$out_" "\"scheme\":\"br_ddb-source-fingerprint-1\""
+    says_ 'and the bundle digest beside it'      "$out_" "\"onDisk\":\"$want_\""
+    says_ 'with the byte count as a NUMBER'      "$out_" '"bundleBytes":713416'
+
+    # The whole line has to parse. This object is interpolated into the one
+    # response the console polls; malformed here is not a wrong bundle reading,
+    # it is the process state and the branch pin going dark to report a hash.
+    if command -v node >/dev/null 2>&1; then
+        if ! printf '%s' "$out_" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{JSON.parse(s)})' 2>/dev/null; then
+            echo "${RED}FAIL${RST} status did not print valid JSON with the bundle block"
+            echo "     $out_"
+            bfail_=1
+        fi
+    fi
+
+    # 2. A MISMATCH IS REACHABLE. One appended byte, which is what half an
+    #    rsync leaves behind.
+    printf '\n// truncated deploy\n' >> "$dep_/server.js"
+    out_="$(ask_)"
+    if printf '%s' "$out_" | grep -qF "\"onDisk\":\"$want_\""; then
+        echo "${RED}FAIL${RST} a modified bundle still reported the manifest's digest"
+        echo "     This check cannot go red, which makes it a decoration."
+        bfail_=1
+    fi
+    says_ 'and still names what the manifest claims' "$out_" "\"bundle\":\"$want_\""
+
+    # 3. THE DEPLOYED COPY WINS. The clone always agrees with itself, so a
+    #    reader pointed at it could never see the case above.
+    cp "$js_" "$clone_/"
+    cp "$mf_" "$clone_/"
+    out_="$(ask_)"
+    if printf '%s' "$out_" | grep -qF "\"onDisk\":\"$want_\""; then
+        echo "${RED}FAIL${RST} status read the clone's bundle, not the deployed one"
+        echo "     A deploy that stops halfway is the whole failure this detects,"
+        echo "     and it is invisible from the tree the deploy came from."
+        bfail_=1
+    fi
+
+    # 4. ABSENCE, THREE WAYS, AND NONE OF THEM IS A MISMATCH.
+    rm -f "$dep_/fingerprint.json"
+    out_="$(ask_)"
+    says_ 'no manifest reads as null, not as a fault' "$out_" '"manifest":null'
+
+    cp "$mf_" "$dep_/"
+    rm -f "$dep_/server.js"
+    out_="$(ask_)"
+    says_ 'no bundle reads as null'      "$out_" '"onDisk":null'
+    says_ 'while the manifest still reports' "$out_" "\"bundle\":\"$want_\""
+
+    rm -f "$dep_/fingerprint.json"
+    out_="$(ask_)"
+    says_ 'neither file reads as two nulls' "$out_" '{"manifest":null,"onDisk":null}'
+
+    # 5. A manifest with no source hash is not a half manifest, it is a file we
+    #    could not read -- the rule server-side fingerprint reading used to
+    #    apply, kept now that the reading moved to the shell.
+    printf '{\n  "scheme": "br_ddb-source-fingerprint-1"\n}\n' > "$dep_/fingerprint.json"
+    out_="$(ask_)"
+    says_ 'a manifest with no source hash reads as null' "$out_" '"manifest":null'
+
+    rm -rf "$bx_"
+    if [ "$bfail_" -eq 0 ]; then
+        echo "${GRN}ok${RST}   status reports the deployed bundle, and every absence as null"
+    else
+        rc=1
+    fi
+fi
+
 # --- 7. duplicate console commands --------------------------------------------
 #
 # TWO HANDLERS FOR ONE NAME MEANS LOAD ORDER DECIDES, AND LOAD ORDER IS NOT A

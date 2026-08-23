@@ -181,13 +181,30 @@ if cfg.configured() then
         end
         if not latest then return end
 
+        local snap = latest
+        latest = nil   -- consumed; a stale slot must not be re-sent
+
+        -- br_ddb's last reachability verdict, RIDING THE SNAPSHOT RATHER THAN
+        -- OPENING ANYTHING. Only something inside FXServer can ask that
+        -- question (see server/ddb.lua); this is the channel that already
+        -- leaves the box, so it costs one optional key on a body already being
+        -- sent -- no new endpoint, no new verb, no new secret.
+        --
+        -- ABSENT WHEN THERE IS NOTHING TO SAY, and that is the normal case:
+        -- br_ddb not started, no probe answered yet, or this whole file loaded
+        -- without ddb.lua beside it. Assigning nil leaves the key off the
+        -- table, json.encode omits it, and the console reads the absence as
+        -- "not told" rather than as a fault. Nothing here ever fills it in.
+        if BR.Ring.ddbProbe then
+            snap.ddb = BR.Ring.ddbProbe()
+        end
+
         local body = {
             v        = 1,
             kind     = 'snapshot',
             server   = serverBlock(),
-            snapshot = latest,
+            snapshot = snap,
         }
-        latest = nil   -- consumed; a stale slot must not be re-sent
 
         post(body, function(okay, status)
             stat.lastStatus = status

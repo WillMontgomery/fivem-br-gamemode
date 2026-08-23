@@ -90,6 +90,27 @@ RegisterCommand('brring', function()
         print('snapshot      not wired yet')
     end
 
+    -- WHAT THE CONSOLE IS BEING TOLD ABOUT br_ddb, which is a different question
+    -- from `brddb`. `brddb` probes now; this says what is on the snapshot, so
+    -- "the console shows nothing" can be split into "the game is not sending it"
+    -- and "the console is not reading it" without leaving this machine.
+    --
+    -- A dash for absent, deliberately, and never a word like "ok" -- absent is
+    -- "this box cannot say", and printing anything reassuring for it here would
+    -- be the same lie the wire is careful not to tell.
+    if BR.Ring.ddbStats then
+        local d = BR.Ring.ddbStats()
+        if not d.running then
+            print('ddb           br_ddb is not started -- nothing sent')
+        elseif not d.probe then
+            print('ddb           no selftest answered yet -- nothing sent')
+        else
+            print(('ddb           %s, probed at %dms%s')
+                :format(d.probe.ok and 'reachable' or 'FAILED', d.probe.at,
+                    d.probe.error and (' -- ' .. d.probe.error) or ''))
+        end
+    end
+
     if BR.Ring.outbox then
         local s = BR.Ring.outbox:stats()
         print(('events        depth %d, inflight %d'):format(s.depth, s.inflight))

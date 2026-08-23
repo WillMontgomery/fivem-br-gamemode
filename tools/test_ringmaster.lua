@@ -480,6 +480,187 @@ do
     ok(extraEvents == 0, 'an acked batch is gone -- the queue drains to silence')
 end
 
+-- --------------------------------------------------- the br_ddb reading ---
+--
+-- THE PROPERTY UNDER TEST IS "NEVER INVENT A VERDICT". This block publishes a
+-- database's health to a console that raises an undismissable alert on it, and
+-- there are exactly two ways to get that wrong: a green that is not true hides a
+-- ban gate failing open, and a red that is not true fires on every routine
+-- `restart br_ddb` -- which tools/deploy.sh tells you to run after every single
+-- deploy -- until nobody reads the alert at all.
+--
+-- So every case below is about an ABSENCE being representable. A probe that has
+-- never run, a br_ddb that is not started, a question nobody answered: all of
+-- them leave the block off the wire entirely, and the console reads that as
+-- "not told".
+
+describe('push.ddb')
+
+-- Stand in for br_ddb's JS half: record the question, answer it by hand, so a
+-- test can be the thing that never replies.
+local selftests = {}
+AddEventHandler('br:ddb:selftest', function(req) selftests[#selftests + 1] = req end)
+
+do
+    loadAll({ 'br_ringmaster/server/ddb.lua' })
+
+    ok(BR.Ring.ddbProbe() == nil,
+        'a resource that has never probed has NOTHING to say -- not a healthy default')
+
+    fakeTime = 31000
+    BR.Sched.step(fakeTime)
+    ok(#selftests == 1, 'the probe asks br_ddb on its first tick', #selftests)
+
+    -- A STRING, AND THAT IS THE WHOLE POINT OF IT. br_ddb's own debug.lua keys
+    -- its pending table by the integer IT minted for a `brddb` invocation; a
+    -- string key is simply absent from that table, so our answers can never be
+    -- printed as the answer somebody at the console is waiting for.
+    ok(type(selftests[1]) == 'string' and selftests[1]:sub(1, 11) == 'ringmaster:',
+        'with a namespaced request id, which cannot collide with brddb\'s own',
+        tostring(selftests[1]))
+
+    ok(BR.Ring.ddbProbe() == nil, 'a question in flight is still not an answer')
+
+    -- The answer.
+    fakeTime = 31500
+    TriggerEvent('br:ddb:selftestResult', selftests[1], true,
+        { ms = 42, region = 'us-east-1', prefix = 'ringmaster-' })
+
+    local p = BR.Ring.ddbProbe()
+    ok(p ~= nil, 'the verdict is cached')
+    ok(p and p.ok == true, 'ok is a real boolean')
+    ok(p and p.at == 31500,
+        'stamped when the ANSWER arrived -- the console expires the PROBE, not the push')
+    ok(p and p.ms == 42 and p.region == 'us-east-1' and p.prefix == 'ringmaster-',
+        'carrying the detail br_ddb reported')
+    ok(p and p.error == nil, 'and no error on a success')
+
+    -- ...and onto the snapshot that was going out anyway.
+    TriggerEvent('br:ringmaster:snapshot', {
+        takenGameMs = 31500, counts = { connected = 0, inMatch = 0 },
+        truncated = false, matches = {}, players = {},
+    })
+    fakeTime = 34000
+    BR.Sched.step(fakeTime)
+
+    local body = bodyOf(lastRequest())
+    ok(body and body.kind == 'snapshot', 'a snapshot goes out')
+    ok(body and body.snapshot and body.snapshot.ddb ~= nil,
+        'carrying the ddb block INSIDE the snapshot, where the console looks for it')
+    ok(body and body.snapshot.ddb and body.snapshot.ddb.at == 31500,
+        'dated by the probe, so a cached verdict cannot masquerade as a fresh one')
+    ok(body and body.snapshot.ddb and body.snapshot.ddb.ok == true,
+        'and the verdict itself')
+
+    -- ═══ `0` IS TRUTHY IN LUA AND A FiveM BOOL MAY ARRIVE AS `1` ═══
+    --
+    -- This repo has shipped that bug six times. Here it would be worse than
+    -- usual twice over: `if ok then` reads a failed probe as reachable, and the
+    -- console's schema requires a real boolean -- a `1` on the wire fails the
+    -- WHOLE envelope, which the outbox reads as a nack. The player list would
+    -- stop arriving in order to report a database.
+    fakeTime = 35000
+    TriggerEvent('br:ddb:selftestResult', 'ringmaster:99', 1, { ms = 7 })
+    local one = BR.Ring.ddbProbe()
+    ok(one and one.ok == true, 'a BOOL that arrived as 1 becomes a real `true`')
+
+    fakeTime = 35500
+    TriggerEvent('br:ddb:selftestResult', 'ringmaster:100', 0,
+        { ms = 7, error = 'no route to host' })
+    local zero = BR.Ring.ddbProbe()
+    ok(zero and zero.ok == false,
+        'and one that arrived as 0 becomes `false` -- NOT true, which is what `if ok` would say')
+    ok(zero and zero.error == 'no route to host', "with the failure in br_ddb's own words")
+
+    -- AN OPERATOR'S OWN `brddb` COUNTS, and the console already promises it
+    -- does: its fix popup ends with "Run brddb on the FXServer console to
+    -- re-probe once a cause is ruled out". br_ddb mints an integer req for that
+    -- one; adopting any result, whoever asked, is what makes that sentence true.
+    fakeTime = 36000
+    TriggerEvent('br:ddb:selftestResult', 7, true, { ms = 3, region = 'eu-west-2' })
+    local adopted = BR.Ring.ddbProbe()
+    ok(adopted and adopted.region == 'eu-west-2' and adopted.ok == true,
+        'a brddb run at the console refreshes the reading immediately')
+
+    -- BOUNDED AT THE EDGE THAT KNOWS THE NUMBERS. An AWS SDK error message is
+    -- not a bounded string, and the console's schema caps these three. Over the
+    -- cap is not a truncated field, it is a rejected envelope.
+    fakeTime = 37000
+    TriggerEvent('br:ddb:selftestResult', 8, false, {
+        error  = string.rep('x', 900),
+        region = string.rep('r', 200),
+        prefix = string.rep('p', 300),
+        ms     = -5,
+    })
+    local big = BR.Ring.ddbProbe()
+    ok(big and #big.error == 512, 'the error is bounded to 512', big and #big.error)
+    ok(big and #big.region == 64, 'the region to 64', big and #big.region)
+    ok(big and #big.prefix == 128, 'the prefix to 128', big and #big.prefix)
+    ok(big and big.ms == nil, 'and a negative round trip is dropped, not reported')
+
+    -- ═══ br_ddb NOT RUNNING IS AN ABSENCE, NOT A FAILURE ═══
+    --
+    -- br_ringmaster runs without br_ddb by design -- there is no dependency in
+    -- either direction. Reporting "unreachable" for a resource nobody started
+    -- would raise a database alert on a server that has no database configured.
+    resourceState.br_ddb = 'stopped'
+    ok(BR.Ring.ddbProbe() == nil,
+        'a stopped br_ddb reports NOTHING, never a stated failure')
+
+    TriggerEvent('br:ringmaster:snapshot', {
+        takenGameMs = 40000, counts = { connected = 0, inMatch = 0 },
+        truncated = false, matches = {}, players = {},
+    })
+    fakeTime = 40000
+    BR.Sched.step(fakeTime)
+    local off = bodyOf(lastRequest())
+    ok(off and off.kind == 'snapshot' and off.snapshot.ddb == nil,
+        'and the key is simply absent from the wire -- absence is the answer')
+
+    local asked = #selftests
+    fakeTime = 55000
+    BR.Sched.step(fakeTime)
+    ok(#selftests == asked, 'nor is a resource that is not running asked anything')
+    resourceState.br_ddb = 'started'
+
+    -- A RESTART MUST NOT RESURRECT THE OLD VERDICT. br_ddb comes back with a
+    -- different region convar or a bundle that reaches nothing, and the reading
+    -- from before it stopped would keep going out until the next probe.
+    ok(BR.Ring.ddbProbe() ~= nil, 'the cached verdict survives a resourceState blip')
+    TriggerEvent('onResourceStop', 'br_core')
+    ok(BR.Ring.ddbProbe() ~= nil, 'another resource stopping is not our business')
+    TriggerEvent('onResourceStop', 'br_ddb')
+    ok(BR.Ring.ddbProbe() == nil, 'br_ddb stopping takes its verdict with it')
+
+    -- ═══ THE CADENCE, AND WHY IT IS TWO NUMBERS ═══
+    --
+    -- Fast while there is nothing at all to report, slow once there is. The
+    -- fast half is what stops a boot -- or a br_ddb that started after us --
+    -- from leaving the console blank for a full minute; the slow half is what
+    -- stops a GetItem every 2s to answer a question that changes when somebody
+    -- edits an IAM policy.
+    local n0 = #selftests
+    fakeTime = 71000
+    BR.Sched.step(fakeTime)
+    ok(#selftests == n0 + 1, 'with no reading at all, it asks on the next tick')
+
+    fakeTime = 86000
+    BR.Sched.step(fakeTime)
+    ok(#selftests == n0 + 2, 'and keeps asking while nothing has ever answered')
+
+    TriggerEvent('br:ddb:selftestResult', selftests[#selftests], true, { ms = 5 })
+
+    fakeTime = 101000
+    BR.Sched.step(fakeTime)
+    ok(#selftests == n0 + 2,
+        'once there is a reading, a tick 15s later asks nothing')
+
+    fakeTime = 147000
+    BR.Sched.step(fakeTime)
+    ok(#selftests == n0 + 3,
+        'and it re-probes a minute on -- four beats inside the console\'s 5min ceiling')
+end
+
 -- ------------------------------------------------------------- ban gate ---
 --
 -- THE PROPERTY UNDER TEST IS "ALWAYS RESOLVES". A deferral that never calls
