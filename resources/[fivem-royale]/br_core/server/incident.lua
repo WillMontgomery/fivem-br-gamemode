@@ -312,27 +312,41 @@ local function corroborate(ev)
     rec.held = ev
 end
 
---- Send whatever a match's cases were still holding.
+--- A match is over: send what its cases were still holding, and forget them.
 ---
---- WHY THIS IS NOT OPTIONAL. A throttle that only fires on arrival drops the
---- tail: an offender who strips twenty times in twenty seconds and then stops
---- has nineteen of those folded into a note that is waiting for a twenty-first
---- which never comes, and the record would close saying `3`. This is the line
---- that makes "the count is never lost" true rather than nearly true.
+--- WHY THE FLUSH IS NOT OPTIONAL. A throttle that only fires on arrival drops
+--- the tail: an offender who strips twenty times in twenty seconds and then
+--- stops has nineteen of those folded into a note waiting for a twenty-first
+--- which never comes, and the record would close saying `3`. This is what makes
+--- "the count is never lost" true rather than nearly true.
 ---
 --- THE TEARDOWN IS THE RIGHT MOMENT AND NOT MERELY A CONVENIENT ONE. It is the
 --- last instant anything will ask, it is already an event so no timer is added,
 --- and the note it releases carries the final total for the match -- which is
 --- the number an admin opening the case tomorrow is actually looking for.
+---
+--- THE SEND AND THE FORGET ARE ONE CALL BECAUSE THEY ARE ONE MOMENT, and
+--- splitting them cost something real enough to be worth naming. With the drop
+--- on its own line beside the flush, deleting that line changed no behaviour any
+--- test could observe -- the map simply grew for the life of the process -- and
+--- a clearing of `rec.held` had to exist to guard a second call that never came.
+--- Joined, there is one thing to call, the per-note clearing is unnecessary
+--- because the whole record goes, and the failure mode of getting it wrong is
+--- the count not arriving, which several cases assert.
 --- @param matchId any
-local function flushHeld(matchId)
-    local m = lastSaid[key(matchId)]
+local function flushAndForget(matchId)
+    local k = key(matchId)
+    local m = lastSaid[k]
     if not m then return end
+
+    -- DROPPED BEFORE THE SENDS, so a handler that somehow re-entered this file
+    -- cannot find a record for a match that is over and hold a note nothing
+    -- will ever release.
+    lastSaid[k] = nil
+
     for _, rec in pairs(m) do
-        local held = rec.held
-        if held then
-            rec.held = nil
-            TriggerEvent('br:ringmaster:corroborate', held)
+        if rec.held then
+            TriggerEvent('br:ringmaster:corroborate', rec.held)
         end
     end
 end
@@ -890,12 +904,10 @@ end)
 -- no prompt. See OPEN_MAX for what bounds it instead.
 AddEventHandler('br:match:destroyed', function(ev)
     if not ev or ev.matchId == nil then return end
-    -- BEFORE THE MAP GOES, AND THE ORDER IS THE WHOLE POINT. `flushHeld` reads
-    -- the record this next line deletes, and the note it releases is the one
-    -- carrying the match's final offence count -- see the throttle's header for
-    -- why that note is the only one whose loss would cost anything.
-    flushHeld(ev.matchId)
-    lastSaid[key(ev.matchId)] = nil
+    -- THE NOTE THIS RELEASES IS THE ONE CARRYING THE MATCH'S FINAL OFFENCE
+    -- COUNT -- see the throttle's header for why it is the only one whose loss
+    -- would cost anything.
+    flushAndForget(ev.matchId)
     filed[ev.matchId] = nil
 end)
 
