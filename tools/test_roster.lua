@@ -7953,6 +7953,205 @@ do
        tostring(pushedOut and pushedOut.carried))
 end
 
+describe('inv.reload')
+do
+    -- THE MANUAL RELOAD KEY (owner, 2026-08-23: "we need a manual reload button,
+    -- which should default to R").
+    --
+    -- WHAT IS BEING PROVED IS A CONSERVATION LAW, NOT A FEATURE. Four ways to
+    -- conjure ammunition have been closed in two days and every one of them was
+    -- REPEATABLE; a reload key is that shape by construction, because it is a
+    -- button in the player's hand with no cooldown on it. So the assertions
+    -- below are almost all about `clip + pool` being the same number afterwards,
+    -- and the one that matters most is a hundred presses at a pool of zero.
+    ok(BR.Config.Combat.serverAmmo, 'server ammo is on for this block')
+
+    lootMatch()
+
+    local carbine = BR.Config.WeaponById['carbinerifle']
+    local MED     = BR.AmmoType.MEDIUM
+
+    --- Arm slot 1 with a carbine at a chosen magazine and pool.
+    local function armed(clip, pool)
+        BR.Inv.reset(1)
+        BR.Inv.give(1, { item = 'carbinerifle', kind = BR.ItemKind.WEAPON,
+                         rarity = 3, count = 1, clip = carbine.clip })
+        local i = BR.Inv.of(1)
+        i.active = 1
+        i.slots[1].clip = clip
+        i.ammo[MED] = pool
+        return i
+    end
+
+    local function totalOf(i)
+        return (i.slots[1] and i.slots[1].clip or 0) + (i.ammo[MED] or 0)
+    end
+
+    -- A PARTIAL MAGAZINE IS TOPPED UP, which is the whole difference between a
+    -- reload KEY and waiting to run dry -- and the reason BR.Inv.reload is a
+    -- generalisation of the rule spendRound ran rather than a copy of it.
+    local inv = armed(10, 100)
+    local before = totalOf(inv)
+    fire(BR.Net.INV_RELOAD, 1, {})
+    ok(inv.slots[1].clip == carbine.clip,
+       'a manual reload fills the magazine',
+       ('clip %s of %d'):format(tostring(inv.slots[1].clip), carbine.clip))
+    ok(inv.ammo[MED] == 100 - (carbine.clip - 10),
+       'and the reserve pays for exactly what went in',
+       tostring(inv.ammo[MED]))
+    ok(totalOf(inv) == before,
+       'THE TOTAL IS UNTOUCHED -- rounds moved, none were made',
+       ('%d -> %d'):format(before, totalOf(inv)))
+
+    -- SPAMMING IT DOES NOTHING, and it does nothing by ARITHMETIC rather than by
+    -- a cooldown: the second press finds a full magazine, and a full magazine
+    -- has no room, and no room is a return before anything is written.
+    before = totalOf(inv)
+    for _ = 1, 100 do fire(BR.Net.INV_RELOAD, 1, {}) end
+    ok(totalOf(inv) == before and inv.slots[1].clip == carbine.clip,
+       'a hundred presses on a full magazine change nothing at all',
+       ('%d -> %d, clip %s'):format(before, totalOf(inv),
+                                    tostring(inv.slots[1].clip)))
+
+    -- ═══ AT EXACTLY ZERO POOL, WHICH IS THE ONE THAT MATTERS ═══
+    --
+    -- This is the railgun's ordinary state and it is where every one of this
+    -- week's bugs became visible. An empty pool cannot conjure a magazine
+    -- because there is nothing for the arithmetic to take it from -- so a key
+    -- that could make one here is a key that makes ammunition.
+    inv = armed(0, 0)
+    for _ = 1, 100 do fire(BR.Net.INV_RELOAD, 1, {}) end
+    ok(inv.slots[1].clip == 0 and inv.ammo[MED] == 0,
+       'A HUNDRED RELOADS AT ZERO POOL PRODUCE ZERO ROUNDS',
+       ('clip %s reserve %s'):format(tostring(inv.slots[1].clip),
+                                     tostring(inv.ammo[MED])))
+
+    -- A POOL SMALLER THAN THE MAGAZINE empties into it and stops. The clamp is
+    -- `min(room, pool)` and getting it the other way round is how a partial
+    -- reserve becomes a full magazine.
+    inv = armed(0, 3)
+    fire(BR.Net.INV_RELOAD, 1, {})
+    ok(inv.slots[1].clip == 3 and inv.ammo[MED] == 0,
+       'three rounds in reserve make a magazine of three, not of thirty',
+       ('clip %s reserve %s'):format(tostring(inv.slots[1].clip),
+                                     tostring(inv.ammo[MED])))
+    fire(BR.Net.INV_RELOAD, 1, {})
+    ok(inv.slots[1].clip == 3 and inv.ammo[MED] == 0,
+       'and pressing again on the empty pool adds nothing',
+       ('clip %s reserve %s'):format(tostring(inv.slots[1].clip),
+                                     tostring(inv.ammo[MED])))
+
+    -- FISTS. inv.active is 0, which is not a slot index at all, and a reload
+    -- there must be a quiet nothing rather than an error.
+    inv = armed(0, 60)
+    inv.active = 0
+    local okFists = pcall(fire, BR.Net.INV_RELOAD, 1, {})
+    ok(okFists, 'a reload on fists does not throw')
+    ok(inv.slots[1].clip == 0 and inv.ammo[MED] == 60,
+       'and it moves nothing, because fists have no magazine',
+       ('clip %s reserve %s'):format(tostring(inv.slots[1].clip),
+                                     tostring(inv.ammo[MED])))
+
+    -- A MELEE WEAPON IN HAND has a slot and no magazine, which is the other
+    -- half of the same guard and the one a `w.clip or 0` would get wrong.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'machete', kind = BR.ItemKind.WEAPON,
+                     rarity = 1, count = 1 })
+    inv = BR.Inv.of(1)
+    inv.active = 1
+    inv.ammo[MED] = 60
+    fire(BR.Net.INV_RELOAD, 1, {})
+    ok(inv.slots[1].clip == nil and inv.ammo[MED] == 60,
+       'a machete cannot be reloaded, and asking does not invent a magazine',
+       ('clip %s reserve %s'):format(tostring(inv.slots[1].clip),
+                                     tostring(inv.ammo[MED])))
+
+    -- A CONSUMABLE IN HAND. The same key is the `use` key; the server's answer
+    -- to "reload a bandage" has to be silence rather than a slot rewritten.
+    BR.Inv.reset(1)
+    BR.Inv.give(1, { item = 'bandage', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = 1, count = 2 })
+    inv = BR.Inv.of(1)
+    inv.active = 1
+    fire(BR.Net.INV_RELOAD, 1, {})
+    ok(inv.slots[1].count == 2 and inv.slots[1].clip == nil,
+       'reloading a bandage does nothing to it')
+
+    -- AND IT IS GATED LIKE EVERY OTHER MUTATION. liveInv admits ALIVE and
+    -- WARMUP only, so a downed player cannot top up off the floor and a player
+    -- still in the air cannot either -- FREEFALL and GLIDE are not LIVE, which
+    -- is the server half of "arming is suspended in the air".
+    inv = armed(0, 60)
+    for _, st in ipairs({ BR.PlayerState.DBNO, BR.PlayerState.FREEFALL,
+                          BR.PlayerState.GLIDE, BR.PlayerState.DEAD }) do
+        BR.Roster.setState(1, st)
+        fire(BR.Net.INV_RELOAD, 1, {})
+        ok(inv.slots[1].clip == 0 and inv.ammo[MED] == 60,
+           ('a reload in state %s is refused'):format(st),
+           ('clip %s reserve %s'):format(tostring(inv.slots[1].clip),
+                                         tostring(inv.ammo[MED])))
+    end
+    BR.Roster.setState(1, BR.PlayerState.ALIVE)
+    fire(BR.Net.INV_RELOAD, 1, {})
+    ok(inv.slots[1].clip == carbine.clip,
+       '...and works again the moment their feet are on the ground',
+       tostring(inv.slots[1].clip))
+
+    -- IT INTERRUPTS A CONSUMABLE, exactly as a slot switch does. Both are what
+    -- the player's hands are doing, and a med kit finishing while a magazine
+    -- goes in would be a free heal mid-fight.
+    inv = armed(0, 60)
+    -- A SHIELD RATHER THAN A MED KIT: the harness's peds stand at full health,
+    -- and INV_USE refuses a heal that would do nothing before it ever starts
+    -- one. GetPedArmour answers 0, so the shield is the consumable that can
+    -- actually begin here.
+    BR.Inv.give(1, { item = 'shield', kind = BR.ItemKind.CONSUMABLE,
+                     rarity = 2, count = 1 })
+    local medSlot
+    for i = 1, 5 do
+        if inv.slots[i] and inv.slots[i].item == 'shield' then medSlot = i end
+    end
+    inv.active = medSlot
+    fire(BR.Net.INV_USE, 1, { slot = medSlot })
+    ok(inv.using ~= nil, 'the shield potion is going down')
+    inv.active = 1
+    fire(BR.Net.INV_RELOAD, 1, {})
+    ok(inv.using == nil, 'and a reload interrupts it, like a slot switch does')
+
+    -- THE PUSH. The split is the server's own arithmetic and the client has no
+    -- other way to learn it -- a reload nobody is told about is a magazine the
+    -- HUD keeps drawing empty.
+    inv = armed(0, 60)
+    sent = {}
+    fire(BR.Net.INV_RELOAD, 1, {})
+    ok(#eventsOf(BR.Net.INV_SET) > 0, 'a real reload is pushed back')
+    sent = {}
+    fire(BR.Net.INV_RELOAD, 1, {})
+    ok(#eventsOf(BR.Net.INV_SET) == 0,
+       'and one that did nothing says nothing -- no push, no notification',
+       tostring(#eventsOf(BR.Net.INV_SET)))
+
+    -- ONE RULE, THREE CALLERS. The automatic reload is the same function with a
+    -- `clip <= 0` test in front of it, so the gun that runs dry mid-burst and
+    -- the gun reloaded by hand cannot end up in different states.
+    inv = armed(1, 60)
+    BR.Damage.spendRound(1, carbine.hash)
+    ok(inv.slots[1].clip == carbine.clip and inv.ammo[MED] == 60 - carbine.clip,
+       'firing the last round still reloads automatically, by the same rule',
+       ('clip %s reserve %s'):format(tostring(inv.slots[1].clip),
+                                     tostring(inv.ammo[MED])))
+
+    -- ...AND THE AUTOMATIC ONE STILL WILL NOT TOP UP A PARTIAL MAGAZINE, which
+    -- is why that test stayed on the caller's side. If BR.Inv.reload were called
+    -- unguarded from spendRound, every shot would refill the gun.
+    inv = armed(10, 100)
+    BR.Damage.spendRound(1, carbine.hash)
+    ok(inv.slots[1].clip == 9 and inv.ammo[MED] == 100,
+       'and an ordinary shot spends a round without refilling the magazine',
+       ('clip %s reserve %s'):format(tostring(inv.slots[1].clip),
+                                     tostring(inv.ammo[MED])))
+end
+
 -- THE FALLBACK PATH, still live when `/brdamage off` turns the takeover back
 -- into an audit. If the server is not applying damage it is not seeing shots
 -- either, and a magazine nothing decrements is better than one nothing

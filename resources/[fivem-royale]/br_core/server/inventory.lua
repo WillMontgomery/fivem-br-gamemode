@@ -226,6 +226,54 @@ local function addAmmo(inv, pool, amount)
     return next_ - have
 end
 
+--- THE RELOAD RULE. THERE IS EXACTLY ONE OF IT AND THIS IS IT.
+---
+--- Rounds out of the pool and into the magazine, up to what the magazine holds.
+--- It MOVES and it cannot MINT: `clip + pool` is the same number on both sides
+--- of this function, whatever it is given, which is the property the whole ammo
+--- model rests on and the one a reload KEY makes somebody able to press on
+--- demand. Every guard below is a `return 0` rather than a clamp, so there is no
+--- path through it that writes without the arithmetic above having balanced.
+---
+--- THREE CALLERS, AND THEY WERE TWO COPIES BEFORE THIS EXISTED (2026-08-23):
+---
+---   spendRound          an empty magazine refills when the last round is fired
+---   the INV_AMMO floor  ...and when the client reports it emptied unseen
+---   INV_RELOAD          the manual key, which is the reason this is shared
+---
+--- The first two keep their own `clip <= 0` test and this is a strict
+--- generalisation of what they used to do inline: at clip 0, `w.clip - 0` is
+--- `w.clip` and the arithmetic is identical to the line each of them held. The
+--- manual reload is the only caller that tops up a PARTIAL magazine, which is
+--- the whole difference between a reload key and waiting to run dry -- and it is
+--- the reason this is one function rather than a third copy that would have to
+--- be kept honest against the other two by hand.
+---
+--- @param inv table
+--- @param s table|false   a slot
+--- @return integer moved
+function BR.Inv.reload(inv, s)
+    if not inv or not s or s.kind ~= BR.ItemKind.WEAPON then return 0 end
+
+    local w = BR.Config.WeaponById[s.item]
+    -- Melee has no magazine and a throwable's "magazine" is its stack -- neither
+    -- is a thing rounds can be moved into.
+    if not w or w.melee or not w.clip or not w.ammo then return 0 end
+
+    local pool = inv.ammo[w.ammo] or 0
+    local clip = s.clip or 0
+    -- ROOM, NOT EMPTINESS, and `<= 0` on both rather than a truthiness test:
+    -- these are the two numbers a bare `if pool then` gets exactly backwards,
+    -- because 0 IS TRUTHY IN LUA and an empty pool is the case this function
+    -- exists to refuse.
+    local room = w.clip - clip
+    if room <= 0 or pool <= 0 then return 0 end
+
+    local moved = math.min(room, pool)
+    s.clip, inv.ammo[w.ammo] = clip + moved, pool - moved
+    return moved
+end
+
 --- STAMP A STACK THAT IS LEAVING SOMEBODY'S HANDS.
 ---
 --- ═══ THE FOURTH DOOR (owner, 2026-08-23) ═══
@@ -739,6 +787,55 @@ AddEventHandler(BR.Net.INV_DROP, function(d)
     BR.Inv.push(src)
 end)
 
+-- THE MANUAL RELOAD KEY (owner, 2026-08-23: "we need a manual reload button,
+-- which should default to R").
+--
+-- ═══ IT MUST NOT BECOME DOOR NUMBER FIVE ═══
+--
+-- Four ways to conjure ammunition have been closed in two days -- the slot
+-- switch, an unrelated pickup, the post-landing sweep and the drop/pickup round
+-- trip -- and every one of them was something a player could REPEAT. A reload
+-- key is that shape by construction: it is a button, in the player's hand,
+-- pressable as fast as they like, and any version of it that can add a round can
+-- add all of them.
+--
+-- SO IT ADDS NOTHING AND CHOOSES NOTHING. It carries no payload, it names no
+-- slot, it reloads the slot THIS SIDE believes is active, out of the pool THIS
+-- SIDE holds, by BR.Inv.reload -- the same function spendRound and the INV_AMMO
+-- floor run. That function MOVES rounds, so `clip + pool` is identical on both
+-- sides of it, so pressing this key a thousand times at a pool of zero produces
+-- exactly what pressing it once does: nothing. There is no rate limit here and
+-- none is needed -- a spammed reload is a magazine that is already full, which
+-- the rule returns 0 for.
+--
+-- AND IT DOES NOT ASK THE ENGINE. The obvious implementation is to tell the
+-- client to call the reload native, but the ped's magazine is not the authority
+-- on anything here and never has been (see the header, and the whole of
+-- client/inventory.lua's `shortfall`). The server moves its own numbers and
+-- pushes; the ped learns about it through the INV_SET that follows, on the same
+-- path a reload the server paid for has always travelled.
+--
+-- THE SILENCE IS DELIBERATE. A full magazine, an empty pool, fists, a melee
+-- weapon in hand: all of them return without a word, because a key that talks
+-- back every time it has nothing to do becomes noise in a firefight -- and the
+-- one case worth explaining, an empty pool, is already on the HUD as a zero.
+RegisterNetEvent(BR.Net.INV_RELOAD)
+AddEventHandler(BR.Net.INV_RELOAD, function()
+    local src = source
+    local inv = liveInv(src)
+    if not inv then return end
+
+    -- SLOT ZERO IS FISTS and holds nothing; every other index is checked by
+    -- BR.Inv.reload, which refuses anything that is not a magazined weapon.
+    if BR.Inv.reload(inv, inv.slots[inv.active]) <= 0 then return end
+
+    -- Reloading interrupts a consumable, exactly as a slot switch does: both are
+    -- "what my hands are doing", and letting a med kit finish while a magazine
+    -- goes in would be a free heal mid-fight.
+    inv.using = nil
+    BR.Inv.push(src)
+end)
+
 RegisterNetEvent(BR.Net.INV_USE)
 AddEventHandler(BR.Net.INV_USE, function(d)
     local src = source
@@ -907,19 +1004,23 @@ AddEventHandler(BR.Net.INV_AMMO, function(d)
             newClip = 0
         end
 
-        -- AND THE RELOAD IS STILL THE SERVER'S, by running the same rule
-        -- spendRound runs rather than a second copy of it: an empty magazine
-        -- over a non-empty pool refills, once, capped by the magazine. Writing
-        -- it here rather than waiting for the next shot keeps the two paths
-        -- from disagreeing about what an empty gun looks like -- and it moves
-        -- rounds without creating any, so the total is untouched.
-        if newClip <= 0 and newPool > 0 then
-            local moved = math.min(w.clip or 0, newPool)
-            newPool, newClip = newPool - moved, moved
-        end
-
         s.clip = newClip
         if w.ammo then inv.ammo[w.ammo] = newPool end
+
+        -- AND THE RELOAD IS STILL THE SERVER'S, by running the same rule
+        -- spendRound runs rather than a second copy of it: an empty magazine
+        -- over a non-empty pool refills, once, capped by the magazine. Doing it
+        -- here rather than waiting for the next shot keeps the two paths from
+        -- disagreeing about what an empty gun looks like -- and it moves rounds
+        -- without creating any, so the total is untouched.
+        --
+        -- `newClip <= 0` STAYS HERE AND IS NOT INSIDE BR.Inv.reload. That
+        -- function tops a magazine up to capacity, which is what a player
+        -- pressing the reload key asks for; this path is a REPORT of rounds
+        -- already gone, and topping up a partial magazine off the back of one
+        -- would reload the gun every time it was fired.
+        if newClip <= 0 then BR.Inv.reload(inv, s) end
+
         BR.Inv.push(src)
         return
     end

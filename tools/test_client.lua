@@ -13155,6 +13155,204 @@ do
     fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
 end
 
+-- ======================================================================== --
+-- O. THE MANUAL RELOAD KEY
+-- ======================================================================== --
+--
+-- Owner, 2026-08-23: "we need a manual reload button, which should default to
+-- R." R WAS ALREADY `use`, and keybinds.lua chose it in the first place by
+-- arguing about a reload that did not exist yet -- "the two never want the key
+-- at the same moment". That sentence is now load-bearing, so it is what this
+-- block tests: ONE key, and which of the two things it means is decided by what
+-- is in the player's hands.
+--
+-- THE SERVER OWNS THE ARITHMETIC AND test_roster PROVES IT. What is proved here
+-- is narrower and is the half that lives on this side: which message goes out,
+-- and -- for the states where nothing should happen -- that NOTHING goes out.
+-- A key that asks the server on every press would be answered correctly and
+-- would still be wrong, because it would eat the `use` that press was.
+describe('#R -- the manual reload key')
+do
+    local RIFLE = BR.Config.WeaponById['carbinerifle']
+
+    local function press()
+        for _, fn in ipairs(BR.Keys.listeners['use'] or {}) do fn(true) end
+    end
+
+    local function asked(name)
+        local n = 0
+        for _, s in ipairs(sent) do if s.name == name then n = n + 1 end end
+        return n
+    end
+
+    --- Stand the player up holding slot 1, with a shield in slot 2.
+    ---
+    --- THE SHIELD IS NOT SCENERY. `use` falls through to "the lowest slot that
+    --- is consumable" when the active slot is not one, so without something to
+    --- fall through TO, every "the reload took the press" assertion would pass
+    --- against a key that did nothing whatsoever.
+    local function holding(slot, pool)
+        fire(BR.Net.INV_SET, {
+            slots = {
+                slot,
+                { id = 'shield', label = 'Shield',
+                  kind = BR.ItemKind.CONSUMABLE, rarity = 2, count = 1 },
+            },
+            ammo = { medium = pool }, active = 1,
+        })
+    end
+
+    local function rifle(clip)
+        return { id = 'carbinerifle', label = 'Carbine Rifle',
+                 kind = BR.ItemKind.WEAPON, rarity = 3, count = 1,
+                 clip = clip, pool = 'medium' }
+    end
+
+    BR.State.me.state = BR.PlayerState.ALIVE
+    BR.State.landed = true
+    fire(BR.Net.STATE, { state = BR.MatchState.PLAYING })
+
+    -- ── 1. THE ORDINARY PRESS: a magazine with room in it over a live pool.
+    holding(rifle(10), 100)
+    sent = {}
+    press()
+    ok(asked(BR.Net.INV_RELOAD) == 1,
+       'R with a half-empty rifle in hand asks the server to reload',
+       ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
+    ok(asked(BR.Net.INV_USE) == 0,
+       'and it does NOT also drink the shield in slot 2 -- one press, one thing',
+       ('%d INV_USE'):format(asked(BR.Net.INV_USE)))
+
+    -- ── 2. A FULL MAGAZINE IS NOT A RELOAD, so the press is a `use` again. This
+    --       is the assertion that keeps the key from swallowing the old
+    --       behaviour: the two are exclusive, not ordered.
+    holding(rifle(RIFLE.clip), 100)
+    sent = {}
+    press()
+    ok(asked(BR.Net.INV_RELOAD) == 0,
+       'a full magazine is not a reload',
+       ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
+    ok(asked(BR.Net.INV_USE) == 1,
+       'and the press goes back to being the use key it always was',
+       ('%d INV_USE'):format(asked(BR.Net.INV_USE)))
+
+    -- ── 3. AN EMPTY POOL IS NOT A RELOAD EITHER, and this is the railgun's
+    --       ordinary state -- the one every ammo bug this week was found in.
+    --       Quietly: no message, no notification, nothing to answer.
+    holding(rifle(0), 0)
+    sent = {}
+    press()
+    ok(asked(BR.Net.INV_RELOAD) == 0,
+       'A DRY GUN OVER AN EMPTY POOL ASKS FOR NOTHING',
+       ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
+
+    -- ...AND SPAMMING IT IS THE SAME NOTHING. The server cannot mint a round
+    -- here either (test_roster runs a hundred presses at zero pool through the
+    -- real handler); this is the half that keeps the wire quiet as well.
+    sent = {}
+    for _ = 1, 50 do press() end
+    ok(asked(BR.Net.INV_RELOAD) == 0,
+       'and fifty presses at zero pool send fifty nothings',
+       ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
+
+    -- ── 4. FISTS. Slot 0 holds nothing at all, and `inv.slots[0]` is not even
+    --       an index -- the predicate has to answer that without reaching into
+    --       it.
+    fire(BR.Net.INV_SET, {
+        slots = { rifle(0),
+                  { id = 'shield', label = 'Shield',
+                    kind = BR.ItemKind.CONSUMABLE, rarity = 2, count = 1 } },
+        ammo = { medium = 100 }, active = 0,
+    })
+    sent = {}
+    press()
+    ok(asked(BR.Net.INV_RELOAD) == 0,
+       'a reload on fists asks for nothing',
+       ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
+    ok(asked(BR.Net.INV_USE) == 1,
+       'and R with empty hands still reaches the shield, as it always did',
+       ('%d INV_USE'):format(asked(BR.Net.INV_USE)))
+
+    -- ── 5. A MACHETE HAS NO MAGAZINE. It is a WEAPON by kind, which is exactly
+    --       why `kind == WEAPON` is not the whole test -- `w.clip` is nil here
+    --       and `w.clip or 0` would have made it a gun with a zero magazine.
+    holding({ id = 'machete', label = 'Machete', kind = BR.ItemKind.WEAPON,
+              rarity = 1, count = 1 }, 100)
+    sent = {}
+    press()
+    ok(asked(BR.Net.INV_RELOAD) == 0,
+       'a machete cannot be reloaded',
+       ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
+
+    -- ── 6. A THROWABLE'S "MAGAZINE" IS ITS STACK. Nothing moves rounds into a
+    --       grenade, and a reload that touched `count` would be inventing them.
+    holding({ id = 'grenade', label = 'Grenade', kind = BR.ItemKind.THROWABLE,
+              rarity = 3, count = 2 }, 100)
+    sent = {}
+    press()
+    ok(asked(BR.Net.INV_RELOAD) == 0,
+       'and neither can a grenade',
+       ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
+
+    -- ── 7. IN THE AIR, WHICH IS DELIBERATE AND IS NOT ABOUT RELOADING. Arming
+    --       is suspended for the whole descent because RemoveAllPedWeapons takes
+    --       the parachute with it, and canArm() is the gate that says so -- so a
+    --       reload at 400 metres is refused by the same line, on this side, and
+    --       again at the far end where FREEFALL is not in the LIVE table.
+    holding(rifle(10), 100)
+    BR.State.landed = false
+    BR.State.me.state = BR.PlayerState.FREEFALL
+    sent = {}
+    press()
+    ok(asked(BR.Net.INV_RELOAD) == 0 and asked(BR.Net.INV_USE) == 0,
+       'a reload in freefall asks for nothing, and neither does anything else',
+       ('%d INV_RELOAD, %d INV_USE'):format(asked(BR.Net.INV_RELOAD),
+                                            asked(BR.Net.INV_USE)))
+
+    BR.State.me.state = BR.PlayerState.GLIDE
+    sent = {}
+    press()
+    ok(asked(BR.Net.INV_RELOAD) == 0,
+       'and under the canopy is the same answer',
+       ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
+
+    -- ...AND IT COMES BACK ON TOUCHDOWN, with nothing to reset. The landing
+    -- latch is what canArm() reads, so this is the same press one state later.
+    BR.State.landed = true
+    BR.State.me.state = BR.PlayerState.ALIVE
+    sent = {}
+    press()
+    ok(asked(BR.Net.INV_RELOAD) == 1,
+       'and the first press on the ground reloads',
+       ('%d INV_RELOAD'):format(asked(BR.Net.INV_RELOAD)))
+
+    -- ── 8. THE BINDING ITSELF. One row, on R, and it is a TAP -- a held reload
+    --       would repeat for as long as the key was down.
+    local row
+    for _, b in ipairs(BR.Keys.bindings) do
+        if b.command == 'bruse' then row = b end
+    end
+    ok(row ~= nil, 'the key is in the table the settings screen reads')
+    ok(row and row.default == 'R', 'and it defaults to R',
+       tostring(row and row.default))
+    ok(row and row.hold == false, 'as a TAP -- one press, one magazine',
+       tostring(row and row.hold))
+    ok(row and row.label:find('eload') ~= nil,
+       'and the row says so, because it is the only row that can',
+       tostring(row and row.label))
+
+    -- NOTHING ELSE CLAIMED R. The whole argument for one binding is that there
+    -- is only one, so a second row on the same default would silently make this
+    -- block's exclusivity assertions meaningless.
+    local onR = 0
+    for _, b in ipairs(BR.Keys.bindings) do
+        if b.default == 'R' then onR = onR + 1 end
+    end
+    ok(onR == 1, 'and it is the only binding defaulting to R', tostring(onR))
+
+    fire(BR.Net.STATE, { state = BR.MatchState.WAITING })
+end
+
 realPrint(('%s%d passed, %d failed\27[0m')
     :format(fail == 0 and '\27[32m' or '\27[31m', pass, fail))
 os.exit(fail == 0 and 0 or 1)

@@ -375,11 +375,40 @@ group = 'Combat'
 tap ('inventory',   'brinventory', 'Royale: Inventory',                  'TAB')
 hold('interact',    'brinteract',  'Royale: Interact / pick up / revive','E')
 tap ('drop',        'brdrop',      'Royale: Drop selected item',         'G')
--- R by default because RELOAD is exactly what a player reaches for when they
--- want the thing in their hands to do something, and reloading a shield potion
--- means nothing -- so the two never want the key at the same moment. Rebind it
--- in Settings > Key Bindings like everything else here.
-tap ('use',         'bruse',       'Royale: Use selected item',          'R')
+-- ═══ R IS THE RELOAD KEY, AND SINCE 2026-08-23 THERE IS A RELOAD ═══
+--
+-- This row chose R by arguing about a reload that did not exist yet:
+--
+--   "R by default because RELOAD is exactly what a player reaches for when they
+--    want the thing in their hands to do something, and reloading a shield
+--    potion means nothing -- so the two never want the key at the same moment."
+--
+-- Owner, 2026-08-23: "we need a manual reload button, which should default to
+-- R." R WAS ALREADY TAKEN -- by this line. Three ways out: put the reload
+-- somewhere the owner did not ask for, move `use` off the key his hands already
+-- know, or take the sentence above at its word.
+--
+-- IT IS TAKEN AT ITS WORD, AND THIS STAYS ONE BINDING. The claim was that the
+-- two can never both be answerable, and it holds exactly: a magazine with room
+-- in it over a live pool is a reload and nothing else, and every other state is
+-- a `use`. So one key answers one question -- "make the thing in my hands do
+-- something" -- and client/inventory.lua decides which, from what is in the
+-- hands rather than from anything about the key.
+--
+-- WHY NOT A SECOND BINDING ALSO DEFAULTING TO R, which is the obvious shape and
+-- was written before this one. The raw layer would handle it -- it tracks edges
+-- per COMMAND, so two rows on 0x52 both fire -- but the ENGINE's half is an
+-- assumption nobody here can test: whether RegisterKeyMapping delivers BOTH
+-- commands for one key, or one of them. On a client without the raw natives
+-- that assumption is the difference between a working reload and a dead key,
+-- and this file has paid for input-layer assumptions three times over #129
+-- alone ("Welp, now trying to open a crate does nothing at all"). One binding
+-- needs no assumption on either layer.
+--
+-- The cost, stated: reload cannot be moved off `use`. They are one key by the
+-- owner's own request and by the argument this row was founded on, and the day
+-- somebody wants them apart is the day to find out what the engine does.
+tap ('use',         'bruse',       'Royale: Use item / reload',          'R')
 
 group = 'Slots'
 -- Slots. Direct slot keys beat scroll-wheel cycling under pressure.

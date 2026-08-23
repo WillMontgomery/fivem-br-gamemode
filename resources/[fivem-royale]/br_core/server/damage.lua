@@ -561,14 +561,19 @@ function BR.Damage.spendRound(src, weapon)
     -- RELOAD IS THE SERVER'S TOO, now that it can see the magazine empty.
     -- Without this the gun would simply stop at zero and never refill, because
     -- the client report that used to carry reloads is gone.
-    if slot.clip <= 0 and w.ammo then
-        local pool = inv.ammo[w.ammo] or 0
-        if pool > 0 then
-            local moved = math.min(w.clip, pool)
-            inv.ammo[w.ammo] = pool - moved
-            slot.clip = moved
-        end
-    end
+    --
+    -- BR.Inv.reload IS THE RULE AND THIS USED TO CARRY A COPY OF IT (2026-08-23).
+    -- There are three places that move rounds out of a pool now -- here, the
+    -- INV_AMMO floor, and the manual reload key -- and the third is one a player
+    -- can press on demand, which is a poor moment to discover that two of them
+    -- rounded differently. The arithmetic is identical to what stood here: at
+    -- clip 0 the shared function's `w.clip - clip` IS `w.clip`.
+    --
+    -- The `<= 0` test stays on this side. This is the automatic reload -- the
+    -- gun ran out mid-burst -- and BR.Inv.reload tops a magazine up to capacity,
+    -- which is what the KEY asks for and would refill a partial magazine on
+    -- every shot if it were asked for here.
+    if slot.clip <= 0 then BR.Inv.reload(inv, slot) end
 
     BR.Inv.push(src)
 end

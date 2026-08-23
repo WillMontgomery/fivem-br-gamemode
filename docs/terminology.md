@@ -166,6 +166,26 @@ the invariant is about the sum, which is why the fourth door survived a readout
 built to find the first three: every column was honest and none of them said
 *you have more ammunition than you did*.
 
+##### The manual reload (2026-08-23)
+
+*"we need a manual reload button, which should default to R."* R was already the
+`use` key, chosen by an argument about a reload that did not exist yet — *"the
+two never want the key at the same moment"*. That is now load-bearing rather than
+aspirational: it stays **one binding**, and which of the two things a press means
+is decided by what is in the player's hands. A magazine with room in it over a
+live pool is a reload; every other state is a `use`. Two rows both defaulting to
+R would have rested on whether `RegisterKeyMapping` delivers both commands for
+one key, which nothing here can test.
+
+`INV_RELOAD` carries **nothing** — no slot, no count, no ammo type. The server
+reloads the slot *it* believes is active out of the pool *it* holds, through
+`BR.Inv.reload`, which is now the single copy of the rule that `spendRound` and
+the `INV_AMMO` floor also run. That function *moves* rounds, so `clip + pool` is
+identical on both sides of it: pressing the key a hundred times at a pool of zero
+produces exactly what pressing it once does. There is no rate limit and none is
+needed. It never asks the engine to reload — the magazine arrives with the
+`INV_SET` that follows, on the path a server-paid reload has always taken.
+
 Infinite ammo and infinite-ammo-clip are asserted **off every tick**, not once
 per weapon grant: the raw probe showed the flag surviving a grant-time clear.
 Two natives a tick is cheaper than finding out what re-sets it.

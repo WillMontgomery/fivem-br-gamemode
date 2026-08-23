@@ -722,6 +722,55 @@ BR.Keys.on('drop', function(pressed)
     TriggerServerEvent(BR.Net.INV_DROP, { slot = inv.active })
 end)
 
+--- IS THERE A RELOAD FOR THE ACTIVE SLOT TO DO RIGHT NOW?
+---
+--- THE WHOLE OF WHICH THING `use` MEANS (owner, 2026-08-23: "we need a manual
+--- reload button, which should default to R" -- and R was already `use`).
+--- keybinds.lua carries the argument for why that is one binding rather than
+--- two; this is the line that splits it. True and the press is a reload; false
+--- and it is everything the key already did.
+---
+--- IT IS A GUESS AT WHAT THE SERVER WILL DO, NOT A DECISION. The server runs
+--- BR.Inv.reload and that is the authority -- this only decides whether to ask,
+--- so a press with no reload in it does not go over the wire and does not eat
+--- the `use` that press was. Being wrong in one direction costs one message the
+--- server ignores; being wrong in the other costs one press.
+---
+--- WHICH `clip` THIS READS, AND WHY IT IS THE RIGHT ONE. `slot.clip` on this
+--- side is the ENGINE's magazine -- the report loop overwrites it every tick so
+--- the counter follows the gun -- which is exactly the number the player is
+--- looking at when they decide to press R. `inv.ammo` is the server's pool, the
+--- other half of what the HUD prints. Both halves of the question are the two
+--- numbers already on screen, which is the only way the key can feel honest.
+---
+--- IT DOES NOT ASK canArm(), AND THAT IS NOT AN OVERSIGHT. The lobby, the bus
+--- and the whole descent are refused by the ONE canArm() at the top of the
+--- listener -- arming is suspended in the air because RemoveAllPedWeapons takes
+--- the parachute with it, and a reload is no exception to that. A second copy
+--- here would be a line no test could ever reach, because the listener returns
+--- before this is called: two gates and only one of them measurable is how a
+--- test comes to pass for a reason nobody intended (docs/testing.md, rule 4).
+--- The far end refuses it a second time on its own authority -- FREEFALL and
+--- GLIDE are not in server/inventory's LIVE table -- which is the boundary that
+--- actually matters.
+--- @return boolean
+local function reloadable()
+    local s = inv.slots[inv.active]
+    -- Fists (slot 0 holds nothing), a consumable, a throwable: none of them
+    -- have a magazine to put rounds into.
+    if not s or s.kind ~= BR.ItemKind.WEAPON then return false end
+
+    local w = BR.Config.WeaponById[s.id]
+    if not w or w.melee or not w.clip or not w.ammo then return false end
+
+    -- `>= w.clip` AND `> 0`, NOT TRUTHINESS. A full magazine and an empty pool
+    -- are the two states this has to say "no" in, and the second is a number
+    -- that 0 IS TRUTHY IN LUA gets exactly backwards -- an empty pool under
+    -- `if pool then` reads as ammunition to reload from.
+    if math.floor(s.clip or 0) >= w.clip then return false end
+    return math.floor(inv.ammo[w.ammo] or 0) > 0
+end
+
 -- THE USE KEY ALWAYS DOES SOMETHING IF THERE IS ANYTHING TO DO.
 --
 -- Strictly, you use what is in your hand. But a player who has just picked up
@@ -731,6 +780,26 @@ end)
 -- if it is consumable, otherwise the lowest slot that is.
 BR.Keys.on('use', function(pressed)
     if not pressed or not canArm() then return end
+
+    -- ═══ AND SINCE 2026-08-23 IT RELOADS FIRST ═══
+    --
+    -- A REQUEST WITH NOTHING IN IT, like every other line in this section. No
+    -- slot, no count, no ammo type: the server reloads what IT thinks is in the
+    -- hand, out of the pool IT holds, by the same rule that refills a gun that
+    -- ran dry mid-burst. Nothing is written to the ped from here -- the magazine
+    -- arrives with the INV_SET that follows, through reapplyAmmo, on the path a
+    -- server-paid reload has always travelled. Asking the engine to reload
+    -- instead would put the ped's magazine back in charge of a number the server
+    -- owns, which is what all four of this week's ammo bugs were made of.
+    --
+    -- IT COMES FIRST BECAUSE THE FALL-THROUGH BELOW WOULD OTHERWISE COLLIDE WITH
+    -- IT: with a half-empty rifle in hand and a shield in slot 3, one press
+    -- would reload the rifle AND drink the shield. The gun asked first, and the
+    -- shield is still one keypress away the moment the gun is full.
+    if reloadable() then
+        TriggerServerEvent(BR.Net.INV_RELOAD, {})
+        return
+    end
 
     local slot = nil
     local s = inv.slots[inv.active]

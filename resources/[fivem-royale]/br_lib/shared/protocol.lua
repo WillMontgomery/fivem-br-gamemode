@@ -161,6 +161,14 @@ BR.Net = {
     -- validation exists. Reports are accepted ONLY when they LOWER the stored
     -- value, so the worst a liar can do is disarm themselves.
     INV_AMMO        = 'br:inv:ammo',         -- C->S  { pool = { light = n, ... }, clip, slot }
+    -- C->S {}. THE MANUAL RELOAD KEY, AND IT CARRIES NOTHING ON PURPOSE.
+    --
+    -- The server reloads the slot IT believes is active, from the pool IT holds,
+    -- by the same rule spendRound and the INV_AMMO floor run -- so there is no
+    -- number for a client to choose and none to lie about. It moves rounds
+    -- between a magazine and its pool and cannot raise the two together, which
+    -- is what stops a reload key being a fifth way to conjure ammunition.
+    INV_RELOAD      = 'br:inv:reload',       -- C->S  {}
     -- C->S <weapon hash>. The client took a weapon out of its own ped's hand
     -- because the inventory never issued it. Client-observed by necessity, in
     -- the same way NPC_DROP above is: the ped's hand is a client-side fact and
